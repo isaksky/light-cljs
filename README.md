@@ -288,8 +288,11 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   ([benchmarks/compiler.md](benchmarks/compiler.md#hash-maps-as-tries--october-14-2026)),
   and its transient edits the nodes it owns in place
   ([benchmarks/compiler.md](benchmarks/compiler.md#transient-hash-maps--october-14-2026)).
-  Sets are still linear entry arrays, whose lookups and updates are O(n)
-  ([docs/compiler.md](docs/compiler.md)).
+  A set of more than 8 members keeps them in the same trie, as upstream's hash
+  set over a hash map, so its `conj`, `disj` and lookup are O(log32 n), its
+  equality and `clojure.set` operations make one lookup per member, and its
+  transient edits the trie in place
+  ([benchmarks/compiler.md](benchmarks/compiler.md#hash-sets-as-tries--october-14-2026)).
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:

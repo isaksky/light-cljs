@@ -1115,9 +1115,28 @@ as members and map keys. Weak identity bookkeeping handles foreign object/functi
 members without examining, freezing or copying host data. No strong global hash or
 intern cache retains values.
 
-Set count is O(1), lookup/copying updates O(n), construction of n distinct members
-and naive unordered equality O(n²), before structural costs. Initial seq
-materialization is O(n), subsequent tails O(1). Traversal order is unspecified.
+A set of at most 8 members stores a frozen member array, as an array map. At its
+ninth distinct member it becomes a hash set, which stores what upstream's
+PersistentHashSet does through its PersistentHashMap (light-cljs-236): the hash
+map's trie of its members (each with a nil value), its nil member beside the
+trie, and its count, in a class-private field of its own as a hash map's (see
+[Hash maps](#hash-maps)). The members go into the trie as upstream's transient
+array map promotes to a transient hash map, so traversal order and the calls
+that hash members are as before. Set count is O(1). Hash-set lookup (`get`,
+`contains?`, a call, `.has`), `conj` and `disj` are O(log32 n): an update
+copies one path of trie nodes and shares the rest, plus member hash/equality
+costs; array-set ones are O(n) in their at most 8 members. Building n distinct
+members one `conj` at a time, or with `set`, `hash-set`, `into` or a literal,
+is O(n log32 n). Equality looks up each member of one set in the other, in the
+order `seq` walks them (as upstream's `reduce-kv` over its map), so it is O(n)
+lookups, and so are `clojure.set`'s `union`, `intersection`, `difference`,
+`subset?` and `superset?` in the members they visit. A transient hash set,
+as upstream's TransientHashSet over a transient hash map, starts from the set's
+trie in O(1) and edits it as a transient hash map does. Initial seq
+materialization is O(n), subsequent tails O(1). Traversal order is unspecified;
+a hash set walks its trie as a hash map does (nil first, then by hash bits).
+A set the public `PersistentHashSet` constructor builds from a map copies the
+map's keys, O(n), at that and each later update.
 
 Duplicate readable set member forms report the repeated member's source span,
 including executable forms such as `#{(observe 1) (observe 1)}`. Dynamic distinct
@@ -2138,7 +2157,8 @@ n-item vector in O(n). Where no protocol implementation exists, the `conj!` of
 `into` (with or without a transducer), `mapv` and `filterv` onto their own
 transient skips the protocol dispatch, and so does the `assoc!` that a transient
 map's `conj!` of a map entry or pair makes, as upstream's TransientHashMap calls
-its own `assoc!`.
+its own `assoc!`. A transient hash set edits its set's trie as a transient hash
+map does (see [Hash sets](#hash-sets)), so `conj!` and `disj!` are O(log32 n).
 As upstream, lookup is allowed on persisted hash-map transients; array-map
 transients and vectors reject it. Out-of-range three-argument vector nth returns
 its fallback even after persistence. Transient sets return the query key during

@@ -367,12 +367,28 @@ const sameMap = (a, b) => {
   if (I.hashRoots.has(ea) !== I.hashRoots.has(eb)) fail("root presence");
   sameNode(rootOf(ea), rootOf(eb), xa, xb, "");
 };
+// A hash set's payload is a trie too (light-cljs-236), without entries at
+// indexes: its members are compared in the order its traversal walks them.
+const membersOf = e => {
+  if (Array.isArray(e)) return e;
+  const ordered = e.nil ? [e.nil] : [];
+  const visit = node => {
+    if (!node) return;
+    if (node.kind === "collision") { ordered.push(...node.entries); return; }
+    for (const slot of node.slots) { if (slot?.kind) visit(slot); else if (slot) ordered.push(slot); }
+  };
+  visit(e.root);
+  if (ordered.length !== e.length) fail("set count", ordered.length, e.length);
+  return ordered;
+};
 const sameSet = (a, b) => {
   const ea = I.sets.get(a), eb = I.sets.get(b);
   if (I.setKinds.get(a) !== I.setKinds.get(b)) fail("set kind");
-  sameEntries(ea, eb);
+  if (Array.isArray(ea) !== Array.isArray(eb) || Object.isFrozen(ea) !== Object.isFrozen(eb)) fail("set payload");
+  const xa = membersOf(ea), xb = membersOf(eb);
+  sameEntries(xa, xb);
   if (I.hashRoots.has(ea) !== I.hashRoots.has(eb)) fail("set root presence");
-  sameNode(I.hashRoots.get(ea), I.hashRoots.get(eb), ea, eb, "");
+  sameNode(rootOf(ea), rootOf(eb), xa, xb, "");
 };
 const outcome = build => { try { return build(); } catch (error) { return error.message; } };
 let maps = 0, hashMaps = 0, sets = 0, duplicates = 0;
@@ -400,7 +416,10 @@ for (let trial = 0; trial < 600; trial++) {
     duplicates++;
   } else {
     sameSet(built, shaped);
-    sameSet(built, I.setFromShape(shape, rest));
+    // Each set edits its own copy of the shape's trie.
+    const again = I.setFromShape(shape, rest);
+    sameSet(built, again);
+    if (!Array.isArray(I.sets.get(shaped)) && rootOf(I.sets.get(shaped)) === rootOf(I.sets.get(again))) fail("shared set root");
   }
   sets++;
 }
@@ -501,6 +520,70 @@ fn transient_hash_maps_edit_the_nodes_they_own_in_place() {
     );
     assert!(
         summary.ends_with(" nodes kept, 1334 edited, 667 after removal"),
+        "{summary}"
+    );
+}
+
+/// [`OWNERSHIP`] for a transient over a 2,000-member hash set, whose members
+/// are a trie since light-cljs-236.
+const SET_OWNERSHIP: &str = r#"
+const I = globalThis.lightInternals, c = I.core;
+const fail = (...detail) => { throw new Error(detail.map(String).join(" ")); };
+const n = 2000;
+let s = c.hashSet();
+for (let i = 0; i < n; i++) s = c.conj(s, i);
+if (Array.isArray(I.sets.get(s)) || I.setKinds.get(s) !== "hash-map") fail("payload");
+const snapshot = root => {
+  const nodes = new Map();
+  const walk = node => {
+    nodes.set(node, (node.slots ?? node.entries).slice());
+    for (const slot of node.slots ?? []) if (slot?.kind) walk(slot);
+  };
+  walk(root);
+  return nodes;
+};
+const unchanged = (nodes, what) => {
+  for (const [node, held] of nodes) {
+    const now = node.slots ?? node.entries;
+    if (now.length !== held.length || now.some((slot, i) => slot !== held[i])) fail(what, "node changed");
+  }
+};
+const original = snapshot(I.sets.get(s).root);
+const rootOf = t => I.transients.get(t).entries.root;
+let t = c.disjBang(c.transient(s), 0);
+const owned = rootOf(t);
+if (owned === I.sets.get(s).root) fail("the first edit shares the persistent root");
+for (let i = 1; i < n; i += 3) t = c.disjBang(t, i);
+for (let i = n; i < n + 100; i++) t = c.conjBang(t, i);
+if (rootOf(t) !== owned) fail("an edit copied an owned root");
+const edited = c.persistentBang(t);
+unchanged(original, "original");
+if (c.count(s) !== n || c.get(s, 0) !== 0 || c.get(s, 1) !== 1 || c.get(s, n, "missing") !== "missing") fail("original lookup");
+const expected = [];
+for (let i = 1; i < n + 100; i++) if (i >= n || i % 3 !== 1) expected.push(i);
+if (!c.equal(edited, I.setFromArray(expected))) fail("edited set");
+const kept = snapshot(I.sets.get(edited).root);
+let again = c.transient(edited);
+for (let i = 0; i < n + 100; i += 2) again = c.disjBang(again, i);
+unchanged(kept, "edited");
+const halved = c.persistentBang(again);
+if (!c.equal(halved, I.setFromArray(expected.filter(i => i % 2))) || c.count(edited) !== expected.length) fail("halved set");
+return `${original.size} nodes kept, ${c.count(edited)} edited, ${c.count(halved)} after removal`;
+"#;
+
+#[test]
+fn transient_hash_sets_edit_the_nodes_they_own_in_place() {
+    // light-cljs-236: a transient hash set edits the trie it shares with
+    // its set as a transient hash map does.
+    let js = exposed();
+    let expression = format!("(() => {{ const value = {js};\n{SET_OWNERSHIP} }})()");
+    let summary = quickjs(&expression);
+    assert_eq!(
+        execute(&format!("console.log({expression});")),
+        format!("{summary}\n")
+    );
+    assert!(
+        summary.ends_with(" nodes kept, 1432 edited, 716 after removal"),
         "{summary}"
     );
 }

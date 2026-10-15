@@ -649,6 +649,132 @@ const nanSet = c.hashSet(NaN);
 assert.equal(c.equal(nanSet, nanSet), true);
 console.log('structural set, collision, representative, sharing and mutation assertions passed');
 
+// Hash sets keep their members in a trie, as hash maps (light-cljs-236):
+// built one `conj` at a time, at once, with `set` and `into` and through a
+// transient, past array nodes and down to collisions, they agree on count,
+// lookup, equality, hash and traversal, and every version survives later
+// updates.
+{
+  const n = 3000, keys = [];
+  for (let i = 0; i < n; i++) keys.push(i % 3 === 0 ? i : i % 3 === 1 ? 'k' + i : c.keyword('n', 'k' + i));
+  const order = s => runtime.inspect(s).items;
+  let built = c.hashSet();
+  const versions = [];
+  for (let i = 0; i < n; i++) {
+    built = c.conj(built, keys[i]);
+    if (i % 499 === 0) versions.push([built, i + 1]);
+  }
+  const whole = runtime.setFromArray(keys);
+  let editing = c.transient(c.hashSet());
+  for (let i = 0; i < n; i++) editing = c.conjBang(editing, keys[i]);
+  const viaTransient = c.persistentBang(editing);
+  const viaSet = c.set(c.vector(...keys)), viaInto = c.into(c.hashSet(), c.vector(...keys));
+  for (const s of [built, whole, viaTransient, viaSet, viaInto]) {
+    assert.equal(c.count(s), n);
+    assert.equal(c.equal(s, built), true);
+    assert.equal(c.equal(built, s), true);
+    assert.equal(c.hash(s), c.hash(whole));
+    assert.deepEqual(order(s), order(whole));
+    for (let i = 0; i < n; i++) {
+      assert.equal(c.get(s, keys[i]), keys[i]);
+      assert.equal(s.call(null, keys[i]), keys[i]);
+      assert.equal(s.has(keys[i]), true);
+    }
+    assert.equal(c.get(s, 'absent', 'missing'), 'missing');
+    assert.equal(c.contains(s, 'absent'), false);
+  }
+  // The hash is that of the members, which an array set of a few also has.
+  assert.equal(c.hash(c.disj(whole, ...keys.slice(3))), c.hash(c.hashSet(...keys.slice(0, 3))));
+  assert.equal(c.conj(built, keys[5]), built);
+  assert.equal(c.equal(built, c.conj(c.disj(built, keys[7]), 'other')), false);
+  for (const [version, count] of versions) {
+    assert.equal(c.count(version), count);
+    assert.equal(c.contains(version, keys[count - 1]), true);
+    assert.equal(c.contains(version, keys[count]), false);
+  }
+  let removed = built;
+  for (let i = 0; i < n; i += 2) removed = c.disj(removed, keys[i]);
+  assert.equal(c.count(removed), n / 2);
+  assert.equal(c.disj(removed, keys[0], 'absent'), removed);
+  const remaining = keys.filter((_, i) => i % 2);
+  assert.equal(c.equal(removed, runtime.setFromArray(remaining)), true);
+  assert.deepEqual(order(removed), order(runtime.setFromArray(remaining)));
+  for (let i = 0; i < n; i++) assert.equal(c.contains(removed, keys[i]), i % 2 === 1);
+  assert.equal(c.count(c.disj(built, ...keys)), 0);
+  assert.equal(c.count(built), n);
+  // Members hash as they compare: -0 is 0, nil is undefined, a list finds a
+  // vector, NaN finds nothing, and same-named strings, keywords and symbols
+  // stay apart; members of equal hash share a collision node.
+  assert.equal(c.conj(built, -0), built);
+  const withNil = c.conj(built, undefined);
+  assert.equal(c.get(withNil, null, 'missing'), undefined);
+  assert.equal(c.count(withNil), n + 1);
+  assert.equal(order(withNil)[0], undefined);
+  assert.equal(c.count(c.disj(withNil, null)), n);
+  const pair = c.vector(1, 2);
+  assert.equal(c.get(c.conj(built, pair), c.list(1, 2)), pair);
+  const nan = c.conj(c.conj(built, NaN), NaN);
+  assert.equal(c.count(nan), n + 2);
+  assert.equal(c.contains(nan, NaN), false);
+  assert.equal(c.count(c.conj(built, 'x', c.keyword(null, 'x'), c.symbol(null, 'x'))), n + 3);
+  const collided = c.conj(built, 'Aa', 'BB');
+  assert.deepEqual([c.get(collided, 'Aa'), c.get(collided, 'BB'), c.count(collided)], ['Aa', 'BB', n + 2]);
+  assert.equal(c.get(c.disj(collided, 'Aa'), 'BB'), 'BB');
+  assert.equal(c.contains(c.disj(collided, 'Aa'), 'Aa'), false);
+  // Metadata survives conj, disj and empty, which keeps the set's kind.
+  const marked = c.withMeta(built, c.hashMap('m', 1));
+  assert.equal(c.get(c.meta(c.disj(c.conj(marked, 'k'), 'k')), 'm'), 1);
+  assert.equal(c.get(c.meta(c.conj(marked, keys[3])), 'm'), 1);
+  assert.equal(c.equal(marked, built), true);
+  const emptied = c.empty(marked);
+  assert.deepEqual([c.count(emptied), c.get(c.meta(emptied), 'm')], [0, 1]);
+  assert.deepEqual(order(c.conj(emptied, ...keys)), order(whole));
+  // A transient over a hash set edits its own copy of the trie; its lookup
+  // returns the query, as upstream's TransientHashSet.
+  let editing2 = c.transient(built);
+  for (let i = 0; i < n; i += 3) editing2 = c.disjBang(editing2, keys[i]);
+  editing2 = c.conjBang(editing2, null, 'Aa', 'BB', keys[1]);
+  assert.equal(c.count(editing2), n - n / 3 + 3);
+  assert.equal(c.get(editing2, keys[0], 'missing'), 'missing');
+  const query = c.list(1, 2);
+  editing2 = c.conjBang(editing2, pair);
+  assert.equal(c.get(editing2, query), query);
+  const edited = c.persistentBang(editing2);
+  assert.throws(() => c.conjBang(editing2, 'late'), /conj! after persistent!/);
+  assert.equal(c.get(editing2, keys[1]), keys[1]);
+  const expected = keys.filter((_, i) => i % 3).concat([null, 'Aa', 'BB', pair]);
+  assert.equal(c.equal(edited, runtime.setFromArray(expected)), true);
+  assert.deepEqual(order(edited), order(runtime.setFromArray(expected)));
+  assert.deepEqual([c.count(built), c.contains(built, keys[3]), c.contains(built, 'Aa')], [n, true, false]);
+  // What `persistent!` returns never changes: later transients edit their own
+  // copies.
+  let halved = c.transient(viaTransient), refilled = c.transient(viaTransient);
+  for (let i = 0; i < n; i += 2) halved = c.disjBang(halved, keys[i]);
+  for (let i = 0; i < n; i++) refilled = c.disjBang(refilled, keys[i]);
+  assert.equal(c.count(refilled), 0);
+  for (let i = 0; i < n; i++) refilled = c.conjBang(refilled, keys[i]);
+  assert.deepEqual(order(c.persistentBang(halved)), order(removed));
+  assert.deepEqual(order(c.persistentBang(refilled)), order(whole));
+  assert.equal(c.count(viaTransient), n);
+  assert.deepEqual(order(viaTransient), order(whole));
+  // From review: a set the public constructor built of nil has no kind, and
+  // a lookup gives its member array a root; past 8 members its transient, or
+  // `conj`, still makes a hash set, which a transient looks up after
+  // persistence.
+  const kindless = c.PersistentHashSet(null, null, null);
+  assert.equal(c.get(kindless, 'missing'), null);
+  let grown = c.transient(kindless);
+  for (let i = 0; i < 9; i++) grown = c.conjBang(grown, i);
+  const persisted = c.persistentBang(grown);
+  assert.deepEqual([c.count(persisted), c.get(grown, 0), c.get(persisted, 8)], [9, 0, 8]);
+  assert.deepEqual(order(persisted), order(runtime.setFromArray([0, 1, 2, 3, 4, 5, 6, 7, 8])));
+  let conjoined = kindless;
+  for (let i = 0; i < 9; i++) conjoined = c.conj(conjoined, i);
+  assert.equal(c.equal(conjoined, persisted), true);
+  assert.deepEqual(order(conjoined), order(persisted));
+}
+console.log('hash set trie assertions passed');
+
 assert.equal(c.count(runtime.setFromArray(Array(150000).fill(nested))), 1);
 
 // Finite reductions use the ordinary call method afresh at each step and never

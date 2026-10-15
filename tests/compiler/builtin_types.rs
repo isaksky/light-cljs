@@ -885,6 +885,26 @@ fn vectors_are_tries_across_leaf_and_level_boundaries() {
     );
 }
 
+/// A set of more than 8 members is a trie (light-cljs-236): `conj`, `disj`,
+/// lookup, a call, `into`, `set`, equality and hashing agree across array
+/// nodes and collisions. From review: a transient of a set the public
+/// constructor built of nil, whose member array a lookup gave a root, still
+/// becomes a hash set past 8 members and looks up after persistence.
+#[test]
+fn hash_sets_are_tries() {
+    every_level(
+        "(let [n 2000 s (reduce conj #{} (range n)) t (into #{} (range n)) u (set (range n))
+               d (reduce disj s (range 0 n 2))
+               k (PersistentHashSet. nil nil nil) _ (get k :missing) kt (transient k)]
+           (doseq [i (range 9)] (conj! kt i))
+           (let [kp (persistent! kt)]
+             (pr-str [(= s t u (set (range n))) (count s) (contains? s 1999) (get s 7) (s 8) (s n :none)
+                      (= (hash s) (hash t)) (count d) (contains? d 2) (contains? d 3)
+                      (= (conj d 2 \"Aa\" \"BB\") (into d [2 \"BB\" \"Aa\"])) (count kp) (get kt 0) (kp 8)])))",
+        "[true 2000 true 7 8 :none true 1000 false true true 9 0 8]",
+    );
+}
+
 /// A subvec is a view of its vector's trie (light-cljs-234): reading, reducing
 /// and seqs across leaf boundaries, a subvec of a subvec, and `pop`, `assoc`
 /// and `conj`, which leave the vector viewed as it was. The public Subvec

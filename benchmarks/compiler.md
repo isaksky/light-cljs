@@ -3488,3 +3488,69 @@ output embeds grew 1,202 bytes, mostly comments (`console-log-sum` 425,082 to
 `constant-keys` grew 110 bytes (42,364 to 42,474, under its 43,000 ceiling) and
 `mapv-count`, whose `into` no longer keeps `conjBang`, shrank 80 (31,215 to
 31,135); no `advanced` ceiling moved.
+
+## Hash sets as tries — October 14, 2026
+
+light-cljs-236 gives a hash set what light-cljs-235 gave a hash map
+(docs/compiler.md, "Hash sets"). A set of at most 8 members keeps its frozen
+member array; at its ninth distinct member it becomes, as upstream's
+PersistentHashSet over a PersistentHashMap, the hash map's trie of its members,
+its nil member and its count, so `conj` and `disj` copy one path of nodes and
+lookup walks one. Before, a hash set was an entry array with a trie beside it
+that found an entry and then searched the array for its index, and every update
+copied the array. Promotion adds the members under one edit token, as upstream's
+transient array map does, so traversal order and the calls that hash members
+are unchanged. The set keeps its trie in a class-private field of its own,
+installed by the helper that now also installs the hash map's
+(`trieBrand(maps, mapKinds)`, `trieBrand(sets, setKinds)`). A transient shares
+the set's trie in O(1) and edits the nodes it owns in place, as a transient hash
+map does, and `conj` with one member onto a set skips its variadic loop, as it
+already did for vectors. Set equality looks up each member of one set in the
+other, in the order `seq` walks them, as upstream's `reduce-kv` over its map.
+
+Command:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only set-conj,map-assoc --output DIR
+```
+
+Node v24.18.0, macOS 15 (Darwin 24.6) ARM64 VM, 24 CPUs, 15 timed rounds, on
+`60f7bcf` (this change on `129064e`). Another worker was active on the machine:
+the one-minute load average was 8.83–10.13 (median 9.80). "Before" is
+`--only set-conj` on `129064e` at a load median of 8.89, whose upstream column
+is within 11% of this run's. Median ms per call; growth is the time at
+n = 20,000 over the time at n = 2,000, light-cljs / upstream:
+
+| Workload | n | Before | light-cljs `advanced` | Upstream `:advanced` | light-cljs / upstream | Growth |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| set-conj | 2,000 | 55.2 (170×) | 0.479 | 0.304 | 1.6× | |
+| set-conj | 20,000 | 5,716 (1,550×) | 5.18 | 3.34 | 1.5× | 10.8× / 11.0× |
+| map-assoc | 2,000 | | 0.572 | 0.289 | 2.0× | |
+| map-assoc | 20,000 | | 6.29 | 3.28 | 1.9× | 11.0× / 11.4× |
+
+Building a 20,000-member set one `conj` at a time is about 1,100 times faster,
+linear in n as upstream's, and 1.5× upstream; map-assoc, run alongside, keeps
+its ratio. A quick timing of other set operations at `advanced` in Node (a
+`setops` namespace compiled against each runtime, median of 3 calls at
+n = 20,000 after one untimed, load 5–10), before / after, ms: `disj` of every
+member 5,046 / 6.90; `contains?` of every member 39.2 / 2.17; `=` of two sets
+built differently 45.9 / 1.41; `clojure.set/union` of two half-overlapping sets
+13,754 / 14.1, `intersection` 3,864 / 14.6, `difference` 7,565 / 20.4 and
+`subset?` 49.2 / 10.8; `into #{}` 2.46 / 1.97, which went through a transient
+whose entry array already grew in place. `set` of a vector, 15.2 / 14.0, is
+bound by walking the vector's seq.
+
+Sizes (bytes, size ratchet): the runtime that every `none` and `prepare`
+output embeds grew 3,204 bytes, mostly comments (`console-log-sum` 426,284 to
+429,488); those ceilings rose to the new sizes rounded up, growth the user
+accepted for light-cljs-234 to 236. At `advanced`, `set-only` (an array set of
+3 constants) is unchanged at 5,214. `constant-keys`, whose dynamic two-member
+set literals keep the set builder and so the trie's units, grew 277 (42,474 to
+42,751, under its 43,000 ceiling), mostly the lookup wrapper for a set's trie
+(111) and `putMember`: its brand is one call of the `trieBrand` that the hash
+map's brand already keeps, where a second copy of the brand would have cost
+about 430. `mapv-count` grew 137 (31,135 to 31,272), the one-member set path
+of `conj`. Every other `advanced` output that compares values shrank 10
+bytes, because equality passes a set rather than its payload; `keyword-only`
+(3,497) and `map-only` (9,899) lowered their ceilings to 3,500 and 9,900.

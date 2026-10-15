@@ -355,15 +355,15 @@
   function PersistentHashSetValue(metadata, source, cachedHash) {
     return typeHooks.hashSet(metadata, source, cachedHash);
   }
-  //@unit publicHashSet requires: constructorSlots, ensureHashRoot, makeSet, mapKinds, mapTraversal,
+  //@unit publicHashSet requires: constructorSlots, hashTrie, makeSet, mapKinds, mapTraversal,
   //@ PersistentHashSetValue
   // The public constructor: a set of a map's keys, of the map's kind (an
   // array set otherwise only comes from builders, which never build a set of
-  // another kind without promoting it in `putMember`).
+  // another kind without promoting it in `putMember`). A set of the hash-map
+  // kind keeps its members in a trie, as a hash map (light-cljs-236).
   function publicHashSet(metadata, source, cachedHash) {
-    const entries = (mapTraversal(source) ?? []).map(e => Object.freeze({key: e.key, hash: e.hash}));
-    if (mapKinds.get(source) === "hash-map") ensureHashRoot(entries);
-    return constructorSlots(makeSet(PersistentHashSetValue, entries, mapKinds.get(source)), {"hash-map": source}, metadata, cachedHash);
+    const entries = (mapTraversal(source) ?? []).map(e => Object.freeze({key: e.key, hash: e.hash})), kind = mapKinds.get(source);
+    return constructorSlots(makeSet(PersistentHashSetValue, kind === "hash-map" ? hashTrie(entries) : entries, kind), {"hash-map": source}, metadata, cachedHash);
   }
 
   //@unit Reduced requires: invalidArity, reduced
@@ -1406,6 +1406,13 @@
       if (metadataValues.has(coll)) metadataValues.set(built, metadataValues.get(coll));
       return built;
     }
+    // Likewise one member onto a set (light-cljs-236).
+    if (arguments.length === 2 && !protocolHooks.builtin && sets.has(coll)) {
+      const built = kindHooks.conjSet(coll, coll, item);
+      if (built === missing) return coll;
+      if (metadataValues.has(coll)) metadataValues.set(built, metadataValues.get(coll));
+      return built;
+    }
     const args = Array.from(arguments);
     if (args.length === 0) return makeVector([]);
     let result = args[0];
@@ -1450,18 +1457,22 @@
   //@ mapConj
   kindHooks.conjMap = mapConj;
   //@unit makeSet.conj effect: makeSet, treeSetConstructor when: conj requires: assoc, copyEntries,
-  //@ kindHooks, makeSet, meta, missing, PersistentHashSetValue, publicCollectionSlots,
-  //@ putCollectionEntry, setKinds, sets, setTypes, sortedComparators
-  // The set `conj` builds, or `missing` where it adds nothing.
+  //@ kindHooks, makeSet, meta, missing, PersistentHashSetValue, publicCollectionSlots, putMember,
+  //@ putSortedEntry, sets, setTypes, sortedComparators
+  // The set `conj` builds, or `missing` where it adds nothing. A hash set's
+  // trie copies one path (`putMember`).
   kindHooks.conjSet = (previous, result, item) => {
     if (publicCollectionSlots.has(result)) {
       const slots = publicCollectionSlots.get(result), source = slots["tree-map"] ?? slots["hash-map"], updated = assoc(source, item, null);
       return updated === source ? result : slots["tree-map"] ? setTypes["sorted-set"](meta(result), updated, null) : PersistentHashSetValue(meta(result), updated, null);
     }
-    const entries = copyEntries(sets.get(result));
-    putCollectionEntry(result, entries, item, undefined, true);
-    if (entries.length === sets.get(result).length) return missing;
-    return sortedComparators.has(previous) ? makeSet(setTypes["sorted-set"], entries, "sorted-set", sortedComparators.get(previous)) : makeSet(PersistentHashSetValue, entries, setKinds.get(previous) === "hash-map" || entries.length > 8 ? "hash-map" : "array-map");
+    const original = sets.get(result), comparator = sortedComparators.get(previous);
+    let members = copyEntries(original);
+    if (comparator) putSortedEntry(members, item, undefined, comparator, true);
+    else members = putMember(members, item);
+    if (members.length === original.length) return missing;
+    return comparator ? makeSet(setTypes["sorted-set"], members, "sorted-set", comparator)
+      : makeSet(PersistentHashSetValue, members, Array.isArray(members) ? "array-map" : "hash-map");
   };
 
   //@unit assoc requires: copyEntries, kindHooks, maps, missing, protocolHooks,
@@ -1590,25 +1601,30 @@
   //@unit PersistentHashMapValue.kind effect: PersistentHashMapValue requires: mapTypes,
   //@ PersistentHashMapValue
   mapTypes["hash-map"] = PersistentHashMapValue;
-  //@unit PersistentHashMapValue.brand effect: PersistentHashMapValue requires: mapKinds, maps
+  //@unit trieBrand mutator
   // A hash map keeps its trie (`hashTrie`) in a private field rather than in
   // the `maps` WeakMap: as unforgeable a brand, but each new version of a map
   // costs no WeakMap entry, which dominated `assoc`. The stores answer for
-  // both, beneath the wrappers another type's effect adds (`maps.records`).
-  (() => {
+  // both, beneath the wrappers another type's effect adds (`maps.records`),
+  // and a value with a trie has the hash-map kind. A hash set's trie has a
+  // field of its own, of another class (light-cljs-236).
+  function trieBrand(store, kinds) {
     // Constructing a Trie adds its private field to `value`, which the base
-    // constructor returns. A map's payload is set once, when it is built.
+    // constructor returns. A payload is set once, when its value is built.
     const Trie = class extends (class { constructor(value) { return value; } }) {
       #trie;
       static of(value) { return Object(value) === value && #trie in value ? value.#trie : null; }
       static put(value, trie) { new Trie(value).#trie = trie; }
     }, trieOf = Trie.of;
-    maps.get = (get => value => trieOf(value) ?? get.call(maps, value))(maps.get);
-    maps.has = (has => value => !!trieOf(value) || has.call(maps, value))(maps.has);
-    maps.set = (set => (value, payload) => (Array.isArray(payload) ? set.call(maps, value, payload) : Trie.put(value, payload), maps))(maps.set);
-    mapKinds.get = (get => value => trieOf(value) ? "hash-map" : get.call(mapKinds, value))(mapKinds.get);
-    mapKinds.set = (set => (value, kind) => (trieOf(value) || set.call(mapKinds, value, kind), mapKinds))(mapKinds.set);
-  })();
+    store.get = (get => value => trieOf(value) ?? get.call(store, value))(store.get);
+    store.has = (has => value => !!trieOf(value) || has.call(store, value))(store.has);
+    store.set = (set => (value, payload) => (Array.isArray(payload) ? set.call(store, value, payload) : Trie.put(value, payload), store))(store.set);
+    kinds.get = (get => value => trieOf(value) ? "hash-map" : get.call(kinds, value))(kinds.get);
+    kinds.set = (set => (value, kind) => (trieOf(value) || set.call(kinds, value, kind), kinds))(kinds.set);
+  }
+  //@unit PersistentHashMapValue.brand effect: PersistentHashMapValue requires: mapKinds, maps,
+  //@ trieBrand
+  trieBrand(maps, mapKinds);
   //@unit lookup.trie effect: PersistentHashMapValue when: lookup requires: lookup, maps, trieEntry
   // The branches of generic operations for a hash map's trie, kept only where
   // a program builds hash maps.
@@ -1618,7 +1634,18 @@
     const entry = trieEntry(trie, key);
     return entry ? entry.value : notFound;
   })(lookup);
-  //@unit copyEntries.trie effect: PersistentHashMapValue when: copyEntries requires: copyEntries
+  //@unit lookup.members effect: publicHashSet, putMember when: lookup requires: lookup, sets,
+  //@ trieEntry
+  // Likewise a hash set's, whose members are a trie (`putMember`), kept only
+  // where a program builds hash sets (light-cljs-236).
+  lookup = (operation => (value, key, notFound) => {
+    const members = sets.get(value);
+    if (!members || Array.isArray(members)) return operation(value, key, notFound);
+    const entry = trieEntry(members, key);
+    return entry ? entry.key : notFound;
+  })(lookup);
+  //@unit copyEntries.trie effect: PersistentHashMapValue, publicHashSet, putMember when: copyEntries
+  //@ requires: copyEntries
   // A trie is immutable; its copy is the fields an update replaces.
   copyEntries = (operation => entries => Array.isArray(entries) ? operation(entries)
     : {root: entries.root, nil: entries.nil, length: entries.length})(copyEntries);
@@ -1853,16 +1880,24 @@
     trie.root = root; if (key == null) trie.nil = null; trie.length--;
     return trie;
   }
-  //@unit PersistentHashMapValue.find effect: PersistentHashMapValue, assocTransient when: find,
-  //@ transientLookup requires: kindHooks, trieEntry
-  // Only hash maps have a trie (see `mapTraversal`), and transient maps,
-  // which `assoc!` can promote to one without a persistent hash map.
+  //@unit PersistentHashMapValue.find effect: PersistentHashMapValue, assocTransient, publicHashSet,
+  //@ putMember when: find, transientLookup requires: kindHooks, trieEntry
+  // Only hash maps have a trie (see `mapTraversal`), transient maps, which
+  // `assoc!` can promote to one without a persistent hash map, and transient
+  // hash sets (light-cljs-236).
   kindHooks.trieEntry = trieEntry;
   //@unit PersistentHashMapValue.dissoc effect: PersistentHashMapValue when: dissoc requires: kindHooks,
   //@ trieDissoc, updatedMap
   kindHooks.dissocTrie = (value, trie, keys) => {
     for (const key of keys) trie = trieDissoc(trie, key);
     return updatedMap(value, trie);
+  };
+  //@unit putMember.disj effect: publicHashSet, putMember when: disj requires: kindHooks, trieDissoc
+  // The members a hash set keeps without `keys`, or the same trie where it
+  // has none of them.
+  kindHooks.disjTrie = (members, keys) => {
+    for (const key of keys) members = trieDissoc(members, key);
+    return members;
   };
 
   //@unit makeMap requires: mapKinds, maps, sortedComparators
@@ -2115,26 +2150,42 @@
     if (kind === "sorted-set") sortedComparators.set(value, comparator);
     return value;
   }
+  //@unit putMember.brand effect: publicHashSet, putMember requires: setKinds, sets, trieBrand
+  // A hash set keeps its trie (see `putMember`) in a private field, as a hash
+  // map does.
+  trieBrand(sets, setKinds);
 
-  //@unit putMember requires: entryIndex, hashRoots, promoteEntries, putEntry
-  function putMember(entries, key, edit = null) {
-    if (!hashRoots.has(entries)) {
-      if (entries.length < 8 || entryIndex(entries, key, undefined, "array-map") >= 0) {
-        putEntry(entries, key, null, "array-map"); return;
+  //@unit putMember requires: entryIndex, hashRoots, putEntry
+  // Adds `key` to the members of a set that a builder, `conj` or a transient
+  // owns, and returns them. At most 8 are an entry array; the ninth distinct
+  // member promotes them to a hash set's payload (light-cljs-236), which, as a
+  // hash map's (`hashTrie`), is the trie of its non-nil members, its nil
+  // member or null, and its count as `length`, so that an update copies or
+  // edits one path. Promotion adds the members under one edit token, as
+  // upstream's transient array map does, so that traversal order and the
+  // calls that hash keys are as before. An array to which another kind's
+  // lookup gave a root (see `collectionEntryIndex`) adds to that root, and
+  // past 8 members becomes the trie of it.
+  function putMember(members, key, edit = null) {
+    if (Array.isArray(members) && !hashRoots.has(members)) {
+      if (members.length < 8 || entryIndex(members, key, undefined, "array-map") >= 0) {
+        putEntry(members, key, null, "array-map"); return members;
       }
-      const promoted = promoteEntries(entries, edit ?? {});
-      entries.splice(0, entries.length, ...promoted);
-      hashRoots.set(entries, hashRoots.get(promoted));
+      const promoted = {root: null, nil: null, length: 0}, token = edit ?? {};
+      for (const entry of members) putEntry(promoted, entry.key, null, "hash-map", token);
+      members = promoted;
     }
-    putEntry(entries, key, null, "hash-map", edit);
+    putEntry(members, key, null, "hash-map", edit);
+    return !Array.isArray(members) || members.length <= 8 ? members
+      : {root: hashRoots.get(members), nil: members.find(entry => entry.key == null) ?? null, length: members.length};
   }
 
   //@unit setFromArray requires: makeSet, PersistentHashSetValue, putMember
   function setFromArray(items) {
-    const entries = [];
+    let members = [];
     const edit = {};
-    for (const item of items) putMember(entries, item, edit);
-    return makeSet(PersistentHashSetValue, entries, entries.length > 8 ? "hash-map" : "array-map");
+    for (const item of items) members = putMember(members, item, edit);
+    return makeSet(PersistentHashSetValue, members, Array.isArray(members) ? "array-map" : "hash-map");
   }
   //@unit arraySetFromArray requires: makeSet, PersistentHashSetValue, putEntry
   // Advanced set literals of at most 8 constants, which `setFromArray` never
@@ -2146,40 +2197,40 @@
   }
 
   //@unit literalSetFromArray requires: displayStr, makeSet, PersistentHashSetValue, putMember
-  function literalSetFromArray(items, entries = [], edit = {}) {
+  function literalSetFromArray(items, members = [], edit = {}) {
     for (const item of items) {
-      const before = entries.length;
-      putMember(entries, item, edit);
-      if (entries.length === before) throw new Error("Duplicate key: " + displayStr(item));
+      const before = members.length;
+      members = putMember(members, item, edit);
+      if (members.length === before) throw new Error("Duplicate key: " + displayStr(item));
     }
-    return makeSet(PersistentHashSetValue, entries, entries.length > 8 ? "hash-map" : "array-map");
+    return makeSet(PersistentHashSetValue, members, Array.isArray(members) ? "array-map" : "hash-map");
   }
   //@unit setShape requires: putMember
   // Set literal shapes (light-cljs-220): distinct constant first members,
   // added as literalSetFromArray adds them, and its edit token.
   function setShape(members) {
-    const entries = [], edit = {};
-    for (const member of members) putMember(entries, member, edit);
+    let entries = [];
+    const edit = {};
+    for (const member of members) entries = putMember(entries, member, edit);
     return Object.freeze({entries: Object.freeze(entries), edit});
   }
-  //@unit setFromShape requires: copyEntries, hashRoots, literalSetFromArray
+  //@unit setFromShape requires: literalSetFromArray
   // The shape's token gives the other members the capacities a literal built
   // at once gives them. An edit changes the nodes of its token in place
   // (`hashNodeAssoc`), so each set edits its own copy of the shape's trie
   // (collision nodes are always copied).
   function setFromShape({entries, edit}, items) {
-    const copy = copyEntries(entries), root = hashRoots.get(entries);
     const own = node => node.kind === "collision" ? node : {...node, slots: node.slots.map(slot => slot?.kind ? own(slot) : slot)};
-    if (root) hashRoots.set(copy, own(root));
-    return literalSetFromArray(items, copy, edit);
+    return literalSetFromArray(items, Array.isArray(entries) ? entries.slice()
+      : {root: entries.root && own(entries.root), nil: entries.nil, length: entries.length}, edit);
   }
 
   //@unit hashSet requires: setFromArray
   function hashSet(...items) { return setFromArray(items); }
 
-  //@unit disj requires: collectionEntryIndex, copyEntries, dissoc, hashRoots, makeSet, meta,
-  //@ PersistentHashSetValue, preserveMeta, protocolHooks, publicCollectionSlots, removeHashEntry,
-  //@ setKinds, sets, setType, sortedComparators, treeSetConstructor
+  //@unit disj requires: collectionEntryIndex, copyEntries, dissoc, hashRoots, kindHooks, makeSet,
+  //@ meta, PersistentHashSetValue, preserveMeta, protocolHooks, publicCollectionSlots,
+  //@ removeHashEntry, setKinds, sets, setType, sortedComparators, treeSetConstructor
   function disj(value, ...keys) {
     if (value != null && protocolHooks.builtin?.(value, "ISet/-disjoin", 2)) return keys.reduce((result, key) => protocolHooks.builtin?.(result, "ISet/-disjoin", 2).call(result, result, key), value);
     if (arguments.length === 0) return null;
@@ -2191,6 +2242,11 @@
     if (treeMap) return treeSetConstructor(meta(value), dissoc(treeMap, ...keys), null);
     const hashMap = publicCollectionSlots.get(value)?.["hash-map"];
     if (hashMap) return PersistentHashSetValue(meta(value), dissoc(hashMap, ...keys), null);
+    // A hash set removes each member from its trie in O(log32 n).
+    if (!Array.isArray(original)) {
+      const members = kindHooks.disjTrie(original, keys);
+      return members === original ? value : preserveMeta(value, makeSet(PersistentHashSetValue, members, "hash-map"));
+    }
     const entries = copyEntries(original);
     for (const key of keys) {
       const index = collectionEntryIndex(value, entries, key);
@@ -2291,10 +2347,10 @@
     // persistence in both pinned versions. Array maps and vectors reject it.
     if (state.mapKind !== "hash-map") editableTransient(value, "lookup");
     if (state.kind === "vector") return typeof key === "number" ? transientNth(value, key, notFound) : notFound;
-    // A transient hash map edits a trie (see `asTransient`).
+    // A transient hash map or set edits a trie (see `asTransient`).
     if (!Array.isArray(state.entries)) {
       const entry = kindHooks.trieEntry(state.entries, key);
-      return entry ? entry.value : notFound;
+      return !entry ? notFound : state.kind === "set" ? key : entry.value;
     }
     const index = kindHooks.transientEntryIndex(state, key);
     return index < 0 ? notFound : state.kind === "set" ? key : state.entries[index].value;
@@ -2346,9 +2402,11 @@
   };
   //@unit makeSet.conjTransient effect: makeSet, treeSetConstructor when: conjTransient requires: kindHooks,
   //@ putMember
+  // As upstream's TransientHashSet over a transient map, it edits the trie it
+  // shares with the set or promotes to, as `assoc!` does (light-cljs-236).
   kindHooks.conjTransientSet = (value, state, member) => {
-    putMember(state.entries, member, state.edit);
-    if (state.entries.length > 8) state.mapKind = "hash-map";
+    state.entries = putMember(state.entries, member, state.edit);
+    if (!Array.isArray(state.entries)) state.mapKind = "hash-map";
     return value;
   };
   //@unit makeMap.conjTransient effect: makeMap, treeMapConstructor, recordMethods when: conjTransient
@@ -3282,10 +3340,10 @@
   //@ withMeta
   function set(value) {
     if (isSet(value)) return withMeta(value, null);
-    const entries = [];
+    let members = [];
     const edit = {};
-    for (let current = seq(value); current != null; current = next(current)) putMember(entries, first(current), edit);
-    return makeSet(PersistentHashSetValue, entries, entries.length > 8 ? "hash-map" : "array-map");
+    for (let current = seq(value); current != null; current = next(current)) members = putMember(members, first(current), edit);
+    return makeSet(PersistentHashSetValue, members, Array.isArray(members) ? "array-map" : "hash-map");
   }
   //@unit objectEquiv requires: cells, equalPair, keywords, maps, protocolHooks, sequential, sets,
   //@ structuralEqualPair, symbols
@@ -3329,8 +3387,7 @@
     }
     if (recordTypes.get(left) !== recordTypes.get(right)) return false;
     if (maps.has(left)) return kindHooks.equivMap(left, right);
-    const leftSet = sets.get(left);
-    if (leftSet) return kindHooks.equivSet(leftSet, right);
+    if (sets.has(left)) return kindHooks.equivSet(left, right);
     if (sequential(left) && !["cycle", "iterate"].includes(cells.get(left)?.kind)) return (kindHooks.equivSequential ?? kindHooks.equivVectors)(left, right);
     // Primitive NaN stays unequal; foreign objects use identity only.
     return false;
@@ -3351,10 +3408,12 @@
     });
   };
   //@unit makeSet.equiv effect: makeSet, treeSetConstructor when: structuralEqualPair requires: kindHooks,
-  //@ lookup, missing, protocolHooks, setCount, sets
-  kindHooks.equivSet = (leftSet, right) => {
-    if (!(right != null && (protocolHooks.satisfies?.("ISet", right) ?? sets.has(right))) || leftSet.length !== (protocolHooks.count ? protocolHooks.count(right) : setCount(right))) return false;
-    try { return leftSet.every(entry => protocolHooks.has ? protocolHooks.has(right, entry.key) : lookup(right, entry.key, missing) !== missing); }
+  //@ lookup, missing, protocolHooks, setCount, sets, setTraversal
+  // Each member of `left`, in the order `seq` walks them, as upstream's
+  // `reduce-kv` over its map, is looked up in the other set: O(n) lookups.
+  kindHooks.equivSet = (left, right) => {
+    if (!(right != null && (protocolHooks.satisfies?.("ISet", right) ?? sets.has(right))) || sets.get(left).length !== (protocolHooks.count ? protocolHooks.count(right) : setCount(right))) return false;
+    try { return setTraversal(left).every(entry => protocolHooks.has ? protocolHooks.has(right, entry.key) : lookup(right, entry.key, missing) !== missing); }
     catch (error) { if (error instanceof Error) return false; throw error; }
   };
   //@unit setCount requires: kindHooks, publicCollectionSlots, sets
@@ -3479,7 +3538,7 @@
   }
   //@unit hash requires: cells, constructorHashes, hashDouble, hashInt, hashNamed, identityCounter,
   //@ identityHashes, keywords, kindHooks, maps, mapTraversal, mixCollectionHash, protocolHooks,
-  //@ sequential, sets, stringHash, symbols, uuidHashes, uuids, vars
+  //@ sequential, sets, setTraversal, stringHash, symbols, uuidHashes, uuids, vars
   // Weak identity bookkeeping never reads or mutates foreign object fields.
   function hash(value) {
     if (value == null) return 0;
@@ -3519,7 +3578,7 @@
     const members = sets.get(value);
     if (members) {
       let result = 0;
-      for (const entry of members) result = (result + entry.hash) | 0;
+      for (const entry of setTraversal(value)) result = (result + entry.hash) | 0;
       const resultHash = mixCollectionHash(result, members.length);
       constructorHashes.set(value, resultHash);
       return resultHash;
@@ -3995,7 +4054,7 @@
     if (recordTypes.has(value) || mapEntries.has(value)) return null;
     if (vectors.has(value)) return preserveMeta(value, vector());
     if (maps.has(value)) return preserveMeta(value, makeMap(mapTypes[mapKinds.get(value)], Array.isArray(maps.get(value)) ? [] : {root: null, nil: null, length: 0}, mapKinds.get(value), sortedComparators.get(value)));
-    if (sets.has(value)) return preserveMeta(value, makeSet(setType(setKinds.get(value)), [], setKinds.get(value), sortedComparators.get(value)));
+    if (sets.has(value)) return preserveMeta(value, makeSet(setType(setKinds.get(value)), Array.isArray(sets.get(value)) ? [] : {root: null, nil: null, length: 0}, setKinds.get(value), sortedComparators.get(value)));
     if (queues.has(value)) return preserveMeta(value, queueFromArray([]));
     if (cells.get(value)?.kind === "list" && cells.get(value).count === 0 && !publicCollectionSlots.has(value)) return value;
     if (cells.has(value) || views.has(value) || lazyValues.has(value))
@@ -4257,11 +4316,10 @@
     else entries.splice(i, 0, entry);
   }
   //@unit putCollectionEntry requires: entryIndex, hashRoots, mapKinds, promoteEntries, putEntry,
-  //@ putMember, putSortedEntry, sortedComparators
-  function putCollectionEntry(coll, entries, key, value, member = false) {
+  //@ putSortedEntry, sortedComparators
+  function putCollectionEntry(coll, entries, key, value) {
     const comparator = sortedComparators.get(coll);
-    if (comparator) putSortedEntry(entries, key, value, comparator, member);
-    else if (member) putMember(entries, key);
+    if (comparator) putSortedEntry(entries, key, value, comparator);
     else {
       const kind = mapKinds.get(coll);
       // A fresh nil map starts as an array map; the ninth distinct key promotes
@@ -7791,12 +7849,12 @@
   }, meta);
   //@unit PersistentHashSetValue.fields effect: PersistentHashSetValue when: resetMeta,
   //@ upstreamMembers requires: arrayMapFromArray, kindHooks, meta, missing, PersistentHashSetValue,
-  //@ publicFields, setKinds, sets, slotField
+  //@ publicFields, setKinds, setTraversal, slotField
   publicFields(PersistentHashSetValue, ["meta", "hash-map", "__hash"], (value, field) => {
     const slot = slotField(value, field);
     if (slot !== missing) return slot;
     // A map of the set's kind: an array set's is an array map.
-    const pairs = sets.get(value).flatMap(e => [e.key, null]), kind = setKinds.get(value);
+    const pairs = setTraversal(value).flatMap(e => [e.key, null]), kind = setKinds.get(value);
     return kind === "array-map" ? arrayMapFromArray(pairs) : kindHooks.hashSetMap(pairs, kind);
   }, meta);
   //@unit putMember.setMap effect: publicHashSet, putMember when: resetMeta, upstreamMembers
