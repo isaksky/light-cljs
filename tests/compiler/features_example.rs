@@ -48,8 +48,8 @@ fn features_example_logs_its_menu_and_both_features_at_every_level() {
 
 /// The driver loads `.js` files as ES modules, waits for timers and dynamic
 /// imports the default export starts without returning, awaits a returned
-/// promise, and reports errors as outcomes; a promise that never settles fails
-/// the run.
+/// promise, reports errors as outcomes, and calls only a default export that is
+/// a function; a promise that never settles fails the run.
 #[test]
 fn chunked_driver_waits_for_dynamic_imports_and_reports_errors() {
     let files = [
@@ -77,6 +77,7 @@ fn chunked_driver_waits_for_dynamic_imports_and_reports_errors() {
             "console.log(\"before\");\nthrow new TypeError(\"failure\");\n",
         ),
         ("never.js", "export default () => new Promise(() => {});\n"),
+        ("value.js", "console.log(\"value\");\nexport default 42;\n"),
     ];
     let record = |startup: &str, outcome: &str, stdout: &str| {
         format!(r#"{{"id":"{startup}","outcome":{outcome},"trace":[],"stdout":"{stdout}"}}"#)
@@ -103,6 +104,23 @@ fn chunked_driver_waits_for_dynamic_imports_and_reports_errors() {
             "throws.js",
             r#"{"status":"threw","error":{"category":"type-error"}}"#,
             r"before\n"
+        )
+    );
+    // A default export that is not a function is the value; none is undefined.
+    assert_eq!(
+        run_modules(&files, "value.js").unwrap(),
+        record(
+            "value.js",
+            r#"{"status":"returned","value":42}"#,
+            r"value\n"
+        )
+    );
+    assert_eq!(
+        run_modules(&files, "chunks/shared.js").unwrap(),
+        record(
+            "chunks/shared.js",
+            r#"{"status":"returned","value":{"$value":"undefined"}}"#,
+            ""
         )
     );
     let error = run_modules(&files, "never.js").unwrap_err();
