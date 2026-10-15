@@ -250,6 +250,26 @@ impl DevSession {
             .keys()
             .any(|name| name.starts_with(&prefix))
     }
+    /// The hook functions of the retained program, the functions whose
+    /// definitions' metadata marks them `^:dev/before-load` and
+    /// `^:dev/after-load` (or their `-async` variants), each list in
+    /// definition order, with the namespaces ordered as `namespaces`, the
+    /// load order ([`crate::dev_build::program_hooks`]).
+    pub fn hooks(&self, namespaces: &[String]) -> [Vec<crate::dev_build::DevHook>; 2] {
+        let compiler = self.compiler.borrow();
+        compiler.program().map_or_else(Default::default, |program| {
+            crate::dev_build::program_hooks(program, namespaces)
+        })
+    }
+    /// Whether the last `ns` form of `namespace` marks it `^:dev/NAME`
+    /// (`once` or `always`) with a value other than nil or false.
+    pub fn namespace_flag(&self, namespace: &str, name: &str) -> bool {
+        self.compiler
+            .borrow()
+            .host
+            .namespace_symbol(namespace)
+            .is_some_and(|symbol| crate::dev_build::namespace_flag(symbol, name))
+    }
     /// The registration of `namespaces` with the runtime, as the session
     /// knows them now: the statements that register each one's reader
     /// context and definitions after a unit's prelude, which binds the

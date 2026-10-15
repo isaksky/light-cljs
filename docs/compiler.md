@@ -1943,8 +1943,9 @@ in a page and with `require` in Node (CommonJS), and sets
 the value of the single-file output. A file that throws while it runs
 rejects the promise with that error and leaves the later files unloaded; in a
 page the error is the page's next `error` event before the script's `load`.
-Hooks are listed in the order of their (last) definitions, also when a
-`declare` named one earlier. Namespaces that only lazy references
+Hooks are listed by namespace in load order, and within a namespace in the
+order of their (last) definitions, also when a `declare` named one earlier.
+Namespaces that only lazy references
 reach load after the entry, and their loadables are resident, as in a single
 file.
 
@@ -1966,15 +1967,18 @@ reverse order, the units, then the after-load functions); the dev builds of
 the phase oracles, the size ratchet fixtures, examples/dev and
 examples/features print through it what their `--optimize none` builds print
 (`tests/compiler/dev_build.rs`). `--watch` writes the same build and then
-rewrites a saved namespace's unit, its map and the manifest
+rewrites a saved namespace's unit, its map and the manifest, whose hook lists
+each step that succeeds finds again in the program it compiled
 ([Watch](evaluation.md#watch)); a rewritten unit is
 `dev_build::namespace_unit` of the session's units of the namespace's forms,
 the same `define` call around an interactive unit that registers the
 namespace once (the first in load order every namespace of the build), makes
 it current and runs each form's statements in turn, each in a scope of its
-own. `--watch --serve PORT` also serves the build and pushes each step's
-units to the pages running it, which `client.js` (src/dev_client.js) loads
-between the hooks ([Serve](evaluation.md#serve)).
+own. `--watch --serve PORT` also serves the build and pushes the units of each
+step's reload set (its namespaces, `^:dev/always` ones, never `^:dev/once`
+ones, and with `--reload-dependents` those downstream) to the pages running
+it, which `client.js` (src/dev_client.js) loads between the hooks
+([Serve](evaluation.md#serve)).
 
 ### Complete collection program
 

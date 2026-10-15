@@ -32,6 +32,10 @@ mod chunked_execution;
 #[path = "../support/dev_execution.rs"]
 mod dev_execution;
 
+// Reload semantics as rows, shared with tests/dev_server.rs.
+#[path = "../support/reload_fixtures.rs"]
+mod reload_fixtures;
+
 // Temporary directories removed when their test ends, however it ends.
 #[path = "../support/temp_dir.rs"]
 #[allow(dead_code)]

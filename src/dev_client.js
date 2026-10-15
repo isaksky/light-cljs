@@ -16,11 +16,15 @@
 //   `^:dev/after-load` functions (in order); an `-async` hook gets a
 //   continuation, which the load waits for. A hook that throws is reported
 //   and skipped; a unit that throws stops the load, is reported, and leaves
-//   later units undefined. A `replay` load, the build as the server has it
-//   when the runtime connects, defines only the units whose text the runtime
-//   does not already run to completion, so a page that loaded the current files changes
-//   nothing and a runtime that missed steps catches up. One console line per
-//   load names the namespaces.
+//   later units undefined. The server chose the units (its reload set). A
+//   `replay` load, the build as the server has it when the runtime connects,
+//   defines only the units whose text the runtime does not already run to
+//   completion, so a page that loaded the current files changes nothing and
+//   a runtime that missed steps catches up; of a namespace in its `once`
+//   list (`^:dev/once`), only a unit the runtime never ran to completion,
+//   and when it defines any, also the units of the namespaces in its
+//   `always` list (`^:dev/always`). One console line per load names the
+//   namespaces.
 // - `warnings` and `error`: compile diagnostics with file, line and column,
 //   drawn in an overlay in a page (and logged); the first message of the
 //   next step clears them.
@@ -109,15 +113,28 @@ globalThis.__lightDev = (() => {
         log("error", `light-cljs: hook ${name} threw: ${error?.stack ?? error}`);
       }
     };
-    // Whether the unit `unit` of a replay is the one the runtime runs: the
-    // text of the function `define` recorded is in it, and it ran to its end.
-    const current = unit => {
+    // Whether the unit `unit` of a replay is one the runtime runs: the text
+    // of the function `define` recorded is in it, and it ran to its end. Of a
+    // `^:dev/once` namespace, any unit that ran to its end is.
+    const current = (unit, once) => {
       const known = units[unit.namespace];
-      return known !== undefined && known.loaded && unit.js.includes(String(known.unit));
+      return known !== undefined && known.loaded &&
+        (once.has(unit.namespace) || unit.js.includes(String(known.unit)));
+    };
+    // The units of a replay to load: those the runtime does not run, and
+    // with them those of the `^:dev/always` namespaces, in the message's
+    // order, which is the load order.
+    const replayed = message => {
+      const once = new Set(message.once ?? []);
+      const always = new Set(message.always ?? []);
+      const stale = new Set(message.units.filter(unit => !current(unit, once)));
+      if (stale.size === 0) return [];
+      return message.units.filter(unit =>
+        stale.has(unit) || always.has(unit.namespace) && !once.has(unit.namespace));
     };
     const load = async message => {
       const begun = Date.now();
-      const pending = message.replay ? message.units.filter(unit => !current(unit)) : message.units;
+      const pending = message.replay ? replayed(message) : message.units;
       if (pending.length === 0) return;
       for (const hook of [...message["before-load"]].reverse()) await runHook(hook);
       for (const unit of pending) {

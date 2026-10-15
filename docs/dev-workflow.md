@@ -48,7 +48,7 @@ as phases land:
 
 | Measurement | Today | Target |
 |---|---|---|
-| Save to updated page, one changed namespace of the example | Phase 3 (light-cljs-286): 29-39 ms from the save to the new render in headless Chrome, 5 saves of `app.view`, debug CLI with `--poll-ms 20` (load 1.9); the client applies the pushed unit in about 1 ms | under 100 ms on the development machine, including the recompile |
+| Save to updated page, one changed namespace of the example | Phase 3 (light-cljs-286): 29-39 ms from the save to the new render in headless Chrome, 5 saves of `app.view`, debug CLI with `--poll-ms 20` (load 1.9); the client applies the pushed unit in about 1 ms; with the reload policy (light-cljs-287) 26.6-66.3 ms, median 30.8, over 14 saves of `app.view` (steps 8.5-37.2 ms in the debug CLI, load 2.1-3.1 next to a peer's builds), and 18.1-40.5 ms for a save of `app.state` under `--reload-dependents`, which reloads `app.state`, `app.view` and `app.main` | under 100 ms on the development machine, including the recompile |
 | Application state across a reload | Phase 0: a replaced unit of the example keeps the `defonce` atom, also when `app.state`'s own unit runs again | `defonce` atoms keep their value; `def` values are reinitialized, as upstream |
 | Observable behavior of the dev build | Phase 0: prints what the `none` build prints for the example, examples/features, every phase oracle and every size ratchet fixture | prints what the `none` build prints, for the same program, before any reload |
 | Recompile of one changed namespace of the example | whole program in 15-250 ms depending on size; Phase 0's whole dev build of the example 246 ms, as its `none` build (release CLI, median of 15, load 4.3); Phase 2: a saved `app.view` is its correct unit on disk 3.9-4.6 ms after the poll notices it (release CLI, 15 saves, median 4.3, load 3.5-9.7; 8.9-11.1 ms from the debug test binary), and `--watch` starts in 279-290 ms; with light-cljs-301's unit 4.0-4.6 ms (20 saves, median 4.3, load 11.7-12.3; 8.7-9.4 ms debug) | the one namespace, under 20 ms |
@@ -279,8 +279,10 @@ session makes a namespace current: when a load enters a namespace and when it
 returns to the requiring one. The `Namespace` of a namespace with no forms
 besides its `ns` thus still reaches the runtime, which creates the namespace,
 and each unit runs after the `Namespace` of its namespace. Reload policy is not
-carried yet (Phase 3). The compiler hands each action to an interpreter as it
-produces it, and the `DevSession` methods collect them; `EvalSession`
+carried by the action: the server's `load` message carries it, the hooks and
+the `once` and `always` lists (light-cljs-287). The compiler hands each
+action to an interpreter as it produces it, and the `DevSession` methods
+collect them; `EvalSession`
 interprets them as they come, so a unit that throws while a namespace loads
 stops that load before its next form is compiled, as before. A runtime in
 another process never makes the compiler wait.
@@ -334,6 +336,32 @@ a continuation. Hook functions are found by reading definition metadata from
 the retained program when the build is made and after each step, and
 resolved at run time through the registry. A failing unit stops the load,
 reports the error with its location, and leaves later units unloaded.
+
+As built (light-cljs-287; the load is in [Serve](evaluation.md#serve)): a
+`--watch` step computes the set from what it wrote (the changed namespaces,
+the requirers of a changed macro namespace, which it recompiled, and the
+namespaces a changed `ns` form loaded), in the manifest's load order, which
+puts each namespace after those it requires. `^:dev/once` and `^:dev/always`
+are read from the metadata of each namespace's last `ns` form in the
+session's macro host, and the hooks from the retained program after the
+build and after each step that succeeds (`DevSession::hooks`,
+`dev_build::program_hooks`), ordered by namespace in load order, then by
+definition. A redefinition replaces a global's metadata, so a definition
+that loses its flag stops being a hook; one deleted from the source keeps
+its last metadata and stays a hook, as it stays defined. A `^:dev/once`
+namespace loads once: with the build, or with the step that adds it to the
+build; after that a step rewrites its unit (a page loaded later runs it) and
+loads nothing of it, and under `--reload-dependents` it passes no change on
+downstream (a namespace that depends on the change only through it is not
+reloaded), as shadow-cljs's never-load list keeps a namespace out of the
+`:full` walk. Unlike shadow-cljs, which leaves a never-load namespace
+out even before it has loaded, a new `^:dev/once` namespace loads, since its
+requirers need it. The `^:dev/always` namespaces join every load that loads
+anything, and a step whose set is empty pushes nothing and runs no hook.
+`--reload-dependents` requires `--serve`, since without a server nothing is
+loaded. A replay applies the policy in the client: a `once` unit only where
+the runtime never ran it to its end, and the `always` units when anything
+else loads.
 
 ### The server and the client
 
@@ -683,6 +711,35 @@ overlay with the file, line 23, column 1 and the message, which the fixed
 save cleared while the page went on (`fixed: clicks: [7]`); and a warning
 drew the overlay while its unit loaded.
 
+Status (light-cljs-287, October 15, 2026): the policy item is done, and with
+it Phase 3. A step loads its reload set ("The reload set", as built there):
+what it wrote, the `^:dev/always` namespaces with it, never a `^:dev/once`
+namespace the runtimes ran, and with `--reload-dependents` (on `--watch
+--serve`) every namespace downstream, in load order; it finds the hooks
+again in the retained program and rewrites the manifest's hook lists, and
+each `load` carries them with the `once` and `always` lists, by which the
+client applies a replay. `tests/dev_server.rs` adds: a macro change loads
+`app.macros` and `app.view` (`clicks = [2]`); a save of `app.state` loads
+`app.state`, then with `--reload-dependents` also `app.view` and `app.main`
+in that order (their top-level lines print again); a `^:dev/once`
+`app.view` is rewritten but never loaded, left out of the downstream walk
+along with a namespace that reaches the change only through it, and kept
+by a late runtime's replay; a `^:dev/always` namespace joins every load and
+every replay that loads anything; and a step that drops one hook's flag and
+adds an `-async` one runs the new list and writes it to the manifest. The
+reload fixtures (tests/support/reload_fixtures.rs: functions, `defonce`,
+records, protocols, multimethods, a macro, a new require and changed
+refers) print the same through the server's client, through the driver
+given the step's rewritten units, and through the driver given a fresh
+build's units (tests/compiler/dev_build.rs); they needed no change to the
+compiler or the runtime. Checked in headless Chrome over the DevTools
+protocol, on copies of examples/dev served by the debug CLI with
+`--poll-ms 20` (load 2.1-3.1): 14 saves of `app.view` reached the page in
+26.6-66.3 ms (median 30.8; steps 8.5-37.2 ms), each `light-cljs: reloaded
+app.view in 0-2 ms`; and with `--reload-dependents`, saves of `app.state`
+logged `reloaded app.state, app.view, app.main` and the new render 18.1-40.5
+ms after the save.
+
 ### Phase 4: connected REPL and nREPL
 
 Scope: "The connected REPL".
@@ -731,7 +788,10 @@ The deliberate differences between a dev build (and the session) and a
 - Reloading a namespace re-runs all of its top-level forms. `def` values
   are reinitialized, `defonce` values are kept (nil and false included),
   top-level effects run again. A definition removed from the source stays
-  defined until the page is reloaded, as upstream.
+  defined until the page is reloaded, as upstream; a removed hook function
+  stays a hook too (shadow-cljs, which forgets a namespace's definitions
+  before it recompiles it, drops it), while one whose definition loses its
+  `^:dev/...` flag stops being one.
 - Redefining a record or type creates a new constructor; old instances
   keep their methods and saved factories follow the new Var. Redefining a
   protocol keeps existing extensions usable. `defmulti` keeps its existing
@@ -739,7 +799,10 @@ The deliberate differences between a dev build (and the session) and a
 - Namespaces that use a changed macro namespace are recompiled and reloaded
   whether or not they used a macro from it. Nothing else downstream is
   reloaded by default; `--reload-dependents` reloads every downstream
-  namespace in topological order.
+  namespace in topological order. A namespace marked `^:dev/always` is
+  reloaded with every load; one marked `^:dev/once` loads once and is never
+  reloaded, though its unit file follows its source for a page loaded
+  later.
 - Analysis uses warning mode: undeclared Vars and arity conflicts are
   warnings, and the code runs as upstream's would.
 - Reflection is always available: namespaces register themselves as below
@@ -762,7 +825,9 @@ The deliberate differences between a dev build (and the session) and a
   expected output after reload) rows for functions, `defonce`, records,
   protocols, multimethods, macros and `ns` changes, run through the driver
   in `tests/compiler/dev_build.rs` and through the watch and server tests
-  so all three paths agree.
+  so all three paths agree (light-cljs-287: tests/support/reload_fixtures.rs;
+  the server test applies the step's rewritten units with the driver too,
+  which is the watch path).
 - Subprocess tests for `--watch`, `--serve` and `--repl --connect` with
   Node runtimes and clients, no browser; browser checks by hand on the
   example before closing a phase, recorded in the pellet.
@@ -808,4 +873,8 @@ these; a finding that contradicts one goes under "Open questions".
 - **Runtime-only state on reload.** shadow-cljs calls per-namespace reset
   hooks before reloading a file. Whether light-cljs needs one (for example
   to reset a namespace's registered reader context) is to be seen in
-  Phase 3.
+  Phase 3. Phase 3's reload fixtures (light-cljs-287) needed none: a changed
+  `ns` form's aliases and refers, records, protocols and multimethods
+  behave as upstream's, since a reloaded unit registers its namespace's
+  reader context again. Still open for state a program keeps outside its
+  definitions.

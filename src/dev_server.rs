@@ -63,12 +63,20 @@ pub struct Diagnostic {
 }
 
 /// The build as a runtime that connects now catches up with it: every
-/// namespace's unit in load order and the hook functions.
+/// namespace's unit in load order, the hook functions, which every `load`
+/// message carries, and the reload policy of its namespaces, with which a
+/// runtime applies a replay.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Build {
     pub units: Vec<LoadUnit>,
     pub before_load: Vec<DevHook>,
     pub after_load: Vec<DevHook>,
+    /// The namespaces marked `^:dev/once`: a replay loads one only into a
+    /// runtime that has not run it.
+    pub once: Vec<String>,
+    /// The namespaces marked `^:dev/always`: a replay that loads anything
+    /// loads them too.
+    pub always: Vec<String>,
 }
 
 /// What a watch step produced, for [`DevServer::publish`].
@@ -228,13 +236,7 @@ impl DevServer {
         }
         let mut messages = diagnostics.clone();
         if step.error.is_none() && !step.load.is_empty() {
-            messages.push(load_message(
-                number,
-                false,
-                &step.load,
-                &state.build.before_load,
-                &state.build.after_load,
-            ));
+            messages.push(load_message(number, false, &step.load, &state.build));
         }
         state.diagnostics = diagnostics;
         for message in &messages {
@@ -372,14 +374,9 @@ fn write_diagnostic(out: &mut String, diagnostic: &Diagnostic) {
     out.push('}');
 }
 
-/// A `load` message: define `units` in order between the hooks.
-fn load_message(
-    step: u64,
-    replay: bool,
-    units: &[LoadUnit],
-    before_load: &[DevHook],
-    after_load: &[DevHook],
-) -> String {
+/// A `load` message: define `units` in order between the hooks of `build`,
+/// which also gives the reload policy a replay is applied with.
+fn load_message(step: u64, replay: bool, units: &[LoadUnit], build: &Build) -> String {
     let mut message = format!("{{\"op\":\"load\",\"step\":{step},\"replay\":{replay},\"units\":[");
     for (index, unit) in units.iter().enumerate() {
         if index > 0 {
@@ -394,7 +391,10 @@ fn load_message(
         message.push('}');
     }
     message.push(']');
-    for (key, hooks) in [("before-load", before_load), ("after-load", after_load)] {
+    for (key, hooks) in [
+        ("before-load", &build.before_load),
+        ("after-load", &build.after_load),
+    ] {
         write!(message, ",\"{key}\":[").unwrap();
         for (index, hook) in hooks.iter().enumerate() {
             if index > 0 {
@@ -403,6 +403,16 @@ fn load_message(
             message.push_str("{\"name\":");
             json_string(&mut message, &hook.name);
             write!(message, ",\"async\":{}}}", hook.asynchronous).unwrap();
+        }
+        message.push(']');
+    }
+    for (key, namespaces) in [("once", &build.once), ("always", &build.always)] {
+        write!(message, ",\"{key}\":[").unwrap();
+        for (index, namespace) in namespaces.iter().enumerate() {
+            if index > 0 {
+                message.push(',');
+            }
+            json_string(&mut message, namespace);
         }
         message.push(']');
     }
@@ -634,8 +644,7 @@ fn events(mut stream: TcpStream, shared: &Shared) -> io::Result<()> {
                 state.step,
                 true,
                 &state.build.units,
-                &state.build.before_load,
-                &state.build.after_load,
+                &state.build,
             )));
         }
         for message in &state.diagnostics {

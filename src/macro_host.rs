@@ -512,6 +512,11 @@ impl MacroHost {
             self.namespace_docs.insert(namespace.to_owned(), doc);
         }
     }
+    /// `namespace`'s symbol as its `ns` form named it, with the form's
+    /// metadata, docstring and attribute map as its metadata.
+    pub(crate) fn namespace_symbol(&self, namespace: &str) -> Option<&crate::compiler_data::Datum> {
+        self.namespace_symbols.get(namespace)
+    }
     /// Replace `namespace`'s symbol and docstring in `&env` ([`Self::set_namespace_symbol`]),
     /// or forget them: a session's `ns` form without metadata has none.
     pub(crate) fn set_namespace_metadata(

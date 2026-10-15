@@ -9,11 +9,20 @@
 #[allow(dead_code)]
 mod temp_dir;
 
+#[path = "support/dev_execution.rs"]
+#[allow(dead_code)]
+mod dev_execution;
+
+#[path = "support/reload_fixtures.rs"]
+mod reload_fixtures;
+
+use dev_execution::run_dev;
 use light_cljs::EvalOptions;
 use light_cljs::dev_server::{Build, DevServer, Json, LoadUnit};
 use light_cljs::dev_session::{Action, DevSession, Unit};
 use light_cljs::eval_session::PrintOptions;
 use light_cljs::source_provider::{FileSourceProvider, SourceInput};
+use reload_fixtures::{FIXTURES, record};
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -34,24 +43,6 @@ const DRIVER: &str = concat!(
 /// Far above a step's or a load's time, so a loaded machine does not fail a
 /// test.
 const TIMEOUT: Duration = Duration::from_secs(60);
-
-/// The driver's record of the example: its stdout, with nothing traced and
-/// an undefined value.
-fn record(stdout: &str) -> String {
-    let mut json = String::from("\"");
-    for ch in stdout.chars() {
-        match ch {
-            '\n' => json.push_str("\\n"),
-            '"' => json.push_str("\\\""),
-            '\\' => json.push_str("\\\\"),
-            ch => json.push(ch),
-        }
-    }
-    json.push('"');
-    format!(
-        r#"{{"id":"program","outcome":{{"status":"returned","value":{{"$value":"undefined"}}}},"trace":[],"stdout":{json}}}"#
-    )
-}
 
 /// The lines a child process writes to stderr, as they come.
 fn lines(stderr: impl Read + Send + 'static) -> Receiver<String> {
@@ -85,14 +76,25 @@ fn until(lines: &Receiver<String>, prefix: &str, what: &str) -> (Vec<String>, St
     }
 }
 
-/// A `--watch --serve 0` process on a copy of examples/dev, killed when
-/// dropped.
+/// A `--watch --serve 0` process, on a copy of examples/dev unless a test
+/// writes other sources, killed when dropped.
 struct Watch {
     dir: TempDir,
     child: Child,
     lines: Receiver<String>,
     /// The server's address, `127.0.0.1:PORT`.
     address: String,
+    /// The flags given besides those of [`Self::spawn`].
+    flags: &'static [&'static str],
+}
+
+/// Copy examples/dev into the source root `src`.
+fn copy_example(src: &Path) {
+    fs::create_dir_all(src.join("app")).unwrap();
+    for name in ["state", "macros", "view", "main"] {
+        let file = format!("app/{name}.cljs");
+        fs::copy(Path::new(EXAMPLE).join(&file), src.join(&file)).unwrap();
+    }
 }
 
 impl Watch {
@@ -107,14 +109,19 @@ impl Watch {
     /// [`Self::start`] after `setup` changed the copy, in the directory it
     /// is given.
     fn start_with(label: &str, setup: impl FnOnce(&Path)) -> Self {
+        Self::start_on(label, &[], |src| {
+            copy_example(src);
+            setup(src);
+        })
+    }
+
+    /// [`Self::start`] with the extra flags `flags` on the sources `setup`
+    /// writes into the source root it is given.
+    fn start_on(label: &str, flags: &'static [&'static str], setup: impl FnOnce(&Path)) -> Self {
         let dir = TempDir::new(label);
-        fs::create_dir_all(dir.join("src/app")).unwrap();
-        for name in ["state", "macros", "view", "main"] {
-            let file = format!("app/{name}.cljs");
-            fs::copy(Path::new(EXAMPLE).join(&file), dir.join("src").join(&file)).unwrap();
-        }
+        fs::create_dir_all(dir.join("src")).unwrap();
         setup(&dir.join("src"));
-        let (child, lines, address) = Self::spawn(&dir, "0");
+        let (child, lines, address) = Self::spawn(&dir, "0", flags);
         fs::create_dir(dir.join("before")).unwrap();
         for entry in fs::read_dir(dir.join("dev")).unwrap() {
             let entry = entry.unwrap();
@@ -125,18 +132,21 @@ impl Watch {
             child,
             lines,
             address,
+            flags,
         }
     }
 
-    /// Watch `dir`'s `src` into its `dev` and serve it on `port`; the
-    /// process, its stderr lines after the first build, and its address.
-    fn spawn(dir: &Path, port: &str) -> (Child, Receiver<String>, String) {
+    /// Watch `dir`'s `src` into its `dev` and serve it on `port`, with the
+    /// extra flags `flags`; the process, its stderr lines after the first
+    /// build, and its address.
+    fn spawn(dir: &Path, port: &str, flags: &[&str]) -> (Child, Receiver<String>, String) {
         let mut child = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
             .args(["--watch", "--entry", "app.main", "--source-root"])
             .arg(dir.join("src"))
             .arg("--out-dir")
             .arg(dir.join("dev"))
             .args(["--poll-ms", "20", "--serve", port])
+            .args(flags)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -163,7 +173,7 @@ impl Watch {
     /// Start the watch again, on the port it had.
     fn restart(&mut self) {
         let port = self.address.rsplit_once(':').unwrap().1.to_owned();
-        let (child, lines, address) = Self::spawn(&self.dir, &port);
+        let (child, lines, address) = Self::spawn(&self.dir, &port, self.flags);
         assert_eq!(address, self.address);
         (self.child, self.lines) = (child, lines);
     }
@@ -953,4 +963,333 @@ start
             "start\nclicks: [1]\nbefore 2 begins\nbefore 2 done\nbefore 1\nview loads\nrender: clicks: [2]\nafter 2\nafter 3\n"
         )
     );
+}
+
+/// A saved change to the macro namespace `app.macros` loads its unit and
+/// the unit of `app.view`, which requires it, recompiled with the new
+/// expansion.
+#[test]
+fn a_macro_change_loads_the_users_unit() {
+    let mut watch = Watch::start("dev-server-macro");
+    let runtime = watch.runtime("before", 2);
+    runtime.until("message load replay ");
+    let macros = watch
+        .source("app/macros.cljs")
+        .replace("~label \": \"", "~label \" = \"");
+    let (_, step) = watch.save("app/macros.cljs", &macros);
+    assert!(
+        step.starts_with("light-cljs: recompiled app.macros, app.view in "),
+        "{step}"
+    );
+    let (_, load) = runtime.until("message load ");
+    assert_eq!(load, "message load app.macros app.view");
+    let (record_line, _) = runtime.finish();
+    assert_eq!(
+        record_line,
+        record("start\nclicks: [1]\nreloading\nclicks = [2]\n")
+    );
+}
+
+/// The example with lines that `app.view` and `app.main` print when their
+/// units run.
+fn loud_example(src: &Path) {
+    copy_example(src);
+    let view = src.join("app/view.cljs");
+    let text = fs::read_to_string(&view).unwrap();
+    fs::write(&view, format!("{text}\n(js/console.log \"view loads\")\n")).unwrap();
+    let main = src.join("app/main.cljs");
+    let text = fs::read_to_string(&main).unwrap();
+    fs::write(
+        &main,
+        text.replace(
+            "\n\nstart\n",
+            "\n\n(js/console.log \"main loads\")\n\nstart\n",
+        ),
+    )
+    .unwrap();
+}
+
+/// A saved change to `app.state` reloads `app.state` alone; with
+/// `--reload-dependents`, also `app.view` and `app.main`, which depend on
+/// it, in that order, unchanged.
+#[test]
+fn reload_dependents_reload_downstream_namespaces_in_order() {
+    let cases: [(&'static [&'static str], &str, &str); 2] = [
+        (
+            &[],
+            "message load app.state",
+            "reloading\nstate loads\nclicks: [2]\n",
+        ),
+        (
+            &["--reload-dependents"],
+            "message load app.state app.view app.main",
+            "reloading\nstate loads\nview loads\nmain loads\nclicks: [2]\n",
+        ),
+    ];
+    for (flags, expected, reloaded) in cases {
+        let mut watch = Watch::start_on("dev-server-dependents", flags, loud_example);
+        let runtime = watch.runtime("before", 2);
+        runtime.until("message load replay ");
+        let state = format!(
+            "{}\n(js/console.log \"state loads\")\n",
+            watch.source("app/state.cljs")
+        );
+        let (_, step) = watch.save("app/state.cljs", &state);
+        assert!(
+            step.starts_with("light-cljs: recompiled app.state in "),
+            "{step}"
+        );
+        let (_, load) = runtime.until("message load ");
+        assert_eq!(load, expected, "{flags:?}");
+        let (record_line, _) = runtime.finish();
+        assert_eq!(
+            record_line,
+            record(&format!(
+                "view loads\nmain loads\nstart\nclicks: [1]\n{reloaded}"
+            )),
+            "{flags:?}"
+        );
+    }
+}
+
+/// A namespace marked `^:dev/once` is never loaded again: a step that
+/// recompiles it rewrites its unit and loads nothing, a load of a change it
+/// depends on leaves it out, even with `--reload-dependents`, which then
+/// reloads no namespace that depends on the change only through it, and a
+/// runtime that catches up keeps the unit it ran.
+#[test]
+fn a_once_namespace_is_never_reloaded() {
+    let mut watch = Watch::start_on("dev-server-once", &["--reload-dependents"], |src| {
+        loud_example(src);
+        let path = src.join("app/view.cljs");
+        let view = fs::read_to_string(&path).unwrap();
+        fs::write(
+            &path,
+            view.replacen("(ns app.view", "(ns ^:dev/once app.view", 1),
+        )
+        .unwrap();
+        fs::write(
+            src.join("app/leaf.cljs"),
+            "(ns app.leaf\n  (:require [app.view]))\n\n(js/console.log \"leaf loads\")\n",
+        )
+        .unwrap();
+        let path = src.join("app/main.cljs");
+        let main = fs::read_to_string(&path).unwrap();
+        fs::write(
+            &path,
+            main.replace(
+                "[app.view :as view]))",
+                "[app.view :as view]\n            [app.leaf]))",
+            ),
+        )
+        .unwrap();
+    });
+    let runtime = watch.runtime("before", 2);
+    runtime.until("message load replay ");
+    let view = watch.source("app/view.cljs").replace(
+        "(js/console.log (describe card))",
+        "(js/console.log \"render:\" (describe card))",
+    );
+    let (_, step) = watch.save("app/view.cljs", &view);
+    assert!(
+        step.starts_with("light-cljs: recompiled app.view in "),
+        "{step}"
+    );
+    assert!(
+        fs::read_to_string(watch.dir.join("dev/app.view.js"))
+            .unwrap()
+            .contains("render:")
+    );
+    let state = format!(
+        "{}\n(js/console.log \"state loads\")\n",
+        watch.source("app/state.cljs")
+    );
+    watch.save("app/state.cljs", &state);
+    let (between, load) = runtime.until("message ");
+    assert_eq!(load, "message load app.state app.main");
+    assert!(
+        between.len() == 1
+            && between[0].starts_with("light-cljs: reloaded app.state, app.main in "),
+        "{between:#?}"
+    );
+    let (record_line, _) = runtime.finish();
+    assert_eq!(
+        record_line,
+        record(
+            "view loads\nleaf loads\nmain loads\nstart\nclicks: [1]\nreloading\nstate loads\nmain loads\nclicks: [2]\n"
+        )
+    );
+    let late = watch.runtime("before", 1);
+    let (lines, _) = late.until("message load replay ");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("light-cljs: reloaded app.state in ")),
+        "{lines:#?}"
+    );
+    let (record_line, _) = late.finish();
+    assert_eq!(
+        record_line,
+        record(
+            "view loads\nleaf loads\nmain loads\nstart\nclicks: [1]\nreloading\nstate loads\nclicks: [2]\n"
+        )
+    );
+}
+
+/// A namespace marked `^:dev/always` is loaded, as it is, with every load,
+/// and with every replay that loads anything.
+#[test]
+fn an_always_namespace_loads_with_every_load() {
+    let mut watch = Watch::start_with("dev-server-always", |src| {
+        fs::write(
+            src.join("app/config.cljs"),
+            "(ns ^:dev/always app.config)\n\n(js/console.log \"config loads\")\n",
+        )
+        .unwrap();
+        let path = src.join("app/main.cljs");
+        let main = fs::read_to_string(&path).unwrap();
+        fs::write(
+            &path,
+            main.replace(
+                "[app.view :as view]))",
+                "[app.view :as view]\n            [app.config]))",
+            ),
+        )
+        .unwrap();
+    });
+    let runtime = watch.runtime("before", 2);
+    runtime.until("message load replay ");
+    let view = watch.source("app/view.cljs").replace(
+        "(js/console.log (describe card))",
+        "(js/console.log \"render:\" (describe card))",
+    );
+    watch.save("app/view.cljs", &view);
+    let (_, load) = runtime.until("message load ");
+    assert_eq!(load, "message load app.view app.config");
+    let reloaded = "reloading\nconfig loads\nrender: clicks: [2]\n";
+    let (record_line, _) = runtime.finish();
+    assert_eq!(
+        record_line,
+        record(&format!("config loads\nstart\nclicks: [1]\n{reloaded}"))
+    );
+    // A runtime that missed the step loads the new `app.view` and, with it,
+    // `app.config`; one running the current files loads neither.
+    let late = watch.runtime("before", 1);
+    let (lines, _) = late.until("message load replay ");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("light-cljs: reloaded app.view, app.config in ")),
+        "{lines:#?}"
+    );
+    let (record_line, _) = late.finish();
+    assert_eq!(
+        record_line,
+        record(&format!("config loads\nstart\nclicks: [1]\n{reloaded}"))
+    );
+    let current = watch.runtime("dev", 1);
+    let (record_line, rest) = current.finish();
+    assert_eq!(
+        record_line,
+        record("config loads\nstart\nrender: clicks: [1]\n")
+    );
+    assert!(
+        !rest
+            .iter()
+            .any(|line| line.starts_with("light-cljs: reloaded")),
+        "{rest:#?}"
+    );
+}
+
+/// A step finds the hooks again in the program it compiled: a definition
+/// that lost its `^:dev/before-load` is no hook, and a new
+/// `^:dev/after-load-async` one is, in the load the step pushes and in the
+/// manifest it writes.
+#[test]
+fn a_step_finds_the_hooks_again() {
+    let mut watch = Watch::start("dev-server-hook-steps");
+    let runtime = watch.runtime("before", 2);
+    runtime.until("message load replay ");
+    let main = watch
+        .source("app/main.cljs")
+        .replace("(defn ^:dev/before-load stop", "(defn stop")
+        .replace(
+            "\n\nstart\n",
+            "\n\n(defn ^:dev/after-load-async again [done]\n  (js/console.log \"again\")\n  (done))\n\nstart\n",
+        );
+    let (_, step) = watch.save("app/main.cljs", &main);
+    assert!(
+        step.starts_with("light-cljs: recompiled app.main in "),
+        "{step}"
+    );
+    let (_, load) = runtime.until("message load ");
+    assert_eq!(load, "message load app.main");
+    let (record_line, _) = runtime.finish();
+    assert_eq!(
+        record_line,
+        record("start\nclicks: [1]\nclicks: [2]\nagain\n")
+    );
+    let manifest = fs::read_to_string(watch.dir.join("dev/manifest.json")).unwrap();
+    assert!(
+        manifest.ends_with(
+            r#"  "before-load": [],
+  "after-load": [
+    {"name": "app.main/reload", "async": false},
+    {"name": "app.main/again", "async": true}
+  ]
+}
+"#
+        ),
+        "{manifest}"
+    );
+}
+
+/// The reload fixtures (tests/support/reload_fixtures.rs) through `--watch
+/// --serve`: a runtime running the first build of a row's sources loads the
+/// step its edit makes, which names the namespaces the row reloads, and
+/// prints the row's output; so does the Phase 0 driver given the units the
+/// step rewrote.
+#[test]
+fn reload_fixtures_print_their_output_through_the_server() {
+    std::thread::scope(|scope| {
+        for fixture in FIXTURES {
+            scope.spawn(move || {
+                let mut watch = Watch::start_on("dev-server-fixture", &[], |src| {
+                    for (path, text) in fixture.files {
+                        let path = src.join(path);
+                        fs::create_dir_all(path.parent().unwrap()).unwrap();
+                        fs::write(path, text).unwrap();
+                    }
+                });
+                let runtime = watch.runtime("before", 2);
+                runtime.until("message load replay ");
+                let (lines, step) = watch.save(fixture.edit.0, fixture.edit.1);
+                assert!(
+                    lines.is_empty() && !step.contains("failed"),
+                    "{}: {lines:#?} {step}",
+                    fixture.name
+                );
+                let (_, load) = runtime.until("message load ");
+                assert_eq!(
+                    load,
+                    format!("message load {}", fixture.reloads.join(" ")),
+                    "{}",
+                    fixture.name
+                );
+                let (record_line, _) = runtime.finish();
+                assert_eq!(record_line, record(fixture.stdout), "{}", fixture.name);
+                let units = fixture
+                    .reloads
+                    .iter()
+                    .map(|namespace| watch.dir.join("dev").join(format!("{namespace}.js")))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    run_dev(&watch.dir.join("before"), true, &units).unwrap(),
+                    record(fixture.stdout),
+                    "{}",
+                    fixture.name
+                );
+            });
+        }
+    });
 }

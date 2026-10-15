@@ -6,6 +6,7 @@
 //! (tests/support/phase_oracle.rs).
 use super::size_ratchet::ratchet_fixtures::FIXTURES;
 use crate::dev_execution::{none_and_dev, run_dev};
+use crate::reload_fixtures::{FIXTURES as RELOAD_FIXTURES, record};
 use crate::temp_dir::TempDir;
 use light_cljs::MacroHost;
 use light_cljs::analyzer::AnalysisOptions;
@@ -291,6 +292,33 @@ fn hooks_run_in_order_around_the_applied_units() {
         run_dev(&out, false, &[out.join("app.main.js")]).unwrap(),
         r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"app.main runs\nstop second\nstop first\napp.main runs\nstart first\nstart second\n"}"#
     );
+}
+
+/// The reload fixtures (tests/support/reload_fixtures.rs) through the Phase
+/// 0 driver: the build of each row's sources started, then the units of the
+/// namespaces the row reloads, from a fresh dev build of the edited sources,
+/// applied between the hooks, print the row's output.
+#[test]
+fn reload_fixtures_print_their_output_through_the_driver() {
+    for fixture in RELOAD_FIXTURES {
+        let dir = TempDir::new("dev-reload-fixture");
+        let first = source_root(&dir.join("first"), fixture.files);
+        let edited = source_root(&dir.join("edited"), fixture.files);
+        fs::write(edited.join(fixture.edit.0), fixture.edit.1).unwrap();
+        dev_build(&first, &dir.join("first/dev"));
+        dev_build(&edited, &dir.join("edited/dev"));
+        let units = fixture
+            .reloads
+            .iter()
+            .map(|namespace| dir.join("edited/dev").join(format!("{namespace}.js")))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            run_dev(&dir.join("first/dev"), true, &units).unwrap(),
+            record(fixture.stdout),
+            "{}",
+            fixture.name
+        );
+    }
 }
 
 /// Writes `sources` (path under the source root and text) into `dir`/src

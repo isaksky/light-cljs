@@ -179,40 +179,12 @@ impl DevManifest {
                 macros: program.declares_macros(namespace),
             })
             .collect();
-        // Hooks in definition order, which is the order of their
-        // definitions' metadata maps, analyzed with the definitions; a
-        // declaration may have allocated the global earlier. A client runs
-        // those before a load in reverse.
-        let mut definitions = program
-            .globals
-            .iter()
-            .filter_map(|global| Some((global.metadata?, global)))
-            .collect::<Vec<_>>();
-        definitions.sort_by_key(|(metadata, _)| metadata.0);
-        let hooks = |phase: &str| {
-            let asynchronous = format!("{phase}-async");
-            definitions
-                .iter()
-                .filter_map(|&(metadata, global)| {
-                    let asynchronous = if dev_flag(program, metadata, &asynchronous) {
-                        true
-                    } else if dev_flag(program, metadata, phase) {
-                        false
-                    } else {
-                        return None;
-                    };
-                    Some(DevHook {
-                        name: format!("{}/{}", global.namespace, global.name),
-                        asynchronous,
-                    })
-                })
-                .collect()
-        };
+        let [before_load, after_load] = program_hooks(program, &program.namespaces);
         Self {
             entry: entry_namespace(program).to_owned(),
             namespaces,
-            before_load: hooks("before-load"),
-            after_load: hooks("after-load"),
+            before_load,
+            after_load,
         }
     }
 
@@ -292,6 +264,79 @@ impl DevManifest {
         manifest.push_str("\n}\n");
         manifest
     }
+}
+
+/// The hook functions of `program` (docs/dev-workflow.md, "The reload set"):
+/// the definitions whose metadata marks them `^:dev/before-load` (or
+/// `-async`), then those it marks `^:dev/after-load` (or `-async`), each list
+/// in definition order: by namespace in the order of `namespaces`, the load
+/// order, then in the order of their definitions' metadata maps, which are
+/// analyzed with the definitions (a declaration may have allocated the
+/// global earlier). A definition of a namespace not in `namespaces` comes
+/// last. In a session's retained program, a redefinition that carries
+/// metadata replaces the global's, so a step that recompiles a namespace
+/// puts its hooks in source order and drops the flag a definition lost; a
+/// definition removed from the source keeps its last metadata, as it stays
+/// defined. A client runs the before-load hooks in reverse.
+pub(crate) fn program_hooks(program: &Program, namespaces: &[String]) -> [Vec<DevHook>; 2] {
+    let position = |namespace: &str| {
+        namespaces
+            .iter()
+            .position(|known| known == namespace)
+            .unwrap_or(namespaces.len())
+    };
+    let mut definitions = program
+        .globals
+        .iter()
+        .filter_map(|global| {
+            let metadata = global.metadata?;
+            Some((position(&global.namespace), metadata, global))
+        })
+        .collect::<Vec<_>>();
+    definitions.sort_by_key(|&(namespace, metadata, _)| (namespace, metadata.0));
+    ["before-load", "after-load"].map(|phase| {
+        let asynchronous = format!("{phase}-async");
+        definitions
+            .iter()
+            .filter_map(|&(_, metadata, global)| {
+                let asynchronous = if dev_flag(program, metadata, &asynchronous) {
+                    true
+                } else if dev_flag(program, metadata, phase) {
+                    false
+                } else {
+                    return None;
+                };
+                Some(DevHook {
+                    name: format!("{}/{}", global.namespace, global.name),
+                    asynchronous,
+                })
+            })
+            .collect()
+    })
+}
+
+/// Whether the namespace symbol `symbol`, with the metadata of its `ns`
+/// form, marks the namespace `:dev/<name>` with a value other than `nil` or
+/// `false`: `^:dev/once` (load once, never reload) or `^:dev/always` (reload
+/// with every load).
+pub(crate) fn namespace_flag(symbol: &crate::compiler_data::Datum, name: &str) -> bool {
+    use crate::compiler_data::{DatumKind, Name};
+    use crate::parser::CollectionKind;
+    let Some(metadata) = symbol.metadata() else {
+        return false;
+    };
+    let DatumKind::Collection {
+        kind: CollectionKind::Map,
+        children,
+    } = metadata.kind()
+    else {
+        return false;
+    };
+    let flag = Name::new(Some("dev"), name);
+    children.as_chunks::<2>().0.iter().any(|[key, value]| {
+        matches!(key.kind(), DatumKind::Keyword(keyword) if *keyword == flag)
+            && !matches!(value.kind(), DatumKind::Nil | DatumKind::Boolean(false))
+    })
 }
 
 /// The entry namespace: the last one the program loads statically, which

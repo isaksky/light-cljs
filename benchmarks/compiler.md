@@ -4228,3 +4228,34 @@ build's first unit does). A REPL form's unit compares the session's
 namespaces with what it last registered, which costs a pass over the
 definitions instead of writing every namespace's registration, and a watch
 step's form units skip even that.
+
+## Save to updated page of examples/dev — October 15, 2026
+
+light-cljs-287 adds the reload policy to `--watch --serve`: each step loads
+its reload set (the namespaces it wrote, `^:dev/always` ones, never
+`^:dev/once` ones, with `--reload-dependents` those downstream), finds the
+hooks again in the retained program, and sends the hooks and the namespace
+policy with each load ([Serve](../docs/evaluation.md#serve); "The reload set"
+in [dev-workflow.md](../docs/dev-workflow.md)). The Goal row "save to updated
+page", measured as light-cljs-286 measured it: a copy of examples/dev served
+by the debug CLI, `light-cljs --watch --entry app.main --source-root SRC
+--out-dir DEV --poll-ms 20 --serve 0` (with `--reload-dependents` for the last
+row), the built-in page open in headless Google Chrome driven over the
+DevTools protocol by a throwaway Node script, which saved the source by a
+rename and timed the save to the page's console event of the new render
+line. Branch of light-cljs-287 on master `c4f357f`; the Apple M3 Ultra
+virtual machine of the [environment](results/environment.txt), macOS 15.7.3,
+one-minute load average 2.1-3.1 with a peer worker building. The Before
+column is light-cljs-286's run, at load 1.9.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| A saved `app.view` to its new render on the page | 29-39 ms (5 saves) | 26.6-66.3 ms (14 saves, median 30.8) |
+| The step the watch prints for it (debug CLI) | — | 8.5-37.2 ms |
+| The client's load of the pushed unit, between the hooks | about 1 ms | 0-2 ms |
+| A saved `app.state` to the new render, `--reload-dependents` (loads `app.state`, `app.view`, `app.main`) | — | 18.1-40.5 ms (10 saves; steps 3.2-16.8 ms) |
+
+The policy's own work in a step is a set over the manifest's namespaces and
+a pass over the retained program's definitions for the hooks; the spread of
+the page times follows the debug CLI's step times under the peer's load, and
+every save stayed under the 100 ms target.

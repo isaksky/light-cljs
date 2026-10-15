@@ -475,7 +475,11 @@ change to the files written; a failed one ends `; app.view failed and keeps
 its previous unit`, after the error. Warnings print before it as
 `--warnings` prints them (`WARNING: <file>:22:22: Use of undeclared Var
 app.view/later [undeclared-var] (bytes 653..658)`). A step changes the
-manifest's namespaces and requires, not its hook lists. Without `--serve`,
+manifest's namespaces and requires, and one that succeeds finds the hooks
+again in the program it compiled (light-cljs-287): a definition that gains
+`^:dev/after-load` is listed, one that loses its flag is not, and a hook
+whose definition was deleted from the source stays listed, as the
+definition stays defined. Without `--serve`,
 nothing is pushed to a running page, and a client applies the rewritten
 units itself, as `tests/support/dev_execution.mjs` does; with it, the
 [server](#serve) pushes them.
@@ -489,6 +493,7 @@ units itself, as `tests/support/dev_execution.mjs` does; with it, the
 | `--elide-asserts` | off | Compile without `assert` and `fn` `:pre`/`:post` checks |
 | `--serve PORT` | off | Serve the build and push each step to connected pages ([Serve](#serve)); 0 picks a free port |
 | `--serve-host HOST` | `127.0.0.1` | The address `--serve` listens on |
+| `--reload-dependents` | off | With `--serve`, a load also reloads every namespace downstream of those it loads ([Serve](#serve)) |
 
 The watch runs until it is interrupted, and exits nonzero when the first
 build fails or a file of the build cannot be written. Startup compiles the program twice,
@@ -500,7 +505,8 @@ the rewritten units to the running first build through the Node driver.
 
 ## Serve
 
-`--watch ... --serve PORT [--serve-host HOST]` (light-cljs-286; the design is
+`--watch ... --serve PORT [--serve-host HOST] [--reload-dependents]`
+(light-cljs-286 and 287; the design is
 "The server and the client" in
 [dev-workflow.md](dev-workflow.md#the-server-and-the-client)) also serves the
 dev build over HTTP and pushes each step to the pages running it:
@@ -537,12 +543,42 @@ The server (`light_cljs::dev_server::DevServer`) is a subset of HTTP/1.1 on
   with `replay`) and the diagnostics of the last step, or before any step
   the build's own warnings; then each step's `warnings` and
   `error` (`{"message", "file", "line", "column"}`) and `load` (`units`,
-  each `{"namespace", "file", "js"}` with the text of the unit file, and the
-  `before-load` and `after-load` hooks of the manifest). A step that fails
+  each `{"namespace", "file", "js"}` with the text of the unit file; the
+  `before-load` and `after-load` hooks of the manifest; and `once` and
+  `always`, the namespaces marked `^:dev/once` and `^:dev/always`, which a
+  replay is applied with). A step that fails
   pushes its error and no load, and changes no replay; the units it wrote,
   if any (a namespace a changed `ns` form loaded before the error), go with
   the next step that succeeds. A comment line every 15 s finds closed
   connections.
+
+A step's `load` holds the units of its reload set (light-cljs-287; "The
+reload set" in [dev-workflow.md](dev-workflow.md#the-reload-set)), in load
+order:
+
+- every namespace the step wrote: the changed ones, the requirers of a
+  changed macro namespace (recompiled, since their units hold the
+  expansions), and the namespaces a changed `ns` form loaded, with those of
+  failed steps since the last that succeeded;
+- with `--reload-dependents`, every namespace that requires one of those,
+  directly or through others the load reloads, unchanged, so that top-level
+  effects that read them run again, as shadow-cljs's `:full` reload strategy
+  does (a save of
+  `app.state` in examples/dev loads `app.state`, `app.view` and `app.main`;
+  without the flag, `app.state` alone, since a call reads a definition when
+  it runs);
+- when that is any namespace, every namespace whose `ns` form is marked
+  `^:dev/always` (`(ns ^:dev/always app.config)`), unchanged;
+- never a namespace marked `^:dev/once` that the pages have run: a step
+  recompiles it and rewrites its unit, for a page loaded later, but loads
+  nothing of it, and it passes no change on downstream: a namespace that
+  depends on the change only through it is not reloaded. One that a
+  step adds to the build loads with that step, since no page has it.
+
+A step whose reload set is empty pushes no load and runs no hooks. The hooks
+of a load are those the step found in the program it compiled, resolved in
+the page when they run: a new before-load function is not defined yet when
+the before-load functions of its own load run.
 - `POST /reply` takes the JSON reply of a runtime to an `invoke` (a REPL
   form's unit, `DevServer::invoke`, which the connected REPL will send:
   light-cljs-288), `{"runtime", "id", "value"}` or `{"runtime", "id",
@@ -568,7 +604,9 @@ the stream with `fetch`, so the same code runs in a page and in Node, and
   (the text of the function `define` recorded is in the unit's, and the unit
   ran to its end), so a page that loaded the current files changes nothing,
   one that missed steps, or reconnects to a server that rebuilt, catches up,
-  and a unit that threw runs again;
+  and a unit that threw runs again; of a `once` namespace only a unit it has
+  not run to its end, and, when it applies any unit, the units of the
+  `always` namespaces too;
 - draws the `warnings` and `error` of a step in an overlay with file, line
   and column (and logs them), which the first message of the next step
   clears;
@@ -615,4 +653,9 @@ earlier. The server serves the directories it is given and does not look in
 
 `tests/dev_server.rs` runs `--watch --serve 0` on a copy of `examples/dev`
 with Node runtimes: the driver with `--connect`, whose build's `client.js`
-reads the stream.
+reads the stream. It also runs the reload fixtures
+(tests/support/reload_fixtures.rs: functions, `defonce`, records, protocols,
+multimethods, macros and `ns` changes, each an edit, the namespaces it
+reloads and what the program prints), whose output the Phase 0 driver gives
+the same from the units the step rewrote and from a fresh build of the
+edited sources (tests/compiler/dev_build.rs).

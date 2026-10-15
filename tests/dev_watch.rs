@@ -937,6 +937,18 @@ fn watch_refuses_missing_options_and_a_failing_first_build() {
         (
             &[
                 "--entry",
+                "app.main",
+                "--source-root",
+                EXAMPLE,
+                "--out-dir",
+                out,
+                "--reload-dependents",
+            ][..],
+            "--reload-dependents requires --serve PORT",
+        ),
+        (
+            &[
+                "--entry",
                 "app.missing",
                 "--source-root",
                 EXAMPLE,

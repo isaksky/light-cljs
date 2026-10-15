@@ -185,7 +185,11 @@ pushes each step to the open pages. The build's `client.js` loads the pushed
 units between the `^:dev/before-load` and `^:dev/after-load` hooks, keeping
 `defonce` state, draws compile errors and warnings over the page with file,
 line and column, catches up when it connects late, and reconnects when the
-server restarts. JavaScript packages come from a page in the build directory
+server restarts. A step loads the namespaces it recompiled (a changed macro
+namespace recompiles those that require it) and those marked `^:dev/always`,
+never again one marked `^:dev/once`; `--reload-dependents` also reloads every
+namespace downstream of them, as shadow-cljs's `:full` strategy does.
+JavaScript packages come from a page in the build directory
 that sets `globalThis.lightCljsPackages` before it loads `index.js`
 ([Serve](docs/evaluation.md#serve), [JavaScript packages in
 dev](docs/evaluation.md#javascript-packages-in-dev)).
@@ -362,9 +366,9 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   (at `advanced` also of definitions and constants moved toward their
   readers), with the runtime in the startup chunk. A dev build
   (`--reloadable`) writes one unit per namespace for reloading, and `--watch`
-  rewrites a saved namespace's unit, which `--serve` pushes to open pages; the
-  reload policy (which namespaces a change reloads, `^:dev/once` and
-  `^:dev/always`) and the connected REPL are still to come. The release
+  rewrites a saved namespace's unit, which `--serve` pushes to open pages with
+  the reload policy (`^:dev/once`, `^:dev/always`, `--reload-dependents`); the
+  connected REPL is still to come. The release
   optimizer, `--optimize advanced`, is still being built
   ([docs/advanced-optimization.md](docs/advanced-optimization.md)); what it does
   so far is listed under [Compile to JavaScript](#compile-to-javascript). Sizes
