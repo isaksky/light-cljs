@@ -341,6 +341,19 @@ impl SourceMapping {
         self.segments.is_empty()
     }
 
+    /// The program source index and byte offset that the output position at
+    /// zero-based `line` and `column` (UTF-16 code units) maps to: that of
+    /// the last segment of the line at or before the column. None where the
+    /// position maps to no program source.
+    pub fn original(&self, line: u32, column: u32) -> Option<(usize, usize)> {
+        self.segments
+            .iter()
+            .rev()
+            .find(|segment| segment.line == line && segment.column <= column)
+            .filter(|segment| segment.source != UNMAPPED && segment.source != RUNTIME)
+            .map(|segment| (segment.source, segment.byte))
+    }
+
     /// The Source Map v3 JSON. `file` is the output's name; `sources` are the
     /// program's sources by source index (the order a namespace program
     /// loaded them in; one for a single source), followed by the runtime when

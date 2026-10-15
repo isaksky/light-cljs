@@ -200,6 +200,25 @@ cargo run --quiet -- --watch --entry app.main --source-root examples/dev --out-d
 # light-cljs: built app.main (4 namespaces) into /tmp/light-dev in 281 ms; watching every 100 ms
 ```
 
+With the server running, `--repl --connect HOST:PORT` is a REPL in the page:
+it reads forms as `--repl` does, the server compiles each with the watch's
+program (so REPL definitions and saved files see each other) in the
+connection's namespace, the entry namespace to begin with, and the most
+recently connected page or Node runtime runs it, prints the value with
+`--print-length` and `--print-level`, and keeps `*1`, `*2`, `*3` and `*e`.
+Runtime errors come back with their stacks mapped to the sources. A value that
+is not finite data also comes back as a reference (`;; ref 1` on stderr),
+which `(light.dev/ref 1)` returns and `(light.dev/inspect 1)` describes;
+`(light.dev/runtimes)` lists the connected runtimes and
+`(light.dev/select! ID)` sends the forms to another
+([Connected REPL](docs/evaluation.md#connected-repl)).
+
+```sh
+cargo run --quiet -- --repl --connect localhost:9630
+# app.main=> (swap! app.state/state update :clicks inc)
+# {:clicks 2, :card #app.view.Card{:label "clicks", :clicks 1}}
+```
+
 `--optimize none|prepare|advanced` after `--compile` (single files and `--entry`
 builds, with `--esm` or `--out-dir` too) picks the optimization level. `prepare`, the
 default, removes unused definitions with inert initializers and specializes
@@ -367,8 +386,8 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   readers), with the runtime in the startup chunk. A dev build
   (`--reloadable`) writes one unit per namespace for reloading, and `--watch`
   rewrites a saved namespace's unit, which `--serve` pushes to open pages with
-  the reload policy (`^:dev/once`, `^:dev/always`, `--reload-dependents`); the
-  connected REPL is still to come. The release
+  the reload policy (`^:dev/once`, `^:dev/always`, `--reload-dependents`) and
+  where `--repl --connect` evaluates; nREPL for editors is still to come. The release
   optimizer, `--optimize advanced`, is still being built
   ([docs/advanced-optimization.md](docs/advanced-optimization.md)); what it does
   so far is listed under [Compile to JavaScript](#compile-to-javascript). Sizes

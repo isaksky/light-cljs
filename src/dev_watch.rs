@@ -24,7 +24,7 @@ use light_cljs::dev_session::{Action, DevSession, Unit};
 use light_cljs::source_provider::{
     FileSourceProvider, LoadError, LoadRequest, Reload, SourceInput, SourceProvider,
 };
-use light_cljs::{EvalDiagnostic, EvalOptions, LineIndex, MacroHost};
+use light_cljs::{EvalOptions, LineIndex, MacroHost};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
@@ -33,6 +33,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     rc::Rc,
+    sync::mpsc::RecvTimeoutError,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -60,7 +61,9 @@ the source roots, a built-in page at / when DIR has no index.html, and at
 /events a stream of server-sent events that pushes each step's units, which
 the build's client.js loads into the page between the ^:dev/before-load and
 ^:dev/after-load hooks, and its warnings and errors, which it draws over
-the page. A page that connects late catches up with the build.
+the page. A page that connects late catches up with the build. The server
+also answers light-cljs --repl --connect 127.0.0.1:PORT, whose forms it
+compiles with the program the watch keeps and runs in a connected runtime.
 
 A step loads the namespaces it recompiled, which include those that require
 a changed macro namespace, then every namespace whose ns form is marked
@@ -368,6 +371,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     // the build lists already; each step that succeeds finds them again.
     watch.refresh_hooks();
     watch.write_manifest()?;
+    let mut repl = None;
     if let Some(port) = options.serve {
         for namespace in &watch.manifest.namespaces {
             let path = options.out_dir.join(&namespace.file);
@@ -389,6 +393,11 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
                 ..Step::default()
             });
         }
+        // The connected REPL compiles with the watch's session, in the entry
+        // namespace to begin with, and calls the runtime's `light.dev`
+        // functions.
+        light_cljs::dev_repl::declare(&watch.session)?;
+        repl = Some(server.serve_repl(&options.entry));
         watch.server = Some(server);
     }
     eprintln!(
@@ -400,7 +409,18 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
         options.poll.as_millis()
     );
     loop {
-        std::thread::sleep(options.poll);
+        // Between polls, compile the forms of connected REPLs as they come.
+        let poll = Instant::now() + options.poll;
+        while let Some(wait) = poll.checked_duration_since(Instant::now()) {
+            match &repl {
+                Some(requests) => match requests.recv_timeout(wait) {
+                    Ok(request) => request.compile(&watch.session),
+                    Err(RecvTimeoutError::Timeout) => break,
+                    Err(RecvTimeoutError::Disconnected) => repl = None,
+                },
+                None => std::thread::sleep(wait),
+            }
+        }
         let now = scan(&roots);
         if now == stamps {
             continue;
@@ -622,11 +642,14 @@ impl Watch {
                 Action::Warnings(warnings) => {
                     for warning in warnings {
                         eprintln!("WARNING: {}", crate::eval_cli::diagnostic(warning));
-                        self.warnings.push(located(warning));
+                        self.warnings.push(Diagnostic::located(warning));
                     }
                 }
                 Action::Error(diagnostic) => {
-                    error = Some((crate::eval_cli::diagnostic(diagnostic), located(diagnostic)));
+                    error = Some((
+                        crate::eval_cli::diagnostic(diagnostic),
+                        Diagnostic::located(diagnostic),
+                    ));
                 }
             }
         }
@@ -921,32 +944,5 @@ impl Watch {
         fs::write(&temporary, &file.text)
             .and_then(|()| fs::rename(&temporary, &path))
             .map_err(|error| format!("cannot write {}: {error}", path.display()).into())
-    }
-}
-
-/// `error` located for the server: its message without the location the
-/// session put in front of it, and the file, line and column.
-fn located(error: &EvalDiagnostic) -> Diagnostic {
-    let Some(span) = &error.location else {
-        return Diagnostic {
-            message: error.message.clone(),
-            ..Diagnostic::default()
-        };
-    };
-    let file = span.source().name();
-    let (line, column) = span
-        .source()
-        .line_column(span.bytes().start)
-        .unwrap_or((1, 1));
-    let prefix = format!("{file}:{line}:{column}: ");
-    Diagnostic {
-        message: error
-            .message
-            .strip_prefix(&prefix)
-            .unwrap_or(&error.message)
-            .to_owned(),
-        file: Some(file.to_owned()),
-        line: Some(line),
-        column: Some(column),
     }
 }

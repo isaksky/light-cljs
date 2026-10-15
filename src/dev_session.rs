@@ -328,6 +328,39 @@ impl DevSession {
             result
         })
     }
+    /// Make `namespace` the current namespace, in which the next form is read
+    /// and compiled, as a connected REPL keeps one per connection.
+    pub fn set_namespace(&self, namespace: &str) {
+        self.compiler.borrow_mut().set_namespace(namespace);
+    }
+    /// Read the top-level form of `source` at `cursor` in the current
+    /// namespace and move `cursor` past it: None at the end of the source.
+    pub fn read_form(
+        &self,
+        source: &SourceInput,
+        cursor: &mut usize,
+    ) -> Result<Option<Form>, EvalDiagnostic> {
+        self.begin()?;
+        self.check_source(source)?;
+        self.next_form(source, cursor)
+    }
+    /// Declare `namespace/name`, a definition the runtime supplies, so that
+    /// forms naming it compile to a read of its registry entry without a
+    /// warning: the functions of `light.dev` that the dev client defines.
+    pub fn declare(&self, namespace: &str, name: &str) -> Result<(), EvalDiagnostic> {
+        self.begin()?;
+        // Declared from its own namespace, so that no other namespace
+        // imports it.
+        let current = self.namespace();
+        self.compiler.borrow_mut().set_namespace(namespace);
+        let result = self
+            .compiler
+            .borrow_mut()
+            .declare_binding(namespace, name)
+            .map_err(|error| EvalError(error.to_string()).into());
+        self.compiler.borrow_mut().set_namespace(&current);
+        result
+    }
     /// Read every top-level form of `source` in the current namespace.
     pub fn read_forms(&self, source: &SourceInput) -> Result<Vec<Form>, EvalDiagnostic> {
         self.begin()?;

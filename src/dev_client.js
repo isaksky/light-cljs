@@ -31,7 +31,14 @@
 //   next step clears them.
 // - `invoke`: evaluate a REPL form's unit in its namespace and post its value
 //   printed by `pr-str` under the print options sent, or the error it threw,
-//   to `reply` with the request ID.
+//   to `reply` with the request ID. One from a REPL session first runs the
+//   `setup` script of what the form loaded, keeps the session's `*1`, `*2`,
+//   `*3` and `*e`, and gives a value that is not finite data a reference
+//   number, `ref`, by which `light.dev/ref` returns it and `light.dev/inspect`
+//   describes it.
+// - `run`: run the script of what a REPL form loaded, sent to the runtimes
+//   that do not run the form, or to all when a later part of it failed.
+// - `forget`: drop the history of a REPL session that closed.
 //
 // When the stream ends or fails, the client connects again after a delay
 // that doubles from 250 ms to 30 s; a server that has no event stream (a
@@ -93,6 +100,89 @@ globalThis.__lightDev = (() => {
 
   const location = diagnostic =>
     [diagnostic.file, diagnostic.line, diagnostic.column].filter(part => part != null).join(":");
+
+  // The connected REPL's side of the runtime: each REPL session's `*1`, `*2`,
+  // `*3` and `*e`, and the values a reply could not give as data, kept by
+  // reference number for `light.dev/ref` and `light.dev/inspect`, the
+  // newest `REFERENCES`.
+  const REFERENCES = 1000;
+  const repl = { sessions: new Map(), references: new Map(), next: 1 };
+  const reference = id => {
+    const number = Number(id);
+    if (!repl.references.has(number)) {
+      throw new Error(`light.dev: no reference ${id} in this runtime`);
+    }
+    return repl.references.get(number);
+  };
+  const remember = value => {
+    const number = repl.next++;
+    repl.references.set(number, value);
+    if (repl.references.size > REFERENCES) {
+      repl.references.delete(repl.references.keys().next().value);
+    }
+    return number;
+  };
+  // Whether `value`, printed under `print`, is finite data that the printed
+  // text gives whole: nil, a boolean, number, string, keyword, symbol, UUID,
+  // instant, regex or tagged literal, or a collection of such within the
+  // print length and level. Anything else, a function, an atom, a host
+  // object, a sequence cut short, comes back as a reference too.
+  const finite = (value, print) => {
+    const core = globalThis.__lightRuntime.core;
+    const length = print?.length ?? null;
+    const level = print?.level ?? null;
+    let budget = 100000;
+    const walk = (value, depth) => {
+      if (--budget < 0) return false;
+      if (value == null || typeof value === "boolean" || typeof value === "number" ||
+          typeof value === "string") return true;
+      if (core.isKeyword(value) || core.isSymbol(value) || core.isUuid(value) ||
+          core.isInst(value) || core.isRegex(value)) return true;
+      if (core.isTaggedLiteral(value)) return walk(value.form, depth);
+      if (!core.isColl(value) || level !== null && depth >= level) return false;
+      let count = 0;
+      for (let items = core.seq(value); items != null; items = core.next(items)) {
+        if (length !== null && count++ >= length) return false;
+        const item = core.first(items);
+        // A map's entries print at its level, their keys and values below.
+        const parts = core.isMap(value) ? [core.nth(item, 0), core.nth(item, 1)] : [item];
+        if (!parts.every(part => walk(part, depth + 1))) return false;
+      }
+      return true;
+    };
+    return walk(value, 0);
+  };
+  // What `light.dev/inspect` tells of a reference: its type, and as fits it
+  // the function's name and arity, the count, the dereferenced value, or a
+  // host object's keys.
+  const inspect = id => {
+    const value = reference(id);
+    const core = globalThis.__lightRuntime.core;
+    const k = name => core.keyword(name);
+    const entries = [k("ref"), Number(id), k("type"),
+      typeof value === "function" ? "function" : value?.constructor?.name ?? typeof value];
+    if (typeof value === "function") {
+      entries.push(k("name"), core.demunge(value.name), k("arity"), value.length);
+    }
+    if (value != null && core.isCounted(value)) entries.push(k("count"), core.count(value));
+    if (value != null && core.satisfies(core.IDeref, value) &&
+        !(core.IPending && core.satisfies(core.IPending, value) && !core.realized(value))) {
+      entries.push(k("deref"), core.deref(value));
+    }
+    const prototype = value !== null && typeof value === "object" ? Object.getPrototypeOf(value) : undefined;
+    if (Array.isArray(value) || prototype === Object.prototype || prototype === null) {
+      entries.push(k("keys"), core.vec(Object.keys(value).slice(0, 100)));
+    }
+    return core.arrayMap(...entries);
+  };
+  const command = name => () => {
+    throw new Error(`light.dev/${name} is a command of the connected REPL: evaluate it as a form of its own`);
+  };
+  const roots = globalThis.__lightApplicationRoots ??= Object.create(null);
+  roots["light.dev/ref"] = reference;
+  roots["light.dev/inspect"] = inspect;
+  roots["light.dev/runtimes"] = command("runtimes");
+  roots["light.dev/select!"] = command("select!");
 
   function connect(url, options = {}) {
     const log = options.log ?? ((level, text) => console[level](text));
@@ -175,16 +265,35 @@ globalThis.__lightDev = (() => {
       try { return core.prStr(value); }
       finally { Object.assign(core, saved); }
     };
+    // An `invoke`: run its `setup` script (what the form loaded), then its
+    // unit, `js`, if any, in its namespace, with the `*1`, `*2`, `*3` and
+    // `*e` of its REPL `session`, which a value rotates and an error sets.
     const invoke = async message => {
       const answer = { runtime, id: message.id };
-      try {
-        const rt = globalThis.__lightRuntime;
-        rt.core.currentNs = rt.core.createNs(rt.symbol(null, message.namespace));
-        const value = (0, eval)("(" + message.js + "\n)")(rt);
-        answer.value = printed(message.print, value);
-      } catch (error) {
-        answer.error = { message: String(error?.message ?? error), stack: error?.stack ?? null };
+      const rt = globalThis.__lightRuntime;
+      const core = rt.core;
+      let history = null;
+      if (message.session != null) {
+        history = repl.sessions.get(message.session) ?? [null, null, null, null];
+        repl.sessions.set(message.session, history);
+        [core.replOne, core.replTwo, core.replThree, core.replError] = history;
       }
+      try {
+        if (message.setup) (0, eval)(message.setup);
+        core.currentNs = core.createNs(rt.symbol(null, message.namespace));
+        const value = message.js == null ? null : (0, eval)(message.js)(rt);
+        answer.value = printed(message.print, value);
+        if (message.session != null && !finite(value, message.print)) answer.ref = remember(value);
+        if (history !== null) history.splice(0, 3, value, history[0], history[1]);
+      } catch (error) {
+        if (history !== null) history[3] = error;
+        answer.error = { message: String(error?.message ?? error), stack: error?.stack ?? null };
+        try {
+          const data = core.exData(error);
+          if (data != null) answer.error.data = printed(message.print, data);
+        } catch {}
+      }
+      if (history !== null) [core.replOne, core.replTwo, core.replThree, core.replError] = history;
       const response = await fetch(reply, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -217,6 +326,19 @@ globalThis.__lightDev = (() => {
           overlay.add("error", "Compile error: " + location(message.error), message.error.message);
           return;
         case "invoke": return invoke(message);
+        case "forget":
+          // A REPL session closed: its history goes.
+          repl.sessions.delete(message.session);
+          return;
+        case "run":
+          // What a REPL form loaded, for the runtimes it was not sent to.
+          try {
+            (0, eval)(message.js);
+          } catch (error) {
+            log("error", `light-cljs: a REPL load threw: ${error?.stack ?? error}`);
+            throw error;
+          }
+          return;
         default: return;
       }
     };
@@ -294,6 +416,7 @@ globalThis.__lightDev = (() => {
   const dev = {
     units,
     values,
+    repl,
     overlay,
     define(namespace, requires, unit) {
       // A unit counts as loaded once it has run to its end, so a replay

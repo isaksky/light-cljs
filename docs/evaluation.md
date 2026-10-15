@@ -554,12 +554,15 @@ The server (`light_cljs::dev_server::DevServer`) is a subset of HTTP/1.1 on
   the next step that succeeds. A comment line every 15 s finds closed
   connections.
 - `POST /reply` takes the JSON reply of a runtime to an `invoke` (a REPL
-  form's unit, `DevServer::invoke`, which the connected REPL will send:
-  light-cljs-288), `{"runtime", "id", "value"}` or `{"runtime", "id",
-  "error": {"message", "stack"}}`, and hands it to the requester when the
-  runtime named is the one asked; a reply naming another gets `409
-  Conflict` and the request still waits. Dropping a `DevServer` ends every
-  stream, and its clients connect again.
+  form's unit, `DevServer::invoke`, which the connected REPL sends),
+  `{"runtime", "id", "value"}` (with `ref`, a reference number, for a value
+  that is not finite data) or `{"runtime", "id", "error": {"message",
+  "stack", "data"}}`, and hands it to the requester when the runtime named is
+  the one asked; a reply naming another gets `409 Conflict` and the request
+  still waits, and one from a page of another origin (its `Origin` header)
+  gets `403 Forbidden`. Dropping a `DevServer` ends every stream, and its
+  clients connect again.
+- `POST /repl` is the [connected REPL](#connected-repl)'s endpoint.
 
 A step's `load` holds the units of its reload set (light-cljs-287; "The
 reload set" in [dev-workflow.md](dev-workflow.md#the-reload-set)), in load
@@ -616,7 +619,11 @@ the stream with `fetch`, so the same code runs in a page and in Node, and
   clears;
 - evaluates an `invoke` in its namespace and posts the value printed by
   `pr-str` under the print options sent (`readably`, `length`, `level`,
-  `meta`, `namespace-maps`, `dup`), or the error, with the request ID;
+  `meta`, `namespace-maps`, `dup`), or the error, with the request ID; one
+  from a REPL session first runs its `setup` script (what the form loaded),
+  keeps the session's `*1`, `*2`, `*3` and `*e`, and gives a value that is
+  not finite data a reference number, and a `run` message runs the script of
+  what a REPL form sent to another runtime loaded;
 - connects again when the stream ends, after 250 ms doubling up to 30 s, and
   stops when the server has no `/events` (a 404, as from a static server).
 
@@ -663,3 +670,111 @@ multimethods, macros and `ns` changes, each an edit, the namespaces it
 reloads and what the program prints), whose output the Phase 0 driver gives
 the same from the units the step rewrote and from a fresh build of the
 edited sources (tests/compiler/dev_build.rs).
+
+## Connected REPL
+
+`light-cljs --repl --connect HOST:PORT [--print-length N] [--print-level N]`
+(light-cljs-288; the design is "The connected REPL" in
+[dev-workflow.md](dev-workflow.md#the-connected-repl)) is a REPL whose forms
+run in the pages and Node runtimes of a `--watch --serve` dev server:
+
+```sh
+light-cljs --watch --entry app.main --source-root src --out-dir dev --serve 9630
+# in another terminal, with the page open:
+light-cljs --repl --connect localhost:9630
+app.main=> (swap! app.state/state update :clicks inc)
+{:clicks 2, :card #app.view.Card{:label "clicks", :clicks 1}}
+```
+
+The client reads forms from stdin as `--repl` does (prompts and `...=>`
+continuation prompts on stderr at a terminal, several forms on a line, EOF
+ends it) and posts the text it has read up to the end of its last complete
+form, with its line and column, to the server. The server reads the forms
+there as the embedded REPL does (a prefix over a reader conditional that
+selects nothing takes the next form; discarded forms are checked) and
+compiles each with the watch's `DevSession`, so REPL definitions and watch
+steps share one program: a definition made at the
+REPL is seen by a namespace a save reloads, and a definition a reload makes
+is seen at the REPL. Each connection has its own current namespace, the
+entry namespace to begin with, which the prompt shows; `in-ns`, `ns` and
+`require` work as under `--repl`. The runtime runs the form's unit in that
+namespace and prints the value with `pr-str` under the print options the
+client sends (`--print-length` 100 and `--print-level` 20 unless given, as
+`--repl`), and the client prints that text on stdout. `--repl --connect`
+takes no other evaluation option, since nothing runs in the client.
+
+- **History.** The runtime keeps each session's `*1`, `*2`, `*3` and `*e`:
+  a value rotates them, a runtime error sets `*e`. **Difference:** a read or
+  analysis error leaves `*e` as it is, since it never reaches the runtime.
+- **References.** A value that is not finite data (a function, an atom, a
+  host object, a sequence the print length cut short; anything but nil,
+  booleans, numbers, strings, keywords, symbols, UUIDs, instants, regexes,
+  tagged literals and collections of them printed whole) also comes back as
+  a reference number, printed on stderr as `;; ref 3`. The runtime keeps the
+  newest 1,000: `(light.dev/ref 3)` returns the value there, and
+  `(light.dev/inspect 3)` describes it as data, `{:ref 3, :type "Atom",
+  :deref 1}`, with a function's `:name` and `:arity`, a counted value's
+  `:count` and a plain object's `:keys`. The dev client defines these
+  `light.dev` functions in every runtime, and the watch declares them, so
+  they need no `require`.
+- **Errors.** A form that does not read is reported by the client, which
+  discards the rest of the text it has read, as `--repl` does: `light-cljs:
+  <stdin>.cljc:4:1: unexpected closing delimiter )`. Analysis errors and
+  warnings come from the server, located in the input: `WARNING:
+  <stdin>.cljc:5:2: Use of undeclared Var app.main/f [undeclared-var]`,
+  since dev compilation is in warning mode. A runtime error comes back from
+  the runtime with its stack, whose locations the server maps through the
+  source maps to the input (a REPL form, or one that defined a function a
+  later form called) and to the sources of the build's units, leaving out
+  the frames of the client that ran the form; an `ex-info`'s data follows:
+
+  ```text
+  light-cljs: <stdin>.cljc:1:1: Error: kaboom
+      at eval (/work/src/app/view.cljs:25:10)
+      at eval (<stdin>.cljc:1:1)
+  ```
+- **Runtimes.** A form goes to the most recently connected runtime.
+  `(light.dev/runtimes)` lists the connected ones, `[{:id 1, :agent
+  "Mozilla/5.0 ...", :selected true}]`, and `(light.dev/select! 2)` sends
+  the session's forms to runtime 2 until `(light.dev/select! nil)`; a chosen
+  runtime that disconnects (a reloaded page connects as a new runtime) is an
+  error until the session chooses again. Both are commands the server
+  answers, as forms of their own; called anywhere else they throw. What a
+  form loads (a `require` of a namespace the session has not loaded) goes to
+  every runtime: with the form to its runtime, and as a `run` message to the
+  others, also when a later part of the form fails, since the session then
+  counts it as loaded. A namespace first loaded at the REPL is not part of the build: the
+  watch does not follow its file, a page loaded later does not have it, and
+  its load runs no reload hooks.
+- **Output.** What the form prints (`println`, `js/console.log`) goes to
+  the runtime's console, not to the terminal.
+
+The protocol is `POST /repl` with a JSON object, sent as
+`application/json`: `{"op": "open"}` answers `{"session", "namespace"}`;
+`{"op": "eval", "session", "code", "file", "line", "column", "print"}`
+answers `{"namespace", "results"}`, a result per form of `code` (a form that
+fails to compile or to run leaves the next to run, as under `--repl`; one
+that does not read ends them), each `{"warnings", "value", "ref"}` or `{"warnings",
+"error": {"phase", "diagnostic", "stack", "data"}}` with `phase` one of
+`compile`, `command` and `runtime`; `{"op": "close", "session"}` forgets the
+session, and a `forget` message makes the runtimes drop its history. A
+session ID belongs to one server process: a session the server does not know
+(after a restart) gets `404`, and the client opens a new one and says so. The server compiles each form on
+the watch's thread between polls and never waits there for a runtime; the
+connection's thread sends the unit and waits for the reply. Since a
+connected runtime runs what the endpoint sends, a request that carries an
+`Origin` header (a page's) or another content type than JSON (which a page
+cannot send to another origin without the server's consent) is refused, as
+well as, on loopback, a request for a non-loopback `Host`.
+
+`(+ 1 2)` takes 0.7-1.0 ms from the line typed to the value printed (median
+0.8 ms over 50, release CLI, headless Chrome running examples/dev, load 2.5),
+and 1.1-3.3 ms (median 1.4 ms over 20) in `tests/dev_repl.rs`, debug CLI with
+a Node runtime. `tests/dev_repl.rs` runs `--watch --serve 0` on a copy of
+`examples/dev`, Node runtimes (the driver with `--connect`) and the client:
+round trips, history and the application's state; references; a REPL
+definition seen by a reloaded namespace and a reloaded definition seen at
+the REPL; errors located in the input and in a reloaded namespace's source,
+`*e`, analysis errors and warnings; two runtimes, selection, loads reaching
+both and a namespace per connection; and the endpoint refusing what a page
+could send.

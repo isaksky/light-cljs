@@ -19,6 +19,7 @@ pub const USAGE: &str = "Compiled JavaScript evaluation:
   light-cljs --eval [OPTIONS] [FILE|-]
   light-cljs --eval [OPTIONS] --text SOURCE
   light-cljs --repl [OPTIONS]
+  light-cljs --repl --connect HOST:PORT [--print-length N] [--print-level N]
 
   --source-root DIR  Explicit .cljs/.cljc namespace roots (.cljs first)
   --poll-budget N    Cooperative engine/compiler polls per operation (1000000)
@@ -35,6 +36,13 @@ pub const USAGE: &str = "Compiled JavaScript evaluation:
 
 --eval prints the final value only after success; program output is immediate.
 --repl retains namespaces and *1/*2/*3/*e and recovers language/reader errors.
+--repl --connect evaluates in the runtimes of a --watch --serve dev server at
+HOST:PORT instead: the server compiles each form with the watch's program, the
+most recently connected page or Node runtime (or the one (light.dev/select! ID)
+chose; (light.dev/runtimes) lists them) runs it and prints the value, which
+comes back as text, and the runtime keeps *1/*2/*3/*e. A value that is not
+finite data also comes back as a reference, ;; ref N on stderr, which
+(light.dev/ref N) returns and (light.dev/inspect N) describes.
 Terminal prompts go to stderr. Terminal engine limits/cancellation exit nonzero.
 Legacy --fuel/--allocation-limit/--call-depth/--evaluation-depth are rejected.
 .clj inputs are retired: rename/adapt to .cljs or .cljc with :cljs conditionals.
@@ -53,12 +61,18 @@ struct Options {
     input: Input,
     roots: Vec<PathBuf>,
     eval: EvalOptions,
+    /// `--repl --connect HOST:PORT`: the dev server to evaluate on.
+    connect: Option<String>,
+    /// The first flag given that only the embedded engine takes.
+    local: Option<String>,
 }
 impl Default for Options {
     fn default() -> Self {
         Self {
             input: Input::Stdin,
             roots: Vec::new(),
+            connect: None,
+            local: None,
             eval: EvalOptions {
                 print: PrintOptions {
                     length: Some(100),
@@ -93,10 +107,27 @@ fn options(repl: bool, mut args: impl Iterator<Item = OsString>) -> Result<Optio
     while let Some(arg) = args.next() {
         let flag = arg.to_str().unwrap_or("");
         if !positional {
+            if repl
+                && flag.starts_with('-')
+                && !matches!(
+                    flag,
+                    "--connect" | "--print-length" | "--print-level" | "--help" | "-h"
+                )
+            {
+                options.local.get_or_insert_with(|| flag.to_owned());
+            }
             match flag {
                 "--help" | "-h" => {
                     println!("{USAGE}");
                     return Ok(None);
+                }
+                "--connect" if repl => {
+                    options.connect = Some(
+                        argument(&mut args, flag)?
+                            .into_string()
+                            .map_err(|_| "--connect requires HOST:PORT")?,
+                    );
+                    continue;
                 }
                 "--" => {
                     positional = true;
@@ -189,6 +220,14 @@ fn options(repl: bool, mut args: impl Iterator<Item = OsString>) -> Result<Optio
         };
         has_input = true;
     }
+    if options.connect.is_some()
+        && let Some(flag) = &options.local
+    {
+        return Err(format!(
+            "{flag} does not apply to --repl --connect, which compiles on the dev server and evaluates in its runtimes; it takes --print-length and --print-level"
+        )
+        .into());
+    }
     Ok(Some(options))
 }
 
@@ -196,6 +235,9 @@ pub fn run(repl: bool, args: impl Iterator<Item = OsString>) -> Result<()> {
     let Some(mut options) = options(repl, args)? else {
         return Ok(());
     };
+    if let Some(address) = &options.connect {
+        return crate::repl_connect::run(address, &options.eval.print);
+    }
     let source = if repl {
         None
     } else {
