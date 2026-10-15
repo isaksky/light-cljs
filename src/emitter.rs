@@ -95,6 +95,10 @@ pub(crate) struct Application<'a> {
     /// names need (`crate::rta`), each with the first expression naming one,
     /// which the slice roots.
     pub protocol_declarations: &'a [(&'static str, ExprId)],
+    /// At `Advanced`: the units the members of light.lazy's `Loadable` the
+    /// program names need (`crate::rta`), each with the first expression
+    /// naming one, which the slice roots.
+    pub loadable_members: &'a [(&'static str, ExprId)],
     /// At `Advanced`: calls that name the method they run, and definitions
     /// that bind each method to an entry of its own (`crate::call_shapes`).
     pub shapes: Option<&'a CallShapes>,
@@ -312,6 +316,13 @@ fn emit_js_mode(
             application.filter(|_| direct.is_some() && !emitter.runtime.is_empty())
         {
             for &(unit, site) in application.protocol_declarations {
+                emitter
+                    .runtime
+                    .record(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);
+            }
+            // ... and read by name what the runtime's `Loadable` has as a
+            // deftype would, which its effects add once these units are kept.
+            for &(unit, site) in application.loadable_members {
                 emitter
                     .runtime
                     .record(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);

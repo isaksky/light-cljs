@@ -713,7 +713,13 @@ output.
     marker and method where the program defines types of its own or looks a
     protocol up by mask or slot (`satisfies?`, `implements?`); and
     `Loadable.dispatch` makes `@l` and `load` use the IDeref that `extend-type`
-    or `specify!` gives, where `installMethods` is kept. Its instances
+    or `specify!` gives, where `installMethods` is kept. A program can also
+    read these by name, `(.cljs$core$IDeref$_deref$arity$1 l l)` or
+    `(.-cljs$lang$ctorStr lazy/Loadable)`, which keeps none of those
+    operations: rapid type analysis finds the names of `LOADABLE_MEMBERS`
+    (`src/runtime_slice.rs`) in reachable code of a program that keeps
+    `Loadable`, and the slice roots a unit the effect adding them waits for
+    and requires anyway (light-cljs-296). Its instances
     carry no `TypeBrand`, which only the compiler form bridge reads, and it has
     no `->Loadable` or `getBasis`. `deref()` calls the getter as the
     deftype's `(getter)` did, `getter.call(null)`, so an IFn object serves

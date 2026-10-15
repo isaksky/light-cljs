@@ -1529,7 +1529,11 @@ defines `load` and `loaded?`. The type is the runtime's (unit `Loadable`),
 which `(light.lazy/loadable-type)` reads, so that an `advanced` program pays
 for no type machinery: effects give it what a `deftype` implementing IDeref
 has only where the slice keeps code that can observe it (`deref`, a printer of
-types, `defineType` or a protocol lookup by mask or slot). Every target is resident in the one
+types, `defineType` or a protocol lookup by mask or slot), or where reachable
+code names what they add, as a property, method, string or in `js*` text: the
+IDeref marker or slot, a protocol mask, `cljs$lang$type` or
+`cljs$lang$ctorStr` (`LOADABLE_MEMBERS` in `src/runtime_slice.rs`,
+light-cljs-296). Every target is resident in the one
 output file: the site emits `new Loadable(null, () => g20)` (`() => null` for a
 namespace target), `@l` reads the target's current value, `loaded?` is true,
 and `load` returns a Promise that resolves with `@l` on a later microtask, as

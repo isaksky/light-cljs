@@ -494,21 +494,52 @@ fn a_namespace_target_keeps_its_effects_and_drops_its_unread_definitions() {
 /// The runtime owns `Loadable` (light-cljs-272) and gives it the parts of a
 /// `deftype` implementing IDeref that a program can observe: each observer
 /// alone, so that the `advanced` slice keeps only what it needs, prints what
-/// it prints at `none`.
+/// it prints at `none`. That includes reading the IDeref slot, the marker,
+/// the masks and the constructor's metadata by name (light-cljs-296), with a
+/// string target that needs no other observer.
 #[test]
 fn a_loadable_is_a_type_implementing_ideref_to_each_observer_at_every_level() {
-    let observe = |observer: &str| {
+    let program = |target: &str, observer: &str| {
         let main = format!(
             "(ns app.main (:require [light.lazy :as lazy]))\n\
-             (def l (lazy/loadable app.lib/f))\n\
+             (def l (lazy/loadable app.lib/{target}))\n\
              (fn [] {observer})\n"
         );
         let files: &'static [(&'static str, &'static str)] = Box::leak(Box::new([
             ("app/main.cljs", &*Box::leak(main.into_boxed_str())),
-            ("app/lib.cljs", "(ns app.lib)\n(def f :value)\n"),
+            (
+                "app/lib.cljs",
+                "(ns app.lib)\n(def f :value)\n(def s \"value\")\n",
+            ),
         ]));
-        call_value_at_every_level(&analyze(files).unwrap_or_else(|error| panic!("{error}")))
+        analyze(files).unwrap_or_else(|error| panic!("{error}"))
     };
+    let observe = |observer: &str| call_value_at_every_level(&program("f", observer));
+    // Nothing else in the direct cases' program keeps the type's decorations,
+    // so that only the name each case reads can keep them.
+    let alone = prepare_application(
+        &program("s", "[l lazy/Loadable]"),
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    )
+    .emit_js();
+    for decoration in ["IDeref/-deref", "cljs$lang$ctorStr", "cljs$lang$type"] {
+        assert!(!alone.contains(decoration), "{decoration}: {alone}");
+    }
+    let direct = [
+        ("(.cljs$core$IDeref$_deref$arity$1 l l)", "value"),
+        ("(if (.-cljs$core$IDeref$ l) \"yes\" \"no\")", "yes"),
+        ("(.-cljs$lang$protocol_mask$partition0$ l)", "32768"),
+        ("(.-cljs$lang$ctorStr lazy/Loadable)", "light.lazy/Loadable"),
+        ("(.-cljs$lang$type lazy/Loadable)", "true"),
+    ];
+    for (observer, printed) in direct {
+        let printed = format!("{printed}\n");
+        assert_eq!(
+            call_value_at_every_level(&program("s", observer)),
+            printed,
+            "{observer}"
+        );
+    }
     let cases = [
         ("(name @l)", "value"),
         ("(name (deref l))", "value"),

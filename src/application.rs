@@ -204,6 +204,10 @@ pub struct PreparedApplication {
     /// `Advanced`: the units the core protocol declarations the program names
     /// need, each with the first expression naming one (`crate::rta`).
     protocol_declarations: Vec<(&'static str, ExprId)>,
+    /// `Advanced`: the units the members of light.lazy's `Loadable` the
+    /// program names need, each with the first expression naming one
+    /// (`crate::rta`).
+    loadable_members: Vec<(&'static str, ExprId)>,
     /// `Advanced`: lookups of constant keys in map literals with constant keys
     /// (or locals bound to them), with the index of the entry each reads
     /// (`crate::folding::entry_lookups`).
@@ -240,6 +244,11 @@ impl PreparedApplication {
                 record_methods: if advanced { &self.record_methods } else { &[] },
                 protocol_declarations: if advanced {
                     &self.protocol_declarations
+                } else {
+                    &[]
+                },
+                loadable_members: if advanced {
+                    &self.loadable_members
                 } else {
                     &[]
                 },
@@ -347,6 +356,7 @@ pub fn prepare_application(
         upstream_member: None,
         record_methods: Vec::new(),
         protocol_declarations: Vec::new(),
+        loadable_members: Vec::new(),
         shapes: None,
         rejected_defines: Vec::new(),
         stats: ApplicationStats::default(),
@@ -445,6 +455,7 @@ pub fn prepare_application(
         prepared.upstream_member = analysis.names_upstream_member();
         prepared.record_methods = analysis.named_record_methods().to_vec();
         prepared.protocol_declarations = analysis.named_protocol_declarations().to_vec();
+        prepared.loadable_members = analysis.named_loadable_members().to_vec();
         prepared.stats.removed_definitions += rewrite.removed_definitions;
         prepared.stats.uninstantiated_types = rewrite.uninstantiated_types;
         prepared.stats.dropped_methods = rewrite.dropped_methods;

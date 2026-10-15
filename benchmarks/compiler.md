@@ -3994,3 +3994,37 @@ and `prepare` embed the whole runtime, which the `Loadable` units make 1,530
 bytes longer in every fixture, so their ceilings rise to the new size rounded
 up: by 2,000 bytes for 19 fixtures and 1,000 for 11, and one keeps its
 ceiling.
+
+## Direct reads of Loadable's decorations — October 15, 2026
+
+light-cljs-296 keeps what the runtime gives light.lazy's `Loadable` as a
+`deftype` where a program reads it by name rather than through an operation
+that observes it: `(.cljs$core$IDeref$_deref$arity$1 l l)` threw a
+`TypeError` at `advanced` and `(.-cljs$lang$ctorStr lazy/Loadable)` was
+`undefined`. Rapid type analysis now roots a unit of the `when:` list of the
+effect adding the name (`LOADABLE_MEMBERS` in `src/runtime_slice.rs`) in a
+program that keeps `Loadable`. Sizes, which do not depend on load, on the
+24-CPU Mac of the [environment](results/environment.txt), macOS 15.7.3,
+one-minute load average 9.9, of
+`(let [L (light.lazy/loadable-type) l (new L nil (fn [] "value"))] (js/console.log READ))`
+with each `READ`, raw bytes at `advanced`, on master `d7dc698` and on this
+change:
+
+```sh
+cargo run --quiet -- --compile --optimize advanced --text '<program>' | wc -c
+```
+
+| `READ` | master `d7dc698` | light-cljs-296 |
+| --- | ---: | ---: |
+| `l` (no decoration read) | 502 | 502 |
+| `(.cljs$core$IDeref$_deref$arity$1 l l)` | 537, throws | 5,707 |
+| `(.-cljs$core$IDeref$ l)` | 520, `undefined` | 5,690 |
+| `(.-cljs$lang$protocol_mask$partition0$ l)` | 5,744 | 5,744 |
+| `(.-cljs$lang$ctorStr L)` | 520, `undefined` | 615 |
+| `(.-cljs$lang$type L)` | 517, `undefined` | 612 |
+
+The marker and slot need `Loadable.type`, which brings `defineType` and the
+protocol machinery, as any program type does; a mask already kept them,
+since naming a mask roots `installMethods`. The names cost `Loadable.name`
+and `typeNames`, 95 bytes. No ratchet fixture names these, so no size
+changes at any level.

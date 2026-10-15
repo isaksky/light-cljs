@@ -155,6 +155,24 @@ pub const RECORD_METHODS: &[(&str, &[usize], &str)] = &[
     ("IKVReduce/-kv-reduce", &[3], "reduceKv"),
 ];
 
+/// What a program can read by name on light.lazy's `Loadable`, the type the
+/// runtime owns (unit `Loadable`), and on its instances, each with a unit of
+/// the `when:` list of the effect adding it: the IDeref marker, with which
+/// every slot of the protocol starts, and the protocol masks, which
+/// `Loadable.type` gives the prototype, and the constructor's
+/// `cljs$lang$type` and `cljs$lang$ctorStr`, which `Loadable.name` sets.
+/// The effects wait for the operations that observe these, but a program can
+/// also read one by naming it anywhere in a property, method, `js/` path,
+/// string or `js*` text ([`crate::rta`]): an `Advanced` slice that keeps
+/// `Loadable` then roots the unit, which the effect requires anyway
+/// (light-cljs-296). The `runtime_manifest` suite checks the units against
+/// those effects.
+pub const LOADABLE_MEMBERS: &[(&[&str], &str)] = &[
+    (&["cljs$core$IDeref$"], "protocolSlot"),
+    (&["cljs$lang$protocol_mask$partition"], "protocolMaskNames"),
+    (&["cljs$lang$ctorStr", "cljs$lang$type"], "typeNames"),
+];
+
 /// A runtime name emitted code reads: a top-level runtime binding, optionally
 /// a property (`member`) read from it, such as the runtime name of a
 /// [`CoreFnId`](crate::CoreFnId). Below `Advanced` the binding is an export

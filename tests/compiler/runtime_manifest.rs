@@ -552,6 +552,45 @@ fn an_owned_type_is_decorated_wherever_it_can_be_observed() {
         names(&[install]),
         "`when:` of unit `Loadable.dispatch`"
     );
+    // A program can also read the marker and slots, the masks or the names
+    // by naming them, where the slice roots the unit `LOADABLE_MEMBERS`
+    // lists (light-cljs-296): a condition of the decoration adding them,
+    // which keeps it and nothing the decoration does not keep itself.
+    let loadable = unit("Loadable");
+    let decorations = [
+        ("cljs$core$IDeref$", "Loadable.type"),
+        ("cljs$lang$protocol_mask$partition", "Loadable.type"),
+        ("cljs$lang$ctorStr", "Loadable.name"),
+        ("cljs$lang$type", "Loadable.name"),
+    ];
+    let mut listed = Vec::new();
+    for (members, condition) in light_cljs::runtime_slice::LOADABLE_MEMBERS {
+        let condition = manifest.unit_of(condition).unwrap();
+        for member in *members {
+            listed.push(*member);
+            let (_, decoration) = decorations
+                .iter()
+                .find(|(name, _)| name == member)
+                .unwrap_or_else(|| panic!("no decoration adds `{member}`"));
+            let decoration = unit(decoration);
+            assert!(
+                manifest.conditions(decoration).contains(&condition),
+                "`{member}` roots `{}`, which `{}` does not wait for",
+                manifest.units[condition.0].name,
+                manifest.units[decoration.0].name
+            );
+            assert!(!manifest.reachable([loadable])[decoration.0]);
+            assert_eq!(
+                manifest.reachable([loadable, condition]),
+                manifest.reachable([loadable, decoration]),
+                "`{member}`"
+            );
+        }
+    }
+    listed.sort_unstable();
+    let mut added: Vec<&str> = decorations.iter().map(|(name, _)| *name).collect();
+    added.sort_unstable();
+    assert_eq!(listed, added);
 }
 
 /// What values a kind hook handles: those of payload stores, built by every

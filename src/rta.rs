@@ -73,7 +73,11 @@
 //! method waits for. Where it names a protocol mask, with which a host value
 //! can declare core protocols, or the marker or a method slot of a protocol
 //! of [`crate::runtime_slice::PROTOCOL_ROOTS`], emission keeps the units such
-//! a value needs ([`TypeAnalysis::named_protocol_declarations`]).
+//! a value needs ([`TypeAnalysis::named_protocol_declarations`]). Where a
+//! program that keeps light.lazy's `Loadable` names what the runtime gives
+//! that type or its instances as a deftype's
+//! ([`crate::runtime_slice::LOADABLE_MEMBERS`]), emission keeps a unit that
+//! the effect adding it waits for ([`TypeAnalysis::named_loadable_members`]).
 //!
 //! # Devirtualization
 //!
@@ -135,6 +139,9 @@ pub(crate) struct TypeAnalysis {
     /// The units to root for the core protocol declarations reachable code
     /// names, each with the first expression naming one.
     declarations: Vec<(&'static str, ExprId)>,
+    /// The units to root for the members of `Loadable` reachable code names,
+    /// each with the first expression naming one.
+    loadable_members: Vec<(&'static str, ExprId)>,
 }
 
 /// What a rewrite removed, for [`crate::ApplicationStats`].
@@ -365,6 +372,7 @@ pub(crate) fn analyze(
         .map(ExprId);
     let record_methods = named_record_methods(program, &live);
     let declarations = named_protocol_declarations(program, &live);
+    let loadable_members = named_loadable_members(program, &live);
     TypeAnalysis {
         live,
         instantiated,
@@ -378,6 +386,7 @@ pub(crate) fn analyze(
         members,
         record_methods,
         declarations,
+        loadable_members,
     }
 }
 
@@ -797,6 +806,18 @@ impl TypeAnalysis {
         &self.declarations
     }
 
+    /// The units an `Advanced` slice of a program that keeps light.lazy's
+    /// `Loadable` roots because reachable code names what the runtime gives
+    /// the type or its instances as a deftype's
+    /// ([`crate::runtime_slice::LOADABLE_MEMBERS`]): its IDeref marker or a
+    /// slot, a protocol mask, `cljs$lang$type` or `cljs$lang$ctorStr`. Each
+    /// comes with the first expression naming it. The effects adding these
+    /// otherwise wait for operations observing them, which a direct read such
+    /// as `(.cljs$core$IDeref$_deref$arity$1 l l)` does not keep.
+    pub(crate) fn named_loadable_members(&self) -> &[(&'static str, ExprId)] {
+        &self.loadable_members
+    }
+
     /// Rewrite `program` as the analysis decided (see the module docs) and
     /// update `retained`, the globals emission declares.
     pub(crate) fn apply(
@@ -1024,6 +1045,41 @@ fn named_protocol_declarations(program: &Program, live: &[bool]) -> Vec<(&'stati
         .chain(["installMethods"])
         .zip(first)
         .filter_map(|(unit, site)| Some((unit, site?)))
+        .collect()
+}
+
+/// See [`TypeAnalysis::named_loadable_members`]: for a program in which a
+/// reachable expression reads the runtime's `Loadable`
+/// ([`ExprKind::LoadableType`]), the units of the
+/// [`crate::runtime_slice::LOADABLE_MEMBERS`] whose names a reachable
+/// expression holds anywhere in one of its [`texts`], each with the first
+/// such expression, in table order.
+fn named_loadable_members(program: &Program, live: &[bool]) -> Vec<(&'static str, ExprId)> {
+    let reached = || {
+        program
+            .exprs
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| live[*index])
+    };
+    if !reached().any(|(_, expr)| matches!(expr.kind, ExprKind::LoadableType)) {
+        return Vec::new();
+    }
+    let members = crate::runtime_slice::LOADABLE_MEMBERS;
+    let mut first = vec![None; members.len()];
+    for (index, expr) in reached() {
+        texts(program, &expr.kind, |text| {
+            for ((names, _), site) in members.iter().zip(&mut first) {
+                if names.iter().any(|name| text.contains(name)) {
+                    site.get_or_insert(ExprId(index));
+                }
+            }
+        });
+    }
+    members
+        .iter()
+        .zip(first)
+        .filter_map(|((_, unit), site)| Some((*unit, site?)))
         .collect()
 }
 
