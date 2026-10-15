@@ -922,8 +922,9 @@ Phase 3 splits them.
     chunk imports the packages its own `--esm` module imports, startup
     imports none, and the chunks print the module's line in Node.
   - `examples/features/index.html` loads the chunks beside it in a browser
-    without a bundler, and is Vite's entry for the same files; both print
-    the single file's three lines at every level ("Verification"). That
+    without a bundler, served by `site/build.bb`'s server from files staged
+    in `site/dist`, and is Vite's entry for the same files; both print the
+    single file's three lines at every level ("Verification"). That
     meets "Done when" below for examples/features as three files.
 - **Placement, namespace level.** New module `src/chunks.rs`:
   `plan(program, prepared) -> ChunkPlan`. Roots from `lazy_targets`; static
@@ -1102,16 +1103,49 @@ the rest of the list are still to come.
 The two hosts are checked by hand, at every level, on examples/features. Its
 `index.html` sits beside the chunks, appends each line the program logs to
 `#log`, and sets `#status` to `done` when `start`'s promise resolves, so
-headless Chrome's `--dump-dom` shows the run. `bb site/build.bb serve` serves
-only `site/dist` under `/light-cljs/`, after a playground build, and putting
-the example there would publish it on GitHub Pages, so a throwaway server
-on 127.0.0.1 serves it instead (`.js` as `text/javascript`). The Vite
-project is a temporary directory outside the repository; each level's
-directory is a Vite root whose `index.html` is the entry, so Vite bundles
-startup and turns the features' `import()`s into its own chunks. Run from
-the repository root on October 15, 2026 (macOS, Node 24.18.0, Chrome
-155.0.8059.79), every page printed the three lines of
-`tests/fixtures/chunks/features/stdout.txt` and `done`:
+headless Chrome's `--dump-dom` shows the run. The example is not part of
+the site: `site/build.bb` never copies it into `site/dist`, which Pages
+publishes. The Vite project is a temporary directory outside the
+repository; each level's directory is a Vite root whose `index.html` is the
+entry, so Vite bundles startup and turns the features' `import()`s into its
+own chunks. Run from the repository root on October 15, 2026 (macOS, Node
+24.18.0, Chrome 155.0.8059.79), every page below printed the three lines of
+`tests/fixtures/chunks/features/stdout.txt` and `done`.
+
+Through the site server: `bb site/build.bb serve` serves `site/dist` under
+`/light-cljs/` and needs only its `index.html`. `site/dist` is ignored by
+git, and `bb site/build.bb build` deletes it and assembles it again from its
+inputs, so files staged there for the check are never published. http-kit
+listens on every interface by default; the check binds it to 127.0.0.1
+without changing `site/build.bb`:
+
+```sh
+test ! -e site/dist   # with a built site/dist, stage under it and remove only the staged files
+mkdir -p site/dist && cp site/index.html site/dist/
+for level in none prepare advanced; do
+  cargo run --quiet -- --compile --optimize $level --entry app.main \
+    --source-root examples/features --out-dir site/dist/features/$level
+  cp examples/features/index.html site/dist/features/$level/
+done
+bb -e '(require (quote org.httpkit.server))
+       (alter-var-root (var org.httpkit.server/run-server)
+                       (fn [run] (fn [handler options] (run handler (assoc options :ip "127.0.0.1")))))
+       (binding [*command-line-args* ["serve" "8790"]] (load-file "site/build.bb"))' &
+server=$!
+sleep 3
+for level in none prepare advanced; do
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+    --user-data-dir="$(pwd)/target/chrome-profile" --virtual-time-budget=5000 \
+    --dump-dom "http://127.0.0.1:8790/light-cljs/features/$level/" 2>/dev/null |
+    sed -n '/<pre id="log">/,/<p id="status">/p' || true
+done
+kill $server
+rm -r site/dist target/chrome-profile
+```
+
+Without a bundler and through Vite, from a temporary directory and a
+throwaway server on 127.0.0.1 that sends `.js` as `text/javascript`, as
+`site/build.bb` does:
 
 ```sh
 dir=$(mktemp -d)
