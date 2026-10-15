@@ -1166,10 +1166,32 @@ extension points").
 - **Devirtualization.** Inference may type a call's receiver as an instance of
   one program type (`Known::Instance`) that implements the method at the
   call's arity. The call then reads the implementation from the receiver, as
-  `protocolMethod`'s dispatcher does: `(r)["ns$P$m$arity$1"](r)`. When an
-  argument cannot be read twice, it uses
-  `((r0, a1) => r0["ns$P$m$arity$2"](r0, a1))(receiver, x)`, which keeps the
-  evaluation order.
+  `protocolMethod`'s dispatcher does: `(r)["ns$P$m$arity$1"](r)`. Each
+  argument that cannot be read twice is evaluated once, in order, into an
+  operand local of the function the call is in (light-cljs-262), which
+  declares them, `let operand0, operand1;`, ahead of its body:
+  `(operand0 = receiver, operand1 = x, operand0["ns$P$m$arity$2"](operand0, operand1))`
+  reads the slot after every argument, as the dispatcher does. When only the
+  receiver is held, nothing runs between its evaluation and the slot read,
+  so the call is `(operand0 = receiver)["ns$P$m$arity$2"](operand0, x)`.
+  Until light-cljs-262 the arguments went to an arrow applied at each call,
+  `((r0, a1) => r0["ns$P$m$arity$2"](r0, a1))(receiver, x)`, a closure per
+  call until TurboFan inlines it.
+  - A local read before the last argument that cannot be read twice is held
+    too, since that argument may assign it through a `js*` hole; one read
+    after it is read at the call, as nothing runs in between.
+  - A call in an argument takes the locals after those the arguments before
+    it hold (`Operands::live`); one in the receiver may reuse the receiver's,
+    which it is done with first. Each JavaScript function the emitter writes
+    for a `fn`, a method or the top level declares its own, so recursive
+    calls and `^:async` calls waiting at the same time keep theirs. A thunk
+    the emitter writes that may run later than its function's code (a
+    Var's value, a qualified method's class, a compiler root's
+    initializer) has no operand locals and keeps the applied arrow; so
+    does a constant table initializer. The names are `operand<n>`, which
+    terse output and the hygiene pass rename (`terse::compiler_name`).
+  - The declaration is inserted after the body is written, so the body's
+    source map marks and raw segments move after it.
   - Conditions: the method is defined once and never assigned, takes no rest
     arguments, and its protocol is not `:extend-via-metadata`. Both the
     protocol and the type are top-level forms, the protocol first, so the
@@ -2078,6 +2100,20 @@ shapes below.
   its forms, outside nested functions, reads `arguments`, holds `js*` (which
   may read `this`), or is a `def` with `:test` metadata, whose test write the
   return position skips. A discarded `def` without a value is no statement.
+- **Factories and dispatchers** (light-cljs-262). A call of a positional or
+  map factory (`->T`, `map->T`) or of a protocol method's dispatcher is a
+  plain call, `g3(a, 2)`, when `ProgramFacts` makes the global
+  `Definition::Type` (with the `Factory` or `MapFactory` role) or
+  `Definition::Protocol` for a method: only its `deftype`, `defrecord` or
+  `defprotocol` defines it, and nothing assigns it (`set!`, a `def`,
+  `declare`, `binding`, `with-redefs`, a `js*` hole), and when inference
+  types the read as a function without `nil`: the read is in a later
+  top-level form than a top-level definition, so the definition has run. A
+  factory is an arrow and the dispatcher `protocolMethod` returns reads no
+  `this`, so the call is the same as `.call(null, ...)`. A read that may run
+  first, such as one in the type's own methods, keeps `.call(null, ...)`,
+  which throws before evaluating the arguments where a plain call of
+  `undefined` evaluates them first.
 - **Unknown callees** keep `.call(null, ...)`. `cargo bench --bench compiler --
   --callees` times the candidates per call in Node and QuickJS (see
   `benches/support/callees.js` and "Direct call shapes" in
@@ -2118,7 +2154,10 @@ shapes below.
     escapes (higher-order arguments, `apply`, aliases, its name as a value,
     `reify`, `extend-type`, `loop`, unselected and underfilled counts, `fn`
     literals called in place), `js*`, `this-as` and `(js-arguments)` in local
-    methods, named global functions, and escaping definitions that run twice.
+    methods, named global functions, and escaping definitions that run twice;
+  - since light-cljs-262, plain calls of factories and protocol method
+    dispatchers, and `.call(null, ...)` where the program assigns or
+    redefines them.
 
   The ratchet fixtures `multi-arity` and `local-arities` pin the sizes, and
   `--levels` runs both as steady-state workloads.
@@ -3362,7 +3401,9 @@ upstream states that advanced mode is unsafe for certain patterns.
   engine-generated message names that binding (`b is not a function`, or
   `g3_1 is not a function` with `pseudo_names`) where lower levels name the
   property they read (`Cannot read properties of undefined (reading
-  'call')`).
+  'call')`), and evaluates its arguments first. A call of a factory or
+  protocol method dispatcher is plain only where it runs after the
+  definition (light-cljs-262).
 - A function's `call` and `apply` are those of `Function.prototype`
   (light-cljs-257). Direct calls (light-cljs-212) and inlining (214) run the
   method a call selects without reading `call` (a method holding `js*`

@@ -394,7 +394,10 @@ following:
   program reads.
 - A call whose receiver inference types as an instance of one program type
   reads the method from the receiver's slot instead of calling the
-  dispatcher.
+  dispatcher. An argument it cannot read twice, and a local read before
+  one, is evaluated once, in order, into a local of the function it is in,
+  `(operand0 = g3(i, 2))["cljs$user$Area$area$arity$1"](operand0)`
+  (light-cljs-262).
 - A type gets its static `getBasis` only when the program names it.
 - The runtime's types get their upstream fields and methods (`first`, `cnt`,
   `meta`, `sval`, ...) only when the program names one, or calls
@@ -442,6 +445,11 @@ method their argument count selects, at every call site:
   `const l5_1 = function (...) {...}`, created at each evaluation as before.
 - A method whose body holds `js*` keeps `.call(null, ...)`, since a plain call
   passes `undefined` as `this`. Unknown callees keep `.call(null, ...)`.
+- The positional and map factories of a `deftype` or `defrecord` (`->T`,
+  `map->T`) and the method dispatchers of a `defprotocol` are called plainly
+  too, `g3(a, 2)`, when only their definition defines them, nothing
+  assigns them and the call is in a later top-level form than the definition:
+  a factory is an arrow and a dispatcher reads no `this` (light-cljs-262).
 - A `do` in value position is a comma expression instead of a function, so a
   `def` initializer is no longer wrapped, unless one of its forms reads
   `arguments` or holds `js*`.

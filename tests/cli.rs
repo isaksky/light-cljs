@@ -755,6 +755,13 @@ fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
         "(defn raw [x]\n  (js* \"(() => {\\n  const y = ~{};\\n  throw new Error(y);\\n})()\" x))\n\n(raw 1)\n",
     )
     .unwrap();
+    // At `advanced`, a function whose devirtualized protocol call holds its
+    // operands declares their locals ahead of its body (light-cljs-262).
+    std::fs::write(
+        root.join("protocol.cljs"),
+        "(defprotocol Area\n  (area [s a b]))\n\n(defrecord Rect [w h]\n  Area\n  (area [_ a b] (* w h a b)))\n\n(defn measure [n]\n  (when (pos? n)\n    (throw (js/Error. (str \"area \" (area (->Rect n 2) (inc n) (dec n))))))\n  n)\n\n(measure 0)\n(measure 3)\n",
+    )
+    .unwrap();
     let path = |name: &str| root.join(name).to_str().unwrap().to_owned();
     // Node reports the real path of each source.
     let real = std::fs::canonicalize(&root).unwrap();
@@ -865,6 +872,34 @@ fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
             &format!("{}:2:3", real("raw.cljs")),
             name,
         );
+
+        // Readable, the declaration is a line of its own before the throw,
+        // longer than the text from the `new` to the next expression.
+        let source = path("protocol.cljs");
+        for pseudo in [&[][..], &["--pseudo-names"]] {
+            let map = path(&format!("out/protocol-{name}-{}.js.map", pseudo.len()));
+            let script = path(&format!("out/protocol-{name}-{}.js", pseudo.len()));
+            let args = [
+                &["--compile", "--optimize", name][..],
+                pseudo,
+                &["--source-map", &map, &source],
+            ]
+            .concat();
+            let mapped = compiled(&args);
+            assert_eq!(
+                mapped.contains("let operand0, operand1, operand2;")
+                    || mapped.contains(".cljs$user$Area$area$arity$3("),
+                level == OptimizationLevel::Advanced,
+                "{args:?}: {mapped}"
+            );
+            std::fs::write(&script, &mapped).unwrap();
+            assert_frame(
+                &first_frame(&script),
+                "measure",
+                &format!("{}:10:12", real("protocol.cljs")),
+                &format!("{args:?}"),
+            );
+        }
 
         let map = path(&format!("out/pick-{name}.js.map"));
         let script = path(&format!("out/pick-{name}.js"));

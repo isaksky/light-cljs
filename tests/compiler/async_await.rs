@@ -402,3 +402,29 @@ fn advanced_passes_keep_awaits_and_promises() {
         "[true false 1 15 \"nth not supported on this type\"]\n",
     );
 }
+
+/// A devirtualized protocol call in an `^:async` function holds its
+/// operands in locals of the function (light-cljs-262), so calls that wait
+/// on their arguments at the same time each keep their own, also around an
+/// awaited wrapper and when the receiver itself awaits.
+#[test]
+fn devirtualized_calls_keep_their_operands_across_awaits() {
+    let program = source_program(
+        r#"(defprotocol P (m [x a b]))
+        (deftype T [v] P (m [_ a b] [v a b]))
+        (defn later [ms v] (js/Promise. (fn [resolve] (js/setTimeout #(resolve v) ms))))
+        (defn ^:async f [v p q]
+          (m (T. v) (let [x (await p)] (inc x)) (m (T. (await q)) 0 (await q))))
+        (defn ^:async g [p] (m (T. (await p)) (await p) 1))
+        (.then (js/Promise.all #js [(f 1 (later 20 2) (later 0 3)) (f 4 (later 0 5) (later 20 6))
+                                    (g (later 10 7))])
+               (fn [values] (js/console.log (pr-str (vec values)))))"#,
+    );
+    every_level(&program, "[[1 3 [3 0 3]] [4 6 [6 0 6]] [7 7 1]]\n");
+    let js = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    )
+    .emit_js();
+    assert!(!js.contains("=>r0"), "{js}");
+}

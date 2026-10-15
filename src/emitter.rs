@@ -231,6 +231,7 @@ fn emit_js_mode(
             returned_definition: None,
             asynchronous: false,
             boxed_return: false,
+            operands: None,
             raw_segments: Vec::new(),
             runtime: RuntimeRoots::default(),
             site: None,
@@ -273,7 +274,7 @@ fn emit_js_mode(
             }
             writeln!(emitter.output, "  let g{global};").unwrap();
         }
-        emitter.emit(program.root, ExprContext::Return);
+        emitter.operand_scope(|emitter| emitter.emit(program.root, ExprContext::Return));
         // A host value the program builds may declare core protocols by
         // their masks or markers, which it names (`crate::rta`).
         if let Some(application) =
@@ -1223,6 +1224,20 @@ struct Wrapper {
     outer_boxed: bool,
 }
 
+/// The locals `operand0`, `operand1`, ... of the function being written,
+/// which hold the evaluated operands of devirtualized protocol method calls
+/// ([`Emitter::direct_method_call`]) and which the function declares, `let
+/// operand0, operand1;`, ahead of its body. Each call takes the ones from
+/// `live` up while it evaluates its operands, so a call inside an operand
+/// takes others, and gives them back once written.
+#[derive(Default)]
+struct Operands {
+    /// The first local no operand being evaluated holds.
+    live: usize,
+    /// How many the function declares.
+    declared: usize,
+}
+
 struct Emitter<'a> {
     program: &'a Program,
     demand_roots: bool,
@@ -1273,6 +1288,11 @@ struct Emitter<'a> {
     /// Whether the innermost function being written is such an awaited
     /// wrapper, whose `return`s box their value ([`Emitter::return_open`]).
     boxed_return: bool,
+    /// The operand locals of the innermost function being written, or `None`
+    /// in code that may run apart from its function's evaluation (a thunk the
+    /// emitter writes, such as a Var's), where a protocol call evaluates its
+    /// operands as an applied arrow's arguments instead.
+    operands: Option<Operands>,
     raw_segments: Vec<std::ops::Range<usize>>,
     /// Every runtime name written so far, the roots of an `Advanced` slice.
     runtime: RuntimeRoots,
@@ -1408,6 +1428,44 @@ impl<'a> Emitter<'a> {
             && !self.replaced(core.runtime_name())
     }
 
+    /// Whether `callee` reads a global that holds a function that reads no
+    /// `this`, so that a call of it may be a plain call, `g3(a, 2)`, instead
+    /// of `(g3).call(null, a, 2)` (light-cljs-262): at `Advanced`, a
+    /// positional or map factory (`->T`, `map->T`), an arrow, or a protocol
+    /// method's dispatcher (`protocolMethod` in `src/js_runtime.js`), which
+    /// only its `deftype`, `defrecord` or `defprotocol` defines and nothing
+    /// assigns (`crate::inference::Definition`), read where inference knows
+    /// it is defined: in a later top-level form than its definition. A read
+    /// that may run first keeps `.call(null, ...)`, which throws before
+    /// evaluating the arguments, as lower levels do.
+    fn this_free_global(&self, callee: ExprId) -> bool {
+        use crate::inference::{Definition, TypeRole};
+        let (Some(inference), ExprKind::Global(global)) =
+            (self.inference, &self.program.exprs[callee.0].kind)
+        else {
+            return false;
+        };
+        if self.demand_roots
+            || self.application_roots
+            || self.program.globals[global.0].name.contains('.')
+            || inference.ty(callee) != Type::FN
+        {
+            return false;
+        }
+        match inference.facts().definition(*global) {
+            Definition::Type {
+                role: TypeRole::Factory | TypeRole::MapFactory,
+                ..
+            } => true,
+            Definition::Protocol(definition) => matches!(
+                &self.program.exprs[definition.0].kind,
+                ExprKind::DefProtocol { methods, .. }
+                    if methods.iter().any(|method| method.global == *global)
+            ),
+            _ => false,
+        }
+    }
+
     /// The spelling a keyword `case` switches on, or `otherwise` for a value
     /// that is not a keyword: `rt.core.isKeyword(caseValue) ?
     /// rt.core.str(caseValue).slice(1) : otherwise`, and at `Advanced`
@@ -1453,7 +1511,8 @@ impl<'a> Emitter<'a> {
         let raw = self.raw_segments.len();
         let marks = self.marks_len();
         self.mark(origin.or(self.site));
-        initializer(self);
+        // A table entry is declared at the top of the output.
+        self.without_operands(initializer);
         debug_assert_eq!(
             self.raw_segments.len(),
             raw,
@@ -2196,13 +2255,25 @@ impl<'a> Emitter<'a> {
     /// `slot` called with the receiver as `this` and first argument, as the
     /// dispatcher calls it, `(r)["ns$P$m$arity$2"](r, x)`. Unless reading
     /// every argument twice is reading it once, the arguments are evaluated
-    /// first, in order, as for the dispatcher call:
+    /// first, in order, as for the dispatcher call, each argument that cannot
+    /// be read twice, and each local before the last such argument, into an
+    /// operand local of the function ([`Operands`]):
+    /// `(operand0 = receiver, operand1 = x, operand0["ns$P$m$arity$2"](operand0, operand1))`.
+    /// When that is the receiver alone, nothing runs between its evaluation
+    /// and the call, which is `(operand0 = receiver)["ns$P$m$arity$2"](operand0, x)`
+    /// (light-cljs-262). In code without operand locals the arguments are
+    /// those of an applied arrow,
     /// `((r0, a1) => r0["ns$P$m$arity$2"](r0, a1))(receiver, x)`.
     fn direct_method_call(&mut self, slot: &str, args: &[ExprId]) {
         let (receiver, rest) = args
             .split_first()
             .expect("a protocol method takes its receiver");
-        if args.iter().all(|arg| self.repeatable(*arg)) {
+        // The operand local each argument is read from, if any.
+        let mut held: Vec<Option<usize>> = args
+            .iter()
+            .map(|arg| (!self.repeatable(*arg)).then_some(0))
+            .collect();
+        let Some(last) = held.iter().rposition(Option::is_some) else {
             self.output.push('(');
             self.value(*receiver);
             self.output.push(')');
@@ -2210,6 +2281,67 @@ impl<'a> Emitter<'a> {
             self.output.push('(');
             self.arguments(args);
             self.output.push(')');
+            return;
+        };
+        // A later argument may assign a local read before it (through a
+        // `js*` hole), so such a local is held too.
+        for (operand, &arg) in held[..last].iter_mut().zip(args) {
+            if matches!(self.program.exprs[arg.0].kind, ExprKind::Local(_)) {
+                *operand = Some(0);
+            }
+        }
+        if let Some(operands) = &mut self.operands {
+            let base = operands.live;
+            let mut next = base;
+            for operand in held.iter_mut().flatten() {
+                *operand = next;
+                next += 1;
+            }
+            operands.declared = operands.declared.max(next);
+            let receiver_only = next == base + 1 && held[0].is_some();
+            if receiver_only {
+                // A call in the receiver may use the same local: it is done
+                // before the assignment.
+                write!(self.output, "(operand{base} = ").unwrap();
+                self.value(*receiver);
+                self.output.push(')');
+            } else {
+                self.output.push('(');
+                for (&arg, operand) in args.iter().zip(&held) {
+                    let Some(operand) = *operand else {
+                        continue;
+                    };
+                    // The arguments before this one are held.
+                    self.operands.as_mut().unwrap().live = operand;
+                    write!(self.output, "operand{operand} = ").unwrap();
+                    self.value(arg);
+                    self.output.push_str(", ");
+                }
+                self.operands.as_mut().unwrap().live = base;
+                match held[0] {
+                    Some(operand) => write!(self.output, "operand{operand}").unwrap(),
+                    None => {
+                        self.output.push('(');
+                        self.value(*receiver);
+                        self.output.push(')');
+                    }
+                }
+            }
+            self.member(slot);
+            self.output.push('(');
+            for (index, (&arg, operand)) in args.iter().zip(&held).enumerate() {
+                if index > 0 {
+                    self.output.push_str(", ");
+                }
+                match *operand {
+                    Some(operand) => write!(self.output, "operand{operand}").unwrap(),
+                    None => self.value(arg),
+                }
+            }
+            self.output.push(')');
+            if !receiver_only {
+                self.output.push(')');
+            }
             return;
         }
         let names = (0..args.len())
@@ -3322,6 +3454,16 @@ impl<'a> Emitter<'a> {
         }
         self.output.push_str(") {\n");
         self.indent += 1;
+        self.operand_scope(|emitter| emitter.method_body(method, ifn_call));
+        self.asynchronous = outer_asynchronous;
+        self.boxed_return = outer_boxed;
+        self.indent -= 1;
+        self.indentation();
+        self.output.push_str("})");
+    }
+
+    /// The statements of `method`'s function, after its opening brace.
+    fn method_body(&mut self, method: &FnMethod, ifn_call: bool) {
         let field_reset = ifn_call
             && self.program.type_methods.contains(&method.target)
             && self.program.recur_targets[method.target.0].used;
@@ -3401,11 +3543,51 @@ impl<'a> Emitter<'a> {
         if capture_reset {
             self.capture_resets.pop();
         }
-        self.asynchronous = outer_asynchronous;
-        self.boxed_return = outer_boxed;
-        self.indent -= 1;
-        self.indentation();
-        self.output.push_str("})");
+    }
+
+    /// Write the statements of a function's body with `body`, declaring the
+    /// operand locals ([`Operands`]) they use ahead of them.
+    fn operand_scope(&mut self, body: impl FnOnce(&mut Self)) {
+        let at = self.output.len();
+        let marks = self.marks_len();
+        let raw = self.raw_segments.len();
+        let outer = self.operands.replace(Operands::default());
+        body(self);
+        let declared = std::mem::replace(&mut self.operands, outer).map_or(0, |o| o.declared);
+        if declared == 0 {
+            return;
+        }
+        let mut declaration = "  ".repeat(self.indent);
+        declaration.push_str("let ");
+        for index in 0..declared {
+            if index > 0 {
+                declaration.push_str(", ");
+            }
+            write!(declaration, "operand{index}").unwrap();
+        }
+        declaration.push_str(";\n");
+        // The body's marks and raw segments follow the declaration.
+        self.output.insert_str(at, &declaration);
+        for range in &mut self.raw_segments[raw..] {
+            range.start += declaration.len();
+            range.end += declaration.len();
+        }
+        if let Some(list) = &mut self.marks {
+            for mark in list.list[marks..]
+                .iter_mut()
+                .filter(|mark| mark.output >= at)
+            {
+                mark.output += declaration.len();
+            }
+        }
+    }
+
+    /// Write `body`, which may run apart from the evaluation of the function
+    /// being written, without that function's operand locals.
+    fn without_operands(&mut self, body: impl FnOnce(&mut Self)) {
+        let outer = self.operands.take();
+        body(self);
+        self.operands = outer;
     }
 
     /// Open a function that is called where it is written, around the
@@ -4319,14 +4501,14 @@ impl<'a> Emitter<'a> {
                 if let Some(method) = method {
                     self.output
                         .push_str("(function (x, ...args) { return Reflect.apply(");
-                    self.value(*class);
+                    self.without_operands(|emitter| emitter.value(*class));
                     self.output.push_str(".prototype");
                     self.member(method);
                     self.output.push_str(", x, args); })");
                 } else {
                     self.output
                         .push_str("(function (...args) { return Reflect.construct(");
-                    self.value(*class);
+                    self.without_operands(|emitter| emitter.value(*class));
                     self.output.push_str(", args); })");
                 }
             }
@@ -4526,7 +4708,7 @@ impl<'a> Emitter<'a> {
                     "makeVar"
                 }));
                 self.output.push_str("(() => ");
-                self.value(*value);
+                self.without_operands(|emitter| emitter.value(*value));
                 self.output.push_str(", ");
                 self.rt(RuntimeName::export("symbol"));
                 self.output.push('(');
@@ -4714,17 +4896,19 @@ impl<'a> Emitter<'a> {
                         self.output.push(')');
                     } else if let Some(init) = init {
                         self.output.push_str("() => ");
-                        if let Some(test) = test {
-                            self.output.push_str("{ const value = ");
-                            self.value(*init);
-                            self.output.push_str("; value.cljs$lang$test = ");
-                            self.value(*test);
-                            self.output.push_str("; return value; }");
-                        } else {
-                            self.output.push('(');
-                            self.value(*init);
-                            self.output.push(')');
-                        }
+                        self.without_operands(|emitter| {
+                            if let Some(test) = test {
+                                emitter.output.push_str("{ const value = ");
+                                emitter.value(*init);
+                                emitter.output.push_str("; value.cljs$lang$test = ");
+                                emitter.value(*test);
+                                emitter.output.push_str("; return value; }");
+                            } else {
+                                emitter.output.push('(');
+                                emitter.value(*init);
+                                emitter.output.push(')');
+                            }
+                        });
                     } else {
                         self.output.push_str("null");
                     }
@@ -4944,6 +5128,18 @@ impl<'a> Emitter<'a> {
                 }
                 if let Some(direct) = self.shapes.and_then(|shapes| shapes.call(id)) {
                     self.direct_call(*callee, args, direct);
+                    return;
+                }
+                if self.this_free_global(*callee)
+                    && self
+                        .specialized_calls
+                        .is_none_or(|calls| !calls.contains_key(&id))
+                {
+                    // `g3(a, 2)`: a factory or dispatcher reads no `this`.
+                    self.value(*callee);
+                    self.output.push('(');
+                    self.arguments(args);
+                    self.output.push(')');
                     return;
                 }
                 self.output.push('(');

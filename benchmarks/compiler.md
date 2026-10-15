@@ -3641,3 +3641,61 @@ the ceilings it passed rose to their new sizes rounded up: `rest-fn` 11,000,
 For the same reason the bound on `(count (.split "a,b" ","))` in
 tests/compiler/builtin_types.rs rose from 1,600 to 1,900 bytes (it is about
 1,810).
+
+## Protocol slot and factory call shapes — October 14, 2026
+
+light-cljs-262 changes two call shapes at `advanced`. A devirtualized protocol
+call holds each argument it cannot read twice in an operand local of its
+function instead of passing it to an arrow applied at each call, and a call of
+a positional or map factory or of a protocol method's dispatcher that nothing
+reassigns is a plain call instead of `.call(null, ...)`. The record-protocol
+loop body goes from
+
+    ((r0) => r0["cljs$user$Area$area$arity$1"](r0))((g3).call(null, l7, 2))
+
+to `(operand0 = g3(l7, 2))["cljs$user$Area$area$arity$1"](operand0)`.
+
+The pellet's acceptance command, on the 24-CPU Mac (Node v24.18.0, macOS
+15.7), with another worker building and testing on it:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only record-protocol --output DIR
+```
+
+"Before" is master `129064e`. Milliseconds per call `(f 2000)`, median /
+minimum of the mean of timed calls 11-30 in fresh processes; upstream is
+timed in the same rounds:
+
+| Build | One-minute load (median of rounds) | light-cljs `advanced` | Upstream `:advanced` | light-cljs / upstream |
+| --- | ---: | ---: | ---: | ---: |
+| before | 3.0 | 0.038 / 0.035 | 0.019 / 0.017 | 2.0× |
+| after | 5.8 | 0.048 / 0.044 | 0.019 / 0.017 | 2.5× |
+
+QuickJS at `advanced` went from 1.52 to 1.35 ms a call, and the output from
+5,475 to 5,463 bytes. The acceptance target, 1.5×, is not met, and the Node
+median is worse, though the final optimized loop is five times faster.
+Timing each call in fresh processes (median of 11, load 5.4) shows why:
+
+| Program | Mean of calls 11-30 (µs) | Final µs per call | At final speed from call |
+| --- | ---: | ---: | ---: |
+| upstream `:advanced` | 24.9 | 10 | 5 |
+| before | 40.0 | 19 | 21 |
+| after | 54.4 | 4 | 28 |
+| before, hand-written constructor | 38.2 | 20 | 12 |
+| after, hand-written constructor | 24.4 | 10 | 8 |
+
+Upstream's loop is `new C(b)` and two field reads: Closure inlined the
+factory, the dispatcher and the method. In light-cljs the shape of the call
+matters little while records are built by `makeType`'s shared constructor and
+`TypeBrand` (Maglev alone, `node --no-turbofan`: 56 µs a call before, 54
+after). Once TurboFan inlines the plain factory call it removes the record
+allocation (4 µs a call), but its concurrent compile takes about as long in
+wall time as before, and the faster calls before it mean more of them run
+first; fewer allocations per call also move the second costly young
+generation collection (about 300 µs) from call 9 into the timed window. The
+last two rows replace the type's constructor, by hand, with a constructor
+function of its own that assigns the five fields, with the method on its
+prototype, the shape light-cljs-264 plans: then the new call shape is at
+upstream's speed (0.98×), where the old one stays at 1.5×, and in Maglev it
+halves the time a call takes (9 against 20 µs).

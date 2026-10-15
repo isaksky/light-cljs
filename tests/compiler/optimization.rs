@@ -496,8 +496,9 @@ fn probe(context: &str) -> String {
 /// This checks that claim from inside raw text: in every scope where the emitter
 /// binds names (functions, arities, the method entries of local functions with
 /// hoisted siblings, loops, closures, `try`, `case`, `binding`,
-/// `with-out-str`, type and `reify` methods, `letfn`, `this-as`, initializers and
-/// the top level), each identifier token of the whole output, with the hygiene
+/// `with-out-str`, type and `reify` methods, `letfn`, `this-as`, initializers,
+/// the operand locals of devirtualized protocol calls and the top level), each
+/// identifier token of the whole output, with the hygiene
 /// prefix removed, must resolve exactly as it does at global scope. A new
 /// emitter construct that binds names should get a probe here.
 #[test]
@@ -525,6 +526,7 @@ fn raw_js_names_resolve_only_to_holes_and_host_globals() {
         "this-as",
         "let",
         "initializer",
+        "operands",
         "top-level",
     ];
     let p = |context: &str| {
@@ -560,13 +562,14 @@ fn raw_js_names_resolve_only_to_holes_and_host_globals() {
         (defn this-as-fn [] (this-as t {} 1))
         (defn let-fn [] (let [x 1 y (inc x)] {} (+ x y)))
         (def initialized (let [v (js/Math.max 1 2)] {} v))
+        (defn operands [n] (let [a (method (->R n) (inc n))] {} a))
         (defn table [] [{}])
         (defn constants [] [(count (table)) (:a {{:a [1 2]}}) '(x y)])
         {}
         (pr-str [(constants) (str (T. 1)) (method (->R 1) 2) (fixed 1 2) (multi 1) (multi 1 2)
                  (variadic 1 2 3) (local-arities 1) (looping 2) (caught) (cases :a 1 "s") (bound)
                  (redefined) (printed) (reified 3) (letfns) (this-as-fn) (let-fn)
-                 initialized])"#,
+                 initialized (operands 1)])"#,
         p("deftype-method"),
         p("record-method"),
         p("fn"),
@@ -589,6 +592,7 @@ fn raw_js_names_resolve_only_to_holes_and_host_globals() {
         p("this-as"),
         p("let"),
         p("initializer"),
+        p("operands"),
         // A constant large enough to be a lazy cell (`c<n>`), which
         // `(constants)` fills before the other probes run.
         (0..1024)
@@ -638,7 +642,7 @@ console.log(value);"#
         assert_eq!(lines[1], ran, "probes that ran at {level}");
         assert_eq!(
             lines[2],
-            r#"[[1024 [1 2] (x y)] "t" 3 3 1 3 6 [2 3 6] [0 1] "x" [1 2 3] 2 0 "x" "3" 1 1 3 2]"#,
+            r#"[[1024 [1 2] (x y)] "t" 3 3 1 3 6 [2 3 6] [0 1] "x" [1 2 3] 2 0 "x" "3" 1 1 3 2 3]"#,
             "{level}"
         );
     }

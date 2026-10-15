@@ -268,14 +268,14 @@ fn terse_slice_marked(
 
 /// Whether `word` is a name the emitter binds in a program's output: the
 /// numbered families (`l7`, `g3_1`, `k0`, `c2`, `m1`, `a0`, `r5_0`, `next0`,
-/// `saved1`, `temporary1`, `captures4`, `self4`, `recur5`, `installed1`),
-/// the fixed helper names, and the `Advanced` runtime reads and core cells
-/// (`rt$add`, `core$inc`). Raw `js*` text must see none of them, and terse
-/// output renames all of them, wherever they occur: a capture object's keys
-/// (`captures4.l7`) are such names too. A constant member key that is one of
-/// them stays bracketed (`x["f"]`).
+/// `saved1`, `temporary1`, `captures4`, `self4`, `recur5`, `installed1`,
+/// `operand0`), the fixed helper names, and the `Advanced` runtime reads and
+/// core cells (`rt$add`, `core$inc`). Raw `js*` text must see none of them,
+/// and terse output renames all of them, wherever they occur: a capture
+/// object's keys (`captures4.l7`) are such names too. A constant member key
+/// that is one of them stays bracketed (`x["f"]`).
 pub(crate) fn compiler_name(word: &str) -> bool {
-    const NUMBERED: [&str; 14] = [
+    const NUMBERED: [&str; 15] = [
         "l",
         "g",
         "k",
@@ -290,6 +290,7 @@ pub(crate) fn compiler_name(word: &str) -> bool {
         "self",
         "recur",
         "installed",
+        "operand",
     ];
     NUMBERED.iter().any(|head| {
         word.strip_prefix(head).is_some_and(|tail| {

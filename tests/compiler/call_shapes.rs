@@ -304,6 +304,59 @@ fn redefined_assigned_and_rerun_definitions() {
     }
 }
 
+/// Positional and map factories and protocol method dispatchers that only
+/// their `defrecord`, `deftype` or `defprotocol` defines are called plainly
+/// in later top-level forms (light-cljs-262): a factory is an arrow and a
+/// dispatcher reads no `this`. Assigned or redefined ones keep
+/// `.call(null, ...)`, and so does a type's own method, which inference does
+/// not place after its definition.
+#[test]
+fn factories_and_dispatchers_are_called_plainly() {
+    let source = r#"
+        (defprotocol Area (area [s]) (scale [s k]))
+        (defrecord Rect [w h] Area (area [_] (* w h)) (scale [_ k] (->Rect (* k w) h)))
+        (deftype Sq [s] Area (area [_] (* s s)) (scale [_ k] (->Sq (* k s))))
+        (defn pick [i] (if (even? i) (->Rect i 2) (->Sq i)))
+        (defrecord Assigned [x])
+        (defn reassign [] (set! ->Assigned (fn [x] [:assigned x])))
+        (defrecord Redefined [x])
+        (def ->Redefined (fn [x] [:redefined x]))
+        (defprotocol Q (q [x]))
+        (extend-type number Q (q [x] (inc x)))
+        (defn requalify [] (set! q (fn [x] [:q x])))
+        (pr-str [(area (pick 3)) (area (pick 4)) (:w (map->Rect {:w 5 :h 1}))
+                 (area (scale (pick 5) 2)) (.-x (->Assigned 1)) (do (reassign) (->Assigned 2))
+                 (->Redefined 3) (q 4) (do (requalify) (q 5))])"#;
+    let program = program(source);
+    let (text, _) = every_level(
+        &program,
+        source,
+        "[9 8 5 100 1 [:assigned 2] [:redefined 3] 5 [:q 5]]",
+    );
+    let [rect, sq, map_rect, area, scale] =
+        ["->Rect", "->Sq", "map->Rect", "area", "scale"].map(|name| global(&program, name));
+    for shape in [
+        format!("{rect}(l"),
+        format!("{sq}(l"),
+        format!("{map_rect}(k"),
+        format!("{area}({scale}("),
+        format!("({rect}).call(null, ("),
+        format!("({sq}).call(null, ("),
+    ] {
+        assert!(text.contains(&shape), "{shape}: {text}");
+    }
+    for name in [&map_rect, &area, &scale] {
+        assert!(!text.contains(&format!("{name}).call(")), "{name}: {text}");
+    }
+    for name in ["->Assigned", "->Redefined", "q"] {
+        let name = global(&program, name);
+        assert!(
+            text.contains(&format!("({name}).call(null, ")),
+            "{name}: {text}"
+        );
+    }
+}
+
 /// A call that runs before the definition still throws a `TypeError`.
 #[test]
 fn calls_before_the_definition_still_throw_type_errors() {
@@ -316,6 +369,41 @@ fn calls_before_the_definition_still_throw_type_errors() {
         (defn later-multi ([] 0) ([x] x))
         (pr-str [result (early)])"#;
     source_at_every_level(source, "[[:type-error :type-error] [1 1]]");
+    // A factory or dispatcher called before its definition runs throws before
+    // evaluating the arguments, as `.call(null, ...)` does (light-cljs-262):
+    // only a read in a later top-level form than a top-level definition is a
+    // plain call. A `declare` is a second definition, and a definition that
+    // is not a top-level form is not known to run before any read.
+    let source = r#"
+        (declare ->Late map->Late q)
+        (def log (atom []))
+        (defn note [x] (swap! log conj x) x)
+        (defn early []
+          [(try (->Late (note :factory)) (catch js/TypeError e :type-error))
+           (try (map->Late (note {:x :map})) (catch js/TypeError e :type-error))
+           (try (q (note 1)) (catch js/TypeError e :type-error))])
+        (def result (early))
+        (defrecord Late [x])
+        (defprotocol Q (q [x]))
+        (extend-type number Q (q [x] (inc x)))
+        (when (some? log) (defrecord Nested [x]))
+        (defrecord Now [x])
+        (pr-str [result @log (early) (:x (->Nested 4)) (:x (->Now 3))])"#;
+    let program = program(source);
+    let (text, _) = every_level(
+        &program,
+        source,
+        "[[:type-error :type-error :type-error] [] [#cljs.user.Late{:x :factory} #cljs.user.Late{:x :map} 2] 4 3]",
+    );
+    for name in ["->Late", "map->Late", "q", "->Nested"] {
+        let name = global(&program, name);
+        assert!(
+            text.contains(&format!("({name}).call(null, ")),
+            "{name}: {text}"
+        );
+    }
+    let now = global(&program, "->Now");
+    assert!(text.contains(&format!("{now}(3)")), "{text}");
 }
 
 /// A variadic call builds the rest sequence the dispatcher builds, after

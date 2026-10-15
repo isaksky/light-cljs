@@ -333,7 +333,9 @@ fn protocols_and_dispatchers_are_defined_only_where_read() {
 
 #[test]
 fn devirtualized_calls_keep_the_dispatcher_semantics() {
-    // Arguments run in order, after the receiver, as for the dispatcher.
+    // Arguments run in order, after the receiver, as for the dispatcher:
+    // each goes to an operand local of the function before the slot is read
+    // (light-cljs-262).
     let text = every_level(
         "(defprotocol P (m [x a b]))
          (deftype T [v] P (m [_ a b] (str v a b)))
@@ -342,7 +344,12 @@ fn devirtualized_calls_keep_the_dispatcher_semantics() {
          (str (m (do (note 0) (T. 1)) (note 2) (note 3)) (pr-str @log))",
         "123[0 2 3]",
     );
-    assert!(text.contains("((r0, a1, a2) => r0["), "{text}");
+    assert!(
+        text.contains("let operand0, operand1, operand2;")
+            && text
+                .contains(", operand0[\"cljs$user$P$m$arity$3\"](operand0, operand1, operand2))"),
+        "{text}"
+    );
     // A receiver in a local is read twice instead.
     let text = every_level(
         "(defprotocol P (m [x])) (deftype T [v] P (m [_] v)) (let [t (T. 7)] (m t))",
@@ -401,6 +408,85 @@ fn devirtualized_calls_keep_the_dispatcher_semantics() {
         "(defprotocol P (m [x & more])) (deftype T [] P (m [_ & more] (count more))) (m (T.) 1 2)",
         "2",
     );
+}
+
+/// A devirtualized call holds each argument it cannot read twice in an
+/// operand local of the function it is in, instead of passing them to an
+/// arrow applied at each call (light-cljs-262): `(operand0 =
+/// receiver)[slot](operand0)` when that is the receiver alone, whose
+/// evaluation is the last thing before the call. A call in an argument uses
+/// the locals after those the arguments before it hold, and each function,
+/// the top level included, declares its own.
+#[test]
+fn devirtualized_calls_hold_their_operands_in_function_locals() {
+    // The record-protocol workload: a factory call as the receiver.
+    let text = every_level(
+        "(defprotocol Area (area [s]))
+         (defrecord Rect [w h] Area (area [_] (* w h)))
+         (defn total [n] (loop [i 0 t 0] (if (< i n) (recur (inc i) (+ t (area (->Rect i 2)))) t)))
+         (total 10)",
+        "90",
+    );
+    assert!(
+        text.contains("let operand0;\n")
+            && text.contains("(operand0 = g")
+            && text.contains(")[\"cljs$user$Area$area$arity$1\"](operand0)"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("=> r0") && !text.contains(".call(null"),
+        "{text}"
+    );
+    // Calls in the receiver and in the arguments run in order. The top level
+    // declares the locals too.
+    let text = every_level(
+        "(defprotocol P (m [x a b]) (n [x]))
+         (deftype T [v] P (m [_ a b] (str v a b)) (n [_] v))
+         (def log (atom []))
+         (defn note [x] (swap! log conj x) x)
+         (str (m (T. (n (T. (note 1))))
+                 (m (T. (note 2)) (note 3) (n (T. (note 4))))
+                 (note 5))
+              (pr-str @log))",
+        "12345[1 2 3 4 5]",
+    );
+    for shape in [
+        // The receiver's call uses the receiver's local, which it is done
+        // with before the receiver is held. The outer call holds its
+        // receiver while the inner one, its second argument, holds three.
+        "(operand0 = new g3((operand0 = new g3(",
+        "operand1 = (operand1 = new g3(",
+        "operand3 = (operand3 = new g3(",
+        "operand1[\"cljs$user$P$m$arity$3\"](operand1, operand2, operand3)), operand2 = ",
+        ", operand0[\"cljs$user$P$m$arity$3\"](operand0, operand1, operand2))",
+    ] {
+        assert!(text.contains(shape), "{shape}: {text}");
+    }
+    assert_eq!(
+        text.matches("\n  let operand0, operand1, operand2, operand3;\n")
+            .count(),
+        1,
+        "{text}"
+    );
+    // A local read before a later argument, which may assign it through a
+    // `js*` hole, is held too.
+    every_level(
+        "(defprotocol P (m [x a b]))
+         (deftype T [v] P (m [_ a b] [v a b]))
+         (defn f [n] (m (T. 0) n (js* \"~{} = 9\" n)))
+         (defn g [t u] (m t (do (js* \"~{} = ~{}\" t u) 2) 3))
+         (pr-str [(f 1) (g (T. 1) (T. 5))])",
+        "[[0 1 9] [1 2 3]]",
+    );
+    // Each call of a function has its own locals.
+    let text = every_level(
+        "(defprotocol P (m [x a]))
+         (deftype T [v] P (m [_ a] (+ v a)))
+         (defn f [d] (if (zero? d) 0 (m (T. d) (f (dec d)))))
+         (f 4)",
+        "10",
+    );
+    assert!(text.contains("operand1 = g"), "{text}");
 }
 
 #[test]
