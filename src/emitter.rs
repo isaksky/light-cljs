@@ -167,13 +167,16 @@ fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
 #[derive(Clone, Copy)]
 struct Interactive<'a> {
     /// A dev build unit: this namespace entry of the program, emitted
-    /// instead of the program's root, which registers only its namespace
-    /// unless `every_namespace`.
+    /// instead of the program's root.
     entry: Option<ExprId>,
-    /// Whether the unit registers every namespace of the program, as the
-    /// first unit of a dev build does: single-file output registers them all
-    /// before its first form runs.
-    every_namespace: bool,
+    /// The namespaces the unit registers with the runtime before its first
+    /// form, in the program's order; `None` for every namespace of the
+    /// program, as the first unit of a dev build does, since single-file
+    /// output registers them all before its first form runs. Another unit of
+    /// a dev build registers its own namespace, and a session's unit those
+    /// whose registration changed since its last unit
+    /// (`crate::dev_session`).
+    registered: Option<&'a [&'a str]>,
     /// The text before and after the unit function, such as the `define`
     /// call of a dev build unit.
     around: [&'a str; 2],
@@ -196,11 +199,7 @@ fn emit_js_mode(
     let application_roots = interactive.is_some();
     let entry = interactive.and_then(|interactive| interactive.entry);
     let root = entry.unwrap_or(program.root);
-    // The unit of a namespace entry registers only that namespace, unless
-    // it registers every one.
-    let registered = entry
-        .filter(|_| interactive.is_some_and(|interactive| !interactive.every_namespace))
-        .map(|entry| program.namespace_entries[&entry].as_str());
+    let registered = interactive.and_then(|interactive| interactive.registered);
     let direct = application
         .and_then(|application| application.direct)
         .filter(|_| shared.is_none());
@@ -498,9 +497,7 @@ fn emit_js_mode(
             around: [before, after],
             ..
         }) => {
-            let open = format!(
-                "{before}(__lightInteractiveRuntime) => {{ globalThis.__lightApplicationRoots ??= Object.create(null); return "
-            );
+            let open = format!("{before}{INTERACTIVE_OPEN}");
             if let Some(marks) = &mut emitter.marks {
                 marks.shift(0, open.len() as isize);
             }
@@ -613,6 +610,23 @@ const PRELUDE_OPEN: &str = "(() => {\n";
 /// Clojure truthiness, which `if` tests use unless the test's type makes
 /// JavaScript truthiness agree.
 const PRELUDE_TRUTH: &str = "  const truth = (value) => value != null && value !== false;\n";
+/// The opening of an interactive unit ([`Interactive`]), before its
+/// expression.
+const INTERACTIVE_OPEN: &str = "(__lightInteractiveRuntime) => { globalThis.__lightApplicationRoots ??= Object.create(null); return ";
+/// The end of an interactive unit, after its last statement.
+pub(crate) const INTERACTIVE_CLOSE: &str = "})()\n; }";
+
+/// The text of an interactive unit of a session's form up to its first
+/// statement, where no raw JavaScript renamed its names: its function of
+/// the runtime and the prelude, which binds the runtime to `rt`. What
+/// follows, up to [`INTERACTIVE_CLOSE`], is statements that end with the
+/// `return` of the form's value, whole lines of the unit, so units written
+/// together ([`crate::dev_build::namespace_unit`]) can share this.
+pub(crate) fn interactive_prelude() -> String {
+    format!(
+        "{INTERACTIVE_OPEN}{PRELUDE_OPEN}{PRELUDE_TRUTH}  const rt = __lightInteractiveRuntime;\n"
+    )
+}
 
 /// Whether some emitted expression is of a kind whose emission reads the
 /// runtime. Below `Advanced` this decides whether the whole runtime is embedded.
@@ -1344,12 +1358,12 @@ impl<'a> Emitter<'a> {
     }
 
     /// The registration of the program's namespaces with the runtime, which
-    /// runs before its first form (only of the one that `registered` names,
-    /// when it names one), listing the definitions `retained` keeps; with
+    /// runs before its first form (only of those that `registered` names,
+    /// when it names them), listing the definitions `retained` keeps; with
     /// `current`, `*ns*` is then the last namespace.
     fn registration(
         &mut self,
-        registered: Option<&str>,
+        registered: Option<&[&str]>,
         current: bool,
         retained: impl Fn(usize) -> bool,
     ) -> String {
@@ -1357,7 +1371,8 @@ impl<'a> Emitter<'a> {
         let mut registration = String::new();
         let register_namespaces = self.register_namespaces;
         for namespace in program.namespaces.iter().filter(|namespace| {
-            register_namespaces && registered.is_none_or(|registered| registered == *namespace)
+            register_namespaces
+                && registered.is_none_or(|registered| registered.contains(&namespace.as_str()))
         }) {
             let previous = std::mem::take(&mut self.output);
             self.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
@@ -5812,23 +5827,32 @@ fn hygienic_js(
     output
 }
 
-/// Interactive application roots live in the application heap, never the macro heap.
+/// Interactive application roots live in the application heap, never the
+/// macro heap. The unit registers every namespace of the program.
 #[cfg(test)]
 pub(crate) fn emit_interactive_unit(program: &Program) -> String {
-    emit_interactive(program, false).0
+    emit_interactive(program, None, false).0
 }
 
-/// [`emit_interactive_unit`] with the source map of its text, whose source
-/// index 0 is the source the program's form was read from.
-pub(crate) fn emit_mapped_interactive_unit(program: &Program) -> (String, SourceMapping) {
-    let (unit, mapping) = emit_interactive(program, true);
+/// The interactive unit of a session's form, which registers the namespaces
+/// `registered` of the program, with the source map of its text, whose
+/// source index 0 is the source the program's form was read from.
+pub(crate) fn emit_mapped_interactive_unit(
+    program: &Program,
+    registered: &[&str],
+) -> (String, SourceMapping) {
+    let (unit, mapping) = emit_interactive(program, Some(registered), true);
     (unit, mapping.expect("a mapped emission has a source map"))
 }
 
-fn emit_interactive(program: &Program, mapped: bool) -> (String, Option<SourceMapping>) {
+fn emit_interactive(
+    program: &Program,
+    registered: Option<&[&str]>,
+    mapped: bool,
+) -> (String, Option<SourceMapping>) {
     let interactive = Interactive {
         entry: None,
-        every_namespace: true,
+        registered,
         around: ["", ""],
     };
     let (unit, _, mapping) = emit_js_mode(
@@ -5853,9 +5877,10 @@ pub(crate) fn emit_namespace_unit(
     every_namespace: bool,
     [before, after]: [&str; 2],
 ) -> (String, SourceMapping) {
+    let own = [program.namespace_entries[&entry].as_str()];
     let interactive = Interactive {
         entry: Some(entry),
-        every_namespace,
+        registered: (!every_namespace).then_some(&own[..]),
         around: [before, after],
     };
     let (unit, _, mapping) = emit_js_mode(
@@ -5868,6 +5893,30 @@ pub(crate) fn emit_namespace_unit(
         true,
     );
     (unit, mapping.expect("a mapped emission has a source map"))
+}
+
+/// The registration of the namespaces `registered` of `program` (every
+/// namespace with `None`) with the runtime, as an interactive unit makes it
+/// after its [`interactive_prelude`]: statements that register each one's
+/// reader context and definitions with the runtime `rt`.
+pub(crate) fn emit_namespace_registration(
+    program: &Program,
+    registered: Option<&[&str]>,
+) -> String {
+    let mut emitter = Emitter::new(
+        program,
+        Setup {
+            demand_roots: false,
+            application_roots: true,
+            module: false,
+            mapped: false,
+            application: None,
+            direct: None,
+            function_names: &[],
+        },
+        true,
+    );
+    emitter.registration(registered, false, |_| true)
 }
 
 /// A readable JavaScript string literal; non-ASCII and controls are escaped.

@@ -51,9 +51,9 @@ as phases land:
 | Save to updated page, one changed namespace of the example | Phase 3 (light-cljs-286): 29-39 ms from the save to the new render in headless Chrome, 5 saves of `app.view`, debug CLI with `--poll-ms 20` (load 1.9); the client applies the pushed unit in about 1 ms | under 100 ms on the development machine, including the recompile |
 | Application state across a reload | Phase 0: a replaced unit of the example keeps the `defonce` atom, also when `app.state`'s own unit runs again | `defonce` atoms keep their value; `def` values are reinitialized, as upstream |
 | Observable behavior of the dev build | Phase 0: prints what the `none` build prints for the example, examples/features, every phase oracle and every size ratchet fixture | prints what the `none` build prints, for the same program, before any reload |
-| Recompile of one changed namespace of the example | whole program in 15-250 ms depending on size; Phase 0's whole dev build of the example 246 ms, as its `none` build (release CLI, median of 15, load 4.3); Phase 2: a saved `app.view` is its correct unit on disk 3.9-4.6 ms after the poll notices it (release CLI, 15 saves, median 4.3, load 3.5-9.7; 8.9-11.1 ms from the debug test binary), and `--watch` starts in 279-290 ms | the one namespace, under 20 ms |
+| Recompile of one changed namespace of the example | whole program in 15-250 ms depending on size; Phase 0's whole dev build of the example 246 ms, as its `none` build (release CLI, median of 15, load 4.3); Phase 2: a saved `app.view` is its correct unit on disk 3.9-4.6 ms after the poll notices it (release CLI, 15 saves, median 4.3, load 3.5-9.7; 8.9-11.1 ms from the debug test binary), and `--watch` starts in 279-290 ms; with light-cljs-301's unit 4.0-4.6 ms (20 saves, median 4.3, load 11.7-12.3; 8.7-9.4 ms debug) | the one namespace, under 20 ms |
 | REPL round trip for `(+ 1 2)` in the page | n/a | under 20 ms, dominated by the compile |
-| Dev build bytes served after the first load | Phase 0: `runtime.js` 432,093 bytes once; the example's `app.view.js` 3,492 bytes (map 974), its other units 817-1,777; Phase 2's rewritten `app.view.js` 9,385 bytes (map 646), since each form's unit registers every namespace | the changed namespace's unit only; the runtime is served once and cached |
+| Dev build bytes served after the first load | Phase 0: `runtime.js` 432,093 bytes once; the example's `app.view.js` 3,492 bytes (map 974), its other units 817-1,777; Phase 2's rewritten `app.view.js` 3,565 bytes (map 542), registering its namespace once (light-cljs-301; 9,385 when each form's unit registered every namespace) | the changed namespace's unit only; the runtime is served once and cached |
 
 Non-goals of this design: a bundler, npm resolution (packages stay
 host-supplied, see [JavaScript packages](compiler.md#javascript-packages)),
@@ -236,7 +236,12 @@ specialization, no slicing, no terse names. It never enters
 and sets the current namespace for the duration of its top-level forms, as
 compiled output does; the first unit registers every namespace of the build,
 as compiled output does before its first form, so reflection during the
-first load matches the `none` build.
+first load matches the `none` build. A session's unit of one form registers
+only the namespaces whose reader context or definitions changed since the
+session's last unit, every one it knows in its first, so a runtime that ran
+the session's units in order sees every namespace as the session knows it;
+a unit that a watch step rewrites registers its namespace once, with the
+definitions of all its forms, as the build's unit does (light-cljs-301).
 
 Definitions live in `globalThis.__lightApplicationRoots` keyed by
 `"ns/name"`. This is the session's registry today; keeping it means the
@@ -567,8 +572,9 @@ finds it then, read from the first form in the namespace as `--compile`
 reads it; the units of each namespace whose forms
 ran, and of each namespace the step loaded, are put together by
 `dev_build::namespace_unit` (the build's `define` call around a function that
-makes the namespace current, then runs each form's unit, with one source map
-made of the forms' maps) and written by rename; the manifest
+registers the namespace, makes it current, then runs each form's statements
+in a scope of their own, with one source map made of the forms' maps) and
+written by rename; the manifest
 (`dev_build::DevManifest`) takes the new namespaces ahead of their requirer
 and is put in an order where each namespace follows its requires. A
 namespace that declares macros, before or after the change, recompiles its
@@ -598,9 +604,12 @@ five step times under 20 ms with the release CLI (`cargo nextest run
 --release --test dev_watch`), as the Goal table measures, and under 100 ms
 in the debug build CI runs; the times are in the Goal table. A step does not
 update the manifest's hook lists (Phase 3 finds hooks in the retained
-program), and a rewritten unit is larger than the build's, since the
-session's unit of each form registers every namespace's reader context
-(9,385 bytes against 3,492 for `app.view`; light-cljs-301). Checked by hand in headless
+program). A rewritten unit registers its namespace once, the first in load
+order every namespace of the build, and its forms share one prelude
+(light-cljs-301; a form whose raw JavaScript renamed its unit's names makes
+the file run each form's unit whole): the rewritten `app.view.js` is 3,565
+bytes against the build's 3,492, where each form's unit registering every
+namespace the session knew made it 9,385. Checked by hand in headless
 Chrome: the first build of the example, then the rewritten `app.view.js`
 evaluated between the hooks, printed `start`, `clicks: [1]`, `reloading`,
 `render: clicks: [2]`.

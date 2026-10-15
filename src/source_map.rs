@@ -471,20 +471,42 @@ impl MappedText {
     /// Append `text`, whose own mapping is `mapping` with its sources at
     /// `sources`: its source index `i` is this output's `sources[i]`.
     pub(crate) fn push_mapped(&mut self, text: &str, mapping: &SourceMapping, sources: &[usize]) {
+        self.push_mapped_lines(text, mapping, sources, 0);
+    }
+
+    /// [`Self::push_mapped`] of `text`, the lines of a text mapped by
+    /// `mapping` from the start of its line `first`: the segments of those
+    /// lines, and of no other.
+    pub(crate) fn push_mapped_lines(
+        &mut self,
+        text: &str,
+        mapping: &SourceMapping,
+        sources: &[usize],
+        first: u32,
+    ) {
         let (line, column) = (self.cursor.line, self.cursor.column);
+        // The line after `text`'s last line terminator.
+        let last = first
+            + Cursor::default()
+                .advance(text, text.len(), &mut Vec::new())
+                .0;
         let names = self.mapping.names.len() as u32;
-        self.mapping
-            .segments
-            .extend(mapping.segments.iter().map(|segment| Segment {
-                line: segment.line + line,
-                column: segment.column + if segment.line == 0 { column } else { 0 },
-                source: match segment.source {
-                    RUNTIME | UNMAPPED => segment.source,
-                    source => sources.get(source).copied().unwrap_or(UNMAPPED),
-                },
-                byte: segment.byte,
-                name: segment.name.map(|name| name + names),
-            }));
+        self.mapping.segments.extend(
+            mapping
+                .segments
+                .iter()
+                .filter(|segment| (first..=last).contains(&segment.line))
+                .map(|segment| Segment {
+                    line: segment.line - first + line,
+                    column: segment.column + if segment.line == first { column } else { 0 },
+                    source: match segment.source {
+                        RUNTIME | UNMAPPED => segment.source,
+                        source => sources.get(source).copied().unwrap_or(UNMAPPED),
+                    },
+                    byte: segment.byte,
+                    name: segment.name.map(|name| name + names),
+                }),
+        );
         self.mapping.names.extend(mapping.names.iter().cloned());
         self.push_str(text);
     }

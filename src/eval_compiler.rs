@@ -128,6 +128,11 @@ impl InteractiveCompiler {
     pub(crate) fn globals(&self) -> &[crate::GlobalBinding] {
         self.program.as_ref().map_or(&[], |p| p.globals.as_slice())
     }
+    /// The retained program: the session's namespaces, their reader contexts
+    /// and definitions, once a form was analyzed.
+    pub(crate) fn program(&self) -> Option<&Program> {
+        self.program.as_ref()
+    }
     /// Whether the session has defined or declared `namespace/name`.
     pub(crate) fn defines(&self, namespace: &str, name: &str) -> bool {
         self.globals()

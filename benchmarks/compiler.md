@@ -4186,3 +4186,45 @@ the shared chunk was `(()=>{})();`. Each feature loses its
 `import "./app.editor+app.reports.js";` line, 38 bytes, and loading one
 feature takes two requests instead of three. Startup is unchanged; its
 manifest entry lists `app.text` and `app.format`, whose forms write nothing.
+
+## Namespace registration in session and watch units — October 15, 2026
+
+light-cljs-301: a session's unit registers with the runtime only the
+namespaces whose reader context or definitions changed since the session's
+last unit (all of them in its first), instead of every namespace the
+session knows; the form units of a watch step register none, and the unit
+the step rewrites registers its namespace once, with the definitions of all
+its forms, and runs the forms' statements under one prelude instead of one
+per form ([Watch](../docs/evaluation.md#watch); "The dev build" in
+[dev-workflow.md](../docs/dev-workflow.md)). Same method as "Watch step of
+examples/dev" above: the step time the watch prints for five saves of
+`app/view.cljs` per run in
+`dev_watch::a_saved_change_rewrites_the_unit_the_running_build_reloads`,
+`cargo nextest run --release --test dev_watch --no-capture a_saved_change`
+four times (release CLI) and the same without `--release` three times (debug
+test binary). Branch of light-cljs-301 on master `b811387`; the Apple M3
+Ultra virtual machine of the [environment](results/environment.txt), macOS
+15.7.3, one-minute load average 11.7-12.3 with peer workers building. The
+Before column is light-cljs-285's run above, at load 3.5-9.7.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| `app.view.js` after the save | 9,385 bytes (map 646) | 3,565 bytes (map 542) |
+| Namespace registrations in it | 16: 4 forms × 4 namespaces | 1 |
+| The build's `app.view.js`, for comparison | 3,492 bytes (map 974) | 3,492 bytes (map 974) |
+| A saved `app.view` to its unit on disk, release CLI | 3.9-4.6 ms (15 saves, median 4.3) | 4.0-4.6 ms (20 saves, median 4.3) |
+| The same, debug test binary | 8.9-11.1 ms | 8.7-9.4 ms (15 saves) |
+| `--watch` startup, release CLI | 279-290 ms | 304-313 ms |
+
+The rewritten unit is now 2% larger than the build's, for the four forms'
+own scopes; the step time of this four-namespace example is within the
+noise of the two loads, since its registrations were a small part of the
+step. What changed is how they grow: a step's unit carried forms ×
+namespaces registrations, each name of each namespace spelled as `\uXXXX`
+escapes, and now carries its namespace's once, so the unit of a namespace
+in an application of many namespaces no longer grows with their number
+(the first unit in load order still registers every namespace, as the
+build's first unit does). A REPL form's unit compares the session's
+namespaces with what it last registered, which costs a pass over the
+definitions instead of writing every namespace's registration, and a watch
+step's form units skip even that.

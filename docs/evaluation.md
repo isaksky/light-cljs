@@ -99,7 +99,18 @@ A `Unit` is one top-level form: its `namespace`, its `js` (the function
 expression `(__lightInteractiveRuntime) => ...` that a runtime calls with the
 runtime, writing definitions to `globalThis.__lightApplicationRoots`, ending
 with a `//# sourceURL=` comment), its `source_map` and the `location` of the
-form, where an error it throws is located. The source map (light-cljs-284) is
+form, where an error it throws is located. Before the form runs, the unit
+registers with the runtime each namespace whose reader context or
+definitions changed since the session's last unit, every namespace the
+session knows in its first (light-cljs-301), so a runtime that runs the
+units in order sees every namespace for reflection (`find-ns`, `read-string`
+with another namespace's aliases) as the session does. The unit of
+`EvalSession::analyze` may run late or never: it leaves its registrations to
+the next unit too, and once `evaluate` ran it, or after a unit that failed,
+the next unit registers every namespace again. The units of
+`DevSession::load_namespace_file` register none: a watch step puts them in
+the namespace's file, which registers the namespace once. The source map
+(light-cljs-284) is
 a Source Map v3 of `js`, made as `--source-map` makes one, whose `sources`
 name the form's source as the source provider named it; its `file` and the
 `sourceURL` are the namespace's file in a [dev build](compiler.md#dev-builds),
@@ -432,9 +443,10 @@ retained program, read from the first in the namespace
 (`DevSession::load_namespace_file`) and in warning mode, then writes the
 namespace's unit file and source map
 (`dev_build::namespace_unit`: the `define` call of the build's units, whose
-function makes the namespace current and runs each form's unit) and the
-manifest. Files are replaced by a rename, so a reader sees the old text or
-the new. Namespaces are compiled in load order, so
+function registers the namespace once, the first in load order every
+namespace of the build, makes it current and runs each form's statements
+under the one prelude) and the manifest. Files are replaced by a rename, so
+a reader sees the old text or the new. Namespaces are compiled in load order, so
 
 - a changed `ns` form loads the namespaces it newly requires through the
   source provider, as a `require` does; their units are written too and go

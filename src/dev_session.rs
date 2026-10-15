@@ -13,7 +13,7 @@
 //! fails, and a definition compiled after it never exists. The methods of
 //! [`DevSession`] collect the actions instead, for a runtime elsewhere: the
 //! compiler never waits on such a runtime.
-use crate::analyzer::LAZY_NAMESPACE;
+use crate::analyzer::{LAZY_NAMESPACE, RuntimeReaderNamespace};
 use crate::compiler_data::{DatumKind, Form, Name, SourceSpan};
 use crate::eval_compiler::InteractiveCompiler;
 use crate::eval_session::{EvalDiagnostic, EvalOptions};
@@ -21,8 +21,8 @@ use crate::evaluator::{EvalError, EvaluatorOptions, ExecutionControl};
 use crate::source_map::{SourceFile, SourceMapping, json_string};
 use crate::source_provider::{LoadRequest, Reload, SourceInput, SourceProvider};
 use std::{
-    cell::{Ref, RefCell, RefMut},
-    collections::{HashSet, VecDeque},
+    cell::{Cell, Ref, RefCell, RefMut},
+    collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
 };
 
@@ -128,7 +128,22 @@ pub struct DevSession {
     /// While a `:reload-all` request loads, the namespaces it has loaded:
     /// it loads each namespace it reaches once, loaded before or not.
     reload_all: RefCell<Option<HashSet<String>>>,
+    /// Each namespace as the last unit handed to an interpreter that
+    /// registered it registered it with the runtime: what a runtime that ran
+    /// the units in order knows of it ([`Registration`]).
+    registered: RefCell<HashMap<String, Registration>>,
+    /// Whether units register what changed ([`Self::changed_registrations`]),
+    /// as they do except in [`Self::load_namespace_file`].
+    registering: Cell<bool>,
 }
+
+/// What a unit registers of a namespace with the runtime: its reader
+/// context (aliases, refers, excludes and macros) and its definitions, which
+/// a session only adds to, by their number.
+type Registration = (Option<RuntimeReaderNamespace>, usize);
+
+/// The namespaces a unit registers, each with what it registers of it.
+type Registrations = Vec<(String, Registration)>;
 
 impl DevSession {
     /// A session compiler configured by the compiler fields of `options`:
@@ -202,6 +217,8 @@ impl DevSession {
             loading: RefCell::default(),
             lazy: RefCell::default(),
             reload_all: RefCell::default(),
+            registered: RefCell::default(),
+            registering: Cell::new(true),
         })
     }
     /// The current namespace.
@@ -232,6 +249,19 @@ impl DevSession {
             .javascript_macros
             .keys()
             .any(|name| name.starts_with(&prefix))
+    }
+    /// The registration of `namespaces` with the runtime, as the session
+    /// knows them now: the statements that register each one's reader
+    /// context and definitions after a unit's prelude, which binds the
+    /// runtime to `rt` ([`crate::emitter::emit_namespace_registration`]).
+    /// The units of [`Self::load_namespace_file`] register no namespace, so
+    /// a file that holds a namespace's units registers the namespace with
+    /// this once ([`crate::dev_build::namespace_unit`]).
+    pub(crate) fn registration(&self, namespaces: &[&str]) -> String {
+        let compiler = self.compiler.borrow();
+        compiler.program().map_or_else(String::new, |program| {
+            crate::emitter::emit_namespace_registration(program, Some(namespaces))
+        })
     }
     /// The actions of one top-level form, as a REPL evaluates it: an `Invoke`
     /// of its unit, or for a directive the `Namespace` and `Load` actions of
@@ -265,11 +295,17 @@ impl DevSession {
     /// its first form in `namespace`, as `--compile` reads a namespace's
     /// source: a `::` keyword in its `ns` form names `namespace`, whatever
     /// namespace is current before. A watch step compiles a changed file so.
+    /// Its units, and those of the namespaces it loads, register no
+    /// namespace: the file of each namespace's units registers it once,
+    /// with what all its forms defined ([`crate::dev_build::namespace_unit`]).
     pub fn load_namespace_file(&self, namespace: &str, source: &SourceInput) -> Vec<Action> {
         collect(|to| {
             self.begin()?;
             self.compiler.borrow_mut().set_namespace(namespace);
-            self.run_source(source, Mode::Load, to)
+            let registering = self.registering.replace(false);
+            let result = self.run_source(source, Mode::Load, to);
+            self.registering.set(registering);
+            result
         })
     }
     /// Read every top-level form of `source` in the current namespace.
@@ -388,7 +424,7 @@ impl DevSession {
             return self.drain_lazy(to);
         }
         self.poll()?;
-        let (unit, program) = self.analyze(form)?;
+        let (unit, program, registration) = self.analyze(form)?;
         self.flush_warnings(form, to)?;
         if !program.lazy_targets.is_empty() && !self.loaded.borrow().contains(LAZY_NAMESPACE) {
             // A loadable needs no require of `light.lazy`, but its type must
@@ -403,22 +439,44 @@ impl DevSession {
         // after the namespace that holds the form when one is loading.
         self.record_lazy(&program, &form.span());
         self.drain_lazy(to)?;
-        to.apply(match mode {
+        // A runtime that runs the unit has its registrations, which come
+        // before its form: from now on, a unit registers these namespaces
+        // only when they change again. A unit that fails may have failed
+        // before them, as one the runtime cannot parse does, so after it the
+        // next unit registers every namespace again.
+        self.registered.borrow_mut().extend(registration);
+        let applied = to.apply(match mode {
             Mode::Repl => Action::Invoke(unit),
             Mode::Load => Action::Load(vec![unit]),
-        })
+        });
+        if applied.is_err() {
+            self.forget_registrations();
+        }
+        applied
     }
     /// Analyze one form as an expression, with no directive or load, into
     /// its unit: `EvalSession::analyze` and the runtime's `eval`. Its
-    /// warnings are dropped.
+    /// warnings are dropped. The unit may run later, or never, so the
+    /// namespaces it registers stay to be registered by the next unit too.
     pub(crate) fn analyze_unit(&self, form: &Form) -> Result<Unit, EvalDiagnostic> {
         let result = self.analyze(form);
         self.compiler.borrow_mut().warnings.clear();
         Ok(result?.0)
     }
+    /// Make the next unit register every namespace again: after a unit that
+    /// failed, perhaps before its registrations ran, or a unit of
+    /// [`Self::analyze_unit`] that ran after units compiled later, which
+    /// registered its namespaces as they were before those units.
+    pub(crate) fn forget_registrations(&self) {
+        self.registered.borrow_mut().clear();
+    }
     /// Analyze one form that is not a directive into its unit, with the
-    /// fragment it was emitted from.
-    fn analyze(&self, form: &Form) -> Result<(Unit, crate::Program), EvalDiagnostic> {
+    /// fragment it was emitted from and what the unit registers
+    /// ([`Self::changed_registrations`]).
+    fn analyze(
+        &self,
+        form: &Form,
+    ) -> Result<(Unit, crate::Program, Registrations), EvalDiagnostic> {
         let program = self
             .compiler
             .borrow_mut()
@@ -433,7 +491,16 @@ impl DevSession {
                     .or_else(|| Some(form.span())),
             })?;
         let namespace = self.namespace();
-        let (mut js, mapping) = crate::emitter::emit_mapped_interactive_unit(&program);
+        let registration = if self.registering.get() {
+            self.changed_registrations(&program)
+        } else {
+            Vec::new()
+        };
+        let registered = registration
+            .iter()
+            .map(|(namespace, _)| namespace.as_str())
+            .collect::<Vec<_>>();
+        let (mut js, mapping) = crate::emitter::emit_mapped_interactive_unit(&program, &registered);
         // The unit is named as the dev build's file of its namespace, which
         // a reload of the namespace replaces.
         let url = crate::dev_build::unit_file(&namespace);
@@ -456,7 +523,35 @@ impl DevSession {
             location: form.span(),
             mapping: Some(mapping),
         };
-        Ok((unit, program))
+        Ok((unit, program, registration))
+    }
+    /// The namespaces of `program`, a form's fragment, that a unit of it
+    /// registers, each with what it registers: those whose reader context or
+    /// definitions a runtime that ran the units handed to interpreters so
+    /// far does not have, which before the first unit is every one. A
+    /// namespace's reader context changes when a form in it is analyzed
+    /// after a directive, and its definitions grow with a definition or a
+    /// host binding.
+    fn changed_registrations(&self, program: &crate::Program) -> Registrations {
+        let mut definitions = HashMap::<&str, usize>::new();
+        for global in &program.globals {
+            *definitions.entry(global.namespace.as_str()).or_default() += 1;
+        }
+        let registered = self.registered.borrow();
+        program
+            .namespaces
+            .iter()
+            .filter_map(|namespace| {
+                let context = program.reader_contexts.get(namespace);
+                let count = definitions.get(namespace.as_str()).copied().unwrap_or(0);
+                let known = registered
+                    .get(namespace)
+                    .is_some_and(|(known, known_count)| {
+                        known.as_ref() == context && *known_count == count
+                    });
+                (!known).then(|| (namespace.clone(), (context.cloned(), count)))
+            })
+            .collect()
     }
     /// Apply the warnings the compiler gathered since the last call, located
     /// in the source of `form`, as one `Warnings` action.

@@ -100,7 +100,9 @@ identity without demanding its value.
 `Namespace`, `create-ns`, `find-ns`, `ns-name`, `the-ns` and `all-ns` use explicit
 session identities. Emitted units register their source namespaces, including
 namespaces without definitions; an `--optimize advanced` application does so
-only when it reaches this reflection (see "Application preparation").
+only when it reaches this reflection (see "Application preparation"), and a
+session's unit registers those whose reader context or definitions changed
+since its last unit ([Actions](evaluation.md#actions)).
 Creating an existing named namespace reuses its identity. `create-ns` accepts
 an optional host object for `.findInternedVar`; no browser global namespace
 traversal is assumed. On source symbols retained in
@@ -1967,11 +1969,12 @@ examples/features print through it what their `--optimize none` builds print
 rewrites a saved namespace's unit, its map and the manifest
 ([Watch](evaluation.md#watch)); a rewritten unit is
 `dev_build::namespace_unit` of the session's units of the namespace's forms,
-the same `define` call around a function that makes the namespace current
-and runs each form's unit in turn. `--watch --serve PORT` also serves the
-build and pushes each step's units to the pages running it, which
-`client.js` (src/dev_client.js) loads between the hooks
-([Serve](evaluation.md#serve)).
+the same `define` call around an interactive unit that registers the
+namespace once (the first in load order every namespace of the build), makes
+it current and runs each form's statements in turn, each in a scope of its
+own. `--watch --serve PORT` also serves the build and pushes each step's
+units to the pages running it, which `client.js` (src/dev_client.js) loads
+between the hooks ([Serve](evaluation.md#serve)).
 
 ### Complete collection program
 

@@ -481,7 +481,11 @@ impl EvalSession {
         if analyzed.owner != self.identity {
             return Err(EvalError("analysis belongs to another session".into()).into());
         }
-        self.interpret(|_, heap| heap.apply(analyzed.action.clone()))
+        let result = self.interpret(|_, heap| heap.apply(analyzed.action.clone()));
+        // The unit registered its namespaces as they were when it was
+        // analyzed, perhaps before units that ran since.
+        self.dev.forget_registrations();
+        result
     }
     pub fn invoke(&self, function: ValueId, args: &[ValueId]) -> Result<ValueId, EvalDiagnostic> {
         let _operation = self.begin()?;

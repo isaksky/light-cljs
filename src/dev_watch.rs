@@ -668,11 +668,24 @@ impl Watch {
             let value = last_unit
                 .get(name)
                 .is_some_and(|unit| last_entry.get(name).is_none_or(|entry| entry < unit));
+            // The file registers its namespace, and the first in load order
+            // every namespace of the build, as the build's units do.
+            let registered = if self.manifest.position(name) == Some(0) {
+                self.manifest
+                    .namespaces
+                    .iter()
+                    .map(|entry| entry.name.as_str())
+                    .collect()
+            } else {
+                vec![name]
+            };
             let base = self.base.clone();
             let url = move |source: &str| crate::source_url(Path::new(source), &base);
             let files = namespace_unit(
+                &self.session,
                 name,
                 &requires,
+                &registered,
                 units.get(name).map_or(&[][..], Vec::as_slice),
                 value,
                 &url,

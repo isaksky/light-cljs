@@ -359,13 +359,27 @@ fn a_saved_change_rewrites_the_unit_the_running_build_reloads() {
         watch.reload(&["app.view.js"]),
         record("start\nclicks: [1]\nreloading\nrender!!!! clicks: [2]\n")
     );
+    let [rewritten, built] = [
+        watch.dev("app.view.js"),
+        watch.dir.join("before/app.view.js"),
+    ]
+    .map(|file| fs::read_to_string(file).unwrap().len());
     eprintln!(
-        "dev_watch: save of app.view to its unit on disk, ms: {times:?}; app.view.js {} bytes (map {}), {} before",
-        watch.read("app.view.js").len(),
+        "dev_watch: save of app.view to its unit on disk, ms: {times:?}; app.view.js {rewritten} bytes (map {}), {built} before",
         watch.read("app.view.js.map").len(),
-        fs::read_to_string(watch.dir.join("before/app.view.js"))
-            .unwrap()
-            .len()
+    );
+    // The rewritten unit registers its namespace once, as the build's does,
+    // rather than every namespace in each form's unit (light-cljs-301).
+    assert_eq!(
+        watch
+            .read("app.view.js")
+            .matches("registerReaderNamespace(")
+            .count(),
+        1
+    );
+    assert!(
+        rewritten.abs_diff(built) * 10 <= built,
+        "app.view.js is {rewritten} bytes, the build's {built}"
     );
     let best = times.iter().copied().fold(f64::INFINITY, f64::min);
     let bound = if cfg!(debug_assertions) { 100.0 } else { 20.0 };
@@ -628,6 +642,105 @@ fn a_trailing_directive_keeps_the_namespace_value_nil() {
         "{step}"
     );
     let started = record("start\nclicks: [1]\n");
+    assert_eq!(watch.now_and_fresh(), [started.clone(), started]);
+}
+
+/// A rewritten unit's forms share its prelude, which binds the runtime to
+/// `rt`, unless raw JavaScript renamed a form's names: then each form's unit
+/// runs whole, and raw text that names a global `rt` still reads it.
+#[test]
+fn a_form_with_raw_javascript_runs_its_whole_unit() {
+    let mut watch = Watch::start("dev-watch-raw");
+    let view = watch.source("app/view.cljs");
+    let (lines, _) = watch.save("app/view.cljs", &format!("{view}\n;; saved\n"));
+    assert!(lines.is_empty(), "{lines:#?}");
+    let shared = watch.read("app.view.js");
+    let raw = format!(
+        "{view}\n(js* \"globalThis.rt = \\\"host\\\"\")\n(js/console.log \"rt is\" (js* \"rt\"))\n"
+    );
+    let (lines, step) = watch.save("app/view.cljs", &raw);
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.view in "),
+        "{step}"
+    );
+    let unit = watch.read("app.view.js");
+    for text in [&shared, &unit] {
+        assert_eq!(text.matches("registerReaderNamespace(").count(), 1);
+    }
+    assert!(
+        !shared.contains(")(__lightInteractiveRuntime);\n"),
+        "{shared}"
+    );
+    assert_eq!(unit.matches(")(__lightInteractiveRuntime);\n").count(), 7);
+    assert_eq!(
+        watch.reload(&["app.view.js"]),
+        record("start\nclicks: [1]\nreloading\nrt is host\nclicks: [2]\n")
+    );
+    let started = record("rt is host\nstart\nclicks: [1]\n");
+    assert_eq!(watch.now_and_fresh(), [started.clone(), started]);
+}
+
+/// A rewritten unit registers its namespace once, with the aliases and
+/// definitions its forms left, however many the step added; its forms'
+/// units register nothing of their own.
+#[test]
+fn new_definitions_and_aliases_register_the_namespace_once() {
+    let mut watch = Watch::start("dev-watch-register");
+    let view = watch.source("app/view.cljs");
+    let edited = format!(
+        "{}\n(def extra-one (read-string \"::nowhere/k\"))\n(def extra-two 2)\n\
+         (js/console.log (str extra-one) extra-two)\n",
+        view.replace(
+            "[app.state :as state]",
+            "[app.state :as state]\n            [app.nowhere :as-alias nowhere]"
+        )
+    );
+    let (lines, step) = watch.save("app/view.cljs", &edited);
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.view in "),
+        "{step}"
+    );
+    assert_eq!(
+        watch
+            .read("app.view.js")
+            .matches("registerReaderNamespace(")
+            .count(),
+        1
+    );
+    assert_eq!(
+        watch.reload(&["app.view.js"]),
+        record("start\nclicks: [1]\nreloading\n:app.nowhere/k 2\nclicks: [2]\n")
+    );
+    let started = record(":app.nowhere/k 2\nstart\nclicks: [1]\n");
+    assert_eq!(watch.now_and_fresh(), [started.clone(), started]);
+}
+
+/// The rewritten unit of the first namespace in load order registers every
+/// namespace of the build, as the build's first unit does, so its forms
+/// find the namespaces that load after it.
+#[test]
+fn the_first_namespace_rewritten_registers_every_namespace() {
+    let mut watch = Watch::start("dev-watch-first");
+    let state = watch.source("app/state.cljs");
+    let edited = format!("{state}\n(js/console.log \"main\" (some? (find-ns 'app.main)))\n");
+    let (lines, step) = watch.save("app/state.cljs", &edited);
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.state in "),
+        "{step}"
+    );
+    let unit = watch.read("app.state.js");
+    for namespace in ["app.state", "app.macros", "app.view", "app.main"] {
+        assert_eq!(
+            unit.matches(&format!("registerReaderNamespace(\"{namespace}\""))
+                .count(),
+            1,
+            "{namespace}"
+        );
+    }
+    let started = record("main true\nstart\nclicks: [1]\n");
     assert_eq!(watch.now_and_fresh(), [started.clone(), started]);
 }
 

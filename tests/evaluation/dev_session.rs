@@ -1023,3 +1023,104 @@ fn runtime_load_file_delivers_warnings_and_stops_on_receiver_error() {
         );
     }
 }
+
+/// The namespaces a unit registers with the runtime, in order.
+fn registered(unit: &light_cljs::dev_session::Unit) -> Vec<&str> {
+    unit.js
+        .split("registerReaderNamespace(\"")
+        .skip(1)
+        .map(|rest| &rest[..rest.find('"').unwrap()])
+        .collect()
+}
+
+/// A unit registers the namespaces whose reader context or definitions
+/// changed since the session's last unit, which is every namespace the
+/// session knows for its first (light-cljs-301), so a form in a namespace
+/// that defines nothing new registers none.
+#[test]
+fn a_unit_registers_the_namespaces_that_changed() {
+    let dev = DevSession::new(&EvalOptions::default()).unwrap();
+    let actions = dev.source(&input(
+        "(def x 1) (+ x 1) (def y 2) (ns app.other (:require [cljs.user :as-alias u])) \
+         (def z ::u/k) (in-ns 'cljs.user) [x y app.other/z]",
+    ));
+    assert_eq!(
+        shape(&actions),
+        [
+            "invoke cljs.user",
+            "invoke cljs.user",
+            "invoke cljs.user",
+            "ns app.other",
+            "invoke app.other",
+            "ns cljs.user",
+            "invoke cljs.user"
+        ]
+    );
+    let units = actions
+        .iter()
+        .filter_map(|action| match action {
+            Action::Invoke(unit) => Some(registered(unit)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        units,
+        [
+            vec!["cljs.user"],
+            vec![],
+            vec!["cljs.user"],
+            vec!["app.other"],
+            vec![]
+        ]
+    );
+    assert_eq!(
+        apply(&Evaluator::new(Default::default()).unwrap(), &actions),
+        "[1 2 :cljs.user/k]"
+    );
+}
+
+/// Reflection in a session sees every namespace as it did when each unit
+/// registered every namespace: `find-ns`, `ns-publics`, `resolve`, and
+/// `read-string` with the aliases and definitions of a namespace other than
+/// the current one, also of a namespace that only a host binding declared.
+#[test]
+fn reflection_sees_every_namespace_of_the_session() {
+    let mut session = EvalSession::new(EvalOptions::default()).unwrap();
+    fn printed(session: &mut EvalSession, source: &str) -> String {
+        let value = session.eval_string(source).unwrap().value;
+        session.print(value).unwrap()
+    }
+    let s = &mut session;
+    printed(
+        s,
+        "(ns app.a (:require [app.lib :as-alias lib])) (defn f [] 1) (def g 2)",
+    );
+    printed(s, "(ns app.b) (def h 3)");
+    let value = s.eval_string("42").unwrap().value;
+    s.bind("app.c/v", value).unwrap();
+    assert_eq!(
+        printed(
+            s,
+            "[(str *ns*) (binding [*ns* (find-ns 'app.a)] \
+              [(read-string \"::lib/k\") (read-string \"`f\") (read-string \"`h\")]) \
+             (sort (keys (ns-publics 'app.a))) (resolve 'app.a/g) app.c/v \
+             (binding [*ns* (find-ns 'app.c)] (read-string \"`v\"))]"
+        ),
+        "[\"app.b\" [:app.lib/k (quote app.a/f) (quote app.a/h)] (f g) #'app.a/g 42 (quote app.c/v)]"
+    );
+    // An analyzed form's unit that runs after later units registered its
+    // namespace again leaves the next unit to register what they did.
+    let form = s.read_forms(&input("(def early 1)")).unwrap().remove(0);
+    let analyzed = s.analyze(&form).unwrap();
+    printed(s, "(def map 2)");
+    s.evaluate(&analyzed).unwrap();
+    assert_eq!(
+        printed(s, "[(read-string \"`map\") (read-string \"`early\")]"),
+        "[(quote app.b/map) (quote app.b/early)]"
+    );
+    // A unit the heap cannot even parse registered nothing: the next unit
+    // registers what it would have.
+    printed(s, "(ns app.d (:require [app.lib :as-alias lib]))");
+    assert!(s.eval_string("(js* \"(\")").is_err());
+    assert_eq!(printed(s, "(read-string \"::lib/k\")"), ":app.lib/k");
+}

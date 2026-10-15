@@ -307,17 +307,28 @@ fn entry_namespace(program: &Program) -> &str {
 }
 
 /// The unit file of `namespace` written from the session's units of its
-/// forms (a watch step), and its source map: the `define` call of a unit of
-/// [`emit_dev_build`], whose function makes `namespace` the current
-/// namespace, as a `Namespace` action does, then runs each form's unit in
-/// order. With `value` it returns the last one's value, else nil: the value
-/// of a namespace whose last form is a directive, or that has no forms.
+/// forms (a watch step), and its source map: the `define` call of an
+/// interactive unit, as [`emit_dev_build`] writes, that registers the
+/// namespaces `registered` as `session` knows them now, makes `namespace`
+/// the current namespace, as a `Namespace` action does, then runs each
+/// form's unit in order. With `value` it returns the last one's value, else
+/// nil: the value of a namespace whose last form is a directive, or that has
+/// no forms. `registered` is `namespace`, or every namespace of the build
+/// for the first unit in load order, as the build's units register them;
+/// the forms' units of [`crate::dev_session::DevSession::load_namespace_file`]
+/// register none, so the file registers its namespace once, with what all
+/// its forms defined. The forms' units share the file's prelude: the file's function
+/// runs each form's statements in a scope of its own. Where raw JavaScript
+/// renamed a unit's names, whose raw text may then name a global `rt`, the
+/// file runs each unit whole instead, as a function of the runtime.
 /// `requires` are the namespaces of the build it requires; `url` names a
 /// unit's source, as the source provider named it, in the map, relative to
 /// the directory.
 pub fn namespace_unit(
+    session: &crate::dev_session::DevSession,
     namespace: &str,
     requires: &[String],
+    registered: &[&str],
     units: &[&crate::dev_session::Unit],
     value: bool,
     url: &dyn Fn(&str) -> String,
@@ -325,28 +336,49 @@ pub fn namespace_unit(
     let file = unit_file(namespace);
     let map = format!("{file}.map");
     let mut text = crate::source_map::MappedText::default();
+    let prelude = crate::emitter::interactive_prelude();
+    // The lines of the prelude: those of a form's unit before its statements.
+    let prelude_lines = prelude.matches('\n').count() as u32;
+    // Each unit without its `sourceURL`: the file's `sourceMappingURL` maps
+    // it, and the file is what the comment named.
+    let texts = units
+        .iter()
+        .map(|unit| match unit.js.rfind("\n//# sourceURL=") {
+            Some(end) => &unit.js[..end],
+            None => unit.js.trim_end(),
+        })
+        .collect::<Vec<_>>();
+    let statements = texts
+        .iter()
+        .map(|js| {
+            js.strip_prefix(&prelude)
+                .and_then(|rest| rest.strip_suffix(crate::emitter::INTERACTIVE_CLOSE))
+        })
+        .collect::<Option<Vec<_>>>();
     let mut head = String::from("globalThis.__lightDev.define(");
     json_string(&mut head, namespace);
     head.push_str(", ");
     json_list(&mut head, requires);
-    head.push_str(", (__lightInteractiveRuntime) => {\n  __lightInteractiveRuntime.core.currentNs = __lightInteractiveRuntime.core.createNs(__lightInteractiveRuntime.symbol(null, ");
-    json_string(&mut head, namespace);
-    head.push_str("));\n");
+    head.push_str(", ");
+    let mut setup = session.registration(registered);
+    setup.push_str("  rt.core.currentNs = rt.core.createNs(rt.symbol(null, ");
+    json_string(&mut setup, namespace);
+    setup.push_str("));\n");
+    if statements.is_some() {
+        head.push_str(&prelude);
+        head.push_str(&setup);
+    } else {
+        write!(
+            head,
+            "(__lightInteractiveRuntime) => {{\n  ((rt) => {{\n{setup}}})(__lightInteractiveRuntime);\n"
+        )
+        .unwrap();
+    }
     text.push_str(&head);
     // The sources of the units, by their names.
     let mut sources: Vec<&crate::compiler_data::Source> = Vec::new();
-    for (index, unit) in units.iter().enumerate() {
-        text.push_str(if value && index + 1 == units.len() {
-            "  return ("
-        } else {
-            "  ("
-        });
-        // The unit's own `sourceURL` names this file, which the file's
-        // `sourceMappingURL` maps.
-        let js = match unit.js.rfind("\n//# sourceURL=") {
-            Some(end) => &unit.js[..end],
-            None => unit.js.trim_end(),
-        };
+    for (index, (unit, js)) in units.iter().zip(&texts).enumerate() {
+        let returns = value && index + 1 == units.len();
         let source = unit.location.source();
         let at = match sources
             .iter()
@@ -358,16 +390,36 @@ pub fn namespace_unit(
                 sources.len() - 1
             }
         };
-        match &unit.mapping {
-            Some(mapping) => text.push_mapped(js, mapping, &[at]),
-            None => text.push_str(js),
+        text.push_str(if returns { "  return (" } else { "  (" });
+        match &statements {
+            Some(statements) => {
+                text.push_str("() => {\n");
+                match &unit.mapping {
+                    Some(mapping) => {
+                        text.push_mapped_lines(statements[index], mapping, &[at], prelude_lines);
+                    }
+                    None => text.push_str(statements[index]),
+                }
+                text.push_str("})();\n");
+            }
+            None => {
+                match &unit.mapping {
+                    Some(mapping) => text.push_mapped(js, mapping, &[at]),
+                    None => text.push_str(js),
+                }
+                text.push_str(")(__lightInteractiveRuntime);\n");
+            }
         }
-        text.push_str(")(__lightInteractiveRuntime);\n");
     }
     if !value || units.is_empty() {
         text.push_str("  return null;\n");
     }
-    text.push_str("});\n");
+    if statements.is_some() {
+        text.push_str(crate::emitter::INTERACTIVE_CLOSE);
+        text.push_str(");\n");
+    } else {
+        text.push_str("});\n");
+    }
     let urls = sources
         .iter()
         .map(|source| url(source.name()))
