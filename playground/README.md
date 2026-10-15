@@ -14,7 +14,8 @@ playground/
   worker.js     runs one compiled program in a worker the page can terminate
   style.css
   build.bb      builds crate + page into playground/dist and serves it
-  check.mjs     Node check of a built dist: every example at every level (CI runs it)
+  check.mjs     Node check of a built dist: every example, and a chunked build,
+                at every level (CI runs it)
   dist/         the built site (ignored by git)
 ```
 
@@ -51,8 +52,13 @@ Most log through `js/console.log` so the emitted JavaScript stays small and
 shows one feature; "Printing" and the calculator use `(enable-console-print!)`.
 Each entry carries the value its program must produce, and `check.mjs`
 compiles and runs all of them at every optimization level, checking that they
-log the same lines. To add one, append to `EXAMPLES` and run
-`bb playground/build.bb check`.
+log the same lines, and that `compile_chunks` writes each as one file, its
+`esm` module. It also compiles a program with two lazy features through
+`compile_chunks` at every level, checks `manifest` against `files` and
+`chunks`, and runs the modules through the compiler tests' Node driver
+(`tests/support/chunked_execution.mjs`), which must print what the single
+file prints; a failed compilation must leave every output empty. To add
+an example, append to `EXAMPLES` and run `bb playground/build.bb check`.
 
 Compile time in the browser is a few hundred milliseconds for the first
 compile (the macro bootstrap) and tens of milliseconds after that. The wasm
