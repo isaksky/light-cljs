@@ -2063,6 +2063,17 @@ impl<'a> Emitter<'a> {
         self.output.push(']');
     }
 
+    /// `a0, a1, ...`: `count` positional parameters, or the same names as
+    /// arguments.
+    fn positional_params(&mut self, count: usize) {
+        for index in 0..count {
+            if index > 0 {
+                self.output.push_str(", ");
+            }
+            write!(self.output, "a{index}").unwrap();
+        }
+    }
+
     fn arguments(&mut self, args: &[ExprId]) {
         for (index, &arg) in args.iter().enumerate() {
             if index > 0 {
@@ -4052,7 +4063,10 @@ impl<'a> Emitter<'a> {
                 });
                 if let Some(masks) = masks {
                     self.output.push_str(", ");
+                    self.rt(RuntimeName::export("typeMasks"));
+                    self.output.push('(');
                     self.value(*masks);
+                    self.output.push(')');
                 } else {
                     self.output.push_str(", null");
                 }
@@ -4063,21 +4077,66 @@ impl<'a> Emitter<'a> {
                         .encode_utf16()
                         .collect::<Vec<_>>(),
                 );
+                // The constructor assigns each field, and a record's three
+                // slots, under the name its reads use (`self["w"]`), so the
+                // runtime munges no name per instance.
+                let members: Vec<String> = fields
+                    .iter()
+                    .map(|field| crate::analyzer::munge_js_member(field))
+                    .chain(
+                        record
+                            .then_some(["__meta", "__extmap", "__hash"].map(String::from))
+                            .into_iter()
+                            .flatten(),
+                    )
+                    .collect();
                 if *record && constructor.is_some() {
                     self.output.push_str(", () => ");
                     self.global(*global);
+                } else if !members.is_empty() {
+                    self.output.push_str(", null");
+                }
+                if !members.is_empty() {
+                    self.output.push_str(", function(");
+                    self.positional_params(members.len());
+                    self.output.push_str(") {");
+                    for (index, member) in members.iter().enumerate() {
+                        if member == "__proto__" {
+                            // An own field like any other: assigning it
+                            // would set the instance's prototype.
+                            write!(
+                                self.output,
+                                " Object.defineProperty(this, \"__proto__\", {{value: a{index}, writable: true, enumerable: true, configurable: true}});"
+                            )
+                            .unwrap();
+                            continue;
+                        }
+                        self.output.push_str(" this");
+                        self.member(member);
+                        write!(self.output, " = a{index};").unwrap();
+                    }
+                    self.output.push_str(" }");
                 }
                 self.output.push_str("); ");
                 if let Some(constructor) = constructor {
                     self.product(*constructor);
-                    self.output.push_str(" = (...args) => new ");
-                    self.global(*global);
                     if *record {
-                        self.output.push_str("(...Array.from({length: ");
-                        self.output.push_str(&fields.len().to_string());
-                        self.output
-                            .push_str("}, (_, i) => args[i]), null, null, null); ");
+                        // A record's factory passes its fields by position.
+                        self.output.push_str(" = (");
+                        self.positional_params(fields.len());
+                        self.output.push_str(") => new ");
+                        self.global(*global);
+                        self.output.push('(');
+                        self.positional_params(fields.len());
+                        if !fields.is_empty() {
+                            self.output.push_str(", ");
+                        }
+                        self.output.push_str("null, null, null); ");
                     } else {
+                        // A saved factory constructs the type's current
+                        // definition, which may have more fields.
+                        self.output.push_str(" = (...args) => new ");
+                        self.global(*global);
                         self.output.push_str("(...args); ");
                     }
                     // At `Advanced` only a program that names `getBasis` has it

@@ -1121,12 +1121,24 @@ console.log('protocol identities, receiver, metadata and fallback assertions pas
   const printer = r.makeReify([['IPrintWithWriter', 0, null], ['IPrintWithWriter/-pr-writer', 3,
     (_self, writer, opts) => { assert.equal(opts, null); core.writeAll(writer, 'a', 'b'); core.flushWriter(writer); }]]);
   assert.equal(core.prStr(printer), 'ab');
-  const Record = r.makeType(['value'], [], true, null, 'sample/R');
+  // Since light-cljs-258 the emitter writes the constructor's field assignments.
+  const Record = r.makeType(['value'], [], true, null, 'sample/R', null,
+    function (value, meta, extmap, hash) { this.value = value; this.__meta = meta; this.__extmap = extmap; this.__hash = hash; });
   const record = new Record('text');
   assert.equal(core.prStr(record), '#sample.R{:value "text"}');
   core.printReadably = false;
   assert.equal(core.prStr(record), '#sample.R{:value text}');
   core.printReadably = true;
+  // A type's brand is private (light-cljs-258): a host object made from the
+  // prototype or given an instance's fields is no record, and a record keeps
+  // its brand when its prototype changes.
+  assert.equal(r.inspect(record).kind, 'map');
+  assert.equal(r.inspect(Object.create(Record.prototype)), null);
+  assert.equal(r.inspect(Object.defineProperties({}, Object.getOwnPropertyDescriptors(record))), null);
+  assert.equal(r.inspect(Object.defineProperties(Object.create(Record.prototype), Object.getOwnPropertyDescriptors(record))), null);
+  const moved = new Record('moved');
+  Object.setPrototypeOf(moved, Object.prototype);
+  assert.equal(r.inspect(moved).count, 1);
   const native = {};
   assert.equal(core.hash(native), core.hash(native));
   assert.equal(core.equal(native, {}), false);

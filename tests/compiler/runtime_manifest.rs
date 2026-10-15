@@ -308,18 +308,27 @@ fn installed_hooks(text: &str) -> Vec<&str> {
         .collect()
 }
 
-/// The runtime binding a unit body replaces with a wrapper of itself in a
-/// top-level statement, as `seq = behindProtocol(seq, ...)` and `nth =
-/// (operation => ...)(nth)` do, if any.
+/// The runtime binding a unit body wraps in a top-level statement, if any:
+/// replacing it with a wrapper of itself, as `seq = behindProtocol(seq, ...)`
+/// and `nth = (operation => ...)(nth)` do, or replacing a method of it, as
+/// `maps.has = ...` does (light-cljs-258). Assigning a member of a hook
+/// table installs a hook instead.
 fn wrapped_binding(text: &str) -> Option<&str> {
     text.lines().find_map(|line| {
         let statement = line
             .strip_prefix("  ")
             .filter(|rest| !rest.starts_with(' '))?;
-        let (name, _) = statement.split_once(" = ")?;
+        let (target, _) = statement.split_once(" = ")?;
+        let (name, method) = target.split_once('.').unwrap_or((target, ""));
+        let identifier = |text: &str| text.chars().all(|c| c.is_ascii_alphanumeric());
         (!name.is_empty()
-            && name.chars().all(|c| c.is_ascii_alphanumeric())
-            && (text.contains(&format!("({name}, ")) || text.contains(&format!("({name});"))))
+            && identifier(name)
+            && identifier(method)
+            && if method.is_empty() {
+                text.contains(&format!("({name}, ")) || text.contains(&format!("({name});"))
+            } else {
+                !HOOK_TABLES.contains(&name)
+            })
         .then_some(name)
     })
 }
@@ -444,14 +453,16 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // the printer's), the protocol hooks (two installs each of the protocol
     // tests and one per core dispatcher since light-cljs-251), the printer's
     // hooks, the initial values of four core cells, the protocol wrappers of
-    // seven operations and the upstream fields of 28 types.
-    assert_eq!(checked, 166);
+    // seven operations, the brand readers of `typeFields` and `recordTypes`
+    // and the record wrappers of `maps` and `mapKinds` (light-cljs-258), and
+    // the upstream fields of 28 types.
+    assert_eq!(checked, 170);
 }
 
 /// What values a kind hook handles: those of payload stores, built by every
 /// unit that writes to one, or a narrower kind only the listed units build.
-/// `Maps` is the payload stores without records, which `makeType` adds to
-/// the `maps` store but which answer the operations reading these hooks
+/// `Maps` is the payload stores without records, which `maps.records` adds
+/// to the `maps` store but which answer the operations reading these hooks
 /// through their own methods (`kind_hooks_skip_records`).
 enum Kind {
     Stores(&'static [&'static str]),
@@ -649,7 +660,7 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
     let body = |unit: usize| &ANNOTATED_RUNTIME[manifest.units[unit].body_range.clone()];
     let writers = |store: &str| -> Vec<&str> {
         let calls = [format!("{store}.set("), format!("{store}.add(")];
-        (0..manifest.units.len())
+        let mut writers: Vec<&str> = (0..manifest.units.len())
             .filter(|&unit| {
                 !manifest.units[unit].declares.is_empty()
                     && calls.iter().any(|call| {
@@ -660,29 +671,27 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
                         })
                     })
             })
-            // `makeType` adds only records to a store, and emission keeps
-            // `recordMethods` for every record type, so a hook for records
-            // waits for that unit instead (light-cljs-251).
-            .map(|unit| match manifest.units[unit].name {
-                "makeType" => "recordMethods",
-                name => name,
-            })
-            .collect()
-    };
-    let make_type = body(manifest.unit_named("makeType").unwrap().0);
-    for (_, kind) in KIND_HOOKS {
-        let (Kind::Stores(stores) | Kind::Maps(stores)) = kind else {
-            continue;
-        };
-        for store in *stores {
-            for line in make_type
-                .lines()
-                .filter(|line| line.contains(&format!("{store}.set(")))
+            .map(|unit| manifest.units[unit].name)
+            .collect();
+        // Since light-cljs-258 `makeType` writes no store: it brands an
+        // instance, and the effects wrapping `recordTypes`, `maps` and
+        // `mapKinds` (`recordTypes.brands`, `maps.records`) answer those
+        // stores for records from the brand, so their targets build those
+        // kinds.
+        for unit in 0..manifest.units.len() {
+            if wrapped_binding(body(unit)) == Some(store)
+                && let Some(effect) = &manifest.units[unit].effect
             {
-                assert!(line.contains("if (record === true)"), "{line}");
+                writers.extend(effect.targets.iter().copied());
             }
         }
-    }
+        writers
+    };
+    // Only a record's brand holds a record type, so those effects target
+    // `recordMethods`, which emission keeps for every record type, and a
+    // hook for records waits for that unit (light-cljs-251).
+    let make_type = body(manifest.unit_named("makeType").unwrap().0);
+    assert!(make_type.contains("new TypeBrand(this, record === true ? Type : null)"));
     // So the hooks a record reaches (`makeMap.seq`, `makeMap.print`,
     // `str.collections`, ...) wait for `recordMethods`, which only a program
     // with records keeps; none waits for `makeType`, which every `deftype`

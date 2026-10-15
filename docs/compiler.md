@@ -1897,6 +1897,24 @@ property writes follow JavaScript interop. Parameters and lexical bindings can
 shadow fields. Field reads and writes inside returned functions remain attached
 to the method's actual receiver and observe later mutation.
 
+As upstream's constructor does, an instance holds each field as an own data
+property under its munged name (a record's `__meta`, `__extmap` and `__hash`
+slots follow), then its two protocol masks. The emitter writes the assignments
+once per type and the positional factory passes its arguments on, so a
+construction munges no name and writes no `WeakMap`: what makes the instance a
+type instance, and a record's type, is a class private field set by
+`TypeBrand` in `src/js_runtime.js`, which copying fields or inheriting the
+prototype cannot forge. The `typeFields` and `recordTypes` stores read it, and
+`maps` and `mapKinds` answer for a record from it until an update gives the
+record entries of its own (light-cljs-258). An instance takes the brand
+once, so calling a constructor as a plain function on an existing instance
+(`(.call T t 2)`), which upstream and earlier light-cljs allowed, throws a
+`TypeError`. A field named `__proto__` is an own field like any other. A
+saved positional `deftype` factory passes all its arguments to the type's
+current definition, and a record factory its declared fields. An instance
+calls through its type's current `IFn` table, so an extension of `IFn`, even
+one replacing the table, reaches existing instances.
+
 Methods support protocols, Object members, destructuring, overloads and recurrence.
 `IFn`, `ILookup`, `ISeqable`, `IReduce` and `IKVReduce` participate in calls,
 `apply`, keyword lookup, `get`, sequence traversal, `reduce`, `into` and

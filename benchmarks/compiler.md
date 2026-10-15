@@ -3257,3 +3257,90 @@ up to the next 1,000:
 | closed-params | 12,996 | 13,826 |
 | callbacks | 36,161 | 37,387 |
 | protocol-params | 41,291 | 42,552 |
+
+## Record construction — October 14, 2026
+
+light-cljs-258 constructs record and `deftype` instances without the
+per-instance work `makeType` did: it munged every field name (`mungeMember`,
+an `Array.from` and a `join`), defined an accessor per field over a fresh
+object, wrote the `typeFields`, `recordTypes`, `mapKinds` and `maps` stores
+and read `ifnValues` for the type's prototype, and a record's positional
+factory built and spread an array. Now the emitter writes each type's field
+assignments once (`this.w = a0; this.h = a1; this.__meta = a2; ...`), a
+record's factory passes its fields on (`(a0, a1) => new Rect(a0, a1, null,
+null, null)`), and the only per-instance work besides the fields and the two
+masks is a private `TypeBrand` field, which the store methods for types and
+records read ("User-defined types" in [compiler.md](../docs/compiler.md)).
+
+The pellet's acceptance command, on the 24-CPU Mac (Node v24.18.0), most
+runs while another worker built and tested on it:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only record-protocol --output DIR
+```
+
+"Before" is master `c2f1711`; the first two "after" runs are this change on
+`c2f1711`, the last on `5501372` (persistent vectors, which this workload
+does not use) with the review fixes. Milliseconds per call `(f 2000)`,
+median / minimum; upstream is the same workload at `:advanced`, timed in the
+same rounds, so its column moves with the load:
+
+| Build | One-minute load (median of rounds) | light-cljs `advanced` | Upstream `:advanced` | light-cljs / upstream |
+| --- | ---: | ---: | ---: | ---: |
+| before | 16.2 | 10.234 / 9.688 | 0.025 / 0.022 | 409× |
+| after | 12.9 | 0.042 / 0.033 | 0.025 / 0.019 | 1.7× |
+| after | 35.0 | 0.044 / 0.038 | 0.027 / 0.020 | 1.6× |
+| after, rebased | 4.1 | 0.038 / 0.037 | 0.019 / 0.018 | 1.96× |
+
+The other levels of the before and last runs: Node at `none` 10.03 → 0.288
+ms and at `prepare` 9.89 → 0.291 ms; QuickJS at `advanced` 16.6 → 1.53 ms
+and at `none` 21.2 → 5.36 ms.
+
+The quiet run is within 2× by a narrow margin, and the margin is what V8's
+tiers leave. A sample's median mixes them: of its 20 timed calls (after 10
+untimed), the first few still run in the mid tier (Maglev), at about 55 µs
+a call, and the rest in TurboFan, at about 17 µs, what an upstream-shaped
+constructor without the brand takes in the same program. In Maglev the
+private field costs about 15 ns per instance (`node --no-turbofan` on the
+compiled program: 53 µs a call, 23 µs without it), and TurboFan removes the
+cost. Reading `new.target` to let a constructor re-initialize an existing
+instance added 11 µs a call in Maglev, so constructors do not
+("User-defined types"). Most of the rest is the program's call shape: the
+protocol call is an immediately applied arrow around `->Rect.call(null, i,
+2)`, and direct calls halve the Maglev time of an upstream-shaped program
+(19 → 9.5 µs a call). Of the per-instance work this pellet removed, the
+`ifnValues` read was the last to go, at about a fifth of the time left once
+the stores and accessors were gone. An instance now calls through its
+prototype's `IFn` table, as `ifnMethods` already did for any value without a
+table of its own, so an extension that replaces the table reaches existing
+instances, as upstream's prototype methods do.
+
+**Sizes**, bytes of `--compile --optimize LEVEL` (`cargo nextest run --test
+compiler size_ratchet:: --no-capture`), "before" on master `5501372`. At
+`advanced`, programs without records lose up to 34 bytes or keep their
+size: `typeFields`, `recordTypes` and `reifyValues` are units of their own,
+so a program keeps only the stores it reads. `none` and `prepare` embed the
+whole runtime, which grew by 1,952 bytes (the brand, the store effects,
+`typeMasks` and their comments), so their ceilings rise by 2,000 bytes
+(3,000 for `closed-params`, which was 5 bytes under its ceiling). No
+`advanced` ceiling rises; five fall.
+
+| Fixture | Advanced before | Advanced after | Ceiling after (none / prepare / advanced) |
+| --- | ---: | ---: | --- |
+| record-protocol | 5,750 | 5,475 | 420,000 / 420,000 / 5,500 |
+| three-records | 5,757 | 5,468 | 422,000 / 422,000 / 5,500 |
+| pure-defs | 5,640 | 5,365 | 421,000 / 420,000 / 5,400 |
+| closed-params | 13,826 | 13,775 | 422,000 / 422,000 / 14,000 |
+| callbacks | 37,387 | 37,489 | 421,000 / 421,000 / 38,000 |
+| protocol-params | 42,552 | 42,683 | 422,000 / 422,000 / 43,000 |
+| keyword-case | 3,612 | 3,580 | 420,000 / 420,000 / 3,600 |
+| vector-only | 5,023 | 4,991 | 419,000 / 419,000 / 5,000 |
+
+`callbacks` and `protocol-params` grow, by 102 and 131 bytes. They keep
+`mapKinds` as well, so all three record wrappers (`recordTypes.brands`,
+`maps.records` and `mapKinds.records`, 287 bytes) and `TypeBrand` come in
+against a `makeType` 404 bytes smaller; a record's assignment function costs
+more than its factory saves, and `protocol-params`' two `deftype` factories
+keep their rest parameter, which a saved factory needs when the type is
+redefined with more fields.

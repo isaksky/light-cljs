@@ -1892,6 +1892,19 @@ host-facing methods of the vector and the keyword.
     value to those stores only for a record, and emission keeps
     `recordMethods` for every record type. A `deftype` with a `seq` keeps
     neither the map seq hook nor `mapEntry` and the vector type it reaches.
+  - **Record stores read the type brand (light-cljs-258).** `makeType`
+    writes no store any more: a construction gives the instance a private
+    `TypeBrand` field holding its record type (`null` for another type), and
+    effects replace store methods to read it. `typeFields.brands`
+    (`effect: TypeBrand when: typeFields`) answers `typeFields.has`;
+    `recordTypes.brands`, `maps.records` and `mapKinds.records` (each
+    `effect: recordMethods` with its store in `when:`) answer `recordTypes`
+    and, for a record without entries of its own, `maps` and `mapKinds`. So
+    a program without types keeps the plain stores, and only a program with
+    records pays for the wrappers. `typeFields`, `recordTypes` and
+    `reifyValues` are units of their own, and the `runtime_manifest` suite
+    treats a top-level replacement of a store's method (`maps.has = ...`)
+    like a wrapper of the store.
   - **One unit per core dispatcher (light-cljs-254).** The unit
     `seqProtocol` declared eight core dispatchers and
     `protocolHooks.dispatchers` installed six; each is a unit of its own now,

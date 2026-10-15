@@ -87,7 +87,13 @@
   //@unit typeNames
   const typeNames = new WeakMap();
   //@unit typeFields
-  const typeFields = new WeakMap(), recordTypes = new WeakMap(), reifyValues = new WeakSet();
+  // Type instances, and a record's type by instance. `makeType` writes
+  // neither: its brands answer them (`typeFields.brands`).
+  const typeFields = new WeakMap();
+  //@unit recordTypes
+  const recordTypes = new WeakMap();
+  //@unit reifyValues
+  const reifyValues = new WeakSet();
   //@unit protocolHooks
   // Generic operations' protocol dispatch, empty unless `installMethods` is kept.
   const protocolHooks = {};
@@ -4823,7 +4829,7 @@
   //@ kindHooks, lazyValues, mapEntries, mapKinds, maps, meta, metadataValues, metaFunctions,
   //@ protocolHooks, protocolImplementations, publicCollectionSlots, queues, recordTypes,
   //@ reifyValues, setKinds, sets, sortedComparators, subvecSources, symbols, treeRoots,
-  //@ treeSetMaps, typeFields, vars, vectors, views
+  //@ treeSetMaps, vars, vectors, views
   // `withMeta` of a value other than a function, for callers that pass no
   // function.
   function collectionWithMeta(value, metadata) {
@@ -4848,7 +4854,8 @@
       const stores = [treeRoots, treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbols, vectors, maps, mapKinds, setKinds, sortedComparators, sets, cells, views, queues, lazyValues, vars, subvecSources];
       if (!stores.some(store => store.has(value)) && !reifyValues.has(value)) throw new Error("value does not support metadata");
       result = Object.create(Object.getPrototypeOf(value));
-      for (const store of [...stores, protocolImplementations, typeFields, recordTypes]) if (store.has(value)) store.set(result, store.get(value));
+      // A copy of a reify value has no brand of its type: `reifyValues` holds it.
+      for (const store of [...stores, protocolImplementations]) if (store.has(value)) store.set(result, store.get(value));
       if (reifyValues.has(value)) reifyValues.add(result);
       if (ifnValues.has(value)) ifnValues.set(result, ifnValues.get(value));
       if (ifnValues.has(value) || reifyValues.has(value) || recordTypes.has(value)) Object.defineProperties(result, Object.getOwnPropertyDescriptors(value));
@@ -5695,10 +5702,11 @@
   function makeReify(methods) { const value = installMethods({}, methods); reifyValues.add(value); return value; }
   //@unit reifySites
   const reifySites = new Map();
-  //@unit reify requires: field, makeType, metadataValues, reifySites, reifyValues
+  //@unit reify requires: field, makeType, metadataValues, mungeMember, reifySites, reifyValues
   function reify(site, fields, values, methods, metadata = null) {
     let Type = reifySites.get(site);
     if (!Type) {
+      const members = fields.map(mungeMember);
       Type = makeType(fields, [
         ["IMeta", 0, null], ["IWithMeta", 0, null],
         ["IMeta/-meta", 1, function () { return metadataValues.has(this) ? metadataValues.get(this) : null; }],
@@ -5707,7 +5715,10 @@
           reifyValues.add(result);
           metadataValues.set(result, metadata);
           return result;
-        }], ...methods()], false);
+        }], ...methods()], false, null, null, null, function (...values) {
+        // Own fields like a type's, whatever their names (`__proto__`).
+        members.forEach((member, i) => Object.defineProperty(this, member, {value: values[i], writable: true, enumerable: true, configurable: true}));
+      });
       reifySites.set(site, Type);
     }
     const value = new Type(...values);
@@ -5854,36 +5865,66 @@
     ["IKVReduce/-kv-reduce", 3, function (_self, fn, init) {
       return reduce((result, entry) => fn.call(null, result, nth(entry, 0), nth(entry, 1)), init, this);
     }]]);
-  //@unit makeType requires: ifnValues, installMethods, mapKinds, maps, mungeMember,
-  //@ protocolMaskNames, recordTypes, typeFields, typeHooks, typeNames
-  function makeType(fields, methods, record, masks = null, name = null, currentConstructor = null) {
-    let implicitMasks;
-    const allFields = record ? [...fields, "__meta", "__extmap", "__hash"] : fields;
-    const Type = function (...args) {
-      const value = this, data = Object.create(null);
-      for (let i = 0; i < allFields.length; i++) {
-        const name = allFields[i]; data[name] = args[i];
-        Object.defineProperty(value, mungeMember(name), {enumerable: true, configurable: true,
-          get() { return data[name]; },
-          set(state) { data[name] = state; }});
+  //@unit TypeBrand
+  // A type instance's brand: a private field holding its record type, or
+  // `null` for another type. Like the stores, copying fields or inheriting a
+  // prototype cannot forge it, and setting it writes no WeakMap. The base
+  // class returns the instance as `this`, and `TypeBrand` adds the field.
+  class TypeBrand extends (class { constructor(value) { return value; } }) {
+    #type;
+    constructor(value, type) { super(value); this.#type = type; }
+    // The brand of `value`, or `undefined` for a value without one.
+    static type(value) { if (Object(value) === value && #type in value) return value.#type; }
+  }
+  //@unit typeFields.brands effect: TypeBrand when: typeFields requires: TypeBrand, typeFields
+  typeFields.has = value => TypeBrand.type(value) !== undefined;
+  //@unit recordTypes.brands effect: recordMethods when: recordTypes requires: recordTypes,
+  //@ TypeBrand
+  // Only a program with records keeps `recordMethods`; in any other no
+  // instance has a record type.
+  recordTypes.has = value => !!TypeBrand.type(value);
+  recordTypes.get = value => TypeBrand.type(value) ?? undefined;
+  //@unit maps.records effect: recordMethods when: maps requires: maps, recordTypes
+  // A record is a map without entries of its own until `updatedRecord` gives
+  // it some, so constructing one writes no store: these answer for it, with
+  // `none` as its entries (a record type is a function).
+  maps.has = (has => value => has.call(maps, value) || recordTypes.has(value))(maps.has);
+  maps.get = ((get, none) => value => get.call(maps, value) ?? (recordTypes.get(value) && none))(maps.get, Object.freeze([]));
+  //@unit mapKinds.records effect: recordMethods when: mapKinds requires: mapKinds, recordTypes
+  mapKinds.has = (has => value => has.call(mapKinds, value) || recordTypes.has(value))(mapKinds.has);
+  mapKinds.get = (get => value => get.call(mapKinds, value) ?? (recordTypes.has(value) ? "record" : undefined))(mapKinds.get);
+  //@unit makeType requires: installMethods, protocolMaskNames, TypeBrand, typeHooks, typeNames
+  // `init`, which the emitter (or `reify`) writes, assigns the arguments to
+  // the munged fields and a record's three slots; `masks` sets a raw type's
+  // masks (`typeMasks`). A construction munges no name and writes no WeakMap.
+  function makeType(fields, methods, record, masks, name, currentConstructor, init) {
+    const implicitMasks = [0, 0];
+    const Type = function () {
+      init?.apply(this, arguments);
+      if (masks) masks(this);
+      else {
+        this.cljs$lang$protocol_mask$partition0$ = implicitMasks[0];
+        this.cljs$lang$protocol_mask$partition1$ = implicitMasks[1];
       }
-      if (masks != null) for (const entry of maps.get(masks) ?? []) value["cljs$lang$protocol_mask$partition" + entry.key + "$"] = entry.value;
-      else for (let i = 0; i < implicitMasks.length; i++) value["cljs$lang$protocol_mask$partition" + i + "$"] = implicitMasks[i];
-      typeFields.set(value, data);
-      if (ifnValues.has(Type.prototype)) ifnValues.set(value, ifnValues.get(Type.prototype));
-      if (record === true) { recordTypes.set(value, Type); mapKinds.set(value, "record"); maps.set(value, Object.freeze([])); }
+      new TypeBrand(this, record === true ? Type : null);
     };
     Type.fieldNames = fields;
     if (currentConstructor) Type.currentConstructor = currentConstructor;
-    if (name != null) typeNames.set(Type, name);
+    if (name) typeNames.set(Type, name);
     const implementations = record === true ? [...methods, ...typeHooks.recordMethods(Type)] : methods;
-    implicitMasks = [0, 0];
     for (const [key, arity] of implementations) {
       const index = arity === 0 ? protocolMaskNames.lastIndexOf(key) : -1;
       if (index >= 0) implicitMasks[index >> 5] |= 1 << (index % 32);
     }
     installMethods(Type.prototype, implementations);
     return Type;
+  }
+  //@unit typeMasks requires: maps
+  // What sets the masks of a raw type's mask map, for `makeType`.
+  function typeMasks(masks) {
+    if (masks == null) return null;
+    const entries = (maps.get(masks) ?? []).map(entry => ["cljs$lang$protocol_mask$partition" + entry.key + "$", entry.value]);
+    return value => { for (const [key, mask] of entries) value[key] = mask; };
   }
   //@unit recordFromMap requires: dissoc, get, into, isRecord, keyword, mapFromArray, seq
   function recordFromMap(Type, map) {
@@ -8912,5 +8953,5 @@
   //@unit core.seal effect: core requires: core
   Object.seal(core);
   //@exports
-  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, arrayMapFromArray, mapFromArrays, mapShape, mapFromShape, hashMapShape, hashMapFromShape, setFromArray, arraySetFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, setShape, setFromShape, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, recordMethods, recordFromMap, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash, hashed});
+  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, arrayMapFromArray, mapFromArrays, mapShape, mapFromShape, hashMapShape, hashMapFromShape, setFromArray, arraySetFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, setShape, setFromShape, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, typeMasks, recordMethods, recordFromMap, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash, hashed});
 })()

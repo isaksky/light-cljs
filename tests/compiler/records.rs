@@ -46,6 +46,26 @@ fn record_printing_metadata_and_constructor_internals_are_observable() {
     );
 }
 
+/// Since light-cljs-258 the constructor assigns each field, under its munged
+/// name, as an own data property that `set!` updates in place, instead of an
+/// accessor over per-instance storage.
+#[test]
+fn type_instances_hold_fields_as_own_data_properties() {
+    assert_eq!(
+        run(
+            "(defrecord R [a b?]) (deftype T [x ^:mutable y-z] Object (bump [_] (set! y-z (inc y-z)) y-z))
+             (let [r (->R 1 2) t (T. 3 4)
+                   d (fn [o k] (let [p (js/Object.getOwnPropertyDescriptor o k)] (array (.-value p) (.-writable p) (.-enumerable p) (fn? (.-get p)))))]
+               (.bump t)
+               (array (d r \"a\") (d r \"b_QMARK_\") (d r \"__extmap\") (d t \"x\") (d t \"y_z\") (.-y-z t)
+                      (js/Object.keys r) (js/Object.keys t) (= r (->R 1 2)) (= (assoc r :a 3) (->R 3 2))))"
+        ),
+        "[[1,true,true,false],[2,true,true,false],[null,true,true,false],[3,true,true,false],[5,true,true,false],5,\
+         [\"a\",\"b_QMARK_\",\"__meta\",\"__extmap\",\"__hash\",\"cljs$lang$protocol_mask$partition0$\",\"cljs$lang$protocol_mask$partition1$\"],\
+         [\"x\",\"y_z\",\"cljs$lang$protocol_mask$partition0$\",\"cljs$lang$protocol_mask$partition1$\"],true,true]\n"
+    );
+}
+
 #[test]
 fn external_record_methods_affect_existing_instances_and_copies() {
     assert_eq!(

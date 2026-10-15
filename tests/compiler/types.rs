@@ -26,6 +26,49 @@ fn field_receiver_is_the_actual_method_call_receiver() {
     );
 }
 
+/// An instance calls through its type's `IFn` table, as upstream's instances
+/// call their prototype's methods: an extension affects existing instances,
+/// including one that replaces the table. Before light-cljs-258 each
+/// instance kept the table its type had when it was constructed.
+#[test]
+fn ifn_extensions_affect_existing_instances() {
+    assert_eq!(
+        run(
+            "(deftype T [x] IFn (-invoke [_ a] (array \"old\" x a))) (deftype U [x]) (def t (T. 1)) (def u (U. 2))
+             (extend-type T IFn (-invoke ([this a] (array \"new\" (.-x this) a))))
+             (extend-type U IFn (-invoke ([this a] (array \"u\" (.-x this) a))))
+             (array (t 3) ((T. 4) 5) (u 6) (apply t [7]) (ifn? t) (ifn? u))"
+        ),
+        "[[\"new\",1,3],[\"new\",4,5],[\"u\",2,6],[\"new\",1,7],true,true]\n"
+    );
+}
+
+/// Since light-cljs-258 the emitter writes each type's field assignments and
+/// `typeMasks` turns a raw type's mask map into assignments once per type.
+/// A saved factory still passes every argument to the type's current
+/// definition, and a field named `__proto__` stays an own field.
+#[test]
+fn constructors_keep_raw_masks_redefined_fields_and_proto_fields() {
+    assert_eq!(
+        run(
+            "(deftype* M [x] {0 2 1 16}) (deftype* N [] nil) (deftype* E [y] {}) (defrecord* Q [x] {0 4})
+             (deftype T [x]) (def factory ->T) (deftype T [x y]) (defrecord R [a])
+             (deftype P [^:mutable __proto__] Object (get [_] __proto__) (put [_ v] (set! __proto__ v)))
+             (let [a (new M 1) b (new M 2) q (new Q 5 nil nil nil) t (T. 1 2) r (->R 1) p (P. 7) o (P. #js {:a 1})
+                   k (let [__proto__ 9] (reify Object (get [_] __proto__)))]
+               (.put p 8)
+               (array (.-cljs$lang$protocol_mask$partition0$ a) (.-cljs$lang$protocol_mask$partition1$ b) (js/Object.keys a)
+                      (js/Object.keys (new N)) (js/Object.keys (new E 3)) (js/Object.keys q) (.-cljs$lang$protocol_mask$partition0$ q)
+                      (.-y (factory 1 2)) (.-y (apply factory [3 4])) (.-y t) (:a r)
+                      (.get p) (.get o) (instance? P o) (.hasOwnProperty o \"__proto__\") (.get k)))"
+        ),
+        "[2,16,[\"x\",\"cljs$lang$protocol_mask$partition0$\",\"cljs$lang$protocol_mask$partition1$\"],\
+         [\"cljs$lang$protocol_mask$partition0$\",\"cljs$lang$protocol_mask$partition1$\"],[\"y\"],\
+         [\"x\",\"__meta\",\"__extmap\",\"__hash\",\"cljs$lang$protocol_mask$partition0$\"],4,\
+         2,4,2,1,8,{\"a\":1},true,true,9]\n"
+    );
+}
+
 #[test]
 fn constructors_and_redefinitions_retain_instance_identity() {
     assert_eq!(
