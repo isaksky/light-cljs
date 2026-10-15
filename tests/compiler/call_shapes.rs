@@ -472,7 +472,7 @@ fn calls_across_namespaces_are_direct() {
     );
     let program = analyze_namespace_entry(
         "app",
-        std::slice::from_ref(&root.0),
+        std::slice::from_ref(root.0.path()),
         &mut MacroHost::new(),
         AnalysisOptions::default(),
         &mut Vec::new(),

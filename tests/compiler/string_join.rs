@@ -1,33 +1,23 @@
 //! Canonical join conversion and complete SCI source in fresh/reused phases.
+use crate::temp_dir::TempDir;
 use light_cljs::{
     MacroHost,
     evaluator::{Evaluator, EvaluatorOptions},
 };
-use std::{
-    fs,
-    process::Command,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::{fs, process::Command};
 
 fn compile(
     host: &mut MacroHost,
     source: &str,
 ) -> Result<String, light_cljs::compiler::NamespaceCompileError> {
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let root = std::env::temp_dir().join(format!(
-        "light-string-join-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
+    let root = TempDir::new("string-join");
     fs::create_dir_all(root.join("string_join")).unwrap();
     fs::write(root.join("string_join/main.cljs"), source).unwrap();
-    let result = light_cljs::compile_namespace_with_macros(
+    light_cljs::compile_namespace_with_macros(
         "string-join.main",
-        std::slice::from_ref(&root),
+        std::slice::from_ref(root.path()),
         host,
-    );
-    fs::remove_dir_all(root).unwrap();
-    result
+    )
 }
 
 fn both(host: &mut MacroHost, source: &str, expected: &str) {

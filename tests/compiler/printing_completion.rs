@@ -1,23 +1,17 @@
 //! Printing controls, writer options and output scopes in both canonical engines.
+use crate::temp_dir::TempDir;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::process::Command;
 
 fn both(source: &str, expected: &str) {
     if source.trim_start().starts_with("(ns cljs.printing-test)") {
-        let root = std::env::temp_dir().join(format!(
-            "light-cljs-printing-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let root = TempDir::new("cljs-printing");
         std::fs::create_dir_all(root.join("cljs")).unwrap();
         std::fs::write(root.join("cljs/printing_test.cljs"), source).unwrap();
         let js = light_cljs::compile_namespace_with_macros(
             "cljs.printing-test",
-            std::slice::from_ref(&root),
+            std::slice::from_ref(root.path()),
             &mut MacroHost::new(),
         )
         .unwrap();
@@ -33,7 +27,6 @@ fn both(source: &str, expected: &str) {
             String::from_utf8_lossy(&out.stderr)
         );
         assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), expected);
-        std::fs::remove_dir_all(root).unwrap();
         return;
     }
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())

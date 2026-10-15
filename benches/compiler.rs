@@ -32,6 +32,10 @@ mod levels;
 #[path = "../tests/support/ratchet_fixtures.rs"]
 #[allow(dead_code)]
 mod ratchet_fixtures;
+// Temporary directories, shared with the tests; `levels` uses them for scratch files.
+#[path = "../tests/support/temp_dir.rs"]
+#[allow(dead_code)]
+mod temp_dir;
 
 const COLLECTION: &str = include_str!("../benchmarks/fixtures/compiler/collections/value.cljs");
 const MACRO_CALL: &str = "(defmacro data [] '[1 2 3]) (data)";

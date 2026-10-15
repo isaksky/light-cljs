@@ -1,4 +1,5 @@
 //! File-scoped compiler state is separate from the public runtime Var.
+use crate::temp_dir::TempDir;
 use light_cljs::analyzer::{AnalysisOptions, CheckedArrays, analyze_with_macro_warnings};
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
 use light_cljs::{MacroHost, Program, emitter::emit_js_unit, parse};
@@ -249,8 +250,7 @@ fn complete_source_bodies_retain_modules_and_file_isolation() {
 
 #[test]
 fn checked_options_reset_between_loaded_files_and_capture_definitions() {
-    let root =
-        std::env::temp_dir().join(format!("light-cljs-array-settings-{}", std::process::id()));
+    let root = TempDir::new("cljs-array-settings");
     std::fs::create_dir_all(root.join("scope")).unwrap();
     std::fs::write(
         root.join("scope/beta.cljs"),
@@ -261,7 +261,7 @@ fn checked_options_reset_between_loaded_files_and_capture_definitions() {
     let mut warnings = Vec::new();
     let js = light_cljs::compiler::compile_namespace_with_warnings(
         "scope.alpha",
-        std::slice::from_ref(&root),
+        std::slice::from_ref(root.path()),
         AnalysisOptions {
             array_checks: CheckedArrays::Error,
             ..Default::default()
@@ -283,7 +283,6 @@ fn checked_options_reset_between_loaded_files_and_capture_definitions() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "true");
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

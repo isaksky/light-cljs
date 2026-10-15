@@ -2,11 +2,10 @@
 //! Number division, :default catches and :cljs conditionals are explicit adaptations.
 //! Complete examples run from an isolated directory with no ambient toolchain.
 use crate::protocol;
+use crate::temp_dir::TempDir;
 use std::{
     fs,
-    path::PathBuf,
     process::{Command, Stdio},
-    sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
 const EXAMPLES: [(&str, &str, &str); 6] = [
@@ -41,29 +40,17 @@ const EXAMPLES: [(&str, &str, &str); 6] = [
         "[[{:price 4} {:rejected 0} {:price 5}] [5 0 4]]\n",
     ),
 ];
-struct Directory(PathBuf);
-impl Drop for Directory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 #[test]
 fn every_compiled_example_runs_fresh_without_java_node_or_project_files() {
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
     let cases = protocol::cases(include_str!("../fixtures/sci-outcomes.tsv")).unwrap();
     let sources = include_str!("../reference/sci/load-sources.tsv");
     for (name, source, result) in EXAMPLES {
         let id = format!("sci-example-{}", name.replace('_', "-"));
         let case = cases.iter().find(|c| c.id == id).unwrap();
-        let dir = Directory(std::env::temp_dir().join(format!(
-            "light-example-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        )));
-        fs::create_dir(&dir.0).unwrap();
-        let binary = dir.0.join("light-cljs");
+        let dir = TempDir::new("example");
+        let binary = dir.join("light-cljs");
         fs::copy(env!("CARGO_BIN_EXE_light-cljs"), &binary).unwrap();
-        fs::write(dir.0.join("main.cljs"), source).unwrap();
+        fs::write(dir.join("main.cljs"), source).unwrap();
         for (namespace, path, text) in [
             (
                 "math-helpers",
@@ -90,16 +77,16 @@ fn every_compiled_example_runs_fresh_without_java_node_or_project_files() {
                 text.lines().collect::<Vec<_>>().join(" "),
                 "loader drift {namespace}"
             );
-            let file = dir.0.join(path);
+            let file = dir.join(path);
             fs::create_dir_all(file.parent().unwrap()).unwrap();
             fs::write(file, text).unwrap();
         }
-        let out_path = dir.0.join("stdout");
-        let err_path = dir.0.join("stderr");
+        let out_path = dir.join("stdout");
+        let err_path = dir.join("stderr");
         let mut child = Command::new(binary)
             .env_clear()
             .env("PATH", "")
-            .current_dir(&dir.0)
+            .current_dir(&dir)
             .args([
                 "--eval",
                 "--source-root",

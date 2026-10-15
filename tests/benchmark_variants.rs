@@ -11,14 +11,16 @@ mod levels;
 #[path = "support/ratchet_fixtures.rs"]
 #[allow(dead_code)]
 mod ratchet_fixtures;
+// Temporary directories, shared with the tests; `levels` uses them for scratch files.
+#[path = "support/temp_dir.rs"]
+#[allow(dead_code)]
+mod temp_dir;
 
 /// `cargo bench --bench compiler -- --levels` at its smallest: two fixtures, one
 /// timed round, tiny steady-state inputs. Every sample is checked as in a real run.
 #[test]
 fn level_benchmark_harness_checks_and_records_every_level() {
-    let output =
-        std::env::temp_dir().join(format!("light-cljs-levels-smoke-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&output);
+    let output = temp_dir::TempDir::new("cljs-levels-smoke");
     let fixtures: Vec<_> = ratchet_fixtures::FIXTURES
         .iter()
         .filter(|fixture| ["seq-pipeline", "rest-fn"].contains(&fixture.name))
@@ -32,7 +34,7 @@ fn level_benchmark_harness_checks_and_records_every_level() {
     assert!(levels::is_workload("event-maps") && !levels::is_workload("rest-fn"));
     assert!(levels::is_workload("map-assoc") && levels::is_workload("vector-into"));
     assert!(levels::is_workload("map-into"));
-    let mut config = levels::Config::new(output.clone());
+    let mut config = levels::Config::new(output.to_path_buf());
     config.samples = 1;
     config.warmups = 0;
     config.input = Some(10);
@@ -85,7 +87,6 @@ fn level_benchmark_harness_checks_and_records_every_level() {
         summary.contains("Not measured; pass `--upstream"),
         "{summary}"
     );
-    std::fs::remove_dir_all(output).unwrap();
 }
 
 fn check(source: &str) {

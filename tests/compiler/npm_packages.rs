@@ -1,5 +1,6 @@
 //! JavaScript package libspecs: registry lowering, bundler ES modules, the REPL
 //! and diagnostics. Contract rows live in tests/fixtures/contracts.
+use crate::temp_dir::TempDir;
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::compiler::{
     analyze_namespace_entry, compile_namespace_esm, compile_namespace_with_warnings,
@@ -12,7 +13,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicUsize, Ordering},
 };
 
 const ROOT: &str = "tests/fixtures/compiler-namespaces/npm-packages";
@@ -35,17 +35,11 @@ fn run_node(command: &mut Command) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-struct TempDir(PathBuf);
-impl TempDir {
+/// A temporary project directory, removed when the test ends.
+struct Project(TempDir);
+impl Project {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "light-cljs-npm-packages-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
+        Self(TempDir::new("cljs-npm-packages"))
     }
     fn write(&self, path: &str, text: &str) {
         let path = self.0.join(path);
@@ -53,12 +47,6 @@ impl TempDir {
         fs::write(path, text).unwrap();
     }
 }
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 /// Just enough JSON for the contract rows.
 #[derive(Clone, Debug, PartialEq)]
 enum Json {
@@ -253,7 +241,7 @@ fn unbundled_output_reads_the_registry_at_each_use() {
     assert_eq!(String::from_utf8(output.stdout).unwrap(), js);
 }
 
-fn write_stub_packages(dir: &TempDir) {
+fn write_stub_packages(dir: &Project) {
     let package = |name: &str, extra: &str| {
         format!("{{\"name\": \"{name}\", \"type\": \"module\", \"main\": \"index.js\"{extra}}}")
     };
@@ -333,7 +321,7 @@ fn bundler_module_imports_only_surviving_package_references() {
     assert_eq!(String::from_utf8(output.stdout).unwrap(), module);
 
     // Module ordering loads every package before the program runs.
-    let dir = TempDir::new();
+    let dir = Project::new();
     write_stub_packages(&dir);
     dir.write("bundle.mjs", &module);
     dir.write(
@@ -372,7 +360,7 @@ fn bundler_module_imports_only_surviving_package_references() {
 #[test]
 fn bundler_modules_run_at_every_optimization_level() {
     let root = manifest(ROOT);
-    let dir = TempDir::new();
+    let dir = Project::new();
     write_stub_packages(&dir);
     dir.write(
         "node_modules/only-in-removed-code/package.json",
@@ -430,7 +418,7 @@ fn bundler_modules_run_at_every_optimization_level() {
 
 #[test]
 fn bundler_import_bindings_are_distinct_identifiers_for_similar_package_names() {
-    let dir = TempDir::new();
+    let dir = Project::new();
     dir.write(
         "main.cljs",
         r#"(ns main (:require ["a-b" :refer [x] :rename {x one}] ["a_b" :refer [x] :rename {x two}]
@@ -438,7 +426,7 @@ fn bundler_import_bindings_are_distinct_identifiers_for_similar_package_names() 
                              ["@a/b" :default five] ["ab$" :refer [x]]))
            [(one) (two) (three) (four/x) (five) (x)]"#,
     );
-    let module = compile_namespace_esm("main", std::slice::from_ref(&dir.0)).unwrap();
+    let module = compile_namespace_esm("main", std::slice::from_ref(dir.0.path())).unwrap();
     let imports: Vec<_> = module
         .lines()
         .take_while(|l| l.starts_with("import"))
@@ -458,7 +446,7 @@ fn bundler_import_bindings_are_distinct_identifiers_for_similar_package_names() 
 
 #[test]
 fn string_libspecs_without_bindings_warn_instead_of_failing() {
-    let dir = TempDir::new();
+    let dir = Project::new();
     dir.write(
         "main.cljs",
         "(ns main (:require \"left-pad\" [\"@scope/side-effect\"]))\n(+ 1 2)",
@@ -466,7 +454,7 @@ fn string_libspecs_without_bindings_warn_instead_of_failing() {
     let mut warnings = Vec::new();
     let js = compile_namespace_with_warnings(
         "main",
-        std::slice::from_ref(&dir.0),
+        std::slice::from_ref(dir.0.path()),
         AnalysisOptions::default(),
         &mut warnings,
     )
@@ -481,7 +469,7 @@ fn string_libspecs_without_bindings_warn_instead_of_failing() {
         ]
     );
     // Neither package is imported by bundler output either.
-    let module = compile_namespace_esm("main", std::slice::from_ref(&dir.0)).unwrap();
+    let module = compile_namespace_esm("main", std::slice::from_ref(dir.0.path())).unwrap();
     assert!(module.starts_with("export default "));
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
         .args([
@@ -491,7 +479,7 @@ fn string_libspecs_without_bindings_warn_instead_of_failing() {
             "main",
             "--source-root",
         ])
-        .arg(&dir.0)
+        .arg(dir.0.path())
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -504,7 +492,7 @@ fn string_libspecs_without_bindings_warn_instead_of_failing() {
 
 #[test]
 fn package_as_alias_is_reader_only() {
-    let dir = TempDir::new();
+    let dir = Project::new();
     dir.write(
         "main.cljs",
         "(ns main (:require [\"@scope/pkg\" :as-alias p]))\n(str ::p/x)",
@@ -512,7 +500,7 @@ fn package_as_alias_is_reader_only() {
     let mut warnings = Vec::new();
     let js = compile_namespace_with_warnings(
         "main",
-        std::slice::from_ref(&dir.0),
+        std::slice::from_ref(dir.0.path()),
         AnalysisOptions::default(),
         &mut warnings,
     )
@@ -520,7 +508,7 @@ fn package_as_alias_is_reader_only() {
     assert!(warnings.is_empty(), "{warnings:?}");
     assert!(!js.contains("pkg("));
     assert_eq!(run_node(node().args(["-p", &js])), ":@scope/pkg/x\n");
-    let module = compile_namespace_esm("main", std::slice::from_ref(&dir.0)).unwrap();
+    let module = compile_namespace_esm("main", std::slice::from_ref(dir.0.path())).unwrap();
     assert!(module.starts_with("export default "));
 }
 
@@ -536,7 +524,7 @@ fn package_diagnostics_match_contract_probes() {
         let id = probe.get("id").str();
         assert_eq!(probe.get("mode").str(), "ns");
         let entry = probe.get("entry").str();
-        let dir = TempDir::new();
+        let dir = Project::new();
         dir.write(
             &format!("{}.cljs", entry.replace('.', "/")),
             probe.get("source").str(),
@@ -546,7 +534,7 @@ fn package_diagnostics_match_contract_probes() {
         let mut warnings = Vec::new();
         let result = compile_namespace_with_warnings(
             entry,
-            std::slice::from_ref(&dir.0),
+            std::slice::from_ref(dir.0.path()),
             AnalysisOptions::default(),
             &mut warnings,
         );

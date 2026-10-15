@@ -1,4 +1,5 @@
 //! Canonical ECMAScript regex execution and finite macro-form transfer.
+use crate::temp_dir::TempDir;
 use light_cljs::eval_session::{EvalOptions, EvalSession};
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace, compile_with_macros};
@@ -7,19 +8,13 @@ use std::{
     io::Write,
     path::PathBuf,
     process::{Command, Stdio},
-    sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
 const CONTRACT: &str = include_str!("../fixtures/compiler-regex-reference/reference/main.cljs");
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-struct Sources(PathBuf);
+struct Sources(TempDir);
 impl Sources {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "light-regex-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let path = TempDir::new("regex");
         fs::create_dir_all(path.join("reference")).unwrap();
         Self(path)
     }
@@ -27,12 +22,7 @@ impl Sources {
         fs::write(self.0.join(name), source).unwrap();
     }
     fn compile(&self) -> String {
-        compile_namespace("main", std::slice::from_ref(&self.0)).unwrap()
-    }
-}
-impl Drop for Sources {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        compile_namespace("main", std::slice::from_ref(self.0.path())).unwrap()
     }
 }
 fn node(script: &str) -> String {
@@ -227,7 +217,7 @@ fn regex_contract_passes_both_pinned_references() {
                 identity,
                 &checkout_arg,
             ])
-            .arg(&output_dir.0)
+            .arg(output_dir.0.path())
             .args([
                 "program",
                 "tests/fixtures/compiler-regex-reference",
@@ -249,7 +239,7 @@ fn regex_contract_passes_both_pinned_references() {
         assert_eq!(
             node(&format!(
                 "process.chdir({:?}); require({:?}); console.log(cljs.core.pr_str.call(null, globalThis.lightProgramRun()));",
-                output_dir.0,
+                output_dir.0.path(),
                 output_dir.0.join("reference.js")
             )),
             "[[23 true] true]",

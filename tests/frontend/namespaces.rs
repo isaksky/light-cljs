@@ -1,25 +1,18 @@
 //! Loader cases are hand-authored for the bounded namespace subset unless an
 //! upstream adaptation is identified beside a test. Runtime assertions execute JS.
 
+use crate::temp_dir::TempDir;
 use light_cljs::compile_namespace;
 use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicUsize, Ordering},
 };
 
-static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
-
-struct Sources(PathBuf);
+struct Sources(TempDir);
 impl Sources {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "light-cljs-namespaces-{}-{}",
-            std::process::id(),
-            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path).unwrap();
+        let path = TempDir::new("cljs-namespaces");
         Self(path)
     }
 
@@ -30,13 +23,7 @@ impl Sources {
     }
 
     fn compile(&self, entry: &str) -> Result<String, light_cljs::NamespaceCompileError> {
-        compile_namespace(entry, std::slice::from_ref(&self.0))
-    }
-}
-
-impl Drop for Sources {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        compile_namespace(entry, std::slice::from_ref(self.0.path()))
     }
 }
 
@@ -136,16 +123,20 @@ fn namespace_paths_munge_hyphens_and_multiple_roots_are_explicit() {
         "(ns my-app.main (:require [lib.math-core :as m])) (js/console.log m/value)",
     );
     deps.write("lib/math_core.cljs", "(ns lib.math-core) (def value 5)");
-    let roots = [entry.0.clone(), deps.0.clone(), entry.0.clone()];
+    let roots = [
+        entry.0.to_path_buf(),
+        deps.0.to_path_buf(),
+        entry.0.to_path_buf(),
+    ];
     assert_eq!(
         execute(&compile_namespace("my-app.main", &roots).unwrap()),
         "5\n"
     );
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
         .args(["--compile", "--source-root"])
-        .arg(&entry.0)
+        .arg(entry.0.path())
         .args(["--entry", "my-app.main", "--source-root"])
-        .arg(&deps.0)
+        .arg(deps.0.path())
         .output()
         .unwrap();
     assert!(
@@ -162,7 +153,7 @@ fn distinct_sources_for_the_same_namespace_are_ambiguous() {
     let two = Sources::new();
     one.write("demo.cljs", "(ns demo) 1");
     two.write("demo.cljs", "(ns demo) 2");
-    let error = compile_namespace("demo", &[one.0.clone(), two.0.clone()]).unwrap_err();
+    let error = compile_namespace("demo", &[one.0.to_path_buf(), two.0.to_path_buf()]).unwrap_err();
     assert!(error.message.contains("ambiguous namespace demo"));
     assert!(error.message.contains(one.0.to_str().unwrap()));
     assert!(error.message.contains(two.0.to_str().unwrap()));
@@ -457,19 +448,19 @@ fn cljs_precedes_cljc_across_roots_but_same_extension_duplicates_remain_ambiguou
     one.write("demo.cljc", "(ns demo) (js/console.log 1)");
     two.write("demo.cljs", "(ns demo) (js/console.log 2)");
     for roots in [
-        [one.0.clone(), two.0.clone()],
-        [two.0.clone(), one.0.clone()],
+        [one.0.to_path_buf(), two.0.to_path_buf()],
+        [two.0.to_path_buf(), one.0.to_path_buf()],
     ] {
         assert_eq!(execute(&compile_namespace("demo", &roots).unwrap()), "2\n");
     }
     two.write("demo.cljc", "(ns demo) 3");
     assert_eq!(
-        execute(&compile_namespace("demo", &[one.0.clone(), two.0.clone()]).unwrap()),
+        execute(&compile_namespace("demo", &[one.0.to_path_buf(), two.0.to_path_buf()]).unwrap()),
         "2\n"
     );
     fs::remove_file(two.0.join("demo.cljs")).unwrap();
     assert!(
-        compile_namespace("demo", &[one.0.clone(), two.0.clone()])
+        compile_namespace("demo", &[one.0.to_path_buf(), two.0.to_path_buf()])
             .unwrap_err()
             .message
             .contains("ambiguous")
@@ -563,7 +554,7 @@ fn shared_primitive_selection_preserves_reader_context_and_matches_cli() {
     let shared = s.compile("main").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
         .args(["--compile", "--entry", "main", "--source-root"])
-        .arg(&s.0)
+        .arg(s.0.path())
         .output()
         .unwrap();
     assert!(output.status.success());

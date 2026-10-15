@@ -1,21 +1,11 @@
 //! Namespace operations execute source programs; reflection returns actual Vars.
+use crate::temp_dir::TempDir;
 use light_cljs::{MacroHost, compile_namespace, compile_namespace_with_macros};
-use std::{
-    fs,
-    path::PathBuf,
-    process::Command,
-    sync::atomic::{AtomicUsize, Ordering},
-};
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-struct Sources(PathBuf);
+use std::{fs, process::Command};
+struct Sources(TempDir);
 impl Sources {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "light-cljs-namespace-completion-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path).unwrap();
+        let path = TempDir::new("cljs-namespace-completion");
         Self(path)
     }
     fn write(&self, path: &str, source: &str) {
@@ -24,7 +14,7 @@ impl Sources {
         fs::write(path, source).unwrap();
     }
     fn run(&self, entry: &str) {
-        let js = compile_namespace(entry, std::slice::from_ref(&self.0)).unwrap();
+        let js = compile_namespace(entry, std::slice::from_ref(self.0.path())).unwrap();
         Self::check(&js);
     }
     fn check(js: &str) {
@@ -40,12 +30,6 @@ impl Sources {
         assert_eq!(String::from_utf8(output.stdout).unwrap(), "true\n");
     }
 }
-impl Drop for Sources {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 #[test]
 fn ordinary_top_level_requires_import_values_macros_and_shared_alias_metadata() {
     let s = Sources::new();
@@ -130,14 +114,16 @@ fn bare_imports_are_ignored_and_reflection_does_not_leak_across_compilations() {
     let mut host = MacroHost::new();
     s.write("main.cljs", "(ns main (:import goog)) (def old 1) (and (= {} (ns-imports 'main)) (contains? (ns-publics 'main) 'old))");
     Sources::check(
-        &compile_namespace_with_macros("main", std::slice::from_ref(&s.0), &mut host).unwrap(),
+        &compile_namespace_with_macros("main", std::slice::from_ref(s.0.path()), &mut host)
+            .unwrap(),
     );
     s.write(
         "main.cljs",
         "(ns main) (and (= {} (ns-imports 'main)) (not (contains? (ns-publics 'main) 'old)))",
     );
     Sources::check(
-        &compile_namespace_with_macros("main", std::slice::from_ref(&s.0), &mut host).unwrap(),
+        &compile_namespace_with_macros("main", std::slice::from_ref(s.0.path()), &mut host)
+            .unwrap(),
     );
 }
 
@@ -158,7 +144,7 @@ fn namespace_operation_errors_are_located_and_nested_requires_stay_invalid() {
         ("(ns-publics main)", "quoted symbol"),
     ] {
         s.write("main.cljs", &format!("(ns main)\n{body}"));
-        let error = compile_namespace("main", std::slice::from_ref(&s.0)).unwrap_err();
+        let error = compile_namespace("main", std::slice::from_ref(s.0.path())).unwrap_err();
         assert!(error.message.contains(expected), "{body}: {error}");
         assert_eq!(error.line_column.unwrap().0, 2);
     }
@@ -193,7 +179,7 @@ fn reserved_js_alias_warns_only_under_the_explicit_warning_api() {
     s.write("cljs/js.cljs", "(ns cljs.js)");
     s.write("main.cljs", "(ns main (:require [cljs.js :as js])) true");
     assert!(
-        compile_namespace("main", std::slice::from_ref(&s.0))
+        compile_namespace("main", std::slice::from_ref(s.0.path()))
             .unwrap_err()
             .message
             .contains("js is reserved")
@@ -201,7 +187,7 @@ fn reserved_js_alias_warns_only_under_the_explicit_warning_api() {
     let mut warnings = Vec::new();
     let js = compile_namespace_with_warnings(
         "main",
-        std::slice::from_ref(&s.0),
+        std::slice::from_ref(s.0.path()),
         AnalysisOptions {
             warning_mode: true,
             checked_arrays: false,
@@ -252,7 +238,7 @@ fn repeated_header_aliases_preserve_function_identity_and_macro_invocation() {
         let mut warnings = Vec::new();
         let js = compile_namespace_with_warnings(
             entry,
-            std::slice::from_ref(&s.0),
+            std::slice::from_ref(s.0.path()),
             AnalysisOptions {
                 warning_mode: true,
                 checked_arrays: false,
@@ -294,7 +280,7 @@ fn ordinary_alias_conflicts_for_value_and_macro_namespaces_fail_in_both_modes() 
         for warning_mode in [false, true] {
             let error = compile_namespace_with_warnings(
                 "boundary.main",
-                std::slice::from_ref(&s.0),
+                std::slice::from_ref(s.0.path()),
                 AnalysisOptions {
                     warning_mode,
                     checked_arrays: false,
@@ -330,7 +316,7 @@ fn retired_macro_import_syntax_reports_located_migration_diagnostics_in_both_mod
         for warning_mode in [false, true] {
             let error = compile_namespace_with_warnings(
                 "boundary.main",
-                std::slice::from_ref(&s.0),
+                std::slice::from_ref(s.0.path()),
                 AnalysisOptions {
                     warning_mode,
                     checked_arrays: false,

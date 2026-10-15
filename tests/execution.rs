@@ -2,7 +2,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
@@ -18,6 +17,12 @@ mod generated_execution;
 
 #[path = "support/language_combinations.rs"]
 mod language_combinations;
+
+// Temporary directories removed when their test ends, however it ends.
+#[path = "support/temp_dir.rs"]
+#[allow(dead_code)]
+mod temp_dir;
+use temp_dir::TempDir;
 
 #[derive(Clone, Debug)]
 struct Case {
@@ -108,14 +113,14 @@ struct RunFailure {
 fn try_run(mut command: Command, input: &[u8], timeout: Duration) -> Result<Output, RunFailure> {
     let dir = TempDir::new("process");
     let description = format!("{command:?}");
-    fs::write(dir.0.join("invocation.txt"), &description).unwrap();
-    fs::write(dir.0.join("input.js"), input).unwrap();
+    fs::write(dir.join("invocation.txt"), &description).unwrap();
+    fs::write(dir.join("input.js"), input).unwrap();
     // File-backed streams retain partial progress on a crash/hang, with no pipe
     // reader/writer joins that could outlive the process timeout.
     let child = command
-        .stdin(fs::File::open(dir.0.join("input.js")).unwrap())
-        .stdout(fs::File::create(dir.0.join("stdout.txt")).unwrap())
-        .stderr(fs::File::create(dir.0.join("stderr.txt")).unwrap())
+        .stdin(fs::File::open(dir.join("input.js")).unwrap())
+        .stdout(fs::File::create(dir.join("stdout.txt")).unwrap())
+        .stderr(fs::File::create(dir.join("stderr.txt")).unwrap())
         .spawn();
     let mut child = match child {
         Ok(child) => child,
@@ -141,8 +146,8 @@ fn try_run(mut command: Command, input: &[u8], timeout: Duration) -> Result<Outp
     };
     let output = Output {
         status,
-        stdout: fs::read(dir.0.join("stdout.txt")).unwrap(),
-        stderr: fs::read(dir.0.join("stderr.txt")).unwrap(),
+        stdout: fs::read(dir.join("stdout.txt")).unwrap(),
+        stderr: fs::read(dir.join("stderr.txt")).unwrap(),
     };
     if timed_out || !status.success() {
         let reason = if timed_out {
@@ -153,7 +158,7 @@ fn try_run(mut command: Command, input: &[u8], timeout: Duration) -> Result<Outp
         return Err(RunFailure {
             message: format!(
                 "required tool {reason}: {description}\nartifacts: {}\n{}\n{}",
-                dir.0.display(),
+                dir.display(),
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             ),
@@ -495,11 +500,7 @@ fn harness_rejects_cycles_through_language_values_and_invalid_adapters() {
         let error = try_run(node_command(), script.as_bytes(), Duration::from_secs(5))
             .expect_err("invalid adapters and cyclic values must fail outside program catch");
         assert!(error.message.contains("required tool failed"));
-        assert!(
-            fs::read(error._dir.0.join("stdout.txt"))
-                .unwrap()
-                .is_empty()
-        );
+        assert!(fs::read(error._dir.join("stdout.txt")).unwrap().is_empty());
     }
 }
 
@@ -555,9 +556,7 @@ fn harness_rejects_invalid_cases_and_unserializable_values() {
             error.message
         );
         assert!(
-            fs::read(error._dir.0.join("stdout.txt"))
-                .unwrap()
-                .is_empty(),
+            fs::read(error._dir.join("stdout.txt")).unwrap().is_empty(),
             "harness failure must not become a program outcome"
         );
     }
@@ -597,7 +596,7 @@ fn process_failures_and_timeouts_retain_current_case_identity_and_source() {
             );
         }
         assert_eq!(
-            fs::read_to_string(error._dir.0.join("input.js")).unwrap(),
+            fs::read_to_string(error._dir.join("input.js")).unwrap(),
             script
         );
     }
@@ -682,40 +681,6 @@ fn large_vector_literals_do_not_use_the_javascript_argument_stack() {
     let source = format!("(count [{}])", "0 ".repeat(140_000));
     let js = compile(&source).unwrap();
     assert_eq!(node(&format!("console.log({js});")), "140000\n");
-}
-
-struct TempDir(PathBuf);
-impl TempDir {
-    fn new(label: &str) -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        loop {
-            let path = std::env::temp_dir().join(format!(
-                "light-cljs-{label}-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => return Self(path),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => panic!(
-                    "cannot create execution artifacts at {}: {error}",
-                    path.display()
-                ),
-            }
-        }
-    }
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            eprintln!(
-                "Execution failure artifacts retained at {}",
-                self.0.display()
-            );
-        } else {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -836,7 +801,7 @@ fn reference_build(
     macro_roots: &[PathBuf],
 ) -> TempDir {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let dir = TempDir::new(&format!("reference-{label}"));
+    let dir = TempDir::new(&format!("cljs-reference-{label}"));
     let (kind, identity, checkout, dependency) = match reference {
         Reference::Release => (
             "release",
@@ -896,7 +861,7 @@ fn reference_build(
             identity,
             &checkout,
         ])
-        .arg(&dir.0)
+        .arg(dir.path())
         .args(args);
     let timeout = std::env::var("LIGHT_CLJS_REFERENCE_TIMEOUT_SECONDS")
         .map(|value| {
@@ -906,7 +871,7 @@ fn reference_build(
         })
         .unwrap_or(180);
     assert!(timeout > 0, "reference timeout must be positive");
-    let settings = run_reference(command, &dir.0, Duration::from_secs(timeout));
+    let settings = run_reference(command, &dir, Duration::from_secs(timeout));
     assert!(
         settings.contains(&format!("REFERENCE IDENTITY {kind} {identity}")),
         "missing verified reference identity: {settings}"
@@ -918,13 +883,12 @@ fn reference_build(
         "missing verified reference settings: {settings}"
     );
     assert!(
-        dir.0
-            .join(if args.first() == Some(&"analysis") {
-                "analysis.tsv"
-            } else {
-                "reference.js"
-            })
-            .is_file(),
+        dir.join(if args.first() == Some(&"analysis") {
+            "analysis.tsv"
+        } else {
+            "reference.js"
+        })
+        .is_file(),
         "reference compiler produced no results"
     );
     eprintln!("{}", settings.trim());
@@ -954,7 +918,7 @@ fn analyzer_boundary_classifications_match_reference() {
             &["analysis", "tests/fixtures/analysis-boundaries.tsv"],
             &[],
         );
-        let output = fs::read_to_string(dir.0.join("analysis.tsv")).unwrap();
+        let output = fs::read_to_string(dir.join("analysis.tsv")).unwrap();
         let actual: Vec<_> = output.lines().collect();
         let expected: Vec<_> = rows(include_str!("fixtures/analysis-boundaries.tsv")).collect();
         assert_eq!(actual.len(), expected.len(), "missing boundary outcomes");
@@ -1016,8 +980,8 @@ fn reference_driver(dir: &TempDir) -> String {
     // The reference Node launcher resolves its asset path from the process cwd.
     format!(
         "process.chdir({:?});\nrequire({:?});\n",
-        dir.0.to_str().unwrap(),
-        dir.0.join("reference.js").to_str().unwrap(),
+        dir.to_str().unwrap(),
+        dir.join("reference.js").to_str().unwrap(),
     )
 }
 
@@ -1097,7 +1061,7 @@ fn reference_results_policy(
         .iter()
         .map(|reference| {
             let dir = reference_build(reference, label, args, macro_roots);
-            fs::write(dir.0.join("node-version.txt"), &node_version).unwrap();
+            fs::write(dir.join("node-version.txt"), &node_version).unwrap();
             // Observed programs initialize inside the case so namespace stdout
             // is captured, just like run/report effects. One case per process.
             let observed_program = args.first() == Some(&"program") && args.len() == 4;
@@ -1109,12 +1073,12 @@ fn reference_results_policy(
             } else {
                 loader + driver
             };
-            fs::write(dir.0.join("driver.js"), &script).unwrap();
+            fs::write(dir.join("driver.js"), &script).unwrap();
             let output = node(&script);
-            fs::write(dir.0.join("results.txt"), &output).unwrap();
+            fs::write(dir.join("results.txt"), &output).unwrap();
             if observed_program {
                 let fresh_output = node(&script);
-                fs::write(dir.0.join("fresh-results.txt"), &fresh_output).unwrap();
+                fs::write(dir.join("fresh-results.txt"), &fresh_output).unwrap();
                 assert_eq!(output, fresh_output, "fresh program processes must agree");
             }
             if label == "cases" {
@@ -1381,11 +1345,7 @@ fn map_encoder_checks_count_duplicates_types_and_unordered_entries_independently
             )]);
         let error = try_run(node_command(), script.as_bytes(), Duration::from_secs(5))
             .expect_err("invalid maps fail outside compiled-case catches");
-        assert!(
-            fs::read(error._dir.0.join("stdout.txt"))
-                .unwrap()
-                .is_empty()
-        );
+        assert!(fs::read(error._dir.join("stdout.txt")).unwrap().is_empty());
     }
 }
 
@@ -1472,11 +1432,7 @@ fn set_encoder_preserves_tags_checks_duplicates_and_sorts_only_members() {
             + &harness_script(&[("invalid-set", "invalid adapter", &format!("() => {value}"))]);
         let error = try_run(node_command(), script.as_bytes(), Duration::from_secs(10))
             .expect_err("invalid sets fail outside compiled-case catches");
-        assert!(
-            fs::read(error._dir.0.join("stdout.txt"))
-                .unwrap()
-                .is_empty()
-        );
+        assert!(fs::read(error._dir.join("stdout.txt")).unwrap().is_empty());
     }
 }
 
@@ -1556,11 +1512,7 @@ fn reduced_markers_are_opaque_harness_failures_even_when_nested_or_traced() {
         let error = try_run(node_command(), script.as_bytes(), Duration::from_secs(10))
             .expect_err("opaque markers must fail transport outside case catches");
         assert!(error.message.contains("unsupported opaque outcome value"));
-        assert!(
-            fs::read(error._dir.0.join("stdout.txt"))
-                .unwrap()
-                .is_empty()
-        );
+        assert!(fs::read(error._dir.join("stdout.txt")).unwrap().is_empty());
     }
 }
 
@@ -1717,7 +1669,7 @@ fn reader_forms_match_pinned_values_effects_and_stdout() {
         })
         .collect::<Vec<_>>();
     let input = TempDir::new("reader-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -1860,7 +1812,7 @@ fn numeric_functions_match_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("numeric-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("numeric-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -1960,7 +1912,7 @@ fn compiled_overloads_match_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("overload-") || case.id.starts_with("arity-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("overload-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -2027,7 +1979,7 @@ fn compiled_invocation_matches_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("invocation-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("invocation-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -2107,7 +2059,7 @@ fn compiled_recur_matches_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("recur-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("recur-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -2187,7 +2139,7 @@ fn compiled_letfn_matches_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("letfn-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("letfn-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -2290,7 +2242,7 @@ fn letfn_identity_guarantees_do_not_reuse_nested_or_iterated_group_slots() {
 fn pinned_letfn_var_reuse_differences_remain_explicit() {
     let cases = letfn_identity_cases();
     let input = TempDir::new("letfn-identities-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -2349,7 +2301,7 @@ fn compiled_destructuring_matches_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("destructure-") && !destructuring_difference(&case.id))
         .collect::<Vec<_>>();
     let input = TempDir::new("destructure-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -2402,7 +2354,7 @@ fn pinned_destructuring_differences_remain_explicit() {
         .filter(|c| destructuring_difference(&c.id))
         .collect();
     let input = TempDir::new("destructuring-differences");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -2548,7 +2500,7 @@ fn compiled_exceptions_match_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("exception-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("exception-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -2629,7 +2581,7 @@ fn compiled_control_matches_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("control-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("control-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -2675,7 +2627,7 @@ fn compiled_metadata_match_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("metadata-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("metadata-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -2721,7 +2673,7 @@ fn compiled_state_matches_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("state-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("state-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -2794,7 +2746,7 @@ fn compiled_definitions_match_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("definitions-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("definitions-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -2882,7 +2834,7 @@ fn compiled_interop_match_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("interop-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("interop-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -2947,7 +2899,7 @@ fn compiled_protocols_match_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("protocol-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("protocol-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -3024,7 +2976,7 @@ fn compiled_reify_match_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("reify-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("reify-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -3098,7 +3050,7 @@ fn compiled_deftype_match_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("deftype-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("deftype-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -3170,7 +3122,7 @@ fn compiled_record_match_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("record-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("record-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -3265,7 +3217,7 @@ fn compiled_extension_matches_pinned_isolated_references() {
         .filter(|case| case.id.starts_with("extension-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("extension-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -3367,7 +3319,7 @@ fn compiled_core_protocol_matches_pinned_isolated_references() {
         .filter(|case| case.id.starts_with("core-protocol-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("core-protocol-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -3444,7 +3396,7 @@ fn compiled_helpers_match_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("helper-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("helper-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -3516,7 +3468,7 @@ fn compiled_deferred_match_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("deferred-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("deferred-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -3562,7 +3514,7 @@ fn compiled_sequences_match_pinned_values_effects_and_stdout() {
         .filter(|case| case.id.starts_with("sequences-"))
         .collect::<Vec<_>>();
     let input = TempDir::new("sequences-cases-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases

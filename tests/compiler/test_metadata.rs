@@ -1,4 +1,5 @@
 //! Executable definition metadata survives ordinary and demanded macro initialization.
+use crate::temp_dir::TempDir;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace_with_macros};
 use std::io::Write;
@@ -34,12 +35,7 @@ fn node(source: &str) -> String {
 }
 #[test]
 fn metadata_test_original_source_passes_both_phases_and_recovers() {
-    let artifacts = std::env::var_os("LIGHT_TEST_METADATA_ARTIFACTS")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("light-test-metadata-{}", std::process::id()))
-        });
-    std::fs::create_dir_all(&artifacts).unwrap();
+    let artifacts = TempDir::named_by("LIGHT_TEST_METADATA_ARTIFACTS", "test-metadata");
     let executable = std::env::current_exe().unwrap();
     let executable_snapshot = artifacts.join("acceptance-test-executable");
     std::fs::copy(&executable, &executable_snapshot).unwrap();

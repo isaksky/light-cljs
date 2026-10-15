@@ -1,3 +1,4 @@
+use crate::temp_dir::TempDir;
 use light_cljs::source_provider::{FileSourceProvider, SourceInput};
 use light_cljs::{EvalOptions, EvalSession};
 use std::{path::PathBuf, rc::Rc};
@@ -127,7 +128,7 @@ fn malformed_nsstar_is_located_and_failed_imports_do_not_publish_aliases() {
 
 #[test]
 fn source_macros_referrals_imports_and_ordered_effects_keep_the_declared_owner() {
-    let root = std::env::temp_dir().join(format!("light-eval-nsstar-{}", std::process::id()));
+    let root = TempDir::new("eval-nsstar");
     std::fs::create_dir_all(root.join("syntax")).unwrap();
     std::fs::write(root.join("syntax/library.cljs"),
         "(ns syntax.library) (def value 7) (defmacro snapshot [] [value (str (get-in &env [:ns :name]))])").unwrap();
@@ -137,7 +138,7 @@ fn source_macros_referrals_imports_and_ordered_effects_keep_the_declared_owner()
     )
     .unwrap();
     let reused = EvalSession::new(EvalOptions {
-        source_provider: Some(Rc::new(FileSourceProvider::new(vec![root.clone()]))),
+        source_provider: Some(Rc::new(FileSourceProvider::new(vec![root.to_path_buf()]))),
         file_provider: Some(Rc::new(|_| {
             Ok(Some(SourceInput::new(
                 "callback.cljs",
@@ -163,7 +164,7 @@ fn source_macros_referrals_imports_and_ordered_effects_keep_the_declared_owner()
          (= ['Widget Widget] (find (ns-imports 'syntax.owner) 'Widget))])"#;
     std::fs::write(root.join("syntax/owner.cljs"), source).unwrap();
     let javascript =
-        light_cljs::compile_namespace("syntax.owner", std::slice::from_ref(&root)).unwrap();
+        light_cljs::compile_namespace("syntax.owner", std::slice::from_ref(root.path())).unwrap();
     let engine = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
     let value = engine.evaluate_js(&javascript).unwrap();
     assert_eq!(
@@ -212,5 +213,4 @@ fn source_macros_referrals_imports_and_ordered_effects_keep_the_declared_owner()
             "\"A\""
         );
     }
-    std::fs::remove_dir_all(root).unwrap();
 }

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Explicit, pinned SCI oracle; check by default, --write to regenerate fixtures."""
 import argparse
+import atexit
 import os
 import re
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -112,6 +114,9 @@ def main():
         parser.error("--timeout must be finite and positive")
     artifacts = Path(tempfile.mkdtemp(prefix="light-cljs-sci-reference-"))
     print(f"SCI reference artifacts: {artifacts}", flush=True)
+    if os.environ.get("LIGHT_CLJS_KEEP_TMP", "") in ("", "0"):
+        # Removed however the run ends; LIGHT_CLJS_KEEP_TMP=1 keeps them.
+        atexit.register(shutil.rmtree, artifacts, ignore_errors=True)
     checkout = checked_checkout(args.checkout, artifacts)
     fixture_path = args.fixtures.resolve(strict=True)
     if args.evaluator and fixture_path != FIXTURES:

@@ -1,4 +1,5 @@
 //! Source-language JavaScript forms, diagnostics and direct host observations.
+use crate::temp_dir::TempDir;
 use light_cljs::{compile, compile_namespace};
 use std::{fs, process::Command};
 
@@ -88,10 +89,9 @@ fn malformed_special_forms_fail_with_source_spans_before_emission() {
 
 #[test]
 fn referred_global_names_and_qualified_methods_survive_namespace_compilation() {
-    let root = std::env::temp_dir().join(format!("light-cljs-interop-{}", std::process::id()));
-    fs::create_dir_all(&root).unwrap();
+    let root = TempDir::new("cljs-interop");
     fs::write(root.join("main.cljs"), "(ns main (:refer-global :only [String Object] :rename {String Text})) (let [method (fn [] Text/.toUpperCase) ctor Object/new] (js/console.log ((method) \"foo\") (object? (ctor))))").unwrap();
-    let javascript = compile_namespace("main", std::slice::from_ref(&root)).unwrap();
+    let javascript = compile_namespace("main", std::slice::from_ref(root.path())).unwrap();
     let output = Command::new("node")
         .args(["-e", &javascript])
         .output()
@@ -102,7 +102,6 @@ fn referred_global_names_and_qualified_methods_survive_namespace_compilation() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stdout, b"FOO true\n");
-    fs::remove_dir_all(root).unwrap();
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in

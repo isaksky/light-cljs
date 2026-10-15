@@ -1,4 +1,5 @@
 //! Complete upstream namespace bodies and setup execute in both phases.
+use crate::temp_dir::TempDir;
 use light_cljs::MacroHost;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::path::Path;
@@ -38,8 +39,7 @@ fn complete_residual_namespace_bodies_execute_in_both_phases() {
                     "complete source context: {} macro={macro_phase} reused={reused}",
                     fields[0]
                 );
-                let root = std::env::temp_dir()
-                    .join(format!("light-residual-source-{}", std::process::id()));
+                let root = TempDir::new("residual-source");
                 copy_tree(
                     &Path::new(env!("CARGO_MANIFEST_DIR")).join(fields[2]),
                     &root,
@@ -73,7 +73,7 @@ fn complete_residual_namespace_bodies_execute_in_both_phases() {
                 }
                 let javascript = light_cljs::compile_namespace_with_macros(
                     fields[1],
-                    std::slice::from_ref(&root),
+                    std::slice::from_ref(root.path()),
                     if reused {
                         &mut reused_host
                     } else {
@@ -98,7 +98,6 @@ fn complete_residual_namespace_bodies_execute_in_both_phases() {
                     String::from_utf8_lossy(&output.stderr)
                 );
                 assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "true");
-                std::fs::remove_dir_all(root).unwrap();
             }
         }
     }

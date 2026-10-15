@@ -154,7 +154,7 @@ pub(super) fn analyze(program: &NamespaceProgram, sources: &[(String, String)]) 
     }
     analyze_namespace_entry(
         &program.entry,
-        std::slice::from_ref(&root.0),
+        std::slice::from_ref(root.0.path()),
         &mut MacroHost::new(),
         AnalysisOptions::default(),
         &mut Vec::new(),

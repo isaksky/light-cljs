@@ -12,6 +12,11 @@ mod row_tests;
 #[allow(dead_code)]
 mod protocol;
 
+// Temporary directories removed when their test ends, however it ends.
+#[path = "../support/temp_dir.rs"]
+#[allow(dead_code)]
+mod temp_dir;
+
 mod eval_cli;
 mod eval_examples;
 mod eval_nsstar;

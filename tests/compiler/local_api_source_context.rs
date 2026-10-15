@@ -1,5 +1,6 @@
 //! Whole original SCI sources and independent retained outcome/effect literals.
 //! Alias checks are additional observations, never substitutes for source runs.
+use crate::temp_dir::TempDir;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace_with_macros};
 use std::io::Write;
@@ -52,11 +53,7 @@ fn original_local_api_sources_execute_in_both_phases_and_host_lifecycles(start: 
         .collect();
     assert_eq!(rows.len(), 121, "whole reviewed cohort drift");
     let mut reused = MacroHost::new();
-    let artifact = std::env::var_os("LIGHT_LOCAL_API_SOURCE_ARTIFACTS")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("light-local-api-source-{}", std::process::id()))
-        });
+    let artifact = TempDir::named_by("LIGHT_LOCAL_API_SOURCE_ARTIFACTS", "local-api-source");
     for row in &rows[start..end] {
         let fields: Vec<_> = row.split('\t').collect();
         assert_eq!(fields.len(), 4);

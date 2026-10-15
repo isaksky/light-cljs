@@ -1,4 +1,5 @@
 //! Executable definition metadata survives ordinary and demanded macro initialization.
+use crate::temp_dir::TempDir;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace_with_macros};
 use std::io::Write;
@@ -48,17 +49,14 @@ fn both(source: &str, host: &mut MacroHost, expected: &str) {
 }
 
 fn both_namespace(namespace: &str, source: &str, host: &mut MacroHost, expected: &str) {
-    let root = std::env::temp_dir().join(format!(
-        "light-metadata-reflection-{}-{namespace}",
-        std::process::id()
-    ));
+    let root = TempDir::new(&format!("metadata-reflection-{namespace}"));
     let path = root.join(format!(
         "{}.cljs",
         namespace.replace('.', "/").replace('-', "_")
     ));
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, source).unwrap();
-    let js = compile_namespace_with_macros(namespace, &[root], host).unwrap();
+    let js = compile_namespace_with_macros(namespace, &[root.to_path_buf()], host).unwrap();
     let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
     assert_eq!(
         evaluator

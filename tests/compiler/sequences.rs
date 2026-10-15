@@ -1,4 +1,5 @@
 //! Compiled sequence checks with literal host results, independent of the shared encoder.
+use crate::temp_dir::TempDir;
 use light_cljs::{compile, compile_namespace};
 use std::{fs, process::Command};
 
@@ -70,15 +71,14 @@ fn nested_modifiers_keep_per_iteration_captures_and_stop_at_each_level() {
 
 #[test]
 fn namespaces_aliases_and_compiled_macro_output_use_compiled_comprehensions() {
-    let root = std::env::temp_dir().join(format!("light-cljs-sequences-{}", std::process::id()));
-    fs::create_dir_all(&root).unwrap();
+    let root = TempDir::new("cljs-sequences");
     fs::write(
         root.join("macros.cljs"),
         "(ns macros) (defmacro squares [xs] (list 'cljs.core/for ['x xs] (list '* 'x 'x)))",
     )
     .unwrap();
     fs::write(root.join("main.cljs"), "(ns main (:require [cljs.core :as c] [macros :as m])) (let [s (m/squares (c/range 4)) n (atom 0) f c/map-indexed] (c/doseq [x s] (swap! n + x)) (js/console.log @n (c/pr-str (f vector s)) (c/pr-str (c/for [x [1 2]] (inc x)))))").unwrap();
-    let javascript = compile_namespace("main", std::slice::from_ref(&root)).unwrap();
+    let javascript = compile_namespace("main", std::slice::from_ref(root.path())).unwrap();
     let output = Command::new("node")
         .args(["-e", &javascript])
         .output()
@@ -89,7 +89,6 @@ fn namespaces_aliases_and_compiled_macro_output_use_compiled_comprehensions() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stdout, b"14 ([0 0] [1 1] [2 4] [3 9]) (2 3)\n");
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

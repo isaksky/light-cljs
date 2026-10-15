@@ -17,6 +17,7 @@
 //! same rounds as light-cljs (light-cljs-233). The collection workloads run at two
 //! sizes, so that an operation that is linear where upstream's is constant shows as
 //! quadratic growth.
+use crate::temp_dir::TempDir;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{ApplicationOptions, OptimizationLevel, analyze, parse, prepare_application};
 use std::error::Error;
@@ -24,7 +25,7 @@ use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use std::{env, fs};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -456,14 +457,6 @@ struct Emitted {
     gzip: Option<usize>,
 }
 
-/// Removes the emitted programs, which are too large to keep, however the run ends.
-struct Scratch(PathBuf);
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 const DRIVER: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/benchmarks/support/compiler_levels.js"
@@ -497,21 +490,18 @@ pub fn run(config: &Config, fixtures: &[Startup]) -> Result<()> {
         return Err(format!("{} exists; use a new output directory", csv.display()).into());
     }
     fs::create_dir_all(&config.output)?;
-    let scratch = Scratch(env::temp_dir().join(format!(
-        "light-cljs-levels-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    )));
-    fs::create_dir_all(&scratch.0)?;
+    // The emitted programs are too large to keep: the guard removes them however
+    // the run ends.
+    let scratch = TempDir::new("cljs-levels");
     let workloads = config.workloads();
     let rows = config.rows();
     let startup = emit_all(
-        &scratch.0,
+        &scratch,
         "startup",
         fixtures.iter().map(|f| (f.name, f.source)),
     )?;
     let steady = emit_all(
-        &scratch.0,
+        &scratch,
         "steady",
         workloads.iter().map(|s| (s.name, s.source)),
     )?;
@@ -519,8 +509,7 @@ pub fn run(config: &Config, fixtures: &[Startup]) -> Result<()> {
     // Compiled before the rounds, so that upstream's steady state is timed in them. A
     // failure leaves the light-cljs timings in place and is reported at the end.
     let upstream = config.upstream.as_ref().map(|checkout| {
-        upstream_builds(checkout, &scratch.0, &node, fixtures, &workloads)
-            .map_err(|e| e.to_string())
+        upstream_builds(checkout, &scratch, &node, fixtures, &workloads).map_err(|e| e.to_string())
     });
     let upstream_steady: &[PathBuf] = match &upstream {
         Some(Ok(upstream)) => &upstream.steady,

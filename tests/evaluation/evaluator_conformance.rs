@@ -60,6 +60,8 @@ fn audit_historical_corpus_with_compiler_evaluator() {
             actual.fields()
         ));
     }
+    // The report is the output of this explicit audit, so it stays: one file whose
+    // fixed name each run overwrites.
     let path = std::env::temp_dir().join("light-cljs-evaluator-corpus-audit.tsv");
     std::fs::write(&path, report).unwrap();
     println!("Audit written to {}", path.display());
@@ -98,6 +100,7 @@ fn audit_explicit_library_import_adaptations() {
             actual.fields()
         ));
     }
+    // Kept on purpose, as in `audit_historical_corpus_with_compiler_evaluator`.
     let path = std::env::temp_dir().join("light-cljs-evaluator-library-audit.tsv");
     std::fs::write(&path, report).unwrap();
     println!("Supplemental library audit written to {}", path.display());

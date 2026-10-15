@@ -341,7 +341,7 @@ fn namespace_entries_switch_ns_only_when_the_program_reaches_reflection() {
         );
         analyze_namespace_entry(
             "app.main",
-            std::slice::from_ref(&sources.0),
+            std::slice::from_ref(sources.0.path()),
             &mut MacroHost::new(),
             AnalysisOptions::default(),
             &mut Vec::new(),

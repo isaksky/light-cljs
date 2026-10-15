@@ -1,4 +1,5 @@
 //! Applied mapv retains lazy collection arguments in both engines and phases.
+use crate::temp_dir::TempDir;
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{
     fs,
@@ -48,22 +49,7 @@ fn execute(unit: &str, expected: &str, directory: &Path) {
 
 #[test]
 fn applied_mapv_shortest_inputs_execute_in_fresh_and_reused_phases() {
-    let retained = std::env::var_os("LIGHT_MAPV_APPLY_ROOT");
-    let root = retained
-        .as_ref()
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!(
-                "light-cljs-mapv-apply-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ))
-        });
-    assert!(!root.exists());
-    fs::create_dir_all(&root).unwrap();
+    let root = TempDir::new_named_by("LIGHT_MAPV_APPLY_ROOT", "cljs-mapv-apply");
     let mut reused = MacroHost::new();
     fs::write(
         root.join("warmup.js"),
@@ -124,7 +110,4 @@ fn applied_mapv_shortest_inputs_execute_in_fresh_and_reused_phases() {
     let unit = emit_js_unit(&program);
     fs::write(directory.join("unit.js"), &unit).unwrap();
     execute(&unit, "\"[10]\"", &directory);
-    if retained.is_none() {
-        fs::remove_dir_all(root).unwrap();
-    }
 }

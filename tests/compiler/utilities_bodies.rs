@@ -1,4 +1,5 @@
 //! Complete utilities_completion upstream bodies, pinned references and source provenance.
+use crate::temp_dir::TempDir;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{
@@ -126,15 +127,7 @@ fn utilities_completion_fixtures_match_pinned_release_and_checkout() {
             checkout.to_string_lossy().into_owned(),
         ),
     ] {
-        let output_dir = std::env::temp_dir().join(format!(
-            "light-cljs-utilities_completion-{kind}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&output_dir).unwrap();
+        let output_dir = TempDir::new(&format!("cljs-utilities_completion-{kind}"));
         let oracle_fixture = output_dir.join("cases.tsv");
         fs::write(&oracle_fixture, &fixture_source).unwrap();
         let mut child =
@@ -150,7 +143,7 @@ fn utilities_completion_fixtures_match_pinned_release_and_checkout() {
                     identity,
                     &checkout_arg,
                 ])
-                .arg(&output_dir)
+                .arg(output_dir.path())
                 .arg("cases")
                 .arg(oracle_fixture)
                 .stdin(Stdio::null())
@@ -204,6 +197,5 @@ fn utilities_completion_fixtures_match_pinned_release_and_checkout() {
             "Matched {} utilities_completion workflows against {kind} {identity}",
             cases.len()
         );
-        fs::remove_dir_all(output_dir).unwrap();
     }
 }

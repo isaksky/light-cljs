@@ -1,4 +1,5 @@
 //! Complete SCI library bodies with explicit original user/import fixture.
+use crate::temp_dir::TempDir;
 use std::{
     fs,
     io::Write,
@@ -112,8 +113,7 @@ fn execute_case(line: &str, root: &std::path::Path) -> String {
 
 #[test]
 fn library_import_fixture_preserves_values_and_callbacks_in_both_engines() {
-    let root =
-        std::env::temp_dir().join(format!("light-cljs-library-bridge-{}", std::process::id()));
+    let root = TempDir::new("cljs-library-bridge");
     let fixtures = [
         (
             "string",
@@ -157,7 +157,6 @@ fn library_import_fixture_preserves_values_and_callbacks_in_both_engines() {
             handle.join().unwrap();
         }
     });
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

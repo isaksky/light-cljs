@@ -1,4 +1,5 @@
 //! Complete equality upstream bodies, pinned references and source provenance.
+use crate::temp_dir::TempDir;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{
@@ -138,15 +139,7 @@ fn equality_fixtures_match_pinned_release_and_checkout() {
             checkout.to_string_lossy().into_owned(),
         ),
     ] {
-        let output_dir = std::env::temp_dir().join(format!(
-            "light-cljs-equality-{kind}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&output_dir).unwrap();
+        let output_dir = TempDir::new(&format!("cljs-equality-{kind}"));
         fs::write(output_dir.join("cases.tsv"), &fixtures).unwrap();
         let mut child =
             Command::new(std::env::var_os("CLOJURE").unwrap_or_else(|| "clojure".into()))
@@ -161,7 +154,7 @@ fn equality_fixtures_match_pinned_release_and_checkout() {
                     identity,
                     &checkout_arg,
                 ])
-                .arg(&output_dir)
+                .arg(output_dir.path())
                 .arg("cases")
                 .arg(output_dir.join("cases.tsv"))
                 .stdin(Stdio::null())
@@ -215,7 +208,6 @@ fn equality_fixtures_match_pinned_release_and_checkout() {
             "Matched {} equality workflows against {kind} {identity}",
             cases.len()
         );
-        fs::remove_dir_all(output_dir).unwrap();
     }
 }
 

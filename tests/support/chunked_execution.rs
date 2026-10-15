@@ -6,11 +6,10 @@
 //! (`tests/support/execution.js`), so checking a chunked run against its
 //! single-file oracle compares two strings. The startup file name is the
 //! record's id: give it the same name in both runs.
+use crate::temp_dir::TempDir;
 use std::{
     fs,
-    path::PathBuf,
     process::{Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
@@ -27,7 +26,7 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 /// anything but one record is an error carrying its stdout and stderr. The
 /// directory is removed either way.
 pub fn run_modules(files: &[(&str, &str)], startup: &str) -> Result<String, String> {
-    let dir = fresh_dir();
+    let dir = TempDir::new("cljs-chunks");
     let modules = dir.join("modules");
     for (name, text) in files {
         let path = modules.join(name);
@@ -46,7 +45,6 @@ pub fn run_modules(files: &[(&str, &str)], startup: &str) -> Result<String, Stri
     let mut child = match spawned {
         Ok(child) => child,
         Err(error) => {
-            let _ = fs::remove_dir_all(&dir);
             return Err(format!("chunked execution requires Node: {error}"));
         }
     };
@@ -64,7 +62,6 @@ pub fn run_modules(files: &[(&str, &str)], startup: &str) -> Result<String, Stri
     };
     let output = fs::read_to_string(&stdout).unwrap();
     let errors = fs::read_to_string(&stderr).unwrap();
-    let _ = fs::remove_dir_all(&dir);
     match (status, output.strip_suffix('\n')) {
         (Some(status), Some(record)) if status.success() && !record.contains('\n') => {
             Ok(record.into())
@@ -77,22 +74,6 @@ pub fn run_modules(files: &[(&str, &str)], startup: &str) -> Result<String, Stri
             Err(format!(
                 "chunked execution of {startup}: {status}\nstdout:\n{output}\nstderr:\n{errors}"
             ))
-        }
-    }
-}
-
-fn fresh_dir() -> PathBuf {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    loop {
-        let path = std::env::temp_dir().join(format!(
-            "light-cljs-chunks-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        match fs::create_dir(&path) {
-            Ok(()) => return path,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => panic!("cannot create {}: {error}", path.display()),
         }
     }
 }

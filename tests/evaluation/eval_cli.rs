@@ -1,10 +1,10 @@
 //! Compiler-backed evaluator subprocesses deliberately have no Node/JVM/SCI on PATH.
+use crate::temp_dir::TempDir;
 use std::{
     fs,
     io::Write,
     path::PathBuf,
     process::{Command, Output, Stdio},
-    sync::atomic::{AtomicUsize, Ordering},
 };
 
 fn command() -> Command {
@@ -44,27 +44,16 @@ fn ok(output: Output, expected: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
-struct Directory(PathBuf);
+/// A temporary directory whose name is not ASCII.
+struct Directory(TempDir);
 impl Directory {
     fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "light-cli-λ-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&path).unwrap();
-        Self(path)
+        Self(TempDir::new("cli-λ"))
     }
     fn write(&self, path: &str, source: &str) -> PathBuf {
         let path = self.0.join(path);
         fs::write(&path, source).unwrap();
         path
-    }
-}
-impl Drop for Directory {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
     }
 }
 

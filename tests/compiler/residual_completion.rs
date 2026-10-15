@@ -1,11 +1,11 @@
 //! Complete remaining assertion-free upstream bodies; preserve actual oracles.
+use crate::temp_dir::TempDir;
 use light_cljs::MacroHost;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::process::Command;
 
 fn both(source: &str, expected: &str, macro_phase: bool) {
-    let root =
-        std::env::temp_dir().join(format!("light-residual-completion-{}", std::process::id()));
+    let root = TempDir::new("residual-completion");
     std::fs::create_dir_all(root.join("residualcomplete")).unwrap();
     let observed = if macro_phase {
         format!("(defmacro upstream [] {source}) (pr-str (upstream))")
@@ -20,7 +20,7 @@ fn both(source: &str, expected: &str, macro_phase: bool) {
     let javascript = light_cljs::compile_namespace_with_macros(
         "residualcomplete.probe",
         &[
-            root.clone(),
+            root.to_path_buf(),
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures/compiler-residual-completion"),
         ],
@@ -49,7 +49,6 @@ fn both(source: &str, expected: &str, macro_phase: bool) {
         expected,
         "Node macro_phase={macro_phase}: {source}"
     );
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

@@ -1,10 +1,11 @@
 //! Complete pinned promised library bodies in canonical applications and macros.
+use crate::temp_dir::TempDir;
 use light_cljs::MacroHost;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::process::Command;
 
 fn both(source: &str, expected: &str) {
-    let root = std::env::temp_dir().join(format!("light-library-bodies-{}", std::process::id()));
+    let root = TempDir::new("library-bodies");
     std::fs::create_dir_all(root.join("librarybody")).unwrap();
     let namespace = if source.contains("clojure.set/") {
         "clojure.set"
@@ -20,7 +21,7 @@ fn both(source: &str, expected: &str) {
     .unwrap();
     let javascript = light_cljs::compile_namespace_with_macros(
         "librarybody.probe",
-        std::slice::from_ref(&root),
+        std::slice::from_ref(root.path()),
         &mut MacroHost::new(),
     )
     .unwrap_or_else(|e| panic!("{source}: {e}"));
@@ -46,7 +47,6 @@ fn both(source: &str, expected: &str) {
         expected,
         "Node: {source}"
     );
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

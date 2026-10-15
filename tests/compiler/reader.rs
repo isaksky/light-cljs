@@ -1,3 +1,4 @@
+use crate::temp_dir::TempDir;
 use light_cljs::{MacroHost, compile, compile_with_macros};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -496,8 +497,7 @@ fn runtime_reader_uses_dynamic_namespace_and_restores_nested_reads() {
 
 #[test]
 fn runtime_reader_registers_aliases_refers_and_source_namespace_entries() {
-    let root =
-        std::env::temp_dir().join(format!("light-cljs-reader-context-{}", std::process::id()));
+    let root = TempDir::new("cljs-reader-context");
     std::fs::create_dir_all(root.join("reader")).unwrap();
     std::fs::write(
         root.join("reader/dep.cljs"),
@@ -531,7 +531,8 @@ fn runtime_reader_registers_aliases_refers_and_source_namespace_entries() {
            (= (second (read-string "`inc")) `inc))"##,
     )
     .unwrap();
-    let js = light_cljs::compile_namespace("reader.app", std::slice::from_ref(&root)).unwrap();
+    let js =
+        light_cljs::compile_namespace("reader.app", std::slice::from_ref(root.path())).unwrap();
     let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
     assert_eq!(
         e.string(e.evaluate_js(&format!("String({js})")).unwrap())
@@ -539,7 +540,6 @@ fn runtime_reader_registers_aliases_refers_and_source_namespace_entries() {
         "true"
     );
     assert_eq!(run(&js), "true\n");
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

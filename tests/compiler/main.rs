@@ -28,6 +28,11 @@ mod generated;
 #[path = "../support/chunked_execution.rs"]
 mod chunked_execution;
 
+// Temporary directories removed when their test ends, however it ends.
+#[path = "../support/temp_dir.rs"]
+#[allow(dead_code)]
+mod temp_dir;
+
 mod array_settings;
 mod async_await;
 mod atom_object_equiv;
@@ -167,6 +172,7 @@ mod string_fixtures;
 mod string_join;
 mod strings;
 mod syntax_context;
+mod temp_dirs;
 mod test_metadata;
 mod transducer_contracts;
 mod transducers;

@@ -1,14 +1,10 @@
 //! Rust application preparation regressions.
+use crate::temp_dir::TempDir;
 use light_cljs::{
     ApplicationOptions, GlobalId, MacroHost, OptimizationLevel, Program, analyze,
     analyze_with_macros, compile_namespace, emit_js, parse, prepare_application,
 };
-use std::{
-    fs,
-    path::PathBuf,
-    process::Command,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::{fs, process::Command};
 
 fn program(source: &str) -> Program {
     analyze(source, &parse(source).unwrap()).unwrap_or_else(|error| panic!("{source}\n{error}"))
@@ -213,20 +209,13 @@ fn explicit_exports_retain_otherwise_unused_definitions() {
     assert_eq!(result(&with.emit_js()), "42\n");
 }
 
-static NEXT: AtomicUsize = AtomicUsize::new(0);
 /// A temporary source root, removed on drop. Its path has the same length for
 /// every root of one test process, since output quotes it in source metadata
 /// that size comparisons (generated_optimization) measure.
-pub(crate) struct Sources(pub(crate) PathBuf);
+pub(crate) struct Sources(pub(crate) TempDir);
 impl Sources {
     pub(crate) fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "light-cljs-optimization-{}-{:06}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
+        Self(TempDir::new("cljs-optimization"))
     }
     /// Write `source` at the relative path `name`, creating its directories.
     pub(crate) fn write(&self, name: &str, source: &str) {
@@ -235,12 +224,6 @@ impl Sources {
         fs::write(path, source).unwrap();
     }
 }
-impl Drop for Sources {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 #[test]
 fn macro_only_require_retains_namespace_initialization_effects() {
     let sources = Sources::new();
@@ -257,7 +240,7 @@ fn macro_only_require_retains_namespace_initialization_effects() {
         r#"(ns app (:require [tools :refer [answer]]))
       (js/trace.push "app") (answer)"#,
     );
-    let js = compile_namespace("app", std::slice::from_ref(&sources.0)).unwrap();
+    let js = compile_namespace("app", std::slice::from_ref(sources.0.path())).unwrap();
     assert!(!js.contains("OPTIMIZER_NAMESPACE_SENTINEL"));
     assert_eq!(
         execute(&format!(

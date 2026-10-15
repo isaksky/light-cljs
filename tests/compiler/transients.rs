@@ -1,4 +1,5 @@
 //! Canonical transient collection ownership, public dispatch and macro parity.
+use crate::temp_dir::TempDir;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{
@@ -188,15 +189,7 @@ fn transient_fixtures_match_pinned_release_and_checkout() {
             checkout.to_string_lossy().into_owned(),
         ),
     ] {
-        let output_dir = std::env::temp_dir().join(format!(
-            "light-cljs-transients-{kind}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&output_dir).unwrap();
+        let output_dir = TempDir::new(&format!("cljs-transients-{kind}"));
         let mut child =
             Command::new(std::env::var_os("CLOJURE").unwrap_or_else(|| "clojure".into()))
                 .current_dir(&root)
@@ -210,7 +203,7 @@ fn transient_fixtures_match_pinned_release_and_checkout() {
                     identity,
                     &checkout_arg,
                 ])
-                .arg(&output_dir)
+                .arg(output_dir.path())
                 .arg("cases")
                 .arg(root.join("tests/fixtures/compiler-transients.tsv"))
                 .stdin(Stdio::null())
@@ -264,7 +257,6 @@ fn transient_fixtures_match_pinned_release_and_checkout() {
             "Matched {} transient workflows against {kind} {identity}",
             cases.len()
         );
-        fs::remove_dir_all(output_dir).unwrap();
     }
 }
 

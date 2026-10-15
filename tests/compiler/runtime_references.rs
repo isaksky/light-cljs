@@ -10,6 +10,7 @@
 //! their `coreCells` cell. Every program here must print what `None` prints.
 
 use super::optimization::{execute, readable};
+use crate::temp_dir::TempDir;
 use light_cljs::runtime_manifest::{CORE_CELLS, CORE_HUB, CoreReference, RUNTIME, RuntimeManifest};
 use light_cljs::runtime_slice::RuntimeName;
 use light_cljs::{
@@ -188,10 +189,8 @@ fn every_core_reference_slices_and_evaluates_on_its_own() {
     }
     let mut script = String::new();
     let mut checked = 0;
-    let path = std::env::temp_dir().join(format!(
-        "light-cljs-runtime-references-{}.js",
-        std::process::id()
-    ));
+    let dir = TempDir::new("cljs-runtime-references");
+    let path = dir.join("program.js");
     let run = |script: &mut String, checked: &mut usize| {
         if script.is_empty() {
             return;
@@ -243,7 +242,6 @@ fn every_core_reference_slices_and_evaluates_on_its_own() {
         }
     }
     run(&mut script, &mut checked);
-    let _ = std::fs::remove_file(&path);
     assert!(groups.len() > 100, "{}", groups.len());
 }
 

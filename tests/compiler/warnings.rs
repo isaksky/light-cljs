@@ -1,4 +1,5 @@
 //! Public compiler diagnostics are collected separately from runtime outcomes.
+use crate::temp_dir::TempDir;
 use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning, analyze_with_warnings};
 use light_cljs::{analyze, parse};
 
@@ -163,16 +164,8 @@ fn local_shadowing_earmuffs_and_unbound_destructuring_are_public_diagnostics() {
 
 #[test]
 fn namespace_private_access_and_reserved_alias_have_structured_locations() {
-    use std::{
-        fs,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let root = std::env::temp_dir().join(format!(
-        "light-warnings-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
+    use std::fs;
+    let root = TempDir::new("warnings");
     fs::create_dir_all(root.join("cljs")).unwrap();
     fs::write(
         root.join("a.cljs"),
@@ -192,7 +185,7 @@ fn namespace_private_access_and_reserved_alias_have_structured_locations() {
     let mut diagnostics = Vec::new();
     light_cljs::compiler::compile_namespace_with_warnings(
         "b",
-        std::slice::from_ref(&root),
+        std::slice::from_ref(root.path()),
         options,
         &mut diagnostics,
     )
@@ -222,11 +215,11 @@ fn namespace_private_access_and_reserved_alias_have_structured_locations() {
     );
     fs::write(root.join("cljs/js.cljs"), "(ns cljs.js)").unwrap();
     fs::write(root.join("b.cljs"), "(ns b (:require [cljs.js :as js]))").unwrap();
-    assert!(light_cljs::compile_namespace("b", std::slice::from_ref(&root)).is_err());
+    assert!(light_cljs::compile_namespace("b", std::slice::from_ref(root.path())).is_err());
     diagnostics.clear();
     light_cljs::compiler::compile_namespace_with_warnings(
         "b",
-        std::slice::from_ref(&root),
+        std::slice::from_ref(root.path()),
         options,
         &mut diagnostics,
     )
@@ -239,7 +232,6 @@ fn namespace_private_access_and_reserved_alias_have_structured_locations() {
         diagnostics[1].message,
         "In [cljs.js :as js], the alias name js is reserved for JavaScript interop"
     );
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

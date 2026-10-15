@@ -1,4 +1,5 @@
 //! Complete pinned residual language bodies in canonical applications and macros.
+use crate::temp_dir::TempDir;
 use light_cljs::MacroHost;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::process::Command;
@@ -6,11 +7,8 @@ use std::process::Command;
 fn both(id: &str, source: &str, expected: &str, macro_phase: bool) {
     // Rows run as parallel tests (threads of one process under `cargo test`), so
     // each row and phase compiles in its own directory.
-    let root = std::env::temp_dir().join(format!(
-        "light-residual-bodies-{}-{id}-{}",
-        std::process::id(),
-        if macro_phase { "macro" } else { "application" }
-    ));
+    let phase = if macro_phase { "macro" } else { "application" };
+    let root = TempDir::new(&format!("residual-bodies-{id}-{phase}"));
     std::fs::create_dir_all(root.join("residualbody")).unwrap();
     let observed_source = if macro_phase {
         // Macro declarations must remain at namespace top level. The full
@@ -35,7 +33,7 @@ fn both(id: &str, source: &str, expected: &str, macro_phase: bool) {
     host.evaluator_options.timeout = std::time::Duration::from_secs(120);
     let javascript = light_cljs::compile_namespace_with_macros(
         "residualbody.probe",
-        std::slice::from_ref(&root),
+        std::slice::from_ref(root.path()),
         &mut host,
     )
     .unwrap_or_else(|e| panic!("{source}: {e}"));
@@ -65,7 +63,6 @@ fn both(id: &str, source: &str, expected: &str, macro_phase: bool) {
         expected,
         "Node: {source}"
     );
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 fn residual_body_executes_in_both_phases(index: usize) {

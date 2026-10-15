@@ -126,7 +126,7 @@ fn equivalent(output: &str, cases: &[Case]) -> Result<(), String> {
 fn save_cases(cases: &[Case]) -> TempDir {
     let dir = TempDir::new("generated-v1");
     fs::write(
-        dir.0.join("cases.tsv"),
+        dir.join("cases.tsv"),
         cases
             .iter()
             .map(|case| format!("{}\t{}\n", case.id, case.source))
@@ -152,7 +152,7 @@ fn generated_programs_match_standard_clojurescript() {
 
 fn compare_reference_cases(cases: &[Case]) {
     let artifacts = save_cases(cases);
-    let path = artifacts.0.join("cases.tsv");
+    let path = artifacts.join("cases.tsv");
     let references = reference_results(
         "generated-v1",
         &["cases", path.to_str().unwrap()],

@@ -1,9 +1,10 @@
 //! Exact diagnostics shared by the analyzer/API and CLI. The last two fixture
 //! columns record the upstream classification for each source.
+use crate::temp_dir::TempDir;
 use light_cljs::{
     AnalysisErrorKind, CompileError, LineIndex, analyze, compile, compile_namespace, parse,
 };
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, process::Command};
 
 fn rows() -> impl Iterator<Item = [&'static str; 9]> {
     include_str!("../fixtures/analysis-boundaries.tsv")
@@ -81,25 +82,17 @@ fn expression_boundaries_retain_exact_diagnostics_in_unselected_branches() {
     }
 }
 
-struct Sources(PathBuf);
-impl Drop for Sources {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 #[test]
 fn namespace_boundaries_retain_file_spans_and_emit_no_partial_javascript() {
-    let sources =
-        Sources(std::env::temp_dir().join(format!("light-cljs-boundaries-{}", std::process::id())));
-    fs::create_dir_all(sources.0.join("boundary")).unwrap();
+    let sources = TempDir::new("cljs-boundaries");
+    fs::create_dir_all(sources.join("boundary")).unwrap();
     // A real dependency ensures rejection isn't an accidental missing-file error.
     fs::write(
-        sources.0.join("boundary/lib.cljs"),
+        sources.join("boundary/lib.cljs"),
         "(ns boundary.lib) (def value 7)",
     )
     .unwrap();
-    fs::write(sources.0.join("other.cljs"), "(ns other) (def value 8)").unwrap();
+    fs::write(sources.join("other.cljs"), "(ns other) (def value 8)").unwrap();
     let loader_cases = [
         [
             "missing-dependency",
@@ -141,24 +134,25 @@ fn namespace_boundaries_retain_file_spans_and_emit_no_partial_javascript() {
         }
         let prefix = "; λ\n";
         let source = format!("{prefix}{before}{rejected}{after}");
-        let file = sources.0.join("boundary.cljs");
+        let file = sources.join("boundary.cljs");
         fs::write(&file, &source).unwrap();
         let start = prefix.len() + before.len();
         let span = start..start + rejected.len();
         let column = before.len() + 1;
         if expected == "accepted" {
-            compile_namespace("boundary", std::slice::from_ref(&sources.0))
+            compile_namespace("boundary", std::slice::from_ref(sources.path()))
                 .unwrap_or_else(|error| panic!("{id}: {error}"));
             continue;
         }
-        let error = compile_namespace("boundary", std::slice::from_ref(&sources.0)).unwrap_err();
+        let error =
+            compile_namespace("boundary", std::slice::from_ref(sources.path())).unwrap_err();
         assert_eq!(error.span, Some(span.clone()), "{id}: {error}");
         assert_eq!(error.line_column, Some((2, column)), "{id}: {error}");
         assert_eq!(error.path, Some(fs::canonicalize(&file).unwrap()), "{id}");
         assert!(error.message.contains(message), "{id}: {error}");
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
             .args(["--compile", "--entry", "boundary", "--source-root"])
-            .arg(&sources.0)
+            .arg(sources.path())
             .output()
             .unwrap();
         assert!(!output.status.success(), "{id}");

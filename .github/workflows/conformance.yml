@@ -75,9 +75,11 @@ jobs:
           LIGHT_CLJS_REFERENCE_CHECKOUT: ${{ github.workspace }}/research/clojurescript
           LIGHT_CLJS_REFERENCE_REVISION: a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e
           LIGHT_CLJS_REFERENCE_TIMEOUT_SECONDS: '180'
+          # Keep the temporary reference builds for the diagnostics upload below.
+          LIGHT_CLJS_KEEP_TMP: '1'
         run: cargo test --locked --test execution -- --ignored --nocapture --test-threads=1
       - name: Preserve reference diagnostics
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: reference-diagnostics
@@ -109,6 +111,9 @@ jobs:
       - name: Check launcher failure enforcement without Java
         run: python3 -m unittest discover -s tests/reference/sci -p 'test_regenerate.py' -v
       - name: Compare all historical oracle observations
+        env:
+          # Keep the artifacts for the upload below.
+          LIGHT_CLJS_KEEP_TMP: '1'
         run: python3 tests/reference/sci/regenerate.py --checkout sci-reference
       - name: Preserve historical reference diagnostics
         if: always()

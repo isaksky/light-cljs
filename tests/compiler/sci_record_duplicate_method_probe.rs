@@ -1,9 +1,9 @@
 //! Exact original and literal two-pin method replacement observations.
+use crate::temp_dir::TempDir;
 use light_cljs::MacroHost;
 use std::{
     fs,
     io::Write,
-    path::PathBuf,
     process::{Command, Stdio},
 };
 
@@ -56,19 +56,10 @@ fn execute(javascript: &str, expected_value: &str, directory: &std::path::Path) 
 
 #[test]
 fn original_duplicate_method_executes_with_last_dispatch_in_both_phases() {
-    let retained = std::env::var_os("LIGHT_SCI_RECORD_DUPLICATE_METHOD_ROOT");
-    let root = retained.as_ref().map(PathBuf::from).unwrap_or_else(|| {
-        std::env::temp_dir().join(format!(
-            "light-cljs-record-last-method-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
-    });
-    assert!(!root.exists());
-    fs::create_dir_all(&root).unwrap();
+    let root = TempDir::new_named_by(
+        "LIGHT_SCI_RECORD_DUPLICATE_METHOD_ROOT",
+        "cljs-record-last-method",
+    );
     fs::write(root.join("original.cljs"), ORIGINAL).unwrap();
     let mut reused = MacroHost::new();
     fs::write(
@@ -150,8 +141,5 @@ fn original_duplicate_method_executes_with_last_dispatch_in_both_phases() {
                 println!("{name}: QuickJS/Node literal result {expected}; recovery succeeded");
             }
         }
-    }
-    if retained.is_none() {
-        fs::remove_dir_all(root).unwrap();
     }
 }

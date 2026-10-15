@@ -2402,10 +2402,11 @@ Checkout selections require a clean repository at the given full commit SHA; the
 harness uses its `deps.edn` via `:local/root` and verifies that compiler resources
 came from that checkout. `LIGHT_CLJS_REFERENCE_TIMEOUT_SECONDS` overrides the
 per-build timeout. Missing tools, failed builds, timeouts and mismatches fail the
-test; there is no passing skip. On failure the printed temporary directory retains
-the generated source, `invocation.sh`, build stdout/stderr and (when execution was
-reached) `driver.js` and `results.txt`. JavaScript text is never compared; only
-observable behavior is.
+test; there is no passing skip. With `LIGHT_CLJS_KEEP_TMP=1` the printed temporary
+directory is kept and holds the generated source, `invocation.sh`, build
+stdout/stderr and (when execution was reached) `driver.js` and `results.txt`;
+otherwise it is removed when the test ends, failed or not. JavaScript text is never
+compared; only observable behavior is.
 
 ### Reader corpora
 

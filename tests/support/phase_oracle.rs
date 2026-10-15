@@ -11,7 +11,8 @@
 //! `cargo nextest run phase_oracles::` runs all of them. Set
 //! `LIGHT_PHASE_ORACLE_ARTIFACTS` to a directory to keep every program and compiled
 //! unit there; otherwise they go to a temporary directory that is removed when the
-//! test passes.
+//! test ends (`LIGHT_CLJS_KEEP_TMP=1` keeps it; see `tests/support/temp_dir.rs`).
+use crate::temp_dir::TempDir;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace_with_macros};
 use std::{
@@ -19,7 +20,6 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -124,55 +124,26 @@ fn host() -> MacroHost {
     host
 }
 
-/// The working directory of one test.
-struct Artifacts {
-    root: PathBuf,
-    keep: bool,
-}
-
-impl Artifacts {
-    fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        // The test harness names each test's thread after the test.
-        let test = std::thread::current()
-            .name()
-            .unwrap_or("phase-oracle")
-            .replace("::", "-");
-        let artifacts = match std::env::var_os("LIGHT_PHASE_ORACLE_ARTIFACTS") {
-            Some(root) => Self {
-                root: PathBuf::from(root).join(test),
-                keep: true,
-            },
-            // `cargo test` runs tests as threads of one process.
-            None => Self {
-                root: std::env::temp_dir().join(format!(
-                    "light-phase-oracle-{}-{}-{test}",
-                    std::process::id(),
-                    NEXT.fetch_add(1, Ordering::Relaxed)
-                )),
-                keep: false,
-            },
-        };
-        fs::create_dir_all(&artifacts.root).unwrap();
-        artifacts
-    }
-}
-
-impl Drop for Artifacts {
-    fn drop(&mut self) {
-        // A failing test keeps its files for inspection.
-        if !self.keep && !std::thread::panicking() {
-            let _ = fs::remove_dir_all(&self.root);
-        }
+/// The working directory of one test: `LIGHT_PHASE_ORACLE_ARTIFACTS/<test>`, kept, when
+/// that variable is set; otherwise a temporary directory.
+fn artifacts() -> TempDir {
+    // The test harness names each test's thread after the test.
+    let test = std::thread::current()
+        .name()
+        .unwrap_or("phase-oracle")
+        .replace("::", "-");
+    match std::env::var_os("LIGHT_PHASE_ORACLE_ARTIFACTS") {
+        Some(root) => TempDir::retained(PathBuf::from(root).join(test)),
+        None => TempDir::new(&format!("phase-oracle-{test}")),
     }
 }
 
 /// Runs every case in both phases, first with a fresh host per program and then with
 /// one reused host shared by all cases (see the module documentation).
 pub fn run(cases: &[Case]) {
-    let artifacts = Artifacts::new();
+    let artifacts = artifacts();
     let mut reused = host();
-    let warm = artifacts.root.join("warmup");
+    let warm = artifacts.join("warmup");
     fs::create_dir_all(&warm).unwrap();
     fs::write(
         warm.join("warm.cljs"),
@@ -191,7 +162,7 @@ pub fn run(cases: &[Case]) {
                 } else {
                     &mut reused
                 };
-                let root = artifacts.root.join(case.id).join(lifecycle).join(phase);
+                let root = artifacts.join(case.id).join(lifecycle).join(phase);
                 fs::create_dir_all(&root).unwrap();
                 let context = format!("{} {lifecycle} {phase}", case.id);
                 match case.kind {

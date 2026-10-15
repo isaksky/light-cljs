@@ -1,9 +1,9 @@
 //! Unary map factory metadata with complete original source and actual macro demand.
+use crate::temp_dir::TempDir;
 use light_cljs::{MacroHost, compile_namespace_with_macros};
 use std::{
     fs,
     io::Write,
-    path::PathBuf,
     process::{Command, Stdio},
 };
 const ORIGINAL: &str = "(defrecord R [x y]) [(:arglists (meta (var ->R))) (mapv count (:arglists (meta (var map->R)))) (ns-name (:ns (meta (var ->R))))]";
@@ -62,12 +62,7 @@ fn node(script: &str) -> String {
 }
 #[test]
 fn record_factory_metadata_executes_in_actual_phases_and_lifecycles() {
-    let artifacts = std::env::var_os("LIGHT_RECORD_METADATA_ARTIFACTS")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("light-record-metadata-{}", std::process::id()))
-        });
-    fs::create_dir_all(&artifacts).unwrap();
+    let artifacts = TempDir::named_by("LIGHT_RECORD_METADATA_ARTIFACTS", "record-metadata");
     let runtime = light_cljs::compile("[]").unwrap();
     fs::write(artifacts.join("observer-runtime.js"), &runtime).unwrap();
     let mut reused = host();

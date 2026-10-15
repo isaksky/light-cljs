@@ -1,24 +1,14 @@
 //! Canonical library values run in both engines; macros demand the same sources.
+use crate::temp_dir::TempDir;
 use light_cljs::{
     compile_namespace,
     evaluator::{Evaluator, EvaluatorOptions},
 };
-use std::{
-    fs,
-    path::PathBuf,
-    process::Command,
-    sync::atomic::{AtomicUsize, Ordering},
-};
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-struct Sources(PathBuf);
+use std::{fs, path::PathBuf, process::Command};
+struct Sources(TempDir);
 impl Sources {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "light-library-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path).unwrap();
+        let path = TempDir::new("library");
         Self(path)
     }
     fn write(&self, path: &str, source: &str) {
@@ -31,12 +21,7 @@ impl Sources {
             "probe/main.cljs",
             &format!("(ns probe.main (:require [clojure.set :as s] [clojure.walk :as w])) {body}"),
         );
-        compile_namespace("probe.main", std::slice::from_ref(&self.0)).unwrap()
-    }
-}
-impl Drop for Sources {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        compile_namespace("probe.main", std::slice::from_ref(self.0.path())).unwrap()
     }
 }
 fn both(body: &str, expected: &str) {
@@ -131,7 +116,7 @@ fn macros_use_libraries_without_native_registration() {
         "probe/main.cljs",
         "(ns probe.main (:require [helper.lib :refer [compute]])) (= (compute) [42])",
     );
-    let js = compile_namespace("probe.main", std::slice::from_ref(&sources.0)).unwrap();
+    let js = compile_namespace("probe.main", std::slice::from_ref(sources.0.path())).unwrap();
     let e = Evaluator::new(Default::default()).unwrap();
     assert_eq!(
         e.string(e.evaluate_js(&format!("JSON.stringify({js})")).unwrap())
@@ -274,7 +259,7 @@ fn all_supported_native_set_and_walk_fixtures_migrate_with_values_and_effects() 
     }
     body.push(']');
     sources.write("probe/main.cljs", &format!("(ns probe.main (:require [clojure.set :as s :refer [union]] [clojure.walk :as w :refer [postwalk]])) {body}"));
-    let js = compile_namespace("probe.main", std::slice::from_ref(&sources.0)).unwrap();
+    let js = compile_namespace("probe.main", std::slice::from_ref(sources.0.path())).unwrap();
     let e = Evaluator::new(Default::default()).unwrap();
     let observations = e
         .string(e.evaluate_js(&format!("JSON.stringify({js})")).unwrap())

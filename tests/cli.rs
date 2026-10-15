@@ -8,6 +8,12 @@ use std::{
     process::{Command, Stdio},
 };
 
+// Temporary directories removed when their test ends, however it ends.
+#[path = "support/temp_dir.rs"]
+#[allow(dead_code)]
+mod temp_dir;
+use temp_dir::TempDir;
+
 #[test]
 fn prints_example() {
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
@@ -105,14 +111,14 @@ fn prints_parser_nodes_and_reports_locations() {
 
 #[test]
 fn compiles_files_and_stdin_to_executable_javascript() {
-    let path = std::env::temp_dir().join(format!("light-cljs-cli-{}.cljs", std::process::id()));
+    let dir = TempDir::new("cljs-cli");
+    let path = dir.join("program.cljs");
     std::fs::write(&path, "(let* [x 10 f (fn* [] x)] (let* [x 20] (f)))").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
         .arg("--compile")
         .arg(&path)
         .output()
         .unwrap();
-    std::fs::remove_file(path).unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -298,7 +304,7 @@ fn optimize_selects_the_application_level_for_text_and_namespace_compiles() {
 fn define_replaces_goog_define_defaults_at_every_level() {
     let source =
         r#"(goog-define DEBUG false) (goog-define NAME "app") (if DEBUG (str NAME "!") NAME)"#;
-    let root = std::env::temp_dir().join(format!("light-cljs-cli-define-{}", std::process::id()));
+    let root = TempDir::new("cljs-cli-define");
     std::fs::create_dir_all(root.join("app")).unwrap();
     std::fs::write(
         root.join("app/main.cljs"),
@@ -345,7 +351,6 @@ fn define_replaces_goog_define_defaults_at_every_level() {
         ]);
         assert_eq!(node(&js), "app!\n", "{level}");
     }
-    let _ = std::fs::remove_dir_all(&root);
     for (args, message) in [
         (
             &["--compile", "--define", "DEBUG=true", "--text", source][..],
@@ -544,7 +549,7 @@ fn elide_asserts_omits_assertions_at_every_level() {
     let plain = "(js/console.log 1)";
     let nil = "nil (js/console.log 1)";
     let pre = "(defn twice [x] {:pre [(pos? x)]} (* 2 x)) (twice -1)";
-    let root = std::env::temp_dir().join(format!("light-cljs-cli-elide-{}", std::process::id()));
+    let root = TempDir::new("cljs-cli-elide");
     std::fs::create_dir_all(root.join("app")).unwrap();
     std::fs::write(root.join("app/main.cljs"), format!("(ns app.main) {pre}")).unwrap();
     let root_arg = root.to_str().unwrap();
@@ -619,7 +624,6 @@ fn elide_asserts_omits_assertions_at_every_level() {
         assert!(!entry(false).status.success(), "{level}");
         assert_eq!(entry(true).stdout, b"-2\n", "{level}");
     }
-    let _ = std::fs::remove_dir_all(&root);
 
     let output = light_cljs(&["--eval", "--text", pre]);
     assert!(!output.status.success());
@@ -668,10 +672,7 @@ fn elide_asserts_omits_assertions_at_every_level() {
 #[test]
 fn elide_asserts_reaches_the_assert_source_macros_read() {
     let flags = "[*assert* clojure.core/*assert* cljs.core/*assert*]";
-    let root = std::env::temp_dir().join(format!(
-        "light-cljs-cli-elide-macros-{}",
-        std::process::id()
-    ));
+    let root = TempDir::new("cljs-cli-elide-macros");
     std::fs::create_dir_all(root.join("app")).unwrap();
     std::fs::write(
         root.join("app/macros.cljs"),
@@ -709,7 +710,6 @@ fn elide_asserts_reaches_the_assert_source_macros_read() {
         let args = [&["--eval"][..], flag, &["--text", &eval]].concat();
         assert_eq!(compiled(&args), expected, "{args:?}");
     }
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// `--source-map PATH` writes a Source Map v3 of the output at every level
@@ -723,7 +723,7 @@ fn elide_asserts_reaches_the_assert_source_macros_read() {
 /// map, and `--source-map-include-sources` adds the sources' text.
 #[test]
 fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
-    let root = std::env::temp_dir().join(format!("light-cljs-cli-map-{}", std::process::id()));
+    let root = TempDir::new("cljs-cli-map");
     std::fs::create_dir_all(root.join("src/app")).unwrap();
     std::fs::create_dir_all(root.join("out")).unwrap();
     let program = "(defn explode [x]\n  (throw (js/Error. (str \"boom \" x))))\n\n(defn outer [n]\n  (let [doubled (* 2 n)]\n    (explode doubled)))\n\n(outer 21)\n";
@@ -1050,5 +1050,4 @@ fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(stderr.contains(message), "{args:?}: {stderr}");
     }
-    let _ = std::fs::remove_dir_all(&root);
 }

@@ -1,6 +1,7 @@
 //! Compiler macro integration through compiler-owned source and JavaScript execution.
 //! CLJS environment/resolution observations
 //! are documented in docs/compiler.md; tests need only Rust/Node.
+use crate::temp_dir::TempDir;
 use light_cljs::{
     MacroHost, analyze_with_macros, compile, compile_namespace, compile_namespace_with_macros,
     emit_js, parse,
@@ -12,16 +13,10 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-struct Sources(PathBuf);
+struct Sources(TempDir);
 impl Sources {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "light-cljs-macros-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path).unwrap();
+        let path = TempDir::new("cljs-macros");
         Self(path)
     }
     fn write(&self, path: &str, source: &str) {
@@ -30,19 +25,14 @@ impl Sources {
         fs::write(path, source).unwrap();
     }
     fn compile(&self, entry: &str) -> Result<String, light_cljs::NamespaceCompileError> {
-        compile_namespace(entry, std::slice::from_ref(&self.0))
+        compile_namespace(entry, std::slice::from_ref(self.0.path()))
     }
     fn compile_host(
         &self,
         entry: &str,
         host: &mut MacroHost,
     ) -> Result<String, light_cljs::NamespaceCompileError> {
-        compile_namespace_with_macros(entry, std::slice::from_ref(&self.0), host)
-    }
-}
-impl Drop for Sources {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        compile_namespace_with_macros(entry, std::slice::from_ref(self.0.path()), host)
     }
 }
 fn execute(js: &str) -> String {
@@ -893,7 +883,7 @@ fn unsupported_generated_collection_program_forms_keep_file_macro_and_callsite_d
         );
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
             .args(["--compile", "--entry", "bad.main", "--source-root"])
-            .arg(&sources.0)
+            .arg(sources.0.path())
             .output()
             .unwrap();
         assert!(!output.status.success(), "{body}");
@@ -3130,7 +3120,7 @@ fn ordinary_dual_use_require_executes_exact_tools_example_through_api_and_cli() 
     }
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
         .args(["--compile", "--entry", "app", "--source-root"])
-        .arg(&s.0)
+        .arg(s.0.path())
         .output()
         .unwrap();
     assert!(
@@ -3251,7 +3241,7 @@ fn macro_source_selection_splices_discards_conflicts_and_recovery_are_current() 
     assert_eq!(result(&s.compile_host("app", &mut h).unwrap()), "44\n");
     let duplicate = Sources::new();
     duplicate.write("tools.cljc", "(ns tools) (defmacro value [x] 999)");
-    let roots = [s.0.clone(), duplicate.0.clone()];
+    let roots = [s.0.to_path_buf(), duplicate.0.to_path_buf()];
     let e = compile_namespace_with_macros("app", &roots, &mut h).unwrap_err();
     assert!(e.message.contains("ambiguous namespace tools"), "{e}");
     assert!(e.path.unwrap().ends_with("app.cljs"));

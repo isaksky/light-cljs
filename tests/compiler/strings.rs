@@ -1,4 +1,5 @@
 //! Compiler-owned clojure.string contracts in QuickJS, Node, and macro execution.
+use crate::temp_dir::TempDir;
 use light_cljs::{
     compile_namespace,
     evaluator::{Evaluator, EvaluatorOptions},
@@ -6,36 +7,22 @@ use light_cljs::{
 use std::{
     fs,
     io::Write,
-    path::PathBuf,
     process::{Command, Stdio},
-    sync::atomic::{AtomicUsize, Ordering},
 };
 
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-struct Sources(PathBuf);
+struct Sources(TempDir);
 impl Sources {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "light-cljs-strings-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path).unwrap();
+        let path = TempDir::new("cljs-strings");
         Self(path)
     }
     fn write(&self, name: &str, source: &str) {
         fs::write(self.0.join(name), source).unwrap();
     }
     fn compile(&self) -> String {
-        compile_namespace("main", std::slice::from_ref(&self.0)).unwrap()
+        compile_namespace("main", std::slice::from_ref(self.0.path())).unwrap()
     }
 }
-impl Drop for Sources {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 fn check(name: &str, javascript: &str) {
     let expression = format!("JSON.stringify({javascript})");
     let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

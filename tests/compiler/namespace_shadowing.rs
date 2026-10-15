@@ -1,21 +1,13 @@
 //! Namespace identity is resolved before lexical dotted property access.
+use crate::temp_dir::TempDir;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace_with_macros};
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::{path::Path, process::Command};
 
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-struct Sources(PathBuf);
+struct Sources(TempDir);
 impl Sources {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "light-namespace-shadow-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = TempDir::new("namespace-shadow");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/compiler-namespace-shadowing");
         std::fs::create_dir_all(root.join("shadow")).unwrap();
@@ -28,12 +20,7 @@ impl Sources {
         std::fs::write(self.0.join("shadow/main.cljs"), source).unwrap();
     }
     fn compile(&self, host: &mut MacroHost) -> Result<String, light_cljs::NamespaceCompileError> {
-        compile_namespace_with_macros("shadow.main", std::slice::from_ref(&self.0), host)
-    }
-}
-impl Drop for Sources {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        compile_namespace_with_macros("shadow.main", std::slice::from_ref(self.0.path()), host)
     }
 }
 fn both(js: &str, expected: &str) {

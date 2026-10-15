@@ -1,23 +1,17 @@
 //! Every native string fixture is retained, with explicit JavaScript departures.
 use crate::sci_protocol as native;
+use crate::temp_dir::TempDir;
 use light_cljs::{compile_namespace, evaluator::Evaluator};
 use std::{
     fs,
     io::Write,
     path::PathBuf,
     process::{Command, Stdio},
-    sync::atomic::{AtomicUsize, Ordering},
 };
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-struct Sources(PathBuf);
+struct Sources(TempDir);
 impl Sources {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "light-string-fixtures-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path).unwrap();
+        let path = TempDir::new("string-fixtures");
         Self(path)
     }
     fn write(&self, name: &str, source: &str) {
@@ -27,12 +21,7 @@ impl Sources {
     }
     fn compile(&self, source: &str) -> Result<String, light_cljs::NamespaceCompileError> {
         self.write("user.cljs", source);
-        compile_namespace("user", std::slice::from_ref(&self.0))
-    }
-}
-impl Drop for Sources {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        compile_namespace("user", std::slice::from_ref(self.0.path()))
     }
 }
 fn literal(value: &native::Value) -> String {
@@ -440,15 +429,11 @@ fn full_upstream_bodies_pass_both_pinned_cljs_references() {
             checkout.to_string_lossy().into_owned(),
         ),
     ] {
-        let output_dir = std::env::temp_dir().join(format!(
-            "light-cljs-string-oracle-{kind}-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&output_dir).unwrap();
+        let output_dir = TempDir::new(&format!("cljs-string-oracle-{kind}"));
         let out=Command::new("clojure").current_dir(&root).args([
             "-J-Xmx1g", "-Srepro", "-Sdeps", &format!("{{:deps {{org.clojure/clojurescript {dependency} org.clojure/test.check {{:mvn/version \"1.1.1\"}}}}}}"),
             "-M", "tests/reference/execution.clj", kind, identity, &checkout_arg,
-        ]).arg(&output_dir).args(["program", "tests/fixtures/compiler-strings-reference", "reference.main", "run"]).output().unwrap();
+        ]).arg(output_dir.path()).args(["program", "tests/fixtures/compiler-strings-reference", "reference.main", "run"]).output().unwrap();
         assert!(
             out.status.success(),
             "{kind}: {}\n{}",
@@ -492,7 +477,6 @@ fn full_upstream_bodies_pass_both_pinned_cljs_references() {
         println!(
             "Pinned string reference {kind} {identity}: 95 API passes, 1000 seeded property passes"
         );
-        fs::remove_dir_all(output_dir).unwrap();
     }
 }
 

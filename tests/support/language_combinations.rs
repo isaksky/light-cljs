@@ -37,7 +37,7 @@ fn late_language_helpers_match_pinned_compilers() {
         .collect();
     assert_cases(&cases, &compiled_cases(&cases), "compiled JavaScript");
     let input = TempDir::new("language-helpers-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases
@@ -237,7 +237,7 @@ fn bounded_language_combinations_execute_values_effects_stdout_and_failures() {
 fn bounded_language_combinations_match_pinned_compilers() {
     let cases = combinations();
     let input = TempDir::new("language-combinations-input");
-    let path = input.0.join("cases.tsv");
+    let path = input.join("cases.tsv");
     fs::write(
         &path,
         cases

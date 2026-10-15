@@ -157,9 +157,13 @@ def main():
         print('Building unchanged primitive baseline', ref, flush=True)
         archive_path = out / 'baseline-source.tar'
         capture(['git','archive','--format=tar','--output',archive_path,ref])
-        baseline_identity = {'commit':ref,'git_archive_sha256':sha(archive_path),'harness_sources':{p:h for p,h in hashes.items() if p.startswith(('benches/compiler.rs','benches/support/allocations.rs','benchmarks/fixtures/compiler/'))}}
-        with tempfile.TemporaryDirectory(prefix='light-cljs-compiler-baseline-') as directory:
+        baseline_identity = {'commit':ref,'git_archive_sha256':sha(archive_path),'harness_sources':{p:h for p,h in hashes.items() if p.startswith(('benches/compiler.rs','benches/support/allocations.rs','tests/support/temp_dir.rs','benchmarks/fixtures/compiler/'))}}
+        # Removed afterwards unless LIGHT_CLJS_KEEP_TMP is set, as the tests' directories are.
+        keep = os.environ.get('LIGHT_CLJS_KEEP_TMP', '') not in ('', '0')
+        with tempfile.TemporaryDirectory(prefix='light-cljs-compiler-baseline-', delete=not keep) as directory:
             base = Path(directory)
+            if keep:
+                print('LIGHT_CLJS_KEEP_TMP: keeping', base, flush=True)
             with tarfile.open(archive_path) as archive:
                 archive.extractall(base, filter='data')
             old_rows = primitive_rows(base/'tests/fixtures/execution.tsv')
@@ -167,6 +171,9 @@ def main():
                 raise RuntimeError('primitive source/expected fixtures differ from baseline')
             shutil.copy2(ROOT/'benches/compiler.rs',base/'benches/compiler.rs')
             shutil.copy2(ROOT/'benches/support/allocations.rs',base/'benches/support/allocations.rs')
+            # benches/compiler.rs loads the temporary-directory guard, which older commits lack.
+            (base/'tests/support').mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT/'tests/support/temp_dir.rs',base/'tests/support/temp_dir.rs')
             shutil.copytree(FIXTURES,base/'benchmarks/fixtures/compiler/collections',dirs_exist_ok=True)
             if 'name = "compiler"' not in (base/'Cargo.toml').read_text():
                 with (base/'Cargo.toml').open('a') as file:

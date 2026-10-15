@@ -1,4 +1,5 @@
 //! Complete syntax semantics in applications and actual MacroHost bodies.
+use crate::temp_dir::TempDir;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::io::Write;
@@ -115,7 +116,7 @@ fn syntax_raw_record_constructor_executes_in_both_phases() {
 fn syntax_namespace_context_executes_with_actual_macro_environment() {
     let fields = row("namespace-header-context");
     let original = unhex(fields[2]);
-    let root = std::env::temp_dir().join(format!("light-syntax-context-{}", std::process::id()));
+    let root = TempDir::new("syntax-context");
     std::fs::create_dir_all(root.join("syntax")).unwrap();
     for extension in ["cljs", "clj"] {
         std::fs::copy(
@@ -137,7 +138,7 @@ fn syntax_namespace_context_executes_with_actual_macro_environment() {
         std::fs::write(root.join("syntax/header.cljs"), source).unwrap();
         let javascript = light_cljs::compile_namespace_with_macros(
             "syntax.header",
-            std::slice::from_ref(&root),
+            std::slice::from_ref(root.path()),
             &mut MacroHost::new(),
         )
         .unwrap();
@@ -155,7 +156,6 @@ fn syntax_namespace_context_executes_with_actual_macro_environment() {
         );
         assert_eq!(actual, "true");
     }
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -165,7 +165,7 @@ fn syntax_raw_nsstar_alias_executes_in_fresh_and_reused_macro_hosts() {
         original,
         include_str!("../fixtures/compiler-nsstar/syntax/nsstar.cljs")
     );
-    let root = std::env::temp_dir().join(format!("light-nsstar-context-{}", std::process::id()));
+    let root = TempDir::new("nsstar-context");
     std::fs::create_dir_all(root.join("syntax")).unwrap();
     let mut reused = MacroHost::new();
     for _ in 0..2 {
@@ -181,7 +181,7 @@ fn syntax_raw_nsstar_alias_executes_in_fresh_and_reused_macro_hosts() {
                 std::fs::write(root.join("syntax/nsstar.cljs"), source).unwrap();
                 let javascript = light_cljs::compile_namespace_with_macros(
                     "syntax.nsstar",
-                    std::slice::from_ref(&root),
+                    std::slice::from_ref(root.path()),
                     host,
                 )
                 .unwrap();
@@ -198,12 +198,11 @@ fn syntax_raw_nsstar_alias_executes_in_fresh_and_reused_macro_hosts() {
             }
         }
     }
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn raw_nsstar_validation_keeps_source_ownership_and_recovers() {
-    let root = std::env::temp_dir().join(format!("light-nsstar-validation-{}", std::process::id()));
+    let root = TempDir::new("nsstar-validation");
     std::fs::create_dir_all(root.join("syntax")).unwrap();
     let path = root.join("syntax/nsstar.cljs");
     let mut host = MacroHost::new();
@@ -249,7 +248,7 @@ fn raw_nsstar_validation_keeps_source_ownership_and_recovers() {
         std::fs::write(&path, &source).unwrap();
         let error = light_cljs::compile_namespace_with_macros(
             "syntax.nsstar",
-            std::slice::from_ref(&root),
+            std::slice::from_ref(root.path()),
             &mut host,
         )
         .unwrap_err();
@@ -272,7 +271,7 @@ fn raw_nsstar_validation_keeps_source_ownership_and_recovers() {
         .unwrap();
         let javascript = light_cljs::compile_namespace_with_macros(
             "syntax.nsstar",
-            std::slice::from_ref(&root),
+            std::slice::from_ref(root.path()),
             &mut host,
         )
         .unwrap();
@@ -282,7 +281,7 @@ fn raw_nsstar_validation_keeps_source_ownership_and_recovers() {
     std::fs::write(&path, "(ns syntax.nsstar)\n(do (ns* (:require (quote [clojure.string :refer [join] :rename {join combine}]))))\n(def value (combine \"-\" [1 2]))\n(pr-str (= syntax.nsstar/value \"1-2\"))").unwrap();
     let javascript = light_cljs::compile_namespace_with_macros(
         "syntax.nsstar",
-        std::slice::from_ref(&root),
+        std::slice::from_ref(root.path()),
         &mut host,
     )
     .unwrap();
@@ -291,17 +290,16 @@ fn raw_nsstar_validation_keeps_source_ownership_and_recovers() {
     std::fs::write(&path, "(ns syntax.nsstar)\n(text/upper-case \"a\")").unwrap();
     let error = light_cljs::compile_namespace_with_macros(
         "syntax.nsstar",
-        std::slice::from_ref(&root),
+        std::slice::from_ref(root.path()),
         &mut host,
     )
     .unwrap_err();
     assert!(error.message.contains("unresolved"), "{error}");
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn raw_nsstar_imports_keep_ordinary_cljs_macro_and_definition_ownership() {
-    let root = std::env::temp_dir().join(format!("light-nsstar-ownership-{}", std::process::id()));
+    let root = TempDir::new("nsstar-ownership");
     std::fs::create_dir_all(root.join("syntax")).unwrap();
     let path = root.join("syntax/nsstar.cljs");
     std::fs::write(
@@ -316,7 +314,7 @@ fn raw_nsstar_imports_keep_ordinary_cljs_macro_and_definition_ownership() {
         for host in [&mut reused, &mut MacroHost::new()] {
             let javascript = light_cljs::compile_namespace_with_macros(
                 "syntax.nsstar",
-                std::slice::from_ref(&root),
+                std::slice::from_ref(root.path()),
                 host,
             )
             .unwrap();
@@ -337,7 +335,7 @@ fn raw_nsstar_imports_keep_ordinary_cljs_macro_and_definition_ownership() {
     .unwrap();
     let error = light_cljs::compile_namespace_with_macros(
         "syntax.nsstar",
-        std::slice::from_ref(&root),
+        std::slice::from_ref(root.path()),
         &mut reused,
     )
     .unwrap_err();
@@ -347,5 +345,4 @@ fn raw_nsstar_imports_keep_ordinary_cljs_macro_and_definition_ownership() {
         Some(&std::fs::canonicalize(&path).unwrap())
     );
     assert_eq!(error.line_column.unwrap().0, 3);
-    std::fs::remove_dir_all(root).unwrap();
 }

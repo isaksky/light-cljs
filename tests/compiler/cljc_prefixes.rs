@@ -1,21 +1,11 @@
 //! Reader prefixes own the next selected form in their original CLJC stream.
+use crate::temp_dir::TempDir;
 use light_cljs::{EvalOptions, EvalSession, MacroHost, source_provider::SourceInput};
-use std::{
-    fs,
-    path::PathBuf,
-    process::Command,
-    sync::atomic::{AtomicUsize, Ordering},
-};
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-struct Sources(PathBuf);
+use std::{fs, process::Command};
+struct Sources(TempDir);
 impl Sources {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "light-cljc-prefix-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&root).unwrap();
+        let root = TempDir::new("cljc-prefix");
         Self(root)
     }
     fn compile(
@@ -24,12 +14,7 @@ impl Sources {
         host: &mut MacroHost,
     ) -> Result<String, light_cljs::NamespaceCompileError> {
         fs::write(self.0.join("user.cljc"), source).unwrap();
-        light_cljs::compile_namespace_with_macros("user", std::slice::from_ref(&self.0), host)
-    }
-}
-impl Drop for Sources {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        light_cljs::compile_namespace_with_macros("user", std::slice::from_ref(self.0.path()), host)
     }
 }
 fn both(js: &str, expected: &str) {
@@ -223,7 +208,7 @@ fn nested_discarded_readers_execute_once_in_plain_and_shared_source_hosts() {
         .unwrap();
         let js = light_cljs::compile_namespace_with_macros(
             "user",
-            std::slice::from_ref(&sources.0),
+            std::slice::from_ref(sources.0.path()),
             &mut host,
         )
         .unwrap();
@@ -233,6 +218,7 @@ fn nested_discarded_readers_execute_once_in_plain_and_shared_source_hosts() {
 
 /// Unchanged original reader failures, located diagnostics and actual host recovery.
 mod original_reader_rejections {
+    use crate::temp_dir::TempDir;
     use light_cljs::MacroHost;
     use std::{
         fs,
@@ -285,30 +271,19 @@ mod original_reader_rejections {
     #[test]
     fn unchanged_original_reader_rejections_preserve_source_and_host_recovery() {
         let supplied = std::env::var("LIGHT_CLJC_REJECTIONS_ROOT").ok();
-        let root = supplied
-            .as_ref()
-            .map_or_else(
-                || {
-                    let nonce = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_nanos();
-                    let directory = std::env::temp_dir().join(format!(
-                        "light-cljs-reader-rejections-{}-{nonce}",
-                        std::process::id()
-                    ));
-                    fs::create_dir(&directory).unwrap();
-                    fs::write(
-                        directory.join("input.tsv"),
-                        include_str!("../fixtures/cljc-reader-rejections.tsv"),
-                    )
-                    .unwrap();
-                    directory
-                },
-                PathBuf::from,
-            )
-            .canonicalize()
-            .unwrap();
+        let directory = match &supplied {
+            Some(root) => TempDir::retained(PathBuf::from(root)),
+            None => {
+                let directory = TempDir::new("cljs-reader-rejections");
+                fs::write(
+                    directory.join("input.tsv"),
+                    include_str!("../fixtures/cljc-reader-rejections.tsv"),
+                )
+                .unwrap();
+                directory
+            }
+        };
+        let root = directory.canonicalize().unwrap();
         let input = fs::read_to_string(root.join("input.tsv")).unwrap();
         let original_root = std::env::var("LIGHT_CLJC_REJECTIONS_SOURCE_ROOT")
             .ok()
@@ -402,9 +377,5 @@ mod original_reader_rejections {
             }
         }
         output.flush().unwrap();
-        if supplied.is_none() {
-            drop(output);
-            fs::remove_dir_all(&root).unwrap();
-        }
     }
 }

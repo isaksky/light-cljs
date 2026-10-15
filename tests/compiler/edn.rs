@@ -1,5 +1,6 @@
 //! Strict EDN, compiled tag handlers and explicit synchronous reader capabilities.
 use crate::sci_protocol as protocol;
+use crate::temp_dir::TempDir;
 use light_cljs::{
     MacroHost, analyze_with_macros,
     evaluator::{EvalError, Evaluator, EvaluatorOptions},
@@ -13,19 +14,8 @@ fn program(source: &str) -> light_cljs::Program {
         .unwrap_or_else(|e| panic!("{source}: {e}"))
 }
 fn both(source: &str, expected: &str) {
-    use std::{
-        fs,
-        io::Write,
-        process::Stdio,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "light-edn-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::create_dir_all(&dir).unwrap();
+    use std::{fs, io::Write, process::Stdio};
+    let dir = TempDir::new("edn");
     let syntax = parse(source).unwrap();
     let last = syntax.nodes[syntax.roots[syntax.roots.len() - 1].0]
         .span
@@ -37,10 +27,12 @@ fn both(source: &str, expected: &str) {
     );
     fs::write(dir.join("main.cljs"), &source).unwrap();
     let mut host = MacroHost::new();
-    let js =
-        light_cljs::compile_namespace_with_macros("main", std::slice::from_ref(&dir), &mut host)
-            .unwrap_or_else(|e| panic!("{source}: {e}"));
-    fs::remove_dir_all(&dir).unwrap();
+    let js = light_cljs::compile_namespace_with_macros(
+        "main",
+        std::slice::from_ref(dir.path()),
+        &mut host,
+    )
+    .unwrap_or_else(|e| panic!("{source}: {e}"));
     let e = Evaluator::new(EvaluatorOptions {
         timeout: std::time::Duration::from_secs(60),
         ..EvaluatorOptions::default()

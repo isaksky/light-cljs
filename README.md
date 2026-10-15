@@ -364,6 +364,14 @@ survives against an expected-survivor list; `--no-capture` prints a table per
 seed. A failure names its seed: rerun it with `LIGHT_CLJS_GENERATED_SEED=<seed>`,
 or run more seeds with `LIGHT_CLJS_GENERATED_COUNT=<n>` (for example 240).
 
+Tests that need files make `light-*` directories in `$TMPDIR` through
+[tests/support/temp_dir.rs](tests/support/temp_dir.rs), which removes each one when
+its test ends, whether the test passes, fails or panics. Set `LIGHT_CLJS_KEEP_TMP=1`
+to keep them for inspection; each kept directory's path is printed. A test that
+nextest kills at its timeout cannot clean up after itself. Suites that take an
+artifact directory from their own variable, such as `LIGHT_PHASE_ORACLE_ARTIFACTS`,
+never remove it.
+
 Some tests bound macro expansion and evaluation by wall-clock deadlines, so on a
 heavily loaded machine run fewer tests at once (`-j`) or rerun a failure alone.
 To see where suite time goes, save a run's output and summarize it with

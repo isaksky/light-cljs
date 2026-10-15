@@ -1,4 +1,5 @@
 //! Repeatable eduction observations measured against both pinned CLJS references.
+use crate::temp_dir::TempDir;
 use light_cljs::{
     compile,
     evaluator::{Evaluator, EvaluatorOptions},
@@ -147,15 +148,7 @@ fn eduction_fixtures_match_pinned_release_and_checkout() {
             checkout.to_string_lossy().into_owned(),
         ),
     ] {
-        let output_dir = std::env::temp_dir().join(format!(
-            "light-cljs-eductions-{kind}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&output_dir).unwrap();
+        let output_dir = TempDir::new(&format!("cljs-eductions-{kind}"));
         let mut child =
             Command::new(std::env::var_os("CLOJURE").unwrap_or_else(|| "clojure".into()))
                 .current_dir(&root)
@@ -169,7 +162,7 @@ fn eduction_fixtures_match_pinned_release_and_checkout() {
                     identity,
                     &checkout_arg,
                 ])
-                .arg(&output_dir)
+                .arg(output_dir.path())
                 .arg("cases")
                 .arg(root.join("tests/fixtures/compiler-eductions.tsv"))
                 .stdin(Stdio::null())
@@ -228,7 +221,6 @@ fn eduction_fixtures_match_pinned_release_and_checkout() {
             "Matched {} eduction observations against {kind} {identity}",
             cases.len()
         );
-        fs::remove_dir_all(output_dir).unwrap();
     }
 }
 

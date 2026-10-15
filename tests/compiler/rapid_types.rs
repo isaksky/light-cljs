@@ -42,7 +42,7 @@ fn entry_at_every_level(entry: &str, sources: &[(&str, &str)], expected: &str) -
     }
     let program = analyze_namespace_entry(
         entry,
-        std::slice::from_ref(&root.0),
+        std::slice::from_ref(root.0.path()),
         &mut MacroHost::new(),
         AnalysisOptions::default(),
         &mut Vec::new(),
