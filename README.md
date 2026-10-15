@@ -281,6 +281,10 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   a keyword to 4 KB, a vector to 6 KB and a map or set literal to 12 KB; a
   program that prints keeps the printer (about 21 KB), and one that uses the
   generic sequence operations most of the collection machinery (30-50 KB).
+- **Collection performance:** vectors are upstream's persistent 32-way trie, so
+  `conj` is amortized O(1), `nth`, `assoc` and `pop` are O(log32 n) and `subvec`
+  is an O(1) view, but `rseq` copies. Maps and sets are still linear entry arrays, whose
+  lookups and updates are O(n) ([docs/compiler.md](docs/compiler.md)).
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:

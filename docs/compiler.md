@@ -869,7 +869,20 @@ impersonating language values. Nested immutable values and opaque host
 references are shared; caller-owned host objects are never frozen or converted
 into collections.
 
-Vector count/indexed lookup is O(1); constructing a vector is O(n). Equality
+A vector is upstream's persistent 32-way trie with a tail of up to 32 items:
+`count` is O(1); `nth`, `get`, `assoc` at an index and `pop` are O(log32 n),
+with the tail read and copied directly; `conj` is amortized O(1). Constructing
+a vector of n items is O(n). Its brand and store are a private class field
+rather than a WeakMap entry, which no host object can have or copy either, and
+its trie nodes stay private: `.-root` of a vector is an opaque token, and
+`.-tail` a copy. `subvec` is O(1), as upstream's Subvec: its store is a view of
+the vector's (a subvec of a subvec views the first vector), which `nth`, `get`,
+`count`, `reduce`, `pop` and `assoc` read or update through; a seq or iterator
+of one copies 32 items at a time, and an operation that needs a trie of its own
+(`conj`, `transient`, the public fields) builds one once, in O(n). The public
+Subvec constructor takes the same view where its source is a vector holding
+every index it names. `rseq` of a vector copies its items leaf by leaf, in
+O(n), where upstream's RSeq is O(1). Equality
 compares sequential contents across list/vector/seq kinds, with an identity fast
 path for the same immutable value. Keywords and symbols compare by full qualified
 spelling within their own kind. Host objects/functions compare by identity; nil
@@ -930,11 +943,13 @@ nil; its zero-argument result is `[]`, and its one-argument result is unchanged.
 Vector `assoc` replaces an existing numeric index or appends exactly at count.
 In-range positive fractions truncate like upstream; invalid indices throw `Error`
 without changing the old vector. An odd extra key receives nil. Vector updates
-copy their array in O(n); list prepend, first and tail are O(1), and list
-construction/indexing are O(n).
+copy the tail, or the trie's path to one leaf; list prepend, first and tail are
+O(1), and list construction/indexing are O(n).
 
 `seq` of an empty value is nil; nonempty lists can reuse their identity, and
 vectors/strings produce views with frozen private offset/storage descriptors.
+A vector of more than 32 items gives upstream's ChunkedSeq over its trie's
+leaves and tail, which a seq shares frozen.
 `rest` at the end (including nil) is the empty list, while `next` is nil. Each tail
 is O(1), so complete traversal is linear. String traversal produces UTF-16
 one-unit strings. `conj` of a generic seq produces a seq-cons, distinct from a list.
@@ -1975,6 +1990,13 @@ ITransientVector/ITransientSet methods also dispatch to custom implementations.
 Vectors provide indexed access; all three provide lookup, count, and IFn calls.
 Transients own private mutable copies of persistent storage. Persistence drops
 metadata, freezes the result, and prevents subsequent mutation or counting.
+A transient vector, as upstream's TransientVector, copies only the tail when it
+is made and the trie nodes it first changes, so `transient`, `conj!`, `assoc!`,
+`pop!` and `persistent!` are O(1) amortized or O(log32 n), and `vec`, `into`,
+`filterv` and `mapv` of one collection (a reduction, as upstream) build an
+n-item vector in O(n). Where no protocol implementation exists, the `conj!` of
+`into`, `mapv` and `filterv` onto their own transient skips the protocol
+dispatch.
 As upstream, lookup is allowed on persisted hash-map transients; array-map
 transients and vectors reject it. Out-of-range three-argument vector nth returns
 its fallback even after persistence. Transient sets return the query key during

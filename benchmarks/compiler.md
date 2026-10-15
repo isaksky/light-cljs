@@ -3159,3 +3159,101 @@ results it does not type, `[:replaced :replaced :replaced]` at `:none` and
 `[:body :body :body]` at `:advanced`, where `:static-fns` calls known
 functions directly. Its `swap!` and `map` call the replacement at every
 level.
+
+## Persistent vector trie — October 14, 2026
+
+light-cljs-234 replaces the vector representation, a frozen array copied on
+every update, with upstream's PersistentVector: a 32-way trie of frozen
+32-item leaves and a tail of up to 32 items (docs/compiler.md, "Collections").
+`conj` copies only the tail (and every 32nd item moves a frozen copy of it into
+the trie), `nth`, `assoc` and `pop` follow one path, and a transient vector owns
+copies of the tail and of the nodes it changes. Further changes, each needed for
+a workload below to come near upstream:
+
+- A vector's brand and store became a private class field (`vectors` keeps a
+  WeakMap's `has`, `get` and `set`). Adding a WeakMap entry for each new vector
+  alone cost about 4.4 ms per 20,000 vectors in Node, nine times upstream's whole
+  `vector-conj`; a private field cannot be forged or copied by host code either.
+- `reduce` of an integer range with an initial value walks the numbers, as
+  upstream's IntegerRange does, instead of a seq: the range walk, not the
+  vector, was most of `vector-conj` and all of `vector-into` once `conj` was
+  cheap.
+- `subvec` is a view of its vector's store (`VectorView`), O(1) as upstream's
+  Subvec, and `reduce` of a vector, a view or a ChunkedSeq over one walks the
+  trie's leaves instead of a copy of its items.
+- `into`, `mapv` and `filterv` `conj!` onto their own transient past the
+  protocol dispatch where no protocol implementation exists, and `mapv` of one
+  collection and `filterv` are reductions into a transient, as upstream.
+- `nth` tests for a vector before the other kinds, and the runtime's own
+  ChunkedSeq steps store no null metadata or hash entries.
+
+Command (the collection workloads of "Collection throughput against upstream"
+that build or read vectors), Node v24.18.0, the same Mac, after rebasing onto
+master `c2f1711`; another worker was active, and the one-minute load average
+was 6.7–7.9 over the rounds:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only vector-conj,vector-nth,subvec-reduce,vector-into --output DIR
+```
+
+Median ms per call; "before" is the baseline section above (load 2.4–11.2):
+
+| Workload | n | Before | After | Upstream (this run) | After / upstream |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| vector-conj | 2,000 | 5.63 | 0.171 | 0.088 | 1.9× |
+| vector-conj | 20,000 | 717 | 1.122 | 0.475 | 2.4× |
+| vector-nth | 2,000 | 0.082 | 0.043 | 0.018 | 2.3× |
+| vector-nth | 20,000 | 0.566 | 0.156 | 0.124 | 1.3× |
+| subvec-reduce | 2,000 | 0.162 | 0.035 | 0.017 | 2.1× |
+| subvec-reduce | 20,000 | 1.54 | 0.175 | 0.079 | 2.2× |
+| vector-into | 2,000 | 1.93 | 0.106 | 0.029 | 3.7× |
+| vector-into | 20,000 | 19.8 | 0.800 | 0.190 | 4.2× |
+
+`vector-conj` grows 6.6× from 2,000 to 20,000 items (upstream 5.4×), linear
+where it was quadratic (127×). `vector-into` is still about 4× upstream: the
+transient vector's `conj!` goes through `conjTransient` and the `transients`
+WeakMap, where upstream's is a method call.
+
+Outside the benchmark driver, a throwaway script timing 200 calls of each at
+`advanced` in Node (load about 10), against the master build of the morning:
+`(count (mapv inc v))` over a 20,000-item vector went from 52.8 ms to 0.60 ms,
+`(count (filterv odd? v))` from 95.5 ms to 0.52 ms, and `(first (rseq v))` from
+10.7 ms to 0.63 ms; with the trie's first slice alone, before the ChunkedSeq
+and `rseq` changes, a seq of a long vector cost about 3 µs an item, and those
+three took 81, 0.85 and 59 ms.
+
+Sizes (bytes), re-measured after rebasing onto master `c2f1711` ("before" is
+that master). Every program that tests for a vector keeps the `vectors` class
+(about 180 bytes minified instead of `new WeakMap()`), and one that builds
+vectors the trie (vector-only: `vectorTrie`, `vectorLeaf`, `vectorSlice`,
+`vectorItems`; mapv-count also the transient trie, `conj` and `reduce`). One
+that iterates, prints or compares vectors also keeps the items that read a
+caller's array as they are read (`vectorStorage`, about 180 bytes). The user
+accepted this growth for light-cljs-234, so the `advanced` ceilings of the
+fixtures that grew rise to their new sizes, rounded up. The shared runtime
+grows by about 17 KB with its comments (console-log-sum at `none`: 399,203 to
+416,592), and every `none` and `prepare` ceiling rises to the new size rounded
+up to the next 1,000:
+
+| Fixture | Advanced before | Advanced after |
+| --- | ---: | ---: |
+| vector-printed | 9,659 | 10,502 |
+| map-printed | 13,453 | 14,312 |
+| seq-pipeline | 24,348 | 25,131 |
+| rest-fn | 9,400 | 9,765 |
+| keyword-case | 3,428 | 3,612 |
+| keyword-lookups | 29,020 | 30,248 |
+| constant-literals | 20,521 | 21,312 |
+| constant-lookups | 3,808 | 3,992 |
+| constant-keys | 39,776 | 41,330 |
+| event-maps | 29,254 | 30,482 |
+| vector-only | 4,221 | 5,023 |
+| keyword-only | 3,355 | 3,539 |
+| map-only | 9,116 | 9,943 |
+| atom-str | 2,284 | 2,464 |
+| set-only | 5,062 | 5,246 |
+| mapv-count | 28,659 | 31,154 |
+| closed-params | 12,996 | 13,826 |
+| callbacks | 36,161 | 37,387 |
+| protocol-params | 41,291 | 42,552 |

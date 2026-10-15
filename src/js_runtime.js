@@ -10,7 +10,18 @@
   //@unit internedKeywords
   const internedKeywords = new Map();
   //@unit vectors
-  const vectors = new WeakMap();
+  // A vector's brand and store (see `vectorTailOffset`) is instead a private
+  // field, with a WeakMap's `has`, `get` and `set`: no host object can have
+  // or copy one either, and adding it to a new value is a property store,
+  // not a WeakMap entry, which a vector built by every `conj` cannot afford.
+  // `new vectors` adds the field `#s` to the value its base constructor
+  // returns, which `set` requires to be a new object.
+  const vectors = class extends (function (value) { return value; }) {
+    #s;
+    static has(value) { return (typeof value === "object" ? value !== null : typeof value === "function") && #s in value; }
+    static get(value) { if (vectors.has(value)) return value.#s; }
+    static set(value, store) { new vectors(value).#s = store; }
+  };
   //@unit symbols
   const symbols = new WeakMap();
   //@unit maps
@@ -266,28 +277,45 @@
     return value;
   }
   //@unit PersistentVectorValue requires: constructorSlots, makeVector, vectorRoots
-  // Root slots are opaque canonical tokens, never an upstream trie-node ABI.
+  // Root slots are opaque canonical tokens, never an upstream trie-node ABI:
+  // a token names the private root of the vector whose `root` field gave it.
+  // The supplied tail is shared, as upstream.
   function PersistentVectorValue(metadata, cnt, shift, root, tail, cachedHash) {
-    const prefix = vectorRoots.get(root) ?? [], tailOffset = cnt < 32 ? 0 : ((cnt - 1) >>> 5) << 5;
-    const items = Array.from({length: cnt});
-    for (let i = 0; i < cnt; i++) Object.defineProperty(items, i, {enumerable: true,
-      get: () => i < tailOffset ? prefix[i] : tail[i - tailOffset]});
-    const value = makeVector(items);
+    // `callerTail` marks the tail, which stores that keep it inherit, as the
+    // caller's: no seq freezes it (`vectorChunk`).
+    const value = makeVector(null, {cnt, shift, root: vectorRoots.get(root) ?? [], tail, callerTail: true});
     return constructorSlots(value, {cnt, shift, root, tail}, metadata, cachedHash);
   }
-  //@unit SubvecValue requires: constructorSlots, makeVector, nth, subvecSources
+  //@unit SubvecValue requires: constructorSlots, makeVector, nth, protocolHooks, subvecSources,
+  //@ vectors, vectorTrie, VectorView
   function SubvecValue(metadata, source, start, end, cachedHash) {
-    const items = Array.from({length: Math.max(0, end - start)});
-    for (let i = 0; i < items.length; i++) Object.defineProperty(items, i, {enumerable: true, get: () => nth(source, start + i)});
-    const value = makeVector(items);
+    const store = vectors.get(source), cnt = Math.max(0, end - start);
+    let value;
+    // A view of a vector's store holding every index it names, as `subvec`;
+    // else items that ask `nth` of the source when read.
+    if (store && Number.isInteger(start) && Number.isInteger(end) && start >= 0 && start + cnt <= store.cnt
+      && !protocolHooks.publicMethod?.(source, "IIndexed/-nth", 2, true, true)) value = makeVector(null, new VectorView(store, start, cnt));
+    else {
+      // Every leaf keeps the getters, and the store is marked as reading a
+      // caller's array (`callerTail`), so that no copy of an item is kept.
+      const getters = (from, to) => {
+        const node = [];
+        for (let i = from; i < to; i++) Object.defineProperty(node, i - from, {enumerable: true, get: () => nth(source, start + i)});
+        return node;
+      };
+      value = makeVector(null, {...vectorTrie(getters(0, cnt), getters), callerTail: true});
+    }
     Object.setPrototypeOf(value, SubvecValue.prototype);
     subvecSources.set(value, source);
     return constructorSlots(value, {start, end}, metadata, cachedHash);
   }
-  //@unit ChunkedSeqValue requires: constructorSlots, view
+  //@unit ChunkedSeqValue requires: constructorSlots, publicCollectionSlots, view
   function ChunkedSeqValue(source, node, index, offset, metadata, cachedHash) {
-    const value = view(ChunkedSeqValue, node, offset, false, "chunked");
-    return constructorSlots(value, {vec: source, node, i: index, off: offset}, metadata, cachedHash);
+    const value = view(ChunkedSeqValue, node, offset, false, "chunked"), slots = {vec: source, node, i: index, off: offset};
+    // Without metadata or a hash, which a vector's seq has at every step,
+    // no entry reads differently from a null one.
+    if (metadata == null && cachedHash == null) { publicCollectionSlots.set(value, slots); return value; }
+    return constructorSlots(value, slots, metadata, cachedHash);
   }
   //@unit PersistentQueueValue requires: constructorSlots, queueFromArray
   function PersistentQueueValue(metadata, cnt, front, rear, cachedHash) {
@@ -487,11 +515,11 @@
     return queue.length ? view(IndexedSeqValue, queue, 0, false, "queue") : null;
   };
   //@unit makeVector.seq effect: makeVector when: seq requires: ChunkedSeqValue, IndexedSeqValue,
-  //@ kindHooks, publicCollectionSlots, subvecSources, view
-  kindHooks.seqVector = (value, items) => {
-    if (publicCollectionSlots.has(value) && !subvecSources.has(value)) { const slots = publicCollectionSlots.get(value); if (slots.cnt === 0) return null; if (slots.cnt <= 32) return view(IndexedSeqValue, slots.tail, 0, true); }
-    return !items.length ? null : items.length <= 32 ? view(IndexedSeqValue, items, 0, true) : view(ChunkedSeqValue, items, 0, false, "chunked");
-  };
+  //@ kindHooks, vectorChunk, view
+  // A vector of at most 32 items walks its tail; a longer one is upstream's
+  // chunked seq over its trie's leaves.
+  kindHooks.seqVector = (value, store) => !store.cnt ? null : store.cnt <= 32 ? view(IndexedSeqValue, vectorChunk(value, 0), 0, true)
+    : ChunkedSeqValue(value, vectorChunk(value, 0), 0, 0, null, null);
   //@unit makeMap.seq effect: makeMap, treeMapConstructor, recordMethods when: seq requires: IndexedSeqValue,
   //@ kindHooks, mapEntry, mapKinds, mapTraversal, NodeSeqType, publicCollectionSlots, view
   kindHooks.seqMap = value => {
@@ -1012,7 +1040,7 @@
 
   //@unit reduce requires: cells, chunks, first, invalidArity, isReduced, iterableValue, iterator,
   //@ iteratorProtocol, kindHooks, lazyValues, next, protocolHooks, publicCollectionSlots,
-  //@ reducedValue, reduceValue, seq, vectors, views
+  //@ reducedValue, reduceValue, seq, vectorReduce, vectors, views
   function reduce(rf, init, collection) {
     const arity = arguments.length;
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
@@ -1033,17 +1061,28 @@
       while (iter.hasNext()) { init = rf.call(null, init, iter.next()); if (isReduced(init)) return reducedValue(init); }
       return init;
     }
-    if (chunkedSlots?.cnt != null && vectors.has(source) && arity === 2) return reduce(rf, vectors.get(source));
-    if (chunkedSlots?.vec) {
-      const values = vectors.get(chunkedSlots.vec).slice(chunkedSlots.i + chunkedSlots.off);
-      return arity === 3 ? reduce(rf, init, values) : reduce(rf, values);
-    }
+    // A vector longer than its tail or a view (`subvec`) whose seq no
+    // protocol implementation replaces, one the public constructor built
+    // without `init` (with one, as upstream, its seq walks the whole tail it
+    // received), and a public ChunkedSeq over one, walk its store.
+    const store = vectors.get(chunkedSlots?.vec ?? source);
+    if (store && (chunkedSlots?.vec || chunkedSlots?.cnt != null && arity === 2
+      || (store.cnt > 32 || store.sub) && !protocolHooks.publicMethod?.(source, "ISeqable/-seq", 1, true)))
+      return vectorReduce(store, rf, init, chunkedSlots?.vec ? chunkedSlots.i + chunkedSlots.off : 0, arity);
     const producer = cells.get(source);
     if (producer?.integer && arity === 2) {
       if (producer.count === 0) return rf.call(null);
       init = producer.head;
       for (let i = 1; i < producer.count; i++) {
         init = rf.call(null, init, producer.head + i * producer.step);
+        if (isReduced(init)) return reducedValue(init);
+      }
+      return init;
+    }
+    // With an initial value, as upstream's IntegerRange: from start to end.
+    if (producer?.integer) {
+      for (let i = producer.head; producer.step > 0 ? i < producer.end : i > producer.end; i += producer.step) {
+        init = rf.call(null, init, i);
         if (isReduced(init)) return reducedValue(init);
       }
       return init;
@@ -1077,7 +1116,9 @@
     }
     let initialized = arity === 3, result = init;
     let current = seq(initialized ? collection : init);
-    let slice = views.get(current), offset = slice?.offset;
+    // A chunked seq over a vector's leaf continues past its storage.
+    const walked = value => publicCollectionSlots.get(value)?.vec ? undefined : views.get(value);
+    let slice = walked(current), offset = slice?.offset;
     // Traverse immutable storage directly. No recursive calls, per-step seq
     // wrappers, captured closures or persistent traversal caches are needed.
     while (current !== null) {
@@ -1094,11 +1135,11 @@
       }
       if (cell || !slice) {
         current = cell ? seq(cell.tail) : next(current);
-        slice = views.get(current);
+        slice = walked(current);
         offset = slice?.offset;
       } else if (++offset >= slice.storage.length) {
         current = seq(slice.tail);
-        slice = views.get(current); offset = slice?.offset;
+        slice = walked(current); offset = slice?.offset;
       }
     }
     return initialized ? result : rf.call(null);
@@ -1235,14 +1276,14 @@
   }
 
   //@unit reduceKv requires: isReduced, keyProtocol, mapEntries, mapTraversal, protocolHooks,
-  //@ reduce, reducedValue, valProtocol, vectors
+  //@ reduce, reducedValue, valProtocol, vectorItems, vectors
   function reduceKv(rf, init, collection) {
     const method = protocolHooks.publicMethod?.(collection, "IKVReduce/-kv-reduce", 3);
     if (method) return method.call(collection, collection, rf, init);
     if (collection == null) return init;
     // MapEntry has vector storage, but no IKVReduce implementation. Its
     // elements must go through the public IMapEntry sequence fallback.
-    const entries = mapTraversal(collection)?.map(entry => [entry.key, entry.value]) ?? (mapEntries.has(collection) ? undefined : vectors.get(collection)?.map((value, key) => [key, value]));
+    const entries = mapTraversal(collection)?.map(entry => [entry.key, entry.value]) ?? (mapEntries.has(collection) || !vectors.has(collection) ? undefined : vectorItems(collection).map((value, key) => [key, value]));
     if (!entries) return reduce((result, entry) => rf.call(null, result, keyProtocol(entry), valProtocol(entry)), init, collection);
     for (const [key, value] of entries) {
       init = rf.call(null, init, key, value);
@@ -1252,13 +1293,18 @@
   }
   //@unit subvecSources
   const subvecSources = new WeakMap();
-  //@unit subvec requires: count, isVector, nth, subvecSources, SubvecValue, vectorFromArray
+  //@unit subvec requires: count, isVector, makeVector, nth, protocolHooks, subvecSources,
+  //@ SubvecValue, vectorFromArray, vectors, VectorView
   function subvec(value, start, end = count(value)) {
     if (start == null || end == null) throw new Error("Assert failed: subvec indices cannot be nil");
     start = start | 0; end = end | 0;
     if (start < 0 || end < start || end > count(value)) throw new Error("Index out of bounds");
     if (!isVector(value)) throw new Error("subvec requires a vector");
-    const result = vectorFromArray(Array.from({length: Math.ceil(end - start)}, (_, i) => nth(value, start + i)));
+    // A view of a vector's store, as upstream's Subvec, unless a protocol
+    // implementation answers its `nth`: then a copy of what that answers.
+    const store = !protocolHooks.publicMethod?.(value, "IIndexed/-nth", 2, true, true) && vectors.get(value);
+    const result = store ? makeVector(null, new VectorView(store, start, end - start))
+      : vectorFromArray(Array.from({length: end - start}, (_, i) => nth(value, start + i)));
     Object.setPrototypeOf(result, SubvecValue.prototype);
     subvecSources.set(result, subvecSources.get(value) ?? value);
     return result;
@@ -1280,7 +1326,7 @@
     }
     remove() { return new Error("Unsupported operation"); }
   }
-  //@unit RangedIterator requires: vectors
+  //@unit RangedIterator requires: vectorLeaf, vectors
   class RangedIterator {
     constructor(i, base, arr, v, start, end) {
       Object.assign(this, {i, base, arr, v, start, end});
@@ -1288,16 +1334,17 @@
     hasNext() { return this.i < this.end; }
     next() {
       if (this.i - this.base === 32) {
-        this.arr = vectors.get(this.v).slice(this.i, this.i + 32);
+        this.arr = vectorLeaf(vectors.get(this.v), this.i).slice();
         this.base += 32;
       }
       const value = this.arr[this.i & 31]; this.i++; return value;
     }
   }
-  //@unit rangedIterator requires: count, RangedIterator, vectors
+  //@unit rangedIterator requires: count, RangedIterator, vectorLeaf, vectors
   function rangedIterator(value, start, end) {
     const base = start - start % 32;
-    return new RangedIterator(start, base, start < count(value) ? vectors.get(value).slice(base, base + 32) : null, value, start, end);
+    // Its public `arr` is a copy of a leaf, which the caller may change.
+    return new RangedIterator(start, base, start < count(value) ? vectorLeaf(vectors.get(value), base).slice() : null, value, start, end);
   }
   //@unit seqIter requires: iteratorInit, SeqIter
   function seqIter(value) { return new SeqIter(iteratorInit, value); }
@@ -1334,10 +1381,19 @@
     return n === count(other);
   }
 
-  //@unit conj requires: cells, cons, emptyList, kindHooks, lazyValues, makeVector, maps, missing,
-  //@ preserveMeta, protocolHooks, publicCollectionSlots, queues, sets, subvecSources, vectors,
-  //@ views
-  function conj(...args) {
+  //@unit conj requires: cells, cons, emptyList, kindHooks, lazyValues, makeVector, maps,
+  //@ metadataValues, missing, preserveMeta, protocolHooks, publicCollectionSlots, queues, sets,
+  //@ subvecSources, vectors, views
+  function conj(coll, item) {
+    // One item onto a vector, where no protocol implementation or public
+    // constructor can intervene: the hot path of building one.
+    const store = arguments.length === 2 && !protocolHooks.builtin ? vectors.get(coll) : undefined;
+    if (store && !subvecSources.has(coll)) {
+      const built = kindHooks.conjVector(store, item);
+      if (metadataValues.has(coll)) metadataValues.set(built, metadataValues.get(coll));
+      return built;
+    }
+    const args = Array.from(arguments);
     if (args.length === 0) return makeVector([]);
     let result = args[0];
     for (let i = 1; i < args.length; i++) {
@@ -1368,8 +1424,8 @@
     return q ? PersistentQueueValue(meta(result), q.count + 1, q.front != null ? q.front : conj(null, item), q.front != null ? conj(q.rear ?? makeVector([]), item) : makeVector([]), null)
       : queueFromArray([...queues.get(result), item]);
   };
-  //@unit makeVector.conj effect: makeVector when: conj requires: kindHooks, makeVector
-  kindHooks.conjVector = (items, item) => makeVector([...items, item]);
+  //@unit makeVector.conj effect: makeVector when: conj requires: kindHooks, makeVector, vectorConj
+  kindHooks.conjVector = (store, item) => makeVector(null, vectorConj(store, item));
   //@unit SubvecValue.conj effect: SubvecValue when: conj requires: assoc, kindHooks, meta,
   //@ publicCollectionSlots, subvecSources, SubvecValue
   // A vector with slots and a source is a Subvec its public constructor built.
@@ -1441,20 +1497,19 @@
     return collectionWithMeta(assoc(normalized, key, item, ...pairs), meta(value));
   };
   //@unit makeVector.assoc effect: makeVector when: assoc requires: kindHooks, makeVector,
-  //@ outOfBounds, preserveMeta
-  kindHooks.assocVector = (value, original, key, item, pairs) => {
-    const items = original.slice();
+  //@ outOfBounds, preserveMeta, vectorAssoc, vectorConj
+  kindHooks.assocVector = (value, store, key, item, pairs) => {
     const assign = (index, value) => {
       if (typeof index !== "number") throw new Error("Vector key must be a number");
-      if (index >= 0 && index < items.length) items[Math.trunc(index)] = value;
-      else if (index === items.length) items.push(value);
+      if (index >= 0 && index < store.cnt) store = vectorAssoc(store, index, value);
+      else if (index === store.cnt) store = vectorConj(store, value);
       else outOfBounds();
     };
     // The fixed arity follows JS argument binding, including missing item.
     assign(key, item);
     for (let i = 0; i < pairs.length; i += 2)
       assign(pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
-    return preserveMeta(value, makeVector(items));
+    return preserveMeta(value, makeVector(null, store));
   };
 
   //@unit ownMap requires: maps, protocolHooks, publicCollectionSlots, recordTypes
@@ -2051,9 +2106,10 @@
   }
   //@unit transient requires: asTransientProtocol
   function transient(value) { return asTransientProtocol(value); }
-  //@unit asTransient requires: copyEntries, makeTransient, mapKinds, maps, setKinds, sets, vectors
+  //@unit asTransient requires: copyEntries, kindHooks, makeTransient, mapKinds, maps, setKinds,
+  //@ sets, vectors
   function asTransient(value) {
-    if (vectors.has(value)) return makeTransient("vector", vectors.get(value).slice());
+    if (vectors.has(value)) return makeTransient("vector", kindHooks.transientVector(vectors.get(value)));
     if (maps.has(value)) return makeTransient("map", copyEntries(maps.get(value)), mapKinds.get(value));
     return makeTransient("set", copyEntries(sets.get(value)), setKinds.get(value));
   }
@@ -2068,9 +2124,20 @@
     return kindHooks.persistSet(state.entries, state.mapKind);
   }
   //@unit makeVector.persist effect: makeVector when: persistTransient requires: kindHooks,
-  //@ makeVector
+  //@ makeVector, vectorTailOffset
   // A transient vector, map or set comes from a persistent one of its kind.
-  kindHooks.persistVector = entries => makeVector(entries);
+  // The vector's tail is trimmed to its count; the nodes it owned no longer
+  // change, as nothing can edit them, and a leaf freezes where a seq first
+  // shares it (`vectorChunk`).
+  kindHooks.persistVector = ({cnt, shift, root, tail}) => makeVector(null, {cnt, shift, root, tail: tail.slice(0, cnt - vectorTailOffset(cnt))});
+  //@unit makeVector.transient effect: makeVector when: asTransient requires: kindHooks
+  // A transient vector edits a copy of the tail, and copies of the trie's
+  // nodes along the paths it changes, which it owns (`vectorEditor`): a weak
+  // set, which keeps no node a `pop!` discarded.
+  kindHooks.transientVector = ({cnt, shift, root, tail}) => {
+    tail = tail.slice();
+    return {cnt, shift, root, tail, owned: new WeakSet([tail])};
+  };
   //@unit makeMap.persist effect: makeMap, treeMapConstructor, recordMethods when: persistTransient
   //@ requires: kindHooks, makeMap, PersistentArrayMapValue, PersistentHashMapValue
   kindHooks.persistMap = (entries, kind) => makeMap(kind === "hash-map" ? PersistentHashMapValue : PersistentArrayMapValue, entries, kind);
@@ -2082,7 +2149,7 @@
     const state = transients.get(value);
     // Pinned CLJS's three-argument -nth returns an out-of-range fallback
     // even after persistence; in-range access still checks ownership.
-    if (fallback !== missing && !(index >= 0 && index < state.entries.length)) return fallback;
+    if (fallback !== missing && !(index >= 0 && index < state.entries.cnt)) return fallback;
     editableTransient(value, "nth");
     return vectorNth(state.entries, index, fallback);
   }
@@ -2099,16 +2166,14 @@
   //@unit makeMap.transientLookup effect: makeMap, treeMapConstructor, recordMethods, makeSet,
   //@ treeSetConstructor when: transientLookup requires: entryIndex, hashEntryIndex, kindHooks
   kindHooks.transientEntryIndex = (state, key) => state.mapKind === "array-map" ? entryIndex(state.entries, key, undefined, "array-map") : hashEntryIndex(state.entries, key);
-  //@unit assocTransient requires: editableTransient, entryIndex, makeTransient, outOfBounds,
+  //@unit assocTransient requires: editableTransient, entryIndex, kindHooks, makeTransient,
   //@ putEntry, transients
   function assocTransient(value, key, item, indexed = false) {
     const state = transients.get(value);
     if (state.kind === "vector") {
       if (!indexed && typeof key !== "number") throw new Error("TransientVector's key for assoc! must be a number.");
       editableTransient(value, "assoc!");
-      if (key >= 0 && key < state.entries.length) state.entries[key & 0x7fffffff] = item;
-      else if (key === state.entries.length) state.entries.push(item);
-      else outOfBounds();
+      kindHooks.assocTransientVector(state.entries, key, item);
     } else {
       editableTransient(value, "assoc!");
       if (state.mapKind === "array-map" && state.entries.length >= 8 && entryIndex(state.entries, key, undefined, "array-map") < 0) {
@@ -2123,9 +2188,26 @@
   //@unit conjTransient requires: editableTransient, kindHooks
   function conjTransient(value, member) {
     const state = editableTransient(value, "conj!");
-    if (state.kind === "vector") { state.entries.push(member); return value; }
+    if (state.kind === "vector") { kindHooks.conjTransientVector(state.entries, member); return value; }
     return state.kind === "set" ? kindHooks.conjTransientSet(value, state, member) : kindHooks.conjTransientMap(value, member);
   }
+  //@unit conjBangOwn requires: conjBangProtocol, conjTransient, protocolHooks, transients
+  // `conj!` onto the transient a core function's reduction holds, past the
+  // protocol dispatch where no protocol implementation can answer for it.
+  const conjBangOwn = (value, member) => !protocolHooks.builtin && transients.has(value) ? conjTransient(value, member) : conjBangProtocol(value, member);
+  //@unit makeVector.conjTransient effect: makeVector when: conjTransient requires: conjVectorBang,
+  //@ kindHooks
+  kindHooks.conjTransientVector = conjVectorBang;
+  //@unit makeVector.assocTransient effect: makeVector when: assocTransient requires: conjVectorBang,
+  //@ kindHooks, outOfBounds, vectorAssocNode, vectorEditor, vectorTailOffset
+  // `assoc!` of an index of a transient vector, or of its count.
+  kindHooks.assocTransientVector = (store, key, item) => {
+    if (key >= 0 && key < store.cnt) {
+      if (key >= vectorTailOffset(store.cnt)) store.tail[key & 31] = item;
+      else store.root = vectorAssocNode(store.shift, store.root, key, item, vectorEditor(store.owned));
+    } else if (key === store.cnt) conjVectorBang(store, item);
+    else outOfBounds();
+  };
   //@unit makeSet.conjTransient effect: makeSet, treeSetConstructor when: conjTransient requires: kindHooks,
   //@ putMember
   kindHooks.conjTransientSet = (value, state, member) => {
@@ -2156,11 +2238,22 @@
     }
     return value;
   }
-  //@unit popTransient requires: editableTransient
+  //@unit popTransient requires: editableTransient, vectorEditor, vectorLeaf, vectorPopTail
+  // As upstream's TransientVector: the tail keeps a popped item until `conj!`
+  // overwrites it or `persistent!` trims it; a vector whose tail empties
+  // takes its last leaf for its tail.
   function popTransient(value) {
-    const state = editableTransient(value, "pop!");
-    if (!state.entries.length) throw new Error("Can't pop empty vector");
-    state.entries.pop(); return value;
+    const store = editableTransient(value, "pop!").entries, {cnt, shift} = store;
+    if (!cnt) throw new Error("Can't pop empty vector");
+    if (cnt > 1 && !((cnt - 1) & 31)) {
+      const edit = vectorEditor(store.owned);
+      store.tail = edit(vectorLeaf(store, cnt - 2));
+      const root = vectorPopTail(cnt, shift, store.root, edit) ?? [];
+      if (shift > 5 && root.length < 2) { store.root = edit(root[0]); store.shift -= 5; }
+      else store.root = root;
+    }
+    store.cnt--;
+    return value;
   }
   //@unit conjBang requires: conjBangProtocol, transient, vector
   function conjBang(value, ...members) {
@@ -2192,25 +2285,34 @@
   //@unit hostHooks
   // Generic host-facing methods, for receivers that cannot answer natively.
   const hostHooks = {};
-  //@unit vectorStorage requires: publicCollectionSlots, subvecSources, vectors
-  // What `seq` of a vector walks (`makeVector.seq`), or null.
+  //@unit vectorStorage requires: vectorItems, vectorNth, vectors
+  // The items of a vector in an array, or null where it has none: the tail of
+  // one with at most 32 items, which `seq` walks (`makeVector.seq`). Where
+  // the store reads a caller's array (`callerTail`), whose items can change
+  // or be getters, each item past one tail, or of a view, reads the store
+  // when it is read, so the iterator, the printer and equality read no more
+  // than they use.
   function vectorStorage(value) {
-    const slots = publicCollectionSlots.get(value), items = vectors.get(value);
-    if (slots && !subvecSources.has(value) && slots.cnt <= 32) return slots.cnt === 0 ? null : slots.tail;
-    return items.length ? items : null;
+    const store = vectors.get(value);
+    if (!store.cnt) return null;
+    if (!(store.sub ?? store).callerTail) return store.cnt <= 32 ? store.tail : vectorItems(value);
+    if (store.cnt <= 32 && !store.sub) return store.tail;
+    const items = [];
+    for (let i = 0; i < store.cnt; i++) Object.defineProperty(items, i, {enumerable: true, get: () => vectorNth(store, i, null)});
+    return items;
   }
   //@unit vectorCount requires: publicCollectionSlots, subvecSources, vectors
   function vectorCount(value) {
     const slots = publicCollectionSlots.get(value);
     if (slots && "cnt" in slots) return slots.cnt;
-    return slots && subvecSources.has(value) ? slots.end - slots.start : vectors.get(value).length;
+    return slots && subvecSources.has(value) ? slots.end - slots.start : vectors.get(value).cnt;
   }
   //@unit vectorIndexOf requires: hostHooks, indexIn, mapEntries, missing, outOfBounds,
   //@ protocolHooks, vectorCount, vectorNth, vectors
   function vectorIndexOf(coll, value, start, reverse) {
     if (protocolHooks.extend || !vectors.has(coll)) return hostHooks.index(coll, value, start, reverse);
-    const items = vectors.get(coll), entry = mapEntries.has(coll);
-    return indexIn(vectorCount(coll), i => entry && i !== 0 && i !== 1 ? outOfBounds() : vectorNth(items, i, missing), value, start, reverse);
+    const store = vectors.get(coll), entry = mapEntries.has(coll);
+    return indexIn(vectorCount(coll), i => entry && i !== 0 && i !== 1 ? outOfBounds() : vectorNth(store, i, missing), value, start, reverse);
   }
   //@unit vectorPrototype requires: hostHooks, invalidArity, itemIterator, mapEntries, missing,
   //@ objectEquiv, outOfBounds, printHooks, protocolHooks, vectorCount, vectorIndexOf, vectorNth,
@@ -2227,15 +2329,15 @@
     },
     // The pinned fixed method accepts one index and ignores extra arguments.
     call(_self, index) {
-      const items = vectors.get(this);
-      if (!items) throw new Error("Expected vector");
+      const store = vectors.get(this);
+      if (!store) throw new Error("Expected vector");
       if (mapEntries.has(this)) {
         if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length - 1);
-        if (index === 0 || index === 1) return items[index];
+        if (index === 0 || index === 1) return store.tail[index];
         return arguments.length === 3 ? arguments[2] : outOfBounds();
       }
       if (typeof index !== "number") throw new Error("Key must be integer");
-      return vectorNth(items, index, missing);
+      return vectorNth(store, index, missing);
     }
   });
 
@@ -2274,11 +2376,200 @@
   // What keyword case compares, or null.
   const keywordFqn = value => keywords.get(value)?.spelling ?? null;
 
-  //@unit makeVector requires: PersistentVectorValue, vectors
-  function makeVector(items) {
+  //@unit makeVector requires: PersistentVectorValue, vectors, vectorTrie
+  // A vector of the new array `items`, or with the store an operation built.
+  function makeVector(items, store = vectorTrie(items)) {
     const value = Object.create(PersistentVectorValue.prototype);
-    vectors.set(value, Object.freeze(items));
+    vectors.set(value, store);
     return value;
+  }
+
+  //@unit vectorTailOffset
+  // A vector's store (`vectors`) is upstream's PersistentVector: `cnt` items,
+  // the last 1 to 32 of them in the array `tail` and the others in the full
+  // 32-item leaves of a 32-way trie, whose `root` is `shift` / 5 levels above
+  // them. Nodes are arrays with no trailing holes. No operation changes a
+  // persistent vector's nodes; only a transient changes those it owns
+  // (`vectorEditor`). Seqs share leaves, which are frozen, and the tail,
+  // which freezes when one first does (`vectorChunk`); the root and the
+  // other nodes stay private.
+  // The index of the first item in the tail:
+  const vectorTailOffset = cnt => cnt < 32 ? 0 : (cnt - 1) & -32;
+  //@unit vectorTrie requires: vectorTailOffset
+  // The store of the new array `items`, which it keeps as its tail where it
+  // can; `slice` gives the items of each leaf and of a shorter tail.
+  function vectorTrie(items, slice = (from, to) => items.slice(from, to)) {
+    const cnt = items.length, end = vectorTailOffset(cnt);
+    // The frozen leaves, then each level of their parents up to the root.
+    let nodes = [], shift = 5;
+    for (let i = 0; i < end; i += 32) nodes.push(Object.freeze(slice(i, i + 32)));
+    for (; nodes.length > 32; shift += 5) {
+      const parents = [];
+      for (let i = 0; i < nodes.length; i += 32) parents.push(nodes.slice(i, i + 32));
+      nodes = parents;
+    }
+    return {cnt, shift, root: nodes, tail: end ? slice(end, cnt) : items};
+  }
+  //@unit vectorLeaf requires: vectorTailOffset
+  // The leaf, or the tail, that holds index `i` of a store; of a view
+  // (`VectorView`), a new array of its items from index `i & -32`.
+  function vectorLeaf(store, i) {
+    if (store.sub) return store.leaf(i);
+    if (i >= vectorTailOffset(store.cnt)) return store.tail;
+    let node = store.root;
+    for (let level = store.shift; level > 0; level -= 5) node = node[(i >>> level) & 31];
+    return node;
+  }
+  //@unit vectorChunk requires: vectorLeaf, vectors
+  // The leaf or tail holding index `i` of a vector, for a seq to share,
+  // which freezes then (a leaf a transient built, the tail and a view's new
+  // array), unless it is a tail the public constructor received (and
+  // `assoc` kept): that one stays its caller's, as upstream.
+  function vectorChunk(value, i) {
+    const store = vectors.get(value), leaf = vectorLeaf(store, i);
+    return !store.sub && store.callerTail && leaf === store.tail ? leaf : Object.freeze(leaf);
+  }
+  //@unit vectorSlice requires: vectorLeaf
+  // A new array of a store's items from index `from` to `to`.
+  function vectorSlice(store, from, to) {
+    const items = [];
+    for (let i = from; i < to; i = (i | 31) + 1) items.push(...vectorLeaf(store, i).slice(i & 31, (i & 31) + to - i));
+    return items;
+  }
+  //@unit vectorItems requires: vectors, vectorSlice
+  // A new array of a vector's items.
+  const vectorItems = value => vectorSlice(vectors.get(value), 0, vectors.get(value).cnt);
+  //@unit VectorView requires: vectorAssoc, vectorSlice, vectorTrie
+  // The store of a `subvec`: a view of `cnt` items of another store, from its
+  // index `start`, which shares that store. `nth`, `reduce`, `pop` and `assoc`
+  // read or update the store it views; an operation that reads the fields of
+  // a trie (`shift`, `root`, `tail`) reads those of one it builds of its
+  // items, once.
+  class VectorView {
+    constructor(store, start, cnt) {
+      // A view of a view is a view of the store that one views.
+      this.cnt = cnt;
+      this.sub = store.sub ?? store;
+      this.start = store.sub ? store.start + start : start;
+      this.built = null;
+    }
+    // Built anew each time where the store it views reads a caller's array
+    // (`callerTail`), whose items can change.
+    get trie() {
+      const trie = this.built ?? vectorTrie(vectorSlice(this.sub, this.start, this.start + this.cnt));
+      if (!this.sub.callerTail) this.built = trie;
+      return trie;
+    }
+    get shift() { return this.trie.shift; }
+    get root() { return this.trie.root; }
+    get tail() { return this.trie.tail; }
+    leaf(i) {
+      const from = this.start + (i & -32);
+      return vectorSlice(this.sub, from, Math.min(from + 32, this.start + this.cnt));
+    }
+    assoc(i, item) { return new VectorView(vectorAssoc(this.sub, this.start + i, item), this.start, this.cnt); }
+    pop() { return new VectorView(this.sub, this.start, this.cnt - 1); }
+  }
+  //@unit vectorReduce requires: isReduced, reducedValue, vectorLeaf, vectorNth
+  // `reduce` of a store's items from index `i`: from `init` where `arity` is
+  // 3, else from the first of them. A view's walks the store it views.
+  function vectorReduce(store, rf, init, i, arity) {
+    let end = store.cnt;
+    if (store.sub) { i += store.start; end += store.start; store = store.sub; }
+    if (arity === 2) { if (i >= end) return rf.call(null); init = vectorNth(store, i++, null); }
+    for (let leaf = vectorLeaf(store, i); i < end;) {
+      init = rf.call(null, init, leaf[i & 31]);
+      if (isReduced(init)) return reducedValue(init);
+      if (!(++i & 31)) leaf = vectorLeaf(store, i);
+    }
+    return init;
+  }
+  //@unit vectorEditor
+  // What a transient vector, which owns the nodes in `owned`, edits for
+  // `node`: the node itself where it owns it, else a copy it then owns.
+  const vectorEditor = owned => node => owned.has(node) ? node : (owned.add(node = node.slice()), node);
+  //@unit vectorPath
+  // `node` below `level` / 5 new nodes of one child each.
+  const vectorPath = (level, node) => level ? [vectorPath(level - 5, node)] : node;
+  //@unit vectorPushTail requires: vectorPath
+  // `parent`, `level` above the leaves of a store of `cnt` items, with the
+  // full tail `leaf` as its next leaf. A persistent vector copies the nodes on
+  // the path; a transient's `edit` gives the ones it changes.
+  function vectorPushTail(cnt, level, parent, leaf, edit) {
+    const node = edit ? edit(parent) : parent.slice(), i = ((cnt - 1) >>> level) & 31;
+    node[i] = level === 5 ? leaf : node[i] ? vectorPushTail(cnt, level - 5, node[i], leaf, edit) : vectorPath(level - 5, leaf);
+    return node;
+  }
+  //@unit vectorConj requires: vectorPath, vectorPushTail, vectorTailOffset
+  // `store` with `item` added: to a copy of the tail, or else as the tail of
+  // one item after a frozen copy of the full tail moves into the trie, which
+  // grows a level where its root is full.
+  function vectorConj({cnt, shift, root, tail}, item) {
+    if (cnt - vectorTailOffset(cnt) < 32) {
+      // A copying loop: spreading the tail costs more than the rest of `conj`.
+      const length = tail.length, copy = new Array(length + 1);
+      for (let i = 0; i < length; i++) copy[i] = tail[i];
+      copy[length] = item;
+      return {cnt: cnt + 1, shift, root, tail: copy};
+    }
+    const grow = (cnt >>> 5) > (1 << shift), leaf = Object.freeze(tail.slice());
+    return {cnt: cnt + 1, shift: grow ? shift + 5 : shift, tail: [item],
+      root: grow ? [root, vectorPath(shift, leaf)] : vectorPushTail(cnt, shift, root, leaf)};
+  }
+  //@unit conjVectorBang requires: vectorEditor, vectorPath, vectorPushTail, vectorTailOffset
+  // `conj!` onto a transient vector's store: `vectorConj` in place.
+  function conjVectorBang(store, item) {
+    const {cnt, shift, root, tail, owned} = store;
+    if (cnt - vectorTailOffset(cnt) < 32) tail[cnt & 31] = item;
+    else {
+      const grow = (cnt >>> 5) > (1 << shift);
+      store.root = grow ? [root, vectorPath(shift, tail)] : vectorPushTail(cnt, shift, root, tail, vectorEditor(owned));
+      if (grow) { owned.add(store.root); store.shift += 5; }
+      owned.add(store.tail = [item]);
+    }
+    store.cnt++;
+    return store;
+  }
+  //@unit vectorAssocNode
+  // `node`, `level` above the leaves, with `item` at index `i`: copied, a
+  // leaf frozen, or given by a transient's `edit` (see `vectorPushTail`).
+  function vectorAssocNode(level, node, i, item, edit) {
+    const copy = edit ? edit(node) : node.slice(), at = (i >>> level) & 31;
+    copy[at] = level ? vectorAssocNode(level - 5, node[at], i, item, edit) : item;
+    return edit || level ? copy : Object.freeze(copy);
+  }
+  //@unit vectorAssoc requires: vectorAssocNode, vectorTailOffset
+  // `store` with `item` at its index `i`.
+  function vectorAssoc(store, i, item) {
+    if (store.sub) return store.assoc(i, item);
+    if (i < vectorTailOffset(store.cnt)) return {...store, root: vectorAssocNode(store.shift, store.root, i, item)};
+    const tail = store.tail.slice();
+    tail[i & 31] = item;
+    return {cnt: store.cnt, shift: store.shift, root: store.root, tail};
+  }
+  //@unit vectorPopTail
+  // `node`, `level` above the leaves of a store of `cnt` items, without its
+  // last leaf, or null where that leaves it empty: copied, or given by a
+  // transient's `edit` (see `vectorPushTail`).
+  function vectorPopTail(cnt, level, node, edit) {
+    const i = ((cnt - 2) >>> level) & 31, child = level > 5 ? vectorPopTail(cnt, level - 5, node[i], edit) : null;
+    if (child == null && !i) return null;
+    const copy = edit ? edit(node) : node.slice(0, i);
+    copy.length = i;
+    if (child) copy.push(child);
+    return copy;
+  }
+  //@unit vectorPop requires: vectorLeaf, vectorPopTail, vectorTailOffset, vectorTrie
+  // `store`, of at least one item, without its last: where the tail empties,
+  // the trie's last leaf becomes the tail and the trie loses a level where
+  // its root is left with one child.
+  function vectorPop(store) {
+    if (store.sub) return store.pop();
+    const {cnt, shift, root, tail} = store;
+    if (cnt === 1) return vectorTrie([]);
+    if (cnt - vectorTailOffset(cnt) > 1) return {cnt: cnt - 1, shift, root, tail: tail.slice(0, -1)};
+    const popped = vectorPopTail(cnt, shift, root) ?? [], shrink = shift > 5 && popped.length < 2;
+    return {cnt: cnt - 1, shift: shrink ? shift - 5 : shift, root: shrink ? popped[0] : popped, tail: vectorLeaf(store, cnt - 2)};
   }
 
   //@unit vector requires: makeVector
@@ -2368,8 +2659,8 @@
     if (queues.has(value)) return queues.get(value).length;
     if (Array.isArray(value)) return value.length;
     if (value == null) return 0;
-    const items = vectors.get(value);
-    if (items) return items.length;
+    const store = vectors.get(value);
+    if (store) return store.cnt;
     if (typeof value === "string") return value.length;
     const entries = maps.get(value);
     if (entries) return entries.length;
@@ -2411,9 +2702,11 @@
   // A sorted map's seq without a count counts its tail's.
   kindHooks.countTreeSeq = value => 1 + count(next(value));
 
-  //@unit vectorNth requires: missing, outOfBounds
-  function vectorNth(items, index, notFound) {
-    if (index >= 0 && index < items.length) return items[Math.trunc(index)];
+  //@unit vectorNth requires: missing, outOfBounds, vectorLeaf
+  // The item of a vector's store at a number `index`, truncated; a view's is
+  // that of the store it views.
+  function vectorNth(store, index, notFound) {
+    if (index >= 0 && index < store.cnt) return store.sub ? vectorNth(store.sub, store.start + index, notFound) : vectorLeaf(store, index)[index & 31];
     if (notFound === missing) return outOfBounds();
     return notFound;
   }
@@ -2427,12 +2720,14 @@
     if (typeof index !== "number") throw new Error("Index argument to nth must be a number");
     if (value == null) return arity === 2 ? value : notFound;
     const fallback = arity === 2 ? missing : notFound;
+    // A vector first, the most common: only a map entry, of two items, has
+    // no index but 0 and 1.
+    const store = vectors.get(value);
+    if (store) return store.cnt === 2 && index !== 0 && index !== 1 && mapEntries.has(value) ? fallback === missing ? outOfBounds() : fallback : vectorNth(store, index, fallback);
     if (transients.has(value)) return kindHooks.nthTransient(value, index, fallback);
     if (chunks.has(value)) return kindHooks.nthChunk(value, index, fallback);
     if (cells.get(value)?.integer) { const c = cells.get(value); return index >= 0 && index < c.count ? c.head + Math.floor(index) * c.step : fallback === missing ? outOfBounds() : fallback; }
     if (Array.isArray(value)) return index > -1 && index < value.length ? value[Math.trunc(index)] : fallback === missing ? outOfBounds() : fallback;
-    const items = vectors.get(value);
-    if (items) return mapEntries.has(value) && index !== 0 && index !== 1 ? fallback === missing ? outOfBounds() : fallback : vectorNth(items, index, fallback);
     if (typeof value === "string") {
       if (index > -1 && index < value.length) return value.charAt(index | 0);
       if (fallback === missing) return outOfBounds();
@@ -2495,8 +2790,8 @@
       const index = kindHooks.entryIndex(value, entries, key);
       return index < 0 ? notFound : entries[index].value;
     }
-    const items = vectors.get(value);
-    if (items) return mapEntries.has(value) ? key === 0 || key === 1 ? items[key] : notFound : typeof key === "number" && key >= 0 && key < items.length ? items[Math.trunc(key)] : notFound;
+    const store = vectors.get(value);
+    if (store) return mapEntries.has(value) ? key === 0 || key === 1 ? store.tail[key] : notFound : typeof key === "number" && key >= 0 && key < store.cnt ? kindHooks.nthVector(store, key, notFound) : notFound;
     if (typeof value === "string" && key != null && key > -1 && key < value.length) {
       return value.charAt(key | 0);
     }
@@ -2519,6 +2814,8 @@
   //@unit makeTransient.lookup effect: makeTransient when: lookup requires: kindHooks,
   //@ transientLookup
   kindHooks.lookupTransient = transientLookup;
+  //@unit makeVector.lookup effect: makeVector when: lookup requires: kindHooks, vectorNth
+  kindHooks.nthVector = vectorNth;
   //@unit makeMap.lookup effect: makeMap, treeMapConstructor, makeSet, treeSetConstructor when: lookup
   //@ requires: collectionEntryIndex, kindHooks
   // A record is a map too, but `get` finds its `-lookup` (`recordMethods.lookup`)
@@ -2544,8 +2841,8 @@
   function contains(value, key) {
     const method = protocolHooks.publicMethod?.(value, "IAssociative/-contains-key?", 2);
     if (method) return method.call(value, value, key);
-    const items = vectors.get(value);
-    if (items) return Number.isInteger(key) && key >= 0 && key < items.length;
+    const store = vectors.get(value);
+    if (store) return Number.isInteger(key) && key >= 0 && key < store.cnt;
     return get(value, key, missing) !== missing;
   }
   //@unit contains.host effect: contains, extendType, extendInstance when: setPrototype requires: contains,
@@ -3118,11 +3415,11 @@
   function hashed(value, cached) { constructorHashes.set(value, cached); return value; }
 
   //@unit compilerFormBridge compile-time requires: atoms, cells, deferredValue, emptyList,
-  //@ EmptyListValue, generatedNames, ifnValues, IndexedSeqValue, jsObject, keyword, keywords,
-  //@ lazyValues, listFromArray, mapFromArray, maps, mapTraversal, metadataValues, name,
+  //@ EmptyListValue, generatedNames, ifnValues, jsObject, keyword, keywords, lazyValues,
+  //@ listFromArray, mapFromArray, maps, mapTraversal, metadataValues, name, publicCollectionSlots,
   //@ queueFromArray, queues, recordTypes, reifyValues, rePattern, setFromArray, sets, setTraversal,
-  //@ symbol, symbols, toArray, typeFields, uuid, uuids, vars, vectorFromArray, vectors, view,
-  //@ views, volatiles
+  //@ symbol, symbols, toArray, typeFields, uuid, uuids, vars, vectorFromArray, vectorItems,
+  //@ vectorNth, vectors, view, views, volatiles
   // Versioned in-process compiler bridge. Descriptors are private arrays,
   // never printed text or JSON. Only brands above authorize language values.
   function compilerFormBridge() {
@@ -3186,8 +3483,8 @@
         case "regex": value = rePattern(decode(a)); break;
         case "instant": value = new Date(decode(a)); break;
         case "uuid": value = uuid(decode(a)); break;
-        case "queue": value = queueFromArray(vectors.get(decode(a))); break;
-        case "js-array": value = vectors.get(decode(a)).slice(); literals.set(value, "js-array"); break;
+        case "queue": value = queueFromArray(vectorItems(decode(a))); break;
+        case "js-array": value = vectorItems(decode(a)); literals.set(value, "js-array"); break;
         case "js-object": {
           const payload = decode(a), pairs = [];
           for (const e of mapTraversal(payload)) pairs.push(typeof e.key === "string" ? e.key : name(e.key), e.value);
@@ -3229,7 +3526,11 @@
           else if (symbols.has(v) || keywords.has(v)) {
             const n = symbols.get(v) || keywords.get(v); tag = symbols.has(v) ? "symbol" : "keyword";
             a = n.namespace == null ? null : units(n.namespace); b = units(n.name);
-          } else if (vectors.has(v)) { tag = "vector"; a = vectors.get(v).map((x, i) => visit(x, path + "[" + i + "]", depth + 1)); }
+          } else if (vectors.has(v)) {
+            // Each item is read just before it is visited, within the limits.
+            tag = "vector"; a = []; const store = vectors.get(v);
+            for (let i = 0; i < store.cnt; i++) a.push(visit(vectorNth(store, i, null), path + "[" + i + "]", depth + 1));
+          }
           else if (maps.has(v)) { tag = "map"; a = []; let i = 0;
             for (const e of mapTraversal(v)) { a.push(visit(e.key, path + ".key[" + i + "]", depth + 1), visit(e.value, path + ".value[" + i++ + "]", depth + 1)); }
           } else if (sets.has(v)) { tag = "set"; a = setTraversal(v).map((e, i) => visit(e.key, path + "[" + i + "]", depth + 1)); }
@@ -3273,7 +3574,24 @@
                 }
               } catch (_) { fail("lazy realization failure", path); }
               if (current == null) break;
-              if (vectors.has(current)) current = view(IndexedSeqValue, vectors.get(current), 0, true);
+              // A vector, or a chunked seq over one, ends the sequence: a chunked
+              // seq's node from its offset, as its `first` and `rest` read it,
+              // then the vector's items after that node, each read within the
+              // limit.
+              const chunked = publicCollectionSlots.get(current)?.vec, store = vectors.get(chunked ?? current);
+              if (store) {
+                const slots = chunked && publicCollectionSlots.get(current);
+                let first = true;
+                if (slots) for (let j = slots.off; j < slots.node.length; j++, first = false) {
+                  if (!first && --remaining < 0) fail("sequence limit", path);
+                  a.push(visit(slots.node[j], path + "[" + a.length + "]", depth + 1));
+                }
+                for (let i = slots ? slots.i + slots.node.length : 0; i < store.cnt; i++, first = false) {
+                  if (!first && --remaining < 0) fail("sequence limit", path);
+                  a.push(visit(vectorNth(store, i, null), path + "[" + a.length + "]", depth + 1));
+                }
+                break;
+              }
               if (cells.has(current)) {
                 const cell = cells.get(current);
                 if (cell.kind === "list" && cell.count === 0) break;
@@ -3321,8 +3639,8 @@
   }
 
   //@unit inspect compile-time requires: atoms, cells, first, isReduced, keywords, mapTraversal,
-  //@ next, nth, recordEntries, recordTypes, seq, sets, setTraversal, symbols, uuids, vars, vectors,
-  //@ views, volatiles
+  //@ next, nth, recordEntries, recordTypes, seq, sets, setTraversal, symbols, uuids, vars,
+  //@ vectorItems, vectors, views, volatiles
   // Private test adapter. Production emission keeps this factory local; only
   // the observation harness registers inspect. Exposed storage remains frozen.
   function inspect(value) {
@@ -3330,8 +3648,7 @@
     const named = keywords.get(value) || symbols.get(value);
     if (named) return Object.freeze({kind: keywords.has(value) ? "keyword" : "symbol",
       namespace: named.namespace, name: named.name, spelling: named.spelling});
-    const items = vectors.get(value);
-    if (items) return Object.freeze({kind: "vector", items});
+    if (vectors.has(value)) return Object.freeze({kind: "vector", items: Object.freeze(vectorItems(value))});
     const entries = recordTypes.has(value)
       ? recordEntries(value, recordTypes.get(value)).map(pair => ({key: nth(pair, 0), value: nth(pair, 1)}))
       : mapTraversal(value);
@@ -3540,29 +3857,30 @@
       return cells.get(value)?.kind === "list" || views.get(value)?.kind === "queue" || lazyValues.has(value) ? collectionWithMeta(emptyList, meta(value)) : emptyList;
     return null;
   }
-  //@unit peek requires: cells, first, protocolHooks, publicCollectionSlots, queues, vectors
+  //@unit peek requires: cells, first, protocolHooks, publicCollectionSlots, queues, vectorNth,
+  //@ vectors
   function peek(value) {
     const method = value == null ? null : protocolHooks.builtin?.(value, "IStack/-peek", 1);
     if (method) return method.call(value, value);
     if (value == null) return null;
-    if (vectors.has(value)) { const items = vectors.get(value); return items.length ? items[items.length - 1] : null; }
+    if (vectors.has(value)) { const store = vectors.get(value); return store.cnt ? vectorNth(store, store.cnt - 1, null) : null; }
     if (queues.has(value) && publicCollectionSlots.has(value)) return first(publicCollectionSlots.get(value).front);
     if (queues.has(value) || cells.get(value)?.kind === "list") return first(value);
     throw new Error("No protocol method IStack.-peek defined for this value");
   }
   //@unit pop requires: cells, count, makeVector, meta, next, PersistentQueueValue, preserveMeta,
   //@ protocolHooks, publicCollectionSlots, queueFromArray, queues, rest, seq, subvecSources,
-  //@ SubvecValue, vector, vectors
+  //@ SubvecValue, vector, vectorPop, vectors
   function pop(value) {
     const method = value == null ? null : protocolHooks.builtin?.(value, "IStack/-pop", 1);
     if (method) return method.call(value, value);
     if (value == null) return null;
     if (vectors.has(value)) {
-      const items = vectors.get(value);
-      if (!items.length) throw new Error("Can't pop empty vector");
+      const store = vectors.get(value);
+      if (!store.cnt) throw new Error("Can't pop empty vector");
       const slots = publicCollectionSlots.get(value);
       if (slots && subvecSources.has(value)) return SubvecValue(meta(value), subvecSources.get(value), slots.start, slots.end - 1, null);
-      return preserveMeta(value, makeVector(items.slice(0, -1)));
+      return preserveMeta(value, makeVector(null, vectorPop(store)));
     }
     if (queues.has(value)) {
       const q = publicCollectionSlots.get(value);
@@ -3576,14 +3894,17 @@
     }
     throw new Error("No protocol method IStack.-pop defined for this value");
   }
-  //@unit rseq requires: IndexedSeqValue, maps, protocolHooks, sortedComparators, toArray,
-  //@ treeMapSeqConstructor, vectors, view, views
+  //@unit rseq requires: IndexedSeqValue, maps, protocolHooks, publicCollectionSlots,
+  //@ sortedComparators, toArray, treeMapSeqConstructor, vectorItems, vectors, view, views
   function rseq(value) {
     const method = protocolHooks.builtin?.(value, "IReversible/-rseq", 1);
     if (method) return method.call(value, value);
     if (!vectors.has(value) && views.get(value)?.kind !== "indexed" && !sortedComparators.has(value))
       throw new Error("No protocol method IReversible.-rseq defined for this value");
-    const items = Object.freeze(toArray(value).reverse());
+    // A vector's items copy leaf by leaf; one a public constructor built, or
+    // whose seq a protocol implementation replaces, walks its seq, as before.
+    const items = Object.freeze((vectors.has(value) && !publicCollectionSlots.has(value)
+      && !protocolHooks.publicMethod?.(value, "ISeqable/-seq", 1, true) ? vectorItems(value) : toArray(value)).reverse());
     return items.length ? maps.has(value) ? view(treeMapSeqConstructor, items, 0, false, "sorted-map") : view(IndexedSeqValue, items, 0, false, "reverse") : null;
   }
   //@unit mapProjection requires: cells, emptyList, entryKey, entryVal, first, next, protocolHooks,
@@ -3630,7 +3951,8 @@
     const start = seq(collection);
     return start === null ? emptyList : cycleNode(start, null, start);
   }
-  //@unit compareKeys requires: displayStr, keywords, protocolHooks, symbols, uuids, vectors
+  //@unit compareKeys requires: displayStr, keywords, protocolHooks, symbols, uuids, vectorItems,
+  //@ vectors
   function compareKeys(a, b) {
     if (a === b) return 0;
     if (a == null) return -1;
@@ -3647,7 +3969,7 @@
       return compareKeys(left.namespace, right.namespace) || compareKeys(left.name, right.name);
     }
     if (vectors.has(a) && vectors.has(b)) {
-      const xs = vectors.get(a), ys = vectors.get(b);
+      const xs = vectorItems(a), ys = vectorItems(b);
       if (xs.length !== ys.length) return xs.length < ys.length ? -1 : 1;
       for (let i = 0; i < xs.length; i++) { const order = compareKeys(xs[i], ys[i]); if (order) return order; }
       return 0;
@@ -4189,7 +4511,7 @@
     return result.length ? setFromArray(result) : null;
   }
   //@unit isa requires: contains, deref, equalPair, get, getGlobalHierarchy, hierarchyPart,
-  //@ invalidArity, supers, toArray, vectors
+  //@ invalidArity, supers, toArray, vectorItems, vectors
   function isa(h, child, parent) {
     if (arguments.length === 2) return isa(deref(getGlobalHierarchy()), h, child);
     if (arguments.length !== 3) return invalidArity(arguments.length);
@@ -4198,7 +4520,7 @@
     const ancestors = hierarchyPart(h, "ancestors");
     if (contains(get(ancestors, child), parent)) return true;
     if (typeof child === "function") for (const base of toArray(supers(child))) if (contains(get(ancestors, base), parent)) return true;
-    const cv = vectors.get(child), pv = vectors.get(parent);
+    const cv = vectors.has(child) && vectorItems(child), pv = vectors.has(parent) && vectorItems(parent);
     return !!(cv && pv && cv.length === pv.length && cv.every((v, i) => isa(h, v, pv[i])));
   }
   //@unit hierarchyRel requires: bases, count, deref, get, getGlobalHierarchy, hierarchyPart,
@@ -4538,9 +4860,9 @@
   //@ kindHooks
   kindHooks.withMetaFn = fnWithMeta;
   //@unit mapEntry.meta effect: mapEntry, clone when: collectionWithMeta requires: kindHooks,
-  //@ vectorFromArray, vectors
+  //@ makeVector, vectors
   // A map entry's metadata copy is a vector.
-  kindHooks.entryVector = value => vectorFromArray(vectors.get(value));
+  kindHooks.entryVector = value => makeVector(null, vectors.get(value));
   //@unit LazySeq.meta effect: LazySeq when: collectionWithMeta requires: kindHooks, LazySeq,
   //@ lazyValues, seq
   kindHooks.withMetaLazy = (value, metadata) => new LazySeq(metadata, () => seq(value), null, lazyValues.get(value).hash);
@@ -5510,7 +5832,7 @@
       const extmap = dissoc(this.__extmap, key);
       return recordCopy(this, Type, this.__meta, seq(extmap) === null ? null : extmap, null);
     }]]);
-  //@unit recordMethods.seq effect: recordMethods when: seq, seqProtocol requires: recordEntries,
+  //@unit recordMethods.seq effect: recordMethods when: reduce, rseq, seq, seqProtocol requires: recordEntries,
   //@ recordMethodTable, seq, vectorFromArray
   recordMethodTable.push(Type => [
     ["ISeqable/-seq", 1, function () { return seq(vectorFromArray(recordEntries(this, Type))); }]]);
@@ -5688,7 +6010,8 @@
   kindHooks.nthTransient = transientNth;
   //@unit makeTransient.count effect: makeTransient when: count requires: editableTransient,
   //@ kindHooks
-  kindHooks.countTransient = value => editableTransient(value, "count").entries.length;
+  // A transient vector's entries are its store; a map's or set's an array.
+  kindHooks.countTransient = value => { const entries = editableTransient(value, "count").entries; return entries.cnt ?? entries.length; };
   //@unit chunkFirst requires: chunkedFirstProtocol
   function chunkFirst(value) { return chunkedFirstProtocol(value); }
   //@unit chunkRest requires: chunkedRestProtocol
@@ -5746,11 +6069,11 @@
   //@ kindHooks
   // A view with the `vec` slot is a ChunkedSeq its public constructor built.
   kindHooks.chunkedVectorRest = chunkedVectorRest;
-  //@unit chunkedVectorRest requires: ChunkedSeqValue, count, emptyList, vectors
+  //@unit chunkedVectorRest requires: ChunkedSeqValue, count, emptyList, vectorChunk
   // The chunks after a public ChunkedSeq's node.
   function chunkedVectorRest(slots) {
     const end = slots.i + slots.node.length;
-    return end < count(slots.vec) ? ChunkedSeqValue(slots.vec, vectors.get(slots.vec).slice((end >>> 5) << 5, ((end >>> 5) << 5) + 32), end, 0, null, null) : emptyList;
+    return end < count(slots.vec) ? ChunkedSeqValue(slots.vec, vectorChunk(slots.vec, end), end, 0, null, null) : emptyList;
   }
   //@unit ChunkedCons requires: cells, count, dropFirstProtocol, emptyList, metadataValues, nth
   function ChunkedCons(chunk, more, metadata, cachedHash) {
@@ -5775,23 +6098,27 @@
     if (cell?.kind === "range") return n > 0 ? n < cell.count ? rangeNode(cell.head + cell.step * n, cell.end, cell.step, true) : null : value;
     const slice = views.get(value), slots = publicCollectionSlots.get(value);
     if (slots?.vec) return kindHooks.dropChunkedSeq(slots, n);
-    if (vectors.has(value)) return kindHooks.dropVector(vectors.get(value), n);
+    if (vectors.has(value)) return kindHooks.dropVector(value, n);
     const offset = slice.offset + n;
     return offset < slice.storage.length ? view(slice.Type, slice.storage, offset, slice.indexed, slice.kind) : null;
   }
   //@unit ChunkedSeqValue.drop effect: ChunkedSeqValue when: dropOwned requires: ChunkedSeqValue,
-  //@ count, kindHooks, vectors
+  //@ count, kindHooks, vectorChunk
   // A view with the `vec` slot is a ChunkedSeq its public constructor built.
   kindHooks.dropChunkedSeq = (slots, n) => {
     const offset = slots.off + n;
     if (offset < slots.node.length) return ChunkedSeqValue(slots.vec, slots.node, slots.i, offset, null, null);
     const i = slots.i + offset, newOffset = i % 32;
-    return i < count(slots.vec) ? ChunkedSeqValue(slots.vec, vectors.get(slots.vec).slice(i - newOffset, i - newOffset + 32), i - newOffset, newOffset, null, null) : null;
+    return i < count(slots.vec) ? ChunkedSeqValue(slots.vec, vectorChunk(slots.vec, i), i - newOffset, newOffset, null, null) : null;
   };
   //@unit makeVector.drop effect: makeVector when: dropOwned requires: ChunkedSeqValue,
-  //@ IndexedSeqValue, kindHooks, view
-  kindHooks.dropVector = (items, n) => n < items.length
-    ? view(items.length <= 32 ? IndexedSeqValue : ChunkedSeqValue, items, n, items.length <= 32, items.length <= 32 ? "indexed" : "chunked") : null;
+  //@ IndexedSeqValue, kindHooks, vectorChunk, vectors, view
+  // As `makeVector.seq`, from index `n`.
+  kindHooks.dropVector = (value, n) => {
+    const store = vectors.get(value);
+    return n >= store.cnt ? null : store.cnt <= 32 ? view(IndexedSeqValue, vectorChunk(value, 0), n, true)
+      : ChunkedSeqValue(value, vectorChunk(value, n), n & -32, n & 31, null, null);
+  };
   //@unit numberArgument
   function numberArgument(value) {
     if (typeof value !== "number") throw new Error("Assert failed: (number? n)");
@@ -6072,10 +6399,14 @@
   function last(coll) { let s = seq(coll); while (s !== null) { const tail = next(s); if (tail === null) return first(s); s = tail; } return null; }
   //@unit butlast requires: seq, toArray, vectorFromArray
   function butlast(coll) { const values = toArray(coll); values.pop(); return seq(vectorFromArray(values)); }
-  //@unit mapv requires: into, mapSeq, vector
-  function mapv(fn, ...colls) { return into(vector(), mapSeq(fn, ...colls)); }
-  //@unit filterv requires: conj, reduce, truth, vector
-  function filterv(fn, coll) { return reduce((v, x) => truth(fn.call(null, x)) ? conj(v, x) : v, vector(), coll); }
+  //@unit mapv requires: conjBangOwn, into, mapSeq, persistentBang, reduce, transient, vector
+  // As upstream: of one collection, a reduction into a transient vector.
+  function mapv(fn, ...colls) {
+    return colls.length === 1 ? persistentBang(reduce((v, x) => conjBangOwn(v, fn.call(null, x)), transient(vector()), colls[0]))
+      : into(vector(), mapSeq(fn, ...colls));
+  }
+  //@unit filterv requires: conjBangOwn, persistentBang, reduce, transient, truth, vector
+  function filterv(fn, coll) { return persistentBang(reduce((v, x) => truth(fn.call(null, x)) ? conjBangOwn(v, x) : v, transient(vector()), coll)); }
   //@unit cat requires: isReduced, reduce, reduced, reducingFunction
   function cat(rf) {
     return reducingFunction(rf, (result, input) => reduce((acc, value) => {
@@ -6290,16 +6621,15 @@
     if (defaults.length === 1) methods[1] = x => run(x);
     return callable(3, methods, (x, y, z, tail) => apply(fn, ...patch([x, y, z]), tail));
   }
-  //@unit into requires: conj, conjBang, conjBangProtocol, conjProtocol, editableValue,
-  //@ invalidArity, meta, persistentBang, protocolHooks, reduce, transduce, transient, vector,
-  //@ withMetaProtocol
+  //@unit into requires: conj, conjBang, conjBangOwn, conjProtocol, editableValue, invalidArity,
+  //@ meta, persistentBang, protocolHooks, reduce, transduce, transient, vector, withMetaProtocol
   function into(to, from, source) {
     switch (arguments.length) {
       case 0: return vector();
       case 1: return to;
       case 2: {
         if (protocolHooks.implements?.("IEditableCollection", to) ?? editableValue(to))
-          return withMetaProtocol(persistentBang(reduce(conjBangProtocol, transient(to), from)), meta(to));
+          return withMetaProtocol(persistentBang(reduce(conjBangOwn, transient(to), from)), meta(to));
         return reduce(to == null ? conj : conjProtocol, to, from);
       }
       case 3: {
@@ -6626,8 +6956,9 @@
   // A vector prints the items `seq` walks, through `seq` where protocol
   // implementations could see it.
   kindHooks.print = printKind(kindHooks.print, value => vectors.has(value), (value, writer, options) => {
+    if (protocolHooks.publicMethod) return printSequential(writer, printWriter, "[", " ", "]", options, value);
     const storage = vectorStorage(value) ?? [];
-    return printSequential(writer, printWriter, "[", " ", "]", options, protocolHooks.publicMethod ? value : Array.isArray(storage) ? storage : Array.from(storage));
+    return printSequential(writer, printWriter, "[", " ", "]", options, Array.isArray(storage) ? storage : Array.from(storage));
   });
   //@unit cons.print effect: ChunkedCons, compilerFormBridge, Cons, cons, cycleNode, emptyList,
   //@ EmptyListValue, IndexedSeqValue, iterateNode, LazySeq, ListValue, mapProjection,
@@ -7215,15 +7546,16 @@
   //@unit PersistentVectorValue.fields effect: PersistentVectorValue when: resetMeta,
   //@ upstreamMembers requires: canonicalVectorRoots, hostHooks, meta, missing,
   //@ PersistentVectorValue, protocolHooks, publicFields, slotField, vectorCount, vectorRoots,
-  //@ vectors
+  //@ vectors, vectorTailOffset
   publicFields(PersistentVectorValue, ["meta", "cnt", "shift", "root", "tail", "__hash"], (value, field) => {
     const slot = slotField(value, field, protocolHooks.extend ? hostHooks.count : vectorCount);
     if (slot !== missing) return slot;
-    const items = vectors.get(value), tailOffset = items.length < 32 ? 0 : ((items.length - 1) >>> 5) << 5;
-    if (field === "tail") return items.slice(tailOffset);
-    if (field === "shift") return 5;
+    // A copy of the tail and a token of the root keep the store private.
+    const store = vectors.get(value);
+    if (field === "tail") return store.tail.slice(0, store.cnt - vectorTailOffset(store.cnt));
+    if (field === "shift") return store.shift;
     if (field === "root") {
-      if (!canonicalVectorRoots.has(value)) { const root = {}; vectorRoots.set(root, items.slice(0, tailOffset)); canonicalVectorRoots.set(value, root); }
+      if (!canonicalVectorRoots.has(value)) { const root = {}; vectorRoots.set(root, store.root); canonicalVectorRoots.set(value, root); }
       return canonicalVectorRoots.get(value);
     }
   }, meta);
@@ -7572,10 +7904,10 @@
     return nth(entry, 1);
   }
   //@unit protocolHooks.builtin effect: installMethods when: addWatchProtocol, assoc,
-  //@ collectionWithMeta, compareKeys, conj, coreMethod, count, derefProtocol, disj, dissoc,
-  //@ equalPair, first, hash, iterator, metaSupported, name, namespace, notifyWatches, objectEquiv,
-  //@ peek, pop, removeWatchProtocol, rest, rseq, stateProtocol, vresetProtocol, withMetaSupported
-  //@ requires: builtin, protocolHooks
+  //@ collectionWithMeta, compareKeys, conj, conjBangOwn, coreMethod, count, derefProtocol, disj,
+  //@ dissoc, equalPair, first, hash, iterator, metaSupported, name, namespace, notifyWatches,
+  //@ objectEquiv, peek, pop, removeWatchProtocol, rest, rseq, stateProtocol, vresetProtocol,
+  //@ withMetaSupported requires: builtin, protocolHooks
   protocolHooks.builtin = builtin;
   //@unit protocolHooks.external effect: extendType when: builtin requires: externalMethod,
   //@ protocolHooks
@@ -7589,12 +7921,12 @@
   protocolHooks.extend = true;
   //@unit protocolHooks.ownMethod effect: installMethods when: contains, count, empty, find, first,
   //@ get, meta, next, nth, printSequential, printValues, printWriterImpl, reduce, reduceKv, rest,
-  //@ seq requires: ownMethod, protocolHooks
+  //@ rseq, seq, subvec, SubvecValue requires: ownMethod, protocolHooks
   // Every protocol implementation goes through `installMethods`.
   protocolHooks.publicMethod = ownMethod;
   //@unit protocolHooks.publicMethod effect: extendType, extendInstance when: contains, count,
   //@ empty, find, first, get, meta, next, nth, printSequential, printValues, printWriterImpl,
-  //@ reduce, reduceKv, rest, seq requires: protocolHooks, publicMethod
+  //@ reduce, reduceKv, rest, rseq, seq, subvec, SubvecValue requires: protocolHooks, publicMethod
   // ... and only `extend-type` and `specify!` give the runtime's values and
   // host values implementations, which `publicMethod` finds.
   protocolHooks.publicMethod = publicMethod;

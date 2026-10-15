@@ -445,7 +445,7 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // tests and one per core dispatcher since light-cljs-251), the printer's
     // hooks, the initial values of four core cells, the protocol wrappers of
     // seven operations and the upstream fields of 28 types.
-    assert_eq!(checked, 162);
+    assert_eq!(checked, 166);
 }
 
 /// What values a kind hook handles: those of payload stores, built by every
@@ -524,6 +524,7 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("withMetaRecord", Kind::Stores(&["recordTypes"])),
     ("updatedRecord", Kind::Stores(&["recordTypes"])),
     ("lookupTransient", Kind::Stores(&["transients"])),
+    ("nthVector", Kind::Stores(&["vectors"])),
     ("lookupTree", Kind::Units(&["treeMapConstructor"])),
     ("entryIndex", Kind::Maps(&["maps", "sets"])),
     // Maps and sets of the hash-map kind, and records. A set has another
@@ -564,6 +565,9 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("persistVector", Kind::Stores(&["vectors"])),
     ("persistMap", Kind::Stores(&["maps"])),
     ("persistSet", Kind::Stores(&["sets"])),
+    ("transientVector", Kind::Stores(&["vectors"])),
+    ("conjTransientVector", Kind::Stores(&["vectors"])),
+    ("assocTransientVector", Kind::Stores(&["vectors"])),
     ("conjTransientMap", Kind::Stores(&["maps"])),
     ("conjTransientSet", Kind::Stores(&["sets"])),
     ("transientEntryIndex", Kind::Stores(&["maps", "sets"])),

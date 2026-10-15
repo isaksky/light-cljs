@@ -608,8 +608,9 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     ] {
         assert_keeps_none(source, &["accumulatingCount", "count.seqs", "seq", "next"]);
     }
-    // 8,948 bytes before.
-    assert!(advanced("(count (.split \"a,b\" \",\"))").emit_js().len() < 1_500);
+    // 8,948 bytes before; the brand test for a vector, a class since
+    // light-cljs-234, is about 170 bytes more than a WeakMap.
+    assert!(advanced("(count (.split \"a,b\" \",\"))").emit_js().len() < 1_600);
     for (source, expected) in [
         ("(count (.split \"a,b\" \",\"))", "2"),
         ("(defrecord R [x]) (count (assoc (->R 1) :y 2))", "2"),
@@ -857,6 +858,119 @@ fn transients_chunks_and_entries_through_the_generic_operations() {
     every_level(
         "(try (first (keys [[1 2]])) (catch :default e (.-message e)))",
         "No protocol method IMapEntry/-key defined for this value",
+    );
+}
+
+/// Vectors are 32-way tries (light-cljs-234): 33,000 items take three levels
+/// above the leaves, which `conj`, `pop`, `assoc` and their transient forms
+/// grow and shrink, and a tail the public constructor received stays the
+/// caller's array through `assoc` and a seq.
+#[test]
+fn vectors_are_tries_across_leaf_and_level_boundaries() {
+    every_level(
+        "(let [n 33000 v (reduce conj [] (range n)) t (persistent! (reduce conj! (transient []) (range n)))
+               p (loop [v v] (if (> (count v) 31) (recur (pop v)) v))
+               tp (loop [t (transient v)] (if (> (count t) 31) (recur (pop! t)) (persistent! t)))
+               a (reduce (fn [v i] (assoc v i (- i))) v (range 0 n 997))
+               ta (persistent! (reduce (fn [t i] (assoc! t i (- i))) (transient v) (range 0 n 997)))]
+           (pr-str [(= v t (range n)) (count v) (nth v 32767) (nth v 32800) (peek v) (= p tp (range 31))
+                    (= a ta) [(nth a 997) (nth a 998) (nth v 997)] (reduce + (rseq p))
+                    (= (seq (vec (range 1100))) (range 1100)) (count (rest (seq v))) (first (drop 32790 v))
+                    (= (range 32) (vec (chunk-first (seq v))))
+                    (= v (PersistentVector. nil n (.-shift v) (.-root v) (.-tail v) nil))
+                    (let [x (vec (range 40)) arr (.-tail x) y (PersistentVector. nil 40 (.-shift x) (.-root x) arr nil)
+                          z (assoc y 0 :z)]
+                      (dorun (seq z)) (aset arr 0 :w) [(nth y 32) (nth z 32) (nth z 0)])]))",
+        "[true 33000 32767 32800 32999 true true [-997 998 997] 465 true 32999 32790 true true [:w :w :z]]",
+    );
+}
+
+/// A subvec is a view of its vector's trie (light-cljs-234): reading, reducing
+/// and seqs across leaf boundaries, a subvec of a subvec, and `pop`, `assoc`
+/// and `conj`, which leave the vector viewed as it was. The public Subvec
+/// constructor takes the same view, and keeps its source's protocol `nth`.
+/// `mapv`, `filterv` and `into` build through transients.
+#[test]
+fn subvecs_are_views_of_their_vectors() {
+    every_level(
+        "(let [v (vec (range 100)) s (subvec v 3 70) s2 (subvec s 10 50) c (Subvec. nil v 2 40)]
+           (pr-str [(count s) (nth s 0) (nth s 66) (nth s 0.5) (get s 67 :nf) (peek s) (s 4)
+                    (reduce + s2) (reduce + 0 s2) (reduce + (subvec v 5 5)) (reduce + 1 (subvec v 5 6))
+                    (reduce (fn [a x] (if (> x 50) (reduced x) a)) 0 s)
+                    (= s2 (range 13 53)) (= (hash s2) (hash (vec (range 13 53)))) (identical? v (.-v s2))
+                    (count (pop s2)) (peek (pop s2)) (nth (assoc s2 5 :x) 5) (peek (conj s2 :end))
+                    (first (drop 33 s)) (vec (rest (subvec v 60 66))) (first (rseq s2))
+                    (reduce-kv (fn [m k x] (+ m k x)) 0 (subvec v 1 4)) (.-tail (pop (subvec v 0 40)))
+                    (= v (range 100)) (count c) (nth c 37) (reduce + c) (pop (Subvec. nil [1 2 3] 1 3))
+                    (mapv inc (subvec v 95)) (filterv odd? s2) (count (into (subvec v 0 2) (range 40)))
+                    (mapv + [1 2] [10 20 30])]))",
+        "[67 3 69 3 :nf 69 7 1300 1300 0 6 51 true true true 39 51 :x :end 36 [61 62 63 64 65] 52 9 \
+         #js [32 33 34 35 36 37 38] true 38 39 779 [2] [96 97 98 99 100] \
+         [13 15 17 19 21 23 25 27 29 31 33 35 37 39 41 43 45 47 49 51] 42 [11 22]]",
+    );
+}
+
+/// A Subvec over a caller's array, through a public PersistentVector's tail or
+/// as the source itself, reads that array's current items wherever it is read.
+#[test]
+fn subvecs_of_caller_arrays_read_them_live() {
+    every_level(
+        "(let [arr #js [1 2] x (PersistentVector. nil 2 5 nil arr nil) s (Subvec. nil x 0 2 nil)
+               before (vec (js/Array.from s)) a (to-array (range 40)) t (Subvec. nil a 0 40 nil)]
+           (aset arr 0 9) (aset a 0 :changed) (aset a 39 :end)
+           (pr-str [before (vec (js/Array.from s)) (nth s 0) (nth t 0) (nth t 39) (first t) (last t)]))",
+        "[[1 2] [9 2] 9 :changed :end :changed :end]",
+    );
+}
+
+/// Where a program replaces a vector's seq, `reduce` and `rseq` of a vector
+/// still walk that seq; a Subvec reads an `nth` source only when read; `mapv`
+/// of one collection reduces it.
+#[test]
+fn vector_reductions_keep_protocol_implementations() {
+    every_level(
+        "(extend-type PersistentVector ISeqable (-seq [_] (list 10 20)))
+         (let [v (vec (range 40))
+               r (reify IIndexed (-nth [_ i] (if (= i 35) (throw (js/Error. \"read\")) i)) (-nth [_ i _] i))
+               s (Subvec. nil r 0 40 nil)]
+           (str (reduce + 0 v) \" \" (reduce + v) \" \" (pr-str (rseq v)) \" \" (reduce + 0 (subvec v 0 35))
+                \" \" (nth s 3) \" \" (nth s 39) \" \"
+                (let [m (mapv inc (reify IReduce (-reduce [_ f init] (f (f init 1) 2))))] (str (count m) (nth m 0) (nth m 1)))))",
+        "30 30 (20 10) 595 3 39 223",
+    );
+}
+
+/// A protocol method a program installs on a vector itself, through its mask
+/// and slot, answers `conj`: the fast path of `conj` onto a vector skips the
+/// dispatch only where no protocol implementation can exist (light-cljs-234).
+#[test]
+fn vector_fast_paths_honor_direct_protocol_slots() {
+    every_level(
+        "(let [v [1]]
+           (aset v \"cljs$lang$protocol_mask$partition0$\" 8)
+           (aset v \"cljs$core$ICollection$_conj$arity$2\" (fn [_ x] [:custom x]))
+           (pr-str [(conj v 2) (conj [5] 6) (into [] (range 3))]))",
+        "[[:custom 2] [5 6] [0 1 2]]",
+    );
+}
+
+/// A vector reading a caller's array reads each item as it is printed or
+/// iterated (light-cljs-234): printing within `*print-length*` stops before
+/// an item that throws, and an iterator reads the tail as it is when it gets
+/// there.
+#[test]
+fn vectors_of_caller_arrays_print_and_iterate_as_they_read() {
+    every_level(
+        "(let [a (to-array (range 40))
+               _ (js/Object.defineProperty a 39 #js {:get (fn [] (throw (js/Error. \"read too far\")))})
+               s (Subvec. nil a 0 40 nil)
+               tail (to-array (range 32 40))
+               x (PersistentVector. nil 40 5 (.-root (vec (range 40))) tail nil)
+               it (.call (aget x js/Symbol.iterator) x)]
+           (dotimes [_ 32] (.next it))
+           (aset tail 0 :changed)
+           (pr-str [(binding [*print-length* 1] (pr-str s)) (.-value (.next it)) (nth x 32)]))",
+        "[\"[0 ...]\" :changed :changed]",
     );
 }
 

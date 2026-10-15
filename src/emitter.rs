@@ -2371,8 +2371,8 @@ impl<'a> Emitter<'a> {
         true
     }
 
-    /// `(count x)`: `.length` of a string or JavaScript array, and of a flat
-    /// vector's payload.
+    /// `(count x)`: `.length` of a string or JavaScript array, and `cnt` of a
+    /// flat vector's store.
     fn count(&mut self, inference: &Inference, value: ExprId) -> bool {
         if !inference.facts().core_protocols_intact() {
             return false;
@@ -2390,7 +2390,7 @@ impl<'a> Emitter<'a> {
             self.rt(RuntimeName::export("vectors"));
             self.output.push_str(".get(");
             self.value(value);
-            self.output.push_str(").length");
+            self.output.push_str(").cnt");
             return true;
         }
         false

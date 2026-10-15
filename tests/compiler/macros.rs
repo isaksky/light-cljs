@@ -1862,6 +1862,70 @@ mod javascript_form_bridge {
         let get = function(&e, "(fn* [x] [(:kept (meta x)) (aget x 0)])");
         assert_eq!(e.print(e.call(get, &[value]).unwrap()).unwrap(), "[true 1]");
     }
+    /// A vector and its seq export their items one at a time within the node
+    /// limit (light-cljs-234): a Subvec whose `nth` source throws past index
+    /// 50 reaches the limit before reading that far.
+    #[test]
+    fn vector_sequence_export_reads_only_within_its_limit() {
+        // A failed export ends the session: one evaluator for each.
+        for wrap in ["seq", "identity"] {
+            let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            let make = function(
+                &e,
+                &format!(
+                    "(fn* [] (let* [read (fn* [i] (if (< i 50) i (throw (js/Error. \"read too far\"))))
+                                    src (reify IIndexed (-nth [_ i] (read i)) (-nth [_ i _] (read i)))]
+                               ({wrap} (Subvec. nil src 0 1000 nil))))"
+                ),
+            );
+            let s = e.call(make, &[]).unwrap();
+            let error = e
+                .export_data(
+                    s,
+                    ConversionLimits {
+                        nodes: 10,
+                        depth: 128,
+                    },
+                )
+                .unwrap_err()
+                .0;
+            assert!(
+                error.contains("limit") && !error.contains("read too far"),
+                "{wrap}: {error}"
+            );
+        }
+    }
+    /// A ChunkedSeq exports the node it was given from its offset, as its
+    /// `first` and `rest` read it, and then the vector's items after that
+    /// node (light-cljs-234).
+    #[test]
+    fn chunked_sequence_export_preserves_supplied_node() {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let make = function(
+            &e,
+            "(fn* [] (let* [node (to-array (range 32))]
+                       (aset node 0 :custom) (aset node 1 :second) (aset node 31 :last)
+                       (ChunkedSeq. (vec (range 40)) node 0 1 nil nil)))",
+        );
+        let s = e.call(make, &[]).unwrap();
+        let data = e.export_data(s, ConversionLimits::default()).unwrap();
+        let quoted = read("'x");
+        let form = Form::from_data(
+            Datum::new(DatumKind::Collection {
+                kind: light_cljs::CollectionKind::List,
+                children: vec![quoted.children()[0].data(), data].into(),
+            }),
+            quoted.span(),
+            Origin::SuppliedData,
+        );
+        let exported = e.print(execute_form(&e, &form)).unwrap();
+        assert_eq!(exported, e.print(s).unwrap());
+        assert!(
+            exported.starts_with("(:second 2 3 ")
+                && exported.ends_with(" 30 :last 32 33 34 35 36 37 38 39)"),
+            "{exported}"
+        );
+    }
     #[test]
     fn quoted_js_literal_export_is_bounded_and_unbranded_nested_values_are_rejected() {
         for (body, limits, detail) in [
