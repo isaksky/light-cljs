@@ -965,13 +965,18 @@ fn the_repl_loads_the_namespace_a_loadable_names() {
         ),
         Ok("[[:started :ready] true 1 [:started :ready]]".into())
     );
-    // `load` returns a Promise of `@l`, which holds. The embedded engine runs
-    // no promise jobs (README, "Known boundaries"), so its reactions never run
-    // here; `call_through_load_at_every_level` resolves one in Node.
+    // `load` returns a Promise of `@l`, which holds. The session runs its
+    // reactions after the form (light-cljs-295), so a later form sees what
+    // they did; `call_through_load_at_every_level` resolves one in Node.
     assert_eq!(
         eval("(instance? js/Promise (light.lazy/load l))"),
         Ok("true".into())
     );
+    assert_eq!(
+        eval("(def r (atom nil)) (.then (light.lazy/load l) #(reset! r (%)))"),
+        Ok("#object[Promise [object Promise]]".into())
+    );
+    assert_eq!(eval("@r"), Ok("[:started :ready]".into()));
     assert_eq!(
         eval("(light.lazy/loadable app.editor/stop)"),
         Err("<eval>.cljs: lazy target app.editor/stop is not defined".into())

@@ -214,6 +214,7 @@ impl Evaluator {
               const rt = {RUNTIME_SOURCE};
               const values = new Map(); let next = 1; let lastError = null;
               let hostDiagnostic = null;
+              let heldError = null; let jobFailure = null;
               const exceptionMessage = error => {{
                 if (hostDiagnostic !== null && Object.is(error, hostDiagnostic.value)) {{ const message = hostDiagnostic.message; hostDiagnostic = null; return message; }}
                 return rt.compilerExceptionMessage(error);
@@ -264,6 +265,15 @@ impl Evaluator {
                 string: id => {{ const v = get(id); if (typeof v !== 'string') throw new TypeError('Expected string'); return v; }},
                 lastError: () => save(lastError),
                 clearError: () => {{ lastError = null; }},
+                // Promise jobs may evaluate, which clears lastError: hold it while
+                // they run, then restore it, or report the first job exception.
+                holdError: () => {{ heldError = {{value: lastError}}; jobFailure = null; }},
+                jobError: error => {{ jobFailure ??= {{value: error}}; }},
+                releaseError: keep => {{
+                  const failure = keep ? null : jobFailure;
+                  lastError = (failure ?? heldError).value; heldError = jobFailure = null;
+                  if (failure !== null) {{ const message = exceptionMessage(failure.value); if (message !== undefined) throw new Error(message); throw failure.value; }}
+                }},
                 inputWindow: more => rt.core.compilerInputWindow(more),
                 inputConsume: units => rt.core.compilerInputConsume(units),
                 inputRecover: () => rt.core.compilerInputRecover(),
@@ -561,6 +571,56 @@ impl Evaluator {
         })
     }
 
+    /// Run the heap's pending promise jobs (`.then` and `queueMicrotask`
+    /// callbacks, and the rest of an async function after an `await`),
+    /// including those they queue, until none is left. Each job costs a poll
+    /// and runs under the current operation's deadline, poll budget and memory
+    /// limit, so a job that loops, an endless chain of jobs and unbounded
+    /// allocation end it as they end any evaluation. A `.then` reaction's
+    /// throw rejects its promise. An exception that leaves a job (a
+    /// `queueMicrotask` callback's) does not stop the others; the first is
+    /// reported and becomes the last exception, unless `keep` keeps the one
+    /// from before the jobs (a failed form's). Call it only at an outer
+    /// boundary, never from a callback: it locks the runtime.
+    pub(crate) fn run_jobs(&self, keep: bool) -> Result<(), EvalError> {
+        if !self.runtime.is_job_pending() {
+            return Ok(());
+        }
+        self.enter(|ctx| ctx.eval::<(), _>("__lightEvaluator.holdError()"))?;
+        // Budget the jobs' engine stack from this frame, as `enter` does;
+        // rquickjs refreshes it only with its parallel feature.
+        unsafe {
+            rquickjs::qjs::JS_UpdateStackTop(rquickjs::qjs::JS_GetRuntime(
+                self.context.as_ref().unwrap().as_raw().as_ptr(),
+            ));
+        }
+        loop {
+            self.control.poll()?;
+            match self.runtime.execute_pending_job() {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(exception) => exception.0.with(|ctx| {
+                    // Take the exception from the job's context, so that it cannot
+                    // surface in a later operation. An interrupt for a resource
+                    // limit reports as that limit.
+                    let error = ctx.catch();
+                    self.control.poll()?;
+                    if !self.preserve_language_errors {
+                        self.control.invalidate();
+                        return self.control.poll();
+                    }
+                    ctx.eval::<Function, _>("__lightEvaluator.jobError")
+                        .and_then(|record| record.call::<_, ()>((error,)))
+                        .catch(&ctx)
+                        .map_err(|error| EvalError(error.to_string()))
+                })?,
+            }
+        }
+        self.enter(|ctx| {
+            let release: Function = ctx.eval("__lightEvaluator.releaseError")?;
+            release.call((keep,))
+        })
+    }
     /// Force collection at an outer boundary. Callbacks must use the active Ctx,
     /// never this runtime-locking method.
     pub fn collect_garbage(&self) {

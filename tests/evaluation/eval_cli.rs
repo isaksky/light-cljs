@@ -205,6 +205,16 @@ fn runtime_and_rendering_limits_fail_without_partial_results() {
         (vec!["--memory-limit", "1", "--text", "[1 2 3]"], "memory"),
         (vec!["--output-limit", "2", "--text", "[1 2 3]"], "output"),
         (vec!["--timeout-ms", "0", "--text", "1"], "deadline"),
+        // A promise job that loops (light-cljs-295).
+        (
+            vec![
+                "--timeout-ms",
+                "100",
+                "--text",
+                "(.then (js/Promise.resolve) #(loop [] (recur))) 1",
+            ],
+            "deadline",
+        ),
         (
             vec!["--source-limit", "1", "--text", "[1 2 3]"],
             "source byte limit",
@@ -569,12 +579,13 @@ fn time_prints_elapsed_milliseconds_under_eval_and_repl() {
     }
 }
 
-/// `^:async` functions under `--eval` and `--repl` (light-cljs-261). The
-/// embedded QuickJS runs no promise jobs, so a call's value is a Promise
-/// whose reactions never run: only its identity and kind are observable.
-/// `await` outside an `^:async` function, at the top level included (which
-/// upstream has no more than light-cljs), is the located analysis error, after
-/// which the REPL goes on.
+/// `^:async` functions under `--eval` and `--repl` (light-cljs-261). A call's
+/// value is a Promise. The session runs promise jobs after each top-level
+/// form (light-cljs-295), so its reactions and the rest of the body after an
+/// `await` have run by the next form, and output they print comes before the
+/// form's printed result. `await` outside an `^:async` function, at the top
+/// level included (which upstream has no more than light-cljs), is the
+/// located analysis error, after which the REPL goes on.
 #[test]
 fn async_functions_return_promises_under_eval_and_repl() {
     let program = "(defn ^:async f [x] (inc (await x)))
@@ -583,6 +594,45 @@ fn async_functions_return_promises_under_eval_and_repl() {
     ok(
         run(&["--eval", "--text", program], ""),
         "[true true false #object[Promise [object Promise]]]\n",
+    );
+    let program = "(def r (atom []))
+        (defn ^:async f [x] (swap! r conj (inc (await x))) (println :resumed) :done)
+        (.then (f (js/Promise.resolve 1)) #(swap! r conj %))
+        @r";
+    ok(
+        run(&["--eval", "--text", program], ""),
+        ":resumed\n[2 :done]\n",
+    );
+    let output = run(
+        &["--repl"],
+        "(defn ^:async f [] (println :resumed (await (js/Promise.resolve 2))) 3)\n\
+         (.then (f) prn)\n\
+         :next\n",
+    );
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "#object[Function]\n:resumed 2\n3\n#object[Promise [object Promise]]\n:next\n"
+    );
+    assert!(output.stderr.is_empty());
+    // An exception that leaves a job is the form's error and its `*e`; a
+    // failed form keeps its own `*e` while its jobs evaluate.
+    let output = run(
+        &["--repl"],
+        "(js/queueMicrotask #(throw (ex-info \"job\" {:tag :kept})))\n\
+         (ex-data *e)\n\
+         (do (.then (js/Promise.resolve) (fn [_] (eval 42))) (throw (ex-info \"original\" {:tag :form})))\n\
+         (ex-data *e)\n",
+    );
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "{:tag :kept}\n{:tag :form}\n"
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.starts_with("light-cljs: Error: job") && stderr.contains("Error: original"),
+        "{stderr}"
     );
     let output = run(&["--eval", "--text", "(await (js/Promise.resolve 1))"], "");
     assert!(!output.status.success());

@@ -686,8 +686,9 @@ output.
   - A target namespace only lazy references reach runs after the entry, so
     `@l` during the synchronous startup reads a Var not yet defined (`nil`)
     where a chunked build would throw; `load` resolves after it either way.
-    The embedded QuickJS of `--eval` and `--repl` runs no promise jobs, so
-    there a `load` Promise never calls its reactions.
+    Under `--eval` and `--repl` the session runs promise jobs after each
+    top-level form (light-cljs-295), so there a `load` Promise's reactions
+    have run by the next form.
 - **As built (light-cljs-272).** The Preparation bullet below, the stubs'
   cost measured in the ratchet, and the type trimmed:
   - The lazy Var targets light-cljs-271 appends to `options.exports` are

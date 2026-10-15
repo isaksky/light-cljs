@@ -103,8 +103,10 @@ host controls which packages exist by what it puts in the registry.
 
 `engine` specifies JS memory bytes, stack bytes, deadline and cooperative poll
 budget. A public evaluation/invocation begins a new deadline/poll budget, shared
-by nested compiler and application work. Nested `eval`, callbacks and macro
-expansion cannot replenish it. Cancellation, memory exhaustion, interrupts and
+by nested compiler and application work, and by the promise jobs that run
+after each top-level form (see [Script and REPL
+commands](#script-and-repl-commands)). Nested `eval`, callbacks, macro
+expansion and promise jobs cannot replenish it. Cancellation, memory exhaustion, interrupts and
 host panic are sticky, even when JavaScript catches an exception; call `reset`
 before using that session again. A separate clean compilation/session remains
 usable. Long host callbacks must poll `HostCall::control()` cooperatively.
@@ -175,18 +177,37 @@ value and `ex-data`; read/analysis diagnostics become ExceptionInfo with phase a
 available source location. Success preserves `*e`. Definitions return their CLJS
 initializer value.
 
-Promises are not pumped: the embedded QuickJS runs no promise jobs between or
-after forms, and the session has no job pump. A Promise may still settle
-synchronously, as one an `^:async` function returns when its body finishes
-without waiting, but its reactions never run: `.then` callbacks, and the rest
-of an `^:async` function body after an `await` (see [Async functions and
-await](compiler.md#async-functions-and-await)). Under `--eval`, `--repl` and
-`EvalSession` a call of an `^:async` function therefore shows only its
-Promise's identity and kind (`(instance? js/Promise p)`, printed
-`#object[Promise [object Promise]]`); its value and any rejection are not
-observable from the session. `await` outside an `^:async` function body,
-including a top-level `(await x)`, is the located analysis error upstream's
-assertion gives; upstream has no top-level `await` either.
+Promise jobs run after each top-level form (light-cljs-295), as an event
+loop runs them after a script. Once a form of `--eval`, `--repl`,
+`eval_string`, `eval_source` or `eval_form` has run, whether or not it threw,
+the session runs the pending jobs of its heap until none is left: `.then`
+callbacks, `js/queueMicrotask` callbacks and the rest of an `^:async` function
+body after an `await` (see [Async functions and
+await](compiler.md#async-functions-and-await)), with the jobs they queue in
+turn. A later form sees what they did, so `(def r (atom nil)) (.then
+(light.lazy/load l) #(reset! r (%)))` followed by `@r` returns the result of
+calling the loaded target, and output a reaction prints comes before the
+form's printed result. Jobs never run inside a form: a top-level `do` cannot
+see its own reactions. Nor do they run between the forms of a namespace the
+session loads or of a `load_file` file, each of which runs as one script, so
+its jobs run after the form that loaded it (`load_file`'s after its last
+form). **Difference:** compiled output runs a whole file as one script, so
+there a form does not see the reactions of an earlier form of the same file;
+under `--eval` it does. Jobs run in the operation of the form that queued
+them, under its deadline, poll budget and memory limit, and each job costs a
+poll: a job that loops, an endless chain of jobs or unbounded allocation
+ends the operation like any loop, and the session needs `reset` (the CLI
+exits). An embedder that drives `evaluate` or `invoke` itself calls
+`EvalSession::run_jobs`. A `.then` reaction's throw rejects its promise, and
+a rejection that no handler catches is dropped without a report. An
+exception that leaves a job, as a `js/queueMicrotask` callback's does, is
+the form's error, with its value in `*e` and its `ex-data` in the
+diagnostic, once the other jobs have run (the first, when several throw);
+a form that failed keeps its own error and `*e`. The engine has no timers (`js/setTimeout` is absent), so
+promise jobs are the only work that runs after a form. `await` outside an
+`^:async` function body, including a top-level `(await x)`, is the located
+analysis error upstream's assertion gives; upstream has no top-level `await`
+either.
 
 | Flag | Default | Unit/behavior |
 | --- | ---: | --- |

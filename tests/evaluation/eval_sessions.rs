@@ -518,3 +518,239 @@ fn contextual_anonymous_reader_data_and_failures_reuse_the_session() {
     assert!(s.eval_string("(#(%0) 1)").is_err());
     assert_eq!(printed(&mut s, "(#(vector %-1 %&) 3 4)"), "[(3 4) (3 4)]");
 }
+
+/// The session runs pending promise jobs after each top-level form
+/// (light-cljs-295), as an event loop runs them after a script: `.then`
+/// reactions, and the rest of an `^:async` body after an `await`, have run
+/// before the next form, but not inside the form that queued them, and not
+/// between the forms of a namespace the session loads.
+#[test]
+fn promise_jobs_run_after_each_top_level_form() {
+    use light_cljs::source_provider::{LoadRequest, SourceInput};
+    use std::rc::Rc;
+    let mut s = EvalSession::new(EvalOptions {
+        source_provider: Some(Rc::new(|r: &LoadRequest| {
+            Ok(
+                (String::from_utf16_lossy(r.namespace.name()) == "app.jobs").then(|| {
+                    SourceInput::new(
+                        "app/jobs.cljs",
+                        "(ns app.jobs)\n\
+                         (def log (atom []))\n\
+                         (.then (js/Promise.resolve) #(swap! log conj :job))\n\
+                         (swap! log conj :loaded)\n",
+                    )
+                }),
+            )
+        })),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(
+        printed(
+            &mut s,
+            "(def r (atom [])) (def v (atom nil))
+             (defn ^:async f [x] (swap! r conj :before) (swap! r conj (inc (await x))) :done)
+             (do (.then (f (js/Promise.resolve 1)) #(reset! v %)) [@r @v])"
+        ),
+        "[[:before] nil]"
+    );
+    assert_eq!(printed(&mut s, "[@r @v]"), "[[:before 2] :done]");
+    // A rejection reaches its handler; a later form of the same source sees
+    // what the reactions of an earlier one did.
+    assert_eq!(
+        printed(
+            &mut s,
+            "(.catch (f (js/Promise.reject (js/Error. \"no\"))) #(reset! v (ex-message %))) @v"
+        ),
+        "\"no\""
+    );
+    assert_eq!(
+        printed(
+            &mut s,
+            "(def log (atom [])) (.then (js/Promise.resolve) #(swap! log conj 1)) (swap! log conj 2)"
+        ),
+        "[1 2]"
+    );
+    assert_eq!(
+        printed(&mut s, "(require 'app.jobs) @app.jobs/log"),
+        "[:loaded :job]"
+    );
+    // A failed form's jobs run too, before the next form.
+    assert!(
+        s.eval_string("(.then (js/Promise.resolve) #(swap! log conj 3)) (throw (js/Error. \"x\"))")
+            .is_err()
+    );
+    assert!(
+        s.eval_string(
+            "(do (.then (js/Promise.resolve) #(swap! log conj 4)) (throw (js/Error. \"x\")))"
+        )
+        .is_err()
+    );
+    assert_eq!(printed(&mut s, "@log"), "[1 2 3 4]");
+}
+
+/// Promise jobs run under the operation's deadline, poll budget and memory
+/// limit, which end a job that loops, an endless chain of jobs and a job
+/// that allocates without bound as they end any other evaluation.
+#[test]
+fn promise_jobs_stay_within_the_session_limits() {
+    use light_cljs::evaluator::EvaluatorOptions;
+    for (engine, source, expected) in [
+        (
+            EvaluatorOptions {
+                timeout: std::time::Duration::from_millis(200),
+                poll_budget: u64::MAX,
+                ..Default::default()
+            },
+            "(.then (js/Promise.resolve) (fn [_] (try (loop [] (recur)) (catch :default _ 0))))",
+            "deadline exceeded",
+        ),
+        (
+            EvaluatorOptions {
+                timeout: std::time::Duration::from_millis(200),
+                poll_budget: u64::MAX,
+                ..Default::default()
+            },
+            "(defn ^:async f [] (await nil) (loop [] (recur))) (.catch (f) (fn [_] 0))",
+            "deadline exceeded",
+        ),
+        (
+            EvaluatorOptions {
+                poll_budget: 2000,
+                ..Default::default()
+            },
+            "(defn again [_] (.then (js/Promise.resolve) again)) (again nil)",
+            "poll budget exhausted",
+        ),
+        (
+            EvaluatorOptions {
+                memory_limit: 4 * 1024 * 1024,
+                ..Default::default()
+            },
+            "(def a #js []) (defn grow [_] (.push a (.fill (js/Array. 4096) 1)) (.then (js/Promise.resolve) grow)) (grow nil)",
+            "memory",
+        ),
+    ] {
+        let mut s = EvalSession::new(EvalOptions {
+            engine,
+            ..Default::default()
+        })
+        .unwrap();
+        let error = s.eval_string(source).unwrap_err().to_string();
+        assert!(error.contains(expected), "{source}: {error}");
+        assert!(s.eval_string("42").is_err(), "{source}");
+        s.reset().unwrap();
+        assert_eq!(printed(&mut s, "42"), "42");
+    }
+}
+
+/// A file `load_file` loads runs as one script, its jobs after its last form
+/// and before the method returns; one the language `load-file` loads runs
+/// inside its form, whose jobs run after the whole form.
+#[test]
+fn promise_jobs_run_after_a_loaded_file() {
+    use light_cljs::source_provider::SourceInput;
+    use std::rc::Rc;
+    let mut s = EvalSession::new(EvalOptions {
+        file_provider: Some(Rc::new(|_: &light_cljs::eval_session::FileLoadRequest| {
+            Ok(Some(SourceInput::new(
+                "jobs.cljs",
+                "(.then (js/Promise.resolve) #(swap! log conj :job))\n\
+                 (swap! log conj :loaded)\n",
+            )))
+        })),
+        ..Default::default()
+    })
+    .unwrap();
+    printed(&mut s, "(def log (atom []))");
+    let value = s.load_file("jobs.cljs").unwrap().value;
+    s.release(value).unwrap();
+    assert_eq!(printed(&mut s, "@log"), "[:loaded :job]");
+    assert_eq!(
+        printed(
+            &mut s,
+            "(reset! log []) (do (load-file \"jobs.cljs\") @log)"
+        ),
+        "[:loaded]"
+    );
+    assert_eq!(printed(&mut s, "@log"), "[:loaded :job]");
+}
+
+/// `run_jobs` budgets the engine's stack from its own Rust frame, as every
+/// other outer operation does, so a caller deeper than the last operation
+/// does not shrink the stack its jobs get.
+#[test]
+fn promise_jobs_refresh_the_stack_boundary() {
+    use light_cljs::EvalDiagnostic;
+    use light_cljs::source_provider::SourceInput;
+    let mut s = EvalSession::new(EvalOptions {
+        engine: light_cljs::evaluator::EvaluatorOptions {
+            stack_limit: 256 * 1024,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .unwrap();
+    printed(&mut s, "(def r (atom nil))");
+    let forms = s
+        .read_forms(&SourceInput::new(
+            "<jobs>.cljs",
+            "(.then (js/Promise.resolve) #(reset! r :ran))",
+        ))
+        .unwrap();
+    let analyzed = s.analyze(&forms[0]).unwrap();
+    let value = s.evaluate(&analyzed).unwrap().value;
+    s.release(value).unwrap();
+    #[inline(never)]
+    fn deeper(s: &EvalSession, depth: usize) -> Result<(), EvalDiagnostic> {
+        let pad = std::hint::black_box([0u8; 16 * 1024]);
+        let result = if depth == 0 {
+            s.run_jobs()
+        } else {
+            deeper(s, depth - 1)
+        };
+        std::hint::black_box(&pad);
+        result
+    }
+    deeper(&s, 32).unwrap();
+    assert_eq!(printed(&mut s, "@r"), ":ran");
+}
+
+/// An exception that leaves a job (a `queueMicrotask` callback's; a `.then`
+/// reaction's rejects its promise instead) is the form's error, with its
+/// value and data, and the remaining jobs still run. A failed form keeps its
+/// own exception while its jobs run, even when they evaluate.
+#[test]
+fn promise_job_exceptions_keep_their_values() {
+    let mut s = EvalSession::new(EvalOptions::default()).unwrap();
+    printed(&mut s, "(def log (atom []))");
+    let error = s
+        .eval_string(
+            "(do (js/queueMicrotask #(throw (ex-info \"job\" {:tag :kept})))
+                 (js/queueMicrotask #(throw (ex-info \"later\" {})))
+                 (.then (js/Promise.resolve) #(swap! log conj :ran))
+                 :value)
+             (swap! log conj :next-form)",
+        )
+        .unwrap_err();
+    assert!(error.message.contains("job"), "{error}");
+    let data = s.value(&error.data.expect("owned ex-data")).unwrap();
+    assert_eq!(s.print(data).unwrap(), "{:tag :kept}");
+    let thrown = s.last_exception().unwrap();
+    let data = s.lookup("cljs.core/ex-data").unwrap();
+    let tag = s.invoke(data, &[thrown]).unwrap();
+    assert_eq!(s.print(tag).unwrap(), "{:tag :kept}");
+    assert_eq!(printed(&mut s, "@log"), "[:ran]");
+    let error = s
+        .eval_string(
+            "(do (.then (js/Promise.resolve) (fn [_] (eval '(swap! log conj :evaluated))))
+                 (js/queueMicrotask #(throw (ex-info \"job\" {})))
+                 (throw (ex-info \"original\" {:tag :form})))",
+        )
+        .unwrap_err();
+    assert!(error.message.contains("original"), "{error}");
+    let thrown = s.last_exception().unwrap();
+    let tag = s.invoke(data, &[thrown]).unwrap();
+    assert_eq!(s.print(tag).unwrap(), "{:tag :form}");
+    assert_eq!(printed(&mut s, "@log"), "[:ran :evaluated]");
+}

@@ -285,18 +285,68 @@ impl EvalSession {
     pub fn eval_string(&mut self, text: &str) -> Result<EvalResult, EvalDiagnostic> {
         self.eval_source(&SourceInput::new("<eval>.cljs", text))
     }
+    /// Evaluate each top-level form of `source` in turn, running the promise
+    /// jobs it queues after it (see [`Self::run_jobs`]).
     pub fn eval_source(&mut self, source: &SourceInput) -> Result<EvalResult, EvalDiagnostic> {
         let _operation = self.begin()?;
-        self.source(source)
+        self.source(source, true)
     }
     /// Load only through the configured file capability, preserving session roots.
+    /// The file runs as one script: promise jobs run after its last form.
     pub fn load_file(&mut self, path: &str) -> Result<EvalResult, EvalDiagnostic> {
         let _operation = self.begin()?;
-        let _file = FileLoadGuard::begin(&self.file_loading, path)?;
-        let source = file_source(&self.options, path, &self.namespace())?;
-        self.source(&source)
+        let result = {
+            let _file = FileLoadGuard::begin(&self.file_loading, path)?;
+            file_source(&self.options, path, &self.namespace())
+                .map_err(EvalDiagnostic::from)
+                .and_then(|source| self.source(&source, false))
+        };
+        self.after_jobs(result)
     }
-    fn source(&mut self, source: &SourceInput) -> Result<EvalResult, EvalDiagnostic> {
+    /// Run the pending promise jobs: `.then` and `queueMicrotask` callbacks
+    /// and the rest of an `^:async` function body after an `await`, with the
+    /// jobs they queue in turn, until none is left. `eval_string`,
+    /// `eval_source`, `eval_form` and `load_file` run them after each
+    /// top-level form, as an event loop runs them after a script, and never
+    /// between the forms of a namespace the session loads; an embedder that
+    /// drives `evaluate` or `invoke` itself calls this. Jobs run under the
+    /// operation's deadline, poll budget and memory limit. The first exception
+    /// that leaves a job is the error, and `last_exception` holds it.
+    pub fn run_jobs(&self) -> Result<(), EvalDiagnostic> {
+        let _operation = self.begin()?;
+        self.jobs(false)
+    }
+    fn jobs(&self, keep: bool) -> Result<(), EvalDiagnostic> {
+        self.engine.run_jobs(keep).map_err(|error| EvalDiagnostic {
+            data: self.engine.error_data(),
+            message: error.0,
+            location: None,
+        })
+    }
+    /// Run the promise jobs after a top-level form, whether or not the form
+    /// succeeded. A failed form's error comes first, and its exception stays
+    /// the last one while its jobs run.
+    fn after_jobs(
+        &self,
+        result: Result<EvalResult, EvalDiagnostic>,
+    ) -> Result<EvalResult, EvalDiagnostic> {
+        match result {
+            Ok(result) => match self.jobs(false) {
+                Ok(()) => Ok(result),
+                Err(error) => {
+                    let _ = self.engine.release(result.value);
+                    Err(error)
+                }
+            },
+            Err(error) => {
+                let _ = self.engine.run_jobs(true);
+                Err(error)
+            }
+        }
+    }
+    /// Evaluate each top-level form of `source`; with `jobs`, run the promise
+    /// jobs after each one, as at the outermost boundary of a REPL or script.
+    fn source(&mut self, source: &SourceInput, jobs: bool) -> Result<EvalResult, EvalDiagnostic> {
         if source.file.ends_with(".clj") {
             return Err(
                 EvalError("native .clj evaluation is retired; use .cljs or .cljc".into()).into(),
@@ -326,7 +376,10 @@ impl EvalSession {
                     return Err(error);
                 }
             };
-            let result = self.form(&form);
+            let mut result = self.form(&form);
+            if jobs {
+                result = self.after_jobs(result);
+            }
             let _ = self.engine.release(last);
             last = result?.value;
         }
@@ -335,9 +388,11 @@ impl EvalSession {
             namespace: self.namespace(),
         })
     }
+    /// Evaluate one top-level form, then run the promise jobs it queued.
     pub fn eval_form(&mut self, form: &Form) -> Result<EvalResult, EvalDiagnostic> {
         let _operation = self.begin()?;
-        self.form(form)
+        let result = self.form(form);
+        self.after_jobs(result)
     }
     fn form(&mut self, form: &Form) -> Result<EvalResult, EvalDiagnostic> {
         if let Some(children) = top_level_do(form) {
@@ -455,7 +510,7 @@ impl EvalSession {
             };
             let namespace = self.namespace();
             self.loading.borrow_mut().push(name.clone());
-            let result = self.source(&source);
+            let result = self.source(&source, false);
             self.loading.borrow_mut().pop();
             self.compiler.borrow_mut().set_namespace(&namespace);
             self.sync_namespace()?;

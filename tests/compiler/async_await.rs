@@ -8,8 +8,10 @@
 //! `iife-open`, whose value is boxed so that it never adopts a Promise.
 //!
 //! The suite runs upstream's `src/test/cljs/cljs/async_await_test.cljs` in
-//! Node at every level, as one script and as one ES module. The embedded
-//! QuickJS runs no promise jobs, so programs here run in Node only.
+//! Node at every level, as one script and as one ES module: this suite
+//! checks compiled output. The REPL session's promise jobs, which run after
+//! each top-level form (light-cljs-295), are tested in
+//! `tests/evaluation/eval_sessions.rs` and `eval_cli.rs`.
 use super::optimization::execute;
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::compiler::analyze_namespace_entry_with_provider;

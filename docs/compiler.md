@@ -765,10 +765,11 @@ inlined body: other code runs while it waits, and could change what the body
 reads first. Folding treats `await` as an effect. Terse emission renames
 names only and keeps `async`/`await` as written.
 
-The embedded QuickJS runs no promise jobs ([evaluation](evaluation.md#script-and-repl-commands)):
-under `--eval` and `--repl` an async call's value is a Promise whose
-reactions never run. Compiled output runs in the host's event loop at every
-level and with `--esm`. `tests/compiler/async_await.rs` runs upstream's
+Under `--eval` and `--repl` the session runs promise jobs after each
+top-level form ([evaluation](evaluation.md#script-and-repl-commands)), so by
+the next form an async call has run the rest of its body after each `await`
+and its Promise's reactions have run. Compiled output runs in the host's
+event loop at every level and with `--esm`. `tests/compiler/async_await.rs` runs upstream's
 `async_await_test.cljs` there, with `clojure.test`'s `deftest`/`is` and
 `goog.object/equals` supplied as small sources, and its `cljs.test`
 reporting test replaced by one that awaits the failing test.
@@ -1546,8 +1547,9 @@ its parameters take any argument. A namespace target needs no root, since a
 namespace's top-level forms are roots however the namespace is reached. A target namespace that only lazy
 references reach runs after the entry, so during that synchronous startup
 `@l` reads its Var before the definition has run (`nil`); `load` always
-resolves after it. The embedded QuickJS runs no promise jobs, so under
-`--eval` and `--repl` a `load` Promise never calls its reactions.
+resolves after it. Under `--eval` and `--repl` the session runs promise jobs
+after each top-level form, so a `load` Promise's reactions have run by the
+next form.
 
 Standalone file/stdin/text modes accept `def` and interop, but a standalone
 `(ns ...)` form is rejected (`unsupported construct: ns`): select an entry with

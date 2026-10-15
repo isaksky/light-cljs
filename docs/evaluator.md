@@ -136,7 +136,9 @@ code sandbox. ECMAScript Math, strings, RegExp, JSON and Object work. DOM, proce
 Node module loading and network globals are absent unless explicitly provided;
 untaken branches do not probe them. `install_callback` currently supports a small
 owned-string bridge. Its callable captures only Rust state, plus a weak execution
-control reference. The structured compiler-form bridge does not use this string API as a form encoding. No promises are pumped or awaited.
+control reference. The structured compiler-form bridge does not use this string API as a form encoding. Nothing awaits a promise, and
+promise jobs run only where `EvalSession` runs them, at its outer boundary after each top-level form
+([evaluation](evaluation.md#script-and-repl-commands)), never inside a callback or a plain `Evaluator` operation.
 
 ## Compiler form bridge
 

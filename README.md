@@ -303,12 +303,15 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:
   no DOM, Node APIs, filesystem, network or process access unless the host supplies
-  them. `NamePolicy` restricts name resolution but is not a sandbox. Promises are
-  not pumped, so under `--eval` and `--repl` an `^:async` function returns a
-  Promise whose `.then` callbacks and post-`await` code never run; compiled
-  output, where `^:async` functions and
-  `await` work as upstream's ([docs/compiler.md](docs/compiler.md#async-functions-and-await)),
-  runs them in the host's event loop.
+  them, and no timers. `NamePolicy` restricts name resolution but is not a
+  sandbox. Under `--eval` and `--repl` promise jobs (`.then` callbacks,
+  post-`await` code) run after each top-level form, never inside one, so a
+  form sees the reactions of the forms before it, even earlier in the same
+  file, where compiled output runs a whole file first
+  ([docs/evaluation.md](docs/evaluation.md#script-and-repl-commands)). Compiled
+  output, where `^:async` functions and `await` work as upstream's
+  ([docs/compiler.md](docs/compiler.md#async-functions-and-await)), runs them in
+  the host's event loop.
 - Some upstream behaviors differ deliberately; [docs/compiler.md](docs/compiler.md)
   documents supported forms, runtime semantics and known differences.
 
