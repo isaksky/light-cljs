@@ -356,12 +356,16 @@ downstream (a namespace that depends on the change only through it is not
 reloaded), as shadow-cljs's never-load list keeps a namespace out of the
 `:full` walk. Unlike shadow-cljs, which leaves a never-load namespace
 out even before it has loaded, a new `^:dev/once` namespace loads, since its
-requirers need it. The `^:dev/always` namespaces join every load that loads
-anything, and a step whose set is empty pushes nothing and runs no hook.
-`--reload-dependents` requires `--serve`, since without a server nothing is
-loaded. A replay applies the policy in the client: a `once` unit only where
-the runtime never ran it to its end, and the `always` units when anything
-else loads.
+requirers need it. The `^:dev/always` namespaces join the load of every step
+that wrote anything, a step that wrote only `^:dev/once` namespaces included,
+and under `--reload-dependents` the walk downstream starts from them too, as
+shadow-cljs's selection includes always-load namespaces; a step that wrote
+nothing pushes nothing and runs no hook. `--reload-dependents` requires
+`--serve`, since without a server nothing is loaded. A replay applies the
+policy in the client, so that a runtime that missed steps loads what they
+would have loaded: a `once` unit only where the runtime never ran it to its
+end, and when anything else loads, the `always` units and, with the
+`dependents` flag, the units downstream along each unit's `requires`.
 
 ### The server and the client
 
@@ -717,16 +721,21 @@ what it wrote, the `^:dev/always` namespaces with it, never a `^:dev/once`
 namespace the runtimes ran, and with `--reload-dependents` (on `--watch
 --serve`) every namespace downstream, in load order; it finds the hooks
 again in the retained program and rewrites the manifest's hook lists, and
-each `load` carries them with the `once` and `always` lists, by which the
-client applies a replay. `tests/dev_server.rs` adds: a macro change loads
-`app.macros` and `app.view` (`clicks = [2]`); a save of `app.state` loads
-`app.state`, then with `--reload-dependents` also `app.view` and `app.main`
-in that order (their top-level lines print again); a `^:dev/once`
-`app.view` is rewritten but never loaded, left out of the downstream walk
-along with a namespace that reaches the change only through it, and kept
-by a late runtime's replay; a `^:dev/always` namespace joins every load and
-every replay that loads anything; and a step that drops one hook's flag and
-adds an `-async` one runs the new list and writes it to the manifest. The
+each `load` carries them with the `once`, `always` and `dependents` policy
+and each unit's requires, by which the client applies a replay.
+`tests/dev_server.rs` adds: a macro change loads `app.macros` and
+`app.view` (`clicks = [2]`); a save of `app.state` loads `app.state`, then
+with `--reload-dependents` also `app.view` and `app.main` in that order
+(their top-level lines print again), and a late runtime's replay loads the
+same; a `^:dev/once` `app.view` is rewritten but never loaded, left out of
+the downstream walk along with a namespace that reaches the change only
+through it, and kept by a late runtime's replay; a `^:dev/always` namespace
+joins every load and every replay that loads anything, also a step that
+rewrote only a `^:dev/once` namespace, whose load then reaches the always
+namespace's dependents under `--reload-dependents`; a step that drops one
+hook's flag and adds an `-async` one runs the new list and writes it to the
+manifest; and hooks in `app.state` and `app.main` keep their namespace
+order across saves of either. The
 reload fixtures (tests/support/reload_fixtures.rs: functions, `defonce`,
 records, protocols, multimethods, a macro, a new require and changed
 refers) print the same through the server's client, through the driver

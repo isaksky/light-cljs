@@ -757,6 +757,7 @@ fn a_replay_runs_again_a_unit_that_threw() {
         namespace: namespace.into(),
         file: format!("{namespace}.js"),
         js: js.into(),
+        requires: Vec::new(),
     };
     let replay = Build {
         units: vec![
@@ -1011,18 +1012,15 @@ fn loud_example(src: &Path) {
 
 /// A saved change to `app.state` reloads `app.state` alone; with
 /// `--reload-dependents`, also `app.view` and `app.main`, which depend on
-/// it, in that order, unchanged.
+/// it, in that order, unchanged. A runtime that missed the step catches up
+/// with the same namespaces.
 #[test]
 fn reload_dependents_reload_downstream_namespaces_in_order() {
     let cases: [(&'static [&'static str], &str, &str); 2] = [
-        (
-            &[],
-            "message load app.state",
-            "reloading\nstate loads\nclicks: [2]\n",
-        ),
+        (&[], "app.state", "reloading\nstate loads\nclicks: [2]\n"),
         (
             &["--reload-dependents"],
-            "message load app.state app.view app.main",
+            "app.state app.view app.main",
             "reloading\nstate loads\nview loads\nmain loads\nclicks: [2]\n",
         ),
     ];
@@ -1040,13 +1038,27 @@ fn reload_dependents_reload_downstream_namespaces_in_order() {
             "{step}"
         );
         let (_, load) = runtime.until("message load ");
-        assert_eq!(load, expected, "{flags:?}");
+        assert_eq!(load, format!("message load {expected}"), "{flags:?}");
+        let started = "view loads\nmain loads\nstart\nclicks: [1]\n";
         let (record_line, _) = runtime.finish();
         assert_eq!(
             record_line,
-            record(&format!(
-                "view loads\nmain loads\nstart\nclicks: [1]\n{reloaded}"
-            )),
+            record(&format!("{started}{reloaded}")),
+            "{flags:?}"
+        );
+        let late = watch.runtime("before", 1);
+        let (lines, _) = late.until("message load replay ");
+        let names = expected.replace(' ', ", ");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with(&format!("light-cljs: reloaded {names} in "))),
+            "{flags:?}: {lines:#?}"
+        );
+        let (record_line, _) = late.finish();
+        assert_eq!(
+            record_line,
+            record(&format!("{started}{reloaded}")),
             "{flags:?}"
         );
     }
@@ -1124,14 +1136,14 @@ fn a_once_namespace_is_never_reloaded() {
     assert!(
         lines
             .iter()
-            .any(|line| line.starts_with("light-cljs: reloaded app.state in ")),
+            .any(|line| line.starts_with("light-cljs: reloaded app.state, app.main in ")),
         "{lines:#?}"
     );
     let (record_line, _) = late.finish();
     assert_eq!(
         record_line,
         record(
-            "view loads\nleaf loads\nmain loads\nstart\nclicks: [1]\nreloading\nstate loads\nclicks: [2]\n"
+            "view loads\nleaf loads\nmain loads\nstart\nclicks: [1]\nreloading\nstate loads\nmain loads\nclicks: [2]\n"
         )
     );
 }
@@ -1292,4 +1304,115 @@ fn reload_fixtures_print_their_output_through_the_server() {
             });
         }
     });
+}
+
+/// A step that rewrites only a `^:dev/once` namespace still loads the
+/// `^:dev/always` namespaces, and with `--reload-dependents` the namespaces
+/// downstream of them, as every step does.
+#[test]
+fn a_once_edit_loads_the_always_namespaces_and_their_dependents() {
+    let mut watch = Watch::start_on("dev-server-once-always", &["--reload-dependents"], |src| {
+        loud_example(src);
+        let path = src.join("app/state.cljs");
+        let state = fs::read_to_string(&path).unwrap();
+        fs::write(
+            &path,
+            state.replacen("(ns app.state", "(ns ^:dev/once app.state", 1),
+        )
+        .unwrap();
+        fs::write(
+            src.join("app/config.cljs"),
+            "(ns ^:dev/always app.config)\n\n(js/console.log \"config loads\")\n",
+        )
+        .unwrap();
+        let path = src.join("app/main.cljs");
+        let main = fs::read_to_string(&path).unwrap();
+        fs::write(
+            &path,
+            main.replace(
+                "[app.view :as view]))",
+                "[app.view :as view]\n            [app.config]))",
+            ),
+        )
+        .unwrap();
+    });
+    let runtime = watch.runtime("before", 2);
+    runtime.until("message load replay ");
+    let state = format!(
+        "{}\n(js/console.log \"state loads\")\n",
+        watch.source("app/state.cljs")
+    );
+    let (_, step) = watch.save("app/state.cljs", &state);
+    assert!(
+        step.starts_with("light-cljs: recompiled app.state in "),
+        "{step}"
+    );
+    let (_, load) = runtime.until("message load ");
+    assert_eq!(load, "message load app.config app.main");
+    let (record_line, _) = runtime.finish();
+    assert_eq!(
+        record_line,
+        record(
+            "view loads\nconfig loads\nmain loads\nstart\nclicks: [1]\nreloading\nconfig loads\nmain loads\nclicks: [2]\n"
+        )
+    );
+}
+
+/// Hooks run by namespace in load order, then by definition, also after
+/// steps that compiled a later namespace first and an earlier one after
+/// it: the before-load functions of `app.main` run before those of
+/// `app.state`, which `app.main` requires, and the after-load functions of
+/// `app.state` before those of `app.main`, at each load and in each
+/// manifest the steps write.
+#[test]
+fn hooks_keep_their_namespace_order_across_steps() {
+    let mut watch = Watch::start_with("dev-server-hook-order", |src| {
+        let path = src.join("app/state.cljs");
+        let state = fs::read_to_string(&path).unwrap();
+        fs::write(
+            &path,
+            format!(
+                "{state}\n(defn ^:dev/before-load state-before [] (js/console.log \"state before\"))\n\n(defn ^:dev/after-load state-after [] (js/console.log \"state after\"))\n"
+            ),
+        )
+        .unwrap();
+    });
+    let manifest_hooks = r#"  "before-load": [
+    {"name": "app.state/state-before", "async": false},
+    {"name": "app.main/stop", "async": false}
+  ],
+  "after-load": [
+    {"name": "app.state/state-after", "async": false},
+    {"name": "app.main/reload", "async": false}
+  ]
+}
+"#;
+    let runtime = watch.runtime("before", 4);
+    runtime.until("message load replay ");
+    for (file, edit) in [
+        ("app/main.cljs", "(js/console.log \"main saved\")"),
+        ("app/state.cljs", "(js/console.log \"state saved\")"),
+        ("app/main.cljs", "(js/console.log \"main saved again\")"),
+    ] {
+        let text = watch.source(file);
+        let text = match text.rfind("\n\nstart\n") {
+            Some(at) => format!("{}\n\n{edit}{}", &text[..at], &text[at..]),
+            None => format!("{text}\n{edit}\n"),
+        };
+        let (_, step) = watch.save(file, &text);
+        assert!(step.starts_with("light-cljs: recompiled "), "{step}");
+        runtime.until("message load ");
+        let manifest = fs::read_to_string(watch.dir.join("dev/manifest.json")).unwrap();
+        assert!(manifest.ends_with(manifest_hooks), "{file}: {manifest}");
+    }
+    let (record_line, _) = runtime.finish();
+    assert_eq!(
+        record_line,
+        record(
+            "start\nclicks: [1]\n\
+             reloading\nstate before\nmain saved\nstate after\nclicks: [2]\n\
+             reloading\nstate before\nstate saved\nstate after\nclicks: [3]\n\
+             reloading\nstate before\nmain saved\nmain saved again\nstate after\nclicks: [4]\n"
+        )
+    );
 }

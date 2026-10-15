@@ -543,14 +543,23 @@ The server (`light_cljs::dev_server::DevServer`) is a subset of HTTP/1.1 on
   with `replay`) and the diagnostics of the last step, or before any step
   the build's own warnings; then each step's `warnings` and
   `error` (`{"message", "file", "line", "column"}`) and `load` (`units`,
-  each `{"namespace", "file", "js"}` with the text of the unit file; the
-  `before-load` and `after-load` hooks of the manifest; and `once` and
-  `always`, the namespaces marked `^:dev/once` and `^:dev/always`, which a
-  replay is applied with). A step that fails
+  each `{"namespace", "file", "js", "requires"}` with the text of the unit
+  file and the namespaces of the build it requires; the `before-load` and
+  `after-load` hooks of the manifest; and the policy a replay is applied
+  with: `once` and `always`, the namespaces marked `^:dev/once` and
+  `^:dev/always`, and `dependents`, whether `--reload-dependents` is on).
+  A step that fails
   pushes its error and no load, and changes no replay; the units it wrote,
   if any (a namespace a changed `ns` form loaded before the error), go with
   the next step that succeeds. A comment line every 15 s finds closed
   connections.
+- `POST /reply` takes the JSON reply of a runtime to an `invoke` (a REPL
+  form's unit, `DevServer::invoke`, which the connected REPL will send:
+  light-cljs-288), `{"runtime", "id", "value"}` or `{"runtime", "id",
+  "error": {"message", "stack"}}`, and hands it to the requester when the
+  runtime named is the one asked; a reply naming another gets `409
+  Conflict` and the request still waits. Dropping a `DevServer` ends every
+  stream, and its clients connect again.
 
 A step's `load` holds the units of its reload set (light-cljs-287; "The
 reload set" in [dev-workflow.md](dev-workflow.md#the-reload-set)), in load
@@ -560,32 +569,26 @@ order:
   changed macro namespace (recompiled, since their units hold the
   expansions), and the namespaces a changed `ns` form loaded, with those of
   failed steps since the last that succeeded;
+- every namespace whose `ns` form is marked `^:dev/always` (`(ns
+  ^:dev/always app.config)`), unchanged;
 - with `--reload-dependents`, every namespace that requires one of those,
   directly or through others the load reloads, unchanged, so that top-level
   effects that read them run again, as shadow-cljs's `:full` reload strategy
-  does (a save of
-  `app.state` in examples/dev loads `app.state`, `app.view` and `app.main`;
-  without the flag, `app.state` alone, since a call reads a definition when
-  it runs);
-- when that is any namespace, every namespace whose `ns` form is marked
-  `^:dev/always` (`(ns ^:dev/always app.config)`), unchanged;
+  does (a save of `app.state` in examples/dev loads `app.state`, `app.view`
+  and `app.main`; without the flag, `app.state` alone, since a call reads a
+  definition when it runs);
 - never a namespace marked `^:dev/once` that the pages have run: a step
   recompiles it and rewrites its unit, for a page loaded later, but loads
   nothing of it, and it passes no change on downstream: a namespace that
-  depends on the change only through it is not reloaded. One that a
-  step adds to the build loads with that step, since no page has it.
+  depends on the change only through it is not reloaded. One that a step
+  adds to the build loads with that step, since no page has it.
 
-A step whose reload set is empty pushes no load and runs no hooks. The hooks
-of a load are those the step found in the program it compiled, resolved in
-the page when they run: a new before-load function is not defined yet when
-the before-load functions of its own load run.
-- `POST /reply` takes the JSON reply of a runtime to an `invoke` (a REPL
-  form's unit, `DevServer::invoke`, which the connected REPL will send:
-  light-cljs-288), `{"runtime", "id", "value"}` or `{"runtime", "id",
-  "error": {"message", "stack"}}`, and hands it to the requester when the
-  runtime named is the one asked; a reply naming another gets `409
-  Conflict` and the request still waits. Dropping a `DevServer` ends every
-  stream, and its clients connect again.
+A step that wrote nothing pushes no load and runs no hooks; one that wrote
+only `^:dev/once` namespaces still loads the `^:dev/always` ones, as
+shadow-cljs does after every build. The hooks of a load are those the step
+found in the program it compiled, resolved in the page when they run: a new
+before-load function is not defined yet when the before-load functions of
+its own load run.
 
 `client.js` of every dev build (src/dev_client.js) is the client. In a page
 loaded over HTTP it connects to the server it came from once the build has
@@ -605,8 +608,9 @@ the stream with `fetch`, so the same code runs in a page and in Node, and
   ran to its end), so a page that loaded the current files changes nothing,
   one that missed steps, or reconnects to a server that rebuilt, catches up,
   and a unit that threw runs again; of a `once` namespace only a unit it has
-  not run to its end, and, when it applies any unit, the units of the
-  `always` namespaces too;
+  not run to its end, and, when it applies any unit, those the missed steps
+  would have loaded with it: the units of the `always` namespaces and, with
+  `dependents`, of the namespaces downstream along the units' `requires`;
 - draws the `warnings` and `error` of a step in an overlay with file, line
   and column (and logs them), which the first message of the next step
   clears;

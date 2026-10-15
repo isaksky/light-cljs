@@ -825,21 +825,25 @@ impl Watch {
 
     /// The namespaces a step that succeeded and wrote the units of `written`
     /// loads into the runtimes, in load order (docs/dev-workflow.md, "The
-    /// reload set"): each one written, which with a changed namespace are
-    /// the requirers of a changed macro namespace and the namespaces a
-    /// changed `ns` form loaded; with `--reload-dependents`, every namespace
-    /// that requires one of those, directly or through others the set
-    /// reloads, as shadow-cljs's `:full` strategy loads; and, when that is
-    /// any, every namespace marked `^:dev/always`, as it is. Never a
+    /// reload set"), none when it wrote none: each one written, which with a
+    /// changed namespace are the requirers of a changed macro namespace and
+    /// the namespaces a changed `ns` form loaded, and every namespace marked
+    /// `^:dev/always`, as it is; with `--reload-dependents`, also every
+    /// namespace that requires one of those, directly or through others the
+    /// set reloads, as shadow-cljs's `:full` strategy loads. Never a
     /// namespace marked `^:dev/once` that the runtimes have been sent, which
     /// passes no change on downstream; one that a step adds to the build
     /// loads with that step.
     fn reload_set(&self, written: &[String]) -> Vec<String> {
+        if written.is_empty() {
+            return Vec::new();
+        }
         let sent_once =
             |namespace: &str| self.published.contains(namespace) && self.once(namespace);
         let mut reload = written
             .iter()
             .map(String::as_str)
+            .chain(self.namespaces().filter(|namespace| self.always(namespace)))
             .filter(|namespace| !sent_once(namespace))
             .collect::<HashSet<_>>();
         if self.reload_dependents {
@@ -864,11 +868,8 @@ impl Watch {
                 }
             }
         }
-        if !reload.is_empty() {
-            reload.extend(self.namespaces().filter(|namespace| self.always(namespace)));
-        }
         self.namespaces()
-            .filter(|namespace| reload.contains(namespace) && !sent_once(namespace))
+            .filter(|namespace| reload.contains(namespace))
             .map(str::to_owned)
             .collect()
     }
@@ -879,6 +880,11 @@ impl Watch {
             namespace: namespace.to_owned(),
             file: unit_file(namespace),
             js: self.units.get(namespace)?.clone(),
+            requires: self
+                .manifest
+                .position(namespace)
+                .map(|at| self.manifest.namespaces[at].requires.clone())
+                .unwrap_or_default(),
         })
     }
 
@@ -903,6 +909,7 @@ impl Watch {
                 .filter(|namespace| self.always(namespace))
                 .map(str::to_owned)
                 .collect(),
+            dependents: self.reload_dependents,
         }
     }
 

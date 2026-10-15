@@ -48,6 +48,9 @@ pub struct LoadUnit {
     /// evaluated text's `sourceURL`, so its `sourceMappingURL` resolves.
     pub file: String,
     pub js: String,
+    /// The namespaces of the build it requires, along which a replay under
+    /// [`Build::dependents`] reloads downstream namespaces.
+    pub requires: Vec<String>,
 }
 
 /// A compile diagnostic of an `error` or `warnings` message, located when
@@ -77,6 +80,9 @@ pub struct Build {
     /// The namespaces marked `^:dev/always`: a replay that loads anything
     /// loads them too.
     pub always: Vec<String>,
+    /// `--reload-dependents`: a replay also loads every namespace that
+    /// requires one it loads, as each step's load does.
+    pub dependents: bool,
 }
 
 /// What a watch step produced, for [`DevServer::publish`].
@@ -388,6 +394,8 @@ fn load_message(step: u64, replay: bool, units: &[LoadUnit], build: &Build) -> S
         json_string(&mut message, &unit.file);
         message.push_str(",\"js\":");
         json_string(&mut message, &unit.js);
+        message.push_str(",\"requires\":");
+        json_names(&mut message, &unit.requires);
         message.push('}');
     }
     message.push(']');
@@ -407,17 +415,23 @@ fn load_message(step: u64, replay: bool, units: &[LoadUnit], build: &Build) -> S
         message.push(']');
     }
     for (key, namespaces) in [("once", &build.once), ("always", &build.always)] {
-        write!(message, ",\"{key}\":[").unwrap();
-        for (index, namespace) in namespaces.iter().enumerate() {
-            if index > 0 {
-                message.push(',');
-            }
-            json_string(&mut message, namespace);
-        }
-        message.push(']');
+        write!(message, ",\"{key}\":").unwrap();
+        json_names(&mut message, namespaces);
     }
-    message.push('}');
+    write!(message, ",\"dependents\":{}}}", build.dependents).unwrap();
     message
+}
+
+/// Append `names` as a JSON array of strings.
+fn json_names(out: &mut String, names: &[String]) {
+    out.push('[');
+    for (index, name) in names.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        json_string(out, name);
+    }
+    out.push(']');
 }
 
 /// The URL path segments under which the files of `root` are served: where

@@ -23,8 +23,9 @@
 //   a runtime that missed steps catches up; of a namespace in its `once`
 //   list (`^:dev/once`), only a unit the runtime never ran to completion,
 //   and when it defines any, also the units of the namespaces in its
-//   `always` list (`^:dev/always`). One console line per load names the
-//   namespaces.
+//   `always` list (`^:dev/always`) and, with `dependents`
+//   (`--reload-dependents`), those downstream of them along each unit's
+//   `requires`. One console line per load names the namespaces.
 // - `warnings` and `error`: compile diagnostics with file, line and column,
 //   drawn in an overlay in a page (and logged); the first message of the
 //   next step clears them.
@@ -121,16 +122,27 @@ globalThis.__lightDev = (() => {
       return known !== undefined && known.loaded &&
         (once.has(unit.namespace) || unit.js.includes(String(known.unit)));
     };
-    // The units of a replay to load: those the runtime does not run, and
-    // with them those of the `^:dev/always` namespaces, in the message's
-    // order, which is the load order.
+    // The units of a replay to load, as the steps the runtime missed would
+    // have loaded them: those the runtime does not run, and with them those
+    // of the `^:dev/always` namespaces and, under `dependents`
+    // (`--reload-dependents`), of every namespace that requires one loaded,
+    // directly or not; never a `^:dev/once` unit the runtime ran. The
+    // message's units are in load order, each after those it requires.
     const replayed = message => {
       const once = new Set(message.once ?? []);
       const always = new Set(message.always ?? []);
-      const stale = new Set(message.units.filter(unit => !current(unit, once)));
-      if (stale.size === 0) return [];
-      return message.units.filter(unit =>
-        stale.has(unit) || always.has(unit.namespace) && !once.has(unit.namespace));
+      const held = unit => once.has(unit.namespace) && current(unit, once);
+      const stale = message.units.filter(unit => !current(unit, once));
+      if (stale.length === 0) return [];
+      const loading = new Set(stale.map(unit => unit.namespace));
+      for (const unit of message.units) {
+        if (held(unit)) continue;
+        if (always.has(unit.namespace) ||
+            message.dependents && (unit.requires ?? []).some(required => loading.has(required))) {
+          loading.add(unit.namespace);
+        }
+      }
+      return message.units.filter(unit => loading.has(unit.namespace));
     };
     const load = async message => {
       const begun = Date.now();
