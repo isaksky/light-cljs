@@ -194,7 +194,7 @@ mod original_record_tags {
                 }
             };
             assert!(
-                error.contains("macros use ordinary :require"),
+                error.contains(":require-macros is retired"),
                 "unexpected original namespace boundary: {error}"
             );
             writeln!(output, "application\t{lifecycle}\t{error}").unwrap();

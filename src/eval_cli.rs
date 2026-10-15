@@ -30,6 +30,8 @@ pub const USAGE: &str = "Compiled JavaScript evaluation:
   --print-length N   Collection result length (100)
   --print-level N    Collection result depth (20)
   --elide-asserts    Compile without assert and fn :pre/:post checks
+  --warnings         Warning mode: undeclared Vars and conflicting arities are
+                     warnings, printed to stderr, as with --compile --warnings
 
 --eval prints the final value only after success; program output is immediate.
 --repl retains namespaces and *1/*2/*3/*e and recovers language/reader errors.
@@ -146,6 +148,16 @@ fn options(repl: bool, mut args: impl Iterator<Item = OsString>) -> Result<Optio
                 }
                 "--elide-asserts" => {
                     options.eval.assertions = false;
+                    continue;
+                }
+                "--warnings" => {
+                    options.eval.warning_mode = true;
+                    options.eval.warnings = Some(Rc::new(|warning| {
+                        let mut err = io::stderr().lock();
+                        writeln!(err, "WARNING: {}", diagnostic(warning))
+                            .and_then(|_| err.flush())
+                            .map_err(|e| EvalError(e.to_string()))
+                    }));
                     continue;
                 }
                 "--text" if !repl && !has_input => {

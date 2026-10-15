@@ -521,10 +521,14 @@ impl InteractiveCompiler {
             self.resolution = previous;
             return Err(error);
         }
-        if let Err(error) = self
-            .host
-            .set_interactive_imports(&self.namespace, staged.imports)
-        {
+        let imported = if staged.replaces {
+            self.host
+                .replace_interactive_imports(&self.namespace, staged.imports)
+        } else {
+            self.host
+                .set_interactive_imports(&self.namespace, staged.imports)
+        };
+        if let Err(error) = imported {
             self.resolution = previous;
             return Err(error);
         }
@@ -532,61 +536,90 @@ impl InteractiveCompiler {
         self.requires = staged.requires;
         self.host
             .set_renames(&self.namespace, self.resolution.refers.clone());
-        self.host
-            .add_namespace_imports(&self.namespace, staged.namespace_imports);
+        if staged.replaces {
+            self.host
+                .set_namespace_imports(&self.namespace, staged.namespace_imports);
+        } else {
+            self.host
+                .add_namespace_imports(&self.namespace, staged.namespace_imports);
+        }
         Ok(())
     }
     /// Apply a namespace directive and return explicit source-provider requests.
     /// `None` is an executable form; `Some` has the value nil after its loads finish.
+    ///
+    /// `ns` and `ns*` go through the compiler's namespace analysis, as a
+    /// namespace source's header and its top-level `ns*` forms do under
+    /// `--compile`, and are staged until their loads finish. `ns` enters its
+    /// namespace and replaces the namespace's requires; `ns*` adds to them.
     pub(crate) fn directive(
         &mut self,
         form: &Form,
     ) -> Result<Option<NamespaceDirective>, crate::EvalDiagnostic> {
         let children = form.children();
-        if matches!(
-            form.data().kind(),
-            DatumKind::Collection {
-                kind: crate::CollectionKind::List,
-                ..
+        let head = match children.first().map(|f| f.data().kind().clone()) {
+            Some(DatumKind::Symbol(name))
+                if matches!(
+                    form.data().kind(),
+                    DatumKind::Collection {
+                        kind: crate::CollectionKind::List,
+                        ..
+                    }
+                ) =>
+            {
+                Some(name)
             }
-        ) && matches!(children.first().map(|f| f.data().kind().clone()),
-            Some(DatumKind::Symbol(name)) if name == Name::new(None, "ns*")
-                || name == Name::new(Some("cljs.core"), "ns*")
-                || name == Name::new(Some("clojure.core"), "ns*"))
-        {
-            let staged = crate::compiler::session_nsstar(
+            _ => None,
+        };
+        let located = |error: crate::compiler::NamespaceCompileError| crate::EvalDiagnostic {
+            message: error.message,
+            location: error
+                .span
+                .and_then(|bytes| form.span().source().span(bytes))
+                .or_else(|| Some(form.span())),
+            data: None,
+        };
+        let mut staged = if head == Some(Name::new(None, "ns")) {
+            let (namespace, staged) =
+                crate::compiler::session_ns(form, self.options.warning_mode).map_err(located)?;
+            self.set_namespace(&namespace);
+            staged
+        } else if head.as_ref().is_some_and(|name| {
+            [None, Some("cljs.core"), Some("clojure.core")]
+                .into_iter()
+                .any(|namespace| *name == Name::new(namespace, "ns*"))
+        }) {
+            crate::compiler::session_nsstar(
                 form,
                 &self.namespace,
                 &self.aliases,
                 &self.requires,
                 &self.resolution,
             )
-            .map_err(|error| crate::EvalDiagnostic {
-                message: error.message,
-                location: error
-                    .span
-                    .and_then(|bytes| form.span().source().span(bytes)),
-                data: None,
-            })?;
-            let requests = staged
-                .imports
-                .iter()
-                .map(|import| crate::source_provider::LoadRequest {
-                    namespace: Name::new(None, &import.namespace),
-                    requesting_namespace: Name::new(None, &self.namespace),
-                    requesting_file: Some(form.span().source().name().into()),
-                    reload: crate::source_provider::Reload::None,
-                })
-                .collect();
-            return Ok(Some((requests, Some(staged))));
-        }
-        self.directive_inner(form)
-            .map_err(|message| crate::EvalDiagnostic {
-                message,
-                location: Some(form.span()),
-                data: None,
+            .map_err(located)?
+        } else {
+            return self
+                .directive_inner(form)
+                .map_err(|message| crate::EvalDiagnostic {
+                    message,
+                    location: Some(form.span()),
+                    data: None,
+                });
+        };
+        self.warnings.append(&mut staged.warnings);
+        let requests = staged
+            .imports
+            .iter()
+            .map(|import| crate::source_provider::LoadRequest {
+                namespace: Name::new(None, &import.namespace),
+                requesting_namespace: Name::new(None, &self.namespace),
+                requesting_file: Some(form.span().source().name().into()),
+                reload: crate::source_provider::Reload::None,
             })
+            .collect();
+        Ok(Some((requests, Some(staged))))
     }
+    /// The other directives: `in-ns` and `require`.
     fn directive_inner(&mut self, form: &Form) -> Result<Option<NamespaceDirective>, String> {
         use crate::source_provider::{LoadRequest, Reload};
         fn text(form: &Form) -> Option<String> {
@@ -625,7 +658,7 @@ impl InteractiveCompiler {
         };
         if !matches!(
             head.as_str(),
-            "ns" | "in-ns" | "require" | "cljs.core/require" | "clojure.core/require"
+            "in-ns" | "require" | "cljs.core/require" | "clojure.core/require"
         ) {
             return Ok(None);
         }
@@ -639,49 +672,16 @@ impl InteractiveCompiler {
             self.set_namespace(&name);
             return Ok(Some((vec![], None)));
         }
-        let mut specs = Vec::new();
-        if head == "ns" {
-            let namespace = children
-                .get(1)
-                .and_then(text)
-                .ok_or("ns requires a namespace symbol")?;
-            self.set_namespace(&namespace);
-            for clause in children.iter().skip(2) {
-                let parts = clause.children();
-                match parts.first().and_then(text).as_deref() {
-                    Some("require") => specs.extend(parts.into_iter().skip(1)),
-                    Some("refer-clojure") => {
-                        let mut i = 1;
-                        while i + 1 < parts.len() {
-                            if text(&parts[i]).as_deref() == Some("exclude") {
-                                self.resolution
-                                    .excludes
-                                    .extend(parts[i + 1].children().iter().filter_map(text));
-                            } else {
-                                return Err("unsupported :refer-clojure option".into());
-                            }
-                            i += 2;
-                        }
-                    }
-                    Some("require-macros" | "use-macros") => {
-                        return Err(
-                            "macros use ordinary :require from .cljs/.cljc namespaces".into()
-                        );
-                    }
-                    Some(other) => return Err(format!("unsupported namespace clause :{other}")),
-                    None => {}
-                }
-            }
-        } else {
-            specs.extend(children.into_iter().skip(1).map(|f| unquote(&f)));
-        }
         let mut imports = Vec::new();
         let mut requests = Vec::new();
+        // The flags `:reload` and `:reload-all`, anywhere among the
+        // arguments, apply to every library; the libspec options `:reload
+        // true` and `:reload-all true` to their own.
         let mut reload = Reload::None;
-        for spec in specs {
+        for spec in children.into_iter().skip(1).map(|f| unquote(&f)) {
             if matches!(spec.data().kind(), DatumKind::Keyword(_)) {
                 match text(&spec).as_deref() {
-                    Some("reload") => reload = Reload::Namespace,
+                    Some("reload") => reload = reload.max(Reload::Namespace),
                     Some("reload-all") => reload = Reload::All,
                     _ => return Err("unsupported require flag".into()),
                 }
@@ -703,6 +703,7 @@ impl InteractiveCompiler {
                 namespace: ns.clone(),
                 ..Default::default()
             };
+            let mut own = Reload::None;
             let mut i = 1;
             while i < parts.len() {
                 let key = text(&parts[i]).ok_or("libspec option must be a keyword")?;
@@ -716,6 +717,18 @@ impl InteractiveCompiler {
                             .map(|f| text(f).ok_or(":refer requires symbols"))
                             .collect::<Result<_, _>>()?
                     }
+                    "reload" | "reload-all" => {
+                        let DatumKind::Boolean(on) = *value.data().kind() else {
+                            return Err(format!(":{key} requires true or false"));
+                        };
+                        if on {
+                            own = own.max(if key == "reload" {
+                                Reload::Namespace
+                            } else {
+                                Reload::All
+                            });
+                        }
+                    }
                     "refer-macros" | "include-macros" => {
                         return Err("macros use ordinary :require and :refer".into());
                     }
@@ -727,12 +740,12 @@ impl InteractiveCompiler {
                 namespace: Name::new(None, &ns),
                 requesting_namespace: Name::new(None, &self.namespace),
                 requesting_file: Some(form.span().source().name().into()),
-                reload,
+                reload: own,
             });
             imports.push(import);
         }
         for request in &mut requests {
-            request.reload = reload;
+            request.reload = request.reload.max(reload);
         }
         self.set_imports(imports)?;
         Ok(Some((requests, None)))
@@ -842,7 +855,8 @@ mod tests {
         let mut cursor = 0;
         let mut result = "nil".to_owned();
         while let Some(form) = compiler.next_form(&input, &mut cursor).unwrap() {
-            if compiler.directive(&form).unwrap().is_some() {
+            if let Some((_, staged)) = compiler.directive(&form).unwrap() {
+                compiler.finish_directive(staged).unwrap();
                 continue;
             }
             let p = compiler.analyze_form(&form).unwrap();

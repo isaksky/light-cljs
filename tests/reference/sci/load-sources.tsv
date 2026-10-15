@@ -11,5 +11,7 @@ load.after-a	load/after_a.clj	(ns load.after-a) (def value 1) (require 'load.aft
 load.after-b	load/after_b.clj	(ns load.after-b (:require load.after-a)) (def value load.after-a/value)
 load.failure	load/failure.clj	(ns load.failure) (user/observe :failure) (def partial 1) (/ 1 0)
 load.file	load/file.cljc	(ns load.file (:require load.shared)) (def file *file*) (def value load.shared/value)
+load.shared-cljs	load/shared_cljs.cljs	(ns load.shared-cljs) (user/observe :shared) (def value 40)
+load.alpha-cljs	load/alpha_cljs.cljs	(ns load.alpha-cljs (:require [load.shared-cljs :as shared])) (user/observe :alpha) (def value (+ shared/value 1))
 reports.stats	reports/stats.cljc	(ns reports.stats)  (defn summarize [orders]   (reduce (fn [totals {:keys [region amount]}]             (update totals region (fn [previous] (+ (or previous 0) amount))))           {} orders))
 math-helpers	math_helpers.cljc	(ns math-helpers)  (def greeting #?(:clj "Hello from native Rust" :cljs "JavaScript"))  (defn square [x]   (* x x))

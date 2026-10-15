@@ -433,6 +433,24 @@ impl MacroHost {
         }
         Ok(())
     }
+    /// Configure `caller`'s imports as [`Self::set_interactive_imports`]
+    /// does, replacing the ones it had: a session's `ns` form declares them
+    /// all. On an error the previous imports stay.
+    pub(crate) fn replace_interactive_imports(
+        &mut self,
+        caller: &str,
+        imports: Vec<MacroImport>,
+    ) -> Result<(), String> {
+        let previous = self.imports.remove(caller);
+        let result = self.set_interactive_imports(caller, imports);
+        if result.is_err() {
+            match previous {
+                Some(previous) => self.imports.insert(caller.to_owned(), previous),
+                None => self.imports.remove(caller),
+            };
+        }
+        result
+    }
     pub fn set_imports(&mut self, caller: &str, imports: Vec<MacroImport>) -> Result<(), String> {
         let mut aliases = HashMap::new();
         let mut refers = HashSet::new();

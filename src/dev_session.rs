@@ -18,7 +18,7 @@ use crate::compiler_data::{DatumKind, Form, Name, SourceSpan};
 use crate::eval_compiler::InteractiveCompiler;
 use crate::eval_session::{EvalDiagnostic, EvalOptions};
 use crate::evaluator::{EvalError, EvaluatorOptions, ExecutionControl};
-use crate::source_map::json_string;
+use crate::source_map::{SourceFile, json_string};
 use crate::source_provider::{LoadRequest, Reload, SourceInput, SourceProvider};
 use std::{
     cell::{Ref, RefCell, RefMut},
@@ -122,6 +122,9 @@ pub struct DevSession {
     loaded: RefCell<HashSet<String>>,
     loading: RefCell<Vec<String>>,
     lazy: RefCell<LazyQueue>,
+    /// While a `:reload-all` request loads, the namespaces it has loaded:
+    /// it loads each namespace it reaches once, loaded before or not.
+    reload_all: RefCell<Option<HashSet<String>>>,
 }
 
 impl DevSession {
@@ -133,8 +136,25 @@ impl DevSession {
     /// [`Self::load_file`] or [`Self::read_forms`] runs under a new deadline
     /// and poll budget of `engine`; one that runs out, or a cancelled
     /// [`Self::control`], leaves the session terminal, as an `EvalSession`.
+    ///
+    /// Analysis is in warning mode, as dev compilation's is
+    /// (docs/dev-workflow.md, "Dev-mode contract"), whatever
+    /// `options.warning_mode` says, which is an `EvalSession`'s setting;
+    /// [`Self::set_warning_mode`] changes it.
     pub fn new(options: &EvalOptions) -> Result<Self, EvalDiagnostic> {
-        Self::with_control(options, None)
+        let session = Self::with_control(options, None)?;
+        session.set_warning_mode(true);
+        Ok(session)
+    }
+    /// Whether analysis is in warning mode: undeclared Vars and conflicting
+    /// arities are warnings (a `Warnings` action) and the code runs as
+    /// upstream's would, instead of errors.
+    pub fn warning_mode(&self) -> bool {
+        self.compiler.borrow().options.warning_mode
+    }
+    /// Turn warning mode on or off for the forms compiled from now on.
+    pub fn set_warning_mode(&self, on: bool) {
+        self.compiler.borrow_mut().options.warning_mode = on;
     }
     /// With `control`, the macro host and the compiler poll the control of
     /// the heap that interprets the actions, whose owner begins operations.
@@ -164,6 +184,7 @@ impl DevSession {
         let mut compiler = InteractiveCompiler::with_host(host);
         compiler.host.set_assertions(options.assertions);
         compiler.policy = options.policy.clone();
+        compiler.options.warning_mode = options.warning_mode;
         compiler.set_namespace(&options.namespace);
         for (alias, target) in &options.aliases {
             compiler.set_alias(alias, target);
@@ -177,6 +198,7 @@ impl DevSession {
             loaded: RefCell::default(),
             loading: RefCell::default(),
             lazy: RefCell::default(),
+            reload_all: RefCell::default(),
         })
     }
     /// The current namespace.
@@ -371,10 +393,27 @@ impl DevSession {
                     .span(error.span)
                     .or_else(|| Some(form.span())),
             })?;
+        let namespace = self.namespace();
+        let (mut js, mapping) = crate::emitter::emit_mapped_interactive_unit(&program);
+        // The unit is named as the dev build's file of its namespace, which
+        // a reload of the namespace replaces.
+        let url = crate::dev_build::unit_file(&namespace);
+        js.push_str("\n//# sourceURL=");
+        js.push_str(&url);
+        js.push('\n');
+        let source = form.span().source().clone();
+        let source_map = mapping.to_json(
+            Some(&url),
+            &[SourceFile {
+                url: source.name(),
+                text: source.text(),
+            }],
+            false,
+        );
         let unit = Unit {
-            namespace: self.namespace(),
-            js: crate::emitter::emit_interactive_unit(&program),
-            source_map: None,
+            namespace,
+            js,
+            source_map: Some(source_map),
             location: form.span(),
         };
         Ok((unit, program))
@@ -400,9 +439,11 @@ impl DevSession {
     /// Load each requested namespace the session has not loaded, compiling
     /// its forms as a `Load` after a `Namespace` of the namespace it enters,
     /// then return to the current namespace (a `Namespace` action, also when
-    /// the load fails). `lazy` requests come from `light.lazy/loadable`
-    /// sites instead of a `require`; `location` is the form that made the
-    /// requests.
+    /// the load fails). A request that reloads loads its namespace again,
+    /// and one that reloads all loads again, once, every namespace its load
+    /// requires, directly or not. `lazy` requests come from
+    /// `light.lazy/loadable` sites instead of a `require`; `location` is the
+    /// form that made the requests.
     fn load_requests(
         &self,
         requests: Vec<LoadRequest>,
@@ -412,8 +453,27 @@ impl DevSession {
     ) -> Result<(), EvalDiagnostic> {
         for request in requests {
             let name = String::from_utf16_lossy(request.namespace.name());
-            if self.loaded.borrow().contains(&name) && request.reload == Reload::None {
+            // Whether a `:reload-all` that is loading has loaded it already.
+            let reloaded = self
+                .reload_all
+                .borrow()
+                .as_ref()
+                .map(|loaded| loaded.contains(&name));
+            if self.loaded.borrow().contains(&name)
+                && request.reload == Reload::None
+                && reloaded != Some(false)
+            {
                 continue;
+            }
+            if request.reload == Reload::All && reloaded.is_none() {
+                *self.reload_all.borrow_mut() = Some(HashSet::new());
+                let result = self.load_requests(vec![request], location, lazy, to);
+                *self.reload_all.borrow_mut() = None;
+                result?;
+                continue;
+            }
+            if let Some(loaded) = self.reload_all.borrow_mut().as_mut() {
+                loaded.insert(name.clone());
             }
             if self.loading.borrow().contains(&name) {
                 return Err(located(

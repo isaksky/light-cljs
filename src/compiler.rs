@@ -540,6 +540,19 @@ impl NamespaceSource {
             ));
         }
         self.name_span = self.syntax.nodes[declared.0].span.clone();
+        let mut clauses = self.header_clauses(&forms)?;
+        for &node in &self.syntax.roots[1..].to_vec() {
+            self.top_level_clauses(node, &mut clauses)?;
+        }
+        self.read_clauses(root, clauses)
+    }
+    /// The clauses of the `ns` form `forms` after its name, docstring and
+    /// attribute map, each kind at most once.
+    #[allow(clippy::type_complexity)]
+    fn header_clauses(
+        &self,
+        forms: &[NodeId],
+    ) -> Result<Vec<(NodeId, String, Vec<NodeId>)>, NamespaceCompileError> {
         let mut offset = 2;
         if forms
             .get(offset)
@@ -555,7 +568,7 @@ impl NamespaceSource {
         }
         let mut seen = std::collections::HashSet::new();
         let mut clauses = Vec::new();
-        for clause in forms.into_iter().skip(offset) {
+        for &clause in forms.iter().skip(offset) {
             let parts = self
                 .collection(clause, CollectionKind::List)
                 .ok_or_else(|| self.error(clause, "unsupported namespace clause"))?
@@ -571,12 +584,9 @@ impl NamespaceSource {
                     format!("only one {kind} clause is allowed per namespace"),
                 ));
             }
-            clauses.push((clause, kind, parts[1..].to_vec()));
+            clauses.push((clause, kind, parts.get(1..).unwrap_or_default().to_vec()));
         }
-        for &node in &self.syntax.roots[1..].to_vec() {
-            self.top_level_clauses(node, &mut clauses)?;
-        }
-        self.read_clauses(root, clauses)
+        Ok(clauses)
     }
     fn read_clauses(
         &mut self,
@@ -826,6 +836,102 @@ pub(crate) struct SessionNamespaceDirective {
     pub resolution: crate::analyzer::NamespaceResolution,
     pub imports: Vec<MacroImport>,
     pub namespace_imports: Vec<(String, String)>,
+    /// Whether the directive replaces the namespace's context, as an `ns`
+    /// form does, instead of adding to it, as `ns*` does.
+    pub replaces: bool,
+    /// The warnings about the directive's header and libspecs, as
+    /// `--compile` reports them before a namespace's body.
+    pub warnings: Vec<AnalysisWarning>,
+}
+
+/// The directive `form` of a session read again from its source text, with
+/// the reader conditionals of a `.cljc` source selected, as a source file's
+/// forms are read: the directive's root in its syntax tree. `None` when the
+/// text at the form's span is not the form, as for a form built from data.
+fn session_syntax(
+    form: &crate::compiler_data::Form,
+) -> Result<Option<(NamespaceSource, NodeId)>, NamespaceCompileError> {
+    let span = form.span();
+    let source = span.source().text();
+    let path = Path::new(span.source().name());
+    let mut parser = crate::Parser::at_offset(source, span.bytes().start).retaining_discards();
+    let Some(root) = parser.read_form().map_err(|error| {
+        NamespaceCompileError::new(error.to_string()).at(path, source, error.span)
+    })?
+    else {
+        return Ok(None);
+    };
+    let mut discards = parser.discarded().to_vec();
+    let mut syntax = SyntaxTree {
+        nodes: parser.into_nodes(),
+        roots: vec![root],
+    };
+    if syntax.nodes[root.0].span != span.bytes() {
+        return Ok(None);
+    }
+    let cljc = span.source().name().ends_with(".cljc");
+    if cljc {
+        crate::compiler_reader::select_cljs(source, &mut syntax, &mut discards).map_err(
+            |error| NamespaceCompileError::new(error.to_string()).at(path, source, error.span),
+        )?;
+    }
+    let file = NamespaceSource {
+        name: String::new(),
+        name_span: span.bytes(),
+        path: path.into(),
+        source: source.into(),
+        syntax,
+        aliases: vec![],
+        requires: vec![],
+        require_spans: vec![],
+        runtime_specs: vec![],
+        namespace_imports: vec![],
+        resolution: crate::analyzer::NamespaceResolution {
+            source_name: Some(span.source().name().into()),
+            cljc,
+            ..Default::default()
+        },
+        warning_mode: false,
+        inert_packages: vec![],
+    };
+    Ok(Some((file, root)))
+}
+
+/// A session's `ns` form, read as `--compile` reads a namespace source's
+/// header: its name (with metadata), docstring, attribute map and clauses,
+/// each clause once, from a fresh context, since an `ns` form declares all
+/// of its namespace's requires, as upstream's replaces them. The name may be
+/// any symbol without a namespace, as `in-ns` takes, where a source file's
+/// is ASCII. Returns the declared namespace and the staged directive. With
+/// `warning_mode`, `[lib :as js]` is a warning, and so is a single-segment
+/// name, as in `--compile --warnings`.
+pub(crate) fn session_ns(
+    form: &crate::compiler_data::Form,
+    warning_mode: bool,
+) -> Result<(String, SessionNamespaceDirective), NamespaceCompileError> {
+    let (mut file, root) = session_syntax(form)?
+        .ok_or_else(|| NamespaceCompileError::new("ns requires a form read from source text"))?;
+    file.warning_mode = warning_mode;
+    let forms = file
+        .collection(root, CollectionKind::List)
+        .expect("an ns form is a list")
+        .to_vec();
+    let mut declared = *forms
+        .get(1)
+        .ok_or_else(|| file.error(root, "ns requires a namespace name"))?;
+    while let NodeKind::Metadata { target, .. } = file.syntax.nodes[declared.0].kind {
+        declared = target;
+    }
+    file.name = file
+        .symbol(declared)
+        .filter(|name| !name.contains('/') && *name != "js")
+        .ok_or_else(|| file.error(declared, "ns requires a namespace symbol; js is reserved"))?
+        .to_owned();
+    file.name_span = file.syntax.nodes[declared.0].span.clone();
+    let clauses = file.header_clauses(&forms)?;
+    file.read_clauses(root, clauses)?;
+    let name = file.name.clone();
+    Ok((name, session_directive(file, root, true)?))
 }
 
 pub(crate) fn session_nsstar(
@@ -835,40 +941,25 @@ pub(crate) fn session_nsstar(
     requires: &[String],
     resolution: &crate::analyzer::NamespaceResolution,
 ) -> Result<SessionNamespaceDirective, NamespaceCompileError> {
-    let span = form.span();
-    let source = span.source().text();
-    let mut parser = crate::Parser::at_offset(source, span.bytes().start);
-    let root = parser
-        .read_form()
-        .map_err(|error| {
-            NamespaceCompileError::new(error.to_string()).at(
-                Path::new(span.source().name()),
-                source,
-                error.span,
-            )
-        })?
+    let (mut file, root) = session_syntax(form)?
         .ok_or_else(|| NamespaceCompileError::new("ns* requires a source directive"))?;
-    let mut file = NamespaceSource {
-        name: namespace.into(),
-        name_span: span.bytes(),
-        path: span.source().name().into(),
-        source: source.into(),
-        syntax: SyntaxTree {
-            nodes: parser.into_nodes(),
-            roots: vec![root],
-        },
-        aliases: aliases.to_vec(),
-        requires: requires.to_vec(),
-        require_spans: vec![],
-        runtime_specs: vec![],
-        namespace_imports: vec![],
-        resolution: resolution.clone(),
-        warning_mode: false,
-        inert_packages: vec![],
-    };
+    file.name = namespace.into();
+    file.aliases = aliases.to_vec();
+    file.requires = requires.to_vec();
+    file.resolution = resolution.clone();
     let mut clauses = vec![];
     file.top_level_clauses(root, &mut clauses)?;
     file.read_clauses(root, clauses)?;
+    session_directive(file, root, false)
+}
+
+/// The staged directive of a read `file`: its imports with the refers they
+/// bind, and its warnings.
+fn session_directive(
+    mut file: NamespaceSource,
+    root: NodeId,
+    replaces: bool,
+) -> Result<SessionNamespaceDirective, NamespaceCompileError> {
     let mut imports = vec![];
     for spec in &file.runtime_specs {
         let mut import = spec.import.clone();
@@ -899,12 +990,20 @@ pub(crate) fn session_nsstar(
         }
         imports.push(import);
     }
+    let mut warnings = vec![];
+    let options = AnalysisOptions {
+        warning_mode: replaces && file.warning_mode,
+        ..Default::default()
+    };
+    source_warnings(std::slice::from_ref(&file), 0, options, &mut warnings);
     Ok(SessionNamespaceDirective {
         aliases: file.aliases,
         requires: file.requires,
         resolution: file.resolution,
         imports,
         namespace_imports: file.namespace_imports,
+        replaces,
+        warnings,
     })
 }
 pub(crate) fn valid_namespace(name: &str) -> bool {

@@ -1,7 +1,10 @@
 //! Owned source requests and provider results, independent of evaluation.
 use crate::compiler_data::Name;
 use std::{fmt, path::PathBuf};
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Whether a request reloads: not a loaded namespace, the namespace itself,
+/// or it and every namespace it requires, directly or not, each once. They
+/// are ordered by what they reload.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, PartialOrd, Ord)]
 pub enum Reload {
     #[default]
     None,

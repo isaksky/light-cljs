@@ -86,7 +86,20 @@ pub struct EvalOptions {
     pub assertions: bool,
     pub policy: NamePolicy,
     pub unhandled_rejections: UnhandledRejections,
+    /// Analyze in warning mode, as `--compile --warnings` does: undeclared
+    /// Vars and conflicting arities are warnings, and the code runs as
+    /// upstream's would. Off by default, so the session's analysis is strict;
+    /// a [`DevSession`] analyzes in warning mode whatever this says
+    /// ([`DevSession::set_warning_mode`]).
+    pub warning_mode: bool,
+    /// Receives the analysis warnings of each form, located, as the compiler
+    /// produces them: before the form runs, and before what it loads. The
+    /// session drops them without it.
+    pub warnings: Option<WarningOutput>,
 }
+/// The receiver of analysis warnings ([`EvalOptions::warnings`]); an error
+/// it returns is the error of the form.
+pub type WarningOutput = Rc<dyn Fn(&EvalDiagnostic) -> Result<(), EvalError>>;
 /// What the session does with a promise rejected with no handler attached
 /// when the jobs after a top-level form run out.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -123,6 +136,8 @@ impl Default for EvalOptions {
             assertions: true,
             policy: NamePolicy::default(),
             unhandled_rejections: UnhandledRejections::default(),
+            warning_mode: false,
+            warnings: None,
         }
     }
 }
@@ -732,6 +747,7 @@ impl EvalSession {
                 call,
                 namespace_update,
                 last: None,
+                warnings: options.warnings.clone(),
             };
             let result = dev.run_source(&source, Mode::Load, &mut runtime);
             runtime
@@ -943,10 +959,20 @@ impl Interpreter for Heap<'_> {
                 self.keep(None);
                 Ok(())
             }
-            Action::Warnings(_) => Ok(()),
+            Action::Warnings(warnings) => warn(&self.session.options.warnings, &warnings),
             Action::Error(error) => Err(error),
         }
     }
+}
+
+/// Hand `warnings` to the session's receiver, if it has one.
+fn warn(output: &Option<WarningOutput>, warnings: &[EvalDiagnostic]) -> Result<(), EvalDiagnostic> {
+    if let Some(output) = output {
+        for warning in warnings {
+            output(warning)?;
+        }
+    }
+    Ok(())
 }
 
 /// The heap of a runtime callback (`load-file` while a unit runs) as the
@@ -956,6 +982,7 @@ struct Callback<'c, 'a, 'js> {
     call: &'c HostCall<'a, 'js>,
     namespace_update: ValueId,
     last: Option<ValueId>,
+    warnings: Option<WarningOutput>,
 }
 impl Callback<'_, '_, '_> {
     fn keep(&mut self, value: Option<ValueId>) -> Result<(), EvalDiagnostic> {
@@ -995,7 +1022,7 @@ impl Interpreter for Callback<'_, '_, '_> {
                 self.call.release_scoped(result?)?;
                 self.keep(None)
             }
-            Action::Warnings(_) => Ok(()),
+            Action::Warnings(warnings) => warn(&self.warnings, &warnings),
             Action::Error(error) => Err(error),
         }
     }

@@ -94,7 +94,10 @@ stderr). Namespaces are loaded only from explicit `--source-root DIR` options
 (`.cljs` is preferred over `.cljc`); `.clj` files are rejected. Resource limits:
 `--poll-budget`, `--memory-limit`, `--stack-limit`, `--timeout-ms`,
 `--source-limit`, `--output-limit`, plus `--print-length`/`--print-level` for the
-printed result. Details: [docs/evaluation.md](docs/evaluation.md#script-and-repl-commands).
+printed result. `--warnings` analyzes as `--compile --warnings` does, printing
+undeclared Vars and arity conflicts to stderr instead of rejecting the form, so
+`(require 'app.view :reload)` of a file that uses a Var another file defines
+later still loads. Details: [docs/evaluation.md](docs/evaluation.md#script-and-repl-commands).
 
 ### Compile to JavaScript
 

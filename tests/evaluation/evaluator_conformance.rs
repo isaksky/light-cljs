@@ -23,6 +23,13 @@ fn adapted_source(source: &str) -> String {
             adapted = format!("(require '{library}) {adapted}");
         }
     }
+    // The reload rows load `load.alpha`, a `.clj` source, which sessions
+    // retire. They load its `.cljs` twin instead (light-cljs-284), whose
+    // dependency `load.shared-cljs` holds the text SCI evaluated of
+    // `load.shared`, the `:clj` branch, so the loads stay observable.
+    if source.contains(":reload") {
+        adapted = adapted.replace("load.alpha", "load.alpha-cljs");
+    }
     adapted
 }
 

@@ -712,3 +712,71 @@ fn unhandled_rejections_warn_in_the_repl_and_fail_a_script() {
     );
     ok(run(&["--eval", "--text", handled], ""), ":handled\n");
 }
+
+/// `--warnings` turns warning mode on for `--eval` and `--repl`: a use of a
+/// Var defined later compiles and runs as upstream's would, and its warning
+/// goes to stderr as `--compile --warnings` prints it, located, before the
+/// form runs. Without it the analysis is strict, as before.
+#[test]
+fn warnings_flag_turns_warning_mode_on_and_prints_warnings() {
+    let script = "(println :a) (defn f [] (g 1)) (println :b) (defn g [x] (inc x)) (f)";
+    let output = run(&["--eval", "--warnings", "--text", script], "");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), ":a\n:b\n2\n");
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "WARNING: <text>.cljc:1:26: Use of undeclared Var cljs.user/g [undeclared-var] \
+         (bytes 25..26)\n"
+    );
+    let output = run(&["--eval", "--text", script], "");
+    assert!(!output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), ":a\n");
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("unresolved symbol: g"),
+    );
+    let output = run(
+        &["--repl", "--warnings"],
+        "(defn f [] (g 1))\n(defn g [x] (inc x))\n(f)\n(ns app (:require [\"react\"]))\n",
+    );
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "#object[Function]\n#object[Function]\n2\nnil\n"
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "WARNING: <stdin>.cljc:1:13: Use of undeclared Var cljs.user/g [undeclared-var] \
+         (bytes 12..13)\n\
+         WARNING: <stdin>.cljc:4:20: requiring JavaScript package \"react\" without :as, \
+         :refer or :default has no effect; the host loads packages \
+         [package-require-no-effect] (bytes 19..26)\n\
+         WARNING: <stdin>.cljc:4:5: app is a single segment namespace \
+         [single-segment-namespace] (bytes 4..7)\n"
+    );
+}
+
+/// The files of examples/dev load through `require` in `--repl`, with every
+/// clause of their `ns` forms, and reload: a `require :reload` of
+/// `app.view` and a `[app.state :reload true]` keep the `defonce` state.
+#[test]
+fn examples_dev_loads_and_reloads_through_require_in_the_repl() {
+    let example = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/dev");
+    let output = run(
+        &["--repl", "--warnings", "--source-root", example],
+        "(set! js/console (js-obj \"log\" println))\n\
+         (require 'app.main)\n\
+         (app.main/start)\n\
+         (require 'app.view :reload)\n\
+         (app.main/stop)\n\
+         (app.main/reload)\n\
+         (require '[app.state :reload true])\n\
+         (:clicks @app.state/state)\n",
+    );
+    ok(
+        output,
+        "#js {:log #object[println]}\nnil\nstart\nclicks: [1]\nnil\nnil\nreloading\nnil\n\
+         clicks: [2]\nnil\nnil\n2\n",
+    );
+}

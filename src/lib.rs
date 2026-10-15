@@ -37,7 +37,7 @@ mod program_fragment;
 mod rta;
 pub use eval_session::{
     EvalDiagnostic, EvalOptions, EvalResult, EvalSession, HostArity, HostCall, HostFunction,
-    UnhandledRejections,
+    UnhandledRejections, WarningOutput,
 };
 mod eval_compiler;
 pub mod form_bridge;

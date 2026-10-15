@@ -266,8 +266,9 @@ runtime does not get runtime `eval` or `load-file` (see the contract).
 
 As built (light-cljs-283; the API is in
 [evaluation.md](evaluation.md#actions)), a unit is one top-level form:
-namespace, JavaScript, source map (none until the source-map item of Phase
-1) and the form's location. A `Load` lists the units of every namespace a
+namespace, JavaScript, source map (light-cljs-284: the form's map, named as
+the namespace's dev build file, `app.view.js`, which the unit's
+`//# sourceURL=` names too) and the form's location. A `Load` lists the units of every namespace a
 `require` loads, but `Namespace` actions come between them wherever the
 session makes a namespace current: when a load enters a namespace and when it
 returns to the requiring one. The `Namespace` of a namespace with no forms
@@ -481,8 +482,30 @@ runtime `load-file`), and a standalone `DevSession` idle past its deadline;
 and it applies the actions of a `require` of an edited `app.view`, compiled
 without a heap and written by `dev_session::script`, to the running Phase 0
 build of `examples/dev` through the driver (`render: clicks: [2]`, the
-`defonce` state kept, each unit in its namespace). Full `ns`, warning mode,
-source maps and the `ns` test are light-cljs-284.
+`defonce` state kept, each unit in its namespace).
+
+Status (light-cljs-284, October 15, 2026): the rest of Phase 1 is done. `ns`
+goes through the compiler's namespace analysis as `ns*` does (`session_ns`
+beside `session_nsstar` in `src/compiler.rs`), so every clause `--compile`
+accepts behaves the same in the session, and an `ns` form replaces its
+namespace's requires, as upstream's does, so a reloaded file whose `ns`
+changed rebinds its aliases; a session name need not be ASCII, as before.
+`[lib :reload true]`, `[lib :reload-all true]` and the flags anywhere
+reload, and `:reload-all` loads again, once, every namespace the library
+reaches. The four SCI reload rows run against a `.cljs` twin of their `.clj`
+dependency and match SCI (`adapted`), and the `ns` path made two more rows
+match (`portable`). A `DevSession` is in warning mode by default
+(`set_warning_mode`); an `EvalSession` takes `EvalOptions::warning_mode` and
+hands warnings to `EvalOptions::warnings`, and `--repl --warnings` and
+`--eval --warnings` print them to stderr. Every unit carries a source map
+(`emit_js_mode`'s mapped path), which the QuickJS session ignores; loading a
+500-definition namespace through `--eval` took the same time with and without
+the maps (5.5 s and 5.7 s, debug build). `tests/evaluation/dev_session.rs`
+adds an `ns` with every clause (its units print what `--compile` output of
+the namespace prints), the reload spellings over a source provider whose text
+changes between loads, warning mode and the unit maps (read back with Node's
+`SourceMap`); `eval_cli` loads and reloads examples/dev through `require` in
+`--repl`.
 
 ### Phase 2: watch
 

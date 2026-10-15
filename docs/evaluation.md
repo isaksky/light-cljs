@@ -71,7 +71,16 @@ a file's text as a loaded file. `namespace` is the current namespace and
 `read_forms` reads in it. Each call runs under a new deadline and poll budget
 of `engine`, which the macro heap shares, so a long-lived `DevSession` (a
 watch loop) can sit idle between calls; one that runs out, or a cancelled
-`DevSession::control`, leaves it terminal. Each returns the actions in order:
+`DevSession::control`, leaves it terminal. A `DevSession` analyzes in warning
+mode, as dev compilation does (light-cljs-284): an undeclared Var (a use of
+one defined later, as a file saved before the one defining it has) and
+conflicting arities are a `Warnings` action, and the code runs as upstream's
+would, reading the Var at each use, where strict analysis rejects the form
+and the reload with it. Warning mode also warns of a single-segment `ns`
+name and allows `[lib :as js]`, as `--compile --warnings` does.
+`DevSession::set_warning_mode(false)` gives the strict analysis an
+`EvalSession` has unless `EvalOptions::warning_mode` turns warning mode on.
+Each returns the actions in order:
 
 | Action | Carries | Meaning |
 |---|---|---|
@@ -83,17 +92,25 @@ watch loop) can sit idle between calls; one that runs out, or a cancelled
 
 A `Unit` is one top-level form: its `namespace`, its `js` (the function
 expression `(__lightInteractiveRuntime) => ...` that a runtime calls with the
-runtime, writing definitions to `globalThis.__lightApplicationRoots`), a
-`source_map` (none yet; light-cljs-284 adds them) and the `location` of the
-form, where an error it throws is located. A `Namespace` action comes where
+runtime, writing definitions to `globalThis.__lightApplicationRoots`, ending
+with a `//# sourceURL=` comment), its `source_map` and the `location` of the
+form, where an error it throws is located. The source map (light-cljs-284) is
+a Source Map v3 of `js`, made as `--source-map` makes one, whose `sources`
+name the form's source as the source provider named it; its `file` and the
+`sourceURL` are the namespace's file in a [dev build](compiler.md#dev-builds),
+`app.view.js`, which a reload of the namespace replaces. A runtime that
+evaluates the unit appends a `//# sourceMappingURL=` comment with the map
+(as a `data:` URL, say) to map what it runs. A `Namespace` action comes where
 the session has always made a namespace current: after each directive (`ns`,
 `in-ns`, `require`, `ns*`), and when a load enters a namespace and returns to
 the requiring one. So `(require 'b)`, where `b` requires `a`, is
 `Namespace(cljs.user)`, `Namespace(b)`, `Namespace(a)`, `Load` of `a`'s forms,
 `Namespace(b)`, `Load` of `b`'s forms, `Namespace(cljs.user)`, and a second
 `(require 'b)` is `Namespace(cljs.user)` alone: a `DevSession` loads a
-namespace once unless the `require` says `:reload` or `:reload-all`, which
-compile the text the source provider returns at that time. Consecutive
+namespace once unless the `require` says `:reload` or `:reload-all` (see
+[Capabilities and configuration](#capabilities-and-configuration) for the
+spellings), which compile the text the source provider returns at that time.
+Consecutive
 `Load`s are one. The value of a form or file is the value of its last action
 when that ran a unit, else nil: a directive's value is nil, and a file whose
 last form is a definition has that definition's value.
@@ -115,8 +132,10 @@ its units ran, and counts a namespace loaded once it compiled it. The
 runtime's `load-file`, `eval` and `macroexpand` call the session's
 `DevSession` in process while a unit runs. `EvalSession::analyze` returns an
 `AnalyzedForm` that wraps the `Invoke` of the form's unit
-(`AnalyzedForm::action`), which `evaluate` interprets. The session ignores
-`Warnings` and source maps.
+(`AnalyzedForm::action`), which `evaluate` interprets. The session hands each
+`Warnings` action's warnings, located, to `EvalOptions::warnings` when it has
+one (an error it returns is the form's), before the form runs, and ignores
+source maps.
 
 ## Capabilities and configuration
 
@@ -142,6 +161,31 @@ Sources load only through the explicit provider. `ns` and `require` use ordinary
 `.cljs`/`.cljc` compilation, aliases/refers and dependency-once loading; standard
 `clojure.string`, `clojure.set`, `clojure.walk`, `clojure.edn` and `cljs.reader`
 sources are bundled. No ambient filesystem, npm, Node, DOM or JVM is introduced.
+
+An `ns` form goes through the compiler's namespace analysis, as `ns*` does
+and as a source file's header does under `--compile` (light-cljs-284), so
+every clause `--compile` accepts behaves the same in the session: name
+metadata, a docstring and an attribute map; `:require` with `:as`,
+`:as-alias`, `:refer`, `:rename` and package strings; `:use` with `:only` and
+`:rename`; `:import`; `:refer-clojure` with `:exclude` and `:rename`;
+`:require-global` and `:refer-global`. Each clause kind appears once, reader
+conditionals of a `.cljc` source are selected first, and a clause `--compile`
+rejects is the same located error. One difference: the name may be any
+symbol without a namespace (`js` excepted), as `in-ns` takes it, where a
+source file's must be ASCII. An `ns` form declares all of its namespace's
+requires, as upstream's does: evaluating it again, as a reloaded file does,
+replaces the namespace's aliases, refers and exclusions with its own (the
+`EvalOptions::aliases` of the initial namespace included), so an alias may
+now name another namespace and one it drops is gone. `ns*` and `require` add
+to them. The loader's own rules stay `--compile`'s alone: there a `goog.*`
+library with no source is a JavaScript host namespace and a missing
+`clojure.x` falls back to `cljs.x`, while the session asks its source
+provider for both. A `require` reloads with the flag `:reload` or
+`:reload-all` anywhere among its arguments (`(require :reload 'lib)` too),
+for every library it names, or with the libspec option `[lib :reload true]`
+or `[lib :reload-all true]` for that library. A reload compiles the text the
+source provider returns at that time; `:reload-all` also loads again every
+namespace the library requires, directly or not, each once.
 String libspecs such as `(require '["react" :as r])` bind JavaScript packages
 from the host registry `globalThis.lightCljsPackages`, read at each use and never
 loaded by the session: supply it first, for example with a prelude
@@ -329,6 +373,18 @@ makes the first one the error of the form, or of `run_jobs`, with its
 | `--print-length N` | 100 | Result collection item bound |
 | `--print-level N` | 20 | Result collection depth bound |
 | `--elide-asserts` | off | Compile without `assert` and `fn` `:pre`/`:post` checks |
+| `--warnings` | off | Warning mode; warnings go to stderr |
+
+`--warnings` analyzes in warning mode, as `--compile --warnings` does
+(light-cljs-284): undeclared Vars and conflicting arities are warnings and
+the code runs as upstream's would, so a namespace that uses a Var another
+file defines later still loads and reloads. Each warning goes to stderr as
+the compiler produces it, before its form runs, one line as `--compile
+--warnings` prints it but located in its file: `WARNING: <stdin>.cljc:1:13:
+Use of undeclared Var cljs.user/g [undeclared-var] (bytes 12..13)`. Package
+requires that bind nothing, single-segment `ns` names and `[lib :as js]`
+warn too. Without it the analysis is strict, as before, and nothing is
+printed.
 
 Numbers are nonnegative integers; zero is a real bound. Startup rejects a heap
 limit below its supported minimum. The obsolete `--fuel`, `--allocation-limit`,

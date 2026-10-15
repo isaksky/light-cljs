@@ -5799,22 +5799,34 @@ fn hygienic_js(
 }
 
 /// Interactive application roots live in the application heap, never the macro heap.
+#[cfg(test)]
 pub(crate) fn emit_interactive_unit(program: &Program) -> String {
+    emit_interactive(program, false).0
+}
+
+/// [`emit_interactive_unit`] with the source map of its text, whose source
+/// index 0 is the source the program's form was read from.
+pub(crate) fn emit_mapped_interactive_unit(program: &Program) -> (String, SourceMapping) {
+    let (unit, mapping) = emit_interactive(program, true);
+    (unit, mapping.expect("a mapped emission has a source map"))
+}
+
+fn emit_interactive(program: &Program, mapped: bool) -> (String, Option<SourceMapping>) {
     let interactive = Interactive {
         entry: None,
         every_namespace: true,
         around: ["", ""],
     };
-    emit_js_mode(
+    let (unit, _, mapping) = emit_js_mode(
         program,
         Some("__lightInteractiveRuntime"),
         false,
         Some(interactive),
         None,
         false,
-        false,
-    )
-    .0
+        mapped,
+    );
+    (unit, mapping)
 }
 
 /// The unit of a dev build ([`crate::dev_build`]) for the namespace entry
