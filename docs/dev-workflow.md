@@ -231,8 +231,8 @@ compiled output does.
 
 Definitions live in `globalThis.__lightApplicationRoots` keyed by
 `"ns/name"`. This is the session's registry today; keeping it means the
-session's tests cover the dev build's storage. Nested namespace objects for
-devtools ergonomics are an open question.
+session's tests cover the dev build's storage. Nested namespace objects
+were considered and rejected (see "Settled questions").
 
 ### Actions
 
@@ -290,8 +290,12 @@ Given the changed namespace N:
   whether or not it used a macro) matches shadow-cljs.
 - Every namespace marked `^:dev/always`, reloaded without recompiling.
 - Never a namespace marked `^:dev/once`, and never `runtime.js`.
-- Downstream namespaces that only *read* N's definitions are not reloaded:
-  their calls look the definition up at call time.
+- Downstream namespaces that only *read* N's definitions are not reloaded
+  by default: their calls look the definition up at call time. With
+  `--reload-dependents`, every namespace downstream of N in the require
+  graph is reloaded too, in topological order and without recompiling, as
+  shadow-cljs's `:full` strategy does, for programs whose dependents have
+  top-level effects that must run again.
 
 The client applies a `Load` by running every `^:dev/before-load` function
 in the build in reverse definition order, defining the units in order, then
@@ -303,13 +307,17 @@ reports the error with its location, and leaves later units unloaded.
 
 ### The server and the client
 
-`--serve PORT` starts an HTTP/1.1 server on the loopback interface (an
-option opens it to the network) in the watch process: it serves `dev/` and
-the source roots (for source maps), answers `GET /events` with a
-server-sent-events stream, and accepts `POST /reply` with JSON bodies.
-Messages are JSON objects with an `op` field. The server keeps the last
-`Load` so a late-connecting tab can catch up, and assigns each connection a
-runtime ID.
+`--serve PORT` starts an HTTP/1.1 server on the loopback interface
+(`--serve-host 0.0.0.0` opens it to the network, for phones and other
+machines; the server can evaluate code in the page, so loopback is the
+default) in the watch process: it serves `dev/` and the source roots (for
+source maps), answers `GET /events` with a server-sent-events stream, and
+accepts `POST /reply` with JSON bodies. Messages are JSON objects with an
+`op` field. The server keeps the last `Load` so a late-connecting tab can
+catch up, and assigns each connection a runtime ID. When the out dir has no
+`index.html`, `GET /` serves a built-in page that loads `index.js` and
+shows console output and the overlay, so a first run needs no files besides
+the sources; an `index.html` in the out dir wins over it.
 
 `client.js` is a runtime unit kept in `src/` and emitted into dev builds.
 It opens the event stream, applies `Load` actions, evaluates `Invoke`
@@ -454,13 +462,15 @@ Scope: `--serve`, `client.js`, the overlay, and the reload set and hooks of
 
 - **Server.** HTTP/1.1 GET for files with content types and ETags, the
   event stream, the reply endpoint, JSON encoding and decoding without a
-  crate (the source map writer already emits JSON). Loopback by default.
+  crate (the source map writer already emits JSON), the built-in index page
+  when the out dir has none. Loopback by default, `--serve-host` to open.
 - **Client.** The event stream, `Load` application with hooks, `Invoke`
   evaluation and replies, the overlay, reconnection with backoff, and a
   console line per reload naming the namespaces.
 - **Policy.** Hook discovery from definition metadata in the retained
   program; `^:dev/once` and `^:dev/always` on namespaces; the reload set
-  computation; topological order from the require graph.
+  computation; topological order from the require graph;
+  `--reload-dependents` for the downstream strategy.
 - **Tests.** `tests/dev_server.rs`: a Node client (a small script using
   `fetch` to read the event stream) connects, receives the initial `Load`,
   the test edits a file, the client receives the next `Load`, applies it
@@ -526,7 +536,8 @@ The deliberate differences between a dev build (and the session) and a
   value. These are the session's semantics today.
 - Namespaces that use a changed macro namespace are recompiled and reloaded
   whether or not they used a macro from it. Nothing else downstream is
-  reloaded by default.
+  reloaded by default; `--reload-dependents` reloads every downstream
+  namespace in topological order.
 - Analysis uses warning mode: undeclared Vars and arity conflicts are
   warnings, and the code runs as upstream's would.
 - Reflection is always available: namespaces register themselves as below
@@ -559,27 +570,40 @@ The deliberate differences between a dev build (and the session) and a
   `eval_nsstar`, `sci_reference`, `eval_examples`) pass unchanged through
   every phase.
 
+## Settled questions
+
+Decided on 2026-10-15, before any phase started. A pellet does not reopen
+these; a finding that contradicts one goes under "Open questions".
+
+- **Flag names.** Mode flags consistent with the existing CLI:
+  `--reloadable` and `--out-dir` on `--compile --entry`, `--watch`,
+  `--serve PORT` with `--serve-host`, `--reload-dependents`, `--repl
+  --connect HOST:PORT` and `--nrepl PORT`. No `dev` subcommand and no
+  configuration file; flags are the only configuration until a second
+  build in one process is needed.
+- **Registry shape.** The flat `"ns/name"` registry the session uses. It
+  is tested and needs no migration. Nested namespace objects
+  (`$light.app.view.render`) would read better in devtools but would be a
+  second storage model or a migration of the session's; rejected.
+- **Transport.** Server-sent events for pushes and POST for replies: no
+  framing or handshake code, works through proxies, testable with `fetch`
+  from Node. A WebSocket server is a Phase 5 option if a reason appears.
+- **Where printing happens.** In the runtime, as shadow-cljs does: the
+  page runs `pr-str` with the print options the server sends, and values
+  that are not finite data come back as references. The server holds no
+  value handles.
+- **Editor protocol.** nREPL first, since Calva, CIDER and Conjure speak
+  it out of the box. A prepl or plain socket REPL is not planned.
+- **Dev page.** `--serve` answers `GET /` with a built-in page when the
+  out dir has no `index.html`; a page in the out dir wins.
+- **Binding.** Loopback by default; `--serve-host` opens the server to the
+  network.
+- **Downstream reloads.** The documented reload set by default, and
+  `--reload-dependents` in Phase 3 for shadow-cljs's `:full` behavior.
+
 ## Open questions
 
-- **Flag names.** `--reloadable` and `--out-dir` for the build, `--watch`,
-  `--serve PORT`, `--connect HOST:PORT` and `--nrepl PORT`. A `light-cljs
-  dev` subcommand that implies all of them is worth adding once the pieces
-  exist.
-- **Registry shape.** The flat `"ns/name"` registry is tested and shared
-  with the session. Nested namespace objects (`$light.app.view.render`)
-  would read better in devtools and let hook lookup use paths; the cost is
-  a second storage model or a migration of the session's.
-- **Transport.** Server-sent events plus POST need no framing code. If
-  editors or proxies make bidirectional framing necessary, a WebSocket
-  server is a few hundred lines; decide after Phase 3 with a reason.
 - **Runtime-only state on reload.** shadow-cljs calls per-namespace reset
   hooks before reloading a file. Whether light-cljs needs one (for example
   to reset a namespace's registered reader context) is to be seen in
   Phase 3.
-- **Where printing happens.** Printing in the runtime matches shadow-cljs
-  and keeps the server free of value handles, but means the REPL's print
-  options live in the client. The alternative, shipping finite values back
-  as data and printing in Rust, keeps one printer but limits what can be
-  shown.
-- **A configuration file.** Not before a second build in one process is
-  needed.
