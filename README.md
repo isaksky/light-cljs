@@ -148,7 +148,7 @@ dependency order with its source map, `manifest.json` and an `index.js` that
 loads them in order (script elements in a page, `require` in Node). Definitions
 live in a registry read at each use, as in the REPL, so evaluating a namespace's
 unit again replaces its definitions while `defonce` state stays; there is no
-watch loop or server yet ([Dev builds](docs/compiler.md#dev-builds),
+server yet ([Dev builds](docs/compiler.md#dev-builds),
 [docs/dev-workflow.md](docs/dev-workflow.md)).
 
 ```sh
@@ -157,6 +157,21 @@ cargo run --quiet -- --compile --entry app.main --source-root examples/dev \
 node -e 'require("/tmp/light-dev/index.js"); __lightDevLoaded.then(start => start())'
 # start
 # clicks: [1]
+```
+
+`--watch --entry NS --source-root DIR --out-dir DIR [--poll-ms N]` writes the
+same dev build, then polls the sources (every 100 ms by default) and, for each
+saved namespace, compiles its forms again against the program it keeps and
+rewrites the namespace's unit, its source map and the manifest: a new require
+adds the units of the namespaces it loads, a change to a macro namespace
+recompiles the namespaces that require it, and a form that fails prints its
+error and leaves the previous unit. One line per step goes to stderr
+([Watch](docs/evaluation.md#watch)).
+
+```sh
+cargo run --quiet -- --watch --entry app.main --source-root examples/dev --out-dir /tmp/light-dev
+# light-cljs: built app.main (4 namespaces) into /tmp/light-dev in 281 ms; watching every 100 ms
+# light-cljs: recompiled app.view in 4.1 ms
 ```
 
 `--optimize none|prepare|advanced` after `--compile` (single files and `--entry`
@@ -324,8 +339,8 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   one ES module per chunk of namespaces that `light.lazy/loadable` sites load
   (at `advanced` also of definitions moved toward their readers), with the
   runtime and every constant in the startup chunk. A dev build
-  (`--reloadable`) writes one unit per namespace for reloading, but nothing
-  watches the sources or pushes a changed unit to a page yet. The release
+  (`--reloadable`) writes one unit per namespace for reloading, and `--watch`
+  rewrites a saved namespace's unit, but nothing pushes it to a page yet. The release
   optimizer, `--optimize advanced`, is still being built
   ([docs/advanced-optimization.md](docs/advanced-optimization.md)); what it does
   so far is listed under [Compile to JavaScript](#compile-to-javascript). Sizes

@@ -68,6 +68,18 @@ impl InteractiveCompiler {
         self.requires = requires;
         self.resolution = resolution;
     }
+    /// The requires of `namespace`, the current namespace or one entered
+    /// before, as its directives left them.
+    pub(crate) fn namespace_requires(&self, namespace: &str) -> Vec<String> {
+        if namespace == self.namespace {
+            self.requires.clone()
+        } else {
+            self.contexts
+                .get(namespace)
+                .map(|(_, requires, _)| requires.clone())
+                .unwrap_or_default()
+        }
+    }
     pub(crate) fn set_alias(&mut self, alias: &str, namespace: &str) {
         self.aliases.retain(|(a, _)| a != alias);
         self.resolution.js_refers.retain(|(local, target)| {

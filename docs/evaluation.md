@@ -67,8 +67,13 @@ assert!(matches!(&actions[..], [Action::Invoke(_), Action::Invoke(_)]));
 `default_data_reader`, `source_provider`, `max_source_bytes`, `assertions` and
 `policy`. `form` and `source` compile as a REPL evaluates: each top-level form
 in turn, the next read after the previous one compiled. `load_file` compiles
-a file's text as a loaded file. `namespace` is the current namespace and
-`read_forms` reads in it. Each call runs under a new deadline and poll budget
+a file's text as a loaded file, and `load_namespace_file` the file of a given
+namespace, read from its first form in that namespace, as `--compile` reads a
+namespace source, so a `::` keyword in its `ns` form names it (a watch step).
+`namespace` is the current namespace and `read_forms` reads in it; `loaded`,
+`requires` and `declares_macros` say whether the session has loaded a
+namespace, which namespaces its directives require and whether it declares
+macros. Each call runs under a new deadline and poll budget
 of `engine`, which the macro heap shares, so a long-lived `DevSession` (a
 watch loop) can sit idle between calls; one that runs out, or a cancelled
 `DevSession::control`, leaves it terminal. A `DevSession` analyzes in warning
@@ -275,7 +280,9 @@ conditionals. Stdin and text use the portable CLJS dialect with conditionals.
 
 Explicit source roots search `.cljs` before `.cljc`, reject ambiguous candidates
 of the selected extension and never discover the script/current directory.
-Bundled libraries need no root. Missing external sources report the namespace
+Bundled libraries need no root; a root's own file for a bundled namespace
+(`clojure/string.cljs`, say) wins over it, as under `--compile`
+(light-cljs-285). Missing external sources report the namespace
 and the requesting form. ECMAScript Math, strings, objects and RegExp are available;
 Node/DOM/JVM/filesystem/network/process capabilities are not supplied implicitly.
 
@@ -398,3 +405,80 @@ not preempted by an engine deadline.
 
 The CLI is tested by `tests/evaluation/eval_cli.rs` (subprocess runs, Rust only) and
 `tests/evaluation/eval_examples.rs`, which runs the scripts in `examples/native`.
+
+## Watch
+
+`light-cljs --watch --entry NS --source-root DIR [--source-root DIR ...]
+--out-dir DIR` (light-cljs-285; the design is "The watch loop" in
+[dev-workflow.md](dev-workflow.md#the-watch-loop)) writes the
+[dev build](compiler.md#dev-builds) of `--compile --entry NS --reloadable
+--out-dir DIR` and keeps it current as the sources change. After the build, a
+`DevSession` loads the same program (a `require` of the entry through the
+source roots), and the watch polls the `.cljs` and `.cljc` files under the
+roots, comparing each one's modification time and size; hidden files are
+left out. One poll is one step: every file saved since the last poll is in
+it.
+
+```sh
+light-cljs --watch --entry app.main --source-root src --out-dir dev
+# light-cljs: built app.main (4 namespaces) into dev in 281 ms; watching every 100 ms
+# light-cljs: recompiled app.view in 4.1 ms
+```
+
+A step reads the source of each namespace of the build whose file changed, as
+the source provider finds it now (a file saved over a symbolic link is still
+its namespace's), and compiles its forms in order against the session's
+retained program, read from the first in the namespace
+(`DevSession::load_namespace_file`) and in warning mode, then writes the
+namespace's unit file and source map
+(`dev_build::namespace_unit`: the `define` call of the build's units, whose
+function makes the namespace current and runs each form's unit) and the
+manifest. Files are replaced by a rename, so a reader sees the old text or
+the new. Namespaces are compiled in load order, so
+
+- a changed `ns` form loads the namespaces it newly requires through the
+  source provider, as a `require` does; their units are written too and go
+  ahead of their requirer in `manifest.json` and `index.js`;
+- a changed namespace that declares macros (or did) recompiles every
+  namespace of the build that requires it from its source, since their units
+  hold the expansions;
+- a form that fails stops the step: its error goes to stderr with file, line
+  and column, the namespace keeps its previous unit, and it is compiled
+  again, with whatever the step had left, at the next change of any source
+  file, so creating a missing required file retries it. A namespace a
+  failing step loaded completely is written all the same, since the session
+  will not load it again;
+- a require that closes a cycle through namespaces already loaded, which the
+  session would not notice, fails the step as `namespace dependency cycle:
+  app.macros -> app.view -> app.macros`, as `--compile` refuses it.
+
+A rewritten namespace's value is its last form's, or nil when that is a
+directive, as in the first build.
+
+A file outside the build changes nothing until a namespace requires it, and
+a deleted file is reported and otherwise ignored: its namespace keeps its
+unit. Each step prints one line to stderr, `light-cljs: recompiled
+app.macros, app.view in 9.8 ms`, the time from the poll that noticed the
+change to the files written; a failed one ends `; app.view failed and keeps
+its previous unit`, after the error. Warnings print before it as
+`--warnings` prints them (`WARNING: <file>:22:22: Use of undeclared Var
+app.view/later [undeclared-var] (bytes 653..658)`). A step changes the
+manifest's namespaces and requires, not its hook lists; nothing is pushed to
+a running page (no server yet, Phase 3), so a client applies the rewritten
+units itself, as `tests/support/dev_execution.mjs` does.
+
+| Flag | Default | Meaning |
+| --- | ---: | --- |
+| `--entry NS` | required | The entry namespace, as `--compile --entry` |
+| `--source-root DIR` | required | A source root, as `--compile`; repeatable |
+| `--out-dir DIR` | required | The dev build directory, created when missing |
+| `--poll-ms N` | 100 | Milliseconds between polls, at least 1 |
+| `--elide-asserts` | off | Compile without `assert` and `fn` `:pre`/`:post` checks |
+
+The watch runs until it is interrupted, and exits nonzero when the first
+build fails or a file of the build cannot be written. Startup compiles the program twice,
+once for the build and once in the session, which is what the steps compile
+against. A save that keeps both a file's size and its modification time,
+possible only on a file system with coarse timestamps, is not seen.
+`tests/dev_watch.rs` runs `--watch` on a copy of `examples/dev` and applies
+the rewritten units to the running first build through the Node driver.

@@ -99,93 +99,213 @@ pub fn emit_dev_build(program: &Program, sources: &[SourceFile<'_>]) -> Vec<DevF
             text: CLIENT.into(),
         },
     ];
-    let mut manifest = String::from("{\n  \"entry\": ");
-    json_string(&mut manifest, entry_namespace(program));
-    manifest.push_str(",\n  \"namespaces\": [");
-    for (index, namespace) in program.namespaces.iter().enumerate() {
-        let requires = program
-            .namespace_requires
-            .get(index)
-            .map_or(&[][..], Vec::as_slice)
-            .iter()
-            .map(|&required| program.namespaces[required].as_str())
-            .collect::<Vec<_>>();
-        let file = unit_file(namespace);
-        let map = format!("{file}.map");
+    let manifest = DevManifest::new(program);
+    for (index, namespace) in manifest.namespaces.iter().enumerate() {
+        let map = format!("{}.map", namespace.file);
         let mut define = String::from("globalThis.__lightDev.define(");
-        json_string(&mut define, namespace);
+        json_string(&mut define, &namespace.name);
         define.push_str(", ");
-        json_list(&mut define, &requires);
+        json_list(&mut define, &namespace.requires);
         define.push_str(", ");
         let (mut unit, mapping) = crate::emitter::emit_namespace_unit(
             program,
-            entries[namespace.as_str()],
+            entries[namespace.name.as_str()],
             index == 0,
             [&define, ");\n"],
         );
         writeln!(unit, "//# sourceMappingURL={map}").unwrap();
         files.push(DevFile {
-            name: file.clone(),
+            name: namespace.file.clone(),
             text: unit,
         });
         files.push(DevFile {
             name: map,
-            text: mapping.to_json(Some(&file), sources, false),
+            text: mapping.to_json(Some(&namespace.file), sources, false),
         });
-        manifest.push_str(if index == 0 { "\n" } else { ",\n" });
-        manifest.push_str("    {\"name\": ");
-        json_string(&mut manifest, namespace);
-        manifest.push_str(", \"file\": ");
-        json_string(&mut manifest, &file);
-        manifest.push_str(", \"requires\": ");
-        json_list(&mut manifest, &requires);
-        let macros = program.declares_macros(namespace);
-        write!(manifest, ", \"macros\": {macros}}}").unwrap();
     }
-    manifest.push_str("\n  ]");
-    // Hooks in definition order, which is the order of their definitions'
-    // metadata maps, analyzed with the definitions; a declaration may have
-    // allocated the global earlier. A client runs those before a load in
-    // reverse.
-    let mut definitions = program
-        .globals
-        .iter()
-        .filter_map(|global| Some((global.metadata?, global)))
-        .collect::<Vec<_>>();
-    definitions.sort_by_key(|(metadata, _)| metadata.0);
-    for phase in ["before-load", "after-load"] {
-        write!(manifest, ",\n  \"{phase}\": [").unwrap();
-        let asynchronous = format!("{phase}-async");
-        let mut first = true;
-        for &(metadata, global) in &definitions {
-            let asynchronous = if dev_flag(program, metadata, &asynchronous) {
-                true
-            } else if dev_flag(program, metadata, phase) {
-                false
-            } else {
-                continue;
-            };
-            manifest.push_str(if first { "\n    " } else { ",\n    " });
-            first = false;
-            manifest.push_str("{\"name\": ");
-            json_string(
-                &mut manifest,
-                &format!("{}/{}", global.namespace, global.name),
-            );
-            write!(manifest, ", \"async\": {asynchronous}}}").unwrap();
-        }
-        manifest.push_str(if first { "]" } else { "\n  ]" });
-    }
-    manifest.push_str("\n}\n");
     files.push(DevFile {
         name: "manifest.json".into(),
-        text: manifest,
+        text: manifest.to_json(),
     });
     files.push(DevFile {
         name: "index.js".into(),
-        text: index(program),
+        text: manifest.index(),
     });
     files
+}
+
+/// What `manifest.json` of a dev build says: the entry namespace, the
+/// namespaces in load order and the hook functions. A watch step
+/// (`--watch`) changes it as namespaces change and are added.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DevManifest {
+    /// The namespace whose value is the program's value.
+    pub entry: String,
+    /// The namespaces in load order: each after those it requires.
+    pub namespaces: Vec<DevNamespace>,
+    /// The functions marked `^:dev/before-load` or
+    /// `^:dev/before-load-async`, in definition order.
+    pub before_load: Vec<DevHook>,
+    /// The functions marked `^:dev/after-load` or `^:dev/after-load-async`,
+    /// in definition order.
+    pub after_load: Vec<DevHook>,
+}
+
+/// One namespace of a [`DevManifest`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DevNamespace {
+    pub name: String,
+    /// Its unit's file in the build directory ([`unit_file`]).
+    pub file: String,
+    /// The namespaces of the build it requires.
+    pub requires: Vec<String>,
+    /// Whether it declares macros, which the units of its requirers expand,
+    /// so a change to it recompiles them.
+    pub macros: bool,
+}
+
+/// A hook function of a [`DevManifest`]: `ns/name`, and whether it is an
+/// `-async` hook, which takes a continuation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DevHook {
+    pub name: String,
+    pub asynchronous: bool,
+}
+
+impl DevManifest {
+    /// The manifest of the dev build of `program`, a program analyzed from
+    /// namespace sources.
+    pub fn new(program: &Program) -> Self {
+        let namespaces = program
+            .namespaces
+            .iter()
+            .enumerate()
+            .map(|(index, namespace)| DevNamespace {
+                name: namespace.clone(),
+                file: unit_file(namespace),
+                requires: program
+                    .namespace_requires
+                    .get(index)
+                    .map_or(&[][..], Vec::as_slice)
+                    .iter()
+                    .map(|&required| program.namespaces[required].clone())
+                    .collect(),
+                macros: program.declares_macros(namespace),
+            })
+            .collect();
+        // Hooks in definition order, which is the order of their
+        // definitions' metadata maps, analyzed with the definitions; a
+        // declaration may have allocated the global earlier. A client runs
+        // those before a load in reverse.
+        let mut definitions = program
+            .globals
+            .iter()
+            .filter_map(|global| Some((global.metadata?, global)))
+            .collect::<Vec<_>>();
+        definitions.sort_by_key(|(metadata, _)| metadata.0);
+        let hooks = |phase: &str| {
+            let asynchronous = format!("{phase}-async");
+            definitions
+                .iter()
+                .filter_map(|&(metadata, global)| {
+                    let asynchronous = if dev_flag(program, metadata, &asynchronous) {
+                        true
+                    } else if dev_flag(program, metadata, phase) {
+                        false
+                    } else {
+                        return None;
+                    };
+                    Some(DevHook {
+                        name: format!("{}/{}", global.namespace, global.name),
+                        asynchronous,
+                    })
+                })
+                .collect()
+        };
+        Self {
+            entry: entry_namespace(program).to_owned(),
+            namespaces,
+            before_load: hooks("before-load"),
+            after_load: hooks("after-load"),
+        }
+    }
+
+    /// The position of `namespace` in load order.
+    pub fn position(&self, namespace: &str) -> Option<usize> {
+        self.namespaces
+            .iter()
+            .position(|entry| entry.name == namespace)
+    }
+
+    /// Put the namespaces in an order where each follows the namespaces of
+    /// the build it requires, keeping the present order where it already
+    /// does: a namespace that a changed `ns` form added (which a step places
+    /// ahead of its requirer) moves after its own requires. A cycle keeps
+    /// the order its first namespace reaches.
+    pub fn sort(&mut self) {
+        fn visit(
+            index: usize,
+            namespaces: &[DevNamespace],
+            seen: &mut [bool],
+            order: &mut Vec<usize>,
+        ) {
+            if std::mem::replace(&mut seen[index], true) {
+                return;
+            }
+            for required in &namespaces[index].requires {
+                if let Some(at) = namespaces.iter().position(|entry| entry.name == *required) {
+                    visit(at, namespaces, seen, order);
+                }
+            }
+            order.push(index);
+        }
+        let mut seen = vec![false; self.namespaces.len()];
+        let mut order = Vec::with_capacity(self.namespaces.len());
+        for index in 0..self.namespaces.len() {
+            visit(index, &self.namespaces, &mut seen, &mut order);
+        }
+        let mut namespaces = std::mem::take(&mut self.namespaces)
+            .into_iter()
+            .map(Some)
+            .collect::<Vec<_>>();
+        self.namespaces = order
+            .into_iter()
+            .map(|index| namespaces[index].take().unwrap())
+            .collect();
+    }
+
+    /// `manifest.json`.
+    pub fn to_json(&self) -> String {
+        let mut manifest = String::from("{\n  \"entry\": ");
+        json_string(&mut manifest, &self.entry);
+        manifest.push_str(",\n  \"namespaces\": [");
+        for (index, namespace) in self.namespaces.iter().enumerate() {
+            manifest.push_str(if index == 0 { "\n" } else { ",\n" });
+            manifest.push_str("    {\"name\": ");
+            json_string(&mut manifest, &namespace.name);
+            manifest.push_str(", \"file\": ");
+            json_string(&mut manifest, &namespace.file);
+            manifest.push_str(", \"requires\": ");
+            json_list(&mut manifest, &namespace.requires);
+            write!(manifest, ", \"macros\": {}}}", namespace.macros).unwrap();
+        }
+        manifest.push_str("\n  ]");
+        for (phase, hooks) in [
+            ("before-load", &self.before_load),
+            ("after-load", &self.after_load),
+        ] {
+            write!(manifest, ",\n  \"{phase}\": [").unwrap();
+            for (index, hook) in hooks.iter().enumerate() {
+                manifest.push_str(if index == 0 { "\n    " } else { ",\n    " });
+                manifest.push_str("{\"name\": ");
+                json_string(&mut manifest, &hook.name);
+                write!(manifest, ", \"async\": {}}}", hook.asynchronous).unwrap();
+            }
+            manifest.push_str(if hooks.is_empty() { "]" } else { "\n  ]" });
+        }
+        manifest.push_str("\n}\n");
+        manifest
+    }
 }
 
 /// The entry namespace: the last one the program loads statically, which
@@ -200,6 +320,95 @@ fn entry_namespace(program: &Program) -> &str {
     &program.namespaces[entry]
 }
 
+/// The unit file of `namespace` written from the session's units of its
+/// forms (a watch step), and its source map: the `define` call of a unit of
+/// [`emit_dev_build`], whose function makes `namespace` the current
+/// namespace, as a `Namespace` action does, then runs each form's unit in
+/// order. With `value` it returns the last one's value, else nil: the value
+/// of a namespace whose last form is a directive, or that has no forms.
+/// `requires` are the namespaces of the build it requires; `url` names a
+/// unit's source, as the source provider named it, in the map, relative to
+/// the directory.
+pub fn namespace_unit(
+    namespace: &str,
+    requires: &[String],
+    units: &[&crate::dev_session::Unit],
+    value: bool,
+    url: &dyn Fn(&str) -> String,
+) -> [DevFile; 2] {
+    let file = unit_file(namespace);
+    let map = format!("{file}.map");
+    let mut text = crate::source_map::MappedText::default();
+    let mut head = String::from("globalThis.__lightDev.define(");
+    json_string(&mut head, namespace);
+    head.push_str(", ");
+    json_list(&mut head, requires);
+    head.push_str(", (__lightInteractiveRuntime) => {\n  __lightInteractiveRuntime.core.currentNs = __lightInteractiveRuntime.core.createNs(__lightInteractiveRuntime.symbol(null, ");
+    json_string(&mut head, namespace);
+    head.push_str("));\n");
+    text.push_str(&head);
+    // The sources of the units, by their names.
+    let mut sources: Vec<&crate::compiler_data::Source> = Vec::new();
+    for (index, unit) in units.iter().enumerate() {
+        text.push_str(if value && index + 1 == units.len() {
+            "  return ("
+        } else {
+            "  ("
+        });
+        // The unit's own `sourceURL` names this file, which the file's
+        // `sourceMappingURL` maps.
+        let js = match unit.js.rfind("\n//# sourceURL=") {
+            Some(end) => &unit.js[..end],
+            None => unit.js.trim_end(),
+        };
+        let source = unit.location.source();
+        let at = match sources
+            .iter()
+            .position(|known| known.name() == source.name())
+        {
+            Some(at) => at,
+            None => {
+                sources.push(source);
+                sources.len() - 1
+            }
+        };
+        match &unit.mapping {
+            Some(mapping) => text.push_mapped(js, mapping, &[at]),
+            None => text.push_str(js),
+        }
+        text.push_str(")(__lightInteractiveRuntime);\n");
+    }
+    if !value || units.is_empty() {
+        text.push_str("  return null;\n");
+    }
+    text.push_str("});\n");
+    let urls = sources
+        .iter()
+        .map(|source| url(source.name()))
+        .collect::<Vec<_>>();
+    let files = urls
+        .iter()
+        .zip(&sources)
+        .map(|(url, source)| SourceFile {
+            url,
+            text: source.text(),
+        })
+        .collect::<Vec<_>>();
+    let json = text.mapping.to_json(Some(&file), &files, false);
+    let mut unit = text.text;
+    writeln!(unit, "//# sourceMappingURL={map}").unwrap();
+    [
+        DevFile {
+            name: file,
+            text: unit,
+        },
+        DevFile {
+            name: map,
+            text: json,
+        },
+    ]
+}
+
 /// The file of `namespace`'s unit: `<namespace>.js`, or `<namespace>$.js`
 /// for a namespace named like a file of its own (`runtime`, `client`,
 /// `index`), since no namespace name contains a `$`.
@@ -211,25 +420,29 @@ pub fn unit_file(namespace: &str) -> String {
     }
 }
 
-/// `index.js`: loads the files of the build in order and sets
-/// `globalThis.__lightDevLoaded` to a promise of the entry's value.
-fn index(program: &Program) -> String {
-    let files = ["runtime.js".to_owned(), "client.js".to_owned()]
-        .into_iter()
-        .chain(
-            program
-                .namespaces
-                .iter()
-                .map(|namespace| unit_file(namespace)),
-        )
-        .collect::<Vec<_>>();
-    let mut list = String::new();
-    json_list(
-        &mut list,
-        &files.iter().map(String::as_str).collect::<Vec<_>>(),
-    );
-    let mut entry = String::new();
-    json_string(&mut entry, entry_namespace(program));
+impl DevManifest {
+    /// `index.js`: loads the files of the build in order and sets
+    /// `globalThis.__lightDevLoaded` to a promise of the entry's value.
+    pub fn index(&self) -> String {
+        let files = ["runtime.js", "client.js"]
+            .into_iter()
+            .chain(
+                self.namespaces
+                    .iter()
+                    .map(|namespace| namespace.file.as_str()),
+            )
+            .collect::<Vec<_>>();
+        let mut list = String::new();
+        json_list(&mut list, &files);
+        let mut entry = String::new();
+        json_string(&mut entry, &self.entry);
+        index_text(&list, &entry)
+    }
+}
+
+/// The text of `index.js` for the JSON array `list` of its files and the
+/// JSON string `entry`.
+fn index_text(list: &str, entry: &str) -> String {
     format!(
         r#"// Loads a light-cljs dev build: the runtime, the dev client and one unit per
 // namespace, in dependency order. globalThis.__lightDevLoaded is a promise of
@@ -293,13 +506,13 @@ fn dev_flag(program: &Program, metadata: ExprId, name: &str) -> bool {
 }
 
 /// Append `items` as a JSON array of strings.
-fn json_list(out: &mut String, items: &[&str]) {
+fn json_list(out: &mut String, items: &[impl AsRef<str>]) {
     out.push('[');
     for (index, item) in items.iter().enumerate() {
         if index > 0 {
             out.push_str(", ");
         }
-        json_string(out, item);
+        json_string(out, item.as_ref());
     }
     out.push(']');
 }

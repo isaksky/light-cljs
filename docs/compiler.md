@@ -1940,8 +1940,12 @@ replacement units with the hook protocol (the before-load functions in
 reverse order, the units, then the after-load functions); the dev builds of
 the phase oracles, the size ratchet fixtures, examples/dev and
 examples/features print through it what their `--optimize none` builds print
-(`tests/compiler/dev_build.rs`). There is no watch loop, server or dev client
-yet.
+(`tests/compiler/dev_build.rs`). `--watch` writes the same build and then
+rewrites a saved namespace's unit, its map and the manifest
+([Watch](evaluation.md#watch)); a rewritten unit is
+`dev_build::namespace_unit` of the session's units of the namespace's forms,
+the same `define` call around a function that makes the namespace current
+and runs each form's unit in turn. There is no server or dev client yet.
 
 ### Complete collection program
 

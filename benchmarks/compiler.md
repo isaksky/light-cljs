@@ -4093,3 +4093,31 @@ bytes): the constant table entry `documents` holds and the runtime's
 `zipmap`. Those go with constants (light-cljs-278) and runtime units
 (light-cljs-279), which still all sit in startup. `label`, which the menu
 reads, stays.
+
+## Watch step of examples/dev — October 15, 2026
+
+light-cljs-285 adds `--watch` ([Watch](../docs/evaluation.md#watch);
+[dev-workflow design](../docs/dev-workflow.md), Phase 2). The step time is
+what the watch prints for each step, from the poll that noticed a save to
+the unit, its map and the manifest written, and what
+`dev_watch::a_saved_change_rewrites_the_unit_the_running_build_reloads`
+reads and asserts (best of five saves under 20 ms with `--release`, under
+100 ms in the debug build): five saves of
+`app/view.cljs` per run, three runs, with
+`cargo nextest run --release --test dev_watch --no-capture a_saved_change`
+(release CLI) and the same without `--release` (the debug test binary, which
+`cargo nextest run` uses). Branch of light-cljs-285 on master `b5e1dd2`; the
+Apple M3 Ultra virtual machine of the [environment](results/environment.txt),
+macOS 15.7.3, one-minute load average 3.5-9.7 with a peer worker building.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| A saved `app.view` to its unit on disk, release CLI | no watch path: the whole dev build, 246 ms | 3.9-4.6 ms (15 saves, median 4.3) |
+| The same, debug test binary | — | 8.9-11.1 ms |
+| `--watch` startup: the dev build, then the session's load of the program | — | 279-290 ms |
+| `app.view.js` after the save | 3,492 bytes (map 974), the build's unit | 9,385 bytes (map 646) |
+
+The rewritten unit is larger because the session's unit of each of the
+namespace's four forms registers the reader context of every namespace the
+session knows, which the build's unit does once for its own (light-cljs-301
+is to register only the unit's own).

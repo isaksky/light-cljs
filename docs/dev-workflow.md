@@ -51,9 +51,9 @@ as phases land:
 | Save to updated page, one changed namespace of the example | no path | under 100 ms on the development machine, including the recompile |
 | Application state across a reload | Phase 0: a replaced unit of the example keeps the `defonce` atom, also when `app.state`'s own unit runs again | `defonce` atoms keep their value; `def` values are reinitialized, as upstream |
 | Observable behavior of the dev build | Phase 0: prints what the `none` build prints for the example, examples/features, every phase oracle and every size ratchet fixture | prints what the `none` build prints, for the same program, before any reload |
-| Recompile of one changed namespace of the example | whole program in 15-250 ms depending on size; Phase 0's whole dev build of the example 246 ms, as its `none` build (release CLI, median of 15, load 4.3) | the one namespace, under 20 ms |
+| Recompile of one changed namespace of the example | whole program in 15-250 ms depending on size; Phase 0's whole dev build of the example 246 ms, as its `none` build (release CLI, median of 15, load 4.3); Phase 2: a saved `app.view` is its correct unit on disk 3.9-4.6 ms after the poll notices it (release CLI, 15 saves, median 4.3, load 3.5-9.7; 8.9-11.1 ms from the debug test binary), and `--watch` starts in 279-290 ms | the one namespace, under 20 ms |
 | REPL round trip for `(+ 1 2)` in the page | n/a | under 20 ms, dominated by the compile |
-| Dev build bytes served after the first load | Phase 0: `runtime.js` 432,093 bytes once; the example's `app.view.js` 3,492 bytes (map 974), its other units 817-1,777 | the changed namespace's unit only; the runtime is served once and cached |
+| Dev build bytes served after the first load | Phase 0: `runtime.js` 432,093 bytes once; the example's `app.view.js` 3,492 bytes (map 974), its other units 817-1,777; Phase 2's rewritten `app.view.js` 9,385 bytes (map 646), since each form's unit registers every namespace | the changed namespace's unit only; the runtime is served once and cached |
 
 Non-goals of this design: a bundler, npm resolution (packages stay
 host-supplied, see [JavaScript packages](compiler.md#javascript-packages)),
@@ -535,6 +535,56 @@ Scope: `--watch` of "The watch loop", writing files, no server.
 Done when: a saved change to `app.view` in the example produces a correct
 unit on disk in under 20 ms after the poll detects it, measured in the test
 and recorded in the Goal table.
+
+Status (light-cljs-285, October 15, 2026): done. `--watch --entry NS
+--source-root DIR --out-dir DIR [--poll-ms N]` ([Watch](evaluation.md#watch))
+writes the dev build, then a `DevSession` loads the same program through the
+source roots (a `require` of the entry: startup compiles twice, 279-290 ms for
+the example with the release CLI), and the poll compares the modification
+time and size of every `.cljs` and `.cljc` file under the roots, so a new file
+is seen too. A step compiles each changed namespace of the build in load
+order with `DevSession::load_namespace_file`, from its source as the provider
+finds it then, read from the first form in the namespace as `--compile`
+reads it; the units of each namespace whose forms
+ran, and of each namespace the step loaded, are put together by
+`dev_build::namespace_unit` (the build's `define` call around a function that
+makes the namespace current, then runs each form's unit, with one source map
+made of the forms' maps) and written by rename; the manifest
+(`dev_build::DevManifest`) takes the new namespaces ahead of their requirer
+and is put in an order where each namespace follows its requires. A
+namespace that declares macros, before or after the change, recompiles its
+requirers, each once a step, and a require that closes a cycle through
+loaded namespaces fails the step as `--compile` refuses it. A rewritten
+namespace whose last form is a directive keeps the value nil. The session
+now looks in its source provider before the bundled libraries, as
+`--compile` does, so a source root's `clojure/string.cljs` wins in both. A
+failing step leaves its namespace, and those after it, to
+compile again at the next change of any source file, which also retries a
+`require` of a file that did not exist yet. `tests/dev_watch.rs` runs
+`--watch` on a copy of the example: the rewritten `app.view` unit, applied by
+the driver to the running first build with the hooks, prints `render:
+clicks: [2]` with the `defonce` state kept, and the rewritten directory
+loads afresh; the unit's map maps its first and last forms to their lines;
+a reader error and an analysis error leave the unit and manifest byte for
+byte; a warning prints and the unit still runs; a macro change rewrites
+`app.macros` and `app.view` (`clicks = [2]`); a new require, first of a
+missing file and then of the `.cljc` file once saved, adds `app.extra` ahead
+of `app.view` in the manifest and `index.js`; and a require cycle, a
+trailing directive, a `::` keyword in an `ns` form after a step in another
+namespace, a source root's `clojure.string`, a save over a symbolic link and
+a unit that cannot be written (the watch exits) each behave as above, with
+the rewritten build checked against a fresh `--reloadable` build of the same
+sources where it applies. The test asserts the best of
+five step times under 20 ms with the release CLI (`cargo nextest run
+--release --test dev_watch`), as the Goal table measures, and under 100 ms
+in the debug build CI runs; the times are in the Goal table. A step does not
+update the manifest's hook lists (Phase 3 finds hooks in the retained
+program), and a rewritten unit is larger than the build's, since the
+session's unit of each form registers every namespace's reader context
+(9,385 bytes against 3,492 for `app.view`; light-cljs-301). Checked by hand in headless
+Chrome: the first build of the example, then the rewritten `app.view.js`
+evaluated between the hooks, printed `start`, `clicks: [1]`, `reloading`,
+`render: clicks: [2]`.
 
 ### Phase 3: server, client and reload policy
 

@@ -449,6 +449,47 @@ impl SourceMapping {
     }
 }
 
+/// One output put together from texts, some of them with the mapping of
+/// their own text: a dev build unit made of the units of a namespace's forms
+/// ([`crate::dev_build::namespace_unit`]).
+#[derive(Default)]
+pub(crate) struct MappedText {
+    pub(crate) text: String,
+    pub(crate) mapping: SourceMapping,
+    /// The end of `text`.
+    cursor: Cursor,
+}
+
+impl MappedText {
+    /// Append `text`, which maps to no source of its own.
+    pub(crate) fn push_str(&mut self, text: &str) {
+        self.text.push_str(text);
+        self.cursor
+            .advance(&self.text, self.text.len(), &mut Vec::new());
+    }
+
+    /// Append `text`, whose own mapping is `mapping` with its sources at
+    /// `sources`: its source index `i` is this output's `sources[i]`.
+    pub(crate) fn push_mapped(&mut self, text: &str, mapping: &SourceMapping, sources: &[usize]) {
+        let (line, column) = (self.cursor.line, self.cursor.column);
+        let names = self.mapping.names.len() as u32;
+        self.mapping
+            .segments
+            .extend(mapping.segments.iter().map(|segment| Segment {
+                line: segment.line + line,
+                column: segment.column + if segment.line == 0 { column } else { 0 },
+                source: match segment.source {
+                    RUNTIME | UNMAPPED => segment.source,
+                    source => sources.get(source).copied().unwrap_or(UNMAPPED),
+                },
+                byte: segment.byte,
+                name: segment.name.map(|name| name + names),
+            }));
+        self.mapping.names.extend(mapping.names.iter().cloned());
+        self.push_str(text);
+    }
+}
+
 /// The zero-based line and UTF-16 column of each byte offset of a source.
 struct Positions {
     lines: crate::LineIndex,

@@ -18,7 +18,7 @@ use crate::compiler_data::{DatumKind, Form, Name, SourceSpan};
 use crate::eval_compiler::InteractiveCompiler;
 use crate::eval_session::{EvalDiagnostic, EvalOptions};
 use crate::evaluator::{EvalError, EvaluatorOptions, ExecutionControl};
-use crate::source_map::{SourceFile, json_string};
+use crate::source_map::{SourceFile, SourceMapping, json_string};
 use crate::source_provider::{LoadRequest, Reload, SourceInput, SourceProvider};
 use std::{
     cell::{Ref, RefCell, RefMut},
@@ -41,6 +41,9 @@ pub struct Unit {
     pub source_map: Option<String>,
     /// The form, at which an error the unit throws is located.
     pub location: SourceSpan,
+    /// The table of `source_map`, whose source 0 is the form's source, for
+    /// a writer that puts units together ([`crate::dev_build::namespace_unit`]).
+    pub(crate) mapping: Option<SourceMapping>,
 }
 
 /// What a runtime does with the result of compiling one input, in order.
@@ -205,6 +208,31 @@ impl DevSession {
     pub fn namespace(&self) -> String {
         self.compiler.borrow().namespace().into()
     }
+    /// Whether the session has loaded `namespace`: a `require` of it loads
+    /// nothing unless it reloads.
+    pub fn loaded(&self, namespace: &str) -> bool {
+        self.loaded.borrow().contains(namespace)
+    }
+    /// The namespaces `namespace` requires, in the order its directives
+    /// named them, without repeats: what its `ns` form requires, with what
+    /// later `require` and `ns*` forms added.
+    pub fn requires(&self, namespace: &str) -> Vec<String> {
+        let mut requires = self.compiler.borrow().namespace_requires(namespace);
+        let mut seen = HashSet::new();
+        requires.retain(|required| required != namespace && seen.insert(required.clone()));
+        requires
+    }
+    /// Whether `namespace` declares macros, so that a change to it must
+    /// reach the namespaces that require it, whose units expanded them.
+    pub fn declares_macros(&self, namespace: &str) -> bool {
+        let prefix = format!("{namespace}/");
+        self.compiler
+            .borrow()
+            .host
+            .javascript_macros
+            .keys()
+            .any(|name| name.starts_with(&prefix))
+    }
     /// The actions of one top-level form, as a REPL evaluates it: an `Invoke`
     /// of its unit, or for a directive the `Namespace` and `Load` actions of
     /// what it loads. A failing form ends with an `Error`.
@@ -230,6 +258,17 @@ impl DevSession {
     pub fn load_file(&self, source: &SourceInput) -> Vec<Action> {
         collect(|to| {
             self.begin()?;
+            self.run_source(source, Mode::Load, to)
+        })
+    }
+    /// [`Self::load_file`] of `source`, the file of `namespace`, read from
+    /// its first form in `namespace`, as `--compile` reads a namespace's
+    /// source: a `::` keyword in its `ns` form names `namespace`, whatever
+    /// namespace is current before. A watch step compiles a changed file so.
+    pub fn load_namespace_file(&self, namespace: &str, source: &SourceInput) -> Vec<Action> {
+        collect(|to| {
+            self.begin()?;
+            self.compiler.borrow_mut().set_namespace(namespace);
             self.run_source(source, Mode::Load, to)
         })
     }
@@ -415,6 +454,7 @@ impl DevSession {
             js,
             source_map: Some(source_map),
             location: form.span(),
+            mapping: Some(mapping),
         };
         Ok((unit, program))
     }
@@ -487,17 +527,27 @@ impl DevSession {
             if name == "cljs.core" || name == "clojure.core" {
                 continue;
             }
-            let source = if let Some(source) = crate::compiler_libraries::source(&name) {
-                SourceInput::new(format!("<builtin>/{name}.cljs"), source)
-            } else {
-                self.source_provider
-                    .as_ref()
-                    .ok_or_else(|| {
-                        located(format!("no source provider for {name}"), location.clone())
-                    })?
+            // The source provider first, then the bundled libraries, as
+            // `--compile` looks in its source roots before them: a source
+            // root may supply its own `clojure.string`.
+            let provided = match &self.source_provider {
+                Some(provider) => provider
                     .load(&request)
-                    .map_err(|error| located(error.to_string(), location.clone()))?
-                    .ok_or_else(|| located(missing_namespace(&name, lazy), location.clone()))?
+                    .map_err(|error| located(error.to_string(), location.clone()))?,
+                None => None,
+            };
+            let source = match (provided, crate::compiler_libraries::source(&name)) {
+                (Some(source), _) => source,
+                (None, Some(source)) => SourceInput::new(format!("<builtin>/{name}.cljs"), source),
+                (None, None) if self.source_provider.is_none() => {
+                    return Err(located(
+                        format!("no source provider for {name}"),
+                        location.clone(),
+                    ));
+                }
+                (None, None) => {
+                    return Err(located(missing_namespace(&name, lazy), location.clone()));
+                }
             };
             let namespace = self.namespace();
             self.loading.borrow_mut().push(name.clone());

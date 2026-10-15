@@ -282,7 +282,7 @@ fn write_result(text: &str) -> Result<()> {
     stdout.flush()?;
     Ok(())
 }
-fn diagnostic(error: &EvalDiagnostic) -> String {
+pub(crate) fn diagnostic(error: &EvalDiagnostic) -> String {
     let mut text = error.to_string();
     if let Some(span) = &error.location {
         let bytes = span.bytes();
