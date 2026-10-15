@@ -1730,10 +1730,17 @@ that feature's chunk, and one that two features read but startup does not
 to a chunk of its own those two import (docs/code-splitting.md, "Items and
 signatures"). The other forms stay in their namespace's chunk: effects, a
 `defmulti`, a `defmethod`, a raw `deftype*`, the definition of a
-`loadable`'s target, a form holding a `loadable`, a Var defined twice. A program that reaches
+`loadable`'s target, a form holding a `loadable`, a Var defined twice.
+At `advanced` a chunk that would write no code is not written: one that
+holds no root and no Var another chunk reads, and whose namespaces' forms
+all emit nothing there, because removal dropped their definitions,
+inlining consumed them, they moved toward their readers or they are
+`declare`s. Its importers import what it imported instead, and startup
+lists its namespaces. Two features requiring a namespace whose one
+function is inlined into both import startup alone. A program that reaches
 reflection ("Namespace reflection and reading": `*ns*`, `find-ns`, the
 reader, `eval`, ...) keeps every form in its namespace's chunk at `advanced`
-too, so the namespaces it registers are whole.
+too, so the namespaces it registers are whole, and keeps every chunk.
 Items keep source order within a chunk. At `advanced` each entry of the
 constant table (a keyword, a quoted symbol, a constant collection, a map or
 set shape, a hoisted method) is declared once, in the chunk of the roots
@@ -1788,7 +1795,10 @@ examples/features at `advanced`:
   definitions in the order the single file loads these, then those holding
   only constants.
 - `namespaces`: the namespaces whose top-level forms it holds, in load order:
-  the forms that stay in their namespace's chunk.
+  the forms that stay in their namespace's chunk. Each namespace is listed
+  once. At `advanced` startup also lists the namespaces of a chunk that
+  was not written because it would hold no code; startup is the one chunk
+  every root reaching them loads, and their forms write nothing there.
 - `definitions`: the definitions it holds of namespaces another chunk holds,
   moved toward their readers at `advanced`, in program order, each by the
   first Var it defines (`app.shared/documents`); empty below `advanced`.

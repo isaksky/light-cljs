@@ -4156,3 +4156,33 @@ reads. The features' files keep their sizes: their import lines name
 the same number of bindings, split between startup and the shared chunk.
 What remains of startup beyond the lower bound is the whole-program runtime
 slice, which light-cljs-279 splits.
+
+## Chunks that hold no code — October 15, 2026
+
+light-cljs-299 drops, at `advanced`, a chunk that would write no code: one
+that holds no root and no Var another chunk reads, whose namespaces' forms
+all emit nothing there because removal, inlining or definition-level
+placement left them nothing ([code-splitting design](../docs/code-splitting.md),
+Phase 3, "As built (light-cljs-299)"). Measured with `light-cljs --compile
+--optimize LEVEL --entry app.main --source-root DIR --out-dir OUT`, `wc -c`
+and `gzip -9` of standard input, against the same tree with the drop
+disabled, which writes what master `684cbb8` (light-cljs-278) writes. `none`
+and `prepare` are byte for byte as before, and so is every file of
+examples/features at every level, whose shared chunk holds
+`app.shared/documents`. Apple M3 Ultra virtual machine of the
+[environment](results/environment.txt), macOS 15.7.3, one-minute load average
+2.7 (sizes do not depend on it). The `diamond` fixture
+(tests/fixtures/chunks/diamond), raw / `gzip -9` bytes at `advanced`, terse:
+
+| File | Before | After |
+| --- | ---: | ---: |
+| `app.main.js`, startup | 23,593 / 7,998 | 23,593 / 7,998 |
+| `app.editor+app.reports.js` | 12 / 32 | none |
+| `app.editor.js` | 143 / 132 | 105 / 115 |
+| `app.reports.js` | 153 / 139 | 115 / 121 |
+
+`app.format/line` and `app.text/shout` are inlined into both features, so
+the shared chunk was `(()=>{})();`. Each feature loses its
+`import "./app.editor+app.reports.js";` line, 38 bytes, and loading one
+feature takes two requests instead of three. Startup is unchanged; its
+manifest entry lists `app.text` and `app.format`, whose forms write nothing.

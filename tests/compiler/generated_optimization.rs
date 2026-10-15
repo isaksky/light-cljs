@@ -56,7 +56,7 @@
 //! twelve tests for longer local runs:
 //! `LIGHT_CLJS_GENERATED_COUNT=240 cargo nextest run --test compiler generated_optimization::`.
 //! `--no-capture` prints each seed's garbage table.
-use super::chunks::{check_manifest, read_manifest};
+use super::chunks::{check, check_manifest, read_manifest};
 use super::generated::{
     GarbageTag, LazyEdges, Literals, NamespaceProgram, Placement, SEEDS, lazy_program,
     namespace_program, seeds,
@@ -65,7 +65,7 @@ use super::optimization::{Sources, readable};
 use crate::chunked_execution::{run_directory, run_modules};
 use crate::temp_dir::TempDir;
 use light_cljs::analyzer::AnalysisOptions;
-use light_cljs::chunks::ChunkedOutput;
+use light_cljs::chunks::{ChunkedOutput, STARTUP, plan};
 use light_cljs::compiler::analyze_namespace_entry;
 use light_cljs::{
     ApplicationOptions, ApplicationStats, MacroHost, OptimizationLevel, Program,
@@ -794,8 +794,10 @@ fn write_chunks(output: &ChunkedOutput) -> TempDir {
 ///
 /// - Structure: `chunks.json` describes the files (`chunks::check_manifest`):
 ///   every import edge targets a strictly larger signature, every chunk holds
-///   a namespace, a definition or constants another chunk imports, and no
-///   namespace only lazy roots reach is in startup.
+///   a namespace, a definition or constants another chunk imports and, but
+///   a root's, writes code, and no namespace only lazy roots reach is in
+///   startup, except at `Advanced` one whose chunk the plan dropped since it
+///   would write no code.
 /// - Property 6, startup never holds a lazy-only definition: the startup chunk
 ///   contains no sentinel of a definition of a namespace only lazy roots
 ///   reach, at any level, and at `Advanced`, unless the program calls
@@ -840,8 +842,25 @@ fn check_lazy_seed(seed: u64) -> LazyCounts {
         let (startup, chunks) = read_manifest(&dir);
         check_manifest(&dir, &startup, &chunks, level, &program.entry);
         for namespace in &lazy.lazy_only {
+            if !output.files[0].namespaces.contains(namespace) {
+                continue;
+            }
+            // Only at `Advanced`, where a chunk that would write no code is
+            // dropped and startup lists its namespaces (light-cljs-299),
+            // whose items startup holds `check` requires to write nothing.
             assert!(
-                !output.files[0].namespaces.contains(namespace),
+                level.advanced(),
+                "seed {seed} {level}: startup holds {namespace}"
+            );
+            let plan = plan(&analyzed, &prepared);
+            check(&analyzed, &prepared, &plan, level);
+            let source = analyzed
+                .namespaces
+                .iter()
+                .position(|name| name == namespace)
+                .unwrap();
+            assert_eq!(
+                plan.namespace_chunks[source], STARTUP,
                 "seed {seed} {level}: startup holds {namespace}"
             );
         }

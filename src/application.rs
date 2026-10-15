@@ -282,11 +282,11 @@ impl PreparedApplication {
     /// unless the target has evaluated before the loadable's chunk runs.
     /// A program of one chunk, one without a loadable whose target another
     /// chunk holds, is one file: [`PreparedApplication::emit_esm`]'s.
-    /// At `Advanced` definitions move toward their readers
-    /// ([`crate::chunks::plan`]), unless the program's forms reach
-    /// reflection: then every form stays in its namespace's chunk
-    /// ([`crate::chunks::namespace_plan`]), so a namespace the program can
-    /// look up is never split across chunks.
+    /// At `Advanced` definitions move toward their readers and chunks that
+    /// would write no code are dropped ([`crate::chunks::plan`]), unless the
+    /// program's forms reach reflection: then every form stays in its
+    /// namespace's chunk ([`crate::chunks::namespace_plan`]), so a namespace
+    /// the program can look up is never split across chunks.
     pub fn emit_chunks(&self) -> crate::chunks::ChunkedOutput {
         let plan = crate::chunks::plan(&self.program, self);
         if let Some(output) = self.write_chunks(&plan, false) {
@@ -297,8 +297,8 @@ impl PreparedApplication {
             .expect("a plan that moves no definition is written")
     }
     /// The files of `plan`, or `None` when its forms reach reflection and it
-    /// moves a definition out of its namespace's chunk. `reflective`: the
-    /// forms are known to reach reflection.
+    /// moves a definition out of its namespace's chunk or drops a chunk.
+    /// `reflective`: the forms are known to reach reflection.
     fn write_chunks(
         &self,
         plan: &crate::chunks::ChunkPlan,

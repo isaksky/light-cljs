@@ -28,6 +28,10 @@
 //! larger signatures, and the chunk graph is acyclic by construction (debug
 //! builds check every edge). Chunk ids are ordered so that a chunk's imports
 //! precede it: startup first, then larger signatures before smaller ones.
+//! At `Advanced` a chunk that would write no code, holding no root, no
+//! global another chunk reads and only items `Advanced` output writes
+//! nothing for, is dropped: its importers import its imports, and startup
+//! lists its namespaces ([`ChunkPlan::drops_chunks`]).
 //!
 //! The constant table's entries are items only emission finds, so the
 //! emitter places them once it has written the chunks
@@ -154,7 +158,9 @@ pub struct Chunk {
     pub signature: Signature,
     /// The source indices of the namespaces the chunk holds, those of its
     /// signature, whose pinned items it holds, ascending. A chunk of moved
-    /// definitions alone holds none.
+    /// definitions alone holds none. At `Advanced` startup also holds the
+    /// namespaces of the chunks the plan dropped since they would write no
+    /// code ([`ChunkPlan::drops_chunks`]).
     pub namespaces: Vec<usize>,
     /// The roots whose namespace the chunk holds, ascending.
     pub roots: Vec<usize>,
@@ -381,6 +387,16 @@ impl ChunkPlan {
             .any(|item| item.chunk != self.namespace_chunks[item.namespace])
     }
 
+    /// Whether the plan dropped a chunk that would write no code at
+    /// `Advanced`: startup then holds a namespace that only lazy roots
+    /// reach.
+    pub fn drops_chunks(&self) -> bool {
+        self.chunks[STARTUP.0].namespaces.iter().any(|&namespace| {
+            let signature = &self.namespace_signatures[namespace];
+            !signature.is_empty() && !signature.contains(STARTUP_ROOT)
+        })
+    }
+
     /// The items of chunk `chunk` from namespaces another chunk holds, in
     /// program order.
     pub fn moved_items(&self, chunk: ChunkId) -> impl Iterator<Item = &Item> + '_ {
@@ -498,11 +514,12 @@ impl ChunkPlan {
 /// ([`PreparedApplication::removable`]), and `defprotocol` and `deftype`
 /// forms, move toward their readers (docs/code-splitting.md, "Phase 3");
 /// below it every top-level form stays in its namespace's chunk, as in
-/// [`namespace_plan`]. Whether a program reaches reflection is known only
-/// once its forms are written, so this plan does not ask:
-/// [`PreparedApplication::emit_chunks`] falls back to [`namespace_plan`] for
-/// a program that does. A program that was not analyzed from namespace
-/// sources has one namespace and one chunk.
+/// [`namespace_plan`]. At `Advanced` it also drops the chunks that would
+/// write no code ([`ChunkPlan::drops_chunks`]). Whether a program reaches
+/// reflection is known only once its forms are written, so this plan does
+/// not ask: [`PreparedApplication::emit_chunks`] falls back to
+/// [`namespace_plan`] for a program that does. A program that was not
+/// analyzed from namespace sources has one namespace and one chunk.
 pub fn plan(program: &Program, prepared: &PreparedApplication) -> ChunkPlan {
     plan_with(program, prepared, prepared.level().advanced())
 }
@@ -1019,13 +1036,146 @@ fn plan_with(
         chunk.setters = setters;
         chunk.sites = sites.into_iter().map(|(_, site)| site).collect();
     }
-    ChunkPlan {
+    let mut plan = ChunkPlan {
         roots,
         namespace_signatures,
         namespace_chunks,
         items,
         global_chunks,
         chunks,
+    };
+    if move_definitions {
+        plan.drop_silent_chunks(emitted, &graph);
+    }
+    plan
+}
+
+/// Whether `Advanced` output writes nothing for `item`, a top-level form
+/// that is not the program's value, in output that registers no namespace:
+/// a `nil`, such as a definition removal dropped, or a definition without a
+/// value (`declare`), as `Emitter::emit_expr` skips them.
+fn silent(program: &Program, item: &Item) -> bool {
+    matches!(
+        program.exprs[item.expr.0].kind,
+        ExprKind::Nil
+            | ExprKind::Def {
+                init: None,
+                test: None,
+                once: false,
+                ..
+            }
+    )
+}
+
+impl ChunkPlan {
+    /// Drop the chunks that would write no code at `Advanced`
+    /// (docs/code-splitting.md, "Phase 3", light-cljs-299): a chunk other
+    /// than startup that holds no root, owns no global another chunk's code
+    /// reads or assigns, and whose items are all [`silent`], because removal
+    /// dropped or inlining consumed its namespaces' definitions or they
+    /// moved toward their readers. Such a chunk would be `(()=>{})();`
+    /// with import lines, a request and a module for nothing. Its importers
+    /// import its imports instead, each of a signature strictly containing
+    /// its own and so theirs, and startup holds its namespaces and their
+    /// items: startup is the chunk every root reaching them loads, and
+    /// first, so a namespace's chunk still has a signature containing the
+    /// namespace's, from which its moved definitions moved down. The
+    /// emitter writes this plan only for forms that reach no reflection,
+    /// which would register the namespaces ([`ChunkPlan::drops_chunks`]).
+    fn drop_silent_chunks(&mut self, program: &Program, graph: &ItemGraph) {
+        let count = self.chunks.len();
+        let mut read = vec![false; count];
+        for (position, item) in self.items.iter().enumerate() {
+            for global in graph.reads[position].iter().chain(&graph.assigns[position]) {
+                let owner = self.global_chunks[global.0];
+                if owner != item.chunk {
+                    read[owner.0] = true;
+                }
+            }
+        }
+        let dropped = self
+            .chunks
+            .iter()
+            .enumerate()
+            .map(|(id, chunk)| {
+                id != STARTUP.0
+                    && chunk.roots.is_empty()
+                    && !read[id]
+                    && chunk
+                        .items
+                        .iter()
+                        .all(|&item| silent(program, &self.items[item]))
+            })
+            .collect::<Vec<_>>();
+        if !dropped.contains(&true) {
+            return;
+        }
+        // Imports precede their importers, so a dropped chunk's imports no
+        // longer name a dropped chunk when its importers are reached.
+        for id in 0..count {
+            if self.chunks[id]
+                .imports
+                .iter()
+                .any(|import| dropped[import.0])
+            {
+                let mut imports = Vec::new();
+                for import in &self.chunks[id].imports {
+                    if dropped[import.0] {
+                        imports.extend_from_slice(&self.chunks[import.0].imports);
+                    } else {
+                        imports.push(*import);
+                    }
+                }
+                imports.sort_unstable();
+                imports.dedup();
+                self.chunks[id].imports = imports;
+            }
+        }
+        // Startup takes the dropped chunks' namespaces and items; the other
+        // chunks keep their order.
+        let mut renumbered = vec![STARTUP; count];
+        let mut chunks = Vec::with_capacity(count);
+        for (id, chunk) in std::mem::take(&mut self.chunks).into_iter().enumerate() {
+            if dropped[id] {
+                debug_assert!(chunk.setters.is_empty() && chunk.sites.is_empty());
+                let startup: &mut Chunk = &mut chunks[STARTUP.0];
+                startup.namespaces.extend(chunk.namespaces);
+                startup.items.extend(chunk.items);
+            } else {
+                renumbered[id] = ChunkId(chunks.len());
+                chunks.push(chunk);
+            }
+        }
+        chunks[STARTUP.0].namespaces.sort_unstable();
+        chunks[STARTUP.0].items.sort_unstable();
+        let renumber = |chunk: &mut ChunkId| *chunk = renumbered[chunk.0];
+        for chunk in &mut chunks {
+            chunk.imports.iter_mut().for_each(renumber);
+            debug_assert!(chunk.imports.is_sorted());
+        }
+        self.chunks = chunks;
+        for root in &mut self.roots {
+            renumber(&mut root.chunk);
+        }
+        self.namespace_chunks.iter_mut().for_each(renumber);
+        for item in &mut self.items {
+            renumber(&mut item.chunk);
+        }
+        self.global_chunks.iter_mut().for_each(renumber);
+        #[cfg(debug_assertions)]
+        for (id, chunk) in self.chunks.iter().enumerate() {
+            for import in &chunk.imports {
+                let outer = &self.chunks[import.0].signature;
+                debug_assert!(
+                    import.0 < id
+                        && *outer != chunk.signature
+                        && outer.is_superset(&chunk.signature),
+                    "{} imports {}, whose signature does not strictly contain its own",
+                    chunk.name,
+                    self.chunks[import.0].name
+                );
+            }
+        }
     }
 }
 

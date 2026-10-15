@@ -47,7 +47,7 @@ Targets, measured in Phase 0 on the example application
 | Measurement | Today | Measured bound | Target |
 |---|---|---|---|
 | Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646; chunked at namespace granularity (light-cljs-274), `app.main.js` 69,587 / 21,575, with the whole-program runtime slice and every constant still in startup; with definitions moved toward their readers (light-cljs-277), 69,539 / 21,551; with constants placed by their readers (light-cljs-278), 69,000 / 21,242, the whole-program runtime slice and the menu's two keywords | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
-| Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds; with definitions moved (light-cljs-277), 361 / 255 and 874 / 531, each also importing the shared `app.editor+app.reports.js`, 63 / 81; with constants (light-cljs-278) the shared chunk holds `documents` with its table, 632 / 397, and the features 361 / 258 and 874 / 531 | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
+| Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds; with definitions moved (light-cljs-277), 361 / 255 and 874 / 531, each also importing the shared `app.editor+app.reports.js`, 63 / 81; with constants (light-cljs-278) the shared chunk holds `documents` with its table, 632 / 397, and the features 361 / 258 and 874 / 531; a shared chunk that would hold no code is not written (light-cljs-299), so a feature imports one only for code or constants it shares | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
 | Observable behavior | n/a; chunked (light-cljs-274), the example and the Phase 2 fixtures print what the single file prints at every level; the fixture matrix (light-cljs-276) through `--out-dir` and `chunks.json` in Node, and the example in Chrome without a bundler and through Vite 8.0.8, at every level | n/a | identical to the single-file program at every level, given the same `load` calls |
 | Compile time of a chunked build | n/a | n/a | within 10% of the single-file build of the same program |
 
@@ -458,6 +458,10 @@ most and thousands of items.
   from the start, and `load` resolves on the next microtask.
 - The entry namespace's final value stays the default export of the startup
   chunk, as `--esm` emits today.
+- A chunk that would write no code is not a file (light-cljs-299): at
+  `advanced`, one that is no root's chunk, owns no global another chunk
+  reads, and holds only forms that emit nothing there. Its importers
+  import its imports, and startup lists its namespaces.
 
 ### What a chunk file contains
 
@@ -1212,6 +1216,82 @@ runtime units toward their first readers; per-chunk runtime factories.
     chunk holds a namespace or a definition, accepts a chunk of neither
     only at `Advanced`, with no root or loadable, exporting a name another
     chunk imports.
+
+- **As built (light-cljs-299): chunks that hold no code are dropped.**
+  - At `Advanced` a chunk can hold no code: removal dropped its
+    namespaces' definitions (the `diamond` fixture's `app.format/line` and
+    `app.text/shout` are inlined into both features), they moved toward
+    their readers (a namespace two features require whose `words` only the
+    editor reads and `shout` only the reports read), or they are
+    `declare`s. Such a chunk was written as `(()=>{})();` with its import
+    lines, and every chunk below it imported it: a request and a module for
+    nothing.
+  - `chunks::plan` decides from the items, not the written text: at
+    `Advanced` (`plan_with` with definitions moving), after the imports are
+    known, `ChunkPlan::drop_silent_chunks` drops each chunk other than
+    startup that holds no root, owns no global that an item of another
+    chunk reads or assigns, and whose items are all `nil` (what removal
+    leaves of a definition) or definitions without a value, which
+    `Emitter::emit_expr` skips at `Advanced` in output that registers no
+    namespace. An importer of a dropped chunk imports its imports instead,
+    in id order, so a chain of dropped chunks resolves; each has a
+    signature strictly containing the dropped chunk's and so the
+    importer's, and the graph stays acyclic with every edge to a strict
+    superset. A dropped chunk holds no root, so no loadable loads it, and
+    no setter, since no other chunk assigns its globals.
+  - Startup lists the dropped chunk's namespaces and holds their items,
+    which write nothing there; `ChunkPlan::drops_chunks` is whether startup
+    holds a namespace only lazy roots reach. Startup is the one chunk every
+    root that reaches the namespaces loads, and the first: a namespace's
+    chunk still has a signature containing the namespace's, so a definition
+    of it that moved still moved down, out of a chunk that does not import
+    its new one, and startup stays first in every importer's lines, which
+    follow their imports' first namespaces. A feature's chunk, which some
+    roots of the namespace never load, would contradict both.
+  - Reflection: output that registers namespaces writes each namespace's
+    switch of `*ns*` in its chunk, so a dropped chunk would not be empty
+    there. `emit_chunked` returns `None` for forms that reach reflection
+    when the plan moves a definition or drops a chunk, and `emit_chunks`
+    writes `chunks::namespace_plan`, which drops nothing.
+  - Constants are placed after the plan: a keyword both features of a
+    dropped chunk read still gets a chunk of its signature, a chunk of
+    constants alone (light-cljs-278) of the dropped chunk's name, holding
+    no namespace.
+  - The `diamond` fixture at `advanced`, terse, raw / `gzip -9` bytes,
+    before and after; `none` and `prepare`, and every file of
+    examples/features, whose shared chunk holds `app.shared/documents`,
+    are byte for byte as before:
+
+    | File | Before | After |
+    | --- | ---: | ---: |
+    | `app.main.js` | 23,593 / 7,998 | 23,593 / 7,998 |
+    | `app.editor+app.reports.js` | 12 / 32 | none |
+    | `app.editor.js` | 143 / 132 | 105 / 115 |
+    | `app.reports.js` | 153 / 139 | 115 / 121 |
+
+    Each feature loses its `import "./app.editor+app.reports.js";` line
+    (38 bytes), and loading one feature is two requests instead of three.
+  - Tests (`tests/compiler/chunks.rs`): `membership.tsv` gives `n/a` as
+    the imports at `Advanced` of a chunk `Advanced` drops, and startup's
+    row there gains its namespaces; the `diamond` fixture's shared chunk is
+    such a chunk, and its features import startup alone.
+    `chunks::check_manifest` rejects at every level a chunk that is no
+    root's whose code is `(()=>{})();` and import lines, so the fixture
+    matrix and the generated lazy programs hold no such chunk. The
+    planner's `check` requires every namespace in the chunk of its
+    signature, except at `Advanced` one startup holds whose items there are
+    all silent. A shared namespace whose definitions all move is no file,
+    its definitions listed by the features that hold them; an importer of a
+    dropped chunk imports the chunk of the namespace it required, whose
+    top-level effect still prints before the feature runs; a keyword the
+    features of a dropped chunk share gets a chunk of constants alone; and
+    a program that reaches reflection keeps the chunk. Two plan tests whose
+    helper is inlined at `Advanced` changed: the diamond plan drops its
+    shared chunk there, and the hashed-name test's helper prints, so its
+    shared chunk keeps code at every level. The generated lazy programs'
+    check that startup lists no lazy-only namespace allows, at `Advanced`
+    only, one the plan dropped into startup with silent items; no fixed
+    seed, nor 480 seeds, drops a chunk.
 
 - **Item signatures.** Extend `chunks::plan` with the item reference graph
   over `flatten(program.root)`: per item, the globals it reads (one walk

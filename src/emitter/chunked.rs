@@ -390,8 +390,9 @@ fn place_constants(
 /// in plan order, with the plan they follow: `plan` and the chunks its
 /// constants add, which hold no form ([`place_constants`]); see the module
 /// documentation. `None` when the forms reach reflection at `Advanced` and
-/// `plan` moves a definition out of its namespace's chunk: such a program is
-/// planned at namespace granularity (docs/code-splitting.md, "Phase 3", the
+/// `plan` moves a definition out of its namespace's chunk or dropped a chunk
+/// that writes no code without reflection: such a program is planned at
+/// namespace granularity (docs/code-splitting.md, "Phase 3", the
 /// reflection gate). `reflective`: the forms are known to reach reflection,
 /// so they are written once, with the namespaces' registration.
 pub(crate) fn emit_chunked(
@@ -457,7 +458,7 @@ pub(crate) fn emit_chunked(
     };
     let (mut emitter, mut bodies) = write(!slice || reflective);
     if slice && !reflective && emitter.runtime.reach_reflection() {
-        if plan.moves_definitions() {
+        if plan.moves_definitions() || plan.drops_chunks() {
             return None;
         }
         (emitter, bodies) = write(true);

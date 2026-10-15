@@ -127,8 +127,9 @@ for a target in them, and `chunks.json`, which lists each file with its
 imports, namespaces, moved definitions, roots, loadable sites and size.
 Chunks follow namespaces, and at `--optimize advanced` definitions without
 effects move to the chunk of the code that reads them, as do the keywords,
-symbols and constant collections of the constant table; the runtime stays in
-startup for now. It works at every
+symbols and constant collections of the constant table, and a chunk left
+without code is not written; the runtime stays in startup for now. It works
+at every
 `--optimize` level, writes only the files the manifest names, takes no source
 map flags, and leaves a program without loadables one file, its `--esm` output
 ([Chunked builds](docs/compiler.md#chunked-builds),
