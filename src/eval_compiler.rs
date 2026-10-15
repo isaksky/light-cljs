@@ -1,7 +1,7 @@
 //! Incremental compiler metadata for an explicit application evaluation session.
 //! The macro host owns a separate compilation heap; no application value enters it.
 use crate::analyzer::{AnalysisOptions, AnalysisWarning, NamespaceResolution};
-use crate::compiler_data::{DatumKind, Form, Name, Source};
+use crate::compiler_data::{Datum, DatumKind, Form, Name, Source};
 use crate::source_provider::SourceInput;
 use crate::{AnalysisError, AnalysisErrorKind, ExprContext, MacroHost, Program};
 
@@ -432,6 +432,51 @@ impl InteractiveCompiler {
     }
 }
 
+/// The symbol an `ns` form declares, with the metadata of its name, its
+/// docstring and its attribute map, and its docstring, which macros read in
+/// `&env` as `--compile` gives them (`prepare_source`); `None` when the form
+/// has none of the three.
+fn namespace_symbol(form: &Form) -> Result<Option<(Datum, Option<Datum>)>, String> {
+    let children = form.children();
+    let Some(name) = children.get(1) else {
+        return Ok(None);
+    };
+    let c = crate::compiler_data::DataBuilder;
+    let mut offset = 2;
+    let doc = children
+        .get(offset)
+        .filter(|doc| matches!(doc.data().kind(), DatumKind::String(_)));
+    if doc.is_some() {
+        offset += 1;
+    }
+    let attributes = children.get(offset).filter(|attributes| {
+        matches!(
+            attributes.data().kind(),
+            DatumKind::Collection {
+                kind: crate::CollectionKind::Map,
+                ..
+            }
+        )
+    });
+    if name.metadata().is_none() && doc.is_none() && attributes.is_none() {
+        return Ok(None);
+    }
+    let mut metadata = match name.metadata() {
+        Some(metadata) => metadata.data(),
+        None => c.map(&[])?,
+    };
+    let mut docstring = metadata.get(&c.keyword(Name::new(None, "doc")))?;
+    if let Some(doc) = doc {
+        docstring = Some(doc.data());
+    }
+    if let Some(attributes) = attributes {
+        for (key, value) in attributes.data().entries()? {
+            metadata = c.assoc(&metadata, &key, &value)?;
+        }
+    }
+    Ok(Some((c.with_meta(&name.data(), &metadata)?, docstring)))
+}
+
 /// Compiler binding policy. It bounds named capabilities, not arbitrary JavaScript.
 #[derive(Clone, Debug, Default)]
 pub struct NamePolicy {
@@ -539,6 +584,8 @@ impl InteractiveCompiler {
         if staged.replaces {
             self.host
                 .set_namespace_imports(&self.namespace, staged.namespace_imports);
+            self.host
+                .set_namespace_metadata(&self.namespace, staged.symbol);
         } else {
             self.host
                 .add_namespace_imports(&self.namespace, staged.namespace_imports);
@@ -580,8 +627,14 @@ impl InteractiveCompiler {
             data: None,
         };
         let mut staged = if head == Some(Name::new(None, "ns")) {
-            let (namespace, staged) =
-                crate::compiler::session_ns(form, self.options.warning_mode).map_err(located)?;
+            let (namespace, mut staged) =
+                crate::compiler::session_ns(form, &self.namespace, self.options.warning_mode)
+                    .map_err(located)?;
+            staged.symbol = namespace_symbol(form).map_err(|message| crate::EvalDiagnostic {
+                message,
+                location: Some(form.span()),
+                data: None,
+            })?;
             self.set_namespace(&namespace);
             staged
         } else if head.as_ref().is_some_and(|name| {
@@ -595,6 +648,7 @@ impl InteractiveCompiler {
                 &self.aliases,
                 &self.requires,
                 &self.resolution,
+                self.options.warning_mode,
             )
             .map_err(located)?
         } else {

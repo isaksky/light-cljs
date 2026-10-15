@@ -505,7 +505,12 @@ adds an `ns` with every clause (its units print what `--compile` output of
 the namespace prints), the reload spellings over a source provider whose text
 changes between loads, warning mode and the unit maps (read back with Node's
 `SourceMap`); `eval_cli` loads and reloads examples/dev through `require` in
-`--repl`.
+`--repl`. The name metadata, docstring and attribute map of an `ns` form
+reach macros' `&env` as under `--compile`, and an `ns` form built from data
+is read from its data. Checked by hand in headless Chrome: the Phase 0 build
+of examples/dev, then the script of a heap-less `require` of an edited
+`app.view` (units with their `sourceURL`) between the hooks, printed
+`start`, `clicks: [1]`, `reloading`, `render: clicks: [2]`.
 
 ### Phase 2: watch
 

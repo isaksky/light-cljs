@@ -815,7 +815,10 @@ impl Form {
 }
 
 /// Readable assertion text from finite compiler data, preserving UTF-16 names.
-/// This is diagnostic formatting, never a representation used to transport forms.
+/// This is diagnostic formatting, never a representation used to transport
+/// forms, with one exception: a session directive built from data, not read
+/// from source text, is written with it to be read as a namespace header
+/// (`compiler::session_syntax`); its metadata is taken from the form itself.
 pub(crate) fn diagnostic_text(data: &Datum) -> Vec<u16> {
     fn text(out: &mut Vec<u16>, s: &str) {
         out.extend(s.encode_utf16());

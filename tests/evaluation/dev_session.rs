@@ -5,6 +5,7 @@
 //! the Phase 0 dev build of examples/dev through its driver.
 use crate::dev_execution::run_dev;
 use crate::temp_dir::TempDir;
+use light_cljs::compiler_data::{Form, Origin, Source};
 use light_cljs::dev_session::{Action, DevSession, script};
 use light_cljs::eval_session::FileLoadRequest;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
@@ -864,4 +865,161 @@ fn units_carry_source_maps_of_their_forms() {
         String::from_utf8(output.stdout).unwrap(),
         "src/app/maps.cljs 4 18\n"
     );
+}
+
+/// The name metadata, docstring and attribute map of an `ns` form reach the
+/// macro environment, as under `--compile`
+/// (`namespace_metadata_and_docstrings_reach_the_macro_environment_and_refresh_on_reuse`
+/// in tests/compiler/macros.rs), and an `ns` form without them forgets them;
+/// metadata on the `ns` form itself is not a clause.
+#[test]
+fn ns_metadata_reaches_the_macro_environment_and_refreshes() {
+    let dev = dev_session(
+        &[(
+            "app.macros",
+            "(ns app.macros) (defmacro read-meta [] \
+             (str (:foo (meta (:name (:ns &env)))) \"/\" (:doc (:ns &env))))",
+        )],
+        Rc::default(),
+    );
+    let engine = Evaluator::new(Default::default()).unwrap();
+    let read = |source: &str| apply(&engine, &dev.source(&input(source)));
+    assert_eq!(
+        read(
+            "(ns ^{:foo old} app.main \"doc\" {:foo new} \
+             (:require [app.macros :refer [read-meta]])) (read-meta)"
+        ),
+        "\"new/doc\""
+    );
+    assert_eq!(
+        read("(ns app.main (:require [app.macros :refer [read-meta]])) (read-meta)"),
+        "\"/\""
+    );
+    let tagged = dev.source(&input("^:tagged (ns app.tagged)"));
+    assert_eq!(shape(&tagged), ["ns app.tagged"]);
+    assert_eq!(
+        read("^:tagged (ns* (:require '[app.macros :as m])) (m/read-meta)"),
+        "\"/\""
+    );
+}
+
+/// A directive built from data, not read from the source text its span
+/// covers, is read from its data: the namespace it declares is entered, an
+/// error in it is located at the whole form, and a span over other text or
+/// over nothing changes neither.
+#[test]
+fn supplied_ns_forms_use_their_data() {
+    let mut session = EvalSession::new(EvalOptions::default()).unwrap();
+    let data = session
+        .read_forms(&input("(ns app.actual (:require [clojure.string :as s]))"))
+        .unwrap()
+        .remove(0)
+        .data();
+    let elsewhere = Source::new("other.cljs", "(ns app.other)");
+    let nowhere = Source::new("<supplied>", "");
+    for (span, origin) in [
+        (elsewhere.span(0..14).unwrap(), Origin::SuppliedData),
+        (elsewhere.span(0..14).unwrap(), Origin::Source),
+        (nowhere.span(0..0).unwrap(), Origin::SuppliedData),
+    ] {
+        let form = Form::from_data(data.clone(), span, origin);
+        session.eval_form(&form).unwrap();
+        assert_eq!(session.namespace(), "app.actual");
+        let value = session.eval_string("(s/upper-case \"x\")").unwrap().value;
+        assert_eq!(session.print(value).unwrap(), "\"X\"");
+        session.eval_string("(in-ns 'cljs.user)").unwrap();
+    }
+    let bad = session
+        .read_forms(&input("(ns app.bad (:unless []))"))
+        .unwrap()
+        .remove(0)
+        .data();
+    let form = Form::from_data(bad, elsewhere.span(0..14).unwrap(), Origin::SuppliedData);
+    let error = session.eval_form(&form).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "other.cljs:1:1: unsupported namespace clause"
+    );
+}
+
+/// Warning mode applies to `ns*` as to `ns`: `[lib :as js]` is the warning
+/// `--compile --warnings` gives, where strict analysis rejects it.
+#[test]
+fn nsstar_honors_warning_mode_for_a_reserved_alias() {
+    let dev = dev_session(&[], Rc::default());
+    let actions = dev.source(&input(
+        "(ns app.user) (ns* (:require '[clojure.string :as js])) true",
+    ));
+    assert_eq!(
+        shape(&actions)[..3],
+        [
+            "ns app.user",
+            "warnings In [clojure.string :as js], the alias name js is reserved for JavaScript \
+         interop [js-used-as-alias]",
+            "ns app.user",
+        ]
+    );
+    assert!(
+        matches!(actions.last(), Some(Action::Invoke(_))),
+        "{:?}",
+        shape(&actions)
+    );
+    dev.set_warning_mode(false);
+    let strict = dev.source(&input("(ns* (:require '[clojure.string :as js]))"));
+    assert!(
+        matches!(strict.last(), Some(Action::Error(error))
+            if error.message.contains("js is reserved")),
+        "{:?}",
+        shape(&strict)
+    );
+}
+
+/// The runtime's `load-file` hands the warnings of the file's forms to
+/// `EvalOptions::warnings`, located, before each form runs; a receiver that
+/// fails fails the load there, so the forms after the warning never run.
+#[test]
+fn runtime_load_file_delivers_warnings_and_stops_on_receiver_error() {
+    let file = "(swap! effects conj :before)\n(defn f [] (later 1))\n(swap! effects conj :after)";
+    for fail in [false, false, true] {
+        let warnings = Rc::new(RefCell::new(Vec::new()));
+        let received = warnings.clone();
+        let mut session = EvalSession::new(EvalOptions {
+            warning_mode: true,
+            warnings: Some(Rc::new(move |warning| {
+                received.borrow_mut().push(warning.to_string());
+                if fail {
+                    Err(light_cljs::evaluator::EvalError("receiver failed".into()))
+                } else {
+                    Ok(())
+                }
+            })),
+            file_provider: Some(Rc::new(move |_: &FileLoadRequest| {
+                Ok(Some(SourceInput::new("warn.cljs", file)))
+            })),
+            ..Default::default()
+        })
+        .unwrap();
+        session.eval_string("(def effects (atom []))").unwrap();
+        let loaded = session.eval_string("(load-file \"warn.cljs\")");
+        assert_eq!(loaded.is_err(), fail);
+        if fail {
+            assert!(
+                loaded.unwrap_err().to_string().contains("receiver failed"),
+                "the receiver's error is the load's"
+            );
+        }
+        assert_eq!(
+            *warnings.borrow(),
+            ["warn.cljs:2:13: Use of undeclared Var cljs.user/later [undeclared-var]"]
+        );
+        let effects = session.eval_string("@effects").unwrap().value;
+        assert_eq!(
+            session.print(effects).unwrap(),
+            if fail {
+                "[:before]"
+            } else {
+                "[:before :after]"
+            }
+        );
+    }
 }

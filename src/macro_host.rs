@@ -512,6 +512,22 @@ impl MacroHost {
             self.namespace_docs.insert(namespace.to_owned(), doc);
         }
     }
+    /// Replace `namespace`'s symbol and docstring in `&env` ([`Self::set_namespace_symbol`]),
+    /// or forget them: a session's `ns` form without metadata has none.
+    pub(crate) fn set_namespace_metadata(
+        &mut self,
+        namespace: &str,
+        symbol: Option<(
+            crate::compiler_data::Datum,
+            Option<crate::compiler_data::Datum>,
+        )>,
+    ) {
+        self.namespace_symbols.remove(namespace);
+        self.namespace_docs.remove(namespace);
+        if let Some((symbol, doc)) = symbol {
+            self.set_namespace_symbol(namespace, symbol, doc);
+        }
+    }
     pub(crate) fn set_renames(&mut self, caller: &str, renames: Vec<(String, String, String)>) {
         self.renames.insert(caller.to_owned(), renames);
     }
