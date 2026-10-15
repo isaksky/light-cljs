@@ -586,9 +586,11 @@ fn plan_with(
 
     // Which items move: at `Advanced`, the definitions removal could drop
     // when unread, and protocol and type definitions, each the only
-    // definition of the globals it defines. A lazy target's definition stays
-    // in its namespace, which is what its loadable loads, and so does a form
-    // holding a loadable site, which the manifest gives to its namespace.
+    // definition of the globals it defines. A raw `deftype*` or `defrecord*`
+    // runs its body when it defines the type, so it stays. A lazy target's
+    // definition stays in its namespace, which is what its loadable loads,
+    // and so does a form holding a loadable site, which the manifest gives to
+    // its namespace.
     let mut targets = vec![false; emitted.globals.len()];
     for target in &emitted.lazy_targets {
         if let Some(global) = target.global {
@@ -603,7 +605,7 @@ fn plan_with(
                 && (prepared.removable(id)
                     || matches!(
                         emitted.exprs[id.0].kind,
-                        ExprKind::DefProtocol { .. } | ExprKind::DefType { .. }
+                        ExprKind::DefProtocol { .. } | ExprKind::DefType { body: None, .. }
                     ))
                 && graph.sites[position].is_empty()
                 && !graph.defines[position].is_empty()

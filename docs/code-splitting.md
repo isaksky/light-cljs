@@ -414,8 +414,9 @@ could drop (light-cljs-277): one of a Var that another form defines too,
 since two chunks would assign it; the definition of a `loadable`'s target
 Var, so that the chunk a loadable loads, its root's namespace's, defines its
 target; and a form holding a `loadable` site, which the manifest gives to its
-namespace's chunk. A program that reaches reflection pins everything, so a
-registered namespace is never split across chunks.
+namespace's chunk. A raw `deftype*` or `defrecord*` stays as well, since it
+runs its body when it defines the type. A program that reaches reflection
+pins everything, so a registered namespace is never split across chunks.
 
 Reach is monotone: if item `a` reads item `b`, every root reaching `a`
 reaches `b`, so `sig(b) ⊇ sig(a)`. Consequences, each relied on below:
@@ -996,7 +997,8 @@ runtime units toward their first readers; per-chunk runtime factories.
     `defprotocol` or a `deftype`), the globals it assigns and its `loadable`
     sites.
   - An item is movable when it is a removal candidate or a
-    `DefProtocol`/`DefType` form, defines a global, is the only item that
+    `DefProtocol` or `DefType` form (not a raw `deftype*`, whose body runs
+    when it defines the type), defines a global, is the only item that
     defines each global it defines, defines no `loadable` target and holds
     no site ("Items and signatures"). A `declare` defines nothing, so a
     forward-declared function moves.
@@ -1075,7 +1077,10 @@ runtime units toward their first readers; per-chunk runtime factories.
     constructing it, a forward-declared helper, and a Var a feature assigns
     (through the shared chunk's setter), and keeps a protocol a startup
     `extend-type` names, a Var defined twice and a function holding a
-    loadable in their namespace. examples/features plans the shared chunk at
+    loadable in their namespace. A raw `deftype*` whose body prints stays in
+    startup and prints first, as in the single file; a definition only
+    `ApplicationOptions::exports` keeps stays in startup with the helper it
+    shares with a feature. examples/features plans the shared chunk at
     `Advanced` and its namespace plan stays the three files of Phase 2.
 
 - **Item signatures.** Extend `chunks::plan` with the item reference graph

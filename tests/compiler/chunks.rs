@@ -1265,6 +1265,116 @@ fn definitions_move_with_their_constructors_and_setters() {
     assert_eq!(plan.chunks[1].setters.len(), 1);
 }
 
+/// A raw `deftype*` runs its body when it defines the type, so it stays in
+/// its namespace's chunk although only a feature constructs the type: the
+/// body's line prints before startup's, as in the single file.
+#[test]
+fn raw_type_bodies_stay_in_their_namespace() {
+    static RAW: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [app.shared :as shared] [light.lazy :as lazy]))\n\
+             (def editor (lazy/loadable app.editor/start))\n\
+             (js/console.log \"menu\")\n\
+             (defn start [] (-> (lazy/load editor) (.then (fn [f] (js/console.log (f)) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/shared.cljs",
+            "(ns app.shared)\n(deftype* T [x] {} (js/console.log \"type\"))\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor (:require [app.shared :as shared]))\n\
+             (defn start [] (.-x (shared/T. 5)))\n",
+        ),
+    ];
+    let program = analyze(RAW);
+    let (record, _) = chunk_files(&program);
+    assert_eq!(record, printed("app.main.js", r"type\nmenu\n5\n"));
+    let prepared = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let plan = plan(&program, &prepared);
+    assert!(!plan.moves_definitions(), "{:?}", moved(&prepared, &plan));
+}
+
+/// A definition that only an explicit export keeps is reached by no root:
+/// it stays in its namespace, startup's here, and the walks run again from
+/// it, so the helper it shares with a feature stays in startup too instead
+/// of moving to the feature's chunk, which startup cannot import.
+#[test]
+fn explicit_exports_root_their_movable_dependencies() {
+    static EXPORTS: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [app.shared :as shared] [light.lazy :as lazy]))\n\
+             (def editor (lazy/loadable app.editor/start))\n\
+             (defn start [] (-> (lazy/load editor) (.then (fn [f] (js/console.log (f)) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/shared.cljs",
+            "(ns app.shared)\n\
+             (defn helper [x] (str \"<\" x \">\"))\n\
+             (defn exported [x] (helper (str x \"!\")))\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor (:require [app.shared :as shared]))\n\
+             (defn start [] (shared/helper \"editor\"))\n",
+        ),
+    ];
+    let program = analyze(EXPORTS);
+    let global = |name: &str| {
+        light_cljs::GlobalId(
+            program
+                .globals
+                .iter()
+                .position(|global| global.namespace == "app.shared" && global.name == name)
+                .unwrap(),
+        )
+    };
+    let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    options.exports = vec![global("exported")];
+    options.no_inlining = true;
+    let prepared = prepare_application(&program, options);
+    let plan = plan(&program, &prepared);
+    check(&program, &prepared, &plan, OptimizationLevel::Advanced);
+    assert_eq!(
+        moved(&prepared, &plan),
+        ["app.main.js: ", "app.editor.js: "]
+    );
+    for name in ["helper", "exported"] {
+        assert_eq!(plan.global_chunks[global(name).0], STARTUP, "{name}");
+    }
+    // Without the export, the helper moves to the editor, its one reader.
+    let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    options.no_inlining = true;
+    let alone = prepare_application(&program, options);
+    assert_eq!(
+        moved(&alone, &plan_of(&program, &alone)),
+        ["app.main.js: ", "app.editor.js: app.shared/helper"]
+    );
+    let output = prepared.emit_chunks();
+    let files = output
+        .files
+        .iter()
+        .map(|file| (file.name.as_str(), file.source.as_str()))
+        .collect::<Vec<_>>();
+    let record = run_modules(&files, "app.main.js").unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(record, printed("app.main.js", r"<editor>\n"));
+    check_imports(&output, OptimizationLevel::Advanced);
+}
+
+/// The plan of `prepared`, checked.
+fn plan_of(program: &Program, prepared: &PreparedApplication) -> ChunkPlan {
+    let plan = plan(program, prepared);
+    check(program, prepared, &plan, prepared.level());
+    plan
+}
+
 /// A program that reaches reflection stays namespace granular at
 /// `Advanced` (the `reflection` fixture, which [`matrix`] runs at every
 /// level): the plan would move app.shared's helper to the editor, which

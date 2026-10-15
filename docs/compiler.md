@@ -1729,8 +1729,8 @@ too: a helper of a shared namespace that only one feature reads moves to
 that feature's chunk, and one that two features read but startup does not
 to a chunk of its own those two import (docs/code-splitting.md, "Items and
 signatures"). The other forms stay in their namespace's chunk: effects, a
-`defmulti`, a `defmethod`, the definition of a `loadable`'s target, a form
-holding a `loadable`, a Var defined twice. A program that reaches
+`defmulti`, a `defmethod`, a raw `deftype*`, the definition of a
+`loadable`'s target, a form holding a `loadable`, a Var defined twice. A program that reaches
 reflection ("Namespace reflection and reading": `*ns*`, `find-ns`, the
 reader, `eval`, ...) keeps every form in its namespace's chunk at `advanced`
 too, so the namespaces it registers are whole.
