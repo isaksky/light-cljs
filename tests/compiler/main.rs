@@ -47,6 +47,7 @@ mod call_shapes;
 mod case_char_string_accepted;
 mod case_char_string_gap;
 mod case_numeric;
+mod chunks;
 mod cljc_prefixes;
 mod compile_time_units;
 mod configured_custom_source_context;

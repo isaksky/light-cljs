@@ -13,6 +13,7 @@ pub mod analyzer;
 pub mod application;
 pub mod call_shapes;
 mod char_classes;
+pub mod chunks;
 mod compilation_session;
 pub mod compiler;
 mod compiler_binding_macros;
