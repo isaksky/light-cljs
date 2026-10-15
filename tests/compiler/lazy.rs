@@ -7,6 +7,7 @@ use super::optimization::execute;
 use crate::phase_oracle::{Case, run};
 use light_cljs::analyzer::{AnalysisOptions, LazyTargetId};
 use light_cljs::compiler::analyze_namespace_entry_with_provider;
+use light_cljs::eval_session::FileLoadRequest;
 use light_cljs::source_provider::{LoadError, LoadRequest, SourceInput};
 use light_cljs::{
     ApplicationOptions, EvalOptions, EvalSession, ExprKind, MacroHost, NamespaceCompileError,
@@ -443,31 +444,23 @@ mod phase_oracles {
     }
 }
 
-/// The REPL loads the namespace of a loadable it has not loaded, as a
-/// `require` of it would, before the form runs.
-#[test]
-fn the_repl_loads_the_namespace_a_loadable_names() {
-    static FILES: &[(&str, &str)] = &[
-        (
-            "app/editor.cljs",
-            "(ns app.editor (:require [app.main :as main]))\n\
-             (defn start [] [:started (main/ready)])\n",
-        ),
-        // A lazy target that requires the namespace loading it is resident
-        // while it loads.
-        (
-            "app/main.cljs",
-            "(ns app.main)\n\
-             (def editor (light.lazy/loadable app.editor/start))\n\
-             (defn ready [] :ready)\n",
-        ),
-    ];
+/// A REPL session over `files`, evaluating source text to its printed value
+/// or its error message after the name of the file the error is in.
+fn repl(
+    files: &'static [(&'static str, &'static str)],
+) -> impl FnMut(&str) -> Result<String, String> {
     let mut session = EvalSession::new(EvalOptions {
-        source_provider: Some(Rc::new(provider(FILES))),
+        source_provider: Some(Rc::new(provider(files))),
+        file_provider: Some(Rc::new(move |request: &FileLoadRequest| {
+            Ok(files
+                .iter()
+                .find(|(file, _)| *file == request.path)
+                .map(|(file, source)| SourceInput::new(*file, *source)))
+        })),
         ..Default::default()
     })
     .unwrap();
-    let mut eval = |source: &str| {
+    move |source| {
         session
             .eval_string(source)
             .map(|result| {
@@ -475,24 +468,118 @@ fn the_repl_loads_the_namespace_a_loadable_names() {
                 session.release(result.value).unwrap();
                 text
             })
-            .map_err(|error| error.message)
-    };
+            .map_err(|error| {
+                let file = error.location.map(|span| span.source().name().to_owned());
+                format!("{}: {}", file.unwrap_or_default(), error.message)
+            })
+    }
+}
+
+/// `app.editor` requires `app.main`, which holds a loadable of `app.editor`.
+const EDITOR: (&str, &str) = (
+    "app/editor.cljs",
+    "(ns app.editor (:require [app.main :as main]))\n\
+     (def loads (swap! main/loads inc))\n\
+     (defn start [] [:started (main/ready)])\n",
+);
+const MAIN: (&str, &str) = (
+    "app/main.cljs",
+    "(ns app.main)\n\
+     (def loads (atom 0))\n\
+     (def editor (light.lazy/loadable app.editor/start))\n\
+     (defn ready [] :ready)\n",
+);
+
+/// The REPL loads the namespace of a loadable it has not loaded, as a
+/// `require` of it would: before a top-level form runs, and after the
+/// namespace holding the loadable when that namespace is loading, as the
+/// compiler's loader does, so a target may require the namespace naming it.
+#[test]
+fn the_repl_loads_the_namespace_a_loadable_names() {
+    static BACK_EDGE: &[(&str, &str)] = &[EDITOR, MAIN];
+    // The target first: app.main loads while app.editor does.
+    let mut eval = repl(BACK_EDGE);
     assert_eq!(
         eval("(light.lazy/loadable app.editor/start)"),
         Ok("nil".into())
     );
-    // Both namespaces are loaded now.
     assert_eq!(
-        eval("[(app.editor/start) app.main/editor]"),
-        Ok("[[:started :ready] nil]".into())
+        eval("[(app.editor/start) app.main/editor @app.main/loads]"),
+        Ok("[[:started :ready] nil 1]".into())
     );
     assert_eq!(
         eval("(light.lazy/loadable app.editor/stop)"),
-        Err("lazy target app.editor/stop is not defined".into())
+        Err("<eval>.cljs: lazy target app.editor/stop is not defined".into())
     );
     assert_eq!(
         eval("(light.lazy/loadable app.nope)"),
-        Err("lazy target namespace app.nope not found".into())
+        Err("<eval>.cljs: lazy target namespace app.nope not found".into())
     );
     assert_eq!(eval("(light.lazy/loadable app.editor)"), Ok("nil".into()));
+    // The namespace naming the target first: app.editor loads after app.main.
+    let mut eval = repl(BACK_EDGE);
+    assert_eq!(eval("(require 'app.main)"), Ok("nil".into()));
+    assert_eq!(
+        eval("[(app.editor/start) @app.main/loads]"),
+        Ok("[[:started :ready] 1]".into())
+    );
+}
+
+/// A Var target is checked once every namespace the REPL loads for a form is
+/// loaded, at the site that names it.
+#[test]
+fn the_repl_checks_lazy_targets_after_their_namespaces_load() {
+    static MUTUAL: &[(&str, &str)] = &[
+        (
+            "app/a.cljs",
+            "(ns app.a)\n(def b (light.lazy/loadable app.b))\n",
+        ),
+        (
+            "app/b.cljs",
+            "(ns app.b)\n(def a (light.lazy/loadable app.a/missing))\n",
+        ),
+    ];
+    let mut eval = repl(MUTUAL);
+    assert_eq!(
+        eval("(light.lazy/loadable app.a)"),
+        Err("app/b.cljs: lazy target app.a/missing is not defined".into())
+    );
+    // Nothing the failed form recorded carries over.
+    assert_eq!(eval(":next"), Ok(":next".into()));
+}
+
+/// `load-file` evaluates its forms through a runtime callback, which loads
+/// lazy targets the same way.
+#[test]
+fn load_file_loads_the_namespaces_its_loadables_name() {
+    static FILES: &[(&str, &str)] = &[
+        (
+            "script.cljs",
+            "(def l (light.lazy/loadable app.editor/start))\n[l (app.editor/start)]\n",
+        ),
+        ("undefined.cljs", "(light.lazy/loadable app.editor/stop)\n"),
+        ("missing.cljs", "(light.lazy/loadable app.nope)\n"),
+        ("back.cljs", "(require 'app.main)\n@app.main/loads\n"),
+        EDITOR,
+        MAIN,
+    ];
+    let mut eval = repl(FILES);
+    assert_eq!(
+        eval("(load-file \"script.cljs\")"),
+        Ok("[nil [:started :ready]]".into())
+    );
+    assert_eq!(eval("@app.main/loads"), Ok("1".into()));
+    let error = eval("(load-file \"undefined.cljs\")").unwrap_err();
+    assert!(
+        error.contains("lazy target app.editor/stop is not defined"),
+        "{error}"
+    );
+    let error = eval("(load-file \"missing.cljs\")").unwrap_err();
+    assert!(
+        error.contains("lazy target namespace app.nope not found"),
+        "{error}"
+    );
+    // The namespace naming the target first, through the callback.
+    let mut eval = repl(FILES);
+    assert_eq!(eval("(load-file \"back.cljs\")"), Ok("1".into()));
 }

@@ -5,6 +5,15 @@ use crate::compiler_data::{DatumKind, Form, Name, Source};
 use crate::source_provider::SourceInput;
 use crate::{AnalysisError, AnalysisErrorKind, ExprContext, MacroHost, Program};
 
+/// The `light.lazy/loadable` references a session has analyzed but not acted
+/// on: the namespaces to load, each with the site that named it first, and
+/// the Var targets to check once they are loaded, with their sites.
+#[derive(Default)]
+pub(crate) struct LazyQueue {
+    pub(crate) loads: std::collections::VecDeque<(String, crate::compiler_data::SourceSpan)>,
+    pub(crate) checks: Vec<(String, String, crate::compiler_data::SourceSpan)>,
+}
+
 type NamespaceContext = (Vec<(String, String)>, Vec<String>, NamespaceResolution);
 type NamespaceDirective = (
     Vec<crate::source_provider::LoadRequest>,
@@ -23,6 +32,8 @@ pub(crate) struct InteractiveCompiler {
     pub(crate) policy: NamePolicy,
     exposed: std::collections::HashSet<Name>,
     contexts: std::collections::HashMap<String, NamespaceContext>,
+    /// See `eval_session::drain_lazy`.
+    pub(crate) lazy: LazyQueue,
 }
 impl InteractiveCompiler {
     #[cfg(test)]
@@ -44,6 +55,7 @@ impl InteractiveCompiler {
             policy: NamePolicy::default(),
             exposed: Default::default(),
             contexts: Default::default(),
+            lazy: LazyQueue::default(),
         }
     }
     pub(crate) fn namespace(&self) -> &str {

@@ -551,10 +551,13 @@ output.
   - `analyze_namespaces` over a fixed slice of sources reports a lazy target
     whose namespace is not among them as "lazy target namespace app.nope not
     found".
-  - The REPL (`EvalSession` and runtime source callbacks) loads the namespace
-    of a loadable it has neither loaded nor entered, as a `require` would,
-    before the form runs, then requires the Var to be defined. A namespace
-    still loading, because it requires the namespace naming it, is resident.
+  - The REPL (`EvalSession` and the `load-file` callback) records the
+    loadables of each form it analyzes and loads each namespace it has
+    neither loaded nor entered, as a `require` would, once no namespace is
+    loading: before a top-level form runs, or after the outermost namespace
+    load when the form belongs to a namespace being loaded, as the loader
+    visits targets after their source. So a target may require the namespace
+    naming it. Var targets are checked after those loads, at their sites.
 - **Library.** `src/compiler_libraries/light/lazy.cljs`: `Loadable` with
   `IDeref`, and the functions `load` and `loaded?`. Register it with the
   bundled first-party libraries in `src/compiler_libraries.rs`, which the

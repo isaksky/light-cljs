@@ -351,13 +351,17 @@ impl EvalSession {
                 namespace: self.namespace(),
             });
         }
+        if self.loading.borrow().is_empty() {
+            // What an earlier top-level form recorded and failed to act on.
+            self.compiler.borrow_mut().lazy = Default::default();
+        }
         self.engine.input_action("clearError", 0)?;
         let requests = self.compiler.borrow_mut().directive(form)?;
         if requests.is_some() {
             self.sync_namespace()?;
         }
         if let Some((requests, staged)) = requests {
-            self.load_requests(requests, form, false)?;
+            self.load_requests(requests, &form.span(), false)?;
             self.compiler
                 .borrow_mut()
                 .finish_directive(staged)
@@ -366,6 +370,7 @@ impl EvalSession {
                     message,
                     location: Some(form.span()),
                 })?;
+            self.drain_lazy()?;
             return Ok(EvalResult {
                 value: self.value(&Datum::new(DatumKind::Nil))?,
                 namespace: self.namespace(),
@@ -373,36 +378,49 @@ impl EvalSession {
         }
         let analyzed = self.analyze(form)?;
         // A `light.lazy/loadable` of a namespace the session has not loaded
-        // loads it, as a `require` would, before the form runs.
-        let requests = lazy_requests(
+        // loads it, as a `require` would: before a top-level form runs, and
+        // after the namespace that holds the form when one is loading.
+        record_lazy(
+            &mut self.compiler.borrow_mut(),
             &analyzed.program,
-            &self.namespace(),
             &self.loaded.borrow(),
-            &self.loading.borrow(),
+            &form.span(),
         );
-        self.load_requests(requests, form, true)?;
-        if let Some(message) = undefined_lazy_target(
-            &analyzed.program,
-            &self.compiler.borrow(),
-            &self.loading.borrow(),
-        ) {
-            return Err(EvalDiagnostic {
-                data: None,
-                message,
-                location: Some(form.span()),
-            });
-        }
+        self.drain_lazy()?;
         self.evaluate(&analyzed)
+    }
+    /// Act on the recorded lazy references once no namespace is loading, as
+    /// the compiler's loader visits a source's lazy targets after the source:
+    /// load each recorded namespace not loaded yet, which may record more,
+    /// then check each recorded Var target. A target may thus require the
+    /// namespace that names it.
+    fn drain_lazy(&mut self) -> Result<(), EvalDiagnostic> {
+        if !self.loading.borrow().is_empty() {
+            return Ok(());
+        }
+        loop {
+            let next = self.compiler.borrow_mut().lazy.loads.pop_front();
+            let Some((name, site)) = next else { break };
+            let request = lazy_request(&name, &self.namespace());
+            self.load_requests(vec![request], &site, true)?;
+        }
+        check_lazy(&mut self.compiler.borrow_mut())
     }
     /// Load and evaluate each requested namespace the session has not
     /// loaded, then return to the current namespace. `lazy` requests come
-    /// from `light.lazy/loadable` sites instead of a `require`.
+    /// from `light.lazy/loadable` sites instead of a `require`; `location`
+    /// is the form that made the requests.
     fn load_requests(
         &mut self,
         requests: Vec<LoadRequest>,
-        form: &Form,
+        location: &SourceSpan,
         lazy: bool,
     ) -> Result<(), EvalDiagnostic> {
+        let located = |message: String| EvalDiagnostic {
+            data: None,
+            message,
+            location: Some(location.clone()),
+        };
         for request in requests {
             let name = String::from_utf16_lossy(request.namespace.name());
             if self.loaded.borrow().contains(&name)
@@ -411,14 +429,10 @@ impl EvalSession {
                 continue;
             }
             if self.loading.borrow().contains(&name) {
-                return Err(EvalDiagnostic {
-                    data: None,
-                    message: format!(
-                        "namespace load cycle: {} -> {name}",
-                        self.loading.borrow().join(" -> ")
-                    ),
-                    location: Some(form.span()),
-                });
+                return Err(located(format!(
+                    "namespace load cycle: {} -> {name}",
+                    self.loading.borrow().join(" -> ")
+                )));
             }
             if name == "cljs.core" || name == "clojure.core" {
                 continue;
@@ -429,22 +443,10 @@ impl EvalSession {
                 self.options
                     .source_provider
                     .as_ref()
-                    .ok_or_else(|| EvalDiagnostic {
-                        data: None,
-                        message: format!("no source provider for {name}"),
-                        location: Some(form.span()),
-                    })?
+                    .ok_or_else(|| located(format!("no source provider for {name}")))?
                     .load(&request)
-                    .map_err(|e| EvalDiagnostic {
-                        data: None,
-                        message: e.to_string(),
-                        location: Some(form.span()),
-                    })?
-                    .ok_or_else(|| EvalDiagnostic {
-                        data: None,
-                        message: missing_namespace(&name, lazy),
-                        location: Some(form.span()),
-                    })?
+                    .map_err(|e| located(e.to_string()))?
+                    .ok_or_else(|| located(missing_namespace(&name, lazy)))?
             };
             let namespace = self.namespace();
             self.loading.borrow_mut().push(name.clone());
@@ -991,56 +993,59 @@ fn source_operations(form: Form) -> Vec<Form> {
         None => vec![form],
     }
 }
-/// The namespaces `program`'s `light.lazy/loadable` sites name that the
-/// session has neither loaded nor entered and is not loading, as requests
-/// from `namespace`. A target that is loading, because it requires the
-/// namespace that loads it, is resident, as in a compiled program.
-fn lazy_requests(
+/// Record the `light.lazy/loadable` references of `program`, a form at
+/// `site`: each namespace the session has neither loaded nor entered, to
+/// load, and each Var target, to check once its namespace is loaded.
+fn record_lazy(
+    compiler: &mut InteractiveCompiler,
     program: &crate::Program,
-    namespace: &str,
     loaded: &HashSet<String>,
-    loading: &[String],
-) -> Vec<LoadRequest> {
-    let mut names: Vec<&String> = Vec::new();
+    site: &SourceSpan,
+) {
     for target in &program.lazy_targets {
         let name = &program.lazy_namespaces[target.namespace];
         if !(loaded.contains(name)
-            || loading.contains(name)
             || program.namespaces.contains(name)
-            || names.contains(&name))
+            || compiler.lazy.loads.iter().any(|(queued, _)| queued == name))
         {
-            names.push(name);
+            compiler.lazy.loads.push_back((name.clone(), site.clone()));
+        }
+        if let Some(global) = target.global {
+            let global = &program.globals[global.0];
+            compiler.lazy.checks.push((
+                global.namespace.clone(),
+                global.name.clone(),
+                site.clone(),
+            ));
         }
     }
-    names
-        .into_iter()
-        .map(|name| LoadRequest {
-            namespace: crate::compiler_data::Name::new(None, name),
-            requesting_namespace: crate::compiler_data::Name::new(None, namespace),
-            requesting_file: None,
-            reload: Reload::None,
-        })
-        .collect()
 }
 
-/// The error for the first Var target of `program`'s `light.lazy/loadable`
-/// sites that the session does not define once their namespaces are loaded.
-/// A namespace still loading may define its Var later.
-fn undefined_lazy_target(
-    program: &crate::Program,
-    compiler: &InteractiveCompiler,
-    loading: &[String],
-) -> Option<String> {
-    program.lazy_targets.iter().find_map(|target| {
-        let global = &program.globals[target.global?.0];
-        (!loading.contains(&global.namespace) && !compiler.defines(&global.namespace, &global.name))
-            .then(|| {
-                format!(
-                    "lazy target {}/{} is not defined",
-                    global.namespace, global.name
-                )
-            })
-    })
+/// A request for the target namespace of a lazy reference.
+fn lazy_request(name: &str, requesting: &str) -> LoadRequest {
+    LoadRequest {
+        namespace: crate::compiler_data::Name::new(None, name),
+        requesting_namespace: crate::compiler_data::Name::new(None, requesting),
+        requesting_file: None,
+        reload: Reload::None,
+    }
+}
+
+/// Check the recorded Var targets, once their namespaces are loaded: the
+/// first one the session does not define is an error at its site.
+fn check_lazy(compiler: &mut InteractiveCompiler) -> Result<(), EvalDiagnostic> {
+    let checks = std::mem::take(&mut compiler.lazy.checks);
+    for (namespace, name, site) in checks {
+        if !compiler.defines(&namespace, &name) {
+            compiler.lazy = Default::default();
+            return Err(EvalDiagnostic {
+                data: None,
+                message: format!("lazy target {namespace}/{name} is not defined"),
+                location: Some(site),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn missing_namespace(name: &str, lazy: bool) -> String {
@@ -1071,11 +1076,17 @@ fn callback_source(
         return Err(EvalError("compiler source byte limit exceeded".into()).into());
     }
     // Load and evaluate each requested namespace not loaded yet, then return
-    // to the current namespace; `lazy` requests come from loadable sites.
+    // to the current namespace; `lazy` requests come from loadable sites, and
+    // `location` is the form that made the requests.
     let load = |requests: Vec<LoadRequest>,
                 lazy: bool,
-                located: &dyn Fn(String) -> EvalDiagnostic|
+                location: &SourceSpan|
      -> Result<(), EvalDiagnostic> {
+        let located = |message: String| EvalDiagnostic {
+            message,
+            location: Some(location.clone()),
+            data: None,
+        };
         for request in requests {
             let name = String::from_utf16_lossy(request.namespace.name());
             if name == "cljs.core"
@@ -1121,6 +1132,19 @@ fn callback_source(
         }
         Ok(())
     };
+    // `EvalSession::drain_lazy` through this loader.
+    let drain_lazy = || -> Result<(), EvalDiagnostic> {
+        if !loading.borrow().is_empty() {
+            return Ok(());
+        }
+        loop {
+            let next = compiler.borrow_mut().lazy.loads.pop_front();
+            let Some((name, site)) = next else { break };
+            let request = lazy_request(&name, compiler.borrow().namespace());
+            load(vec![request], true, &site)?;
+        }
+        check_lazy(&mut compiler.borrow_mut())
+    };
     let mut cursor = 0;
     let mut last = call.value(&Datum::new(DatumKind::Nil))?;
     loop {
@@ -1136,16 +1160,21 @@ fn callback_source(
                 location: Some(form.span()),
                 data: None,
             };
+            if loading.borrow().is_empty() {
+                // What an earlier top-level form recorded and failed to act on.
+                compiler.borrow_mut().lazy = Default::default();
+            }
             let requests = compiler.borrow_mut().directive(&form)?;
             if requests.is_some() {
                 callback_sync_namespace(call, compiler, namespace_update)?;
             }
             if let Some((requests, staged)) = requests {
-                load(requests, false, &located)?;
+                load(requests, false, &form.span())?;
                 compiler
                     .borrow_mut()
                     .finish_directive(staged)
                     .map_err(located)?;
+                drain_lazy()?;
                 let value = call.value(&Datum::new(DatumKind::Nil))?;
                 call.release_scoped(last)?;
                 last = value;
@@ -1163,15 +1192,13 @@ fn callback_source(
                                 .or_else(|| Some(form.span())),
                             data: None,
                         })?;
-                let namespace = compiler.borrow().namespace().to_owned();
-                let requests =
-                    lazy_requests(&program, &namespace, &loaded.borrow(), &loading.borrow());
-                load(requests, true, &located)?;
-                if let Some(message) =
-                    undefined_lazy_target(&program, &compiler.borrow(), &loading.borrow())
-                {
-                    return Err(located(message));
-                }
+                record_lazy(
+                    &mut compiler.borrow_mut(),
+                    &program,
+                    &loaded.borrow(),
+                    &form.span(),
+                );
+                drain_lazy()?;
                 let value = call
                     .unit(&crate::emitter::emit_interactive_unit(&program))
                     .map_err(|error| located(error.0))?;

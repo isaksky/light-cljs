@@ -1510,8 +1510,9 @@ provides, a target in the site's own namespace and `cljs.core`. The `Program`
 also records the static require graph (`namespace_requires`, by source index)
 and which sources only lazy references reach (`namespace_lazy_only`). The REPL
 loads the namespace of a loadable it has not loaded, as a `require` would,
-before the form runs. Until the `light.lazy` library exists, a loadable
-evaluates to `nil`.
+before a top-level form runs, or after the outermost namespace load when the
+form belongs to a namespace being loaded, then checks the Var targets. Until
+the `light.lazy` library exists, a loadable evaluates to `nil`.
 
 Standalone file/stdin/text modes accept `def` and interop, but a standalone
 `(ns ...)` form is rejected (`unsupported construct: ns`): select an entry with
