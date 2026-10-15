@@ -1635,6 +1635,116 @@ may expose everything only under `default`, and named imports read `undefined`.
 That is bundler behavior, not compiler behavior; bind such a package with
 `:default` and read its members from that binding.
 
+### Dev builds
+
+Add `--reloadable --out-dir DIR` to `--compile --entry NS --source-root DIR`
+(library: `dev_build::emit_dev_build`) to write a dev build into `DIR` instead
+of printing one expression: a directory whose namespaces a running
+application can replace one at a time (docs/dev-workflow.md, "The dev build").
+
+```text
+DIR/
+  runtime.js           globalThis.__lightRuntime = (factory)(); the whole runtime, once
+  client.js            the dev client stub, which defines globalThis.__lightDev.define
+  app.state.js         one unit per namespace, in dependency order,
+  app.state.js.map       each with its source map
+  ...
+  manifest.json        the entry, the namespaces with their files, requires and macros, the hooks
+  index.js             loads runtime.js, client.js and the units in manifest order
+```
+
+A unit's file is `NAMESPACE.js`, except that the namespaces `runtime`,
+`client` and `index` get `runtime$.js`, `client$.js` and `index$.js`, since
+no namespace name contains a `$`.
+
+A unit is the namespace's forms emitted as an interactive unit, the storage
+model of the session (docs/evaluation.md): every definition is
+`globalThis.__lightApplicationRoots["ns/name"]`, read at each use, and nothing
+is sealed in a closure. The unit is wrapped in a registration call,
+
+```js
+globalThis.__lightDev.define("app.view", ["app.macros", "app.state"], (__lightInteractiveRuntime) => { globalThis.__lightApplicationRoots ??= Object.create(null); return (() => {
+  /* the namespace's registration and forms */
+})()
+; });
+//# sourceMappingURL=app.view.js.map
+```
+
+whose second argument lists the namespace's source requires. The stub's
+`define` records the unit by namespace in `__lightDev.units` and runs it
+against `globalThis.__lightRuntime` at once, keeping its value in
+`__lightDev.values`. Evaluating a unit again replaces its namespace's
+definitions for every caller, with the session's semantics: `def` values are
+reinitialized and `defonce` values kept, a redefined record or type gets a new
+constructor while old instances keep their fields and methods, and functions
+saved in data keep their old code.
+
+Units are emitted from the one whole-program `Program`, by namespace entry
+(`Program::namespace_entries`), at `none` semantics with the whole runtime:
+they never go through application preparation. Each registers its own
+namespace's reader context and sets `*ns*` as it starts, as compiled output
+does, so reflection works, and the first unit registers every namespace of
+the build, as single-file output does before its first form runs, so a
+namespace that loads early finds the later ones. The CLI analyzes a dev build in warning mode
+(`--warnings`). Each unit's source map names every source relative to `DIR`
+and maps the unit's text to its `.cljs` lines, columns and names, so
+`node --enable-source-maps` reports a throw at the source.
+
+`manifest.json` holds the entry namespace; the namespaces in load order, each
+with its file, its source requires (`Program::namespace_requires`) and
+whether it declares macros (`Program::declares_macros`), whose requirers a
+change must recompile; and the functions marked `^:dev/before-load` and
+`^:dev/after-load` (or their `-async` variants, `"async": true`, which take a
+continuation), in definition order:
+
+```json
+{
+  "entry": "app.main",
+  "namespaces": [
+    {"name": "app.state", "file": "app.state.js", "requires": [], "macros": false},
+    {"name": "app.macros", "file": "app.macros.js", "requires": [], "macros": true},
+    {"name": "app.view", "file": "app.view.js", "requires": ["app.macros", "app.state"], "macros": false},
+    {"name": "app.main", "file": "app.main.js", "requires": ["app.state", "app.view"], "macros": false}
+  ],
+  "before-load": [
+    {"name": "app.main/stop", "async": false}
+  ],
+  "after-load": [
+    {"name": "app.main/reload", "async": false}
+  ]
+}
+```
+
+`index.js` loads the files in that order, as script elements after its own
+in a page and with `require` in Node (CommonJS), and sets
+`globalThis.__lightDevLoaded` to a promise of the entry namespace's value,
+the value of the single-file output. A file that throws while it runs
+rejects the promise with that error and leaves the later files unloaded; in a
+page the error is the page's next `error` event before the script's `load`.
+Hooks are listed in the order of their (last) definitions, also when a
+`declare` named one earlier. Namespaces that only lazy references
+reach load after the entry, and their loadables are resident, as in a single
+file.
+
+```sh
+cargo run --quiet -- --compile --entry app.main --source-root examples/dev \
+  --reloadable --out-dir /tmp/light-dev
+node -e 'require("/tmp/light-dev/index.js"); __lightDevLoaded.then(start => start())'
+# start
+# clicks: [1]
+```
+
+A dev build takes none of `--esm`, `--optimize`, `--size-report`,
+`--pseudo-names`, `--define` and the source map flags, and `--out-dir`
+requires `--reloadable`. The Node driver `tests/support/dev_execution.mjs`
+runs a dev build or a single-file build, calls a start function, and applies
+replacement units with the hook protocol (the before-load functions in
+reverse order, the units, then the after-load functions); the dev builds of
+the phase oracles, the size ratchet fixtures, examples/dev and
+examples/features print through it what their `--optimize none` builds print
+(`tests/compiler/dev_build.rs`). There is no watch loop, server or dev client
+yet.
+
 ### Complete collection program
 
 [examples/collections](../examples/collections) contains `batch.data`,

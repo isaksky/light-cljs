@@ -28,6 +28,10 @@ mod generated;
 #[path = "../support/chunked_execution.rs"]
 mod chunked_execution;
 
+// The Node driver for dev builds and their `none` oracles.
+#[path = "../support/dev_execution.rs"]
+mod dev_execution;
+
 // Temporary directories removed when their test ends, however it ends.
 #[path = "../support/temp_dir.rs"]
 #[allow(dead_code)]
@@ -63,6 +67,7 @@ mod declare_values;
 mod deferred;
 mod definitions;
 mod destructuring_completion;
+mod dev_build;
 mod edn;
 mod edn_stream;
 mod eduction_contracts;

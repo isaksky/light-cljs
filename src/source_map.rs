@@ -532,7 +532,7 @@ fn vlq(out: &mut String, value: i64) {
 }
 
 /// Append `text` as a JSON string.
-fn json_string(out: &mut String, text: &str) {
+pub(crate) fn json_string(out: &mut String, text: &str) {
     out.push('"');
     for ch in text.chars() {
         match ch {

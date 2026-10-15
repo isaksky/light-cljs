@@ -36,6 +36,14 @@ UTF-16 names/strings and metadata; arbitrary functions/atoms/objects remain IDs.
 Release retained IDs when finished. The entire heap and its root registry are
 reclaimed on drop, including cycles.
 
+Evaluated definitions live in the heap's application registry,
+`globalThis.__lightApplicationRoots["ns/name"]`, which later code reads at each
+use, so a redefinition is seen by every caller the next time it runs. A dev
+build (`--compile --entry NS --source-root DIR --reloadable --out-dir DIR`,
+[Dev builds](compiler.md#dev-builds)) emits a program's namespaces as units of
+the same shape over the same registry, so reloading a namespace there
+redefines as the session does.
+
 ## Capabilities and configuration
 
 `EvalOptions` supplies host functions, finite initial bindings, namespace/aliases,

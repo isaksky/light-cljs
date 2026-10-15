@@ -7,6 +7,10 @@
 //! macro, then serves every case of the `run` in turn, so later cases also check a
 //! host that has already compiled other namespaces.
 //!
+//! Each case's application program is also built as a dev build
+//! (docs/dev-workflow.md, "Phase 0"), which must print what its `--optimize none`
+//! build prints through the Node driver `tests/support/dev_execution.mjs`.
+//!
 //! Feature suites group their cases into tests of a `phase_oracles` module, so
 //! `cargo nextest run phase_oracles::` runs all of them. Set
 //! `LIGHT_PHASE_ORACLE_ARTIFACTS` to a directory to keep every program and compiled
@@ -165,14 +169,19 @@ pub fn run(cases: &[Case]) {
                 let root = artifacts.join(case.id).join(lifecycle).join(phase);
                 fs::create_dir_all(&root).unwrap();
                 let context = format!("{} {lifecycle} {phase}", case.id);
-                match case.kind {
+                let (entry, start) = match case.kind {
                     Kind::Value { namespace, invoke } => {
-                        value(case, namespace, invoke, phase, &root, host, &context)
+                        value(case, namespace, invoke, phase, &root, host, &context);
+                        (namespace, false)
                     }
                     Kind::Observed(macro_phase) => {
                         let expansion = phase == "macro" && macro_phase == MacroPhase::Expansion;
-                        observed(case, &runtime, phase, expansion, &root, host, &context)
+                        observed(case, &runtime, phase, expansion, &root, host, &context);
+                        ("user", true)
                     }
+                };
+                if lifecycle == "fresh" && phase == "application" {
+                    dev_build(entry, start, &root, &context);
                 }
             }
         }
@@ -270,6 +279,26 @@ fn observed(
     assert_eq!(actual, case.expected, "{context} QuickJS");
     let actual = node(&format!("console.log({script});"));
     assert_eq!(actual, case.expected, "{context} Node");
+}
+
+/// The dev build of the application program at `root` prints what its
+/// `--optimize none` build prints (docs/dev-workflow.md, "Phase 0"): an
+/// observed case's program value, `run`, is called with the driver's
+/// `observe` (`start`), so the trace is compared too.
+fn dev_build(entry: &str, start: bool, root: &Path, context: &str) {
+    let (program, sources) = light_cljs::compiler::analyze_namespace_entry_with_sources(
+        entry,
+        &[root.to_path_buf()],
+        &mut host(),
+        light_cljs::analyzer::AnalysisOptions::default(),
+        &mut Vec::new(),
+    )
+    .unwrap_or_else(|e| panic!("{context} dev build: {e}"));
+    let [none, dev] =
+        crate::dev_execution::none_and_dev(&program, &sources, &root.join("builds"), start);
+    let none = none.unwrap_or_else(|e| panic!("{context} none build: {e}"));
+    let dev = dev.unwrap_or_else(|e| panic!("{context} dev build: {e}"));
+    assert_eq!(dev, none, "{context} dev build");
 }
 
 /// Exposes the runtime that a compiled unit embeds as `globalThis.lightRuntime`, so

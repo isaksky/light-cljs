@@ -2609,6 +2609,17 @@ pub struct Program {
     pub root: ExprId,
 }
 
+impl Program {
+    /// Whether the source namespace `namespace` declares macros: expanded
+    /// code is part of every namespace that uses them, so a change to it
+    /// reaches its requirers only by recompiling them.
+    pub fn declares_macros(&self, namespace: &str) -> bool {
+        self.reader_contexts
+            .get(namespace)
+            .is_some_and(|context| !context.macros.is_empty())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct LazyTargetId(pub usize);
 

@@ -51,7 +51,7 @@ pub(crate) fn emit_application(
         program,
         None,
         false,
-        false,
+        None,
         Some(application),
         module,
         mapped,
@@ -144,7 +144,7 @@ fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
             program,
             Some(&parameter),
             demand_roots,
-            false,
+            None,
             None,
             false,
             false
@@ -153,19 +153,47 @@ fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
     )
 }
 
+/// An interactive unit: a function of the runtime,
+/// `(__lightInteractiveRuntime) => ...`, whose definitions live in the
+/// application registry, `globalThis.__lightApplicationRoots["ns/name"]`,
+/// which every unit of a session or a dev build reads and writes.
+#[derive(Clone, Copy)]
+struct Interactive<'a> {
+    /// A dev build unit: this namespace entry of the program, emitted
+    /// instead of the program's root, which registers only its namespace
+    /// unless `every_namespace`.
+    entry: Option<ExprId>,
+    /// Whether the unit registers every namespace of the program, as the
+    /// first unit of a dev build does: single-file output registers them all
+    /// before its first form runs.
+    every_namespace: bool,
+    /// The text before and after the unit function, such as the `define`
+    /// call of a dev build unit.
+    around: [&'a str; 2],
+}
+
 /// `application` carries the decisions of application preparation, including
 /// whether to read a runtime slice directly (`Advanced`). The returned runtime
 /// report lists every runtime name the output reads. With `mapped` the output
-/// also has a source map.
+/// also has a source map. With `interactive` the output is an interactive
+/// unit ([`Interactive`]) instead of an expression defining its own globals.
 fn emit_js_mode(
     program: &Program,
     shared: Option<&str>,
     demand_roots: bool,
-    application_roots: bool,
+    interactive: Option<Interactive<'_>>,
     application: Option<Application<'_>>,
     module: bool,
     mapped: bool,
 ) -> (String, EmittedRuntime, Option<SourceMapping>) {
+    let application_roots = interactive.is_some();
+    let entry = interactive.and_then(|interactive| interactive.entry);
+    let root = entry.unwrap_or(program.root);
+    // The unit of a namespace entry registers only that namespace, unless
+    // it registers every one.
+    let registered = entry
+        .filter(|_| interactive.is_some_and(|interactive| !interactive.every_namespace))
+        .map(|entry| program.namespace_entries[&entry].as_str());
     let direct = application
         .and_then(|application| application.direct)
         .filter(|_| shared.is_none());
@@ -176,7 +204,6 @@ fn emit_js_mode(
         .and_then(|application| application.shapes)
         .filter(|_| direct.is_some());
     let terse = direct.is_some() && application.is_some_and(|application| application.terse);
-    let mapped = mapped && shared.is_none();
     let function_names = if mapped {
         function_names(program)
     } else {
@@ -278,7 +305,7 @@ fn emit_js_mode(
             }
             writeln!(emitter.output, "  let g{global};").unwrap();
         }
-        emitter.operand_scope(|emitter| emitter.emit(program.root, ExprContext::Return));
+        emitter.operand_scope(|emitter| emitter.emit(root, ExprContext::Return));
         // A host value the program builds may declare core protocols by
         // their masks or markers, which it names (`crate::rta`).
         if let Some(application) =
@@ -381,7 +408,9 @@ fn emit_js_mode(
         let retained = |global: usize| {
             !slice || application.is_none_or(|application| application.globals[global])
         };
-        for namespace in program.namespaces.iter().filter(|_| register_namespaces) {
+        for namespace in program.namespaces.iter().filter(|namespace| {
+            register_namespaces && registered.is_none_or(|registered| registered == *namespace)
+        }) {
             let previous = std::mem::take(&mut emitter.output);
             emitter.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
             let literal = std::mem::replace(&mut emitter.output, previous);
@@ -622,6 +651,21 @@ fn emit_js_mode(
                 marks.shift(0, (module.len() - output.trim_end().len() - 2) as isize);
             }
             module
+        }
+        None => output,
+    };
+    let output = match interactive {
+        Some(Interactive {
+            around: [before, after],
+            ..
+        }) => {
+            let open = format!(
+                "{before}(__lightInteractiveRuntime) => {{ globalThis.__lightApplicationRoots ??= Object.create(null); return "
+            );
+            if let Some(marks) = &mut emitter.marks {
+                marks.shift(0, open.len() as isize);
+            }
+            format!("{open}{output}; }}{after}")
         }
         None => output,
     };
@@ -5606,18 +5650,48 @@ fn hygienic_js(
 
 /// Interactive application roots live in the application heap, never the macro heap.
 pub(crate) fn emit_interactive_unit(program: &Program) -> String {
-    let (body, ..) = emit_js_mode(
+    let interactive = Interactive {
+        entry: None,
+        every_namespace: true,
+        around: ["", ""],
+    };
+    emit_js_mode(
         program,
         Some("__lightInteractiveRuntime"),
         false,
-        true,
+        Some(interactive),
         None,
         false,
         false,
-    );
-    format!(
-        "(__lightInteractiveRuntime) => {{ globalThis.__lightApplicationRoots ??= Object.create(null); return {body}; }}"
     )
+    .0
+}
+
+/// The unit of a dev build ([`crate::dev_build`]) for the namespace entry
+/// `entry` of `program`: its interactive unit between `before` and `after`,
+/// and the source map of the result. The unit registers its namespace, or
+/// with `every_namespace` every namespace of the program.
+pub(crate) fn emit_namespace_unit(
+    program: &Program,
+    entry: ExprId,
+    every_namespace: bool,
+    [before, after]: [&str; 2],
+) -> (String, SourceMapping) {
+    let interactive = Interactive {
+        entry: Some(entry),
+        every_namespace,
+        around: [before, after],
+    };
+    let (unit, _, mapping) = emit_js_mode(
+        program,
+        Some("__lightInteractiveRuntime"),
+        false,
+        Some(interactive),
+        None,
+        false,
+        true,
+    );
+    (unit, mapping.expect("a mapped emission has a source map"))
 }
 
 /// A readable JavaScript string literal; non-ASCII and controls are escaped.

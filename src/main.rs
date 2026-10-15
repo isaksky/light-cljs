@@ -16,7 +16,7 @@ use light_cljs::{
 
 mod eval_cli;
 
-const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] [--pseudo-names] [--define NS/NAME=VALUE ...] [--elide-asserts] [--source-map PATH | --source-map-inline] [--source-map-include-sources] ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --define NS/NAME=VALUE after --compile, replace the default of the goog-define NS/NAME at every level: true or false for a boolean, a number for a number, and the text as written for a string; at advanced, code only a define's other value runs is removed.\nWith --elide-asserts after --compile, omit every assert and fn :pre/:post check at every level, as upstream's :elide-asserts does; it is the only switch, since --define names only goog-define Vars.\nWith --source-map PATH after --compile, also write a Source Map v3 of the output to PATH, at every level, and end the output with a //# sourceMappingURL comment naming the map's file, for JavaScript written next to it; source paths in the map are relative to its directory. With --source-map-inline the comment embeds the map instead, with paths relative to the current directory. With --source-map-include-sources the map also holds the text of every source.\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --pseudo-names after --compile, keep advanced output readable for debugging: the compiler's own names, the runtime with its comments and the emitter's layout, instead of short names and no whitespace.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
+const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --reloadable --out-dir DIR\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] [--pseudo-names] [--define NS/NAME=VALUE ...] [--elide-asserts] [--source-map PATH | --source-map-inline] [--source-map-include-sources] ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --define NS/NAME=VALUE after --compile, replace the default of the goog-define NS/NAME at every level: true or false for a boolean, a number for a number, and the text as written for a string; at advanced, code only a define's other value runs is removed.\nWith --elide-asserts after --compile, omit every assert and fn :pre/:post check at every level, as upstream's :elide-asserts does; it is the only switch, since --define names only goog-define Vars.\nWith --source-map PATH after --compile, also write a Source Map v3 of the output to PATH, at every level, and end the output with a //# sourceMappingURL comment naming the map's file, for JavaScript written next to it; source paths in the map are relative to its directory. With --source-map-inline the comment embeds the map instead, with paths relative to the current directory. With --source-map-include-sources the map also holds the text of every source.\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --pseudo-names after --compile, keep advanced output readable for debugging: the compiler's own names, the runtime with its comments and the emitter's layout, instead of short names and no whitespace.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nWith --reloadable --out-dir DIR, write a dev build into DIR instead: runtime.js (the runtime, once), client.js, one NAMESPACE.js unit with its source map per namespace in dependency order, manifest.json and index.js, which loads them in order. Definitions live in a registry, so a unit evaluated again replaces its namespace for every caller; the build runs at none semantics, with warnings for undeclared Vars and arity conflicts.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
 
 fn print_warnings(warnings: &[AnalysisWarning]) {
     for warning in warnings {
@@ -52,6 +52,8 @@ struct CompileFlags {
     /// `--source-map-include-sources`: the map holds the sources' text.
     include_sources: bool,
     level: OptimizationLevel,
+    /// Whether `--optimize` was given, which a dev build refuses.
+    optimize: bool,
     size_report: bool,
     pseudo_names: bool,
     /// `NS/NAME=VALUE` texts, read against the program once it is analyzed.
@@ -68,7 +70,10 @@ impl CompileFlags {
         args: &mut impl Iterator<Item = std::ffi::OsString>,
     ) -> Result<bool, Box<dyn Error>> {
         match flag {
-            "--optimize" => self.level = optimization_level(args)?,
+            "--optimize" => {
+                self.level = optimization_level(args)?;
+                self.optimize = true;
+            }
             "--size-report" => self.size_report = true,
             "--pseudo-names" => self.pseudo_names = true,
             "--elide-asserts" => self.elide_asserts = true,
@@ -240,17 +245,53 @@ fn print_size_report(prepared: &light_cljs::PreparedApplication) -> io::Result<(
     write!(io::stderr().lock(), "{}", prepared.retention())
 }
 
+/// Write the dev build of `program` (`--reloadable`) into `out_dir`.
+/// `sources` are the program's source files by source index.
+fn write_dev_build(
+    program: &light_cljs::Program,
+    sources: &[(PathBuf, String)],
+    out_dir: &Path,
+) -> Result<(), Box<dyn Error>> {
+    fs::create_dir_all(out_dir)
+        .map_err(|error| format!("cannot create {}: {error}", out_dir.display()))?;
+    // Source maps name the sources relative to the build directory.
+    let base = fs::canonicalize(out_dir)?;
+    let urls = sources
+        .iter()
+        .map(|(path, _)| source_url(path, &base))
+        .collect::<Vec<_>>();
+    let files = urls
+        .iter()
+        .zip(sources)
+        .map(|(url, (_, text))| SourceFile { url, text })
+        .collect::<Vec<_>>();
+    for file in light_cljs::dev_build::emit_dev_build(program, &files) {
+        let path = out_dir.join(&file.name);
+        fs::write(&path, file.text)
+            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
 fn run_namespace(
     mut args: impl Iterator<Item = std::ffi::OsString>,
-    options: AnalysisOptions,
+    mut options: AnalysisOptions,
     mut flags: CompileFlags,
 ) -> Result<(), Box<dyn Error>> {
     let mut entry = None;
     let mut roots = Vec::new();
     let mut esm = false;
+    let mut reloadable = false;
+    let mut out_dir = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--esm") => esm = true,
+            Some("--reloadable") => reloadable = true,
+            Some("--out-dir") => {
+                out_dir = Some(PathBuf::from(
+                    args.next().ok_or("--out-dir requires a directory")?,
+                ));
+            }
             Some(flag) if flags.accept(flag, &mut args)? => {}
             Some("--entry") => {
                 if entry.is_some() {
@@ -270,6 +311,28 @@ fn run_namespace(
         }
     }
     let entry = entry.ok_or("namespace compilation requires --entry NAMESPACE")?;
+    let out_dir = match (reloadable, out_dir) {
+        (true, Some(out_dir)) => Some(out_dir),
+        (false, None) => None,
+        (true, None) => return Err("--reloadable requires --out-dir DIR".into()),
+        (false, Some(_)) => return Err("--out-dir requires --reloadable".into()),
+    };
+    if out_dir.is_some() {
+        if esm
+            || flags.optimize
+            || flags.size_report
+            || flags.pseudo_names
+            || !flags.defines.is_empty()
+            || flags.source_map.is_some()
+            || flags.source_map_inline
+            || flags.include_sources
+        {
+            return Err("--reloadable writes the dev build at none semantics with source maps; it excludes --esm, --optimize, --size-report, --pseudo-names, --define and the --source-map flags".into());
+        }
+        // Dev compilation reports undeclared Vars and arity conflicts as
+        // warnings (docs/dev-workflow.md, "Dev-mode contract").
+        options.warning_mode = true;
+    }
     let mut warnings = Vec::new();
     let program = light_cljs::compiler::analyze_namespace_entry_with_sources(
         &entry,
@@ -282,6 +345,9 @@ fn run_namespace(
         print_warnings(&warnings);
     }
     let (program, files) = program?;
+    if let Some(out_dir) = out_dir {
+        return write_dev_build(&program, &files, &out_dir);
+    }
     let prepared = prepare_application(&program, flags.options(&program)?);
     let sources = files
         .iter()
@@ -348,7 +414,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     if matches!(
         first.as_deref().and_then(|arg| arg.to_str()),
-        Some("--entry" | "--source-root" | "--esm")
+        Some("--entry" | "--source-root" | "--esm" | "--reloadable" | "--out-dir")
     ) {
         if mode != "compile" {
             return Err("namespace options require --compile".into());

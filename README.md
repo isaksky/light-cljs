@@ -116,6 +116,23 @@ String libspecs such as `["react" :as r]` read host-supplied packages from
 module for a bundler instead, with static package imports and the entry value as
 its default export (see [JavaScript packages](docs/compiler.md#javascript-packages)).
 
+Add `--reloadable --out-dir DIR` to `--compile --entry` to write a dev build
+into `DIR` instead: `runtime.js` (the runtime, once), one unit per namespace in
+dependency order with its source map, `manifest.json` and an `index.js` that
+loads them in order (script elements in a page, `require` in Node). Definitions
+live in a registry read at each use, as in the REPL, so evaluating a namespace's
+unit again replaces its definitions while `defonce` state stays; there is no
+watch loop or server yet ([Dev builds](docs/compiler.md#dev-builds),
+[docs/dev-workflow.md](docs/dev-workflow.md)).
+
+```sh
+cargo run --quiet -- --compile --entry app.main --source-root examples/dev \
+  --reloadable --out-dir /tmp/light-dev
+node -e 'require("/tmp/light-dev/index.js"); __lightDevLoaded.then(start => start())'
+# start
+# clicks: [1]
+```
+
 `--optimize none|prepare|advanced` after `--compile` (single files and `--entry`
 builds, with or without `--esm`) picks the optimization level. `prepare`, the
 default, removes unused definitions with inert initializers and specializes
@@ -253,6 +270,7 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
 | [examples/macros](examples/macros) | A `.cljs` macro namespace required alongside runtime code |
 | [examples/collections](examples/collections) | Several namespaces compiled to an expression returning `batch.main/run` |
 | [examples/features](examples/features) | The code-splitting application: startup `app.main`, shared helpers and two features (`--entry app.main --esm`; [docs/code-splitting.md](docs/code-splitting.md)) |
+| [examples/dev](examples/dev) | The dev-workflow application: `defonce` state, a macro, a record view and reload hooks (`--entry app.main --reloadable --out-dir DIR`; [docs/dev-workflow.md](docs/dev-workflow.md)) |
 | [examples/native](examples/native) | Scripts for `--eval` (data processing, macros, lazy pipelines, state, exceptions) |
 | [examples/embedding.rs](examples/embedding.rs), [examples/evaluator.rs](examples/evaluator.rs) | Rust embedding |
 
@@ -274,7 +292,9 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   compiler never reads `node_modules` or `package.json` and does no package
   resolution or CommonJS conversion.
 - **No build tooling:** no per-namespace module output; output
-  is one JavaScript expression, or one ES module with `--esm`. The release
+  is one JavaScript expression, or one ES module with `--esm`. A dev build
+  (`--reloadable`) writes one unit per namespace for reloading, but nothing
+  watches the sources or pushes a changed unit to a page yet. The release
   optimizer, `--optimize advanced`, is still being built
   ([docs/advanced-optimization.md](docs/advanced-optimization.md)); what it does
   so far is listed under [Compile to JavaScript](#compile-to-javascript). Sizes

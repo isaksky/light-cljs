@@ -49,11 +49,11 @@ as phases land:
 | Measurement | Today | Target |
 |---|---|---|
 | Save to updated page, one changed namespace of the example | no path | under 100 ms on the development machine, including the recompile |
-| Application state across a reload | n/a | `defonce` atoms keep their value; `def` values are reinitialized, as upstream |
-| Observable behavior of the dev build | n/a | prints what the `none` build prints, for the same program, before any reload |
-| Recompile of one changed namespace of the example | whole program in 15-250 ms depending on size | the one namespace, under 20 ms |
+| Application state across a reload | Phase 0: a replaced unit of the example keeps the `defonce` atom, also when `app.state`'s own unit runs again | `defonce` atoms keep their value; `def` values are reinitialized, as upstream |
+| Observable behavior of the dev build | Phase 0: prints what the `none` build prints for the example, examples/features, every phase oracle and every size ratchet fixture | prints what the `none` build prints, for the same program, before any reload |
+| Recompile of one changed namespace of the example | whole program in 15-250 ms depending on size; Phase 0's whole dev build of the example 246 ms, as its `none` build (release CLI, median of 15, load 4.3) | the one namespace, under 20 ms |
 | REPL round trip for `(+ 1 2)` in the page | n/a | under 20 ms, dominated by the compile |
-| Dev build bytes served after the first load | n/a | the changed namespace's unit only; the runtime is served once and cached |
+| Dev build bytes served after the first load | Phase 0: `runtime.js` 432,093 bytes once; the example's `app.view.js` 3,492 bytes (map 974), its other units 817-1,777 | the changed namespace's unit only; the runtime is served once and cached |
 
 Non-goals of this design: a bundler, npm resolution (packages stay
 host-supplied, see [JavaScript packages](compiler.md#javascript-packages)),
@@ -154,7 +154,8 @@ Citations are into `research/shadow-cljs/src/main/shadow/`.
   context when units run, so `find-ns`, `ns-publics` and `resolve` work in
   the session.
 - **Source maps** exist for compiled output and `--esm` at every level
-  (`emit_js_mode`'s `mapped`), not for interactive units.
+  (`emit_js_mode`'s `mapped`), not for interactive units (since Phase 0,
+  for the units of a dev build).
 - **The compiler runs in wasm** in the browser playground
   (`playground/crate/src/lib.rs`) with an in-memory source provider.
 
@@ -210,24 +211,32 @@ dev/
 A unit file is the interactive unit wrapped in a registration call:
 
 ```js
-globalThis.__lightDev.define("app.view", ["cljs.core", "app.state"],
+globalThis.__lightDev.define("app.view", ["app.macros", "app.state"],
   (__lightInteractiveRuntime) => { globalThis.__lightApplicationRoots ??= Object.create(null); /* forms */ return value; });
 //# sourceMappingURL=app.view.js.map
 ```
 
-`define` records the unit by namespace and runs it against
-`globalThis.__lightRuntime` immediately. The same text serves the first load
-(as a script file) and every reload (evaluated by the client with a
-`sourceURL`), so there is one unit writer. `index.js` is a few lines that
-insert script elements in manifest order and resolve a promise when the last
-has run; in Node, the driver requires the files in that order.
+The requires are the namespace's source requires; `cljs.core` is the
+runtime, which every unit reads. `define` records the unit by namespace and
+runs it against `globalThis.__lightRuntime` immediately, keeping its value.
+The same text serves the first load (as a script file) and every reload
+(evaluated by the client with a `sourceURL`), so there is one unit writer.
+`index.js` is a few lines that insert script elements in manifest order and
+resolve a promise of the entry namespace's value when the last has run; in
+Node it requires the files in that order, and the test driver runs them
+itself. The manifest also lists the `^:dev/before-load` and
+`^:dev/after-load` functions (and their `-async` variants) in definition
+order, which a client needs for the hook protocol. The format is in
+[Dev builds](compiler.md#dev-builds).
 
 The dev build is emitted at `none` semantics with the full runtime and with
 namespace registration on, like the session: no definition removal, no
 specialization, no slicing, no terse names. It never enters
 `prepare_application`. Each unit registers its namespace's reader context
 and sets the current namespace for the duration of its top-level forms, as
-compiled output does.
+compiled output does; the first unit registers every namespace of the build,
+as compiled output does before its first form, so reflection during the
+first load matches the `none` build.
 
 Definitions live in `globalThis.__lightApplicationRoots` keyed by
 `"ns/name"`. This is the session's registry today; keeping it means the
@@ -401,6 +410,19 @@ by hand, with no watch loop and no server.
 
 Done when: the example runs as a dev build in Node with the same output as
 `--optimize none`, and a replaced unit changes behavior with state intact.
+
+Status (light-cljs-282, October 15, 2026): done. `--reloadable --out-dir`
+writes the directory ([Dev builds](compiler.md#dev-builds));
+`Program::namespace_requires` (from code-splitting) is the require graph and
+`Program::declares_macros` names the macro declarers. The manifest also
+lists the hook functions, and `index.js` resolves with the entry
+namespace's value, the single-file output's value, so a host calls `start`
+as it calls the value of examples/features. The CLI analyzes a dev build in
+warning mode. Besides Node, the example was checked in headless Chrome
+(`--dump-dom` of a page that loads `index.js`, calls `start`, then evaluates
+an edited `app.view` unit with the hooks): `start`, `clicks: [1]`,
+`reloading`, `render: clicks: [2]`; a build whose dependency throws while it
+loads rejected `__lightDevLoaded` with that error before the entry ran.
 
 ### Phase 1: the compiler as an action producer
 
