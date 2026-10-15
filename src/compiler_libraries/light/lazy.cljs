@@ -2,8 +2,10 @@
   "Code a chunked build may load later (docs/code-splitting.md, \"The loading
   API\"). `(light.lazy/loadable app.editor/start)`, or `(light.lazy/loadable
   app.editor)` for a namespace, is a special form the compiler turns into a
-  `Loadable`, with or without a require of this namespace. Every target is
-  resident in the one output file for now: a loadable is always loaded.")
+  `Loadable`, with or without a require of this namespace. In one output file
+  every target is resident: a loadable is always loaded. In a chunked build a
+  loadable whose target is in a chunk that may not have evaluated yet imports
+  that chunk when `load` first runs; the compiler gives it that `load`.")
 
 (def Loadable
   "The type of a loadable, `(Loadable. importer getter)`: `importer` loads the

@@ -46,9 +46,9 @@ Targets, measured in Phase 0 on the example application
 
 | Measurement | Today | Measured bound | Target |
 |---|---|---|---|
-| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646 | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
-| Bytes loaded for one feature | n/a: both load at startup | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
-| Observable behavior | n/a | n/a | identical to the single-file program at every level, given the same `load` calls |
+| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646; chunked at namespace granularity (light-cljs-274), `app.main.js` 69,587 / 21,575, with the whole-program runtime slice and every constant still in startup | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
+| Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
+| Observable behavior | n/a; chunked (light-cljs-274), the example and the Phase 2 fixtures print what the single file prints at every level | n/a | identical to the single-file program at every level, given the same `load` calls |
 | Compile time of a chunked build | n/a | n/a | within 10% of the single-file build of the same program |
 
 `bb benchmarks/features.bb` regenerates the bounds from the sources. It
@@ -766,6 +766,87 @@ Scope: multi-file output with namespace-granular placement, correct at
 whole-program slice (at `Advanced`) and every constant stay in startup;
 Phase 3 splits them.
 
+- **As built (light-cljs-274): the chunk files.** `PreparedApplication::emit_chunks()`
+  returns `ChunkedOutput { files }`, one `ChunkFile { name, source, imports,
+  namespaces, roots }` per chunk of `chunks::plan` in plan order; the
+  manifest and `--out-dir` are light-cljs-275's. The writer is
+  `emitter::emit_chunked` (`src/emitter/chunked.rs`), beside `emit_js_mode`
+  rather than a mode of it, sharing its parts (`Emitter::new`, the
+  registration, the application roots, the helpers):
+  - One `Emitter` writes every chunk's forms in plan order, walking
+    `program.root` and writing the forms the plan gives the chunk and the
+    entries of its namespaces, so the constant table, the runtime roots, the
+    `used` set and the reflection decision (both passes) are the program's.
+    A chunk is a module: its imports; the prelude helpers it calls (`truth`,
+    `host`, `pkg`, each chunk its own); in startup the runtime (`const rt =
+    ...` below `Advanced`, `const [rt$add, ...] = ...` at `Advanced`), the
+    `core$` cells, the constant table and `lazy$`; its `let`
+    declarations, `export let` for the globals another chunk reads; the
+    setters others call; an `export { ... }` of its other names others read;
+    and its forms in `(() => { ... })()` as the single file runs them,
+    startup's with the namespace registration first and as `export default`.
+  - What a chunk imports is read off its text: each compiler name it reads
+    (not after a `.`) that another chunk declares is imported from that
+    chunk, which exports it. The plan's edges without a name read become
+    `import "./x.js";`, so a required namespace's effects still run first;
+    reads of startup's runtime, cells and constants add edges to startup,
+    which the plan does not list. Import statements follow the order in
+    which the single file loads the imported chunks' first namespaces.
+  - An assignment of a binding another chunk owns, a global (`set!`,
+    `binding`'s install and restore, and so `with-redefs`) or a `core$` cell
+    outside startup, is `g7$(v)` or `core$inc$(v)`; the owner declares
+    `const g7$ = (v) => g7 = v;` and exports it. `g7$`, `core$inc$` and
+    `lazy$` are compiler names (`terse::compiler_name`).
+  - Hoisted methods (light-cljs-228) are declared in their function's chunk,
+    whose globals they read; every other constant stays in startup.
+  - A loadable is resident when its target's chunk is its own, startup, or
+    one its chunk imports transitively: `new Loadable(null, () => g20)` as in
+    the single file. Otherwise it is `lazy$("./app.editor.js", new
+    Loadable(() => import("./app.editor.js"), (m) => m.g20))`, or `() =>
+    null` for a namespace target, and the target chunk exports `g20`.
+    Startup's `lazy$` keeps, per chunk, the module namespace object once an
+    importer has imported it, and the loadables of chunks not imported yet.
+    It makes a loadable of an imported chunk resident at once, a getter of
+    the module's binding and no importer, and gives any other a
+    non-enumerable `load` that calls its importer; when the import
+    resolves, every loadable of that chunk becomes resident, so `loaded?`
+    is whether the chunk has been loaded, and `@l` reads the same fields as
+    a single file's loadable. The runtime's `Loadable` and `light.lazy/load`
+    do not change, so no single file changes either, a program with
+    loadables included. Importing in
+    `light.lazy/load` made `examples/features` 223 bytes longer at
+    `Advanced` (307 a site against `features-direct`, past Phase 1's 200,
+    which `size_ratchet` caught), and importing in the class would have
+    changed every `none` and `prepare` output, which embed the whole runtime.
+  - Renaming covers all chunks at once. At `Advanced` `terse::terse_texts`
+    lexes each chunk's two texts (module-level declarations and forms),
+    counts every compiler name over all of them for one table, and rewrites
+    each, so a name has one short name everywhere; when one text cannot be
+    followed, every chunk takes the hygiene prefix that no chunk's raw text
+    contains. Below `Advanced`, a program with raw text prefixes every
+    chunk's names with that one prefix. The import, `let` and export lines
+    are written afterwards from the final names.
+  - `examples/features` is three files at every level, `app.main.js`,
+    `app.editor.js` and `app.reports.js`, raw / `gzip -9` bytes: 441,976 /
+    107,628, 1,295 / 423 and 13,101 / 2,612 at `none` and `prepare`, against
+    455,109 / 109,611 for the single file; 69,587 / 21,575, 276 / 224 and
+    832 / 517 at `advanced`, against 69,500 / 21,646. Startup is 87 bytes
+    over the single file at `advanced`: `lazy$`, whose names terse output
+    keeps, and the export lines outweigh the features' forms.
+  - Tests (`tests/compiler/chunks.rs`): the example and runnable versions of
+    the planner's fixtures (a shared helper with a top-level effect, a
+    feature loading a sub-feature, a feature requiring the namespace that
+    loads it beside a resident loadable, `set!`, `binding` and
+    `with-redefs` of startup Vars, `with-redefs` of a core function, a probe
+    of a sourceless Var, a namespace loadable that only adds methods,
+    reflection, raw `js*` with and without the hygiene fallback, a program
+    without namespace sources, an entry without forms, loadables of one
+    chunk made before and after it loads, a package only a feature
+    imports, which only its chunk imports) run as chunks and as the single `--esm` file
+    through the Node driver at every level and print the same; a module
+    importing every chunk statically links in Node, where a missing export
+    is a link error; and each name an import line names is in the export
+    lines of the chunk it names, after terse renaming too.
 - **Placement, namespace level.** New module `src/chunks.rs`:
   `plan(program, prepared) -> ChunkPlan`. Roots from `lazy_targets`; static
   reach per root over `namespace_requires`; every top-level form pinned to
@@ -975,6 +1056,14 @@ file, stated the way the advanced-mode contract is:
 - **Granularity of the reference graph for motion.** Items are top-level
   forms; a `defn` with several methods is one item. Finer motion (per method
   entry `g3_1`) is possible with call shapes but has no measured case yet.
+- **Loaded state of a chunk another chunk imported.** `loaded?` of a
+  chunked build's loadable turns true when a loadable of its chunk has been
+  loaded (light-cljs-274), not when the chunk evaluates because another
+  chunk imports it statically: chunks carry no load markers, and only an
+  `import()` hands `lazy$` the module namespace object a getter reads. A
+  `load` then resolves without a request. A chunk could announce itself
+  with an object of getters of its targets, at the cost of a marker the
+  design leaves out; whether `loaded?` needs that is open.
 - **Many lazy roots.** Distinct signatures can fragment shared code into
   many small chunks. `--chunk-min-bytes` and loader dominance are the
   intended answers; whether a default threshold should be on needs numbers

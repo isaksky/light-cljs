@@ -229,35 +229,34 @@ impl PreparedApplication {
         crate::runtime_slice::EmittedRuntime,
         Option<crate::source_map::SourceMapping>,
     ) {
+        crate::emitter::emit_application(&self.program, self.application(), module, mapped)
+    }
+    /// What preparation decided for emission.
+    fn application(&self) -> crate::emitter::Application<'_> {
         let advanced = self.level.advanced();
-        crate::emitter::emit_application(
-            &self.program,
-            crate::emitter::Application {
-                globals: &self.globals,
-                calls: &self.calls,
-                direct: advanced.then_some(self.replaced_core.as_slice()),
-                inference: self.inference.as_ref().filter(|_| advanced),
-                methods: advanced.then_some(&self.direct_methods),
-                entries: advanced.then_some(&self.entry_lookups),
-                basis: !advanced || self.type_basis,
-                upstream_member: self.upstream_member.filter(|_| advanced),
-                record_methods: if advanced { &self.record_methods } else { &[] },
-                protocol_declarations: if advanced {
-                    &self.protocol_declarations
-                } else {
-                    &[]
-                },
-                loadable_members: if advanced {
-                    &self.loadable_members
-                } else {
-                    &[]
-                },
-                shapes: self.shapes.as_ref().filter(|_| advanced),
-                terse: self.terse,
+        crate::emitter::Application {
+            globals: &self.globals,
+            calls: &self.calls,
+            direct: advanced.then_some(self.replaced_core.as_slice()),
+            inference: self.inference.as_ref().filter(|_| advanced),
+            methods: advanced.then_some(&self.direct_methods),
+            entries: advanced.then_some(&self.entry_lookups),
+            basis: !advanced || self.type_basis,
+            upstream_member: self.upstream_member.filter(|_| advanced),
+            record_methods: if advanced { &self.record_methods } else { &[] },
+            protocol_declarations: if advanced {
+                &self.protocol_declarations
+            } else {
+                &[]
             },
-            module,
-            mapped,
-        )
+            loadable_members: if advanced {
+                &self.loadable_members
+            } else {
+                &[]
+            },
+            shapes: self.shapes.as_ref().filter(|_| advanced),
+            terse: self.terse,
+        }
     }
     /// One JavaScript expression. At `Advanced` it embeds only the runtime
     /// units the program reaches; see [`PreparedApplication::retention`].
@@ -268,6 +267,17 @@ impl PreparedApplication {
     /// runtime is the one [`PreparedApplication::emit_js`] embeds.
     pub fn emit_esm(&self) -> String {
         self.emit(true, false).0
+    }
+    /// One ES module per chunk of the program's [`crate::chunks::plan`]
+    /// (docs/code-splitting.md, "Phase 2"), in plan order: startup first,
+    /// whose default export is the program's value, as
+    /// [`PreparedApplication::emit_esm`]'s is. A loadable whose target
+    /// another chunk holds imports that chunk, `import("./app.editor.js")`,
+    /// unless the target has evaluated before the loadable's chunk runs.
+    pub fn emit_chunks(&self) -> crate::chunks::ChunkedOutput {
+        let plan = crate::chunks::plan(&self.program, self);
+        let emitted = crate::emitter::emit_chunked(&self.program, self.application(), &plan);
+        crate::chunks::ChunkedOutput::new(&self.program, &plan, emitted)
     }
     /// [`PreparedApplication::emit_js`] (the same text) and its source map,
     /// which [`crate::source_map::SourceMapping::to_json`] writes against

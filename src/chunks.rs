@@ -1,8 +1,9 @@
 //! Chunk placement at namespace granularity (docs/code-splitting.md, "The
 //! model" and "Phase 2"): which top-level forms of a prepared program each
 //! chunk of a chunked build holds, which chunks each imports, and which
-//! globals each exports a setter for. [`plan`] is pure data; nothing emits a
-//! chunk from it yet.
+//! globals each exports a setter for. [`plan`] is pure data;
+//! [`PreparedApplication::emit_chunks`] writes one ES module per chunk of it
+//! ([`ChunkedOutput`]).
 //!
 //! A *root* is a place code can start running: startup (the entry namespace,
 //! root 0) and each distinct namespace a `light.lazy/loadable` names (root
@@ -156,6 +157,65 @@ pub struct ChunkPlan {
     pub global_chunks: Vec<ChunkId>,
     /// By [`ChunkId`]; startup is [`STARTUP`].
     pub chunks: Vec<Chunk>,
+}
+
+/// The files of a chunked build, one ES module per chunk in plan order
+/// ([`PreparedApplication::emit_chunks`]).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChunkedOutput {
+    pub files: Vec<ChunkFile>,
+}
+
+/// One chunk's ES module.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChunkFile {
+    /// The file name ([`Chunk::name`]), which importers and loaders name as
+    /// `./<name>`, so the files go in one directory.
+    pub name: String,
+    pub source: String,
+    /// The names of the files it imports statically: every chunk holding a
+    /// namespace its namespaces require or a binding its code reads.
+    pub imports: Vec<String>,
+    /// The namespaces whose top-level forms it holds, in source order.
+    pub namespaces: Vec<String>,
+    /// The namespaces of the roots it holds: the entry for startup, and the
+    /// namespaces whose loadables load it.
+    pub roots: Vec<String>,
+}
+
+impl ChunkedOutput {
+    pub(crate) fn new(
+        program: &Program,
+        plan: &ChunkPlan,
+        emitted: Vec<crate::emitter::EmittedChunk>,
+    ) -> Self {
+        let namespace = |source: usize| program.namespaces[source].clone();
+        let files = plan
+            .chunks
+            .iter()
+            .zip(emitted)
+            .map(|(chunk, emitted)| ChunkFile {
+                name: chunk.name.clone(),
+                source: emitted.source,
+                imports: emitted
+                    .imports
+                    .iter()
+                    .map(|import| plan.chunks[import.0].name.clone())
+                    .collect(),
+                namespaces: chunk
+                    .namespaces
+                    .iter()
+                    .map(|&source| namespace(source))
+                    .collect(),
+                roots: chunk
+                    .roots
+                    .iter()
+                    .map(|&root| namespace(plan.roots[root].namespace))
+                    .collect(),
+            })
+            .collect();
+        Self { files }
+    }
 }
 
 impl ChunkPlan {

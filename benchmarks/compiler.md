@@ -4028,3 +4028,34 @@ protocol machinery, as any program type does; a mask already kept them,
 since naming a mask roots `installMethods`. The names cost `Loadable.name`
 and `typeNames`, 95 bytes. No ratchet fixture names these, so no size
 changes at any level.
+
+## Chunked output of examples/features — October 15, 2026
+
+light-cljs-274 writes one ES module per chunk of the namespace-level plan
+(`PreparedApplication::emit_chunks`; [code-splitting design](../docs/code-splitting.md),
+Phase 2, "As built (light-cljs-274)"). There is no CLI for it until
+light-cljs-275, so the files are those `emit_chunks` returns for
+`examples/features` at each level, as
+`chunks::the_features_example_runs_as_three_chunks_at_every_level` builds
+them, written out and measured with `wc -c` and `gzip -9`; the single file
+is `emit_esm`, which the change leaves byte for byte as it was. Branch of
+light-cljs-274 on master `ba3d120`; the Apple M3 Ultra virtual machine of the
+[environment](results/environment.txt), macOS 15.7.3, one-minute load average
+2.9 (sizes do not depend on it). Raw / `gzip -9` bytes:
+
+| File | `none` | `prepare` | `advanced` |
+| --- | ---: | ---: | ---: |
+| single file, `app.main` `--esm` | 455,109 / 109,611 | 455,109 / 109,611 | 69,500 / 21,646 |
+| `app.main.js`, startup | 441,976 / 107,628 | 441,976 / 107,628 | 69,587 / 21,575 |
+| `app.editor.js` | 1,295 / 423 | 1,295 / 423 | 276 / 224 |
+| `app.reports.js` | 13,101 / 2,612 | 13,101 / 2,612 | 832 / 517 |
+
+Startup keeps the runtime (the whole runtime below `advanced`, the
+whole-program slice at `advanced`) and every constant, as Phase 2 plans, so
+at `advanced` it is 87 bytes over the single file: the features' forms move
+out, and startup gains its `export` lines, the two `lazy$` loadables and
+`lazy$` itself, which records loaded chunks and whose local names terse
+output keeps (686 bytes). Each feature is its forms and its imports of startup's runtime
+bindings, constants and helpers. The features' runtime units and constants
+leave startup in Phase 3. `app.reports.js` at `none` is mostly
+`clojure.string`, which only reports requires.

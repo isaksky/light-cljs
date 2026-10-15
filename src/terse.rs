@@ -270,7 +270,10 @@ fn terse_slice_marked(
 /// numbered families (`l7`, `g3_1`, `k0`, `c2`, `m1`, `a0`, `r5_0`, `next0`,
 /// `saved1`, `temporary1`, `captures4`, `self4`, `recur5`, `installed1`,
 /// `operand0`), the fixed helper names, and the `Advanced` runtime reads and
-/// core cells (`rt$add`, `core$inc`). Raw `js*` text must see none of them,
+/// core cells (`rt$add`, `core$inc`), and the setters a chunk of a chunked
+/// build exports for its globals that another chunk assigns (`g7$`, and
+/// `core$inc$` for a core cell), and its helper `lazy$` that gives a
+/// loadable of another chunk its `load`. Raw `js*` text must see none of them,
 /// and terse output renames all of them, wherever they occur: a capture
 /// object's keys (`captures4.l7`) are such names too. A constant member key
 /// that is one of them stays bracketed (`x["f"]`).
@@ -292,34 +295,46 @@ pub(crate) fn compiler_name(word: &str) -> bool {
         "installed",
         "operand",
     ];
-    NUMBERED.iter().any(|head| {
-        word.strip_prefix(head).is_some_and(|tail| {
-            !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit() || b == b'_')
+    let numbered = |word: &str| {
+        NUMBERED.iter().any(|head| {
+            word.strip_prefix(head).is_some_and(|tail| {
+                !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit() || b == b'_')
+            })
         })
-    }) || matches!(
-        word,
-        "rt" | "truth"
-            | "host"
-            | "pkg"
-            | "f"
-            | "text"
-            | "savedPrint"
-            | "savedNewline"
-            | "caught"
-            | "caseValue"
-    ) || word.starts_with("rt$")
+    };
+    numbered(word)
+        || word
+            .strip_prefix('g')
+            .and_then(|tail| tail.strip_suffix('$'))
+            .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+        || matches!(
+            word,
+            "rt" | "truth"
+                | "host"
+                | "pkg"
+                | "f"
+                | "text"
+                | "savedPrint"
+                | "savedNewline"
+                | "caught"
+                | "caseValue"
+                | "lazy$"
+        )
+        || word.starts_with("rt$")
         || word.starts_with("core$")
 }
 
 /// A prefix that no raw `js*` segment of `source` contains: `__light<n>_`.
 pub(crate) fn hygiene_prefix(source: &str, raw: &[Range<usize>]) -> String {
+    raw_hygiene_prefix(raw.iter().map(|range| &source[range.clone()]))
+}
+
+/// A prefix that none of the `raw` texts contains: `__light<n>_`.
+pub(crate) fn raw_hygiene_prefix<'r>(raw: impl Iterator<Item = &'r str> + Clone) -> String {
     let mut index = 0;
     loop {
         let candidate = format!("__light{index}_");
-        if !raw
-            .iter()
-            .any(|range| source[range.clone()].contains(&candidate))
-        {
+        if !raw.clone().any(|text| text.contains(&candidate)) {
             return candidate;
         }
         index += 1;
@@ -424,6 +439,93 @@ pub(crate) fn terse_program(
             source.to_owned()
         }
     }
+}
+
+/// One text of a chunked build for [`terse_texts`]: the source as the
+/// emitter wrote it, its raw `js*` ranges, and the embedded runtime factory
+/// in it, if any.
+pub(crate) struct Text<'s> {
+    pub(crate) source: &'s str,
+    pub(crate) raw: Vec<Range<usize>>,
+    pub(crate) runtime: Option<Range<usize>>,
+}
+
+/// The terse output of the texts of a chunked build (docs/code-splitting.md,
+/// "Phase 2"), each written as [`terse_program`] writes one program but with
+/// one frequency table over all of them: a compiler name has the same short
+/// name in every text, so a name one chunk exports is the name another
+/// imports, and the short names avoid every other identifier of every text.
+/// Also returns that table, by compiler name, from which the import and
+/// export lines are written.
+///
+/// When one text cannot be followed ([`terse_program`]), every text keeps
+/// its layout, and the compiler names are one hygiene prefix that no raw
+/// text of any chunk contains and a short name.
+pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s str, String>) {
+    let raws = texts
+        .iter()
+        .map(|text| {
+            let mut raw = text
+                .raw
+                .iter()
+                .filter(|segment| Some(*segment) != text.runtime.as_ref() && !segment.is_empty())
+                .cloned()
+                .collect::<Vec<_>>();
+            raw.sort_by_key(|range| range.start);
+            raw
+        })
+        .collect::<Vec<_>>();
+    let lexed = texts
+        .iter()
+        .zip(&raws)
+        .map(|(text, raw)| Lexed::new(text.source, text.runtime.clone(), raw))
+        .collect::<Option<Vec<_>>>();
+    if let Some(lexed) = lexed {
+        let mut words = Vec::new();
+        let mut excluded = HashSet::new();
+        for text in &lexed {
+            text.words(&mut words, &mut excluded);
+        }
+        let names = short_names(words, |name| excluded.contains(name));
+        let outputs = lexed
+            .into_iter()
+            .map(|text| text.rewrite(&names).0)
+            .collect();
+        return (outputs, names);
+    }
+    debug_assert!(
+        raws.iter().any(|raw| !raw.is_empty()),
+        "emitted JavaScript does not lex"
+    );
+    let prefix = raw_hygiene_prefix(
+        texts
+            .iter()
+            .zip(&raws)
+            .flat_map(|(text, raw)| raw.iter().map(|range| &text.source[range.clone()])),
+    );
+    let skipped = texts
+        .iter()
+        .zip(&raws)
+        .map(|(text, raw)| raw.iter().cloned().chain(text.runtime.clone()).collect())
+        .collect::<Vec<Vec<_>>>();
+    let words = texts
+        .iter()
+        .zip(&skipped)
+        .flat_map(|(text, skipped)| scanned_names(text.source, skipped))
+        .map(|(_, word)| word)
+        .collect::<Vec<_>>();
+    let names = short_names(words, |_| false)
+        .into_iter()
+        .map(|(word, name)| (word, format!("{prefix}{name}")))
+        .collect::<HashMap<_, _>>();
+    let outputs = texts
+        .iter()
+        .zip(&skipped)
+        .map(|(text, skipped)| {
+            rename_compiler_names(text.source, skipped, |word| names[word].clone()).0
+        })
+        .collect();
+    (outputs, names)
 }
 
 /// Where text at `offset` of a source is in its renamed text, given the
@@ -559,43 +661,101 @@ fn rewritten(
     runtime: Option<Range<usize>>,
     raw: &[Range<usize>],
 ) -> Option<(String, Vec<(usize, usize)>)> {
-    // The runtime factory is one token, an atom like a template literal.
-    let mut tokens = Vec::new();
-    match &runtime {
-        Some(factory) => {
-            tokens.extend(lex_section(source, 0..factory.start, false).ok()?);
-            tokens.push(Token {
-                kind: Kind::Template,
-                start: factory.start,
-                end: factory.end,
-                newline_before: false,
-            });
-            tokens.extend(lex_section(source, factory.end..source.len(), false).ok()?);
+    let lexed = Lexed::new(source, runtime, raw)?;
+    let mut words = Vec::new();
+    let mut excluded = HashSet::new();
+    lexed.words(&mut words, &mut excluded);
+    let names = short_names(words, |name| excluded.contains(name));
+    Some(lexed.rewrite(&names))
+}
+
+/// The tokens of a text [`rewritten`] writes: which are raw `js*` text, and
+/// the comments of raw text it keeps.
+struct Lexed<'s> {
+    source: &'s str,
+    runtime: Option<Range<usize>>,
+    tokens: Vec<Token>,
+    partners: Vec<usize>,
+    in_raw: Vec<bool>,
+    comments: Vec<(usize, &'s str, bool)>,
+}
+
+impl<'s> Lexed<'s> {
+    /// `source` lexed, with its `runtime` factory one token; `None` where
+    /// [`rewritten`] cannot follow it.
+    fn new(source: &'s str, runtime: Option<Range<usize>>, raw: &[Range<usize>]) -> Option<Self> {
+        // The runtime factory is one token, an atom like a template literal.
+        let mut tokens = Vec::new();
+        match &runtime {
+            Some(factory) => {
+                tokens.extend(lex_section(source, 0..factory.start, false).ok()?);
+                tokens.push(Token {
+                    kind: Kind::Template,
+                    start: factory.start,
+                    end: factory.end,
+                    newline_before: false,
+                });
+                tokens.extend(lex_section(source, factory.end..source.len(), false).ok()?);
+            }
+            None => tokens.extend(lex_section(source, 0..source.len(), false).ok()?),
         }
-        None => tokens.extend(lex_section(source, 0..source.len(), false).ok()?),
+        let partners = partners(source, &tokens);
+        let in_raw = raw_tokens(source, &tokens, &partners, raw, runtime.as_ref())?;
+        let comments = raw_comments(source, &tokens, raw);
+        Some(Self {
+            source,
+            runtime,
+            tokens,
+            partners,
+            in_raw,
+            comments,
+        })
     }
+
+    /// Add the compiler names of the text, in order, to `words`, and its
+    /// other identifiers, which short names avoid, to `excluded`.
+    fn words(&self, words: &mut Vec<&'s str>, excluded: &mut HashSet<&'s str>) {
+        for (token, &in_raw) in self.tokens.iter().zip(&self.in_raw) {
+            if token.kind == Kind::Name {
+                let word = token.text(self.source);
+                if compiler_name(word) && !in_raw {
+                    words.push(word);
+                } else {
+                    excluded.insert(word);
+                }
+            }
+        }
+    }
+
+    /// The text rewritten with the short `names` of its compiler names, with
+    /// the start of each written token in the source and in the output.
+    fn rewrite(self, names: &HashMap<&str, String>) -> (String, Vec<(usize, usize)>) {
+        let Lexed {
+            source,
+            runtime,
+            tokens,
+            partners,
+            in_raw,
+            comments,
+        } = self;
+        rewrite_tokens(source, runtime, tokens, partners, in_raw, comments, names)
+    }
+}
+
+fn rewrite_tokens(
+    source: &str,
+    runtime: Option<Range<usize>>,
+    tokens: Vec<Token>,
+    partners: Vec<usize>,
+    in_raw: Vec<bool>,
+    comments: Vec<(usize, &str, bool)>,
+    names: &HashMap<&str, String>,
+) -> (String, Vec<(usize, usize)>) {
     let is_runtime = |token: &Token| runtime.as_ref().is_some_and(|r| r.start == token.start);
-    let partners = partners(source, &tokens);
-    let in_raw = raw_tokens(source, &tokens, &partners, raw, runtime.as_ref())?;
-    let comments = raw_comments(source, &tokens, raw);
     let mut commented = vec![false; tokens.len() + 1];
     for &(index, ..) in &comments {
         commented[index] = true;
     }
-
-    let mut words = Vec::new();
-    let mut excluded = HashSet::new();
-    for (token, &in_raw) in tokens.iter().zip(&in_raw) {
-        if token.kind == Kind::Name {
-            let word = token.text(source);
-            if compiler_name(word) && !in_raw {
-                words.push(word);
-            } else {
-                excluded.insert(word);
-            }
-        }
-    }
-    let names = short_names(words, |name| excluded.contains(name));
 
     let mut dropped = redundant_semicolons(source, &tokens, &partners);
     for (dropped, in_raw) in dropped.iter_mut().zip(&in_raw) {
@@ -710,7 +870,7 @@ fn rewritten(
     if !output.ends_with('\n') {
         output.push('\n');
     }
-    Some((output, written))
+    (output, written)
 }
 
 /// The comments of raw `js*` text (sorted, disjoint `raw` ranges), which

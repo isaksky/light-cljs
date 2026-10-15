@@ -21,6 +21,9 @@ use crate::runtime_slice::{
 use crate::source_map::{Mark, Marks, SourceMapping};
 use crate::value_hash::ConstantHashes;
 
+mod chunked;
+pub(crate) use chunked::{EmittedChunk, emit_chunked};
+
 /// What `rt.core.<name>` holds in the embedded runtime's core table.
 fn core_reference(name: &str) -> CoreReference<'static> {
     RuntimeManifest::embedded()
@@ -201,9 +204,6 @@ fn emit_js_mode(
     let direct = application
         .and_then(|application| application.direct)
         .filter(|_| shared.is_none());
-    let inference = application
-        .and_then(|application| application.inference)
-        .filter(|_| direct.is_some());
     let shapes = application
         .and_then(|application| application.shapes)
         .filter(|_| direct.is_some());
@@ -215,69 +215,19 @@ fn emit_js_mode(
     };
     // The prelude, the `let g<n>;` declarations and the program body.
     let body = |register_namespaces: bool| {
-        let mut emitter = Emitter {
+        let mut emitter = Emitter::new(
             program,
-            demand_roots,
-            application_roots,
+            Setup {
+                demand_roots,
+                application_roots,
+                module,
+                mapped,
+                application,
+                direct,
+                function_names: &function_names,
+            },
             register_namespaces,
-            needs_host: false,
-            needs_package: false,
-            imports: module.then(Vec::new),
-            specialized_calls: application.map(|application| application.calls),
-            retained: application
-                .filter(|_| direct.is_some())
-                .map(|application| application.globals),
-            direct_methods: application
-                .and_then(|application| application.methods)
-                .filter(|_| direct.is_some()),
-            entry_lookups: application
-                .and_then(|application| application.entries)
-                .filter(|_| direct.is_some()),
-            type_basis: direct.is_none() || application.is_none_or(|application| application.basis),
-            record_methods: application
-                .filter(|_| direct.is_some())
-                .map_or(&[], |application| application.record_methods),
-            replaced_core: direct,
-            core_cells: Vec::new(),
-            constants: direct.map(|_| ConstantTable {
-                declarations: String::new(),
-                numbers: HashMap::new(),
-                named: vec![[None; 2]; program.named_literals.len()],
-                lazy: Vec::new(),
-                composites: 0,
-                functions: 0,
-                classes: vec![ConstantClass::Unknown; program.exprs.len()],
-                hashes: inference
-                    .is_some_and(|inference| inference.facts().core_protocols_intact())
-                    .then(ConstantHashes::default),
-            }),
-            output: String::new(),
-            indent: 1,
-            captures: Vec::new(),
-            reify_captures: Vec::new(),
-            reify_receivers: Vec::new(),
-            capture_resets: Vec::new(),
-            field_resets: Vec::new(),
-            used: HashSet::new(),
-            returned_definition: None,
-            asynchronous: false,
-            boxed_return: false,
-            operands: None,
-            this_target: None,
-            self_aliases: Vec::new(),
-            receivers: Vec::new(),
-            dispatchers: None,
-            raw_segments: Vec::new(),
-            runtime: RuntimeRoots::default(),
-            site: None,
-            protocol_operand: None,
-            inference,
-            shapes,
-            truth_used: false,
-            marks: mapped.then(Marks::default),
-            constant_marks: Vec::new(),
-            function_names: &function_names,
-        };
+        );
         emitter.output.push_str(PRELUDE_OPEN);
         emitter.output.push_str(PRELUDE_TRUTH);
         let mut prelude_end = emitter.output.len();
@@ -310,36 +260,7 @@ fn emit_js_mode(
             writeln!(emitter.output, "  let g{global};").unwrap();
         }
         emitter.operand_scope(|emitter| emitter.emit(root, ExprContext::Return));
-        // A host value the program builds may declare core protocols by
-        // their masks or markers, which it names (`crate::rta`).
-        if let Some(application) =
-            application.filter(|_| direct.is_some() && !emitter.runtime.is_empty())
-        {
-            for &(unit, site) in application.protocol_declarations {
-                emitter
-                    .runtime
-                    .record(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);
-            }
-            // ... and read by name what the runtime's `Loadable` has as a
-            // deftype would, which its effects add once these units are kept.
-            for &(unit, site) in application.loadable_members {
-                emitter
-                    .runtime
-                    .record(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);
-            }
-        }
-        // Only code naming them reads the upstream fields and methods of the
-        // runtime's types, so an `Advanced` slice keeps them only then.
-        if let Some(site) = application
-            .and_then(|application| application.upstream_member)
-            .filter(|_| direct.is_some() && !emitter.runtime.is_empty())
-        {
-            emitter.runtime.record(
-                RuntimeName::direct(crate::runtime_slice::UPSTREAM_MEMBERS_UNIT, None),
-                Some(site),
-                NameUse::Keep,
-            );
-        }
+        emitter.record_application_roots(application);
         // `Advanced` output that tests no value with `truth` does not declare it.
         if emitter.inference.is_some() && !emitter.truth_used {
             let start = PRELUDE_OPEN.len();
@@ -375,13 +296,7 @@ fn emit_js_mode(
     );
     emitter.output.push_str("})()\n");
     if emitter.needs_host || emitter.needs_package {
-        let mut host = String::new();
-        if emitter.needs_host {
-            host.push_str("  const host = (name) => { if (!(name in globalThis)) throw new ReferenceError(name + \" is not defined\"); return globalThis[name]; };\n");
-        }
-        if emitter.needs_package {
-            writeln!(host, "  const pkg = (name) => {{ const registry = globalThis.{PACKAGE_REGISTRY}; if (registry == null || !(name in Object(registry))) throw new ReferenceError(\"JavaScript package \\\"\" + name + \"\\\" is not provided by globalThis.{PACKAGE_REGISTRY}\"); return registry[name]; }};").unwrap();
-        }
+        let host = helpers(emitter.needs_host, emitter.needs_package);
         let host = host.as_str();
         for range in &mut emitter.raw_segments {
             if range.start >= prelude_end {
@@ -413,98 +328,11 @@ fn emit_js_mode(
     let mut runtime_statement = 0..0;
     let mut unit_bytes = None;
     if embed {
-        let mut registration = String::new();
-        let register_namespaces = emitter.register_namespaces;
         // At `Advanced` a namespace lists only the definitions the output keeps.
         let retained = |global: usize| {
             !slice || application.is_none_or(|application| application.globals[global])
         };
-        for namespace in program.namespaces.iter().filter(|namespace| {
-            register_namespaces && registered.is_none_or(|registered| registered == *namespace)
-        }) {
-            let previous = std::mem::take(&mut emitter.output);
-            emitter.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
-            let literal = std::mem::replace(&mut emitter.output, previous);
-            let register = emitter.runtime_read(
-                RuntimeName::core("registerReaderNamespace"),
-                None,
-                NameUse::Value,
-            );
-            writeln!(registration, "  {register}({literal}, {{aliases: [").unwrap();
-            if let Some(context) = program.reader_contexts.get(namespace) {
-                for (alias, target) in &context.aliases {
-                    writeln!(
-                        registration,
-                        "    [{}, {}],",
-                        js_string(alias),
-                        js_string(target)
-                    )
-                    .unwrap();
-                }
-                registration.push_str("  ], refers: [\n");
-                for (local, ns, original) in &context.refers {
-                    writeln!(
-                        registration,
-                        "    [{}, {}, {}],",
-                        js_string(local),
-                        js_string(ns),
-                        js_string(original)
-                    )
-                    .unwrap();
-                }
-                writeln!(
-                    registration,
-                    "  ], excludes: [{}],",
-                    context
-                        .excludes
-                        .iter()
-                        .map(|s| js_string(s))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                )
-                .unwrap();
-            } else {
-                registration.push_str("  ],\n");
-            }
-            writeln!(
-                registration,
-                "  bindings: [{}]}});",
-                program
-                    .globals
-                    .iter()
-                    .enumerate()
-                    .filter(|(id, g)| g.namespace == *namespace && retained(*id))
-                    .map(|(_, g)| js_string(&g.name))
-                    .chain(
-                        program
-                            .reader_contexts
-                            .get(namespace)
-                            .into_iter()
-                            .flat_map(|c| &c.macros)
-                            .map(|name| js_string(name))
-                    )
-                    .collect::<Vec<_>>()
-                    .join(",")
-            )
-            .unwrap();
-        }
-        if shared.is_none()
-            && register_namespaces
-            && let Some(namespace) = program.namespaces.last()
-        {
-            let [current, the_ns, symbol] = [
-                RuntimeName::core("currentNs"),
-                RuntimeName::core("theNs"),
-                RuntimeName::export("symbol"),
-            ]
-            .map(|name| emitter.runtime_read(name, None, NameUse::Value));
-            writeln!(
-                registration,
-                "  {current} = {the_ns}({symbol}(null, {}));",
-                js_string(namespace)
-            )
-            .unwrap();
-        }
+        let registration = emitter.registration(registered, shared.is_none(), retained);
         // Marks of the runtime text, by offset in `runtime`.
         let mut runtime_marks = Marks::default();
         let mut runtime = if let Some(parameter) = shared {
@@ -700,6 +528,19 @@ fn emit_js_mode(
     (output, runtime, mapping)
 }
 
+/// The declarations of the output's helpers: `host`, which reads a host
+/// global, and `pkg`, which reads a package from the registry.
+fn helpers(host: bool, package: bool) -> String {
+    let mut helpers = String::new();
+    if host {
+        helpers.push_str("  const host = (name) => { if (!(name in globalThis)) throw new ReferenceError(name + \" is not defined\"); return globalThis[name]; };\n");
+    }
+    if package {
+        writeln!(helpers, "  const pkg = (name) => {{ const registry = globalThis.{PACKAGE_REGISTRY}; if (registry == null || !(name in Object(registry))) throw new ReferenceError(\"JavaScript package \\\"\" + name + \"\\\" is not provided by globalThis.{PACKAGE_REGISTRY}\"); return registry[name]; }};").unwrap();
+    }
+    helpers
+}
+
 /// The names that source maps give the functions of `program`, by `fn`
 /// expression (`ExprId`): its own name, else the definition or local it
 /// initializes (through `do` and metadata).
@@ -858,6 +699,9 @@ fn check_runtime_reads(
                 continue;
             }
             if let Some(name) = token.strip_prefix("core$") {
+                // A chunk assigns another chunk's cell through its setter,
+                // `core$inc$`.
+                let name = name.strip_suffix('$').unwrap_or(name);
                 if !core_cells.iter().any(|(cell, _)| *cell == name) {
                     missing.push(token.to_owned());
                 }
@@ -932,6 +776,15 @@ fn named_import_binding(package: &str, export: &str) -> String {
 }
 
 fn module_source(imports: &[PackageImport], expression: &str) -> String {
+    let mut source = package_imports(imports);
+    source.push_str("export default ");
+    source.push_str(expression.trim_end());
+    source.push_str(";\n");
+    source
+}
+
+/// The static import statements of a module's package references.
+fn package_imports(imports: &[PackageImport]) -> String {
     let mut source = String::new();
     for import in imports {
         let specifier = quoted(&import.package);
@@ -958,9 +811,6 @@ fn module_source(imports: &[PackageImport], expression: &str) -> String {
             writeln!(source, "import {{ {names} }} from {specifier};").unwrap();
         }
     }
-    source.push_str("export default ");
-    source.push_str(expression.trim_end());
-    source.push_str(";\n");
     source
 }
 
@@ -1391,9 +1241,241 @@ struct Emitter<'a> {
     constant_marks: Vec<Mark>,
     /// With a source map: the names of functions ([`function_names`]).
     function_names: &'a [Option<&'a str>],
+    /// In a chunked build, the chunk being written and what the chunks
+    /// share ([`chunked`]).
+    chunks: Option<chunked::Chunks<'a>>,
+}
+
+/// What a fresh [`Emitter`] writes for ([`Emitter::new`]).
+#[derive(Clone, Copy)]
+struct Setup<'a> {
+    demand_roots: bool,
+    application_roots: bool,
+    module: bool,
+    mapped: bool,
+    application: Option<Application<'a>>,
+    direct: Option<&'a [&'static str]>,
+    function_names: &'a [Option<&'a str>],
 }
 
 impl<'a> Emitter<'a> {
+    /// A fresh emitter of `program` for `setup`, which registers its
+    /// namespaces when `register_namespaces`.
+    fn new(program: &'a Program, setup: Setup<'a>, register_namespaces: bool) -> Self {
+        let Setup {
+            demand_roots,
+            application_roots,
+            module,
+            mapped,
+            application,
+            direct,
+            ..
+        } = setup;
+        let inference = application
+            .and_then(|application| application.inference)
+            .filter(|_| direct.is_some());
+        let shapes = application
+            .and_then(|application| application.shapes)
+            .filter(|_| direct.is_some());
+        Emitter {
+            program,
+            demand_roots,
+            application_roots,
+            register_namespaces,
+            needs_host: false,
+            needs_package: false,
+            imports: module.then(Vec::new),
+            specialized_calls: application.map(|application| application.calls),
+            retained: application
+                .filter(|_| direct.is_some())
+                .map(|application| application.globals),
+            direct_methods: application
+                .and_then(|application| application.methods)
+                .filter(|_| direct.is_some()),
+            entry_lookups: application
+                .and_then(|application| application.entries)
+                .filter(|_| direct.is_some()),
+            type_basis: direct.is_none() || application.is_none_or(|application| application.basis),
+            record_methods: application
+                .filter(|_| direct.is_some())
+                .map_or(&[], |application| application.record_methods),
+            replaced_core: direct,
+            core_cells: Vec::new(),
+            constants: direct.map(|_| ConstantTable {
+                declarations: String::new(),
+                numbers: HashMap::new(),
+                named: vec![[None; 2]; program.named_literals.len()],
+                lazy: Vec::new(),
+                composites: 0,
+                functions: 0,
+                classes: vec![ConstantClass::Unknown; program.exprs.len()],
+                hashes: inference
+                    .is_some_and(|inference| inference.facts().core_protocols_intact())
+                    .then(ConstantHashes::default),
+            }),
+            output: String::new(),
+            indent: 1,
+            captures: Vec::new(),
+            reify_captures: Vec::new(),
+            reify_receivers: Vec::new(),
+            capture_resets: Vec::new(),
+            field_resets: Vec::new(),
+            used: HashSet::new(),
+            returned_definition: None,
+            asynchronous: false,
+            boxed_return: false,
+            operands: None,
+            this_target: None,
+            self_aliases: Vec::new(),
+            receivers: Vec::new(),
+            dispatchers: None,
+            raw_segments: Vec::new(),
+            runtime: RuntimeRoots::default(),
+            site: None,
+            protocol_operand: None,
+            inference,
+            shapes,
+            truth_used: false,
+            marks: mapped.then(Marks::default),
+            constant_marks: Vec::new(),
+            function_names: setup.function_names,
+            chunks: None,
+        }
+    }
+
+    /// The registration of the program's namespaces with the runtime, which
+    /// runs before its first form (only of the one that `registered` names,
+    /// when it names one), listing the definitions `retained` keeps; with
+    /// `current`, `*ns*` is then the last namespace.
+    fn registration(
+        &mut self,
+        registered: Option<&str>,
+        current: bool,
+        retained: impl Fn(usize) -> bool,
+    ) -> String {
+        let program = self.program;
+        let mut registration = String::new();
+        let register_namespaces = self.register_namespaces;
+        for namespace in program.namespaces.iter().filter(|namespace| {
+            register_namespaces && registered.is_none_or(|registered| registered == *namespace)
+        }) {
+            let previous = std::mem::take(&mut self.output);
+            self.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
+            let literal = std::mem::replace(&mut self.output, previous);
+            let register = self.runtime_read(
+                RuntimeName::core("registerReaderNamespace"),
+                None,
+                NameUse::Value,
+            );
+            writeln!(registration, "  {register}({literal}, {{aliases: [").unwrap();
+            if let Some(context) = program.reader_contexts.get(namespace) {
+                for (alias, target) in &context.aliases {
+                    writeln!(
+                        registration,
+                        "    [{}, {}],",
+                        js_string(alias),
+                        js_string(target)
+                    )
+                    .unwrap();
+                }
+                registration.push_str("  ], refers: [\n");
+                for (local, ns, original) in &context.refers {
+                    writeln!(
+                        registration,
+                        "    [{}, {}, {}],",
+                        js_string(local),
+                        js_string(ns),
+                        js_string(original)
+                    )
+                    .unwrap();
+                }
+                writeln!(
+                    registration,
+                    "  ], excludes: [{}],",
+                    context
+                        .excludes
+                        .iter()
+                        .map(|s| js_string(s))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+                .unwrap();
+            } else {
+                registration.push_str("  ],\n");
+            }
+            writeln!(
+                registration,
+                "  bindings: [{}]}});",
+                program
+                    .globals
+                    .iter()
+                    .enumerate()
+                    .filter(|(id, g)| g.namespace == *namespace && retained(*id))
+                    .map(|(_, g)| js_string(&g.name))
+                    .chain(
+                        program
+                            .reader_contexts
+                            .get(namespace)
+                            .into_iter()
+                            .flat_map(|c| &c.macros)
+                            .map(|name| js_string(name))
+                    )
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+            .unwrap();
+        }
+        if current
+            && register_namespaces
+            && let Some(namespace) = program.namespaces.last()
+        {
+            let [current, the_ns, symbol] = [
+                RuntimeName::core("currentNs"),
+                RuntimeName::core("theNs"),
+                RuntimeName::export("symbol"),
+            ]
+            .map(|name| self.runtime_read(name, None, NameUse::Value));
+            writeln!(
+                registration,
+                "  {current} = {the_ns}({symbol}(null, {}));",
+                js_string(namespace)
+            )
+            .unwrap();
+        }
+        registration
+    }
+
+    /// After the body is written, the runtime units an `Advanced` slice
+    /// keeps for what the program names rather than reads (`crate::rta`).
+    fn record_application_roots(&mut self, application: Option<Application<'_>>) {
+        let Some(application) =
+            application.filter(|_| self.replaced_core.is_some() && !self.runtime.is_empty())
+        else {
+            return;
+        };
+        // A host value the program builds may declare core protocols by
+        // their masks or markers, which it names (`crate::rta`).
+        for &(unit, site) in application.protocol_declarations {
+            self.runtime
+                .record(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);
+        }
+        // ... and read by name what the runtime's `Loadable` has as a
+        // deftype would, which its effects add once these units are kept.
+        for &(unit, site) in application.loadable_members {
+            self.runtime
+                .record(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);
+        }
+        // Only code naming them reads the upstream fields and methods of the
+        // runtime's types, so an `Advanced` slice keeps them only then.
+        if let Some(site) = application.upstream_member {
+            self.runtime.record(
+                RuntimeName::direct(crate::runtime_slice::UPSTREAM_MEMBERS_UNIT, None),
+                Some(site),
+                NameUse::Keep,
+            );
+        }
+    }
+
     /// Write a runtime read (`rt.keyword`, `rt.core.add`; `rt$keyword`,
     /// `rt$add` at `Advanced`) and record it as a root of the runtime slice.
     /// All emitted runtime reads go through here.
@@ -1607,6 +1689,9 @@ impl<'a> Emitter<'a> {
         constants.composites += usize::from(matches!(key, ConstantKey::Composite { .. }));
         constants.lazy.push(lazy);
         constants.numbers.insert(key, number);
+        if let Some(chunks) = &mut self.chunks {
+            chunks.constant(false);
+        }
         number
     }
 
@@ -2150,6 +2235,27 @@ impl<'a> Emitter<'a> {
                 .encode_utf16()
                 .collect::<Vec<_>>(),
         );
+    }
+
+    /// An assignment of the binding `target` writes: `target = value`, or in
+    /// a chunk that does not own that binding, a call of the setter its
+    /// owner exports, `g7$(value)`, whose value is the assigned value too
+    /// (docs/code-splitting.md, "Assignment across chunks").
+    fn assignment(&mut self, target: impl FnOnce(&mut Self), value: impl FnOnce(&mut Self)) {
+        let start = self.output.len();
+        target(self);
+        if self
+            .chunks
+            .as_ref()
+            .is_some_and(|chunks| chunks.assigns_through_setter(&self.output[start..]))
+        {
+            self.output.push_str("$(");
+            value(self);
+            self.output.push(')');
+        } else {
+            self.output.push_str(" = ");
+            value(self);
+        }
     }
 
     fn assignable(&mut self, id: ExprId) {
@@ -2967,12 +3073,9 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn emit_expr(&mut self, id: ExprId, context: ExprContext) {
-        self.used.insert(id);
-        if context == ExprContext::Value {
-            self.value(id);
-            return;
-        }
+    /// At a namespace's entry in output that registers namespaces, switch
+    /// `*ns*` to it.
+    fn namespace_entry(&mut self, id: ExprId) {
         if self.register_namespaces
             && let Some(namespace) = self.program.namespace_entries.get(&id)
         {
@@ -2984,6 +3087,15 @@ impl<'a> Emitter<'a> {
             self.rt(RuntimeName::export("symbol"));
             writeln!(self.output, "(null, {}));", js_string(namespace)).unwrap();
         }
+    }
+
+    fn emit_expr(&mut self, id: ExprId, context: ExprContext) {
+        self.used.insert(id);
+        if context == ExprContext::Value {
+            self.value(id);
+            return;
+        }
+        self.namespace_entry(id);
         // A discarded `nil`, such as a definition application preparation
         // removed, is no statement at `Advanced`, and neither is a discarded
         // definition without a value (`declare`), which assigns nothing.
@@ -3102,8 +3214,11 @@ impl<'a> Emitter<'a> {
                         self.binding_name(*target);
                         writeln!(self.output, ", temporary{i});").unwrap();
                     } else {
-                        self.assignable(*target);
-                        writeln!(self.output, " = temporary{i};").unwrap();
+                        self.assignment(
+                            |emitter| emitter.assignable(*target),
+                            |emitter| write!(emitter.output, "temporary{i}").unwrap(),
+                        );
+                        self.output.push_str(";\n");
                     }
                     self.indentation();
                     writeln!(self.output, "installed{i} = true;").unwrap();
@@ -3122,8 +3237,11 @@ impl<'a> Emitter<'a> {
                         self.binding_name(*target);
                         writeln!(self.output, ", saved{i});").unwrap();
                     } else {
-                        self.assignable(*target);
-                        writeln!(self.output, " = saved{i};").unwrap();
+                        self.assignment(
+                            |emitter| emitter.assignable(*target),
+                            |emitter| write!(emitter.output, "saved{i}").unwrap(),
+                        );
+                        self.output.push_str(";\n");
                     }
                 }
                 self.indent -= 1;
@@ -4138,6 +4256,9 @@ impl<'a> Emitter<'a> {
         constants.lazy.push(false);
         constants.functions += 1;
         constants.numbers.insert(key, number);
+        if let Some(chunks) = &mut self.chunks {
+            chunks.constant(true);
+        }
         let program = self.program;
         let ExprKind::Fn { methods, .. } = &program.exprs[function.0].kind else {
             unreachable!("a hoisted method of a fn")
@@ -4171,8 +4292,14 @@ impl<'a> Emitter<'a> {
         let declaration = format!("  const k{number} = ");
         let at = self.constants.as_ref().unwrap().declarations.len() + declaration.len();
         self.take_marks(marks, at);
-        let constants = self.constants.as_mut().unwrap();
-        writeln!(constants.declarations, "{declaration}{value};").unwrap();
+        // A chunked build declares the method in the chunk of its function.
+        let declarations = match &mut self.chunks {
+            Some(chunks) => chunks.method_declarations(),
+            None => None,
+        };
+        let declarations =
+            declarations.unwrap_or(&mut self.constants.as_mut().unwrap().declarations);
+        writeln!(declarations, "{declaration}{value};").unwrap();
         number
     }
 
@@ -4713,8 +4840,19 @@ impl<'a> Emitter<'a> {
         }
         match &self.program.exprs[id.0].kind {
             ExprKind::Nil => self.output.push_str("null"),
-            // Every target is resident: no importer, and a getter of the
-            // target's current value, or of nil for a namespace.
+            // A target in a chunk that may not have evaluated yet: an
+            // importer of that chunk, which startup's `lazy$` gives a `load`
+            // that calls it (`chunked`).
+            ExprKind::Loadable { target, class }
+                if self
+                    .chunks
+                    .as_ref()
+                    .is_some_and(|chunks| chunks.importer(self.program, *target).is_some()) =>
+            {
+                self.lazy_loadable(*target, *class);
+            }
+            // A resident target: no importer, and a getter of the target's
+            // current value, or of nil for a namespace.
             ExprKind::Loadable { target, class } => {
                 self.output.push_str("new ");
                 self.value(*class);
@@ -5303,9 +5441,10 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::SetGlobal { target, value } => {
                 self.output.push('(');
-                self.assignable(*target);
-                self.output.push_str(" = ");
-                self.value(*value);
+                self.assignment(
+                    |emitter| emitter.assignable(*target),
+                    |emitter| emitter.value(*value),
+                );
                 self.output.push(')');
             }
             ExprKind::Def {
