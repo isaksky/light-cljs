@@ -434,8 +434,12 @@ and runs them at every level in Node;
 table. `generated_optimization` compiles seeded multi-namespace programs with
 tagged dead code at every level, runs them in Node and checks which dead code
 survives against an expected-survivor list; `--no-capture` prints a table per
-seed. A failure names its seed: rerun it with `LIGHT_CLJS_GENERATED_SEED=<seed>`,
-or run more seeds with `LIGHT_CLJS_GENERATED_COUNT=<n>` (for example 240).
+seed. Its `lazy_seed_*` tests turn one or two namespaces of each seed's
+program into lazy roots and check the chunked build against the single file,
+and that startup holds no definition only lazy code reads
+([docs/code-splitting.md](docs/code-splitting.md), Phase 3). A failure names
+its seed: rerun it with `LIGHT_CLJS_GENERATED_SEED=<seed>`, or run more seeds
+with `LIGHT_CLJS_GENERATED_COUNT=<n>` (for example 240).
 
 Tests that need files make `light-*` directories in `$TMPDIR` through
 [tests/support/temp_dir.rs](tests/support/temp_dir.rs), which removes each one when

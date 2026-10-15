@@ -3,7 +3,8 @@
 //!
 //! [`run_modules`] writes the files into a fresh temporary directory and returns
 //! the driver's record in the shared outcome protocol
-//! (`tests/support/execution.js`), so checking a chunked run against its
+//! (`tests/support/execution.js`), with the values the program passes to
+//! `js/lightObserve` as its trace, so checking a chunked run against its
 //! single-file oracle compares two strings; [`run_directory`] runs files
 //! already in a directory, such as an `--out-dir` build. The startup file name
 //! is the record's id: give it the same name in both runs.

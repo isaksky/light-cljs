@@ -39,15 +39,33 @@
 //!    with folding off, the built rendering pools no more than the constant
 //!    one.
 //!
+//! 6. Lazy edges (light-cljs-281): `lazy_program` turns one or two namespaces
+//!    of a seed's program into lazy roots and puts a sentinel in every
+//!    definition. Built as chunks at every level (`lazy_seed_00` ...
+//!    `lazy_seed_11`, every fixed seed: each takes less time than a seed
+//!    above), startup never holds the sentinel of a definition only lazy
+//!    roots reach, at `Advanced` including movable definitions of startup's
+//!    namespaces that only lazy code reads; `chunks.json` holds its
+//!    invariants (`chunks::check_manifest`).
+//! 7. The chunked run's record, trace included, equals the single `--esm`
+//!    file's through the one Node driver (tests/support/chunked_execution.mjs).
+//!
 //! Failures print the seed, every namespace's source and the three output
 //! sizes. Replay a seed with `LIGHT_CLJS_GENERATED_SEED=<u64>` (it runs in
 //! `seed_00`); `LIGHT_CLJS_GENERATED_COUNT=<n>` spreads `n` seeds over the
 //! twelve tests for longer local runs:
 //! `LIGHT_CLJS_GENERATED_COUNT=240 cargo nextest run --test compiler generated_optimization::`.
 //! `--no-capture` prints each seed's garbage table.
-use super::generated::{GarbageTag, Literals, NamespaceProgram, SEEDS, namespace_program, seeds};
+use super::chunks::{check_manifest, read_manifest};
+use super::generated::{
+    GarbageTag, LazyEdges, Literals, NamespaceProgram, Placement, SEEDS, lazy_program,
+    namespace_program, seeds,
+};
 use super::optimization::{Sources, readable};
+use crate::chunked_execution::{run_directory, run_modules};
+use crate::temp_dir::TempDir;
 use light_cljs::analyzer::AnalysisOptions;
+use light_cljs::chunks::ChunkedOutput;
 use light_cljs::compiler::analyze_namespace_entry;
 use light_cljs::{
     ApplicationOptions, ApplicationStats, MacroHost, OptimizationLevel, Program,
@@ -756,3 +774,247 @@ fn garbage_never_changes_the_program_text_and_every_tag_occurs() {
         assert!(program.garbage.iter().any(|item| item.escape.is_some()));
     }
 }
+
+// Programs with lazy edges (light-cljs-281; docs/code-splitting.md, "Phase 3"
+// and "Verification"): `lazy_program` turns one or two namespaces of a
+// generated program into lazy roots and gives every definition a sentinel.
+
+/// Write `output`'s chunk files and `chunks.json` into a fresh directory.
+fn write_chunks(output: &ChunkedOutput) -> TempDir {
+    let dir = TempDir::new("generated-chunks");
+    for file in &output.files {
+        fs::write(dir.join(&file.name), &file.source).unwrap();
+    }
+    fs::write(dir.join("chunks.json"), output.manifest()).unwrap();
+    dir
+}
+
+/// The chunked build of `seed`'s program with lazy edges at every level,
+/// against its single `--esm` file:
+///
+/// - Structure: `chunks.json` describes the files (`chunks::check_manifest`):
+///   every import edge targets a strictly larger signature, every chunk holds
+///   a namespace or a definition, and no namespace only lazy roots reach is
+///   in startup.
+/// - Property 6, startup never holds a lazy-only definition: the startup chunk
+///   contains no sentinel of a definition of a namespace only lazy roots
+///   reach, at any level, and at `Advanced`, unless the program calls
+///   `resolve` (the reflection gate keeps definitions in their namespaces),
+///   none of a movable definition only code that lazy roots reach reads.
+/// - Property 7, the chunked run is the single file's: through the one Node
+///   driver (tests/support/chunked_execution.mjs) the record, trace, stdout
+///   and outcome, equals the single file's, which is the same at every level
+///   and loads every lazy root.
+///
+/// At `None` every sentinel is in some chunk, so the sentinels survive to
+/// the output. Returns how many sentinels of each placement the program has,
+/// and how many `LazyReaders` ones left startup for another chunk at
+/// `Advanced`.
+fn check_lazy_seed(seed: u64) -> LazyCounts {
+    let program = lazy_program(seed);
+    let lazy = program.lazy.as_ref().unwrap();
+    let sources = program.sources(&|_| false, false);
+    // Printed first, so a failure's captured output carries the program.
+    println!(
+        "seed {seed} (replay with LIGHT_CLJS_GENERATED_SEED={seed}): entry {}, lazy roots {}, lazy-only {}, resolve {}\n{}",
+        program.entry,
+        lazy.roots.join(" "),
+        lazy.lazy_only.join(" "),
+        lazy.reflective,
+        listing(&sources)
+    );
+    let analyzed = analyze(&program, &sources);
+    let mut counts = LazyCounts::default();
+    for sentinel in &lazy.sentinels {
+        match sentinel.placement {
+            Placement::Startup => counts.startup += 1,
+            Placement::LazyNamespace => counts.lazy_namespace += 1,
+            Placement::LazyReaders => counts.lazy_readers += 1,
+        }
+    }
+    let mut records = Vec::new();
+    for level in OptimizationLevel::ALL {
+        let prepared = prepare_application(&analyzed, ApplicationOptions::new(level));
+        let output = prepared.emit_chunks();
+        let dir = write_chunks(&output);
+        let (startup, chunks) = read_manifest(&dir);
+        check_manifest(&dir, &startup, &chunks, level, &program.entry);
+        for namespace in &lazy.lazy_only {
+            assert!(
+                !output.files[0].namespaces.contains(namespace),
+                "seed {seed} {level}: startup holds {namespace}"
+            );
+        }
+
+        let held = lazy_only_in_startup(lazy, &output.files[0].source, level);
+        assert!(
+            held.is_empty(),
+            "seed {seed} {level}: property 6: startup holds {held:?}"
+        );
+        let moves = level.advanced() && !lazy.reflective;
+        for sentinel in &lazy.sentinels {
+            let found = output
+                .files
+                .iter()
+                .any(|file| file.source.contains(&sentinel.text));
+            assert!(
+                found || level != OptimizationLevel::None,
+                "seed {seed} {level}: no chunk holds the sentinel of {}",
+                sentinel.definition
+            );
+            if moves && sentinel.placement == Placement::LazyReaders && found {
+                counts.moved += 1;
+            }
+        }
+        // The function only the first root reads runs, so its observation is
+        // in some chunk, and not in startup.
+        assert!(
+            !moves || counts.moved > 0,
+            "seed {seed} {level}: no definition left startup"
+        );
+
+        let single = prepared.emit_esm();
+        let oracle = run_modules(&[(startup.as_str(), single.as_str())], &startup)
+            .unwrap_or_else(|error| panic!("seed {seed} {level}: {error}"));
+        let record = run_directory(&dir, &startup)
+            .unwrap_or_else(|error| panic!("seed {seed} {level}: {error}"));
+        assert_eq!(
+            record, oracle,
+            "seed {seed} {level}: property 7: the chunked run differs from the single file"
+        );
+        records.push(record);
+    }
+    // The single file's record is the same at every level and the outcome
+    // the generator intended, after every lazy root loaded.
+    let observable = records
+        .iter()
+        .map(|record| record.split_once(',').unwrap().1)
+        .collect::<Vec<_>>();
+    agree(&observable, program.throws)
+        .unwrap_or_else(|error| panic!("seed {seed}: property 7: {error}"));
+    for root in &lazy.roots {
+        assert!(
+            observable[0].contains(&format!("\"load {root}\"")),
+            "seed {seed}: {root} never loaded: {}",
+            observable[0]
+        );
+    }
+    counts
+}
+
+/// The definitions whose sentinel the startup chunk `startup` holds although
+/// only lazy roots reach them (property 6): those of lazy-only namespaces, and
+/// at `Advanced`, unless the program calls `resolve`, the movable ones that
+/// only code lazy roots reach reads.
+fn lazy_only_in_startup<'a>(
+    lazy: &'a LazyEdges,
+    startup: &str,
+    level: OptimizationLevel,
+) -> Vec<&'a str> {
+    let moves = level.advanced() && !lazy.reflective;
+    lazy.sentinels
+        .iter()
+        .filter(|sentinel| match sentinel.placement {
+            Placement::Startup => false,
+            Placement::LazyNamespace => true,
+            Placement::LazyReaders => moves,
+        })
+        .filter(|sentinel| startup.contains(&sentinel.text))
+        .map(|sentinel| sentinel.definition.as_str())
+        .collect()
+}
+
+/// What [`check_lazy_seed`] counts of one program's sentinels.
+#[derive(Default, Debug)]
+struct LazyCounts {
+    startup: usize,
+    lazy_namespace: usize,
+    lazy_readers: usize,
+    /// `LazyReaders` sentinels in a chunk other than startup at `Advanced`.
+    moved: usize,
+}
+
+/// Run the selected seeds at positions `index`, `index + 12`, ... with lazy
+/// edges.
+fn check_lazy_seeds(index: usize) {
+    for seed in seeds().into_iter().skip(index).step_by(SEEDS.len()) {
+        let counts = check_lazy_seed(seed);
+        println!("seed {seed}: sentinels {counts:?}");
+    }
+}
+
+/// Property 6 rejects a startup chunk holding lazy-only definitions: below
+/// `Advanced` nothing moves, so startup holds the definitions of its
+/// namespaces that only a lazy root reads, which the `Advanced` check
+/// rejects unless the program calls `resolve`, and the sentinel of a
+/// lazy-only namespace's definition fails at every level. Property 7
+/// compares traces: the driver records what the program observes.
+#[test]
+fn lazy_checks_reject_lazy_only_definitions_in_startup() {
+    let program = SEEDS
+        .into_iter()
+        .map(lazy_program)
+        .find(|program| !program.lazy.as_ref().unwrap().reflective)
+        .unwrap();
+    let lazy = program.lazy.as_ref().unwrap();
+    let analyzed = analyze(&program, &program.sources(&|_| false, false));
+    let none = prepare_application(&analyzed, ApplicationOptions::new(OptimizationLevel::None));
+    let startup = none.emit_chunks().files.swap_remove(0);
+    let advanced = prepare_application(
+        &analyzed,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    )
+    .emit_chunks()
+    .files
+    .swap_remove(0);
+    let lazy_readers: Vec<_> = lazy
+        .sentinels
+        .iter()
+        .filter(|sentinel| sentinel.placement == Placement::LazyReaders)
+        .map(|sentinel| sentinel.definition.as_str())
+        .collect();
+    assert!(!lazy_readers.is_empty(), "seed {}", program.seed);
+    assert_eq!(
+        lazy_only_in_startup(lazy, &startup.source, OptimizationLevel::None),
+        Vec::<&str>::new()
+    );
+    assert_eq!(
+        lazy_only_in_startup(lazy, &startup.source, OptimizationLevel::Advanced),
+        lazy_readers
+    );
+    assert_eq!(
+        lazy_only_in_startup(lazy, &advanced.source, OptimizationLevel::Advanced),
+        Vec::<&str>::new()
+    );
+    let reflective = LazyEdges {
+        reflective: true,
+        ..lazy.clone()
+    };
+    assert_eq!(
+        lazy_only_in_startup(&reflective, &startup.source, OptimizationLevel::Advanced),
+        Vec::<&str>::new()
+    );
+    let sentinel = lazy
+        .sentinels
+        .iter()
+        .find(|sentinel| sentinel.placement == Placement::LazyNamespace)
+        .unwrap();
+    let tampered = format!("{}\"{}\";\n", startup.source, sentinel.text);
+    assert_eq!(
+        lazy_only_in_startup(lazy, &tampered, OptimizationLevel::None),
+        [sentinel.definition.as_str()]
+    );
+
+    let record = run_modules(&[(&startup.name, &none.emit_esm())], &startup.name).unwrap();
+    let trace = record.split_once("\"trace\":[").unwrap().1;
+    assert!(
+        trace.contains(&format!("\"load {}\"", lazy.roots[0])) && trace.contains("\"sentinel gen."),
+        "{record}"
+    );
+}
+
+row_tests!(check_lazy_seeds;
+    lazy_seed_00(0), lazy_seed_01(1), lazy_seed_02(2), lazy_seed_03(3), lazy_seed_04(4),
+    lazy_seed_05(5), lazy_seed_06(6), lazy_seed_07(7), lazy_seed_08(8), lazy_seed_09(9),
+    lazy_seed_10(10), lazy_seed_11(11),
+);

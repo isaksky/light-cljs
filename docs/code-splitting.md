@@ -586,7 +586,10 @@ Scope: fix the semantics and get numbers before writing compiler code.
   of a chunk count as pending too, not only microtasks. The record's id is the
   startup file name, its trace is empty (the program has no observer), and its
   value must be a host value, since no inspection adapter reaches a runtime
-  inside the modules. `tests/support/chunked_execution.rs` (`run_modules`)
+  inside the modules. Since light-cljs-281 the driver binds
+  `globalThis.lightObserve`, the per-case observer generated programs call,
+  for the whole run, and the trace is what the program passed it (still
+  empty for a program that never calls it). `tests/support/chunked_execution.rs` (`run_modules`)
   writes the files to a fresh temporary directory and runs the driver;
   `tests/compiler/features_example.rs` runs the example at every level. By
   hand, into an empty directory `DIR`: `cargo run --quiet -- --compile --entry
@@ -1086,6 +1089,52 @@ runtime units toward their first readers; per-chunk runtime factories.
     shares with a feature. examples/features plans the shared chunk at
     `Advanced` and its namespace plan stays the three files of Phase 2.
 
+- **As built (light-cljs-281): generated programs with lazy edges.**
+  - `lazy_program(seed)` (`tests/support/generated.rs`) draws a namespace
+    program of four to six namespaces from the streams `namespace_program`
+    uses and turns one or two namespaces, none of them the entry, the
+    protocol's or the first, into lazy roots. Edges into a root are dropped
+    before any form is drawn, so the forms differ from `namespace_program`'s
+    for the seed, whose text stays as it was. Each root defines a function
+    last, the target of a loadable in the entry, and the entry's value is a
+    function that loads the roots in order, then calls each root's function
+    and observes its value, then computes the entry's usual result. Loading
+    every root before the first observation makes the traces comparable: the
+    single file runs the lazy sources right after the entry, the chunks when
+    they load, and nothing is observed in between.
+  - Every definition but the protocol holds a sentinel string: a function or
+    method body observes it, and a `def` is `(do (identity "sentinel ...;")
+    value)`, which leaves a `def` of a literal one removal could drop. The
+    generator records the globals each form names and places each sentinel
+    (`Placement`): `LazyNamespace` when only lazy roots reach its namespace;
+    `LazyReaders` for a movable definition (a `defn`, a `def` of a literal
+    or a keyword, a `defrecord` or `deftype`) of a namespace startup holds
+    that only code lazy roots reach reads; `Startup` otherwise. Drawn forms
+    seldom leave such a definition, since startup's top-level forms read
+    most of what their namespaces define, so the first root also requires a
+    namespace startup loads (the entry requiring it if nothing else does)
+    that ends with a `def` of a literal, a `deftype` when it sees the
+    protocol and a function reading both, which only the root's function
+    calls. `resolve` reaches reflection, which keeps every definition in its
+    namespace's chunk, and 11 of the 12 fixed seeds called it, so a lazy
+    program may call it in one seed of four (`LazyEdges::reflective`) and
+    reads through `var` otherwise.
+  - `generated_optimization::lazy_seed_00` ... `lazy_seed_11` compile each
+    fixed seed at every level with `emit_chunks` against `emit_esm`.
+    `chunks::check_manifest` checks the files and `chunks.json`, now also
+    that every chunk holds a namespace or a definition (its code may still
+    be `(()=>{})();` at `Advanced` until light-cljs-299). Startup holds no
+    namespace only lazy roots reach and no `LazyNamespace` sentinel at any
+    level, and at `Advanced`, without `resolve`, no `LazyReaders` one, while
+    another chunk holds one; at `None` every sentinel is in some chunk; and
+    through the one Node driver the chunked record (trace, stdout, outcome)
+    equals the single file's, which is the same at every level and shows
+    each root loading. All twelve seeds run, each test in about 1.2 s against
+    1.6-2.4 s for a seed of the garbage properties, so the chunked variant
+    keeps every seed; `LIGHT_CLJS_GENERATED_COUNT=480` passed too. Seven of
+    the fixed seeds do not call `resolve`, and their two or three
+    lazy-reader definitions each leave startup at `Advanced`.
+
 - **Item signatures.** Extend `chunks::plan` with the item reference graph
   over `flatten(program.root)`: per item, the globals it reads (one walk
   with `program_fragment::children`), the globals it defines
@@ -1206,8 +1255,10 @@ available; docs/compiler.md, "Chunked builds", documents `--out-dir`,
 As built (light-cljs-276), `chunks::matrix` is the differential execution
 and the membership tables for the fixtures of `tests/fixtures/chunks/`
 (Phase 2, "As built (light-cljs-276)"), with the edge check made again from
-`chunks.json`; generated programs with lazy edges, per-chunk ceilings and
-the rest of the list are still to come.
+`chunks.json`. Since light-cljs-281 generated programs with lazy edges run
+chunked against the single file at every level, with the same manifest
+checks (Phase 3, "As built (light-cljs-281)"); per-chunk ceilings and the
+rest of the list are still to come.
 
 The two hosts are checked by hand, at every level, on examples/features. Its
 `index.html` sits beside the chunks, appends each line the program logs to

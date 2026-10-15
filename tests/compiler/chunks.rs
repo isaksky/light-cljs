@@ -1721,7 +1721,7 @@ fn install_packages(name: &str, dir: &Path) {
 }
 
 /// A chunk of `chunks.json`.
-struct ManifestChunk {
+pub(super) struct ManifestChunk {
     name: String,
     file: String,
     imports: Vec<String>,
@@ -1735,7 +1735,7 @@ struct ManifestChunk {
 }
 
 /// The startup file and the chunks of `dir/chunks.json`.
-fn read_manifest(dir: &Path) -> (String, Vec<ManifestChunk>) {
+pub(super) fn read_manifest(dir: &Path) -> (String, Vec<ManifestChunk>) {
     let manifest = Json::parse(&fs::read_to_string(dir.join("chunks.json")).unwrap());
     let strings = |list: &Json| {
         list.items()
@@ -1829,10 +1829,18 @@ fn reach(chunks: &[ManifestChunk], level: OptimizationLevel) -> Vec<Vec<bool>> {
 /// imports are the chunks of the loadables its namespaces hold that it does
 /// not reach statically; the namespaces partition the program's, with each
 /// root and loadable target in its chunk; and every import edge targets a
-/// strictly larger signature, the roots whose chunks reach a chunk.
-fn check_manifest(out: &Path, startup: &str, chunks: &[ManifestChunk], level: OptimizationLevel) {
+/// strictly larger signature, the roots whose chunks reach a chunk. The
+/// first chunk is startup, whose first root is `entry`, and every chunk
+/// holds a namespace or a definition.
+pub(super) fn check_manifest(
+    out: &Path,
+    startup: &str,
+    chunks: &[ManifestChunk],
+    level: OptimizationLevel,
+    entry: &str,
+) {
     assert_eq!(startup, chunks[0].file, "{level}");
-    assert_eq!(chunks[0].roots[0], "app.main", "{level}");
+    assert_eq!(chunks[0].roots[0], entry, "{level}");
     let mut files = chunks
         .iter()
         .map(|chunk| chunk.file.clone())
@@ -1855,6 +1863,13 @@ fn check_manifest(out: &Path, startup: &str, chunks: &[ManifestChunk], level: Op
     for (i, chunk) in chunks.iter().enumerate() {
         let source = &sources[i];
         assert_eq!(chunk.file, format!("{}.js", chunk.name), "{level}");
+        // No chunk is empty in the manifest. Its code may still be, at
+        // `Advanced`, `(()=>{})();` (light-cljs-299 drops such chunks).
+        assert!(
+            !chunk.namespaces.is_empty() || !chunk.definitions.is_empty(),
+            "{level}: {} holds neither a namespace nor a definition",
+            chunk.file
+        );
         assert_eq!(source.len(), chunk.bytes, "{level}: {}", chunk.file);
         assert_eq!(
             static_imports(source),
@@ -2021,7 +2036,7 @@ fn matrix(name: &str) {
             "{name} {level}"
         );
         let (startup, chunks) = read_manifest(&out);
-        check_manifest(&out, &startup, &chunks, level);
+        check_manifest(&out, &startup, &chunks, level, "app.main");
         assert_eq!(
             membership_rows(&chunks),
             expected_membership(name, level),

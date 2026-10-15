@@ -8,7 +8,10 @@
 //! - namespaces ([`namespace_program`]): a DAG of namespaces with definitions,
 //!   protocols, types and escapes, plus tagged known-dead garbage. The compiler
 //!   binary checks optimization levels against it
-//!   (tests/compiler/generated_optimization.rs).
+//!   (tests/compiler/generated_optimization.rs). [`lazy_program`] draws the
+//!   same kind of program with one or two namespaces turned into lazy roots
+//!   and a sentinel in every definition, which the same file checks as
+//!   chunked output.
 //!
 //! `LIGHT_CLJS_GENERATED_SEED=<u64>` replays one seed and
 //! `LIGHT_CLJS_GENERATED_COUNT=<n>` runs `n` seeds instead of the fixed twelve.
@@ -347,6 +350,8 @@ const LITERAL_STREAM: u64 = 0x6c69_7465_7261_6c73;
 const SHAPE_STREAM: u64 = 0x7368_6170_6573_2121;
 /// Lookups of constant literals (light-cljs-221) too, with their literals.
 const LOOKUP_STREAM: u64 = 0x6c6f_6f6b_7570_7321;
+/// Which namespaces of a [`lazy_program`] are lazy roots (light-cljs-281).
+const LAZY_STREAM: u64 = 0x6c61_7a79_726f_6f74;
 /// Constant keys of shaped maps and first members of shaped sets: keywords,
 /// and scalars that hash alike in full (`1` and `2147483648`, `0` and
 /// `2147483647`, `"Aa"` and `"BB"`, `true` and `1231`) or in their low bits
@@ -690,6 +695,12 @@ struct Item {
     after: Vec<Item>,
     /// How many program globals are defined once this item has run.
     defined: usize,
+    /// The globals the item's text names (program items only).
+    reads: Vec<usize>,
+    /// The global the item defines when it is a definition that removal could
+    /// drop unread, so that `Advanced` may move it toward its readers: a
+    /// `defn`, a `def` of a literal or a keyword, a `defrecord` or `deftype`.
+    movable: Option<usize>,
 }
 impl Item {
     fn new(gate: Gate, text: String) -> Self {
@@ -700,6 +711,8 @@ impl Item {
             close: String::new(),
             after: Vec::new(),
             defined: 0,
+            reads: Vec::new(),
+            movable: None,
         }
     }
 
@@ -754,7 +767,60 @@ pub(crate) struct NamespaceProgram {
     /// The entry ends with a call at an arity the callee lacks, so the program
     /// throws an `Error` after its other effects (a deliberate rare outcome).
     pub(crate) throws: bool,
+    /// The lazy roots and sentinels of a [`lazy_program`].
+    pub(crate) lazy: Option<LazyEdges>,
     namespaces: Vec<Namespace>,
+}
+
+/// What [`lazy_program`] adds to a namespace program. No namespace requires a
+/// lazy root; the entry holds a `light.lazy/loadable` of a function each lazy
+/// root defines last, and its value is a function that loads the roots in
+/// order, then calls each root's function and observes its value, then
+/// computes the entry's usual result. So the lazy sources' top-level effects
+/// run before any of those observations, whether they run after the entry
+/// (the single file) or as their chunks load.
+#[derive(Clone, Debug)]
+pub(crate) struct LazyEdges {
+    /// The lazy root namespaces, in loading order.
+    pub(crate) roots: Vec<String>,
+    /// The namespaces the entry does not require, directly or not, which
+    /// only lazy roots reach.
+    pub(crate) lazy_only: Vec<String>,
+    /// One per definition but the protocol, whose dispatchers hold no code of
+    /// the program's.
+    pub(crate) sentinels: Vec<Sentinel>,
+    /// Some form calls `resolve`, so `Advanced` output reaches reflection and
+    /// the chunked build keeps every definition in its namespace's chunk.
+    pub(crate) reflective: bool,
+}
+
+/// A string literal in one definition's code, unique in the program: in a
+/// function or method body an observation, `(js/lightObserve "sentinel ...;")`,
+/// and in a `def` a statement before the value, `(do (identity "sentinel
+/// ...;") value)`, which leaves the definition one that removal could drop.
+/// Emitted JavaScript contains it where that code is.
+#[derive(Clone, Debug)]
+pub(crate) struct Sentinel {
+    pub(crate) text: String,
+    /// The definition's qualified name.
+    pub(crate) definition: String,
+    pub(crate) placement: Placement,
+}
+
+/// Where the code of a definition may be emitted, by who reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Placement {
+    /// The definition is in a namespace startup holds, and stays there or
+    /// may: it is not movable, code startup holds reads it, or nothing does.
+    Startup,
+    /// Only lazy roots reach the definition's namespace, so its chunk is not
+    /// startup at any level.
+    LazyNamespace,
+    /// The definition is in a namespace startup holds but only code that
+    /// lazy roots reach reads it, and removal could drop it unread: at
+    /// `Advanced`, without reflection, it moves out of startup toward its
+    /// readers (light-cljs-277).
+    LazyReaders,
 }
 impl NamespaceProgram {
     /// `(relative path, source)` of every namespace when the garbage items that
@@ -817,6 +883,9 @@ enum Kind {
     Type {
         methods: Vec<usize>,
     },
+    /// A definition of a [`lazy_program`] that only its first lazy root
+    /// reads, which no other form picks.
+    LazyOnly,
 }
 
 #[derive(Clone, Debug)]
@@ -867,56 +936,52 @@ struct Builder {
     names: usize,
     throws: bool,
     garbage: Vec<Garbage>,
+    /// Draws the lazy roots of a [`lazy_program`]; `None` for
+    /// [`namespace_program`], whose text has no lazy edge or sentinel.
+    lazy_rng: Option<Generator>,
+    lazy_roots: Vec<usize>,
+    /// The globals named since the last program item was pushed, which that
+    /// item reads.
+    reads: Vec<usize>,
+    /// The global the next pushed item defines when it is movable.
+    movable: Option<usize>,
+    /// Each definition's sentinel, namespace and global when it is movable.
+    sentinels: Vec<(String, usize, Option<usize>)>,
+    /// Each lazy root's function, the target of a loadable in the entry.
+    targets: Vec<String>,
+    /// Whether reflective reads may call `resolve` rather than `var`.
+    resolve: bool,
+    reflective: bool,
+    /// The namespace startup loads below the first lazy root where
+    /// [`Builder::lazy_only_definitions`] go, and their function.
+    shared: Option<usize>,
+    only: Option<usize>,
+}
+
+/// For each namespace, whether `from` requires it, directly or not, or is it.
+fn reach(requires: &[Vec<usize>], from: usize) -> Vec<bool> {
+    let mut reached = vec![false; requires.len()];
+    let mut stack = vec![from];
+    while let Some(namespace) = stack.pop() {
+        if !std::mem::replace(&mut reached[namespace], true) {
+            stack.extend(&requires[namespace]);
+        }
+    }
+    reached
 }
 
 /// Generate the namespace program for `seed`. Programs terminate: functions and
 /// method bodies only call what was defined before them, multi-arity functions
 /// only delegate to a larger arity, and nothing loops.
 pub(crate) fn namespace_program(seed: u64) -> NamespaceProgram {
-    let mut builder = Builder {
-        rng: Generator {
-            state: seed ^ PROGRAM_STREAM,
-            next_id: 0,
-        },
-        literal_rng: Generator {
-            state: seed ^ LITERAL_STREAM,
-            next_id: 0,
-        },
-        shape_rng: Generator {
-            state: seed ^ SHAPE_STREAM,
-            next_id: 0,
-        },
-        lookup_rng: Generator {
-            state: seed ^ LOOKUP_STREAM,
-            next_id: 0,
-        },
-        literals: Vec::new(),
-        namespaces: Vec::new(),
-        requires: Vec::new(),
-        ancestors: Vec::new(),
-        globals: Vec::new(),
-        protocol: 0,
-        methods: 2,
-        protocol_item: None,
-        implementations: Vec::new(),
-        number: None,
-        names: 0,
-        throws: false,
-        garbage: Vec::new(),
-    };
+    let mut builder = Builder::new(seed, false);
     builder.program();
     builder.rng = Generator {
         state: seed ^ GARBAGE_STREAM,
         next_id: 0,
     };
     builder.garbage_items();
-    let program = NamespaceProgram {
-        seed,
-        entry: format!("gen.n{}", builder.entry()),
-        garbage: builder.garbage,
-        throws: builder.throws,
-        namespaces: builder.namespaces,
-    };
+    let program = builder.finish(seed);
     let bytes: usize = program
         .sources(&|_| true, true)
         .iter()
@@ -926,7 +991,168 @@ pub(crate) fn namespace_program(seed: u64) -> NamespaceProgram {
     program
 }
 
+/// Generate the program with lazy edges for `seed` (light-cljs-281): a
+/// namespace program of four to six namespaces, drawn with the same streams
+/// as [`namespace_program`]'s, in which one or two namespaces other than the
+/// first, the entry and the protocol's are lazy roots ([`LazyEdges`]), every
+/// definition holds a [`Sentinel`], and there is no garbage. Edges into a
+/// lazy root are dropped before any form is drawn, so the forms differ from
+/// [`namespace_program`]'s for the same seed. A namespace startup loads
+/// below the first root ends with definitions only that root reads
+/// ([`Builder::lazy_only_definitions`]), and one program in four may call
+/// `resolve`.
+pub(crate) fn lazy_program(seed: u64) -> NamespaceProgram {
+    let mut builder = Builder::new(seed, true);
+    builder.program();
+    let lazy = builder.lazy_edges();
+    let program = NamespaceProgram {
+        lazy: Some(lazy),
+        ..builder.finish(seed)
+    };
+    let bytes: usize = program
+        .sources(&|_| false, false)
+        .iter()
+        .map(|(_, source)| source.len())
+        .sum();
+    assert!(bytes <= PROGRAM_BYTES, "seed {seed}: program source bound");
+    program
+}
+
 impl Builder {
+    fn new(seed: u64, lazy: bool) -> Self {
+        Self {
+            rng: Generator {
+                state: seed ^ PROGRAM_STREAM,
+                next_id: 0,
+            },
+            literal_rng: Generator {
+                state: seed ^ LITERAL_STREAM,
+                next_id: 0,
+            },
+            shape_rng: Generator {
+                state: seed ^ SHAPE_STREAM,
+                next_id: 0,
+            },
+            lookup_rng: Generator {
+                state: seed ^ LOOKUP_STREAM,
+                next_id: 0,
+            },
+            literals: Vec::new(),
+            namespaces: Vec::new(),
+            requires: Vec::new(),
+            ancestors: Vec::new(),
+            globals: Vec::new(),
+            protocol: 0,
+            methods: 2,
+            protocol_item: None,
+            implementations: Vec::new(),
+            number: None,
+            names: 0,
+            throws: false,
+            garbage: Vec::new(),
+            lazy_rng: lazy.then_some(Generator {
+                state: seed ^ LAZY_STREAM,
+                next_id: 0,
+            }),
+            lazy_roots: Vec::new(),
+            reads: Vec::new(),
+            movable: None,
+            sentinels: Vec::new(),
+            targets: Vec::new(),
+            resolve: true,
+            reflective: false,
+            shared: None,
+            only: None,
+        }
+    }
+
+    /// The lazy roots and the placement of each sentinel. Startup holds the
+    /// entry and what it requires. In those namespaces a movable definition
+    /// is [`Placement::LazyReaders`] when no item there reads it but the
+    /// movable definitions only lazy code reads, and some item of a lazy-only
+    /// namespace reads it, directly or through such definitions.
+    fn lazy_edges(&self) -> LazyEdges {
+        let count = self.namespaces.len();
+        let startup = reach(&self.requires, self.entry());
+        let mut definitions = vec![None; self.globals.len()];
+        for (namespace, source) in self.namespaces.iter().enumerate() {
+            for item in &source.items {
+                if let Some(global) = item.movable.filter(|_| startup[namespace]) {
+                    definitions[global] = Some(item);
+                }
+            }
+        }
+        // The globals read from items of `namespaces`, other than startup's
+        // movable definitions, and through the movable definitions read.
+        let read_from = |namespaces: &dyn Fn(usize) -> bool| {
+            let mut read = vec![false; self.globals.len()];
+            let mut work: Vec<usize> = Vec::new();
+            for (namespace, source) in self.namespaces.iter().enumerate() {
+                for item in &source.items {
+                    if namespaces(namespace) && (item.movable.is_none() || !startup[namespace]) {
+                        work.extend(&item.reads);
+                    }
+                }
+            }
+            while let Some(global) = work.pop() {
+                if !std::mem::replace(&mut read[global], true)
+                    && let Some(item) = definitions[global]
+                {
+                    work.extend(&item.reads);
+                }
+            }
+            read
+        };
+        let from_startup = read_from(&|namespace| startup[namespace]);
+        let from_lazy = read_from(&|namespace| !startup[namespace]);
+        let sentinels = self
+            .sentinels
+            .iter()
+            .map(|(text, namespace, movable)| {
+                let name = text
+                    .strip_prefix("sentinel ")
+                    .and_then(|name| name.strip_suffix(';'))
+                    .unwrap();
+                let placement = match movable {
+                    _ if !startup[*namespace] => Placement::LazyNamespace,
+                    Some(global) if !from_startup[*global] && from_lazy[*global] => {
+                        Placement::LazyReaders
+                    }
+                    _ => Placement::Startup,
+                };
+                Sentinel {
+                    text: text.clone(),
+                    definition: name.into(),
+                    placement,
+                }
+            })
+            .collect();
+        LazyEdges {
+            roots: self
+                .lazy_roots
+                .iter()
+                .map(|root| format!("gen.n{root}"))
+                .collect(),
+            lazy_only: (0..count)
+                .filter(|&namespace| !startup[namespace])
+                .map(|namespace| format!("gen.n{namespace}"))
+                .collect(),
+            sentinels,
+            reflective: self.reflective,
+        }
+    }
+
+    fn finish(self, seed: u64) -> NamespaceProgram {
+        NamespaceProgram {
+            seed,
+            entry: format!("gen.n{}", self.entry()),
+            garbage: self.garbage,
+            throws: self.throws,
+            lazy: None,
+            namespaces: self.namespaces,
+        }
+    }
+
     fn shuffle<T>(&mut self, items: &mut [T]) {
         for index in (1..items.len()).rev() {
             let other = self.rng.choose(index + 1);
@@ -957,9 +1183,56 @@ impl Builder {
 
     fn push(&mut self, namespace: usize, item: Item) -> usize {
         let defined = self.globals.len();
+        let reads = std::mem::take(&mut self.reads);
+        let movable = self.movable.take();
         let items = &mut self.namespaces[namespace].items;
-        items.push(Item { defined, ..item });
+        items.push(Item {
+            defined,
+            reads,
+            movable,
+            ..item
+        });
         items.len() - 1
+    }
+
+    /// The sentinel of definition `name` of `namespace` in a [`lazy_program`],
+    /// recorded with the global it defines when that is movable; `None`
+    /// otherwise.
+    fn sentinel(&mut self, namespace: usize, name: &str, movable: Option<usize>) -> Option<String> {
+        self.lazy_rng.as_ref()?;
+        let text = format!("sentinel gen.n{namespace}/{name};");
+        self.sentinels.push((text.clone(), namespace, movable));
+        Some(text)
+    }
+
+    /// `body` behind an observation of definition `name`'s sentinel in a
+    /// [`lazy_program`]: the body of a function or method.
+    fn observed_body(
+        &mut self,
+        namespace: usize,
+        name: &str,
+        global: Option<usize>,
+        body: String,
+    ) -> String {
+        match self.sentinel(namespace, name, global) {
+            Some(sentinel) => format!("({OBSERVE} \"{sentinel}\") {body}"),
+            None => body,
+        }
+    }
+
+    /// The initializer `value` of `def` `name` with its sentinel in a
+    /// [`lazy_program`], before the value where nothing observes it.
+    fn sentinel_value(
+        &mut self,
+        namespace: usize,
+        name: &str,
+        global: Option<usize>,
+        value: String,
+    ) -> String {
+        match self.sentinel(namespace, name, global) {
+            Some(sentinel) => format!("(do (identity \"{sentinel}\") {value})"),
+            None => value,
+        }
     }
 
     fn statement(&mut self, namespace: usize, text: String) -> usize {
@@ -975,7 +1248,9 @@ impl Builder {
         self.globals.len() - 1
     }
 
-    fn reference(&self, namespace: usize, global: usize) -> String {
+    /// The name of `global` in `namespace`, which the next pushed item reads.
+    fn reference(&mut self, namespace: usize, global: usize) -> String {
+        self.reads.push(global);
         let global = &self.globals[global];
         if global.namespace == namespace {
             global.name.clone()
@@ -984,7 +1259,8 @@ impl Builder {
         }
     }
 
-    fn constructor(&self, namespace: usize, global: usize) -> String {
+    fn constructor(&mut self, namespace: usize, global: usize) -> String {
+        self.reads.push(global);
         let global = &self.globals[global];
         if global.namespace == namespace {
             format!("->{}", global.name)
@@ -993,7 +1269,8 @@ impl Builder {
         }
     }
 
-    fn qualified(&self, global: usize) -> String {
+    fn qualified(&mut self, global: usize) -> String {
+        self.reads.push(global);
         let global = &self.globals[global];
         format!("gen.n{}/{}", global.namespace, global.name)
     }
@@ -1519,7 +1796,8 @@ impl Builder {
         let global = self.pick(scope, |kind| {
             matches!(kind, Kind::Number | Kind::Function { .. })
         })?;
-        let var = if self.rng.choose(2) == 0 {
+        let var = if self.rng.choose(2) == 0 && self.resolve {
+            self.reflective = true;
             format!("(resolve '{})", self.qualified(global))
         } else {
             format!("(var {})", self.reference(scope.namespace, global))
@@ -1557,7 +1835,12 @@ impl Builder {
     }
 
     fn program(&mut self) {
-        let count = 2 + self.rng.choose(5);
+        let mut count = 2 + self.rng.choose(5);
+        if self.lazy_rng.is_some() {
+            // A lazy root is neither the entry, nor the protocol's namespace,
+            // nor the first one, so a namespace is below it.
+            count = count.max(4);
+        }
         self.requires = vec![Vec::new(); count];
         for later in 1..count {
             for earlier in 0..later {
@@ -1586,6 +1869,37 @@ impl Builder {
         let mut requires = std::mem::take(&mut self.requires);
         for list in &mut requires {
             self.shuffle(list);
+        }
+        if let Some(rng) = &mut self.lazy_rng {
+            // One or two lazy roots, which no namespace requires: the entry
+            // reaches each through a loadable instead, and the namespaces
+            // only a lazy root requires load with it.
+            let mut eligible: Vec<_> = (1..count - 1)
+                .filter(|&namespace| namespace != self.protocol)
+                .collect();
+            for _ in 0..(1 + rng.choose(2)).min(eligible.len()) {
+                let root = eligible.remove(rng.choose(eligible.len()));
+                self.lazy_roots.push(root);
+            }
+            self.lazy_roots.sort();
+            for list in &mut requires {
+                list.retain(|required| !self.lazy_roots.contains(required));
+            }
+            // The first root requires a namespace below it, which startup
+            // loads too, the entry requiring it if nothing else does: the
+            // home of definitions only that root reads.
+            let first = self.lazy_roots[0];
+            let shared = rng.choose(first);
+            if !requires[first].contains(&shared) {
+                requires[first].push(shared);
+            }
+            if !reach(&requires, count - 1)[shared] {
+                requires[count - 1].push(shared);
+            }
+            self.shared = Some(shared);
+            // `resolve` reaches reflection, which keeps every definition in
+            // its namespace's chunk; most programs never call it.
+            self.resolve = rng.choose(4) == 0;
         }
         self.requires = requires;
         self.ancestors = vec![vec![false; count]; count];
@@ -1624,13 +1938,17 @@ impl Builder {
         first: bool,
     ) {
         let mut form = Item::new(Gate::Program, format!("(ns gen.n{namespace}"));
-        if self.requires[namespace].is_empty() {
+        let lazy = !self.lazy_roots.is_empty() && namespace == self.entry();
+        if self.requires[namespace].is_empty() && !lazy {
             form.close = ")".into();
         } else {
             form.open.push_str("\n  (:require");
             for required in &self.requires[namespace] {
                 form.open
                     .push_str(&format!(" [gen.n{required} :as n{required}]"));
+            }
+            if lazy {
+                form.open.push_str(" [light.lazy :as lazy]");
             }
             form.close = "))".into();
         }
@@ -1669,14 +1987,113 @@ impl Builder {
                 1 => self.implementation(namespace),
                 _ => {
                     let name = self.fresh("eff");
-                    self.statement(namespace, format!("(def {name} ({OBSERVE} \"{name}\"))"));
+                    let value = self.sentinel_value(
+                        namespace,
+                        &name,
+                        None,
+                        format!("({OBSERVE} \"{name}\")"),
+                    );
+                    self.statement(namespace, format!("(def {name} {value})"));
                 }
             }
         }
-        if namespace == self.entry() {
+        if self.shared == Some(namespace) {
+            self.lazy_only_definitions(namespace);
+        }
+        if self.lazy_roots.contains(&namespace) {
+            // The loadable's target: what the trace calls once the root loads.
+            let name = self.fresh("start");
+            let scope = self.scope(namespace);
+            let mut values: Vec<_> = (0..3).map(|_| self.number(scope, &[], 3)).collect();
+            if namespace == self.lazy_roots[0] {
+                let argument = self.number(scope, &[], 1);
+                let only = self.reference(namespace, self.only.unwrap());
+                values.push(format!("({only} {argument})"));
+            }
+            let body = format!("(pr-str [{}])", values.join(" "));
+            let body = self.observed_body(namespace, &name, None, body);
+            self.statement(namespace, format!("(defn {name} [] {body})"));
+            self.targets.push(format!("gen.n{namespace}/{name}"));
+        }
+        if namespace == self.entry() && self.lazy_roots.is_empty() {
             let result = self.result(namespace);
             self.statement(namespace, result);
+        } else if namespace == self.entry() {
+            // Load every root, then call each root's function, then compute
+            // the result, so the lazy sources' effects precede the trace's
+            // observations from here on whenever they run.
+            let mut loadables = Vec::new();
+            for target in self.targets.clone() {
+                let name = self.fresh("lazy");
+                self.statement(namespace, format!("(def {name} (lazy/loadable {target}))"));
+                loadables.push(name);
+            }
+            let result = self.result(namespace);
+            let mut body: String = (0..loadables.len())
+                .map(|index| format!("({OBSERVE} (f{index})) "))
+                .collect();
+            body.push_str(&result);
+            for (index, name) in loadables.iter().enumerate().rev() {
+                body = format!("(.then (lazy/load {name}) (fn [f{index}] {body}))");
+            }
+            self.statement(namespace, format!("(fn [] {body})"));
         }
+    }
+
+    /// Movable definitions of `namespace`, which startup loads, that only the
+    /// first lazy root reads: a `def` of a literal, a `deftype` when the
+    /// namespace sees the protocol, and a function reading both, which the
+    /// root's function calls. At `Advanced` all three move to the root's
+    /// chunk, unless the program calls `resolve`.
+    fn lazy_only_definitions(&mut self, namespace: usize) {
+        let scope = self.scope(namespace);
+        let name = self.fresh("only");
+        let value = self.small();
+        let literal = self.define(namespace, name.clone(), Kind::LazyOnly);
+        let value = self.sentinel_value(namespace, &name, Some(literal), value);
+        self.movable = Some(literal);
+        self.statement(namespace, format!("(def {name} {value})"));
+        let mut terms = Vec::new();
+        if self.sees_protocol(namespace) {
+            self.names += 1;
+            let name = format!("Only{}", self.names - 1);
+            let global = self.globals.len();
+            let sentinel = self.sentinel(namespace, &name, Some(global)).unwrap();
+            let method = self.rng.choose(self.methods);
+            let (method_name, parameters) = METHODS[method];
+            let mut locals: Vec<String> = vec!["a".into(), "b".into()];
+            let receiver = if parameters == 1 {
+                "[_]"
+            } else {
+                locals.push("y".into());
+                "[_ y]"
+            };
+            let body = self.number(scope, &locals, 2);
+            let protocol = self.protocol_name(namespace, "Proto");
+            self.movable = Some(global);
+            self.statement(
+                namespace,
+                format!(
+                    "(deftype {name} [a b] {protocol}\n  ({method_name} {receiver} ({OBSERVE} \"{sentinel}\") {body}))"
+                ),
+            );
+            assert_eq!(self.define(namespace, name.clone(), Kind::LazyOnly), global);
+            let arguments = self.arguments(scope, &[], 1, parameters - 1);
+            self.reads.push(global);
+            terms.push(format!(
+                "({} (->{name} 1 2){arguments})",
+                self.protocol_name(namespace, method_name)
+            ));
+        }
+        terms.push(self.reference(namespace, literal));
+        let name = self.fresh("only");
+        let body = self.number(scope, &["a".into()], 2);
+        let function = self.define(namespace, name.clone(), Kind::LazyOnly);
+        let sum = format!("(+ a {} {body})", terms.join(" "));
+        let sum = self.observed_body(namespace, &name, Some(function), sum);
+        self.movable = Some(function);
+        self.statement(namespace, format!("(defn {name} [a] {sum})"));
+        self.only = Some(function);
     }
 
     fn result(&mut self, namespace: usize) -> String {
@@ -1709,13 +2126,16 @@ impl Builder {
             0 | 1 => {
                 let value = self.small();
                 let name = self.fresh("val");
-                self.define(namespace, name.clone(), Kind::Number);
+                let global = self.define(namespace, name.clone(), Kind::Number);
+                self.movable = Some(global);
+                let value = self.sentinel_value(namespace, &name, Some(global), value);
                 format!("(def {name} {value})")
             }
             2 | 3 => {
                 let value = self.number(scope, &[], 2);
                 let name = self.fresh("val");
                 self.define(namespace, name.clone(), Kind::Number);
+                let value = self.sentinel_value(namespace, &name, None, value);
                 format!("(def {name} {value})")
             }
             4 => {
@@ -1724,20 +2144,26 @@ impl Builder {
                     .collect();
                 let name = self.fresh("vec");
                 self.define(namespace, name.clone(), Kind::Vector);
-                format!("(def {name} [{}])", items.join(" "))
+                let value = format!("[{}]", items.join(" "));
+                let value = self.sentinel_value(namespace, &name, None, value);
+                format!("(def {name} {value})")
             }
             5 => {
                 let a = self.number(scope, &[], 1);
                 let b = self.number(scope, &[], 1);
                 let name = self.fresh("map");
                 self.define(namespace, name.clone(), Kind::Map);
-                format!("(def {name} {{:a {a} :b {b}}})")
+                let value = format!("{{:a {a} :b {b}}}");
+                let value = self.sentinel_value(namespace, &name, None, value);
+                format!("(def {name} {value})")
             }
             6 => {
                 let keyword = KEYWORDS[self.rng.choose(KEYWORDS.len())];
                 let name = self.fresh("kw");
-                self.define(namespace, name.clone(), Kind::Keyword);
-                format!("(def {name} {keyword})")
+                let global = self.define(namespace, name.clone(), Kind::Keyword);
+                self.movable = Some(global);
+                let value = self.sentinel_value(namespace, &name, Some(global), keyword.into());
+                format!("(def {name} {value})")
             }
             7 | 8 => {
                 let name = self.fresh("fun");
@@ -1746,7 +2172,7 @@ impl Builder {
                     .map(|name| name.to_string())
                     .collect();
                 let body = self.body(scope, &name, &parameters);
-                self.define(
+                let global = self.define(
                     namespace,
                     name.clone(),
                     Kind::Function {
@@ -1754,13 +2180,15 @@ impl Builder {
                         rest: None,
                     },
                 );
+                self.movable = Some(global);
+                let body = self.observed_body(namespace, &name, Some(global), body);
                 format!("(defn {name} [{}] {body})", parameters.join(" "))
             }
             9 => {
                 let name = self.fresh("fun");
                 let default = self.small();
                 let body = self.body(scope, &name, &["a".into(), "b".into()]);
-                self.define(
+                let global = self.define(
                     namespace,
                     name.clone(),
                     Kind::Function {
@@ -1768,12 +2196,14 @@ impl Builder {
                         rest: None,
                     },
                 );
+                self.movable = Some(global);
+                let body = self.observed_body(namespace, &name, Some(global), body);
                 format!("(defn {name}\n  ([a] ({name} a {default}))\n  ([a b] {body}))")
             }
             10 => {
                 let name = self.fresh("fun");
                 let body = self.body(scope, &name, &["a".into()]);
-                self.define(
+                let global = self.define(
                     namespace,
                     name.clone(),
                     Kind::Function {
@@ -1781,11 +2211,14 @@ impl Builder {
                         rest: Some(1),
                     },
                 );
-                if self.rng.choose(2) == 0 {
-                    format!("(defn {name} [a & more] (+ {body} (count more)))")
+                self.movable = Some(global);
+                let sum = if self.rng.choose(2) == 0 {
+                    format!("(+ {body} (count more))")
                 } else {
-                    format!("(defn {name} [a & more] (apply + {body} more))")
-                }
+                    format!("(apply + {body} more)")
+                };
+                let sum = self.observed_body(namespace, &name, Some(global), sum);
+                format!("(defn {name} [a & more] {sum})")
             }
             13 => match self.call(scope, &[], 2) {
                 // A bare top-level call, which fixed-entry specialization sees.
@@ -1803,7 +2236,8 @@ impl Builder {
                 ];
                 let (core, fixed, rest) = ALIASES[self.rng.choose(ALIASES.len())];
                 let name = self.fresh("alias");
-                self.statement(namespace, format!("(def {name} {core})"));
+                let value = self.sentinel_value(namespace, &name, None, core.into());
+                self.statement(namespace, format!("(def {name} {value})"));
                 let alias = self.define(
                     namespace,
                     name,
@@ -1833,12 +2267,19 @@ impl Builder {
             14 => {
                 let name = self.fresh("eff");
                 let value = self.number(scope, &[], 1);
-                format!("(def {name} (do ({OBSERVE} \"{name}\") {value}))")
+                let value = self.sentinel_value(
+                    namespace,
+                    &name,
+                    None,
+                    format!("(do ({OBSERVE} \"{name}\") {value})"),
+                );
+                format!("(def {name} {value})")
             }
             15 => {
                 let initial = self.number(scope, &[], 1);
                 let step = self.number(scope, &[], 1);
                 let name = self.fresh("cnt");
+                let initial = self.sentinel_value(namespace, &name, None, initial);
                 self.statement(namespace, format!("(def {name} {initial})"));
                 self.define(namespace, name.clone(), Kind::Number);
                 format!("(set! {name} (+ {name} {step}))")
@@ -1846,7 +2287,13 @@ impl Builder {
             16 => {
                 let name = self.fresh("once");
                 let value = self.number(scope, &[], 1);
-                let text = format!("(defonce {name} (do ({OBSERVE} \"{name}\") {value}))");
+                let value = self.sentinel_value(
+                    namespace,
+                    &name,
+                    None,
+                    format!("(do ({OBSERVE} \"{name}\") {value})"),
+                );
+                let text = format!("(defonce {name} {value})");
                 self.define(namespace, name.clone(), Kind::Number);
                 if self.rng.choose(2) == 0 {
                     // A second defonce must not run its initializer.
@@ -1930,6 +2377,13 @@ impl Builder {
             "({} {name} [a b] {protocol}",
             if record { "defrecord" } else { "deftype" }
         );
+        // The global the type defines once its item is pushed. Every method
+        // observes the type's one sentinel.
+        let global = self.globals.len();
+        let sentinel = self
+            .sentinel(namespace, &name, Some(global))
+            .map(|sentinel| format!("({OBSERVE} \"{sentinel}\") "))
+            .unwrap_or_default();
         for &method in &methods {
             let (method_name, parameters) = METHODS[method];
             let mut locals: Vec<String> = vec!["a".into(), "b".into()];
@@ -1940,18 +2394,20 @@ impl Builder {
                 "[_ y]"
             };
             let body = self.number(scope, &locals, 2);
-            text.push_str(&format!("\n  ({method_name} {receiver} {body})"));
+            text.push_str(&format!("\n  ({method_name} {receiver} {sentinel}{body})"));
         }
         let mut item = Item::new(Gate::Program, text);
         item.close = ")".into();
+        self.movable = Some(global);
         let item = self.push(namespace, item);
-        let global = self.define(
+        let defined = self.define(
             namespace,
             name.clone(),
             Kind::Type {
                 methods: methods.clone(),
             },
         );
+        assert_eq!(defined, global);
         self.implementations.push(Implementation {
             namespace,
             item,
@@ -1964,6 +2420,7 @@ impl Builder {
             let (method_name, parameters) = METHODS[method];
             let fields = self.arguments(scope, &[], 1, 2);
             let arguments = self.arguments(scope, &[], 1, parameters - 1);
+            self.reads.push(global);
             let text = format!(
                 "({OBSERVE} (pr-str ({} (->{name}{fields}){arguments})))",
                 self.protocol_name(namespace, method_name)
