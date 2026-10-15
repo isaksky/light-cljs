@@ -5,8 +5,9 @@
 //! the Phase 0 dev build of examples/dev through its driver.
 use crate::dev_execution::run_dev;
 use crate::temp_dir::TempDir;
-use light_cljs::dev_session::{Action, DevSession, define_script};
-use light_cljs::evaluator::Evaluator;
+use light_cljs::dev_session::{Action, DevSession, script};
+use light_cljs::eval_session::FileLoadRequest;
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::source_provider::{FileSourceProvider, LoadRequest, SourceInput};
 use light_cljs::{EvalOptions, EvalSession};
 use std::{
@@ -15,6 +16,7 @@ use std::{
     path::Path,
     process::Command,
     rc::Rc,
+    time::Duration,
 };
 
 const EXAMPLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/dev");
@@ -270,10 +272,11 @@ fn a_failing_form_after_a_successful_one_ends_with_its_error() {
     );
 }
 
-/// The units of a `require` compiled without a heap from an edited
+/// The actions of a `require` compiled without a heap from an edited
 /// examples/dev apply to the running Phase 0 dev build of the original with
 /// the hook protocol: the next render runs the new code, and the `defonce`
-/// state keeps its clicks.
+/// state keeps its clicks. Each unit runs in its namespace, and the REPL form
+/// after the `require` in the requiring one.
 #[test]
 fn units_without_a_heap_reload_a_running_dev_build_in_node() {
     let dir = TempDir::new("dev-session");
@@ -298,34 +301,138 @@ fn units_without_a_heap_reload_a_running_dev_build_in_node() {
         assert_eq!(edited != text, name == "view");
         fs::write(root.join(&file), edited).unwrap();
     }
+    fs::write(
+        root.join("app/probe.cljs"),
+        "(ns app.probe)\n(js/console.log \"probe\" (str *ns*))\n",
+    )
+    .unwrap();
     let dev = DevSession::new(&EvalOptions {
         source_provider: Some(Rc::new(FileSourceProvider::new(vec![root]))),
         ..Default::default()
     })
     .unwrap();
-    let actions = dev.source(&input("(require 'app.view)"));
+    let actions = dev.source(&input(
+        "(require 'app.view 'app.probe) (js/console.log \"after\" (str *ns*))",
+    ));
     assert_eq!(
-        shape(&actions)
-            .into_iter()
-            .filter(|action| action.starts_with("load"))
-            .collect::<Vec<_>>(),
+        shape(&actions),
         [
+            "ns cljs.user",
+            "ns app.view",
+            "ns app.macros",
             "load app.macros app.macros",
+            "ns app.view",
+            "ns app.state",
             "load app.state app.state",
-            "load app.view app.view app.view app.view"
+            "ns app.view",
+            "load app.view app.view app.view app.view",
+            "ns cljs.user",
+            "ns app.probe",
+            "load app.probe",
+            "ns cljs.user",
+            "invoke cljs.user"
         ]
     );
-    let units = actions
-        .iter()
-        .flat_map(|action| match action {
-            Action::Load(units) => units.clone(),
-            _ => vec![],
-        })
-        .collect::<Vec<_>>();
-    let script = dir.join("units.js");
-    fs::write(&script, define_script(&units)).unwrap();
+    let file = dir.join("actions.js");
+    fs::write(&file, script(&actions)).unwrap();
     assert_eq!(
-        run_dev(&out, true, &[script]).unwrap(),
-        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"start\nclicks: [1]\nreloading\nrender: clicks: [2]\n"}"#
+        run_dev(&out, true, &[file]).unwrap(),
+        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"start\nclicks: [1]\nreloading\nprobe app.probe\nafter cljs.user\nrender: clicks: [2]\n"}"#
     );
+    // An error is the script's exception: nothing after it was compiled.
+    let failing = dev.source(&input("(js/console.log \"before\") (undeclared)"));
+    assert!(
+        script(&failing)
+            .ends_with("throw new Error(\"repl.cljs:1:28: unresolved symbol: undeclared\");\n"),
+        "{}",
+        script(&failing)
+    );
+}
+
+/// A standalone session begins a new deadline and poll budget at each call,
+/// so its macro heap outlives an idle period longer than the deadline.
+#[test]
+fn a_standalone_session_survives_idle_time_between_compilations() {
+    let dev = DevSession::new(&EvalOptions {
+        engine: EvaluatorOptions {
+            timeout: Duration::from_millis(3000),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .unwrap();
+    let engine = Evaluator::new(Default::default()).unwrap();
+    let defined = dev.source(&input(
+        "(defmacro twice [x] `(* 2 ~x)) (defn half [x] (/ x 2)) (twice 21)",
+    ));
+    assert_eq!(apply(&engine, &defined), "42");
+    std::thread::sleep(Duration::from_millis(3200));
+    assert_eq!(
+        apply(&engine, &dev.source(&input("(half (twice 21))"))),
+        "21"
+    );
+}
+
+/// While the session's heap interprets a load, a unit that throws stops it:
+/// the definitions after it are never compiled, the requiring namespace is
+/// current again, the exception keeps its data, and the namespace loads
+/// again at the next `require`; through the runtime's `load-file` too.
+#[test]
+fn a_unit_that_throws_while_a_namespace_loads_stops_the_load_until_a_retry() {
+    let sources = Rc::new(RefCell::new(
+        "(ns lib) (def before 1) (throw (ex-info \"boom\" {:at 1})) (def after 2)".to_owned(),
+    ));
+    let source = sources.clone();
+    let mut session = EvalSession::new(EvalOptions {
+        source_provider: Some(Rc::new(move |request: &LoadRequest| {
+            let name = String::from_utf16_lossy(request.namespace.name());
+            Ok(Some(SourceInput::new(
+                format!("{name}.cljs"),
+                source.borrow().replace("lib", &name),
+            )))
+        })),
+        file_provider: Some(Rc::new(|_: &FileLoadRequest| {
+            Ok(Some(SourceInput::new(
+                "load.cljs",
+                "(require 'other) :loaded",
+            )))
+        })),
+        ..Default::default()
+    })
+    .unwrap();
+    fn printed(session: &mut EvalSession, source: &str) -> String {
+        let value = session.eval_string(source).unwrap().value;
+        session.print(value).unwrap()
+    }
+    let s = &mut session;
+    assert_eq!(printed(s, "(ns app) :entered"), ":entered");
+    let error = s.eval_string("(require 'lib)").unwrap_err();
+    assert!(
+        error.to_string().starts_with("lib.cljs:1:25: Error: boom"),
+        "{error}"
+    );
+    let data = s.value(&error.data.unwrap()).unwrap();
+    assert_eq!(s.print(data).unwrap(), "{:at 1}");
+    assert_eq!(s.namespace(), "app");
+    let bindings = s.bindings();
+    assert!(bindings.contains(&"lib/before".to_owned()), "{bindings:?}");
+    assert!(!bindings.contains(&"lib/after".to_owned()), "{bindings:?}");
+    assert_eq!(printed(s, "(str *ns*)"), "\"app\"");
+    // The runtime's `load-file` loads through the same compiler.
+    assert_eq!(
+        printed(
+            s,
+            "(try (load-file \"load.cljs\") (catch :default e [(ex-message e) (ex-data e)]))"
+        ),
+        "[\"boom\" {:at 1}]"
+    );
+    assert!(!s.bindings().contains(&"other/after".to_owned()));
+    assert_eq!(printed(s, "(str *ns*)"), "\"app\"");
+    *sources.borrow_mut() = "(ns lib) (def before 1) (def after 2)".into();
+    assert_eq!(
+        printed(s, "(require 'lib) [lib/before lib/after (str *ns*)]"),
+        "[1 2 \"app\"]"
+    );
+    assert_eq!(printed(s, "(load-file \"load.cljs\")"), ":loaded");
+    assert_eq!(printed(s, "[other/after (str *ns*)]"), "[2 \"app\"]");
 }

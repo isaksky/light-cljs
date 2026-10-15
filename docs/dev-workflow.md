@@ -475,10 +475,13 @@ loaded/loading sets; `EvalSession` and its runtime `load-file` callback are
 interpreters of the actions, and the two copies of the loading code they
 had are one. `tests/evaluation/dev_session.rs` covers a form, a `require`,
 a `require :reload` whose source changed, a `load-file` and a failing form
-after a successful one by applying the units in a fresh QuickJS heap, and
-applies the units of a `require` of an edited `app.view` compiled without a
-heap to the running Phase 0 build of `examples/dev` through the driver
-(`render: clicks: [2]`, the `defonce` state kept). Full `ns`, warning mode,
+after a successful one by applying the units in a fresh QuickJS heap, a
+unit that throws while a namespace loads (in the session and through the
+runtime `load-file`), and a standalone `DevSession` idle past its deadline;
+and it applies the actions of a `require` of an edited `app.view`, compiled
+without a heap and written by `dev_session::script`, to the running Phase 0
+build of `examples/dev` through the driver (`render: clicks: [2]`, the
+`defonce` state kept, each unit in its namespace). Full `ns`, warning mode,
 source maps and the `ns` test are light-cljs-284.
 
 ### Phase 2: watch

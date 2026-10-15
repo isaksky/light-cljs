@@ -68,7 +68,10 @@ assert!(matches!(&actions[..], [Action::Invoke(_), Action::Invoke(_)]));
 `policy`. `form` and `source` compile as a REPL evaluates: each top-level form
 in turn, the next read after the previous one compiled. `load_file` compiles
 a file's text as a loaded file. `namespace` is the current namespace and
-`read_forms` reads in it. Each returns the actions in order:
+`read_forms` reads in it. Each call runs under a new deadline and poll budget
+of `engine`, which the macro heap shares, so a long-lived `DevSession` (a
+watch loop) can sit idle between calls; one that runs out, or a cancelled
+`DevSession::control`, leaves it terminal. Each returns the actions in order:
 
 | Action | Carries | Meaning |
 |---|---|---|
@@ -94,10 +97,12 @@ compile the text the source provider returns at that time. Consecutive
 `Load`s are one. The value of a form or file is the value of its last action
 when that ran a unit, else nil: a directive's value is nil, and a file whose
 last form is a definition has that definition's value.
-`dev_session::define_script` writes units as a script for the client of a
-[dev build](compiler.md#dev-builds), one `globalThis.__lightDev.define` per
-namespace, so a `DevSession` can replace the namespaces of a running dev build
-(`tests/evaluation/dev_session.rs` does so in Node).
+`dev_session::script` writes actions as a script that applies them to a
+running [dev build](compiler.md#dev-builds) as the session's heap does: a
+`Namespace` sets the runtime's current namespace, the units of a `Load` are a
+`globalThis.__lightDev.define` call per namespace, an `Invoke` runs its unit
+and an `Error` throws. So a `DevSession` can replace the namespaces of a
+running dev build (`tests/evaluation/dev_session.rs` does so in Node).
 
 `EvalSession` is the interpreter of these actions over its heap: a unit runs
 in the heap, and a `Namespace` sets the runtime's `*ns*`. It interprets each

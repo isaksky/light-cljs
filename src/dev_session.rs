@@ -17,7 +17,8 @@ use crate::analyzer::LAZY_NAMESPACE;
 use crate::compiler_data::{DatumKind, Form, Name, SourceSpan};
 use crate::eval_compiler::InteractiveCompiler;
 use crate::eval_session::{EvalDiagnostic, EvalOptions};
-use crate::evaluator::{EvalError, ExecutionControl};
+use crate::evaluator::{EvalError, EvaluatorOptions, ExecutionControl};
+use crate::source_map::json_string;
 use crate::source_provider::{LoadRequest, Reload, SourceInput, SourceProvider};
 use std::{
     cell::{Ref, RefCell, RefMut},
@@ -111,9 +112,13 @@ pub struct DevSession {
     compiler: RefCell<InteractiveCompiler>,
     source_provider: Option<Rc<dyn SourceProvider>>,
     max_source_bytes: usize,
-    /// The control of the heap that interprets the actions in process, if
-    /// one does.
-    control: Option<ExecutionControl>,
+    /// What the compiler and its macro heap poll: the control of the heap
+    /// that interprets the actions in process, or the session's own.
+    control: ExecutionControl,
+    /// The limits of each operation when the session owns its control: each
+    /// public method then begins a new deadline and poll budget, as
+    /// `EvalSession` does for its heap's.
+    operation: Option<EvaluatorOptions>,
     loaded: RefCell<HashSet<String>>,
     loading: RefCell<Vec<String>>,
     lazy: RefCell<LazyQueue>,
@@ -124,20 +129,30 @@ impl DevSession {
     /// `namespace`, `aliases`, `compiler`, `engine` (for the macro heap),
     /// `data_readers`, `default_data_reader`, `source_provider`,
     /// `max_source_bytes`, `assertions` and `policy`. The other fields
-    /// configure a heap.
+    /// configure a heap. Each call of [`Self::form`], [`Self::source`],
+    /// [`Self::load_file`] or [`Self::read_forms`] runs under a new deadline
+    /// and poll budget of `engine`; one that runs out, or a cancelled
+    /// [`Self::control`], leaves the session terminal, as an `EvalSession`.
     pub fn new(options: &EvalOptions) -> Result<Self, EvalDiagnostic> {
         Self::with_control(options, None)
     }
     /// With `control`, the macro host and the compiler poll the control of
-    /// the heap that interprets the actions.
+    /// the heap that interprets the actions, whose owner begins operations.
     pub(crate) fn with_control(
         options: &EvalOptions,
         control: Option<ExecutionControl>,
     ) -> Result<Self, EvalDiagnostic> {
+        let (control, operation) = match control {
+            Some(control) => (control, None),
+            None => (
+                ExecutionControl::new(&options.engine)?,
+                Some(options.engine.clone()),
+            ),
+        };
         let mut host = crate::MacroHost::new();
         host.limits = options.compiler;
         host.evaluator_options = options.engine.clone();
-        host.interactive_control = control.clone();
+        host.interactive_control = Some(control.clone());
         for (tag, source) in &options.data_readers {
             host.register_compiler_data_reader(tag.clone(), source)
                 .map_err(EvalError)?;
@@ -158,6 +173,7 @@ impl DevSession {
             source_provider: options.source_provider.clone(),
             max_source_bytes: options.max_source_bytes,
             control,
+            operation,
             loaded: RefCell::default(),
             loading: RefCell::default(),
             lazy: RefCell::default(),
@@ -171,12 +187,18 @@ impl DevSession {
     /// of its unit, or for a directive the `Namespace` and `Load` actions of
     /// what it loads. A failing form ends with an `Error`.
     pub fn form(&self, form: &Form) -> Vec<Action> {
-        collect(|to| self.run_form(form, Mode::Repl, to))
+        collect(|to| {
+            self.begin()?;
+            self.run_form(form, Mode::Repl, to)
+        })
     }
     /// The actions of each top-level form of `source` in turn, as
     /// [`Self::form`]; the first form that fails ends them with an `Error`.
     pub fn source(&self, source: &SourceInput) -> Vec<Action> {
-        collect(|to| self.run_source(source, Mode::Repl, to))
+        collect(|to| {
+            self.begin()?;
+            self.run_source(source, Mode::Repl, to)
+        })
     }
     /// The actions of loading the file `source`: its forms are units of a
     /// `Load` with those of the namespaces they require, and its directives
@@ -184,14 +206,30 @@ impl DevSession {
     /// leaves, and the file's value is the value of its last unit when that
     /// is the last action, else nil.
     pub fn load_file(&self, source: &SourceInput) -> Vec<Action> {
-        collect(|to| self.run_source(source, Mode::Load, to))
+        collect(|to| {
+            self.begin()?;
+            self.run_source(source, Mode::Load, to)
+        })
     }
     /// Read every top-level form of `source` in the current namespace.
     pub fn read_forms(&self, source: &SourceInput) -> Result<Vec<Form>, EvalDiagnostic> {
+        self.begin()?;
         self.compiler
             .borrow()
             .read_forms(source)
             .map_err(EvalDiagnostic::from)
+    }
+    /// The control the compiler and its macro heap poll; cancelling it
+    /// leaves the session terminal.
+    pub fn control(&self) -> ExecutionControl {
+        self.control.clone()
+    }
+    /// Begin an operation of a session that owns its control.
+    fn begin(&self) -> Result<(), EvalDiagnostic> {
+        if let Some(options) = &self.operation {
+            self.control.begin(options)?;
+        }
+        Ok(())
     }
     pub(crate) fn compiler(&self) -> Ref<'_, InteractiveCompiler> {
         self.compiler.borrow()
@@ -200,10 +238,7 @@ impl DevSession {
         self.compiler.borrow_mut()
     }
     fn poll(&self) -> Result<(), EvalDiagnostic> {
-        if let Some(control) = &self.control {
-            control.poll()?;
-        }
-        Ok(())
+        Ok(self.control.poll()?)
     }
     /// Refuse a source the session cannot compile: native `.clj` code, or
     /// one over the source byte limit.
@@ -551,27 +586,53 @@ fn missing_namespace(name: &str, lazy: bool) -> String {
     }
 }
 
-/// `units` as a script for the client of a dev build ([`crate::dev_build`]):
-/// a `globalThis.__lightDev.define` call for each run of consecutive units
-/// of one namespace, whose unit runs them in order and returns the last
-/// one's value. The session does not track a namespace's requires, so each
-/// call lists none.
-pub fn define_script(units: &[Unit]) -> String {
+/// `actions` as a script for a running dev build ([`crate::dev_build`]),
+/// which applies them in order to its runtime, `globalThis.__lightRuntime`,
+/// as the session's heap does: a `Namespace` makes the namespace the
+/// runtime's current one (`*ns*`); each run of consecutive units of one
+/// namespace in a `Load` is one call of the client's
+/// `globalThis.__lightDev.define`, whose unit runs them in order and returns
+/// the last one's value (the session does not track a namespace's requires,
+/// so each call lists none); an `Invoke` runs its unit; an `Error` throws
+/// its message, since nothing after it was compiled. `Warnings` are left out.
+pub fn script(actions: &[Action]) -> String {
     let mut script = String::new();
-    for run in units.chunk_by(|a, b| a.namespace == b.namespace) {
-        script.push_str("globalThis.__lightDev.define(");
-        crate::source_map::json_string(&mut script, &run[0].namespace);
-        script.push_str(", [], (__lightInteractiveRuntime) => {\n");
-        for (index, unit) in run.iter().enumerate() {
-            script.push_str(if index + 1 == run.len() {
-                "  return ("
-            } else {
-                "  ("
-            });
-            script.push_str(&unit.js);
-            script.push_str(")(__lightInteractiveRuntime);\n");
+    for action in actions {
+        match action {
+            Action::Namespace(name) => {
+                script.push_str("(rt => { rt.core.currentNs = rt.core.createNs(rt.symbol(null, ");
+                json_string(&mut script, name);
+                script.push_str(")); })(globalThis.__lightRuntime);\n");
+            }
+            Action::Load(units) => {
+                for run in units.chunk_by(|a, b| a.namespace == b.namespace) {
+                    script.push_str("globalThis.__lightDev.define(");
+                    json_string(&mut script, &run[0].namespace);
+                    script.push_str(", [], (__lightInteractiveRuntime) => {\n");
+                    for (index, unit) in run.iter().enumerate() {
+                        script.push_str(if index + 1 == run.len() {
+                            "  return ("
+                        } else {
+                            "  ("
+                        });
+                        script.push_str(&unit.js);
+                        script.push_str(")(__lightInteractiveRuntime);\n");
+                    }
+                    script.push_str("});\n");
+                }
+            }
+            Action::Invoke(unit) => {
+                script.push('(');
+                script.push_str(&unit.js);
+                script.push_str(")(globalThis.__lightRuntime);\n");
+            }
+            Action::Warnings(_) => {}
+            Action::Error(error) => {
+                script.push_str("throw new Error(");
+                json_string(&mut script, &error.to_string());
+                script.push_str(");\n");
+            }
         }
-        script.push_str("});\n");
     }
     script
 }

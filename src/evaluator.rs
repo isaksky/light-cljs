@@ -94,6 +94,40 @@ struct ControlState {
 #[derive(Clone)]
 pub struct ExecutionControl(Arc<ControlState>);
 impl ExecutionControl {
+    /// A control whose deadline and poll budget, from `options`, start now.
+    pub(crate) fn new(options: &EvaluatorOptions) -> Result<Self, EvalError> {
+        Ok(Self(Arc::new(ControlState {
+            cancelled: AtomicBool::new(false),
+            terminal: AtomicU8::new(0),
+            remaining: AtomicU64::new(options.poll_budget),
+            clock_origin: Instant::now(),
+            deadline_nanos: AtomicU64::new(
+                u64::try_from(options.timeout.as_nanos())
+                    .map_err(|_| EvalError("invalid session timeout".into()))?,
+            ),
+        })))
+    }
+    /// Begin an operation: a new deadline and poll budget from `options`,
+    /// unless the control is cancelled or terminal, which stays.
+    pub(crate) fn begin(&self, options: &EvaluatorOptions) -> Result<(), EvalError> {
+        if self.0.terminal.load(Ordering::Relaxed) != 0 || self.0.cancelled.load(Ordering::Relaxed)
+        {
+            return self.poll();
+        }
+        let deadline = self
+            .0
+            .clock_origin
+            .elapsed()
+            .as_nanos()
+            .checked_add(options.timeout.as_nanos())
+            .and_then(|n| u64::try_from(n).ok())
+            .ok_or_else(|| EvalError("invalid operation timeout".into()))?;
+        self.0.deadline_nanos.store(deadline, Ordering::Relaxed);
+        self.0
+            .remaining
+            .store(options.poll_budget, Ordering::Relaxed);
+        self.poll()
+    }
     pub fn cancel(&self) {
         self.0.cancelled.store(true, Ordering::Relaxed);
     }
@@ -184,16 +218,7 @@ impl Evaluator {
                 "JavaScript memory limit must be at least 1048576 bytes for engine startup".into(),
             ));
         }
-        let control = shared.unwrap_or(ExecutionControl(Arc::new(ControlState {
-            cancelled: AtomicBool::new(false),
-            terminal: AtomicU8::new(0),
-            remaining: AtomicU64::new(options.poll_budget),
-            clock_origin: Instant::now(),
-            deadline_nanos: AtomicU64::new(
-                u64::try_from(options.timeout.as_nanos())
-                    .map_err(|_| EvalError("invalid session timeout".into()))?,
-            ),
-        })));
+        let control = shared.unwrap_or(ExecutionControl::new(&options)?);
         let runtime = Runtime::new_with_alloc(LimitedAllocator {
             used: 0,
             limit: options.memory_limit,
@@ -317,29 +342,7 @@ impl Evaluator {
         self.control.clone()
     }
     pub(crate) fn begin_operation(&self, options: &EvaluatorOptions) -> Result<(), EvalError> {
-        if self.control.0.terminal.load(Ordering::Relaxed) != 0
-            || self.control.0.cancelled.load(Ordering::Relaxed)
-        {
-            return self.control.poll();
-        }
-        let deadline = self
-            .control
-            .0
-            .clock_origin
-            .elapsed()
-            .as_nanos()
-            .checked_add(options.timeout.as_nanos())
-            .and_then(|n| u64::try_from(n).ok())
-            .ok_or_else(|| EvalError("invalid operation timeout".into()))?;
-        self.control
-            .0
-            .deadline_nanos
-            .store(deadline, Ordering::Relaxed);
-        self.control
-            .0
-            .remaining
-            .store(options.poll_budget, Ordering::Relaxed);
-        self.control.poll()
+        self.control.begin(options)
     }
 
     fn enter<T>(
