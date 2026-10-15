@@ -423,6 +423,48 @@ fn advanced_keeps_initializers_that_may_throw_run_code_or_see_replaced_operation
     }
 }
 
+/// Raw text that terse output's lexer may read otherwise than an engine (a
+/// regular expression after a block, a name before a no-break space, an
+/// HTML-like comment) keeps the hygienic layout at `Advanced`
+/// (light-cljs-294), so it runs as at every other level; raw text the lexer
+/// reads exactly, with its comments, is terse and runs the same.
+#[test]
+fn raw_js_the_terse_lexer_may_misread_runs_the_same_at_every_level() {
+    for (source, expected, terse) in [
+        (
+            r#"(let [x 1]
+                 (js* "(() => { let r; if (true) {} / x /.test('x') ? r = 'bad' : r = 'ok'; return r + ~{}; })()" x))"#,
+            "ok1\n",
+            false,
+        ),
+        (
+            "(let [x 41] (pr-str [(js* \"typeof a\u{a0}\") (js* \"typeof b\u{a0}\") (inc x)]))",
+            "[\"undefined\" \"undefined\" 42]\n",
+            false,
+        ),
+        (
+            r#"(let [x (js/Math.abs 1)] (+ x x (js* "2 <!-- 3\n")))"#,
+            "4\n",
+            false,
+        ),
+        (
+            r#"(let [x 4] (js* "(() => { // a line comment
+                 return ( // and another
+                   /*#__PURE__*/ ~{} / 2); })()" x))"#,
+            "2\n",
+            true,
+        ),
+    ] {
+        both(source, expected);
+        let js = prepare_application(
+            &program(source),
+            ApplicationOptions::new(OptimizationLevel::Advanced),
+        )
+        .emit_js();
+        assert_eq!(!js.contains("__light0_"), terse, "{source}\n{js}");
+    }
+}
+
 /// Phase 2 step 7 of docs/advanced-optimization.md: at `Advanced`, retained raw
 /// JavaScript no longer roots every top-level form or disables specialization
 /// (see [`raw_js_names_resolve_only_to_holes_and_host_globals`]). Its holes are
@@ -468,22 +510,30 @@ fn advanced_treats_raw_javascript_as_an_opaque_leaf() {
 
 /// Raw `js*` text in `context`: report to the harness of
 /// [`raw_js_names_resolve_only_to_holes_and_host_globals`], with a direct eval
-/// that resolves names in the raw text's own scope.
-fn probe(context: &str) -> String {
-    format!("(js* \"__probe('{context}', (__probeCode) => eval(__probeCode))\")")
+/// that resolves names in the raw text's own scope. The raw text also writes
+/// `names`, comma-separated identifiers, in a function it never calls.
+fn probe(context: &str, names: &str) -> String {
+    format!("(js* \"__probe('{context}', (__probeCode) => eval(__probeCode), () => [{names}])\")")
 }
 
 /// Advanced mode treats `js*` as an opaque leaf rather than an escape to every
-/// definition, because the hygiene pass renames every identifier the compiler
-/// emits away from raw text (docs/advanced-optimization.md, Phase 2 step 7).
-/// This checks that claim from inside raw text: in every scope where the emitter
-/// binds names (functions, arities, the method entries of local functions with
+/// definition, because the compiler renames every identifier it emits away
+/// from raw text (docs/advanced-optimization.md, Phase 2 step 7). This checks
+/// that claim from inside raw text: in every scope where the emitter binds
+/// names (functions, arities, the method entries of local functions with
 /// hoisted siblings, loops, closures, `try`, `case`, `binding`,
-/// `with-out-str`, type and `reify` methods, `letfn`, `this-as`, initializers,
-/// the operand locals of devirtualized protocol calls and the top level), each
-/// identifier token of the whole output, with the hygiene
+/// `with-out-str`, type and `reify` methods, `letfn`, `this-as`,
+/// initializers, the operand locals of devirtualized protocol calls and the
+/// top level), each identifier token of the whole output, with the hygiene
 /// prefix removed, must resolve exactly as it does at global scope. A new
 /// emitter construct that binds names should get a probe here.
+///
+/// Terse `Advanced` output names the compiler's bindings with short names that
+/// avoid each identifier raw text writes (light-cljs-294), not with the
+/// prefix, so an identifier that only an eval builds may name one; that is
+/// unsupported (docs/advanced-optimization.md, "Advanced-mode contract").
+/// There the probes write each identifier of the program compiled without
+/// them, and those are the names tried.
 #[test]
 fn raw_js_names_resolve_only_to_holes_and_host_globals() {
     let contexts = [
@@ -512,12 +562,13 @@ fn raw_js_names_resolve_only_to_holes_and_host_globals() {
         "operands",
         "top-level",
     ];
-    let p = |context: &str| {
-        assert!(contexts.contains(&context), "{context}");
-        probe(context)
-    };
-    let source = format!(
-        r#"
+    let source = |names: &str| {
+        let p = |context: &str| {
+            assert!(contexts.contains(&context), "{context}");
+            probe(context, names)
+        };
+        format!(
+            r#"
         (deftype T [x] Object (toString [this] {} "t"))
         (defprotocol P (method [this a]))
         (defrecord R [x] P (method [this a] {} (+ x a)))
@@ -553,55 +604,79 @@ fn raw_js_names_resolve_only_to_holes_and_host_globals() {
                  (variadic 1 2 3) (local-arities 1) (looping 2) (caught) (cases :a 1 "s") (bound)
                  (redefined) (printed) (reified 3) (letfns) (this-as-fn) (let-fn)
                  initialized (operands 1)])"#,
-        p("deftype-method"),
-        p("record-method"),
-        p("fn"),
-        p("multi-arity-1"),
-        p("multi-arity-2"),
-        p("variadic"),
-        p("local-multi-arity"),
-        p("loop-closure"),
-        p("loop"),
-        p("catch"),
-        p("finally"),
-        p("keyword-case"),
-        p("number-case"),
-        p("string-case"),
-        p("binding"),
-        p("with-redefs"),
-        p("with-out-str"),
-        p("reify"),
-        p("letfn"),
-        p("this-as"),
-        p("let"),
-        p("initializer"),
-        p("operands"),
-        // A constant large enough to be a lazy cell (`c<n>`), which
-        // `(constants)` fills before the other probes run.
-        (0..1024)
-            .map(|n| n.to_string())
-            .collect::<Vec<_>>()
-            .join(" "),
-        p("top-level"),
-    );
-    let program = program(&source);
+            p("deftype-method"),
+            p("record-method"),
+            p("fn"),
+            p("multi-arity-1"),
+            p("multi-arity-2"),
+            p("variadic"),
+            p("local-multi-arity"),
+            p("loop-closure"),
+            p("loop"),
+            p("catch"),
+            p("finally"),
+            p("keyword-case"),
+            p("number-case"),
+            p("string-case"),
+            p("binding"),
+            p("with-redefs"),
+            p("with-out-str"),
+            p("reify"),
+            p("letfn"),
+            p("this-as"),
+            p("let"),
+            p("initializer"),
+            p("operands"),
+            // A constant large enough to be a lazy cell (`c<n>`), which
+            // `(constants)` fills before the other probes run.
+            (0..1024)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
+            p("top-level"),
+        )
+    };
     let ran = {
         let mut contexts = contexts.to_vec();
         contexts.sort_unstable();
         format!("[\"{}\"]", contexts.join("\",\""))
     };
+    // The identifier tokens of the program's text. `arguments` and `this` are
+    // the raw text's own function context, and `__probeCode` is the probe's
+    // parameter. The harness's names are global.
+    let identifiers = r#"[...new Set(program.toString().match(/[A-Za-z_$][\w$]*/g)
+  .map(name => name.replace(/^__light\d+_/, "")))]
+  .filter(name => !["arguments", "this", "__probeCode"].includes(name))"#;
     for level in OptimizationLevel::ALL {
-        let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
-        // The names to try are the identifier tokens of the program's text.
-        // `arguments` and `this` are the raw text's own function context, and
-        // `__probeCode` is the probe's parameter. The harness's names are global.
+        let emit = |source: &str| {
+            prepare_application(&program(source), ApplicationOptions::new(level)).emit_js()
+        };
+        let js = emit(&source(""));
+        // The names to try: the identifiers of this output, or at `Advanced`
+        // those of the output without names in the probes, which the probes
+        // then write (those a reference can spell).
+        let (js, names) = if level.advanced() {
+            let listed = execute(&format!(
+                r#"const program = () => (
+{js}
+);
+const reference = (name) => {{ try {{ Function(`"use strict"; return () => [${{name}}];`); return true; }} catch {{ return false; }} }};
+console.log({identifiers}.filter(reference).join(", "));"#
+            ));
+            let listed = listed.trim();
+            assert!(listed.split(", ").count() > 100, "{listed}");
+            let names = format!("{:?}", listed.split(", ").collect::<Vec<_>>());
+            let js = emit(&source(listed));
+            assert!(!js.contains("__light0_"), "terse names at {level}");
+            (js, names)
+        } else {
+            (js, identifiers.to_owned())
+        };
         let harness = format!(
             r#"const program = () => (
 {js}
 );
-const names = [...new Set(program.toString().match(/[A-Za-z_$][\w$]*/g)
-  .map(name => name.replace(/^__light\d+_/, "")))]
-  .filter(name => !["arguments", "this", "__probeCode"].includes(name));
+const names = {names};
 const kind = (resolve) => {{ try {{ return resolve(); }} catch (error) {{ return error.name; }} }};
 const ran = new Set(), leaks = [];
 globalThis.__probe = (context, evalHere) => {{

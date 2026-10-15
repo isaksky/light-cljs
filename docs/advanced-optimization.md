@@ -3282,11 +3282,38 @@ run the terse output.
   tokens join as above. The runtime factory, already terse, is one token.
   A new emitter construct that binds a name must add it to
   `compiler_name`.
-- **Raw `js*`.** A program whose output keeps raw text keeps its layout,
-  and its compiler names are the hygiene prefix and a short name
-  (`__light0_a`), so raw text still sees only its holes and host globals.
+- **Raw `js*`.** Since light-cljs-294 raw text is lexed with the rest of
+  the program, and each of its tokens is written as it is: no rule dots,
+  unwraps, drops or joins one, and its identifiers, compiler-shaped ones
+  (`f`, `l2`) too, keep their spelling and join the identifiers the short
+  names avoid, so raw text still sees only its holes and host globals. Its
+  comments are written too (`js-comment`, bundler annotations such as
+  `/*#__PURE__*/`), on a new line where one started a line, and a line
+  comment with the line break that ends it (`TerseWriter::comment`). The
+  emitter's parentheses around a template and its holes are unwrapped by
+  the usual rules, which read the raw tokens, except a group whose first
+  token follows a raw comment, which might end a `return` line. When a
+  token crosses a raw
+  boundary, or the compiler names outside raw text are not the ones the
+  hygiene scan finds there (a hole inside a raw string, template, regex,
+  comment or identifier), or the raw text may not lex as an engine lexes it
+  (the lexer serves the runtime and emitted code: a byte outside ASCII
+  other than in a string literal, an HTML-like comment, or a `/` whose
+  tokens before it do not tell a division from a regular expression, as
+  after `}`; `terse::raw_tokens`), the program keeps its layout and its
+  names are the hygiene prefix and a short name (`__light0_a`), as every
+  program with raw text was before.
+  `optimization::raw_js_the_terse_lexer_may_misread_runs_the_same_at_every_level`
+  runs such text.
   `optimization::raw_js_names_resolve_only_to_holes_and_host_globals`
-  checks it at every level.
+  checks it at every level; at `Advanced` its probes write each identifier
+  of the program without them, since the short names are not prefixed.
+  `clojure.string/join` is `js*`, so before light-cljs-294 a program that
+  called it lost terse emission: in examples/features `app.reports` as its
+  own entry went from 4,337 to 1,423 bytes beside its runtime slice, the
+  whole application from 6,647 to 2,385, and the ratchet's `raw-js` fixture
+  from 36 to 26 bytes (`bb benchmarks/features.bb`; "Terse raw `js*`" in
+  `benchmarks/compiler.md`).
 - **Retention report.** At terse `Advanced` a unit's bytes are its bytes in
   the slice, names included.
 - **Measured.** Over the 25 size-ratchet fixtures `Advanced` output goes
@@ -3405,8 +3432,8 @@ upstream states that advanced mode is unsafe for certain patterns.
 - `js*` is opaque: raw text can name only its `~{}` holes and host globals,
   because the compiler renames every name it binds away from it: the
   hygiene pass gives them the `__light<n>_` prefix, which no raw text of the
-  program contains, and terse output (light-cljs-215) keeps the prefix on
-  the short names of a program with raw text.
+  program contains, and terse output (light-cljs-294) gives them short
+  names that no raw text of the program contains as an identifier.
   Raw text that reaches compiler state another way (building a renamed
   identifier for `eval`, patching host or runtime prototypes so that core
   operations run program code) is unsupported, and a definition only such

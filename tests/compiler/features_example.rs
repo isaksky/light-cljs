@@ -36,7 +36,17 @@ pub(crate) fn compile_features(level: OptimizationLevel, esm: bool) -> String {
 #[test]
 fn features_example_logs_its_menu_and_both_features_at_every_level() {
     for level in OptimizationLevel::ALL {
-        assert!(compile_features(level, false).starts_with("(() => {"));
+        // `Advanced` output is terse, though clojure.string/join holds raw
+        // `js*` text (light-cljs-294).
+        let script = if level.advanced() {
+            "(()=>{"
+        } else {
+            "(() => {"
+        };
+        assert!(
+            compile_features(level, false).starts_with(script),
+            "{level}"
+        );
         let module = compile_features(level, true);
         assert!(module.starts_with("export default "), "{level}");
         assert_eq!(

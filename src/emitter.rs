@@ -586,8 +586,8 @@ fn emit_js_mode(
 
     // Raw JavaScript is an escape hatch, but its user-authored identifiers must
     // not accidentally capture compiler locals or be captured by our helpers.
-    // Terse output renames every compiler name anyway, and keeps them away
-    // from raw text the same way.
+    // Terse output renames every compiler name anyway, to short names that no
+    // raw text spells.
     let raw_js = emitter
         .used
         .iter()
@@ -607,7 +607,6 @@ fn emit_js_mode(
             &emitter.output,
             &emitter.raw_segments,
             runtime_segment,
-            raw_js,
             emitter.marks.as_mut(),
         )
     } else if raw_js {

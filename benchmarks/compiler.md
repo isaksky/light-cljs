@@ -3877,3 +3877,37 @@ of the `--esm` output at `advanced`: the whole application 80,407 / 24,286
 5,233 / 1,923 (slice 4,695), against 4,535 / 1,701, since `start` keeps its
 `lazy/load` calls when the script turns the sites into `nil`. The feature rows
 are unchanged.
+
+## Terse raw `js*` — October 15, 2026
+
+light-cljs-294. A program with any raw `js*` text used to keep the emitter's
+layout at `advanced`, with every compiler name the hygiene prefix and a short
+name (`__light0_a`); `clojure.string/join` is `js*`, so every program calling
+it lost terse emission. `terse::terse_program` now lexes raw text with the
+program, writes each of its tokens and comments as they are, and gives the
+compiler's names short names that avoid every identifier the raw text
+contains. Only a program whose raw text puts a hole inside one of its strings
+or comments, or that the lexer may read otherwise than an engine (a byte
+outside ASCII outside string literals, an HTML-like comment, a `/` after
+`}`), keeps the old layout. Measured with `bb benchmarks/features.bb`
+on master `b1c15d9` (after light-cljs-271, resident loadables) and on this
+change, the same sources; 24-CPU Mac, macOS 15.7.3, one-minute load 5.3 and
+5.6 (sizes do not depend on it). Raw / `gzip -9` bytes of the single-file
+`--esm` output at `advanced`; "program" is the output beside its runtime
+slice, which does not change:
+
+| Program | Before | After | Program before | Program after |
+| --- | ---: | ---: | ---: | ---: |
+| `app.main`, the whole application | 80,407 / 24,286 | 76,145 / 23,900 | 6,647 | 2,385 |
+| `app.main` without `app.editor` | 74,481 / 22,577 | 70,816 / 22,215 | 5,768 | 2,103 |
+| `app.main` without `app.reports` | 73,289 / 23,006 | 73,289 / 23,006 | 1,667 | 1,667 |
+| `app.main` without both features | 5,233 / 1,923 | 5,233 / 1,923 | 538 | 538 |
+| `app.editor` as its own entry | 64,447 / 20,035 | 64,447 / 20,035 | 803 | 803 |
+| `app.reports` as its own entry | 66,841 / 20,117 | 63,927 / 19,817 | 4,337 | 1,423 |
+
+The script now also names the rows whose `advanced` output carries the
+prefix: before, the whole application, the application without `app.editor`
+and `app.reports` as its own entry; after, none. In the size ratchet only
+`raw-js` has raw text: its `advanced` output goes from 36 to 26 bytes,
+`(()=>{void 0;return 3})()`, under the unchanged 100-byte ceiling. The
+`none` and `prepare` columns do not change.

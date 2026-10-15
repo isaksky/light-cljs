@@ -15,7 +15,10 @@
 ;; the sources: the feature's file is left out, its libspec is dropped from
 ;; every `ns` form, and every list naming it (a `lazy/loadable` site, or a
 ;; direct call) becomes nil. The last column is the runtime slice of the
-;; `advanced` output as --size-report counts it.
+;; `advanced` output as --size-report counts it. A line after the table names
+;; the rows whose `advanced` output is not fully terse: whose names carry the
+;; `__light<n>_` hygiene prefix, kept only where raw `js*` text puts a hole
+;; inside one of its strings or comments (src/terse.rs).
 ;;
 ;;   bb benchmarks/features.bb
 (require '[babashka.fs :as fs]
@@ -113,9 +116,11 @@
                 {:bytes (fs/size file)
                  :gzip (count gzip)
                  :runtime (-> (re-find #"([\d,]+) runtime bytes" err) second
-                              (str/replace "," "") parse-long)})]
+                              (str/replace "," "") parse-long)
+                 :prefixed (boolean (re-find #"__light\d+_" (slurp file)))})]
     {:levels (mapv #(select-keys % [:bytes :gzip]) sizes)
-     :runtime (:runtime (last sizes))}))
+     :runtime (:runtime (last sizes))
+     :prefixed (:prefixed (last sizes))}))
 
 (defn- grouped [n] (String/format java.util.Locale/ROOT "%,d" (object-array [n])))
 
@@ -146,5 +151,12 @@
       (println (str "| Program | " (str/join " | " (map #(str "`" % "`") levels))
                     " | `advanced` runtime slice |"))
       (println (str "| --- |" (str/join (repeat (inc (count levels)) " ---: |"))))
-      (doseq [[label sizes] rows] (println (row label sizes))))
+      (doseq [[label sizes] rows] (println (row label sizes)))
+      (println)
+      (println (str "`advanced` output with hygiene-prefixed names (`__light<n>_`): "
+                    (or (some->> (seq (keep (fn [[label sizes]] (when (:prefixed sizes) label))
+                                            rows))
+                                 (str/join "; "))
+                        "none")
+                    ".")))
     (finally (fs/delete-tree tmp))))

@@ -1768,10 +1768,14 @@ impl TerseWriter {
                 || (previous.plain_number && first == b'.')
                 || (previous.last == b'<' && first == b'!')
                 || (previous.punct == *b"--" && first == b'>');
-            if line {
-                self.out.push('\n');
-            } else if space {
-                self.out.push(' ');
+            // After a line comment ([`TerseWriter::comment`]) the line has
+            // ended already.
+            if !self.out.ends_with('\n') {
+                if line {
+                    self.out.push('\n');
+                } else if space {
+                    self.out.push(' ');
+                }
             }
         }
         self.out.push_str(text);
@@ -1792,6 +1796,23 @@ impl TerseWriter {
             regex: shape.kind == Kind::Regex,
             punct,
         });
+    }
+
+    /// Writes a comment as it is (raw `js*` text keeps its comments): on a
+    /// new line when a line break preceded it, and a line comment with the
+    /// line break that ends it. Either break was in the source, so neither
+    /// changes the parse; a comment separates the tokens around it.
+    pub fn comment(&mut self, text: &str, newline_before: bool) {
+        if newline_before && !self.out.is_empty() && !self.out.ends_with('\n') {
+            self.out.push('\n');
+        } else if self.out.ends_with('/') {
+            // `a / /* c */ b`, not `a //* c */ b`.
+            self.out.push(' ');
+        }
+        self.out.push_str(text);
+        if text.starts_with("//") {
+            self.out.push('\n');
+        }
     }
 
     /// Ends a sequence of statements that other text may follow on a new

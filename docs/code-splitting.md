@@ -46,8 +46,8 @@ Targets, measured in Phase 0 on the example application
 
 | Measurement | Today | Measured bound | Target |
 |---|---|---|---|
-| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286 | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
-| Bytes loaded for one feature | n/a: both load at startup | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
+| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900 | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
+| Bytes loaded for one feature | n/a: both load at startup | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
 | Observable behavior | n/a | n/a | identical to the single-file program at every level, given the same `load` calls |
 | Compile time of a chunked build | n/a | n/a | within 10% of the single-file build of the same program |
 
@@ -92,12 +92,18 @@ What the bounds say:
   stays near its upper bound, and the second feature's load costs only its
   own few kilobytes. The subtraction is approximate, since the terse slice names
   its bindings by frequency per program.
-- **`clojure.string/join` turns terse emission off.** Its body is `js*`
-  text, and a program with raw `js*` keeps its layout and prefixed names, so
-  the program part of every row that includes `app.reports` is several times
+- **`clojure.string/join` turned terse emission off.** Its body is `js*`
+  text, and a program with raw `js*` kept its layout and prefixed names, so
+  the program part of every row that includes `app.reports` was several times
   larger than its code: 4,337 bytes beside the runtime for `app.reports` as
   its own entry, against 803 for `app.editor`, and 5,339 for the whole
-  application against 1,079 without `app.reports`.
+  application against 1,079 without `app.reports`. Since light-cljs-294 raw
+  text keeps its tokens inside terse output, and `bb benchmarks/features.bb`
+  reports no `advanced` output with prefixed names: `app.reports` as its own
+  entry is 63,927 / 19,817 (1,423 bytes beside the runtime), and with
+  resident loadables the whole application 76,145 / 23,900 instead of
+  80,407 / 24,286 (2,385 beside the runtime instead of 6,647) and without
+  `app.editor` 70,816 / 22,215 instead of 74,481 / 22,577.
 - **After the switch to `light.lazy` (light-cljs-271),** both targets
   resident in the one file, `bb benchmarks/features.bb` gives 80,407 / 24,286
   bytes for the whole application at `advanced` (runtime slice 73,760) and
@@ -697,8 +703,9 @@ Phase 3 splits them.
   `Loadable` sites emit `import("./<name>.js")` or the resident form.
 - **Terse.** `terse_program` renames over the concatenation of all chunk
   texts and rewrites each; import and export lines are written afterwards
-  from the final names. With raw `js*` in the program, names keep the hygiene
-  prefix as today.
+  from the final names. Raw `js*` text in any chunk joins the identifiers the
+  short names avoid (light-cljs-294); only a program that falls back to the
+  hygiene prefix (a hole inside a raw string or comment) keeps it.
 - **Output.** `PreparedApplication::emit_chunks() -> ChunkedOutput { files:
   Vec<ChunkFile { name, source, imports, namespaces, roots }>, manifest }`,
   with the manifest as JSON (chunks, files, imports, member namespaces, root

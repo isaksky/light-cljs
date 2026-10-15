@@ -364,14 +364,22 @@ fn short_names<'s>(
 /// factory, already terse ([`terse_slice`]).
 ///
 /// Every compiler name ([`compiler_name`]) gets a short name, the most
-/// frequent first. When the program has raw `js*` text, the names carry the
-/// hygiene prefix (`__light0_a`), so raw text still sees only its holes and
-/// host globals, and the layout is kept. Otherwise the new names avoid every
-/// other identifier of the output (host globals, helper parameters,
-/// properties) and the ECMAScript globals the runtime reads, and the program
-/// is rewritten: a member read with a constant identifier key is dotted
-/// (`x.length`), redundant parentheses and semicolons go, and tokens are
-/// joined by [`TerseWriter`].
+/// frequent first. The new names avoid every other identifier of the output
+/// (host globals, helper parameters, properties, and each identifier of raw
+/// `js*` text, whatever it spells) and the ECMAScript globals the runtime
+/// reads, so raw text still names only its holes and host globals. The
+/// program is rewritten: a member read with a constant identifier key is
+/// dotted (`x.length`), redundant parentheses and semicolons go, and tokens
+/// are joined by [`TerseWriter`]. Raw text keeps each of its tokens and
+/// comments as written (light-cljs-294); only its whitespace goes, except
+/// line breaks the parse or a comment needs.
+///
+/// When a token crosses between raw text and a hole (a hole inside a string,
+/// template or regex of the raw text), a hole with compiler names is inside
+/// a comment of it, or the raw text may not lex as an engine lexes it
+/// ([`raw_tokens`]), the program keeps its layout instead, and its compiler
+/// names are the hygiene prefix and a short name (`__light0_a`), as every
+/// program with raw text was written before light-cljs-294.
 ///
 /// `marks`, positions in `source` ([`crate::source_map`]), move with the
 /// text they mark: a mark before a token to where that token is written
@@ -381,7 +389,6 @@ pub(crate) fn terse_program(
     source: &str,
     segments: &[Range<usize>],
     runtime: Option<Range<usize>>,
-    raw_js: bool,
     marks: Option<&mut crate::source_map::Marks>,
 ) -> String {
     let mut raw = segments
@@ -390,14 +397,7 @@ pub(crate) fn terse_program(
         .cloned()
         .collect::<Vec<_>>();
     raw.sort_by_key(|range| range.start);
-    if raw_js {
-        let (output, anchors) = hygienic(source, &raw, runtime);
-        if let Some(marks) = marks {
-            marks.relocate(|offset| Some(renamed_offset(&anchors, offset)));
-        }
-        return output;
-    }
-    match rewritten(source, runtime.clone()) {
+    match rewritten(source, runtime.clone(), &raw) {
         Some((output, written)) => {
             if let Some(marks) = marks {
                 marks.relocate(|offset| match &runtime {
@@ -409,6 +409,13 @@ pub(crate) fn terse_program(
                         .get(written.partition_point(|(old, _)| *old < offset))
                         .map(|(_, new)| *new),
                 });
+            }
+            output
+        }
+        None if !raw.is_empty() => {
+            let (output, anchors) = hygienic(source, &raw, runtime);
+            if let Some(marks) = marks {
+                marks.relocate(|offset| Some(renamed_offset(&anchors, offset)));
             }
             output
         }
@@ -484,8 +491,9 @@ pub(crate) fn scanned_names<'s>(
     names
 }
 
-/// A program with raw `js*` text: compiler names become the hygiene prefix
-/// and a short name, and nothing else changes.
+/// A program with raw `js*` text whose tokens [`rewritten`] cannot follow:
+/// compiler names become the hygiene prefix and a short name, and nothing
+/// else changes.
 fn hygienic(
     source: &str,
     raw: &[Range<usize>],
@@ -541,9 +549,16 @@ const BEFORE_EXPRESSION: &[&str] = &[
     "...",
 ];
 
-/// The program rewritten from its tokens, or `None` when it does not lex,
-/// with the start of each written token in `source` and in the output.
-fn rewritten(source: &str, runtime: Option<Range<usize>>) -> Option<(String, Vec<(usize, usize)>)> {
+/// The program rewritten from its tokens, with the start of each written
+/// token in `source` and in the output; `None` when it does not lex, or when
+/// a token crosses a boundary of the `raw` ranges (sorted, disjoint `js*`
+/// text) or the compiler names outside them are not the names
+/// [`scanned_names`] finds there.
+fn rewritten(
+    source: &str,
+    runtime: Option<Range<usize>>,
+    raw: &[Range<usize>],
+) -> Option<(String, Vec<(usize, usize)>)> {
     // The runtime factory is one token, an atom like a template literal.
     let mut tokens = Vec::new();
     match &runtime {
@@ -560,13 +575,20 @@ fn rewritten(source: &str, runtime: Option<Range<usize>>) -> Option<(String, Vec
         None => tokens.extend(lex_section(source, 0..source.len(), false).ok()?),
     }
     let is_runtime = |token: &Token| runtime.as_ref().is_some_and(|r| r.start == token.start);
+    let partners = partners(source, &tokens);
+    let in_raw = raw_tokens(source, &tokens, &partners, raw, runtime.as_ref())?;
+    let comments = raw_comments(source, &tokens, raw);
+    let mut commented = vec![false; tokens.len() + 1];
+    for &(index, ..) in &comments {
+        commented[index] = true;
+    }
 
     let mut words = Vec::new();
     let mut excluded = HashSet::new();
-    for token in &tokens {
+    for (token, &in_raw) in tokens.iter().zip(&in_raw) {
         if token.kind == Kind::Name {
             let word = token.text(source);
-            if compiler_name(word) {
+            if compiler_name(word) && !in_raw {
                 words.push(word);
             } else {
                 excluded.insert(word);
@@ -575,11 +597,15 @@ fn rewritten(source: &str, runtime: Option<Range<usize>>) -> Option<(String, Vec
     }
     let names = short_names(words, |name| excluded.contains(name));
 
-    let partners = partners(source, &tokens);
-    let dropped = redundant_semicolons(source, &tokens, &partners);
+    let mut dropped = redundant_semicolons(source, &tokens, &partners);
+    for (dropped, in_raw) in dropped.iter_mut().zip(&in_raw) {
+        *dropped &= !in_raw;
+    }
     let mut rewrite = Rewrite {
         source,
         tokens: &tokens,
+        raw: &in_raw,
+        commented: &commented,
         cleared: vec![false; tokens.len()],
         dotted: vec![None; tokens.len()],
         partners,
@@ -592,15 +618,26 @@ fn rewritten(source: &str, runtime: Option<Range<usize>>) -> Option<(String, Vec
         dotted,
         ..
     } = rewrite;
-    // Adjacent `let` and `const` statements join: `let a,b;`.
-    let joins = match resolve(source, &tokens) {
+    // Adjacent `let` and `const` statements join: `let a,b;`, unless the
+    // `;` or the keyword is raw text.
+    let mut joins = match resolve(source, &tokens) {
         Ok(resolution) => joined_declarations(source, &tokens, &resolution.statements),
         Err(_) => vec![Join::Keep; tokens.len()],
     };
+    for semicolon in 0..tokens.len() {
+        if joins[semicolon] == Join::Comma && (in_raw[semicolon] || in_raw[semicolon + 1]) {
+            joins[semicolon] = Join::Keep;
+            joins[semicolon + 1] = Join::Keep;
+        }
+    }
 
     let mut writer = TerseWriter::default();
     let mut written = Vec::new();
+    let mut comments = comments.into_iter().peekable();
     for (index, token) in tokens.iter().enumerate() {
+        while let Some((_, text, newline)) = comments.next_if(|(at, ..)| *at == index) {
+            writer.comment(text, newline);
+        }
         if dropped[index] || joins[index] == Join::Drop {
             continue;
         }
@@ -651,7 +688,7 @@ fn rewritten(source: &str, runtime: Option<Range<usize>>) -> Option<(String, Vec
                 text: ")",
             };
             writer.write(close, ")", false);
-        } else if token.kind == Kind::Name && compiler_name(word) {
+        } else if token.kind == Kind::Name && compiler_name(word) && !in_raw[index] {
             let shape = Shape {
                 kind: Kind::Name,
                 text: word,
@@ -666,9 +703,229 @@ fn rewritten(source: &str, runtime: Option<Range<usize>>) -> Option<(String, Vec
         }
         written.push((token.start, separated(&writer.out)));
     }
+    for (_, text, newline) in comments {
+        writer.comment(text, newline);
+    }
     let mut output = writer.out;
-    output.push('\n');
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
     Some((output, written))
+}
+
+/// The comments of raw `js*` text (sorted, disjoint `raw` ranges), which
+/// terse output keeps: each with the index of the token it precedes
+/// (`tokens.len()` after the last) and whether a line break precedes it
+/// since the token before.
+fn raw_comments<'s>(
+    source: &'s str,
+    tokens: &[Token],
+    raw: &[Range<usize>],
+) -> Vec<(usize, &'s str, bool)> {
+    let mut comments = Vec::new();
+    if raw.is_empty() {
+        return comments;
+    }
+    let bytes = source.as_bytes();
+    let in_raw = |at: usize| {
+        raw.get(raw.partition_point(|range| range.end <= at))
+            .is_some_and(|range| range.start <= at)
+    };
+    let mut gap_start = 0;
+    for index in 0..=tokens.len() {
+        // Between two tokens there is only whitespace and comments.
+        let gap_end = tokens.get(index).map_or(source.len(), |token| token.start);
+        let mut newline = false;
+        let mut at = gap_start;
+        while at < gap_end {
+            let end = match (bytes[at], bytes.get(at + 1)) {
+                (b'\n' | b'\r', _) => {
+                    newline = true;
+                    at += 1;
+                    continue;
+                }
+                (b'/', Some(b'/')) => source[at..gap_end]
+                    .find(['\n', '\r'])
+                    .map_or(gap_end, |length| at + length),
+                (b'/', Some(b'*')) => source[at + 2..gap_end]
+                    .find("*/")
+                    .map_or(gap_end, |length| at + length + 4),
+                _ => {
+                    at += 1;
+                    continue;
+                }
+            };
+            let text = &source[at..end];
+            if in_raw(at) {
+                comments.push((index, text, newline));
+            }
+            newline |= text.contains(['\n', '\r']);
+            at = end;
+        }
+        if let Some(token) = tokens.get(index) {
+            gap_start = token.end;
+        }
+    }
+    comments
+}
+
+/// Which `tokens` are raw `js*` text, inside one of the `raw` ranges (sorted
+/// and disjoint, without the `runtime` factory); `None` when a token crosses
+/// a boundary of one, or when the compiler names of the other tokens are
+/// not those [`scanned_names`] finds outside the ranges, which the readable
+/// output renames. Either happens only where raw text puts a hole inside
+/// one of its strings, comments, templates or identifiers.
+///
+/// Also `None` where raw text may not lex as a JavaScript engine lexes it
+/// (the lexer serves the runtime and emitted code): a byte outside ASCII
+/// other than in a string literal (`a` and a no-break space would be one
+/// name), an HTML-like comment (`<!--`, `-->`), and a `/` that the lexer
+/// takes for a division or a regular expression where the tokens before it
+/// do not tell which ([`slash_starts_regex`]).
+fn raw_tokens(
+    source: &str,
+    tokens: &[Token],
+    partners: &[usize],
+    raw: &[Range<usize>],
+    runtime: Option<&Range<usize>>,
+) -> Option<Vec<bool>> {
+    let mut in_raw = vec![false; tokens.len()];
+    if raw.is_empty() {
+        return Some(in_raw);
+    }
+    let mut ranges = raw.iter().peekable();
+    for (index, token) in tokens.iter().enumerate() {
+        while ranges.next_if(|range| range.end <= token.start).is_some() {}
+        match ranges.peek() {
+            Some(range) if range.start <= token.start => {
+                if token.end > range.end {
+                    return None;
+                }
+                in_raw[index] = true;
+            }
+            Some(range) if range.start < token.end => return None,
+            _ => {}
+        }
+    }
+    let non_ascii = |text: &str| text.bytes().filter(|byte| !byte.is_ascii()).count();
+    let in_strings = tokens
+        .iter()
+        .zip(&in_raw)
+        .filter(|(token, in_raw)| **in_raw && token.kind == Kind::Str)
+        .map(|(token, _)| non_ascii(token.text(source)))
+        .sum::<usize>();
+    if raw
+        .iter()
+        .map(|range| non_ascii(&source[range.clone()]))
+        .sum::<usize>()
+        != in_strings
+    {
+        return None;
+    }
+    // Punctuators that start at `index` and touch: `<!--` and `-->` (`-->=`).
+    let adjacent = |index: usize, texts: &[&str]| {
+        texts.iter().enumerate().all(|(offset, text)| {
+            tokens.get(index + offset).is_some_and(|token| {
+                token.kind == Kind::Punct
+                    && token.text(source).starts_with(*text)
+                    && (offset == 0 || tokens[index + offset - 1].end == token.start)
+            })
+        })
+    };
+    for (index, token) in tokens.iter().enumerate() {
+        let touches_raw = in_raw[index] || (index > 0 && in_raw[index - 1]);
+        if !touches_raw {
+            continue;
+        }
+        if in_raw[index] && (adjacent(index, &["<", "!", "--"]) || adjacent(index, &["--", ">"])) {
+            return None;
+        }
+        let text = token.text(source);
+        let slash =
+            token.kind == Kind::Regex || (token.kind == Kind::Punct && text.starts_with('/'));
+        if slash
+            && slash_starts_regex(source, tokens, partners, index)
+                != Some(token.kind == Kind::Regex)
+        {
+            return None;
+        }
+    }
+    let mut skipped = raw.to_vec();
+    skipped.extend(runtime.cloned());
+    let scanned = scanned_names(source, &skipped);
+    let named = tokens
+        .iter()
+        .zip(&in_raw)
+        .filter(|(token, in_raw)| {
+            !**in_raw && token.kind == Kind::Name && compiler_name(token.text(source))
+        })
+        .map(|(token, _)| token.start..token.end);
+    named
+        .eq(scanned.into_iter().map(|(range, _)| range))
+        .then_some(in_raw)
+}
+
+/// Whether the `/` (or `/=`, or regular expression) token at `index` starts a
+/// regular expression, as the tokens before it decide in any JavaScript:
+/// `None` after `}` (a block, or an object or function expression), `++`,
+/// `--`, and the words that may be identifiers (`of`, `yield`, `let`, ...).
+/// The lexer guesses there, and after a keyword used as a property name
+/// (`a.return / 2`) it guesses wrong.
+fn slash_starts_regex(
+    source: &str,
+    tokens: &[Token],
+    partners: &[usize],
+    index: usize,
+) -> Option<bool> {
+    let Some(previous) = index.checked_sub(1).map(|at| &tokens[at]) else {
+        return Some(true);
+    };
+    // A name after `.` or `?.` is a property name.
+    let member = |at: usize| {
+        at > 0
+            && tokens[at - 1].kind == Kind::Punct
+            && matches!(tokens[at - 1].text(source), "." | "?.")
+    };
+    let word = previous.text(source);
+    match previous.kind {
+        Kind::Number | Kind::Str | Kind::Template | Kind::TemplateTail | Kind::Regex => Some(false),
+        Kind::TemplateHead | Kind::TemplateMiddle => Some(true),
+        Kind::Private => Some(false),
+        Kind::Name if member(index - 1) => Some(false),
+        Kind::Name => match word {
+            "this" | "super" | "null" | "true" | "false" => Some(false),
+            "return" | "typeof" | "instanceof" | "in" | "new" | "delete" | "void" | "throw"
+            | "case" | "do" | "else" => Some(true),
+            _ if reserved(word)
+                || matches!(
+                    word,
+                    "of" | "async" | "get" | "set" | "let" | "yield" | "await"
+                ) =>
+            {
+                None
+            }
+            _ => Some(false),
+        },
+        Kind::Punct => match word {
+            "]" => Some(false),
+            // After an `if`, `for`, `while` or `with` head a statement starts.
+            ")" => {
+                let open = partners[index - 1];
+                Some(
+                    open != usize::MAX
+                        && open > 0
+                        && tokens[open - 1].kind == Kind::Name
+                        && matches!(
+                            tokens[open - 1].text(source),
+                            "if" | "for" | "while" | "with"
+                        )
+                        && !member(open - 1),
+                )
+            }
+            "}" | "++" | "--" => None,
+            _ => Some(true),
+        },
+    }
 }
 
 /// Keywords after which a `(` opens a parenthesized expression.
@@ -692,6 +949,12 @@ const KEYWORDS_BEFORE_EXPRESSION: &[&str] = &[
 struct Rewrite<'s, 't> {
     source: &'s str,
     tokens: &'t [Token],
+    /// Tokens of raw `js*` text, which no rule drops or changes.
+    raw: &'t [bool],
+    /// Tokens after a comment of raw text, which is written: a group that
+    /// starts with one keeps its parentheses, since the comment may end a
+    /// line (`return (// c` and a line break).
+    commented: &'t [bool],
     partners: Vec<usize>,
     /// Tokens not written.
     dropped: Vec<bool>,
@@ -859,7 +1122,10 @@ impl<'s> Rewrite<'s, '_> {
 
     fn run(&mut self) {
         for index in 0..self.tokens.len() {
-            if self.punct(index) != "[" || self.partners[index] != index + 2 {
+            if self.punct(index) != "["
+                || self.partners[index] != index + 2
+                || self.raw[index..=index + 2].contains(&true)
+            {
                 continue;
             }
             let key = &self.tokens[index + 1];
@@ -892,10 +1158,13 @@ impl<'s> Rewrite<'s, '_> {
                 && Some(self.partners[inner]) == self.previous(close)
                 && self.next(inner) != Some(self.partners[inner])
                 && !self.holds(inner, self.partners[inner], ",")
+                && !self.raw[inner]
+                && !self.raw[self.partners[inner]]
+                && !self.commented[inner + 1]
             {
                 self.unwrap(inner, self.partners[inner]);
             }
-            if !self.group(open) {
+            if self.raw[open] || self.raw[close] || self.commented[open + 1] || !self.group(open) {
                 continue;
             }
             let before = self.previous(open).map(|previous| self.text(previous));
@@ -1038,6 +1307,125 @@ mod tests {
             ));
         }
         Ok(())
+    }
+
+    /// The terse program of `pieces`, emitted text and raw `js*` text (`true`)
+    /// in turn, without a runtime.
+    fn terse_with_raw(pieces: &[(bool, &str)]) -> String {
+        let mut source = String::new();
+        let mut raw = Vec::new();
+        for &(is_raw, text) in pieces {
+            if is_raw {
+                raw.push(source.len()..source.len() + text.len());
+            }
+            source.push_str(text);
+        }
+        terse_program(&source, &raw, None, None)
+    }
+
+    /// Raw text keeps its tokens, and the compiler's names avoid each of its
+    /// identifiers, compiler-shaped ones too (light-cljs-294).
+    #[test]
+    fn raw_text_keeps_its_tokens_and_names_in_a_terse_program() {
+        let output = terse_with_raw(&[
+            (false, "let l1 = {b: 1};\nlet l2 = ("),
+            (true, "(function (a) {\n  return (a)[\"b\"] + l2;\n})("),
+            (false, "l1"),
+            (true, ")"),
+            (false, ");\nconsole.log(l2, (l1)[\"b\"]);\n"),
+        ]);
+        assert_eq!(
+            output,
+            "let c={b:1},d=(function(a){return(a)[\"b\"]+l2;})(c);console.log(d,c.b);\n"
+        );
+    }
+
+    /// Raw text keeps its comments too: where one started a line it starts
+    /// one, a line comment ends its line, and the parentheses of a group that
+    /// starts after one stay, so that the comment's line break cannot end a
+    /// `return`.
+    #[test]
+    fn raw_comments_are_kept_where_they_cannot_end_a_statement() {
+        let output = terse_with_raw(&[
+            (false, "let l1 = (() => {\n  return ("),
+            (true, "// first\n  /*#__PURE__*/ f(1) /* a\n   b */"),
+            (false, ");\n})();\nlet l2 = ("),
+            (true, "l1 /* c */ / /* d */ 2"),
+            (false, ");\n"),
+            (true, "/** e */"),
+            (false, ";\nconsole.log(l1 / l2);\n"),
+        ]);
+        assert_eq!(
+            output,
+            "let a=(()=>{return(// first\n\
+             /*#__PURE__*/f(1)/* a\n   b */)})(),b=l1/* c *// /* d */2;\n\
+             /** e */;console.log(a/b);\n"
+        );
+    }
+
+    /// Raw text that the lexer may read otherwise than an engine keeps the
+    /// hygienic layout: a regular expression after a block, which the lexer
+    /// takes for a division, a name and a no-break space, which it takes for
+    /// one name, an HTML-like comment, and a keyword as a property name before
+    /// a `/`. A `/` after a group or a control head stays terse.
+    #[test]
+    fn raw_text_the_lexer_may_misread_keeps_the_hygienic_layout() {
+        for raw in [
+            "if (true) {} / x /.test('x'), ",
+            "typeof a\u{a0}, ",
+            "1 <!-- x\n, ",
+            "({return: 6}).return / x / 1, ",
+            "x-->0, ",
+        ] {
+            let output = terse_with_raw(&[
+                (false, "let l1 = 1;\nconsole.log("),
+                (true, raw),
+                (false, "l1);\n"),
+            ]);
+            assert!(
+                output.starts_with("let __light0_a = 1;"),
+                "{raw:?}: {output}"
+            );
+        }
+        let output = terse_with_raw(&[
+            (false, "let l1 = 4;\nconsole.log(("),
+            (true, "(() => { if (x) /a/.test(y); return ("),
+            (false, "l1"),
+            (true, " + 2) / 2; })()"),
+            (false, "));\n"),
+        ]);
+        assert_eq!(
+            output,
+            "let a=4;console.log((()=>{if(x)/a/.test(y);return(a+2)/2;})());\n"
+        );
+    }
+
+    /// A token that crosses between raw text and a hole leaves the program in
+    /// its layout, with prefixed names, as the hygiene pass writes it.
+    #[test]
+    fn a_hole_inside_raw_strings_or_comments_keeps_the_hygienic_layout() {
+        let output = terse_with_raw(&[
+            (false, "let l1 = 1;\nconsole.log("),
+            (true, "'"),
+            (false, "l1"),
+            (true, "'"),
+            (false, ", l1);\n"),
+        ]);
+        assert_eq!(
+            output,
+            "let __light0_a = 1;\nconsole.log('__light0_a', __light0_a);\n"
+        );
+        let output = terse_with_raw(&[
+            (false, "let l1 = 1;\n"),
+            (true, "/* __light0_ "),
+            (false, "l1"),
+            (true, " */"),
+            (false, "console.log(l1);\n"),
+        ]);
+        assert_eq!(
+            output,
+            "let __light1_a = 1;\n/* __light0_ __light1_a */console.log(__light1_a);\n"
+        );
     }
 
     #[test]

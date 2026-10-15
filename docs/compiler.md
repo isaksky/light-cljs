@@ -268,8 +268,16 @@ their locals short names, using the lexer and scope analysis of
 `src/js_syntax.rs`; the slice names its top-level bindings by frequency; and
 `src/terse.rs` gives every name the emitter binds a short name, dots member
 reads with identifier keys, drops redundant parentheses and joins the tokens
-without whitespace. Runtime constructors keep their names. A program with
-raw `js*` text keeps its layout, and its names keep the hygiene prefix.
+without whitespace. Runtime constructors keep their names. Raw `js*` text
+keeps each of its tokens and comments (a `js-comment` too), losing only
+whitespace, and the short names avoid every identifier it contains
+(light-cljs-294), so `clojure.string/join`, whose body is `js*`, no longer
+keeps a program in the emitter's layout. Only a program whose raw text puts
+a hole inside one of its strings, templates or regexes (or a hole with
+compiler names inside one of its comments), or whose raw text the lexer may
+read otherwise than an engine (a byte outside ASCII outside its string
+literals, an HTML-like comment, a `/` after `}`), keeps its layout, with
+names after the hygiene prefix.
 `ApplicationOptions::pseudo_names` (`--compile --pseudo-names`) keeps the
 readable output instead. Terse output changes engine-generated error
 messages and function names, as the Advanced-mode contract says.
@@ -313,8 +321,9 @@ argument types stay, as do calls of an operation the program `set!`s,
 a `js*` hole, and every core call in a program that extends a core protocol to a
 type it does not define (`extend-type number IHash`, `PersistentVector`, `default`,
 `specify!`). Retained `js*` is an opaque leaf at `Advanced`: hygiene keeps raw
-text from naming compiler bindings, so it can reach only its `~{}` holes and
-host globals, and it no longer prevents elimination or specialization.
+text from naming compiler bindings (terse names that no raw text spells, or the
+hygiene prefix), so it can reach only its `~{}` holes and host globals, and it
+no longer prevents elimination or specialization.
 
 Specialization covers eager top-level calls after a sole, non-dynamic
 initialization, with no value/Var escape or mutation: fixed entries of multi-arity

@@ -176,8 +176,15 @@ fn js_debugger_and_js_comment_emit_raw_statements_whose_value_is_nil() {
     );
     for (level, js) in OptimizationLevel::ALL.into_iter().zip(outputs) {
         assert_eq!(js.matches("debugger;").count(), 3, "at {level}");
-        assert!(js.contains("\n/**\n * a\n * b\n *  c\n */\n"), "at {level}");
-        assert!(js.contains("\n/**\n * c\n */\n"), "at {level}");
+        // Terse `Advanced` output keeps the comments of raw text where they
+        // started a line, and writes the statement's `;` right after them
+        // (light-cljs-294).
+        let end = if level.advanced() { " */;" } else { " */\n" };
+        assert!(
+            js.contains(&format!("\n/**\n * a\n * b\n *  c\n{end}")),
+            "at {level}"
+        );
+        assert!(js.contains(&format!("\n/**\n * c\n{end}")), "at {level}");
     }
     // A comment is nil in a value position too, where upstream's bare
     // template emits `var x = /** ... */;`, which is not JavaScript.
