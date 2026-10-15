@@ -562,6 +562,31 @@ fn loadable_ideref_overrides_are_honored_at_every_level() {
     );
 }
 
+/// A `Loadable` calls its getter as the deftype did, `(getter)`: as
+/// ClojureScript calls a local, so an IFn object serves as one and a getter
+/// reading `this` does not see the loadable, through `@l` and `load`.
+#[test]
+fn loadable_getters_keep_cljs_invocation_semantics_at_every_level() {
+    static GETTERS: &[(&str, &str)] = &[(
+        "app/main.cljs",
+        "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (defn start []\n\
+               (js/console.log \"IFn\" @(lazy/Loadable. nil (reify IFn (-invoke [_] 42))))\n\
+               (js/console.log \"this is the loadable\"\n\
+                               @(lazy/Loadable. nil (fn [] (this-as t (instance? lazy/Loadable t)))))\n\
+               (.then (lazy/load (lazy/Loadable. nil (reify IFn (-invoke [_] 43))))\n\
+                      (fn [v] (js/console.log \"load\" v) nil)))\n\
+             start\n",
+    )];
+    assert_eq!(
+        run_module_at_every_level(GETTERS),
+        concat!(
+            r#"{"id":"app.main.js","outcome":{"status":"returned","value":null},"trace":[],"stdout":""#,
+            r#"IFn 42\nthis is the loadable false\nload 43\n"}"#,
+        )
+    );
+}
+
 /// `(light.lazy/loadable-type)` reads the runtime, which a program of one
 /// source text embeds for it at every level.
 #[test]

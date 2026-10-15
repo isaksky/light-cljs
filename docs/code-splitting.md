@@ -46,7 +46,7 @@ Targets, measured in Phase 0 on the example application
 
 | Measurement | Today | Measured bound | Target |
 |---|---|---|---|
-| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,491 / 21,644 | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
+| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646 | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
 | Bytes loaded for one feature | n/a: both load at startup | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
 | Observable behavior | n/a | n/a | identical to the single-file program at every level, given the same `load` calls |
 | Compile time of a chunked build | n/a | n/a | within 10% of the single-file build of the same program |
@@ -116,18 +116,22 @@ What the bounds say:
 
   | Program | `none` | `prepare` | `advanced` | `advanced` runtime slice |
   | --- | ---: | ---: | ---: | ---: |
-  | `app.main`, the whole application | 455,100 / 109,609 | 455,100 / 109,609 | 73,546 / 22,010 | 67,473 |
-  | `app.main` without `app.editor` | 453,549 / 109,421 | 453,549 / 109,421 | 68,024 / 20,424 | 62,830 |
-  | `app.main` without `app.reports` | 439,005 / 107,222 | 438,752 / 107,179 | 65,417 / 20,420 | 64,117 |
-  | `app.main` without `app.editor` and `app.reports`: startup lower bound | 437,659 / 107,002 | 436,207 / 106,776 | 4,680 / 1,753 | 4,189 |
-  | `app.editor` as its own entry: chunk upper bound | 436,976 / 106,838 | 436,585 / 106,762 | 64,447 / 20,035 | 63,644 |
-  | `app.reports` as its own entry: chunk upper bound | 451,227 / 109,081 | 451,227 / 109,081 | 66,841 / 20,117 | 62,504 |
+  | `app.main`, the whole application | 455,109 / 109,611 | 455,109 / 109,611 | 69,500 / 21,646 | 67,482 |
+  | `app.main` without `app.editor` | 453,558 / 109,423 | 453,558 / 109,423 | 64,575 / 20,090 | 62,839 |
+  | `app.main` without `app.reports` | 439,014 / 107,224 | 438,761 / 107,181 | 65,426 / 20,431 | 64,126 |
+  | `app.main` without `app.editor` and `app.reports`: startup lower bound | 437,668 / 107,004 | 436,216 / 106,778 | 4,680 / 1,753 | 4,189 |
+  | `app.editor` as its own entry: chunk upper bound | 436,985 / 106,840 | 436,594 / 106,764 | 64,447 / 20,035 | 63,644 |
+  | `app.reports` as its own entry: chunk upper bound | 451,236 / 109,083 | 451,236 / 109,083 | 63,927 / 19,817 | 62,504 |
 
-  The whole application is 1,060 bytes over the 72,486 of direct calls at
-  `advanced`, and its runtime slice 326: the `Loadable` class and its names.
-  Startup without the features is 145 bytes over its 4,535: `start` and the
-  `load` it calls once the sites are `nil`. `none` and `prepare` embed a
-  runtime 1,521 bytes longer.
+  At `advanced` the whole application is 392 bytes, 196 a site, over the
+  69,108 of the same example with direct calls (each target read from a
+  required namespace, `js/Promise.resolve` for each `load`; the ratchet's
+  `features-direct`), and 596 over the 68,904 of the example before
+  light-cljs-271, which called both features from `start`. Its runtime slice
+  is 335 bytes over theirs: the `Loadable` class, its names and its slot in
+  the runtime factory. Startup without the features is 145 bytes over its
+  4,535: `start` and the `load` it calls once the sites are `nil`. `none`
+  and `prepare` embed a runtime 1,530 bytes longer.
 
 Non-goals of this design: a module manager with retries and backoff, bundling
 npm code (the npm seam stays as designed: packages are static imports a bundler
@@ -700,7 +704,7 @@ output.
     units and 6,553 bytes, most of them the protocol hooks every core
     operation needs once a program type may implement its protocol. The
     runtime owns `Loadable` instead, a class with `deref()` and `load()`
-    (245 bytes terse), and effects give it what a deftype implementing
+    (254 bytes terse), and effects give it what a deftype implementing
     IDeref has where a program can observe it: `Loadable.deref` wraps
     `derefProtocol` (`@l`, `deref`, `-deref`); `Loadable.name` sets
     `cljs$lang$ctorStr`, `cljs$lang$type` and the `typeNames` entry where a
@@ -710,7 +714,9 @@ output.
     `Loadable.dispatch` makes `@l` and `load` use the IDeref that `extend-type`
     or `specify!` gives, where `installMethods` is kept. Its instances
     carry no `TypeBrand`, which only the compiler form bridge reads, and it has
-    no `->Loadable` or `getBasis`.
+    no `->Loadable` or `getBasis`. `deref()` calls the getter as the
+    deftype's `(getter)` did, `getter.call(null)`, so an IFn object serves
+    as one.
   - `light.lazy/Loadable` is `(def Loadable (light.lazy/loadable-type))`, a
     zero-argument special form for the runtime's class
     (`ExprKind::LoadableType`, inert). The sites still read
@@ -719,18 +725,18 @@ output.
     program type in it. `load` is `(.load l)`, so a program that only loads
     keeps no `deref`, and the inliner may turn a call into `l.load()`.
   - Measured with the ratchet's `NAMESPACE_FIXTURES`: `loadable-site`, one
-    site with its target in another namespace, is 578 bytes at `advanced`
+    site with its target in another namespace, is 587 bytes at `advanced`
     against 280 for `direct-site`, the same program reading the target
-    directly: one site with the whole type and `load` costs 298 bytes, of
-    which the runtime factory and class are 277. In `examples/features`
-    (ratchet `features`, 69,475 bytes) the two sites cost 383 bytes, 192 a
+    directly: one site with the whole type and `load` costs 307 bytes, of
+    which the runtime factory and class are 286. In `examples/features`
+    (ratchet `features`, 69,484 bytes) the two sites cost 392 bytes, 196 a
     site, against `features-direct`, the same example with direct calls:
     each target read directly from a required namespace and
     `Promise.resolve` for each `load` (69,092 bytes). That meets the exit
     criterion below, and
     `size_ratchet::features_loadable_sites_cost_under_200_bytes_each_at_advanced`
     keeps it. Against the example as it was before light-cljs-271, calling
-    both features from `start`, the growth is 587 bytes: the targets now
+    both features from `start`, the growth is 596 bytes: the targets now
     escape as functions instead of being inlined into `start`, and `start`
     chains two promises.
 - **Preparation.** Lazy Var targets join `options.exports` as retention and

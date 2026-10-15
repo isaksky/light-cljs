@@ -3920,14 +3920,14 @@ light-cljs-272 measures what a `light.lazy/loadable` site costs at
 machinery (`rt$defineType`, 39 units and 6,553 bytes in `examples/features`,
 most of it the protocol hooks every core operation needs once a program type
 may implement its protocol). The runtime now owns the type: a class with
-`deref()` and `load()`, 245 bytes terse, plus 77 bytes for its printed names
+`deref()` and `load()`, 254 bytes terse, plus 77 bytes for its printed names
 where the program prints; its IDeref implementation as a `defineType` gives
 it, and the dispatch to one `extend-type` or `specify!` gives, are added only
 where the program has types of its own or looks protocols up
 (docs/code-splitting.md, Phase 1, "As built (light-cljs-272)"). Sizes, which
 do not depend on load, on the 24-CPU Mac of the
 [environment](results/environment.txt), macOS 15.7.3, one-minute load
-average 2.5, on master `965135d` (after light-cljs-294, which writes
+average 3.1, on master `965135d` (after light-cljs-294, which writes
 `clojure.string/join`'s `js*` tersely) and on this change:
 
 ```sh
@@ -3941,8 +3941,8 @@ cargo run --quiet -- --compile --optimize advanced --size-report --entry app.mai
 
 | `advanced` | light-cljs-271 (`deftype`), master `965135d` | light-cljs-272 (the runtime's type) |
 | --- | ---: | ---: |
-| `app.main`, the whole application | 76,145 / 23,900 | 69,491 / 21,644 |
-| its runtime slice | 73,760 | 67,473 |
+| `app.main`, the whole application | 76,145 / 23,900 | 69,500 / 21,646 |
+| its runtime slice | 73,760 | 67,482 |
 | without both features: startup lower bound | 5,233 / 1,923 | 4,680 / 1,753 |
 
 What a site costs, as the difference between a program and the same program
@@ -3956,23 +3956,26 @@ example as it was then, calling both features from `start`:
 
 | Comparison | Loadables | Direct | Difference | Per site |
 | --- | ---: | ---: | ---: | ---: |
-| ratchet `loadable-site` against `direct-site`, one site | 578 | 280 | 298 | 298 |
-| ratchet `features` against `features-direct` | 69,475 | 69,092 | 383 | 192 |
-| `examples/features` against the same with direct calls, `--esm` | 69,491 | 69,108 | 383 | 192 |
-| `examples/features` against before light-cljs-271, `--esm` | 69,491 | 68,904 | 587 | 294 |
+| ratchet `loadable-site` against `direct-site`, one site | 587 | 280 | 307 | 307 |
+| ratchet `features` against `features-direct` | 69,484 | 69,092 | 392 | 196 |
+| `examples/features` against the same with direct calls, `--esm` | 69,500 | 69,108 | 392 | 196 |
+| `examples/features` against before light-cljs-271, `--esm` | 69,500 | 68,904 | 596 | 298 |
 
-One site carries the whole type: the runtime factory and class are 277 of
-`loadable-site`'s 298 bytes. Two sites share it, so the stubs of
-`examples/features` cost 192 bytes a site, under the 200 of the Phase 1 exit
+One site carries the whole type: the runtime factory and class are 286 of
+`loadable-site`'s 307 bytes. Two sites share it, so the stubs of
+`examples/features` cost 196 bytes a site, under the 200 of the Phase 1 exit
 criterion, which
 `size_ratchet::features_loadable_sites_cost_under_200_bytes_each_at_advanced`
-asserts. Of the 383 bytes, 326 are the runtime slice's (67,473 against
+asserts. Of the 392 bytes, 335 are the runtime slice's (67,482 against
 67,147: the class, its printed names and its slot in the runtime factory);
 the program's other 57 are `light.lazy/Loadable`, `light.lazy/load` (a
 method call the inliner keeps as a function, since it is called twice and a
 method call has an effect) and the two `new` expressions, less the two
-`Promise.resolve` reads of the direct program. Against the example before light-cljs-271 the
-growth is 587 bytes: the loadable targets escape as functions where that
+`Promise.resolve` reads of the direct program. The class calls its getter
+as the `deftype` did, `getter.call(null)`, so that an IFn object serves as
+one (`lazy::loadable_getters_keep_cljs_invocation_semantics_at_every_level`):
+9 of the bytes, 192 a site before. Against the example before light-cljs-271
+the growth is 596 bytes: the loadable targets escape as functions where that
 `start` inlined both features, and `start` chains two promises.
 
 New ratchet rows (`NAMESPACE_FIXTURES`, programs of several namespaces), bytes
@@ -3980,14 +3983,14 @@ New ratchet rows (`NAMESPACE_FIXTURES`, programs of several namespaces), bytes
 
 | Fixture | `none` | `prepare` | `advanced` |
 | --- | ---: | ---: | ---: |
-| `features` | 455,084 / 456,000 | 455,084 / 456,000 | 69,475 / 70,000 |
-| `features-direct` | 453,980 / 454,000 | 453,980 / 454,000 | 69,092 / 70,000 |
-| `loadable-site` | 435,638 / 436,000 | 435,508 / 436,000 | 578 / 600 |
-| `direct-site` | 434,855 / 435,000 | 434,855 / 435,000 | 280 / 300 |
+| `features` | 455,093 / 456,000 | 455,093 / 456,000 | 69,484 / 70,000 |
+| `features-direct` | 453,989 / 454,000 | 453,989 / 454,000 | 69,092 / 70,000 |
+| `loadable-site` | 435,647 / 436,000 | 435,517 / 436,000 | 587 / 600 |
+| `direct-site` | 434,864 / 435,000 | 434,864 / 435,000 | 280 / 300 |
 
 With light-cljs-271's `deftype`, `loadable-site` was 6,600 bytes at
 `advanced`. The `advanced` size of every other fixture is unchanged. `none`
-and `prepare` embed the whole runtime, which the `Loadable` units make 1,521
+and `prepare` embed the whole runtime, which the `Loadable` units make 1,530
 bytes longer in every fixture, so their ceilings rise to the new size rounded
 up: by 2,000 bytes for 19 fixtures and 1,000 for 11, and one keeps its
 ceiling.

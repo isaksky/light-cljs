@@ -709,7 +709,7 @@
   const Loadable = class {
     constructor(importer, getter) { this.importer = importer; this.getter = getter; }
     deref() {
-      if (this.importer == null) return this.getter();
+      if (this.importer == null) return this.getter.call(null);
       throw new Error("light.lazy: the target of this loadable is not loaded");
     }
     load() { return Promise.resolve().then(() => this.deref()); }
