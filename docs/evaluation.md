@@ -44,6 +44,75 @@ build (`--compile --entry NS --source-root DIR --reloadable --out-dir DIR`,
 the same shape over the same registry, so reloading a namespace there
 redefines as the session does.
 
+## Actions
+
+The session is two parts: a `DevSession` (`light_cljs::dev_session`), the
+incremental compiler with its macro host and the namespaces the session has
+loaded, and the QuickJS heap, which interprets what the compiler produces
+(light-cljs-283; the design is "Actions" in
+[dev-workflow.md](dev-workflow.md#actions)). A `DevSession` also works with no
+heap at all, for a runtime in another process:
+
+```rust
+use light_cljs::dev_session::{Action, DevSession};
+use light_cljs::{EvalOptions, source_provider::SourceInput};
+let dev = DevSession::new(&EvalOptions::default())?;
+let actions = dev.source(&SourceInput::new("repl.cljs", "(def x 41) (inc x)"));
+assert!(matches!(&actions[..], [Action::Invoke(_), Action::Invoke(_)]));
+# Ok::<(), light_cljs::EvalDiagnostic>(())
+```
+
+`DevSession::new` reads the compiler fields of `EvalOptions`: `namespace`,
+`aliases`, `compiler`, `engine` (for the macro heap), `data_readers`,
+`default_data_reader`, `source_provider`, `max_source_bytes`, `assertions` and
+`policy`. `form` and `source` compile as a REPL evaluates: each top-level form
+in turn, the next read after the previous one compiled. `load_file` compiles
+a file's text as a loaded file. `namespace` is the current namespace and
+`read_forms` reads in it. Each returns the actions in order:
+
+| Action | Carries | Meaning |
+|---|---|---|
+| `Invoke(Unit)` | one unit | Evaluate this unit for its value: a REPL form. |
+| `Load(Vec<Unit>)` | units in order | Run these units: the forms of the namespaces a `require` loads, dependencies first, or of a loaded file. |
+| `Namespace(name)` | a namespace name | The current namespace is now `name`. |
+| `Warnings(Vec<EvalDiagnostic>)` | located warnings | Analysis warnings, `message [kind]`, before the actions of their form. |
+| `Error(EvalDiagnostic)` | a located diagnostic | The form did not compile. Always last: nothing after it was compiled. |
+
+A `Unit` is one top-level form: its `namespace`, its `js` (the function
+expression `(__lightInteractiveRuntime) => ...` that a runtime calls with the
+runtime, writing definitions to `globalThis.__lightApplicationRoots`), a
+`source_map` (none yet; light-cljs-284 adds them) and the `location` of the
+form, where an error it throws is located. A `Namespace` action comes where
+the session has always made a namespace current: after each directive (`ns`,
+`in-ns`, `require`, `ns*`), and when a load enters a namespace and returns to
+the requiring one. So `(require 'b)`, where `b` requires `a`, is
+`Namespace(cljs.user)`, `Namespace(b)`, `Namespace(a)`, `Load` of `a`'s forms,
+`Namespace(b)`, `Load` of `b`'s forms, `Namespace(cljs.user)`, and a second
+`(require 'b)` is `Namespace(cljs.user)` alone: a `DevSession` loads a
+namespace once unless the `require` says `:reload` or `:reload-all`, which
+compile the text the source provider returns at that time. Consecutive
+`Load`s are one. The value of a form or file is the value of its last action
+when that ran a unit, else nil: a directive's value is nil, and a file whose
+last form is a definition has that definition's value.
+`dev_session::define_script` writes units as a script for the client of a
+[dev build](compiler.md#dev-builds), one `globalThis.__lightDev.define` per
+namespace, so a `DevSession` can replace the namespaces of a running dev build
+(`tests/evaluation/dev_session.rs` does so in Node).
+
+`EvalSession` is the interpreter of these actions over its heap: a unit runs
+in the heap, and a `Namespace` sets the runtime's `*ns*`. It interprets each
+action as the compiler produces it, which is how the session has always
+evaluated: a namespace's form runs before the next one is read and compiled,
+so a form that throws while a namespace loads stops the load there, a
+definition after it is never compiled, and the namespace stays unloaded until
+a `require` loads it again. A `DevSession` with no heap cannot know whether
+its units ran, and counts a namespace loaded once it compiled it. The
+runtime's `load-file`, `eval` and `macroexpand` call the session's
+`DevSession` in process while a unit runs. `EvalSession::analyze` returns an
+`AnalyzedForm` that wraps the `Invoke` of the form's unit
+(`AnalyzedForm::action`), which `evaluate` interprets. The session ignores
+`Warnings` and source maps.
+
 ## Capabilities and configuration
 
 `EvalOptions` supplies host functions, finite initial bindings, namespace/aliases,

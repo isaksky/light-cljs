@@ -264,6 +264,21 @@ runtime callbacks for `require` and `load-file` inside QuickJS keep working
 through the same `DevSession` because the heap is in-process; a browser
 runtime does not get runtime `eval` or `load-file` (see the contract).
 
+As built (light-cljs-283; the API is in
+[evaluation.md](evaluation.md#actions)), a unit is one top-level form:
+namespace, JavaScript, source map (none until the source-map item of Phase
+1) and the form's location. A `Load` lists the units of every namespace a
+`require` loads, but `Namespace` actions come between them wherever the
+session makes a namespace current: when a load enters a namespace and when it
+returns to the requiring one. The `Namespace` of a namespace with no forms
+besides its `ns` thus still reaches the runtime, which creates the namespace,
+and each unit runs after the `Namespace` of its namespace. Reload policy is not
+carried yet (Phase 3). The compiler hands each action to an interpreter as it
+produces it, and the `DevSession` methods collect them; `EvalSession`
+interprets them as they come, so a unit that throws while a namespace loads
+stops that load before its next form is compiled, as before. A runtime in
+another process never makes the compiler wait.
+
 ### The watch loop
 
 `--watch` holds the `DevSession` after the initial dev build and polls the
@@ -452,6 +467,19 @@ CLI's `--repl` and `--eval` rebuilt on it, and the session gaps closed.
 
 Done when: `--repl` and `--eval` behave as before on the full suite, and a
 `DevSession` without a heap produces the units the Phase 0 driver can apply.
+
+Status (light-cljs-283, October 15, 2026): the factoring is done.
+`src/dev_session.rs` holds `DevSession`, the actions, form reading,
+directives, fragment analysis, unit emission, lazy loads and the
+loaded/loading sets; `EvalSession` and its runtime `load-file` callback are
+interpreters of the actions, and the two copies of the loading code they
+had are one. `tests/evaluation/dev_session.rs` covers a form, a `require`,
+a `require :reload` whose source changed, a `load-file` and a failing form
+after a successful one by applying the units in a fresh QuickJS heap, and
+applies the units of a `require` of an edited `app.view` compiled without a
+heap to the running Phase 0 build of `examples/dev` through the driver
+(`render: clicks: [2]`, the `defonce` state kept). Full `ns`, warning mode,
+source maps and the `ns` test are light-cljs-284.
 
 ### Phase 2: watch
 

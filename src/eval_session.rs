@@ -1,15 +1,13 @@
 //! Compiler-backed interactive evaluation and explicit embedding capabilities.
-use crate::analyzer::LAZY_NAMESPACE;
 use crate::compiler_data::{Datum, DatumKind, Form, Origin, Source, SourceSpan};
-use crate::eval_compiler::InteractiveCompiler;
+use crate::dev_session::{Action, DevSession, Interpreter, Mode, Unit};
 pub use crate::eval_compiler::NamePolicy;
 use crate::evaluator::{EvalError, Evaluator, EvaluatorOptions, ExecutionControl, ValueId};
 pub use crate::evaluator::{HostArity, HostCall};
 use crate::form_bridge::ConversionLimits;
-use crate::source_provider::{LoadRequest, Reload, SourceInput, SourceProvider};
+use crate::source_provider::{SourceInput, SourceProvider};
 use std::{
     cell::{Cell, RefCell},
-    collections::HashSet,
     fmt,
     rc::Rc,
 };
@@ -177,8 +175,15 @@ pub struct EvalResult {
 /// Analysis retains no engine values; evaluation requires its originating session.
 pub struct AnalyzedForm {
     owner: u64,
-    source: Form,
-    program: crate::Program,
+    /// The `Invoke` of the form's unit.
+    action: Action,
+}
+impl AnalyzedForm {
+    /// The `Invoke` action of the form's unit, which [`EvalSession::evaluate`]
+    /// interprets.
+    pub fn action(&self) -> &Action {
+        &self.action
+    }
 }
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -207,14 +212,16 @@ impl Drop for FileLoadGuard {
     }
 }
 
+/// The session: a [`DevSession`], which compiles, and a QuickJS heap, which
+/// interprets the compiler's actions as they come (docs/evaluation.md,
+/// "Actions"). The runtime's `load-file`, `eval` and `macroexpand` call the
+/// same compiler while a unit runs.
 pub struct EvalSession {
     engine: Evaluator,
     namespace_update: ValueId,
-    compiler: Rc<RefCell<InteractiveCompiler>>,
+    dev: Rc<DevSession>,
     options: EvalOptions,
     output_bytes: Rc<RefCell<usize>>,
-    loaded: Rc<RefCell<HashSet<String>>>,
-    loading: Rc<RefCell<Vec<String>>>,
     file_loading: Rc<RefCell<Vec<String>>>,
     identity: u64,
     operation_depth: Rc<Cell<usize>>,
@@ -227,33 +234,13 @@ impl EvalSession {
         engine.track_rejections();
         let namespace_update = engine
             .evaluate_js("name => { rt.core.currentNs = rt.core.createNs(name); return null; }")?;
-        let mut host = crate::MacroHost::new();
-        host.limits = options.compiler;
-        host.evaluator_options = options.engine.clone();
-        host.interactive_control = Some(engine.control());
-        for (tag, source) in &options.data_readers {
-            host.register_compiler_data_reader(tag.clone(), source)
-                .map_err(EvalError)?;
-        }
-        if let Some(source) = &options.default_data_reader {
-            host.register_compiler_default_data_reader(source)
-                .map_err(EvalError)?;
-        }
-        let mut compiler = InteractiveCompiler::with_host(host);
-        compiler.host.set_assertions(options.assertions);
-        compiler.policy = options.policy.clone();
-        compiler.set_namespace(&options.namespace);
-        for (alias, target) in &options.aliases {
-            compiler.set_alias(alias, target);
-        }
+        let dev = DevSession::with_control(&options, Some(engine.control()))?;
         let mut session = Self {
             engine,
             namespace_update,
-            compiler: Rc::new(RefCell::new(compiler)),
+            dev: Rc::new(dev),
             options,
             output_bytes: Rc::new(RefCell::new(0)),
-            loaded: Rc::new(RefCell::new(HashSet::new())),
-            loading: Rc::new(RefCell::new(vec![])),
             file_loading: Rc::new(RefCell::new(vec![])),
             operation_depth: Rc::new(Cell::new(0)),
             identity: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -289,7 +276,7 @@ impl EvalSession {
         self.engine.control()
     }
     pub fn namespace(&self) -> String {
-        self.compiler.borrow().namespace().into()
+        self.dev.namespace()
     }
     fn begin(&self) -> Result<OperationGuard, EvalDiagnostic> {
         if self.operation_depth.get() == 0 {
@@ -314,7 +301,27 @@ impl EvalSession {
     /// jobs it queues after it (see [`Self::run_jobs`]).
     pub fn eval_source(&mut self, source: &SourceInput) -> Result<EvalResult, EvalDiagnostic> {
         let _operation = self.begin_jobs()?;
-        self.source(source, true)
+        self.dev.check_source(source)?;
+        let mut cursor = 0;
+        let mut last = self.value(&Datum::new(DatumKind::Nil))?;
+        loop {
+            let form = match self.dev.next_form(source, &mut cursor) {
+                Ok(Some(form)) => form,
+                Ok(None) => break,
+                Err(error) => {
+                    let _ = self.engine.release(last);
+                    return Err(error);
+                }
+            };
+            let result = self.form(&form);
+            let result = self.after_jobs(result);
+            let _ = self.engine.release(last);
+            last = result?.value;
+        }
+        Ok(EvalResult {
+            value: last,
+            namespace: self.namespace(),
+        })
     }
     /// Load only through the configured file capability, preserving session roots.
     /// The file runs as one script: promise jobs run after its last form.
@@ -324,7 +331,9 @@ impl EvalSession {
             let _file = FileLoadGuard::begin(&self.file_loading, path)?;
             file_source(&self.options, path, &self.namespace())
                 .map_err(EvalDiagnostic::from)
-                .and_then(|source| self.source(&source, false))
+                .and_then(|source| {
+                    self.interpret(|dev, heap| dev.run_source(&source, Mode::Load, heap))
+                })
         };
         self.after_jobs(result)
     }
@@ -407,201 +416,49 @@ impl EvalSession {
             }
         }
     }
-    /// Evaluate each top-level form of `source`; with `jobs`, run the promise
-    /// jobs after each one, as at the outermost boundary of a REPL or script.
-    fn source(&mut self, source: &SourceInput, jobs: bool) -> Result<EvalResult, EvalDiagnostic> {
-        if source.file.ends_with(".clj") {
-            return Err(
-                EvalError("native .clj evaluation is retired; use .cljs or .cljc".into()).into(),
-            );
-        }
-        if source.source.len() > self.options.max_source_bytes {
-            return Err(EvalDiagnostic {
-                data: None,
-                message: "compiler source byte limit exceeded".into(),
-                location: None,
-            });
-        }
-        let mut cursor = 0;
-        let mut last = self.value(&Datum::new(DatumKind::Nil))?;
-        loop {
-            self.engine.control().poll()?;
-            let next = self
-                .compiler
-                .borrow()
-                .next_form(source, &mut cursor)
-                .map_err(EvalDiagnostic::from);
-            let form = match next {
-                Ok(Some(form)) => form,
-                Ok(None) => break,
-                Err(error) => {
-                    let _ = self.engine.release(last);
-                    return Err(error);
-                }
-            };
-            let mut result = self.form(&form);
-            if jobs {
-                result = self.after_jobs(result);
-            }
-            let _ = self.engine.release(last);
-            last = result?.value;
-        }
-        Ok(EvalResult {
-            value: last,
-            namespace: self.namespace(),
-        })
-    }
     /// Evaluate one top-level form, then run the promise jobs it queued.
     pub fn eval_form(&mut self, form: &Form) -> Result<EvalResult, EvalDiagnostic> {
         let _operation = self.begin_jobs()?;
         let result = self.form(form);
         self.after_jobs(result)
     }
-    fn form(&mut self, form: &Form) -> Result<EvalResult, EvalDiagnostic> {
-        if let Some(children) = top_level_do(form) {
-            let mut last = self.value(&Datum::new(DatumKind::Nil))?;
-            for child in children {
-                let result = self.form(&child);
-                let _ = self.engine.release(last);
-                last = result?.value;
-            }
-            return Ok(EvalResult {
-                value: last,
-                namespace: self.namespace(),
-            });
-        }
-        if self.loading.borrow().is_empty() {
-            // What an earlier top-level form recorded and failed to act on.
-            self.compiler.borrow_mut().lazy = Default::default();
-        }
-        self.engine.input_action("clearError", 0)?;
-        let requests = self.compiler.borrow_mut().directive(form)?;
-        if requests.is_some() {
-            self.sync_namespace()?;
-        }
-        if let Some((requests, staged)) = requests {
-            self.load_requests(requests, &form.span(), false)?;
-            self.compiler
-                .borrow_mut()
-                .finish_directive(staged)
-                .map_err(|message| EvalDiagnostic {
-                    data: None,
-                    message,
-                    location: Some(form.span()),
-                })?;
-            self.drain_lazy()?;
-            return Ok(EvalResult {
-                value: self.value(&Datum::new(DatumKind::Nil))?,
-                namespace: self.namespace(),
-            });
-        }
-        let analyzed = self.analyze(form)?;
-        if needs_lazy_library(&analyzed.program, &self.loaded.borrow()) {
-            let request = lazy_request(LAZY_NAMESPACE, &self.namespace());
-            self.load_requests(vec![request], &form.span(), false)?;
-        }
-        // A `light.lazy/loadable` of a namespace the session has not loaded
-        // loads it, as a `require` would: before a top-level form runs, and
-        // after the namespace that holds the form when one is loading.
-        record_lazy(
-            &mut self.compiler.borrow_mut(),
-            &analyzed.program,
-            &self.loaded.borrow(),
-            &form.span(),
-        );
-        self.drain_lazy()?;
-        self.evaluate(&analyzed)
+    /// Compile one top-level form and interpret its actions.
+    fn form(&self, form: &Form) -> Result<EvalResult, EvalDiagnostic> {
+        self.interpret(|dev, heap| dev.run_form(form, Mode::Repl, heap))
     }
-    /// Act on the recorded lazy references once no namespace is loading, as
-    /// the compiler's loader visits a source's lazy targets after the source:
-    /// load each recorded namespace not loaded yet, which may record more,
-    /// then check each recorded Var target. A target may thus require the
-    /// namespace that names it.
-    fn drain_lazy(&mut self) -> Result<(), EvalDiagnostic> {
-        if !self.loading.borrow().is_empty() {
-            return Ok(());
-        }
-        loop {
-            let next = self.compiler.borrow_mut().lazy.loads.pop_front();
-            let Some((name, site)) = next else { break };
-            let request = lazy_request(&name, &self.namespace());
-            self.load_requests(vec![request], &site, true)?;
-        }
-        check_lazy(&mut self.compiler.borrow_mut())
-    }
-    /// Load and evaluate each requested namespace the session has not
-    /// loaded, then return to the current namespace. `lazy` requests come
-    /// from `light.lazy/loadable` sites instead of a `require`; `location`
-    /// is the form that made the requests.
-    fn load_requests(
-        &mut self,
-        requests: Vec<LoadRequest>,
-        location: &SourceSpan,
-        lazy: bool,
-    ) -> Result<(), EvalDiagnostic> {
-        let located = |message: String| EvalDiagnostic {
-            data: None,
-            message,
-            location: Some(location.clone()),
+    /// Compile with `compile`, interpreting each action in this heap as the
+    /// compiler produces it. The value is the value of the last action when
+    /// that ran a unit, else nil.
+    fn interpret(
+        &self,
+        compile: impl FnOnce(&DevSession, &mut dyn Interpreter) -> Result<(), EvalDiagnostic>,
+    ) -> Result<EvalResult, EvalDiagnostic> {
+        let mut heap = Heap {
+            session: self,
+            last: None,
         };
-        for request in requests {
-            let name = String::from_utf16_lossy(request.namespace.name());
-            if self.loaded.borrow().contains(&name)
-                && request.reload == crate::source_provider::Reload::None
-            {
-                continue;
+        let result = compile(&self.dev, &mut heap);
+        let last = heap.last.take();
+        if let Err(error) = result {
+            if let Some(value) = last {
+                let _ = self.engine.release(value);
             }
-            if self.loading.borrow().contains(&name) {
-                return Err(located(format!(
-                    "namespace load cycle: {} -> {name}",
-                    self.loading.borrow().join(" -> ")
-                )));
-            }
-            if name == "cljs.core" || name == "clojure.core" {
-                continue;
-            }
-            let source = if let Some(source) = crate::compiler_libraries::source(&name) {
-                SourceInput::new(format!("<builtin>/{name}.cljs"), source)
-            } else {
-                self.options
-                    .source_provider
-                    .as_ref()
-                    .ok_or_else(|| located(format!("no source provider for {name}")))?
-                    .load(&request)
-                    .map_err(|e| located(e.to_string()))?
-                    .ok_or_else(|| located(missing_namespace(&name, lazy)))?
-            };
-            let namespace = self.namespace();
-            self.loading.borrow_mut().push(name.clone());
-            let result = self.source(&source, false);
-            self.loading.borrow_mut().pop();
-            self.compiler.borrow_mut().set_namespace(&namespace);
-            self.sync_namespace()?;
-            self.engine.release(result?.value)?;
-            self.loaded.borrow_mut().insert(name);
+            return Err(error);
         }
-        Ok(())
+        Ok(EvalResult {
+            value: match last {
+                Some(value) => value,
+                None => self.value(&Datum::new(DatumKind::Nil))?,
+            },
+            namespace: self.namespace(),
+        })
     }
     pub fn analyze(&mut self, form: &Form) -> Result<AnalyzedForm, EvalDiagnostic> {
         let _operation = self.begin()?;
         self.engine.control().poll()?;
-        let program =
-            self.compiler
-                .borrow_mut()
-                .analyze_form(form)
-                .map_err(|e| EvalDiagnostic {
-                    data: None,
-                    message: e.to_string(),
-                    location: form
-                        .span()
-                        .source()
-                        .span(e.span)
-                        .or_else(|| Some(form.span())),
-                })?;
         Ok(AnalyzedForm {
             owner: self.identity,
-            source: form.clone(),
-            program,
+            action: Action::Invoke(self.dev.analyze_unit(form)?),
         })
     }
     pub fn evaluate(&self, analyzed: &AnalyzedForm) -> Result<EvalResult, EvalDiagnostic> {
@@ -609,19 +466,7 @@ impl EvalSession {
         if analyzed.owner != self.identity {
             return Err(EvalError("analysis belongs to another session".into()).into());
         }
-        let source = crate::emitter::emit_interactive_unit(&analyzed.program);
-        let value = self
-            .engine
-            .evaluate_unit(&source)
-            .map_err(|e| EvalDiagnostic {
-                data: self.engine.error_data(),
-                message: e.0,
-                location: Some(analyzed.source.span()),
-            })?;
-        Ok(EvalResult {
-            value,
-            namespace: self.namespace(),
-        })
+        self.interpret(|_, heap| heap.apply(analyzed.action.clone()))
     }
     pub fn invoke(&self, function: ValueId, args: &[ValueId]) -> Result<ValueId, EvalDiagnostic> {
         let _operation = self.begin()?;
@@ -635,8 +480,8 @@ impl EvalSession {
     }
     pub fn macroexpand(&self, form: &Form, once: bool) -> Result<Form, EvalDiagnostic> {
         let _operation = self.begin()?;
-        self.compiler
-            .borrow_mut()
+        self.dev
+            .compiler_mut()
             .macroexpand(form, once)
             .map_err(|message| EvalDiagnostic {
                 data: None,
@@ -707,8 +552,8 @@ impl EvalSession {
             }
             let mut cursor = offset;
             let result =
-                self.compiler
-                    .borrow()
+                self.dev
+                    .compiler()
                     .next_form_in_source(&input, &mut cursor, source.clone());
             match result {
                 Ok(form) => {
@@ -742,10 +587,7 @@ impl EvalSession {
     }
     pub fn read_forms(&self, source: &SourceInput) -> Result<Vec<Form>, EvalDiagnostic> {
         let _operation = self.begin()?;
-        self.compiler
-            .borrow()
-            .read_forms(source)
-            .map_err(EvalDiagnostic::from)
+        self.dev.read_forms(source)
     }
     pub fn value(&self, data: &Datum) -> Result<ValueId, EvalDiagnostic> {
         let _operation = self.begin()?;
@@ -786,15 +628,15 @@ impl EvalSession {
         }
         let namespace = self.namespace();
         let (ns, local) = name.split_once('/').unwrap_or((&namespace, name));
-        self.compiler
-            .borrow_mut()
+        self.dev
+            .compiler_mut()
             .declare_binding(ns, local)
             .map_err(|e| EvalError(e.to_string()))?;
         Ok(self.engine.bind(&format!("{ns}/{local}"), value, false)?)
     }
     pub fn bindings(&self) -> Vec<String> {
-        self.compiler
-            .borrow()
+        self.dev
+            .compiler()
             .globals()
             .iter()
             .map(|g| format!("{}/{}", g.namespace, g.name))
@@ -854,7 +696,7 @@ impl EvalSession {
         )
     }
     fn install_services(&mut self) -> Result<(), EvalDiagnostic> {
-        self.sync_namespace()?;
+        self.sync_namespace(&self.namespace())?;
         let assertions = self.value(&Datum::new(DatumKind::Boolean(self.options.assertions)))?;
         self.engine.bind("assertions", assertions, true)?;
         self.release(assertions)?;
@@ -872,30 +714,29 @@ impl EvalSession {
                 self.engine.release(value)?;
             }
         }
-        let compiler = Rc::downgrade(&self.compiler);
+        // The runtime's `load-file` compiles the file through this session's
+        // compiler and interprets its actions in the active engine context,
+        // as `load_file` does.
+        let dev = Rc::downgrade(&self.dev);
         let namespace_update = self.namespace_update;
         let options = self.options.clone();
-        let loaded = self.loaded.clone();
-        let loading = self.loading.clone();
         let file_loading = self.file_loading.clone();
         let callback: HostCallback = Rc::new(move |call, args| {
-            let compiler = compiler
+            let dev = dev
                 .upgrade()
                 .ok_or_else(|| EvalError("session dropped".into()))?;
             let path = call.string(args[0])?;
             let _file = FileLoadGuard::begin(&file_loading, &path)?;
-            let namespace = compiler.borrow().namespace().to_owned();
-            let source = file_source(&options, &path, &namespace)?;
-            callback_source(
+            let source = file_source(&options, &path, &dev.namespace())?;
+            let mut runtime = Callback {
                 call,
-                &compiler,
                 namespace_update,
-                &options,
-                &loaded,
-                &loading,
-                &source,
-            )
-            .map_err(|error| EvalError(error.to_string()))
+                last: None,
+            };
+            let result = dev.run_source(&source, Mode::Load, &mut runtime);
+            runtime
+                .finish(result)
+                .map_err(|error| EvalError(error.to_string()))
         });
         let value = self
             .engine
@@ -981,24 +822,23 @@ impl EvalSession {
             ("macroexpand1", true),
             ("eval", false),
         ] {
-            let compiler = Rc::downgrade(&self.compiler);
+            let dev = Rc::downgrade(&self.dev);
             let evaluate = name == "eval";
             let callback: HostCallback = Rc::new(move |call, args| {
-                let compiler = compiler
+                let dev = dev
                     .upgrade()
                     .ok_or_else(|| EvalError("session dropped".into()))?;
                 let data = call.data(args[0])?;
                 let source = Source::new("<runtime-eval>", "");
                 let form = Form::from_data(data, source.span(0..0).unwrap(), Origin::Source);
                 if evaluate {
-                    let program = compiler
-                        .borrow_mut()
-                        .analyze_form(&form)
-                        .map_err(|e| EvalError(e.to_string()))?;
-                    call.unit(&crate::emitter::emit_interactive_unit(&program))
+                    let unit = dev
+                        .analyze_unit(&form)
+                        .map_err(|error| EvalError(error.message))?;
+                    call.unit(&unit.js)
                 } else {
-                    let expanded = compiler
-                        .borrow_mut()
+                    let expanded = dev
+                        .compiler_mut()
                         .macroexpand(&form, once)
                         .map_err(EvalError)?;
                     call.value(&expanded.data())
@@ -1031,9 +871,10 @@ impl EvalSession {
         }
         Ok(())
     }
-    fn sync_namespace(&self) -> Result<(), EvalDiagnostic> {
+    /// Make `namespace` the runtime's current namespace (`*ns*`).
+    fn sync_namespace(&self, namespace: &str) -> Result<(), EvalDiagnostic> {
         let name = self.value(&Datum::new(DatumKind::Symbol(
-            crate::compiler_data::Name::new(None, &self.namespace()),
+            crate::compiler_data::Name::new(None, namespace),
         )))?;
         let result = self.engine.call(self.namespace_update, &[name]);
         self.engine.release(name)?;
@@ -1063,296 +904,99 @@ fn file_source(
     .ok_or_else(|| EvalError(format!("missing file {path}")))
 }
 
-fn top_level_do(form: &Form) -> Option<Vec<Form>> {
-    if !matches!(
-        form.data().kind(),
-        DatumKind::Collection {
-            kind: crate::CollectionKind::List,
-            ..
+/// The session's heap as the interpreter of its compiler's actions: units
+/// run in the heap, a namespace becomes the runtime's current one, and the
+/// value of the last action that ran a unit is kept.
+struct Heap<'a> {
+    session: &'a EvalSession,
+    last: Option<ValueId>,
+}
+impl Heap<'_> {
+    fn keep(&mut self, value: Option<ValueId>) {
+        if let Some(old) = std::mem::replace(&mut self.last, value) {
+            let _ = self.session.engine.release(old);
         }
-    ) {
-        return None;
     }
-    let children = form.children();
-    match children.first()?.data().kind() {
-        DatumKind::Symbol(name) if name == &crate::compiler_data::Name::new(None, "do") => {
-            let children: Vec<_> = children.into_iter().skip(1).collect();
-            children
-                .iter()
-                .any(has_nsstar_operation)
-                .then_some(children)
-        }
-        _ => None,
+    fn unit(&mut self, unit: &Unit) -> Result<(), EvalDiagnostic> {
+        let engine = &self.session.engine;
+        let value = engine
+            .evaluate_unit(&unit.js)
+            .map_err(|error| EvalDiagnostic {
+                data: engine.error_data(),
+                message: error.0,
+                location: Some(unit.location.clone()),
+            })?;
+        self.keep(Some(value));
+        Ok(())
     }
 }
-fn has_nsstar_operation(form: &Form) -> bool {
-    if !matches!(
-        form.data().kind(),
-        DatumKind::Collection {
-            kind: crate::CollectionKind::List,
-            ..
-        }
-    ) {
-        return false;
+impl Interpreter for Heap<'_> {
+    fn begin_form(&mut self) -> Result<(), EvalDiagnostic> {
+        Ok(self.session.engine.input_action("clearError", 0)?)
     }
-    let children = form.children();
-    match children.first().map(|head| head.data().kind().clone()) {
-        Some(DatumKind::Symbol(name))
-            if name == crate::compiler_data::Name::new(None, "ns*")
-                || name == crate::compiler_data::Name::new(Some("cljs.core"), "ns*")
-                || name == crate::compiler_data::Name::new(Some("clojure.core"), "ns*") =>
-        {
-            true
-        }
-        Some(DatumKind::Symbol(name)) if name == crate::compiler_data::Name::new(None, "do") => {
-            children.iter().skip(1).any(has_nsstar_operation)
-        }
-        _ => false,
-    }
-}
-fn source_operations(form: Form) -> Vec<Form> {
-    match top_level_do(&form) {
-        Some(children) => children.into_iter().flat_map(source_operations).collect(),
-        None => vec![form],
-    }
-}
-/// Record the `light.lazy/loadable` references of `program`, a form at
-/// `site`: each namespace the session has neither loaded nor entered, to
-/// load, and each Var target, to check once its namespace is loaded.
-fn record_lazy(
-    compiler: &mut InteractiveCompiler,
-    program: &crate::Program,
-    loaded: &HashSet<String>,
-    site: &SourceSpan,
-) {
-    for target in &program.lazy_targets {
-        let name = &program.lazy_namespaces[target.namespace];
-        if !(loaded.contains(name)
-            || program.namespaces.contains(name)
-            || compiler.lazy.loads.iter().any(|(queued, _)| queued == name))
-        {
-            compiler.lazy.loads.push_back((name.clone(), site.clone()));
-        }
-        if let Some(global) = target.global {
-            let global = &program.globals[global.0];
-            compiler.lazy.checks.push((
-                global.namespace.clone(),
-                global.name.clone(),
-                site.clone(),
-            ));
+    fn apply(&mut self, action: Action) -> Result<(), EvalDiagnostic> {
+        match action {
+            Action::Invoke(unit) => self.unit(&unit),
+            Action::Load(units) => units.iter().try_for_each(|unit| self.unit(unit)),
+            Action::Namespace(name) => {
+                self.session.sync_namespace(&name)?;
+                self.keep(None);
+                Ok(())
+            }
+            Action::Warnings(_) => Ok(()),
+            Action::Error(error) => Err(error),
         }
     }
 }
 
-/// Whether `program`, a form, constructs a `light.lazy/Loadable` the session
-/// has not loaded. A loadable needs no require of `light.lazy`, but its type
-/// must exist when the form runs, so the session loads `light.lazy` before
-/// the form runs, even while a namespace is loading: it requires only the core.
-fn needs_lazy_library(program: &crate::Program, loaded: &HashSet<String>) -> bool {
-    !program.lazy_targets.is_empty() && !loaded.contains(LAZY_NAMESPACE)
-}
-
-/// A request for the target namespace of a lazy reference.
-fn lazy_request(name: &str, requesting: &str) -> LoadRequest {
-    LoadRequest {
-        namespace: crate::compiler_data::Name::new(None, name),
-        requesting_namespace: crate::compiler_data::Name::new(None, requesting),
-        requesting_file: None,
-        reload: Reload::None,
-    }
-}
-
-/// Check the recorded Var targets, once their namespaces are loaded: the
-/// first one the session does not define is an error at its site.
-fn check_lazy(compiler: &mut InteractiveCompiler) -> Result<(), EvalDiagnostic> {
-    let checks = std::mem::take(&mut compiler.lazy.checks);
-    for (namespace, name, site) in checks {
-        if !compiler.defines(&namespace, &name) {
-            compiler.lazy = Default::default();
-            return Err(EvalDiagnostic {
-                data: None,
-                message: format!("lazy target {namespace}/{name} is not defined"),
-                location: Some(site),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn missing_namespace(name: &str, lazy: bool) -> String {
-    if lazy {
-        format!("lazy target namespace {name} not found")
-    } else {
-        format!("missing namespace {name}")
-    }
-}
-
-/// Runtime callbacks use the already active engine context and this session's
-/// compiler. No second evaluator or filesystem authority is introduced.
-fn callback_source(
-    call: &HostCall<'_, '_>,
-    compiler: &Rc<RefCell<InteractiveCompiler>>,
+/// The heap of a runtime callback (`load-file` while a unit runs) as the
+/// interpreter of the compiler's actions, in the already active engine
+/// context: no second evaluator or filesystem authority is introduced.
+struct Callback<'c, 'a, 'js> {
+    call: &'c HostCall<'a, 'js>,
     namespace_update: ValueId,
-    options: &EvalOptions,
-    loaded: &Rc<RefCell<HashSet<String>>>,
-    loading: &Rc<RefCell<Vec<String>>>,
-    source: &SourceInput,
-) -> Result<ValueId, EvalDiagnostic> {
-    if source.file.ends_with(".clj") {
-        return Err(
-            EvalError("native .clj evaluation is retired; use .cljs or .cljc".into()).into(),
-        );
-    }
-    if source.source.len() > options.max_source_bytes {
-        return Err(EvalError("compiler source byte limit exceeded".into()).into());
-    }
-    // Load and evaluate each requested namespace not loaded yet, then return
-    // to the current namespace; `lazy` requests come from loadable sites, and
-    // `location` is the form that made the requests.
-    let load = |requests: Vec<LoadRequest>,
-                lazy: bool,
-                location: &SourceSpan|
-     -> Result<(), EvalDiagnostic> {
-        let located = |message: String| EvalDiagnostic {
-            message,
-            location: Some(location.clone()),
-            data: None,
-        };
-        for request in requests {
-            let name = String::from_utf16_lossy(request.namespace.name());
-            if name == "cljs.core"
-                || name == "clojure.core"
-                || (loaded.borrow().contains(&name)
-                    && request.reload == crate::source_provider::Reload::None)
-            {
-                continue;
-            }
-            if loading.borrow().contains(&name) {
-                return Err(located(format!(
-                    "namespace load cycle: {} -> {name}",
-                    loading.borrow().join(" -> ")
-                )));
-            }
-            let dependency = if let Some(text) = crate::compiler_libraries::source(&name) {
-                SourceInput::new(format!("<builtin>/{name}.cljs"), text)
-            } else {
-                options
-                    .source_provider
-                    .as_ref()
-                    .ok_or_else(|| located(format!("no source provider for {name}")))?
-                    .load(&request)
-                    .map_err(|error| located(error.to_string()))?
-                    .ok_or_else(|| located(missing_namespace(&name, lazy)))?
-            };
-            let namespace = compiler.borrow().namespace().to_owned();
-            loading.borrow_mut().push(name.clone());
-            let result = callback_source(
-                call,
-                compiler,
-                namespace_update,
-                options,
-                loaded,
-                loading,
-                &dependency,
-            );
-            loading.borrow_mut().pop();
-            compiler.borrow_mut().set_namespace(&namespace);
-            callback_sync_namespace(call, compiler, namespace_update)?;
-            call.release_scoped(result?)?;
-            loaded.borrow_mut().insert(name);
+    last: Option<ValueId>,
+}
+impl Callback<'_, '_, '_> {
+    fn keep(&mut self, value: Option<ValueId>) -> Result<(), EvalDiagnostic> {
+        if let Some(old) = std::mem::replace(&mut self.last, value) {
+            self.call.release_scoped(old)?;
         }
         Ok(())
-    };
-    // `EvalSession::drain_lazy` through this loader.
-    let drain_lazy = || -> Result<(), EvalDiagnostic> {
-        if !loading.borrow().is_empty() {
-            return Ok(());
-        }
-        loop {
-            let next = compiler.borrow_mut().lazy.loads.pop_front();
-            let Some((name, site)) = next else { break };
-            let request = lazy_request(&name, compiler.borrow().namespace());
-            load(vec![request], true, &site)?;
-        }
-        check_lazy(&mut compiler.borrow_mut())
-    };
-    let mut cursor = 0;
-    let mut last = call.value(&Datum::new(DatumKind::Nil))?;
-    loop {
-        call.control().poll()?;
-        let next = compiler
-            .borrow()
-            .next_form(source, &mut cursor)
-            .map_err(EvalDiagnostic::from)?;
-        let Some(form) = next else { return Ok(last) };
-        for form in source_operations(form) {
-            let located = |message: String| EvalDiagnostic {
-                message,
-                location: Some(form.span()),
-                data: None,
-            };
-            if loading.borrow().is_empty() {
-                // What an earlier top-level form recorded and failed to act on.
-                compiler.borrow_mut().lazy = Default::default();
-            }
-            let requests = compiler.borrow_mut().directive(&form)?;
-            if requests.is_some() {
-                callback_sync_namespace(call, compiler, namespace_update)?;
-            }
-            if let Some((requests, staged)) = requests {
-                load(requests, false, &form.span())?;
-                compiler
-                    .borrow_mut()
-                    .finish_directive(staged)
-                    .map_err(located)?;
-                drain_lazy()?;
-                let value = call.value(&Datum::new(DatumKind::Nil))?;
-                call.release_scoped(last)?;
-                last = value;
-            } else {
-                let program =
-                    compiler
-                        .borrow_mut()
-                        .analyze_form(&form)
-                        .map_err(|error| EvalDiagnostic {
-                            message: error.to_string(),
-                            location: form
-                                .span()
-                                .source()
-                                .span(error.span)
-                                .or_else(|| Some(form.span())),
-                            data: None,
-                        })?;
-                if needs_lazy_library(&program, &loaded.borrow()) {
-                    let request = lazy_request(LAZY_NAMESPACE, compiler.borrow().namespace());
-                    load(vec![request], false, &form.span())?;
-                }
-                record_lazy(
-                    &mut compiler.borrow_mut(),
-                    &program,
-                    &loaded.borrow(),
-                    &form.span(),
-                );
-                drain_lazy()?;
-                let value = call
-                    .unit(&crate::emitter::emit_interactive_unit(&program))
-                    .map_err(|error| located(error.0))?;
-                call.release_scoped(last)?;
-                last = value;
-            }
+    }
+    fn unit(&mut self, unit: &Unit) -> Result<(), EvalDiagnostic> {
+        let value = self.call.unit(&unit.js).map_err(|error| EvalDiagnostic {
+            message: error.0,
+            location: Some(unit.location.clone()),
+            data: None,
+        })?;
+        self.keep(Some(value))
+    }
+    /// The value of the compilation that ended with `result`.
+    fn finish(mut self, result: Result<(), EvalDiagnostic>) -> Result<ValueId, EvalDiagnostic> {
+        result?;
+        match self.last.take() {
+            Some(value) => Ok(value),
+            None => Ok(self.call.value(&Datum::new(DatumKind::Nil))?),
         }
     }
 }
-fn callback_sync_namespace(
-    call: &HostCall<'_, '_>,
-    compiler: &Rc<RefCell<InteractiveCompiler>>,
-    namespace_update: ValueId,
-) -> Result<(), EvalError> {
-    let name = call.value(&Datum::new(DatumKind::Symbol(
-        crate::compiler_data::Name::new(None, compiler.borrow().namespace()),
-    )))?;
-    let result = call.invoke(namespace_update, &[name]);
-    call.release_scoped(name)?;
-    call.release_scoped(result?)?;
-    Ok(())
+impl Interpreter for Callback<'_, '_, '_> {
+    fn apply(&mut self, action: Action) -> Result<(), EvalDiagnostic> {
+        match action {
+            Action::Invoke(unit) => self.unit(&unit),
+            Action::Load(units) => units.iter().try_for_each(|unit| self.unit(unit)),
+            Action::Namespace(name) => {
+                let name = self.call.value(&Datum::new(DatumKind::Symbol(
+                    crate::compiler_data::Name::new(None, &name),
+                )))?;
+                let result = self.call.invoke(self.namespace_update, &[name]);
+                self.call.release_scoped(name)?;
+                self.call.release_scoped(result?)?;
+                self.keep(None)
+            }
+            Action::Warnings(_) => Ok(()),
+            Action::Error(error) => Err(error),
+        }
+    }
 }

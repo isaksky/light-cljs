@@ -17,6 +17,12 @@ mod protocol;
 #[allow(dead_code)]
 mod temp_dir;
 
+// The Node driver of dev builds (tests/support/dev_execution.mjs).
+#[path = "../support/dev_execution.rs"]
+#[allow(dead_code)]
+mod dev_execution;
+
+mod dev_session;
 mod eval_cli;
 mod eval_examples;
 mod eval_nsstar;

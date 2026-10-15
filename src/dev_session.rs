@@ -1,0 +1,577 @@
+//! The session compiler as an action producer (docs/dev-workflow.md,
+//! "Actions"): a [`DevSession`] owns the incremental compiler of a session,
+//! its macro host and the namespaces it has loaded, and no application heap.
+//! Compiling a form or a source yields [`Action`]s, which a runtime
+//! interprets: [`crate::EvalSession`] over its QuickJS heap, or a client that
+//! sends the units to a browser tab or a Node process.
+//!
+//! The compiler works one top-level form at a time and hands each action to
+//! an interpreter as soon as it has one, the way the session has always
+//! evaluated: a `require` compiles a loaded namespace's form, runs it, then
+//! reads and compiles the next. An interpreter in the same process, as the
+//! session's heap is, therefore stops the compilation at the first unit that
+//! fails, and a definition compiled after it never exists. The methods of
+//! [`DevSession`] collect the actions instead, for a runtime elsewhere: the
+//! compiler never waits on such a runtime.
+use crate::analyzer::LAZY_NAMESPACE;
+use crate::compiler_data::{DatumKind, Form, Name, SourceSpan};
+use crate::eval_compiler::InteractiveCompiler;
+use crate::eval_session::{EvalDiagnostic, EvalOptions};
+use crate::evaluator::{EvalError, ExecutionControl};
+use crate::source_provider::{LoadRequest, Reload, SourceInput, SourceProvider};
+use std::{
+    cell::{Ref, RefCell, RefMut},
+    collections::{HashSet, VecDeque},
+    rc::Rc,
+};
+
+/// One compiled top-level form: an interactive unit, the JavaScript function
+/// expression `(__lightInteractiveRuntime) => ...` of the runtime whose
+/// definitions live in the application registry,
+/// `globalThis.__lightApplicationRoots["ns/name"]` (docs/evaluation.md).
+#[derive(Clone, Debug)]
+pub struct Unit {
+    /// The namespace the form was compiled in.
+    pub namespace: String,
+    /// The unit's JavaScript.
+    pub js: String,
+    /// The unit's source map, when the compiler made one; the QuickJS
+    /// session ignores it.
+    pub source_map: Option<String>,
+    /// The form, at which an error the unit throws is located.
+    pub location: SourceSpan,
+}
+
+/// What a runtime does with the result of compiling one input, in order.
+#[derive(Clone, Debug)]
+pub enum Action {
+    /// Evaluate this unit for its value: a REPL form.
+    Invoke(Unit),
+    /// Run these units in order: the forms of a namespace a `require` loads,
+    /// with those of the namespaces it loads first, or of a loaded file.
+    Load(Vec<Unit>),
+    /// The current namespace is now this one: an `ns` or `in-ns`, a
+    /// `require` (which stays in its namespace), the namespace a load enters,
+    /// or the one it returns to.
+    Namespace(String),
+    /// Analysis warnings for the input, located.
+    Warnings(Vec<EvalDiagnostic>),
+    /// The input did not compile; nothing was emitted for the failing form or
+    /// after it. Always the last action.
+    Error(EvalDiagnostic),
+}
+
+/// A runtime that applies actions as the compiler produces them.
+pub(crate) trait Interpreter {
+    /// A top-level form begins (each form of a top-level `do` that holds an
+    /// `ns*` form is its own).
+    fn begin_form(&mut self) -> Result<(), EvalDiagnostic> {
+        Ok(())
+    }
+    /// Apply `action`; an error stops the compilation.
+    fn apply(&mut self, action: Action) -> Result<(), EvalDiagnostic>;
+}
+
+/// The interpreter of the collecting methods: keeps every action, merging
+/// consecutive `Load`s.
+#[derive(Default)]
+struct Collect(Vec<Action>);
+impl Interpreter for Collect {
+    fn apply(&mut self, action: Action) -> Result<(), EvalDiagnostic> {
+        match (self.0.last_mut(), action) {
+            (Some(Action::Load(units)), Action::Load(more)) => units.extend(more),
+            (_, action) => self.0.push(action),
+        }
+        Ok(())
+    }
+}
+
+/// How the units of the forms are delivered: a REPL form's value is wanted
+/// (`Invoke`), a loaded form's is not (`Load`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Repl,
+    Load,
+}
+
+/// The `light.lazy/loadable` references the session has analyzed but not
+/// acted on: the namespaces to load, each with the site that named it first,
+/// and the Var targets to check once they are loaded, with their sites.
+#[derive(Default)]
+struct LazyQueue {
+    loads: VecDeque<(String, SourceSpan)>,
+    checks: Vec<(String, String, SourceSpan)>,
+}
+
+/// The incremental compiler of a session without its heap: reads, compiles
+/// and loads as `EvalSession` does, and returns the actions for a runtime to
+/// apply. It keeps the namespaces it has loaded: a `require` of one loads
+/// nothing unless it says `:reload` or `:reload-all`.
+pub struct DevSession {
+    compiler: RefCell<InteractiveCompiler>,
+    source_provider: Option<Rc<dyn SourceProvider>>,
+    max_source_bytes: usize,
+    /// The control of the heap that interprets the actions in process, if
+    /// one does.
+    control: Option<ExecutionControl>,
+    loaded: RefCell<HashSet<String>>,
+    loading: RefCell<Vec<String>>,
+    lazy: RefCell<LazyQueue>,
+}
+
+impl DevSession {
+    /// A session compiler configured by the compiler fields of `options`:
+    /// `namespace`, `aliases`, `compiler`, `engine` (for the macro heap),
+    /// `data_readers`, `default_data_reader`, `source_provider`,
+    /// `max_source_bytes`, `assertions` and `policy`. The other fields
+    /// configure a heap.
+    pub fn new(options: &EvalOptions) -> Result<Self, EvalDiagnostic> {
+        Self::with_control(options, None)
+    }
+    /// With `control`, the macro host and the compiler poll the control of
+    /// the heap that interprets the actions.
+    pub(crate) fn with_control(
+        options: &EvalOptions,
+        control: Option<ExecutionControl>,
+    ) -> Result<Self, EvalDiagnostic> {
+        let mut host = crate::MacroHost::new();
+        host.limits = options.compiler;
+        host.evaluator_options = options.engine.clone();
+        host.interactive_control = control.clone();
+        for (tag, source) in &options.data_readers {
+            host.register_compiler_data_reader(tag.clone(), source)
+                .map_err(EvalError)?;
+        }
+        if let Some(source) = &options.default_data_reader {
+            host.register_compiler_default_data_reader(source)
+                .map_err(EvalError)?;
+        }
+        let mut compiler = InteractiveCompiler::with_host(host);
+        compiler.host.set_assertions(options.assertions);
+        compiler.policy = options.policy.clone();
+        compiler.set_namespace(&options.namespace);
+        for (alias, target) in &options.aliases {
+            compiler.set_alias(alias, target);
+        }
+        Ok(Self {
+            compiler: RefCell::new(compiler),
+            source_provider: options.source_provider.clone(),
+            max_source_bytes: options.max_source_bytes,
+            control,
+            loaded: RefCell::default(),
+            loading: RefCell::default(),
+            lazy: RefCell::default(),
+        })
+    }
+    /// The current namespace.
+    pub fn namespace(&self) -> String {
+        self.compiler.borrow().namespace().into()
+    }
+    /// The actions of one top-level form, as a REPL evaluates it: an `Invoke`
+    /// of its unit, or for a directive the `Namespace` and `Load` actions of
+    /// what it loads. A failing form ends with an `Error`.
+    pub fn form(&self, form: &Form) -> Vec<Action> {
+        collect(|to| self.run_form(form, Mode::Repl, to))
+    }
+    /// The actions of each top-level form of `source` in turn, as
+    /// [`Self::form`]; the first form that fails ends them with an `Error`.
+    pub fn source(&self, source: &SourceInput) -> Vec<Action> {
+        collect(|to| self.run_source(source, Mode::Repl, to))
+    }
+    /// The actions of loading the file `source`: its forms are units of a
+    /// `Load` with those of the namespaces they require, and its directives
+    /// `Namespace` actions. The current namespace stays the one the file
+    /// leaves, and the file's value is the value of its last unit when that
+    /// is the last action, else nil.
+    pub fn load_file(&self, source: &SourceInput) -> Vec<Action> {
+        collect(|to| self.run_source(source, Mode::Load, to))
+    }
+    /// Read every top-level form of `source` in the current namespace.
+    pub fn read_forms(&self, source: &SourceInput) -> Result<Vec<Form>, EvalDiagnostic> {
+        self.compiler
+            .borrow()
+            .read_forms(source)
+            .map_err(EvalDiagnostic::from)
+    }
+    pub(crate) fn compiler(&self) -> Ref<'_, InteractiveCompiler> {
+        self.compiler.borrow()
+    }
+    pub(crate) fn compiler_mut(&self) -> RefMut<'_, InteractiveCompiler> {
+        self.compiler.borrow_mut()
+    }
+    fn poll(&self) -> Result<(), EvalDiagnostic> {
+        if let Some(control) = &self.control {
+            control.poll()?;
+        }
+        Ok(())
+    }
+    /// Refuse a source the session cannot compile: native `.clj` code, or
+    /// one over the source byte limit.
+    pub(crate) fn check_source(&self, source: &SourceInput) -> Result<(), EvalDiagnostic> {
+        if source.file.ends_with(".clj") {
+            return Err(
+                EvalError("native .clj evaluation is retired; use .cljs or .cljc".into()).into(),
+            );
+        }
+        if source.source.len() > self.max_source_bytes {
+            return Err(EvalError("compiler source byte limit exceeded".into()).into());
+        }
+        Ok(())
+    }
+    /// Read the next top-level form of `source` at `cursor`.
+    pub(crate) fn next_form(
+        &self,
+        source: &SourceInput,
+        cursor: &mut usize,
+    ) -> Result<Option<Form>, EvalDiagnostic> {
+        self.poll()?;
+        self.compiler
+            .borrow()
+            .next_form(source, cursor)
+            .map_err(EvalDiagnostic::from)
+    }
+    /// Compile each top-level form of `source` in turn, each read after the
+    /// previous one's actions were applied.
+    pub(crate) fn run_source(
+        &self,
+        source: &SourceInput,
+        mode: Mode,
+        to: &mut dyn Interpreter,
+    ) -> Result<(), EvalDiagnostic> {
+        self.check_source(source)?;
+        let mut cursor = 0;
+        while let Some(form) = self.next_form(source, &mut cursor)? {
+            self.run_form(&form, mode, to)?;
+        }
+        Ok(())
+    }
+    /// Compile one top-level form and apply its actions. A top-level `do`
+    /// that holds an `ns*` form is a sequence of top-level forms.
+    pub(crate) fn run_form(
+        &self,
+        form: &Form,
+        mode: Mode,
+        to: &mut dyn Interpreter,
+    ) -> Result<(), EvalDiagnostic> {
+        if let Some(children) = top_level_do(form) {
+            for child in &children {
+                self.run_form(child, mode, to)?;
+            }
+            return Ok(());
+        }
+        if self.loading.borrow().is_empty() {
+            // What an earlier top-level form recorded and failed to act on.
+            *self.lazy.borrow_mut() = LazyQueue::default();
+        }
+        to.begin_form()?;
+        let result = self.compile_form(form, mode, to);
+        if result.is_err() {
+            // The warnings of a directive or an analysis that failed.
+            self.flush_warnings(form, to)?;
+        }
+        result
+    }
+    /// The body of [`Self::run_form`]: a directive's loads, or the form's
+    /// unit with the namespaces it loads lazily first. The form's warnings
+    /// come before what it loads, whose forms report their own.
+    fn compile_form(
+        &self,
+        form: &Form,
+        mode: Mode,
+        to: &mut dyn Interpreter,
+    ) -> Result<(), EvalDiagnostic> {
+        let directive = self.compiler.borrow_mut().directive(form)?;
+        self.flush_warnings(form, to)?;
+        if let Some((requests, staged)) = directive {
+            to.apply(Action::Namespace(self.namespace()))?;
+            self.load_requests(requests, &form.span(), false, to)?;
+            self.compiler
+                .borrow_mut()
+                .finish_directive(staged)
+                .map_err(|message| located(message, form.span()))?;
+            return self.drain_lazy(to);
+        }
+        self.poll()?;
+        let (unit, program) = self.analyze(form)?;
+        self.flush_warnings(form, to)?;
+        if !program.lazy_targets.is_empty() && !self.loaded.borrow().contains(LAZY_NAMESPACE) {
+            // A loadable needs no require of `light.lazy`, but its type must
+            // exist when the form runs, so the session loads `light.lazy`
+            // before the form runs, even while a namespace is loading: it
+            // requires only the core.
+            let request = lazy_request(LAZY_NAMESPACE, &self.namespace());
+            self.load_requests(vec![request], &form.span(), false, to)?;
+        }
+        // A `light.lazy/loadable` of a namespace the session has not loaded
+        // loads it, as a `require` would: before a top-level form runs, and
+        // after the namespace that holds the form when one is loading.
+        self.record_lazy(&program, &form.span());
+        self.drain_lazy(to)?;
+        to.apply(match mode {
+            Mode::Repl => Action::Invoke(unit),
+            Mode::Load => Action::Load(vec![unit]),
+        })
+    }
+    /// Analyze one form as an expression, with no directive or load, into
+    /// its unit: `EvalSession::analyze` and the runtime's `eval`. Its
+    /// warnings are dropped.
+    pub(crate) fn analyze_unit(&self, form: &Form) -> Result<Unit, EvalDiagnostic> {
+        let result = self.analyze(form);
+        self.compiler.borrow_mut().warnings.clear();
+        Ok(result?.0)
+    }
+    /// Analyze one form that is not a directive into its unit, with the
+    /// fragment it was emitted from.
+    fn analyze(&self, form: &Form) -> Result<(Unit, crate::Program), EvalDiagnostic> {
+        let program = self
+            .compiler
+            .borrow_mut()
+            .analyze_form(form)
+            .map_err(|error| EvalDiagnostic {
+                data: None,
+                message: error.to_string(),
+                location: form
+                    .span()
+                    .source()
+                    .span(error.span)
+                    .or_else(|| Some(form.span())),
+            })?;
+        let unit = Unit {
+            namespace: self.namespace(),
+            js: crate::emitter::emit_interactive_unit(&program),
+            source_map: None,
+            location: form.span(),
+        };
+        Ok((unit, program))
+    }
+    /// Apply the warnings the compiler gathered since the last call, located
+    /// in the source of `form`, as one `Warnings` action.
+    fn flush_warnings(&self, form: &Form, to: &mut dyn Interpreter) -> Result<(), EvalDiagnostic> {
+        let warnings = std::mem::take(&mut self.compiler.borrow_mut().warnings);
+        if warnings.is_empty() {
+            return Ok(());
+        }
+        to.apply(Action::Warnings(
+            warnings
+                .into_iter()
+                .map(|warning| EvalDiagnostic {
+                    message: format!("{} [{}]", warning.message, warning.kind),
+                    location: form.span().source().span(warning.span),
+                    data: None,
+                })
+                .collect(),
+        ))
+    }
+    /// Load each requested namespace the session has not loaded, compiling
+    /// its forms as a `Load` after a `Namespace` of the namespace it enters,
+    /// then return to the current namespace (a `Namespace` action, also when
+    /// the load fails). `lazy` requests come from `light.lazy/loadable`
+    /// sites instead of a `require`; `location` is the form that made the
+    /// requests.
+    fn load_requests(
+        &self,
+        requests: Vec<LoadRequest>,
+        location: &SourceSpan,
+        lazy: bool,
+        to: &mut dyn Interpreter,
+    ) -> Result<(), EvalDiagnostic> {
+        for request in requests {
+            let name = String::from_utf16_lossy(request.namespace.name());
+            if self.loaded.borrow().contains(&name) && request.reload == Reload::None {
+                continue;
+            }
+            if self.loading.borrow().contains(&name) {
+                return Err(located(
+                    format!(
+                        "namespace load cycle: {} -> {name}",
+                        self.loading.borrow().join(" -> ")
+                    ),
+                    location.clone(),
+                ));
+            }
+            if name == "cljs.core" || name == "clojure.core" {
+                continue;
+            }
+            let source = if let Some(source) = crate::compiler_libraries::source(&name) {
+                SourceInput::new(format!("<builtin>/{name}.cljs"), source)
+            } else {
+                self.source_provider
+                    .as_ref()
+                    .ok_or_else(|| {
+                        located(format!("no source provider for {name}"), location.clone())
+                    })?
+                    .load(&request)
+                    .map_err(|error| located(error.to_string(), location.clone()))?
+                    .ok_or_else(|| located(missing_namespace(&name, lazy), location.clone()))?
+            };
+            let namespace = self.namespace();
+            self.loading.borrow_mut().push(name.clone());
+            let result = self.run_source(&source, Mode::Load, to);
+            self.loading.borrow_mut().pop();
+            self.compiler.borrow_mut().set_namespace(&namespace);
+            to.apply(Action::Namespace(namespace))?;
+            result?;
+            self.loaded.borrow_mut().insert(name);
+        }
+        Ok(())
+    }
+    /// Act on the recorded lazy references once no namespace is loading, as
+    /// the compiler's loader visits a source's lazy targets after the source:
+    /// load each recorded namespace not loaded yet, which may record more,
+    /// then check each recorded Var target. A target may thus require the
+    /// namespace that names it.
+    fn drain_lazy(&self, to: &mut dyn Interpreter) -> Result<(), EvalDiagnostic> {
+        if !self.loading.borrow().is_empty() {
+            return Ok(());
+        }
+        loop {
+            let next = self.lazy.borrow_mut().loads.pop_front();
+            let Some((name, site)) = next else { break };
+            let request = lazy_request(&name, &self.namespace());
+            self.load_requests(vec![request], &site, true, to)?;
+        }
+        // Check the recorded Var targets, now that their namespaces are
+        // loaded: the first one the session does not define is an error at
+        // its site.
+        let checks = std::mem::take(&mut self.lazy.borrow_mut().checks);
+        for (namespace, name, site) in checks {
+            if !self.compiler.borrow().defines(&namespace, &name) {
+                *self.lazy.borrow_mut() = LazyQueue::default();
+                return Err(located(
+                    format!("lazy target {namespace}/{name} is not defined"),
+                    site,
+                ));
+            }
+        }
+        Ok(())
+    }
+    /// Record the `light.lazy/loadable` references of `program`, a form at
+    /// `site`: each namespace the session has neither loaded nor entered, to
+    /// load, and each Var target, to check once its namespace is loaded.
+    fn record_lazy(&self, program: &crate::Program, site: &SourceSpan) {
+        let loaded = self.loaded.borrow();
+        let mut lazy = self.lazy.borrow_mut();
+        for target in &program.lazy_targets {
+            let name = &program.lazy_namespaces[target.namespace];
+            if !(loaded.contains(name)
+                || program.namespaces.contains(name)
+                || lazy.loads.iter().any(|(queued, _)| queued == name))
+            {
+                lazy.loads.push_back((name.clone(), site.clone()));
+            }
+            if let Some(global) = target.global {
+                let global = &program.globals[global.0];
+                lazy.checks
+                    .push((global.namespace.clone(), global.name.clone(), site.clone()));
+            }
+        }
+    }
+}
+
+/// The actions `run` applies to a collecting interpreter, ending with the
+/// error it returns.
+fn collect(run: impl FnOnce(&mut dyn Interpreter) -> Result<(), EvalDiagnostic>) -> Vec<Action> {
+    let mut actions = Collect::default();
+    if let Err(error) = run(&mut actions) {
+        actions.0.push(Action::Error(error));
+    }
+    actions.0
+}
+
+fn located(message: String, location: SourceSpan) -> EvalDiagnostic {
+    EvalDiagnostic {
+        message,
+        location: Some(location),
+        data: None,
+    }
+}
+
+/// The forms of a top-level `do` that holds an `ns*` form, at any depth of
+/// `do`, which each run as a top-level form.
+fn top_level_do(form: &Form) -> Option<Vec<Form>> {
+    if !is_list(form) {
+        return None;
+    }
+    let children = form.children();
+    match children.first()?.data().kind() {
+        DatumKind::Symbol(name) if name == &Name::new(None, "do") => {
+            let children: Vec<_> = children.into_iter().skip(1).collect();
+            children
+                .iter()
+                .any(has_nsstar_operation)
+                .then_some(children)
+        }
+        _ => None,
+    }
+}
+fn has_nsstar_operation(form: &Form) -> bool {
+    if !is_list(form) {
+        return false;
+    }
+    let children = form.children();
+    match children.first().map(|head| head.data().kind().clone()) {
+        Some(DatumKind::Symbol(name))
+            if name == Name::new(None, "ns*")
+                || name == Name::new(Some("cljs.core"), "ns*")
+                || name == Name::new(Some("clojure.core"), "ns*") =>
+        {
+            true
+        }
+        Some(DatumKind::Symbol(name)) if name == Name::new(None, "do") => {
+            children.iter().skip(1).any(has_nsstar_operation)
+        }
+        _ => false,
+    }
+}
+fn is_list(form: &Form) -> bool {
+    matches!(
+        form.data().kind(),
+        DatumKind::Collection {
+            kind: crate::CollectionKind::List,
+            ..
+        }
+    )
+}
+
+/// A request for the target namespace of a lazy reference.
+fn lazy_request(name: &str, requesting: &str) -> LoadRequest {
+    LoadRequest {
+        namespace: Name::new(None, name),
+        requesting_namespace: Name::new(None, requesting),
+        requesting_file: None,
+        reload: Reload::None,
+    }
+}
+
+fn missing_namespace(name: &str, lazy: bool) -> String {
+    if lazy {
+        format!("lazy target namespace {name} not found")
+    } else {
+        format!("missing namespace {name}")
+    }
+}
+
+/// `units` as a script for the client of a dev build ([`crate::dev_build`]):
+/// a `globalThis.__lightDev.define` call for each run of consecutive units
+/// of one namespace, whose unit runs them in order and returns the last
+/// one's value. The session does not track a namespace's requires, so each
+/// call lists none.
+pub fn define_script(units: &[Unit]) -> String {
+    let mut script = String::new();
+    for run in units.chunk_by(|a, b| a.namespace == b.namespace) {
+        script.push_str("globalThis.__lightDev.define(");
+        crate::source_map::json_string(&mut script, &run[0].namespace);
+        script.push_str(", [], (__lightInteractiveRuntime) => {\n");
+        for (index, unit) in run.iter().enumerate() {
+            script.push_str(if index + 1 == run.len() {
+                "  return ("
+            } else {
+                "  ("
+            });
+            script.push_str(&unit.js);
+            script.push_str(")(__lightInteractiveRuntime);\n");
+        }
+        script.push_str("});\n");
+    }
+    script
+}
