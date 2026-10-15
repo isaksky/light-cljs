@@ -129,6 +129,18 @@ fn simple_benchmark_runs_its_expression_and_prints_one_line() {
              @its @out])])"#,
         r#"[[:printed 6 ["[x 2 s \"a\" k :kw], (swap! n + x), 3 runs, N msecs"]] [nil "[x 1], (+ x 1), 2 runs, N msecs\n"] [["[], nil, 2 runs, N msecs"] 2 ["[], nil, 2 runs, N msecs"]]]"#,
     );
+    // The bindings and expression print as light-cljs macro data, a
+    // documented difference (docs/compiler.md, "Core macros, destructuring
+    // and assertions"): upstream's JVM printer gives
+    // `[x 2.0 c \a], (str c x 1.0), 1 runs, N msecs`.
+    every_level(
+        r#"(pr-str
+         (let [out (atom [])]
+           (simple-benchmark [x 2.0 c \a] (str c x 1.0) 1
+             :print-fn (fn [line] (swap! out conj (.replace line (js/RegExp. "\\d+ msecs") "N msecs"))))
+           @out))"#,
+        r#"["[x 2 c \"a\"], (str c x 1), 1 runs, N msecs"]"#,
+    );
     // Options are keyword arguments: upstream's destructuring rejects a
     // trailing map.
     rejected(
