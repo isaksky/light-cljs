@@ -410,8 +410,11 @@ fn loadables_read_the_current_value_of_a_reassigned_target_at_every_level() {
 /// The `Advanced` output of `files` from `app.main`, as one ES module.
 fn advanced_module(files: &'static [(&'static str, &'static str)]) -> String {
     let program = analyze(files).unwrap_or_else(|error| panic!("{error}"));
-    prepare_application(&program, ApplicationOptions::new(OptimizationLevel::Advanced))
-        .emit_esm()
+    prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    )
+    .emit_esm()
 }
 
 /// A Var only a loadable reads is a root like an export (light-cljs-272): at
@@ -488,6 +491,47 @@ fn a_namespace_target_keeps_its_effects_and_drops_its_unread_definitions() {
     assert!(!module.contains("unread definition"), "{module}");
 }
 
+/// The runtime owns `Loadable` (light-cljs-272) and gives it the parts of a
+/// `deftype` implementing IDeref that a program can observe: each observer
+/// alone, so that the `advanced` slice keeps only what it needs, prints what
+/// it prints at `none`.
+#[test]
+fn a_loadable_is_a_type_implementing_ideref_to_each_observer_at_every_level() {
+    let observe = |observer: &str| {
+        let main = format!(
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (def l (lazy/loadable app.lib/f))\n\
+             (fn [] {observer})\n"
+        );
+        let files: &'static [(&'static str, &'static str)] = Box::leak(Box::new([
+            ("app/main.cljs", &*Box::leak(main.into_boxed_str())),
+            ("app/lib.cljs", "(ns app.lib)\n(def f :value)\n"),
+        ]));
+        call_value_at_every_level(&analyze(files).unwrap_or_else(|error| panic!("{error}")))
+    };
+    let cases = [
+        ("(name @l)", "value"),
+        ("(name (deref l))", "value"),
+        ("(name (-deref l))", "value"),
+        ("(if (lazy/loaded? l) \"yes\" \"no\")", "yes"),
+        ("(if (satisfies? IDeref l) \"yes\" \"no\")", "yes"),
+        ("(if (implements? IDeref l) \"yes\" \"no\")", "yes"),
+        ("(if (satisfies? ISeqable l) \"yes\" \"no\")", "no"),
+        ("(if (instance? lazy/Loadable l) \"yes\" \"no\")", "yes"),
+        ("(if (= (type l) lazy/Loadable) \"yes\" \"no\")", "yes"),
+        ("(pr-str l)", "#object[light.lazy.Loadable [object Object]]"),
+        ("(pr-str lazy/Loadable)", "light.lazy/Loadable"),
+        ("(str l)", "[object Object]"),
+        (
+            "(try @(lazy/Loadable. (fn []) (fn [] 1)) (catch :default e (.-message e)))",
+            "light.lazy: the target of this loadable is not loaded",
+        ),
+    ];
+    for (observer, printed) in cases {
+        assert_eq!(observe(observer), format!("{printed}\n"), "{observer}");
+    }
+}
+
 /// examples/features holds loadables of `app.editor/start` and
 /// `app.reports/start`, whose namespaces follow `app.main` in the one output
 /// file; at every level its loads resolve there and it logs the lines it
@@ -551,6 +595,11 @@ fn analysis_errors_name_the_site() {
     assert_eq!(
         case!("(ns app.main)\n[(light.lazy/loadable app.nope)]\n"),
         "app/main.cljs:2:2: lazy target namespace app.nope not found: expected app/nope.cljs or .cljc in explicit source roots"
+    );
+    // The runtime's type takes no argument.
+    assert_eq!(
+        case!("(ns app.main)\n(light.lazy/loadable-type app.lib/f)\n"),
+        "app/main.cljs:2:1: light.lazy/loadable-type takes no arguments"
     );
     // Not a literal symbol.
     let literal = "light.lazy/loadable requires one literal symbol naming a Var or a namespace";

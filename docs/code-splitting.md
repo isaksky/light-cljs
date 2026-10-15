@@ -111,6 +111,23 @@ What the bounds say:
   brings `rt$defineType` (6,553 bytes) into every row that keeps a site, and
   `start` keeps its `lazy/load` calls when the sites become `nil`. The
   feature rows are unchanged. light-cljs-272 measures and trims the stubs.
+- **With the runtime's `Loadable` (light-cljs-272)** (Phase 1, "As built
+  (light-cljs-272)"), `bb benchmarks/features.bb` gives:
+
+  | Program | `none` | `prepare` | `advanced` | `advanced` runtime slice |
+  | --- | ---: | ---: | ---: | ---: |
+  | `app.main`, the whole application | 454,767 / 109,506 | 454,767 / 109,506 | 73,546 / 22,010 | 67,473 |
+  | `app.main` without `app.editor` | 453,216 / 109,319 | 453,216 / 109,319 | 68,024 / 20,424 | 62,830 |
+  | `app.main` without `app.reports` | 438,672 / 107,121 | 438,419 / 107,079 | 65,417 / 20,420 | 64,117 |
+  | `app.main` without `app.editor` and `app.reports`: startup lower bound | 437,326 / 106,901 | 435,874 / 106,676 | 4,680 / 1,753 | 4,189 |
+  | `app.editor` as its own entry: chunk upper bound | 436,643 / 106,737 | 436,252 / 106,661 | 64,447 / 20,035 | 63,644 |
+  | `app.reports` as its own entry: chunk upper bound | 450,894 / 108,980 | 450,894 / 108,980 | 66,841 / 20,117 | 62,504 |
+
+  The whole application is 1,060 bytes over the 72,486 of direct calls at
+  `advanced`, and its runtime slice 326: the `Loadable` class and its names.
+  Startup without the features is 145 bytes over its 4,535: `start` and the
+  `load` it calls once the sites are `nil`. `none` and `prepare` embed a
+  runtime 1,188 bytes longer.
 
 Non-goals of this design: a module manager with retries and backoff, bundling
 npm code (the npm seam stays as designed: packages are static imports a bundler
@@ -484,9 +501,11 @@ A first-party namespace, `light.lazy` (the name is an open question), with:
 | `@l` | The target's current value; throws when not loaded, as shadow-cljs does. |
 | `(lazy/prefetch l)` | Phase 4. |
 
-`Loadable` is a `deftype` in `src/compiler_libraries/light/lazy.cljs`,
-compiled with the program like `clojure.string` is, holding an import thunk
-and a getter. Only `loadable` needs the compiler: it lowers to
+`Loadable` is the runtime's type (unit `Loadable` of `src/js_runtime.js`,
+light-cljs-272), which `light.lazy/Loadable` in
+`src/compiler_libraries/light/lazy.cljs` names, holding an import thunk and a
+getter; the library is compiled with the program like `clojure.string` is.
+Only `loadable` needs the compiler: it lowers to
 `ExprKind::Loadable { target }`, which the emitter writes as
 `new Loadable(() => import("./app.editor.js"), (m) => m.g20)` in a chunked
 build and `new Loadable(null, () => g20)` when the target is resident. The
@@ -665,6 +684,52 @@ output.
     where a chunked build would throw; `load` resolves after it either way.
     The embedded QuickJS of `--eval` and `--repl` runs no promise jobs, so
     there a `load` Promise never calls its reactions.
+- **As built (light-cljs-272).** The Preparation bullet below, the stubs'
+  cost measured in the ratchet, and the type trimmed:
+  - The lazy Var targets light-cljs-271 appends to `options.exports` are
+    the only roots added, and every pass that reads `exports` gets them
+    (`retain`, `call_shapes::analyze` and `closed_functions`, `rta::analyze`):
+    a Var only a loadable reads keeps its definition, every arity and what
+    it reads, and its parameters take any argument rather than what its
+    namespace's own calls pass. A namespace target needs no root: a
+    namespace's top-level forms are roots in `retain` whatever reaches the
+    namespace, and its definitions nothing reads are removed at `advanced`
+    as any namespace's are (`tests/compiler/lazy.rs`).
+  - A `deftype` costs an `advanced` program the type machinery: in
+    `examples/features` the `Loadable` deftype brought `rt$defineType`, 39
+    units and 6,553 bytes, most of them the protocol hooks every core
+    operation needs once a program type may implement its protocol. The
+    runtime owns `Loadable` instead, a class with `deref()` and `load()`
+    (245 bytes terse), and three effects give it what a deftype implementing
+    IDeref has where a program can observe it: `Loadable.deref` wraps
+    `derefProtocol` (`@l`, `deref`, `-deref`); `Loadable.name` sets
+    `cljs$lang$ctorStr`, `cljs$lang$type` and the `typeNames` entry where a
+    printer reads them; `Loadable.type` calls `defineType` with the IDeref
+    marker and method where the program defines types of its own or looks a
+    protocol up by mask or slot (`satisfies?`, `implements?`). Its instances
+    carry no `TypeBrand`, which only the compiler form bridge reads, and it has
+    no `->Loadable` or `getBasis`.
+  - `light.lazy/Loadable` is `(def Loadable (light.lazy/loadable-type))`, a
+    zero-argument special form for the runtime's class
+    (`ExprKind::LoadableType`, inert). The sites still read
+    `light.lazy/Loadable`, so light-cljs-271's ordering checks stand;
+    inference types a site as any value, and rapid type analysis sees no
+    program type in it. `load` is `(.load l)`, so a program that only loads
+    keeps no `deref`, and the inliner may turn a call into `l.load()`.
+  - Measured with the ratchet's `NAMESPACE_FIXTURES`: `loadable-site`, one
+    site with its target in another namespace, is 578 bytes at `advanced`
+    against 280 for `direct-site`, the same program reading the target
+    directly: one site with the whole type and `load` costs 298 bytes, of
+    which the runtime factory and class are 277. In `examples/features` the
+    two sites cost 554 bytes against the same `start` reading both Vars
+    (`Promise.resolve` for `load`), 277 a site, and 383 bytes (192 a site)
+    with `clojure.string/join` written without `js*`, which turns terse
+    output off for the program part (light-cljs-294). Against the example
+    as it was before light-cljs-271, calling both features directly, the
+    growth is 1,060 bytes (587 without `js*`): the targets now escape as
+    functions instead of being inlined into `start`, and `start` chains two
+    promises. So the exit criterion below is met per site only by the stubs
+    in terse output.
 - **Preparation.** Lazy Var targets join `options.exports` as retention and
   escape roots everywhere `exports` is consulted (`retain`, `call_shapes`,
   `rta`).

@@ -3911,3 +3911,74 @@ and `app.reports` as its own entry; after, none. In the size ratchet only
 `raw-js` has raw text: its `advanced` output goes from 36 to 26 bytes,
 `(()=>{void 0;return 3})()`, under the unchanged 100-byte ceiling. The
 `none` and `prepare` columns do not change.
+
+## Loadable stubs — October 15, 2026
+
+light-cljs-272 measures what a `light.lazy/loadable` site costs at
+`advanced` and trims it. light-cljs-271 wrote `light.lazy/Loadable` as a
+`deftype`, and any program type brings an `advanced` program the type
+machinery (`rt$defineType`, 39 units and 6,553 bytes in `examples/features`,
+most of it the protocol hooks every core operation needs once a program type
+may implement its protocol). The runtime now owns the type: a class with
+`deref()` and `load()`, 245 bytes terse, plus 77 bytes for its printed names
+where the program prints; its IDeref implementation as a `defineType` gives
+it is added only where the program has types of its own or looks protocols up
+(docs/code-splitting.md, Phase 1, "As built (light-cljs-272)"). Sizes, which
+do not depend on load, on the 24-CPU Mac of the
+[environment](results/environment.txt), macOS 15.7.3, one-minute load
+average 13.1:
+
+```sh
+cargo nextest run --test compiler size_ratchet:: --no-capture
+bb benchmarks/features.bb
+cargo run --quiet -- --compile --optimize advanced --size-report --entry app.main --source-root DIR --esm | wc -c
+```
+
+`examples/features` with its two loadables, single-file `--esm`, raw /
+`gzip -9`:
+
+| `advanced` | light-cljs-271 (`deftype`) | light-cljs-272 (the runtime's type) |
+| --- | ---: | ---: |
+| `app.main`, the whole application | 80,407 / 24,286 | 73,546 / 22,010 |
+| its runtime slice | 73,760 | 67,473 |
+| without both features: startup lower bound | 5,233 / 1,923 | 4,680 / 1,753 |
+
+What a site costs, as the difference between a program and the same program
+reading its targets directly (raw bytes at `advanced`). The ratchet rows are
+`emit_js` output; the others single-file `--esm`. "Same shape" keeps `start`'s
+promise chain with `(js/Promise.resolve app.editor/start)` for each `load`;
+"before light-cljs-271" is the example calling both features directly.
+`clojure.string/join` is written with `js*`, which turns terse output off for
+the program part (light-cljs-294), so each comparison is also given with it
+written as `(apply str (interpose ...))`:
+
+| Comparison | Loadables | Direct | Difference | Per site |
+| --- | ---: | ---: | ---: | ---: |
+| ratchet `loadable-site` against `direct-site`, one site | 578 | 280 | 298 | 298 |
+| `examples/features` against the same shape | 73,546 | 72,992 | 554 | 277 |
+| the same without `js*` | 71,838 | 71,455 | 383 | 192 |
+| `examples/features` against before light-cljs-271 | 73,546 | 72,486 | 1,060 | 530 |
+| the same without `js*` | 71,838 | 71,251 | 587 | 294 |
+
+One site carries the whole type: the runtime factory and class are 277 of
+`loadable-site`'s 298 bytes. Two sites share it, so in terse output the
+stubs of `examples/features` cost 192 bytes a site, under the 200 of the
+Phase 1 exit criterion, but not with `js*` in the program, nor against the
+example before light-cljs-271, whose `start` inlined both features where the
+loadable targets now escape as functions and `start` chains two promises.
+
+New ratchet rows (`NAMESPACE_FIXTURES`, programs of several namespaces), bytes
+/ ceiling:
+
+| Fixture | `none` | `prepare` | `advanced` |
+| --- | ---: | ---: | ---: |
+| `features` | 454,751 / 455,000 | 454,751 / 455,000 | 73,530 / 74,000 |
+| `loadable-site` | 435,305 / 436,000 | 435,175 / 436,000 | 578 / 600 |
+| `direct-site` | 434,522 / 435,000 | 434,522 / 435,000 | 280 / 300 |
+
+With light-cljs-271's `deftype`, `features` was 80,391 bytes at `advanced`
+and `loadable-site` 6,600. The `advanced` size of every other fixture is
+unchanged. `none` and `prepare` embed the whole runtime, which the
+`Loadable` units make 1,188 bytes longer in every fixture, so each of their
+ceilings rises by 1,000 bytes (2,000 for `protocol-params`, which was 96
+bytes under its ceiling).

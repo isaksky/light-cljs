@@ -737,6 +737,7 @@ impl<'p> Inert<'p> {
             Keyword(_) => Shape::of(Type::KEYWORD),
             Symbol(_) => Shape::of(Type::SYMBOL),
             CoreFn(core) => Shape::opaque(core.operation().value),
+            LoadableType => Shape::opaque(Type::FN),
             Fn { .. } => Shape::opaque(Type::FN),
             Do(items) => {
                 let mut last = Shape::of(Type::NIL);

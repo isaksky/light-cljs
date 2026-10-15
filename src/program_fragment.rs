@@ -648,7 +648,7 @@ impl<F: Fn(ExprId) -> ExprId> Remap<'_, F> {
     fn kind(&self, kind: &mut ExprKind) {
         use ExprKind::*;
         match kind {
-            Nil | Bool(_) | Number(_) | CoreFn(_) | JsArguments => {}
+            Nil | Bool(_) | Number(_) | CoreFn(_) | JsArguments | LoadableType => {}
             String(id) => self.string(id),
             Keyword(id) | Symbol(id) => self.named(id),
             Local(id) => self.local(id),

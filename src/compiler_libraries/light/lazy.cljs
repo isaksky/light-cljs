@@ -5,14 +5,13 @@
   `Loadable`, with or without a require of this namespace. Every target is
   resident in the one output file for now: a loadable is always loaded.")
 
-(deftype Loadable [importer getter]
-  ;; `importer` loads the chunk holding the target (nil while the target is
-  ;; resident); `getter` reads the target's current value.
-  IDeref
-  (-deref [_]
-    (if (nil? importer)
-      (getter)
-      (throw (js/Error. "light.lazy: the target of this loadable is not loaded")))))
+(def Loadable
+  "The type of a loadable, `(Loadable. importer getter)`: `importer` loads the
+  chunk holding the target (nil while the target is resident) and `getter`
+  reads the target's current value. It implements IDeref: `@l` is the target's
+  current value, and throws while the target is not loaded. The runtime owns the
+  type, so that a program pays only for what it uses of it."
+  (light.lazy/loadable-type))
 
 (defn loaded?
   "Whether the target of loadable `l` is loaded, so that `@l` returns its value."
@@ -24,4 +23,4 @@
   loaded. It is always asynchronous: a resident target resolves on the next
   microtask, as a chunk already loaded would."
   [l]
-  (.then (js/Promise.resolve) (fn [_] (deref l))))
+  (.load l))

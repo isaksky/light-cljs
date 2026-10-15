@@ -256,9 +256,10 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 /// namespace registry; a pellet that stops exporting compile-time machinery
 /// lists its units here. `upstreamMembers` is the condition of the types'
 /// `.fields` effects, which only an `Advanced` program that names one of
-/// `UPSTREAM_MEMBERS` roots (light-cljs-238). `defineType` decorates the
-/// constructors that only `Advanced` emission writes (light-cljs-264).
-const UNREACHABLE_FROM_EXPORTS: &[&str] = &["defineType", "upstreamMembers"];
+/// `UPSTREAM_MEMBERS` roots (light-cljs-238). (`defineType`, which decorates the
+/// constructors only `Advanced` emission writes, is reached through
+/// `Loadable.type` since light-cljs-272.)
+const UNREACHABLE_FROM_EXPORTS: &[&str] = &["upstreamMembers"];
 
 /// The string-literal protocol method keys of `text` (`"IHash/-hash"`), each
 /// with whether it is the first item of a method entry (`["IHash/-hash", 1,
@@ -372,6 +373,7 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
             .effect
             .as_ref()
             .is_none_or(|effect| effect.when.is_empty())
+            || OWNED_TYPE_DECORATIONS.contains(&unit.name)
         {
             continue;
         }
@@ -457,9 +459,85 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // seven operations, the brand readers of `typeFields` and `recordTypes`
     // and the record wrappers of `maps` and `mapKinds` (light-cljs-258), the
     // hash-map trie wrappers of two operations (light-cljs-235), the hash-set
-    // trie wrapper of `lookup` (light-cljs-236), and the upstream fields of
-    // 28 types.
-    assert_eq!(checked, 176);
+    // trie wrapper of `lookup` (light-cljs-236), the upstream fields of 28
+    // types, and the deref wrapper of light.lazy's `Loadable` (light-cljs-272).
+    assert_eq!(checked, 177);
+}
+
+/// The decorations of a type the runtime owns for a library, `light.lazy`'s
+/// `Loadable` (light-cljs-272), which `an_owned_type_is_decorated_wherever_it_can_be_observed`
+/// checks instead of the test above.
+const OWNED_TYPE_DECORATIONS: &[&str] = &["Loadable.name", "Loadable.type"];
+
+/// `Loadable` gets what a `deftype` implementing IDeref has where code can
+/// observe it. Its names (`Loadable.name`) are needed by every unit reading
+/// a constructor's `cljs$lang$ctorStr`, and by the readers of `typeNames`,
+/// which require it. Its protocols as `defineType` installs them
+/// (`Loadable.type`) are needed where a program defines types of its own
+/// (`decorateType`), and wherever a unit looks a protocol up by mask or by
+/// slot: every reader of a protocol mask requires `protocolMaskNames` for the
+/// mask's index, and every slot lookup goes through `protocolSlot`.
+#[test]
+fn an_owned_type_is_decorated_wherever_it_can_be_observed() {
+    let manifest = manifest();
+    let body = |unit: UnitId| &ANNOTATED_RUNTIME[manifest.units[unit.0].body_range.clone()];
+    let unit = |name: &str| {
+        UnitId(
+            manifest
+                .units
+                .iter()
+                .position(|unit| unit.name == name)
+                .unwrap_or_else(|| panic!("unit `{name}`")),
+        )
+    };
+    let names = |units: &[UnitId]| {
+        let mut names: Vec<&str> = units.iter().map(|u| manifest.units[u.0].name).collect();
+        names.sort_unstable();
+        names
+    };
+    let reads = |text: &str, member: &str| {
+        text.match_indices(member).any(|(start, _)| {
+            let after = text[start + member.len()..].trim_start();
+            !(after.starts_with('=') && !after.starts_with("=="))
+        })
+    };
+    let others = || {
+        (0..manifest.units.len())
+            .map(UnitId)
+            .filter(|&other| !OWNED_TYPE_DECORATIONS.contains(&manifest.units[other.0].name))
+    };
+    let mut expected: Vec<UnitId> = others()
+        .filter(|&other| reads(body(other), "cljs$lang$ctorStr"))
+        .collect();
+    expected.push(manifest.unit_of("typeNames").unwrap());
+    assert_eq!(
+        names(manifest.conditions(unit("Loadable.name"))),
+        names(&expected),
+        "`when:` of unit `Loadable.name`"
+    );
+    let (masks, slots) = (unit("protocolMaskNames"), unit("protocolSlot"));
+    for other in others() {
+        let text = body(other);
+        if reads(text, "\"cljs$lang$protocol_mask$partition\"") && !text.contains("] = mask") {
+            assert!(
+                manifest.dependencies(other).contains(&masks),
+                "`{}` reads a protocol mask without `protocolMaskNames`",
+                manifest.units[other.0].name
+            );
+        }
+        if text.contains("protocolSlot(") && other != slots {
+            assert!(
+                manifest.dependencies(other).contains(&slots),
+                "`{}` looks up a protocol slot without `protocolSlot`",
+                manifest.units[other.0].name
+            );
+        }
+    }
+    assert_eq!(
+        names(manifest.conditions(unit("Loadable.type"))),
+        names(&[unit("decorateType"), masks, slots]),
+        "`when:` of unit `Loadable.type`"
+    );
 }
 
 /// What values a kind hook handles: those of payload stores, built by every

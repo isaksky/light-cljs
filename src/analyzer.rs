@@ -2424,6 +2424,11 @@ pub enum ExprKind {
         target: LazyTargetId,
         class: ExprId,
     },
+    /// `(light.lazy/loadable-type)`: the runtime's `Loadable` type, which
+    /// `light.lazy/Loadable` holds (`src/compiler_libraries/light/lazy.cljs`).
+    /// The runtime owns it so that a program pays only for the parts of a type
+    /// it can observe (unit `Loadable` of `src/js_runtime.js`).
+    LoadableType,
     /// Resolve checks binding identity in the compiler, value availability in applications.
     BindingExists(ExprId),
     BooleanHint(ExprId),
@@ -4512,6 +4517,20 @@ impl Analyzer<'_> {
                 && self.alias_target(qualifier) == LAZY_NAMESPACE
             {
                 return self.loadable_form(id, args, context);
+            }
+            if let Some((qualifier, "loadable-type")) = operator_name.split_once('/')
+                && self.alias_target(qualifier) == LAZY_NAMESPACE
+            {
+                if !args.is_empty() {
+                    return Err(self.error(
+                        id,
+                        AnalysisErrorKind::InvalidForm(
+                            "light.lazy/loadable-type takes no arguments",
+                        ),
+                    ));
+                }
+                let span = self.syntax.nodes[id.0].span.clone();
+                return Ok(self.push(ExprKind::LoadableType, span, context));
             }
             let imported_intrinsic = self
                 .macro_host

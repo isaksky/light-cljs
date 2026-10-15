@@ -1522,9 +1522,13 @@ loads the namespace of a loadable it has not loaded, as a `require` would,
 before a top-level form runs, or after the outermost namespace load when the
 form belongs to a namespace being loaded, then checks the Var targets.
 
-A loadable's value is a `light.lazy/Loadable`, the `deftype` of the bundled
-first-party namespace `light.lazy` (`src/compiler_libraries/light/lazy.cljs`),
-which also defines `load` and `loaded?`. Every target is resident in the one
+A loadable's value is a `light.lazy/Loadable`, of the bundled first-party
+namespace `light.lazy` (`src/compiler_libraries/light/lazy.cljs`), which also
+defines `load` and `loaded?`. The type is the runtime's (unit `Loadable`),
+which `(light.lazy/loadable-type)` reads, so that an `advanced` program pays
+for no type machinery: effects give it what a `deftype` implementing IDeref
+has only where the slice keeps code that can observe it (`deref`, a printer of
+types, `defineType` or a protocol lookup by mask or slot). Every target is resident in the one
 output file: the site emits `new Loadable(null, () => g20)` (`() => null` for a
 namespace target), `@l` reads the target's current value, `loaded?` is true,
 and `load` returns a Promise that resolves with `@l` on a later microtask, as
@@ -1537,7 +1541,9 @@ namespace is loading. A site a macro writes in a namespace that neither spells
 the symbol nor loads `light.lazy` earlier is an error ("light.lazy/loadable
 needs light.lazy loaded before app.main: require it there"). Every lazy Var
 target is retained like an `ApplicationOptions::exports` entry, since its
-loadable reads it only once loaded. A target namespace that only lazy
+loadable reads it only once loaded: it keeps its definition and arities, and
+its parameters take any argument. A namespace target needs no root, since a
+namespace's top-level forms are roots however the namespace is reached. A target namespace that only lazy
 references reach runs after the entry, so during that synchronous startup
 `@l` reads its Var before the definition has run (`nil`); `load` always
 resolves after it. The embedded QuickJS runs no promise jobs, so under

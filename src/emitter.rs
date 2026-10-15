@@ -4669,6 +4669,7 @@ impl<'a> Emitter<'a> {
                 }
                 self.output.push(')');
             }
+            ExprKind::LoadableType => self.rt(RuntimeName::export("Loadable")),
             ExprKind::Construct { callee, args } => {
                 self.output.push_str("new ");
                 // Host resolution is an implementation call, not a source call.

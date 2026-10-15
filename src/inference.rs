@@ -1371,6 +1371,8 @@ impl<'p> Walker<'p> {
         let program = self.program;
         let value = match &program.exprs[id.0].kind {
             K::Nil => Inferred::of(Type::NIL),
+            // The runtime's `Loadable` class, like a core type's (`AtomType`).
+            K::LoadableType => Inferred::of(Type::FN),
             // `new Loadable(...)`, as `K::Construct` below.
             K::Loadable { class, .. } => {
                 self.walk(*class);

@@ -18,16 +18,70 @@
 pub(super) mod ratchet_fixtures;
 
 use super::optimization::execute;
+use light_cljs::analyzer::AnalysisOptions;
+use light_cljs::compiler::analyze_namespace_entry_with_provider;
+use light_cljs::source_provider::{LoadError, LoadRequest, SourceInput};
 use light_cljs::{
-    ApplicationOptions, OptimizationLevel, Program, analyze, parse, prepare_application,
+    ApplicationOptions, MacroHost, OptimizationLevel, Program, analyze, parse, prepare_application,
 };
-use ratchet_fixtures::{FIXTURES, Fixture};
+use ratchet_fixtures::{FIXTURES, Fixture, NAMESPACE_FIXTURES, NamespaceFixture};
 use std::fmt::Write;
 
 fn program(fixture: &Fixture) -> Program {
     let source = fixture.source;
     analyze(source, &parse(source).unwrap())
         .unwrap_or_else(|error| panic!("{}: {error}", fixture.name))
+}
+
+/// The program of `fixture`, from its entry over its in-memory source root.
+fn namespace_program(fixture: &NamespaceFixture) -> Program {
+    let files = fixture.files;
+    let provider = |request: &LoadRequest| -> Result<Option<SourceInput>, LoadError> {
+        let namespace = String::from_utf16_lossy(request.namespace.name());
+        let path = format!("{}.cljs", namespace.replace('.', "/").replace('-', "_"));
+        Ok(files
+            .iter()
+            .find(|(file, _)| *file == path)
+            .map(|(file, source)| SourceInput::new(*file, *source)))
+    };
+    analyze_namespace_entry_with_provider(
+        fixture.entry,
+        &provider,
+        &mut MacroHost::new(),
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("{}: {error}", fixture.name))
+}
+
+/// A program the ratchet pins, from [`FIXTURES`] or [`NAMESPACE_FIXTURES`].
+struct Pinned {
+    name: &'static str,
+    program: Program,
+    ceilings: [usize; 3],
+    removed: [usize; 3],
+    printed: &'static str,
+}
+
+/// Every pinned program, the fixtures of one source text first.
+fn pinned() -> Vec<Pinned> {
+    FIXTURES
+        .iter()
+        .map(|fixture| Pinned {
+            name: fixture.name,
+            program: program(fixture),
+            ceilings: fixture.ceilings,
+            removed: fixture.removed,
+            printed: fixture.printed,
+        })
+        .chain(NAMESPACE_FIXTURES.iter().map(|fixture| Pinned {
+            name: fixture.name,
+            program: namespace_program(fixture),
+            ceilings: fixture.ceilings,
+            removed: fixture.removed,
+            printed: fixture.printed,
+        }))
+        .collect()
 }
 
 fn emit(program: &Program, level: OptimizationLevel) -> String {
@@ -63,11 +117,10 @@ fn emitted_sizes_stay_under_their_ceilings() {
     }
     table.push('\n');
     let mut exceeded = Vec::new();
-    for fixture in FIXTURES {
-        let program = program(fixture);
+    for fixture in pinned() {
         write!(table, "{:<16}", fixture.name).unwrap();
         for (level, ceiling) in OptimizationLevel::ALL.into_iter().zip(fixture.ceilings) {
-            let size = emit(&program, level).len();
+            let size = emit(&fixture.program, level).len();
             let mark = if size > ceiling {
                 exceeded.push(format!("{} at {level}", fixture.name));
                 '!'
@@ -90,10 +143,9 @@ fn emitted_sizes_stay_under_their_ceilings() {
 
 #[test]
 fn removed_definitions_match_each_fixture() {
-    for fixture in FIXTURES {
-        let program = program(fixture);
+    for fixture in pinned() {
         let removed = OptimizationLevel::ALL.map(|level| {
-            prepare_application(&program, ApplicationOptions::new(level))
+            prepare_application(&fixture.program, ApplicationOptions::new(level))
                 .stats()
                 .removed_definitions
         });
@@ -107,9 +159,8 @@ fn removed_definitions_match_each_fixture() {
 
 #[test]
 fn fixtures_print_identical_results_at_every_level() {
-    for fixture in FIXTURES {
-        let program = program(fixture);
-        let outputs = OptimizationLevel::ALL.map(|level| printed(&emit(&program, level)));
+    for fixture in pinned() {
+        let outputs = OptimizationLevel::ALL.map(|level| printed(&emit(&fixture.program, level)));
         assert_eq!(
             outputs[0], fixture.printed,
             "{} at none (the oracle)",

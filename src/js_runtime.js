@@ -702,6 +702,25 @@
     if (!isReduced(value)) throw new Error("value does not support deref");
     return reducedValues.get(value);
   }
+  //@unit Loadable
+  // light.lazy's `Loadable`: `importer` loads the target's chunk (null while
+  // it is resident), `getter` reads its value. The `Loadable.*` effects add
+  // what a deftype has where a program can observe it, but no `TypeBrand`.
+  const Loadable = class {
+    constructor(importer, getter) { this.importer = importer; this.getter = getter; }
+    deref() {
+      if (this.importer == null) return this.getter();
+      throw new Error("light.lazy: the target of this loadable is not loaded");
+    }
+    load() { return Promise.resolve().then(() => this.deref()); }
+  };
+  //@unit Loadable.deref effect: Loadable when: derefProtocol requires: derefProtocol, Loadable
+  // `deref` and `-deref` of a loadable, with or without protocol dispatch.
+  derefProtocol = (derefOther => value => value instanceof Loadable ? value.deref() : derefOther(value))(derefProtocol);
+  //@unit Loadable.name effect: Loadable when: printHost, typeNames requires: Loadable, typeNames
+  // What prints for a loadable and for its type, as for a deftype.
+  Loadable.cljs$lang$type = true;
+  typeNames.set(Loadable, Loadable.cljs$lang$ctorStr = "light.lazy/Loadable");
 
   //@unit add
   function add(x, y) {
@@ -8282,6 +8301,11 @@
   //@ protocolHooks
   // A function with a protocol implementation reaches `-with-meta`.
   protocolHooks.fnWithMeta = fnWithMeta;
+  //@unit Loadable.type effect: Loadable when: decorateType, protocolMaskNames, protocolSlot
+  //@ requires: defineType, Loadable
+  // A deftype's IDeref where a program can look up protocols by mask or slot.
+  defineType(Loadable, "light.lazy/Loadable importer getter", [
+    ["IDeref", 0, null], ["IDeref/-deref", 1, function () { return this.deref(); }]]);
   //@unit findProtocol effect requires: coreMethod, find, findValue
   const findProtocol = coreMethod("IFind/-find", [2], find, findValue);
   //@unit sortedSeqProtocol effect requires: coreMethod, identity, mapSeq, rseq, seq, sets,
@@ -9210,5 +9234,5 @@
   //@unit core.seal effect: core requires: core
   Object.seal(core);
   //@exports
-  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, arrayMapFromArray, mapFromArrays, mapShape, mapFromShape, hashMapShape, hashMapFromShape, setFromArray, arraySetFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, setShape, setFromShape, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, typeMasks, recordMethods, recordFromMap, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash, hashed});
+  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, arrayMapFromArray, mapFromArrays, mapShape, mapFromShape, hashMapShape, hashMapFromShape, setFromArray, arraySetFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, setShape, setFromShape, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, typeMasks, recordMethods, recordFromMap, Loadable, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash, hashed});
 })()
