@@ -40,15 +40,64 @@ is one `import()` whose promise resolves to the Var's value once the chunk and
 its prerequisites have evaluated. The browser's or bundler's module loader
 orders, deduplicates and caches the loads; no loader library is emitted.
 
-Targets, to be measured in Phase 0 on an example application
-(`examples/features`, below) and recorded here:
+Targets, measured in Phase 0 on the example application
+(`examples/features`, below). Bytes are raw / `gzip -9` of the single-file
+`--esm` output at `advanced`:
 
-| Measurement | Today | Target |
-|---|---|---|
-| Startup bytes, `advanced`, both features lazy | the whole program | the same application compiled without its features, plus under 200 bytes per `loadable` |
-| Bytes loaded for one feature | n/a | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
-| Observable behavior | n/a | identical to the single-file program at every level, given the same `load` calls |
-| Compile time of a chunked build | n/a | within 10% of the single-file build of the same program |
+| Measurement | Today | Measured bound | Target |
+|---|---|---|---|
+| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732 | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
+| Bytes loaded for one feature | n/a: both load at startup | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
+| Observable behavior | n/a | n/a | identical to the single-file program at every level, given the same `load` calls |
+| Compile time of a chunked build | n/a | n/a | within 10% of the single-file build of the same program |
+
+`bb benchmarks/features.bb` regenerates the bounds from the sources. It
+builds the compiler and prints raw / `gzip -9` bytes of the single-file
+`--esm` output at each level (`advanced` is terse), and the runtime slice of
+the `advanced` output as `--size-report` counts it. A variant without a
+feature is generated into a temporary directory: the feature's file is left
+out, its libspec is dropped, and each form naming it (a `lazy/loadable` site,
+or before light-cljs-271 a direct call) becomes `nil`. A feature as its own
+entry is `--entry app.editor`, whose value is its last form, `start`. Measured
+on October 15, 2026 at `6804bfb`, with `app.main` still calling both features
+directly:
+
+| Program | `none` | `prepare` | `advanced` | `advanced` runtime slice |
+| --- | ---: | ---: | ---: | ---: |
+| `app.main`, the whole application | 452,213 / 108,808 | 452,213 / 108,808 | 72,486 / 21,732 | 67,147 |
+| `app.main` without `app.editor` | 450,559 / 108,607 | 450,559 / 108,607 | 67,064 / 20,162 | 62,504 |
+| `app.main` without `app.reports` | 436,315 / 106,437 | 436,192 / 106,420 | 64,870 / 20,192 | 63,791 |
+| `app.main` without `app.editor` and `app.reports`: startup lower bound | 434,998 / 106,245 | 433,736 / 106,054 | 4,535 / 1,701 | 4,189 |
+| `app.editor` as its own entry: chunk upper bound | 435,455 / 106,284 | 435,064 / 106,209 | 64,447 / 20,035 | 63,644 |
+| `app.reports` as its own entry: chunk upper bound | 449,706 / 108,526 | 449,706 / 108,526 | 66,841 / 20,117 | 62,504 |
+
+What the bounds say:
+
+- **Only `advanced` separates the programs.** `none` and `prepare` embed the
+  whole runtime (432,063 bytes) in every row, so the features are 17 KB of
+  their 452 KB. The phases are measured at `advanced`.
+- **Startup is 6% of the program.** Without its features the application is
+  4,535 bytes: the menu needs keywords, `name`, `subs` and `str`, and
+  `app.shared/documents` and the map helpers go with the features. Lazy
+  loading can take 94% of the bytes out of startup.
+- **Each feature's own entry is its runtime slice.** The runtime is 98.8% of
+  `app.editor` as its own entry (63,644 of 64,447 bytes) and 93.5% of
+  `app.reports` (62,504 of 66,841). By subtraction from the whole
+  application's 67,147-byte slice, only about 4.6 KB of runtime is needed by
+  the editor alone and 3.4 KB by reports alone, against 4.2 KB at startup;
+  the remaining 55 KB (the collection constructors behind
+  `app.shared/documents`, hash maps and sets, seqs, `into`, and the printer
+  behind `str`) is needed by both features and not by startup. That is the
+  `app.editor+app.reports` chunk Phase 3 has to produce: one feature's load
+  stays near its upper bound, and the second feature's load costs only its
+  own few kilobytes. The subtraction is approximate, since the terse slice names
+  its bindings by frequency per program.
+- **`clojure.string/join` turns terse emission off.** Its body is `js*`
+  text, and a program with raw `js*` keeps its layout and prefixed names, so
+  the program part of every row that includes `app.reports` is several times
+  larger than its code: 4,337 bytes beside the runtime for `app.reports` as
+  its own entry, against 803 for `app.editor`, and 5,339 for the whole
+  application against 1,079 without `app.reports`.
 
 Non-goals of this design: a module manager with retries and backoff, bundling
 npm code (the npm seam stays as designed: packages are static imports a bundler

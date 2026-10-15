@@ -3799,3 +3799,47 @@ added at `TypeBrand`'s one site, which goes megamorphic past four types, and
 Maglev does not inline the return override at all. Writing the record's
 three slots there too would have saved 38 bytes a record but took 27 ns at
 16 types, so the constructor writes them.
+
+## Code-splitting example bounds — October 15, 2026
+
+light-cljs-269 measures `examples/features`, the application the
+[code-splitting design](../docs/code-splitting.md) is measured against
+(`app.main`, `app.shared`, and the two features `app.editor` and
+`app.reports`), and records the bounds under its "Goal". `bb
+benchmarks/features.bb` builds the compiler and prints the table below. It
+compiles the single-file `--esm` output at each level (`advanced` is terse)
+of the whole application, of the application with each feature removed and
+with both removed (the lower bound for the startup chunk), and of each
+feature as its own entry (the upper bound for its chunk). Variants are
+generated from the sources into a temporary directory: the feature's file
+left out, its libspec dropped, and each form naming it replaced by `nil`.
+Cells are raw / `gzip -9` bytes; the last column is the `advanced` runtime
+slice as `--size-report` counts it. Master `6804bfb`, with `app.main` still
+calling both features directly (before light-cljs-271); the Apple M3 Ultra
+virtual machine of the [environment](results/environment.txt), macOS 15.7.3,
+one-minute load average 9.2 (sizes do not depend on it).
+
+| Program | `none` | `prepare` | `advanced` | `advanced` runtime slice |
+| --- | ---: | ---: | ---: | ---: |
+| `app.main`, the whole application | 452,213 / 108,808 | 452,213 / 108,808 | 72,486 / 21,732 | 67,147 |
+| `app.main` without `app.editor` | 450,559 / 108,607 | 450,559 / 108,607 | 67,064 / 20,162 | 62,504 |
+| `app.main` without `app.reports` | 436,315 / 106,437 | 436,192 / 106,420 | 64,870 / 20,192 | 63,791 |
+| `app.main` without `app.editor` and `app.reports`: startup lower bound | 434,998 / 106,245 | 433,736 / 106,054 | 4,535 / 1,701 | 4,189 |
+| `app.editor` as its own entry: chunk upper bound | 435,455 / 106,284 | 435,064 / 106,209 | 64,447 / 20,035 | 63,644 |
+| `app.reports` as its own entry: chunk upper bound | 449,706 / 108,526 | 449,706 / 108,526 | 66,841 / 20,117 | 62,504 |
+
+At `none` and `prepare` every row embeds the whole 432,063-byte runtime, so
+the features are 17 KB of 452 KB. At `advanced` startup without its
+features is 4,535 bytes, 6% of the application: the Phase 3 target is that
+size plus under 200 bytes per `loadable`, under 4,935 bytes. Each
+feature's own entry is mostly its runtime slice, 98.8% for `app.editor` and
+93.5% for `app.reports`. By subtraction from the whole application's
+67,147-byte slice, about 4.6 KB of runtime is needed by the editor alone,
+3.4 KB by reports alone and 4.2 KB by startup; the other 55 KB is needed by
+both features and not by startup, so it is the `app.editor+app.reports`
+chunk, and loading the second feature costs only its own few kilobytes.
+`clojure.string/join` is written with `js*`, and a program with raw `js*`
+text keeps its layout and prefixed names at `advanced`: the program part
+beside the runtime is 4,337 bytes for `app.reports` as its own entry against
+803 for `app.editor`, and 5,339 for the whole application against 1,079
+without `app.reports`.
