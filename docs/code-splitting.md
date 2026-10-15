@@ -487,6 +487,18 @@ Scope: fix the semantics and get numbers before writing compiler code.
   it is empty, and prints the shared outcome protocol
   (`tests/support/execution.js`). The same driver runs a single-file `--esm`
   output, so the oracle comparison is one function.
+  As built (light-cljs-268), the driver awaits a promise the default export
+  returns and then waits for Node's `beforeExit`, so timers and the `import()`
+  of a chunk count as pending too, not only microtasks. The record's id is the
+  startup file name, its trace is empty (the program has no observer), and its
+  value must be a host value, since no inspection adapter reaches a runtime
+  inside the modules. `tests/support/chunked_execution.rs` (`run_modules`)
+  writes the files to a fresh temporary directory and runs the driver;
+  `tests/compiler/features_example.rs` runs the example at every level. By
+  hand, into an empty directory `DIR`: `cargo run --quiet -- --compile --entry
+  app.main --source-root examples/features --esm > DIR/app.main.js`, then
+  `node tests/support/chunked_execution.mjs DIR app.main.js`. Until `light.lazy` exists, `app.main/start` calls both features directly;
+  each feature logs its own result line.
 
 Done when: the example compiles today as a single file, the driver runs it,
 and the table has numbers.

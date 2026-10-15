@@ -24,6 +24,10 @@ mod phase_oracle;
 #[allow(dead_code)]
 mod generated;
 
+// The Node driver for single-file `--esm` and chunked output.
+#[path = "../support/chunked_execution.rs"]
+mod chunked_execution;
+
 mod array_settings;
 mod async_await;
 mod atom_object_equiv;
@@ -61,6 +65,7 @@ mod eductions;
 mod equality;
 mod equality_contracts;
 mod extensions;
+mod features_example;
 mod find_effects;
 mod folding_inlining;
 mod generated_optimization;

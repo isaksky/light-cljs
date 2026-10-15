@@ -252,6 +252,7 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
 | [examples/namespaces](examples/namespaces) | Two runtime namespaces (`--entry demo.main`) |
 | [examples/macros](examples/macros) | A `.cljs` macro namespace required alongside runtime code |
 | [examples/collections](examples/collections) | Several namespaces compiled to an expression returning `batch.main/run` |
+| [examples/features](examples/features) | The code-splitting application: startup `app.main`, shared helpers and two features (`--entry app.main --esm`; [docs/code-splitting.md](docs/code-splitting.md)) |
 | [examples/native](examples/native) | Scripts for `--eval` (data processing, macros, lazy pipelines, state, exceptions) |
 | [examples/embedding.rs](examples/embedding.rs), [examples/evaluator.rs](examples/evaluator.rs) | Rust embedding |
 
