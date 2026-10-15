@@ -3425,3 +3425,66 @@ grew from 41,308 to 42,364 bytes (ceiling 42,000 to 43,000), of which the
 private-field brand is 434, the trie wrappers of `lookup` and `copyEntries` 190,
 and the payload builder (`hashTrie`) and lookup (`trieEntry`) 192. A map
 literal of at most 8 keys (`map-only`, 9,909 bytes) keeps no trie.
+
+## Transient hash maps — October 14, 2026
+
+light-cljs-249 adds `map-into`, `(into {} (map (fn [i] [i i])) (range n))`, to
+the `--levels` collection workloads: building a hash map through a transient,
+as `into` does in both compilers. light-cljs-235 had already made a transient
+edit in place the trie nodes it owns; what remained was the work around each
+edit:
+
+- **Node counts.** A bitmap or array node keeps its count of occupied slots,
+  so an insertion no longer counts the node's 32 slots for its capacity, and
+  every node has one shape. A new node's slot array is allocated at its length.
+- **No dispatch per pair.** A transient map's `conj!` of a map entry or pair
+  calls its own `assoc!`, as upstream's TransientHashMap does, unless a protocol
+  implementation could answer for it; `into` with a transducer reduces through
+  a fixed-arity step and `conjBangOwn` rather than the variadic `conjBang`
+  protocol dispatch. `dissoc!` updates the transient's payload in place.
+
+The same change makes a bitmap node's capacity after a persistent removal, and
+after a transient packs an array node, upstream's, and expands an owned node
+into new slots (docs/compiler.md, "Hash maps"); those change when a node is
+rehashed, not the time measured here.
+
+Command:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only map-into,map-assoc,map-get,map-assoc-existing --output DIR
+```
+
+Node v24.18.0, macOS 15 (Darwin 24.6) ARM64 VM, 24 CPUs, 15 timed rounds, on
+`ae574f4` (this change on `39f7609`). Another worker was active on the machine:
+the one-minute load average was 4.31–5.31 (median 4.88). "Before" is the same
+command with `--only map-into,map-assoc` on `373ead3` (light-cljs-235), at a
+load median of 10.65, whose upstream column is within 16% of this run's.
+Median ms per call; growth is the time at n = 20,000 over the time at
+n = 2,000, light-cljs / upstream:
+
+| Workload | n | Before | light-cljs `advanced` | Upstream `:advanced` | light-cljs / upstream | Growth |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| map-into | 2,000 | 0.719 (3.3×) | 0.480 | 0.200 | 2.4× | |
+| map-into | 20,000 | 7.56 (3.5×) | 4.42 | 1.89 | 2.3× | 9.2× / 9.4× |
+| map-assoc | 2,000 | 0.708 (2.1×) | 0.582 | 0.292 | 2.0× | |
+| map-assoc | 20,000 | 7.29 (1.9×) | 6.38 | 3.31 | 1.9× | 11.0× / 11.3× |
+| map-get | 2,000 | | 0.109 | 0.054 | 2.0× | |
+| map-get | 20,000 | | 1.23 | 0.546 | 2.2× | 11.3× / 10.1× |
+| map-assoc-existing | 2,000 | | 0.307 | 0.114 | 2.7× | |
+| map-assoc-existing | 20,000 | | 0.309 | 0.133 | 2.3× | 1.0× / 1.2× |
+
+Building a 20,000-entry map through `into` went from 3.5× upstream to 2.3×,
+and from slower than 20,000 persistent `assoc`s to a third faster; it grows
+linearly, as upstream's. In a profile of the `advanced` output before the
+change, counting slots and the two protocol dispatches per pair were about a
+fifth of the call; what remains is mostly the `[i i]` vectors, the reduction
+over `range` and the garbage collector. The persistent workloads keep their
+ratios to upstream.
+
+Sizes (bytes, size ratchet): the runtime that every `none` and `prepare`
+output embeds grew 1,202 bytes, mostly comments (`console-log-sum` 425,082 to
+426,284); those ceilings rose to the new sizes rounded up. At `advanced`,
+`constant-keys` grew 110 bytes (42,364 to 42,474, under its 43,000 ceiling) and
+`mapv-count`, whose `into` no longer keeps `conjBang`, shrank 80 (31,215 to
+31,135); no `advanced` ceiling moved.

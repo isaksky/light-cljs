@@ -1049,8 +1049,13 @@ starts from the map's trie in O(1) and edits it in O(log32 n) per `assoc!` or
 `dissoc!`: as upstream's, it copies a node of the persistent map once, the
 first time an edit passes through it, and then changes that copy, which no
 other version shares, in place, so a run of edits allocates amortized O(1)
-nodes each. Builders (`hash-map`, larger literals) edit their unpublished trie
-the same way. New versions retain the first equivalent key and share
+nodes each. Each node keeps its count of occupied slots, so an insertion counts
+none, and a bitmap node the capacity of upstream's array for it, which decides
+when an edit turns it into an array node, including after a removal or an array
+node's packing. That array node gets new slots, as upstream's, so a key whose
+hash throws during it leaves the transient as it was. `assoc!` and `dissoc!`
+change the transient's root, nil entry and count in place. Builders (`hash-map`, larger literals) edit their
+unpublished trie the same way. New versions retain the first equivalent key and share
 unchanged entry cells, trie nodes and nested immutable values. A hash map keeps
 its trie in a class-private field rather than a `WeakMap` entry: as unforgeable
 a brand, without a `WeakMap` registration per version. `seq`, printing and
@@ -2130,8 +2135,10 @@ is made and the trie nodes it first changes, so `transient`, `conj!`, `assoc!`,
 `pop!` and `persistent!` are O(1) amortized or O(log32 n), and `vec`, `into`,
 `filterv` and `mapv` of one collection (a reduction, as upstream) build an
 n-item vector in O(n). Where no protocol implementation exists, the `conj!` of
-`into`, `mapv` and `filterv` onto their own transient skips the protocol
-dispatch.
+`into` (with or without a transducer), `mapv` and `filterv` onto their own
+transient skips the protocol dispatch, and so does the `assoc!` that a transient
+map's `conj!` of a map entry or pair makes, as upstream's TransientHashMap calls
+its own `assoc!`.
 As upstream, lookup is allowed on persisted hash-map transients; array-map
 transients and vectors reject it. Out-of-range three-argument vector nth returns
 its fallback even after persistence. Transient sets return the query key during

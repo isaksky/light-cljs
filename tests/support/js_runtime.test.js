@@ -498,6 +498,41 @@ console.log('structural map, collision, sharing and mutation assertions passed')
   assert.equal(c.equal(edited, runtime.mapFromArray(expected, 'hash-map')), true);
   assert.deepEqual(order(edited), order(runtime.mapFromArray(expected, 'hash-map')));
   assert.deepEqual([c.count(built), c.get(built, keys[3]), c.get(built, keys[1])], [n, 3, 1]);
+  // A transient changes in place the nodes and payload it made (light-cljs-249).
+  // What `persistent!` returns never changes: two later transients of it edit
+  // their own copies, and one emptied to nothing, through array nodes packed
+  // back into bitmap nodes, and filled again agrees with a map built at once.
+  const unchanged = (m, count, value) => {
+    assert.equal(c.count(m), count);
+    for (let i = 0; i < n; i++) assert.equal(c.get(m, keys[i], 'missing'), value(i));
+  };
+  let growing = c.transient(c.hashMap());
+  for (let i = 0; i < n; i++) growing = c.assocBang(growing, keys[i], i);
+  const grown = c.persistentBang(growing);
+  assert.throws(() => c.assocBang(growing, 'late', 1), /assoc! after persistent!/);
+  assert.throws(() => c.dissocBang(growing, keys[0]), /dissoc! after persistent!/);
+  assert.deepEqual(order(grown), order(whole));
+  let halved = c.transient(grown), negated = c.transient(grown);
+  for (let i = 0; i < n; i += 2) {
+    halved = c.dissocBang(halved, keys[i]);
+    negated = c.assocBang(negated, keys[i], -i);
+  }
+  unchanged(grown, n, i => i);
+  assert.deepEqual(order(grown), order(whole));
+  const half = c.persistentBang(halved), negative = c.persistentBang(negated);
+  unchanged(half, n / 2, i => i % 2 ? i : 'missing');
+  unchanged(negative, n, i => i % 2 ? i : -i);
+  assert.deepEqual(order(half), order(removed));
+  let emptied = c.transient(negative);
+  for (const key of keys) emptied = c.dissocBang(emptied, key);
+  assert.equal(c.count(emptied), 0);
+  assert.equal(c.get(emptied, keys[1], 'missing'), 'missing');
+  for (let i = 0; i < n; i++) emptied = c.assocBang(emptied, keys[i], i);
+  const refilled = c.persistentBang(emptied);
+  assert.equal(c.equal(refilled, whole), true);
+  assert.deepEqual(order(refilled), order(whole));
+  unchanged(negative, n, i => i % 2 ? i : -i);
+  unchanged(grown, n, i => i);
 }
 console.log('hash array mapped trie assertions passed');
 

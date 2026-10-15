@@ -285,7 +285,9 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   `conj` is amortized O(1), `nth`, `assoc` and `pop` are O(log32 n) and `subvec`
   is an O(1) view, but `rseq` copies. A map of more than 8 keys is a hash array
   mapped trie, as upstream's, so its `assoc`, `dissoc` and lookup are O(log32 n)
-  ([benchmarks/compiler.md](benchmarks/compiler.md#hash-maps-as-tries--october-14-2026)).
+  ([benchmarks/compiler.md](benchmarks/compiler.md#hash-maps-as-tries--october-14-2026)),
+  and its transient edits the nodes it owns in place
+  ([benchmarks/compiler.md](benchmarks/compiler.md#transient-hash-maps--october-14-2026)).
   Sets are still linear entry arrays, whose lookups and updates are O(n)
   ([docs/compiler.md](docs/compiler.md)).
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)

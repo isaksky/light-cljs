@@ -1644,12 +1644,20 @@
     return copy;
   }
   //@unit bitmapNode
-  function bitmapNode(slots = [], edit = null, capacity = slots.filter(Boolean).length) {
-    return {kind: "bitmap", slots, edit, capacity};
+  // A bitmap node: its slots, the edit that made it, the pairs its upstream
+  // array holds (`capacity`, which times a transient's expansion) and its
+  // occupied slots (`count`). An array node has the same fields, capacity 0,
+  // so that every node has one shape.
+  function bitmapNode(slots, edit, capacity, count) {
+    return {kind: "bitmap", slots, edit, capacity, count};
   }
   //@unit hashNodeAssoc requires: bitmapNode, equalPair, hash
   function hashNodeAssoc(node, shift, keyHash, entry, edit, result, effects = true) {
-    node ??= bitmapNode();
+    if (!node) {
+      // Upstream's empty node grows to 4 pairs for an edit, 1 otherwise.
+      const index = (keyHash >>> shift) & 31, slots = new Array(index + 1); slots[index] = entry;
+      return bitmapNode(slots, edit, edit ? 4 : 1, 1);
+    }
     if (node.kind === "collision") {
       if (keyHash === node.hash) {
         const index = node.entries.findIndex(old => effects ? equalPair(entry.key, old.key) : entry.key === old.key);
@@ -1668,35 +1676,36 @@
         return {...node, entries};
       }
       const slots = []; slots[(node.hash >>> shift) & 31] = node;
-      return hashNodeAssoc(bitmapNode(slots, edit, edit ? 2 : 1), shift, keyHash, entry, edit, result, effects);
+      return hashNodeAssoc(bitmapNode(slots, edit, edit ? 2 : 1, 1), shift, keyHash, entry, edit, result, effects);
     }
     // A slot holds a child node, which has a `kind`, or an entry, which has
     // none; an array node's slots hold only nodes. As upstream's transients,
     // an edit changes in place the bitmap and array nodes it made (`owned`),
     // which no other version shares, and copies the rest once.
-    const index = (keyHash >>> shift) & 31, slot = node.slots[index];
+    const index = (keyHash >>> shift) & 31, slot = node.slots[index], n = node.count;
     const owned = edit && node.edit === edit, slots = owned ? node.slots : node.slots.slice();
     if (node.kind === "array") {
       slots[index] = hashNodeAssoc(slot, shift + 5, keyHash, entry, edit, result, effects);
-      return owned ? node : {kind: "array", slots, edit};
+      if (!owned) return {kind: "array", slots, edit, capacity: 0, count: slot ? n : n + 1};
+      if (!slot) node.count++;
+      return node;
     }
-    // The occupied slots, counted only where expansion or capacity needs them.
-    let n = 0;
-    if (!slot || edit && !owned) for (let i = 0; i < slots.length; i++) if (slots[i]) n++;
     if (!slot) {
       if (n >= 16 && (!edit || n >= node.capacity)) {
-        // Canonical expansion visits retained leaves in ascending branch order.
-        slots[index] = hashNodeAssoc(null, shift + 5, keyHash, entry, edit, result, effects);
-        for (let i = 0; i < slots.length; ++i) {
-          const old = slots[i];
-          if (old && !old.kind) slots[i] = hashNodeAssoc(null, shift + 5, effects ? hash(old.key) : old.hash, old, edit, {}, effects);
+        // Canonical expansion visits retained leaves in ascending branch order,
+        // into new slots, as upstream's, so a hash that throws changes nothing.
+        const nodes = owned ? slots.slice() : slots;
+        nodes[index] = hashNodeAssoc(null, shift + 5, keyHash, entry, edit, result, effects);
+        for (let i = 0; i < nodes.length; ++i) {
+          const old = nodes[i];
+          if (old && !old.kind) nodes[i] = hashNodeAssoc(null, shift + 5, effects ? hash(old.key) : old.hash, old, edit, null, effects);
         }
-        return {kind: "array", slots, edit};
+        return {kind: "array", slots: nodes, edit, capacity: 0, count: n + 1};
       }
       slots[index] = entry;
       const capacity = !edit ? n + 1 : n < node.capacity ? owned ? node.capacity : n + 1 : n + 4;
-      if (owned) { node.capacity = capacity; return node; }
-      return bitmapNode(slots, edit, capacity);
+      if (owned) { node.capacity = capacity; node.count = n + 1; return node; }
+      return bitmapNode(slots, edit, capacity, n + 1);
     }
     if (slot.kind) slots[index] = hashNodeAssoc(slot, shift + 5, keyHash, entry, edit, result, effects);
     else if (effects ? equalPair(entry.key, slot.key) : entry.key === slot.key) {
@@ -1708,12 +1717,12 @@
       let child;
       if (oldHash === keyHash) child = {kind: "collision", hash: keyHash, entries: [slot, entry]};
       else {
-        child = hashNodeAssoc(null, shift + 5, oldHash, slot, edit, {}, effects);
+        child = hashNodeAssoc(null, shift + 5, oldHash, slot, edit, null, effects);
         child = hashNodeAssoc(child, shift + 5, keyHash, entry, edit, {}, effects);
       }
       slots[index] = child;
     }
-    return owned ? node : bitmapNode(slots, edit, edit ? n + 1 : node.capacity);
+    return owned ? node : bitmapNode(slots, edit, edit ? n + 1 : node.capacity, n);
   }
   //@unit hashNodeFind requires: equalPair
   function hashNodeFind(node, shift, keyHash, key) {
@@ -1744,11 +1753,16 @@
       child = hashNodeRemove(slot, shift + 5, keyHash, removed, edit);
       if (child === slot) return node;
     } else if (slot !== removed) return node;
-    const owned = edit && node.edit === edit, slots = owned ? node.slots : node.slots.slice(), n = slots.filter(Boolean).length;
+    const owned = edit && node.edit === edit, slots = owned ? node.slots : node.slots.slice();
+    const n = node.count, count = child ? n : n - 1;
+    if (!count) return null;
     slots[index] = child ?? undefined;
-    if (!slots.some(Boolean)) return null;
-    if (node.kind === "array") return n <= 8 && !slots[index] ? bitmapNode(slots, edit, edit ? 2 * (n - 1) : n - 1) : owned ? node : {...node, slots, edit};
-    return owned ? node : bitmapNode(slots, edit, edit ? n + 1 : node.capacity);
+    // Capacities as upstream's arrays: a packed array node and a persistent
+    // removal hold one pair fewer (`pack-array-node`, `remove-pair`), an edit's
+    // copy one more than the node held (`ensure-editable`).
+    if (node.kind === "array" && n <= 8 && !child) return bitmapNode(slots, edit, count, count);
+    if (owned) { node.count = count; return node; }
+    return node.kind === "array" ? {...node, slots, edit, count} : bitmapNode(slots, edit, edit ? n + 1 : node.capacity - !child, count);
   }
   //@unit ensureHashRoot requires: hashNodeAssoc, hashRoots
   function ensureHashRoot(entries) {
@@ -1830,11 +1844,14 @@
     return key == null ? trie.nil : trie.root ? hashNodeFind(trie.root, 0, hash(key), key) : null;
   }
   //@unit trieDissoc requires: hashNodeRemove, trieEntry
+  // A transient (`edit`) changes its own payload in place, as `putHashEntry`.
   function trieDissoc(trie, key, edit = null) {
     const entry = trieEntry(trie, key);
     if (!entry) return trie;
-    return key == null ? {root: trie.root, nil: null, length: trie.length - 1}
-      : {root: hashNodeRemove(trie.root, 0, entry.hash, entry, edit), nil: trie.nil, length: trie.length - 1};
+    const root = key == null ? trie.root : hashNodeRemove(trie.root, 0, entry.hash, entry, edit);
+    if (!edit) return {root, nil: key == null ? null : trie.nil, length: trie.length - 1};
+    trie.root = root; if (key == null) trie.nil = null; trie.length--;
+    return trie;
   }
   //@unit PersistentHashMapValue.find effect: PersistentHashMapValue, assocTransient when: find,
   //@ transientLookup requires: kindHooks, trieEntry
@@ -2335,14 +2352,17 @@
     return value;
   };
   //@unit makeMap.conjTransient effect: makeMap, treeMapConstructor, recordMethods when: conjTransient
-  //@ requires: assocBangProtocol, first, isMapEntry, isVector, keyProtocol, kindHooks, next, seq,
-  //@ truth, valProtocol
+  //@ requires: assocBangProtocol, assocTransient, first, isMapEntry, isVector, keyProtocol,
+  //@ kindHooks, next, protocolHooks, seq, truth, valProtocol
+  // Past the protocol dispatch where no protocol implementation can answer
+  // for the transient, as `conjBangOwn`.
   kindHooks.conjTransientMap = (value, member) => {
-    if (isMapEntry(member)) return assocBangProtocol(value, keyProtocol(member), valProtocol(member));
-    if (isVector(member)) return assocBangProtocol(value, member.call(null, 0), member.call(null, 1));
+    const assoc = protocolHooks.builtin ? assocBangProtocol : assocTransient;
+    if (isMapEntry(member)) return assoc(value, keyProtocol(member), valProtocol(member));
+    if (isVector(member)) return assoc(value, member.call(null, 0), member.call(null, 1));
     for (let s = seq(member); s !== null && truth(first(s)); s = next(s)) {
       const entry = first(s);
-      value = assocBangProtocol(value, keyProtocol(entry), valProtocol(entry));
+      value = assoc(value, keyProtocol(entry), valProtocol(entry));
     }
     return value;
   };
@@ -6784,8 +6804,8 @@
     if (defaults.length === 1) methods[1] = x => run(x);
     return callable(3, methods, (x, y, z, tail) => apply(fn, ...patch([x, y, z]), tail));
   }
-  //@unit into requires: conj, conjBang, conjBangOwn, conjProtocol, editableValue, invalidArity,
-  //@ meta, persistentBang, protocolHooks, reduce, transduce, transient, vector, withMetaProtocol
+  //@unit into requires: conj, conjBangOwn, conjProtocol, editableValue, invalidArity, meta,
+  //@ persistentBang, protocolHooks, reduce, transduce, transient, vector, withMetaProtocol
   function into(to, from, source) {
     switch (arguments.length) {
       case 0: return vector();
@@ -6797,10 +6817,10 @@
       }
       case 3: {
         const editable = protocolHooks.implements?.("IEditableCollection", to) ?? editableValue(to), metadata = editable ? meta(to) : null;
-        const rf = !editable ? conj : function (...args) {
-          if (args.length === 1) return withMetaProtocol(persistentBang(args[0]), metadata);
-          if (args.length === 2) return conjBang(args[0], args[1]);
-          return invalidArity(args.length);
+        const rf = !editable ? conj : function (result, input) {
+          if (arguments.length === 2) return conjBangOwn(result, input);
+          if (arguments.length === 1) return withMetaProtocol(persistentBang(result), metadata);
+          return invalidArity(arguments.length);
         };
         return transduce(from, rf, editable ? transient(to) : to, source);
       }
@@ -8067,10 +8087,10 @@
     return nth(entry, 1);
   }
   //@unit protocolHooks.builtin effect: installMethods when: addWatchProtocol, assoc,
-  //@ collectionWithMeta, compareKeys, conj, conjBangOwn, coreMethod, count, derefProtocol, disj,
-  //@ dissoc, equalPair, first, hash, iterator, metaSupported, name, namespace, notifyWatches,
-  //@ objectEquiv, peek, pop, removeWatchProtocol, rest, rseq, stateProtocol, vresetProtocol,
-  //@ withMetaSupported requires: builtin, protocolHooks
+  //@ collectionWithMeta, compareKeys, conj, conjBangOwn, conjTransient, coreMethod, count,
+  //@ derefProtocol, disj, dissoc, equalPair, first, hash, iterator, metaSupported, name, namespace,
+  //@ notifyWatches, objectEquiv, peek, pop, removeWatchProtocol, rest, rseq, stateProtocol,
+  //@ vresetProtocol, withMetaSupported requires: builtin, protocolHooks
   protocolHooks.builtin = builtin;
   //@unit protocolHooks.external effect: extendType when: builtin requires: externalMethod,
   //@ protocolHooks

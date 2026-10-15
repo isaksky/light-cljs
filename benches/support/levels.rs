@@ -84,8 +84,9 @@ macro_rules! built_map {
 /// functions of `multi-arity` as local and named functions. Then the collection
 /// workloads of light-cljs-233, each at [`GROWTH`]: building a vector, map and set
 /// one element at a time, `nth` and `get` over a built one, `assoc` onto a built
-/// map, `subvec` then `reduce`, and `into`, which goes through a transient.
-const STEADY: [Steady; 17] = [
+/// map, `subvec` then `reduce`, and `into` a vector and a map, which goes through
+/// a transient (`map-into`, light-cljs-249).
+const STEADY: [Steady; 18] = [
     Steady {
         name: "seq-pipeline",
         source: "(fn [n] (reduce + 0 (->> (map inc (range n)) (filter even?) (partition 2) \
@@ -270,6 +271,13 @@ const STEADY: [Steady; 17] = [
     Steady {
         name: "vector-into",
         source: "(fn [n] (let [v (into [] (range n))] (+ (count v) (nth v (dec n)))))",
+        inputs: GROWTH,
+        every_level: false,
+        expected: count_and_last,
+    },
+    Steady {
+        name: "map-into",
+        source: "(fn [n] (let [m (into {} (map (fn [i] [i i])) (range n))] (+ (count m) (get m (dec n)))))",
         inputs: GROWTH,
         every_level: false,
         expected: count_and_last,
