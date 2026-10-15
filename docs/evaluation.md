@@ -206,8 +206,8 @@ them, under its deadline, poll budget and memory limit, and each job costs a
 poll: a job that loops, an endless chain of jobs or unbounded allocation
 ends the operation like any loop, and the session needs `reset` (the CLI
 exits). An embedder that drives `evaluate` or `invoke` itself calls
-`EvalSession::run_jobs`. A `.then` reaction's throw rejects its promise, and
-a rejection that no handler catches is dropped without a report. An
+`EvalSession::run_jobs`. A `.then` reaction's throw rejects its promise (see
+unhandled rejections below). An
 exception that leaves a job, as a `js/queueMicrotask` callback's does, is
 the form's error, with its value in `*e` and its `ex-data` in the
 diagnostic, once the other jobs have run (the first, when several throw);
@@ -216,6 +216,32 @@ promise jobs are the only work that runs after a form. `await` outside an
 `^:async` function body, including a top-level `(await x)`, is the located
 analysis error upstream's assertion gives; upstream has no top-level `await`
 either.
+
+A promise still rejected with no handler attached once the jobs after a form
+have run out is an unhandled rejection (light-cljs-297), reported once with
+its printed reason: `unhandled promise rejection: #error {:message "boom",
+:data {}}`. The session's engine tracks rejections (rquickjs
+`set_host_promise_rejection_tracker`; the record lives in the heap, never in
+Rust) and forgets one when a handler is attached first, so a rejection that a
+`.catch`, an `await` or a job of the same drain handles is not reported, while
+a handler that a later form attaches comes too late. Under `--repl` each is a
+warning on stderr after the form's printed result or error, `light-cljs:
+WARNING: unhandled promise rejection: ...`, leaving `*1` and `*e` as they are,
+and the REPL goes on, as Node's REPL prints `Uncaught` and a browser logs
+`Uncaught (in promise)`. Under `--eval` the first is the script's error, as
+an unhandled rejection ends a Node script: its reason becomes the last
+exception, the forms after it do not run, and the CLI exits nonzero.
+**Difference:** Node checks for unhandled rejections once the whole script
+and its jobs have run, so there a handler that a later form of the script
+attaches still counts; under `--eval` the check follows each form's jobs. A
+form's own error and an exception that leaves a job come first; under
+`--eval` the form's rejections are then dropped. An embedder chooses with
+`EvalOptions::unhandled_rejections`: `UnhandledRejections::Report`, the
+default, keeps the reports of the latest `eval_string`, `eval_source`,
+`eval_form`, `load_file` or `run_jobs` for
+`EvalSession::take_unhandled_rejections`, and `UnhandledRejections::Fail`
+makes the first one the error of the form, or of `run_jobs`, with its
+`ex-data` in the diagnostic.
 
 | Flag | Default | Unit/behavior |
 | --- | ---: | --- |

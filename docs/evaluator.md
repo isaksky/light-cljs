@@ -138,7 +138,7 @@ untaken branches do not probe them. `install_callback` currently supports a smal
 owned-string bridge. Its callable captures only Rust state, plus a weak execution
 control reference. The structured compiler-form bridge does not use this string API as a form encoding. Nothing awaits a promise, and
 promise jobs run only where `EvalSession` runs them, at its outer boundary after each top-level form
-([evaluation](evaluation.md#script-and-repl-commands)), never inside a callback or a plain `Evaluator` operation.
+([evaluation](evaluation.md#script-and-repl-commands)), never inside a callback or a plain `Evaluator` operation. Only an `EvalSession` heap tracks promise rejections: its rejection tracker captures only a Rust flag and records the promise in the heap, and the session reports the ones still unhandled after the jobs.
 
 ## Compiler form bridge
 

@@ -10,7 +10,10 @@ use rquickjs::allocator::{Allocator, RustAllocator};
 use rquickjs::{Array, CatchResultExt, Context, Ctx, Function, Runtime};
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 use std::{
     fmt,
     sync::{
@@ -154,6 +157,9 @@ pub struct Evaluator {
     generation: u64,
     bridge: Rc<RefCell<BridgeState>>,
     preserve_language_errors: bool,
+    /// Whether a promise was rejected with no handler since the last
+    /// `unhandled_rejections`, which then has a record to take.
+    rejected: Rc<Cell<bool>>,
 }
 impl Evaluator {
     pub fn new(options: EvaluatorOptions) -> Result<Self, EvalError> {
@@ -208,6 +214,7 @@ impl Evaluator {
             generation: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
             bridge: Rc::new(RefCell::new(BridgeState::default())),
             preserve_language_errors,
+            rejected: Rc::new(Cell::new(false)),
         };
         session.enter(|ctx| ctx.eval::<(), _>(format!(r#"
             const __lightEvaluator = (() => {{
@@ -215,6 +222,7 @@ impl Evaluator {
               const values = new Map(); let next = 1; let lastError = null;
               let hostDiagnostic = null;
               let heldError = null; let jobFailure = null;
+              const rejections = new Map();
               const exceptionMessage = error => {{
                 if (hostDiagnostic !== null && Object.is(error, hostDiagnostic.value)) {{ const message = hostDiagnostic.message; hostDiagnostic = null; return message; }}
                 return rt.compilerExceptionMessage(error);
@@ -273,6 +281,20 @@ impl Evaluator {
                   const failure = keep ? null : jobFailure;
                   lastError = (failure ?? heldError).value; heldError = jobFailure = null;
                   if (failure !== null) {{ const message = exceptionMessage(failure.value); if (message !== undefined) throw new Error(message); throw failure.value; }}
+                }},
+                // The host's rejection tracker records a promise rejected with no
+                // handler until one is attached; takeRejections takes the reasons
+                // still recorded, oldest first and printed. With fail it takes the
+                // first only, which becomes the last exception.
+                trackRejection: (promise, reason, handled) => {{
+                  if (handled) rejections.delete(promise); else rejections.set(promise, reason);
+                }},
+                takeRejections: fail => {{
+                  const reasons = [...rejections.values()]; rejections.clear();
+                  if (fail) {{ reasons.length = Math.min(reasons.length, 1); if (reasons.length > 0) lastError = reasons[0]; }}
+                  return reasons.map(reason => {{
+                    try {{ return rt.core.printForHost(reason); }} catch {{ return Object.prototype.toString.call(reason); }}
+                  }});
                 }},
                 inputWindow: more => rt.core.compilerInputWindow(more),
                 inputConsume: units => rt.core.compilerInputConsume(units),
@@ -619,6 +641,41 @@ impl Evaluator {
         self.enter(|ctx| {
             let release: Function = ctx.eval("__lightEvaluator.releaseError")?;
             release.call((keep,))
+        })
+    }
+    /// Track promise rejections for `unhandled_rejections`: the engine's
+    /// tracker records a promise rejected with no handler in
+    /// `__lightEvaluator`, and drops it when a handler is attached first. The
+    /// tracker holds no engine value; a record it cannot make (an interrupt
+    /// for a limit, which ends the operation at its next poll) is dropped.
+    pub(crate) fn track_rejections(&self) {
+        let rejected = self.rejected.clone();
+        self.runtime
+            .set_host_promise_rejection_tracker(Some(Box::new(
+                move |ctx, promise, reason, handled| {
+                    // Nothing is recorded since the last take: no promise to drop.
+                    if handled && !rejected.get() {
+                        return;
+                    }
+                    rejected.set(true);
+                    let _ = ctx
+                        .eval::<Function, _>("__lightEvaluator.trackRejection")
+                        .and_then(|track| track.call::<_, ()>((promise, reason, handled)))
+                        .catch(&ctx);
+                },
+            )));
+    }
+    /// Take the promises rejected with no handler attached since the last
+    /// call (see `track_rejections`), oldest first, as their printed reasons.
+    /// With `fail` take only the first, whose reason becomes the last
+    /// exception. Call it at an outer boundary, after `run_jobs`.
+    pub(crate) fn unhandled_rejections(&self, fail: bool) -> Result<Vec<String>, EvalError> {
+        if !self.rejected.replace(false) {
+            return Ok(vec![]);
+        }
+        self.enter(|ctx| {
+            let take: Function = ctx.eval("__lightEvaluator.takeRejections")?;
+            take.call((fail,))
         })
     }
     /// Force collection at an outer boundary. Callbacks must use the active Ctx,

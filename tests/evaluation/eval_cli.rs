@@ -655,3 +655,60 @@ fn async_functions_return_promises_under_eval_and_repl() {
         "light-cljs: <stdin>.cljc:2:1: macro expansion: Assert failed: await can only be used in async contexts\n(:async &env) (bytes 0..11)\n"
     );
 }
+
+/// A promise left rejected with no handler attached once a form's jobs ran
+/// out is a warning on stderr after the form's result under `--repl`, which
+/// goes on, as in Node's REPL, and the script's error under `--eval`, as in
+/// Node. One that a job handles later in the same drain is not reported.
+#[test]
+fn unhandled_rejections_warn_in_the_repl_and_fail_a_script() {
+    let main = "(defn ^:async main [] (await nil) (throw (ex-info \"boom\" {:at :main})))";
+    let handled = "(let [p (js/Promise.reject 1)] \
+                   (.then (js/Promise.resolve) (fn [_] (.catch p (fn [_] nil)))) :handled)";
+    let warning = "light-cljs: WARNING: unhandled promise rejection: #error {:message \"boom\", :data {:at :main}}\n";
+    let input = format!("{main}\n(main)\n{handled}\n:next\n");
+    let output = run(&["--repl"], &input);
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "#object[Function]\n#object[Promise [object Promise]]\n:handled\n:next\n"
+    );
+    assert_eq!(String::from_utf8(output.stderr).unwrap(), warning);
+    // One stream for both shows the warning after the result.
+    let directory = Directory::new();
+    let path = directory.0.join("repl.log");
+    let log = fs::File::create(&path).unwrap();
+    let mut child = command()
+        .arg("--repl")
+        .stdin(Stdio::piped())
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        format!("#object[Function]\n#object[Promise [object Promise]]\n{warning}:handled\n:next\n")
+    );
+    let output = run(
+        &[
+            "--eval",
+            "--text",
+            &format!("{main} (main) (println :not-run)"),
+        ],
+        "",
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "light-cljs: unhandled promise rejection: #error {:message \"boom\", :data {:at :main}}\n"
+    );
+    ok(run(&["--eval", "--text", handled], ""), ":handled\n");
+}

@@ -87,6 +87,18 @@ pub struct EvalOptions {
     pub arguments: Vec<String>,
     pub assertions: bool,
     pub policy: NamePolicy,
+    pub unhandled_rejections: UnhandledRejections,
+}
+/// What the session does with a promise rejected with no handler attached
+/// when the jobs after a top-level form run out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UnhandledRejections {
+    /// Keep a report of it for [`EvalSession::take_unhandled_rejections`],
+    /// as a browser logs "Uncaught (in promise)" and goes on (`--repl`).
+    #[default]
+    Report,
+    /// Fail the form with it, as Node fails a script (`--eval`).
+    Fail,
 }
 impl Default for EvalOptions {
     fn default() -> Self {
@@ -112,6 +124,7 @@ impl Default for EvalOptions {
             arguments: vec![],
             assertions: true,
             policy: NamePolicy::default(),
+            unhandled_rejections: UnhandledRejections::default(),
         }
     }
 }
@@ -205,10 +218,13 @@ pub struct EvalSession {
     file_loading: Rc<RefCell<Vec<String>>>,
     identity: u64,
     operation_depth: Rc<Cell<usize>>,
+    /// Reports of unhandled rejections, under `UnhandledRejections::Report`.
+    rejections: RefCell<Vec<String>>,
 }
 impl EvalSession {
     pub fn new(options: EvalOptions) -> Result<Self, EvalDiagnostic> {
         let engine = Evaluator::interactive(options.engine.clone())?;
+        engine.track_rejections();
         let namespace_update = engine
             .evaluate_js("name => { rt.core.currentNs = rt.core.createNs(name); return null; }")?;
         let mut host = crate::MacroHost::new();
@@ -241,6 +257,7 @@ impl EvalSession {
             file_loading: Rc::new(RefCell::new(vec![])),
             operation_depth: Rc::new(Cell::new(0)),
             identity: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            rejections: RefCell::new(vec![]),
         };
         for function in session.options.functions.clone() {
             let value = session.engine.install_host_function(
@@ -282,19 +299,27 @@ impl EvalSession {
         self.operation_depth.set(self.operation_depth.get() + 1);
         Ok(OperationGuard(self.operation_depth.clone()))
     }
+    /// Begin an operation that runs promise jobs; the outermost one starts a
+    /// new list of unhandled rejection reports.
+    fn begin_jobs(&self) -> Result<OperationGuard, EvalDiagnostic> {
+        if self.operation_depth.get() == 0 {
+            self.rejections.borrow_mut().clear();
+        }
+        self.begin()
+    }
     pub fn eval_string(&mut self, text: &str) -> Result<EvalResult, EvalDiagnostic> {
         self.eval_source(&SourceInput::new("<eval>.cljs", text))
     }
     /// Evaluate each top-level form of `source` in turn, running the promise
     /// jobs it queues after it (see [`Self::run_jobs`]).
     pub fn eval_source(&mut self, source: &SourceInput) -> Result<EvalResult, EvalDiagnostic> {
-        let _operation = self.begin()?;
+        let _operation = self.begin_jobs()?;
         self.source(source, true)
     }
     /// Load only through the configured file capability, preserving session roots.
     /// The file runs as one script: promise jobs run after its last form.
     pub fn load_file(&mut self, path: &str) -> Result<EvalResult, EvalDiagnostic> {
-        let _operation = self.begin()?;
+        let _operation = self.begin_jobs()?;
         let result = {
             let _file = FileLoadGuard::begin(&self.file_loading, path)?;
             file_source(&self.options, path, &self.namespace())
@@ -311,13 +336,47 @@ impl EvalSession {
     /// between the forms of a namespace the session loads; an embedder that
     /// drives `evaluate` or `invoke` itself calls this. Jobs run under the
     /// operation's deadline, poll budget and memory limit. The first exception
-    /// that leaves a job is the error, and `last_exception` holds it.
+    /// that leaves a job is the error, and `last_exception` holds it. Then
+    /// each promise still rejected with no handler attached is reported (see
+    /// [`UnhandledRejections`]).
     pub fn run_jobs(&self) -> Result<(), EvalDiagnostic> {
-        let _operation = self.begin()?;
+        let _operation = self.begin_jobs()?;
         self.jobs(false)
     }
+    /// Take the reports of the promises that the latest `eval_string`,
+    /// `eval_source`, `eval_form`, `load_file` or `run_jobs` left rejected
+    /// with no handler attached once its jobs ran out, oldest first, under
+    /// [`UnhandledRejections::Report`]: `unhandled promise rejection: ` and
+    /// the printed reason. Each promise is reported once, and a handler
+    /// attached later does not withdraw its report.
+    pub fn take_unhandled_rejections(&self) -> Vec<String> {
+        std::mem::take(&mut *self.rejections.borrow_mut())
+    }
+    /// Run the jobs, then take the unhandled rejections: under `Fail` the
+    /// first is the error unless the form (`keep`) or a job failed first,
+    /// and under `Report` each is kept for `take_unhandled_rejections`.
     fn jobs(&self, keep: bool) -> Result<(), EvalDiagnostic> {
-        self.engine.run_jobs(keep).map_err(|error| EvalDiagnostic {
+        let jobs = self.engine.run_jobs(keep);
+        let fail = self.options.unhandled_rejections == UnhandledRejections::Fail;
+        let raise = fail && !keep && jobs.is_ok();
+        let rejected = self.engine.unhandled_rejections(raise).map(|reasons| {
+            reasons
+                .into_iter()
+                .map(|reason| format!("unhandled promise rejection: {reason}"))
+        });
+        let result = match (jobs, rejected) {
+            (Ok(()), Ok(mut messages)) if raise => messages
+                .next()
+                .map_or(Ok(()), |message| Err(EvalError(message))),
+            (jobs, Ok(messages)) => {
+                if !fail {
+                    self.rejections.borrow_mut().extend(messages);
+                }
+                jobs
+            }
+            (jobs, Err(error)) => jobs.and(Err(error)),
+        };
+        result.map_err(|error| EvalDiagnostic {
             data: self.engine.error_data(),
             message: error.0,
             location: None,
@@ -339,7 +398,7 @@ impl EvalSession {
                 }
             },
             Err(error) => {
-                let _ = self.engine.run_jobs(true);
+                let _ = self.jobs(true);
                 Err(error)
             }
         }
@@ -390,7 +449,7 @@ impl EvalSession {
     }
     /// Evaluate one top-level form, then run the promise jobs it queued.
     pub fn eval_form(&mut self, form: &Form) -> Result<EvalResult, EvalDiagnostic> {
-        let _operation = self.begin()?;
+        let _operation = self.begin_jobs()?;
         let result = self.form(form);
         self.after_jobs(result)
     }

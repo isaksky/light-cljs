@@ -768,7 +768,9 @@ names only and keeps `async`/`await` as written.
 Under `--eval` and `--repl` the session runs promise jobs after each
 top-level form ([evaluation](evaluation.md#script-and-repl-commands)), so by
 the next form an async call has run the rest of its body after each `await`
-and its Promise's reactions have run. Compiled output runs in the host's
+and its Promise's reactions have run; a call whose Promise then stays
+rejected with no handler is a warning under `--repl` and the script's error
+under `--eval`. Compiled output runs in the host's
 event loop at every level and with `--esm`. `tests/compiler/async_await.rs` runs upstream's
 `async_await_test.cljs` there, with `clojure.test`'s `deftest`/`is` and
 `goog.object/equals` supplied as small sources, and its `cljs.test`

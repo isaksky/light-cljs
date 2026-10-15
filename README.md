@@ -327,8 +327,11 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   sandbox. Under `--eval` and `--repl` promise jobs (`.then` callbacks,
   post-`await` code) run after each top-level form, never inside one, so a
   form sees the reactions of the forms before it, even earlier in the same
-  file, where compiled output runs a whole file first
-  ([docs/evaluation.md](docs/evaluation.md#script-and-repl-commands)). Compiled
+  file, where compiled output runs a whole file first. A promise rejection
+  that no handler has caught once a form's jobs have run is a warning after
+  the form's result under `--repl` and the script's error under `--eval`, as
+  in Node, but a handler that a later form of the script attaches comes too
+  late ([docs/evaluation.md](docs/evaluation.md#script-and-repl-commands)). Compiled
   output, where `^:async` functions and `await` work as upstream's
   ([docs/compiler.md](docs/compiler.md#async-functions-and-await)), runs them in
   the host's event loop.

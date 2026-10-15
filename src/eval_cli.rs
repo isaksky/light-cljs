@@ -3,7 +3,7 @@ use light_cljs::compiler_data::{Datum, DatumKind, Name};
 use light_cljs::eval_session::PrintOptions;
 use light_cljs::evaluator::{EvalError, ValueId};
 use light_cljs::source_provider::{FileSourceProvider, SourceInput};
-use light_cljs::{EvalDiagnostic, EvalOptions, EvalSession};
+use light_cljs::{EvalDiagnostic, EvalOptions, EvalSession, UnhandledRejections};
 use std::{
     cell::{Cell, RefCell},
     error::Error,
@@ -237,6 +237,11 @@ pub fn run(repl: bool, args: impl Iterator<Item = OsString>) -> Result<()> {
     if !options.roots.is_empty() {
         options.eval.source_provider = Some(Rc::new(FileSourceProvider::new(options.roots)));
     }
+    // A rejection no handler catches fails a script, as in Node, and is a
+    // warning after the form's result in the REPL, as in Node's REPL.
+    if !repl {
+        options.eval.unhandled_rejections = UnhandledRejections::Fail;
+    }
     let mut session = EvalSession::new(options.eval)?;
     if repl {
         return repl_loop(&mut session, continuation, prompt);
@@ -381,6 +386,9 @@ fn repl_loop(session: &mut EvalSession, continuation: Rc<Cell<bool>>, prompt: bo
                 eprintln!("light-cljs: {}", diagnostic(&error));
                 remember_error(session, &error, runtime)?;
             }
+        }
+        for report in session.take_unhandled_rejections() {
+            eprintln!("light-cljs: WARNING: {report}");
         }
         session.recover_input()?;
     }

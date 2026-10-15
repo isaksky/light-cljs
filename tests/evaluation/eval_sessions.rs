@@ -754,3 +754,102 @@ fn promise_job_exceptions_keep_their_values() {
     assert_eq!(s.print(tag).unwrap(), "{:tag :form}");
     assert_eq!(printed(&mut s, "@log"), "[:ran :evaluated]");
 }
+
+/// A promise left rejected with no handler attached once the jobs after a
+/// form run out is reported once, after the form, in order; one that a job
+/// handles later in the same drain, or an `await` or `.catch` handles, is
+/// not. Under `Fail` the first is the form's error, with its reason as the
+/// last exception, unless the form or a job failed first.
+#[test]
+fn unhandled_promise_rejections_are_reported_after_the_jobs() {
+    use light_cljs::UnhandledRejections;
+    let report = |reason: &str| format!("unhandled promise rejection: {reason}");
+    let define = "(def log (atom []))
+        (defn ^:async boom [] (await nil) (throw (ex-info \"boom\" {:a 1})))";
+    let mut s = EvalSession::new(EvalOptions::default()).unwrap();
+    printed(&mut s, define);
+    assert_eq!(printed(&mut s, "(boom) :value"), ":value");
+    assert_eq!(
+        s.take_unhandled_rejections(),
+        [report("#error {:message \"boom\", :data {:a 1}}")]
+    );
+    assert!(s.take_unhandled_rejections().is_empty());
+    printed(
+        &mut s,
+        "(let [p (js/Promise.reject 1)]
+           (.then (js/Promise.resolve) (fn [_] (.catch p #(swap! log conj %)))))
+         (defn ^:async caught [] (try (await (boom)) (catch :default e (swap! log conj (ex-message e)))))
+         (caught)
+         (.catch (boom) #(swap! log conj (:a (ex-data %))))",
+    );
+    assert!(s.take_unhandled_rejections().is_empty());
+    assert_eq!(printed(&mut s, "@log"), "[1 \"boom\" 1]");
+    // No job needs to run; a handler a later form attaches does not withdraw
+    // a report, and a failed form's rejections are reported too.
+    printed(
+        &mut s,
+        "(def p (js/Promise.reject :first)) (do (js/Promise.reject :second) nil) (.catch p identity)",
+    );
+    assert_eq!(
+        s.take_unhandled_rejections(),
+        [report(":first"), report(":second")]
+    );
+    assert!(
+        s.eval_string("(do (js/Promise.reject :failed) (throw (js/Error. \"x\")))")
+            .is_err()
+    );
+    assert_eq!(s.take_unhandled_rejections(), [report(":failed")]);
+    // An embedder that evaluates a form itself reports them with `run_jobs`.
+    let forms = s
+        .read_forms(&light_cljs::source_provider::SourceInput::new(
+            "<jobs>.cljs",
+            "(boom)",
+        ))
+        .unwrap();
+    let analyzed = s.analyze(&forms[0]).unwrap();
+    let value = s.evaluate(&analyzed).unwrap().value;
+    s.release(value).unwrap();
+    assert!(s.take_unhandled_rejections().is_empty());
+    s.run_jobs().unwrap();
+    assert_eq!(
+        s.take_unhandled_rejections(),
+        [report("#error {:message \"boom\", :data {:a 1}}")]
+    );
+
+    let mut s = EvalSession::new(EvalOptions {
+        unhandled_rejections: UnhandledRejections::Fail,
+        ..Default::default()
+    })
+    .unwrap();
+    printed(&mut s, define);
+    let error = s
+        .eval_string("(boom) (swap! log conj :next-form)")
+        .unwrap_err();
+    assert_eq!(
+        error.message,
+        report("#error {:message \"boom\", :data {:a 1}}")
+    );
+    let data = s.value(&error.data.expect("owned ex-data")).unwrap();
+    assert_eq!(s.print(data).unwrap(), "{:a 1}");
+    let thrown = s.last_exception().unwrap();
+    let ex_data = s.lookup("cljs.core/ex-data").unwrap();
+    let data = s.invoke(ex_data, &[thrown]).unwrap();
+    assert_eq!(s.print(data).unwrap(), "{:a 1}");
+    assert_eq!(printed(&mut s, "@log"), "[]");
+    assert_eq!(
+        printed(&mut s, "(.catch (boom) #(swap! log conj :caught)) @log"),
+        "[:caught]"
+    );
+    let error = s
+        .eval_string("(do (js/Promise.reject :dropped) (throw (ex-info \"form\" {})))")
+        .unwrap_err();
+    assert!(error.message.contains("form"), "{error}");
+    let error = s
+        .eval_string(
+            "(do (js/Promise.reject :dropped) (js/queueMicrotask #(throw (ex-info \"job\" {}))) nil)",
+        )
+        .unwrap_err();
+    assert!(error.message.contains("job"), "{error}");
+    assert_eq!(printed(&mut s, ":clean"), ":clean");
+    assert!(s.take_unhandled_rejections().is_empty());
+}
