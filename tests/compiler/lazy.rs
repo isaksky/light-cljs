@@ -407,6 +407,87 @@ fn loadables_read_the_current_value_of_a_reassigned_target_at_every_level() {
     );
 }
 
+/// The `Advanced` output of `files` from `app.main`, as one ES module.
+fn advanced_module(files: &'static [(&'static str, &'static str)]) -> String {
+    let program = analyze(files).unwrap_or_else(|error| panic!("{error}"));
+    prepare_application(&program, ApplicationOptions::new(OptimizationLevel::Advanced))
+        .emit_esm()
+}
+
+/// A Var only a loadable reads is a root like an export (light-cljs-272): at
+/// `advanced` it keeps its definition and both arities, what it reads stays,
+/// its parameter takes what the loaded function is called with rather than
+/// what its namespace's own call passes, and the definitions of its namespace
+/// it does not reach are removed.
+#[test]
+fn a_var_only_a_loadable_reads_keeps_its_arities_and_what_it_reaches() {
+    static ONLY_LOADABLE: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (def l (lazy/loadable app.lib/f))\n\
+             (defn start []\n\
+               (-> (lazy/load l)\n\
+                   (.then (fn [f] (js/console.log (f) (f 2) (f \"x\")) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/lib.cljs",
+            "(ns app.lib)\n\
+             (defn helper [x] (str \"helper \" x))\n\
+             (defn unreached [] \"unreached definition\")\n\
+             (defn f ([] (helper \"none\")) ([x] (if (number? x) (inc x) (helper x))))\n\
+             (js/console.log \"lib\" (f 1))\n",
+        ),
+    ];
+    assert_eq!(
+        run_module_at_every_level(ONLY_LOADABLE),
+        concat!(
+            r#"{"id":"app.main.js","outcome":{"status":"returned","value":null},"trace":[],"stdout":""#,
+            r#"lib 2\nhelper none 3 helper x\n"}"#,
+        )
+    );
+    let module = advanced_module(ONLY_LOADABLE);
+    assert!(module.contains("helper "), "{module}");
+    assert!(!module.contains("unreached definition"), "{module}");
+}
+
+/// A namespace target roots its namespace's top-level forms as a required
+/// namespace's are: its effects run once, before `load` resolves with nil, and
+/// at `advanced` a definition nothing reads is removed.
+#[test]
+fn a_namespace_target_keeps_its_effects_and_drops_its_unread_definitions() {
+    static NAMESPACE_TARGET: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (def reports (lazy/loadable app.reports))\n\
+             (defn start []\n\
+               (-> (lazy/load reports)\n\
+                   (.then (fn [value] (js/console.log \"loaded\" (pr-str value)) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/reports.cljs",
+            "(ns app.reports)\n\
+             (defn unread [] \"unread definition\")\n\
+             (defn row [k] (str \"row \" (name k)))\n\
+             (js/console.log (row :effect))\n\
+             (def table (js/console.log (row :table)))\n",
+        ),
+    ];
+    assert_eq!(
+        run_module_at_every_level(NAMESPACE_TARGET),
+        concat!(
+            r#"{"id":"app.main.js","outcome":{"status":"returned","value":null},"trace":[],"stdout":""#,
+            r#"row effect\nrow table\nloaded nil\n"}"#,
+        )
+    );
+    let module = advanced_module(NAMESPACE_TARGET);
+    assert!(module.contains("row "), "{module}");
+    assert!(!module.contains("unread definition"), "{module}");
+}
+
 /// examples/features holds loadables of `app.editor/start` and
 /// `app.reports/start`, whose namespaces follow `app.main` in the one output
 /// file; at every level its loads resolve there and it logs the lines it
