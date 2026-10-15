@@ -89,14 +89,10 @@ const TAIL: &str = r#"(deftest ^:async async-test-error-reporting-test
 ///   retires legacy macro imports);
 /// - the `cljs.test` reporting test and its `defmethod` give way to [`TAIL`].
 fn adapted() -> String {
-    let mut source = UPSTREAM.to_owned();
-    for (from, to) in [(
-        "            [goog.object :as gobj])\n  (:require-macros [cljs.macro-test.macros :refer [await!] :as macros]))",
-        "            [goog.object :as gobj]\n            [cljs.macro-test.macros :refer [await!] :as macros]))",
-    )] {
-        assert!(source.contains(from), "upstream no longer has {from:?}");
-        source = source.replace(from, to);
-    }
+    let from = "            [goog.object :as gobj])\n  (:require-macros [cljs.macro-test.macros :refer [await!] :as macros]))";
+    let to = "            [goog.object :as gobj]\n            [cljs.macro-test.macros :refer [await!] :as macros]))";
+    assert!(UPSTREAM.contains(from), "upstream no longer has {from:?}");
+    let mut source = UPSTREAM.replace(from, to);
     let tail = source
         .find("(def async-error-reports")
         .expect("upstream's reporting test");
@@ -207,6 +203,34 @@ fn refer_global_static_methods_keep_their_class_as_this() {
 "#;
     let program = namespace_program("probe", &[("probe.cljs", source)]);
     every_level(&program, "[true [0 1] true true :no-receiver]\n");
+}
+
+/// A static method passed as a value is called without a receiver, as
+/// upstream's `.call(null, ...)` calls it, also where `Advanced` inlines
+/// the function that calls it: the host path does not move into the callee.
+#[test]
+fn static_method_values_stay_detached_when_inlined() {
+    let source = r#"(ns probe (:refer-global :only [Promise]))
+(defn call-a [f] (f 0))
+(defn call-b [f] (f 0))
+(defn call-c [f x] (f x))
+(def g Promise/resolve)
+(js/console.log
+ (pr-str
+  (mapv #(try (%) :receiver (catch :default e (if (instance? js/TypeError e) :no-receiver e)))
+        [#(call-a Promise/resolve)
+         #(call-b js/Promise.resolve)
+         #(let [h Promise/resolve] (h 0))
+         #(g 0)
+         #((fn [h] (h 0)) Promise/resolve)
+         #(call-c Promise/resolve 1)
+         #(call-c Promise.resolve 2)])))
+"#;
+    let program = namespace_program("probe", &[("probe.cljs", source)]);
+    every_level(
+        &program,
+        "[:no-receiver :no-receiver :no-receiver :no-receiver :no-receiver :no-receiver :no-receiver]\n",
+    );
 }
 
 /// `await` in the body of anything but an `^:async` function is upstream's

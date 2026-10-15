@@ -771,10 +771,22 @@ impl Copier<'_> {
             ExprKind::Set(items) => ExprKind::Set(self.all(&items)?),
             ExprKind::LiteralMap(items) => ExprKind::LiteralMap(self.all(&items)?),
             ExprKind::LiteralSet(items) => ExprKind::LiteralSet(self.all(&items)?),
-            ExprKind::Call { callee, args } => ExprKind::Call {
-                callee: self.copy(callee)?,
-                args: self.all(&args)?,
-            },
+            ExprKind::Call { callee, args } => {
+                // A host path such as `js/Promise.resolve` called in place
+                // keeps its object as `this`; the parameter's call had none.
+                if let ExprKind::Local(local) = self.program.exprs[callee.0].kind
+                    && let Some(Parameter::Value(argument) | Parameter::Moved(argument)) =
+                        self.parameter(local)
+                    && let ExprKind::JsGlobal(global) = self.program.exprs[argument.0].kind
+                    && self.program.js_globals[global.0].path.len() > 1
+                {
+                    return None;
+                }
+                ExprKind::Call {
+                    callee: self.copy(callee)?,
+                    args: self.all(&args)?,
+                }
+            }
             ExprKind::Property { receiver, property } => ExprKind::Property {
                 receiver: self.copy(receiver)?,
                 property,

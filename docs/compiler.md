@@ -1964,7 +1964,9 @@ Namespace `:refer-global :only` and `:rename` expose explicit host globals.
 A referred global's `Class/member`, like a built-in class's (`String/fromCharCode`),
 is the host path `js/Class.member`, as upstream resolves it, so a call such as
 `(Promise/resolve x)` keeps the class as `this`; reading the member first, as in
-`((.-resolve Promise) x)`, calls it without a receiver, as upstream does.
+`((.-resolve Promise) x)`, calls it without a receiver, as upstream does, and so
+does a function called with the method as an argument, also where `advanced`
+inlines that function.
 Unqualified dotted names such as `console.log` also resolve host paths when
 the root is not a lexical binding. Such host calls retain the final receiver;
 a lexical root instead uses ordinary CLJS function-call receiver behavior.
