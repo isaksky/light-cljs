@@ -536,3 +536,46 @@ fn original_raw_nsstar_source_executes_with_explicit_roots() {
         "\"true\"\n",
     );
 }
+
+/// `time` prints its line through the session's `*print-fn*`, stdout, before
+/// the result under `--eval` and `--repl` (light-cljs-260). A program clock
+/// for `system-time` makes the line exact; the engine's own clock gives its
+/// shape, quoted with six decimals as upstream's `prn` prints it.
+#[test]
+fn time_prints_elapsed_milliseconds_under_eval_and_repl() {
+    let clock = r#"(do (set! (.-performance js/globalThis) (js-obj "now" (let [t (atom 10)] (fn [] (swap! t + 2.25))))) nil)"#;
+    ok(
+        run(
+            &["--eval", "--text", &format!("{clock} (time (+ 1 2))")],
+            "",
+        ),
+        "\"Elapsed time: 2.250000 msecs\"\n3\n",
+    );
+    ok(
+        run(
+            &["--repl"],
+            &format!("{clock}\n(time (+ 1 2))\n(time :k)\n"),
+        ),
+        "nil\n\"Elapsed time: 2.250000 msecs\"\n3\n\"Elapsed time: 2.250000 msecs\"\n:k\n",
+    );
+    for (args, input) in [
+        (&["--eval", "--text", "(time (+ 1 2))"][..], ""),
+        (&["--repl"][..], "(time (+ 1 2))\n"),
+    ] {
+        let output = run(args, input);
+        assert!(output.status.success(), "{args:?}");
+        let text = String::from_utf8(output.stdout).unwrap();
+        let elapsed = text
+            .strip_prefix("\"Elapsed time: ")
+            .and_then(|rest| rest.strip_suffix(" msecs\"\n3\n"))
+            .unwrap_or_else(|| panic!("{args:?}: {text:?}"));
+        let (whole, fraction) = elapsed.split_once('.').unwrap();
+        assert!(
+            !whole.is_empty()
+                && whole.bytes().all(|b| b.is_ascii_digit())
+                && fraction.len() == 6
+                && fraction.bytes().all(|b| b.is_ascii_digit()),
+            "{args:?}: {text:?}"
+        );
+    }
+}

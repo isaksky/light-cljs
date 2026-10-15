@@ -207,6 +207,60 @@
 (defmacro macro-memfn [name & args]
   (let [target (gensym "target")]
     (list 'cljs.core/fn (vec (cons target args)) (list '. target (cons name args)))))
+(defmacro macro-js-debugger []
+  (list 'do (list 'js* "debugger") nil))
+(defmacro macro-js-comment [comment]
+  (if (string? comment) nil
+    (throw (ex-info "js-comment requires a string" {})))
+  ;; The pinned macro's block: clojure.string/split drops trailing empty
+  ;; lines, and later lines lose three leading spaces. The value is nil in
+  ;; every position, where a bare comment template is not an expression.
+  (let [lines (loop* [lines (vec (.split comment "\n"))]
+                (if (= "" (peek lines)) (recur (pop lines)) lines))]
+    (list 'do
+      (list 'js*
+        (str "\n/**\n * " (first lines) "\n"
+          (apply str (map (fn [line] (str " * " (.replace line (js/RegExp. "^   ") "") "\n"))
+                       (rest lines)))
+          " */\n"))
+      nil)))
+(defmacro macro-locking [x & forms]
+  ;; The pinned macro discards the lock expression without evaluating it.
+  (cons 'do forms))
+(defmacro macro-time [expr]
+  (let [start (gensym "start") ret (gensym "ret")]
+    (list 'cljs.core/let [start (list 'cljs.core/system-time) ret expr]
+      (list 'cljs.core/prn
+        (list 'cljs.core/str "Elapsed time: "
+          (list '.toFixed (list 'cljs.core/- (list 'cljs.core/system-time) start) 6)
+          " msecs"))
+      ret)))
+(defmacro macro-simple-benchmark [bindings expr iterations & options]
+  ;; The pinned macro destructures keyword arguments, so a trailing map or
+  ;; another odd option count is rejected as there.
+  (if (odd? (count options))
+    (throw (ex-info (str "No value supplied for key: " (pr-str (last options))) {})) nil)
+  (let [print-fn (get (apply hash-map options) :print-fn 'println)
+        start (gensym "start") end (gensym "end") elapsed (gensym "elapsed")]
+    (list 'cljs.core/let bindings
+      (list 'cljs.core/let [start (list '.getTime (list 'new 'js/Date))
+                            (gensym "ret") (list 'cljs.core/dotimes [(gensym "_") iterations] expr)
+                            end (list '.getTime (list 'new 'js/Date))
+                            elapsed (list 'cljs.core/- end start)]
+        (list print-fn
+          (list 'cljs.core/str (pr-str bindings) ", " (pr-str expr) ", "
+            iterations " runs, " elapsed " msecs"))))))
+(defn macro-unchecked-extreme [x y more test extreme]
+  (if (seq more)
+    (list* extreme (list extreme x y) more)
+    (let [a (gensym "x") b (gensym "y")]
+      (list 'let* [a x b y] (list 'if (list test a b) a b)))))
+(defmacro macro-unchecked-max
+  ([x] x)
+  ([x y & more] (macro-unchecked-extreme x y more 'cljs.core/> 'cljs.core/max)))
+(defmacro macro-unchecked-min
+  ([x] x)
+  ([x y & more] (macro-unchecked-extreme x y more 'cljs.core/< 'cljs.core/min)))
 (defmacro macro-amap [a idx ret expr]
   (let [arr (gensym "array") len (gensym "length")]
     (list 'cljs.core/let [arr a len (list 'cljs.core/alength arr) ret (list 'cljs.core/aclone arr)]

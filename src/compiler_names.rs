@@ -53,6 +53,13 @@ pub fn core_macro(name: &str) -> bool {
             | "letfn"
             | "vswap!"
             | "with-in-str"
+            | "js-debugger"
+            | "js-comment"
+            | "locking"
+            | "time"
+            | "simple-benchmark"
+            | "unchecked-max"
+            | "unchecked-min"
     )
 }
 

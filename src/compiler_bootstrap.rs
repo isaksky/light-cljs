@@ -48,6 +48,13 @@ const MACROS: &[(&str, &str)] = &[
     ("selector", "selector"),
     ("comment", "comment"),
     ("with-in-str", "with-in-str"),
+    ("js-debugger", "js-debugger"),
+    ("js-comment", "js-comment"),
+    ("locking", "locking"),
+    ("time", "time"),
+    ("simple-benchmark", "simple-benchmark"),
+    ("unchecked-max", "unchecked-max"),
+    ("unchecked-min", "unchecked-min"),
 ];
 #[derive(Clone)]
 pub(crate) struct Bootstrap {

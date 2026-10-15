@@ -1678,6 +1678,30 @@ trailing maps. `:or` is an eager `get` argument: missing keys use defaults, whil
 present nil and false are retained. Sequential bindings support nil, lazy inputs,
 host arrays and custom sequence or indexed protocol receivers.
 
+`time`, `simple-benchmark`, `locking`, `unchecked-max` and `unchecked-min`
+expand as the pinned macros do (light-cljs-260; `js-debugger` and `js-comment`
+are under [JavaScript interop](#javascript-interop)). `time` evaluates its
+expression once, prints `"Elapsed time: <ms> msecs"` with `prn` (quoted, six
+decimals, through `*print-fn*`, so compiled output needs
+`enable-console-print!` or `set-print-fn!` as upstream's does) and returns the
+value. It reads the clock through `system-time`: the session's
+`EvalOptions::clock` when one is set, otherwise `performance.now` where the host
+has it and `Date.now` where it does not (the embedded QuickJS).
+`simple-benchmark` binds its bindings, runs its expression the given number of
+times and calls `:print-fn` (default `println`, resolved where the macro is
+used) with the bindings and expression as printed at expansion time, the count
+and the elapsed whole milliseconds between two `Date` reads, returning what
+that call returns. Its iteration expression is spliced twice, for the loop and
+for the line, so it runs twice; options are keyword/value pairs, and a trailing
+map is rejected as upstream's destructuring rejects it. Expansion-time printing
+shows light-cljs macro data, so `2.0` prints as `2` and `\a` as `"a"` where
+upstream's JVM printer keeps the reader spelling. `locking` is its body: the
+lock expression is not evaluated, as upstream discards it. `unchecked-max` and
+`unchecked-min` evaluate two operands once each, left to right, and compare
+them with `>` or `<`, so NaN wins only as the second operand; more operands nest
+`max` or `min`. As upstream, all of these are macros only, with no function
+value.
+
 Extended map directives `:keys!`, `:syms!`, `:strs!`, `:select`, `:all`,
 `:missing`, `:excess`, and `:defaults`, and the `selector` macro, follow the
 pinned ClojureScript checkout (`a5e94c98`); they are not in the 1.12.134 release.
@@ -1829,6 +1853,14 @@ holes and ordinary object-literal prototype-key behavior.
 `js-fn?` evaluates its single operand once and checks whether its JavaScript type
 is `function`. Metadata-wrapped callable values remain `fn?` and `ifn?` without
 becoming `js-fn?`.
+
+`js-debugger` emits a `debugger;` statement and `js-comment` a `/** ... */`
+block, one ` * ` line per line of its string argument, with three leading
+spaces dropped from later lines and trailing empty lines dropped, as upstream
+(light-cljs-260). Both are nil. They are raw `js*` text, which every
+optimization level keeps verbatim, so both stay in `advanced` output too.
+Upstream's `js-comment` is a bare template, which is not JavaScript in a value
+position such as a `let` initializer; here it is nil there as well.
 
 `to-array-2d` converts ragged seqable rows to ordinary JavaScript arrays.
 `int-array`, `long-array`, `double-array`, and `object-array` support size/seq and

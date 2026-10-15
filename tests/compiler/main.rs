@@ -168,6 +168,7 @@ mod type_inference;
 mod types;
 mod utilities_bodies;
 mod utilities_completion;
+mod utility_macros;
 mod var_test_metadata;
 mod warnings;
 mod watch_keys;
