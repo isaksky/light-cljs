@@ -609,8 +609,9 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
         assert_keeps_none(source, &["accumulatingCount", "count.seqs", "seq", "next"]);
     }
     // 8,948 bytes before; the brand test for a vector, a class since
-    // light-cljs-234, is about 170 bytes more than a WeakMap.
-    assert!(advanced("(count (.split \"a,b\" \",\"))").emit_js().len() < 1_600);
+    // light-cljs-234, is about 170 bytes more than a WeakMap, and the seq
+    // stores' `privateStore`, since light-cljs-259, about 320 more than theirs.
+    assert!(advanced("(count (.split \"a,b\" \",\"))").emit_js().len() < 1_900);
     for (source, expected) in [
         ("(count (.split \"a,b\" \",\"))", "2"),
         ("(defrecord R [x]) (count (assoc (->R 1) :y 2))", "2"),

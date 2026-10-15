@@ -1016,7 +1016,12 @@ O(1), and list construction/indexing are O(n).
 `seq` of an empty value is nil; nonempty lists can reuse their identity, and
 vectors/strings produce views with frozen private offset/storage descriptors.
 A vector of more than 32 items gives upstream's ChunkedSeq over its trie's
-leaves and tail, which a seq shares frozen.
+leaves and tail, which a seq shares frozen. Cons cells, views, lazy seqs and
+chunks keep their payloads in class-private fields, as vectors do, rather than
+in `WeakMap` entries (light-cljs-259): each step of a lazy pipeline builds new
+values, and their entries, which the collector traces as ephemerons, cost more
+than the step. A lazy seq or chunked cons built with nil metadata stores none;
+`meta` and its `meta` field read nil either way.
 `rest` at the end (including nil) is the empty list, while `next` is nil. Each tail
 is O(1), so complete traversal is linear. String traversal produces UTF-16
 one-unit strings. `conj` of a generic seq produces a seq-cons, distinct from a list.

@@ -293,6 +293,10 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   equality and `clojure.set` operations make one lookup per member, and its
   transient edits the trie in place
   ([benchmarks/compiler.md](benchmarks/compiler.md#hash-sets-as-tries--october-14-2026)).
+  A lazy seq pipeline writes no `WeakMap` entry per step, but its generic seq
+  operations still probe each kind's store, so a `map`/`filter`/`partition`
+  pipeline takes about 4× upstream's time in Node
+  ([benchmarks/compiler.md](benchmarks/compiler.md#seq-payloads-in-private-fields--october-15-2026)).
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in QuickJS, not the JVM.
 - **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:

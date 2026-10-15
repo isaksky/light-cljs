@@ -42,10 +42,29 @@
   const mapTypes = {}, setTypes = {};
   //@unit transients
   const transients = new WeakMap();
-  //@unit cells
-  const cells = new WeakMap();
-  //@unit views
-  const views = new WeakMap();
+  //@unit privateStore
+  // A store like a vector's, with a private field of its own: the seq kinds'
+  // stores (`cells`, `views`, `lazyValues`, `chunks`). Each step of a seq
+  // builds a value, and a WeakMap entry per value, which the collector traces
+  // as an ephemeron, cost more than the step (light-cljs-259). Unlike
+  // `vectors.set`, `set` also replaces the payload of a value that has one.
+  // The stores share these methods' code, and so V8's feedback for them,
+  // which the seq operations do not feel; `vectors` keeps its own, since
+  // sharing slowed `conj` and `nth` on a vector by a third.
+  function privateStore() {
+    const Store = class extends (function (value) { return value; }) {
+      #s;
+      static has(value) { return (typeof value === "object" ? value !== null : typeof value === "function") && #s in value; }
+      // Not `Store.has`: QuickJS, which does not inline it, would call it.
+      static get(value) { if ((typeof value === "object" ? value !== null : typeof value === "function") && #s in value) return value.#s; }
+      static set(value, payload) { if (#s in value) value.#s = payload; else new Store(value).#s = payload; }
+    };
+    return Store;
+  }
+  //@unit cells requires: privateStore
+  const cells = privateStore();
+  //@unit views requires: privateStore
+  const views = privateStore();
   //@unit iteratorSeqs
   const iteratorSeqs = new WeakMap();
   //@unit reducedValues
@@ -76,8 +95,8 @@
   const atoms = new WeakMap(), volatiles = new WeakMap();
   //@unit queues
   const queues = new WeakMap();
-  //@unit lazyValues
-  const lazyValues = new WeakMap(), delays = new WeakMap();
+  //@unit lazyValues requires: privateStore
+  const lazyValues = privateStore(), delays = new WeakMap();
   //@unit eductions
   const eductions = new WeakMap();
   //@unit ifnValues
@@ -449,7 +468,7 @@
       else if (!(protocolHooks.implements?.("ISeq", tail) ?? seqValue(tail))) tail = seq(tail);
     }
     const value = Object.create((kind === "list" ? ListValue : Cons).prototype);
-    cells.set(value, Object.freeze({kind, head, tail, ...(kind === "list" ? {count: count(tail) + 1} : {})}));
+    cells.set(value, Object.freeze(kind === "list" ? {kind, head, tail, count: count(tail) + 1} : {kind, head, tail}));
     return value;
   }
 
@@ -3826,7 +3845,9 @@
             }
             if (!tag) fail("arbitrary object (including promise)", path);
           }
-          const metadata = object && metadataValues.has(v) ? visit(metadataValues.get(v), path + ".meta", depth + 1) : null;
+          // A lazy seq or chunked cons has metadata, nil where none is stored.
+          const metadata = object && (metadataValues.has(v) || lazyValues.has(v) || cells.get(v)?.kind === "chunked-cons")
+            ? visit(metadataValues.has(v) ? metadataValues.get(v) : null, path + ".meta", depth + 1) : null;
           return [tag, object ? borrowed.get(v) || 0 : primitives.get(primitiveKey(v)) || 0, metadata, a, b];
         } finally { if (object) active.delete(v); }
       }
@@ -5424,14 +5445,16 @@
     return value;
   }
   //@unit LazySeq requires: lazyValues, metadataValues
+  // Nil metadata is not stored: a lazy seq without an entry reads as one
+  // with nil (`meta`, the `meta` field, the compiler bridge).
   function LazySeq(metadata, thunk, result, cachedHash) {
     const value = Object.create(LazySeq.prototype);
     lazyValues.set(value, {thunk, value: result, hash: cachedHash});
-    metadataValues.set(value, metadata);
+    if (metadata !== null) metadataValues.set(value, metadata);
     return value;
   }
   //@unit lazySequence requires: LazySeq
-  function lazySequence(thunk) { return new LazySeq(null, thunk, null, null); }
+  function lazySequence(thunk) { return LazySeq(null, thunk, null, null); }
   //@unit force requires: delays, deref
   function force(value) { return delays.has(value) ? deref(value) : value; }
   //@unit nthrest requires: rest, seq
@@ -6214,9 +6237,9 @@
   }
   //@unit iterate requires: iterateNode
   function iterate(fn, seed) { return iterateNode(fn, null, seed, true); }
-  //@unit chunks
+  //@unit chunks requires: privateStore
   // Chunk values expose indexed/count/reduce protocols, without being seqs.
-  const chunks = new WeakMap(), chunkBuffers = new WeakMap();
+  const chunks = privateStore(), chunkBuffers = new WeakMap();
   //@unit ChunkBuffer requires: chunkBuffers
   function ChunkBuffer(array, end) {
     const value = Object.create(ChunkBuffer.prototype);
@@ -6316,19 +6339,30 @@
     const end = slots.i + slots.node.length;
     return end < count(slots.vec) ? ChunkedSeqValue(slots.vec, vectorChunk(slots.vec, end), end, 0, null, null) : emptyList;
   }
-  //@unit ChunkedCons requires: cells, count, dropFirstProtocol, emptyList, metadataValues, nth
+  //@unit ChunkedCell requires: ChunkedCons, count, dropFirstProtocol, emptyList, nth
+  // A ChunkedCons's cell. Its `head`, `tail` and `hash` are getters of the
+  // class, so that a step allocates no closures.
+  // Declared fields are defined, as a literal's: no inherited setter sees one.
+  const ChunkedCell = class {
+    kind = "chunked-cons"; chunk; more; chunkedState;
+    constructor(chunk, more, hash) {
+      this.chunk = chunk; this.more = more; this.chunkedState = {hash};
+      Object.freeze(this);
+    }
+    get hash() { return this.chunkedState.hash; }
+    get head() { return nth(this.chunk, 0); }
+    get tail() { return count(this.chunk) > 1 ? ChunkedCons(dropFirstProtocol(this.chunk), this.more, null, null) : this.more ?? emptyList; }
+  };
+  //@unit ChunkedCons requires: cells, ChunkedCell, metadataValues
+  // Nil metadata is not stored, as for LazySeq.
   function ChunkedCons(chunk, more, metadata, cachedHash) {
     const value = Object.create(ChunkedCons.prototype);
-    const chunkedState = {hash: cachedHash};
-    cells.set(value, Object.freeze({kind: "chunked-cons", chunk, more, chunkedState,
-      get hash() { return chunkedState.hash; },
-      get head() { return nth(chunk, 0); },
-      get tail() { return count(chunk) > 1 ? new ChunkedCons(dropFirstProtocol(chunk), more, null, null) : more ?? emptyList; }}));
-    metadataValues.set(value, metadata);
+    cells.set(value, new ChunkedCell(chunk, more, cachedHash));
+    if (metadata !== null) metadataValues.set(value, metadata);
     return value;
   }
   //@unit chunkCons requires: ChunkedCons, count
-  function chunkCons(chunk, tail) { return count(chunk) === 0 ? tail : new ChunkedCons(chunk, tail, null, null); }
+  function chunkCons(chunk, tail) { return count(chunk) === 0 ? tail : ChunkedCons(chunk, tail, null, null); }
   //@unit dropOwned requires: cells, kindHooks, maps, publicCollectionSlots, rangeNode, repeat, seq,
   //@ vectors, view, views
   function dropOwned(value, n) {
@@ -7957,7 +7991,9 @@
     configurable: true, get() { return lazyValues.get(this)[key]; }, set(value) { lazyValues.get(this)[key] = value; }
   });
   Object.defineProperty(LazySeq.prototype, "meta", {
-    configurable: true, get() { return metadataValues.get(this); }, set(value) { metadataValues.set(this, value); }
+    // `LazySeq` stores no nil metadata.
+    configurable: true, get() { return metadataValues.has(this) || !lazyValues.has(this) ? metadataValues.get(this) : null; },
+    set(value) { metadataValues.set(this, value); }
   });
   Object.defineProperties(LazySeq.prototype, Object.getOwnPropertyDescriptors({
     sval() { return deferredValue(lazyValues.get(this), true); }

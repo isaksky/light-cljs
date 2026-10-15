@@ -3554,3 +3554,90 @@ about 430. `mapv-count` grew 137 (31,135 to 31,272), the one-member set path
 of `conj`. Every other `advanced` output that compares values shrank 10
 bytes, because equality passes a set rather than its payload; `keyword-only`
 (3,497) and `map-only` (9,899) lowered their ceilings to 3,500 and 9,900.
+
+## Seq payloads in private fields — October 15, 2026
+
+light-cljs-259 stores the payloads of the seq kinds, cons cells (`cells`),
+views (`views`), lazy seqs (`lazyValues`) and chunks (`chunks`), in
+class-private fields, as vectors already did, instead of `WeakMap` entries
+(docs/compiler.md, "Lists, vectors and seqs"). `privateStore()` returns a class
+whose static `has`, `get` and `set` stand in for the `WeakMap`'s, so the
+generic operations and the kind tables are unchanged. `LazySeq` and
+`ChunkedCons` no longer store nil metadata; a ChunkedCons cell is an instance
+of a class with `head`, `tail` and `hash` getters instead of a frozen literal
+with three getter closures; `cons` builds its cell without a spread; and
+`lazySequence` and `chunkCons` call their constructors without `new`. One
+`seq-pipeline` call (n = 200) wrote 1,854 `WeakMap` entries before and writes
+none now, which tests/support/js_runtime.test.js asserts.
+
+Command:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only seq-pipeline,keyword-lookups,event-maps,vector-conj,subvec-reduce,vector-into --output DIR
+```
+
+Node v24.18.0, macOS 15 (Darwin 24.6) ARM64 VM, 24 CPUs, 15 timed rounds,
+another worker and this pellet's differential tests running: "before" on
+master `b8c199a` (one-minute load median 7.75, range 5.19–8.38), "after" on
+this change (median 7.61, range 7.16–9.01), upstream from each run. Median
+µs per call:
+
+| Workload | n | Engine | Level | Before | After | Upstream `:advanced` (after run) |
+| --- | ---: | --- | --- | ---: | ---: | ---: |
+| seq-pipeline | 200 | Node | `advanced` | 1,264 (17×) | 330 (3.9×) | 84 |
+| seq-pipeline | 200 | Node | `none` | 5,000 | 3,771 | |
+| seq-pipeline | 200 | Node | `prepare` | 4,896 | 3,750 | |
+| seq-pipeline | 200 | QuickJS | `advanced` | 2,657 | 2,928 | |
+| seq-pipeline | 200 | QuickJS | `none` | 22,967 | 23,650 | |
+| seq-pipeline | 200 | QuickJS | `prepare` | 22,929 | 23,543 | |
+
+Between the two runs the other workloads moved by up to 6% either way
+(`keyword-lookups` at `advanced` 3,802 to 4,001 in Node), except
+`subvec-reduce` at n = 2,000 (29 to 37, with minimums of 24.2 and 24.8).
+Interleaved reruns, the median of seven fresh Node processes per runtime, put
+the two runtimes within 3% of each other on `keyword-lookups`, `event-maps`,
+`vector-conj`, `vector-into` and `subvec-reduce`, and in QuickJS within 2% on
+`keyword-lookups` at `none` and `advanced`, the new runtime the faster, so
+those differences are load.
+
+In Node, `seq-pipeline` at `advanced` is 3.8 times as fast and 3.9× upstream,
+not the 2× light-cljs-259 aimed for. A CPU profile of 5,000 warm calls shows
+what remains: garbage collection fell from 42% of the time to 3%, and the
+constructors (`LazySeq`, `ChunkedCons`, `cons`, `arrayChunk`) from about 30%
+to under 10%. About 45% is now generic dispatch, `seq`, `rest`, `first`,
+`next`, `count` and `nth` probing one store after another (and `vectors.has`
+from each), which light-cljs-237 replaces with one slot per kind; the
+pipeline's own thunks take about a fifth.
+
+In QuickJS the change costs 10% at `advanced` and 3% at `none` and
+`prepare`. QuickJS frees short-lived values by reference counting, so a
+`WeakMap` entry costs it little (about 50 ns per `set` in a microbenchmark),
+while adding a private field constructs a class (about 200 ns), and a store's
+`get` is a call of a JavaScript function rather than of a native one. Testing
+the field in `get` itself, instead of calling `has`, took the cost from 18%
+to 10%; the same edit is neutral in Node.
+
+Two layouts were measured before this one. A class per store, as `vectors`
+has, was about 13% slower in Node on `seq-pipeline` than one `privateStore`
+shared by the four seq stores, and 370 to 580 bytes larger at `advanced`. Moving `vectors` onto
+`privateStore` as well would save another 150 bytes, but slowed `vector-conj`
+by 37% and `vector-nth` by 50% at n = 20,000, as the shared methods' V8
+feedback sees every store, so `vectors` keeps its own class.
+
+Sizes (bytes, size ratchet): the runtime that every `none` and `prepare`
+output embeds grew 2,092 bytes (`console-log-sum` 429,488 to 431,580), and
+those ceilings rose to the new sizes rounded up to the next 1,000. At
+`advanced`, `seq-pipeline` grew 456 (25,087 to 25,543): `privateStore`, four
+calls of it instead of `new WeakMap()`, the ChunkedCons cell class and the
+nil-metadata tests. An output that tests values against the seq stores
+without building seqs keeps `privateStore` and three of its calls, 289 more
+(`keyword-only` 3,497 to 3,786, `atom-str` 2,422 to 2,711). The user accepted
+up to 1 KB of `advanced` growth per ceiling for this pellet's speed target;
+the ceilings it passed rose to their new sizes rounded up: `rest-fn` 11,000,
+`keyword-case` 3,900, `constant-lookups` 4,300, `constant-keys` 44,000,
+`vector-only` 5,300, `keyword-only` 3,800, `map-only` 11,000, `atom-str`
+2,800, `set-only` 5,600, `closed-params` 15,000 and `protocol-params` 44,000.
+For the same reason the bound on `(count (.split "a,b" ","))` in
+tests/compiler/builtin_types.rs rose from 1,600 to 1,900 bytes (it is about
+1,810).

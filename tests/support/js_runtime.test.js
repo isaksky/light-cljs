@@ -1531,6 +1531,48 @@ for (const [Type, fields] of [
 }
 console.log('public constructor fields preserve canonical payload brands');
 
+// Lazy seqs, cells, views and chunks keep their payloads in private fields
+// (light-cljs-259): a pipeline writes no WeakMap entry for the values its steps
+// build, and a host object that inherits one's prototype, or copies its own
+// properties onto that prototype, is no language value.
+{
+  const set = WeakMap.prototype.set;
+  let writes = 0;
+  WeakMap.prototype.set = function (...args) { writes++; return set.apply(this, args); };
+  try {
+    const steps = c.mapcat(c.identity, c.drop(1, c.partition(2, c.filter(c.isEven, c.mapSeq(c.inc, c.range(200))))));
+    assert.equal(c.reduce(c.add, 0, steps), 10094);
+  } finally { WeakMap.prototype.set = set; }
+  assert.equal(writes, 0);
+  const lazy = c.mapSeq(x => x + 1, c.range(40)), chunked = c.seq(lazy), chunk = c.chunkFirst(chunked);
+  assert.equal(c.isChunkedSeq(chunked), true);
+  assert.equal(c.count(chunk), 32);
+  assert.equal(c.meta(lazy), null);
+  assert.equal(lazy.meta, null);
+  for (const value of [lazy, chunked, chunk, c.seq([1, 2, 3]), c.cons(0, lazy), c.list(1, 2)]) {
+    const forged = Object.create(Object.getPrototypeOf(value));
+    for (const candidate of [forged, Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))]) {
+      assert.equal(c.isSeq(candidate), false);
+      assert.equal(c.isChunkedSeq(candidate), false);
+      assert.equal(runtime.inspect(candidate), null);
+      assert.throws(() => c.count(candidate), /count not supported/);
+    }
+  }
+  // A chunked cons's cell defines its fields, as a literal does: a setter that
+  // the cell would inherit from Object.prototype never sees it.
+  const names = ['kind', 'chunk', 'more', 'chunkedState'];
+  let intercepted = 0;
+  for (const name of names) Object.defineProperty(Object.prototype, name, {configurable: true, set() { intercepted++; throw new Error('inherited setter'); }});
+  try {
+    const doubled = c.chunkCons(c.chunkFirst(c.seq(c.mapSeq(x => x * 2, c.range(3)))), null);
+    assert.equal(c.first(doubled), 0);
+    assert.equal(c.prStr(c.rest(doubled)), '(2 4)');
+    assert.equal(c.hash(doubled), c.hash(c.list(0, 2, 4)));
+  } finally { for (const name of names) delete Object.prototype[name]; }
+  assert.equal(intercepted, 0);
+}
+console.log('seq payloads are private fields that host objects cannot copy');
+
 // Public find and the IFind fallback consume one retained map search.
 {
   const events = [];
