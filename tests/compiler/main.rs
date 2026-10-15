@@ -84,6 +84,7 @@ mod iterator_helpers;
 mod iterator_name;
 mod key_shapes;
 mod language_namespace;
+mod lazy;
 mod library_bodies;
 mod literal_char_string;
 mod literal_map_traversal;

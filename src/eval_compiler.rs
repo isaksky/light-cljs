@@ -116,6 +116,12 @@ impl InteractiveCompiler {
     pub(crate) fn globals(&self) -> &[crate::GlobalBinding] {
         self.program.as_ref().map_or(&[], |p| p.globals.as_slice())
     }
+    /// Whether the session has defined or declared `namespace/name`.
+    pub(crate) fn defines(&self, namespace: &str, name: &str) -> bool {
+        self.globals()
+            .iter()
+            .any(|g| g.declared && g.namespace == namespace && g.name == name)
+    }
     pub(crate) fn read_forms(
         &self,
         input: &SourceInput,

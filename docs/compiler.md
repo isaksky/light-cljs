@@ -1491,6 +1491,28 @@ The result is one combined JavaScript expression whose value is the entry
 namespace's final form (with `--esm`, an ES module whose default export it is). There is no caching, package manager, incremental
 invalidation, or parallel scheduler.
 
+A lazy reference, `(light.lazy/loadable app.editor/start)` or
+`(light.lazy/loadable app.editor)` (also through an alias of `light.lazy`),
+is not a require (docs/code-splitting.md). Its argument is a literal symbol;
+the namespace need not be required, and the Var need not be defined yet, since
+analysis reserves its binding by name as `exists?` does. The site lowers to
+`ExprKind::Loadable` and is recorded in `Program::lazy_targets`. Analysis is a
+worklist: after a source is analyzed, the loader visits each namespace its
+lazy references name, which appends that namespace's unvisited dependencies
+and then the namespace itself; a namespace already loaded is resident, and a
+target may require the namespace that names it. Sources reached only that way
+follow the entry and run after it, and the program's value is still the entry
+namespace's final form, which then stores its value in a global the program
+returns at the end. Once every namespace is analyzed, a Var target its
+namespace never defines is an error at the site ("lazy target app.editor/start
+is not defined"), as are a non-literal argument, a namespace no source
+provides, a target in the site's own namespace and `cljs.core`. The `Program`
+also records the static require graph (`namespace_requires`, by source index)
+and which sources only lazy references reach (`namespace_lazy_only`). The REPL
+loads the namespace of a loadable it has not loaded, as a `require` would,
+before the form runs. Until the `light.lazy` library exists, a loadable
+evaluates to `nil`.
+
 Standalone file/stdin/text modes accept `def` and interop, but a standalone
 `(ns ...)` form is rejected (`unsupported construct: ns`): select an entry with
 `--entry` and explicit roots to request namespace loading.

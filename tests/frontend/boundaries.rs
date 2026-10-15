@@ -21,6 +21,7 @@ fn category(kind: &AnalysisErrorKind) -> &'static str {
         AnalysisErrorKind::Unsupported(_) => "unsupported",
         AnalysisErrorKind::NumberOutOfRange => "number-range",
         AnalysisErrorKind::MacroExpansion(_) => "macro-expansion",
+        AnalysisErrorKind::LazyTarget(_) => "lazy-target",
     }
 }
 

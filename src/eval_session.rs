@@ -5,7 +5,7 @@ pub use crate::eval_compiler::NamePolicy;
 use crate::evaluator::{EvalError, Evaluator, EvaluatorOptions, ExecutionControl, ValueId};
 pub use crate::evaluator::{HostArity, HostCall};
 use crate::form_bridge::ConversionLimits;
-use crate::source_provider::{SourceInput, SourceProvider};
+use crate::source_provider::{LoadRequest, Reload, SourceInput, SourceProvider};
 use std::{
     cell::{Cell, RefCell},
     collections::HashSet,
@@ -357,58 +357,7 @@ impl EvalSession {
             self.sync_namespace()?;
         }
         if let Some((requests, staged)) = requests {
-            for request in requests {
-                let name = String::from_utf16_lossy(request.namespace.name());
-                if self.loaded.borrow().contains(&name)
-                    && request.reload == crate::source_provider::Reload::None
-                {
-                    continue;
-                }
-                if self.loading.borrow().contains(&name) {
-                    return Err(EvalDiagnostic {
-                        data: None,
-                        message: format!(
-                            "namespace load cycle: {} -> {name}",
-                            self.loading.borrow().join(" -> ")
-                        ),
-                        location: Some(form.span()),
-                    });
-                }
-                if name == "cljs.core" || name == "clojure.core" {
-                    continue;
-                }
-                let source = if let Some(source) = crate::compiler_libraries::source(&name) {
-                    SourceInput::new(format!("<builtin>/{name}.cljs"), source)
-                } else {
-                    self.options
-                        .source_provider
-                        .as_ref()
-                        .ok_or_else(|| EvalDiagnostic {
-                            data: None,
-                            message: format!("no source provider for {name}"),
-                            location: Some(form.span()),
-                        })?
-                        .load(&request)
-                        .map_err(|e| EvalDiagnostic {
-                            data: None,
-                            message: e.to_string(),
-                            location: Some(form.span()),
-                        })?
-                        .ok_or_else(|| EvalDiagnostic {
-                            data: None,
-                            message: format!("missing namespace {name}"),
-                            location: Some(form.span()),
-                        })?
-                };
-                let namespace = self.namespace();
-                self.loading.borrow_mut().push(name.clone());
-                let result = self.source(&source);
-                self.loading.borrow_mut().pop();
-                self.compiler.borrow_mut().set_namespace(&namespace);
-                self.sync_namespace()?;
-                self.engine.release(result?.value)?;
-                self.loaded.borrow_mut().insert(name);
-            }
+            self.load_requests(requests, form, false)?;
             self.compiler
                 .borrow_mut()
                 .finish_directive(staged)
@@ -423,7 +372,90 @@ impl EvalSession {
             });
         }
         let analyzed = self.analyze(form)?;
+        // A `light.lazy/loadable` of a namespace the session has not loaded
+        // loads it, as a `require` would, before the form runs.
+        let requests = lazy_requests(
+            &analyzed.program,
+            &self.namespace(),
+            &self.loaded.borrow(),
+            &self.loading.borrow(),
+        );
+        self.load_requests(requests, form, true)?;
+        if let Some(message) = undefined_lazy_target(
+            &analyzed.program,
+            &self.compiler.borrow(),
+            &self.loading.borrow(),
+        ) {
+            return Err(EvalDiagnostic {
+                data: None,
+                message,
+                location: Some(form.span()),
+            });
+        }
         self.evaluate(&analyzed)
+    }
+    /// Load and evaluate each requested namespace the session has not
+    /// loaded, then return to the current namespace. `lazy` requests come
+    /// from `light.lazy/loadable` sites instead of a `require`.
+    fn load_requests(
+        &mut self,
+        requests: Vec<LoadRequest>,
+        form: &Form,
+        lazy: bool,
+    ) -> Result<(), EvalDiagnostic> {
+        for request in requests {
+            let name = String::from_utf16_lossy(request.namespace.name());
+            if self.loaded.borrow().contains(&name)
+                && request.reload == crate::source_provider::Reload::None
+            {
+                continue;
+            }
+            if self.loading.borrow().contains(&name) {
+                return Err(EvalDiagnostic {
+                    data: None,
+                    message: format!(
+                        "namespace load cycle: {} -> {name}",
+                        self.loading.borrow().join(" -> ")
+                    ),
+                    location: Some(form.span()),
+                });
+            }
+            if name == "cljs.core" || name == "clojure.core" {
+                continue;
+            }
+            let source = if let Some(source) = crate::compiler_libraries::source(&name) {
+                SourceInput::new(format!("<builtin>/{name}.cljs"), source)
+            } else {
+                self.options
+                    .source_provider
+                    .as_ref()
+                    .ok_or_else(|| EvalDiagnostic {
+                        data: None,
+                        message: format!("no source provider for {name}"),
+                        location: Some(form.span()),
+                    })?
+                    .load(&request)
+                    .map_err(|e| EvalDiagnostic {
+                        data: None,
+                        message: e.to_string(),
+                        location: Some(form.span()),
+                    })?
+                    .ok_or_else(|| EvalDiagnostic {
+                        data: None,
+                        message: missing_namespace(&name, lazy),
+                        location: Some(form.span()),
+                    })?
+            };
+            let namespace = self.namespace();
+            self.loading.borrow_mut().push(name.clone());
+            let result = self.source(&source);
+            self.loading.borrow_mut().pop();
+            self.compiler.borrow_mut().set_namespace(&namespace);
+            self.sync_namespace()?;
+            self.engine.release(result?.value)?;
+            self.loaded.borrow_mut().insert(name);
+        }
+        Ok(())
     }
     pub fn analyze(&mut self, form: &Form) -> Result<AnalyzedForm, EvalDiagnostic> {
         let _operation = self.begin()?;
@@ -959,6 +991,66 @@ fn source_operations(form: Form) -> Vec<Form> {
         None => vec![form],
     }
 }
+/// The namespaces `program`'s `light.lazy/loadable` sites name that the
+/// session has neither loaded nor entered and is not loading, as requests
+/// from `namespace`. A target that is loading, because it requires the
+/// namespace that loads it, is resident, as in a compiled program.
+fn lazy_requests(
+    program: &crate::Program,
+    namespace: &str,
+    loaded: &HashSet<String>,
+    loading: &[String],
+) -> Vec<LoadRequest> {
+    let mut names: Vec<&String> = Vec::new();
+    for target in &program.lazy_targets {
+        let name = &program.lazy_namespaces[target.namespace];
+        if !(loaded.contains(name)
+            || loading.contains(name)
+            || program.namespaces.contains(name)
+            || names.contains(&name))
+        {
+            names.push(name);
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| LoadRequest {
+            namespace: crate::compiler_data::Name::new(None, name),
+            requesting_namespace: crate::compiler_data::Name::new(None, namespace),
+            requesting_file: None,
+            reload: Reload::None,
+        })
+        .collect()
+}
+
+/// The error for the first Var target of `program`'s `light.lazy/loadable`
+/// sites that the session does not define once their namespaces are loaded.
+/// A namespace still loading may define its Var later.
+fn undefined_lazy_target(
+    program: &crate::Program,
+    compiler: &InteractiveCompiler,
+    loading: &[String],
+) -> Option<String> {
+    program.lazy_targets.iter().find_map(|target| {
+        let global = &program.globals[target.global?.0];
+        (!loading.contains(&global.namespace) && !compiler.defines(&global.namespace, &global.name))
+            .then(|| {
+                format!(
+                    "lazy target {}/{} is not defined",
+                    global.namespace, global.name
+                )
+            })
+    })
+}
+
+fn missing_namespace(name: &str, lazy: bool) -> String {
+    if lazy {
+        format!("lazy target namespace {name} not found")
+    } else {
+        format!("missing namespace {name}")
+    }
+}
+
 /// Runtime callbacks use the already active engine context and this session's
 /// compiler. No second evaluator or filesystem authority is introduced.
 fn callback_source(
@@ -978,6 +1070,57 @@ fn callback_source(
     if source.source.len() > options.max_source_bytes {
         return Err(EvalError("compiler source byte limit exceeded".into()).into());
     }
+    // Load and evaluate each requested namespace not loaded yet, then return
+    // to the current namespace; `lazy` requests come from loadable sites.
+    let load = |requests: Vec<LoadRequest>,
+                lazy: bool,
+                located: &dyn Fn(String) -> EvalDiagnostic|
+     -> Result<(), EvalDiagnostic> {
+        for request in requests {
+            let name = String::from_utf16_lossy(request.namespace.name());
+            if name == "cljs.core"
+                || name == "clojure.core"
+                || (loaded.borrow().contains(&name)
+                    && request.reload == crate::source_provider::Reload::None)
+            {
+                continue;
+            }
+            if loading.borrow().contains(&name) {
+                return Err(located(format!(
+                    "namespace load cycle: {} -> {name}",
+                    loading.borrow().join(" -> ")
+                )));
+            }
+            let dependency = if let Some(text) = crate::compiler_libraries::source(&name) {
+                SourceInput::new(format!("<builtin>/{name}.cljs"), text)
+            } else {
+                options
+                    .source_provider
+                    .as_ref()
+                    .ok_or_else(|| located(format!("no source provider for {name}")))?
+                    .load(&request)
+                    .map_err(|error| located(error.to_string()))?
+                    .ok_or_else(|| located(missing_namespace(&name, lazy)))?
+            };
+            let namespace = compiler.borrow().namespace().to_owned();
+            loading.borrow_mut().push(name.clone());
+            let result = callback_source(
+                call,
+                compiler,
+                namespace_update,
+                options,
+                loaded,
+                loading,
+                &dependency,
+            );
+            loading.borrow_mut().pop();
+            compiler.borrow_mut().set_namespace(&namespace);
+            callback_sync_namespace(call, compiler, namespace_update)?;
+            call.release_scoped(result?)?;
+            loaded.borrow_mut().insert(name);
+        }
+        Ok(())
+    };
     let mut cursor = 0;
     let mut last = call.value(&Datum::new(DatumKind::Nil))?;
     loop {
@@ -998,49 +1141,7 @@ fn callback_source(
                 callback_sync_namespace(call, compiler, namespace_update)?;
             }
             if let Some((requests, staged)) = requests {
-                for request in requests {
-                    let name = String::from_utf16_lossy(request.namespace.name());
-                    if name == "cljs.core"
-                        || name == "clojure.core"
-                        || (loaded.borrow().contains(&name)
-                            && request.reload == crate::source_provider::Reload::None)
-                    {
-                        continue;
-                    }
-                    if loading.borrow().contains(&name) {
-                        return Err(located(format!(
-                            "namespace load cycle: {} -> {name}",
-                            loading.borrow().join(" -> ")
-                        )));
-                    }
-                    let dependency = if let Some(text) = crate::compiler_libraries::source(&name) {
-                        SourceInput::new(format!("<builtin>/{name}.cljs"), text)
-                    } else {
-                        options
-                            .source_provider
-                            .as_ref()
-                            .ok_or_else(|| located(format!("no source provider for {name}")))?
-                            .load(&request)
-                            .map_err(|error| located(error.to_string()))?
-                            .ok_or_else(|| located(format!("missing namespace {name}")))?
-                    };
-                    let namespace = compiler.borrow().namespace().to_owned();
-                    loading.borrow_mut().push(name.clone());
-                    let result = callback_source(
-                        call,
-                        compiler,
-                        namespace_update,
-                        options,
-                        loaded,
-                        loading,
-                        &dependency,
-                    );
-                    loading.borrow_mut().pop();
-                    compiler.borrow_mut().set_namespace(&namespace);
-                    callback_sync_namespace(call, compiler, namespace_update)?;
-                    call.release_scoped(result?)?;
-                    loaded.borrow_mut().insert(name);
-                }
+                load(requests, false, &located)?;
                 compiler
                     .borrow_mut()
                     .finish_directive(staged)
@@ -1062,6 +1163,15 @@ fn callback_source(
                                 .or_else(|| Some(form.span())),
                             data: None,
                         })?;
+                let namespace = compiler.borrow().namespace().to_owned();
+                let requests =
+                    lazy_requests(&program, &namespace, &loaded.borrow(), &loading.borrow());
+                load(requests, true, &located)?;
+                if let Some(message) =
+                    undefined_lazy_target(&program, &compiler.borrow(), &loading.borrow())
+                {
+                    return Err(located(message));
+                }
                 let value = call
                     .unit(&crate::emitter::emit_interactive_unit(&program))
                     .map_err(|error| located(error.0))?;

@@ -8,8 +8,8 @@ use std::{
 };
 
 use crate::analyzer::{
-    AnalysisOptions, AnalysisWarning, JsRefer, NamespaceInput,
-    analyze_namespaces_prepared_with_warnings, analyze_with_macros,
+    AnalysisOptions, AnalysisWarning, JsRefer, NamespaceAnalysis, NamespaceInput,
+    analyze_with_macros,
 };
 use crate::macro_host::{MacroHost, MacroImport};
 use crate::source_provider::{FileSourceProvider, LoadError, LoadRequest, Reload, SourceProvider};
@@ -1128,6 +1128,31 @@ impl Loader<'_> {
         self.ordered.push(file);
         Ok(())
     }
+
+    /// Visit `name`, the target namespace of a lazy reference in source
+    /// `requester`. A namespace already loaded is resident. Otherwise this
+    /// appends the namespace's unvisited static dependencies and then the
+    /// namespace itself; a dependency on `requester` or on another loaded
+    /// namespace is no cycle.
+    fn visit_lazy(&mut self, name: &str, requester: usize) -> Result<(), NamespaceCompileError> {
+        if matches!(self.states.get(name), Some(LoadState::Loaded)) {
+            return Ok(());
+        }
+        // The requester is the namespace asking the provider for the target.
+        self.stack.push(self.ordered[requester].name.clone());
+        let result = match self.find(name) {
+            Ok(None) if crate::compiler_libraries::source(name).is_none() => {
+                Err(NamespaceCompileError::new(format!(
+                    "lazy target namespace {name} not found: expected {}.cljs or .cljc in explicit source roots",
+                    name.replace('.', "/").replace('-', "_")
+                )))
+            }
+            Ok(_) => self.visit(name),
+            Err(error) => Err(error),
+        };
+        self.stack.pop();
+        result
+    }
 }
 
 /// Load an entry namespace and its dependencies from explicit roots, then emit
@@ -1299,6 +1324,14 @@ pub fn analyze_namespace_entry_with_provider(
 
 /// The program of an entry namespace and the path and text of each source,
 /// by source index.
+///
+/// The loader first reaches the entry and its static dependencies, which are
+/// analyzed in that order. A `light.lazy/loadable` site is not a dependency:
+/// after a source is analyzed, the loader visits each namespace its lazy
+/// references name, which appends that namespace's unvisited dependencies and
+/// then the namespace itself, to be analyzed in turn. A target already loaded
+/// is resident, and a target may require the namespace that loads it, which
+/// is loaded by then (docs/code-splitting.md, "Roots, edges and reach").
 fn analyze_entry(
     entry: &str,
     sources: &dyn SourceProvider,
@@ -1320,7 +1353,71 @@ fn analyze_entry(
         warning_mode: options.warning_mode,
     };
     loader.visit(entry)?;
-    for (source_index, file) in loader.ordered.iter().enumerate() {
+    let entry_index = loader.ordered.len() - 1;
+    source_warnings(&loader.ordered, 0, options, warnings);
+    let mut analysis = NamespaceAnalysis::new(macros);
+    let mut index = 0;
+    while index < loader.ordered.len() {
+        let file = &loader.ordered[index];
+        let at = |error: AnalysisError| {
+            NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
+        };
+        let first_lazy = analysis.lazy_target_count();
+        let resolution = prepare_source(macros, file).map_err(at)?;
+        let input = NamespaceInput {
+            name: &file.name,
+            source: &file.source,
+            syntax: &file.syntax,
+            aliases: &file.aliases,
+            requires: &file.requires,
+        };
+        analysis
+            .analyze(
+                &input,
+                resolution,
+                index == entry_index,
+                macros,
+                options,
+                warnings,
+            )
+            .map_err(at)?;
+        let loaded = loader.ordered.len();
+        for (namespace, span) in analysis.lazy_namespaces_since(first_lazy) {
+            loader.visit_lazy(&namespace, index).map_err(|error| {
+                if error.path.is_none() {
+                    let file = &loader.ordered[index];
+                    error.at(&file.path, &file.source, span)
+                } else {
+                    error
+                }
+            })?;
+        }
+        source_warnings(&loader.ordered, loaded, options, warnings);
+        index += 1;
+    }
+    let program = analysis
+        .finish(entry_index, macros)
+        .map_err(|(index, error)| {
+            let file = &loader.ordered[index];
+            NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
+        })?;
+    let files = loader
+        .ordered
+        .into_iter()
+        .map(|file| (file.path, file.source))
+        .collect();
+    Ok((program, files))
+}
+
+/// The warnings about the headers of `files[from..]`, which analysis reports
+/// before the warnings of their bodies.
+fn source_warnings(
+    files: &[NamespaceSource],
+    from: usize,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+) {
+    for (source_index, file) in files.iter().enumerate().skip(from) {
         for (package, span) in &file.inert_packages {
             warnings.push(AnalysisWarning {
                 kind: "package-require-no-effect",
@@ -1333,7 +1430,7 @@ fn analyze_entry(
         }
     }
     if options.warning_mode {
-        for (source_index, file) in loader.ordered.iter().enumerate() {
+        for (source_index, file) in files.iter().enumerate().skip(from) {
             if !file.name.contains('.') {
                 warnings.push(AnalysisWarning {
                     kind: "single-segment-namespace",
@@ -1359,189 +1456,165 @@ fn analyze_entry(
             }
         }
     }
-    let inputs = loader
-        .ordered
-        .iter()
-        .map(|file| NamespaceInput {
-            name: &file.name,
-            source: &file.source,
-            syntax: &file.syntax,
-            aliases: &file.aliases,
-            requires: &file.requires,
-        })
-        .collect::<Vec<_>>();
-    let program = analyze_namespaces_prepared_with_warnings(
-        &inputs,
-        macros,
-        options,
-        warnings,
-        |macros, index| {
-            let file = &loader.ordered[index];
-            macros.set_namespace_imports(&file.name, file.namespace_imports.clone());
-            let error = |span: Range<usize>, message: String| AnalysisError {
-                kind: crate::AnalysisErrorKind::MacroExpansion(message),
-                span,
-            };
-            let header_span = file.syntax.nodes[file.syntax.roots[0].0].span.clone();
-            let mut imports = Vec::new();
-            let mut renamed_macros = Vec::new();
-            for spec in &file.runtime_specs {
-                let mut import = spec.import.clone();
-                import.refers.clear();
-                for original in &spec.import.refers {
-                    if macros.source_binding_private(&import.namespace, original) {
-                        return Err(error(
-                            spec.span.clone(),
-                            format!(
-                                "{}/{original} is private; :refer requires a public binding",
-                                import.namespace
-                            ),
-                        ));
-                    }
-                    if macros
-                        .has_macro(&import.namespace, original)
-                        .map_err(|m| error(spec.span.clone(), m))?
-                    {
-                        let local = spec
-                            .renames
-                            .iter()
-                            .find(|(from, _)| from == original)
-                            .map_or(original, |(_, to)| to);
-                        if local == original {
-                            import.refers.push(original.clone());
-                        } else {
-                            renamed_macros.push((
-                                local.clone(),
-                                import.namespace.clone(),
-                                original.clone(),
-                            ));
-                        }
-                    }
-                }
-                imports.push(import);
+}
+
+/// Configure the macro host for analyzing `file` and return how its names
+/// resolve: its imports, refers, renamed macros and namespace metadata.
+fn prepare_source(
+    macros: &mut MacroHost,
+    file: &NamespaceSource,
+) -> Result<crate::analyzer::NamespaceResolution, AnalysisError> {
+    macros.set_namespace_imports(&file.name, file.namespace_imports.clone());
+    let error = |span: Range<usize>, message: String| AnalysisError {
+        kind: crate::AnalysisErrorKind::MacroExpansion(message),
+        span,
+    };
+    let header_span = file.syntax.nodes[file.syntax.roots[0].0].span.clone();
+    let mut imports = Vec::new();
+    let mut renamed_macros = Vec::new();
+    for spec in &file.runtime_specs {
+        let mut import = spec.import.clone();
+        import.refers.clear();
+        for original in &spec.import.refers {
+            if macros.source_binding_private(&import.namespace, original) {
+                return Err(error(
+                    spec.span.clone(),
+                    format!(
+                        "{}/{original} is private; :refer requires a public binding",
+                        import.namespace
+                    ),
+                ));
             }
-            let mut resolution = file.resolution.clone();
-            for spec in &file.runtime_specs {
-                for original in &spec.import.refers {
-                    let local = spec
-                        .renames
-                        .iter()
-                        .find(|(from, _)| from == original)
-                        .map(|(_, to)| to)
-                        .unwrap_or(original);
-                    if resolution.refers.iter().any(|(name, _, _)| name == local) {
-                        return Err(error(
-                            spec.span.clone(),
-                            format!("duplicate or conflicting refer: {local}"),
-                        ));
-                    }
-                    resolution.refers.push((
+            if macros
+                .has_macro(&import.namespace, original)
+                .map_err(|m| error(spec.span.clone(), m))?
+            {
+                let local = spec
+                    .renames
+                    .iter()
+                    .find(|(from, _)| from == original)
+                    .map_or(original, |(_, to)| to);
+                if local == original {
+                    import.refers.push(original.clone());
+                } else {
+                    renamed_macros.push((
                         local.clone(),
-                        spec.import.namespace.clone(),
+                        import.namespace.clone(),
                         original.clone(),
                     ));
                 }
             }
-            for (local, namespace, original) in &file.resolution.refers {
-                if matches!(namespace.as_str(), "cljs.core" | "clojure.core")
-                    && macros
-                        .has_macro(namespace, original)
-                        .map_err(|m| error(header_span.clone(), m))?
-                {
-                    renamed_macros.push((local.clone(), namespace.clone(), original.clone()));
-                }
+        }
+        imports.push(import);
+    }
+    let mut resolution = file.resolution.clone();
+    for spec in &file.runtime_specs {
+        for original in &spec.import.refers {
+            let local = spec
+                .renames
+                .iter()
+                .find(|(from, _)| from == original)
+                .map(|(_, to)| to)
+                .unwrap_or(original);
+            if resolution.refers.iter().any(|(name, _, _)| name == local) {
+                return Err(error(
+                    spec.span.clone(),
+                    format!("duplicate or conflicting refer: {local}"),
+                ));
             }
-            macros
-                .set_imports(&file.name, imports)
-                .map_err(|m| error(header_span.clone(), m))?;
-            macros.set_renames(&file.name, renamed_macros);
-            let NodeKind::Collection { children, .. } =
-                &file.syntax.nodes[file.syntax.roots[0].0].kind
-            else {
-                unreachable!()
-            };
-            let declared = children[1];
-            if matches!(
-                file.syntax.nodes[declared.0].kind,
-                NodeKind::Metadata { .. }
-            ) || children.get(2).is_some_and(|n| {
-                matches!(
-                    file.syntax.nodes[n.0].kind,
-                    NodeKind::String(_)
-                        | NodeKind::Collection {
-                            kind: CollectionKind::Map,
-                            ..
-                        }
+            resolution.refers.push((
+                local.clone(),
+                spec.import.namespace.clone(),
+                original.clone(),
+            ));
+        }
+    }
+    for (local, namespace, original) in &file.resolution.refers {
+        if matches!(namespace.as_str(), "cljs.core" | "clojure.core")
+            && macros
+                .has_macro(namespace, original)
+                .map_err(|m| error(header_span.clone(), m))?
+        {
+            renamed_macros.push((local.clone(), namespace.clone(), original.clone()));
+        }
+    }
+    macros
+        .set_imports(&file.name, imports)
+        .map_err(|m| error(header_span.clone(), m))?;
+    macros.set_renames(&file.name, renamed_macros);
+    let NodeKind::Collection { children, .. } = &file.syntax.nodes[file.syntax.roots[0].0].kind
+    else {
+        unreachable!()
+    };
+    let declared = children[1];
+    if matches!(
+        file.syntax.nodes[declared.0].kind,
+        NodeKind::Metadata { .. }
+    ) || children.get(2).is_some_and(|n| {
+        matches!(
+            file.syntax.nodes[n.0].kind,
+            NodeKind::String(_)
+                | NodeKind::Collection {
+                    kind: CollectionKind::Map,
+                    ..
+                }
+        )
+    }) {
+        let aliases = macros.reader_aliases(&file.name, &file.aliases, &file.requires);
+        let source = crate::compiler_data::Source::new(file.path.to_string_lossy(), &file.source);
+        let c = crate::compiler_data::DataBuilder;
+        let mut view = crate::compiler_reader::NamespaceView::new(&file.name, &source);
+        view.aliases = aliases
+            .iter()
+            .map(|(a, n)| {
+                (
+                    crate::compiler_data::Name::new(None, a),
+                    crate::compiler_data::Name::new(None, n),
                 )
-            }) {
-                let aliases = macros.reader_aliases(&file.name, &file.aliases, &file.requires);
-                let source =
-                    crate::compiler_data::Source::new(file.path.to_string_lossy(), &file.source);
-                let c = crate::compiler_data::DataBuilder;
-                let mut view = crate::compiler_reader::NamespaceView::new(&file.name, &source);
-                view.aliases = aliases
-                    .iter()
-                    .map(|(a, n)| {
-                        (
-                            crate::compiler_data::Name::new(None, a),
-                            crate::compiler_data::Name::new(None, n),
-                        )
-                    })
-                    .collect();
-                let lower = |node| {
-                    crate::compiler_reader::lower_form(&source, &file.syntax, node, &view, &[])
-                        .map_err(|e| error(file.syntax.nodes[node.0].span.clone(), e.to_string()))
-                };
-                let name = lower(declared)?;
-                let mut metadata = name.metadata().map(|f| f.data()).unwrap_or(
-                    c.map(&[])
-                        .map_err(|e| error(header_span.clone(), e.to_string()))?,
-                );
-                let mut docstring = metadata
-                    .get(&c.keyword(crate::compiler_data::Name::new(None, "doc")))
-                    .map_err(|e| error(header_span.clone(), e.to_string()))?;
-                let mut offset = 2;
-                if let Some(&doc) = children.get(offset)
-                    && matches!(file.syntax.nodes[doc.0].kind, NodeKind::String(_))
-                {
-                    docstring = Some(lower(doc)?.data());
-                    offset += 1;
+            })
+            .collect();
+        let lower = |node| {
+            crate::compiler_reader::lower_form(&source, &file.syntax, node, &view, &[])
+                .map_err(|e| error(file.syntax.nodes[node.0].span.clone(), e.to_string()))
+        };
+        let name = lower(declared)?;
+        let mut metadata = name.metadata().map(|f| f.data()).unwrap_or(
+            c.map(&[])
+                .map_err(|e| error(header_span.clone(), e.to_string()))?,
+        );
+        let mut docstring = metadata
+            .get(&c.keyword(crate::compiler_data::Name::new(None, "doc")))
+            .map_err(|e| error(header_span.clone(), e.to_string()))?;
+        let mut offset = 2;
+        if let Some(&doc) = children.get(offset)
+            && matches!(file.syntax.nodes[doc.0].kind, NodeKind::String(_))
+        {
+            docstring = Some(lower(doc)?.data());
+            offset += 1;
+        }
+        if let Some(&attrs) = children.get(offset)
+            && matches!(
+                file.syntax.nodes[attrs.0].kind,
+                NodeKind::Collection {
+                    kind: CollectionKind::Map,
+                    ..
                 }
-                if let Some(&attrs) = children.get(offset)
-                    && matches!(
-                        file.syntax.nodes[attrs.0].kind,
-                        NodeKind::Collection {
-                            kind: CollectionKind::Map,
-                            ..
-                        }
-                    )
-                {
-                    for (key, value) in lower(attrs)?
-                        .data()
-                        .entries()
-                        .map_err(|e| error(header_span.clone(), e.to_string()))?
-                    {
-                        metadata = c
-                            .assoc(&metadata, &key, &value)
-                            .map_err(|e| error(header_span.clone(), e.to_string()))?;
-                    }
-                }
-                let symbol = c
-                    .with_meta(&name.data(), &metadata)
+            )
+        {
+            for (key, value) in lower(attrs)?
+                .data()
+                .entries()
+                .map_err(|e| error(header_span.clone(), e.to_string()))?
+            {
+                metadata = c
+                    .assoc(&metadata, &key, &value)
                     .map_err(|e| error(header_span.clone(), e.to_string()))?;
-                macros.set_namespace_symbol(&file.name, symbol, docstring);
             }
-            Ok(resolution)
-        },
-    )
-    .map_err(|(index, error)| {
-        let file = &loader.ordered[index];
-        NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
-    })?;
-    let files = loader
-        .ordered
-        .into_iter()
-        .map(|file| (file.path, file.source))
-        .collect();
-    Ok((program, files))
+        }
+        let symbol = c
+            .with_meta(&name.data(), &metadata)
+            .map_err(|e| error(header_span.clone(), e.to_string()))?;
+        macros.set_namespace_symbol(&file.name, symbol, docstring);
+    }
+    Ok(resolution)
 }

@@ -99,7 +99,21 @@ pub(crate) fn append(target: &mut Program, fragment: &Program, shared: &SharedPr
         named: Ids::new(&shared.named_literals, target.named_literals.len()),
         globals: Vec::with_capacity(fragment.globals.len()),
         js: Vec::with_capacity(fragment.js_globals.len()),
+        lazy: Vec::with_capacity(fragment.lazy_targets.len()),
     };
+    // A lazy target whose site is shared is the target's own; the others are
+    // appended after the target's, in fragment order.
+    let mut appended_lazy = Vec::new();
+    for (index, lazy) in fragment.lazy_targets.iter().enumerate() {
+        let site = (remap.map_expr)(lazy.site);
+        let existing = (lazy.site.0 < shared.exprs.len())
+            .then(|| target.lazy_targets.iter().position(|t| t.site == site))
+            .flatten();
+        remap.lazy.push(LazyTargetId(existing.unwrap_or_else(|| {
+            appended_lazy.push(index);
+            target.lazy_targets.len() + appended_lazy.len() - 1
+        })));
+    }
     debug_assert!(
         remap.shares_prefix(target, fragment, shared),
         "a fragment's shared entries must be unchanged in its target"
@@ -166,6 +180,26 @@ pub(crate) fn append(target: &mut Program, fragment: &Program, shared: &SharedPr
             }
         };
         remap.js.push(id);
+    }
+    for index in appended_lazy {
+        let lazy = fragment.lazy_targets[index];
+        let name = &fragment.lazy_namespaces[lazy.namespace];
+        let namespace = match target.lazy_namespaces.iter().position(|n| n == name) {
+            Some(namespace) => namespace,
+            None => {
+                target.lazy_namespaces.push(name.clone());
+                target.lazy_namespaces.len() - 1
+            }
+        };
+        let mut global = lazy.global;
+        if let Some(global) = &mut global {
+            remap.global(global);
+        }
+        target.lazy_targets.push(LazyTarget {
+            site: (remap.map_expr)(lazy.site),
+            namespace,
+            global,
+        });
     }
     target
         .strings
@@ -329,7 +363,21 @@ fn retain(program: &Program, root: Option<ExprId>) -> (Program, Vec<usize>) {
     for (index, origin) in origins.iter().enumerate() {
         ids.insert(*origin, ExprId(index));
     }
-    let remap = identity_remap(program, |id| ids[&id.0]);
+    // The lazy targets the retained loadables name, renumbered in order.
+    let mut lazy = vec![LazyTargetId(usize::MAX); program.lazy_targets.len()];
+    let mut lazy_targets = Vec::new();
+    for origin in &origins {
+        if let ExprKind::Loadable { target } = program.exprs[*origin].kind
+            && lazy[target.0].0 == usize::MAX
+        {
+            let mut kept = program.lazy_targets[target.0];
+            kept.site = ids.get(&kept.site.0).copied().unwrap_or(ids[origin]);
+            lazy[target.0] = LazyTargetId(lazy_targets.len());
+            lazy_targets.push(kept);
+        }
+    }
+    let mut remap = identity_remap(program, |id| ids[&id.0]);
+    remap.lazy = lazy;
     let exprs = origins
         .iter()
         .map(|origin| {
@@ -363,6 +411,10 @@ fn retain(program: &Program, root: Option<ExprId>) -> (Program, Vec<usize>) {
         js_globals: program.js_globals.clone(),
         strings: Vec::new(),
         named_literals: Vec::new(),
+        lazy_targets,
+        lazy_namespaces: program.lazy_namespaces.clone(),
+        namespace_requires: program.namespace_requires.clone(),
+        namespace_lazy_only: program.namespace_lazy_only.clone(),
         root: root.map_or(ExprId(0), |root| ids[&root.0]),
     };
     (snapshot, origins)
@@ -473,6 +525,7 @@ fn identity_remap<F: Fn(ExprId) -> ExprId>(_program: &Program, map_expr: F) -> R
         named: Ids::default(),
         globals: Vec::new(),
         js: Vec::new(),
+        lazy: Vec::new(),
     }
 }
 
@@ -485,6 +538,8 @@ struct Remap<'a, F> {
     /// An empty table is the identity mapping used by read-only traversals.
     globals: Vec<GlobalId>,
     js: Vec<JsGlobalId>,
+    /// [`Program::lazy_targets`] entries; empty is the identity, as above.
+    lazy: Vec<LazyTargetId>,
 }
 
 impl<F: Fn(ExprId) -> ExprId> Remap<'_, F> {
@@ -601,6 +656,11 @@ impl<F: Fn(ExprId) -> ExprId> Remap<'_, F> {
             JsGlobal(id) => {
                 if !self.js.is_empty() {
                     *id = self.js[id.0];
+                }
+            }
+            Loadable { target } => {
+                if !self.lazy.is_empty() {
+                    *target = self.lazy[target.0];
                 }
             }
             ReaderLiteral { items, .. }

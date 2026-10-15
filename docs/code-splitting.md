@@ -523,6 +523,38 @@ output.
   the target itself to `ordered`. A lazy target that is already `Loaded` is
   resident. Record the static require graph in the `Program`
   (`namespace_requires: Vec<Vec<usize>>` by source index) for Phase 2.
+- **As built (light-cljs-270).** The analyzer and loader above, with the
+  form emitted as `null` until the library exists. Details the list leaves
+  open:
+  - `LazyTarget::namespace` indexes `Program::lazy_namespaces`, the distinct
+    target namespace names in first-site order, because a target's source
+    index is unknown at the site (the REPL and the macro host analyze sites
+    of namespaces no loader orders). Map a name to its source index through
+    `Program::namespaces`, which for a whole program is the source order.
+    `ExprKind::Loadable { target }` indexes `Program::lazy_targets`;
+    `program_fragment` keeps both tables when it snapshots or appends.
+  - `light.lazy/loadable` is recognized fully qualified without a require of
+    `light.lazy`, like a special form, and through an alias of it; the
+    argument must be an unquoted symbol. Errors: "light.lazy/loadable requires
+    one literal symbol naming a Var or a namespace", "lazy target app.main/f
+    is in the current namespace app.main", "lazy target namespace cljs.core is
+    not a source namespace" (also `js`), "lazy target namespace app.nope not
+    found: expected app/nope.cljs or .cljc in explicit source roots" (from the
+    loader) and, once every namespace is analyzed, "lazy target
+    app.editor/start is not defined".
+  - Sources reached only through lazy edges follow the entry
+    (`Program::namespace_lazy_only`), so they run after it, as their chunks
+    would. The program's value stays the entry's: its last top-level form
+    stores its value in a global no symbol names (`<entry value>`) and the
+    program returns that global after the lazy sources run. Programs without
+    such sources are unchanged.
+  - `analyze_namespaces` over a fixed slice of sources reports a lazy target
+    whose namespace is not among them as "lazy target namespace app.nope not
+    found".
+  - The REPL (`EvalSession` and runtime source callbacks) loads the namespace
+    of a loadable it has neither loaded nor entered, as a `require` would,
+    before the form runs, then requires the Var to be defined. A namespace
+    still loading, because it requires the namespace naming it, is resident.
 - **Library.** `src/compiler_libraries/light/lazy.cljs`: `Loadable` with
   `IDeref`, and the functions `load` and `loaded?`. Register it with the
   bundled first-party libraries in `src/compiler_libraries.rs`, which the

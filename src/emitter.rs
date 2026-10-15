@@ -4657,7 +4657,8 @@ impl<'a> Emitter<'a> {
             return;
         }
         match &self.program.exprs[id.0].kind {
-            ExprKind::Nil => self.output.push_str("null"),
+            // A loadable is `nil` until the `light.lazy` library gives it a value.
+            ExprKind::Nil | ExprKind::Loadable { .. } => self.output.push_str("null"),
             ExprKind::Construct { callee, args } => {
                 self.output.push_str("new ");
                 // Host resolution is an implementation call, not a source call.

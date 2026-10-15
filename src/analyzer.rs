@@ -2415,6 +2415,12 @@ pub enum ExprKind {
     },
     WithOutStr(ExprId),
     Exists(ExprId),
+    /// `(light.lazy/loadable target)`: a reference to code a chunked build
+    /// may load later, recorded in [`Program::lazy_targets`]. Emitted as
+    /// `nil` until the `light.lazy` library gives it a value.
+    Loadable {
+        target: LazyTargetId,
+    },
     /// Resolve checks binding identity in the compiler, value availability in applications.
     BindingExists(ExprId),
     BooleanHint(ExprId),
@@ -2577,7 +2583,37 @@ pub struct Program {
     /// Owned UTF-16 preserves even lone surrogate escapes.
     pub strings: Vec<Vec<u16>>,
     pub named_literals: Vec<NamedLiteral>,
+    /// Every `light.lazy/loadable` site, in analysis order; an
+    /// [`ExprKind::Loadable`] names its entry.
+    pub lazy_targets: Vec<LazyTarget>,
+    /// The distinct namespaces lazy targets name, in first-site order; a
+    /// [`LazyTarget::namespace`] indexes this table.
+    pub lazy_namespaces: Vec<String>,
+    /// For a program of several namespace sources, by source index (the
+    /// position in `namespaces`): the source indices of the namespaces that
+    /// source requires, in its `ns` form's order. Lazy references are not
+    /// requires. Empty for a program not analyzed from namespace sources.
+    pub namespace_requires: Vec<Vec<usize>>,
+    /// By source index, whether the source was reached only through lazy
+    /// references: it is neither the entry nor a static dependency of it.
+    /// Such sources follow the entry; see `NamespaceAnalysis::finish`.
+    pub namespace_lazy_only: Vec<bool>,
     pub root: ExprId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct LazyTargetId(pub usize);
+
+/// One `light.lazy/loadable` site: what a chunked build loads for it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LazyTarget {
+    /// The [`ExprKind::Loadable`] expression.
+    pub site: ExprId,
+    /// The target namespace, an index into [`Program::lazy_namespaces`].
+    pub namespace: usize,
+    /// The target Var, or `None` for a namespace target. Its binding is
+    /// reserved like an existence probe's until the namespace defines it.
+    pub global: Option<GlobalId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2589,6 +2625,9 @@ pub enum AnalysisErrorKind {
     DuplicateParameter(String),
     NumberOutOfRange,
     MacroExpansion(String),
+    /// A `light.lazy/loadable` site whose target is not a defined Var of a
+    /// loadable namespace other than the site's own.
+    LazyTarget(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2639,6 +2678,7 @@ impl fmt::Display for AnalysisError {
             }
             AnalysisErrorKind::DuplicateParameter(name) => write!(f, "duplicate parameter: {name}"),
             AnalysisErrorKind::MacroExpansion(message) => write!(f, "macro expansion: {message}"),
+            AnalysisErrorKind::LazyTarget(message) => f.write_str(message),
             AnalysisErrorKind::NumberOutOfRange => {
                 f.write_str("number is not a valid ClojureScript constant")
             }
@@ -2877,6 +2917,10 @@ fn empty_program() -> Program {
         js_globals: Vec::new(),
         strings: Vec::new(),
         named_literals: Vec::new(),
+        lazy_targets: Vec::new(),
+        lazy_namespaces: Vec::new(),
+        namespace_requires: Vec::new(),
+        namespace_lazy_only: Vec::new(),
         root: ExprId(0),
     }
 }
@@ -3283,17 +3327,90 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
     warnings: &mut Vec<AnalysisWarning>,
     mut prepare: impl FnMut(&mut MacroHost, usize) -> Result<NamespaceResolution, AnalysisError>,
 ) -> Result<Program, (usize, AnalysisError)> {
-    macro_host.begin_compilation();
-    let mut program = empty_program();
-    let mut globals = HashMap::new();
-    let mut roots = Vec::new();
+    let mut analysis = NamespaceAnalysis::new(macro_host);
     for (source_index, input) in inputs.iter().enumerate() {
         let resolution =
             prepare(macro_host, source_index).map_err(|error| (source_index, error))?;
+        analysis
+            .analyze(
+                input,
+                resolution,
+                source_index + 1 == inputs.len(),
+                macro_host,
+                options,
+                warnings,
+            )
+            .map_err(|error| (source_index, error))?;
+    }
+    analysis.finish(inputs.len().saturating_sub(1), macro_host)
+}
+
+/// The name of the global that holds the entry namespace's value while the
+/// namespaces loaded after it run ([`NamespaceAnalysis::finish`]). No symbol
+/// spells it, so no source resolves or redefines it.
+pub(crate) const ENTRY_VALUE: &str = "<entry value>";
+
+/// Namespace sources analyzed one after another into one program, each after
+/// the sources it requires. A loader adds sources as it reaches them: the
+/// targets of the lazy references a source introduced
+/// ([`NamespaceAnalysis::lazy_namespaces_since`]) follow everything analyzed
+/// before them.
+pub(crate) struct NamespaceAnalysis {
+    program: Program,
+    globals: HashMap<(String, String), GlobalId>,
+    /// The body of each source, by source index.
+    roots: Vec<ExprId>,
+    /// The namespaces each source requires, by source index.
+    requires: Vec<Vec<String>>,
+}
+
+impl NamespaceAnalysis {
+    pub(crate) fn new(macro_host: &mut MacroHost) -> Self {
+        macro_host.begin_compilation();
+        Self {
+            program: empty_program(),
+            globals: HashMap::new(),
+            roots: Vec::new(),
+            requires: Vec::new(),
+        }
+    }
+
+    /// How many lazy reference sites the sources analyzed so far hold.
+    pub(crate) fn lazy_target_count(&self) -> usize {
+        self.program.lazy_targets.len()
+    }
+
+    /// The distinct namespaces the lazy targets from site `first` on name, in
+    /// site order.
+    pub(crate) fn lazy_namespaces_since(&self, first: usize) -> Vec<(String, Span)> {
+        let mut namespaces: Vec<(String, Span)> = Vec::new();
+        for target in &self.program.lazy_targets[first..] {
+            let namespace = &self.program.lazy_namespaces[target.namespace];
+            if !namespaces.iter().any(|(existing, _)| existing == namespace) {
+                namespaces.push((
+                    namespace.clone(),
+                    self.program.exprs[target.site.0].span.clone(),
+                ));
+            }
+        }
+        namespaces
+    }
+
+    /// Analyze the next source, whose dependencies were analyzed before it.
+    /// `result` marks the entry namespace, whose value is the program's.
+    pub(crate) fn analyze(
+        &mut self,
+        input: &NamespaceInput<'_>,
+        resolution: NamespaceResolution,
+        result: bool,
+        macro_host: &mut MacroHost,
+        options: AnalysisOptions,
+        warnings: &mut Vec<AnalysisWarning>,
+    ) -> Result<(), AnalysisError> {
+        let source_index = self.roots.len();
         let (mut syntax, mut discards) = compiler_syntax(input.source, input.syntax);
         if resolution.cljc {
-            crate::compiler_reader::select_cljs(input.source, syntax.to_mut(), &mut discards)
-                .map_err(|error| (source_index, error))?;
+            crate::compiler_reader::select_cljs(input.source, syntax.to_mut(), &mut discards)?;
         }
         let source_roots = syntax.roots.clone();
         let mut analyzer = Analyzer {
@@ -3313,10 +3430,10 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
             macro_depth: 0,
             analysis_depth: 0,
             macro_source: None,
-            program,
+            program: std::mem::replace(&mut self.program, empty_program()),
             env: Environment::default(),
             recur_target: None,
-            globals,
+            globals: std::mem::take(&mut self.globals),
             namespace: input.name,
             aliases: input.aliases,
             requires: input.requires,
@@ -3344,38 +3461,26 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
             let mac = analyzer
                 .macro_host
                 .resolves_macro(input.name, local, true)
-                .map_err(|message| {
-                    (
-                        source_index,
-                        AnalysisError {
-                            kind: AnalysisErrorKind::MacroExpansion(message),
-                            span: input.syntax.nodes[input.syntax.roots[0].0].span.clone(),
-                        },
-                    )
+                .map_err(|message| AnalysisError {
+                    kind: AnalysisErrorKind::MacroExpansion(message),
+                    span: input.syntax.nodes[input.syntax.roots[0].0].span.clone(),
                 })?;
             if !runtime && !mac {
-                return Err((
-                    source_index,
-                    AnalysisError {
-                        kind: AnalysisErrorKind::UnresolvedSymbol(format!(
-                            "{namespace}/{original} (:refer does not name a public Var or macro)"
-                        )),
-                        span: input.syntax.nodes[input.syntax.roots[0].0].span.clone(),
-                    },
-                ));
+                return Err(AnalysisError {
+                    kind: AnalysisErrorKind::UnresolvedSymbol(format!(
+                        "{namespace}/{original} (:refer does not name a public Var or macro)"
+                    )),
+                    span: input.syntax.nodes[input.syntax.roots[0].0].span.clone(),
+                });
             }
         }
-        let context = if source_index + 1 == inputs.len() {
+        let context = if result {
             ExprContext::Return
         } else {
             ExprContext::Discard
         };
-        let root = analyzer
-            .body(&source_roots[1..], 0..input.source.len(), context)
-            .map_err(|error| (source_index, error))?;
-        analyzer
-            .read_discards_before(input.source.len())
-            .map_err(|e| (source_index, e))?;
+        let root = analyzer.body(&source_roots[1..], 0..input.source.len(), context)?;
+        analyzer.read_discards_before(input.source.len())?;
         analyzer.program.reader_contexts.insert(
             input.name.into(),
             RuntimeReaderNamespace {
@@ -3389,8 +3494,7 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
             .program
             .namespace_entries
             .insert(root, input.name.into());
-        roots.push(root);
-        analyzer.drain_deferred().map_err(|e| (source_index, e))?;
+        analyzer.drain_deferred()?;
         analyzer.collect_expression_warnings();
         if !analyzer
             .program
@@ -3400,20 +3504,149 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
         {
             analyzer.program.namespaces.push(input.name.into());
         }
-        program = analyzer.program;
-        globals = analyzer.globals;
+        self.program = analyzer.program;
+        self.globals = analyzer.globals;
+        self.roots.push(root);
+        self.requires.push(input.requires.to_vec());
+        Ok(())
     }
-    program.compilation_uses = macro_host
-        .session_handle()
-        .map_or_else(Vec::new, |s| s.compilation_uses());
-    program.root = ExprId(program.exprs.len());
-    program.exprs.push(Expr {
-        kind: ExprKind::Do(roots),
-        span: 0..0,
-        context: ExprContext::Return,
-        source_index: 0,
+
+    /// Check the lazy targets and close the program. Its root runs every
+    /// source in order. Its value is the value of source `entry`: when
+    /// sources reached only through lazy references follow the entry, the
+    /// entry's last form stores its value in the [`ENTRY_VALUE`] global and
+    /// the root returns that global after those sources have run, so they run
+    /// after the namespace that loads them, as a chunk would.
+    pub(crate) fn finish(
+        self,
+        entry: usize,
+        macro_host: &MacroHost,
+    ) -> Result<Program, (usize, AnalysisError)> {
+        let Self {
+            mut program,
+            mut roots,
+            requires,
+            ..
+        } = self;
+        let index = program
+            .namespaces
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.as_str(), index))
+            .collect::<HashMap<_, _>>();
+        for target in &program.lazy_targets {
+            let namespace = &program.lazy_namespaces[target.namespace];
+            let message = if !index.contains_key(namespace.as_str()) {
+                format!("lazy target namespace {namespace} not found")
+            } else if let Some(global) = target.global
+                && !program.globals[global.0].declared
+            {
+                format!(
+                    "lazy target {namespace}/{} is not defined",
+                    program.globals[global.0].name
+                )
+            } else {
+                continue;
+            };
+            let site = &program.exprs[target.site.0];
+            return Err((
+                site.source_index,
+                AnalysisError {
+                    kind: AnalysisErrorKind::LazyTarget(message),
+                    span: site.span.clone(),
+                },
+            ));
+        }
+        // `cljs.core` and host namespaces have no source.
+        program.namespace_requires = requires
+            .iter()
+            .map(|names| {
+                names
+                    .iter()
+                    .filter_map(|name| index.get(name.as_str()).copied())
+                    .collect()
+            })
+            .collect();
+        program.namespace_lazy_only = (0..roots.len()).map(|source| source > entry).collect();
+        if entry + 1 < roots.len() {
+            let value = entry_value(&mut program, roots[entry], entry);
+            roots.push(value);
+        }
+        program.compilation_uses = macro_host
+            .session_handle()
+            .map_or_else(Vec::new, |s| s.compilation_uses());
+        program.root = ExprId(program.exprs.len());
+        program.exprs.push(Expr {
+            kind: ExprKind::Do(roots),
+            span: 0..0,
+            context: ExprContext::Return,
+            source_index: 0,
+        });
+        Ok(program)
+    }
+}
+
+/// Make the last form of the entry namespace's body `root` store its value in
+/// a new [`ENTRY_VALUE`] global, and return a read of that global (or `nil`
+/// for an empty body) for the end of the program.
+fn entry_value(program: &mut Program, root: ExprId, entry: usize) -> ExprId {
+    let push = |program: &mut Program, kind, span: Span, context| {
+        program.exprs.push(Expr {
+            kind,
+            span,
+            context,
+            source_index: entry,
+        });
+        ExprId(program.exprs.len() - 1)
+    };
+    // The last top-level form, inside any `do` forms that end the body.
+    let mut body = root;
+    while let ExprKind::Do(items) = &program.exprs[body.0].kind
+        && let Some(&last) = items.last()
+        && matches!(&program.exprs[last.0].kind, ExprKind::Do(inner) if !inner.is_empty())
+    {
+        body = last;
+    }
+    let ExprKind::Do(items) = &program.exprs[body.0].kind else {
+        unreachable!("a namespace body is a do")
+    };
+    let Some(&last) = items.last() else {
+        return push(program, ExprKind::Nil, 0..0, ExprContext::Return);
+    };
+    let span = program.exprs[last.0].span.clone();
+    let global = GlobalId(program.globals.len());
+    program.globals.push(GlobalBinding {
+        type_descriptor: false,
+        declared: false,
+        constant: false,
+        boolean_tag: false,
+        define: false,
+        metadata: None,
+        namespace: program.namespaces[entry].clone(),
+        name: ENTRY_VALUE.into(),
+        span: span.clone(),
+        source_index: entry,
     });
-    Ok(program)
+    let target = push(
+        program,
+        ExprKind::Global(global),
+        span.clone(),
+        ExprContext::Value,
+    );
+    let store = push(
+        program,
+        ExprKind::SetGlobal {
+            target,
+            value: last,
+        },
+        span.clone(),
+        ExprContext::Discard,
+    );
+    let ExprKind::Do(items) = &mut program.exprs[body.0].kind else {
+        unreachable!()
+    };
+    *items.last_mut().unwrap() = store;
+    push(program, ExprKind::Global(global), span, ExprContext::Return)
 }
 
 const DIAGNOSTIC_NUMBER: u8 = 1;
@@ -4219,6 +4452,11 @@ impl Analyzer<'_> {
         if matches!(self.syntax.nodes[operator.0].kind, NodeKind::Symbol) {
             self.validate_symbol(operator)?;
             let operator_name = self.spelling(operator).to_owned();
+            if let Some((qualifier, "loadable")) = operator_name.split_once('/')
+                && self.alias_target(qualifier) == "light.lazy"
+            {
+                return self.loadable_form(id, args, context);
+            }
             let imported_intrinsic = self
                 .macro_host
                 .definition_macro(self.namespace, &operator_name)
@@ -6496,6 +6734,116 @@ impl Analyzer<'_> {
             }
         };
         Ok(self.push(kind, self.syntax.nodes[id.0].span.clone(), context))
+    }
+
+    /// The namespace `qualifier` names in this namespace: an alias's target,
+    /// or the qualifier itself.
+    fn alias_target(&self, qualifier: &str) -> String {
+        self.aliases
+            .iter()
+            .find(|(alias, _)| alias == qualifier)
+            .map_or(qualifier, |(_, namespace)| namespace.as_str())
+            .to_owned()
+    }
+
+    /// `(light.lazy/loadable app.editor/start)` or `(light.lazy/loadable
+    /// app.editor)`, also through an alias of `light.lazy`: a literal Var or
+    /// namespace a chunked build may load later (docs/code-splitting.md, "The
+    /// loading API"). The namespace need not be required, and its Var need not
+    /// be defined yet: the binding is reserved by name, as an existence probe
+    /// reserves one, and the loader analyzes the namespace after this source.
+    /// The program reports a Var its namespace never defines once every
+    /// namespace is analyzed ([`NamespaceAnalysis::finish`]).
+    fn loadable_form(
+        &mut self,
+        id: NodeId,
+        args: &[NodeId],
+        context: ExprContext,
+    ) -> Result<ExprId, AnalysisError> {
+        let lazy_error = AnalysisErrorKind::LazyTarget;
+        let symbol = match args {
+            [symbol] if matches!(self.syntax.nodes[symbol.0].kind, NodeKind::Symbol) => *symbol,
+            _ => {
+                return Err(self.error(
+                    if args.len() == 1 { args[0] } else { id },
+                    lazy_error(
+                        "light.lazy/loadable requires one literal symbol naming a Var or a namespace"
+                            .into(),
+                    ),
+                ));
+            }
+        };
+        self.validate_symbol(symbol)?;
+        let spelling = self.spelling(symbol).to_owned();
+        let (namespace, name) = match spelling.split_once('/') {
+            Some((qualifier, name)) if !qualifier.is_empty() && !name.is_empty() => {
+                (self.alias_target(qualifier), Some(name.to_owned()))
+            }
+            _ => (spelling.clone(), None),
+        };
+        if !crate::compiler::valid_namespace(&namespace)
+            || matches!(namespace.as_str(), "cljs.core" | "clojure.core")
+        {
+            return Err(self.error(
+                symbol,
+                lazy_error(format!(
+                    "lazy target namespace {namespace} is not a source namespace"
+                )),
+            ));
+        }
+        if namespace == self.namespace {
+            return Err(self.error(
+                symbol,
+                lazy_error(format!(
+                    "lazy target {spelling} is in the current namespace {namespace}"
+                )),
+            ));
+        }
+        let global = name.map(|name| {
+            *self
+                .globals
+                .entry((namespace.clone(), name.clone()))
+                .or_insert_with(|| {
+                    let global = GlobalId(self.program.globals.len());
+                    self.program.globals.push(GlobalBinding {
+                        type_descriptor: false,
+                        declared: false,
+                        constant: false,
+                        boolean_tag: false,
+                        define: false,
+                        metadata: None,
+                        namespace: namespace.clone(),
+                        name,
+                        span: self.syntax.nodes[symbol.0].span.clone(),
+                        source_index: self.source_index,
+                    });
+                    global
+                })
+        });
+        let namespace = match self
+            .program
+            .lazy_namespaces
+            .iter()
+            .position(|existing| *existing == namespace)
+        {
+            Some(index) => index,
+            None => {
+                self.program.lazy_namespaces.push(namespace);
+                self.program.lazy_namespaces.len() - 1
+            }
+        };
+        let target = LazyTargetId(self.program.lazy_targets.len());
+        let site = self.push(
+            ExprKind::Loadable { target },
+            self.syntax.nodes[id.0].span.clone(),
+            context,
+        );
+        self.program.lazy_targets.push(LazyTarget {
+            site,
+            namespace,
+            global,
+        });
+        Ok(site)
     }
 
     fn assignment_target(&mut self, node: NodeId) -> Result<ExprId, AnalysisError> {
