@@ -277,12 +277,18 @@ struct Written {
 }
 
 /// The chunks of `plan` for `program` with the decisions of `application`,
-/// in plan order; see the module documentation.
+/// in plan order; see the module documentation. `None` when the forms reach
+/// reflection at `Advanced` and `plan` moves a definition out of its
+/// namespace's chunk: such a program is planned at namespace granularity
+/// (docs/code-splitting.md, "Phase 3", the reflection gate). `reflective`:
+/// the forms are known to reach reflection, so they are written once, with
+/// the namespaces' registration.
 pub(crate) fn emit_chunked(
     program: &Program,
     application: Application<'_>,
     plan: &ChunkPlan,
-) -> Vec<EmittedChunk> {
+    reflective: bool,
+) -> Option<Vec<EmittedChunk>> {
     let direct = application.direct;
     let slice = direct.is_some();
     let terse = slice && application.terse;
@@ -351,8 +357,11 @@ pub(crate) fn emit_chunked(
         emitter.record_application_roots(Some(application));
         (emitter, bodies)
     };
-    let (mut emitter, mut bodies) = write(!slice);
-    if slice && emitter.runtime.reach_reflection() {
+    let (mut emitter, mut bodies) = write(!slice || reflective);
+    if slice && !reflective && emitter.runtime.reach_reflection() {
+        if plan.moves_definitions() {
+            return None;
+        }
         (emitter, bodies) = write(true);
     }
     let embed = if slice {
@@ -599,16 +608,24 @@ pub(crate) fn emit_chunked(
     };
     let space = if terse { "" } else { " " };
     let mut renamed = renamed.into_iter();
-    written
+    let files = written
         .into_iter()
         .enumerate()
         .map(|(chunk, text)| {
             let (head, run) = (renamed.next().unwrap(), renamed.next().unwrap());
             let mut source = package_imports(&text.packages);
             // The chunks it imports, in the order their namespaces load in
-            // the single file.
+            // the single file; a chunk of moved definitions alone, which
+            // have no effect, by the namespace of its first.
             let mut imported = imports[chunk].iter().collect::<Vec<_>>();
-            imported.sort_by_key(|(import, _)| plan.chunks[import.0].namespaces.first().copied());
+            imported.sort_by_key(|(import, _)| {
+                let chunk = &plan.chunks[import.0];
+                chunk
+                    .namespaces
+                    .first()
+                    .copied()
+                    .or_else(|| chunk.items.first().map(|&item| plan.items[item].namespace))
+            });
             for (import, names) in &imported {
                 let specifier = quoted(&format!("./{}", plan.chunks[import.0].name));
                 if names.is_empty() {
@@ -671,7 +688,8 @@ pub(crate) fn emit_chunked(
                 imports: imports[chunk].keys().copied().collect(),
             }
         })
-        .collect()
+        .collect();
+    Some(files)
 }
 
 /// The order of declared global names: by global, then method entry.

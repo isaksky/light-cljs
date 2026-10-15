@@ -124,8 +124,10 @@ Add `--out-dir DIR` to `--compile --entry` to split a program at its
 implies `--esm`), the startup chunk `NS.js` whose default export is the entry
 value, the chunks loaded with `import()` the first time `light.lazy/load` asks
 for a target in them, and `chunks.json`, which lists each file with its
-imports, namespaces, roots, loadable sites and size. Chunks follow namespaces
-for now: the runtime and constants stay in startup. It works at every
+imports, namespaces, moved definitions, roots, loadable sites and size.
+Chunks follow namespaces, and at `--optimize advanced` definitions without
+effects move to the chunk of the code that reads them; the runtime and
+constants stay in startup for now. It works at every
 `--optimize` level, writes only the files the manifest names, takes no source
 map flags, and leaves a program without loadables one file, its `--esm` output
 ([Chunked builds](docs/compiler.md#chunked-builds),
@@ -319,8 +321,9 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   resolution or CommonJS conversion.
 - **No build tooling:** no per-namespace module output; output
   is one JavaScript expression, one ES module with `--esm`, or with `--out-dir`
-  one ES module per chunk of namespaces that `light.lazy/loadable` sites load,
-  with the runtime and every constant in the startup chunk. A dev build
+  one ES module per chunk of namespaces that `light.lazy/loadable` sites load
+  (at `advanced` also of definitions moved toward their readers), with the
+  runtime and every constant in the startup chunk. A dev build
   (`--reloadable`) writes one unit per namespace for reloading, but nothing
   watches the sources or pushes a changed unit to a page yet. The release
   optimizer, `--optimize advanced`, is still being built

@@ -1,0 +1,5 @@
+# file	namespaces	roots	imports	imports at advanced	definitions at advanced
+app.main.js	app.shared light.lazy app.main	app.main	-	-	-
+app.editor+app.reports.js	-	-	n/a	app.main.js	app.shared/fmt
+app.editor.js	app.editor	app.editor	app.main.js	app.main.js app.editor+app.reports.js	app.shared/outline app.shared/Shape
+app.reports.js	app.reports	app.reports	app.main.js	app.main.js app.editor+app.reports.js	-

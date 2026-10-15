@@ -1,19 +1,25 @@
-//! Chunk placement at namespace granularity (docs/code-splitting.md, "The
-//! model" and "Phase 2"): which top-level forms of a prepared program each
-//! chunk of a chunked build holds, which chunks each imports, and which
-//! globals each exports a setter for. [`plan`] is pure data;
+//! Chunk placement (docs/code-splitting.md, "The model", "Phase 2" and
+//! "Phase 3"): which top-level forms of a prepared program each chunk of a
+//! chunked build holds, which chunks each imports, and which globals each
+//! exports a setter for. [`plan`] is pure data;
 //! [`PreparedApplication::emit_chunks`] writes one ES module per chunk of it
 //! ([`ChunkedOutput`]).
 //!
 //! A *root* is a place code can start running: startup (the entry namespace,
 //! root 0) and each distinct namespace a `light.lazy/loadable` names (root
 //! `1 + i` for [`Program::lazy_namespaces`]`[i]`; a Var target roots its
-//! namespace at this phase). The *static reach* of a root is the namespaces
-//! reachable from its namespace over [`Program::namespace_requires`]. The
-//! *signature* of a namespace is the set of roots whose reach contains it, a
-//! bitset dense by root index ([`Signature`]), and every top-level form of
-//! the namespace (an *item*, an entry of the flattened `program.root`) is
-//! pinned to it.
+//! namespace). The *static reach* of a root is the namespaces reachable from
+//! its namespace over [`Program::namespace_requires`]. The *signature* of a
+//! namespace is the set of roots whose reach contains it, a bitset dense by
+//! root index ([`Signature`]). An *item* is a top-level form, an entry of the
+//! flattened `program.root`. A *pinned* item has its namespace's signature.
+//! At `Advanced` a *movable* item, a definition that removal could drop when
+//! unread or a `defprotocol` or `deftype` form, has the signature of the
+//! roots whose code reaches it: one walk per root over the item reference
+//! graph (the globals each item reads, in function bodies too, to the item
+//! defining them) from the pinned items of the root's reach. Below
+//! `Advanced`, and for a program that reaches reflection
+//! ([`namespace_plan`]), every item is pinned.
 //!
 //! A chunk is a distinct signature, except that every signature containing
 //! startup is the startup chunk: startup loads first, so nothing it reaches
@@ -113,7 +119,14 @@ pub struct Item {
     /// outside every body (the read of the entry's value that ends a program
     /// with lazily loaded sources) belongs to the entry namespace.
     pub namespace: usize,
+    /// The chunk of the item's signature: its namespace's chunk when the
+    /// item is pinned.
     pub chunk: ChunkId,
+    /// Whether the item is a definition placed by its readers rather than
+    /// pinned to its namespace (docs/code-splitting.md, "Items and
+    /// signatures"); only at `Advanced`. It may still land in its
+    /// namespace's chunk.
+    pub movable: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -126,12 +139,15 @@ pub struct Chunk {
     /// The roots whose code reaches the chunk's items. Startup's is every
     /// root, since every root loads after it.
     pub signature: Signature,
-    /// The source indices of the namespaces the chunk holds, ascending.
+    /// The source indices of the namespaces the chunk holds, those of its
+    /// signature, whose pinned items it holds, ascending. A chunk of moved
+    /// definitions alone holds none.
     pub namespaces: Vec<usize>,
     /// The roots whose namespace the chunk holds, ascending.
     pub roots: Vec<usize>,
     /// The chunk's items, indices into [`ChunkPlan::items`], ascending: the
-    /// order of `program.root`, so namespaces initialize in source order.
+    /// order of `program.root`, so namespaces initialize in source order and
+    /// a definition precedes the items that read it while the chunk loads.
     pub items: Vec<usize>,
     /// The chunks this chunk imports, ascending: each has a smaller id and a
     /// signature strictly containing this chunk's.
@@ -166,7 +182,8 @@ pub struct ChunkPlan {
     /// The entries of the flattened `program.root` of the prepared program,
     /// in order.
     pub items: Vec<Item>,
-    /// By [`GlobalId`]: the chunk owning the global, which declares it.
+    /// By [`GlobalId`]: the chunk owning the global, which declares it: the
+    /// chunk of its definition when that is movable, else its namespace's.
     pub global_chunks: Vec<ChunkId>,
     /// By [`ChunkId`]; startup is [`STARTUP`].
     pub chunks: Vec<Chunk>,
@@ -194,6 +211,10 @@ pub struct ChunkFile {
     pub imports: Vec<String>,
     /// The namespaces whose top-level forms it holds, in source order.
     pub namespaces: Vec<String>,
+    /// The definitions it holds of namespaces another chunk holds, moved
+    /// toward their readers at `Advanced`, in program order: each by the
+    /// first global it defines, `app.shared/fmt`.
+    pub definitions: Vec<String>,
     /// The namespaces of the roots it holds: the entry for startup, and the
     /// namespaces whose loadables load it.
     pub roots: Vec<String>,
@@ -229,11 +250,18 @@ impl ChunkedOutput {
                 None => program.lazy_namespaces[target.namespace].clone(),
             }
         };
+        let definition = |item: &Item| {
+            let kind = &program.exprs[item.expr.0].kind;
+            let global = crate::application::globals(kind)[0];
+            let global = &program.globals[global.0];
+            format!("{}/{}", global.namespace, global.name)
+        };
         let files = plan
             .chunks
             .iter()
+            .enumerate()
             .zip(emitted)
-            .map(|(chunk, emitted)| ChunkFile {
+            .map(|((id, chunk), emitted)| ChunkFile {
                 name: chunk.name.clone(),
                 source: emitted.source,
                 imports: emitted
@@ -246,6 +274,7 @@ impl ChunkedOutput {
                     .iter()
                     .map(|&source| namespace(source))
                     .collect(),
+                definitions: plan.moved_items(ChunkId(id)).map(definition).collect(),
                 roots: chunk
                     .roots
                     .iter()
@@ -303,6 +332,8 @@ impl ChunkedOutput {
             list(&mut manifest, &file.imports);
             manifest.push_str(", \"namespaces\": ");
             list(&mut manifest, &file.namespaces);
+            manifest.push_str(", \"definitions\": ");
+            list(&mut manifest, &file.definitions);
             manifest.push_str(", \"roots\": ");
             list(&mut manifest, &file.roots);
             manifest.push_str(", \"loadables\": [");
@@ -328,12 +359,166 @@ impl ChunkPlan {
     pub fn target_chunk(&self, program: &Program, target: LazyTargetId) -> ChunkId {
         self.roots[1 + program.lazy_targets[target.0].namespace].chunk
     }
+
+    /// Whether an item lies outside its namespace's chunk.
+    pub fn moves_definitions(&self) -> bool {
+        self.items
+            .iter()
+            .any(|item| item.chunk != self.namespace_chunks[item.namespace])
+    }
+
+    /// The items of chunk `chunk` from namespaces another chunk holds, in
+    /// program order.
+    pub fn moved_items(&self, chunk: ChunkId) -> impl Iterator<Item = &Item> + '_ {
+        self.chunks[chunk.0]
+            .items
+            .iter()
+            .map(|&item| &self.items[item])
+            .filter(move |item| self.namespace_chunks[item.namespace] != chunk)
+    }
 }
 
-/// Plan the chunks of `prepared`, the application of `program`, at namespace
-/// granularity. A program that was not analyzed from namespace sources has
-/// one namespace and one chunk.
+/// Plan the chunks of `prepared`, the application of `program`. At
+/// `Advanced` the definitions that removal could drop when unread
+/// ([`PreparedApplication::removable`]), and `defprotocol` and `deftype`
+/// forms, move toward their readers (docs/code-splitting.md, "Phase 3");
+/// below it every top-level form stays in its namespace's chunk, as in
+/// [`namespace_plan`]. Whether a program reaches reflection is known only
+/// once its forms are written, so this plan does not ask:
+/// [`PreparedApplication::emit_chunks`] falls back to [`namespace_plan`] for
+/// a program that does. A program that was not analyzed from namespace
+/// sources has one namespace and one chunk.
 pub fn plan(program: &Program, prepared: &PreparedApplication) -> ChunkPlan {
+    plan_with(program, prepared, prepared.level().advanced())
+}
+
+/// The plan of `prepared` with every top-level form pinned to its
+/// namespace's chunk, in source order (docs/code-splitting.md, "Phase 2"):
+/// the plan below `Advanced`, and at `Advanced` the plan of a program that
+/// reaches reflection, so that a namespace it can look up is never split
+/// across chunks.
+pub fn namespace_plan(program: &Program, prepared: &PreparedApplication) -> ChunkPlan {
+    plan_with(program, prepared, false)
+}
+
+/// What one walk over each item's expressions finds: the item reference
+/// graph of the plan.
+struct ItemGraph {
+    /// By item: the globals its expressions read, in function bodies too:
+    /// each global reference, and the dispatcher of each program protocol
+    /// method that a method of a type, `reify` or extension names by key,
+    /// which the emitter may write as the dispatcher's binding.
+    reads: Vec<Vec<GlobalId>>,
+    /// By item: the globals its expressions define with a value.
+    defines: Vec<Vec<GlobalId>>,
+    /// By global: the items defining it with a value, ascending.
+    definers: Vec<Vec<usize>>,
+    /// By item: the globals its expressions assign (`set!`, `binding`).
+    assigns: Vec<Vec<GlobalId>>,
+    /// By item: its `light.lazy/loadable` sites, in walk order.
+    sites: Vec<Vec<(ExprId, LazyTargetId)>>,
+}
+
+impl ItemGraph {
+    /// Walk `items`, the top-level forms of `program`, once each.
+    fn new(program: &Program, items: &[(ExprId, usize)]) -> Self {
+        use crate::analyzer::MethodDispatch;
+        let dispatchers = program
+            .protocols
+            .values()
+            .flatten()
+            .map(|method| (method.key.as_str(), method.global))
+            .collect::<HashMap<_, _>>();
+        let count = items.len();
+        let mut graph = Self {
+            reads: vec![Vec::new(); count],
+            defines: vec![Vec::new(); count],
+            definers: vec![Vec::new(); program.globals.len()],
+            assigns: vec![Vec::new(); count],
+            sites: vec![Vec::new(); count],
+        };
+        let mut walked = vec![usize::MAX; program.exprs.len()];
+        let mut pending = Vec::new();
+        for (position, &(expr, _)) in items.iter().enumerate() {
+            let (reads, defines) = (&mut graph.reads[position], &mut graph.defines[position]);
+            pending.push(expr);
+            while let Some(id) = pending.pop() {
+                if std::mem::replace(&mut walked[id.0], position) == position {
+                    continue;
+                }
+                let kind = &program.exprs[id.0].kind;
+                let methods = match kind {
+                    ExprKind::Global(global) => {
+                        reads.push(*global);
+                        &[][..]
+                    }
+                    ExprKind::Def { init: None, .. } => &[],
+                    ExprKind::Def { .. } => {
+                        defines.extend(crate::application::globals(kind));
+                        &[]
+                    }
+                    ExprKind::DefProtocol { .. } => {
+                        defines.extend(crate::application::globals(kind));
+                        &[]
+                    }
+                    ExprKind::DefType { methods, .. } => {
+                        defines.extend(crate::application::globals(kind));
+                        methods.as_slice()
+                    }
+                    ExprKind::ExtendType { methods, .. } | ExprKind::Reify { methods, .. } => {
+                        methods.as_slice()
+                    }
+                    ExprKind::SetGlobal { target, .. } => {
+                        graph.assigns[position].extend(global_of(program, *target));
+                        &[]
+                    }
+                    ExprKind::Binding { bindings, .. } => {
+                        for (target, _) in bindings {
+                            graph.assigns[position].extend(global_of(program, *target));
+                        }
+                        &[]
+                    }
+                    ExprKind::Loadable { target, .. } => {
+                        graph.sites[position].push((id, *target));
+                        &[]
+                    }
+                    _ => &[],
+                };
+                for (dispatch, _) in methods {
+                    if let MethodDispatch::Protocol(key) = dispatch
+                        && let Some(&dispatcher) = dispatchers.get(key.as_str())
+                    {
+                        reads.push(dispatcher);
+                    }
+                }
+                pending.extend(children(program, id));
+            }
+            reads.sort_unstable_by_key(|global| global.0);
+            reads.dedup();
+            defines.sort_unstable_by_key(|global| global.0);
+            defines.dedup();
+            for global in defines.iter() {
+                graph.definers[global.0].push(position);
+            }
+        }
+        graph
+    }
+}
+
+/// The global `target`, the assigned place of a `set!` or `binding`, names,
+/// if it is one.
+fn global_of(program: &Program, target: ExprId) -> Option<GlobalId> {
+    match program.exprs[target.0].kind {
+        ExprKind::Global(global) => Some(global),
+        _ => None,
+    }
+}
+
+fn plan_with(
+    program: &Program,
+    prepared: &PreparedApplication,
+    move_definitions: bool,
+) -> ChunkPlan {
     let emitted = prepared.program();
     debug_assert_eq!(emitted.namespaces, program.namespaces);
     let names = &program.namespaces;
@@ -383,26 +568,140 @@ pub fn plan(program: &Program, prepared: &PreparedApplication) -> ChunkPlan {
         }
     }
 
-    // One chunk per distinct signature without startup; a namespace no root
-    // reaches (none of a program the loader built) stays in startup, where
-    // the single file runs it.
+    // The items, each with its namespace, in program order.
+    let mut forms = Vec::new();
+    let mut pending = vec![(emitted.root, entry)];
+    while let Some((id, namespace)) = pending.pop() {
+        let namespace = emitted
+            .namespace_entries
+            .get(&id)
+            .map_or(namespace, |name| index[name.as_str()]);
+        if let ExprKind::Do(body) = &emitted.exprs[id.0].kind {
+            pending.extend(body.iter().rev().map(|&form| (form, namespace)));
+        } else {
+            forms.push((id, namespace));
+        }
+    }
+    let graph = ItemGraph::new(emitted, &forms);
+
+    // Which items move: at `Advanced`, the definitions removal could drop
+    // when unread, and protocol and type definitions, each the only
+    // definition of the globals it defines. A lazy target's definition stays
+    // in its namespace, which is what its loadable loads, and so does a form
+    // holding a loadable site, which the manifest gives to its namespace.
+    let mut targets = vec![false; emitted.globals.len()];
+    for target in &emitted.lazy_targets {
+        if let Some(global) = target.global {
+            targets[global.0] = true;
+        }
+    }
+    let mut movable = forms
+        .iter()
+        .enumerate()
+        .map(|(position, &(id, _))| {
+            move_definitions
+                && (prepared.removable(id)
+                    || matches!(
+                        emitted.exprs[id.0].kind,
+                        ExprKind::DefProtocol { .. } | ExprKind::DefType { .. }
+                    ))
+                && graph.sites[position].is_empty()
+                && !graph.defines[position].is_empty()
+                && graph.defines[position]
+                    .iter()
+                    .all(|global| graph.definers[global.0] == [position] && !targets[global.0])
+        })
+        .collect::<Vec<_>>();
+
+    // Item signatures: a pinned item has its namespace's; a movable one the
+    // roots whose walk reaches it, one walk per root from the pinned items
+    // of the root's reach (startup's walk also from those of namespaces no
+    // root reaches, which startup holds) over reads of globals to their
+    // definitions. A movable item that no walk reaches, one only an explicit
+    // export keeps, is pinned, and the walks run again.
+    let mut signatures;
+    let mut walk = Vec::new();
+    loop {
+        signatures = forms
+            .iter()
+            .zip(&movable)
+            .map(|(&(_, namespace), &movable)| {
+                if movable {
+                    Signature::empty(root_count)
+                } else {
+                    namespace_signatures[namespace].clone()
+                }
+            })
+            .collect::<Vec<_>>();
+        for root in 0..root_count {
+            seeds(&forms, &movable, &namespace_signatures, root, &mut walk);
+            while let Some(item) = walk.pop() {
+                for global in &graph.reads[item] {
+                    if let [definer] = graph.definers[global.0][..]
+                        && movable[definer]
+                        && !signatures[definer].contains(root)
+                    {
+                        signatures[definer].insert(root);
+                        walk.push(definer);
+                    }
+                }
+            }
+        }
+        let mut unreached = false;
+        for (movable, signature) in movable.iter_mut().zip(&signatures) {
+            if *movable && signature.is_empty() {
+                *movable = false;
+                unreached = true;
+            }
+        }
+        if !unreached {
+            break;
+        }
+    }
+
+    // One chunk per distinct signature without startup, of a namespace or of
+    // a movable item; a namespace no root reaches (none of a program the
+    // loader built) and its items stay in startup, where the single file
+    // runs them.
+    let startup = |signature: &Signature| signature.contains(STARTUP_ROOT) || signature.is_empty();
     let mut groups: Vec<(Signature, Vec<usize>)> = Vec::new();
     let mut group_of = HashMap::new();
     let mut startup_namespaces = Vec::new();
-    for (source, signature) in namespace_signatures.iter().enumerate() {
-        if signature.contains(STARTUP_ROOT) || signature.is_empty() {
-            startup_namespaces.push(source);
-            continue;
-        }
-        let group = *group_of.entry(signature).or_insert_with(|| {
+    let mut group = |signature: &Signature, groups: &mut Vec<(Signature, Vec<usize>)>| {
+        *group_of.entry(signature.clone()).or_insert_with(|| {
             groups.push((signature.clone(), Vec::new()));
             groups.len() - 1
-        });
-        groups[group].1.push(source);
+        })
+    };
+    for (source, signature) in namespace_signatures.iter().enumerate() {
+        if startup(signature) {
+            startup_namespaces.push(source);
+        } else {
+            let group = group(signature, &mut groups);
+            groups[group].1.push(source);
+        }
+    }
+    for (signature, _) in signatures.iter().zip(&movable).filter(|(_, m)| **m) {
+        if !startup(signature) {
+            group(signature, &mut groups);
+        }
     }
     // Larger signatures first, so that every import precedes its importer;
-    // equal sizes keep the order of their first namespace.
+    // equal sizes keep the order of their first namespace, then of their
+    // first item.
     groups.sort_by_key(|(signature, _)| std::cmp::Reverse(signature.len()));
+    let chunk_of_signature = groups
+        .iter()
+        .enumerate()
+        .map(|(group, (signature, _))| (signature.clone(), ChunkId(1 + group)))
+        .collect::<HashMap<_, _>>();
+    let chunk_of = |signature: &Signature| {
+        if startup(signature) {
+            STARTUP
+        } else {
+            chunk_of_signature[signature]
+        }
+    };
     let mut chunks = vec![Chunk {
         name: format!("{}.js", names[entry]),
         signature: Signature::full(root_count),
@@ -469,30 +768,32 @@ pub fn plan(program: &Program, prepared: &PreparedApplication) -> ChunkPlan {
         })
         .collect::<Vec<_>>();
 
-    // Items, each pinned to its namespace, in program order.
-    let mut items = Vec::new();
-    let mut forms = vec![(emitted.root, entry)];
-    while let Some((id, namespace)) = forms.pop() {
-        let namespace = emitted
-            .namespace_entries
-            .get(&id)
-            .map_or(namespace, |name| index[name.as_str()]);
-        if let ExprKind::Do(body) = &emitted.exprs[id.0].kind {
-            forms.extend(body.iter().rev().map(|&form| (form, namespace)));
-        } else {
-            let chunk = namespace_chunks[namespace];
-            chunks[chunk.0].items.push(items.len());
-            items.push(Item {
-                expr: id,
+    // Each item goes to the chunk of its signature, in program order: a
+    // definition precedes every item that reads it while the program loads,
+    // so the single file's order restricted to a chunk is one in which the
+    // chunk's items can run.
+    let items = forms
+        .iter()
+        .zip(&movable)
+        .zip(&signatures)
+        .enumerate()
+        .map(|(position, ((&(expr, namespace), &movable), signature))| {
+            let chunk = chunk_of(signature);
+            debug_assert!(movable || chunk == namespace_chunks[namespace]);
+            chunks[chunk.0].items.push(position);
+            Item {
+                expr,
                 namespace,
                 chunk,
-            });
-        }
-    }
+                movable,
+            }
+        })
+        .collect::<Vec<_>>();
 
-    // A global belongs to its namespace's chunk; a global of a namespace
-    // without a source stays with the runtime in startup.
-    let global_chunks = emitted
+    // A global belongs to the chunk of its definition when that moves, else
+    // to its namespace's chunk; a global of a namespace without a source
+    // stays with the runtime in startup.
+    let mut global_chunks = emitted
         .globals
         .iter()
         .map(|global| {
@@ -501,6 +802,13 @@ pub fn plan(program: &Program, prepared: &PreparedApplication) -> ChunkPlan {
                 .map_or(STARTUP, |&source| namespace_chunks[source])
         })
         .collect::<Vec<_>>();
+    for (position, item) in items.iter().enumerate() {
+        if item.movable {
+            for global in &graph.defines[position] {
+                global_chunks[global.0] = item.chunk;
+            }
+        }
+    }
 
     // Edges: every require, and every read of a global across chunks, in
     // function bodies too, since a function may run as soon as its chunk has
@@ -528,59 +836,58 @@ pub fn plan(program: &Program, prepared: &PreparedApplication) -> ChunkPlan {
             edge(namespace_chunks[source], namespace_chunks[required]);
         }
     }
-    let mut walked = vec![usize::MAX; emitted.exprs.len()];
-    let mut pending = Vec::new();
     // By chunk: the loadable sites resolving to it, keyed for program order;
     // each target once per namespace (a site copied by inlining is one).
     let mut sites = vec![Vec::new(); chunks.len()];
     let mut listed = HashSet::new();
     for (position, item) in items.iter().enumerate() {
-        pending.push(item.expr);
-        while let Some(id) = pending.pop() {
-            if std::mem::replace(&mut walked[id.0], position) == position {
-                continue;
-            }
-            let kind = &emitted.exprs[id.0].kind;
-            if let ExprKind::Global(global) = *kind {
-                let binding = &emitted.globals[global.0];
-                // Every root reaching the reader reaches what it reads.
-                debug_assert!(
-                    index.get(binding.namespace.as_str()).is_none_or(|&source| {
-                        namespace_signatures[source]
-                            .is_superset(&namespace_signatures[item.namespace])
-                    }),
-                    "{} reads {}/{} outside its reach",
-                    names[item.namespace],
-                    binding.namespace,
-                    binding.name
-                );
-                edge(item.chunk, global_chunks[global.0]);
-            }
-            // An assignment of another chunk's global goes through the
-            // owner's setter; the owner's own assignments stay direct.
-            match kind {
-                ExprKind::SetGlobal { target, .. } => {
-                    assign(emitted, &global_chunks, item.chunk, *target, &mut setters);
-                }
-                ExprKind::Binding { bindings, .. } => {
-                    for (target, _) in bindings {
-                        assign(emitted, &global_chunks, item.chunk, *target, &mut setters);
+        for global in &graph.reads[position] {
+            let binding = &emitted.globals[global.0];
+            // Every root reaching the reader reaches what it reads: its
+            // namespace, and the item defining it.
+            debug_assert!(
+                index.get(binding.namespace.as_str()).is_none_or(|&source| {
+                    namespace_signatures[source].is_superset(&namespace_signatures[item.namespace])
+                }),
+                "{} reads {}/{} outside its reach",
+                names[item.namespace],
+                binding.namespace,
+                binding.name
+            );
+            debug_assert!(
+                match graph.definers[global.0][..] {
+                    [definer] if items[definer].movable => {
+                        signatures[definer].is_superset(&signatures[position])
                     }
-                }
-                // A site resolves to the chunk of its target's root.
-                ExprKind::Loadable { target, .. } if listed.insert((target.0, item.namespace)) => {
-                    let root = 1 + emitted.lazy_targets[target.0].namespace;
-                    sites[roots[root].chunk.0].push((
-                        (position, id.0),
-                        Site {
-                            target: *target,
-                            namespace: item.namespace,
-                        },
-                    ));
-                }
-                _ => {}
+                    _ => true,
+                },
+                "{} reads {}/{}, which fewer roots reach",
+                names[item.namespace],
+                binding.namespace,
+                binding.name
+            );
+            edge(item.chunk, global_chunks[global.0]);
+        }
+        // An assignment of another chunk's global goes through the owner's
+        // setter; the owner's own assignments stay direct.
+        for global in &graph.assigns[position] {
+            let owner = global_chunks[global.0];
+            if owner != item.chunk {
+                setters[owner.0].push(*global);
             }
-            pending.extend(children(emitted, id));
+        }
+        // A site resolves to the chunk of its target's root.
+        for &(id, target) in &graph.sites[position] {
+            if listed.insert((target.0, item.namespace)) {
+                let root = 1 + emitted.lazy_targets[target.0].namespace;
+                sites[roots[root].chunk.0].push((
+                    (position, id.0),
+                    Site {
+                        target,
+                        namespace: item.namespace,
+                    },
+                ));
+            }
         }
     }
     let chunk_data = imports.into_iter().zip(setters).zip(sites);
@@ -605,21 +912,29 @@ pub fn plan(program: &Program, prepared: &PreparedApplication) -> ChunkPlan {
     }
 }
 
-/// Record that an item of chunk `from` assigns `target` when it is a global
-/// another chunk owns.
-fn assign(
-    program: &Program,
-    global_chunks: &[ChunkId],
-    from: ChunkId,
-    target: ExprId,
-    setters: &mut [Vec<GlobalId>],
+/// Fill `walk` with the seeds of `root`'s walk: the pinned items whose
+/// namespace `root` reaches, and for startup those of namespaces no root
+/// reaches.
+fn seeds(
+    forms: &[(ExprId, usize)],
+    movable: &[bool],
+    namespace_signatures: &[Signature],
+    root: usize,
+    walk: &mut Vec<usize>,
 ) {
-    if let ExprKind::Global(global) = program.exprs[target.0].kind {
-        let owner = global_chunks[global.0];
-        if owner != from {
-            setters[owner.0].push(global);
-        }
-    }
+    walk.clear();
+    walk.extend(
+        forms
+            .iter()
+            .zip(movable)
+            .enumerate()
+            .filter(|(_, ((_, namespace), movable))| {
+                let signature = &namespace_signatures[*namespace];
+                !**movable
+                    && (signature.contains(root) || (root == STARTUP_ROOT && signature.is_empty()))
+            })
+            .map(|(item, _)| item),
+    );
 }
 
 /// The file name of a chunk other than startup whose signature holds the

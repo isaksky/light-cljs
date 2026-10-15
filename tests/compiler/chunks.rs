@@ -68,9 +68,10 @@ fn flatten(program: &Program, id: ExprId, out: &mut Vec<ExprId>) {
 }
 
 /// What the chunked emitter relies on: the chunks partition the items of the
-/// prepared program in program order, each item is in its namespace's chunk,
-/// startup imports nothing, and every import precedes its importer and has a
-/// signature strictly containing the importer's.
+/// prepared program in program order, each pinned item is in its
+/// namespace's chunk and each movable one in a chunk of a signature its
+/// namespace's contains, startup imports nothing, and every import precedes
+/// its importer and has a signature strictly containing the importer's.
 fn check(
     program: &Program,
     prepared: &PreparedApplication,
@@ -117,9 +118,25 @@ fn check(
         }
     }
     assert!(seen.into_iter().all(|seen| seen), "{level}");
+    // A pinned item is in its namespace's chunk. A movable one, only at
+    // `Advanced`, moves only toward its readers: into a chunk that fewer
+    // roots, or the same ones, load.
     for item in &plan.items {
-        assert_eq!(item.chunk, plan.namespace_chunks[item.namespace], "{level}");
+        let home = plan.namespace_chunks[item.namespace];
+        if item.movable {
+            assert!(level.advanced(), "{level}");
+            assert!(
+                plan.chunks[home.0]
+                    .signature
+                    .is_superset(&plan.chunks[item.chunk.0].signature),
+                "{level}: {}",
+                plan.chunks[item.chunk.0].name
+            );
+        } else {
+            assert_eq!(item.chunk, home, "{level}");
+        }
     }
+    assert!(level.advanced() || !plan.moves_definitions(), "{level}");
     let mut names = plan.chunks.iter().map(|c| &c.name).collect::<Vec<_>>();
     names.sort();
     names.dedup();
@@ -191,22 +208,58 @@ fn the_features_example_plans_startup_and_one_chunk_per_feature() {
     )
     .unwrap_or_else(|error| panic!("{error}"));
     // Both features read app.shared, which startup requires for its menu,
-    // so at namespace granularity they share nothing startup lacks: the
-    // `app.editor+app.reports` chunk of the Goal comes with definition-level
-    // placement (Phase 3).
-    let (membership, plan) = same_membership(&program);
+    // so at namespace granularity they share nothing startup lacks.
+    let namespaces = [
+        "app.main.js: app.shared light.lazy app.main | roots app.main | imports ",
+        "app.editor.js: app.editor | roots app.editor | imports app.main.js",
+        "app.reports.js: clojure.string app.reports | roots app.reports | imports app.main.js",
+    ];
+    for (level, plan) in plans(&program) {
+        if !level.advanced() {
+            assert_eq!(membership(&program, &plan), namespaces, "{level}");
+        }
+    }
+    // At `Advanced` the definitions of app.shared that only the features
+    // read move toward them (Phase 3): `documents`, which both read, to the
+    // `app.editor+app.reports` chunk of the Goal, and `index-by` to the
+    // editor's chunk (`pluck` is inlined into its one reader); `label`,
+    // which the menu reads, stays in startup.
+    let prepared = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let namespace_plan = light_cljs::chunks::namespace_plan(&program, &prepared);
+    check(
+        &program,
+        &prepared,
+        &namespace_plan,
+        OptimizationLevel::Advanced,
+    );
+    assert_eq!(membership(&program, &namespace_plan), namespaces);
+    let plan = plan(&program, &prepared);
     assert_eq!(
-        membership,
+        membership(&program, &plan),
         [
             "app.main.js: app.shared light.lazy app.main | roots app.main | imports ",
-            "app.editor.js: app.editor | roots app.editor | imports app.main.js",
-            "app.reports.js: clojure.string app.reports | roots app.reports | imports app.main.js",
+            "app.editor+app.reports.js:  | roots  | imports ",
+            "app.editor.js: app.editor | roots app.editor | imports app.main.js app.editor+app.reports.js",
+            "app.reports.js: clojure.string app.reports | roots app.reports | imports app.main.js app.editor+app.reports.js",
+        ]
+    );
+    assert_eq!(
+        moved(&prepared, &plan),
+        [
+            "app.main.js: ",
+            "app.editor+app.reports.js: app.shared/documents",
+            "app.editor.js: app.shared/index-by",
+            "app.reports.js: ",
         ]
     );
     for (chunk, roots) in [
         (0, &["app.main", "app.editor", "app.reports"][..]),
-        (1, &["app.editor"]),
-        (2, &["app.reports"]),
+        (1, &["app.editor", "app.reports"]),
+        (2, &["app.editor"]),
+        (3, &["app.reports"]),
     ] {
         assert_eq!(signature_roots(&program, &plan, chunk), roots);
     }
@@ -214,9 +267,35 @@ fn the_features_example_plans_startup_and_one_chunk_per_feature() {
     let targets = (0..program.lazy_targets.len())
         .map(|target| plan.target_chunk(&program, light_cljs::analyzer::LazyTargetId(target)))
         .collect::<Vec<_>>();
-    assert_eq!(targets, [ChunkId(1), ChunkId(2)]);
+    assert_eq!(targets, [ChunkId(2), ChunkId(3)]);
     // No feature assigns a global of another chunk.
     assert!(plan.chunks.iter().all(|chunk| chunk.setters.is_empty()));
+}
+
+/// Each chunk of `plan` with the definitions it holds of namespaces another
+/// chunk holds, by the global each defines.
+fn moved(prepared: &PreparedApplication, plan: &ChunkPlan) -> Vec<String> {
+    let program = prepared.program();
+    plan.chunks
+        .iter()
+        .enumerate()
+        .map(|(id, chunk)| {
+            let definitions = plan
+                .moved_items(ChunkId(id))
+                .map(|item| {
+                    let global = match &program.exprs[item.expr.0].kind {
+                        ExprKind::Def { global, .. }
+                        | ExprKind::DefProtocol { global, .. }
+                        | ExprKind::DefType { global, .. } => *global,
+                        other => panic!("{} holds {other:?}", chunk.name),
+                    };
+                    let global = &program.globals[global.0];
+                    format!("{}/{}", global.namespace, global.name)
+                })
+                .collect::<Vec<_>>();
+            format!("{}: {}", chunk.name, definitions.join(" "))
+        })
+        .collect()
 }
 
 #[test]
@@ -722,13 +801,17 @@ fn printed(startup: &str, stdout: &str) -> String {
 /// The record of `program` as chunks, which [`runs_as_chunks`] checks
 /// against the single file at every level, and its files at `none`. The
 /// files hold the same namespaces at every level; what they import differs
-/// where `Advanced` code reads nothing of a chunk.
+/// where `Advanced` code reads nothing of a chunk, and `Advanced` adds the
+/// chunks that hold only definitions moved toward their readers.
 fn chunk_files(program: &Program) -> (String, Vec<String>) {
     let (record, outputs) = runs_as_chunks(program);
     let members = |output: &ChunkedOutput| {
-        files(output)
-            .into_iter()
-            .map(|file| file.split(" | imports").next().unwrap().to_owned())
+        output
+            .files
+            .iter()
+            .zip(files(output))
+            .filter(|(chunk, _)| !chunk.namespaces.is_empty() || chunk.definitions.is_empty())
+            .map(|(_, file)| file.split(" | imports").next().unwrap().to_owned())
             .collect::<Vec<_>>()
     };
     for (level, output) in &outputs {
@@ -751,9 +834,9 @@ fn a_feature_loads_its_sub_feature_chunk() {
             r#"{
   "startup": "app.main.js",
   "chunks": [
-    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["light.lazy", "app.main"], "roots": ["app.main"], "loadables": []},
-    {"name": "app.editor+app.spell", "file": "app.editor+app.spell.js", "imports": ["app.main.js"], "namespaces": ["app.text", "app.editor"], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}]},
-    {"name": "app.spell", "file": "app.spell.js", "imports": ["app.main.js", "app.editor+app.spell.js"], "namespaces": ["app.spell"], "roots": ["app.spell"], "loadables": [{"namespace": "app.editor", "target": "app.spell/check"}]}
+    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["light.lazy", "app.main"], "definitions": [], "roots": ["app.main"], "loadables": []},
+    {"name": "app.editor+app.spell", "file": "app.editor+app.spell.js", "imports": ["app.main.js"], "namespaces": ["app.text", "app.editor"], "definitions": [], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}]},
+    {"name": "app.spell", "file": "app.spell.js", "imports": ["app.main.js", "app.editor+app.spell.js"], "namespaces": ["app.spell"], "definitions": [], "roots": ["app.spell"], "loadables": [{"namespace": "app.editor", "target": "app.spell/check"}]}
   ]
 }
 "#,
@@ -782,8 +865,8 @@ fn a_feature_reads_the_namespace_that_loads_it() {
             r#"{
   "startup": "app.main.js",
   "chunks": [
-    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["app.shared", "app.util", "light.lazy", "app.main"], "roots": ["app.main", "app.util"], "loadables": [{"namespace": "app.main", "target": "app.util/twice"}]},
-    {"name": "app.editor", "file": "app.editor.js", "imports": ["app.main.js"], "namespaces": ["app.text", "app.editor"], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}]}
+    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["app.shared", "app.util", "light.lazy", "app.main"], "definitions": [], "roots": ["app.main", "app.util"], "loadables": [{"namespace": "app.main", "target": "app.util/twice"}]},
+    {"name": "app.editor", "file": "app.editor.js", "imports": ["app.main.js"], "namespaces": ["app.text", "app.editor"], "definitions": [], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}]}
   ]
 }
 "#,
@@ -851,7 +934,7 @@ fn a_namespace_loadable_runs_its_methods_when_loaded() {
         let output = prepare_application(&program, ApplicationOptions::new(level)).emit_chunks();
         assert!(
             unsized_manifest(&output).contains(
-                r#""file": "app.shapes.js", "imports": ["app.main.js"], "namespaces": ["app.shapes"], "roots": ["app.shapes"], "loadables": [{"namespace": "app.main", "target": "app.shapes"}]}"#
+                r#""file": "app.shapes.js", "imports": ["app.main.js"], "namespaces": ["app.shapes"], "definitions": [], "roots": ["app.shapes"], "loadables": [{"namespace": "app.main", "target": "app.shapes"}]}"#
             ),
             "{level}: {}",
             output.manifest()
@@ -1031,6 +1114,195 @@ fn a_package_only_a_feature_requires_is_imported_by_its_chunk() {
     }
 }
 
+/// At `Advanced` definitions move toward their readers (the `definitions`
+/// fixture, which [`matrix`] runs at every level): `fmt`, which both
+/// features read, to their shared chunk, and the helper and the protocol
+/// only the editor reads to the editor's chunk, where the protocol's
+/// dispatcher is defined before the types that name it. Each `defmethod`
+/// stays in its namespace's chunk. Their `defmulti` stays pinned in
+/// app.shared's chunk, startup: removal never drops it, since its
+/// initializer builds a `MultiFn` on the global hierarchy, which `Inert`
+/// does not accept, and only what removal could drop moves.
+#[test]
+fn definitions_move_toward_their_readers_and_methods_stay() {
+    let program = fixture_program("definitions");
+    let options = ApplicationOptions {
+        pseudo_names: true,
+        ..ApplicationOptions::new(OptimizationLevel::Advanced)
+    };
+    let prepared = prepare_application(&program, options);
+    let plan = plan(&program, &prepared);
+    check(&program, &prepared, &plan, OptimizationLevel::Advanced);
+    assert_eq!(
+        moved(&prepared, &plan),
+        [
+            "app.main.js: ",
+            "app.editor+app.reports.js: app.shared/fmt",
+            "app.editor.js: app.shared/outline app.shared/Shape",
+            "app.reports.js: ",
+        ]
+    );
+    let emitted = prepared.program();
+    let render = plan
+        .items
+        .iter()
+        .find(|item| {
+            matches!(&emitted.exprs[item.expr.0].kind,
+                ExprKind::Def { global, .. } if emitted.globals[global.0].name == "render")
+        })
+        .unwrap();
+    assert!(!render.movable && render.chunk == STARTUP);
+    let output = prepared.emit_chunks();
+    let source = |name: &str| {
+        output
+            .files
+            .iter()
+            .find(|file| file.name == name)
+            .unwrap_or_else(|| panic!("no {name}"))
+            .source
+            .as_str()
+    };
+    let (startup, editor, reports) = (
+        source("app.main.js"),
+        source("app.editor.js"),
+        source("app.reports.js"),
+    );
+    assert!(startup.contains("new rt$MultiFn("), "{startup}");
+    for (chunk, method) in [(editor, "\"<p>\""), (reports, "\" rows\"")] {
+        assert!(
+            chunk.contains("rt$addMethodProtocol(") && chunk.contains(method),
+            "{chunk}"
+        );
+        assert!(!startup.contains(method));
+    }
+    let dispatcher = editor
+        .find("rt$protocolMethod(\"app.shared/Shape/area\"")
+        .unwrap_or_else(|| panic!("{editor}"));
+    assert!(
+        dispatcher < editor.find("rt$defineType(").unwrap(),
+        "{editor}"
+    );
+    assert!(!startup.contains("app.shared/Shape"));
+}
+
+/// What moves at `Advanced`, and what stays: a record and the definition
+/// that constructs it move together to the one feature reading them, a
+/// forward-declared helper too; a definition a feature assigns moves with
+/// its readers and is assigned through its setter; and a protocol a startup
+/// `extend-type` names, a Var defined twice and a function holding a
+/// loadable stay in their namespace. The chunks print what the single file
+/// prints at every level.
+#[test]
+fn definitions_move_with_their_constructors_and_setters() {
+    static EDGES: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [app.shared :as shared] [light.lazy :as lazy]))\n\
+             (def editor (lazy/loadable app.editor/start))\n\
+             (def reports (lazy/loadable app.reports/start))\n\
+             (extend-type number shared/Sized (size [n] (* 2 n)))\n\
+             (defn start []\n\
+               (-> (lazy/load editor)\n\
+                   (.then (fn [f] (js/console.log (f)) (js/console.log (f)) (lazy/load reports)))\n\
+                   (.then (fn [f] (js/console.log (f)) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/shared.cljs",
+            "(ns app.shared (:require [light.lazy :as lazy]))\n\
+             (defprotocol Sized (size [x]))\n\
+             (defrecord Point [x y])\n\
+             (def origin (->Point 1 2))\n\
+             (def counter 0)\n\
+             (def twice 1)\n\
+             (def twice 2)\n\
+             (declare helper)\n\
+             (defn describe [p]\n\
+               (str (apply str (map helper [(:x p) (:y p)])) \" at \" (:x p) \",\" (:y p)))\n\
+             (defn helper [n] (str \"<\" (size n) \">\"))\n\
+             (defn spelling [] (lazy/loadable app.editor/start))\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor (:require [app.shared :as shared]))\n\
+             (defn start []\n\
+               (set! shared/counter (inc shared/counter))\n\
+               (str (shared/describe (update shared/origin :x + 2)) \"; \"\n\
+                    (shared/describe shared/origin) \"; \" shared/counter \" \" shared/twice))\n",
+        ),
+        (
+            "app/reports.cljs",
+            "(ns app.reports (:require [app.shared :as shared] [light.lazy :as lazy]))\n\
+             (defn start [] (str \"reports \" shared/counter \" \" (lazy/loaded? (shared/spelling))))\n",
+        ),
+    ];
+    let program = analyze(EDGES);
+    let (record, _) = chunk_files(&program);
+    assert_eq!(
+        record,
+        printed(
+            "app.main.js",
+            r"<6><4> at 3,2; <2><4> at 1,2; 1 2\n<6><4> at 3,2; <2><4> at 1,2; 2 2\nreports 2 true\n"
+        )
+    );
+    let prepared = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let plan = plan(&program, &prepared);
+    check(&program, &prepared, &plan, OptimizationLevel::Advanced);
+    assert_eq!(
+        moved(&prepared, &plan),
+        [
+            "app.main.js: ",
+            "app.editor+app.reports.js: app.shared/counter",
+            "app.editor.js: app.shared/Point app.shared/origin app.shared/describe app.shared/helper",
+            "app.reports.js: ",
+        ]
+    );
+    // The shared chunk owns `counter` and exports its setter, which the
+    // editor's `set!` calls.
+    assert_eq!(plan.chunks[1].setters.len(), 1);
+}
+
+/// A program that reaches reflection stays namespace granular at
+/// `Advanced` (the `reflection` fixture, which [`matrix`] runs at every
+/// level): the plan would move app.shared's helper to the editor, which
+/// alone reads it, but the editor looks namespaces up, so `emit_chunks`
+/// keeps every form in its namespace's chunk.
+#[test]
+fn a_program_reaching_reflection_keeps_definitions_in_their_namespaces() {
+    let program = fixture_program("reflection");
+    let prepared = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let plan = plan(&program, &prepared);
+    assert_eq!(
+        moved(&prepared, &plan),
+        ["app.main.js: ", "app.editor.js: app.shared/outline"]
+    );
+    let namespaces = light_cljs::chunks::namespace_plan(&program, &prepared);
+    check(
+        &program,
+        &prepared,
+        &namespaces,
+        OptimizationLevel::Advanced,
+    );
+    assert!(!namespaces.moves_definitions());
+    let output = prepared.emit_chunks();
+    assert_eq!(
+        files(&output),
+        [
+            "app.main.js: app.shared light.lazy app.main | roots app.main | imports ",
+            "app.editor.js: app.editor | roots app.editor | imports app.main.js",
+        ]
+    );
+    assert!(output.files.iter().all(|file| file.definitions.is_empty()));
+    assert!(output.files[0].source.contains(" words, first "));
+    assert!(!output.files[1].source.contains(" words, first "));
+}
+
 /// The CLI's output for `args`: whether it succeeded, its stdout and stderr.
 fn cli(args: &[&str]) -> (bool, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
@@ -1098,6 +1370,7 @@ fn out_dir_writes_the_features_example_chunks_and_manifest_at_every_level() {
             "chunks.json",
         ];
         if level == OptimizationLevel::Advanced {
+            expected.insert(0, "app.editor+app.reports.js");
             expected.push("notes.txt");
             assert_eq!(fs::read_to_string(out.join("notes.txt")).unwrap(), "kept");
         }
@@ -1113,19 +1386,31 @@ fn out_dir_writes_the_features_example_chunks_and_manifest_at_every_level() {
         }
         let manifest = fs::read_to_string(out.join("chunks.json")).unwrap();
         assert_eq!(manifest, output.manifest(), "{level}");
-        assert_eq!(
-            unsized_manifest(&output),
+        // At `Advanced` the definitions of app.shared that only the
+        // features read move toward them (docs/code-splitting.md, Phase 3).
+        let expected = if level == OptimizationLevel::Advanced {
             r#"{
   "startup": "app.main.js",
   "chunks": [
-    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["app.shared", "light.lazy", "app.main"], "roots": ["app.main"], "loadables": []},
-    {"name": "app.editor", "file": "app.editor.js", "imports": ["app.main.js"], "namespaces": ["app.editor"], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}]},
-    {"name": "app.reports", "file": "app.reports.js", "imports": ["app.main.js"], "namespaces": ["clojure.string", "app.reports"], "roots": ["app.reports"], "loadables": [{"namespace": "app.main", "target": "app.reports/start"}]}
+    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["app.shared", "light.lazy", "app.main"], "definitions": [], "roots": ["app.main"], "loadables": []},
+    {"name": "app.editor+app.reports", "file": "app.editor+app.reports.js", "imports": ["app.main.js"], "namespaces": [], "definitions": ["app.shared/documents"], "roots": [], "loadables": []},
+    {"name": "app.editor", "file": "app.editor.js", "imports": ["app.main.js", "app.editor+app.reports.js"], "namespaces": ["app.editor"], "definitions": ["app.shared/index-by"], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}]},
+    {"name": "app.reports", "file": "app.reports.js", "imports": ["app.main.js", "app.editor+app.reports.js"], "namespaces": ["clojure.string", "app.reports"], "definitions": [], "roots": ["app.reports"], "loadables": [{"namespace": "app.main", "target": "app.reports/start"}]}
   ]
 }
-"#,
-            "{level}"
-        );
+"#
+        } else {
+            r#"{
+  "startup": "app.main.js",
+  "chunks": [
+    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["app.shared", "light.lazy", "app.main"], "definitions": [], "roots": ["app.main"], "loadables": []},
+    {"name": "app.editor", "file": "app.editor.js", "imports": ["app.main.js"], "namespaces": ["app.editor"], "definitions": [], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}]},
+    {"name": "app.reports", "file": "app.reports.js", "imports": ["app.main.js"], "namespaces": ["clojure.string", "app.reports"], "definitions": [], "roots": ["app.reports"], "loadables": [{"namespace": "app.main", "target": "app.reports/start"}]}
+  ]
+}
+"#
+        };
+        assert_eq!(unsized_manifest(&output), expected, "{level}");
         // `node tests/support/chunked_execution.mjs OUT app.main.js` prints
         // the single file's lines.
         let single = crate::features_example::compile_features(level, true);
@@ -1181,7 +1466,7 @@ fn out_dir_of_a_program_without_loadables_is_its_esm_file() {
                     r#"{{
   "startup": "demo.main.js",
   "chunks": [
-    {{"name": "demo.main", "file": "demo.main.js", "imports": [], "namespaces": ["demo.math", "demo.main"], "roots": ["demo.main"], "loadables": [], "bytes": {}}}
+    {{"name": "demo.main", "file": "demo.main.js", "imports": [], "namespaces": ["demo.math", "demo.main"], "definitions": [], "roots": ["demo.main"], "loadables": [], "bytes": {}}}
   ]
 }}
 "#,
@@ -1254,6 +1539,8 @@ macro_rules! fixture_matrix {
 
 fixture_matrix! {
     matrix_features_example: "features",
+    matrix_definitions_move_toward_their_readers: "definitions",
+    matrix_reflection_keeps_namespaces_whole: "reflection",
     matrix_diamond: "diamond",
     matrix_sub_feature: "sub-feature",
     matrix_target_requiring_its_loader: "requires-loader",
@@ -1274,9 +1561,11 @@ fn the_matrix_runs_every_fixture_directory() {
 /// Fixture `name`'s directory: a program of entry `app.main` (`features`
 /// takes examples/features instead); `stdout.txt`, what it prints; and
 /// `membership.tsv`, its chunks in manifest order, a row each: the file, its
-/// namespaces, its roots, and its imports below `Advanced` and at
-/// `Advanced`, `-` for none. `packages`, if present, holds the JavaScript
-/// packages it imports, which a run finds in `node_modules`.
+/// namespaces, its roots, its imports below `Advanced` (`n/a` for a chunk
+/// only `Advanced` has) and at `Advanced`, and the definitions it holds at
+/// `Advanced` of namespaces other chunks hold, `-` for none. `packages`, if
+/// present, holds the JavaScript packages it imports, which a run finds in
+/// `node_modules`.
 fn fixture_dir(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/chunks")
@@ -1327,6 +1616,8 @@ struct ManifestChunk {
     file: String,
     imports: Vec<String>,
     namespaces: Vec<String>,
+    /// The definitions it holds of namespaces another chunk holds.
+    definitions: Vec<String>,
     roots: Vec<String>,
     /// Each loadable site's namespace and target.
     loadables: Vec<(String, String)>,
@@ -1351,6 +1642,7 @@ fn read_manifest(dir: &Path) -> (String, Vec<ManifestChunk>) {
             file: chunk.get("file").str().to_owned(),
             imports: strings(chunk.get("imports")),
             namespaces: strings(chunk.get("namespaces")),
+            definitions: strings(chunk.get("definitions")),
             roots: strings(chunk.get("roots")),
             loadables: chunk
                 .get("loadables")
@@ -1473,6 +1765,18 @@ fn check_manifest(out: &Path, startup: &str, chunks: &[ManifestChunk], level: Op
         for namespace in &chunk.namespaces {
             assert_eq!(chunk_of(namespace), i, "{level}: {namespace} twice");
         }
+        // A definition moves, at `Advanced` only, out of its namespace's
+        // chunk into one its namespace's chunk does not import.
+        assert!(
+            level.advanced() || chunk.definitions.is_empty(),
+            "{level}: {}",
+            chunk.file
+        );
+        for definition in &chunk.definitions {
+            let (namespace, _) = definition.rsplit_once('/').unwrap();
+            let home = chunk_of(namespace);
+            assert!(home != i && !reach[home][i], "{level}: {definition}");
+        }
         for root in &chunk.roots {
             assert_eq!(chunk_of(root), i, "{level}: root {root}");
         }
@@ -1520,40 +1824,50 @@ fn check_manifest(out: &Path, startup: &str, chunks: &[ManifestChunk], level: Op
     }
 }
 
-/// Each chunk's file, namespaces, roots and imports.
+/// Each chunk's file, namespaces, roots, imports and moved definitions.
 fn membership_rows(chunks: &[ManifestChunk]) -> Vec<String> {
     chunks
         .iter()
         .map(|chunk| {
             format!(
-                "{} | {} | roots {} | imports {}",
+                "{} | {} | roots {} | imports {} | definitions {}",
                 chunk.file,
                 chunk.namespaces.join(" "),
                 chunk.roots.join(" "),
-                chunk.imports.join(" ")
+                chunk.imports.join(" "),
+                chunk.definitions.join(" ")
             )
         })
         .collect()
 }
 
 /// The rows of fixture `name`'s `membership.tsv` at `level`, as
-/// [`membership_rows`] writes them.
+/// [`membership_rows`] writes them. A chunk whose imports below `Advanced`
+/// are `n/a` holds only definitions that move at `Advanced`, and exists only
+/// there; below it no definition moves.
 fn expected_membership(name: &str, level: OptimizationLevel) -> Vec<String> {
     let table = fs::read_to_string(fixture_dir(name).join("membership.tsv")).unwrap();
     table
         .lines()
         .filter(|line| !line.starts_with('#'))
-        .map(|line| {
+        .filter_map(|line| {
             let cells = line
                 .split('\t')
                 .map(|cell| if cell == "-" { "" } else { cell })
                 .collect::<Vec<_>>();
-            assert_eq!(cells.len(), 5, "{name}: {line}");
-            let imports = if level.advanced() { cells[4] } else { cells[3] };
-            format!(
-                "{} | {} | roots {} | imports {imports}",
+            assert_eq!(cells.len(), 6, "{name}: {line}");
+            if !level.advanced() && cells[3] == "n/a" {
+                return None;
+            }
+            let (imports, definitions) = if level.advanced() {
+                (cells[4], cells[5])
+            } else {
+                (cells[3], "")
+            };
+            Some(format!(
+                "{} | {} | roots {} | imports {imports} | definitions {definitions}",
                 cells[0], cells[1], cells[2]
-            )
+            ))
         })
         .collect()
 }

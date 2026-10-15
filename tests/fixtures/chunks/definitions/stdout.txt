@@ -1,0 +1,3 @@
+== menu ==
+editor: 90, 30; 3 words, first alpha, last gamma | 1 words, first delta, last delta; <p>hi</p>
+reports: 60, total; 2 rows

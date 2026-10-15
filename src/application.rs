@@ -215,6 +215,12 @@ pub struct PreparedApplication {
     /// `Advanced`: direct calls and dispatcher-free definitions
     /// (`crate::call_shapes`).
     shapes: Option<CallShapes>,
+    /// `Advanced`: by expression, the discarded top-level definitions with
+    /// inert initializers (`Retained::candidates`), which removal could drop
+    /// when unread and a chunked build may therefore move toward their
+    /// readers (docs/code-splitting.md, "Items and signatures"). Empty
+    /// below `Advanced`, where every form stays in its namespace.
+    removable: Vec<bool>,
     /// Defines of the options that did not apply.
     rejected_defines: Vec<crate::defines::DefineError>,
     stats: ApplicationStats,
@@ -276,17 +282,41 @@ impl PreparedApplication {
     /// unless the target has evaluated before the loadable's chunk runs.
     /// A program of one chunk, one without a loadable whose target another
     /// chunk holds, is one file: [`PreparedApplication::emit_esm`]'s.
+    /// At `Advanced` definitions move toward their readers
+    /// ([`crate::chunks::plan`]), unless the program's forms reach
+    /// reflection: then every form stays in its namespace's chunk
+    /// ([`crate::chunks::namespace_plan`]), so a namespace the program can
+    /// look up is never split across chunks.
     pub fn emit_chunks(&self) -> crate::chunks::ChunkedOutput {
         let plan = crate::chunks::plan(&self.program, self);
+        if let Some(output) = self.write_chunks(&plan, false) {
+            return output;
+        }
+        let plan = crate::chunks::namespace_plan(&self.program, self);
+        self.write_chunks(&plan, true)
+            .expect("a plan that moves no definition is written")
+    }
+    /// The files of `plan`, or `None` when its forms reach reflection and it
+    /// moves a definition out of its namespace's chunk. `reflective`: the
+    /// forms are known to reach reflection.
+    fn write_chunks(
+        &self,
+        plan: &crate::chunks::ChunkPlan,
+        reflective: bool,
+    ) -> Option<crate::chunks::ChunkedOutput> {
         let emitted = if plan.chunks.len() == 1 {
             vec![crate::emitter::EmittedChunk {
                 source: self.emit_esm(),
                 imports: Vec::new(),
             }]
         } else {
-            crate::emitter::emit_chunked(&self.program, self.application(), &plan)
+            crate::emitter::emit_chunked(&self.program, self.application(), plan, reflective)?
         };
-        crate::chunks::ChunkedOutput::new(&self.program, &plan, emitted)
+        Some(crate::chunks::ChunkedOutput::new(
+            &self.program,
+            plan,
+            emitted,
+        ))
     }
     /// [`PreparedApplication::emit_js`] (the same text) and its source map,
     /// which [`crate::source_map::SourceMapping::to_json`] writes against
@@ -338,6 +368,14 @@ impl PreparedApplication {
     pub fn program(&self) -> &Program {
         &self.program
     }
+    /// At `Advanced`, whether `id` is a discarded top-level definition with
+    /// an inert initializer, one that removal drops when nothing reads it
+    /// (`Retained::candidates`). Removability is movability: a chunked build
+    /// moves such a definition toward its readers ([`crate::chunks::plan`]).
+    /// False below `Advanced`.
+    pub fn removable(&self, id: ExprId) -> bool {
+        self.removable.get(id.0).copied().unwrap_or(false)
+    }
     /// The level this application was prepared at. Level-specific emission
     /// (for example runtime slicing under `Advanced`) reads it here.
     pub fn level(&self) -> OptimizationLevel {
@@ -377,6 +415,7 @@ pub fn prepare_application(
         protocol_declarations: Vec::new(),
         loadable_members: Vec::new(),
         shapes: None,
+        removable: Vec::new(),
         rejected_defines: Vec::new(),
         stats: ApplicationStats::default(),
     };
@@ -505,6 +544,7 @@ pub fn prepare_application(
         prepared.entry_lookups =
             crate::folding::entry_lookups(&prepared.program, inference.facts());
         prepared.inference = Some(inference);
+        prepared.removable = candidates;
     }
     prepared.stats.retained_globals = prepared.globals.iter().filter(|b| **b).count();
     prepared.stats.specialized_calls += prepared.calls.len();

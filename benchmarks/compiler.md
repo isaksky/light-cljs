@@ -4059,3 +4059,37 @@ output keeps (686 bytes). Each feature is its forms and its imports of startup's
 bindings, constants and helpers. The features' runtime units and constants
 leave startup in Phase 3. `app.reports.js` at `none` is mostly
 `clojure.string`, which only reports requires.
+
+## Definition-level chunk placement — October 15, 2026
+
+light-cljs-277 moves the definitions that removal could drop, and
+`defprotocol` and `deftype` forms, toward the chunks of the roots whose code
+reads them at `advanced` ([code-splitting design](../docs/code-splitting.md),
+Phase 3, "As built (light-cljs-277)"). Measured with
+`light-cljs --compile --optimize advanced --entry app.main --source-root
+examples/features --out-dir DIR`, `wc -c` and `gzip -9`, against the same
+command built from master `ed49b92` (namespace-level placement,
+light-cljs-274/275); `none` and `prepare`, where nothing moves, and the
+single `--esm` file are unchanged, and `bb benchmarks/features.bb` prints the
+bounds of the Goal table as before. Apple M3 Ultra virtual machine of the
+[environment](results/environment.txt), macOS 15.7.3, one-minute load average
+1.8 (sizes do not depend on it). Raw / `gzip -9` bytes at `advanced`, terse:
+
+| File | Namespace level | Definition level |
+| --- | ---: | ---: |
+| `app.main.js`, startup | 69,587 / 21,575 | 69,539 / 21,551 |
+| `app.editor+app.reports.js` | none | 63 / 81 |
+| `app.editor.js` | 276 / 224 | 361 / 255 |
+| `app.reports.js` | 832 / 517 | 874 / 531 |
+
+The shared definitions only the features read are `app.shared/documents`,
+which both read, now the whole `app.editor+app.reports.js`, and
+`app.shared/index-by`, which only the editor reads (`pluck` is inlined into
+`app.reports`). In the namespace-level startup chunk their statements are 48
+bytes, `(N=aq);` and `(au=function(av,Q){return k(l(av,Q),Q)});`, and startup
+shrinks by those 48 bytes. Their two names left startup's `export let` line
+(5 bytes), and startup exports two names to the moved code instead (5
+bytes): the constant table entry `documents` holds and the runtime's
+`zipmap`. Those go with constants (light-cljs-278) and runtime units
+(light-cljs-279), which still all sit in startup. `label`, which the menu
+reads, stays.

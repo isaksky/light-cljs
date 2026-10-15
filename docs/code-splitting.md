@@ -46,8 +46,8 @@ Targets, measured in Phase 0 on the example application
 
 | Measurement | Today | Measured bound | Target |
 |---|---|---|---|
-| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646; chunked at namespace granularity (light-cljs-274), `app.main.js` 69,587 / 21,575, with the whole-program runtime slice and every constant still in startup | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
-| Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
+| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646; chunked at namespace granularity (light-cljs-274), `app.main.js` 69,587 / 21,575, with the whole-program runtime slice and every constant still in startup; with definitions moved toward their readers (light-cljs-277), 69,539 / 21,551 | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
+| Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds; with definitions moved (light-cljs-277), 361 / 255 and 874 / 531, each also importing the shared `app.editor+app.reports.js`, 63 / 81 | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
 | Observable behavior | n/a; chunked (light-cljs-274), the example and the Phase 2 fixtures print what the single file prints at every level; the fixture matrix (light-cljs-276) through `--out-dir` and `chunks.json` in Node, and the example in Chrome without a bundler and through Vite 8.0.8, at every level | n/a | identical to the single-file program at every level, given the same `load` calls |
 | Compile time of a chunked build | n/a | n/a | within 10% of the single-file build of the same program |
 
@@ -392,12 +392,13 @@ the startup chunk (startup loads first, so there is nothing to defer).
 
 - A **pinned** item has the signature of its namespace: the set of roots whose
   static reach contains the namespace. Pinned items keep their source order.
-- A **movable** item has the union of the signatures of its readers, plus the
-  lazy roots that name its global. Readers are items whose expressions read
-  one of its globals anywhere, including inside function bodies, since a
-  function may run as soon as its chunk has loaded. Constants and runtime
-  units are movable; their readers are the items that use them and the
-  constants and units that require them.
+- A **movable** item has the union of the signatures of its readers.
+  Readers are items whose expressions read one of its globals anywhere,
+  including inside function bodies, since a function may run as soon as its
+  chunk has loaded, and a type, `reify` or extension whose method names a
+  protocol method it defines. Constants and runtime units are movable; their
+  readers are the items that use them and the constants and units that
+  require them.
 
 Which top-level forms are movable: below `Advanced`, none (Phase 2). At
 `Advanced`, exactly the `Retained::candidates` of `retain`, the definitions
@@ -405,9 +406,15 @@ whose initializer the `Inert` scan accepts (literals, functions, pure and
 allocating core calls on plain data, constructors of program types defined
 earlier), plus `DefProtocol` and `DefType` forms, whose load-time work touches
 only what they declare. `ExtendType` of a type another form declares,
-`defmethod` (an `AddMethod` call), `set!`, `enable-console-print!`, printing,
-a `def` with a `test` or several definitions, and every other form with an
-effect stay pinned. A program that reaches reflection pins everything, so a
+`defmethod` (an `AddMethod` call), `defmulti` (its initializer builds a
+`MultiFn`, which `Inert` does not accept), `set!`, `enable-console-print!`,
+printing, a `def` with a `test` or several definitions, and every other form
+with an effect stay pinned. So do three kinds of definition that removal
+could drop (light-cljs-277): one of a Var that another form defines too,
+since two chunks would assign it; the definition of a `loadable`'s target
+Var, so that the chunk a loadable loads, its root's namespace's, defines its
+target; and a form holding a `loadable` site, which the manifest gives to its
+namespace's chunk. A program that reaches reflection pins everything, so a
 registered namespace is never split across chunks.
 
 Reach is monotone: if item `a` reads item `b`, every root reaching `a`
@@ -977,6 +984,100 @@ Scope: the startup chunk of an application with lazy features is the size of
 the application without them. Motion of inert definitions, constants and
 runtime units toward their first readers; per-chunk runtime factories.
 
+- **As built (light-cljs-277): definitions move toward their readers.**
+  - `PreparedApplication::removable(id)` surfaces the `Retained::candidates`
+    of the last `retain` at `Advanced` (none below). `chunks::plan` walks
+    the flattened root once with `program_fragment::children` and records
+    per item the globals it reads (every global reference, in function
+    bodies too, and the dispatcher of each program protocol method that a
+    method of a type, `reify` or extension names by key, since a `deftype`'s
+    method table may write the dispatcher's binding), the globals it defines
+    with a value (`application::globals` of a `def` with a value, a
+    `defprotocol` or a `deftype`), the globals it assigns and its `loadable`
+    sites.
+  - An item is movable when it is a removal candidate or a
+    `DefProtocol`/`DefType` form, defines a global, is the only item that
+    defines each global it defines, defines no `loadable` target and holds
+    no site ("Items and signatures"). A `declare` defines nothing, so a
+    forward-declared function moves.
+  - Signatures are bitsets per item: one walk per root from the pinned
+    items of its reach (startup's also from those of namespaces no root
+    reaches), following each read to its one defining item when that is
+    movable. A movable item that no walk reaches, one that only
+    `ApplicationOptions::exports` keeps, is pinned, and the walks run again.
+    A chunk is a distinct signature of a namespace or a movable item, so a
+    chunk may hold moved definitions alone, without a namespace or a root:
+    `app.editor+app.reports.js` of examples/features holds
+    `app.shared/documents` only. A global belongs to its definition's chunk
+    (`ChunkPlan::global_chunks`), so the setters of light-cljs-274 carry
+    over: a feature's `set!` of a definition that moved into the shared
+    chunk calls the shared chunk's setter. Debug builds also assert, on
+    every read, that the reader's signature is within its movable
+    definition's.
+  - Items keep program order within a chunk. A definition precedes in the
+    single file every item that reads it while the program loads (an inert
+    initializer reads globals only by constructing types defined earlier),
+    so this order puts a moved definition before the first item of its
+    chunk that reads it; hoisting it further, above a forward reference in
+    a function body, could run it before the type it constructs. A chunk's
+    import lines follow its imports' first namespaces, and a chunk of moved
+    definitions alone, which have no effect, its first definition's
+    namespace.
+  - The reflection gate needs the written forms: `reach_reflection` is a
+    property of the runtime names emission records. `emit_chunks` writes
+    the definition-level plan; when that first write reaches reflection and
+    the plan moved a definition, `emit_chunked` returns `None` and
+    `emit_chunks` writes `chunks::namespace_plan` with the namespaces'
+    registration, the second write such a program costs the single file
+    too. `chunks::plan` itself does not know about reflection.
+  - `ChunkFile::definitions` and `"definitions"` in `chunks.json` list the
+    definitions a chunk holds of namespaces another chunk holds, by the
+    first global each defines, so the manifest still describes the whole
+    partition.
+  - A `defmulti` stays pinned ("Open questions"), and its `defmethod`s in
+    their namespaces' chunks: the pellet's "a `defmethod` stays in its
+    namespace's chunk although its `defmulti` moved" holds for the methods
+    only.
+  - examples/features at `advanced`, terse, raw / `gzip -9` bytes, before
+    (namespace level, light-cljs-274) and after:
+
+    | File | Namespace level | Definition level |
+    | --- | ---: | ---: |
+    | `app.main.js` | 69,587 / 21,575 | 69,539 / 21,551 |
+    | `app.editor+app.reports.js` | none | 63 / 81 |
+    | `app.editor.js` | 276 / 224 | 361 / 255 |
+    | `app.reports.js` | 832 / 517 | 874 / 531 |
+
+    The shared definitions only the features read are `app.shared/documents`
+    and `app.shared/index-by` (`pluck` is inlined into `app.reports`), 48
+    bytes of statements in the namespace-level startup chunk, `(N=aq);` and
+    `(au=function(av,Q){return k(l(av,Q),Q)});`; startup shrinks by those 48
+    bytes. Their two names in startup's `export let` line (5 bytes) are
+    offset by the two names startup now exports to them (5 bytes): the
+    constant `documents` holds and the runtime's `zipmap`, which leave
+    startup with constants (light-cljs-278) and runtime units
+    (light-cljs-279). The rest of startup is the whole-program runtime slice
+    and every constant, as at Phase 2. `label` stays, since the menu reads
+    it.
+  - Tests (`tests/compiler/chunks.rs`): `membership.tsv` gained a column,
+    the definitions each chunk holds at `Advanced` of namespaces other
+    chunks hold, and a chunk only `Advanced` has gives `n/a` as its imports
+    below it. Two fixtures joined the matrix: `definitions`, where
+    `app.shared/fmt`, which both features read, lands in their shared chunk,
+    a helper and a protocol only the editor reads land in the editor's
+    chunk with the types implementing it (the dispatcher defined before
+    them), and each feature's `defmethod` stays in its own chunk while the
+    `defmulti` stays in startup; and `reflection`, whose editor looks
+    namespaces up, so its helper stays in startup although the plan alone
+    would move it. The planner's `check` accepts a movable item in a chunk
+    whose signature its namespace's contains, and only at `Advanced`. A
+    program run at every level moves a record with the definition
+    constructing it, a forward-declared helper, and a Var a feature assigns
+    (through the shared chunk's setter), and keeps a protocol a startup
+    `extend-type` names, a Var defined twice and a function holding a
+    loadable in their namespace. examples/features plans the shared chunk at
+    `Advanced` and its namespace plan stays the three files of Phase 2.
+
 - **Item signatures.** Extend `chunks::plan` with the item reference graph
   over `flatten(program.root)`: per item, the globals it reads (one walk
   with `program_fragment::children`), the globals it defines
@@ -1203,6 +1304,15 @@ minification, against the 69,587 bytes `--out-dir` wrote.
   closure per chunk and the destructuring, at the cost of renaming inside unit
   bodies. The existing open question about the sliced runtime's shape in
   advanced-optimization.md should be settled together with this.
+- **Multimethods and motion.** A `defmulti` stays pinned at `Advanced`
+  (light-cljs-277): its initializer builds a `MultiFn` from the dispatch
+  function, the options and the global hierarchy, which `Inert` does not
+  accept, so removal never drops it and only what removal could drop moves.
+  A multimethod of a shared namespace that only features call therefore
+  keeps its definition in startup, and once the runtime splits per chunk
+  (light-cljs-279) the `MultiFn` units with it. Accepting `defmulti` with a keyword or `fn` dispatch
+  and the default hierarchy as inert would let it move with its readers;
+  its `defmethod`s stay pinned in their namespaces either way.
 - **Granularity of the reference graph for motion.** Items are top-level
   forms; a `defn` with several methods is one item. Finer motion (per method
   entry `g3_1`) is possible with call shapes but has no measured case yet.

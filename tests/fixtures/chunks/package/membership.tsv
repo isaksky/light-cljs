@@ -1,3 +1,3 @@
-# file	namespaces	roots	imports	imports at advanced
-app.main.js	light.lazy app.main	app.main	-	-
-app.editor.js	app.editor	app.editor	app.main.js	app.main.js
+# file	namespaces	roots	imports	imports at advanced	definitions at advanced
+app.main.js	light.lazy app.main	app.main	-	-	-
+app.editor.js	app.editor	app.editor	app.main.js	app.main.js	-

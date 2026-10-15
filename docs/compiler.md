@@ -553,9 +553,9 @@ the single file, stated the way the "Advanced-mode contract" in
   position, in the chunk of its first reader. This is unobservable through
   the program: only its readers can see it, and they are in that chunk or
   later. It is observable through reflection, so a program that reaches
-  reflection moves nothing. (Definitions move from Phase 3 of
-  docs/code-splitting.md; at namespace granularity every form stays in its
-  namespace's chunk.)
+  reflection moves nothing. (Definitions move at `advanced` since
+  light-cljs-277, Phase 3 of docs/code-splitting.md; below it every form
+  stays in its namespace's chunk.)
 - Eager code may be larger or less specialized because of lazy code: every
   whole-program decision (which types exist, which methods are called, which
   core operations the program may replace, whether printing is reachable)
@@ -1711,7 +1711,7 @@ node -e 'import("/tmp/light-features/app.main.js").then(m => m.default())'
 # reports: tags Draft, Guide, Reference; drafts FAQ, INTRO; 1050 words
 ```
 
-The chunks are planned at namespace granularity (`src/chunks.rs`). A *root*
+The chunks are planned per namespace, and at `advanced` per definition (`src/chunks.rs`). A *root*
 is the entry namespace, startup, or a namespace a `loadable` site names; the
 static reach of a root is the namespaces its namespace requires,
 transitively. Each namespace goes to the chunk of the set of roots that
@@ -1719,19 +1719,37 @@ reach it, except that every namespace startup reaches is startup's. The
 other chunks hold namespaces only lazy roots reach: those of one root are
 `NS.js`, and those several roots share are named by the roots' namespaces,
 sorted and joined with `+` (`app.editor+app.reports.js`), or
-`shared-<16 hex digits>.js` past 80 characters. Every top-level form stays in its namespace's chunk, in
-source order; the runtime (the whole runtime below `advanced`, the
-whole-program slice at `advanced`) and every constant stay in startup.
+`shared-<16 hex digits>.js` past 80 characters. Below `advanced` every
+top-level form stays in its namespace's chunk, in source order. At
+`advanced` a definition that removal could drop when nothing reads it (an
+inert initializer: a function, a literal, a pure core call, a constructor
+of a type defined earlier), and a `defprotocol` or `deftype` form, goes
+instead to the chunk of the roots whose code reads it, in function bodies
+too: a helper of a shared namespace that only one feature reads moves to
+that feature's chunk, and one that two features read but startup does not
+to a chunk of its own those two import (docs/code-splitting.md, "Items and
+signatures"). The other forms stay in their namespace's chunk: effects, a
+`defmulti`, a `defmethod`, the definition of a `loadable`'s target, a form
+holding a `loadable`, a Var defined twice. A program that reaches
+reflection ("Namespace reflection and reading": `*ns*`, `find-ns`, the
+reader, `eval`, ...) keeps every form in its namespace's chunk at `advanced`
+too, so the namespaces it registers are whole.
+Items keep source order within a chunk. The runtime (the whole runtime
+below `advanced`, the whole-program slice at `advanced`) and every
+constant stay in startup.
 Analysis and optimization run once over the whole program, so each chunk's
 code is what the single file would hold. A chunk imports statically the
 chunks holding what its namespaces require and the bindings its code reads,
 each of which therefore evaluates first; startup imports none. A loadable
 whose target's chunk has evaluated before the site's chunk runs is resident,
 as in the single file; any other imports the target's chunk when it is first
-loaded. examples/features is three files at every level, `app.main.js`,
-`app.editor.js` and `app.reports.js`: 441,976, 1,295 and 13,101 bytes at
-`none` and `prepare`, against 455,109 for the single file, and 69,587, 276
-and 832 at `advanced`, against 69,500. A program without a loadable whose
+loaded. examples/features is three files at `none` and `prepare`,
+`app.main.js`, `app.editor.js` and `app.reports.js`: 441,976, 1,295 and
+13,101 bytes, against 455,109 for the single file. At `advanced` it is
+four: `app.shared/documents`, which both features read and the menu does
+not, moves to `app.editor+app.reports.js`, and `app.shared/index-by` to
+`app.editor.js`, so the files are 69,539, 63, 361 and 874 bytes, against
+69,500 for the single file. A program without a loadable whose
 target another chunk holds, every program without a loadable among them, is
 one file, byte for byte its `--esm` output.
 
@@ -1743,9 +1761,10 @@ examples/features at `advanced`:
 {
   "startup": "app.main.js",
   "chunks": [
-    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["app.shared", "light.lazy", "app.main"], "roots": ["app.main"], "loadables": [], "bytes": 69587},
-    {"name": "app.editor", "file": "app.editor.js", "imports": ["app.main.js"], "namespaces": ["app.editor"], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}], "bytes": 276},
-    {"name": "app.reports", "file": "app.reports.js", "imports": ["app.main.js"], "namespaces": ["clojure.string", "app.reports"], "roots": ["app.reports"], "loadables": [{"namespace": "app.main", "target": "app.reports/start"}], "bytes": 832}
+    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["app.shared", "light.lazy", "app.main"], "definitions": [], "roots": ["app.main"], "loadables": [], "bytes": 69539},
+    {"name": "app.editor+app.reports", "file": "app.editor+app.reports.js", "imports": ["app.main.js"], "namespaces": [], "definitions": ["app.shared/documents"], "roots": [], "loadables": [], "bytes": 63},
+    {"name": "app.editor", "file": "app.editor.js", "imports": ["app.main.js", "app.editor+app.reports.js"], "namespaces": ["app.editor"], "definitions": ["app.shared/index-by"], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}], "bytes": 361},
+    {"name": "app.reports", "file": "app.reports.js", "imports": ["app.main.js", "app.editor+app.reports.js"], "namespaces": ["clojure.string", "app.reports"], "definitions": [], "roots": ["app.reports"], "loadables": [{"namespace": "app.main", "target": "app.reports/start"}], "bytes": 874}
   ]
 }
 ```
@@ -1756,7 +1775,11 @@ examples/features at `advanced`:
 - `file`: the file, which the other chunks import as `./FILE`, so the files
   stay together in one directory.
 - `imports`: the files it imports statically, which evaluate before it.
-- `namespaces`: the namespaces whose top-level forms it holds, in load order.
+- `namespaces`: the namespaces whose top-level forms it holds, in load order:
+  the forms that stay in their namespace's chunk.
+- `definitions`: the definitions it holds of namespaces another chunk holds,
+  moved toward their readers at `advanced`, in program order, each by the
+  first Var it defines (`app.shared/documents`); empty below `advanced`.
 - `roots`: the namespaces of the roots it holds: the entry for startup, and
   for any other chunk the target namespaces whose loads load it.
 - `loadables`: the `light.lazy/loadable` sites of the output whose target it
@@ -1771,7 +1794,7 @@ manager and no load markers, and a bundler that renames or regroups them
 leaves the manifest behind (docs/code-splitting.md, "Open questions").
 Library callers get the files as values: `emit_chunks` returns a
 `ChunkedOutput` whose `files` are `ChunkFile { name, source, imports,
-namespaces, roots, loadables }`, startup first (`ChunkedOutput::startup`),
+namespaces, definitions, roots, loadables }`, startup first (`ChunkedOutput::startup`),
 and whose `manifest()` is `chunks.json`'s text; the library writes no file.
 The playground's WebAssembly module offers the same as `compile_chunks`,
 whose result holds the file names, their sources and the manifest.
