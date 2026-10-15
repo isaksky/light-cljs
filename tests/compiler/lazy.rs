@@ -1,12 +1,15 @@
 //! `light.lazy/loadable` in analysis (docs/code-splitting.md, "Phase 1"): the
 //! special form, the loader that analyzes a lazy target's namespace after the
 //! namespace naming it, the require graph the `Program` records, macro
-//! expansions and the REPL. Until the `light.lazy` library exists, a loadable
-//! evaluates to `nil`.
+//! expansions and the REPL; and the `light.lazy` library, with each target
+//! resident in the one output file, executed through the Node driver of
+//! Phase 0 at every level.
+use super::features_example::{FEATURES_RECORD, compile_features};
 use super::optimization::execute;
+use crate::chunked_execution::run_modules;
 use crate::phase_oracle::{Case, run};
 use light_cljs::analyzer::{AnalysisOptions, LazyTargetId};
-use light_cljs::compiler::analyze_namespace_entry_with_provider;
+use light_cljs::compiler::{analyze_namespace_entry, analyze_namespace_entry_with_provider};
 use light_cljs::eval_session::FileLoadRequest;
 use light_cljs::source_provider::{LoadError, LoadRequest, SourceInput};
 use light_cljs::{
@@ -72,7 +75,7 @@ static THREE: &[(&str, &str)] = &[
          (def editor (light.lazy/loadable app.editor/start))\n\
          (def whole (light.lazy/loadable app.editor))\n\
          (defn ready [] :main-ready)\n\
-         (fn [] (pr-str [(shared/label :main) @shared/log editor whole]))\n",
+         (fn [] (pr-str [(shared/label :main) @shared/log ((deref editor)) @whole]))\n",
     ),
     (
         "app/shared.cljs",
@@ -91,9 +94,16 @@ static THREE: &[(&str, &str)] = &[
 fn loadable_sites_and_the_require_graph_of_three_namespaces() {
     let program = analyze(THREE).unwrap_or_else(|error| panic!("{error}"));
     // app.editor is not a dependency of the entry: it is analyzed after it.
-    assert_eq!(program.namespaces, ["app.shared", "app.main", "app.editor"]);
-    assert_eq!(program.namespace_requires, [vec![], vec![0], vec![0, 1]]);
-    assert_eq!(program.namespace_lazy_only, [false, false, true]);
+    // app.main spells light.lazy/loadable, so it requires light.lazy last.
+    assert_eq!(
+        program.namespaces,
+        ["app.shared", "light.lazy", "app.main", "app.editor"]
+    );
+    assert_eq!(
+        program.namespace_requires,
+        [vec![], vec![], vec![0, 1], vec![0, 2]]
+    );
+    assert_eq!(program.namespace_lazy_only, [false, false, false, true]);
     assert_eq!(program.lazy_namespaces, ["app.editor"]);
     let sites = program
         .lazy_targets
@@ -119,19 +129,30 @@ fn loadable_sites_and_the_require_graph_of_three_namespaces() {
         ]
     );
     for (index, target) in program.lazy_targets.iter().enumerate() {
+        let ExprKind::Loadable { target: id, class } = program.exprs[target.site.0].kind else {
+            panic!("a site is a loadable")
+        };
+        assert_eq!(id, LazyTargetId(index));
+        // The site reads the type it constructs.
+        let ExprKind::Global(class) = program.exprs[class.0].kind else {
+            panic!("a loadable reads its type")
+        };
+        let class = &program.globals[class.0];
         assert_eq!(
-            program.exprs[target.site.0].kind,
-            ExprKind::Loadable {
-                target: LazyTargetId(index)
-            }
+            (
+                class.namespace.as_str(),
+                class.name.as_str(),
+                class.declared
+            ),
+            ("light.lazy", "Loadable", true)
         );
-        assert_eq!(program.exprs[target.site.0].source_index, 1);
+        assert_eq!(program.exprs[target.site.0].source_index, 2);
     }
     // The program's value is still app.main's last form, and app.editor's
     // top-level forms run after app.main's, which they read.
     assert_eq!(
         call_value_at_every_level(&program),
-        "[\"label main\" [:main :main-ready] nil nil]\n"
+        "[\"label main\" [:main :main-ready] \"label editor\" nil]\n"
     );
 }
 
@@ -162,13 +183,22 @@ fn a_lazy_target_follows_its_unvisited_dependencies_and_a_loaded_one_is_resident
     let program = analyze(DEPENDENCIES).unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(
         program.namespaces,
-        ["app.util", "app.main", "app.text", "app.editor"]
+        [
+            "app.util",
+            "light.lazy",
+            "app.main",
+            "app.text",
+            "app.editor"
+        ]
     );
     assert_eq!(
         program.namespace_requires,
-        [vec![], vec![0], vec![], vec![2, 0]]
+        [vec![], vec![], vec![0, 1], vec![], vec![3, 0]]
     );
-    assert_eq!(program.namespace_lazy_only, [false, false, true, true]);
+    assert_eq!(
+        program.namespace_lazy_only,
+        [false, false, false, true, true]
+    );
     assert_eq!(program.lazy_namespaces, ["app.editor", "app.util"]);
     assert_eq!(call_value_at_every_level(&program), "mainmain\n");
 
@@ -185,14 +215,14 @@ fn a_lazy_target_follows_its_unvisited_dependencies_and_a_loaded_one_is_resident
         ),
     ];
     let program = analyze(RESIDENT).unwrap();
-    assert_eq!(program.namespaces, ["app.util", "app.main"]);
-    assert_eq!(program.namespace_lazy_only, [false, false]);
+    assert_eq!(program.namespaces, ["app.util", "light.lazy", "app.main"]);
+    assert_eq!(program.namespace_lazy_only, [false, false, false]);
     let ExprKind::Do(roots) = &program.exprs[program.root.0].kind else {
         panic!("the root is a do")
     };
     assert_eq!(
         roots.len(),
-        2,
+        3,
         "no entry value is kept for a resident target"
     );
     assert_eq!(call_value_at_every_level(&program), "mainmain\n");
@@ -207,12 +237,12 @@ fn the_entry_value_survives_lazy_namespaces_analyzed_after_it() {
             "app/main.cljs",
             "(ns app.main)\n\
              (do (def l (light.lazy/loadable app.lib)) (def n 2))\n\
-             (do (def k 3) (fn [] (pr-str [l n k])))\n",
+             (do (def k 3) (fn [] (pr-str [@l n k])))\n",
         ),
         ("app/lib.cljs", "(ns app.lib)\n(def x 1)\n"),
     ];
     let program = analyze(VALUES).unwrap();
-    assert_eq!(program.namespace_lazy_only, [false, true]);
+    assert_eq!(program.namespace_lazy_only, [false, false, true]);
     assert_eq!(call_value_at_every_level(&program), "[nil 2 3]\n");
     // A definition last is the value it is when nothing follows the entry.
     static DEFINITION: &[(&str, &str)] = &[
@@ -220,7 +250,7 @@ fn the_entry_value_survives_lazy_namespaces_analyzed_after_it() {
             "app/main.cljs",
             "(ns app.main)\n\
              (def l (light.lazy/loadable app.lib/f))\n\
-             (defn start [] (str \"started \" (nil? l)))\n",
+             (defn start [] (str \"started \" (light.lazy/loaded? l)))\n",
         ),
         ("app/lib.cljs", "(ns app.lib)\n(defn f [] 1)\n"),
     ];
@@ -229,14 +259,14 @@ fn the_entry_value_survives_lazy_namespaces_analyzed_after_it() {
             "app/main.cljs",
             "(ns app.main (:require [app.lib]))\n\
              (def l (light.lazy/loadable app.lib/f))\n\
-             (defn start [] (str \"started \" (nil? l)))\n",
+             (defn start [] (str \"started \" (light.lazy/loaded? l)))\n",
         ),
         ("app/lib.cljs", "(ns app.lib)\n(defn f [] 1)\n"),
     ];
     let lazy = analyze(DEFINITION).unwrap();
-    assert_eq!(lazy.namespace_lazy_only, [false, true]);
+    assert_eq!(lazy.namespace_lazy_only, [false, false, true]);
     let resident = analyze(RESIDENT_DEFINITION).unwrap();
-    assert_eq!(resident.namespace_lazy_only, [false, false]);
+    assert_eq!(resident.namespace_lazy_only, [false, false, false]);
     assert_eq!(call_value_at_every_level(&lazy), "started true\n");
     assert_eq!(call_value_at_every_level(&resident), "started true\n");
     // An entry without forms is nil; here a dependency of the entry holds
@@ -250,10 +280,163 @@ fn the_entry_value_survives_lazy_namespaces_analyzed_after_it() {
         ("app/lib.cljs", "(ns app.lib)\n(def x 1)\n"),
     ];
     let program = analyze(EMPTY).unwrap();
-    assert_eq!(program.namespaces, ["app.dep", "app.main", "app.lib"]);
+    assert_eq!(
+        program.namespaces,
+        ["light.lazy", "app.dep", "app.main", "app.lib"]
+    );
     for level in OptimizationLevel::ALL {
         let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
         assert_eq!(execute(&format!("console.log({js});")), "null\n", "{level}");
+    }
+}
+
+/// Run the program of `files` from `app.main` as one ES module through the
+/// Node driver of Phase 0 at every level, and return its record, which must
+/// be the same at every level.
+fn run_module_at_every_level(files: &'static [(&'static str, &'static str)]) -> String {
+    let program = analyze(files).unwrap_or_else(|error| panic!("{error}"));
+    let records = OptimizationLevel::ALL.map(|level| {
+        let module = prepare_application(&program, ApplicationOptions::new(level)).emit_esm();
+        assert!(
+            !module.contains("import("),
+            "{level}: every target is resident"
+        );
+        run_modules(&[("app.main.js", &module)], "app.main.js")
+            .unwrap_or_else(|error| panic!("{level}: {error}"))
+    });
+    for (level, record) in OptimizationLevel::ALL.iter().zip(&records) {
+        assert_eq!(record, &records[0], "at {level}");
+    }
+    records[0].clone()
+}
+
+static LOADING: &[(&str, &str)] = &[
+    (
+        "app/main.cljs",
+        "(ns app.main (:require [light.lazy :as lazy] [app.shared :as shared]))\n\
+         (def editor (lazy/loadable app.editor/start))\n\
+         (def again (lazy/loadable app.editor/start))\n\
+         (def reports (lazy/loadable app.reports))\n\
+         (def pending (lazy/Loadable. (fn [] (js/Promise.resolve #js {})) (fn [m] m)))\n\
+         (defn start []\n\
+           (js/console.log \"before load:\" (lazy/loaded? editor) (lazy/loaded? reports)\n\
+                           (@editor) (pr-str @reports))\n\
+           (js/console.log \"not loaded:\" (lazy/loaded? pending)\n\
+                           (try @pending (catch :default e (.-message e))))\n\
+           (let [before @editor\n\
+                 loading (lazy/load editor)]\n\
+             (js/console.log \"load is asynchronous\")\n\
+             (-> loading\n\
+                 (.then (fn [f]\n\
+                          (js/console.log \"after load:\" (f) (identical? f before)\n\
+                                          (identical? f @again) (= editor again))\n\
+                          (lazy/load reports)))\n\
+                 (.then (fn [value]\n\
+                          (js/console.log \"namespace:\" (pr-str value) (pr-str @shared/log))\n\
+                          nil)))))\n\
+         start\n",
+    ),
+    ("app/shared.cljs", "(ns app.shared)\n(def log (atom []))\n"),
+    (
+        "app/editor.cljs",
+        "(ns app.editor (:require [app.shared :as shared]))\n\
+         (swap! shared/log conj :editor)\n\
+         (defn start [] \"editor started\")\n",
+    ),
+    (
+        "app/reports.cljs",
+        "(ns app.reports (:require [app.shared :as shared]))\n\
+         (swap! shared/log conj :reports)\n",
+    ),
+];
+
+/// `@l`, `loaded?` and `load` with every target resident: `@l` is the target's
+/// value before `load` too, `load` resolves with it on a later microtask, two
+/// sites of one target are two loadables of one value, and a namespace
+/// target's value is nil once its top-level forms have run. A `Loadable` with
+/// an importer, which only a chunked build makes, is not loaded and throws.
+#[test]
+fn loadables_deref_and_load_their_resident_targets_at_every_level() {
+    assert_eq!(
+        run_module_at_every_level(LOADING),
+        concat!(
+            r#"{"id":"app.main.js","outcome":{"status":"returned","value":null},"trace":[],"stdout":""#,
+            r#"before load: true true editor started nil\n"#,
+            r#"not loaded: false light.lazy: the target of this loadable is not loaded\n"#,
+            r#"load is asynchronous\n"#,
+            r#"after load: editor started true true false\n"#,
+            r#"namespace: nil [:editor :reports]\n"}"#,
+        )
+    );
+}
+
+/// `load` and `@l` read the target's current value: `load` when its
+/// microtask runs, after a `set!` made since the call, and `@l` and a later
+/// `load` after another one.
+#[test]
+fn loadables_read_the_current_value_of_a_reassigned_target_at_every_level() {
+    static REASSIGNED: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (def value (lazy/loadable app.editor/value))\n\
+             (def change (lazy/loadable app.editor/change!))\n\
+             (defn start []\n\
+               (let [loading (lazy/load value)]\n\
+                 ((deref change) 2)\n\
+                 (-> loading\n\
+                     (.then (fn [v]\n\
+                              (js/console.log \"load:\" v \"deref:\" @value)\n\
+                              ((deref change) 3)\n\
+                              (js/console.log \"after set!:\" @value)\n\
+                              (lazy/load value)))\n\
+                     (.then (fn [v] (js/console.log \"load again:\" v) nil)))))\n\
+             start\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor)\n(def value 1)\n(defn change! [v] (set! value v))\n",
+        ),
+    ];
+    assert_eq!(
+        run_module_at_every_level(REASSIGNED),
+        concat!(
+            r#"{"id":"app.main.js","outcome":{"status":"returned","value":null},"trace":[],"stdout":""#,
+            r#"load: 2 deref: 2\nafter set!: 3\nload again: 3\n"}"#,
+        )
+    );
+}
+
+/// examples/features holds loadables of `app.editor/start` and
+/// `app.reports/start`, whose namespaces follow `app.main` in the one output
+/// file; at every level its loads resolve there and it logs the lines it
+/// logged when `start` called both features directly.
+#[test]
+fn the_features_example_loads_its_features_in_one_file() {
+    let program = analyze_namespace_entry(
+        "app.main",
+        &[concat!(env!("CARGO_MANIFEST_DIR"), "/examples/features").into()],
+        &mut MacroHost::new(),
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(program.lazy_namespaces, ["app.editor", "app.reports"]);
+    let lazy_only = program
+        .namespaces
+        .iter()
+        .zip(&program.namespace_lazy_only)
+        .filter_map(|(namespace, lazy)| lazy.then_some(namespace.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(lazy_only, ["app.editor", "clojure.string", "app.reports"]);
+    for level in OptimizationLevel::ALL {
+        let module = compile_features(level, true);
+        assert!(!module.contains("import("), "{level}");
+        assert_eq!(
+            run_modules(&[("app.main.js", &module)], "app.main.js").unwrap(),
+            FEATURES_RECORD,
+            "{level}"
+        );
     }
 }
 
@@ -327,14 +510,75 @@ fn analysis_errors_name_the_site() {
     );
 }
 
+/// A source that spells `light.lazy/loadable` requires `light.lazy`; a site a
+/// macro writes otherwise needs `light.lazy` loaded before its namespace, which
+/// must define `Loadable`.
+#[test]
+fn a_loadable_needs_light_lazy_loaded_before_its_namespace() {
+    static MACRO_ELSEWHERE: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [app.macros :refer [later]]))\n(def l (later))\n",
+        ),
+        (
+            "app/macros.cljs",
+            "(ns app.macros)\n\
+             (defmacro later [] (list (symbol \"light.lazy\" \"loadable\") 'app.lib/f))\n",
+        ),
+        ("app/lib.cljs", "(ns app.lib)\n(defn f [] 1)\n"),
+    ];
+    assert_eq!(
+        error(MACRO_ELSEWHERE),
+        "app/main.cljs:2:8: light.lazy/loadable needs light.lazy loaded before app.main: require it there"
+    );
+    // Only a symbol the source compiles makes it require light.lazy: not
+    // quoted data, nor a reader conditional's unselected branch.
+    let sources = |request: &LoadRequest| {
+        let namespace = String::from_utf16_lossy(request.namespace.name());
+        Ok(match namespace.as_str() {
+            "app.main" => Some(SourceInput::new(
+                "app/main.cljc",
+                "(ns app.main)\n\
+                 #?(:clj (light.lazy/loadable app.lib/f) :cljs nil)\n\
+                 [(quote light.lazy/loadable) 'light.lazy/loadable]\n",
+            )),
+            _ => None,
+        })
+    };
+    let program = analyze_namespace_entry_with_provider(
+        "app.main",
+        &sources,
+        &mut MacroHost::new(),
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(program.namespaces, ["app.main"]);
+    // A source root's light.lazy replaces the library.
+    static REPLACED: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main)\n(def l (light.lazy/loadable app.lib/f))\n",
+        ),
+        ("light/lazy.cljs", "(ns light.lazy)\n"),
+        ("app/lib.cljs", "(ns app.lib)\n(defn f [] 1)\n"),
+    ];
+    assert_eq!(
+        error(REPLACED),
+        "app/main.cljs:2:8: light.lazy/Loadable is not defined"
+    );
+}
+
 /// `analyze_namespaces` analyzes the sources it is given, in order: a lazy
-/// target among them is resident, and one missing from them is an error.
+/// target among them is resident, and one missing from them is an error, as
+/// is a missing `light.lazy`, which no loader adds.
 #[test]
 fn analyzing_given_namespaces_requires_lazy_targets_among_them() {
     use light_cljs::{NamespaceInput, analyze_namespaces, parse};
     let sources = [
         "(ns app.lib) (defn f [] 1)",
         "(ns app.main) (light.lazy/loadable app.lib/f) (light.lazy/loadable app.nope)",
+        "(ns app.main) (light.lazy/loadable app.lib/f)",
     ];
     let syntax = sources.map(|source| parse(source).unwrap());
     let input = |index: usize, name| NamespaceInput {
@@ -358,6 +602,15 @@ fn analyzing_given_namespaces_requires_lazy_targets_among_them() {
         error.to_string(),
         "lazy target namespace app.nope not found"
     );
+    let (source, error) =
+        analyze_namespaces(&[input(0, "app.lib"), input(2, "app.main")]).unwrap_err();
+    assert_eq!(
+        (source, error.to_string()),
+        (
+            1,
+            "light.lazy/loadable needs light.lazy loaded before app.main: require it there".into()
+        )
+    );
 }
 
 /// The special form is recognized through an alias of `light.lazy`, and only
@@ -369,10 +622,8 @@ fn an_alias_of_light_lazy_names_the_special_form() {
             "app/main.cljs",
             "(ns app.main (:require [light.lazy :as lazy] [app.other :as other]))\n\
              (def l (lazy/loadable app.lib/f))\n\
-             (fn [] (pr-str [l (other/loadable 'app.lib/f)]))\n",
+             (fn [] (pr-str [(lazy/loaded? l) (other/loadable 'app.lib/f)]))\n",
         ),
-        // A stand-in until the `light.lazy` library exists.
-        ("light/lazy.cljs", "(ns light.lazy)\n"),
         (
             "app/other.cljs",
             "(ns app.other)\n(defn loadable [x] (str \"other \" x))\n",
@@ -391,7 +642,7 @@ fn an_alias_of_light_lazy_names_the_special_form() {
     );
     assert_eq!(
         call_value_at_every_level(&program),
-        "[nil \"other app.lib/f\"]\n"
+        "[true \"other app.lib/f\"]\n"
     );
 }
 
@@ -401,9 +652,8 @@ static MACRO: &[(&str, &str)] = &[
         "(ns app.main (:require [light.lazy :as lazy]))\n\
          (defmacro later [] `(lazy/loadable app.lib/f))\n\
          (def l (later))\n\
-         (fn [] (pr-str l))\n",
+         (fn [] (pr-str ((deref l))))\n",
     ),
-    ("light/lazy.cljs", "(ns light.lazy)\n"),
     ("app/lib.cljs", "(ns app.lib)\n(defn f [] 1)\n"),
 ];
 
@@ -421,7 +671,7 @@ fn a_macro_expansion_can_write_a_loadable() {
         ("app.lib", "f")
     );
     assert_eq!(program.namespace_lazy_only, [false, false, true]);
-    assert_eq!(call_value_at_every_level(&program), "nil\n");
+    assert_eq!(call_value_at_every_level(&program), "1\n");
 }
 
 mod phase_oracles {
@@ -438,7 +688,7 @@ mod phase_oracles {
             "(probe)",
             "(ns app.main)\n\
              (defmacro later [] `(light.lazy/loadable app.lib/f))\n\
-             (defn probe [] (let [l (later)] (= l l)))\n",
+             (defn probe [] (let [l (later)] (and (light.lazy/loaded? l) (instance? light.lazy/Loadable l))))\n",
         )
         .with_sources(&[("app/lib.cljs", "(ns app.lib)\n(defn f [] 1)\n")])]);
     }
@@ -499,13 +749,24 @@ fn the_repl_loads_the_namespace_a_loadable_names() {
     static BACK_EDGE: &[(&str, &str)] = &[EDITOR, MAIN];
     // The target first: app.main loads while app.editor does.
     let mut eval = repl(BACK_EDGE);
+    // The session loads light.lazy too, without a require, before the form
+    // constructs its loadable.
     assert_eq!(
-        eval("(light.lazy/loadable app.editor/start)"),
-        Ok("nil".into())
+        eval("(def l (light.lazy/loadable app.editor/start)) (light.lazy/loaded? l)"),
+        Ok("true".into())
     );
     assert_eq!(
-        eval("[(app.editor/start) app.main/editor @app.main/loads]"),
-        Ok("[[:started :ready] nil 1]".into())
+        eval(
+            "[(app.editor/start) (light.lazy/loaded? app.main/editor) @app.main/loads ((deref l))]"
+        ),
+        Ok("[[:started :ready] true 1 [:started :ready]]".into())
+    );
+    // `load` returns a Promise of `@l`, which holds. The embedded engine runs
+    // no promise jobs (README, "Known boundaries"), so its reactions never run
+    // here; `call_through_load_at_every_level` resolves one in Node.
+    assert_eq!(
+        eval("(instance? js/Promise (light.lazy/load l))"),
+        Ok("true".into())
     );
     assert_eq!(
         eval("(light.lazy/loadable app.editor/stop)"),
@@ -515,7 +776,7 @@ fn the_repl_loads_the_namespace_a_loadable_names() {
         eval("(light.lazy/loadable app.nope)"),
         Err("<eval>.cljs: lazy target namespace app.nope not found".into())
     );
-    assert_eq!(eval("(light.lazy/loadable app.editor)"), Ok("nil".into()));
+    assert_eq!(eval("@(light.lazy/loadable app.editor)"), Ok("nil".into()));
     // The namespace naming the target first: app.editor loads after app.main.
     let mut eval = repl(BACK_EDGE);
     assert_eq!(eval("(require 'app.main)"), Ok("nil".into()));
@@ -555,7 +816,7 @@ fn load_file_loads_the_namespaces_its_loadables_name() {
     static FILES: &[(&str, &str)] = &[
         (
             "script.cljs",
-            "(def l (light.lazy/loadable app.editor/start))\n[l (app.editor/start)]\n",
+            "(def l (light.lazy/loadable app.editor/start))\n[(light.lazy/loaded? l) (@l)]\n",
         ),
         ("undefined.cljs", "(light.lazy/loadable app.editor/stop)\n"),
         ("missing.cljs", "(light.lazy/loadable app.nope)\n"),
@@ -566,7 +827,7 @@ fn load_file_loads_the_namespaces_its_loadables_name() {
     let mut eval = repl(FILES);
     assert_eq!(
         eval("(load-file \"script.cljs\")"),
-        Ok("[nil [:started :ready]]".into())
+        Ok("[true [:started :ready]]".into())
     );
     assert_eq!(eval("@app.main/loads"), Ok("1".into()));
     let error = eval("(load-file \"undefined.cljs\")").unwrap_err();

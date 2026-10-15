@@ -2416,10 +2416,13 @@ pub enum ExprKind {
     WithOutStr(ExprId),
     Exists(ExprId),
     /// `(light.lazy/loadable target)`: a reference to code a chunked build
-    /// may load later, recorded in [`Program::lazy_targets`]. Emitted as
-    /// `nil` until the `light.lazy` library gives it a value.
+    /// may load later, recorded in [`Program::lazy_targets`]. Its value is a
+    /// new `light.lazy/Loadable`, and `class` reads that type: a
+    /// [`ExprKind::Global`] of it, the only child. The target is no child,
+    /// since the site does not read it until the loadable is loaded.
     Loadable {
         target: LazyTargetId,
+        class: ExprId,
     },
     /// Resolve checks binding identity in the compiler, value availability in applications.
     BindingExists(ExprId),
@@ -3350,6 +3353,10 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
 /// spells it, so no source resolves or redefines it.
 pub(crate) const ENTRY_VALUE: &str = "<entry value>";
 
+/// The first-party namespace of `loadable` (a special form) and of the
+/// `Loadable` type its sites construct (`src/compiler_libraries/light/lazy.cljs`).
+pub(crate) const LAZY_NAMESPACE: &str = "light.lazy";
+
 /// Namespace sources analyzed one after another into one program, each after
 /// the sources it requires. A loader adds sources as it reaches them: the
 /// targets of the lazy references a source introduced
@@ -3534,28 +3541,20 @@ impl NamespaceAnalysis {
             .enumerate()
             .map(|(index, name)| (name.as_str(), index))
             .collect::<HashMap<_, _>>();
-        for target in &program.lazy_targets {
-            let namespace = &program.lazy_namespaces[target.namespace];
-            let message = if !index.contains_key(namespace.as_str()) {
-                format!("lazy target namespace {namespace} not found")
-            } else if let Some(global) = target.global
-                && !program.globals[global.0].declared
-            {
-                format!(
-                    "lazy target {namespace}/{} is not defined",
-                    program.globals[global.0].name
-                )
-            } else {
-                continue;
-            };
-            let site = &program.exprs[target.site.0];
-            return Err((
-                site.source_index,
-                AnalysisError {
-                    kind: AnalysisErrorKind::LazyTarget(message),
-                    span: site.span.clone(),
-                },
-            ));
+        // Every site's target first, then the type every site constructs.
+        for check in [lazy_target_error, loadable_type_error] {
+            for target in &program.lazy_targets {
+                if let Some(message) = check(&program, &index, target) {
+                    let site = &program.exprs[target.site.0];
+                    return Err((
+                        site.source_index,
+                        AnalysisError {
+                            kind: AnalysisErrorKind::LazyTarget(message),
+                            span: site.span.clone(),
+                        },
+                    ));
+                }
+            }
         }
         // `cljs.core` and host namespaces have no source.
         program.namespace_requires = requires
@@ -3583,6 +3582,63 @@ impl NamespaceAnalysis {
             source_index: 0,
         });
         Ok(program)
+    }
+}
+
+/// Why lazy target `target` cannot load, given the source index of each
+/// namespace of the program: its namespace is missing, or its Var undefined.
+fn lazy_target_error(
+    program: &Program,
+    index: &HashMap<&str, usize>,
+    target: &LazyTarget,
+) -> Option<String> {
+    let namespace = &program.lazy_namespaces[target.namespace];
+    if !index.contains_key(namespace.as_str()) {
+        Some(format!("lazy target namespace {namespace} not found"))
+    } else if let Some(global) = target.global
+        && !program.globals[global.0].declared
+    {
+        Some(format!(
+            "lazy target {namespace}/{} is not defined",
+            program.globals[global.0].name
+        ))
+    } else {
+        None
+    }
+}
+
+/// Why the site of `target` cannot construct its `light.lazy/Loadable` when
+/// its source runs: `light.lazy` does not run first, or does not define the
+/// type. The loader requires `light.lazy` for a source that spells
+/// `light.lazy/loadable`; a site a macro writes in a namespace that does not
+/// needs the require there.
+fn loadable_type_error(
+    program: &Program,
+    index: &HashMap<&str, usize>,
+    target: &LazyTarget,
+) -> Option<String> {
+    let site = &program.exprs[target.site.0];
+    let ExprKind::Loadable { class, .. } = site.kind else {
+        unreachable!("a lazy target's site is a loadable")
+    };
+    let ExprKind::Global(loadable_type) = program.exprs[class.0].kind else {
+        unreachable!("a loadable reads its type")
+    };
+    if index
+        .get(LAZY_NAMESPACE)
+        .is_none_or(|lazy| *lazy >= site.source_index)
+    {
+        let namespace = program
+            .namespaces
+            .get(site.source_index)
+            .map_or("its namespace", String::as_str);
+        Some(format!(
+            "light.lazy/loadable needs {LAZY_NAMESPACE} loaded before {namespace}: require it there"
+        ))
+    } else if !program.globals[loadable_type.0].declared {
+        Some(format!("{LAZY_NAMESPACE}/Loadable is not defined"))
+    } else {
+        None
     }
 }
 
@@ -4453,7 +4509,7 @@ impl Analyzer<'_> {
             self.validate_symbol(operator)?;
             let operator_name = self.spelling(operator).to_owned();
             if let Some((qualifier, "loadable")) = operator_name.split_once('/')
-                && self.alias_target(qualifier) == "light.lazy"
+                && self.alias_target(qualifier) == LAZY_NAMESPACE
             {
                 return self.loadable_form(id, args, context);
             }
@@ -6799,27 +6855,17 @@ impl Analyzer<'_> {
                 )),
             ));
         }
-        let global = name.map(|name| {
-            *self
-                .globals
-                .entry((namespace.clone(), name.clone()))
-                .or_insert_with(|| {
-                    let global = GlobalId(self.program.globals.len());
-                    self.program.globals.push(GlobalBinding {
-                        type_descriptor: false,
-                        declared: false,
-                        constant: false,
-                        boolean_tag: false,
-                        define: false,
-                        metadata: None,
-                        namespace: namespace.clone(),
-                        name,
-                        span: self.syntax.nodes[symbol.0].span.clone(),
-                        source_index: self.source_index,
-                    });
-                    global
-                })
-        });
+        let global = name.map(|name| self.reserve_global(&namespace, &name, symbol));
+        // The value is a `light.lazy/Loadable`, whose constructor the site reads
+        // like any global; the namespace need not be analyzed yet (see
+        // `NamespaceAnalysis::finish` for where it must be).
+        let span = self.syntax.nodes[id.0].span.clone();
+        let loadable_type = self.reserve_global(LAZY_NAMESPACE, "Loadable", id);
+        let class = self.push(
+            ExprKind::Global(loadable_type),
+            span.clone(),
+            ExprContext::Value,
+        );
         let namespace = match self
             .program
             .lazy_namespaces
@@ -6833,17 +6879,37 @@ impl Analyzer<'_> {
             }
         };
         let target = LazyTargetId(self.program.lazy_targets.len());
-        let site = self.push(
-            ExprKind::Loadable { target },
-            self.syntax.nodes[id.0].span.clone(),
-            context,
-        );
+        let site = self.push(ExprKind::Loadable { target, class }, span, context);
         self.program.lazy_targets.push(LazyTarget {
             site,
             namespace,
             global,
         });
         Ok(site)
+    }
+
+    /// The global `namespace/name`, reserved by name as an existence probe
+    /// reserves one when nothing has defined it yet.
+    fn reserve_global(&mut self, namespace: &str, name: &str, node: NodeId) -> GlobalId {
+        *self
+            .globals
+            .entry((namespace.to_owned(), name.to_owned()))
+            .or_insert_with(|| {
+                let global = GlobalId(self.program.globals.len());
+                self.program.globals.push(GlobalBinding {
+                    type_descriptor: false,
+                    declared: false,
+                    constant: false,
+                    boolean_tag: false,
+                    define: false,
+                    metadata: None,
+                    namespace: namespace.to_owned(),
+                    name: name.to_owned(),
+                    span: self.syntax.nodes[node.0].span.clone(),
+                    source_index: self.source_index,
+                });
+                global
+            })
     }
 
     fn assignment_target(&mut self, node: NodeId) -> Result<ExprId, AnalysisError> {

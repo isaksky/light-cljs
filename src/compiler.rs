@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::analyzer::{
-    AnalysisOptions, AnalysisWarning, JsRefer, NamespaceAnalysis, NamespaceInput,
+    AnalysisOptions, AnalysisWarning, JsRefer, LAZY_NAMESPACE, NamespaceAnalysis, NamespaceInput,
     analyze_with_macros,
 };
 use crate::macro_host::{MacroHost, MacroImport};
@@ -144,6 +144,36 @@ impl NamespaceSource {
     }
     fn symbol(&self, node: NodeId) -> Option<&str> {
         matches!(self.syntax.nodes[node.0].kind, NodeKind::Symbol).then(|| self.text(node))
+    }
+    /// The span of the first `light.lazy/loadable` symbol among the forms the
+    /// source compiles: not in quoted data, and for `.cljc` only in the
+    /// selected branches. Syntax quote counts, since a macro writes code with it.
+    fn spells_loadable(&self) -> Option<Range<usize>> {
+        let mut pending = self.syntax.roots.iter().rev().copied().collect::<Vec<_>>();
+        while let Some(node) = pending.pop() {
+            match &self.syntax.nodes[node.0].kind {
+                NodeKind::Symbol if self.text(node) == "light.lazy/loadable" => {
+                    return Some(self.syntax.nodes[node.0].span.clone());
+                }
+                NodeKind::Collection { kind, children } => {
+                    let quoted = *kind == CollectionKind::List
+                        && children.first().and_then(|first| self.symbol(*first)) == Some("quote");
+                    if !quoted {
+                        pending.extend(children.iter().rev());
+                    }
+                }
+                NodeKind::Prefix { kind, form } if *kind != PrefixKind::Quote => {
+                    pending.push(*form);
+                }
+                NodeKind::Metadata { metadata, target } => {
+                    pending.extend([*target, *metadata]);
+                }
+                NodeKind::Tagged { form, .. } => pending.push(*form),
+                NodeKind::NamespacedMap { map, .. } => pending.push(*map),
+                _ => {}
+            }
+        }
+        None
     }
     fn collection(&self, node: NodeId, expected: CollectionKind) -> Option<&[NodeId]> {
         match &self.syntax.nodes[node.0].kind {
@@ -1111,6 +1141,19 @@ impl Loader<'_> {
                     *dependency = rewritten;
                 }
             }
+        }
+        // `light.lazy/loadable` is a special form that needs no require, but
+        // its sites construct a `light.lazy/Loadable` when the source runs: a
+        // source spelling it requires `light.lazy` after its own requires.
+        if name != LAZY_NAMESPACE
+            && !file
+                .requires
+                .iter()
+                .any(|required| required == LAZY_NAMESPACE)
+            && let Some(span) = file.spells_loadable()
+        {
+            file.requires.push(LAZY_NAMESPACE.to_owned());
+            file.require_spans.push(span);
         }
         self.states.insert(name.to_owned(), LoadState::Loading);
         self.stack.push(name.to_owned());

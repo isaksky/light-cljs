@@ -46,7 +46,7 @@ Targets, measured in Phase 0 on the example application
 
 | Measurement | Today | Measured bound | Target |
 |---|---|---|---|
-| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732 | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
+| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286 | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
 | Bytes loaded for one feature | n/a: both load at startup | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
 | Observable behavior | n/a | n/a | identical to the single-file program at every level, given the same `load` calls |
 | Compile time of a chunked build | n/a | n/a | within 10% of the single-file build of the same program |
@@ -98,6 +98,13 @@ What the bounds say:
   larger than its code: 4,337 bytes beside the runtime for `app.reports` as
   its own entry, against 803 for `app.editor`, and 5,339 for the whole
   application against 1,079 without `app.reports`.
+- **After the switch to `light.lazy` (light-cljs-271),** both targets
+  resident in the one file, `bb benchmarks/features.bb` gives 80,407 / 24,286
+  bytes for the whole application at `advanced` (runtime slice 73,760) and
+  5,233 / 1,923 without both features (slice 4,695): the `Loadable` type
+  brings `rt$defineType` (6,553 bytes) into every row that keeps a site, and
+  `start` keeps its `lazy/load` calls when the sites become `nil`. The
+  feature rows are unchanged. light-cljs-272 measures and trims the stubs.
 
 Non-goals of this design: a module manager with retries and backoff, bundling
 npm code (the npm seam stays as designed: packages are static imports a bundler
@@ -546,8 +553,11 @@ Scope: fix the semantics and get numbers before writing compiler code.
   `tests/compiler/features_example.rs` runs the example at every level. By
   hand, into an empty directory `DIR`: `cargo run --quiet -- --compile --entry
   app.main --source-root examples/features --esm > DIR/app.main.js`, then
-  `node tests/support/chunked_execution.mjs DIR app.main.js`. Until `light.lazy` exists, `app.main/start` calls both features directly;
-  each feature logs its own result line.
+  `node tests/support/chunked_execution.mjs DIR app.main.js`. Each feature
+  logs its own result line. Until `light.lazy` existed, `app.main/start`
+  called both features directly; since light-cljs-271 it holds
+  `(lazy/loadable app.editor/start)` and `(lazy/loadable app.reports/start)`
+  and loads them in sequence, printing the same lines.
 
 Done when: the example compiles today as a single file, the driver runs it,
 and the table has numbers.
@@ -615,6 +625,40 @@ output.
   (or `() => null` for a namespace target). `load` on a resident loadable
   resolves on the next microtask so timing matches a chunked build as far as
   "asynchronous" goes.
+- **As built (light-cljs-271).** The library, emitter and REPL above, with
+  `examples/features` switched to the API. Details the list leaves open:
+  - `Loadable` has two fields, `importer` (nil while the target is resident)
+    and `getter`. `@l` calls the getter and throws "light.lazy: the target of
+    this loadable is not loaded" when an importer is set; `loaded?` is
+    `(nil? importer)`; `load` is `(.then (js/Promise.resolve) (fn [_] @l))`, so
+    it reads the value on a later microtask and rejects with the deref's
+    error. Chunk state for a set importer is Phase 2's.
+  - `ExprKind::Loadable { target, class }`: `class` is an ordinary
+    `ExprKind::Global` read of `light.lazy/Loadable`, reserved by name at the
+    site like a lazy Var target, and the only child. So `retain` keeps the
+    type, rapid type analysis counts it instantiated (a constructor read), and
+    inference types the site as an instance of it, as for `new`. The target is
+    no child: the site does not read it until loaded.
+  - The type must exist when the site's source runs. The loader makes a
+    source whose compiled forms spell `light.lazy/loadable` (syntax quote
+    included; quoted data and unselected reader-conditional branches not)
+    require `light.lazy` after its own requires, so the namespace lists and
+    `namespace_requires` include it; `NamespaceAnalysis::finish` reports a site whose source does not
+    follow `light.lazy` ("light.lazy/loadable needs light.lazy loaded before
+    app.main: require it there", a macro's site in another namespace, or
+    `analyze_namespaces` without it) and a `light.lazy` from a source root
+    that lacks `Loadable`. The REPL and the `load-file` callback load
+    `light.lazy` before a form holding a loadable runs, even while a
+    namespace is loading.
+  - The minimum of the Preparation bullet below is in, since the example
+    must run at `prepare` and `advanced`: `prepare_application` appends every
+    lazy Var target to `options.exports`. Namespace targets, the tests that
+    nothing more is rooted, and the size measurements are light-cljs-272's.
+  - A target namespace only lazy references reach runs after the entry, so
+    `@l` during the synchronous startup reads a Var not yet defined (`nil`)
+    where a chunked build would throw; `load` resolves after it either way.
+    The embedded QuickJS of `--eval` and `--repl` runs no promise jobs, so
+    there a `load` Promise never calls its reactions.
 - **Preparation.** Lazy Var targets join `options.exports` as retention and
   escape roots everywhere `exports` is consulted (`retain`, `call_shapes`,
   `rta`).

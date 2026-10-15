@@ -3843,3 +3843,37 @@ text keeps its layout and prefixed names at `advanced`: the program part
 beside the runtime is 4,337 bytes for `app.reports` as its own entry against
 803 for `app.editor`, and 5,339 for the whole application against 1,079
 without `app.reports`.
+
+## Resident loadables in examples/features — October 15, 2026
+
+light-cljs-271 switched `app.main` of `examples/features` from calling
+`app.editor/start` and `app.reports/start` to holding
+`(lazy/loadable app.editor/start)` and `(lazy/loadable app.reports/start)` and
+loading them in sequence, with both targets resident in the one file. Bytes of
+the single-file output, the same binary compiling the example as it was before
+the switch and after it (24-CPU Mac, macOS 15.7.3, one-minute load 2.3):
+
+```sh
+cargo run --quiet -- --compile --optimize LEVEL --entry app.main --source-root examples/features | wc -c
+```
+
+| Level | Direct calls | Two loadables | Growth |
+| --- | ---: | ---: | ---: |
+| `none` | 452,197 | 454,642 | +2,445 |
+| `prepare` | 452,197 | 454,642 | +2,445 |
+| `advanced` | 72,470 | 80,391 | +7,921 |
+
+At `advanced`, `--size-report` puts 6,613 of the growth in the runtime slice
+(455 to 503 units): `rt$defineType`, which the example's first `deftype`
+(`light.lazy/Loadable`) demands, is 39 units and 6,553 bytes, and `rt$deref`
+4 units and 351 bytes. The rest is `light.lazy` itself, the two sites and the
+features' `start` functions, which now escape with their dispatchers instead
+of being called directly. This is far above the 200 bytes per site the Goal
+table targets; light-cljs-272 measures it in the ratchet and trims it.
+
+`bb benchmarks/features.bb` (light-cljs-269) after the switch, raw / `gzip -9`
+of the `--esm` output at `advanced`: the whole application 80,407 / 24,286
+(runtime slice 73,760), against 72,486 / 21,732 before; without both features
+5,233 / 1,923 (slice 4,695), against 4,535 / 1,701, since `start` keeps its
+`lazy/load` calls when the script turns the sites into `nil`. The feature rows
+are unchanged.

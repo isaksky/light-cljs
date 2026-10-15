@@ -1,4 +1,5 @@
 //! Compiler-backed interactive evaluation and explicit embedding capabilities.
+use crate::analyzer::LAZY_NAMESPACE;
 use crate::compiler_data::{Datum, DatumKind, Form, Origin, Source, SourceSpan};
 use crate::eval_compiler::InteractiveCompiler;
 pub use crate::eval_compiler::NamePolicy;
@@ -377,6 +378,10 @@ impl EvalSession {
             });
         }
         let analyzed = self.analyze(form)?;
+        if needs_lazy_library(&analyzed.program, &self.loaded.borrow()) {
+            let request = lazy_request(LAZY_NAMESPACE, &self.namespace());
+            self.load_requests(vec![request], &form.span(), false)?;
+        }
         // A `light.lazy/loadable` of a namespace the session has not loaded
         // loads it, as a `require` would: before a top-level form runs, and
         // after the namespace that holds the form when one is loading.
@@ -1021,6 +1026,14 @@ fn record_lazy(
     }
 }
 
+/// Whether `program`, a form, constructs a `light.lazy/Loadable` the session
+/// has not loaded. A loadable needs no require of `light.lazy`, but its type
+/// must exist when the form runs, so the session loads `light.lazy` before
+/// the form runs, even while a namespace is loading: it requires only the core.
+fn needs_lazy_library(program: &crate::Program, loaded: &HashSet<String>) -> bool {
+    !program.lazy_targets.is_empty() && !loaded.contains(LAZY_NAMESPACE)
+}
+
 /// A request for the target namespace of a lazy reference.
 fn lazy_request(name: &str, requesting: &str) -> LoadRequest {
     LoadRequest {
@@ -1192,6 +1205,10 @@ fn callback_source(
                                 .or_else(|| Some(form.span())),
                             data: None,
                         })?;
+                if needs_lazy_library(&program, &loaded.borrow()) {
+                    let request = lazy_request(LAZY_NAMESPACE, compiler.borrow().namespace());
+                    load(vec![request], false, &form.span())?;
+                }
                 record_lazy(
                     &mut compiler.borrow_mut(),
                     &program,

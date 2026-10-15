@@ -4657,8 +4657,19 @@ impl<'a> Emitter<'a> {
             return;
         }
         match &self.program.exprs[id.0].kind {
-            // A loadable is `nil` until the `light.lazy` library gives it a value.
-            ExprKind::Nil | ExprKind::Loadable { .. } => self.output.push_str("null"),
+            ExprKind::Nil => self.output.push_str("null"),
+            // Every target is resident: no importer, and a getter of the
+            // target's current value, or of nil for a namespace.
+            ExprKind::Loadable { target, class } => {
+                self.output.push_str("new ");
+                self.value(*class);
+                self.output.push_str("(null, () => ");
+                match self.program.lazy_targets[target.0].global {
+                    Some(global) => self.global(global),
+                    None => self.output.push_str("null"),
+                }
+                self.output.push(')');
+            }
             ExprKind::Construct { callee, args } => {
                 self.output.push_str("new ");
                 // Host resolution is an implementation call, not a source call.

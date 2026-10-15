@@ -54,7 +54,7 @@ source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─
 - **Emitter** (`src/emitter.rs`) writes the JavaScript expression; the shared
   runtime is `src/js_runtime.js`, split into units with declared dependencies
   (`src/runtime_manifest.rs`). Bundled `clojure.string`, `clojure.set`,
-  `clojure.walk`, `clojure.edn` and `cljs.reader` live in
+  `clojure.walk`, `clojure.edn`, `cljs.reader` and `light.lazy` live in
   `src/compiler_libraries/`.
 - **Evaluation** (`src/eval_session.rs`, `eval_compiler.rs`, `eval_cli.rs`)
   compiles forms incrementally and executes them in a persistent QuickJS heap.
@@ -262,7 +262,8 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   time. `N`/`M` literals and integral ratios (`4/2`) become Numbers (large
   integers round); non-integral ratio literals such as `1/3` are rejected.
 - **Libraries:** only `cljs.core` (the supported subset), `clojure.string`,
-  `clojure.set`, `clojure.walk`, `clojure.edn` and `cljs.reader` are bundled. Other
+  `clojure.set`, `clojure.walk`, `clojure.edn`, `cljs.reader` and `light.lazy`
+  (lazy loading; docs/code-splitting.md) are bundled. Other
   namespaces must be supplied as source via `--source-root` or a source provider.
   The Google Closure Library (`goog.*`), `cljs.pprint`, `cljs.test`,
   `core.async` and `test.check` are not provided.

@@ -5,16 +5,17 @@ use crate::chunked_execution::run_modules;
 use light_cljs::OptimizationLevel;
 use std::process::Command;
 
-/// The menu line app.main logs when it loads, then one line per feature from
-/// the default export, `app.main/start`.
-const FEATURES_RECORD: &str = concat!(
+/// The menu line app.main logs when it loads, then one line per feature, which
+/// the default export, `app.main/start`, loads and runs in turn (before the
+/// switch to `light.lazy`, it called them directly and printed the same).
+pub(crate) const FEATURES_RECORD: &str = concat!(
     r#"{"id":"app.main.js","outcome":{"status":"returned","value":null},"trace":[],"stdout":""#,
     r#"menu: Editor | Reports\n"#,
     r#"editor: 4 documents, first Introduction, ids #{:api :faq :intro :setup}\n"#,
     r#"reports: tags Draft, Guide, Reference; drafts FAQ, INTRO; 1050 words\n"}"#,
 );
 
-fn compile_features(level: OptimizationLevel, esm: bool) -> String {
+pub(crate) fn compile_features(level: OptimizationLevel, esm: bool) -> String {
     let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
     command
         .args(["--compile", "--optimize", level.name()])

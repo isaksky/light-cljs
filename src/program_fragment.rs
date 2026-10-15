@@ -367,7 +367,7 @@ fn retain(program: &Program, root: Option<ExprId>) -> (Program, Vec<usize>) {
     let mut lazy = vec![LazyTargetId(usize::MAX); program.lazy_targets.len()];
     let mut lazy_targets = Vec::new();
     for origin in &origins {
-        if let ExprKind::Loadable { target } = program.exprs[*origin].kind
+        if let ExprKind::Loadable { target, .. } = program.exprs[*origin].kind
             && lazy[target.0].0 == usize::MAX
         {
             let mut kept = program.lazy_targets[target.0];
@@ -658,10 +658,11 @@ impl<F: Fn(ExprId) -> ExprId> Remap<'_, F> {
                     *id = self.js[id.0];
                 }
             }
-            Loadable { target } => {
+            Loadable { target, class } => {
                 if !self.lazy.is_empty() {
                     *target = self.lazy[target.0];
                 }
+                self.expr(class);
             }
             ReaderLiteral { items, .. }
             | List(items)

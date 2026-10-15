@@ -844,8 +844,8 @@ including collection splicing, before dependency discovery. `.cljs` and standalo
 
 ## Compiler-owned standard libraries and stream reading
 
-`clojure.string`, `clojure.set`, `clojure.walk`, `cljs.reader` and `clojure.edn`
-are embedded first-party sources (`src/compiler_libraries/`) compiled by the
+`clojure.string`, `clojure.set`, `clojure.walk`, `cljs.reader`, `clojure.edn` and
+`light.lazy` are embedded first-party sources (`src/compiler_libraries/`) compiled by the
 ordinary namespace resolver. Explicit source roots take precedence, as for other
 namespaces. Runtime imports, aliases, refers and unmarked macro helpers use the
 same sources and JavaScript runtime.
@@ -1511,8 +1511,28 @@ also records the static require graph (`namespace_requires`, by source index)
 and which sources only lazy references reach (`namespace_lazy_only`). The REPL
 loads the namespace of a loadable it has not loaded, as a `require` would,
 before a top-level form runs, or after the outermost namespace load when the
-form belongs to a namespace being loaded, then checks the Var targets. Until
-the `light.lazy` library exists, a loadable evaluates to `nil`.
+form belongs to a namespace being loaded, then checks the Var targets.
+
+A loadable's value is a `light.lazy/Loadable`, the `deftype` of the bundled
+first-party namespace `light.lazy` (`src/compiler_libraries/light/lazy.cljs`),
+which also defines `load` and `loaded?`. Every target is resident in the one
+output file: the site emits `new Loadable(null, () => g20)` (`() => null` for a
+namespace target), `@l` reads the target's current value, `loaded?` is true,
+and `load` returns a Promise that resolves with `@l` on a later microtask, as
+the load of a chunk already loaded would. The site reads the `Loadable` type
+like any global, so it needs no require of `light.lazy`: a source whose compiled forms spell
+`light.lazy/loadable` (also under syntax quote, for a macro) requires
+`light.lazy` after its own requires, and the
+REPL loads `light.lazy` before a form holding a loadable runs, even while a
+namespace is loading. A site a macro writes in a namespace that neither spells
+the symbol nor loads `light.lazy` earlier is an error ("light.lazy/loadable
+needs light.lazy loaded before app.main: require it there"). Every lazy Var
+target is retained like an `ApplicationOptions::exports` entry, since its
+loadable reads it only once loaded. A target namespace that only lazy
+references reach runs after the entry, so during that synchronous startup
+`@l` reads its Var before the definition has run (`nil`); `load` always
+resolves after it. The embedded QuickJS runs no promise jobs, so under
+`--eval` and `--repl` a `load` Promise never calls its reactions.
 
 Standalone file/stdin/text modes accept `def` and interop, but a standalone
 `(ns ...)` form is rejected (`unsupported construct: ns`): select an entry with

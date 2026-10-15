@@ -1371,7 +1371,14 @@ impl<'p> Walker<'p> {
         let program = self.program;
         let value = match &program.exprs[id.0].kind {
             K::Nil => Inferred::of(Type::NIL),
-            K::Loadable { .. } => Inferred::ANY,
+            // `new Loadable(...)`, as `K::Construct` below.
+            K::Loadable { class, .. } => {
+                self.walk(*class);
+                match program.exprs[class.0].kind {
+                    K::Global(global) => self.instance(global, true).unwrap_or(Inferred::ANY),
+                    _ => Inferred::ANY,
+                }
+            }
             K::Bool(_) => Inferred::of(Type::BOOLEAN),
             K::Number(_) => Inferred::of(Type::NUMBER),
             K::String(_) => Inferred::of(Type::STRING),

@@ -326,7 +326,10 @@ impl PreparedApplication {
 /// Only discarded top-level definitions with provably inert initializers are
 /// candidates for removal. Unknown calls, throws, metadata tests, declaration
 /// bundles and standalone expressions stay in their original execution order.
-pub fn prepare_application(program: &Program, options: ApplicationOptions) -> PreparedApplication {
+pub fn prepare_application(
+    program: &Program,
+    mut options: ApplicationOptions,
+) -> PreparedApplication {
     #[cfg(test)]
     PREPARATIONS.with(|count| count.set(count.get() + 1));
     let level = options.optimize;
@@ -351,6 +354,14 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
     // Build-time defines replace `goog-define` defaults at every level, as
     // upstream's `:closure-defines` do.
     prepared.rejected_defines = crate::defines::apply(&mut prepared.program, &options.defines);
+    // A loadable reads its target only once loaded, so a lazy Var target is a
+    // root like an export: kept, with a dispatcher, its arguments unknown.
+    options.exports.extend(
+        program
+            .lazy_targets
+            .iter()
+            .filter_map(|target| target.global),
+    );
     let mut retained = retain(&mut prepared, &options.exports);
     // Folding and inlining (Phase 2 step 8) alternate with definition removal:
     // folding removes dead branches and the reads in them, inlining the calls
