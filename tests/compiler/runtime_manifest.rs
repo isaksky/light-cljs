@@ -467,7 +467,7 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
 /// `Loadable` (light-cljs-272), which `an_owned_type_is_decorated_wherever_it_can_be_observed`
 /// checks instead of the test above.
-const OWNED_TYPE_DECORATIONS: &[&str] = &["Loadable.name", "Loadable.type"];
+const OWNED_TYPE_DECORATIONS: &[&str] = &["Loadable.name", "Loadable.type", "Loadable.dispatch"];
 
 /// `Loadable` gets what a `deftype` implementing IDeref has where code can
 /// observe it. Its names (`Loadable.name`) are needed by every unit reading
@@ -476,7 +476,9 @@ const OWNED_TYPE_DECORATIONS: &[&str] = &["Loadable.name", "Loadable.type"];
 /// (`Loadable.type`) are needed where a program defines types of its own
 /// (`decorateType`), and wherever a unit looks a protocol up by mask or by
 /// slot: every reader of a protocol mask requires `protocolMaskNames` for the
-/// mask's index, and every slot lookup goes through `protocolSlot`.
+/// mask's index, and every slot lookup goes through `protocolSlot`. Its IDeref
+/// dispatches to another implementation (`Loadable.dispatch`) wherever one can
+/// be given, which `extend-type` and `specify!` do through `installMethods`.
 #[test]
 fn an_owned_type_is_decorated_wherever_it_can_be_observed() {
     let manifest = manifest();
@@ -537,6 +539,18 @@ fn an_owned_type_is_decorated_wherever_it_can_be_observed() {
         names(manifest.conditions(unit("Loadable.type"))),
         names(&[unit("decorateType"), masks, slots]),
         "`when:` of unit `Loadable.type`"
+    );
+    let install = unit("installMethods");
+    for extension in ["extendType", "extendInstance"] {
+        assert!(
+            manifest.dependencies(unit(extension)).contains(&install),
+            "`{extension}` installs methods without `installMethods`"
+        );
+    }
+    assert_eq!(
+        names(manifest.conditions(unit("Loadable.dispatch"))),
+        names(&[install]),
+        "`when:` of unit `Loadable.dispatch`"
     );
 }
 

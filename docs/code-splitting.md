@@ -116,18 +116,18 @@ What the bounds say:
 
   | Program | `none` | `prepare` | `advanced` | `advanced` runtime slice |
   | --- | ---: | ---: | ---: | ---: |
-  | `app.main`, the whole application | 454,767 / 109,506 | 454,767 / 109,506 | 73,546 / 22,010 | 67,473 |
-  | `app.main` without `app.editor` | 453,216 / 109,319 | 453,216 / 109,319 | 68,024 / 20,424 | 62,830 |
-  | `app.main` without `app.reports` | 438,672 / 107,121 | 438,419 / 107,079 | 65,417 / 20,420 | 64,117 |
-  | `app.main` without `app.editor` and `app.reports`: startup lower bound | 437,326 / 106,901 | 435,874 / 106,676 | 4,680 / 1,753 | 4,189 |
-  | `app.editor` as its own entry: chunk upper bound | 436,643 / 106,737 | 436,252 / 106,661 | 64,447 / 20,035 | 63,644 |
-  | `app.reports` as its own entry: chunk upper bound | 450,894 / 108,980 | 450,894 / 108,980 | 66,841 / 20,117 | 62,504 |
+  | `app.main`, the whole application | 455,100 / 109,609 | 455,100 / 109,609 | 73,546 / 22,010 | 67,473 |
+  | `app.main` without `app.editor` | 453,549 / 109,421 | 453,549 / 109,421 | 68,024 / 20,424 | 62,830 |
+  | `app.main` without `app.reports` | 439,005 / 107,222 | 438,752 / 107,179 | 65,417 / 20,420 | 64,117 |
+  | `app.main` without `app.editor` and `app.reports`: startup lower bound | 437,659 / 107,002 | 436,207 / 106,776 | 4,680 / 1,753 | 4,189 |
+  | `app.editor` as its own entry: chunk upper bound | 436,976 / 106,838 | 436,585 / 106,762 | 64,447 / 20,035 | 63,644 |
+  | `app.reports` as its own entry: chunk upper bound | 451,227 / 109,081 | 451,227 / 109,081 | 66,841 / 20,117 | 62,504 |
 
   The whole application is 1,060 bytes over the 72,486 of direct calls at
   `advanced`, and its runtime slice 326: the `Loadable` class and its names.
   Startup without the features is 145 bytes over its 4,535: `start` and the
   `load` it calls once the sites are `nil`. `none` and `prepare` embed a
-  runtime 1,188 bytes longer.
+  runtime 1,521 bytes longer.
 
 Non-goals of this design: a module manager with retries and backoff, bundling
 npm code (the npm seam stays as designed: packages are static imports a bundler
@@ -700,13 +700,15 @@ output.
     units and 6,553 bytes, most of them the protocol hooks every core
     operation needs once a program type may implement its protocol. The
     runtime owns `Loadable` instead, a class with `deref()` and `load()`
-    (245 bytes terse), and three effects give it what a deftype implementing
+    (245 bytes terse), and effects give it what a deftype implementing
     IDeref has where a program can observe it: `Loadable.deref` wraps
     `derefProtocol` (`@l`, `deref`, `-deref`); `Loadable.name` sets
     `cljs$lang$ctorStr`, `cljs$lang$type` and the `typeNames` entry where a
     printer reads them; `Loadable.type` calls `defineType` with the IDeref
     marker and method where the program defines types of its own or looks a
-    protocol up by mask or slot (`satisfies?`, `implements?`). Its instances
+    protocol up by mask or slot (`satisfies?`, `implements?`); and
+    `Loadable.dispatch` makes `@l` and `load` use the IDeref that `extend-type`
+    or `specify!` gives, where `installMethods` is kept. Its instances
     carry no `TypeBrand`, which only the compiler form bridge reads, and it has
     no `->Loadable` or `getBasis`.
   - `light.lazy/Loadable` is `(def Loadable (light.lazy/loadable-type))`, a

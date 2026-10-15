@@ -8222,9 +8222,9 @@
   }
   //@unit protocolHooks.builtin effect: installMethods when: addWatchProtocol, assoc,
   //@ collectionWithMeta, compareKeys, conj, conjBangOwn, conjTransient, coreMethod, count,
-  //@ derefProtocol, disj, dissoc, equalPair, first, hash, iterator, metaSupported, name, namespace,
-  //@ notifyWatches, objectEquiv, peek, pop, removeWatchProtocol, rest, rseq, stateProtocol,
-  //@ vresetProtocol, withMetaSupported requires: builtin, protocolHooks
+  //@ derefProtocol, disj, dissoc, equalPair, first, hash, iterator, Loadable.dispatch,
+  //@ metaSupported, name, namespace, notifyWatches, objectEquiv, peek, pop, removeWatchProtocol,
+  //@ rest, rseq, stateProtocol, vresetProtocol, withMetaSupported requires: builtin, protocolHooks
   protocolHooks.builtin = builtin;
   //@unit protocolHooks.external effect: extendType when: builtin requires: externalMethod,
   //@ protocolHooks
@@ -8305,7 +8305,14 @@
   //@ requires: defineType, Loadable
   // A deftype's IDeref where a program can look up protocols by mask or slot.
   defineType(Loadable, "light.lazy/Loadable importer getter", [
-    ["IDeref", 0, null], ["IDeref/-deref", 1, function () { return this.deref(); }]]);
+    ["IDeref", 0, null], ["IDeref/-deref", 1, Loadable.prototype.deref]]);
+  //@unit Loadable.dispatch effect: Loadable when: installMethods requires: Loadable, protocolHooks
+  // Where `extend-type` or `specify!` can give a loadable another IDeref, `@l`
+  // and `load` use it, as a deftype's would.
+  Loadable.prototype.deref = (value => function () {
+    const method = protocolHooks.builtin?.(this, "IDeref/-deref", 1);
+    return method ? method.call(this, this) : value.call(this);
+  })(Loadable.prototype.deref);
   //@unit findProtocol effect requires: coreMethod, find, findValue
   const findProtocol = coreMethod("IFind/-find", [2], find, findValue);
   //@unit sortedSeqProtocol effect requires: coreMethod, identity, mapSeq, rseq, seq, sets,

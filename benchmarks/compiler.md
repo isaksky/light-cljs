@@ -3922,7 +3922,8 @@ most of it the protocol hooks every core operation needs once a program type
 may implement its protocol). The runtime now owns the type: a class with
 `deref()` and `load()`, 245 bytes terse, plus 77 bytes for its printed names
 where the program prints; its IDeref implementation as a `defineType` gives
-it is added only where the program has types of its own or looks protocols up
+it, and the dispatch to one `extend-type` or `specify!` gives, are added only
+where the program has types of its own or looks protocols up
 (docs/code-splitting.md, Phase 1, "As built (light-cljs-272)"). Sizes, which
 do not depend on load, on the 24-CPU Mac of the
 [environment](results/environment.txt), macOS 15.7.3, one-minute load
@@ -3972,13 +3973,13 @@ New ratchet rows (`NAMESPACE_FIXTURES`, programs of several namespaces), bytes
 
 | Fixture | `none` | `prepare` | `advanced` |
 | --- | ---: | ---: | ---: |
-| `features` | 454,751 / 455,000 | 454,751 / 455,000 | 73,530 / 74,000 |
-| `loadable-site` | 435,305 / 436,000 | 435,175 / 436,000 | 578 / 600 |
-| `direct-site` | 434,522 / 435,000 | 434,522 / 435,000 | 280 / 300 |
+| `features` | 455,084 / 456,000 | 455,084 / 456,000 | 73,530 / 74,000 |
+| `loadable-site` | 435,638 / 436,000 | 435,508 / 436,000 | 578 / 600 |
+| `direct-site` | 434,855 / 435,000 | 434,855 / 435,000 | 280 / 300 |
 
 With light-cljs-271's `deftype`, `features` was 80,391 bytes at `advanced`
 and `loadable-site` 6,600. The `advanced` size of every other fixture is
 unchanged. `none` and `prepare` embed the whole runtime, which the
-`Loadable` units make 1,188 bytes longer in every fixture, so each of their
-ceilings rises by 1,000 bytes (2,000 for `protocol-params`, which was 96
-bytes under its ceiling).
+`Loadable` units make 1,521 bytes longer in every fixture, so their ceilings
+rise to the new size rounded up: by 2,000 bytes for 19 fixtures and 1,000
+for 11, and one keeps its ceiling.

@@ -532,6 +532,55 @@ fn a_loadable_is_a_type_implementing_ideref_to_each_observer_at_every_level() {
     }
 }
 
+/// `extend-type` of `Loadable` and `specify!` of one loadable give it another
+/// IDeref, which `@l` and `load` use, as a deftype's would.
+#[test]
+fn loadable_ideref_overrides_are_honored_at_every_level() {
+    static OVERRIDES: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (def plain (lazy/loadable app.lib/f))\n\
+             (def specified (specify! (lazy/loadable app.lib/f) IDeref (-deref [_] \"specified\")))\n\
+             (defn start []\n\
+               (js/console.log @plain @specified)\n\
+               (extend-type lazy/Loadable IDeref (-deref [_] \"extended\"))\n\
+               (js/console.log @plain @specified)\n\
+               (-> (lazy/load plain)\n\
+                   (.then (fn [v] (js/console.log \"load\" v) (lazy/load specified)))\n\
+                   (.then (fn [v] (js/console.log \"load\" v) nil))))\n\
+             start\n",
+        ),
+        ("app/lib.cljs", "(ns app.lib)\n(def f \"target\")\n"),
+    ];
+    assert_eq!(
+        run_module_at_every_level(OVERRIDES),
+        concat!(
+            r#"{"id":"app.main.js","outcome":{"status":"returned","value":null},"trace":[],"stdout":""#,
+            r#"target specified\nextended specified\nload extended\nload specified\n"}"#,
+        )
+    );
+}
+
+/// `(light.lazy/loadable-type)` reads the runtime, which a program of one
+/// source text embeds for it at every level.
+#[test]
+fn a_standalone_loadable_type_embeds_the_runtime_at_every_level() {
+    use light_cljs::{analyze, parse};
+    let source = "(light.lazy/loadable-type)";
+    let program = analyze(source, &parse(source).unwrap()).unwrap();
+    for level in OptimizationLevel::ALL {
+        let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+        assert_eq!(
+            execute(&format!(
+                "const value = {js};\nconsole.log(typeof new value(null, () => 1).load);"
+            )),
+            "function\n",
+            "{level}"
+        );
+    }
+}
+
 /// examples/features holds loadables of `app.editor/start` and
 /// `app.reports/start`, whose namespaces follow `app.main` in the one output
 /// file; at every level its loads resolve there and it logs the lines it

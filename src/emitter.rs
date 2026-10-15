@@ -743,6 +743,7 @@ fn reads_runtime(program: &Program, used: &HashSet<ExprId>) -> bool {
                 | ExprKind::ProtocolPredicate { .. }
                 | ExprKind::Reify { .. }
                 | ExprKind::DefType { .. }
+                | ExprKind::LoadableType
                 | ExprKind::Assert { message: Some(_), .. }
                 | ExprKind::Case { strict: false, .. }
                 | ExprKind::Case { keyword_tests: true, .. }
