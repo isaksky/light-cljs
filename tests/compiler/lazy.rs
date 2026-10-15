@@ -531,6 +531,24 @@ fn a_loadable_is_a_type_implementing_ideref_to_each_observer_at_every_level() {
         ("(.-cljs$lang$protocol_mask$partition0$ l)", "32768"),
         ("(.-cljs$lang$ctorStr lazy/Loadable)", "light.lazy/Loadable"),
         ("(.-cljs$lang$type lazy/Loadable)", "true"),
+        // ... in a string, in `js*` text and in a `js/` path.
+        (
+            "(.call (aget l \"cljs$core$IDeref$_deref$arity$1\") l l)",
+            "value",
+        ),
+        (
+            "(js* \"~{}.cljs$core$IDeref$_deref$arity$1(~{})\" l l)",
+            "value",
+        ),
+        (
+            "(js* \"~{}.cljs$lang$ctorStr\" lazy/Loadable)",
+            "light.lazy/Loadable",
+        ),
+        (
+            "(do (set! (.-LoadableType js/globalThis) lazy/Loadable)\n\
+             js/LoadableType.cljs$lang$type)",
+            "true",
+        ),
     ];
     for (observer, printed) in direct {
         let printed = format!("{printed}\n");
