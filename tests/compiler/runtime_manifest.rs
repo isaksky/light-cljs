@@ -454,9 +454,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // tests and one per core dispatcher since light-cljs-251), the printer's
     // hooks, the initial values of four core cells, the protocol wrappers of
     // seven operations, the brand readers of `typeFields` and `recordTypes`
-    // and the record wrappers of `maps` and `mapKinds` (light-cljs-258), and
-    // the upstream fields of 28 types.
-    assert_eq!(checked, 170);
+    // and the record wrappers of `maps` and `mapKinds` (light-cljs-258), the
+    // hash-map trie wrappers of two operations (light-cljs-235), and the
+    // upstream fields of 28 types.
+    assert_eq!(checked, 174);
 }
 
 /// What values a kind hook handles: those of payload stores, built by every
@@ -563,6 +564,13 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
             "makeTransient",
         ]),
     ),
+    // Hash maps, whose payload is a trie (light-cljs-235), and transient
+    // maps that `assoc!` promotes to one.
+    (
+        "trieEntry",
+        Kind::Units(&["PersistentHashMapValue", "assocTransient"]),
+    ),
+    ("dissocTrie", Kind::Units(&["PersistentHashMapValue"])),
     // The map of a set of another kind than array-map.
     ("hashSetMap", Kind::Units(&["publicHashSet", "putMember"])),
     // Sets with public slots, which only the public constructors build.

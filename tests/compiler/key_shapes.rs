@@ -280,7 +280,7 @@ fn set_literals_add_their_other_members_to_a_shape_of_their_first_members() {
 /// by [`exposed`].
 const INTERNALS: &str = "maps, mapKinds, sets, setKinds, hashRoots, hash, keyword, symbol, \
      vectorFromArray, listFromArray, setFromArray, mapFromArray, mapShape, mapFromShape, \
-     hashMapShape, hashMapFromShape, setShape, setFromShape, literalSetFromArray";
+     hashMapShape, hashMapFromShape, setShape, setFromShape, literalSetFromArray, transients, core";
 
 /// `None` output of a program whose runtime exposes [`INTERNALS`] as
 /// `globalThis.lightInternals` when it loads.
@@ -347,17 +347,25 @@ const sameNode = (x, y, ex, ey, path) => {
     const s = x.slots[i], t = y.slots[i];
     if (!s || !t) { if (s !== t) fail("slot", path, i); continue; }
     sameKeys(s, t, "slot " + path + "/" + i);
-    if (s.node) sameNode(s.node, t.node, ex, ey, path + "/" + i);
-    else if (ex.indexOf(s.entry) !== ey.indexOf(t.entry) || ex.indexOf(s.entry) < 0) fail("leaf", path, i);
+    // A slot holds a child node, which has a `kind`, or an entry.
+    if (s.kind) sameNode(s, t, ex, ey, path + "/" + i);
+    else if (ex.indexOf(s) !== ey.indexOf(t) || ex.indexOf(s) < 0) fail("leaf", path, i);
   }
 };
+// A hash map's payload is a trie (light-cljs-235): its root, its nil entry
+// and its count, with a builder's entries at their indexes.
+const entriesOf = e => Array.isArray(e) ? e : Array.from({length: e.length}, (_, i) => e[i]);
+const rootOf = e => Array.isArray(e) ? I.hashRoots.get(e) : e.root;
 const sameMap = (a, b) => {
   const ea = I.maps.get(a), eb = I.maps.get(b);
   if (I.mapKinds.get(a) !== I.mapKinds.get(b)) fail("map kind", I.mapKinds.get(a), I.mapKinds.get(b));
   if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) fail("map type");
-  sameEntries(ea, eb);
+  if (Array.isArray(ea) !== Array.isArray(eb) || Object.isFrozen(ea) !== Object.isFrozen(eb)) fail("payload");
+  const xa = entriesOf(ea), xb = entriesOf(eb);
+  sameEntries(xa, xb);
+  if (!Array.isArray(ea) && (xa.indexOf(ea.nil) !== xb.indexOf(eb.nil) || (ea.nil === null) !== (xa.findIndex(e => e.key == null) < 0))) fail("nil entry");
   if (I.hashRoots.has(ea) !== I.hashRoots.has(eb)) fail("root presence");
-  sameNode(I.hashRoots.get(ea), I.hashRoots.get(eb), ea, eb, "");
+  sameNode(rootOf(ea), rootOf(eb), xa, xb, "");
 };
 const sameSet = (a, b) => {
   const ea = I.sets.get(a), eb = I.sets.get(b);
@@ -378,7 +386,7 @@ for (let trial = 0; trial < 600; trial++) {
   // A shape builds any number of maps, which share no entries or nodes.
   const other = fromShape(shape, values.map(valueOf));
   sameMap(built, fromShape(shape, values));
-  if (I.maps.get(other)[0] === I.maps.get(built)[0] || (big && I.hashRoots.get(I.maps.get(other)) === I.hashRoots.get(I.maps.get(built)))) fail("shared");
+  if (I.maps.get(other)[0] === I.maps.get(built)[0] || (big && rootOf(I.maps.get(other)) === rootOf(I.maps.get(built)))) fail("shared");
   if (big) hashMaps++; else maps++;
 }
 for (let trial = 0; trial < 600; trial++) {
@@ -424,6 +432,77 @@ fn shapes_build_the_entries_and_tries_the_builders_build() {
         .and_then(|(_, last)| last.split(' ').next()?.parse().ok())
         .unwrap();
     assert!((100..500).contains(&duplicates), "{summary}");
+}
+
+/// Edits a transient over a 2,000-entry hash map and returns a summary, or
+/// throws where an edit copies a node it already owns or changes a node of
+/// a persistent version.
+const OWNERSHIP: &str = r#"
+const I = globalThis.lightInternals, c = I.core;
+const fail = (...detail) => { throw new Error(detail.map(String).join(" ")); };
+const n = 2000;
+let m = c.hashMap();
+for (let i = 0; i < n; i++) m = c.assoc(m, i, i);
+// Every node of a persistent version, with what its slots or entries held.
+const snapshot = root => {
+  const nodes = new Map();
+  const walk = node => {
+    nodes.set(node, (node.slots ?? node.entries).slice());
+    for (const slot of node.slots ?? []) if (slot?.kind) walk(slot);
+  };
+  walk(root);
+  return nodes;
+};
+const unchanged = (nodes, what) => {
+  for (const [node, held] of nodes) {
+    const now = node.slots ?? node.entries;
+    if (now.length !== held.length || now.some((slot, i) => slot !== held[i])) fail(what, "node changed");
+  }
+};
+const original = snapshot(I.maps.get(m).root);
+const rootOf = t => I.transients.get(t).entries.root;
+let t = c.assocBang(c.transient(m), 0, "a");
+const owned = rootOf(t);
+if (owned === I.maps.get(m).root) fail("the first edit shares the persistent root");
+for (let i = 0; i < n; i += 3) t = c.assocBang(t, i, "x" + i);
+for (let i = 1; i < n; i += 3) t = c.dissocBang(t, i);
+t = c.assocBang(t, n, "new");
+// Owned nodes change in place: the root the first edit copied stays the root.
+if (rootOf(t) !== owned) fail("an edit copied an owned root");
+const edited = c.persistentBang(t);
+unchanged(original, "original");
+if (c.count(m) !== n || c.get(m, 0) !== 0 || c.get(m, 1) !== 1 || c.get(m, n, "missing") !== "missing") fail("original lookup");
+const expected = [];
+for (let i = 0; i < n; i++) if (i % 3 !== 1) expected.push(i, i % 3 === 0 ? "x" + i : i);
+expected.push(n, "new");
+if (!c.equal(edited, I.mapFromArray(expected, "hash-map"))) fail("edited map");
+// A later transient over the edited map copies its nodes again.
+const kept = snapshot(I.maps.get(edited).root);
+let again = c.transient(edited);
+for (let i = 0; i < n; i += 2) again = c.dissocBang(again, i);
+unchanged(kept, "edited");
+const halved = c.persistentBang(again), rest = [];
+for (let i = 0; i < expected.length; i += 2) if (expected[i] % 2 || expected[i] === n) rest.push(expected[i], expected[i + 1]);
+if (!c.equal(halved, I.mapFromArray(rest, "hash-map")) || c.count(edited) !== expected.length / 2) fail("halved map");
+return `${original.size} nodes kept, ${c.count(edited)} edited, ${c.count(halved)} after removal`;
+"#;
+
+#[test]
+fn transient_hash_maps_edit_the_nodes_they_own_in_place() {
+    // light-cljs-235, from review: as upstream's TransientHashMap, a
+    // transient copies a node of a persistent version once and then edits
+    // it in place, and no edit reaches a persistent version's nodes.
+    let js = exposed();
+    let expression = format!("(() => {{ const value = {js};\n{OWNERSHIP} }})()");
+    let summary = quickjs(&expression);
+    assert_eq!(
+        execute(&format!("console.log({expression});")),
+        format!("{summary}\n")
+    );
+    assert!(
+        summary.ends_with(" nodes kept, 1334 edited, 667 after removal"),
+        "{summary}"
+    );
 }
 
 #[test]

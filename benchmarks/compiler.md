@@ -3344,3 +3344,84 @@ against a `makeType` 404 bytes smaller; a record's assignment function costs
 more than its factory saves, and `protocol-params`' two `deftype` factories
 keep their rest parameter, which a saved factory needs when the type is
 redefined with more fields.
+
+## Hash maps as tries — October 14, 2026
+
+light-cljs-235 replaces the linear entry array of a hash map with upstream's
+structure (docs/compiler.md, "Hash maps"). An array map of at most 8 keys keeps
+its frozen entry array; past that, a map is a hash array mapped trie of its
+entries, its nil entry beside the trie and its count, so `assoc` and `dissoc`
+copy one path of nodes and lookup walks one. The trie's nodes are the ones that
+light-cljs-181 already kept beside each entry array to pin upstream's traversal
+order: the map now stores only the trie. Two changes made `assoc` fast as well
+as logarithmic:
+
+- **A private field, not a WeakMap entry.** Each new version of a map was
+  registered in two `WeakMap`s (`maps` for its payload and brand, `mapKinds`
+  for its kind). In V8 that registration, and the garbage collector's work on
+  the ephemeron tables, cost more than the trie update itself: in a quick Node
+  timing of the `advanced` output, building a 20,000-entry map one `assoc` at
+  a time took 13.6 ms with both, against 4.3 ms once a hash map kept
+  its trie in a class-private field (`#trie in value` is the brand check) and
+  derived its kind from it. The field is as unforgeable as the `WeakMap`
+  entry, and invisible to reflection. The wrappers that read it sit beneath
+  the record wrappers of light-cljs-258 (`maps.records`, `mapKinds.records`),
+  whichever installs first.
+- **Trie slots hold children and entries directly**, not in `{node}` and
+  `{entry}` wrappers, and a bitmap node counts its occupied slots only where
+  expansion or a transient's capacity needs the count.
+
+Transients edit the same trie as upstream's do: `transient` of a hash map
+shares its root in O(1), and `assoc!`/`dissoc!` copy a node of the persistent
+map the first time an edit passes through it and then change that copy, which
+no other version shares, in place. Building a map with `assoc!` and removing
+every second key with `dissoc!`, `(count (persistent! ...))` at `advanced` in
+Node (median of 30 calls, load about 7), took 10.3 ms at n = 20,000 when every
+edit copied its path and takes 6.2 ms in place (0.51 ms at 2,000, 61 ms at
+200,000). Only a program that builds a hash map keeps the trie units: `lookup`
+and `copyEntries` take their trie branches through wrappers that the hash map
+type's effects install, and `array-map` builds its map without that type.
+
+Command:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only map-assoc,map-get,map-assoc-existing --output DIR
+```
+
+Node v24.18.0, macOS 15 (Darwin 24.6) ARM64 VM, 24 CPUs, 15 timed rounds, on
+`fd989af` with this change. Another worker was building and testing on the
+machine: the one-minute load average was 11.97–19.75 (median 18.63). Median ms
+per call; "before" is light-cljs in "Collection throughput against upstream"
+above (`49e64cc`; master's maps were still linear entry arrays), whose
+upstream column is within 15% of this run's. Growth is the time at
+n = 20,000 over the time at n = 2,000, light-cljs / upstream:
+
+| Workload | n | Before | light-cljs `advanced` | Upstream `:advanced` | light-cljs / upstream | Growth |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| map-assoc | 2,000 | 56.4 | 0.644 | 0.309 | 2.1× | |
+| map-assoc | 20,000 | 5,643 | 6.85 | 3.49 | 2.0× | 10.6× / 11.3× |
+| map-get | 2,000 | 0.629 | 0.105 | 0.055 | 1.9× | |
+| map-get | 20,000 | 36.9 | 1.23 | 0.542 | 2.3× | 11.7× / 9.9× |
+| map-assoc-existing | 2,000 | 50.8 | 0.320 | 0.115 | 2.8× | |
+| map-assoc-existing | 20,000 | 608 | 0.351 | 0.147 | 2.4× | 1.1× / 1.3× |
+
+Building a 20,000-entry map is about 800 times faster and now linear in n
+(11× for tenfold n, as upstream's); `get` grows with n about as upstream's
+does, and an `assoc` onto a 20,000-entry map costs 0.35 µs instead of 0.6 ms.
+All three are within 2.8× of upstream. A run of the same persistent paths
+before the transient change, at a load median of 5.29, measured 1.9× for
+map-assoc (6.21 / 3.27 ms) and 2.4× for map-get (1.28 / 0.524 ms) at
+n = 20,000, with growth 10.3× and 12.0×.
+
+Sizes (bytes, size ratchet). Every `none` and `prepare` output embeds the
+whole runtime, comments included, which grew 6,538 bytes (418,544 to 425,082
+for `console-log-sum`); those ceilings rose to the new sizes rounded up, growth
+the user accepted for light-cljs-234 to 236. At `advanced`, programs that build
+no hash map are unchanged apart from `mapv-count`, which keeps the transient
+lookup's trie branch (31,132 to 31,215). A program that builds one carries the
+trie and its brand: `constant-keys`, whose `zipmap` builds a 36-entry hash map,
+grew from 41,308 to 42,364 bytes (ceiling 42,000 to 43,000), of which the
+private-field brand is 434, the trie wrappers of `lookup` and `copyEntries` 190,
+and the payload builder (`hashTrie`) and lookup (`trieEntry`) 192. A map
+literal of at most 8 keys (`map-only`, 9,909 bytes) keeps no trie.

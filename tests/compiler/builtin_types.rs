@@ -1242,6 +1242,54 @@ fn a_set_keeps_no_seq_hash_map_or_hashing() {
 }
 
 #[test]
+fn array_maps_keep_no_hash_map_trie() {
+    // light-cljs-235: a hash map is a trie whose brand and generic-operation
+    // branches its type's effects install, so a program that only builds
+    // array maps, through `array-map` too, keeps none of them.
+    let source =
+        "(js/console.log (.get (apply array-map [:a 1 :b 2]) :a) (count (array-map :a 1)))";
+    assert_keeps_none(
+        source,
+        &[
+            "mapFromArray",
+            "PersistentHashMapValue",
+            "PersistentHashMapValue.brand",
+            "hashTrie",
+            "trieEntry",
+            "lookup.trie",
+            "copyEntries.trie",
+            "hashNodeAssoc",
+        ],
+    );
+    every_level(source, "1 1\nundefined");
+    let units = units("(js/console.log (count (hash-map :a 1)))");
+    for unit in ["hashTrie", "PersistentHashMapValue.brand"] {
+        assert!(units.contains(&unit), "{unit}: {units:?}");
+    }
+}
+
+#[test]
+fn promoted_transient_maps_look_up_without_a_persistent_hash_map() {
+    // light-cljs-235, from review: `assoc!` promotes a transient array map
+    // past 8 keys to a trie in a program that builds no persistent hash map,
+    // whose lookup still finds the trie's hook.
+    every_level(
+        "(js/console.log (get (assoc! (transient (array-map)) 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8) 8))",
+        "8\nundefined",
+    );
+}
+
+#[test]
+fn applied_array_maps_accept_large_argument_sequences() {
+    // light-cljs-235, from review: `apply array-map` hands its pairs on as
+    // one array, not as spread arguments, whose number an engine limits.
+    every_level(
+        "(js/console.log (get (apply array-map (take 200000 (cycle [:a 1]))) :a))",
+        "1\nundefined",
+    );
+}
+
+#[test]
 fn membership_in_value_position_keeps_no_set() {
     // light-cljs-231: `(contains? s x)`, `(s x)` and `(get s x)` on a set
     // literal of at most 8 keywords, strings or numbers compare the value

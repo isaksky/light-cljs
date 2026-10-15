@@ -422,6 +422,85 @@ for (let i = 0; i < retained.length; i++) {
 }
 console.log('structural map, collision, sharing and mutation assertions passed');
 
+// Hash maps are hash array mapped tries (light-cljs-235): built one `assoc`
+// at a time, at once or through a transient, past array nodes and down to
+// collisions, they agree on count, lookup, equality, hash and traversal, and
+// every version survives later updates.
+{
+  const n = 3000, keys = [];
+  for (let i = 0; i < n; i++) keys.push(i % 3 === 0 ? i : i % 3 === 1 ? 'k' + i : c.keyword('n', 'k' + i));
+  const order = m => runtime.inspect(m).entries.map(([key]) => key);
+  let built = c.hashMap();
+  const versions = [];
+  for (let i = 0; i < n; i++) {
+    built = c.assoc(built, keys[i], i);
+    if (i % 499 === 0) versions.push([built, i + 1]);
+  }
+  const whole = runtime.mapFromArray(keys.flatMap((key, i) => [key, i]), 'hash-map');
+  let editing = c.transient(c.arrayMap());
+  for (let i = 0; i < n; i++) editing = c.assocBang(editing, keys[i], i);
+  const viaTransient = c.persistentBang(editing);
+  for (const m of [built, whole, viaTransient]) {
+    assert.equal(c.count(m), n);
+    assert.equal(c.equal(m, built), true);
+    assert.equal(c.hash(m), c.hash(whole));
+    assert.deepEqual(order(m), order(whole));
+    for (let i = 0; i < n; i++) assert.equal(c.get(m, keys[i]), i);
+    assert.equal(c.get(m, 'absent', 'missing'), 'missing');
+  }
+  assert.equal(c.equal(built, c.assoc(built, keys[7], 'changed')), false);
+  for (const [version, count] of versions) {
+    assert.equal(c.count(version), count);
+    assert.equal(c.get(version, keys[count - 1]), count - 1);
+    assert.equal(c.get(version, keys[count], 'missing'), 'missing');
+  }
+  let removed = built;
+  for (let i = 0; i < n; i += 2) removed = c.dissoc(removed, keys[i]);
+  assert.equal(c.count(removed), n / 2);
+  assert.equal(c.count(c.dissoc(removed, keys[0], 'absent')), n / 2);
+  const remaining = keys.flatMap((key, i) => i % 2 ? [key, i] : []);
+  assert.equal(c.equal(removed, runtime.mapFromArray(remaining, 'hash-map')), true);
+  assert.deepEqual(order(removed), order(runtime.mapFromArray(remaining, 'hash-map')));
+  for (let i = 0; i < n; i++) assert.equal(c.get(removed, keys[i], 'missing'), i % 2 ? i : 'missing');
+  assert.equal(c.count(built), n);
+  assert.equal(c.count(c.reduce((m, key) => c.dissoc(m, key), built, c.vector(...keys))), 0);
+  // Keys hash as they compare: -0 is 0, nil is undefined, a list finds a
+  // vector, NaN finds nothing, and same-named strings, keywords and symbols
+  // stay apart.
+  assert.equal(c.get(c.assoc(built, -0, 'zero'), 0), 'zero');
+  assert.equal(c.count(c.assoc(built, -0, 'zero')), n);
+  const withNil = c.assoc(built, undefined, 'nil');
+  assert.equal(c.get(withNil, null), 'nil');
+  assert.equal(c.count(withNil), n + 1);
+  assert.equal(order(withNil)[0], undefined);
+  assert.equal(c.count(c.dissoc(withNil, null)), n);
+  assert.equal(c.get(c.assoc(built, c.vector(1, 2), 'pair'), c.list(1, 2)), 'pair');
+  const nan = c.assoc(c.assoc(built, NaN, 1), NaN, 2);
+  assert.equal(c.count(nan), n + 2);
+  assert.equal(c.get(nan, NaN, 'missing'), 'missing');
+  assert.equal(c.count(c.assoc(built, 'x', 1, c.keyword(null, 'x'), 2, c.symbol(null, 'x'), 3)), n + 3);
+  // Keys of equal hash share a collision node.
+  const collided = c.assoc(c.assoc(built, 'Aa', 'a'), 'BB', 'b');
+  assert.equal(c.hash('Aa'), c.hash('BB'));
+  assert.deepEqual([c.get(collided, 'Aa'), c.get(collided, 'BB'), c.count(collided)], ['a', 'b', n + 2]);
+  assert.equal(c.get(c.dissoc(collided, 'Aa'), 'BB'), 'b');
+  const marked = c.withMeta(built, c.hashMap('m', 1));
+  assert.equal(c.get(c.meta(c.dissoc(c.assoc(marked, 'k', 1), 'k')), 'm'), 1);
+  // A transient over a hash map edits its own copy of the trie.
+  let editing2 = c.transient(built);
+  for (let i = 0; i < n; i += 3) editing2 = c.assocBang(editing2, keys[i], 'x' + i);
+  for (let i = 1; i < n; i += 3) editing2 = c.dissocBang(editing2, keys[i]);
+  editing2 = c.assocBang(c.assocBang(editing2, null, 'nil'), 'Aa', 'a', 'BB', 'b');
+  assert.equal(c.count(editing2), n - n / 3 + 3);
+  const edited = c.persistentBang(editing2);
+  assert.equal(c.get(editing2, keys[0]), 'x0');
+  const expected = keys.flatMap((key, i) => i % 3 === 1 ? [] : [key, i % 3 ? i : 'x' + i]).concat([null, 'nil', 'Aa', 'a', 'BB', 'b']);
+  assert.equal(c.equal(edited, runtime.mapFromArray(expected, 'hash-map')), true);
+  assert.deepEqual(order(edited), order(runtime.mapFromArray(expected, 'hash-map')));
+  assert.deepEqual([c.count(built), c.get(built, keys[3]), c.get(built, keys[1])], [n, 3, 1]);
+}
+console.log('hash array mapped trie assertions passed');
+
 assert.equal(c.dissoc(), null);
 const undefinedKeyMap = c.hashMap(undefined, 1);
 assert.equal(runtime.inspect(c.assoc(undefinedKeyMap, null, 2)).entries[0][0], undefined);

@@ -963,15 +963,33 @@ supplied default (nil when omitted), and `contains?` returns false.
 
 ### Hash maps
 
-Maps store frozen entry arrays and private structural key hashes. Lookup compares
-both hash and language equality, so collisions do not merge unequal keys, and a
-list/vector/seq with equal contents can retrieve the same entry. Nested map keys
-use unordered equality/hash. Keyword, symbol and string keys remain distinct;
-`"__proto__"` is ordinary data. Map count is O(1); lookup and copying updates are
-O(n), plus key hash/equality costs. Building n distinct entries and naive unordered
-map equality are O(n²), before nested costs. This is a deliberately simple linear
-representation, not a HAMT. New versions retain the first equivalent key and share
-unchanged entry cells and nested immutable values.
+An array map (at most 8 keys) stores a frozen entry array. A hash map, which an
+array map becomes at its ninth distinct key and which `hash-map`, larger literals
+and transients build, stores upstream's structure (light-cljs-235): a hash array
+mapped trie of its entries (bitmap nodes, array nodes past 16 children, collision
+nodes for keys of equal hash), its nil entry beside the trie, and its count. Keys
+hash with the runtime's `hash`, so -0 and 0, nil and undefined, and equal
+collections land together. Lookup compares both hash and language equality, so
+collisions do not merge unequal keys, and a list/vector/seq with equal contents
+can retrieve the same entry. Nested map keys use unordered equality/hash.
+Keyword, symbol and string keys remain distinct; `"__proto__"` is ordinary data.
+Map count is O(1). Hash-map lookup, `find`, `contains?`, `assoc` and `dissoc`
+are O(log32 n): an update copies one path of trie nodes and shares the rest,
+plus key hash/equality costs; array-map ones are O(n) in their at most 8
+entries. Building n distinct entries one `assoc` at a time is O(n log32 n), and
+map equality looks up each entry of one map in the other. A transient hash map
+starts from the map's trie in O(1) and edits it in O(log32 n) per `assoc!` or
+`dissoc!`: as upstream's, it copies a node of the persistent map once, the
+first time an edit passes through it, and then changes that copy, which no
+other version shares, in place, so a run of edits allocates amortized O(1)
+nodes each. Builders (`hash-map`, larger literals) edit their unpublished trie
+the same way. New versions retain the first equivalent key and share
+unchanged entry cells, trie nodes and nested immutable values. A hash map keeps
+its trie in a class-private field rather than a `WeakMap` entry: as unforgeable
+a brand, without a `WeakMap` registration per version. `seq`, printing and
+reduction walk the trie in upstream's order (nil first, then by hash bits), and
+a builder's map also keeps its entries in literal order, which advanced
+constant lookups read.
 
 Maps implement ordinary `.call` with a key and optional default, alongside keyword
 and symbol lookup calls. Missing is a private sentinel: stored nil, false and
