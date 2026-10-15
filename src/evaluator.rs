@@ -283,18 +283,21 @@ impl Evaluator {
                   if (failure !== null) {{ const message = exceptionMessage(failure.value); if (message !== undefined) throw new Error(message); throw failure.value; }}
                 }},
                 // The host's rejection tracker records a promise rejected with no
-                // handler until one is attached; takeRejections takes the reasons
-                // still recorded, oldest first and printed. With fail it takes the
-                // first only, which becomes the last exception.
+                // handler until one is attached; takeRejections forgets them all
+                // and returns the reasons of up to `limit`, oldest first and
+                // printed. With `raise` the first becomes the last exception;
+                // otherwise the last exception stays, even when a printer evaluates.
                 trackRejection: (promise, reason, handled) => {{
                   if (handled) rejections.delete(promise); else rejections.set(promise, reason);
                 }},
-                takeRejections: fail => {{
-                  const reasons = [...rejections.values()]; rejections.clear();
-                  if (fail) {{ reasons.length = Math.min(reasons.length, 1); if (reasons.length > 0) lastError = reasons[0]; }}
-                  return reasons.map(reason => {{
-                    try {{ return rt.core.printForHost(reason); }} catch {{ return Object.prototype.toString.call(reason); }}
-                  }});
+                takeRejections: (limit, raise) => {{
+                  const reasons = limit > 0 ? [...rejections.values()].slice(0, limit) : []; rejections.clear();
+                  const last = raise && reasons.length > 0 ? reasons[0] : lastError;
+                  const describe = reason => {{
+                    try {{ return rt.core.printForHost(reason); }} catch {{}}
+                    try {{ return Object.prototype.toString.call(reason); }} catch {{ return '<unprintable reason>'; }}
+                  }};
+                  try {{ return reasons.map(describe); }} finally {{ lastError = last; }}
                 }},
                 inputWindow: more => rt.core.compilerInputWindow(more),
                 inputConsume: units => rt.core.compilerInputConsume(units),
@@ -665,17 +668,21 @@ impl Evaluator {
                 },
             )));
     }
-    /// Take the promises rejected with no handler attached since the last
-    /// call (see `track_rejections`), oldest first, as their printed reasons.
-    /// With `fail` take only the first, whose reason becomes the last
-    /// exception. Call it at an outer boundary, after `run_jobs`.
-    pub(crate) fn unhandled_rejections(&self, fail: bool) -> Result<Vec<String>, EvalError> {
+    /// Forget the promises rejected with no handler attached since the last
+    /// call (see `track_rejections`), returning the printed reasons of up to
+    /// `limit` of them, oldest first; with `raise` the first reason becomes
+    /// the last exception. Call it at an outer boundary, after `run_jobs`.
+    pub(crate) fn unhandled_rejections(
+        &self,
+        limit: u32,
+        raise: bool,
+    ) -> Result<Vec<String>, EvalError> {
         if !self.rejected.replace(false) {
             return Ok(vec![]);
         }
         self.enter(|ctx| {
             let take: Function = ctx.eval("__lightEvaluator.takeRejections")?;
-            take.call((fail,))
+            take.call((f64::from(limit), raise))
         })
     }
     /// Force collection at an outer boundary. Callbacks must use the active Ctx,

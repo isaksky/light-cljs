@@ -220,7 +220,8 @@ either.
 A promise still rejected with no handler attached once the jobs after a form
 have run out is an unhandled rejection (light-cljs-297), reported once with
 its printed reason: `unhandled promise rejection: #error {:message "boom",
-:data {}}`. The session's engine tracks rejections (rquickjs
+:data {}}` (`<unprintable reason>` when printing it throws; printing keeps
+`*e`). The session's engine tracks rejections (rquickjs
 `set_host_promise_rejection_tracker`; the record lives in the heap, never in
 Rust) and forgets one when a handler is attached first, so a rejection that a
 `.catch`, an `await` or a job of the same drain handles is not reported, while

@@ -765,7 +765,8 @@ fn unhandled_promise_rejections_are_reported_after_the_jobs() {
     use light_cljs::UnhandledRejections;
     let report = |reason: &str| format!("unhandled promise rejection: {reason}");
     let define = "(def log (atom []))
-        (defn ^:async boom [] (await nil) (throw (ex-info \"boom\" {:a 1})))";
+        (defn ^:async boom [] (await nil) (throw (ex-info \"boom\" {:a 1})))
+        (deftype Loud [] IPrintWithWriter (-pr-writer [_ w _] (eval nil) (-write w \"#loud\")))";
     let mut s = EvalSession::new(EvalOptions::default()).unwrap();
     printed(&mut s, define);
     assert_eq!(printed(&mut s, "(boom) :value"), ":value");
@@ -799,6 +800,30 @@ fn unhandled_promise_rejections_are_reported_after_the_jobs() {
             .is_err()
     );
     assert_eq!(s.take_unhandled_rejections(), [report(":failed")]);
+    // Printing a reason keeps the last exception, even when its printer
+    // evaluates, and a reason that does not print at all is still reported.
+    assert!(
+        s.eval_string("(do (js/Promise.reject (Loud.)) (throw (ex-info \"form\" {:tag :form})))")
+            .is_err()
+    );
+    assert_eq!(s.take_unhandled_rejections(), [report("#loud")]);
+    let thrown = s.last_exception().unwrap();
+    let ex_data = s.lookup("cljs.core/ex-data").unwrap();
+    let data = s.invoke(ex_data, &[thrown]).unwrap();
+    assert_eq!(s.print(data).unwrap(), "{:tag :form}");
+    assert_eq!(
+        printed(
+            &mut s,
+            "(do (js/Promise.reject (js* \"new Proxy({}, {get() {throw new Error('no access')}})\"))
+                 (js/Promise.reject :second)
+                 :ok)"
+        ),
+        ":ok"
+    );
+    assert_eq!(
+        s.take_unhandled_rejections(),
+        [report("<unprintable reason>"), report(":second")]
+    );
     // An embedder that evaluates a form itself reports them with `run_jobs`.
     let forms = s
         .read_forms(&light_cljs::source_provider::SourceInput::new(
@@ -840,13 +865,20 @@ fn unhandled_promise_rejections_are_reported_after_the_jobs() {
         printed(&mut s, "(.catch (boom) #(swap! log conj :caught)) @log"),
         "[:caught]"
     );
+    let error = s.eval_string("(js/Promise.reject (Loud.))").unwrap_err();
+    assert_eq!(error.message, report("#loud"));
+    let thrown = s.last_exception().unwrap();
+    let loud = s.eval_string("#(instance? Loud %)").unwrap().value;
+    let is_loud = s.invoke(loud, &[thrown]).unwrap();
+    assert_eq!(s.print(is_loud).unwrap(), "true");
+    // Those are dropped unprinted: an endless reason would never print.
     let error = s
-        .eval_string("(do (js/Promise.reject :dropped) (throw (ex-info \"form\" {})))")
+        .eval_string("(do (js/Promise.reject (range)) (throw (ex-info \"form\" {})))")
         .unwrap_err();
     assert!(error.message.contains("form"), "{error}");
     let error = s
         .eval_string(
-            "(do (js/Promise.reject :dropped) (js/queueMicrotask #(throw (ex-info \"job\" {}))) nil)",
+            "(do (js/Promise.reject (range)) (js/queueMicrotask #(throw (ex-info \"job\" {}))) nil)",
         )
         .unwrap_err();
     assert!(error.message.contains("job"), "{error}");

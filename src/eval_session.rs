@@ -357,23 +357,27 @@ impl EvalSession {
     /// and under `Report` each is kept for `take_unhandled_rejections`.
     fn jobs(&self, keep: bool) -> Result<(), EvalDiagnostic> {
         let jobs = self.engine.run_jobs(keep);
-        let fail = self.options.unhandled_rejections == UnhandledRejections::Fail;
-        let raise = fail && !keep && jobs.is_ok();
-        let rejected = self.engine.unhandled_rejections(raise).map(|reasons| {
-            reasons
-                .into_iter()
-                .map(|reason| format!("unhandled promise rejection: {reason}"))
-        });
+        let report = self.options.unhandled_rejections == UnhandledRejections::Report;
+        // `Fail` prints only the first, and none once the form or a job failed.
+        let raise = !report && !keep && jobs.is_ok();
+        let limit = if report { u32::MAX } else { u32::from(raise) };
+        let rejected = self
+            .engine
+            .unhandled_rejections(limit, raise)
+            .map(|reasons| {
+                reasons
+                    .into_iter()
+                    .map(|reason| format!("unhandled promise rejection: {reason}"))
+            });
         let result = match (jobs, rejected) {
-            (Ok(()), Ok(mut messages)) if raise => messages
-                .next()
-                .map_or(Ok(()), |message| Err(EvalError(message))),
-            (jobs, Ok(messages)) => {
-                if !fail {
-                    self.rejections.borrow_mut().extend(messages);
-                }
+            (jobs, Ok(messages)) if report => {
+                self.rejections.borrow_mut().extend(messages);
                 jobs
             }
+            (Ok(()), Ok(mut messages)) => messages
+                .next()
+                .map_or(Ok(()), |message| Err(EvalError(message))),
+            (jobs, Ok(_)) => jobs,
             (jobs, Err(error)) => jobs.and(Err(error)),
         };
         result.map_err(|error| EvalDiagnostic {
