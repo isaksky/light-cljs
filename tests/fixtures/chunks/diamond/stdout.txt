@@ -1,0 +1,2 @@
+editor: draft!
+reports: 12!

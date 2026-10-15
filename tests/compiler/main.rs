@@ -37,6 +37,11 @@ mod dev_execution;
 #[allow(dead_code)]
 mod temp_dir;
 
+// Just enough JSON for contract rows, driver records and chunks.json.
+#[path = "../support/json.rs"]
+#[allow(dead_code)]
+mod json;
+
 mod array_settings;
 mod async_await;
 mod atom_object_equiv;

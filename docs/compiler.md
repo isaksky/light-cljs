@@ -1776,6 +1776,14 @@ and whose `manifest()` is `chunks.json`'s text; the library writes no file.
 The playground's WebAssembly module offers the same as `compile_chunks`,
 whose result holds the file names, their sources and the manifest.
 
+The files are standard ES modules that load each other by relative paths,
+so a browser loads them from any static server that sends `.js` as
+`text/javascript`, and a bundler takes the startup file, or a page that
+imports it, as its entry. `examples/features/index.html` is such a page:
+placed beside the example's chunks, it shows what the program logs.
+docs/code-splitting.md, "Verification", gives the commands that load it in
+headless Chrome without a bundler and after a Vite build, at every level.
+
 The loading API is the bundled namespace `light.lazy`
 (`src/compiler_libraries/light/lazy.cljs`, docs/code-splitting.md, "The
 loading API"):

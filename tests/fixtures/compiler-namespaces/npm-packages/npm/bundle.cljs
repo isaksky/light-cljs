@@ -12,5 +12,10 @@
 ;; The alias object escapes as a value, so its namespace object is imported.
 (defn describe [package] (.-label package))
 
-(str (r/createElement "div") " " (use-state 1) " " (Scoped 2) " "
-     (describe debounce) " " (sub/helper 21) " " (exists? debounce/missingExport))
+;; The entry's value, and what npm.split reads when it loads this namespace
+;; as a feature.
+(def line
+  (str (r/createElement "div") " " (use-state 1) " " (Scoped 2) " "
+       (describe debounce) " " (sub/helper 21) " " (exists? debounce/missingExport)))
+
+line

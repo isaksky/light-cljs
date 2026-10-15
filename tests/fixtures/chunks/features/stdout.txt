@@ -1,0 +1,3 @@
+menu: Editor | Reports
+editor: 4 documents, first Introduction, ids #{:api :faq :intro :setup}
+reports: tags Draft, Guide, Reference; drafts FAQ, INTRO; 1050 words

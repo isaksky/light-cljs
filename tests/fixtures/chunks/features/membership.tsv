@@ -1,0 +1,4 @@
+# file	namespaces	roots	imports	imports at advanced
+app.main.js	app.shared light.lazy app.main	app.main	-	-
+app.editor.js	app.editor	app.editor	app.main.js	app.main.js
+app.reports.js	clojure.string app.reports	app.reports	app.main.js	app.main.js

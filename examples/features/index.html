@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>light-cljs features example</title>
+</head>
+<body>
+<!--
+  The code-splitting example in a browser without a bundler
+  (docs/code-splitting.md, "Verification"). Serve this file beside the files
+  `light-cljs --compile --entry app.main --source-root examples/features
+  --out-dir DIR` writes: it imports app.main.js, which imports each feature's
+  chunk when app.main/start loads it. Each line the program logs is appended
+  to #log, and #status becomes "done" once start's promise resolves, so
+  headless Chrome's --dump-dom shows the run.
+-->
+<pre id="log"></pre>
+<p id="status">loading</p>
+<script type="module">
+  const log = document.getElementById("log");
+  const status = document.getElementById("status");
+  const consoleLog = console.log;
+  console.log = (...values) => {
+    log.textContent += values.join(" ") + "\n";
+    consoleLog.apply(console, values);
+  };
+  try {
+    // Imported after console.log is replaced: startup logs as it loads.
+    const { default: start } = await import("./app.main.js");
+    await start();
+    status.textContent = "done";
+  } catch (error) {
+    status.textContent = "failed: " + error;
+  }
+</script>
+</body>
+</html>

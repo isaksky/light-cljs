@@ -48,7 +48,7 @@ Targets, measured in Phase 0 on the example application
 |---|---|---|---|
 | Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646; chunked at namespace granularity (light-cljs-274), `app.main.js` 69,587 / 21,575, with the whole-program runtime slice and every constant still in startup | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
 | Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
-| Observable behavior | n/a; chunked (light-cljs-274), the example and the Phase 2 fixtures print what the single file prints at every level | n/a | identical to the single-file program at every level, given the same `load` calls |
+| Observable behavior | n/a; chunked (light-cljs-274), the example and the Phase 2 fixtures print what the single file prints at every level; the fixture matrix (light-cljs-276) through `--out-dir` and `chunks.json` in Node, and the example in Chrome without a bundler and through Vite 8.0.8, at every level | n/a | identical to the single-file program at every level, given the same `load` calls |
 | Compile time of a chunked build | n/a | n/a | within 10% of the single-file build of the same program |
 
 `bb benchmarks/features.bb` regenerates the bounds from the sources. It
@@ -885,6 +885,46 @@ Phase 3 splits them.
     refused before anything is written. The manifests of the sub-feature,
     resident-target and namespace-target fixtures are checked at every
     level.
+- **As built (light-cljs-276): the fixture matrix and the two hosts.**
+  - `tests/fixtures/chunks/` holds the eight fixtures of "Tests" below, a
+    directory each: `features` (examples/features, whose sources stay
+    there), `diamond`, `sub-feature`, `requires-loader`, `shared-effect`,
+    `startup-vars` (`set!`, `binding` and `with-redefs` of startup Vars,
+    read back in startup), `package` and `methods`. Each holds a program of
+    entry `app.main`; `stdout.txt`, what it prints; and `membership.tsv`,
+    its chunks in manifest order with their namespaces, roots, and imports
+    below `Advanced` and at `Advanced`. The imports differ where `Advanced`
+    code reads nothing of a chunk: the diamond's shared chunk imports
+    nothing there, and the shared-effect features import only the shared
+    chunk. A fixture's `packages/` is copied into `node_modules` for its
+    runs.
+  - `chunks::matrix` runs a fixture at every level, one test per fixture.
+    The CLI's `--out-dir` writes the chunks, which are read back through
+    `chunks.json`: the directory holds exactly the files it names, of the
+    sizes it gives; each file's import lines name its imports in order,
+    and the chunks they name export every name imported; each file's
+    `import()`s are the chunks of the loadables its namespaces hold that it
+    does not reach statically; the namespaces partition the program's, with
+    each root and target in its chunk; every import names an earlier chunk
+    whose signature, derived as the roots whose chunks reach it through
+    imports, strictly contains the importer's; and the rows are
+    `membership.tsv`'s. Run by the Node driver, the chunks print
+    `stdout.txt` and return nil, as the single `--esm` file does, and a
+    module importing every chunk links. The planner's `check` runs on each
+    program too. The runnable programs of light-cljs-274 that became
+    fixtures left their record and file assertions to the matrix and keep
+    what it does not check: the full manifests with their loadable sites,
+    the resident loadable's single `import(` and the package's one
+    importer.
+  - The `--esm` package tests gained a chunked variant
+    (`npm_packages::bundler_chunks_import_packages_only_in_the_feature_chunk`):
+    `npm.split` loads `npm.bundle` lazily, and at every level `npm.bundle`'s
+    chunk imports the packages its own `--esm` module imports, startup
+    imports none, and the chunks print the module's line in Node.
+  - `examples/features/index.html` loads the chunks beside it in a browser
+    without a bundler, and is Vite's entry for the same files; both print
+    the single file's three lines at every level ("Verification"). That
+    meets "Done when" below for examples/features as three files.
 - **Placement, namespace level.** New module `src/chunks.rs`:
   `plan(program, prepared) -> ChunkPlan`. Roots from `lazy_targets`; static
   reach per root over `namespace_requires`; every top-level form pinned to
@@ -1053,6 +1093,70 @@ available; docs/compiler.md, "Chunked builds", documents `--out-dir`,
 - Compile time of the chunked build against the single-file build on the
   features example and on the largest generated seed.
 
+As built (light-cljs-276), `chunks::matrix` is the differential execution
+and the membership tables for the fixtures of `tests/fixtures/chunks/`
+(Phase 2, "As built (light-cljs-276)"), with the edge check made again from
+`chunks.json`; generated programs with lazy edges, per-chunk ceilings and
+the rest of the list are still to come.
+
+The two hosts are checked by hand, at every level, on examples/features. Its
+`index.html` sits beside the chunks, appends each line the program logs to
+`#log`, and sets `#status` to `done` when `start`'s promise resolves, so
+headless Chrome's `--dump-dom` shows the run. `bb site/build.bb serve` serves
+only `site/dist` under `/light-cljs/`, after a playground build, and putting
+the example there would publish it on GitHub Pages, so a throwaway server
+on 127.0.0.1 serves it instead (`.js` as `text/javascript`). The Vite
+project is a temporary directory outside the repository; each level's
+directory is a Vite root whose `index.html` is the entry, so Vite bundles
+startup and turns the features' `import()`s into its own chunks. Run from
+the repository root on October 15, 2026 (macOS, Node 24.18.0, Chrome
+155.0.8059.79), every page printed the three lines of
+`tests/fixtures/chunks/features/stdout.txt` and `done`:
+
+```sh
+dir=$(mktemp -d)
+for level in none prepare advanced; do
+  cargo run --quiet -- --compile --optimize $level --entry app.main \
+    --source-root examples/features --out-dir "$dir/$level"
+  cp examples/features/index.html "$dir/$level/"
+done
+(cd "$dir" && npm init -y >/dev/null && npm install --prefer-offline --silent vite@8.0.8 &&
+  for level in none prepare advanced; do npx vite build $level --base ./ --logLevel warn; done)
+
+bb -e '(require (quote [org.httpkit.server :as http]) (quote [babashka.fs :as fs]))
+       (let [[dir port] *command-line-args*
+             root (fs/canonicalize dir)
+             types {"html" "text/html" "js" "text/javascript" "json" "application/json"}]
+         (http/run-server
+          (fn [{:keys [uri]}]
+            (let [file (fs/canonicalize (fs/path root (str "." uri (when (.endsWith uri "/") "index.html"))))]
+              (if (and (fs/starts-with? file root) (fs/regular-file? file))
+                {:status 200 :headers {"Content-Type" (types (fs/extension file) "application/octet-stream")}
+                 :body (fs/file file)}
+                {:status 404 :body "not found"})))
+          {:ip "127.0.0.1" :port (parse-long port)})
+         @(promise))' "$dir" 8790 &
+server=$!
+sleep 2
+
+# The chunks without a bundler, then Vite's build of them.
+for page in none/ prepare/ advanced/ none/dist/ prepare/dist/ advanced/dist/; do
+  echo "== $page"
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+    --user-data-dir="$dir/profile" --virtual-time-budget=5000 \
+    --dump-dom "http://127.0.0.1:8790/$page" 2>/dev/null |
+    sed -n '/<pre id="log">/,/<p id="status">/p' || true
+done
+
+kill $server
+rm -r "$dir"
+```
+
+Vite kept `app.editor` and `app.reports` as chunks of their own behind
+`import()` and split startup into two files, a 0.07 kB one the page imports
+and the rest; at `advanced` it reported the rest as 65.18 kB after its own
+minification, against the 69,587 bytes `--out-dir` wrote.
+
 ## Open questions
 
 - **Namespace name** for the API: `light.lazy`, `light-cljs.lazy`, or a
@@ -1084,3 +1188,6 @@ available; docs/compiler.md, "Chunked builds", documents `--out-dir`,
   own heuristics; the compiler's manifest then no longer matches the served
   files. Whether to offer a mode that emits one chunk per lazy root with
   duplicated shared code, for hosts that prefer fewer requests, is open.
+  In the Vite 8.0.8 check of light-cljs-276 ("Verification") each feature
+  stayed a chunk of its own, under a hashed name, and startup became two
+  files.

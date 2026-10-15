@@ -1,5 +1,6 @@
 //! JavaScript package libspecs: registry lowering, bundler ES modules, the REPL
 //! and diagnostics. Contract rows live in tests/fixtures/contracts.
+use crate::json::Json;
 use crate::temp_dir::TempDir;
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::compiler::{
@@ -45,119 +46,6 @@ impl Project {
         let path = self.0.join(path);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, text).unwrap();
-    }
-}
-/// Just enough JSON for the contract rows.
-#[derive(Clone, Debug, PartialEq)]
-enum Json {
-    Null,
-    Bool(bool),
-    Number(f64),
-    String(String),
-    Array(Vec<Json>),
-    Object(Vec<(String, Json)>),
-}
-impl Json {
-    fn parse(text: &str) -> Json {
-        let mut chars = text.chars().peekable();
-        let value = Self::value(&mut chars);
-        assert!(chars.all(char::is_whitespace), "trailing JSON: {text}");
-        value
-    }
-    fn value(chars: &mut std::iter::Peekable<std::str::Chars>) -> Json {
-        while chars.next_if(|c| c.is_whitespace()).is_some() {}
-        match chars.next().expect("JSON value") {
-            'n' => Self::literal(chars, "ull", Json::Null),
-            't' => Self::literal(chars, "rue", Json::Bool(true)),
-            'f' => Self::literal(chars, "alse", Json::Bool(false)),
-            '"' => Json::String(Self::string(chars)),
-            '[' => {
-                let mut items = Vec::new();
-                loop {
-                    while chars.next_if(|c| c.is_whitespace()).is_some() {}
-                    if chars.next_if_eq(&']').is_some() {
-                        break Json::Array(items);
-                    }
-                    chars.next_if_eq(&',');
-                    items.push(Self::value(chars));
-                }
-            }
-            '{' => {
-                let mut entries = Vec::new();
-                loop {
-                    while chars.next_if(|c| c.is_whitespace() || *c == ',').is_some() {}
-                    if chars.next_if_eq(&'}').is_some() {
-                        break Json::Object(entries);
-                    }
-                    assert_eq!(chars.next(), Some('"'));
-                    let key = Self::string(chars);
-                    while chars.next_if(|c| c.is_whitespace()).is_some() {}
-                    assert_eq!(chars.next(), Some(':'));
-                    entries.push((key, Self::value(chars)));
-                }
-            }
-            first => {
-                let mut number = String::from(first);
-                while let Some(c) = chars.next_if(|c| c.is_ascii_digit() || "+-.eE".contains(*c)) {
-                    number.push(c);
-                }
-                Json::Number(number.parse().unwrap())
-            }
-        }
-    }
-    fn literal(chars: &mut std::iter::Peekable<std::str::Chars>, rest: &str, value: Json) -> Json {
-        assert!(rest.chars().all(|c| chars.next() == Some(c)));
-        value
-    }
-    fn string(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
-        let mut result = String::new();
-        let mut units = Vec::new();
-        loop {
-            match chars.next().expect("unterminated JSON string") {
-                '"' => break,
-                '\\' => match chars.next().unwrap() {
-                    'u' => {
-                        let hex: String = chars.by_ref().take(4).collect();
-                        units.push(u16::from_str_radix(&hex, 16).unwrap());
-                        if !chars.clone().take(2).eq("\\u".chars()) {
-                            result.push_str(&String::from_utf16(&units).unwrap());
-                            units.clear();
-                        }
-                        continue;
-                    }
-                    'n' => result.push('\n'),
-                    't' => result.push('\t'),
-                    'r' => result.push('\r'),
-                    'b' => result.push('\u{8}'),
-                    'f' => result.push('\u{c}'),
-                    other => result.push(other),
-                },
-                c => result.push(c),
-            }
-        }
-        result
-    }
-    fn get(&self, key: &str) -> &Json {
-        let Json::Object(entries) = self else {
-            panic!("expected object for {key}")
-        };
-        &entries
-            .iter()
-            .find(|(k, _)| k == key)
-            .unwrap_or_else(|| panic!("missing {key}"))
-            .1
-    }
-    fn str(&self) -> &str {
-        let Json::String(text) = self else {
-            panic!("expected string: {self:?}")
-        };
-        text
-    }
-    fn items(&self) -> &[Json] {
-        let Json::Array(items) = self else {
-            panic!("expected array: {self:?}")
-        };
-        items
     }
 }
 
@@ -282,6 +170,30 @@ fn write_stub_packages(dir: &Project) {
     );
 }
 
+/// The stub packages and only-in-removed-code, which npm.bundle imports at
+/// `none`, where its unused definition stays.
+fn write_bundle_packages(dir: &Project) {
+    write_stub_packages(dir);
+    dir.write(
+        "node_modules/only-in-removed-code/package.json",
+        "{\"name\": \"only-in-removed-code\", \"type\": \"module\", \"main\": \"index.js\"}",
+    );
+    dir.write(
+        "node_modules/only-in-removed-code/index.js",
+        "export function anything() { return 0; }\n",
+    );
+}
+
+/// The packages the leading `import` lines of `module` name, in order.
+fn imported_packages(module: &str) -> Vec<&str> {
+    module
+        .lines()
+        .take_while(|line| line.starts_with("import"))
+        .filter_map(|line| line.trim_end_matches(';').rsplit('"').nth(1))
+        .filter(|specifier| !specifier.starts_with("./"))
+        .collect()
+}
+
 #[test]
 fn bundler_module_imports_only_surviving_package_references() {
     let root = manifest(ROOT);
@@ -361,15 +273,7 @@ fn bundler_module_imports_only_surviving_package_references() {
 fn bundler_modules_run_at_every_optimization_level() {
     let root = manifest(ROOT);
     let dir = Project::new();
-    write_stub_packages(&dir);
-    dir.write(
-        "node_modules/only-in-removed-code/package.json",
-        "{\"name\": \"only-in-removed-code\", \"type\": \"module\", \"main\": \"index.js\"}",
-    );
-    dir.write(
-        "node_modules/only-in-removed-code/index.js",
-        "export function anything() { return 0; }\n",
-    );
+    write_bundle_packages(&dir);
     for level in OptimizationLevel::ALL {
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
             .args(["--compile", "--esm", "--optimize", level.name()])
@@ -407,6 +311,76 @@ fn bundler_modules_run_at_every_optimization_level() {
         dir.write(
             "main.mjs",
             &format!("import value from \"./{name}\";\nconsole.log(value);\n"),
+        );
+        assert_eq!(
+            run_node(node().arg(dir.0.join("main.mjs"))),
+            "el:div state:1 scoped:2 debounce-label 42 false\n",
+            "{level}"
+        );
+    }
+}
+
+/// The chunked variant of the bundler module tests: npm.split loads
+/// npm.bundle lazily, so with `--out-dir` npm.bundle's chunk imports the
+/// packages its own `--esm` module imports at each level, and the startup
+/// chunk imports none; the chunks run in Node to the module's line.
+#[test]
+fn bundler_chunks_import_packages_only_in_the_feature_chunk() {
+    let root = manifest(ROOT);
+    let dir = Project::new();
+    write_bundle_packages(&dir);
+    dir.write("package.json", "{\"type\": \"module\"}\n");
+    let compile = |level: OptimizationLevel, entry: &str, output: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .args(["--compile", "--optimize", level.name(), "--entry", entry])
+            .arg("--source-root")
+            .arg(&root)
+            .args(output)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success() && output.stderr.is_empty(),
+            "{level} {entry}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    for level in OptimizationLevel::ALL {
+        let module = compile(level, "npm.bundle", &["--esm"]);
+        let out = dir.0.join(format!("split-{level}"));
+        assert_eq!(
+            compile(level, "npm.split", &["--out-dir", out.to_str().unwrap()]),
+            ""
+        );
+        let mut files = fs::read_dir(&out)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        files.sort();
+        assert_eq!(files, ["chunks.json", "npm.bundle.js", "npm.split.js"]);
+        let feature = fs::read_to_string(out.join("npm.bundle.js")).unwrap();
+        assert_eq!(
+            imported_packages(&feature),
+            imported_packages(&module),
+            "{level}"
+        );
+        // Only `none` keeps the unused definition and so imports its packages.
+        assert_eq!(
+            imported_packages(&feature).contains(&"only-in-removed-code"),
+            level == OptimizationLevel::None,
+            "{level}"
+        );
+        let startup = fs::read_to_string(out.join("npm.split.js")).unwrap();
+        assert_eq!(imported_packages(&startup), Vec::<&str>::new(), "{level}");
+        assert!(
+            startup.contains("import(\"./npm.bundle.js\")"),
+            "{level}: the loadable imports the feature"
+        );
+        dir.write(
+            "main.mjs",
+            &format!(
+                "import start from \"./split-{level}/npm.split.js\";\nconsole.log(await start());\n"
+            ),
         );
         assert_eq!(
             run_node(node().arg(dir.0.join("main.mjs"))),

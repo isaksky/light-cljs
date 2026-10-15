@@ -5,6 +5,7 @@
 //! run in Node against the single `--esm` file (`runs_as_chunks`); their
 //! manifest, `chunks.json`; and the CLI's `--out-dir`, which writes both.
 use crate::chunked_execution::{run_directory, run_modules};
+use crate::json::Json;
 use crate::temp_dir::TempDir;
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::chunks::{ChunkId, ChunkPlan, ChunkedOutput, STARTUP, plan};
@@ -541,15 +542,6 @@ fn a_hashed_shared_name_does_not_collide_with_a_namespace() {
 /// each name a chunk imports is one the chunk it names exports. Returns the
 /// record, the same at every level, and the files at each level.
 fn runs_as_chunks(program: &Program) -> (String, Vec<(OptimizationLevel, ChunkedOutput)>) {
-    runs_as_chunks_beside(program, &[])
-}
-
-/// [`runs_as_chunks`] with `packages`, files the modules import beside
-/// them (`node_modules/...`).
-fn runs_as_chunks_beside(
-    program: &Program,
-    packages: &[(&str, &str)],
-) -> (String, Vec<(OptimizationLevel, ChunkedOutput)>) {
     let mut records = Vec::new();
     let mut outputs = Vec::new();
     for level in OptimizationLevel::ALL {
@@ -557,30 +549,14 @@ fn runs_as_chunks_beside(
         let output = prepared.emit_chunks();
         let startup = output.files[0].name.as_str();
         let single = prepared.emit_esm();
-        let mut oracle_files = vec![(startup, single.as_str())];
-        oracle_files.extend_from_slice(packages);
-        let oracle =
-            run_modules(&oracle_files, startup).unwrap_or_else(|error| panic!("{level}: {error}"));
+        let oracle = run_modules(&[(startup, single.as_str())], startup)
+            .unwrap_or_else(|error| panic!("{level}: {error}"));
         let mut files = output
             .files
             .iter()
             .map(|file| (file.name.as_str(), file.source.as_str()))
             .collect::<Vec<_>>();
-        files.extend_from_slice(packages);
-        // The files for a failure message, without the runtime's text, which
-        // is the longest line of a terse startup chunk and its own lines in
-        // a readable one.
-        let listing = files
-            .iter()
-            .map(|(name, source)| {
-                let shown = source
-                    .lines()
-                    .filter(|line| line.len() < 2_000 && !line.starts_with("    "))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                format!("// {name}\n{shown}\n")
-            })
-            .collect::<String>();
+        let listing = shown(&files);
         let record = run_modules(&files, startup)
             .unwrap_or_else(|error| panic!("{level}: {error}\n{listing}"));
         assert_eq!(record, oracle, "{level}:\n{listing}");
@@ -606,6 +582,24 @@ fn runs_as_chunks_beside(
         assert_eq!(record, &records[0], "{level}");
     }
     (records.swap_remove(0), outputs)
+}
+
+/// Chunk files for a failure message, without the runtime's text, which is
+/// the longest line of a terse startup chunk and its own lines in a readable
+/// one.
+fn shown<T: AsRef<str>>(files: &[(T, T)]) -> String {
+    files
+        .iter()
+        .map(|(name, source)| {
+            let shown = source
+                .as_ref()
+                .lines()
+                .filter(|line| line.len() < 2_000 && !line.starts_with("    "))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("// {}\n{shown}\n", name.as_ref())
+        })
+        .collect()
 }
 
 /// The file and names of each `import { a, b } from "./x.js";` line of a
@@ -691,47 +685,6 @@ fn files(output: &ChunkedOutput) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn the_features_example_runs_as_three_chunks_at_every_level() {
-    let program = analyze_namespace_entry(
-        "app.main",
-        &[PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/examples/features"
-        ))],
-        &mut MacroHost::new(),
-        AnalysisOptions::default(),
-        &mut Vec::new(),
-    )
-    .unwrap_or_else(|error| panic!("{error}"));
-    let (record, outputs) = runs_as_chunks(&program);
-    assert_eq!(record, crate::features_example::FEATURES_RECORD);
-    for (level, output) in outputs {
-        assert_eq!(
-            files(&output),
-            [
-                "app.main.js: app.shared light.lazy app.main | roots app.main | imports ",
-                "app.editor.js: app.editor | roots app.editor | imports app.main.js",
-                "app.reports.js: clojure.string app.reports | roots app.reports | imports app.main.js",
-            ],
-            "{level}"
-        );
-        // Each loadable imports its feature's chunk.
-        let startup = &output.files[0].source;
-        for feature in ["app.editor.js", "app.reports.js"] {
-            assert!(
-                startup.contains(&format!("import(\"./{feature}\")")),
-                "{level}: {}",
-                startup
-                    .lines()
-                    .filter(|line| line.contains("import"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            );
-        }
-    }
-}
-
 /// `output.manifest()` without the `"bytes"` of each chunk, which must be
 /// the length of its file.
 fn unsized_manifest(output: &ChunkedOutput) -> String {
@@ -784,98 +737,13 @@ fn chunk_files(program: &Program) -> (String, Vec<String>) {
     (record, files(&outputs[0].1))
 }
 
-/// Two features share a helper with a top-level effect, which runs once,
-/// when the first of them loads, as it runs once at startup in the single
-/// file: before the default export is called.
-#[test]
-fn features_sharing_a_helper_load_its_chunk_once() {
-    static DIAMOND: &[(&str, &str)] = &[
-        (
-            "app/main.cljs",
-            "(ns app.main (:require [light.lazy :as lazy]))\n\
-             (def editor (lazy/loadable app.editor/start))\n\
-             (def reports (lazy/loadable app.reports/start))\n\
-             (defn start []\n\
-               (-> (lazy/load editor)\n\
-                   (.then (fn [f] (js/console.log (f)) (lazy/load reports)))\n\
-                   (.then (fn [f] (js/console.log (f)) nil))))\n\
-             start\n",
-        ),
-        (
-            "app/helper.cljs",
-            "(ns app.helper)\n\
-             (js/console.log \"helper loads\")\n\
-             (def calls (atom 0))\n\
-             (defn shout [s] (swap! calls inc) (str s \"!\" @calls))\n",
-        ),
-        (
-            "app/editor.cljs",
-            "(ns app.editor (:require [app.helper :as helper]))\n\
-             (defn start [] (helper/shout \"editor\"))\n",
-        ),
-        (
-            "app/reports.cljs",
-            "(ns app.reports (:require [app.helper :as helper]))\n\
-             (defn start [] (helper/shout \"reports\"))\n",
-        ),
-    ];
-    let (record, files) = chunk_files(&analyze(DIAMOND));
-    assert_eq!(
-        record,
-        printed("app.main.js", r"helper loads\neditor!1\nreports!2\n")
-    );
-    assert_eq!(
-        files,
-        [
-            "app.main.js: light.lazy app.main | roots app.main | imports ",
-            "app.editor+app.reports.js: app.helper | roots  | imports app.main.js",
-            "app.editor.js: app.editor | roots app.editor | imports app.main.js app.editor+app.reports.js",
-            "app.reports.js: app.reports | roots app.reports | imports app.main.js app.editor+app.reports.js",
-        ]
-    );
-}
-
-/// A feature loads a sub-feature, which requires it back: the loadable in
-/// the feature's chunk imports the sub-feature's chunk.
+/// A feature loads a sub-feature, which requires it back (the
+/// `sub-feature` fixture, which [`matrix`] runs): the loadable in the
+/// feature's chunk imports the sub-feature's chunk, and the manifest gives
+/// the site to the editor.
 #[test]
 fn a_feature_loads_its_sub_feature_chunk() {
-    static CHAIN: &[(&str, &str)] = &[
-        (
-            "app/main.cljs",
-            "(ns app.main (:require [light.lazy :as lazy]))\n\
-             (def editor (lazy/loadable app.editor/start))\n\
-             (defn start []\n\
-               (-> (lazy/load editor)\n\
-                   (.then (fn [f] (f)))\n\
-                   (.then (fn [text] (js/console.log text) nil))))\n\
-             start\n",
-        ),
-        (
-            "app/editor.cljs",
-            "(ns app.editor (:require [app.text :as text] [light.lazy :as lazy]))\n\
-             (def spelling (lazy/loadable app.spell/check))\n\
-             (defn start []\n\
-               (.then (lazy/load spelling) (fn [check] (str (text/greet) \", \" (check)))))\n",
-        ),
-        ("app/text.cljs", "(ns app.text)\n(defn greet [] \"hi\")\n"),
-        (
-            "app/spell.cljs",
-            "(ns app.spell (:require [app.editor :as editor] [app.text :as text]))\n\
-             (defn check [] (str \"spelled \" (text/greet) \" \" (fn? editor/start)))\n",
-        ),
-    ];
-    let (record, files) = chunk_files(&analyze(CHAIN));
-    assert_eq!(record, printed("app.main.js", r"hi, spelled hi true\n"));
-    assert_eq!(
-        files,
-        [
-            "app.main.js: light.lazy app.main | roots app.main | imports ",
-            "app.editor+app.spell.js: app.text app.editor | roots app.editor | imports app.main.js",
-            "app.spell.js: app.spell | roots app.spell | imports app.main.js app.editor+app.spell.js",
-        ]
-    );
-    // The sub-feature's loadable is the editor's.
-    let program = analyze(CHAIN);
+    let program = fixture_program("sub-feature");
     for level in OptimizationLevel::ALL {
         let output = prepare_application(&program, ApplicationOptions::new(level)).emit_chunks();
         assert_eq!(
@@ -896,47 +764,11 @@ fn a_feature_loads_its_sub_feature_chunk() {
 
 /// A lazy target that requires the loading namespace reads startup's
 /// definitions through imports, and a loadable of a namespace startup
-/// requires is resident: no import.
+/// requires is resident: no import (the `requires-loader` fixture, which
+/// [`matrix`] runs).
 #[test]
 fn a_feature_reads_the_namespace_that_loads_it() {
-    static BACK: &[(&str, &str)] = &[
-        (
-            "app/main.cljs",
-            "(ns app.main\n  (:require [app.shared :as shared] [app.util :as util] [light.lazy :as lazy]))\n\
-             (def editor (light.lazy/loadable app.editor/start))\n\
-             (def twice (light.lazy/loadable app.util/twice))\n\
-             (defn ready [] (shared/label :main))\n\
-             (defn start []\n\
-               (-> (lazy/load twice)\n\
-                   (.then (fn [f] (js/console.log (f \"ab\")) (lazy/load editor)))\n\
-                   (.then (fn [f] (js/console.log (f)) nil))))\n\
-             start\n",
-        ),
-        (
-            "app/shared.cljs",
-            "(ns app.shared)\n(defn label [k] (str \"label \" (name k)))\n",
-        ),
-        (
-            "app/util.cljs",
-            "(ns app.util)\n(defn twice [s] (str s s))\n",
-        ),
-        (
-            "app/editor.cljs",
-            "(ns app.editor\n  (:require [app.main :as main] [app.text :as text]))\n\
-             (defn start [] (str (main/ready) \" \" text/greeting))\n",
-        ),
-        ("app/text.cljs", "(ns app.text)\n(def greeting \"hi\")\n"),
-    ];
-    let (record, files) = chunk_files(&analyze(BACK));
-    assert_eq!(record, printed("app.main.js", r"abab\nlabel main hi\n"));
-    assert_eq!(
-        files,
-        [
-            "app.main.js: app.shared app.util light.lazy app.main | roots app.main app.util | imports ",
-            "app.editor.js: app.text app.editor | roots app.editor | imports app.main.js",
-        ]
-    );
-    let program = analyze(BACK);
+    let program = fixture_program("requires-loader");
     for level in OptimizationLevel::ALL {
         let output = prepare_application(&program, ApplicationOptions::new(level)).emit_chunks();
         assert_eq!(
@@ -958,59 +790,6 @@ fn a_feature_reads_the_namespace_that_loads_it() {
             "{level}"
         );
     }
-}
-
-/// `set!`, `binding` and `with-redefs` of another chunk's Var from a
-/// feature go through the setters its owner exports; the feature's own
-/// assignments stay direct.
-#[test]
-fn a_feature_assigns_startup_vars_through_their_setters() {
-    static SETTERS: &[(&str, &str)] = &[
-        (
-            "app/main.cljs",
-            "(ns app.main (:require [app.state :as state] [light.lazy :as lazy]))\n\
-             (def editor (lazy/loadable app.editor/start))\n\
-             (defn show [] [state/mode state/*depth* (state/fixed-value)])\n\
-             (defn start []\n\
-               (-> (lazy/load editor)\n\
-                   (.then (fn [f]\n\
-                            (js/console.log (pr-str (f)) (pr-str (show)) (pr-str (f)))\n\
-                            nil))))\n\
-             start\n",
-        ),
-        (
-            "app/state.cljs",
-            "(ns app.state)\n\
-             (def mode :plain)\n\
-             (def ^:dynamic *depth* 0)\n\
-             (def fixed 1)\n\
-             (defn depth [] *depth*)\n\
-             (defn fixed-value [] fixed)\n",
-        ),
-        (
-            "app/editor.cljs",
-            "(ns app.editor (:require [app.state :as state]))\n\
-             (def edits 0)\n\
-             (defn start []\n\
-               (set! state/mode :edit)\n\
-               (set! edits (inc edits))\n\
-               (binding [state/*depth* edits]\n\
-                 (with-redefs [state/fixed 2]\n\
-                   [state/mode (state/depth) (state/fixed-value) edits])))\n",
-        ),
-    ];
-    let (record, files) = chunk_files(&analyze(SETTERS));
-    assert_eq!(
-        record,
-        printed("app.main.js", r"[:edit 1 2 1] [:edit 0 1] [:edit 2 2 2]\n")
-    );
-    assert_eq!(
-        files,
-        [
-            "app.main.js: app.state light.lazy app.main | roots app.main | imports ",
-            "app.editor.js: app.editor | roots app.editor | imports app.main.js",
-        ]
-    );
 }
 
 /// A feature that rebinds a core function the program reads assigns
@@ -1062,41 +841,12 @@ fn a_feature_probes_a_var_startup_declares() {
 }
 
 /// A loadable of a namespace that only adds methods to a multimethod of
-/// startup loads its chunk and resolves to nil.
+/// startup loads its chunk and resolves to nil (the `methods` fixture, which
+/// [`matrix`] runs); the manifest writes a namespace target as its
+/// namespace.
 #[test]
 fn a_namespace_loadable_runs_its_methods_when_loaded() {
-    static METHODS: &[(&str, &str)] = &[
-        (
-            "app/main.cljs",
-            "(ns app.main (:require [light.lazy :as lazy]))\n\
-             (defmulti area :shape)\n\
-             (defmethod area :default [_] :unknown)\n\
-             (def shapes (lazy/loadable app.shapes))\n\
-             (defn start []\n\
-               (-> (lazy/load shapes)\n\
-                   (.then (fn [v]\n\
-                            (js/console.log (pr-str v) (area {:shape :square :side 3})\n\
-                                            (pr-str (area {:shape :circle})))\n\
-                            nil))))\n\
-             start\n",
-        ),
-        (
-            "app/shapes.cljs",
-            "(ns app.shapes (:require [app.main :as main]))\n\
-             (defmethod main/area :square [{:keys [side]}] (* side side))\n",
-        ),
-    ];
-    let (record, files) = chunk_files(&analyze(METHODS));
-    assert_eq!(record, printed("app.main.js", r"nil 9 :unknown\n"));
-    assert_eq!(
-        files,
-        [
-            "app.main.js: light.lazy app.main | roots app.main | imports ",
-            "app.shapes.js: app.shapes | roots app.shapes | imports app.main.js",
-        ]
-    );
-    // A namespace target is written as its namespace.
-    let program = analyze(METHODS);
+    let program = fixture_program("methods");
     for level in OptimizationLevel::ALL {
         let output = prepare_application(&program, ApplicationOptions::new(level)).emit_chunks();
         assert!(
@@ -1264,38 +1014,13 @@ fn loading_one_target_marks_other_targets_in_the_same_chunk_loaded() {
 }
 
 /// A package only a feature requires is imported by the feature's chunk
-/// alone, under its terse name at `Advanced` too.
+/// alone, under its terse name at `Advanced` too (the `package` fixture,
+/// which [`matrix`] runs with the package installed).
 #[test]
 fn a_package_only_a_feature_requires_is_imported_by_its_chunk() {
-    static PACKAGE: &[(&str, &str)] = &[
-        (
-            "app/main.cljs",
-            "(ns app.main (:require [light.lazy :as lazy]))\n\
-             (def editor (lazy/loadable app.editor/start))\n\
-             (defn start []\n\
-               (-> (lazy/load editor) (.then (fn [f] (js/console.log (f 2)) nil))))\n\
-             start\n",
-        ),
-        (
-            "app/editor.cljs",
-            "(ns app.editor (:require [\"stub-package\" :as stub :refer [twice]]))\n\
-             (defn start [x] (str (twice x) \" \" (.-label stub)))\n",
-        ),
-    ];
-    let packages = [
-        (
-            "node_modules/stub-package/package.json",
-            "{\"name\": \"stub-package\", \"type\": \"module\", \"main\": \"index.js\"}\n",
-        ),
-        (
-            "node_modules/stub-package/index.js",
-            "export const twice = (x) => 2 * x;\nexport const label = \"stub\";\n",
-        ),
-    ];
-    let program = analyze(PACKAGE);
-    let (record, outputs) = runs_as_chunks_beside(&program, &packages);
-    assert_eq!(record, printed("app.main.js", r"4 stub\n"));
-    for (level, output) in outputs {
+    let program = fixture_program("package");
+    for level in OptimizationLevel::ALL {
+        let output = prepare_application(&program, ApplicationOptions::new(level)).emit_chunks();
         let importers = output
             .files
             .iter()
@@ -1508,4 +1233,409 @@ fn out_dir_refuses_the_source_map_flags() {
     let (success, _, stderr) = cli(&["--compile", "--text", "1", "--out-dir", out]);
     assert!(!success && stderr.contains("Usage:"), "{stderr}");
     assert_eq!(listing(&dir), Vec::<String>::new());
+}
+
+// ---------------------------------------------------------------------------
+// The fixture matrix (light-cljs-276): each program of tests/fixtures/chunks
+// written by `--out-dir` at every level and checked through its chunks.json.
+
+/// One `#[test]` per fixture, and [`FIXTURES`], their directories.
+macro_rules! fixture_matrix {
+    ($($test:ident: $fixture:literal),* $(,)?) => {
+        const FIXTURES: &[&str] = &[$($fixture),*];
+        $(
+            #[test]
+            fn $test() {
+                matrix($fixture);
+            }
+        )*
+    };
+}
+
+fixture_matrix! {
+    matrix_features_example: "features",
+    matrix_diamond: "diamond",
+    matrix_sub_feature: "sub-feature",
+    matrix_target_requiring_its_loader: "requires-loader",
+    matrix_shared_top_level_effect: "shared-effect",
+    matrix_feature_assigning_startup_vars: "startup-vars",
+    matrix_package_only_a_feature_requires: "package",
+    matrix_namespace_of_methods: "methods",
+}
+
+/// Each directory of tests/fixtures/chunks is a fixture of the matrix.
+#[test]
+fn the_matrix_runs_every_fixture_directory() {
+    let mut fixtures = FIXTURES.to_vec();
+    fixtures.sort();
+    assert_eq!(listing(&fixture_dir("")), fixtures);
+}
+
+/// Fixture `name`'s directory: a program of entry `app.main` (`features`
+/// takes examples/features instead); `stdout.txt`, what it prints; and
+/// `membership.tsv`, its chunks in manifest order, a row each: the file, its
+/// namespaces, its roots, and its imports below `Advanced` and at
+/// `Advanced`, `-` for none. `packages`, if present, holds the JavaScript
+/// packages it imports, which a run finds in `node_modules`.
+fn fixture_dir(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/chunks")
+        .join(name)
+}
+
+fn fixture_root(name: &str) -> PathBuf {
+    match name {
+        "features" => Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/features"),
+        _ => fixture_dir(name),
+    }
+}
+
+fn fixture_program(name: &str) -> Program {
+    analyze_namespace_entry(
+        "app.main",
+        &[fixture_root(name)],
+        &mut MacroHost::new(),
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("{name}: {error}"))
+}
+
+/// Copies fixture `name`'s packages, if it has any, into `dir/node_modules`.
+fn install_packages(name: &str, dir: &Path) {
+    fn copy(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    let packages = fixture_dir(name).join("packages");
+    if packages.is_dir() {
+        copy(&packages, &dir.join("node_modules"));
+    }
+}
+
+/// A chunk of `chunks.json`.
+struct ManifestChunk {
+    name: String,
+    file: String,
+    imports: Vec<String>,
+    namespaces: Vec<String>,
+    roots: Vec<String>,
+    /// Each loadable site's namespace and target.
+    loadables: Vec<(String, String)>,
+    bytes: usize,
+}
+
+/// The startup file and the chunks of `dir/chunks.json`.
+fn read_manifest(dir: &Path) -> (String, Vec<ManifestChunk>) {
+    let manifest = Json::parse(&fs::read_to_string(dir.join("chunks.json")).unwrap());
+    let strings = |list: &Json| {
+        list.items()
+            .iter()
+            .map(|item| item.str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let chunks = manifest
+        .get("chunks")
+        .items()
+        .iter()
+        .map(|chunk| ManifestChunk {
+            name: chunk.get("name").str().to_owned(),
+            file: chunk.get("file").str().to_owned(),
+            imports: strings(chunk.get("imports")),
+            namespaces: strings(chunk.get("namespaces")),
+            roots: strings(chunk.get("roots")),
+            loadables: chunk
+                .get("loadables")
+                .items()
+                .iter()
+                .map(|site| {
+                    (
+                        site.get("namespace").str().to_owned(),
+                        site.get("target").str().to_owned(),
+                    )
+                })
+                .collect(),
+            bytes: match chunk.get("bytes") {
+                Json::Number(bytes) => *bytes as usize,
+                other => panic!("bytes: {other:?}"),
+            },
+        })
+        .collect();
+    (manifest.get("startup").str().to_owned(), chunks)
+}
+
+/// The chunk files the leading `import` lines of `source` name, in order:
+/// `import { a } from "./x.js";` and `import "./x.js";`, readable or terse,
+/// but not a package's `import ... from "name";`.
+fn static_imports(source: &str) -> Vec<String> {
+    source
+        .lines()
+        .take_while(|line| line.starts_with("import"))
+        .filter_map(|line| {
+            let specifier = line.trim_end_matches(';').rsplit('"').nth(1)?;
+            Some(specifier.strip_prefix("./")?.to_owned())
+        })
+        .collect()
+}
+
+/// The chunk files `source` imports dynamically, `import("./x.js")`,
+/// sorted.
+fn dynamic_imports(source: &str) -> Vec<String> {
+    let mut files = source
+        .split("import(\"./")
+        .skip(1)
+        .map(|rest| rest.split('"').next().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// For each pair of chunks, whether the second is the first or one the first
+/// imports transitively, after checking that every import names an earlier
+/// chunk.
+fn reach(chunks: &[ManifestChunk], level: OptimizationLevel) -> Vec<Vec<bool>> {
+    let mut reach = vec![vec![false; chunks.len()]; chunks.len()];
+    for (i, chunk) in chunks.iter().enumerate() {
+        reach[i][i] = true;
+        for import in &chunk.imports {
+            let j = chunks
+                .iter()
+                .position(|other| &other.file == import)
+                .unwrap_or_else(|| panic!("{level}: {} imports {import}", chunk.file));
+            assert!(j < i, "{level}: {} imports {import}", chunk.file);
+            let (earlier, rest) = reach.split_at_mut(i);
+            for (own, imported) in rest[0].iter_mut().zip(&earlier[j]) {
+                *own |= *imported;
+            }
+        }
+    }
+    reach
+}
+
+/// What `chunks.json` in `out` says against the files: they are the files
+/// in `out`, of the sizes it gives; each file's import lines name the chunks
+/// it lists, which export every name imported from them, and its dynamic
+/// imports are the chunks of the loadables its namespaces hold that it does
+/// not reach statically; the namespaces partition the program's, with each
+/// root and loadable target in its chunk; and every import edge targets a
+/// strictly larger signature, the roots whose chunks reach a chunk.
+fn check_manifest(out: &Path, startup: &str, chunks: &[ManifestChunk], level: OptimizationLevel) {
+    assert_eq!(startup, chunks[0].file, "{level}");
+    assert_eq!(chunks[0].roots[0], "app.main", "{level}");
+    let mut files = chunks
+        .iter()
+        .map(|chunk| chunk.file.clone())
+        .chain(["chunks.json".to_owned()])
+        .collect::<Vec<_>>();
+    files.sort();
+    assert_eq!(listing(out), files, "{level}");
+    let reach = reach(chunks, level);
+    let index = |file: &str| chunks.iter().position(|chunk| chunk.file == file).unwrap();
+    let chunk_of = |namespace: &str| {
+        chunks
+            .iter()
+            .position(|chunk| chunk.namespaces.iter().any(|n| n == namespace))
+            .unwrap_or_else(|| panic!("{level}: no chunk holds {namespace}"))
+    };
+    let sources = chunks
+        .iter()
+        .map(|chunk| fs::read_to_string(out.join(&chunk.file)).unwrap())
+        .collect::<Vec<_>>();
+    for (i, chunk) in chunks.iter().enumerate() {
+        let source = &sources[i];
+        assert_eq!(chunk.file, format!("{}.js", chunk.name), "{level}");
+        assert_eq!(source.len(), chunk.bytes, "{level}: {}", chunk.file);
+        assert_eq!(
+            static_imports(source),
+            chunk.imports,
+            "{level}: {}",
+            chunk.file
+        );
+        for (from, names) in imported_names(source) {
+            let exported = exported_names(&sources[index(&from)]);
+            for name in names {
+                assert!(
+                    exported.contains(&name),
+                    "{level}: {} imports {name} from {from}, which exports {exported:?}",
+                    chunk.file
+                );
+            }
+        }
+        for namespace in &chunk.namespaces {
+            assert_eq!(chunk_of(namespace), i, "{level}: {namespace} twice");
+        }
+        for root in &chunk.roots {
+            assert_eq!(chunk_of(root), i, "{level}: root {root}");
+        }
+        for (_, target) in &chunk.loadables {
+            let namespace = target.split('/').next().unwrap();
+            assert_eq!(chunk_of(namespace), i, "{level}: target {target}");
+        }
+        // A loadable is resident, without an import, where its site's chunk
+        // reaches its target's chunk, which includes startup's.
+        let mut lazy = chunks
+            .iter()
+            .enumerate()
+            .filter(|&(target, other)| {
+                target != 0
+                    && !reach[i][target]
+                    && other
+                        .loadables
+                        .iter()
+                        .any(|(namespace, _)| chunk_of(namespace) == i)
+            })
+            .map(|(_, other)| other.file.clone())
+            .collect::<Vec<_>>();
+        lazy.sort();
+        assert_eq!(dynamic_imports(source), lazy, "{level}: {}", chunk.file);
+    }
+    let signature = |chunk: usize| {
+        chunks
+            .iter()
+            .enumerate()
+            .filter(|&(other, _)| reach[other][chunk])
+            .flat_map(|(_, other)| other.roots.iter().map(String::as_str))
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    for (i, chunk) in chunks.iter().enumerate() {
+        let inner = signature(i);
+        assert!(!inner.is_empty(), "{level}: no root reaches {}", chunk.file);
+        for import in &chunk.imports {
+            let outer = signature(index(import));
+            assert!(
+                outer.is_superset(&inner) && outer != inner,
+                "{level}: {} {inner:?} imports {import} {outer:?}",
+                chunk.file
+            );
+        }
+    }
+}
+
+/// Each chunk's file, namespaces, roots and imports.
+fn membership_rows(chunks: &[ManifestChunk]) -> Vec<String> {
+    chunks
+        .iter()
+        .map(|chunk| {
+            format!(
+                "{} | {} | roots {} | imports {}",
+                chunk.file,
+                chunk.namespaces.join(" "),
+                chunk.roots.join(" "),
+                chunk.imports.join(" ")
+            )
+        })
+        .collect()
+}
+
+/// The rows of fixture `name`'s `membership.tsv` at `level`, as
+/// [`membership_rows`] writes them.
+fn expected_membership(name: &str, level: OptimizationLevel) -> Vec<String> {
+    let table = fs::read_to_string(fixture_dir(name).join("membership.tsv")).unwrap();
+    table
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| {
+            let cells = line
+                .split('\t')
+                .map(|cell| if cell == "-" { "" } else { cell })
+                .collect::<Vec<_>>();
+            assert_eq!(cells.len(), 5, "{name}: {line}");
+            let imports = if level.advanced() { cells[4] } else { cells[3] };
+            format!(
+                "{} | {} | roots {} | imports {imports}",
+                cells[0], cells[1], cells[2]
+            )
+        })
+        .collect()
+}
+
+/// Fixture `name` at every level: `--out-dir` writes its chunks and
+/// `chunks.json`, which [`check_manifest`] checks against the files and
+/// `membership.tsv` describes; run by the Node driver, the chunks print
+/// `stdout.txt` and return nil, as the single `--esm` file does; and Node
+/// links every chunk, which fails on an import of a missing export. The
+/// planner's own invariants (`check`) hold of the program at every level.
+fn matrix(name: &str) {
+    let expected = fs::read_to_string(fixture_dir(name).join("stdout.txt")).unwrap();
+    let root = fixture_root(name);
+    let root = root.to_str().unwrap();
+    plans(&fixture_program(name));
+    let dir = TempDir::new("chunks-matrix");
+    for level in OptimizationLevel::ALL {
+        let base = [
+            "--compile",
+            "--optimize",
+            level.name(),
+            "--entry",
+            "app.main",
+            "--source-root",
+            root,
+        ];
+        let (success, single, stderr) = cli(&[&base[..], &["--esm"]].concat());
+        assert!(success && stderr.is_empty(), "{name} {level}: {stderr}");
+        let oracle_dir = dir.join(level.name()).join("single");
+        fs::create_dir_all(&oracle_dir).unwrap();
+        fs::write(oracle_dir.join("app.main.js"), single).unwrap();
+        install_packages(name, &oracle_dir);
+        let oracle = run_directory(&oracle_dir, "app.main.js")
+            .unwrap_or_else(|error| panic!("{name} {level}: {error}"));
+
+        let out = dir.join(level.name()).join("chunks");
+        let args = [&base[..], &["--out-dir", out.to_str().unwrap()]].concat();
+        assert_eq!(
+            cli(&args),
+            (true, String::new(), String::new()),
+            "{name} {level}"
+        );
+        let (startup, chunks) = read_manifest(&out);
+        check_manifest(&out, &startup, &chunks, level);
+        assert_eq!(
+            membership_rows(&chunks),
+            expected_membership(name, level),
+            "{name} {level}"
+        );
+
+        let files = || {
+            let files = chunks
+                .iter()
+                .map(|chunk| {
+                    let source = fs::read_to_string(out.join(&chunk.file)).unwrap();
+                    (chunk.file.clone(), source)
+                })
+                .collect::<Vec<_>>();
+            shown(&files)
+        };
+        install_packages(name, &out);
+        let record = run_directory(&out, &startup)
+            .unwrap_or_else(|error| panic!("{name} {level}: {error}\n{}", files()));
+        assert_eq!(record, oracle, "{name} {level}:\n{}", files());
+        let record = Json::parse(&record);
+        assert_eq!(
+            record.get("outcome"),
+            &Json::parse(r#"{"status": "returned", "value": null}"#),
+            "{name} {level}"
+        );
+        assert_eq!(record.get("stdout").str(), expected, "{name} {level}");
+
+        let link = chunks
+            .iter()
+            .map(|chunk| format!("import \"./{}\";\n", chunk.file))
+            .collect::<String>();
+        fs::write(out.join("link-every-chunk.js"), link).unwrap();
+        let linked = run_directory(&out, "link-every-chunk.js")
+            .unwrap_or_else(|error| panic!("{name} {level}: {error}"));
+        assert!(
+            linked.contains(r#""outcome":{"status":"returned""#),
+            "{name} {level}: {linked}"
+        );
+    }
 }
