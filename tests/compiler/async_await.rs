@@ -87,20 +87,13 @@ const TAIL: &str = r#"(deftest ^:async async-test-error-reporting-test
 /// still apply to the pinned file:
 /// - its `:require-macros` becomes an ordinary `:require` (light-cljs
 ///   retires legacy macro imports);
-/// - `(Promise/resolve x)` through `:refer-global` is written
-///   `(js/Promise.resolve x)`: light-cljs calls a `:refer-global` class's
-///   static method without its class as `this`, which `Promise.resolve`
-///   needs (light-cljs-263);
 /// - the `cljs.test` reporting test and its `defmethod` give way to [`TAIL`].
 fn adapted() -> String {
     let mut source = UPSTREAM.to_owned();
-    for (from, to) in [
-        (
-            "            [goog.object :as gobj])\n  (:require-macros [cljs.macro-test.macros :refer [await!] :as macros]))",
-            "            [goog.object :as gobj]\n            [cljs.macro-test.macros :refer [await!] :as macros]))",
-        ),
-        ("(Promise/resolve", "(js/Promise.resolve"),
-    ] {
+    for (from, to) in [(
+        "            [goog.object :as gobj])\n  (:require-macros [cljs.macro-test.macros :refer [await!] :as macros]))",
+        "            [goog.object :as gobj]\n            [cljs.macro-test.macros :refer [await!] :as macros]))",
+    )] {
         assert!(source.contains(from), "upstream no longer has {from:?}");
         source = source.replace(from, to);
     }
@@ -189,6 +182,31 @@ fn upstream_async_await_tests_pass_at_every_level() {
         ],
     );
     every_level(&program, "{:tests 20, :pass 41, :fail []}\n");
+}
+
+/// A host class's static method keeps its class as `this` (light-cljs-263),
+/// as upstream resolves `Promise/resolve` to `js/Promise.resolve`: through
+/// `:refer-global`, its `:rename`, the dotted `Promise.resolve` spelling and
+/// a built-in class such as `String`. Reading the method first, as in
+/// `((.-resolve Promise) 0)`, still calls it without a receiver, as
+/// upstream's `.call(null, 0)` does.
+#[test]
+fn refer_global_static_methods_keep_their_class_as_this() {
+    let source = r#"(ns probe (:refer-global :only [Promise Date] :rename {Date D}))
+(set! (.-whoami js/String) (fn [] (this-as cls cls)))
+(set! (.-whoami js/Date) (fn [] (this-as cls cls)))
+(def explicit
+  (try ((.-resolve Promise) 0) :receiver
+       (catch :default e (if (instance? js/TypeError e) :no-receiver e))))
+(.then (js/Promise.all #js [(Promise/resolve 0) (Promise.resolve 1)])
+       (fn [values]
+         (js/console.log
+          (pr-str [(instance? Promise (Promise/resolve 0)) (vec values)
+                   (identical? js/String (String/whoami))
+                   (identical? js/Date (D/whoami)) explicit]))))
+"#;
+    let program = namespace_program("probe", &[("probe.cljs", source)]);
+    every_level(&program, "[true [0 1] true true :no-receiver]\n");
 }
 
 /// `await` in the body of anything but an `^:async` function is upstream's

@@ -8551,6 +8551,18 @@ impl Analyzer<'_> {
             }
             return Ok(self.js_global(path));
         }
+        // A host class's members extend its path, as upstream resolves
+        // `Promise/resolve` to `js/Promise.resolve`: a call then keeps the
+        // class as `this`. A member that is no identifier stays a property.
+        if let ExprKind::JsGlobal(global) = root
+            && fields
+                .split('.')
+                .all(|field| js_identifier(&munge_js_member(field)))
+        {
+            let mut path = self.program.js_globals[global.0].path.clone();
+            path.extend(fields.split('.').map(munge_js_member));
+            return Ok(self.js_global(path));
+        }
         let mut kind = root;
         for field in fields.split('.') {
             if field.is_empty() {

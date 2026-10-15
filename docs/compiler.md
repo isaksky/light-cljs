@@ -1961,6 +1961,10 @@ normal JavaScript failure behavior. Dot members and JS paths use CLJS munging
 spelling. Unicode member names are emitted safely as quoted properties. `js/x`
 resolves to a same-spelled lexical `x`; a dotted `js/Math.sqrt` keeps its host root.
 Namespace `:refer-global :only` and `:rename` expose explicit host globals.
+A referred global's `Class/member`, like a built-in class's (`String/fromCharCode`),
+is the host path `js/Class.member`, as upstream resolves it, so a call such as
+`(Promise/resolve x)` keeps the class as `this`; reading the member first, as in
+`((.-resolve Promise) x)`, calls it without a receiver, as upstream does.
 Unqualified dotted names such as `console.log` also resolve host paths when
 the root is not a lexical binding. Such host calls retain the final receiver;
 a lexical root instead uses ordinary CLJS function-call receiver behavior.
