@@ -4562,7 +4562,7 @@ impl Analyzer<'_> {
                         || self
                             .aliases
                             .iter()
-                            .any(|(alias, target)| alias == qualifier && target == "cljs.core") =>
+                            .any(|(alias, target)| alias == qualifier && matches!(target.as_str(), "cljs.core" | "clojure.core")) =>
                 {
                     name
                 }
@@ -5171,18 +5171,7 @@ impl Analyzer<'_> {
                     .js_refers
                     .iter()
                     .any(|(local, _)| local == class)
-                || matches!(
-                    class,
-                    "String"
-                        | "Object"
-                        | "Array"
-                        | "Number"
-                        | "Boolean"
-                        | "Date"
-                        | "RegExp"
-                        | "Error"
-                        | "Function"
-                ))
+                || crate::js_syntax::ECMASCRIPT_GLOBALS.contains(&class))
         {
             let kind = if self.lookup(class).is_some()
                 || self
@@ -5214,6 +5203,10 @@ impl Analyzer<'_> {
             }
             if namespace != self.namespace
                 && !self.requires.iter().any(|required| required == namespace)
+                // A namespace the program has already loaded resolves too, as
+                // upstream resolves it: macro expansions name the macro
+                // namespace's own dependencies, which load before their callers.
+                && !self.program.namespaces.iter().any(|loaded| loaded == namespace)
             {
                 if self.options.warning_mode {
                     let namespace = namespace.to_owned();
@@ -5284,6 +5277,15 @@ impl Analyzer<'_> {
             return Ok(resolved);
         }
         if qualified.is_none() && name.contains('.') {
+            // As upstream, `a.b.c` names Var `c` of the loaded namespace `a.b`
+            // (malli writes `(implements? malli.core.IntoSchema x)`).
+            if let Some((prefix, member)) = name.rsplit_once('.')
+                && !member.is_empty()
+                && (prefix == self.namespace
+                    || self.program.namespaces.iter().any(|loaded| loaded == prefix))
+            {
+                return self.resolve(id, &format!("{prefix}/{member}"));
+            }
             return self.resolve(id, &format!("js/{name}"));
         }
         let namespace = namespace.to_owned();
@@ -7946,7 +7948,7 @@ impl Analyzer<'_> {
                     Some((qualifier, local))
                         if matches!(qualifier, "cljs.core" | "clojure.core")
                             || self.aliases.iter().any(|(alias, target)| {
-                                alias == qualifier && target == "cljs.core"
+                                alias == qualifier && matches!(target.as_str(), "cljs.core" | "clojure.core")
                             }) =>
                     {
                         local
@@ -8955,7 +8957,7 @@ impl Analyzer<'_> {
         let core_alias = if let Some((qualifier, member)) = name.split_once('/') {
             self.aliases
                 .iter()
-                .find(|(alias, target)| alias == qualifier && target == "cljs.core")
+                .find(|(alias, target)| alias == qualifier && matches!(target.as_str(), "cljs.core" | "clojure.core"))
                 .map(|_| format!("cljs.core/{member}"))
         } else {
             self.resolution

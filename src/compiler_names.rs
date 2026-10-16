@@ -64,6 +64,23 @@ pub fn core_macro(name: &str) -> bool {
 }
 
 // These forms are lowered directly by the compiler analyzer.
+/// The declaration bundles the analyzer owns, which syntax quote qualifies as
+/// `cljs.core` names like upstream's macros of the same names.
+pub fn is_declaration_macro(name: &str) -> bool {
+    matches!(
+        name,
+        "deftype"
+            | "defrecord"
+            | "defprotocol"
+            | "extend-type"
+            | "extend-protocol"
+            | "reify"
+            | "specify!"
+            | "specify"
+            | "defmacro"
+    )
+}
+
 pub fn is_definition_macro(namespace: &str, name: &str) -> bool {
     matches!(namespace, "cljs.core" | "clojure.core")
         && matches!(

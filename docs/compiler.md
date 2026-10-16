@@ -1503,8 +1503,10 @@ namespace. Names and aliases contain dot-separated ASCII components matching
 
 Aliases and full names of directly required namespaces can qualify globals.
 Only one `:require` clause may appear in a namespace declaration.
-The current namespace can qualify its own globals. Transitive-only and unknown
-qualifiers are errors in the strict API. Repeated identical imports coalesce;
+The current namespace can qualify its own globals, and so can the full name of
+any namespace the program has already loaded, as upstream resolves it (a macro
+expansion names the macro namespace's own dependencies); unknown qualifiers
+are errors in the strict API. Repeated identical imports coalesce;
 aliases that conflict with another target or redirect a required/current full
 namespace name are rejected. `cljs.core` is a virtual dependency:
 `(:require [cljs.core :as c])` never reads `cljs/core.cljs`. Reserved `cljs.core`

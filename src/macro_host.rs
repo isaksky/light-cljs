@@ -62,6 +62,12 @@ pub struct MacroHost {
     pub(crate) session_ref: std::rc::Weak<crate::compilation_session::CompilationSession>,
     pub(crate) expansions: std::rc::Rc<std::cell::Cell<usize>>,
     pub(crate) generated_nodes: std::rc::Rc<std::cell::Cell<usize>>,
+    /// Give compile-time heaps an opaque JavaScript package registry: every
+    /// package, export, call and construction answers an inert stub, so the
+    /// initializers that macro expansion demands (such as an extension whose
+    /// target type a package builds) run without the host's packages, which
+    /// only the application has.
+    pub opaque_packages: bool,
 }
 
 #[derive(Default)]
@@ -72,6 +78,30 @@ struct CompilerDataReaders {
     evaluator: Option<std::rc::Rc<crate::evaluator::Evaluator>>,
     functions: HashMap<Name, crate::evaluator::ValueId>,
 }
+
+/// The compile-time package registry of [`MacroHost::opaque_packages`]: a Proxy
+/// whose packages are stubs. A stub is a function whose every property is a
+/// stub (its `prototype` is a real object, so extensions can install methods),
+/// whose calls and constructions return stubs, and which prints as text.
+const OPAQUE_PACKAGES_PRELUDE: &str = r#"rt => {
+  const stub = () => {
+    const target = function lightCljsPackageStub() {};
+    return new Proxy(target, {
+      get: (t, p) => {
+        if (p === "prototype") return t.prototype;
+        if (p === Symbol.toPrimitive || p === "toString" || p === "valueOf") return () => "[light-cljs compile-time package stub]";
+        if (typeof p === "symbol") return undefined;
+        return stub();
+      },
+      apply: () => stub(),
+      construct: () => stub(),
+      has: () => true,
+    });
+  };
+  globalThis.lightCljsPackages = new Proxy({}, { get: (t, p) => typeof p === "symbol" ? undefined : stub(), has: () => true });
+  return null;
+}"#;
+
 
 impl MacroHost {
     /// Allocate a fresh synchronous heap for a clean compilation. Its dynamic
@@ -94,6 +124,10 @@ impl MacroHost {
         if self.assertions_disabled {
             let done =
                 evaluator.evaluate_unit("rt => { rt.core.assertions = false; return null; }")?;
+            evaluator.release(done)?;
+        }
+        if self.opaque_packages {
+            let done = evaluator.evaluate_unit(OPAQUE_PACKAGES_PRELUDE)?;
             evaluator.release(done)?;
         }
         Ok(evaluator)
@@ -560,6 +594,7 @@ impl MacroHost {
                 .map_or_else(std::rc::Weak::new, |s| std::rc::Rc::downgrade(&s)),
             expansions: self.expansions.clone(),
             generated_nodes: self.generated_nodes.clone(),
+            opaque_packages: self.opaque_packages,
             ..Self::default()
         }
     }
@@ -751,7 +786,15 @@ impl MacroHost {
                 imports
                     .iter()
                     .find(|i| i.namespace == qualifier || i.alias.as_deref() == Some(qualifier))
-                    .map(|i| (i.namespace.clone(), name.to_owned()))
+                    .and_then(|i| {
+                        // An alias of the core namespace names a macro only when
+                        // the core name is one: `c/concat` is the function.
+                        if i.namespace == "cljs.core" || i.namespace == "clojure.core" {
+                            core_macro(name).then(|| ("clojure.core".to_owned(), name.to_owned()))
+                        } else {
+                            Some((i.namespace.clone(), name.to_owned()))
+                        }
+                    })
             }
         } else if let Some((_, namespace, name)) = self
             .renames

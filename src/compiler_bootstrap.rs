@@ -400,8 +400,13 @@ impl MacroHost {
     }
     pub(crate) fn source_macro_key(&self, namespace: &str, name: &str) -> Option<String> {
         if let Some((qualifier, member)) = name.split_once('/') {
-            let target = self.source_namespace(namespace, qualifier)?;
-            return Some(format!("{target}/{member}"));
+            if let Some(target) = self.source_namespace(namespace, qualifier) {
+                return Some(format!("{target}/{member}"));
+            }
+            // A fully qualified macro of a namespace the program loaded: a macro
+            // expansion names its own namespace's dependencies, as upstream.
+            let key = format!("{qualifier}/{member}");
+            return self.javascript_macros.contains_key(&key).then_some(key);
         }
         if self.has_source_value(namespace, name)
             || self

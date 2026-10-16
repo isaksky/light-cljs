@@ -1509,6 +1509,7 @@ impl NamespaceView {
         if !self.excludes.contains(name)
             && (crate::compiler_names::core_macro(&text)
                 || crate::compiler_names::is_definition_macro("cljs.core", &text)
+                || crate::compiler_names::is_declaration_macro(&text)
                 || core_metadata(&text).is_some()
                 || self
                     .core_bindings

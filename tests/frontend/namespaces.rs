@@ -284,16 +284,15 @@ fn analyzer_diagnostics_name_the_original_dependency_source() {
 }
 
 #[test]
-fn unknown_and_transitive_only_qualifiers_are_rejected() {
+fn unknown_qualifiers_are_rejected_and_loaded_namespaces_qualify() {
     let sources = Sources::new();
-    sources.write("a.cljs", "(ns a (:require b)) c/value");
+    // A namespace the program has loaded qualifies a symbol even when the
+    // caller did not require it, as upstream resolves it: macro expansions
+    // name the macro namespace's own dependencies.
+    sources.write("a.cljs", "(ns a (:require b)) (js/console.log c/value)");
     sources.write("b.cljs", "(ns b (:require c))");
     sources.write("c.cljs", "(ns c) (def value 1)");
-    let error = sources.compile("a").unwrap_err();
-    assert!(
-        error.message.contains("unknown namespace or alias c"),
-        "{error}"
-    );
+    assert_eq!(execute(&sources.compile("a").unwrap()), "1\n");
     sources.write("a.cljs", "(ns a) absent/value");
     let error = sources.compile("a").unwrap_err();
     assert!(

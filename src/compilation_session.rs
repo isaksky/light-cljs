@@ -482,7 +482,8 @@ struct AnalysisGuard<'a> {
 impl Drop for AnalysisGuard<'_> {
     fn drop(&mut self) {
         let mut c = self.session.catalog.borrow_mut();
-        debug_assert_eq!(c.stack.pop(), Some(self.id));
+        let popped = c.stack.pop();
+        debug_assert_eq!(popped, Some(self.id));
         let mut unit = self.unit.borrow_mut();
         if matches!(unit.state, AnalysisState::Analyzing) {
             unit.state = AnalysisState::Failed("analysis interrupted".into(), None);
