@@ -489,7 +489,7 @@ fn analysis_owns_its_values_and_compile_distinguishes_error_stages() {
         let source = String::from("(let* [λ \"\\uD800\"] λ)");
         analyze(&source, &parse(&source).unwrap()).unwrap()
     };
-    assert_eq!(program.strings, [vec![0xd800]]);
+    assert_eq!(program.strings.to_vec(), [vec![0xd800]]);
     assert_eq!(program.locals[0].name, "λ");
     assert!(matches!(compile("["), Err(CompileError::Parse(_))));
     assert!(matches!(compile("x"), Err(CompileError::Analysis(_))));

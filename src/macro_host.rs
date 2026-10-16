@@ -41,12 +41,13 @@ pub(crate) enum SourceBindingKind {
 #[derive(Default)]
 pub struct MacroHost {
     compiler_data_readers: std::rc::Rc<std::cell::RefCell<CompilerDataReaders>>,
-    imports: HashMap<String, Vec<MacroImport>>,
-    renames: HashMap<String, Vec<(String, String, String)>>,
-    namespace_symbols: HashMap<String, crate::compiler_data::Datum>,
-    namespace_docs: HashMap<String, crate::compiler_data::Datum>,
-    runtime_vars: HashMap<String, HashMap<String, bool>>,
-    namespace_imports: HashMap<String, Vec<(String, String)>>,
+    imports: crate::layered::Layered<String, Vec<MacroImport>>,
+    renames: crate::layered::Layered<String, Vec<(String, String, String)>>,
+    namespace_symbols: crate::layered::Layered<String, crate::compiler_data::Datum>,
+    namespace_docs: crate::layered::Layered<String, crate::compiler_data::Datum>,
+    /// By `namespace/name`, whether the Var is private.
+    runtime_vars: crate::layered::Layered<String, bool>,
+    namespace_imports: crate::layered::Layered<String, Vec<(String, String)>>,
     pub limits: MacroLimits,
     /// Configuration only: JS roots belong to each fresh compilation session.
     pub evaluator_options: crate::evaluator::EvaluatorOptions,
@@ -56,8 +57,9 @@ pub struct MacroHost {
     pub(crate) name_policy: Option<crate::eval_compiler::NamePolicy>,
     pub(crate) bootstrap: Option<crate::compiler_bootstrap::Bootstrap>,
     pub(crate) bootstrap_seed: bool,
-    pub(crate) javascript_macros: HashMap<String, crate::compiler_bootstrap::CompiledMacro>,
-    pub(crate) source_bindings: HashMap<String, SourceBindingKind>,
+    pub(crate) javascript_macros:
+        crate::layered::Layered<String, crate::compiler_bootstrap::CompiledMacro>,
+    pub(crate) source_bindings: crate::layered::Layered<String, SourceBindingKind>,
     pub(crate) session: Option<std::rc::Rc<crate::compilation_session::CompilationSession>>,
     pub(crate) session_ref: std::rc::Weak<crate::compilation_session::CompilationSession>,
     pub(crate) expansions: std::rc::Rc<std::cell::Cell<usize>>,
@@ -68,6 +70,13 @@ pub struct MacroHost {
     /// target type a package builds) run without the host's packages, which
     /// only the application has.
     pub opaque_packages: bool,
+    /// Per namespace, the globals registered as its declared bindings in the
+    /// compile-time session: the position after the last one registered and
+    /// how many of the namespace's own globals were among them. Shared by
+    /// the analysis frames of one compilation.
+    pub(crate) reader_declared: std::rc::Rc<std::cell::RefCell<HashMap<String, (usize, usize)>>>,
+    /// The compilation whose declared bindings the session holds.
+    pub(crate) reader_generation: u64,
 }
 
 #[derive(Default)]
@@ -101,7 +110,6 @@ const OPAQUE_PACKAGES_PRELUDE: &str = r#"rt => {
   globalThis.lightCljsPackages = new Proxy({}, { get: (t, p) => typeof p === "symbol" ? undefined : stub(), has: () => true });
   return null;
 }"#;
-
 
 impl MacroHost {
     /// Allocate a fresh synchronous heap for a clean compilation. Its dynamic
@@ -443,7 +451,7 @@ impl MacroHost {
         caller: &str,
         imports: Vec<MacroImport>,
     ) -> Result<(), String> {
-        let current = self.imports.entry(caller.to_owned()).or_default();
+        let current = self.imports.entry_or_default(caller.to_owned());
         for import in imports {
             if let Some(alias) = &import.alias
                 && current.iter().any(|old| {
@@ -595,6 +603,8 @@ impl MacroHost {
             expansions: self.expansions.clone(),
             generated_nodes: self.generated_nodes.clone(),
             opaque_packages: self.opaque_packages,
+            reader_declared: self.reader_declared.clone(),
+            reader_generation: self.reader_generation,
             ..Self::default()
         }
     }
@@ -624,6 +634,8 @@ impl MacroHost {
         }
         self.expansions = Default::default();
         self.generated_nodes = Default::default();
+        self.reader_declared = Default::default();
+        self.reader_generation += 1;
         self.runtime_vars.clear();
         self.namespace_imports.clear();
     }
@@ -654,9 +666,7 @@ impl MacroHost {
     ) -> Result<(), String> {
         self.register_source_binding(namespace, name, SourceBindingKind::Value)?;
         self.runtime_vars
-            .entry(namespace.to_owned())
-            .or_default()
-            .insert(name.to_owned(), private);
+            .insert(format!("{namespace}/{name}"), private);
         Ok(())
     }
     pub(crate) fn source_namespace<'a>(
@@ -677,8 +687,7 @@ impl MacroHost {
     pub(crate) fn source_binding_private(&self, namespace: &str, name: &str) -> bool {
         if self
             .runtime_vars
-            .get(namespace)
-            .and_then(|vars| vars.get(name))
+            .get(&format!("{namespace}/{name}"))
             .copied()
             .unwrap_or(false)
         {
@@ -707,8 +716,7 @@ impl MacroHost {
     ) {
         let current = self
             .namespace_imports
-            .entry(namespace.to_owned())
-            .or_default();
+            .entry_or_default(namespace.to_owned());
         for import in imports {
             if !current.contains(&import) {
                 current.push(import);
@@ -963,11 +971,12 @@ impl MacroHost {
                     .unwrap_or_default()
             } else {
                 self.runtime_vars
-                    .get(&namespace)
-                    .into_iter()
-                    .flat_map(|vars| vars.iter())
-                    .filter(|(_, private)| operation == "ns-interns" || !**private)
-                    .map(|(local, _)| (local.clone(), format!("{namespace}/{local}")))
+                    .iter()
+                    .filter_map(|(key, private)| {
+                        let (owner, local) = key.split_once('/')?;
+                        (owner == namespace && (operation == "ns-interns" || !*private))
+                            .then(|| (local.to_owned(), key.clone()))
+                    })
                     .collect()
             };
             if matches!(operation, "ns-interns" | "ns-publics") {
@@ -1082,17 +1091,49 @@ impl MacroHost {
         names
     }
 
+    /// Add the reader context of `namespace` to a macro's environment. The
+    /// first `shared` globals are the compilation's, in its order, of which
+    /// `visible` belong to `namespace`: the session registers each of those
+    /// once, so a context names only the ones registered since, and how many
+    /// it sees. The globals after `shared` are this analysis's own.
     pub(crate) fn reader_environment(
         &self,
         environment: crate::compiler_data::Datum,
         namespace: &str,
-        refers: &[(String, String, String)],
-        excludes: &[String],
-        globals: &[crate::GlobalBinding],
+        resolution: &crate::analyzer::NamespaceResolution,
+        globals: &crate::arena::Arena<crate::GlobalBinding>,
+        shared: usize,
+        visible: usize,
     ) -> Result<crate::compiler_data::Datum, String> {
         let c = crate::compiler_data::DataBuilder;
         let string = |s: &str| c.string(s.encode_utf16().collect::<Vec<_>>());
         let key = |s| c.keyword(Name::new(None, s));
+        let (refers, excludes) = (&resolution.refers, &resolution.excludes);
+        let (position, count) = self
+            .reader_declared
+            .borrow()
+            .get(namespace)
+            .copied()
+            .unwrap_or((0, 0));
+        let mut names = Vec::new();
+        if position <= shared {
+            names = globals
+                .range(position..shared)
+                .filter(|g| g.namespace == namespace)
+                .map(|g| string(&g.name))
+                .collect();
+            debug_assert_eq!(count + names.len(), visible);
+            self.reader_declared
+                .borrow_mut()
+                .insert(namespace.to_owned(), (shared, visible));
+        }
+        let declared = c
+            .map(&[
+                (key("generation"), c.integer(self.reader_generation as i64)),
+                (key("from"), c.integer(count as i64)),
+                (key("names"), c.vector(&names).map_err(|e| e.to_string())?),
+            ])
+            .map_err(|e| e.to_string())?;
         let context = c
             .map(&[
                 (
@@ -1113,11 +1154,13 @@ impl MacroHost {
                     c.vector(&excludes.iter().map(|s| string(s)).collect::<Vec<_>>())
                         .map_err(|e| e.to_string())?,
                 ),
+                (key("declared"), declared),
+                (key("visible"), c.integer(visible as i64)),
                 (
                     key("bindings"),
                     c.vector(
                         &globals
-                            .iter()
+                            .range(shared..globals.len())
                             .filter(|g| g.namespace == namespace)
                             .map(|g| string(&g.name))
                             .chain(

@@ -5395,12 +5395,25 @@
     const previous = ns.readerContext;
     const view = get(args[1], keyword("light-cljs", "reader-context"));
     const refers = new Map(context.refers), excludes = new Set(context.excludes), bindings = new Set(context.bindings);
+    let declared = context.declared, visible = context.visible ?? 0;
     if (view != null) {
       for (const entry of toArray(get(view, keyword(null, "refers")))) refers.set(nth(entry, 0), [nth(entry, 1), nth(entry, 2)]);
       for (const name of toArray(get(view, keyword(null, "excludes")))) excludes.add(name);
       for (const name of toArray(get(view, keyword(null, "bindings")))) bindings.add(name);
+      // The compilation's declarations, registered on the namespace once each
+      // by the views that first name them, in declaration order; a view sees
+      // the first `visible` of them.
+      const added = get(view, keyword(null, "declared"));
+      if (added != null) {
+        const generation = get(added, keyword(null, "generation"));
+        if (ns.readerDeclared?.generation !== generation) ns.readerDeclared = {generation, index: new Map()};
+        let position = get(added, keyword(null, "from"));
+        for (const name of toArray(get(added, keyword(null, "names")))) ns.readerDeclared.index.set(name, position++);
+        declared = ns.readerDeclared.index;
+        visible = get(view, keyword(null, "visible"));
+      }
     }
-    ns.readerContext = {aliases, refers, excludes, bindings}; coreCells.currentNs = ns;
+    ns.readerContext = {aliases, refers, excludes, bindings, declared, visible}; coreCells.currentNs = ns;
     try { return Reflect.apply(fn, null, args); }
     finally { ns.readerContext = previous; coreCells.currentNs = saved; }
   }
@@ -8836,9 +8849,10 @@
         }
         if (data.namespace !== null && context?.aliases.has(data.namespace)) resolved = rt.symbol(context.aliases.get(data.namespace), data.name);
         if (data.namespace === null && !data.name.endsWith('#')) {
-          if (context?.bindings.has(data.name) || context?.excludes.has(data.name)) resolved = rt.symbol(currentName, data.name);
+          const bound = context?.bindings.has(data.name) || context?.declared?.get(data.name) < context?.visible;
+          if (bound || context?.excludes.has(data.name)) resolved = rt.symbol(currentName, data.name);
           const referred = context?.refers.get(data.name);
-          if (referred && !context?.bindings.has(data.name)) resolved = rt.symbol(...referred);
+          if (referred && !bound) resolved = rt.symbol(...referred);
         }
         return rt.listFromArray([rt.symbol(null,'quote'), resolved]);
       }

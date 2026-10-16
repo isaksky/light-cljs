@@ -11,6 +11,7 @@ use std::{iter::FusedIterator, ops::Range};
 
 pub mod analyzer;
 pub mod application;
+pub mod arena;
 pub mod call_shapes;
 mod char_classes;
 pub mod chunks;
@@ -35,8 +36,10 @@ pub mod folding;
 pub mod inference;
 pub mod inlining;
 mod js_syntax;
+mod layered;
 mod program_fragment;
 mod rta;
+pub mod shared;
 pub use eval_session::{
     EvalDiagnostic, EvalOptions, EvalResult, EvalSession, HostArity, HostCall, HostFunction,
     UnhandledRejections, WarningOutput,

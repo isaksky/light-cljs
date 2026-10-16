@@ -657,7 +657,6 @@ impl EvalSession {
         self.dev
             .compiler()
             .globals()
-            .iter()
             .map(|g| format!("{}/{}", g.namespace, g.name))
             .collect()
     }

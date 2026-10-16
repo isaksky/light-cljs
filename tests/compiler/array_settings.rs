@@ -97,10 +97,12 @@ fn array_setting_var_and_macro_state_execute_in_both_phases() {
 
 #[test]
 fn named_function_macro_environments_capture_boolean_array_settings() {
-    // Reader declarations are a finite source-ordered snapshot, distinct from
-    // the argument/self locals and captured alongside the array setting.
+    // The macro session registers the namespace's source declarations once, in
+    // source order; an environment says how many are declared at its expansion,
+    // distinct from the argument/self locals, and is captured alongside the
+    // array setting.
     let source = r#"(do
-      (defmacro inspect [self expected-bindings]
+      (defmacro inspect [self expected-visible]
         (let [locals (:locals &env)
               reader (:light-cljs/reader-context &env)]
           (list 'quote
@@ -120,29 +122,29 @@ fn named_function_macro_environments_capture_boolean_array_settings() {
                (= {:name self :op :binding :local :fn}
                   (select-keys (get locals self) [:name :op :local :arg-id :binding-form?]))
                true)
-             (= #{:refers :excludes :bindings} (set (keys reader)))
+             (= #{:refers :excludes :bindings :declared :visible} (set (keys reader)))
              (= [] (:refers reader))
              (= [] (:excludes reader))
-             (and (vector? (:bindings reader))
-                  (every? string? (:bindings reader))
-                  (= (count expected-bindings) (count (:bindings reader)))
-                  (= expected-bindings (set (:bindings reader))))
+             (and (= ["inspect"] (:bindings reader))
+                  (= expected-visible (:visible reader))
+                  (let [declared (:declared reader)]
+                    (and (integer? (:generation declared))
+                         (integer? (:from declared))
+                         (vector? (:names declared))
+                         (every? string? (:names declared))
+                         (<= expected-visible
+                             (+ (:from declared) (count (:names declared)))))))
              (and (= 'cljs.user (:name (:ns &env)))
                   (= :cljs.user/probe (read-string "::probe"))
                   (= 'cljs.core/map (second (read-string "`map"))))])))
-      (defn named-default [x y] (inspect nil #{"inspect" "named-default"}))
-      (def self-default (fn foo [x y]
-        (inspect foo #{"inspect" "named-default" "self-default"})))
+      (defn named-default [x y] (inspect nil 1))
+      (def self-default (fn foo [x y] (inspect foo 2)))
       (set! *unchecked-arrays* true)
-      (defn named-enabled [x y]
-        (inspect nil #{"inspect" "named-default" "self-default" "named-enabled"}))
-      (def self-enabled (fn foo [x y]
-        (inspect foo #{"inspect" "named-default" "self-default" "named-enabled" "self-enabled"})))
+      (defn named-enabled [x y] (inspect nil 3))
+      (def self-enabled (fn foo [x y] (inspect foo 4)))
       (set! *unchecked-arrays* false)
-      (defn named-reset [x y]
-        (inspect nil #{"inspect" "named-default" "self-default" "named-enabled" "self-enabled" "named-reset"}))
-      (def self-reset (fn foo [x y]
-        (inspect foo #{"inspect" "named-default" "self-default" "named-enabled" "self-enabled" "named-reset" "self-reset"})))
+      (defn named-reset [x y] (inspect nil 5))
+      (def self-reset (fn foo [x y] (inspect foo 6)))
       [(named-default 1 2) (self-default 1 2)
        (named-enabled 1 2) (self-enabled 1 2)
        (named-reset 1 2) (self-reset 1 2)])"#;

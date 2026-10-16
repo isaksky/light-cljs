@@ -407,6 +407,9 @@ impl CompilationSession {
             debug_assert!(request.generation > 0);
             debug_assert_eq!(self.catalog.borrow().bindings[&unit.name].0, request.var);
             let mut host = unit.host.macro_analysis_frame();
+            // A unit is analyzed once; its registration-time host is not needed
+            // after its analysis frame is taken.
+            unit.host = MacroHost::default();
             if host.bootstrap.is_none() {
                 host.bootstrap = bootstrap;
             }

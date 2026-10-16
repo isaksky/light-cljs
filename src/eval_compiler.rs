@@ -105,7 +105,6 @@ impl InteractiveCompiler {
         for (_, namespace, name) in &self.resolution.refers {
             let exists = self
                 .globals()
-                .iter()
                 .any(|g| g.namespace == *namespace && g.name == *name && g.declared)
                 || self
                     .host
@@ -125,8 +124,8 @@ impl InteractiveCompiler {
         }
         Ok(())
     }
-    pub(crate) fn globals(&self) -> &[crate::GlobalBinding] {
-        self.program.as_ref().map_or(&[], |p| p.globals.as_slice())
+    pub(crate) fn globals(&self) -> impl Iterator<Item = &crate::GlobalBinding> {
+        self.program.iter().flat_map(|p| p.globals.iter())
     }
     /// The retained program: the session's namespaces, their reader contexts
     /// and definitions, once a form was analyzed.
@@ -136,7 +135,6 @@ impl InteractiveCompiler {
     /// Whether the session has defined or declared `namespace/name`.
     pub(crate) fn defines(&self, namespace: &str, name: &str) -> bool {
         self.globals()
-            .iter()
             .any(|g| g.declared && g.namespace == namespace && g.name == name)
     }
     pub(crate) fn read_forms(
@@ -265,12 +263,7 @@ impl InteractiveCompiler {
             for name in &self.resolution.excludes {
                 view.excludes.insert(Name::new(None, name));
             }
-            for (index, global) in self
-                .globals()
-                .iter()
-                .enumerate()
-                .filter(|(_, g)| g.declared)
-            {
+            for (index, global) in self.globals().enumerate().filter(|(_, g)| g.declared) {
                 let qualified = Name::new(Some(&global.namespace), &global.name);
                 let binding = crate::compiler_reader::ResolvedBinding {
                     id: crate::compiler_reader::BindingId(index),
@@ -305,7 +298,7 @@ impl InteractiveCompiler {
         for ns in self
             .contexts
             .keys()
-            .chain(self.globals().iter().map(|g| &g.namespace))
+            .chain(self.globals().map(|g| &g.namespace))
         {
             if ns != &self.namespace && !requires.contains(ns) {
                 requires.push(ns.clone());
@@ -409,12 +402,19 @@ impl InteractiveCompiler {
                 &self.requires,
                 (1, 1),
             )?;
+            let empty = crate::arena::Arena::new();
+            let globals = self.program.as_ref().map_or(&empty, |p| &p.globals);
+            let visible = globals
+                .iter()
+                .filter(|g| g.namespace == self.namespace)
+                .count();
             let env = self.host.reader_environment(
                 env,
                 &self.namespace,
-                &self.resolution.refers,
-                &self.resolution.excludes,
-                self.globals(),
+                &self.resolution,
+                globals,
+                globals.len(),
+                visible,
             )?;
             let next = if self.host.has_javascript_macro(&self.namespace, &target) {
                 Some(self.host.expand_source_javascript(
@@ -536,7 +536,7 @@ impl NamePolicy {
 }
 impl InteractiveCompiler {
     fn check_policy(&self, program: &Program, start: usize) -> Result<(), AnalysisError> {
-        for expression in &program.exprs[start..] {
+        for expression in program.exprs.tail_from(start) {
             let denied = match &expression.kind {
                 crate::ExprKind::CoreFn(core) if !self.policy.permits_core(*core) => {
                     Some(format!("cljs.core/{}", core.runtime_name()))

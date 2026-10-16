@@ -119,8 +119,11 @@ auto-resolved aliases report reader source, line and column. Reading never loads
 a namespace or evaluates input. Nested tag reads and `*ns*` bindings preserve the
 enclosing view. Macro computations bind the caller's reader context and restore
 it afterwards. `&env :light-cljs/reader-context` exposes descriptive refers,
-exclusions and declaration names. Strict `clojure.edn` and `cljs.reader` profiles
-reject auto-resolved/syntax-quote forms.
+exclusions and declaration names: `:bindings` names the macros and the Vars
+the expanding analysis itself declared, and `:declared` registers the
+namespace's source declarations with the macro session once each, in source
+order, of which the first `:visible` are declared at the expansion. Strict
+`clojure.edn` and `cljs.reader` profiles reject auto-resolved/syntax-quote forms.
 
 ### Application preparation
 

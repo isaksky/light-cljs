@@ -2572,40 +2572,40 @@ pub struct RuntimeReaderNamespace {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     /// Source namespaces present in this unit, including namespaces without Vars.
-    pub namespaces: Vec<String>,
+    pub namespaces: crate::shared::Shared<Vec<String>>,
     /// Explicit source reader contexts; runtime reads never consult a loader.
-    pub reader_contexts: HashMap<String, RuntimeReaderNamespace>,
-    pub namespace_entries: HashMap<ExprId, String>,
+    pub reader_contexts: crate::shared::Shared<HashMap<String, RuntimeReaderNamespace>>,
+    pub namespace_entries: crate::shared::Shared<HashMap<ExprId, String>>,
     pub compilation_uses: Vec<CompilationUse>,
-    pub exprs: Vec<Expr>,
-    pub locals: Vec<LocalBinding>,
-    pub recur_targets: Vec<RecurTarget>,
-    pub protocols: HashMap<GlobalId, Vec<ProtocolMethod>>,
-    pub record_constructors: std::collections::HashSet<GlobalId>,
-    pub field_bindings: HashMap<LocalId, (RecurTargetId, bool)>,
-    pub type_methods: std::collections::HashSet<RecurTargetId>,
+    pub exprs: crate::arena::Arena<Expr>,
+    pub locals: crate::arena::Arena<LocalBinding>,
+    pub recur_targets: crate::arena::Arena<RecurTarget>,
+    pub protocols: crate::shared::Shared<HashMap<GlobalId, Vec<ProtocolMethod>>>,
+    pub record_constructors: crate::shared::Shared<std::collections::HashSet<GlobalId>>,
+    pub field_bindings: crate::shared::Shared<HashMap<LocalId, (RecurTargetId, bool)>>,
+    pub type_methods: crate::shared::Shared<std::collections::HashSet<RecurTargetId>>,
     /// Runtime macro functions have two implicit parameters but public user arities.
-    pub macro_functions: std::collections::HashSet<ExprId>,
-    pub globals: Vec<GlobalBinding>,
-    pub js_globals: Vec<JsGlobal>,
+    pub macro_functions: crate::shared::Shared<std::collections::HashSet<ExprId>>,
+    pub globals: crate::arena::Arena<GlobalBinding>,
+    pub js_globals: crate::arena::Arena<JsGlobal>,
     /// Owned UTF-16 preserves even lone surrogate escapes.
-    pub strings: Vec<Vec<u16>>,
-    pub named_literals: Vec<NamedLiteral>,
+    pub strings: crate::arena::Arena<Vec<u16>>,
+    pub named_literals: crate::arena::Arena<NamedLiteral>,
     /// Every `light.lazy/loadable` site, in analysis order; an
     /// [`ExprKind::Loadable`] names its entry.
-    pub lazy_targets: Vec<LazyTarget>,
+    pub lazy_targets: crate::shared::Shared<Vec<LazyTarget>>,
     /// The distinct namespaces lazy targets name, in first-site order; a
     /// [`LazyTarget::namespace`] indexes this table.
-    pub lazy_namespaces: Vec<String>,
+    pub lazy_namespaces: crate::shared::Shared<Vec<String>>,
     /// For a program of several namespace sources, by source index (the
     /// position in `namespaces`): the source indices of the namespaces that
     /// source requires, in its `ns` form's order. Lazy references are not
     /// requires. Empty for a program not analyzed from namespace sources.
-    pub namespace_requires: Vec<Vec<usize>>,
+    pub namespace_requires: crate::shared::Shared<Vec<Vec<usize>>>,
     /// By source index, whether the source was reached only through lazy
     /// references: it is neither the entry nor a static dependency of it.
     /// Such sources follow the entry; see `NamespaceAnalysis::finish`.
-    pub namespace_lazy_only: Vec<bool>,
+    pub namespace_lazy_only: crate::shared::Shared<Vec<bool>>,
     pub root: ExprId,
 }
 
@@ -2617,6 +2617,18 @@ impl Program {
         self.reader_contexts
             .get(namespace)
             .is_some_and(|context| !context.macros.is_empty())
+    }
+
+    /// Freeze every table, so a clone shares the entries so far instead of
+    /// copying them; see [`crate::arena::Arena::freeze`].
+    pub fn freeze(&mut self) {
+        self.exprs.freeze();
+        self.locals.freeze();
+        self.recur_targets.freeze();
+        self.globals.freeze();
+        self.js_globals.freeze();
+        self.strings.freeze();
+        self.named_literals.freeze();
     }
 }
 
@@ -2885,6 +2897,37 @@ struct Analyzer<'a> {
     /// other function, including `delay`, `lazy-seq` and type methods,
     /// clears it.
     asynchronous: bool,
+    /// The first expression this analyzer added: the ones before it are the
+    /// shared program it started from, which its own diagnostics skip.
+    first_expr: usize,
+    /// Whether this analyzer is a deferred unit, whose diagnostics consult
+    /// only its own declarations.
+    deferred_unit: bool,
+    /// The reader's view of the namespace for compiler forms, once built.
+    reader_view: Option<ReaderView>,
+    /// How many of the shared globals seen so far are this namespace's own:
+    /// the count up to a position, for macro environments.
+    namespace_globals: (usize, usize),
+}
+
+/// The reader's view of an analyzer's namespace, kept between forms and
+/// extended with the declarations made since it was built.
+struct ReaderView {
+    view: crate::compiler_reader::NamespaceView,
+    /// The globals the view covers.
+    globals: usize,
+    /// Covered globals that were not declared when they were seen.
+    undeclared: Vec<usize>,
+    /// The expressions scanned for declaration kinds.
+    exprs: usize,
+    kinds: HashMap<usize, crate::compiler_reader::BindingKind>,
+    /// The locals referring to each qualified name.
+    refer_locals: HashMap<crate::compiler_data::Name, Vec<crate::compiler_data::Name>>,
+    /// The inputs a view is rebuilt for rather than extended with.
+    aliases: Vec<(String, String)>,
+    excludes: usize,
+    refers: usize,
+    macros: usize,
 }
 
 fn compiler_syntax<'a>(source: &str, syntax: &'a SyntaxTree) -> (Cow<'a, SyntaxTree>, Vec<NodeId>) {
@@ -2920,26 +2963,26 @@ fn compiler_syntax<'a>(source: &str, syntax: &'a SyntaxTree) -> (Cow<'a, SyntaxT
 
 fn empty_program() -> Program {
     Program {
-        namespaces: Vec::new(),
-        reader_contexts: HashMap::new(),
-        namespace_entries: HashMap::new(),
+        namespaces: Default::default(),
+        reader_contexts: Default::default(),
+        namespace_entries: Default::default(),
         compilation_uses: Vec::new(),
-        exprs: Vec::new(),
-        locals: Vec::new(),
-        recur_targets: Vec::new(),
-        protocols: HashMap::new(),
-        record_constructors: std::collections::HashSet::new(),
-        field_bindings: HashMap::new(),
-        type_methods: std::collections::HashSet::new(),
-        macro_functions: std::collections::HashSet::new(),
-        globals: Vec::new(),
-        js_globals: Vec::new(),
-        strings: Vec::new(),
-        named_literals: Vec::new(),
-        lazy_targets: Vec::new(),
-        lazy_namespaces: Vec::new(),
-        namespace_requires: Vec::new(),
-        namespace_lazy_only: Vec::new(),
+        exprs: Default::default(),
+        locals: Default::default(),
+        recur_targets: Default::default(),
+        protocols: Default::default(),
+        record_constructors: Default::default(),
+        field_bindings: Default::default(),
+        type_methods: Default::default(),
+        macro_functions: Default::default(),
+        globals: Default::default(),
+        js_globals: Default::default(),
+        strings: Default::default(),
+        named_literals: Default::default(),
+        lazy_targets: Default::default(),
+        lazy_namespaces: Default::default(),
+        namespace_requires: Default::default(),
+        namespace_lazy_only: Default::default(),
         root: ExprId(0),
     }
 }
@@ -3188,6 +3231,10 @@ fn analyze_input(
         definition_name: None,
         top_level: snapshot.is_none(),
         asynchronous: false,
+        first_expr: 0,
+        deferred_unit: false,
+        reader_view: None,
+        namespace_globals: (0, 0),
     };
     if let Some(previous) = previous {
         analyzer.program = previous.clone();
@@ -3210,6 +3257,8 @@ fn analyze_input(
         analyzer.source_index = snapshot.source_index;
         analyzer.definition_name = snapshot.definition_name.clone();
     }
+    analyzer.first_expr = analyzer.program.exprs.len();
+    analyzer.deferred_unit = snapshot.is_some();
     if !analyzer.program.namespaces.iter().any(|ns| ns == namespace) {
         analyzer.program.namespaces.push(namespace.into());
     }
@@ -3245,6 +3294,7 @@ fn analyze_input(
             &mut analyzer.program,
             &program,
             &crate::program_fragment::SharedPrefix::same(&snapshot.resolution_program),
+            true,
         );
         analyzer.warnings.extend(warnings);
         let test = analyzer.push(
@@ -3470,7 +3520,12 @@ impl NamespaceAnalysis {
             definition_name: None,
             top_level: true,
             asynchronous: false,
+            first_expr: 0,
+            deferred_unit: false,
+            reader_view: None,
+            namespace_globals: (0, 0),
         };
+        analyzer.first_expr = analyzer.program.exprs.len();
         for (local, namespace, original) in &analyzer.resolution.refers.clone() {
             let runtime = if matches!(namespace.as_str(), "cljs.core" | "clojure.core") {
                 CoreFnId::resolve(original).is_some()
@@ -3885,7 +3940,7 @@ impl Analyzer<'_> {
         // no union changes; unknown operands remain unknown, never guessed.
         for _ in 0..=self.program.locals.len() * 8 {
             let before = locals.clone();
-            for expr in &self.program.exprs {
+            for expr in self.program.exprs.tail_from(self.first_expr) {
                 match &expr.kind {
                     ExprKind::Let { bindings, .. } | ExprKind::Loop { bindings, .. } => {
                         for &(local, init) in bindings {
@@ -3908,7 +3963,14 @@ impl Analyzer<'_> {
                 break;
             }
         }
-        for (expr_index, expr) in self.program.exprs.iter().enumerate() {
+        let declarations = if self.deferred_unit {
+            self.first_expr
+        } else {
+            0
+        };
+        for (expr_index, expr) in
+            (self.first_expr..).zip(self.program.exprs.tail_from(self.first_expr))
+        {
             if expr.source_index != self.source_index {
                 continue;
             }
@@ -3956,7 +4018,7 @@ impl Analyzer<'_> {
                     }
                     ExprKind::Global(global) => {
                         let mut arities = Vec::new();
-                        for definition in &self.program.exprs {
+                        for definition in self.program.exprs.tail_from(declarations) {
                             if let ExprKind::DefType {
                                 constructor: Some(constructor),
                                 fields,
@@ -4559,10 +4621,10 @@ impl Analyzer<'_> {
             let intrinsic = match operator_name.split_once('/') {
                 Some((qualifier, name))
                     if matches!(qualifier, "cljs.core" | "clojure.core")
-                        || self
-                            .aliases
-                            .iter()
-                            .any(|(alias, target)| alias == qualifier && matches!(target.as_str(), "cljs.core" | "clojure.core")) =>
+                        || self.aliases.iter().any(|(alias, target)| {
+                            alias == qualifier
+                                && matches!(target.as_str(), "cljs.core" | "clojure.core")
+                        }) =>
                 {
                     name
                 }
@@ -4820,13 +4882,9 @@ impl Analyzer<'_> {
             let node = self.import_form(&lowered)?;
             return self.form(node, context);
         }
+        let snapshot = self.definition_snapshot().0;
         self.macro_host
-            .register_javascript_macro(
-                self.namespace,
-                &form,
-                self.definition_snapshot().0,
-                self.engine,
-            )
+            .register_javascript_macro(self.namespace, &form, snapshot, self.engine)
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
         Ok(self.push(ExprKind::Nil, self.syntax.nodes[id.0].span.clone(), context))
     }
@@ -5282,7 +5340,11 @@ impl Analyzer<'_> {
             if let Some((prefix, member)) = name.rsplit_once('.')
                 && !member.is_empty()
                 && (prefix == self.namespace
-                    || self.program.namespaces.iter().any(|loaded| loaded == prefix))
+                    || self
+                        .program
+                        .namespaces
+                        .iter()
+                        .any(|loaded| loaded == prefix))
             {
                 return self.resolve(id, &format!("{prefix}/{member}"));
             }
@@ -6054,13 +6116,13 @@ impl Analyzer<'_> {
     /// A deferred unit's definition-time environment, and what its resolution
     /// program shares with this one for appending the unit's analysis.
     fn definition_snapshot(
-        &self,
+        &mut self,
     ) -> (
         crate::compilation_session::DefinitionSnapshot,
         crate::program_fragment::SharedPrefix,
     ) {
         let (resolution_program, shared) =
-            crate::program_fragment::resolution_snapshot(&self.program);
+            crate::program_fragment::resolution_snapshot(&mut self.program);
         let snapshot = crate::compilation_session::DefinitionSnapshot {
             namespace: self.namespace.into(),
             aliases: self.aliases.to_vec(),
@@ -6092,14 +6154,13 @@ impl Analyzer<'_> {
                     kind: AnalysisErrorKind::MacroExpansion(message),
                 })
             })?;
-            let globals = self.program.globals.clone();
+            let defined = self.program.globals.len();
             // The unit was analyzed from a snapshot of this program, so only
-            // what it added is appended.
-            let root = crate::program_fragment::append(&mut self.program, &program, &shared);
-            // Snapshot metadata resolves references within the fragment, but must
-            // not roll back a later source declaration's live metadata/flags.
-            self.program.globals[..globals.len()].clone_from_slice(&globals);
-            for (index, global) in self.program.globals.iter().enumerate().skip(globals.len()) {
+            // what it added is appended. Its snapshot-time view of the shared
+            // globals must not roll back a later source declaration's live
+            // metadata/flags, so those stay as they are.
+            let root = crate::program_fragment::append(&mut self.program, &program, &shared, false);
+            for (index, global) in self.program.globals.iter().enumerate().skip(defined) {
                 self.globals.insert(
                     (global.namespace.clone(), global.name.clone()),
                     GlobalId(index),
@@ -7325,6 +7386,8 @@ impl Analyzer<'_> {
             .compiler_read_form(id)
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
         let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
+        let snapshot = self.definition_snapshot().0;
+        let analyzed = crate::program_fragment::expression_snapshot(&mut self.program, expr);
         session
             .register_bundle(
                 &self.program,
@@ -7333,13 +7396,10 @@ impl Analyzer<'_> {
                     extensions: &[],
                     once: false,
                     form,
-                    snapshot: self.definition_snapshot().0,
+                    snapshot,
                     host: self.macro_host.macro_analysis_frame(),
                     location: format!("{}:{}:{}", loc.source, loc.line, loc.column),
-                    analyzed: Some(crate::program_fragment::expression_snapshot(
-                        &self.program,
-                        expr,
-                    )),
+                    analyzed: Some(analyzed),
                 },
             )
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
@@ -7948,7 +8008,8 @@ impl Analyzer<'_> {
                     Some((qualifier, local))
                         if matches!(qualifier, "cljs.core" | "clojure.core")
                             || self.aliases.iter().any(|(alias, target)| {
-                                alias == qualifier && matches!(target.as_str(), "cljs.core" | "clojure.core")
+                                alias == qualifier
+                                    && matches!(target.as_str(), "cljs.core" | "clojure.core")
                             }) =>
                     {
                         local
@@ -8603,17 +8664,16 @@ impl Analyzer<'_> {
     }
 
     fn js_global(&mut self, path: Vec<String>) -> ExprKind {
-        let global = self
+        let existing = self
             .program
             .js_globals
             .iter()
-            .position(|global| global.path == path)
-            .map(JsGlobalId)
-            .unwrap_or_else(|| {
-                let id = JsGlobalId(self.program.js_globals.len());
-                self.program.js_globals.push(JsGlobal { path });
-                id
-            });
+            .position(|global| global.path == path);
+        let global = existing.map(JsGlobalId).unwrap_or_else(|| {
+            let id = JsGlobalId(self.program.js_globals.len());
+            self.program.js_globals.push(JsGlobal { path });
+            id
+        });
         ExprKind::JsGlobal(global)
     }
 
@@ -8957,7 +9017,9 @@ impl Analyzer<'_> {
         let core_alias = if let Some((qualifier, member)) = name.split_once('/') {
             self.aliases
                 .iter()
-                .find(|(alias, target)| alias == qualifier && matches!(target.as_str(), "cljs.core" | "clojure.core"))
+                .find(|(alias, target)| {
+                    alias == qualifier && matches!(target.as_str(), "cljs.core" | "clojure.core")
+                })
                 .map(|_| format!("cljs.core/{member}"))
         } else {
             self.resolution
@@ -9232,16 +9294,33 @@ impl Analyzer<'_> {
     }
 
     fn array_environment(
-        &self,
+        &mut self,
         environment: crate::compiler_data::Datum,
     ) -> Result<crate::compiler_data::Datum, String> {
         let c = crate::compiler_data::DataBuilder;
+        // A unit's own globals are not the compilation's; the ones it shares
+        // are its frozen prefix.
+        let shared = if self.deferred_unit {
+            self.program.globals.frozen()
+        } else {
+            self.program.globals.len()
+        };
+        let (seen, count) = self.namespace_globals;
+        let count = count
+            + self
+                .program
+                .globals
+                .range(seen.min(shared)..shared)
+                .filter(|g| g.namespace == self.namespace)
+                .count();
+        self.namespace_globals = (shared, count);
         let environment = self.macro_host.reader_environment(
             environment,
             self.namespace,
-            &self.resolution.refers,
-            &self.resolution.excludes,
+            &self.resolution,
             &self.program.globals,
+            shared,
+            count,
         )?;
         let environment = c.assoc(
             &environment,
@@ -9360,96 +9439,155 @@ impl Analyzer<'_> {
         if let Some(form) = self.generated.get(id.0).and_then(Option::as_ref) {
             return Ok(form.clone());
         }
+        self.update_reader_view();
+        let source = self.macro_source.as_ref().expect("reader view source");
+        let view = &self.reader_view.as_ref().expect("reader view").view;
+        self.macro_host
+            .lower_form_in_view(source, &self.syntax, id, view, &self.discards)
+    }
+
+    /// Build the reader's view of this namespace, or extend the one built for
+    /// an earlier form with the declarations since: bindings only grow, so
+    /// the view is rebuilt only when its aliases, refers, excludes or macros
+    /// changed.
+    fn update_reader_view(&mut self) {
+        use crate::compiler_data::Name;
+        use crate::compiler_reader::{BindingId, BindingKind, ResolvedBinding};
         let aliases = self
             .macro_host
             .reader_aliases(self.namespace, self.aliases, self.requires);
-        let globals = self.reader_bindings();
-        let source = self.macro_source.get_or_insert_with(|| {
-            Source::new(
-                self.resolution
-                    .source_name
-                    .as_deref()
-                    .unwrap_or(self.namespace),
-                self.source,
-            )
-        });
-        let mut view = crate::compiler_reader::NamespaceView::new(self.namespace, source);
-        view.aliases = aliases
-            .iter()
-            .map(|(a, n)| {
-                (
-                    crate::compiler_data::Name::new(None, a),
-                    crate::compiler_data::Name::new(None, n),
+        let refers =
+            self.resolution.refers.len() + self.macro_host.reader_refers(self.namespace).len();
+        let macros = self.macro_host.javascript_macros.len();
+        let excludes = self.resolution.excludes.len();
+        if self.reader_view.as_ref().is_some_and(|cache| {
+            cache.aliases != aliases
+                || cache.refers != refers
+                || cache.macros != macros
+                || cache.excludes != excludes
+        }) {
+            self.reader_view = None;
+        }
+        if self.reader_view.is_none() {
+            let globals = self.reader_bindings();
+            let source = self.macro_source.get_or_insert_with(|| {
+                Source::new(
+                    self.resolution
+                        .source_name
+                        .as_deref()
+                        .unwrap_or(self.namespace),
+                    self.source,
                 )
-            })
-            .collect();
-        view.refers = globals
-            .iter()
-            .map(|(a, n, v)| {
-                (
-                    crate::compiler_data::Name::new(None, a),
-                    crate::compiler_data::Name::new(Some(n), v),
-                )
-            })
-            .collect();
-        view.excludes = self
-            .resolution
-            .excludes
-            .iter()
-            .map(|n| crate::compiler_data::Name::new(None, n))
-            .collect();
-        self.macro_host.register_macro_view(&mut view);
-        let binding_kinds = self
-            .program
-            .exprs
-            .iter()
-            .filter_map(|expr| match &expr.kind {
-                ExprKind::DefProtocol { global, .. } => {
-                    Some((global.0, crate::compiler_reader::BindingKind::Protocol))
-                }
-                ExprKind::DefType { global, record, .. } => Some((
+            });
+            let mut view = crate::compiler_reader::NamespaceView::new(self.namespace, source);
+            view.aliases = aliases
+                .iter()
+                .map(|(a, n)| (Name::new(None, a), Name::new(None, n)))
+                .collect();
+            let mut refer_locals: HashMap<Name, Vec<Name>> = HashMap::new();
+            view.refers = globals
+                .iter()
+                .map(|(a, n, v)| {
+                    let (local, target) = (Name::new(None, a), Name::new(Some(n), v));
+                    refer_locals
+                        .entry(target.clone())
+                        .or_default()
+                        .push(local.clone());
+                    (local, target)
+                })
+                .collect();
+            view.excludes = self
+                .resolution
+                .excludes
+                .iter()
+                .map(|n| Name::new(None, n))
+                .collect();
+            self.macro_host.register_macro_view(&mut view);
+            self.reader_view = Some(ReaderView {
+                view,
+                globals: 0,
+                undeclared: Vec::new(),
+                exprs: self.first_expr,
+                kinds: HashMap::new(),
+                refer_locals,
+                aliases,
+                excludes,
+                refers,
+                macros,
+            });
+        }
+        let cache = self.reader_view.as_mut().unwrap();
+        // Declaration kinds from the expressions since the last form; a
+        // covered global whose kind changed is bound again.
+        let mut changed = Vec::new();
+        for expr in self.program.exprs.tail_from(cache.exprs) {
+            let (global, kind) = match &expr.kind {
+                ExprKind::DefProtocol { global, .. } => (global.0, BindingKind::Protocol),
+                ExprKind::DefType { global, record, .. } => (
                     global.0,
                     if *record {
-                        crate::compiler_reader::BindingKind::Record
+                        BindingKind::Record
                     } else {
-                        crate::compiler_reader::BindingKind::Type
+                        BindingKind::Type
                     },
-                )),
-                _ => None,
-            })
-            .collect::<HashMap<_, _>>();
-        for (index, global) in self
-            .program
-            .globals
-            .iter()
-            .enumerate()
-            .filter(|(_, g)| g.declared)
-        {
-            let qualified = crate::compiler_data::Name::new(Some(&global.namespace), &global.name);
-            let binding = crate::compiler_reader::ResolvedBinding {
-                id: crate::compiler_reader::BindingId(index),
-                kind: binding_kinds
+                ),
+                _ => continue,
+            };
+            if cache.kinds.insert(global, kind) != Some(kind) && global < cache.globals {
+                changed.push(global);
+            }
+        }
+        cache.exprs = self.program.exprs.len();
+        // The globals since the last form, and earlier ones declared only now.
+        let pending = std::mem::take(&mut cache.undeclared);
+        let added = cache.globals..self.program.globals.len();
+        cache.globals = self.program.globals.len();
+        for index in added.clone() {
+            let global = &self.program.globals[index];
+            if global.namespace == self.namespace {
+                let (local, target) = (
+                    Name::new(None, &global.name),
+                    Name::new(Some(&global.namespace), &global.name),
+                );
+                cache
+                    .refer_locals
+                    .entry(target.clone())
+                    .or_default()
+                    .push(local.clone());
+                cache.view.refers.insert(local, target);
+            }
+        }
+        for index in pending.into_iter().chain(added).chain(changed) {
+            let global = &self.program.globals[index];
+            if !global.declared {
+                cache.undeclared.push(index);
+                continue;
+            }
+            let qualified = Name::new(Some(&global.namespace), &global.name);
+            let binding = ResolvedBinding {
+                id: BindingId(index),
+                kind: cache
+                    .kinds
                     .get(&index)
                     .copied()
-                    .unwrap_or(crate::compiler_reader::BindingKind::Value),
+                    .unwrap_or(BindingKind::Value),
                 name: qualified.clone(),
             };
-            view.bindings.insert(qualified.clone(), binding.clone());
+            cache
+                .view
+                .bindings
+                .insert(qualified.clone(), binding.clone());
             if global.namespace == self.namespace {
-                view.bindings.insert(
-                    crate::compiler_data::Name::new(None, &global.name),
-                    binding.clone(),
-                );
+                cache
+                    .view
+                    .bindings
+                    .insert(Name::new(None, &global.name), binding.clone());
             }
-            for (local, target) in &view.refers {
-                if target == &qualified {
-                    view.bindings.insert(local.clone(), binding.clone());
-                }
+            for local in cache.refer_locals.get(&qualified).into_iter().flatten() {
+                cache.view.bindings.insert(local.clone(), binding.clone());
             }
-            view.declaration_frontier = view.declaration_frontier.max(index + 1);
+            cache.view.declaration_frontier = cache.view.declaration_frontier.max(index + 1);
         }
-        self.macro_host
-            .lower_form_in_view(source, &self.syntax, id, &view, &self.discards)
     }
     fn expand_reader(&mut self, id: NodeId) -> Result<NodeId, AnalysisError> {
         self.check_compiler_sets(id)?;
@@ -10624,7 +10762,7 @@ impl Analyzer<'_> {
             self.recur_target = previous;
             let body = body?;
             let mut captures = Vec::new();
-            for expr in &self.program.exprs[first_expr..] {
+            for expr in self.program.exprs.tail_from(first_expr) {
                 if let ExprKind::Local(local) = expr.kind
                     && outer.contains(&local)
                     && !captures.contains(&local)
