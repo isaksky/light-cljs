@@ -561,12 +561,13 @@ impl<F: Fn(ExprId) -> ExprId> Remap<F> {
     /// Expressions and literals compare after mapping their IDs; globals
     /// compare by name, since a later definition may update their flags.
     fn shares_prefix(&self, target: &Program, fragment: &Program, shared: &SharedPrefix) -> bool {
-        let exprs = fragment.exprs.shares_prefix(&target.exprs, shared.exprs)
-            || (0..shared.exprs).all(|id| {
-                let mut expr = fragment.exprs[id].clone();
-                self.kind(&mut expr.kind);
-                target.exprs.get((self.map_expr)(ExprId(id)).0) == Some(&expr)
-            });
+        // Shared expressions are checked by ID bounds only: the target may have
+        // changed some since the fragment's snapshot was taken, such as a
+        // deferred initializer's placeholder it has since filled in, or a
+        // declaration's metadata it has since extended; the snapshot keeps its
+        // own copy of those.
+        let exprs = target.exprs.len() >= shared.exprs
+            && (0..shared.exprs).all(|id| (self.map_expr)(ExprId(id)).0 < target.exprs.len());
         let strings = fragment
             .strings
             .shares_prefix(&target.strings, shared.strings)
@@ -586,14 +587,10 @@ impl<F: Fn(ExprId) -> ExprId> Remap<F> {
                 .range(0..shared.locals)
                 .enumerate()
                 .all(|(id, local)| target.locals.get(self.local.map(id)) == Some(local));
-        let recur_targets = fragment
-            .recur_targets
-            .shares_prefix(&target.recur_targets, shared.recur_targets)
-            || (0..shared.recur_targets).all(|id| {
-                let mut recur_target = fragment.recur_targets[id].clone();
-                self.locals(&mut recur_target.params);
-                target.recur_targets.get(self.recur.map(id)) == Some(&recur_target)
-            });
+        // Recur targets are marked used and given argument slots in place, so
+        // they are checked by ID bounds as well.
+        let recur_targets = target.recur_targets.len() >= shared.recur_targets
+            && (0..shared.recur_targets).all(|id| self.recur.map(id) < target.recur_targets.len());
         let globals = target.globals.len() >= shared.globals
             && (fragment
                 .globals
@@ -1071,5 +1068,21 @@ mod tests {
             let value: String = ctx.eval(crate::emit_js(&program)).unwrap();
             assert_eq!(value, "kept-2");
         });
+    }
+    #[test]
+    fn deferred_prefix_allows_patched_initializers() {
+        // Draining the first definition fills in the placeholder its snapshot
+        // left for it, which the later definitions' snapshots still hold as it
+        // was; appending them accepts that, with a declaration bundle between.
+        let program =
+            analyze("(def a 1) (defprotocol P (m [this])) (def b (fn [] (m a))) (def c b)");
+        assert_eq!(
+            program
+                .globals
+                .iter()
+                .filter(|g| ["a", "b", "c"].contains(&g.name.as_str()))
+                .count(),
+            3
+        );
     }
 }

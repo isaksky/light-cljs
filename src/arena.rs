@@ -363,3 +363,58 @@ impl<'a, T: Clone> IntoIterator for &'a mut Arena<T> {
         self.iter_mut()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Arena;
+
+    #[test]
+    fn frozen_versions_preserve_values_and_ids() {
+        let mut arena = Arena::new();
+        let mut oracle = Vec::new();
+        let mut versions = Vec::new();
+        for round in 0..40u32 {
+            for i in 0..(round % 5 + 1) {
+                arena.push(round * 10 + i);
+                oracle.push(round * 10 + i);
+            }
+            arena.freeze();
+            versions.push((arena.clone(), oracle.clone()));
+        }
+        assert!(arena.chunks.len() <= 10, "{} chunks", arena.chunks.len());
+        for (version, expected) in &versions {
+            assert_eq!(version.len(), expected.len());
+            assert_eq!(version.iter().copied().collect::<Vec<_>>(), *expected);
+            assert!((0..expected.len()).all(|id| version[id] == expected[id]));
+            let (start, end) = (3.min(expected.len()), expected.len().min(17));
+            assert_eq!(
+                version.range(start..end).copied().collect::<Vec<_>>(),
+                expected[start..end]
+            );
+            assert_eq!(version.last(), expected.last());
+        }
+    }
+
+    #[test]
+    fn frozen_clone_mutation_and_truncation_are_isolated() {
+        let mut arena: Arena<u32> = (0..10).collect();
+        arena.freeze();
+        let snapshot = arena.clone();
+        arena[3] = 33;
+        *arena.get_mut(4).unwrap() = 44;
+        for value in arena.iter_mut() {
+            *value += 100;
+        }
+        arena.extend([7, 8]);
+        arena.truncate(6);
+        assert_eq!(arena.to_vec(), vec![100, 101, 102, 133, 144, 105]);
+        assert_eq!(snapshot.to_vec(), (0..10).collect::<Vec<_>>());
+        let mut again = snapshot.clone();
+        again.truncate(4);
+        again.push(99);
+        assert_eq!(again.to_vec(), vec![0, 1, 2, 3, 99]);
+        assert_eq!(snapshot.to_vec(), (0..10).collect::<Vec<_>>());
+        assert!(snapshot.shares_prefix(&snapshot.clone(), 10));
+        assert!(!again.shares_prefix(&snapshot, 4));
+    }
+}

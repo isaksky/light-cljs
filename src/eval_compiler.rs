@@ -402,28 +402,17 @@ impl InteractiveCompiler {
                 &self.requires,
                 (1, 1),
             )?;
-            let empty = crate::arena::Arena::new();
-            let globals = self.program.as_ref().map_or(&empty, |p| &p.globals);
-            let visible = globals
-                .iter()
-                .filter(|g| g.namespace == self.namespace)
-                .count();
-            let env = self.host.reader_environment(
-                env,
-                &self.namespace,
-                &self.resolution,
-                globals,
-                globals.len(),
-                visible,
-            )?;
             let next = if self.host.has_javascript_macro(&self.namespace, &target) {
-                Some(self.host.expand_source_javascript(
+                let (env, registration) = self.reader_environment(env)?;
+                let expanded = self.host.expand_source_javascript(
                     &self.namespace,
                     &target,
                     &form,
                     &env,
                     None,
-                )?)
+                )?;
+                self.host.register_reader_declarations(registration);
+                Some(expanded)
             } else {
                 match self.host.macro_name(&self.namespace, &target, shadow) {
                     Some((ns, name)) if ns == "cljs.core" || ns == "clojure.core" => {
@@ -433,7 +422,11 @@ impl InteractiveCompiler {
                         {
                             Some(expanded)
                         } else {
-                            Some(self.host.expand_core_javascript(&name, &form, &env, None)?)
+                            let (env, registration) = self.reader_environment(env)?;
+                            let expanded =
+                                self.host.expand_core_javascript(&name, &form, &env, None)?;
+                            self.host.register_reader_declarations(registration);
+                            Some(expanded)
                         }
                     }
                     _ => None,
@@ -535,6 +528,35 @@ impl NamePolicy {
     }
 }
 impl InteractiveCompiler {
+    /// `environment` with the reader context of the session's namespace. The
+    /// context registers declarations with the macro session, so only an
+    /// expansion the session runs builds one, and records the registration
+    /// afterwards.
+    fn reader_environment(
+        &self,
+        environment: crate::compiler_data::Datum,
+    ) -> Result<
+        (
+            crate::compiler_data::Datum,
+            Option<crate::macro_host::ReaderRegistration>,
+        ),
+        String,
+    > {
+        let empty = crate::arena::Arena::new();
+        let globals = self.program.as_ref().map_or(&empty, |p| &p.globals);
+        let visible = globals
+            .iter()
+            .filter(|g| g.namespace == self.namespace)
+            .count();
+        self.host.reader_environment(
+            environment,
+            &self.namespace,
+            &self.resolution,
+            globals,
+            globals.len(),
+            visible,
+        )
+    }
     fn check_policy(&self, program: &Program, start: usize) -> Result<(), AnalysisError> {
         for expression in program.exprs.tail_from(start) {
             let denied = match &expression.kind {

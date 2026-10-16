@@ -79,8 +79,10 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
     {
         if !self.own.contains_key(key) {
             let value = self.base.get(key)?.clone();
-            self.own.insert(key.to_owned(), Some(value));
+            // Compact first: the entry must stay in the own layer to be
+            // returned from it.
             self.compact();
+            self.own.insert(key.to_owned(), Some(value));
         }
         self.own.get_mut(key)?.as_mut()
     }
@@ -176,5 +178,39 @@ impl<K: Eq + Hash + Clone, V: Clone> FromIterator<(K, V)> for Layered<K, V> {
             base: Rc::new(base),
             own: HashMap::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Layered;
+
+    #[test]
+    fn get_mut_survives_compaction_boundary() {
+        let mut map: Layered<String, Vec<u32>> =
+            (0..100).map(|i| (format!("k{i}"), vec![i])).collect();
+        let frame = map.clone();
+        // 64 + isqrt(100) own entries fit; the next write crosses the bound.
+        for i in 100..174 {
+            map.insert(format!("k{i}"), vec![i]);
+        }
+        map.get_mut("k5").unwrap().push(99);
+        assert_eq!(map.get("k5"), Some(&vec![5, 99]));
+        map.entry_or_default("k7".to_owned()).push(7);
+        assert_eq!(map.get("k7"), Some(&vec![7, 7]));
+        map.entry_or_default("new".to_owned()).push(1);
+        assert_eq!(map.get("new"), Some(&vec![1]));
+        assert_eq!(map.len(), 175);
+        assert_eq!(map.iter().count(), 175);
+        assert_eq!(map.remove("k5"), Some(vec![5, 99]));
+        assert!(!map.contains_key("k5"));
+        assert_eq!(map.len(), 174);
+        assert_eq!(map.keys().count(), 174);
+        assert_eq!(frame.get("k5"), Some(&vec![5]));
+        assert_eq!(frame.get("k7"), Some(&vec![7]));
+        assert_eq!(frame.len(), 100);
+        map.clear();
+        assert_eq!(map.len(), 0);
+        assert_eq!(frame.len(), 100);
     }
 }

@@ -125,15 +125,16 @@ fn named_function_macro_environments_capture_boolean_array_settings() {
              (= #{:refers :excludes :bindings :declared :visible} (set (keys reader)))
              (= [] (:refers reader))
              (= [] (:excludes reader))
-             (and (= ["inspect"] (:bindings reader))
-                  (= expected-visible (:visible reader))
-                  (let [declared (:declared reader)]
-                    (and (integer? (:generation declared))
-                         (integer? (:from declared))
-                         (vector? (:names declared))
-                         (every? string? (:names declared))
-                         (<= expected-visible
-                             (+ (:from declared) (count (:names declared)))))))
+             (let [declared (:declared reader)
+                   from (:from declared)
+                   names (:names declared)
+                   all ["named-default" "self-default" "named-enabled"
+                        "self-enabled" "named-reset" "self-reset"]]
+               (and (= ["inspect"] (:bindings reader))
+                    (= expected-visible (:visible reader))
+                    (integer? (:generation declared))
+                    (<= expected-visible (+ from (count names)) (count all))
+                    (= names (subvec all from (+ from (count names))))))
              (and (= 'cljs.user (:name (:ns &env)))
                   (= :cljs.user/probe (read-string "::probe"))
                   (= 'cljs.core/map (second (read-string "`map"))))])))

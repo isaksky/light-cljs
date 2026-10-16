@@ -739,3 +739,58 @@ fn anonymous_bindings_retain_source_and_expansion_provenance() {
         symbol(&reused.children()[2].children()[0])
     );
 }
+
+/// The program of `entry` over in-memory namespace sources.
+fn namespace_program(entry: &str, files: &[(&str, &str)]) -> light_cljs::Program {
+    use light_cljs::source_provider::{LoadError, LoadRequest, SourceInput};
+    let provider = |request: &LoadRequest| -> Result<Option<SourceInput>, LoadError> {
+        let relative = String::from_utf16_lossy(request.namespace.name())
+            .replace('.', "/")
+            .replace('-', "_");
+        Ok(files
+            .iter()
+            .find(|(path, _)| {
+                path.strip_suffix(".cljs")
+                    .or_else(|| path.strip_suffix(".cljc"))
+                    .is_some_and(|stem| stem == relative)
+            })
+            .map(|(path, source)| SourceInput::new(*path, *source)))
+    };
+    light_cljs::compiler::analyze_namespace_entry_with_provider(
+        entry,
+        &provider,
+        &mut MacroHost::new(),
+        light_cljs::analyzer::AnalysisOptions::default(),
+        &mut Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("{error}"))
+}
+
+#[test]
+fn local_macro_shadows_referred_value_in_syntax_quote() {
+    // A macro declared after a refer of the same name wins both in the
+    // compiler's reader (the call expands) and in the macro session's
+    // (syntax-quote qualifies to this namespace), also once the referred
+    // Var is declared in the reader's view.
+    let program = namespace_program(
+        "app",
+        &[
+            ("dep.cljs", "(ns dep) (defn value [] 1)"),
+            (
+                "app.cljs",
+                "(ns app (:require [dep :refer [value]]))
+                 (defmacro value [] 2)
+                 (defmacro resolved [] (list 'quote (second (read-string \"`value\"))))
+                 (def answer (value))
+                 [answer (resolved) (dep/value)]",
+            ),
+        ],
+    );
+    let e =
+        light_cljs::evaluator::Evaluator::new(light_cljs::evaluator::EvaluatorOptions::default())
+            .unwrap();
+    assert_eq!(
+        e.print(e.evaluate(&program).unwrap()).unwrap(),
+        "[2 app/value 1]"
+    );
+}

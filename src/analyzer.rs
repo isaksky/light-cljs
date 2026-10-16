@@ -2908,6 +2908,9 @@ struct Analyzer<'a> {
     /// How many of the shared globals seen so far are this namespace's own:
     /// the count up to a position, for macro environments.
     namespace_globals: (usize, usize),
+    /// What the last macro environment built names for the session, recorded
+    /// once an expansion has used it.
+    pending_reader_registration: Option<crate::macro_host::ReaderRegistration>,
 }
 
 /// The reader's view of an analyzer's namespace, kept between forms and
@@ -2923,11 +2926,9 @@ struct ReaderView {
     kinds: HashMap<usize, crate::compiler_reader::BindingKind>,
     /// The locals referring to each qualified name.
     refer_locals: HashMap<crate::compiler_data::Name, Vec<crate::compiler_data::Name>>,
-    /// The inputs a view is rebuilt for rather than extended with.
-    aliases: Vec<(String, String)>,
-    excludes: usize,
-    refers: usize,
-    macros: usize,
+    /// A hash of the inputs a view is rebuilt for rather than extended with:
+    /// the aliases, refers, excludes and macro count.
+    inputs: u64,
 }
 
 fn compiler_syntax<'a>(source: &str, syntax: &'a SyntaxTree) -> (Cow<'a, SyntaxTree>, Vec<NodeId>) {
@@ -3235,6 +3236,7 @@ fn analyze_input(
         deferred_unit: false,
         reader_view: None,
         namespace_globals: (0, 0),
+        pending_reader_registration: None,
     };
     if let Some(previous) = previous {
         analyzer.program = previous.clone();
@@ -3524,6 +3526,7 @@ impl NamespaceAnalysis {
             deferred_unit: false,
             reader_view: None,
             namespace_globals: (0, 0),
+            pending_reader_registration: None,
         };
         analyzer.first_expr = analyzer.program.exprs.len();
         for (local, namespace, original) in &analyzer.resolution.refers.clone() {
@@ -9082,6 +9085,8 @@ impl Analyzer<'_> {
                 .macro_host
                 .expand_source_javascript(self.namespace, target, &form, &env, self.engine)
                 .map_err(error)?;
+            self.macro_host
+                .register_reader_declarations(self.pending_reader_registration.take());
             return self.import_form(&result).map(Some);
         }
         // Canonical quoted source calls expand during analysis in either phase.
@@ -9177,6 +9182,8 @@ impl Analyzer<'_> {
                 .macro_host
                 .expand_core_javascript(&core_name, &form, &environment, self.engine)
                 .map_err(error)?;
+            self.macro_host
+                .register_reader_declarations(self.pending_reader_registration.take());
             return self.import_form(&expanded).map(Some);
         }
         Ok(None)
@@ -9314,7 +9321,7 @@ impl Analyzer<'_> {
                 .filter(|g| g.namespace == self.namespace)
                 .count();
         self.namespace_globals = (shared, count);
-        let environment = self.macro_host.reader_environment(
+        let (environment, registration) = self.macro_host.reader_environment(
             environment,
             self.namespace,
             &self.resolution,
@@ -9322,6 +9329,7 @@ impl Analyzer<'_> {
             shared,
             count,
         )?;
+        self.pending_reader_registration = registration;
         let environment = c.assoc(
             &environment,
             &c.keyword(crate::compiler_data::Name::new(
@@ -9456,16 +9464,23 @@ impl Analyzer<'_> {
         let aliases = self
             .macro_host
             .reader_aliases(self.namespace, self.aliases, self.requires);
-        let refers =
-            self.resolution.refers.len() + self.macro_host.reader_refers(self.namespace).len();
-        let macros = self.macro_host.javascript_macros.len();
-        let excludes = self.resolution.excludes.len();
-        if self.reader_view.as_ref().is_some_and(|cache| {
-            cache.aliases != aliases
-                || cache.refers != refers
-                || cache.macros != macros
-                || cache.excludes != excludes
-        }) {
+        let inputs = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            aliases.hash(&mut hasher);
+            self.resolution.refers.hash(&mut hasher);
+            self.macro_host
+                .reader_refers(self.namespace)
+                .hash(&mut hasher);
+            self.resolution.excludes.hash(&mut hasher);
+            self.macro_host.javascript_macros.len().hash(&mut hasher);
+            hasher.finish()
+        };
+        if self
+            .reader_view
+            .as_ref()
+            .is_some_and(|cache| cache.inputs != inputs)
+        {
             self.reader_view = None;
         }
         if self.reader_view.is_none() {
@@ -9484,18 +9499,19 @@ impl Analyzer<'_> {
                 .iter()
                 .map(|(a, n)| (Name::new(None, a), Name::new(None, n)))
                 .collect();
-            let mut refer_locals: HashMap<Name, Vec<Name>> = HashMap::new();
             view.refers = globals
                 .iter()
-                .map(|(a, n, v)| {
-                    let (local, target) = (Name::new(None, a), Name::new(Some(n), v));
-                    refer_locals
-                        .entry(target.clone())
-                        .or_default()
-                        .push(local.clone());
-                    (local, target)
-                })
+                .map(|(a, n, v)| (Name::new(None, a), Name::new(Some(n), v)))
                 .collect();
+            // By target, the locals referring to it, from the final mapping: a
+            // later entry for a local replaces an earlier one.
+            let mut refer_locals: HashMap<Name, Vec<Name>> = HashMap::new();
+            for (local, target) in &view.refers {
+                refer_locals
+                    .entry(target.clone())
+                    .or_default()
+                    .push(local.clone());
+            }
             view.excludes = self
                 .resolution
                 .excludes
@@ -9510,10 +9526,7 @@ impl Analyzer<'_> {
                 exprs: self.first_expr,
                 kinds: HashMap::new(),
                 refer_locals,
-                aliases,
-                excludes,
-                refers,
-                macros,
+                inputs,
             });
         }
         let cache = self.reader_view.as_mut().unwrap();
@@ -9549,12 +9562,12 @@ impl Analyzer<'_> {
                     Name::new(None, &global.name),
                     Name::new(Some(&global.namespace), &global.name),
                 );
-                cache
-                    .refer_locals
-                    .entry(target.clone())
-                    .or_default()
-                    .push(local.clone());
-                cache.view.refers.insert(local, target);
+                if let Some(previous) = cache.view.refers.insert(local.clone(), target.clone())
+                    && let Some(locals) = cache.refer_locals.get_mut(&previous)
+                {
+                    locals.retain(|name| *name != local);
+                }
+                cache.refer_locals.entry(target).or_default().push(local);
             }
         }
         for index in pending.into_iter().chain(added).chain(changed) {

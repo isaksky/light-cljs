@@ -79,6 +79,21 @@ pub struct MacroHost {
     pub(crate) reader_generation: u64,
 }
 
+/// Every compilation in the process gets its own reader generation, so a
+/// fresh host never reuses the declarations an earlier one registered.
+static READER_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The declarations a macro environment names for its session, recorded with
+/// [`MacroHost::register_reader_declarations`] once the environment reached it.
+#[derive(Clone, Debug)]
+pub(crate) struct ReaderRegistration {
+    namespace: String,
+    /// The globals up to this position are registered.
+    position: usize,
+    /// How many of them the namespace declared.
+    visible: usize,
+}
+
 #[derive(Default)]
 struct CompilerDataReaders {
     units: HashMap<Name, String>,
@@ -635,7 +650,8 @@ impl MacroHost {
         self.expansions = Default::default();
         self.generated_nodes = Default::default();
         self.reader_declared = Default::default();
-        self.reader_generation += 1;
+        self.reader_generation =
+            READER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.runtime_vars.clear();
         self.namespace_imports.clear();
     }
@@ -1104,11 +1120,12 @@ impl MacroHost {
         globals: &crate::arena::Arena<crate::GlobalBinding>,
         shared: usize,
         visible: usize,
-    ) -> Result<crate::compiler_data::Datum, String> {
+    ) -> Result<(crate::compiler_data::Datum, Option<ReaderRegistration>), String> {
         let c = crate::compiler_data::DataBuilder;
         let string = |s: &str| c.string(s.encode_utf16().collect::<Vec<_>>());
         let key = |s| c.keyword(Name::new(None, s));
         let (refers, excludes) = (&resolution.refers, &resolution.excludes);
+        let mut registration = None;
         let (position, count) = self
             .reader_declared
             .borrow()
@@ -1123,9 +1140,11 @@ impl MacroHost {
                 .map(|g| string(&g.name))
                 .collect();
             debug_assert_eq!(count + names.len(), visible);
-            self.reader_declared
-                .borrow_mut()
-                .insert(namespace.to_owned(), (shared, visible));
+            registration = Some(ReaderRegistration {
+                namespace: namespace.to_owned(),
+                position: shared,
+                visible,
+            });
         }
         let declared = c
             .map(&[
@@ -1174,11 +1193,26 @@ impl MacroHost {
                 ),
             ])
             .map_err(|e| e.to_string())?;
-        c.assoc(
+        let environment = c.assoc(
             &environment,
             &c.keyword(Name::new(Some("light-cljs"), "reader-context")),
             &context,
-        )
+        )?;
+        Ok((environment, registration))
+    }
+
+    /// Record that the macro session holds the declarations an environment
+    /// from [`Self::reader_environment`] named, once it has reached the
+    /// session: an environment that was not sent registers nothing.
+    pub(crate) fn register_reader_declarations(&self, registration: Option<ReaderRegistration>) {
+        let Some(registration) = registration else {
+            return;
+        };
+        let mut declared = self.reader_declared.borrow_mut();
+        let entry = declared.entry(registration.namespace).or_insert((0, 0));
+        if registration.position >= entry.0 {
+            *entry = (registration.position, registration.visible);
+        }
     }
 
     pub fn compiler_environment(

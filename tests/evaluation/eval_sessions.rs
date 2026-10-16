@@ -885,3 +885,20 @@ fn unhandled_promise_rejections_are_reported_after_the_jobs() {
     assert_eq!(printed(&mut s, ":clean"), ":clean");
     assert!(s.take_unhandled_rejections().is_empty());
 }
+#[test]
+fn macroexpand_seed_preserves_pending_reader_declarations() {
+    // Expansions the macro session does not run (compiler seeds, nonmacro
+    // calls) must not consume a declaration's registration, or a later
+    // expansion would not see it declared.
+    let mut s = EvalSession::new(EvalOptions::default()).unwrap();
+    assert_eq!(
+        printed(
+            &mut s,
+            "(defmacro probe [] (list 'quote (second (read-string \"`map\")))) (def map 1) nil"
+        ),
+        "nil"
+    );
+    assert!(printed(&mut s, "(macroexpand '(let [x 1] x))").contains("x 1"));
+    assert_eq!(printed(&mut s, "(macroexpand '(+ 1 2))"), "(+ 1 2)");
+    assert_eq!(printed(&mut s, "(probe)"), "cljs.user/map");
+}
