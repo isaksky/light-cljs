@@ -1722,17 +1722,22 @@ fn prepare_source(
                 .find(|(from, _)| from == original)
                 .map(|(_, to)| to)
                 .unwrap_or(original);
+            let refer = (
+                local.clone(),
+                spec.import.namespace.clone(),
+                original.clone(),
+            );
+            // The same refer twice is one refer, as upstream reads it.
+            if resolution.refers.contains(&refer) {
+                continue;
+            }
             if resolution.refers.iter().any(|(name, _, _)| name == local) {
                 return Err(error(
                     spec.span.clone(),
                     format!("duplicate or conflicting refer: {local}"),
                 ));
             }
-            resolution.refers.push((
-                local.clone(),
-                spec.import.namespace.clone(),
-                original.clone(),
-            ));
+            resolution.refers.push(refer);
         }
     }
     for (local, namespace, original) in &file.resolution.refers {

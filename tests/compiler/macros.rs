@@ -374,6 +374,7 @@ fn macro_import_validation_and_loader_failures_are_located() {
         "macros.cljs",
         "(ns macros) (def value 1) (defmacro hidden {:private true} [] 4) (defmacro visible [] 5)",
     );
+    s.write("other.cljs", "(ns other) (def visible 2)");
     for (header, message) in [
         (
             "(:require [macros :refer [missing]])",
@@ -381,7 +382,7 @@ fn macro_import_validation_and_loader_failures_are_located() {
         ),
         ("(:require [macros :refer [hidden]])", "private"),
         (
-            "(:require [macros :refer [visible visible]])",
+            "(:require [macros :refer [visible]] [other :refer [visible]])",
             "duplicate or conflicting refer",
         ),
         ("(:require [missing :as m])", "not found"),
@@ -396,6 +397,12 @@ fn macro_import_validation_and_loader_failures_are_located() {
         assert!(error.path.unwrap().ends_with("main.cljs"));
         assert!(error.span.is_some());
     }
+    // The same refer twice is one refer, as upstream reads it.
+    s.write(
+        "main.cljs",
+        "(ns main (:require [macros :refer [value value]])) value",
+    );
+    assert_eq!(result(&s.compile("main").unwrap()), "1\n");
     s.write(
         "main.cljs",
         "(ns main (:require [macros :as m])) (m/visible)",
