@@ -1,0 +1,1 @@
+Both sampled v12 output and the cached-count trial match phase42 main-none byte for byte. Explicit ESM syntax rejection is a known baseline defect documented in phase44.

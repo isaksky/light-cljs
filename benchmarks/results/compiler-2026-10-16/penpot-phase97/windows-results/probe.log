@@ -1,0 +1,8 @@
+﻿g++.exe (Rev4, Built by MSYS2 project) 16.2.0
+Copyright (C) 2026 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+main: reservation=2097152 available=2094752 committed=2097152
+one-MiB worker: reservation=1048576 available=1046592 committed=1048576
+PASS: exact production shim, stable bounds through 256 KiB recursion and one-MiB worker

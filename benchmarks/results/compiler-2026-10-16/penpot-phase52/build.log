@@ -1,0 +1,6 @@
+    Updating crates.io index
+     Locking 2 packages to highest Rust 1.99.0 compatible versions
+      Adding libmimalloc-sys v0.1.49
+      Adding mimalloc v0.1.52
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase52/project)
+    Finished `release` profile [optimized] target(s) in 9.03s

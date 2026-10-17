@@ -1,0 +1,1 @@
+All compiler, runtime, test, vendor, bench and build inputs match the candidate that passed 1403 tests, strict Clippy, formatting and three Node workflows. The evaluator documentation was updated after validation.

@@ -56,6 +56,118 @@ fn every_level(source: &str, expected: &str) {
     }
 }
 
+#[test]
+fn existing_sequences_dispatch_only_the_requested_protocol() {
+    // Pinned core.cljs: first/rest dispatch ISeq directly. IndexedSeq and
+    // NodeSeq implement INext independently of ISeq's rest and ISeqable's seq.
+    let body = r#"(let [calls (atom [])
+                       s (specify! (seq [10 20 30])
+                           ISeqable (-seq [this] (swap! calls conj :seq) this))
+                       a [(first s) (into [] (rest s)) (into [] (next s)) @calls]
+                       s (specify! (seq [10 20 30])
+                           ISeq (-first [_] 99) (-rest [_] (list 88)))
+                       b [(first s) (into [] (rest s)) (into [] (next s))]
+                       s (specify! (seq [10 20 30])
+                           INext (-next [_] (list 77)))
+                       m (into {} (map (fn [x] [x x]) (range 20)))
+                       s0 (seq m)
+                       s1 (specify! s0 ISeqable (-seq [this] (swap! calls conj :map-seq) this))]
+                   [a b (into [] (next s))
+                    [(count (rest s1)) (count (next s1)) @calls]])"#;
+    let expected = "[[10 [20 30] [20 30] []] [99 [88] [20 30]] [77] [19 19 []]]";
+    every_level(&format!("(pr-str {body})"), expected);
+    // The same native sequence implementations are used inside source macros.
+    every_level(
+        &format!("(defmacro result [] (list 'quote {body})) (pr-str (result))"),
+        expected,
+    );
+}
+
+#[test]
+fn record_field_lookup_uses_keyword_identity_without_equivalence_dispatch() {
+    // Upstream defrecord uses keyword case for lookup/contains and
+    // keyword-identical? for assoc. An IEquiv override cannot name a field.
+    let body = r#"(let [calls (atom 0)
+                       key (specify! (keyword "y")
+                             IEquiv (-equiv [_ _] (swap! calls inc) true))
+                       unknown (specify! (keyword "missing")
+                                 IEquiv (-equiv [_ _] (swap! calls inc) true))
+                       impostor (reify IEquiv (-equiv [_ _] (swap! calls inc) true)
+                                       IHash (-hash [_] 0))
+                       record (->R 10 20)
+                       associated (assoc record key 30)
+                       extra (assoc record unknown 40)]
+                   [(get record key :missing) (contains? record key)
+                    (get record unknown :missing) (contains? record unknown)
+                    (get record impostor :missing) (contains? record impostor)
+                    [(.-x associated) (.-y associated)]
+                    [(.-x extra) (.-y extra) (count extra)] @calls])"#;
+    let expected = "[20 true :missing false :missing false [10 30] [10 20 3] 0]";
+    every_level(&format!("(defrecord R [x y]) (pr-str {body})"), expected);
+    every_level(
+        &format!("(defrecord R [x y]) (defmacro result [] (list 'quote {body})) (pr-str (result))"),
+        expected,
+    );
+}
+
+#[test]
+fn list_construction_keeps_intrinsic_count_while_public_count_remains_live() {
+    // Pinned List.-conj increments its stored count; list construction never
+    // asks ICounted for the size of its newly allocated tail. Public count
+    // still observes a method installed on List.prototype.
+    // Declare the extension so Advanced retains its public dispatch hooks.
+    let body = r#"(do (extend-type List ICounted (-count [xs] (.-count xs)))
+                     (let [prototype (.-prototype List)
+                       slot "cljs$core$ICounted$_count$arity$1"
+                       previous (js/Object.getOwnPropertyDescriptor prototype slot)
+                       calls (atom 0)
+                       value (atom nil)
+                       observed (atom nil)]
+                   (try
+                     (js/Object.defineProperty prototype slot
+                       #js {:configurable true :writable true
+                            :value (fn [_] (swap! calls inc) 999)})
+                     (reset! value (list 10 20 30))
+                     (reset! observed (count @value))
+                     (finally
+                       (if previous
+                         (js/Object.defineProperty prototype slot previous)
+                         (js-delete prototype slot))))
+                   [@calls @observed (count @value) (into [] @value)]))"#;
+    let expected = "[1 999 3 [10 20 30]]";
+    every_level(&format!("(pr-str {body})"), expected);
+    every_level(
+        &format!("(defmacro result [] (list 'quote {body})) (pr-str (result))"),
+        expected,
+    );
+}
+
+#[test]
+fn selected_protocol_missing_method_does_not_fall_back_after_a_getter_mutation() {
+    // Pinned core.cljs get commits to -lookup after its membership test.
+    // A method getter can remove the marker; that cannot turn a missing method
+    // into a missing key or suppress a method the getter actually returns.
+    let body = r#"(let [run (fn [found]
+                             (let [value (specify! (js-obj)
+                                           ILookup
+                                           (-lookup [_ _] :two)
+                                           (-lookup [_ _ _] :three))]
+                               (js/Object.defineProperty
+                                 value "cljs$core$ILookup$_lookup$arity$3"
+                                 #js {:get (fn []
+                                             (js-delete value "cljs$core$ILookup$")
+                                             (if found (fn [_ _ _] :found) nil))})
+                               (try (get value :key :fallback)
+                                    (catch :default error (.-message error)))))]
+                         [(run false) (run true)])"#;
+    let expected = r#"["No protocol method ILookup/-lookup defined for this value" :found]"#;
+    every_level(&format!("(pr-str {body})"), expected);
+    every_level(
+        &format!("(defmacro result [] (list 'quote {body})) (pr-str (result))"),
+        expected,
+    );
+}
+
 /// The runtime units an `Advanced` program embeds.
 fn units(source: &str) -> Vec<&'static str> {
     advanced(source)

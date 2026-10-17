@@ -16,6 +16,8 @@ pub(crate) struct DefinitionSnapshot {
     pub requires: Vec<String>,
     pub resolution: NamespaceResolution,
     pub resolution_program: Program,
+    pub global_names: crate::name_index::NameIndex,
+    pub namespace_globals: (usize, crate::arena::Arena<crate::analyzer::GlobalId>),
     pub options: AnalysisOptions,
     pub unchecked_arrays: bool,
     pub source_index: usize,
@@ -44,18 +46,29 @@ struct UnitRequest {
 struct Unit {
     request: UnitRequest,
     name: String,
-    form: Form,
-    snapshot: DefinitionSnapshot,
-    host: MacroHost,
+    // Consumed by the one analysis. The analyzed result keeps any resolution
+    // data it needs; these inputs must not pin an obsolete second snapshot.
+    // Keep large inputs out of line so completed units retain no empty space
+    // for the definition snapshot or the macro host's many shared tables.
+    form: Option<Form>,
+    snapshot: Option<Box<DefinitionSnapshot>>,
+    host: Option<Box<MacroHost>>,
     state: AnalysisState,
     analyses: usize,
-    emission: Option<String>,
+    // Count actual engine demand separately from pure source preparation.
+    // Ready or failed JavaScript roots never initialize a second time.
+    emitted: bool,
 }
 #[derive(Clone)]
 enum AnalysisState {
     Unstarted,
     Analyzing,
     Analyzed(Rc<Program>, Vec<AnalysisWarning>),
+    Prepared(
+        std::rc::Weak<Program>,
+        Vec<AnalysisWarning>,
+        Rc<crate::emitter::DeferredUnit>,
+    ),
     Failed(String, Option<crate::AnalysisError>),
 }
 #[derive(Clone)]
@@ -92,20 +105,30 @@ impl CompilationSession {
         }
         let evaluator = &bootstrap.evaluator;
         let weak = Rc::downgrade(self);
-        let engine = Rc::downgrade(evaluator);
         evaluator
-            .install_unit_service("__lightCompileUnit", move |ctx, id| {
-                let session = weak.upgrade().ok_or("compilation session expired")?;
-                let evaluator = engine.upgrade().ok_or("evaluator expired")?;
-                let active = evaluator.active(ctx).map_err(|e| e.to_string())?;
-                let (program, _) = session.analyze(id as usize, Some(&active))?;
-                let unit = session.catalog.borrow().units[id as usize].clone();
-                let mut unit = unit.borrow_mut();
-                Ok(unit
-                    .emission
-                    .get_or_insert_with(|| crate::emitter::emit_deferred_unit(&program))
-                    .clone())
-            })
+            .clone()
+            .install_compiler_service(
+                "__lightCompileUnit",
+                Rc::new(move |active, id| {
+                    let session = weak.upgrade().ok_or("compilation session expired")?;
+                    let unit = session.catalog.borrow().units[id as usize].clone();
+                    let prepared = match &unit.borrow().state {
+                        AnalysisState::Prepared(_, _, prepared) => Some(prepared.clone()),
+                        _ => None,
+                    };
+                    let (registration, code) = if let Some(prepared) = prepared {
+                        prepared.emit()
+                    } else {
+                        let (program, _) = session.analyze(id as usize, Some(active))?;
+                        crate::emitter::emit_deferred_unit(&program)
+                    };
+                    unit.borrow_mut().emitted = true;
+                    active
+                        .evaluate_registration(&registration.source, &registration.chunks)
+                        .map_err(|e| e.to_string())?;
+                    Ok(code)
+                }),
+            )
             .map_err(|e| e.to_string())?;
         // Registry and root states stay in JS, so ready reads never cross Rust.
         let value = evaluator
@@ -148,7 +171,7 @@ impl CompilationSession {
                     name: unit.name.clone(),
                     generation: unit.request.generation,
                     analyses: unit.analyses,
-                    emissions: usize::from(unit.emission.is_some()),
+                    emissions: usize::from(unit.emitted),
                 }
             })
             .collect()
@@ -207,11 +230,15 @@ impl CompilationSession {
             .register(name, Some(form), snapshot, host, false, location.clone())?
             .unwrap();
         let group = analyzed.is_some();
-        if let Some(program) = analyzed {
+        if let Some(mut program) = analyzed {
+            program.shrink_to_fit();
             let unit = self.catalog.borrow().units[unit].clone();
             let mut unit = unit.borrow_mut();
             unit.state = AnalysisState::Analyzed(Rc::new(program), Vec::new());
             unit.analyses = 1;
+            unit.form = None;
+            unit.snapshot = None;
+            unit.host = None;
         }
         let code = format!(
             "(() => {{ let code; return rt => {{ code ??= (0,eval)(globalThis.__lightCompileUnit({unit})); return code(rt); }}; }})()"
@@ -244,6 +271,9 @@ impl CompilationSession {
             let value = engine.evaluate_unit(&source).map_err(|e| e.to_string())?;
             engine.release(value).map_err(|e| e.to_string())?;
         }
+        if group {
+            self.release_application_ir(unit);
+        }
         Ok(unit)
     }
     fn install(
@@ -254,25 +284,9 @@ impl CompilationSession {
         once: bool,
         location: &str,
     ) -> Result<(), String> {
-        // Qualified CLJS names cannot contain these escaped JS string delimiters.
-        let name = name
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r");
-        let location = location
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r");
-        let value = engine
-            .evaluate_unit(&format!(
-                "rt => globalThis.__lightRegisterUnit(\"{name}\",{}, {once}, \"{location}\", {})",
-                unit.map_or("null".into(), |n| n.to_string()),
-                test.map_or("null".into(), |n| n.to_string())
-            ))
-            .map_err(|e| e.to_string())?;
-        engine.release(value).map_err(|e| e.to_string())
+        engine
+            .register_compiler_root(name, unit, once, location, test)
+            .map_err(|e| e.to_string())
     }
     pub fn register(
         &self,
@@ -313,12 +327,12 @@ impl CompilationSession {
                 c.units.push(Rc::new(RefCell::new(Unit {
                     request,
                     name: name.clone(),
-                    form,
-                    snapshot,
-                    host,
+                    form: Some(form),
+                    snapshot: Some(Box::new(snapshot)),
+                    host: Some(Box::new(host)),
                     state: AnalysisState::Unstarted,
                     analyses: 0,
-                    emission: None,
+                    emitted: false,
                 })));
                 id
             });
@@ -356,6 +370,19 @@ impl CompilationSession {
             _ => None,
         }
     }
+    /// Called after the analyzed body has been copied into its application
+    /// owner. Preparing source is pure: execution and registration stay lazy.
+    pub fn release_application_ir(&self, id: usize) {
+        let unit = self.catalog.borrow().units[id].clone();
+        let mut unit = unit.borrow_mut();
+        if let AnalysisState::Analyzed(program, warnings) = &unit.state {
+            unit.state = AnalysisState::Prepared(
+                Rc::downgrade(program),
+                warnings.clone(),
+                Rc::new(crate::emitter::DeferredUnit::prepare(program)),
+            );
+        }
+    }
     pub fn analyze(
         &self,
         id: usize,
@@ -373,6 +400,12 @@ impl CompilationSession {
             match &unit.state {
                 AnalysisState::Analyzed(program, warnings) => {
                     return Ok((program.clone(), warnings.clone()));
+                }
+                AnalysisState::Prepared(program, warnings, _) => {
+                    return program
+                        .upgrade()
+                        .map(|program| (program, warnings.clone()))
+                        .ok_or_else(|| "application IR was already transferred".to_owned());
                 }
                 AnalysisState::Failed(error, _) => return Err(error.clone()),
                 AnalysisState::Analyzing => {
@@ -393,10 +426,21 @@ impl CompilationSession {
                 }
                 AnalysisState::Unstarted => (),
             }
-            if self.catalog.borrow().stack.len() >= unit.host.limits.expansion_depth.min(64) {
+            if self.catalog.borrow().stack.len()
+                >= unit
+                    .host
+                    .as_ref()
+                    .expect("unstarted unit host")
+                    .limits
+                    .expansion_depth
+                    .min(64)
+            {
                 let message =
                     "compiler macro expansion depth limit exceeded in deferred units".to_owned();
                 unit.state = AnalysisState::Failed(message.clone(), None);
+                unit.form = None;
+                unit.snapshot = None;
+                unit.host = None;
                 return Err(message);
             }
             unit.state = AnalysisState::Analyzing;
@@ -406,14 +450,21 @@ impl CompilationSession {
             let request = unit.request;
             debug_assert!(request.generation > 0);
             debug_assert_eq!(self.catalog.borrow().bindings[&unit.name].0, request.var);
-            let mut host = unit.host.macro_analysis_frame();
             // A unit is analyzed once; its registration-time host is not needed
             // after its analysis frame is taken.
-            unit.host = MacroHost::default();
+            let mut host = unit
+                .host
+                .take()
+                .expect("unstarted unit host")
+                .macro_analysis_frame();
             if host.bootstrap.is_none() {
                 host.bootstrap = bootstrap;
             }
-            (unit.form.clone(), unit.snapshot.clone(), host)
+            (
+                unit.form.take().expect("unstarted unit form"),
+                unit.snapshot.take().expect("unstarted unit snapshot"),
+                host,
+            )
         };
         self.catalog.borrow_mut().stack.push(id);
         let guard = AnalysisGuard {
@@ -428,29 +479,30 @@ impl CompilationSession {
                 .map(|e| e.as_ref() as &dyn MacroEvaluator)
         });
         let _frontier = if let Some(engine) = engine {
-            let value = engine
-                .evaluate_unit(&format!(
-                    "rt => globalThis.__lightEnterCompilerFrontier({})",
-                    snapshot.extension_frontier
-                ))
+            engine
+                .compiler_frontier(Some(snapshot.extension_frontier))
                 .map_err(|e| e.to_string())?;
-            engine.release(value).map_err(|e| e.to_string())?;
             Some(FrontierGuard { engine })
         } else {
             None
         };
         let analysis = crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
         let diagnostic = analysis.as_ref().err().cloned();
-        let result = analysis.map(|(p, w)| (Rc::new(p), w)).map_err(|e| {
-            let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
-            format!(
-                "{}:{}:{}: {}: {e}",
-                loc.source,
-                loc.line,
-                loc.column,
-                unit.borrow().name
-            )
-        });
+        let result = analysis
+            .map(|(mut p, w)| {
+                p.shrink_to_fit();
+                (Rc::new(p), w)
+            })
+            .map_err(|e| {
+                let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
+                format!(
+                    "{}:{}:{}: {}: {e}",
+                    loc.source,
+                    loc.line,
+                    loc.column,
+                    unit.borrow().name
+                )
+            });
         unit.borrow_mut().state = match &result {
             Ok((p, w)) => AnalysisState::Analyzed(p.clone(), w.clone()),
             Err(e) => AnalysisState::Failed(e.clone(), diagnostic),
@@ -467,6 +519,8 @@ impl Clone for DefinitionSnapshot {
             requires: self.requires.clone(),
             resolution: self.resolution.clone(),
             resolution_program: self.resolution_program.clone(),
+            global_names: self.global_names.clone(),
+            namespace_globals: self.namespace_globals.clone(),
             options: self.options,
             unchecked_arrays: self.unchecked_arrays,
             source_index: self.source_index,
@@ -500,21 +554,61 @@ pub(crate) struct FrontierGuard<'a> {
 impl<'a> FrontierGuard<'a> {
     pub(crate) fn bootstrap(engine: &'a dyn MacroEvaluator) -> Result<Self, String> {
         // Used only after attaching a compilation with user declarations.
-        let value = engine
-            .evaluate_unit("rt => globalThis.__lightEnterCompilerFrontier(0)")
+        engine
+            .compiler_frontier(Some(0))
             .map_err(|e| e.to_string())?;
-        engine.release(value).map_err(|e| e.to_string())?;
         Ok(Self { engine })
     }
 }
 impl Drop for FrontierGuard<'_> {
     fn drop(&mut self) {
         // Terminal cancellation makes this heap unusable; no later demand runs.
-        if let Ok(value) = self
-            .engine
-            .evaluate_unit("rt => globalThis.__lightLeaveCompilerFrontier()")
-        {
-            let _ = self.engine.release(value);
+        let _ = self.engine.compiler_frontier(None);
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+
+    #[test]
+    fn completed_units_release_their_analysis_inputs() {
+        let mut host = MacroHost::new();
+        crate::compile_with_macros("(defn f [x] (+ x 1)) (defmacro m [] (f 41)) (m)", &mut host)
+            .unwrap();
+        let session = host.session_handle().unwrap();
+        let catalog = session.catalog.borrow();
+        let mut completed = 0;
+        for unit in &catalog.units {
+            let unit = unit.borrow();
+            if matches!(
+                unit.state,
+                AnalysisState::Analyzed(..) | AnalysisState::Prepared(..)
+            ) {
+                completed += 1;
+                assert!(unit.form.is_none());
+                assert!(unit.snapshot.is_none());
+                assert!(unit.host.is_none());
+            }
         }
+        assert!(completed > 0);
+    }
+
+    #[test]
+    fn application_assembly_releases_programs_but_retains_lazy_source() {
+        let mut host = MacroHost::new();
+        crate::compile_with_macros("(defn f [x] (+ x 1)) (defmacro m [] (f 41)) (m)", &mut host)
+            .unwrap();
+        let session = host.session_handle().unwrap();
+        let catalog = session.catalog.borrow();
+        let mut released = 0;
+        for unit in &catalog.units {
+            if let AnalysisState::Prepared(program, _, code) = &unit.borrow().state {
+                assert!(program.upgrade().is_none());
+                assert!(!code.emit().1.is_empty());
+                released += 1;
+            }
+        }
+        assert!(released > 0);
     }
 }

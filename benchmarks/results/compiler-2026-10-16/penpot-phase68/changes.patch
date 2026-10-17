@@ -1,0 +1,443 @@
+diff --git a/src/compilation_session.rs b/src/compilation_session.rs
+index 8c75fd5..af9ba1e 100644
+--- a/src/compilation_session.rs
++++ b/src/compilation_session.rs
+@@ -109,10 +109,9 @@ impl CompilationSession {
+                     let unit = session.catalog.borrow().units[id as usize].clone();
+                     unit.borrow_mut().emitted = true;
+                     let (registration, unit) = crate::emitter::emit_deferred_unit(&program);
+-                    let value = active
+-                        .evaluate_unit(&registration)
++                    active
++                        .evaluate_registration(&registration.source, &registration.chunks)
+                         .map_err(|e| e.to_string())?;
+-                    active.release(value).map_err(|e| e.to_string())?;
+                     Ok(unit)
+                 }),
+             )
+diff --git a/src/compiler_bootstrap.rs b/src/compiler_bootstrap.rs
+index 557e8ab..6805f85 100644
+--- a/src/compiler_bootstrap.rs
++++ b/src/compiler_bootstrap.rs
+@@ -522,10 +522,9 @@ impl MacroHost {
+                 .map_err(|e| e.to_string())?;
+         let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
+         let (registration, unit) = crate::emitter::emit_deferred_unit(&program);
+-        let value = engine
+-            .evaluate_unit(&registration)
++        engine
++            .evaluate_registration(&registration.source, &registration.chunks)
+             .map_err(|e| e.to_string())?;
+-        engine.release(value).map_err(|e| e.to_string())?;
+         let function = engine
+             .evaluate_unit(&format!(
+                 "rt => rt.core.macroReaderFunction(({})(rt))",
+diff --git a/src/emitter.rs b/src/emitter.rs
+index 2b1dbdf..206ae33 100644
+--- a/src/emitter.rs
++++ b/src/emitter.rs
+@@ -128,10 +128,15 @@ pub fn emit_js_unit(program: &Program) -> String {
+ }
+ 
+ /// Compile-time globals use the session demand registry; all semantic lowering is shared.
+-pub(crate) fn emit_deferred_unit(program: &Program) -> (String, String) {
+-    let mut registration = String::new();
++#[derive(Default)]
++pub(crate) struct NamespaceRegistration {
++    pub source: String,
++    pub chunks: Vec<(String, std::ops::Range<usize>)>,
++}
++pub(crate) fn emit_deferred_unit(program: &Program) -> (NamespaceRegistration, String) {
++    let mut registration = NamespaceRegistration::default();
+     let unit = emit_unit_parts(program, true, Some(&mut registration));
+-    (format!("rt => {{ {registration} return null; }}"), unit)
++    (registration, unit)
+ }
+ 
+ // Search the concatenated UTF-16 table without allocating its UTF-8 copy.
+@@ -206,7 +211,7 @@ fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
+ fn emit_unit_parts(
+     program: &Program,
+     demand_roots: bool,
+-    registration: Option<&mut String>,
++    registration: Option<&mut NamespaceRegistration>,
+ ) -> String {
+     let mut index = 0;
+     let parameter = loop {
+@@ -269,7 +274,7 @@ fn emit_js_mode(
+     application: Option<Application<'_>>,
+     module: bool,
+     mapped: bool,
+-    detached_registration: Option<&mut String>,
++    detached_registration: Option<&mut NamespaceRegistration>,
+ ) -> (String, EmittedRuntime, Option<SourceMapping>) {
+     let application_roots = interactive.is_some();
+     let entry = interactive.and_then(|interactive| interactive.entry);
+@@ -481,7 +486,8 @@ fn emit_js_mode(
+         }
+         let registration_at = runtime.len();
+         if let Some(detached) = detached_registration {
+-            *detached = registration;
++            detached.source = registration;
++            detached.chunks = std::mem::take(&mut emitter.registration_chunks);
+         } else {
+             runtime.push_str(&registration);
+         }
+@@ -1244,6 +1250,7 @@ struct Operands {
+ }
+ 
+ struct Emitter<'a> {
++    registration_chunks: Vec<(String, std::ops::Range<usize>)>,
+     program: &'a Program,
+     demand_roots: bool,
+     application_roots: bool,
+@@ -1371,6 +1378,7 @@ impl<'a> Emitter<'a> {
+             .and_then(|application| application.shapes)
+             .filter(|_| direct.is_some());
+         Emitter {
++            registration_chunks: Vec::new(),
+             program,
+             demand_roots,
+             application_roots,
+@@ -1474,6 +1482,7 @@ impl<'a> Emitter<'a> {
+             register_namespaces
+                 && registered.is_none_or(|registered| registered.contains(&namespace.as_str()))
+         }) {
++            let registration_start = registration.len();
+             let previous = std::mem::take(&mut self.output);
+             self.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
+             let literal = std::mem::replace(&mut self.output, previous);
+@@ -1538,6 +1547,10 @@ impl<'a> Emitter<'a> {
+                     .join(",")
+             )
+             .unwrap();
++            if demand_roots {
++                self.registration_chunks
++                    .push((namespace.clone(), registration_start..registration.len()));
++            }
+         }
+         if current
+             && register_namespaces
+diff --git a/src/evaluator.rs b/src/evaluator.rs
+index 5f98128..1f0fc6e 100644
+--- a/src/evaluator.rs
++++ b/src/evaluator.rs
+@@ -925,6 +925,16 @@ impl Evaluator {
+ pub trait MacroEvaluator {
+     fn control(&self) -> ExecutionControl;
+     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError>;
++    /// Execute all namespace registrations in order. Engines may cache the
++    /// compiled chunks, but must execute every registration on every call.
++    fn evaluate_registration(
++        &self,
++        source: &str,
++        _chunks: &[(String, std::ops::Range<usize>)],
++    ) -> Result<(), EvalError> {
++        let value = self.evaluate_unit(&format!("rt => {{ {source} return null; }}"))?;
++        self.release(value)
++    }
+     /// Enter a source declaration view, or restore its caller's view with None.
+     /// The default preserves compatibility with external evaluator adapters.
+     fn compiler_frontier(&self, next: Option<usize>) -> Result<(), EvalError> {
+diff --git a/src/v8_evaluator.rs b/src/v8_evaluator.rs
+index 9604e0a..702e79e 100644
+--- a/src/v8_evaluator.rs
++++ b/src/v8_evaluator.rs
+@@ -10,6 +10,7 @@ use crate::{
+ };
+ use std::{
+     cell::{Cell, RefCell},
++    collections::{HashMap, VecDeque},
+     rc::Rc,
+     sync::{
+         Arc, OnceLock,
+@@ -52,6 +53,7 @@ impl CompilerEvaluator for Evaluator {
+     }
+ }
+ struct State {
++    namespaces: RefCell<NamespaceCache>,
+     control: ExecutionControl,
+     generation: u64,
+     bridge: RefCell<BridgeState>,
+@@ -63,6 +65,37 @@ struct State {
+     source_bytes: Cell<usize>,
+     source_units: Cell<usize>,
+ }
++#[derive(Default)]
++struct NamespaceCache {
++    entries: HashMap<String, (String, v8::Global<v8::Function>)>,
++    order: VecDeque<String>,
++    bytes: usize,
++    hits: usize,
++    misses: usize,
++    compiled_bytes: usize,
++}
++impl NamespaceCache {
++    fn insert(&mut self, name: &str, source: &str, function: v8::Global<v8::Function>) {
++        const BYTES: usize = 4 * 1024 * 1024;
++        if source.len() > BYTES {
++            return;
++        }
++        if let Some((old, _)) = self.entries.remove(name) {
++            self.bytes -= old.len();
++            self.order.retain(|key| key != name);
++        }
++        while self.entries.len() >= 1024 || self.bytes + source.len() > BYTES {
++            let oldest = self.order.pop_front().unwrap();
++            if let Some((old, _)) = self.entries.remove(&oldest) {
++                self.bytes -= old.len();
++            }
++        }
++        self.bytes += source.len();
++        self.order.push_back(name.to_owned());
++        self.entries
++            .insert(name.to_owned(), (source.to_owned(), function));
++    }
++}
+ impl State {
+     fn remember_error(&self, error: &EvalError) {
+         let mut pending = self.pending_error.borrow_mut();
+@@ -200,6 +233,7 @@ impl V8Evaluator {
+         );
+         isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+         let state = Rc::new(State {
++            namespaces: RefCell::new(NamespaceCache::default()),
+             control: control.clone(),
+             generation: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
+             bridge: RefCell::new(BridgeState::default()),
+@@ -298,6 +332,15 @@ impl Drop for V8Evaluator {
+             self.isolate.get_mut().enter();
+         }
+         if std::env::var_os("LIGHT_V8_STATS").is_some() {
++            let cache = self.state.namespaces.borrow();
++            eprintln!(
++                "v8-namespace-cache hits={} misses={} compiled-bytes={} entries={} source-bytes={}",
++                cache.hits,
++                cache.misses,
++                cache.compiled_bytes,
++                cache.entries.len(),
++                cache.bytes
++            );
+             eprintln!(
+                 "v8-source units={} bytes={}",
+                 self.state.source_units.get(),
+@@ -329,6 +372,7 @@ impl Drop for V8Evaluator {
+             .get_mut()
+             .remove_near_heap_limit_callback(near_heap_limit, 0);
+         self.state.services.borrow_mut().take();
++        self.state.namespaces.borrow_mut().entries.clear();
+         self.state.bridge.borrow_mut().clear_engine_roots();
+         self.context.take();
+         // memory callback data stays alive until after removal.
+@@ -436,6 +480,60 @@ impl MacroEvaluator for Active<'_, '_, '_> {
+     fn control(&self) -> ExecutionControl {
+         self.state.control.clone()
+     }
++    fn evaluate_registration(
++        &self,
++        source: &str,
++        chunks: &[(String, std::ops::Range<usize>)],
++    ) -> Result<(), EvalError> {
++        let mut end = 0;
++        let complete = chunks.iter().all(|(_, range)| {
++            let contiguous = range.start == end && source.get(range.clone()).is_some();
++            end = range.end;
++            contiguous
++        }) && end == source.len();
++        let enabled = complete
++            && std::env::var("LIGHT_V8_NAMESPACE_CACHE").as_deref() != Ok("0")
++            && self.enter(|scope| {
++                Ok(invoke(scope, self.state, "canCacheRegistration", &[])?.is_true())
++            })?;
++        if !enabled {
++            let value = self.evaluate_unit(&format!("rt => {{ {source} return null; }}"))?;
++            return self.release(value);
++        }
++        self.enter(|scope| {
++            for (name, range) in chunks {
++                self.state.control.poll()?;
++                v8::scope!(let scope, scope);
++                let source = &source[range.clone()];
++                let function = {
++                    let cache = self.state.namespaces.borrow();
++                    cache
++                        .entries
++                        .get(name)
++                        .filter(|(old, _)| old == source)
++                        .map(|(_, function)| Local::new(scope, function))
++                };
++                let function = if let Some(function) = function {
++                    self.state.namespaces.borrow_mut().hits += 1;
++                    function
++                } else {
++                    let function: Local<v8::Function> =
++                        script(scope, &format!("rt => {{ {source} return null; }}"))?
++                            .try_into()
++                            .map_err(|_| {
++                                bridge::error("invalid namespace registration function")
++                            })?;
++                    let mut cache = self.state.namespaces.borrow_mut();
++                    cache.misses += 1;
++                    cache.compiled_bytes += source.len();
++                    cache.insert(name, source, v8::Global::new(scope, function));
++                    function
++                };
++                invoke(scope, self.state, "registerNamespace", &[function.into()])?;
++            }
++            Ok(())
++        })
++    }
+     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
+         self.state
+             .source_bytes
+@@ -644,6 +742,13 @@ impl MacroEvaluator for V8Evaluator {
+     fn control(&self) -> ExecutionControl {
+         self.state.control.clone()
+     }
++    fn evaluate_registration(
++        &self,
++        source: &str,
++        chunks: &[(String, std::ops::Range<usize>)],
++    ) -> Result<(), EvalError> {
++        self.with_active(|e| e.evaluate_registration(source, chunks))
++    }
+     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
+         self.with_active(|e| e.evaluate_unit(source))
+     }
+@@ -799,6 +904,116 @@ impl CompilerEvaluator for V8Evaluator {
+ mod tests {
+     use super::*;
+ 
++    fn registration(evaluator: &dyn MacroEvaluator, name: &str, source: &str) {
++        evaluator
++            .evaluate_registration(source, &[(name.into(), 0..source.len())])
++            .unwrap();
++    }
++
++    #[test]
++    fn cached_namespace_registration_reexecutes_and_restores_each_source_view() {
++        let evaluator = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
++        let first = "globalThis.registrations = (globalThis.registrations || 0) + 1; rt.core.registerReaderNamespace('probe', {aliases: [['x', 'first']], bindings: ['one']});";
++        let second = first.replace("first", "second").replace("one", "two");
++        registration(&evaluator, "probe", first);
++        let done = evaluator.evaluate_unit("rt => { const ns = rt.core.theNs(rt.symbol(null, 'probe')); globalThis.previousContext = ns.readerContext; ns.readerContext.aliases.set('x', 'mutated'); ns.readerContext.bindings.add('bad'); return null; }").unwrap();
++        evaluator.release(done).unwrap();
++        registration(&evaluator, "probe", first);
++        let check = evaluator.evaluate_unit("rt => { const c = rt.core.theNs(rt.symbol(null, 'probe')).readerContext; return Number(c !== previousContext && c.aliases.get('x') === 'first' && !c.bindings.has('bad')); }").unwrap();
++        assert_eq!(evaluator.number(check).unwrap(), 1.0);
++        evaluator.release(check).unwrap();
++        assert_eq!(evaluator.state.namespaces.borrow().hits, 1);
++        registration(&evaluator, "probe", &second);
++        registration(&evaluator, "probe", first);
++        let check = evaluator.evaluate_unit("rt => { const c = rt.core.theNs(rt.symbol(null, 'probe')).readerContext; return Number(registrations === 4 && c.aliases.get('x') === 'first' && c.bindings.has('one') && !c.bindings.has('two')); }").unwrap();
++        assert_eq!(evaluator.number(check).unwrap(), 1.0);
++        evaluator.release(check).unwrap();
++    }
++
++    #[test]
++    fn namespace_cache_eviction_keeps_execution_and_observes_eval_replacement() {
++        let evaluator = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
++        let source = "globalThis.registrations = (globalThis.registrations || 0) + 1;";
++        for index in 0..1025 {
++            registration(&evaluator, &format!("ns{index}"), source);
++        }
++        assert_eq!(evaluator.state.namespaces.borrow().entries.len(), 1024);
++        registration(&evaluator, "ns0", source);
++        let check = evaluator.evaluate_js("registrations").unwrap();
++        assert_eq!(evaluator.number(check).unwrap(), 1026.0);
++        evaluator.release(check).unwrap();
++        let done = evaluator.evaluate_unit("rt => { globalThis.savedEval = globalThis.eval; globalThis.evalCalls = 0; globalThis.eval = source => { evalCalls++; return savedEval(source); }; return null; }").unwrap();
++        evaluator.release(done).unwrap();
++        registration(&evaluator, "ns0", source);
++        let check = evaluator
++            .evaluate_unit("rt => { globalThis.eval = savedEval; return evalCalls; }")
++            .unwrap();
++        assert_eq!(evaluator.number(check).unwrap(), 2.0);
++        evaluator.release(check).unwrap();
++    }
++
++    #[test]
++    fn namespace_registration_allows_reentry_and_stops_at_first_exception() {
++        let evaluator = Rc::new(V8Evaluator::new(EvaluatorOptions::default()).unwrap());
++        evaluator
++            .clone()
++            .install_compiler_service(
++                "nestedRegistration",
++                Rc::new(|active, _| {
++                    let source = "globalThis.trace.push(2);";
++                    active
++                        .evaluate_registration(source, &[("same".into(), 0..source.len())])
++                        .map_err(|e| e.to_string())?;
++                    Ok("null".into())
++                }),
++            )
++            .unwrap();
++        registration(
++            evaluator.as_ref(),
++            "same",
++            "globalThis.trace = [1]; nestedRegistration(0); globalThis.trace.push(3);",
++        );
++        let check = evaluator
++            .evaluate_js("Number(trace.join(',') === '1,2,3')")
++            .unwrap();
++        assert_eq!(evaluator.number(check).unwrap(), 1.0);
++        evaluator.release(check).unwrap();
++        let observed = Rc::new(Cell::new(0));
++        let record = observed.clone();
++        evaluator
++            .clone()
++            .install_compiler_service(
++                "recordRegistration",
++                Rc::new(move |_, id| {
++                    record.set(id);
++                    Ok("null".into())
++                }),
++            )
++            .unwrap();
++        let chunks = [
++            "recordRegistration(1);",
++            "throw new Error('registration stopped');",
++            "recordRegistration(3);",
++        ];
++        let source = chunks.concat();
++        let mut end = 0;
++        let ranges = chunks
++            .iter()
++            .enumerate()
++            .map(|(i, part)| {
++                let start = end;
++                end += part.len();
++                (format!("chunk{i}"), start..end)
++            })
++            .collect::<Vec<_>>();
++        let error = evaluator
++            .evaluate_registration(&source, &ranges)
++            .unwrap_err();
++        assert!(error.0.contains("registration stopped"), "{error}");
++        assert_eq!(observed.get(), 1);
++        assert!(evaluator.evaluate_js("1").is_err());
++    }
++
+     #[test]
+     fn compiler_callback_rejects_invalid_ids_without_running_coercion_hooks() {
+         for argument in [
+diff --git a/src/v8_services.js b/src/v8_services.js
+index 5eaaf55..78fe872 100644
+--- a/src/v8_services.js
++++ b/src/v8_services.js
+@@ -1,5 +1,6 @@
+             const __lightEvaluator = (() => {
+               const rt = __LIGHT_RUNTIME_SOURCE__;
++              const compilerEval = globalThis.eval;
+               const values = new Map(); let next = 1; let lastError = null;
+               let hostDiagnostic = null;
+               let heldError = null; let jobFailure = null;
+@@ -15,6 +16,8 @@
+               const get = id => { if (!values.has(id)) throw new Error('Released or unknown value ID'); return values.get(id); };
+               return Object.freeze({
+                 save,
++                registerNamespace: fn => fn(rt),
++                canCacheRegistration: () => globalThis.eval === compilerEval,
+                 bind: (name, id) => { (globalThis.__lightApplicationRoots ??= Object.create(null))[name] = get(id); },
+                 coreBinding: (name, id) => { rt.core[name] = get(id); },
+                 coreLookup: name => save(rt.core[name]),

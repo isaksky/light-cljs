@@ -735,9 +735,10 @@ fn plan_with(
         .map(|(position, &(id, _))| {
             move_definitions
                 && (prepared.removable(id)
+                    || matches!(emitted.exprs[id.0].kind, ExprKind::DefProtocol { .. })
                     || matches!(
-                        emitted.exprs[id.0].kind,
-                        ExprKind::DefProtocol { .. } | ExprKind::DefType { body: None, .. }
+                        &emitted.exprs[id.0].kind,
+                        ExprKind::DefType { layout, .. } if layout.body.is_none()
                     ))
                 && graph.sites[position].is_empty()
                 && !graph.defines[position].is_empty()

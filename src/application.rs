@@ -1104,14 +1104,9 @@ pub(crate) fn globals(kind: &ExprKind) -> Vec<GlobalId> {
         } => std::iter::once(*global)
             .chain(methods.iter().map(|m| m.global))
             .collect(),
-        ExprKind::DefType {
-            global,
-            constructor,
-            map_constructor,
-            ..
-        } => std::iter::once(*global)
-            .chain(*constructor)
-            .chain(*map_constructor)
+        ExprKind::DefType { global, layout, .. } => std::iter::once(*global)
+            .chain(layout.constructor)
+            .chain(layout.map_constructor)
             .collect(),
         _ => Vec::new(),
     }

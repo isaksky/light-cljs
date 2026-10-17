@@ -285,7 +285,7 @@ impl InteractiveCompiler {
             self.host.register_macro_view(&mut view);
             return self
                 .host
-                .lower_form_in_view(&source, &syntax, root, &view, &discards)
+                .lower_form_in_view(&source, &syntax, root, &view, &discards, None)
                 .map(Some);
         }
     }
@@ -544,17 +544,20 @@ impl InteractiveCompiler {
     > {
         let empty = crate::arena::Arena::new();
         let globals = self.program.as_ref().map_or(&empty, |p| &p.globals);
-        let visible = globals
+        let namespace_globals = globals
             .iter()
-            .filter(|g| g.namespace == self.namespace)
-            .count();
+            .enumerate()
+            .filter_map(|(index, global)| {
+                (global.namespace == self.namespace).then_some(crate::analyzer::GlobalId(index))
+            })
+            .collect();
         self.host.reader_environment(
             environment,
             &self.namespace,
             &self.resolution,
             globals,
             globals.len(),
-            visible,
+            &namespace_globals,
         )
     }
     fn check_policy(&self, program: &Program, start: usize) -> Result<(), AnalysisError> {

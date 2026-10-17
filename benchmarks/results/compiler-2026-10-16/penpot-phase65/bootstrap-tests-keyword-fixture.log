@@ -1,0 +1,31 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase65/project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.51s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/light_cljs-c245fc672d71037e)
+
+running 10 tests
+test compiler_bootstrap::tests::bootstrap_form_reads_preserve_reflection_and_captures ... ok
+test compiler_bootstrap::tests::bootstrap_environment_reads_follow_resolved_locals_and_reflection ... ok
+test compiler_bootstrap::tests::declaration_products_are_atomic_and_unfinished_value_reads_cycle ... ok
+test compiler_bootstrap::tests::cancelled_extension_bundle_rolls_back_before_reusing_host ... ok
+test compiler_bootstrap::tests::cancelled_demand_discards_roots_before_reusing_host ... ok
+test compiler_bootstrap::tests::asynchronous_bootstrap_cancellation_recovers_reused_host ... ok
+test compiler_bootstrap::tests::unused_core_environment_keeps_literal_conversion_failures ... ok
+test compiler_bootstrap::tests::unused_core_environment_keeps_conversion_limits_and_host_recovery ... ok
+test compiler_bootstrap::tests::unused_core_form_matches_full_transport_and_preserves_limits ... FAILED
+test compiler_bootstrap::tests::regenerate_from_first_party_sources_and_collect_during_bootstrap ... ok
+
+failures:
+
+---- compiler_bootstrap::tests::unused_core_form_matches_full_transport_and_preserves_limits stdout ----
+
+thread 'compiler_bootstrap::tests::unused_core_form_matches_full_transport_and_preserves_limits' (137889062) panicked at src/compiler_bootstrap.rs:748:57:
+called `Result::unwrap()` on an `Err` value: ReadError { message: "Lower(InvalidMetadataTarget)", span: SourceSpan { source: Source { id: SourceId(2867), name: "form-transport.cljs" }, bytes: 31..36 }, related: Some(SourceSpan { source: Source { id: SourceId(2867), name: "form-transport.cljs" }, bytes: 17..36 }) }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    compiler_bootstrap::tests::unused_core_form_matches_full_transport_and_preserves_limits
+
+test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 112 filtered out; finished in 0.55s
+
+error: test failed, to rerun pass `--lib`

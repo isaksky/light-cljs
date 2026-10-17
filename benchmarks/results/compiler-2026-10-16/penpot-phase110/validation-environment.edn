@@ -1,0 +1,1 @@
+{"CARGO_TARGET_DIR" "/private/tmp/light-cljs-phase110/target", "RUSTY_V8_ARCHIVE" "/private/tmp/light-cljs-phase109/frozen-engine/librusty_v8.a", "RUSTY_V8_SRC_BINDING_PATH" "/private/tmp/light-cljs-phase109/frozen-engine/src_binding.rs", "CARGO_PROFILE_RELEASE_LTO" "thin", "CARGO_PROFILE_RELEASE_CODEGEN_UNITS" "1", "LIGHT_V8_MACROS" "1", "LIGHT_V8_HEAP_BYTES" "268435456"}

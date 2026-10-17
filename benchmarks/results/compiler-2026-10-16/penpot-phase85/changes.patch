@@ -1,0 +1,87 @@
+diff --git a/src/analyzer.rs b/src/analyzer.rs
+index 96fbad2..a56587e 100644
+--- a/src/analyzer.rs
++++ b/src/analyzer.rs
+@@ -2641,6 +2641,17 @@ impl Program {
+         self.strings.freeze();
+         self.named_literals.freeze();
+     }
++
++    pub(crate) fn shrink_to_fit(&mut self) {
++        self.namespaces.shrink_to_fit();
++        self.exprs.shrink_to_fit();
++        self.locals.shrink_to_fit();
++        self.recur_targets.shrink_to_fit();
++        self.globals.shrink_to_fit();
++        self.js_globals.shrink_to_fit();
++        self.strings.shrink_to_fit();
++        self.named_literals.shrink_to_fit();
++    }
+ }
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+diff --git a/src/arena.rs b/src/arena.rs
+index 883c2d2..05decc1 100644
+--- a/src/arena.rs
++++ b/src/arena.rs
+@@ -217,6 +217,14 @@ impl<T> Arena<T> {
+         self.tail.push(value);
+     }
+ 
++    /// Release spare capacity before retaining a completed analysis. Frozen
++    /// entries stay shared; no IDs or values change.
++    pub(crate) fn shrink_to_fit(&mut self) {
++        self.chunks.shrink_to_fit();
++        self.starts.shrink_to_fit();
++        self.tail.shrink_to_fit();
++    }
++
+     pub fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+         self.tail.extend(iter);
+     }
+diff --git a/src/compilation_session.rs b/src/compilation_session.rs
+index 6d24160..c54048e 100644
+--- a/src/compilation_session.rs
++++ b/src/compilation_session.rs
+@@ -218,7 +218,8 @@ impl CompilationSession {
+             .register(name, Some(form), snapshot, host, false, location.clone())?
+             .unwrap();
+         let group = analyzed.is_some();
+-        if let Some(program) = analyzed {
++        if let Some(mut program) = analyzed {
++            program.shrink_to_fit();
+             let unit = self.catalog.borrow().units[unit].clone();
+             let mut unit = unit.borrow_mut();
+             unit.state = AnalysisState::Analyzed(Rc::new(program), Vec::new());
+@@ -453,16 +454,21 @@ impl CompilationSession {
+         };
+         let analysis = crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
+         let diagnostic = analysis.as_ref().err().cloned();
+-        let result = analysis.map(|(p, w)| (Rc::new(p), w)).map_err(|e| {
+-            let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
+-            format!(
+-                "{}:{}:{}: {}: {e}",
+-                loc.source,
+-                loc.line,
+-                loc.column,
+-                unit.borrow().name
+-            )
+-        });
++        let result = analysis
++            .map(|(mut p, w)| {
++                p.shrink_to_fit();
++                (Rc::new(p), w)
++            })
++            .map_err(|e| {
++                let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
++                format!(
++                    "{}:{}:{}: {}: {e}",
++                    loc.source,
++                    loc.line,
++                    loc.column,
++                    unit.borrow().name
++                )
++            });
+         unit.borrow_mut().state = match &result {
+             Ok((p, w)) => AnalysisState::Analyzed(p.clone(), w.clone()),
+             Err(e) => AnalysisState::Failed(e.clone(), diagnostic),

@@ -1,0 +1,23 @@
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.23s
+     Running unittests src/lib.rs (target/debug/deps/light_cljs-ad9e157a4734fe2e)
+
+running 1 test
+test evaluator::active_tests::discarded_environment_children_preserve_spelling_when_reused ... FAILED
+
+failures:
+
+---- evaluator::active_tests::discarded_environment_children_preserve_spelling_when_reused stdout ----
+
+thread 'evaluator::active_tests::discarded_environment_children_preserve_spelling_when_reused' (133202148) panicked at src/evaluator.rs:1839:9:
+assertion failed: matches!(children[0].kind(), DatumKind::Ratio
+    { numerator: 3, denominator: 2 })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    evaluator::active_tests::discarded_environment_children_preserve_spelling_when_reused
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 104 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `--lib`

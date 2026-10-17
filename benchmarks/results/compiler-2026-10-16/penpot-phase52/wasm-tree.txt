@@ -1,0 +1,8 @@
+light-cljs v0.1.0 (/private/tmp/light-cljs-phase52/project)
+└── rquickjs v0.14.0
+    └── rquickjs-core v0.14.0
+        ├── hashbrown v0.17.1
+        │   ├── allocator-api2 v0.2.21
+        │   ├── equivalent v1.0.2
+        │   └── foldhash v0.2.0
+        └── rquickjs-sys v0.14.0 (/private/tmp/light-cljs-phase52/project/vendor/rquickjs-sys)

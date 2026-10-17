@@ -1,0 +1,76 @@
+session-units unstarted=0 analyzing=0 analyzed=0 failed=0
+rust-alloc stage=session-drop-start live=68891273 peak=73583424 requested=153307624
+rust-alloc stage=session-hosts-cleared live=68891273 peak=73583424 requested=153307624
+rust-alloc stage=session-forms-cleared live=68891273 peak=73583424 requested=153307624
+rust-alloc stage=session-snapshots-cleared live=68891273 peak=73583424 requested=153307624
+session-programs unique=0 unit-bytes=1792 snapshot-bytes=1120 host-bytes=528
+rust-alloc stage=program-reader-contexts-cleared live=68891273 peak=73583424 requested=153307624
+rust-alloc stage=program-namespace-tables-cleared live=68891273 peak=73583424 requested=153307624
+rust-alloc stage=program-protocol-tables-cleared live=68891273 peak=73583424 requested=153307624
+rust-alloc stage=program-expressions-cleared live=68891273 peak=73583424 requested=153307624
+rust-alloc stage=program-globals-cleared live=68891273 peak=73583424 requested=153307624
+rust-alloc stage=program-locals-cleared live=68891273 peak=73583424 requested=153307624
+rust-alloc stage=program-literals-cleared live=68891273 peak=73583424 requested=153307624
+rust-alloc stage=program-lazy-cleared live=68891273 peak=73583424 requested=153307624
+rust-alloc stage=session-programs-cleared live=68891273 peak=73583424 requested=153307624
+rust-alloc stage=session-catalog-cleared live=68891273 peak=73583424 requested=153307624
+rust-alloc stage=session-bootstrap-cleared live=68891273 peak=73583424 requested=153307624
+session-units unstarted=0 analyzing=0 analyzed=0 failed=0
+rust-alloc stage=session-drop-start live=72960063 peak=77506012 requested=177496154
+rust-alloc stage=session-hosts-cleared live=72960063 peak=77506012 requested=177496154
+rust-alloc stage=session-forms-cleared live=72960063 peak=77506012 requested=177496154
+rust-alloc stage=session-snapshots-cleared live=72960063 peak=77506012 requested=177496154
+session-programs unique=0 unit-bytes=1792 snapshot-bytes=1120 host-bytes=528
+rust-alloc stage=program-reader-contexts-cleared live=72960063 peak=77506012 requested=177496154
+rust-alloc stage=program-namespace-tables-cleared live=72960063 peak=77506012 requested=177496154
+rust-alloc stage=program-protocol-tables-cleared live=72960063 peak=77506012 requested=177496154
+rust-alloc stage=program-expressions-cleared live=72960063 peak=77506012 requested=177496154
+rust-alloc stage=program-globals-cleared live=72960063 peak=77506012 requested=177496154
+rust-alloc stage=program-locals-cleared live=72960063 peak=77506012 requested=177496154
+rust-alloc stage=program-literals-cleared live=72960063 peak=77506012 requested=177496154
+rust-alloc stage=program-lazy-cleared live=72960063 peak=77506012 requested=177496154
+rust-alloc stage=session-programs-cleared live=72960063 peak=77506012 requested=177496154
+rust-alloc stage=session-catalog-cleared live=72960063 peak=77506012 requested=177496154
+rust-alloc stage=session-bootstrap-cleared live=72960063 peak=77506012 requested=177496154
+rust-alloc stage=after-analysis live=650933490 peak=663523412 requested=12908707868
+session-units unstarted=0 analyzing=0 analyzed=13367 failed=0
+rust-alloc stage=session-drop-start live=647130763 peak=663523412 requested=12908707868
+rust-alloc stage=session-hosts-cleared live=647130763 peak=663523412 requested=12932661532
+rust-alloc stage=session-forms-cleared live=647130763 peak=663523412 requested=12932661532
+rust-alloc stage=session-snapshots-cleared live=647130763 peak=663523412 requested=12932661532
+session-programs unique=13367 unit-bytes=1792 snapshot-bytes=1120 host-bytes=528
+rust-alloc stage=program-reader-contexts-cleared live=639527358 peak=663523412 requested=12934907188
+rust-alloc stage=program-namespace-tables-cleared live=578234951 peak=663523412 requested=12937366716
+rust-alloc stage=program-protocol-tables-cleared live=574788922 peak=663523412 requested=12941644156
+rust-alloc stage=program-expressions-cleared live=391717932 peak=663523412 requested=12941644156
+rust-alloc stage=program-globals-cleared live=389355731 peak=663523412 requested=12941644156
+rust-alloc stage=program-locals-cleared live=374596990 peak=663523412 requested=12941644156
+rust-alloc stage=program-literals-cleared live=352539520 peak=663523412 requested=12941644156
+rust-alloc stage=program-lazy-cleared live=353605298 peak=663523412 requested=12942713516
+rust-alloc stage=session-programs-cleared live=333392710 peak=663523412 requested=12942713516
+rust-alloc stage=session-catalog-cleared live=280914088 peak=663523412 requested=12942713516
+v8-namespace-cache hits=131239 misses=1292 compiled-bytes=1050924 entries=851 source-bytes=717833
+v8-source units=993 bytes=1666732
+v8-stats stage=before-final-gc used=39650152 total=65454080 physical=65454080 external=0 rust-provenance-estimate=63877576
+v8-stats stage=after-final-gc used=26913836 total=30146560 physical=30146560 external=0 rust-provenance-estimate=26441320
+rust-alloc stage=session-bootstrap-cleared live=199392992 peak=663523412 requested=12942713837
+rust-alloc stage=after-session-drop live=196537702 peak=663523412 requested=12942713837
+program-tables exprs=1220906 locals=110119 globals=13392 strings=336622 names=204735
+rust-alloc stage=after-prepare live=197753012 peak=663523412 requested=12977833612
+rust-alloc stage=after-output live=264959874 peak=663523412 requested=13461512850
+       20.41 real        24.33 user         0.62 sys
+          1160167424  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               76390  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                1753  voluntary context switches
+              100867  involuntary context switches
+           991482496  peak memory footprint

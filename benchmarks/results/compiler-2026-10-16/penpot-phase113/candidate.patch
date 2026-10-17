@@ -1,0 +1,85 @@
+--- a/src/js_runtime.js
++++ b/src/js_runtime.js
+@@ -42,29 +42,22 @@
+   const mapTypes = {}, setTypes = {};
+   //@unit transients
+   const transients = new WeakMap();
+-  //@unit privateStore
+-  // A store like a vector's, with a private field of its own: the seq kinds'
+-  // stores (`cells`, `views`, `lazyValues`, `chunks`). Each step of a seq
+-  // builds a value, and a WeakMap entry per value, which the collector traces
+-  // as an ephemeron, cost more than the step (light-cljs-259). Unlike
+-  // `vectors.set`, `set` also replaces the payload of a value that has one.
+-  // The stores share these methods' code, and so V8's feedback for them,
+-  // which the seq operations do not feel; `vectors` keeps its own, since
+-  // sharing slowed `conj` and `nth` on a vector by a third.
+-  function privateStore() {
+-    const Store = class extends (function (value) { return value; }) {
+-      #s;
+-      static has(value) { return (typeof value === "object" ? value !== null : typeof value === "function") && #s in value; }
+-      // Not `Store.has`: QuickJS, which does not inline it, would call it.
+-      static get(value) { if ((typeof value === "object" ? value !== null : typeof value === "function") && #s in value) return value.#s; }
+-      static set(value, payload) { if (#s in value) value.#s = payload; else new Store(value).#s = payload; }
+-    };
+-    return Store;
+-  }
+-  //@unit cells requires: privateStore
+-  const cells = privateStore();
+-  //@unit views requires: privateStore
+-  const views = privateStore();
++  //@unit cells
++  // A separate private brand and method body lets engines specialize this store.
++  const cells = class extends (function (value) { return value; }) {
++    #s;
++    static has(value) { return (typeof value === "object" ? value !== null : typeof value === "function") && #s in value; }
++    static get(value) { if ((typeof value === "object" ? value !== null : typeof value === "function") && #s in value) return value.#s; }
++    static set(value, payload) { if (#s in value) value.#s = payload; else new cells(value).#s = payload; }
++  };
++  //@unit views
++  // A separate private brand and method body lets engines specialize this store.
++  const views = class extends (function (value) { return value; }) {
++    #s;
++    static has(value) { return (typeof value === "object" ? value !== null : typeof value === "function") && #s in value; }
++    static get(value) { if ((typeof value === "object" ? value !== null : typeof value === "function") && #s in value) return value.#s; }
++    static set(value, payload) { if (#s in value) value.#s = payload; else new views(value).#s = payload; }
++  };
+   //@unit iteratorSeqs
+   const iteratorSeqs = new WeakMap();
+   //@unit reducedValues
+@@ -95,8 +88,15 @@
+   const atoms = new WeakMap(), volatiles = new WeakMap();
+   //@unit queues
+   const queues = new WeakMap();
+-  //@unit lazyValues requires: privateStore
+-  const lazyValues = privateStore(), delays = new WeakMap();
++  //@unit lazyValues
++  // A separate private brand and method body lets engines specialize this store.
++  const lazyValues = class extends (function (value) { return value; }) {
++    #s;
++    static has(value) { return (typeof value === "object" ? value !== null : typeof value === "function") && #s in value; }
++    static get(value) { if ((typeof value === "object" ? value !== null : typeof value === "function") && #s in value) return value.#s; }
++    static set(value, payload) { if (#s in value) value.#s = payload; else new lazyValues(value).#s = payload; }
++  };
++  const delays = new WeakMap();
+   //@unit eductions
+   const eductions = new WeakMap();
+   //@unit ifnValues
+@@ -6416,9 +6416,16 @@
+   }
+   //@unit iterate requires: iterateNode
+   function iterate(fn, seed) { return iterateNode(fn, null, seed, true); }
+-  //@unit chunks requires: privateStore
++  //@unit chunks
+   // Chunk values expose indexed/count/reduce protocols, without being seqs.
+-  const chunks = privateStore(), chunkBuffers = new WeakMap();
++  // A separate private brand and method body lets engines specialize this store.
++  const chunks = class extends (function (value) { return value; }) {
++    #s;
++    static has(value) { return (typeof value === "object" ? value !== null : typeof value === "function") && #s in value; }
++    static get(value) { if ((typeof value === "object" ? value !== null : typeof value === "function") && #s in value) return value.#s; }
++    static set(value, payload) { if (#s in value) value.#s = payload; else new chunks(value).#s = payload; }
++  };
++  const chunkBuffers = new WeakMap();
+   //@unit ChunkBuffer requires: chunkBuffers
+   function ChunkBuffer(array, end) {
+     const value = Object.create(ChunkBuffer.prototype);

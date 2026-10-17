@@ -1,0 +1,9 @@
+9ae810b112a7b3fbfb1880c7ff3c5e9ec534f5fb98247e1dca18fd2f32d76207  /private/tmp/light-cljs-phase101/light-cljs-lexical-js-vars
+ede2d0d766a439339ce037c50257592ea8044392fd8e2d1f9cd13dd01afd41b0  /private/tmp/light-cljs-phase101/main-none.js
+f861002e8d616eb598f4673e4d3b94397f172243dd21b910420bb2f096830e1c  /private/tmp/light-cljs-phase101/project/src/analyzer.rs
+8c9c401a1cede277fb181107712d253429eedf3c1c35e02913d6ae9cc8a57ee8  /private/tmp/light-cljs-phase101/project/src/js_syntax.rs
+63c505eafb798efc271d3280484f9df11f102ac943d3d767054298a768347d25  /private/tmp/light-cljs-phase101/project/src/emitter.rs
+143a765cb10e1e2d3ec393e6b260ed5646a0b9e100746bd844b6452670adad6b  /private/tmp/light-cljs-phase101/project/src/emitter/chunked.rs
+44d12a8ee7b505cb90ad2683ae436a6517fd60baba74cc83e65ec861501fc657  /private/tmp/light-cljs-phase101/project/tests/compiler/macros.rs
+91ca7009d2906b1427815202890924b8fc674daa03ca1873a7cf204c6f4114a6  /private/tmp/light-cljs-phase101/project/tests/compiler/optimization.rs
+008ce2f03f6097246f090f9c1591d095706030572300b038f6e2f2dfbacc1bdf  /private/tmp/light-cljs-phase101/project/docs/compiler.md

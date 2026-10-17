@@ -1,0 +1,16 @@
+(require '[babashka.fs :as fs] '[babashka.process :as p] '[clojure.string :as str])
+(def here (fs/parent *file*))
+(def project (fs/file here "project"))
+(fs/create-dirs project)
+(p/shell "rsync" "-a" "--exclude=target" "--exclude=.git"
+  "/private/tmp/light-cljs-phase47/project/" (str project "/"))
+(def manifest (fs/file project "Cargo.toml"))
+(spit manifest (str/replace (slurp manifest) "[dependencies]\n"
+                 "[dependencies]\nmimalloc = \"=0.1.52\"\n"))
+(def main-file (fs/file project "src/main.rs"))
+(spit main-file (str "// Isolated CLI allocation experiment; library consumers keep their allocator.\n#[global_allocator]\nstatic ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;\n\n" (slurp main-file)))
+(fs/copy "/private/tmp/light-cljs-phase47/run-bench.bb" (fs/file here "run-bench.bb") {:replace-existing true})
+(p/shell {:dir (str project)} "cargo" "fmt")
+(spit (fs/file here "sources.txt")
+  "https://github.com/purpleprotocol/mimalloc_rust/blob/master/Cargo.toml\nhttps://github.com/microsoft/mimalloc\nExact crate version 0.1.52; Cargo.lock will record the resolved native dependency.\n")
+(println "Prepared isolated CLI allocator trial; dependency not fetched or built yet.")

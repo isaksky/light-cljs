@@ -1,0 +1,4 @@
+0cec253fe2d02c02acaac765c84ddd9e098efcd151f14b3a67d7224c6fe78041  /private/tmp/light-cljs-phase80/light-cljs-shared-arena
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase80/main-none.js
+cbcd84667b8dcf7ce31727e44b79f70dfe9bb56ead1ac7ebfdef8e4e1c465769  /private/tmp/light-cljs-phase80/project/Cargo.lock
+9404bce94f79cb878820cc183051189eb6addc87a340058d545f30b01871b321  /private/tmp/light-cljs-phase80/project/src/arena.rs

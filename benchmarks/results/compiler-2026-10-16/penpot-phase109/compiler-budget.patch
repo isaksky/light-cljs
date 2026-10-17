@@ -1,0 +1,556 @@
+--- a/build.rs
++++ b/build.rs
+@@ -29,6 +29,7 @@
+ fn main() {
+     println!("cargo::rerun-if-changed=src/v8_stack.cc");
+     println!("cargo::rerun-if-changed=src/v8_thread_stack.cc");
++    println!("cargo::rerun-if-changed=src/v8_buffers.cc");
+     println!("cargo::rerun-if-changed=vendor/v8-headers/include");
+     cc::Build::new()
+         .cpp(true)
+@@ -37,6 +38,7 @@
+         .define("V8_COMPRESS_POINTERS", None)
+         .file("src/v8_stack.cc")
+         .file("src/v8_thread_stack.cc")
++        .file("src/v8_buffers.cc")
+         .compile("light_cljs_v8_stack");
+     let out = env::var_os("OUT_DIR").expect("OUT_DIR");
+     let out = Path::new(&out);
+--- a/src/v8_evaluator.rs
++++ b/src/v8_evaluator.rs
+@@ -16,6 +16,11 @@
+ };
+ use v8::{Local, PinScope};
+ 
++#[cfg(test)]
++#[path = "v8_buffer_tests.rs"]
++mod buffer_tests;
++#[path = "v8_buffers.rs"]
++mod buffers;
+ #[path = "v8_stack.rs"]
+ mod stack;
+ #[path = "v8_watchdog.rs"]
+@@ -54,6 +59,7 @@
+     }
+ }
+ struct State {
++    buffers: Arc<buffers::Budget>,
+     namespaces: RefCell<NamespaceCache>,
+     control: ExecutionControl,
+     generation: u64,
+@@ -236,10 +242,12 @@
+             .unwrap_or(options.memory_limit)
+             .min(options.memory_limit);
+         let stack = stack::StackLimit::new(options.stack_limit)?;
++        let buffers = buffers::Budget::new(options.memory_limit, control.clone());
+         // SAFETY: the stack helper verifies a boundary within this thread's
+         // stack. Rc state prevents moving the evaluator to another thread.
+         let params = unsafe {
+             v8::CreateParams::default()
++                .array_buffer_allocator(buffers.allocator()?)
+                 .cpp_heap(heap)
+                 .heap_limits(0, heap_limit)
+                 .set_stack_limit(stack.boundary()?)
+@@ -247,6 +255,7 @@
+         let mut isolate = v8::Isolate::new(params);
+         isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+         let state = Rc::new(State {
++            buffers,
+             namespaces: RefCell::new(NamespaceCache::default()),
+             control: control.clone(),
+             generation: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
+@@ -363,12 +372,13 @@
+                 }
+                 let stats = self.isolate.get_mut().get_heap_statistics();
+                 eprintln!(
+-                    "v8-stats stage={stage} used={} total={} physical={} external={} rust-provenance-estimate={}",
++                    "v8-stats stage={stage} used={} total={} physical={} external={} rust-provenance-estimate={} backing-store-bytes={}",
+                     stats.used_heap_size(),
+                     stats.total_heap_size(),
+                     stats.total_physical_size(),
+                     stats.external_memory(),
+-                    self.state.bridge.borrow().external_estimate()
++                    self.state.bridge.borrow().external_estimate(),
++                    self.state.buffers.used()
+                 );
+             }
+         }
+--- a/src/v8_buffers.cc
++++ b/src/v8_buffers.cc
+@@ -0,0 +1,47 @@
++#include <cstdlib>
++#include <new>
++#include "v8-array-buffer.h"
++
++// These callbacks only touch atomic Rust accounting. They never enter V8.
++struct LightBufferBudget {
++  bool (*reserve)(const void*, size_t);
++  void (*release)(const void*, size_t);
++  void (*failed)(const void*);
++  void (*drop)(const void*);
++};
++
++class LightBufferAllocator final : public v8::ArrayBuffer::Allocator {
++ public:
++  LightBufferAllocator(const void* state, const LightBufferBudget* callbacks)
++      : state_(state), callbacks_(callbacks) {}
++  ~LightBufferAllocator() override { callbacks_->drop(state_); }
++
++  void* Allocate(size_t length) override {
++    if (!callbacks_->reserve(state_, length)) return nullptr;
++    void* data = std::calloc(length ? length : 1, 1);
++    if (!data) callbacks_->release(state_, length);
++    return data;
++  }
++  void* AllocateUninitialized(size_t length) override { return Allocate(length); }
++  void Free(void* data, size_t length) override {
++    std::free(data);
++    callbacks_->release(state_, length);
++  }
++  bool HasBackingStoreMemoryBudget() const override { return true; }
++  bool ReserveBackingStoreMemory(size_t length) override {
++    return callbacks_->reserve(state_, length);
++  }
++  void ReleaseBackingStoreMemory(size_t length) override {
++    callbacks_->release(state_, length);
++  }
++  void BackingStoreAllocationFailed() override { callbacks_->failed(state_); }
++
++ private:
++  const void* state_;
++  const LightBufferBudget* callbacks_;
++};
++
++extern "C" v8::ArrayBuffer::Allocator* light_v8_buffer_allocator(
++    const void* state, const LightBufferBudget* callbacks) {
++  return new (std::nothrow) LightBufferAllocator(state, callbacks);
++}
+--- a/src/v8_buffers.rs
++++ b/src/v8_buffers.rs
+@@ -0,0 +1,101 @@
++//! Backing stores can outlive an isolate and may be released on GC threads.
++//! Their shared allocator owns this atomic budget independently of JS roots.
++use crate::evaluator::{EvalError, ExecutionControl};
++use std::ffi::c_void;
++use std::sync::{
++    Arc,
++    atomic::{AtomicUsize, Ordering},
++};
++
++pub(super) struct Budget {
++    used: AtomicUsize,
++    limit: usize,
++    control: ExecutionControl,
++}
++
++#[repr(C)]
++struct Callbacks {
++    reserve: unsafe extern "C" fn(*const c_void, usize) -> bool,
++    release: unsafe extern "C" fn(*const c_void, usize),
++    failed: unsafe extern "C" fn(*const c_void),
++    drop: unsafe extern "C" fn(*const c_void),
++}
++
++unsafe extern "C" {
++    fn light_v8_buffer_allocator(
++        state: *const c_void,
++        callbacks: *const Callbacks,
++    ) -> *mut v8::Allocator;
++}
++
++impl Budget {
++    pub(super) fn new(limit: usize, control: ExecutionControl) -> Arc<Self> {
++        Arc::new(Self {
++            used: AtomicUsize::new(0),
++            limit,
++            control,
++        })
++    }
++
++    pub(super) fn used(&self) -> usize {
++        self.used.load(Ordering::Relaxed)
++    }
++
++    pub(super) fn allocator(self: &Arc<Self>) -> Result<v8::UniqueRef<v8::Allocator>, EvalError> {
++        static CALLBACKS: Callbacks = Callbacks {
++            reserve,
++            release,
++            failed,
++            drop: drop_budget,
++        };
++        let state = Arc::into_raw(self.clone()).cast();
++        // SAFETY: C++ owns this Arc reference on success and releases it only
++        // after all shared allocator/backing-store owners have gone away.
++        let allocator =
++            unsafe { v8::UniquePtr::from_raw(light_v8_buffer_allocator(state, &CALLBACKS)) };
++        if allocator.is_null() {
++            unsafe { drop_budget(state) };
++            self.control.memory_exhausted();
++            return Err(EvalError(
++                "JavaScript session memory limit exhausted".into(),
++            ));
++        }
++        Ok(allocator.unwrap())
++    }
++}
++
++unsafe extern "C" fn reserve(state: *const c_void, length: usize) -> bool {
++    // SAFETY: the allocator retains its Arc until after all callbacks finish.
++    let state = unsafe { &*state.cast::<Budget>() };
++    let mut current = state.used.load(Ordering::Relaxed);
++    loop {
++        let Some(next) = current.checked_add(length).filter(|&n| n <= state.limit) else {
++            // V8 may collect garbage and retry. Failure becomes terminal only
++            // through `failed`, after the engine exhausts its allocation retries.
++            return false;
++        };
++        match state
++            .used
++            .compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed)
++        {
++            Ok(_) => return true,
++            Err(observed) => current = observed,
++        }
++    }
++}
++
++unsafe extern "C" fn release(state: *const c_void, length: usize) {
++    unsafe { &*state.cast::<Budget>() }
++        .used
++        .fetch_sub(length, Ordering::Relaxed);
++}
++
++unsafe extern "C" fn failed(state: *const c_void) {
++    unsafe { &*state.cast::<Budget>() }
++        .control
++        .memory_exhausted();
++}
++
++unsafe extern "C" fn drop_budget(state: *const c_void) {
++    drop(unsafe { Arc::from_raw(state.cast::<Budget>()) });
++}
+--- a/src/v8_buffer_tests.rs
++++ b/src/v8_buffer_tests.rs
+@@ -0,0 +1,322 @@
++use super::*;
++
++fn session() -> V8Evaluator {
++    V8Evaluator::new(EvaluatorOptions {
++        memory_limit: 32 * 1024 * 1024,
++        timeout: std::time::Duration::from_secs(5),
++        ..Default::default()
++    })
++    .unwrap()
++}
++
++fn number(evaluator: &V8Evaluator, source: &str) -> f64 {
++    let value = evaluator.evaluate_js(source).unwrap();
++    let result = evaluator.number(value).unwrap();
++    evaluator.release(value).unwrap();
++    result
++}
++
++fn collect(evaluator: &V8Evaluator) {
++    let mut isolate = evaluator.isolate.borrow_mut();
++    let entered = Entered::new(&mut isolate);
++    entered.0.low_memory_notification();
++}
++
++#[test]
++fn backing_store_budgets_cover_construction_growth_and_aggregate_storage() {
++    let mut failures = Vec::new();
++    for (name, expression) in [
++        ("fixed ArrayBuffer", "new ArrayBuffer(33 * 1024 * 1024)"),
++        (
++            "fixed SharedArrayBuffer",
++            "new SharedArrayBuffer(33 * 1024 * 1024)",
++        ),
++        (
++            "resizable ArrayBuffer",
++            "new ArrayBuffer(33 * 1024 * 1024, { maxByteLength: 34 * 1024 * 1024 })",
++        ),
++        (
++            "growable SharedArrayBuffer",
++            "new SharedArrayBuffer(33 * 1024 * 1024, { maxByteLength: 34 * 1024 * 1024 })",
++        ),
++        (
++            "ArrayBuffer.resize",
++            "(() => { const b = new ArrayBuffer(8, { maxByteLength: 34 * 1024 * 1024 }); b.resize(33 * 1024 * 1024); return b; })()",
++        ),
++        (
++            "SharedArrayBuffer.grow",
++            "(() => { const b = new SharedArrayBuffer(8, { maxByteLength: 34 * 1024 * 1024 }); b.grow(33 * 1024 * 1024); return b; })()",
++        ),
++        (
++            "Wasm memory",
++            "new WebAssembly.Memory({ initial: 528, maximum: 1024 })",
++        ),
++        (
++            "shared Wasm memory",
++            "new WebAssembly.Memory({ initial: 528, maximum: 1024, shared: true })",
++        ),
++        (
++            "Wasm memory.grow",
++            "(() => { const m = new WebAssembly.Memory({ initial: 1, maximum: 1024 }); m.grow(527); return m; })()",
++        ),
++        (
++            "shared Wasm memory.grow",
++            "(() => { const m = new WebAssembly.Memory({ initial: 1, maximum: 1024, shared: true }); m.grow(527); return m; })()",
++        ),
++        (
++            "aggregate fixed buffers",
++            "Array.from({length: 8}, () => new ArrayBuffer(5 * 1024 * 1024))",
++        ),
++        (
++            "aggregate growable buffers",
++            "Array.from({length: 8}, () => new SharedArrayBuffer(5 * 1024 * 1024, {maxByteLength: 6 * 1024 * 1024}))",
++        ),
++        (
++            "aggregate mixed buffers",
++            "[new ArrayBuffer(8 * 1024 * 1024), new SharedArrayBuffer(8 * 1024 * 1024), new ArrayBuffer(8 * 1024 * 1024, {maxByteLength: 9 * 1024 * 1024}), new SharedArrayBuffer(9 * 1024 * 1024, {maxByteLength: 10 * 1024 * 1024})]",
++        ),
++    ] {
++        let evaluator = V8Evaluator::new(EvaluatorOptions {
++            memory_limit: 32 * 1024 * 1024,
++            ..Default::default()
++        })
++        .unwrap();
++        match evaluator.evaluate_js(expression) {
++            Err(error) if error.0.contains("memory limit exhausted") => {
++                assert!(
++                    evaluator
++                        .evaluate_js("1")
++                        .unwrap_err()
++                        .0
++                        .contains("memory limit exhausted"),
++                    "{name}"
++                );
++            }
++            Err(error) => failures.push(format!("{name}: wrong error {error}")),
++            Ok(value) => {
++                failures.push(format!("{name}: exceeded budget without error"));
++                evaluator.release(value).unwrap();
++            }
++        }
++    }
++    assert!(failures.is_empty(), "{}", failures.join("\n"));
++}
++
++#[test]
++fn backing_store_failure_cannot_be_hidden_by_javascript_catch() {
++    for expression in [
++        "new ArrayBuffer(33 * 1024 * 1024)",
++        "new SharedArrayBuffer(33 * 1024 * 1024, {maxByteLength: 34 * 1024 * 1024})",
++        "new ArrayBuffer(8, {maxByteLength: 34 * 1024 * 1024}).resize(33 * 1024 * 1024)",
++        "new SharedArrayBuffer(8, {maxByteLength: 34 * 1024 * 1024}).grow(33 * 1024 * 1024)",
++        "new WebAssembly.Memory({initial: 1, maximum: 1024}).grow(527)",
++    ] {
++        let evaluator = session();
++        let error = evaluator
++            .evaluate_js(&format!(
++                "(() => {{ try {{ {expression}; }} catch (_) {{}} while (true) {{}} }})()"
++            ))
++            .unwrap_err();
++        assert!(
++            error.0.contains("memory limit exhausted"),
++            "{expression}: {error}"
++        );
++    }
++}
++
++#[test]
++fn backing_store_budget_applies_during_runtime_startup() {
++    let result = V8Evaluator::new_with_startup(
++        EvaluatorOptions {
++            memory_limit: 32 * 1024 * 1024,
++            timeout: std::time::Duration::from_secs(5),
++            ..Default::default()
++        },
++        || {
++            "try { new SharedArrayBuffer(33 * 1024 * 1024, {maxByteLength: 34 * 1024 * 1024}); } catch (_) {} while (true) {}".into()
++        },
++    );
++    let Err(error) = result else {
++        panic!("startup must fail")
++    };
++    assert!(error.0.contains("memory limit exhausted"), "{error}");
++}
++
++#[test]
++fn wasm_memory_grow_instruction_cannot_silently_exceed_the_budget() {
++    let evaluator = session();
++    // (module (memory (export "m") 1 1024)
++    //   (func (export "g") (param i32) (result i32)
++    //     local.get 0 memory.grow))
++    let error = evaluator
++        .evaluate_js(
++            r#"(() => {
++        const module = new WebAssembly.Module(new Uint8Array([
++            0,97,115,109,1,0,0,0,
++            1,6,1,96,1,127,1,127,
++            3,2,1,0,
++            5,5,1,1,1,128,8,
++            7,9,2,1,109,2,0,1,103,0,0,
++            10,8,1,6,0,32,0,64,0,11
++        ]));
++        return new WebAssembly.Instance(module).exports.g(527);
++    })()"#,
++        )
++        .unwrap_err();
++    assert!(error.0.contains("memory limit exhausted"), "{error}");
++}
++
++#[test]
++fn invalid_growth_is_a_catchable_language_error_without_budget_failure() {
++    let evaluator = session();
++    assert_eq!(
++        number(
++            &evaluator,
++            r#"(() => {
++        let caught = 0;
++        for (const grow of [
++            () => new ArrayBuffer(1, {maxByteLength: 65536}).resize(65537),
++            () => new SharedArrayBuffer(1, {maxByteLength: 65536}).grow(65537),
++            () => new WebAssembly.Memory({initial: 1, maximum: 1}).grow(1)
++        ]) { try { grow(); } catch (e) { if (e instanceof RangeError) ++caught; } }
++        return caught;
++    })()"#
++        ),
++        3.0
++    );
++    assert_eq!(number(&evaluator, "42"), 42.0);
++}
++
++#[test]
++fn reservations_charge_committed_pages_and_shrink_refunds_them() {
++    let evaluator = session();
++    let before = evaluator.state.buffers.used();
++    assert_eq!(
++        number(
++            &evaluator,
++            "(() => { globalThis.b = new ArrayBuffer(1, {maxByteLength: 1024 * 1024 * 1024}); return b.byteLength; })()"
++        ),
++        1.0
++    );
++    let one_page = evaluator.state.buffers.used() - before;
++    assert!((4096..=65536).contains(&one_page), "{one_page}");
++    assert_eq!(
++        number(
++            &evaluator,
++            "(() => { b.resize(4 * 1024 * 1024); new Uint8Array(b).fill(123); b.resize(1); return b.byteLength; })()"
++        ),
++        1.0
++    );
++    assert_eq!(evaluator.state.buffers.used(), before + one_page);
++    assert_eq!(
++        number(
++            &evaluator,
++            "(() => { b.resize(4 * 1024 * 1024); const a = new Uint8Array(b); return a[0] === 123 && a.subarray(1).every(x => x === 0) ? 1 : 0; })()"
++        ),
++        1.0
++    );
++    assert_eq!(evaluator.state.buffers.used(), before + 4 * 1024 * 1024);
++    assert_eq!(
++        number(
++            &evaluator,
++            "(() => { b.resize(0); return b.byteLength; })()"
++        ),
++        0.0
++    );
++    assert_eq!(evaluator.state.buffers.used(), before);
++}
++
++#[test]
++fn buffer_coercions_and_growth_preserve_native_semantics() {
++    let evaluator = session();
++    assert_eq!(
++        number(
++            &evaluator,
++            r#"(() => {
++        const calls = [];
++        const size = { valueOf() { calls.push('size'); return 7; } };
++        const options = { get maxByteLength() {
++            calls.push('max'); return { valueOf() { calls.push('max-value'); return 65536; } };
++        }};
++        const b = new ArrayBuffer(size, options);
++        const a = new Uint8Array(b);
++        if (!a.every(x => x === 0)) return 0;
++        a[0] = 19;
++        b.resize({valueOf() { calls.push('resize'); return 32768; }});
++        if (a.length !== 32768 || a[0] !== 19 || !a.subarray(1).every(x => x === 0)) return 0;
++        const s = new SharedArrayBuffer(1, {maxByteLength: 65536});
++        new Uint8Array(s)[0] = 23;
++        s.grow({valueOf() { calls.push('grow'); return 32768; }});
++        if (new Uint8Array(s)[0] !== 23 || !new Uint8Array(s).subarray(1).every(x => x === 0)) return 0;
++        const m = new WebAssembly.Memory({initial: 1, maximum: 4, shared: true});
++        new Uint8Array(m.buffer)[0] = 29;
++        const old = m.grow(1);
++        return old === 1 && m.buffer.byteLength === 131072 && new Uint8Array(m.buffer)[0] === 29
++            && calls.join(',') === 'size,max,max-value,resize,grow' ? 1 : 0;
++    })()"#
++        ),
++        1.0
++    );
++}
++
++#[test]
++fn unreachable_backing_stores_are_reclaimed_during_allocation_retry() {
++    for source in [
++        "(() => { for (let i=0; i<40; ++i) { const b = new ArrayBuffer(4*1024*1024); new Uint8Array(b)[0] = i; } return 1; })()",
++        "(() => { for (let i=0; i<40; ++i) { const b = new SharedArrayBuffer(4*1024*1024, {maxByteLength: 8*1024*1024}); new Uint8Array(b)[0] = i; } return 1; })()",
++        "(() => { for (let i=0; i<40; ++i) { const m = new WebAssembly.Memory({initial: 64, maximum: 128}); new Uint8Array(m.buffer)[0] = i; } return 1; })()",
++    ] {
++        let evaluator = session();
++        let before = evaluator.state.buffers.used();
++        assert_eq!(number(&evaluator, source), 1.0);
++        collect(&evaluator);
++        assert_eq!(evaluator.state.buffers.used(), before, "{source}");
++        assert_eq!(number(&evaluator, "42"), 42.0);
++    }
++}
++
++#[test]
++fn backing_store_allocator_lives_until_last_native_owner_drops() {
++    for (source, shared) in [
++        ("new ArrayBuffer(1048576)", false),
++        ("new ArrayBuffer(1048576, {maxByteLength: 2097152})", false),
++        ("new SharedArrayBuffer(1048576)", true),
++        (
++            "new SharedArrayBuffer(1048576, {maxByteLength: 2097152})",
++            true,
++        ),
++        (
++            "new WebAssembly.Memory({initial:16, maximum:32}).buffer",
++            false,
++        ),
++        (
++            "new WebAssembly.Memory({initial:16, maximum:32, shared:true}).buffer",
++            true,
++        ),
++    ] {
++        let evaluator = session();
++        let budget = evaluator.state.buffers.clone();
++        let store = evaluator
++            .with_active(|active| {
++                active.enter(|scope| {
++                    let value = script(scope, source)?;
++                    Ok(if shared {
++                        Local::<v8::SharedArrayBuffer>::try_from(value)
++                            .unwrap()
++                            .get_backing_store()
++                    } else {
++                        Local::<v8::ArrayBuffer>::try_from(value)
++                            .unwrap()
++                            .get_backing_store()
++                    })
++                })
++            })
++            .unwrap();
++        assert_eq!(budget.used(), 1048576, "{source}");
++        drop(evaluator);
++        assert_eq!(budget.used(), 1048576, "native owner: {source}");
++        drop(store);
++        assert_eq!(budget.used(), 0, "last native owner: {source}");
++        assert_eq!(Arc::strong_count(&budget), 1, "allocator owner: {source}");
++    }
++}

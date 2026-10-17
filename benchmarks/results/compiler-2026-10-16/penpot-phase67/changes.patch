@@ -1,0 +1,30 @@
+diff --git a/src/emitter.rs b/src/emitter.rs
+index 2b1dbdf..88af70a 100644
+--- a/src/emitter.rs
++++ b/src/emitter.rs
+@@ -129,8 +129,25 @@ pub fn emit_js_unit(program: &Program) -> String {
+ 
+ /// Compile-time globals use the session demand registry; all semantic lowering is shared.
+ pub(crate) fn emit_deferred_unit(program: &Program) -> (String, String) {
++    let started = std::time::Instant::now();
+     let mut registration = String::new();
+     let unit = emit_unit_parts(program, true, Some(&mut registration));
++    if std::env::var_os("LIGHT_DEFERRED_STATS").is_some() {
++        use std::hash::{Hash, Hasher};
++        let mut hash = std::collections::hash_map::DefaultHasher::new();
++        registration.hash(&mut hash);
++        eprintln!(
++            "deferred-stats ns={} globals={} expressions={} strings={} registration={} code={} emission-us={} registration-hash={:016x}",
++            program.namespaces.len(),
++            program.globals.len(),
++            program.exprs.len(),
++            program.strings.len(),
++            registration.len(),
++            unit.len(),
++            started.elapsed().as_micros(),
++            hash.finish()
++        );
++    }
+     (format!("rt => {{ {registration} return null; }}"), unit)
+ }
+ 

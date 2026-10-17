@@ -1,0 +1,380 @@
+diff --git a/src/analyzer.rs b/src/analyzer.rs
+index db41455..a56587e 100644
+--- a/src/analyzer.rs
++++ b/src/analyzer.rs
+@@ -2580,12 +2580,12 @@ pub struct RuntimeReaderNamespace {
+ #[derive(Clone, Debug, PartialEq)]
+ pub struct Program {
+     /// Source namespaces present in this unit, including namespaces without Vars.
+-    pub namespaces: crate::shared::Shared<Vec<String>>,
++    pub namespaces: crate::arena::Arena<String>,
+     /// Explicit source reader contexts; runtime reads never consult a loader.
+     pub reader_contexts: crate::shared::Shared<
+         crate::layered::Layered<String, crate::shared::Shared<RuntimeReaderNamespace>>,
+     >,
+-    pub namespace_entries: crate::shared::Shared<HashMap<ExprId, String>>,
++    pub namespace_entries: crate::shared::Shared<crate::layered::Layered<ExprId, String>>,
+     pub compilation_uses: Vec<CompilationUse>,
+     pub exprs: crate::arena::Arena<Expr>,
+     pub locals: crate::arena::Arena<LocalBinding>,
+@@ -2632,6 +2632,7 @@ impl Program {
+     /// Freeze every table, so a clone shares the entries so far instead of
+     /// copying them; see [`crate::arena::Arena::freeze`].
+     pub fn freeze(&mut self) {
++        self.namespaces.freeze();
+         self.exprs.freeze();
+         self.locals.freeze();
+         self.recur_targets.freeze();
+@@ -2640,6 +2641,17 @@ impl Program {
+         self.strings.freeze();
+         self.named_literals.freeze();
+     }
++
++    pub(crate) fn shrink_to_fit(&mut self) {
++        self.namespaces.shrink_to_fit();
++        self.exprs.shrink_to_fit();
++        self.locals.shrink_to_fit();
++        self.recur_targets.shrink_to_fit();
++        self.globals.shrink_to_fit();
++        self.js_globals.shrink_to_fit();
++        self.strings.shrink_to_fit();
++        self.named_literals.shrink_to_fit();
++    }
+ }
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+diff --git a/src/arena.rs b/src/arena.rs
+index c249f0b..05decc1 100644
+--- a/src/arena.rs
++++ b/src/arena.rs
+@@ -162,6 +162,24 @@ impl<T: PartialEq> PartialEq for Arena<T> {
+ 
+ impl<T: Eq> Eq for Arena<T> {}
+ 
++impl<T, U> PartialEq<Vec<U>> for Arena<T>
++where
++    T: PartialEq<U>,
++{
++    fn eq(&self, other: &Vec<U>) -> bool {
++        self.len() == other.len() && self.iter().zip(other).all(|(a, b)| a == b)
++    }
++}
++
++impl<T, U, const N: usize> PartialEq<[U; N]> for Arena<T>
++where
++    T: PartialEq<U>,
++{
++    fn eq(&self, other: &[U; N]) -> bool {
++        self.len() == N && self.iter().zip(other).all(|(a, b)| a == b)
++    }
++}
++
+ impl<T> From<Vec<T>> for Arena<T> {
+     fn from(tail: Vec<T>) -> Self {
+         Self {
+@@ -199,6 +217,14 @@ impl<T> Arena<T> {
+         self.tail.push(value);
+     }
+ 
++    /// Release spare capacity before retaining a completed analysis. Frozen
++    /// entries stay shared; no IDs or values change.
++    pub(crate) fn shrink_to_fit(&mut self) {
++        self.chunks.shrink_to_fit();
++        self.starts.shrink_to_fit();
++        self.tail.shrink_to_fit();
++    }
++
+     pub fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+         self.tail.extend(iter);
+     }
+diff --git a/src/compilation_session.rs b/src/compilation_session.rs
+index 34766a6..c54048e 100644
+--- a/src/compilation_session.rs
++++ b/src/compilation_session.rs
+@@ -48,9 +48,11 @@ struct Unit {
+     name: String,
+     // Consumed by the one analysis. The analyzed result keeps any resolution
+     // data it needs; these inputs must not pin an obsolete second snapshot.
++    // Keep large inputs out of line so completed units retain no empty space
++    // for the definition snapshot or the macro host's many shared tables.
+     form: Option<Form>,
+-    snapshot: Option<DefinitionSnapshot>,
+-    host: MacroHost,
++    snapshot: Option<Box<DefinitionSnapshot>>,
++    host: Option<Box<MacroHost>>,
+     state: AnalysisState,
+     analyses: usize,
+     // The engine requests source when it first initializes a root. Its ready
+@@ -216,14 +218,15 @@ impl CompilationSession {
+             .register(name, Some(form), snapshot, host, false, location.clone())?
+             .unwrap();
+         let group = analyzed.is_some();
+-        if let Some(program) = analyzed {
++        if let Some(mut program) = analyzed {
++            program.shrink_to_fit();
+             let unit = self.catalog.borrow().units[unit].clone();
+             let mut unit = unit.borrow_mut();
+             unit.state = AnalysisState::Analyzed(Rc::new(program), Vec::new());
+             unit.analyses = 1;
+             unit.form = None;
+             unit.snapshot = None;
+-            unit.host = MacroHost::default();
++            unit.host = None;
+         }
+         let code = format!(
+             "(() => {{ let code; return rt => {{ code ??= (0,eval)(globalThis.__lightCompileUnit({unit})); return code(rt); }}; }})()"
+@@ -310,8 +313,8 @@ impl CompilationSession {
+                     request,
+                     name: name.clone(),
+                     form: Some(form),
+-                    snapshot: Some(snapshot),
+-                    host,
++                    snapshot: Some(Box::new(snapshot)),
++                    host: Some(Box::new(host)),
+                     state: AnalysisState::Unstarted,
+                     analyses: 0,
+                     emitted: false,
+@@ -389,13 +392,21 @@ impl CompilationSession {
+                 }
+                 AnalysisState::Unstarted => (),
+             }
+-            if self.catalog.borrow().stack.len() >= unit.host.limits.expansion_depth.min(64) {
++            if self.catalog.borrow().stack.len()
++                >= unit
++                    .host
++                    .as_ref()
++                    .expect("unstarted unit host")
++                    .limits
++                    .expansion_depth
++                    .min(64)
++            {
+                 let message =
+                     "compiler macro expansion depth limit exceeded in deferred units".to_owned();
+                 unit.state = AnalysisState::Failed(message.clone(), None);
+                 unit.form = None;
+                 unit.snapshot = None;
+-                unit.host = MacroHost::default();
++                unit.host = None;
+                 return Err(message);
+             }
+             unit.state = AnalysisState::Analyzing;
+@@ -405,10 +416,13 @@ impl CompilationSession {
+             let request = unit.request;
+             debug_assert!(request.generation > 0);
+             debug_assert_eq!(self.catalog.borrow().bindings[&unit.name].0, request.var);
+-            let mut host = unit.host.macro_analysis_frame();
+             // A unit is analyzed once; its registration-time host is not needed
+             // after its analysis frame is taken.
+-            unit.host = MacroHost::default();
++            let mut host = unit
++                .host
++                .take()
++                .expect("unstarted unit host")
++                .macro_analysis_frame();
+             if host.bootstrap.is_none() {
+                 host.bootstrap = bootstrap;
+             }
+@@ -440,16 +454,21 @@ impl CompilationSession {
+         };
+         let analysis = crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
+         let diagnostic = analysis.as_ref().err().cloned();
+-        let result = analysis.map(|(p, w)| (Rc::new(p), w)).map_err(|e| {
+-            let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
+-            format!(
+-                "{}:{}:{}: {}: {e}",
+-                loc.source,
+-                loc.line,
+-                loc.column,
+-                unit.borrow().name
+-            )
+-        });
++        let result = analysis
++            .map(|(mut p, w)| {
++                p.shrink_to_fit();
++                (Rc::new(p), w)
++            })
++            .map_err(|e| {
++                let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
++                format!(
++                    "{}:{}:{}: {}: {e}",
++                    loc.source,
++                    loc.line,
++                    loc.column,
++                    unit.borrow().name
++                )
++            });
+         unit.borrow_mut().state = match &result {
+             Ok((p, w)) => AnalysisState::Analyzed(p.clone(), w.clone()),
+             Err(e) => AnalysisState::Failed(e.clone(), diagnostic),
+@@ -532,6 +551,7 @@ mod retention_tests {
+                 completed += 1;
+                 assert!(unit.form.is_none());
+                 assert!(unit.snapshot.is_none());
++                assert!(unit.host.is_none());
+             }
+         }
+         assert!(completed > 0);
+diff --git a/src/dev_build.rs b/src/dev_build.rs
+index a53b451..b93e690 100644
+--- a/src/dev_build.rs
++++ b/src/dev_build.rs
+@@ -278,11 +278,15 @@ impl DevManifest {
+ /// puts its hooks in source order and drops the flag a definition lost; a
+ /// definition removed from the source keeps its last metadata, as it stays
+ /// defined. A client runs the before-load hooks in reverse.
+-pub(crate) fn program_hooks(program: &Program, namespaces: &[String]) -> [Vec<DevHook>; 2] {
++pub(crate) fn program_hooks<'a>(
++    program: &Program,
++    namespaces: impl IntoIterator<Item = &'a String>,
++) -> [Vec<DevHook>; 2] {
++    let namespaces = namespaces.into_iter().collect::<Vec<_>>();
+     let position = |namespace: &str| {
+         namespaces
+             .iter()
+-            .position(|known| known == namespace)
++            .position(|known| known.as_str() == namespace)
+             .unwrap_or(namespaces.len())
+     };
+     let mut definitions = program
+diff --git a/src/layered.rs b/src/layered.rs
+index 4aba83f..e87917e 100644
+--- a/src/layered.rs
++++ b/src/layered.rs
+@@ -6,14 +6,14 @@ use std::hash::Hash;
+ use std::rc::Rc;
+ 
+ /// A map whose frames share its entries by reference. Entries are written to
+-/// a small layer of this map's own, over a base shared with every frame taken
+-/// from it; when the layer grows past a bound, the two are merged into a new
+-/// base, so a frame costs the layer and a lookup costs two probes.
++/// a small layer over a shared base. Both are shared until a write, so a frame
++/// costs two reference increments and a lookup costs two probes. Once the
++/// layer grows past a bound, the two are merged into a new base.
+ #[derive(Debug)]
+ pub struct Layered<K, V> {
+     base: Rc<HashMap<K, V>>,
+     /// This map's entries over `base`; `None` removes a base entry.
+-    own: HashMap<K, Option<V>>,
++    own: Rc<HashMap<K, Option<V>>>,
+     len: usize,
+ }
+ 
+@@ -30,7 +30,7 @@ impl<K, V> Default for Layered<K, V> {
+     fn default() -> Self {
+         Self {
+             base: Rc::new(HashMap::new()),
+-            own: HashMap::new(),
++            own: Rc::new(HashMap::new()),
+             len: 0,
+         }
+     }
+@@ -51,6 +51,10 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
+         self.len
+     }
+ 
++    pub fn is_empty(&self) -> bool {
++        self.len == 0
++    }
++
+     pub fn get<Q>(&self, key: &Q) -> Option<&V>
+     where
+         K: Borrow<Q>,
+@@ -91,13 +95,13 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
+             // Compact first: the entry must stay in the own layer to be
+             // returned from it.
+             self.compact();
+-            self.own.insert(key.to_owned(), Some(value));
++            Rc::make_mut(&mut self.own).insert(key.to_owned(), Some(value));
+         }
+-        self.own.get_mut(key)?.as_mut()
++        Rc::make_mut(&mut self.own).get_mut(key)?.as_mut()
+     }
+ 
+     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+-        let previous = match self.own.insert(key.clone(), Some(value)) {
++        let previous = match Rc::make_mut(&mut self.own).insert(key.clone(), Some(value)) {
+             Some(previous) => previous,
+             None => self.base.get(&key).cloned(),
+         };
+@@ -114,12 +118,12 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
+         Q: ?Sized + Hash + Eq + ToOwned<Owned = K>,
+     {
+         let previous = if self.base.contains_key(key) {
+-            match self.own.insert(key.to_owned(), None) {
++            match Rc::make_mut(&mut self.own).insert(key.to_owned(), None) {
+                 Some(previous) => previous,
+                 None => self.base.get(key).cloned(),
+             }
+         } else {
+-            self.own.remove(key).flatten()
++            Rc::make_mut(&mut self.own).remove(key).flatten()
+         };
+         if previous.is_some() {
+             self.len -= 1;
+@@ -153,7 +157,7 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
+             return;
+         }
+         let mut merged = (*self.base).clone();
+-        for (key, value) in self.own.drain() {
++        for (key, value) in Rc::make_mut(&mut self.own).drain() {
+             match value {
+                 Some(value) => {
+                     merged.insert(key, value);
+@@ -185,7 +189,15 @@ impl<K: Eq + Hash + Clone, V: Clone> FromIterator<(K, V)> for Layered<K, V> {
+         Self {
+             len: base.len(),
+             base: Rc::new(base),
+-            own: HashMap::new(),
++            own: Rc::new(HashMap::new()),
++        }
++    }
++}
++
++impl<K: Eq + Hash + Clone, V: Clone> Extend<(K, V)> for Layered<K, V> {
++    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, entries: I) {
++        for (key, value) in entries {
++            self.insert(key, value);
+         }
+     }
+ }
+@@ -194,6 +206,40 @@ impl<K: Eq + Hash + Clone, V: Clone> FromIterator<(K, V)> for Layered<K, V> {
+ mod tests {
+     use super::Layered;
+ 
++    #[test]
++    fn frames_keep_own_entries_across_mutation_removal_and_compaction() {
++        let mut map = Layered::<String, Vec<usize>>::default();
++        let mut oracle = std::collections::HashMap::<String, Vec<usize>>::new();
++        let mut frames = Vec::new();
++        for i in 0..240 {
++            let key = format!("k{i}");
++            map.insert(key.clone(), vec![i]);
++            oracle.insert(key, vec![i]);
++            if i % 7 == 0 {
++                frames.push((map.clone(), oracle.clone()));
++            }
++            let previous = format!("k{}", i / 2);
++            map.entry_or_default(previous.clone()).push(i + 1000);
++            oracle.entry(previous.clone()).or_default().push(i + 1000);
++            if i % 3 == 0 {
++                assert_eq!(map.remove(&previous), oracle.remove(&previous));
++            }
++            if let Some(value) = map.get_mut("k0") {
++                value.push(i);
++                oracle.get_mut("k0").unwrap().push(i);
++            }
++        }
++        frames.push((map.clone(), oracle));
++        map.clear();
++        for (frame, expected) in frames {
++            assert_eq!(frame.len(), expected.len());
++            assert_eq!(frame.iter().count(), expected.len());
++            for (key, value) in expected {
++                assert_eq!(frame.get(&key), Some(&value));
++            }
++        }
++    }
++
+     #[test]
+     fn get_mut_survives_compaction_boundary() {
+         let mut map: Layered<String, Vec<u32>> =

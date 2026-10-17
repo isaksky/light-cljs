@@ -1,0 +1,7 @@
+HEAD 415620c83428d5a8fb6b761364305e1a63bf8031
+ca4eb60eab8419e57428347b4e6aab1c04f17906fce362ed2c7f0be3364a86ee  /private/tmp/light-cljs-phase42/production/light-cljs
+e34f7ebaaa53705b5207c479a2e0be42f30c3e932522e6ca416d0fc6a51ec52c  /private/tmp/light-cljs-phase42/production/implementation.patch
+35e67e18e9539a08781737bea93c45fdc57d5000b10c2b0e2525440af074aea1  /private/tmp/light-cljs-phase42/production/name_index.rs
+f720e8ff4e8b283c48e00db6e1f8073c1cd8b3e7ebbb0c99fa559bf6994fd717  /private/tmp/light-cljs-phase42/negative
+717e8281f64d2827d3cba474dbc5419c23f6b11c0b9f6c583542eab3de656266  src/analyzer.rs
+fa094fff7a2e2e96e8ac64d6d995bcc9916001c86a8bc4a4bc9920a15a4cec0b  tests/compiler/map_reader_order.rs

@@ -1,0 +1,446 @@
+diff --git a/src/analyzer.rs b/src/analyzer.rs
+index c433dc0..aa63044 100644
+--- a/src/analyzer.rs
++++ b/src/analyzer.rs
+@@ -2979,7 +2979,7 @@ fn compiler_syntax<'a>(source: &str, syntax: &'a SyntaxTree) -> (Cow<'a, SyntaxT
+     (Cow::Owned(SyntaxTree { nodes, roots }), discards)
+ }
+ 
+-fn empty_program() -> Program {
++pub(crate) fn empty_program() -> Program {
+     Program {
+         namespaces: Default::default(),
+         reader_contexts: Default::default(),
+@@ -3317,6 +3317,7 @@ fn analyze_input(
+             &crate::program_fragment::SharedPrefix::same(&snapshot.resolution_program),
+             true,
+         );
++        session.release_application_ir(unit);
+         analyzer.warnings.extend(warnings);
+         let test = analyzer.push(
+             ExprKind::DefinitionTest { value, unit },
+@@ -6214,6 +6215,7 @@ impl Analyzer<'_> {
+             // globals must not roll back a later source declaration's live
+             // metadata/flags, so those stay as they are.
+             let root = crate::program_fragment::append(&mut self.program, &program, &shared, false);
++            session.release_application_ir(unit);
+             for (index, global) in self.program.globals.iter().enumerate().skip(defined) {
+                 self.globals.insert(
+                     (global.namespace.clone(), global.name.clone()),
+diff --git a/src/compilation_session.rs b/src/compilation_session.rs
+index 7ff5080..bc7ce89 100644
+--- a/src/compilation_session.rs
++++ b/src/compilation_session.rs
+@@ -55,9 +55,8 @@ struct Unit {
+     host: Option<Box<MacroHost>>,
+     state: AnalysisState,
+     analyses: usize,
+-    // The engine requests source when it first initializes a root. Its ready
+-    // or failed state prevents another initialization. Retaining that source
+-    // here duplicates the engine's executable/source and namespace catalogs.
++    // Count actual engine demand separately from pure source preparation.
++    // Ready or failed JavaScript roots never initialize a second time.
+     emitted: bool,
+ }
+ #[derive(Clone)]
+@@ -65,6 +64,11 @@ enum AnalysisState {
+     Unstarted,
+     Analyzing,
+     Analyzed(Rc<Program>, Vec<AnalysisWarning>),
++    Prepared(
++        std::rc::Weak<Program>,
++        Vec<AnalysisWarning>,
++        Rc<crate::emitter::DeferredUnit>,
++    ),
+     Failed(String, Option<crate::AnalysisError>),
+ }
+ #[derive(Clone)]
+@@ -107,10 +111,22 @@ impl CompilationSession {
+                 let session = weak.upgrade().ok_or("compilation session expired")?;
+                 let evaluator = engine.upgrade().ok_or("evaluator expired")?;
+                 let active = evaluator.active(ctx).map_err(|e| e.to_string())?;
+-                let (program, _) = session.analyze(id as usize, Some(&active))?;
+                 let unit = session.catalog.borrow().units[id as usize].clone();
++                let prepared = match &unit.borrow().state {
++                    AnalysisState::Prepared(_, _, prepared) => Some(prepared.clone()),
++                    _ => None,
++                };
++                let (registration, code) = if let Some(prepared) = prepared {
++                    prepared.emit()
++                } else {
++                    let (program, _) = session.analyze(id as usize, Some(&active))?;
++                    crate::emitter::emit_deferred_unit(&program)
++                };
+                 unit.borrow_mut().emitted = true;
+-                Ok(crate::emitter::emit_deferred_unit(&program))
++                active
++                    .evaluate_registration(&registration.source, &registration.chunks)
++                    .map_err(|e| e.to_string())?;
++                Ok(code)
+             })
+             .map_err(|e| e.to_string())?;
+         // Registry and root states stay in JS, so ready reads never cross Rust.
+@@ -254,6 +270,9 @@ impl CompilationSession {
+             let value = engine.evaluate_unit(&source).map_err(|e| e.to_string())?;
+             engine.release(value).map_err(|e| e.to_string())?;
+         }
++        if group {
++            self.release_application_ir(unit);
++        }
+         Ok(unit)
+     }
+     fn install(
+@@ -366,6 +385,19 @@ impl CompilationSession {
+             _ => None,
+         }
+     }
++    /// Called after the analyzed body has been copied into its application
++    /// owner. Preparing source is pure: execution and registration stay lazy.
++    pub fn release_application_ir(&self, id: usize) {
++        let unit = self.catalog.borrow().units[id].clone();
++        let mut unit = unit.borrow_mut();
++        if let AnalysisState::Analyzed(program, warnings) = &unit.state {
++            unit.state = AnalysisState::Prepared(
++                Rc::downgrade(program),
++                warnings.clone(),
++                Rc::new(crate::emitter::DeferredUnit::prepare(program)),
++            );
++        }
++    }
+     pub fn analyze(
+         &self,
+         id: usize,
+@@ -384,6 +416,12 @@ impl CompilationSession {
+                 AnalysisState::Analyzed(program, warnings) => {
+                     return Ok((program.clone(), warnings.clone()));
+                 }
++                AnalysisState::Prepared(program, warnings, _) => {
++                    return program
++                        .upgrade()
++                        .map(|program| (program, warnings.clone()))
++                        .ok_or_else(|| "application IR was already transferred".to_owned());
++                }
+                 AnalysisState::Failed(error, _) => return Err(error.clone()),
+                 AnalysisState::Analyzing => {
+                     let c = self.catalog.borrow();
+@@ -558,7 +596,10 @@ mod retention_tests {
+         let mut completed = 0;
+         for unit in &catalog.units {
+             let unit = unit.borrow();
+-            if matches!(unit.state, AnalysisState::Analyzed(..)) {
++            if matches!(
++                unit.state,
++                AnalysisState::Analyzed(..) | AnalysisState::Prepared(..)
++            ) {
+                 completed += 1;
+                 assert!(unit.form.is_none());
+                 assert!(unit.snapshot.is_none());
+@@ -567,4 +608,22 @@ mod retention_tests {
+         }
+         assert!(completed > 0);
+     }
++
++    #[test]
++    fn application_assembly_releases_programs_but_retains_lazy_source() {
++        let mut host = MacroHost::new();
++        crate::compile_with_macros("(defn f [x] (+ x 1)) (defmacro m [] (f 41)) (m)", &mut host)
++            .unwrap();
++        let session = host.session_handle().unwrap();
++        let catalog = session.catalog.borrow();
++        let mut released = 0;
++        for unit in &catalog.units {
++            if let AnalysisState::Prepared(program, _, code) = &unit.borrow().state {
++                assert!(program.upgrade().is_none());
++                assert!(!code.emit().1.is_empty());
++                released += 1;
++            }
++        }
++        assert!(released > 0);
++    }
+ }
+diff --git a/src/compiler_bootstrap.rs b/src/compiler_bootstrap.rs
+index 334fbd1..5c73e25 100644
+--- a/src/compiler_bootstrap.rs
++++ b/src/compiler_bootstrap.rs
+@@ -518,11 +518,15 @@ impl MacroHost {
+         let (program, _) =
+             crate::analyzer::analyze_deferred_form(&function, &mut frame, &snapshot, engine)
+                 .map_err(|e| e.to_string())?;
++        let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
++        let (registration, unit) = crate::emitter::emit_deferred_unit(&program);
++        engine
++            .evaluate_registration(&registration.source, &registration.chunks)
++            .map_err(|e| e.to_string())?;
+         let function = engine
+-            .unwrap_or(bootstrap.evaluator.as_ref())
+             .evaluate_unit(&format!(
+                 "rt => rt.core.macroReaderFunction(({})(rt))",
+-                crate::emitter::emit_deferred_unit(&program)
++                unit
+             ))
+             .map_err(|e| e.to_string())?;
+         self.javascript_macros.insert(
+diff --git a/src/emitter.rs b/src/emitter.rs
+index 0753510..6c64585 100644
+--- a/src/emitter.rs
++++ b/src/emitter.rs
+@@ -58,6 +58,7 @@ pub(crate) fn emit_application(
+         Some(application),
+         module,
+         mapped,
++        None,
+     )
+ }
+ 
+@@ -127,8 +128,111 @@ pub fn emit_js_unit(program: &Program) -> String {
+ }
+ 
+ /// Compile-time globals use the session demand registry; all semantic lowering is shared.
+-pub(crate) fn emit_deferred_unit(program: &Program) -> String {
+-    emit_unit_mode(program, true)
++#[derive(Default)]
++pub(crate) struct NamespaceRegistration {
++    pub source: String,
++    pub chunks: Vec<(String, std::ops::Range<usize>)>,
++    deferred: bool,
++}
++
++/// The application already owns the analyzed body. Retain executable source
++/// and only the immutable tables that lazy namespace registration reads.
++pub(crate) struct DeferredUnit {
++    source: String,
++    namespaces: crate::arena::Arena<String>,
++    globals: crate::arena::Arena<crate::analyzer::GlobalBinding>,
++    reader_contexts: crate::shared::Shared<
++        crate::layered::Layered<
++            String,
++            crate::shared::Shared<crate::analyzer::RuntimeReaderNamespace>,
++        >,
++    >,
++}
++
++impl DeferredUnit {
++    pub(crate) fn prepare(program: &Program) -> Self {
++        let mut registration = NamespaceRegistration {
++            deferred: true,
++            ..Default::default()
++        };
++        Self {
++            source: emit_unit_parts(program, true, Some(&mut registration)),
++            namespaces: program.namespaces.clone(),
++            globals: program.globals.clone(),
++            reader_contexts: program.reader_contexts.clone(),
++        }
++    }
++
++    pub(crate) fn emit(&self) -> (NamespaceRegistration, String) {
++        // Registration reads names and reader context only. Global metadata
++        // expression IDs are deliberately never followed by this operation.
++        let mut program = crate::analyzer::empty_program();
++        program.namespaces = self.namespaces.clone();
++        program.globals = self.globals.clone();
++        program.reader_contexts = self.reader_contexts.clone();
++        let mut emitter = Emitter::new(
++            &program,
++            Setup {
++                demand_roots: true,
++                application_roots: false,
++                module: false,
++                mapped: false,
++                application: None,
++                direct: None,
++                function_names: &[],
++            },
++            true,
++        );
++        let source = emitter.registration(None, false, |_| true);
++        (
++            NamespaceRegistration {
++                source,
++                chunks: emitter.registration_chunks,
++                deferred: false,
++            },
++            self.source.clone(),
++        )
++    }
++}
++pub(crate) fn emit_deferred_unit(program: &Program) -> (NamespaceRegistration, String) {
++    let mut registration = NamespaceRegistration::default();
++    let unit = emit_unit_parts(program, true, Some(&mut registration));
++    (registration, unit)
++}
++
++#[cfg(test)]
++mod deferred_storage_tests {
++    use super::*;
++
++    #[test]
++    fn prepared_source_matches_direct_emission_and_freezes_reader_registration() {
++        for source in [
++            "nil",
++            "(defn f [x] (+ x 1))",
++            "(def ^{:doc \"old metadata\"} x {:answer 42})",
++            "(defprotocol P (f [this])) (defrecord R [x] P (f [this] x))",
++            "(let [x 42] (reify Object (toString [this] (str x))))",
++            "(js* \"((x) => x + 1)(~{})\" 41)",
++        ] {
++            let mut program = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
++            let (expected_registration, expected_code) = emit_deferred_unit(&program);
++            let prepared = DeferredUnit::prepare(&program);
++            program.namespaces.push("later.namespace".into());
++            if let Some(global) = program.globals.get_mut(0) {
++                global.name = "later-name".into();
++            }
++            let (registration, code) = prepared.emit();
++            assert_eq!(code, expected_code, "{source}");
++            assert_eq!(
++                registration.source, expected_registration.source,
++                "{source}"
++            );
++            assert_eq!(
++                registration.chunks, expected_registration.chunks,
++                "{source}"
++            );
++        }
++    }
+ }
+ 
+ // This generated binding participates in the same raw-JavaScript hygiene as
+@@ -136,6 +240,14 @@ pub(crate) fn emit_deferred_unit(program: &Program) -> String {
+ const UNIT_RUNTIME: &str = "__lightSessionRuntime";
+ 
+ fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
++    emit_unit_parts(program, demand_roots, None)
++}
++
++fn emit_unit_parts(
++    program: &Program,
++    demand_roots: bool,
++    registration: Option<&mut NamespaceRegistration>,
++) -> String {
+     emit_js_mode(
+         program,
+         Some(UNIT_RUNTIME),
+@@ -144,6 +256,7 @@ fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
+         None,
+         false,
+         false,
++        registration,
+     )
+     .0
+ }
+@@ -175,6 +288,8 @@ struct Interactive<'a> {
+ /// report lists every runtime name the output reads. With `mapped` the output
+ /// also has a source map. With `interactive` the output is an interactive
+ /// unit ([`Interactive`]) instead of an expression defining its own globals.
++// Application and compiler unit emission share these explicit mode arguments.
++#[allow(clippy::too_many_arguments)]
+ fn emit_js_mode(
+     program: &Program,
+     shared: Option<&str>,
+@@ -183,6 +298,7 @@ fn emit_js_mode(
+     application: Option<Application<'_>>,
+     module: bool,
+     mapped: bool,
++    detached_registration: Option<&mut NamespaceRegistration>,
+ ) -> (String, EmittedRuntime, Option<SourceMapping>) {
+     let application_roots = interactive.is_some();
+     let entry = interactive.and_then(|interactive| interactive.entry);
+@@ -319,7 +435,11 @@ fn emit_js_mode(
+         let retained = |global: usize| {
+             !slice || application.is_none_or(|application| application.globals[global])
+         };
+-        let registration = emitter.registration(registered, shared.is_none(), retained);
++        let registration = if detached_registration.as_ref().is_some_and(|r| r.deferred) {
++            String::new()
++        } else {
++            emitter.registration(registered, shared.is_none(), retained)
++        };
+         // Marks of the runtime text, by offset in `runtime`.
+         let mut runtime_marks = Marks::default();
+         let mut runtime = if let Some(parameter) = shared {
+@@ -393,7 +513,12 @@ fn emit_js_mode(
+             runtime.push_str(&constants.declarations);
+         }
+         let registration_at = runtime.len();
+-        runtime.push_str(&registration);
++        if let Some(detached) = detached_registration {
++            detached.source = registration;
++            detached.chunks = std::mem::take(&mut emitter.registration_chunks);
++        } else {
++            runtime.push_str(&registration);
++        }
+         for range in &mut emitter.raw_segments {
+             if range.start >= prelude_end {
+                 range.start += runtime.len();
+@@ -1165,6 +1290,7 @@ struct Operands {
+ }
+ 
+ struct Emitter<'a> {
++    registration_chunks: Vec<(String, std::ops::Range<usize>)>,
+     program: &'a Program,
+     demand_roots: bool,
+     application_roots: bool,
+@@ -1292,6 +1418,7 @@ impl<'a> Emitter<'a> {
+             .and_then(|application| application.shapes)
+             .filter(|_| direct.is_some());
+         Emitter {
++            registration_chunks: Vec::new(),
+             program,
+             demand_roots,
+             application_roots,
+@@ -1395,6 +1522,7 @@ impl<'a> Emitter<'a> {
+             register_namespaces
+                 && registered.is_none_or(|registered| registered.contains(&namespace.as_str()))
+         }) {
++            let registration_start = registration.len();
+             let previous = std::mem::take(&mut self.output);
+             self.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
+             let literal = std::mem::replace(&mut self.output, previous);
+@@ -1459,6 +1587,10 @@ impl<'a> Emitter<'a> {
+                     .join(",")
+             )
+             .unwrap();
++            if demand_roots {
++                self.registration_chunks
++                    .push((namespace.clone(), registration_start..registration.len()));
++            }
+         }
+         if current
+             && register_namespaces
+@@ -5888,6 +6020,7 @@ fn emit_interactive(
+         None,
+         false,
+         mapped,
++        None,
+     );
+     (unit, mapping)
+ }
+@@ -5916,6 +6049,7 @@ pub(crate) fn emit_namespace_unit(
+         None,
+         false,
+         true,
++        None,
+     );
+     (unit, mapping.expect("a mapped emission has a source map"))
+ }
+diff --git a/src/evaluator.rs b/src/evaluator.rs
+index f9b1d84..ef56bbc 100644
+--- a/src/evaluator.rs
++++ b/src/evaluator.rs
+@@ -919,6 +919,15 @@ impl Evaluator {
+ pub trait MacroEvaluator {
+     fn control(&self) -> ExecutionControl;
+     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError>;
++    /// Registration is kept lazy even when a unit's source is prepared early.
++    fn evaluate_registration(
++        &self,
++        source: &str,
++        _chunks: &[(String, std::ops::Range<usize>)],
++    ) -> Result<(), EvalError> {
++        let value = self.evaluate_unit(&format!("rt => {{ {source} return null; }}"))?;
++        self.release(value)
++    }
+     /// Enter a source declaration view, or restore its caller's view with None.
+     /// The default preserves compatibility with external evaluator adapters.
+     fn compiler_frontier(&self, next: Option<usize>) -> Result<(), EvalError> {

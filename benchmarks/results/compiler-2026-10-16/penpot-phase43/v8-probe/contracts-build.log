@@ -1,0 +1,16 @@
+   Compiling light-v8-probe v0.0.0 (/private/tmp/light-cljs-phase43/v8-probe)
+warning: use of deprecated method `std::sync::atomic::Atomic::<usize>::fetch_update`: renamed to `try_update` for consistency
+   --> src/bin/contracts.rs:214:19
+    |
+214 |     if state.used.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+    |                   ^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+    |
+214 -     if state.used.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+214 +     if state.used.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+    |
+
+warning: `light-v8-probe` (bin "contracts") generated 1 warning (run `cargo fix --bin "contracts" -p light-v8-probe` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.41s

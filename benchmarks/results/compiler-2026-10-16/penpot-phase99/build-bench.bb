@@ -1,0 +1,8 @@
+(require '[babashka.fs :as fs] '[clojure.string :as str] '[babashka.process :as p])
+(def here (fs/parent *file*))
+(def run-text (slurp (fs/file here "run.bb")))
+(def cut (str/index-of run-text "(p/shell {:extra-env"))
+(assert cut)
+(spit (fs/file here "build-only.bb") (subs run-text 0 cut))
+(p/shell "bb" (str (fs/file here "build-only.bb")))
+(p/shell "bb" (str (fs/file here "clean-bench.bb")))

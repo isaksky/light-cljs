@@ -1,0 +1,244 @@
+--- a/v8/include/v8-array-buffer.h
++++ b/v8/include/v8-array-buffer.h
+@@ -197,6 +197,23 @@
+      */
+     virtual PageAllocator* GetPageAllocator() { return nullptr; }
+ 
++    /**
++     * Optional accounting for page-allocated resizable buffers and Wasm memory.
++     * Ordinary buffers continue to use Allocate/Free. A successful reservation
++     * charges committed bytes, not virtual address-space capacity; it is paired
++     * with release on shrink, failed commitment, or backing-store destruction.
++     * A failed reservation may be retried after garbage collection.
++     *
++     * These methods must be thread-safe and must not call into V8. Shared
++     * allocator ownership keeps them alive through backing-store destruction.
++     */
++    virtual bool HasBackingStoreMemoryBudget() const { return false; }
++    virtual bool ReserveBackingStoreMemory(size_t length) { return true; }
++    virtual void ReleaseBackingStoreMemory(size_t length) {}
++
++    /** Called after an ordinary or page-backed allocation has finally failed. */
++    virtual void BackingStoreAllocationFailed() {}
++
+ #if defined(V8_COMPRESS_POINTERS) && \
+     !defined(V8_COMPRESS_POINTERS_IN_SHARED_CAGE)
+     /**
+--- a/v8/src/objects/backing-store.h
++++ b/v8/src/objects/backing-store.h
+@@ -47,6 +47,7 @@
+ // a list of all memory objects (across all isolates) that share this
+ // backing store.
+ struct SharedWasmMemoryData;
++struct BackingStoreBudget;
+ 
+ // The {BackingStore} data structure stores all the low-level details about the
+ // backing store of an array buffer or Wasm memory, including its base address
+@@ -298,6 +299,9 @@
+   // identify stores used by several ArrayBuffers or WebAssembly memories
+   // (reported by the inspector as [[ArrayBufferData]] internal property)
+   const uint32_t id_;
++
++  // Optional embedder quota; owns its allocator and serializes shared growth.
++  std::unique_ptr<BackingStoreBudget> budget_;
+ 
+ #ifdef V8_ENABLE_SANDBOX
+   std::weak_ptr<v8::PageAllocator> page_allocator_;
+--- a/v8/src/objects/backing-store.cc
++++ b/v8/src/objects/backing-store.cc
+@@ -8,6 +8,7 @@
+ #include <optional>
+ 
+ #include "src/base/bits.h"
++#include "src/base/platform/mutex.h"
+ #include "src/execution/isolate.h"
+ #include "src/handles/global-handles.h"
+ #include "src/logging/counters.h"
+@@ -105,6 +106,42 @@
+ // with which it has been shared.
+ struct SharedWasmMemoryData {
+   std::vector<Isolate*> isolates_;
++};
++
++struct BackingStoreBudget {
++  explicit BackingStoreBudget(Isolate* isolate)
++      : owner(isolate->array_buffer_allocator_shared()),
++        allocator(isolate->array_buffer_allocator()) {}
++
++  ~BackingStoreBudget() { Shrink(0); }
++
++  static std::unique_ptr<BackingStoreBudget> Create(Isolate* isolate) {
++    if (!isolate ||
++        !isolate->array_buffer_allocator()->HasBackingStoreMemoryBudget()) {
++      return {};
++    }
++    return std::make_unique<BackingStoreBudget>(isolate);
++  }
++
++  bool Grow(size_t target) {
++    if (target <= bytes) return true;
++    if (!allocator->ReserveBackingStoreMemory(target - bytes)) return false;
++    bytes = target;
++    return true;
++  }
++
++  void Shrink(size_t target) {
++    DCHECK_LE(target, bytes);
++    if (target != bytes) allocator->ReleaseBackingStoreMemory(bytes - target);
++    bytes = target;
++  }
++
++  void Failed() { allocator->BackingStoreAllocationFailed(); }
++
++  std::shared_ptr<v8::ArrayBuffer::Allocator> owner;
++  v8::ArrayBuffer::Allocator* allocator;
++  base::Mutex mutex;
++  size_t bytes = 0;
+ };
+ 
+ BackingStore::BackingStore(void* buffer_start, size_t byte_length,
+@@ -253,6 +290,7 @@
+     if (buffer_start == nullptr) {
+       // Allocation failed.
+       counters->array_buffer_new_size_failures()->AddSample(mb_length);
++      allocator->BackingStoreAllocationFailed();
+       return {};
+     }
+ #ifdef V8_ENABLE_SANDBOX
+@@ -380,12 +418,19 @@
+   // Commit the initial pages (allow read/write).
+   //--------------------------------------------------------------------------
+   size_t committed_byte_length = initial_pages * page_size;
++  auto budget = BackingStoreBudget::Create(isolate);
+   auto commit_memory = [&] {
+-    return committed_byte_length == 0 ||
+-           SetPermissions(page_allocator, buffer_start, committed_byte_length,
+-                          PageAllocator::kReadWrite);
++    if (budget && !budget->Grow(committed_byte_length)) return false;
++    if (committed_byte_length == 0 ||
++        SetPermissions(page_allocator, buffer_start, committed_byte_length,
++                       PageAllocator::kReadWrite)) {
++      return true;
++    }
++    if (budget) budget->Shrink(0);
++    return false;
+   };
+   if (!gc_retry(commit_memory)) {
++    if (budget) budget->Failed();
+     TRACE_BS("BSw:try   failed to set permissions (%p, %zu)\n", buffer_start,
+              committed_byte_length);
+     FreePages(page_allocator, allocation_base, reservation_size);
+@@ -406,6 +451,7 @@
+       buffer_start, byte_length, max_byte_length, byte_capacity, shared,
+       resizable, ImmutableFlag{false}, wasm_memory, has_guard_regions,
+       CustomDeleter{false}, EmptyDeleter{false});
++  result->budget_ = std::move(budget);
+ #ifdef V8_ENABLE_SANDBOX
+   if (page_allocator_shared_ptr) {
+     result->set_page_allocator(page_allocator_shared_ptr);
+@@ -515,6 +561,9 @@
+ std::optional<size_t> BackingStore::GrowWasmMemoryInPlace(Isolate* isolate,
+                                                           size_t delta_pages,
+                                                           size_t max_pages) {
++  // Quota updates and permission changes must agree even for racing grows.
++  std::optional<base::MutexGuard> budget_lock;
++  if (budget_) budget_lock.emplace(&budget_->mutex);
+   // This function grows wasm memory by
+   // * changing the permissions of additional {delta_pages} pages to kReadWrite;
+   // * increment {byte_length_};
+@@ -566,12 +615,22 @@
+ 
+     new_length = (current_pages + delta_pages) * wasm::kWasmPageSize;
+ 
++    size_t previous_charge = budget_ ? budget_->bytes : 0;
++    if (budget_ && !budget_->Grow(new_length)) {
++      budget_->Failed();
++      return {};
++    }
++
+     // Try to adjust the permissions on the memory.
+     if (!i::SetPermissions(GetPlatformPageAllocator(), buffer_start_,
+                            new_length, PageAllocator::kReadWrite)) {
+       // This is a nondeterministic failure; mark as such in the WasmEngine (for
+       // differential fuzzing).
+       wasm::WasmEngine::set_had_nondeterminism();
++      if (budget_) {
++        budget_->Shrink(previous_charge);
++        budget_->Failed();
++      }
+       return {};
+     }
+     if (byte_length_.compare_exchange_weak(old_length, new_length,
+@@ -621,6 +680,8 @@
+ // Commit already reserved memory (for RAB backing stores (not shared)).
+ BackingStore::ResizeOrGrowResult BackingStore::ResizeInPlace(
+     Isolate* isolate, size_t new_byte_length) {
++  std::optional<base::MutexGuard> budget_lock;
++  if (budget_) budget_lock.emplace(&budget_->mutex);
+   size_t page_size = AllocatePageSize();
+   size_t new_committed_pages;
+   bool round_return_value =
+@@ -668,6 +729,7 @@
+     // Changing the byte length wouldn't strictly speaking be needed, since
+     // the JSArrayBuffer already stores the updated length. This is to keep
+     // the BackingStore and JSArrayBuffer in sync.
++    if (budget_) budget_->Shrink(new_committed_length);
+     byte_length_ = new_byte_length;
+     return kSuccess;
+   }
+@@ -677,9 +739,18 @@
+     return kSuccess;
+   }
+ 
++  size_t previous_charge = budget_ ? budget_->bytes : 0;
++  if (budget_ && !budget_->Grow(new_committed_length)) {
++    budget_->Failed();
++    return kFailure;
++  }
+   // Try to adjust the permissions on the memory.
+   if (!i::SetPermissions(GetPlatformPageAllocator(), buffer_start_,
+                          new_committed_length, PageAllocator::kReadWrite)) {
++    if (budget_) {
++      budget_->Shrink(previous_charge);
++      budget_->Failed();
++    }
+     return kFailure;
+   }
+ 
+@@ -690,6 +761,8 @@
+ // Commit already reserved memory (for GSAB backing stores (shared)).
+ BackingStore::ResizeOrGrowResult BackingStore::GrowInPlace(
+     Isolate* isolate, size_t new_byte_length) {
++  std::optional<base::MutexGuard> budget_lock;
++  if (budget_) budget_lock.emplace(&budget_->mutex);
+   size_t page_size = AllocatePageSize();
+   size_t new_committed_pages;
+   bool round_return_value =
+@@ -726,9 +799,18 @@
+       return kSuccess;
+     }
+ 
++    size_t previous_charge = budget_ ? budget_->bytes : 0;
++    if (budget_ && !budget_->Grow(new_committed_length)) {
++      budget_->Failed();
++      return kFailure;
++    }
+     // Try to adjust the permissions on the memory.
+     if (!i::SetPermissions(GetPlatformPageAllocator(), buffer_start_,
+                            new_committed_length, PageAllocator::kReadWrite)) {
++      if (budget_) {
++        budget_->Shrink(previous_charge);
++        budget_->Failed();
++      }
+       return kFailure;
+     }
+ 
+--- a/src/binding.cc
++++ b/src/binding.cc
+@@ -1,4 +1,6 @@
+ // Copyright 2019-2021 the Deno authors. All rights reserved. MIT license.
++// Required by light-cljs's allocator adapter; absent in upstream archives.
++extern "C" void light_v8_backing_store_budget_abi_v1() {}
+ #include <algorithm>
+ #include <cassert>
+ #include <cstddef>

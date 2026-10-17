@@ -1,0 +1,1 @@
+ArrayBuffer budget refusal survives JS catch, all backing stores freed at drop

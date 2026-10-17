@@ -1,0 +1,66 @@
+main: 488399 interrupt-check samples, zero dropped.
+These measure poll occurrences, not wall-clock percentages.
+
+Top frame
+{:top 62570, :inclusive 103928, :at "eval_script:3109:7 visit"}
+{:top 31754, :inclusive 31813, :at "<input>:128:31 <null>"}
+{:top 22880, :inclusive 22880, :at "eval_script:46:14 <null>"}
+{:top 17988, :inclusive 17988, :at "eval_script:48:14 <null>"}
+{:top 17554, :inclusive 17554, :at "eval_script:4698:3 protocolSlot"}
+{:top 16280, :inclusive 22000, :at "eval_script:4728:3 externalMethod"}
+{:top 16234, :inclusive 20839, :at "<input>:150:3 selectFrontier"}
+{:top 15405, :inclusive 88897, :at "eval_script:4713:3 directMethod"}
+{:top 14689, :inclusive 100075, :at "eval_script:3023:5 decode"}
+{:top 14685, :inclusive 170061, :at "eval_script:4741:3 publicMethod"}
+{:top 14505, :inclusive 46252, :at "eval_script:3679:22 <null>"}
+{:top 13272, :inclusive 29654, :at "eval_script:3763:12 <null>"}
+{:top 13130, :inclusive 87575, :at "eval_script:3821:3 coreProtocolImplementation"}
+{:top 11476, :inclusive 47326, :at "eval_script:3064:5 decodeNode"}
+{:top 11017, :inclusive 55939, :at "eval_script:3680:20 <null>"}
+{:top 8435, :inclusive 14740, :at "eval_script:1295:25 <null>"}
+{:top 8270, :inclusive 8270, :at "eval_script:1291:14 <null>"}
+{:top 8150, :inclusive 8150, :at "eval_script:5026:12 <null>"}
+{:top 8118, :inclusive 82613, :at "eval_script:4723:3 builtin"}
+{:top 8104, :inclusive 8104, :at "eval_script:20:12 <null>"}
+{:top 7812, :inclusive 67876, :at "eval_script:3828:3 builtinCoreImplementation"}
+{:top 6471, :inclusive 14983, :at "eval_script:2801:3 structuralEqualPair"}
+{:top 5728, :inclusive 5728, :at "eval_script:4696:3 nativeType"}
+{:top 5556, :inclusive 12166, :at "eval_script:3754:3 seqValue"}
+{:top 4820, :inclusive 17243, :at "eval_script:5036:22 <null>"}
+{:top 4743, :inclusive 14207, :at "eval_script:472:3 first"}
+{:top 4517, :inclusive 92092, :at "eval_script:3726:3 implementsProtocol"}
+{:top 4203, :inclusive 8474, :at "eval_script:3769:3 indexedValue"}
+{:top 3885, :inclusive 42642, :at "eval_script:2794:3 equalPair"}
+{:top 3475, :inclusive 189680, :at "eval_script:415:34 <null>"}
+
+Inclusive (deduplicated within each sampled stack)
+{:top 73, :inclusive 292225, :at "eval_script:7511:23 <null>"}
+{:top 615, :inclusive 275117, :at "eval_script:4409:3 withMacroReaderContext"}
+{:top 1, :inclusive 275104, :at "eval_script:4399:21 <null>"}
+{:top 3475, :inclusive 189680, :at "eval_script:415:34 <null>"}
+{:top 14685, :inclusive 170061, :at "eval_script:4741:3 publicMethod"}
+{:top 164, :inclusive 111261, :at "eval_script:918:48 <null>"}
+{:top 1358, :inclusive 109971, :at "eval_script:804:3 reduce"}
+{:top 132, :inclusive 104060, :at "eval_script:3106:5 encode"}
+{:top 62570, :inclusive 103928, :at "eval_script:3109:7 visit"}
+{:top 3470, :inclusive 103411, :at "eval_script:392:3 seq"}
+{:top 501, :inclusive 102853, :at "eval_script:4482:3 deferredValue"}
+{:top 14689, :inclusive 100075, :at "eval_script:3023:5 decode"}
+{:top 263, :inclusive 97337, :at "eval_script:421:23 <null>"}
+{:top 277, :inclusive 95256, :at "<input>:1269:11 <null>"}
+{:top 31, :inclusive 95003, :at "<input>:1270:17 <null>"}
+{:top 70, :inclusive 94936, :at "<input>:1273:17 <null>"}
+{:top 2, :inclusive 94391, :at "<input>:1286:15 <null>"}
+{:top 4517, :inclusive 92092, :at "eval_script:3726:3 implementsProtocol"}
+{:top 15405, :inclusive 88897, :at "eval_script:4713:3 directMethod"}
+{:top 13130, :inclusive 87575, :at "eval_script:3821:3 coreProtocolImplementation"}
+{:top 4, :inclusive 85313, :at "eval_script:3953:5 <null>"}
+{:top 9, :inclusive 85088, :at "<input>:1292:17 <null>"}
+{:top 0, :inclusive 83574, :at "<input>:1343:20 <null>"}
+{:top 64, :inclusive 83164, :at "<input>:1291:11 <null>"}
+{:top 18, :inclusive 82903, :at "eval_script:7495:36 <null>"}
+{:top 8118, :inclusive 82613, :at "eval_script:4723:3 builtin"}
+{:top 6, :inclusive 81256, :at "eval_script:5523:3 mapv"}
+{:top 4, :inclusive 79378, :at "eval_script:5524:48 <null>"}
+{:top 3110, :inclusive 69404, :at "eval_script:521:3 next"}
+{:top 7812, :inclusive 67876, :at "eval_script:3828:3 builtinCoreImplementation"}

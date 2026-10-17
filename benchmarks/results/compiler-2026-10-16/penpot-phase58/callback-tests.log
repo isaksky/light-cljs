@@ -1,0 +1,77 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase58/project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.70s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/light_cljs-c245fc672d71037e)
+
+running 3 tests
+test v8_evaluator::tests::compiler_callback_panic_is_owned_and_terminal ... ok
+test v8_evaluator::tests::compiler_callback_rejects_invalid_ids_without_running_coercion_hooks ... ok
+test v8_evaluator::tests::poisoned_callback_keeps_owned_diagnostic_when_javascript_catches_and_spins ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 117 filtered out; finished in 0.06s
+
+     Running unittests src/main.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/light_cljs-a469ded843805a0e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/benchmark_variants.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/benchmark_variants-70005a6f62e2d153)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/cli.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/cli-4e41bb63c5049ac1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s
+
+     Running tests/compiler/main.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/compiler-b26cfdf29c13ab90)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1016 filtered out; finished in 0.00s
+
+     Running tests/dev_repl.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/dev_repl-a87fa2b534f1b5cb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/dev_server.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/dev_server-0a1d17bf89eb954a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+     Running tests/dev_watch.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/dev_watch-000fffe7174b35c6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+     Running tests/evaluation/main.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/evaluation-22d755dd1b663dd6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 111 filtered out; finished in 0.00s
+
+     Running tests/execution.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/execution-21016883142da9bb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 96 filtered out; finished in 0.00s
+
+     Running tests/frontend/main.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/frontend-be91fb5e7079b67e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 109 filtered out; finished in 0.00s
+
+     Running tests/provenance.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/provenance-89c9990ab77d022c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

@@ -1,0 +1,16 @@
+﻿g++.exe (Rev4, Built by MSYS2 project) 16.2.0
+Copyright (C) 2026 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+C:/Users/tester.WINDOWS-TESTS/scoop/apps/msys2/2026-06-11/ucrt64/bin/../lib/gcc/x86_64-w64-mingw32/16.2.0/../../../../x86_64-w64-mingw32/bin/ld.exe: shim.o:v8_stack.cc:(.text$light_cljs_v8_set_stack_limit+0x1): undefined reference to `v8::Isolate::SetStackLimit(unsigned long long)'
+collect2.exe: error: ld returned 1 exit status
+Native command failed (1): g++
+At C:\WT\r51f6e29c8c4a\w0d57602a691b\261017163842-34cdb4\w\windows-run.ps1:21 char:28
++ ... tiveCode -ne 0) { throw "Native command failed ($nativeCode): $Exe" }
++                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (Native command failed (1): g++:String) [], Runtim 
+   eException
+    + FullyQualifiedErrorId : Native command failed (1): g++
+ 
+

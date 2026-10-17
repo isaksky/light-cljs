@@ -1,0 +1,10 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase78/project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.00s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/light_cljs-c245fc672d71037e)
+
+running 2 tests
+test layered::tests::get_mut_survives_compaction_boundary ... ok
+test layered::tests::frames_keep_own_entries_across_mutation_removal_and_compaction ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 123 filtered out; finished in 0.00s
+

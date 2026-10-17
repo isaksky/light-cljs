@@ -1,0 +1,11 @@
+{
+  "run" : "/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/261017130156-fa1949",
+  "exit" : 0,
+  "socket" : "/private/tmp/lt-p52-17404440933478375478/s",
+  "purpose" : "Bundled mimalloc v3 Linux ARM64 C probe; no Rust toolchain installed",
+  "start-time" : "2026-10-17T13:01:56.022098Z",
+  "command" : "bash '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/261017130156-fa1949/w/run.sh' '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/261017130156-fa1949'",
+  "end-time" : "2026-10-17T13:02:04.978820Z",
+  "state" : "completed",
+  "local-results" : "/private/tmp/light-cljs-phase52/linux-results"
+}

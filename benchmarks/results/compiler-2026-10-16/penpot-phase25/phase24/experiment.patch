@@ -1,0 +1,59 @@
+--- /private/tmp/light-cljs-phase24/before.js	2026-10-17 01:30:04
++++ /private/tmp/light-cljs-phase24/after.js	2026-10-17 01:30:04
+@@ -3,6 +3,23 @@
+ (() => {
+   const units = new Map(), slots = new Map(), overlays = new Map(), path = [], extensions = new Map(), installing = [], bundles = [], frontiers = [];
+   let frontier = Infinity, declarationFrontier = Infinity;
++  const readyExtensions = [];
++  // First initialized extension after this declaration order.
++  function readyAfter(order) {
++    let low = 0, high = readyExtensions.length;
++    while (low < high) {
++      const middle = (low + high) >>> 1;
++      if (readyExtensions[middle].order <= order) low = middle + 1;
++      else high = middle;
++    }
++    return low;
++  }
++  function changesFrontier(next) {
++    const low = Math.min(frontier, next), high = Math.max(frontier, next);
++    const index = readyAfter(low);
++    return index < readyExtensions.length && readyExtensions[index].order <= high;
++  }
++
+   // Demanding a protocol only initializes matching pending bundles. Once a
+   // selector has completed in this declaration view, repeating the scan cannot
+   // do work. Never publish a result across registration or frontier reentry.
+@@ -87,6 +104,7 @@
+       const installed = __lightRuntimeForCompiler.declarationTransaction(() => bundle.code(__lightRuntimeForCompiler), true);
+       bundle.patches = installed.patches;
+       bundle.state = 'ready';
++      if (bundle.indices.length) readyExtensions.splice(readyAfter(bundle.order), 0, bundle);
+     } catch (error) {
+       bundle.products.clear(); bundle.state = 'failed'; bundle.error = error;
+       if (error instanceof Error) error.message = bundle.location + ': ' + bundle.name + ': ' + error.message;
+@@ -150,17 +168,17 @@
+   function selectFrontier(next) {
+     if (frontier === next) return;
+     invalidateDemands();
+-    if (!bundles.some(bundle => bundle.indices.length && bundle.state === 'ready' && (bundle.order <= frontier) !== (bundle.order <= next))) { frontier = next; return; }
+-    for (let i = bundles.length - 1; i >= 0; i--) {
+-      const bundle = bundles[i];
+-      if (bundle.indices.length && bundle.state === 'ready' && bundle.order <= frontier) __lightRuntimeForCompiler.applyDeclarationPatches(bundle.patches, false);
++    if (!changesFrontier(next)) { frontier = next; return; }
++    for (let i = readyExtensions.length - 1; i >= 0; i--) {
++      const bundle = readyExtensions[i];
++      if (bundle.order <= frontier) __lightRuntimeForCompiler.applyDeclarationPatches(bundle.patches, false);
+     }
+     frontier = next;
+-    for (const bundle of bundles) if (bundle.indices.length && bundle.state === 'ready' && bundle.order <= frontier) __lightRuntimeForCompiler.applyDeclarationPatches(bundle.patches, true);
++    for (const bundle of readyExtensions) if (bundle.order <= frontier) __lightRuntimeForCompiler.applyDeclarationPatches(bundle.patches, true);
+   }
+   globalThis.__lightEnterCompilerFrontier = next => {
+-    const changesView = bundles.some(bundle => bundle.indices.length && bundle.state === 'ready' && (bundle.order <= frontier) !== (bundle.order <= next));
+-    const saved = changesView ? bundles.flatMap(bundle => bundle.indices.length && bundle.state === 'ready' ? __lightRuntimeForCompiler.snapshotDeclarationPatches(bundle.patches) : []) : null;
++    const changesView = changesFrontier(next);
++    const saved = changesView ? readyExtensions.flatMap(bundle => __lightRuntimeForCompiler.snapshotDeclarationPatches(bundle.patches)) : null;
+     frontiers.push({previous: frontier, saved}); selectFrontier(next); return null;
+   };
+   globalThis.__lightLeaveCompilerFrontier = () => {

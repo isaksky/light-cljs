@@ -1,0 +1,1 @@
+render and main: complete output byte-identical to phase20; node --check passes.

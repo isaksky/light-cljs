@@ -1,0 +1,13 @@
+(require '[babashka.fs :as fs] '[babashka.process :as p] '[clojure.string :as str])
+(def here (fs/parent *file*))
+(def project (fs/file here "project"))
+(fs/create-dirs project)
+(p/shell "rsync" "-a" "--exclude=target" "--exclude=.git" "/private/tmp/light-cljs-phase55/project/" (str project "/"))
+(fs/copy "/private/tmp/light-cljs-phase55/run-bench.bb" (fs/file here "run-bench.bb") {:replace-existing true})
+(spit (fs/file here "run.bb")
+  (-> (slurp "/private/tmp/light-cljs-phase55/run.bb")
+      (str/replace "light-cljs-namespace-ids" "light-cljs-thin-lto")
+      (str/replace "main-namespace-ids" "main-thin-lto")
+      (str/replace "{\"CARGO_TARGET_DIR\" \"/private/tmp/light-cljs-phase43/v8-probe/target\"}"
+        "{\"CARGO_TARGET_DIR\" \"/private/tmp/light-cljs-phase43/v8-probe/target\" \"CARGO_PROFILE_RELEASE_LTO\" \"thin\" \"CARGO_PROFILE_RELEASE_CODEGEN_UNITS\" \"1\"}")))
+(println "Prepared isolated thin LTO and one codegen unit build; not started.")

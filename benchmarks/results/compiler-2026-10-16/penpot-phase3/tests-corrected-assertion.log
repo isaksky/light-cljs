@@ -1,0 +1,3 @@
+        PASS [   0.007s] (1/2) light-cljs macro_host::compiler_pure_tests::environment_reuse_preserves_local_shadow_chains_and_location
+        PASS [   0.007s] (2/2) light-cljs macro_host::compiler_pure_tests::reader_environment_reuse_obeys_declaration_acknowledgement_and_old_views
+     Summary [   0.010s] 2 tests run: 2 passed, 1479 skipped

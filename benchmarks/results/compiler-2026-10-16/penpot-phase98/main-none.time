@@ -1,0 +1,36 @@
+retained-programs un-emitted=0 emitted=0 unique=0 logical-exprs-un-emitted=0 logical-exprs-emitted=0
+rust-alloc stage=session-before-program-release live=68824599 peak=73516750 requested=153308196
+rust-alloc stage=session-emitted-programs-released live=68824599 peak=73516750 requested=153308196
+rust-alloc stage=session-all-programs-released live=68824599 peak=73516750 requested=153308196
+rust-alloc stage=session-catalog-released live=68824599 peak=73516750 requested=153308196
+rust-alloc stage=session-bootstrap-released live=68824599 peak=73516750 requested=153308196
+retained-programs un-emitted=0 emitted=0 unique=0 logical-exprs-un-emitted=0 logical-exprs-emitted=0
+rust-alloc stage=session-before-program-release live=72893389 peak=77439402 requested=177500566
+rust-alloc stage=session-emitted-programs-released live=72893389 peak=77439402 requested=177500566
+rust-alloc stage=session-all-programs-released live=72893389 peak=77439402 requested=177500566
+rust-alloc stage=session-catalog-released live=72893389 peak=77439402 requested=177500566
+rust-alloc stage=session-bootstrap-released live=72893389 peak=77439402 requested=177500566
+rust-alloc stage=after-analysis live=499298634 peak=511704977 requested=12936264236
+retained-programs un-emitted=13090 emitted=277 unique=13367 logical-exprs-un-emitted=6704299122 logical-exprs-emitted=149672567
+rust-alloc stage=session-before-program-release live=495495907 peak=511704977 requested=12936264236
+rust-alloc stage=session-emitted-programs-released live=491484429 peak=511704977 requested=12936264236
+rust-alloc stage=session-all-programs-released live=285938105 peak=511704977 requested=12936264236
+rust-alloc stage=session-catalog-released live=279228091 peak=511704977 requested=12936264236
+rust-alloc stage=session-bootstrap-released live=199530265 peak=511704977 requested=12936264300
+rust-alloc stage=after-session-drop live=196674975 peak=511704977 requested=12936264300
+       22.70 real        26.76 user         0.92 sys
+          1120501760  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               70431  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                1817  voluntary context switches
+              134125  involuntary context switches
+          1017663808  peak memory footprint

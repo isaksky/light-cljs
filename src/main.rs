@@ -1,3 +1,8 @@
+// The CLI benefits from mimalloc; library consumers keep their own allocator.
+#[cfg(not(target_arch = "wasm32"))]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::{
     env,
     error::Error,

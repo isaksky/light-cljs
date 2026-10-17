@@ -1,0 +1,3 @@
+render: complete output byte-identical to phase14; node --check passes.
+main-none: complete output byte-identical to phase14; node --check passes.
+main-advanced: complete output byte-identical to phase14; node --check passes.

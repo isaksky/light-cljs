@@ -1,0 +1,6 @@
+(require '[babashka.fs :as fs] '[clojure.string :as str])
+(def here (fs/parent *file*))
+(fs/copy "/private/tmp/light-cljs-phase63/project/src/js_runtime.js" (fs/file here "project/src/js_runtime.js") {:replace-existing true})
+(spit (fs/file here "run.bb") (-> (slurp "/private/tmp/light-cljs-phase62/run.bb")
+  (str/replace "quickjs-replay" "quickjs-active-stack")
+  (str/replace "QuickJS replay trial" "QuickJS active ancestor stack trial")))

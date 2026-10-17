@@ -1,0 +1,82 @@
+diff --git a/src/compilation_session.rs b/src/compilation_session.rs
+index 34766a6..afa7cdf 100644
+--- a/src/compilation_session.rs
++++ b/src/compilation_session.rs
+@@ -86,6 +86,52 @@ struct Catalog {
+ pub(crate) struct CompilationSession {
+     catalog: RefCell<Catalog>,
+ }
++// Diagnostic only: separate ownership categories after compilation is finished.
++impl Drop for CompilationSession {
++    fn drop(&mut self) {
++        use crate::allocation_probe::report;
++        let catalog = self.catalog.get_mut();
++        let mut counts = [0; 4];
++        for unit in &catalog.units {
++            let unit = unit.borrow();
++            counts[match unit.state {
++                AnalysisState::Unstarted => 0,
++                AnalysisState::Analyzing => 1,
++                AnalysisState::Analyzed(..) => 2,
++                AnalysisState::Failed(..) => 3,
++            }] += 1;
++        }
++        eprintln!(
++            "session-units unstarted={} analyzing={} analyzed={} failed={}",
++            counts[0], counts[1], counts[2], counts[3]
++        );
++        report("session-drop-start");
++        for unit in &catalog.units {
++            unit.borrow_mut().host = MacroHost::default();
++        }
++        report("session-hosts-cleared");
++        for unit in &catalog.units {
++            unit.borrow_mut().form = None;
++        }
++        report("session-forms-cleared");
++        for unit in &catalog.units {
++            unit.borrow_mut().snapshot = None;
++        }
++        report("session-snapshots-cleared");
++        for unit in &catalog.units {
++            unit.borrow_mut().state = AnalysisState::Unstarted;
++        }
++        report("session-programs-cleared");
++        catalog.units.clear();
++        catalog.registrations.clear();
++        catalog.bindings.clear();
++        catalog.active.clear();
++        catalog.multifn_targets.clear();
++        report("session-catalog-cleared");
++        catalog.bootstrap = None;
++        report("session-bootstrap-cleared");
++    }
++}
+ impl CompilationSession {
+     pub fn bootstrap(&self) -> Option<Bootstrap> {
+         self.catalog.borrow().bootstrap.clone()
+diff --git a/src/lib.rs b/src/lib.rs
+index b285b48..8e3ace3 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -9,6 +9,7 @@
+ 
+ use std::{iter::FusedIterator, ops::Range};
+ 
++pub mod allocation_probe;
+ pub mod analyzer;
+ pub mod application;
+ pub mod arena;
+diff --git a/src/main.rs b/src/main.rs
+index 45147e4..73fbef1 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,7 +1,7 @@
+ // Isolated CLI allocation experiment; library consumers keep their allocator.
+ #[global_allocator]
+ static ALLOCATOR: allocation_probe::Allocator = allocation_probe::Allocator;
+-mod allocation_probe;
++use light_cljs::allocation_probe;
+ 
+ use std::{
+     env,

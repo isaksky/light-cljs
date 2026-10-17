@@ -1,0 +1,524 @@
+diff --git a/docs/compiler.md b/docs/compiler.md
+index 2d60e2c..338ac57 100644
+--- a/docs/compiler.md
++++ b/docs/compiler.md
+@@ -2384,10 +2384,15 @@ method with their first argument as receiver; `Type/new` uses `Reflect.construct
+ `js*` accepts literal JavaScript with positional placeholders and expressions, or
+ named placeholders resolved in the current lexical/namespace context. Analysis
+ checks the template type, closed placeholders and exact positional arity before
+-emission. Literal segments remain literal and generated identifiers are hygienic
+-against those segments. Statement templates emit in statement context; value
+-and return contexts retain their actual function scope. The compiler does not
+-parse JavaScript source strings. `this-as`, `js-arguments`, function metadata and
++emission. Generated identifiers are hygienic against the literal segments.
++A local passed directly through a placeholder has a lexical, assignable binding.
++When a template uses `var` to destructure into an existing local, the compiler's
++JavaScript parser converts that declaration to assignment, retaining declarations
++for any raw names in the same pattern. Nested-function declarations still shadow
++normally, and loop closures retain their own iteration's binding. Templates the
++parser cannot recognize are left unchanged. Statement templates emit in statement
++context; value and return contexts retain their actual function scope.
++`this-as`, `js-arguments`, function metadata and
+ `apply` preserve upstream function-context behavior, including non-strict
+ parameter/arguments aliasing.
+ 
+diff --git a/src/analyzer.rs b/src/analyzer.rs
+index aa63044..61df6e2 100644
+--- a/src/analyzer.rs
++++ b/src/analyzer.rs
+@@ -8970,7 +8970,7 @@ impl Analyzer<'_> {
+             tail = &tail[end + 1..];
+         }
+         segments.push(tail.to_owned());
+-        let args = if operands.is_empty() {
++        let mut args = if operands.is_empty() {
+             let mut args = Vec::new();
+             for name in placeholders {
+                 if name.is_empty() {
+@@ -9001,6 +9001,53 @@ impl Analyzer<'_> {
+                 .map(|&arg| self.non_tail_form(arg, ExprContext::Value))
+                 .collect::<Result<_, _>>()?
+         };
++        // Upstream macros may use `var` to destructure into existing CLJS
++        // bindings. Keep those bindings lexical: redeclaration becomes an
++        // assignment rather than a second declaration in the generated JS.
++        if segments.iter().any(|segment| segment.contains("var"))
++            && args
++                .iter()
++                .any(|arg| matches!(self.program.exprs[arg.0].kind, ExprKind::Local(_)))
++        {
++            let mut prefix = "__lightJsHole$".to_string();
++            while segments.iter().any(|segment| segment.contains(&prefix)) {
++                prefix.push('$');
++            }
++            let names = (0..args.len())
++                .map(|i| format!("{prefix}{i}$"))
++                .collect::<Vec<_>>();
++            let mut source = String::new();
++            for (index, segment) in segments.iter().enumerate() {
++                source.push_str(segment);
++                if let Some(name) = names.get(index) {
++                    source.push_str(name);
++                }
++            }
++            let locals = args
++                .iter()
++                .zip(&names)
++                .filter_map(|(arg, name)| {
++                    matches!(self.program.exprs[arg.0].kind, ExprKind::Local(_))
++                        .then_some(name.as_str())
++                })
++                .collect::<Vec<_>>();
++            if let Some(source) = crate::js_syntax::assign_existing_vars(&source, &locals) {
++                let mut rebuilt_segments = Vec::new();
++                let mut rebuilt_args = Vec::new();
++                let mut tail = source.as_str();
++                while let Some(start) = tail.find(&prefix) {
++                    let number = start + prefix.len();
++                    let end = number + tail[number..].find('$').expect("a placeholder suffix");
++                    let index: usize = tail[number..end].parse().expect("a placeholder index");
++                    rebuilt_segments.push(tail[..start].to_string());
++                    rebuilt_args.push(args[index]);
++                    tail = &tail[end + 1..];
++                }
++                rebuilt_segments.push(tail.to_string());
++                segments = rebuilt_segments;
++                args = rebuilt_args;
++            }
++        }
+         Ok(self.push(
+             ExprKind::JsTemplate { segments, args },
+             self.syntax.nodes[id.0].span.clone(),
+diff --git a/src/emitter/chunked.rs b/src/emitter/chunked.rs
+index b18ddd8..f3ebf60 100644
+--- a/src/emitter/chunked.rs
++++ b/src/emitter/chunked.rs
+@@ -447,6 +447,7 @@ pub(crate) fn emit_chunked(
+             emitter.operand_scope(|emitter| {
+                 emitter.chunk_forms(program.root, ExprContext::Return, entry, &sources, &forms)
+             });
++            emitter.allow_js_local_assignment();
+             bodies.push((
+                 std::mem::take(&mut emitter.output),
+                 std::mem::take(&mut emitter.raw_segments),
+diff --git a/src/emitter.rs b/src/emitter.rs
+index 6c64585..3bc32dd 100644
+--- a/src/emitter.rs
++++ b/src/emitter.rs
+@@ -364,6 +364,7 @@ fn emit_js_mode(
+         }
+         emitter.operand_scope(|emitter| emitter.emit(root, ExprContext::Return));
+         emitter.record_application_roots(application);
++        emitter.allow_js_local_assignment();
+         // `Advanced` output that tests no value with `truth` does not declare it.
+         if emitter.inference.is_some() && !emitter.truth_used {
+             let start = PRELUDE_OPEN.len();
+@@ -1399,6 +1400,43 @@ struct Setup<'a> {
+ }
+ 
+ impl<'a> Emitter<'a> {
++    /// A local passed directly to `js*` may be assigned by that JavaScript.
++    /// Use lexical `let`, including for per-iteration copies, so closures keep
++    /// their own iteration's binding. The equal-length replacement preserves
++    /// source-map anchors and the recorded raw-text boundaries.
++    fn allow_js_local_assignment(&mut self) {
++        let mut exposed = HashSet::new();
++        for &id in &self.used {
++            if let ExprKind::JsTemplate { args, .. } = &self.program.exprs[id.0].kind {
++                for &arg in args {
++                    if let ExprKind::Local(local) = self.program.exprs[arg.0].kind {
++                        exposed.insert(local.0);
++                    }
++                }
++            }
++        }
++        if exposed.is_empty() {
++            return;
++        }
++        let mut raw = self.raw_segments.clone();
++        raw.sort_by_key(|range| range.start);
++        let replacements = crate::terse::scanned_names(&self.output, &raw)
++            .into_iter()
++            .filter_map(|(range, name)| {
++                let local: usize = name.strip_prefix('l')?.parse().ok()?;
++                let start = range.start.checked_sub("const ".len())?;
++                let prior_raw = raw.partition_point(|range| range.start < start + 5);
++                (exposed.contains(&local)
++                    && self.output.get(start..range.start) == Some("const ")
++                    && (prior_raw == 0 || raw[prior_raw - 1].end <= start))
++                    .then_some(start)
++            })
++            .collect::<Vec<_>>();
++        for start in replacements {
++            self.output.replace_range(start..start + 5, "let  ");
++        }
++    }
++
+     /// A fresh emitter of `program` for `setup`, which registers its
+     /// namespaces when `register_namespaces`.
+     fn new(program: &'a Program, setup: Setup<'a>, register_namespaces: bool) -> Self {
+diff --git a/src/js_syntax.rs b/src/js_syntax.rs
+index 0f05987..0b32229 100644
+--- a/src/js_syntax.rs
++++ b/src/js_syntax.rs
+@@ -450,9 +450,24 @@ struct Parser<'t, 'a> {
+     /// Each `var`, `let` or `const` statement ended by a `;`: the keyword's
+     /// token and the `;`'s.
+     statements: Vec<(usize, usize)>,
++    variable_statements: Option<Vec<VariableStatement>>,
++    directive_end: usize,
+     error: Option<(usize, String)>,
+ }
+ 
++struct VariableStatement {
++    keyword: usize,
++    end: usize,
++    enumeration: bool,
++    declarators: Vec<VariableDeclarator>,
++}
++
++struct VariableDeclarator {
++    range: Range<usize>,
++    bindings: Vec<usize>,
++    initialized: bool,
++}
++
+ /// An identifier reference: its scope, whether it is the callee of a call, its
+ /// token and whether it is a shorthand property (`{a}`).
+ struct Reference<'a> {
+@@ -485,6 +500,14 @@ const ASSIGNMENT: Stops = Stops {
+ fn parse<'t, 'a>(
+     source: &'a str,
+     tokens: &'t [Token],
++) -> Result<(Parser<'t, 'a>, bool), (usize, String)> {
++    parse_with_variables(source, tokens, false)
++}
++
++fn parse_with_variables<'t, 'a>(
++    source: &'a str,
++    tokens: &'t [Token],
++    record_variables: bool,
+ ) -> Result<(Parser<'t, 'a>, bool), (usize, String)> {
+     let mut partners = vec![usize::MAX; tokens.len()];
+     let mut open = Vec::new();
+@@ -530,10 +553,14 @@ fn parse<'t, 'a>(
+         references: Vec::new(),
+         declarations: Vec::new(),
+         statements: Vec::new(),
++        variable_statements: record_variables.then(Vec::new),
++        directive_end: 0,
+         error: None,
+     };
+     let mut has_effect_statements = false;
++    let mut prologue = true;
+     while parser.pos < tokens.len() && parser.error.is_none() {
++        let start = parser.pos;
+         let declaration = match parser.word() {
+             Some("var" | "let" | "const" | "function" | "class") => true,
+             Some("async") => parser.word_at(parser.pos + 1) == Some("function"),
+@@ -541,6 +568,15 @@ fn parse<'t, 'a>(
+         };
+         has_effect_statements |= !declaration;
+         parser.statement_progressing(0);
++        if prologue
++            && tokens[start].kind == Kind::Str
++            && (parser.pos == start + 1
++                || (parser.pos == start + 2 && tokens[start + 1].text(source) == ";"))
++        {
++            parser.directive_end = tokens[parser.pos - 1].end;
++        } else {
++            prologue = false;
++        }
+     }
+     match parser.error.take() {
+         Some(error) => Err(error),
+@@ -548,6 +584,75 @@ fn parse<'t, 'a>(
+     }
+ }
+ 
++/// Lower `var` declarations of existing compiler locals to assignments. Raw
++/// names in the same declaration retain their function-scoped declaration;
++/// declarations inside a nested function keep their ordinary shadowing.
++/// `locals` are unique identifier placeholders, not user-authored JS names.
++pub(crate) fn assign_existing_vars(source: &str, locals: &[&str]) -> Option<String> {
++    let tokens = lex(source, 0..source.len()).ok()?;
++    let (parser, _) = parse_with_variables(source, &tokens, true).ok()?;
++    let mut edits = Vec::new();
++    let mut declared = Vec::new();
++    for statement in parser.variable_statements.unwrap() {
++        let bindings = statement.declarators.iter().flat_map(|d| &d.bindings);
++        if !bindings
++            .clone()
++            .any(|&i| locals.contains(&tokens[i].text(source)))
++        {
++            continue;
++        }
++        for &i in bindings {
++            let name = tokens[i].text(source);
++            if !locals.contains(&name) && !declared.contains(&name) {
++                declared.push(name);
++            }
++        }
++        // Parentheses make an object pattern an assignment in statement
++        // position. In a for-in/of head the grammar requires a bare target.
++        edits.push((
++            tokens[statement.keyword].start..tokens[statement.keyword].end,
++            if statement.enumeration { "" } else { "(" }.to_string(),
++        ));
++        if !statement.enumeration {
++            let end = tokens[statement.end - 1].end;
++            edits.push((end..end, ")".to_string()));
++            for declarator in statement.declarators {
++                if !declarator.initialized {
++                    let start = tokens[declarator.range.start].start;
++                    let end = tokens[declarator.range.end - 1].end;
++                    // A repeated `var x;` leaves an existing value alone.
++                    edits.push((start..end, "void 0".to_string()));
++                }
++            }
++        }
++    }
++    if edits.is_empty() {
++        return None;
++    }
++    // Apply disjoint edits in source order, including an insertion at the
++    // end of a replaced uninitialized declarator.
++    edits.sort_by_key(|(range, _)| (range.start, range.end));
++    let mut output = String::new();
++    let mut previous = 0;
++    if !declared.is_empty() {
++        output.push_str(&source[..parser.directive_end]);
++        if parser.directive_end > 0 {
++            output.push_str("; ");
++        }
++        output.push_str("var ");
++        output.push_str(&declared.join(", "));
++        output.push_str("; ");
++        previous = parser.directive_end;
++    }
++    for (range, text) in edits {
++        output.push_str(&source[previous..range.start]);
++        output.push_str(&text);
++        previous = range.end;
++    }
++    output.push_str(&source[previous..]);
++    Some(output)
++}
++
+ /// The top-level bindings and free identifiers of a unit body.
+ pub fn analyze<'a>(source: &'a str, tokens: &[Token]) -> Result<Facts<'a>, (usize, String)> {
+     let (parser, has_effect_statements) = parse(source, tokens)?;
+@@ -745,7 +850,7 @@ impl<'a> Parser<'_, 'a> {
+                 } else {
+                     scope
+                 };
+-                self.declarations(target, scope, false);
++                self.declarations(target, scope, false, keyword);
+                 if self.eat(";") {
+                     self.statements.push((keyword, self.pos - 1));
+                 }
+@@ -888,13 +993,14 @@ impl<'a> Parser<'_, 'a> {
+         let head = self.scope(scope, false);
+         match self.word() {
+             Some(word @ ("var" | "let" | "const")) => {
++                let keyword = self.pos;
+                 self.pos += 1;
+                 let target = if word == "var" {
+                     self.function_scope(head)
+                 } else {
+                     head
+                 };
+-                self.declarations(target, head, true);
++                self.declarations(target, head, true, keyword);
+             }
+             _ if self.at_punct(";") => {}
+             _ => self.expression(
+@@ -924,17 +1030,49 @@ impl<'a> Parser<'_, 'a> {
+ 
+     /// Declarators after `var`/`let`/`const`: names go to `target`,
+     /// initializers and defaults resolve in `scope`.
+-    fn declarations(&mut self, target: usize, scope: usize, for_head: bool) {
++    fn declarations(&mut self, target: usize, scope: usize, for_head: bool, keyword: usize) {
++        let record = self.variable_statements.is_some()
++            && target == 0
++            && self.word_at(keyword) == Some("var");
++        let mut declarators = Vec::new();
+         loop {
++            let start = self.pos;
++            let first_binding = self.declarations.len();
+             self.binding(target, scope);
+-            if self.eat("=") {
++            let bindings = if record {
++                self.declarations[first_binding..]
++                    .iter()
++                    .filter_map(|&(token, declared, _, _)| (declared == target).then_some(token))
++                    .collect()
++            } else {
++                Vec::new()
++            };
++            let initialized = self.eat("=");
++            if initialized {
+                 self.expression(scope, ASSIGNMENT);
+             }
+-            if for_head && (self.at_word("of") || self.at_word("in")) {
+-                return;
++            if record {
++                declarators.push(VariableDeclarator {
++                    range: start..self.pos,
++                    bindings,
++                    initialized,
++                });
+             }
+-            if !self.eat(",") {
+-                return;
++            let enumeration = for_head && (self.at_word("of") || self.at_word("in"));
++            let end = self.pos;
++            if enumeration || !self.eat(",") {
++                if record {
++                    self.variable_statements
++                        .as_mut()
++                        .unwrap()
++                        .push(VariableStatement {
++                            keyword,
++                            end,
++                            enumeration,
++                            declarators,
++                        });
++                }
++                break;
+             }
+         }
+     }
+@@ -1935,6 +2073,43 @@ pub fn terse(source: &str, tokens: &[Token]) -> String {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn existing_var_assignment_respects_patterns_scopes_and_directives() {
++        for (source, expected) in [
++            (
++                "var {a: hole, ...rest} = obj;",
++                "var rest; ( {a: hole, ...rest} = obj);",
++            ),
++            ("var hole;", "( void 0);"),
++            ("for (var hole in obj) {}", "for ( hole in obj) {}"),
++            (
++                "'use strict'; var raw, hole = 3;",
++                "'use strict';; var raw;  ( void 0, hole = 3);",
++            ),
++            (
++                "'use strict'\nvar raw, hole = 3",
++                "'use strict'; var raw; \n( void 0, hole = 3)",
++            ),
++        ] {
++            let result = assign_existing_vars(source, &["hole"]).unwrap();
++            assert_eq!(result, expected);
++            let tokens = lex(&result, 0..result.len()).unwrap();
++            resolve(&result, &tokens).unwrap();
++        }
++        for source in [
++            "function f() { var hole = 3; }",
++            "(() => { var hole = 3; })()",
++            "{ let hole = 3; }",
++            "const text = 'var hole = 3';",
++            "var raw = hole;",
++        ] {
++            assert!(
++                assign_existing_vars(source, &["hole"]).is_none(),
++                "{source}"
++            );
++        }
++    }
++
+     fn facts(body: &str) -> (Vec<&str>, Vec<&str>, bool) {
+         let tokens =
+             lex(body, 0..body.len()).unwrap_or_else(|e| panic!("{} at {}", e.message, e.offset));
+diff --git a/tests/compiler/macros.rs b/tests/compiler/macros.rs
+index 974ecd8..12a18ee 100644
+--- a/tests/compiler/macros.rs
++++ b/tests/compiler/macros.rs
+@@ -42,6 +42,18 @@ fn reader_qualification_preserves_alias_collisions_refers_and_definition_views()
+ }
+ 
+ struct Sources(TempDir);
++
++#[test]
++fn raw_js_var_destructuring_assigns_locals_during_macro_execution() {
++    let source = r#"
++      (defmacro extracted []
++        (let [props #js {:a 4 :z 8} x (js* "undefined") rest (js* "undefined")]
++          (js* "var {~{}: ~{}, ...~{}} = ~{}" "a" x rest props)
++          (list 'quote [x (.-z rest)])))
++      (js/console.log (pr-str (extracted)))"#;
++    assert_eq!(execute(&compile(source).unwrap()), "[4 8]\n");
++}
++
+ impl Sources {
+     fn new() -> Self {
+         let path = TempDir::new("cljs-macros");
+diff --git a/tests/compiler/optimization.rs b/tests/compiler/optimization.rs
+index f990605..4c0badb 100644
+--- a/tests/compiler/optimization.rs
++++ b/tests/compiler/optimization.rs
+@@ -68,6 +68,61 @@ fn both(source: &str, expected: &str) {
+     }
+ }
+ 
++#[test]
++fn raw_js_var_holes_assign_lexical_locals_without_losing_iteration_captures() {
++    for (source, expected) in [
++        (
++            r#"(let [props #js {:a 4 :z 8} x (js* "undefined") rest (js* "undefined")]
++                (js* "var {~{}: ~{}, ...~{}} = ~{}" "a" x rest props)
++                (pr-str [x (.-z rest)]))"#,
++            "[4 8]\n",
++        ),
++        (
++            r#"(let [x 4] (js* "var ~{x}; var raw = ~{x} + 1, ~{x} = raw * 2") x)"#,
++            "10\n",
++        ),
++        (
++            r#"(let [x 1] (js* "if (true) { var {a: ~{} = 7} = {}; }
++                              for (var ~{} of [2, 3]) { ~{} += 1; }" x x x) x)"#,
++            "4\n",
++        ),
++        (
++            r#"(let [x 1] (js* "for (var ~{} = 0, raw = 2; ~{} < raw; ~{}++) {}" x x x) x)"#,
++            "2\n",
++        ),
++        (
++            r#"(let [x 1] (pr-str [(js* "(function() { var ~{} = 7; return ~{}; })()" x x) x]))"#,
++            "[7 1]\n",
++        ),
++        (r#"(let [x 1] (js* "~{} = 9" x) x)"#, "9\n"),
++        (
++            r#"(loop [i 0 out []]
++              (if (< i 3)
++                (let [x (js* "undefined")]
++                  (js* "var {a: ~{}} = {a: ~{}}" x i)
++                  (recur (inc i) (conj out (fn [] x))))
++                (pr-str (mapv (fn [f] (f)) out))))"#,
++            "[0 1 2]\n",
++        ),
++        (
++            r#"(loop [i 0 out []]
++              (if (< i 3)
++                (do (js* "var ~{} = ~{} + 1" i i)
++                    (recur i (conj out (fn [] i))))
++                (pr-str (mapv (fn [f] (f)) out))))"#,
++            "[1 2 3]\n",
++        ),
++        (
++            r#"(let [x 1]
++              (js* "var {a: ~{}, b: raw = ~{} + 3} = {a: 2}; ~{} = raw" x x x)
++              x)"#,
++            "5\n",
++        ),
++    ] {
++        both(source, expected);
++    }
++}
++
+ #[test]
+ fn macro_only_helpers_are_removed_after_expansion_but_shared_helpers_survive() {
+     let source = r#"

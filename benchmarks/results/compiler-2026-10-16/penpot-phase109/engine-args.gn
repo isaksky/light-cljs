@@ -1,0 +1,8 @@
+is_debug = false
+use_custom_libcxx = true
+v8_enable_sandbox = false
+v8_enable_pointer_compression = true
+v8_enable_v8_checks = false
+host_cpu = "arm64"
+clang_base_path = "/private/tmp/light-cljs-phase109/target/release/clang"
+target_cpu = "arm64"

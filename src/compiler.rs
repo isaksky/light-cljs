@@ -1587,6 +1587,13 @@ fn analyze_entry(
                 warnings,
             )
             .map_err(at)?;
+        // Deferred definitions own their forms and resolution snapshots now.
+        // Keep source text for diagnostics, but release each parsed tree as
+        // soon as analysis finishes instead of retaining all trees until the
+        // last namespace (including lazily discovered ones) has completed.
+        let syntax = &mut loader.ordered[index].syntax;
+        syntax.nodes = Vec::new();
+        syntax.roots = Vec::new();
         let loaded = loader.ordered.len();
         for (namespace, span) in analysis.lazy_namespaces_since(first_lazy) {
             loader.visit_lazy(&namespace, index).map_err(|error| {

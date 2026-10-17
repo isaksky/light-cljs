@@ -1,0 +1,19 @@
+v8-stats stage=before-final-gc used=165213008 total=171016192 physical=170868736 external=0 rust-provenance-estimate=18946562
+v8-stats stage=after-final-gc used=165206088 total=168132608 physical=167886848 external=0 rust-provenance-estimate=18946562
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro expansion: while expanding precompile-cljs-grammar: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro instaparse.abnf/precompile-cljs-grammar: JavaScript session memory limit exhausted; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:104:1 (bytes 5039..5064)
+       32.39 real        35.92 user         0.60 sys
+          1321943040  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               89779  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+               24902  involuntary context switches
+           942490688  peak memory footprint

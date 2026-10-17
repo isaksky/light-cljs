@@ -1,0 +1,7 @@
+4878c6f83bd3558ca47d5abadab295fdb00898367b43eb2a1da5b6fd787be423  /private/tmp/light-cljs-phase88/light-cljs-quickjs-namespace-cache
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase88/main-none.js
+c8d35620d2fccd410068c94a643f7b1842f8b2b76d719ab8a788f63fc7c3629a  /private/tmp/light-cljs-phase88/project/Cargo.lock
+e7c9b60375ff0a030c0fd07287d0b16fe8ebcc93528af5cdd83ee924cca72514  /private/tmp/light-cljs-phase88/project/src/compilation_session.rs
+80a284e20af2945682cf94791757204f6dc6dc82208fddefecf8527bee04d3f4  /private/tmp/light-cljs-phase88/project/src/compiler_bootstrap.rs
+9f89661a55586ebe7886a447bd10106769f9d62d144645bcb7bad64025cba020  /private/tmp/light-cljs-phase88/project/src/emitter.rs
+380a29784e1ea36eef12427e64e07bf0f4841094ad8463a14143355cdc238c8b  /private/tmp/light-cljs-phase88/project/src/evaluator.rs

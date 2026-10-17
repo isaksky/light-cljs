@@ -1,0 +1,3 @@
+bridge and callbacks passed
+provenance released by GC and isolate drop, on the owning thread
+uncatchable external termination: 59 ms

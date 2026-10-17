@@ -1,0 +1,6 @@
+1dd0bb0d29104ebcbf987000dae9a3cdaa9b7c0ec41e61a856c2b5ff596e13b3  /private/tmp/light-cljs-phase52/light-cljs-quickjs-mimalloc
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase52/main-quickjs-mimalloc.js
+8dfcd6a9de3d70a453d7f0b47ad5fe9b33a776e2ae2fd81899c51cb278776267  /private/tmp/light-cljs-phase52/quickjs-allocator-quotes.patch
+c8d35620d2fccd410068c94a643f7b1842f8b2b76d719ab8a788f63fc7c3629a  /private/tmp/light-cljs-phase52/project/Cargo.lock
+bc983131a3ec6a33c77cdd5cdf01b0b84f1113aeb62ff6db3a11650efb47205f  /private/tmp/light-cljs-phase52/allocator-probe.c
+ba20bf1e293ff453ac0c006e5b321763650863b7dee33f519a3939c5eb1f6f02  /private/tmp/light-cljs-phase52/linux-run.sh

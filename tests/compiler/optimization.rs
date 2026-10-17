@@ -69,6 +69,61 @@ fn both(source: &str, expected: &str) {
 }
 
 #[test]
+fn raw_js_var_holes_assign_lexical_locals_without_losing_iteration_captures() {
+    for (source, expected) in [
+        (
+            r#"(let [props #js {:a 4 :z 8} x (js* "undefined") rest (js* "undefined")]
+                (js* "var {~{}: ~{}, ...~{}} = ~{}" "a" x rest props)
+                (pr-str [x (.-z rest)]))"#,
+            "[4 8]\n",
+        ),
+        (
+            r#"(let [x 4] (js* "var ~{x}; var raw = ~{x} + 1, ~{x} = raw * 2") x)"#,
+            "10\n",
+        ),
+        (
+            r#"(let [x 1] (js* "if (true) { var {a: ~{} = 7} = {}; }
+                              for (var ~{} of [2, 3]) { ~{} += 1; }" x x x) x)"#,
+            "4\n",
+        ),
+        (
+            r#"(let [x 1] (js* "for (var ~{} = 0, raw = 2; ~{} < raw; ~{}++) {}" x x x) x)"#,
+            "2\n",
+        ),
+        (
+            r#"(let [x 1] (pr-str [(js* "(function() { var ~{} = 7; return ~{}; })()" x x) x]))"#,
+            "[7 1]\n",
+        ),
+        (r#"(let [x 1] (js* "~{} = 9" x) x)"#, "9\n"),
+        (
+            r#"(loop [i 0 out []]
+              (if (< i 3)
+                (let [x (js* "undefined")]
+                  (js* "var {a: ~{}} = {a: ~{}}" x i)
+                  (recur (inc i) (conj out (fn [] x))))
+                (pr-str (mapv (fn [f] (f)) out))))"#,
+            "[0 1 2]\n",
+        ),
+        (
+            r#"(loop [i 0 out []]
+              (if (< i 3)
+                (do (js* "var ~{} = ~{} + 1" i i)
+                    (recur i (conj out (fn [] i))))
+                (pr-str (mapv (fn [f] (f)) out))))"#,
+            "[1 2 3]\n",
+        ),
+        (
+            r#"(let [x 1]
+              (js* "var {a: ~{}, b: raw = ~{} + 3} = {a: 2}; ~{} = raw" x x x)
+              x)"#,
+            "5\n",
+        ),
+    ] {
+        both(source, expected);
+    }
+}
+
+#[test]
 fn macro_only_helpers_are_removed_after_expansion_but_shared_helpers_survive() {
     let source = r#"
       (def optimizer-only-constant "OPTIMIZER_MACRO_ONLY_SENTINEL")

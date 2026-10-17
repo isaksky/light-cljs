@@ -1,0 +1,1 @@
+Complete render output is byte-identical to phase33 and passes node --check.

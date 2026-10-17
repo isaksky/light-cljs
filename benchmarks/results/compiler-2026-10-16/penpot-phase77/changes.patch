@@ -1,0 +1,113 @@
+diff --git a/after/src/allocation_probe.rs b/src/allocation_probe.rs
+new file mode 100644
+index 0000000..e68da6b
+--- /dev/null
++++ b/src/allocation_probe.rs
+@@ -0,0 +1,50 @@
++//! Isolated diagnostic: requested Rust allocation bytes, not RSS or V8 heap.
++use std::alloc::{GlobalAlloc, Layout};
++use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
++
++static LIVE: AtomicUsize = AtomicUsize::new(0);
++static PEAK: AtomicUsize = AtomicUsize::new(0);
++static REQUESTED: AtomicUsize = AtomicUsize::new(0);
++
++fn allocated(bytes: usize) {
++    let current = LIVE.fetch_add(bytes, Relaxed) + bytes;
++    PEAK.fetch_max(current, Relaxed);
++    REQUESTED.fetch_add(bytes, Relaxed);
++}
++pub struct Allocator;
++unsafe impl GlobalAlloc for Allocator {
++    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
++        let result = unsafe { mimalloc::MiMalloc.alloc(layout) };
++        if !result.is_null() {
++            allocated(layout.size());
++        }
++        result
++    }
++    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
++        let result = unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) };
++        if !result.is_null() {
++            allocated(layout.size());
++        }
++        result
++    }
++    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
++        LIVE.fetch_sub(layout.size(), Relaxed);
++        unsafe { mimalloc::MiMalloc.dealloc(ptr, layout) };
++    }
++    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
++        let result = unsafe { mimalloc::MiMalloc.realloc(ptr, layout, size) };
++        if !result.is_null() {
++            LIVE.fetch_sub(layout.size(), Relaxed);
++            allocated(size);
++        }
++        result
++    }
++}
++pub fn report(stage: &str) {
++    eprintln!(
++        "rust-alloc stage={stage} live={} peak={} requested={}",
++        LIVE.load(Relaxed),
++        PEAK.load(Relaxed),
++        REQUESTED.load(Relaxed)
++    );
++}
+diff --git a/src/main.rs b/src/main.rs
+index 9a42d2b..45147e4 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,6 +1,7 @@
+ // Isolated CLI allocation experiment; library consumers keep their allocator.
+ #[global_allocator]
+-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
++static ALLOCATOR: allocation_probe::Allocator = allocation_probe::Allocator;
++mod allocation_probe;
+ 
+ use std::{
+     env,
+@@ -420,21 +421,34 @@ fn run_namespace(
+         options.warning_mode = true;
+     }
+     let mut warnings = Vec::new();
++    let mut host = flags.host();
+     let program = light_cljs::compiler::analyze_namespace_entry_with_sources(
+         &entry,
+         &roots,
+-        &mut flags.host(),
++        &mut host,
+         options,
+         &mut warnings,
+     );
+     if options.warning_mode {
+         print_warnings(&warnings);
+     }
++    allocation_probe::report("after-analysis");
++    drop(host);
++    allocation_probe::report("after-session-drop");
+     let (program, files) = program?;
++    eprintln!(
++        "program-tables exprs={} locals={} globals={} strings={} names={}",
++        program.exprs.len(),
++        program.locals.len(),
++        program.globals.len(),
++        program.strings.len(),
++        program.named_literals.len()
++    );
+     if let (true, Some(out_dir)) = (reloadable, &out_dir) {
+         return write_dev_build(&program, &files, out_dir);
+     }
+     let prepared = prepare_application(&program, flags.options(&program)?);
++    allocation_probe::report("after-prepare");
+     if let Some(out_dir) = out_dir {
+         write_chunks(&prepared.emit_chunks(), &out_dir)?;
+     } else {
+@@ -443,6 +457,7 @@ fn run_namespace(
+             .map(|(path, text)| (path.as_path(), text.as_str()))
+             .collect::<Vec<_>>();
+         let output = flags.output(&prepared, esm, &sources)?;
++        allocation_probe::report("after-output");
+         io::stdout().lock().write_all(output.as_bytes())?;
+     }
+     if flags.size_report {

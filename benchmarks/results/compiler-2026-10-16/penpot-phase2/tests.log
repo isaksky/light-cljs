@@ -1,0 +1,26 @@
+     Running unittests src/lib.rs (target/release/deps/light_cljs-384a94473e085000)
+test result: ok. 96 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.59s
+     Running unittests src/main.rs (target/release/deps/light_cljs-27db46b64a02dad7)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/benchmark_variants.rs (target/release/deps/benchmark_variants-85c3434cd346804f)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.18s
+     Running tests/cli.rs (target/release/deps/cli-4a07d4d7ebbb5def)
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.25s
+     Running tests/compiler/main.rs (target/release/deps/compiler-e9fc976f5d581140)
+test result: ok. 951 passed; 0 failed; 56 ignored; 0 measured; 0 filtered out; finished in 93.70s
+     Running tests/dev_repl.rs (target/release/deps/dev_repl-67ea0f8cadb5e2d4)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.20s
+     Running tests/dev_server.rs (target/release/deps/dev_server-d9467f09c5990341)
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.72s
+     Running tests/dev_watch.rs (target/release/deps/dev_watch-576517259f7a9c09)
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.33s
+     Running tests/evaluation/main.rs (target/release/deps/evaluation-35277b8750d7e7b6)
+test result: ok. 107 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 12.81s
+     Running tests/execution.rs (target/release/deps/execution-788b31e831a46aa1)
+test result: ok. 53 passed; 0 failed; 43 ignored; 0 measured; 0 filtered out; finished in 35.84s
+     Running tests/frontend/main.rs (target/release/deps/frontend-ba6a95ab1180011f)
+test result: ok. 107 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 9.86s
+     Running tests/provenance.rs (target/release/deps/provenance-c63e0bd6c9207f3a)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+   Doc-tests light_cljs
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

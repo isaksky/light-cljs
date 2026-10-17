@@ -1,0 +1,23 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase47/project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.59s
+     Running tests/compiler/main.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/compiler-c01618f91ebea5db)
+
+running 1 test
+test macros::reader_qualification_preserves_alias_collisions_refers_and_definition_views ... FAILED
+
+failures:
+
+---- macros::reader_qualification_preserves_alias_collisions_refers_and_definition_views stdout ----
+
+thread 'macros::reader_qualification_preserves_alias_collisions_refers_and_definition_views' (137088875) panicked at tests/compiler/macros.rs:37:41:
+called `Result::unwrap()` on an `Err` value: NamespaceCompileError { message: "namespace alias real conflicts with namespace qualifier real", path: Some("/private/var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-macros-12006-000000/app.cljs"), span: Some(109..113), line_column: Some((3, 36)) }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+removed /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-cljs-macros-12006-000000; set LIGHT_CLJS_KEEP_TMP=1 to keep it
+
+
+failures:
+    macros::reader_qualification_preserves_alias_collisions_refers_and_definition_views
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1015 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test compiler`

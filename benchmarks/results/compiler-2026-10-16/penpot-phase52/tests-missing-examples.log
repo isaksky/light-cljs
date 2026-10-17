@@ -1,0 +1,109 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase52/project)
+   Compiling libmimalloc-sys v0.1.49
+   Compiling mimalloc v0.1.52
+error: couldn't read `tests/support/../../examples/features/app/shared.cljs`: No such file or directory (os error 2)
+   --> tests/support/ratchet_fixtures.rs:492:5
+    |
+492 |     include_str!("../../examples/features/app/shared.cljs"),
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `tests/support/../../examples/features/app/editor.cljs`: No such file or directory (os error 2)
+   --> tests/support/ratchet_fixtures.rs:496:5
+    |
+496 |     include_str!("../../examples/features/app/editor.cljs"),
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `tests/support/../../examples/features/app/reports.cljs`: No such file or directory (os error 2)
+   --> tests/support/ratchet_fixtures.rs:500:5
+    |
+500 |     include_str!("../../examples/features/app/reports.cljs"),
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `tests/support/../../examples/features/app/main.cljs`: No such file or directory (os error 2)
+   --> tests/support/ratchet_fixtures.rs:515:17
+    |
+515 |                 include_str!("../../examples/features/app/main.cljs"),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `tests/evaluation/../../examples/native/demo.cljs`: No such file or directory (os error 2)
+  --> tests/evaluation/eval_examples.rs:14:9
+   |
+14 |         include_str!("../../examples/native/demo.cljs"),
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `tests/evaluation/../../examples/native/data_processing.cljs`: No such file or directory (os error 2)
+  --> tests/evaluation/eval_examples.rs:19:9
+   |
+19 |         include_str!("../../examples/native/data_processing.cljs"),
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `tests/evaluation/../../examples/native/custom_macro.cljs`: No such file or directory (os error 2)
+  --> tests/evaluation/eval_examples.rs:24:9
+   |
+24 |         include_str!("../../examples/native/custom_macro.cljs"),
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `tests/evaluation/../../examples/native/lazy_pipeline.cljs`: No such file or directory (os error 2)
+  --> tests/evaluation/eval_examples.rs:29:9
+   |
+29 |         include_str!("../../examples/native/lazy_pipeline.cljs"),
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `tests/evaluation/../../examples/native/stateful_callbacks.cljs`: No such file or directory (os error 2)
+  --> tests/evaluation/eval_examples.rs:34:9
+   |
+34 |         include_str!("../../examples/native/stateful_callbacks.cljs"),
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `tests/evaluation/../../examples/native/recoverable_exceptions.cljs`: No such file or directory (os error 2)
+  --> tests/evaluation/eval_examples.rs:39:9
+   |
+39 |         include_str!("../../examples/native/recoverable_exceptions.cljs"),
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `tests/evaluation/../../examples/native/math_helpers.cljc`: No such file or directory (os error 2)
+  --> tests/evaluation/eval_examples.rs:58:17
+   |
+58 |                 include_str!("../../examples/native/math_helpers.cljc"),
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `tests/evaluation/../../examples/native/reports/stats.cljc`: No such file or directory (os error 2)
+  --> tests/evaluation/eval_examples.rs:63:17
+   |
+63 |                 include_str!("../../examples/native/reports/stats.cljc"),
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: could not compile `light-cljs` (test "benchmark_variants") due to 4 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: couldn't read `tests/compiler/../../examples/collections/batch/macros.cljs`: No such file or directory (os error 2)
+   --> tests/compiler/macros.rs:964:9
+    |
+964 |         include_str!("../../examples/collections/batch/macros.cljs"),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `tests/compiler/../support/../../examples/features/app/shared.cljs`: No such file or directory (os error 2)
+   --> tests/compiler/../support/ratchet_fixtures.rs:492:5
+    |
+492 |     include_str!("../../examples/features/app/shared.cljs"),
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `tests/compiler/../support/../../examples/features/app/editor.cljs`: No such file or directory (os error 2)
+   --> tests/compiler/../support/ratchet_fixtures.rs:496:5
+    |
+496 |     include_str!("../../examples/features/app/editor.cljs"),
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `tests/compiler/../support/../../examples/features/app/reports.cljs`: No such file or directory (os error 2)
+   --> tests/compiler/../support/ratchet_fixtures.rs:500:5
+    |
+500 |     include_str!("../../examples/features/app/reports.cljs"),
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `tests/compiler/../support/../../examples/features/app/main.cljs`: No such file or directory (os error 2)
+   --> tests/compiler/../support/ratchet_fixtures.rs:515:17
+    |
+515 |                 include_str!("../../examples/features/app/main.cljs"),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: could not compile `light-cljs` (test "evaluation") due to 8 previous errors
+error: could not compile `light-cljs` (test "compiler") due to 5 previous errors

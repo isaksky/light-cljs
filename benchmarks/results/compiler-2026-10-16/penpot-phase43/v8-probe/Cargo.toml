@@ -1,0 +1,10 @@
+[package]
+name = "light-v8-probe"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+v8 = "=152.2.0"
+
+[profile.release]
+debug = 1

@@ -1,0 +1,38 @@
+   Compiling rquickjs-sys v0.14.0 (/private/tmp/light-cljs-phase107/project/vendor/rquickjs-sys)
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase107/project)
+   Compiling rquickjs-core v0.14.0
+   Compiling rquickjs v0.14.0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.58s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/light_cljs-7da03a0464a17970)
+
+running 20 tests
+test v8_evaluator::tests::startup_rejects_exhausted_control_before_generating_source ... ok
+test v8_evaluator::watchdog::tests::scheduler_thread_allocation_failure_is_owned ... ok
+
+thread 'v8_evaluator::tests::execution_activity_is_released_when_a_host_operation_unwinds' (140224436) panicked at src/v8_evaluator.rs:1248:67:
+host operation failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'v8_evaluator::tests::compiler_callback_panic_is_owned_and_terminal' (140224431) panicked at src/v8_evaluator.rs:1441:74:
+service failed
+test v8_evaluator::tests::compiler_callback_panic_is_owned_and_terminal ... ok
+test v8_evaluator::tests::direct_root_registration_failure_is_owned_and_terminal ... ok
+test v8_evaluator::tests::poisoned_callback_keeps_owned_diagnostic_when_javascript_catches_and_spins ... ok
+test v8_evaluator::tests::outer_operations_refresh_stack_limits_after_deeper_rust_entry ... ok
+test v8_evaluator::tests::execution_activity_is_released_when_a_host_operation_unwinds ... ok
+test v8_evaluator::tests::namespace_registration_allows_reentry_and_stops_at_first_exception ... ok
+test v8_evaluator::tests::cached_namespace_registration_reexecutes_and_restores_each_source_view ... ok
+test v8_evaluator::tests::direct_root_registration_preserves_values_and_dynamic_callbacks ... ok
+test v8_evaluator::tests::namespace_cache_eviction_keeps_execution_and_observes_eval_replacement ... ok
+test v8_evaluator::tests::startup_exceptions_and_invalid_services_clean_up_partial_sessions ... ok
+test v8_evaluator::tests::configured_stack_budget_limits_recursion_and_caught_errors_recover ... ok
+test v8_evaluator::tests::nested_compiler_callbacks_share_the_outer_stack_budget ... ok
+test v8_evaluator::tests::unlimited_and_oversized_stack_budgets_respect_native_thread_bounds ... ok
+test v8_evaluator::tests::startup_heap_exhaustion_is_owned_even_when_javascript_catches ... ok
+test v8_evaluator::tests::compiler_callback_rejects_invalid_ids_without_running_coercion_hooks ... ok
+test v8_evaluator::tests::shared_scheduler_interrupts_concurrent_sessions_and_keeps_failures_terminal ... ok
+test v8_evaluator::tests::shared_scheduler_does_not_consume_idle_session_fuel ... ok
+test v8_evaluator::tests::startup_interrupts_catch_and_spin_and_leaves_other_sessions_usable ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 120 filtered out; finished in 0.24s
+

@@ -1,0 +1,8 @@
+exit 1
+light-cljs: 1:41: macro expansion: while expanding when: /private/tmp/light-cljs-phase27/literal.cljs:1:41: macro cljs.core/when: Error: unexpected end
+    at RegExp (native)
+    at rePattern (eval_script:4477:84)
+    at decodeNode (eval_script:3083:48)
+    at decode (eval_script:3033:39)
+    at importEnvironment (eval_script:7519:140)
+; definition compiler_core_macros.cljs:29:1 (bytes 40..54)

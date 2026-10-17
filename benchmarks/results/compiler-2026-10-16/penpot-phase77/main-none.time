@@ -1,0 +1,25 @@
+rust-alloc stage=after-analysis live=647918028 peak=658056060 requested=15226118119
+v8-namespace-cache hits=131239 misses=1292 compiled-bytes=1050924 entries=851 source-bytes=717833
+v8-source units=993 bytes=1666732
+v8-stats stage=before-final-gc used=35965700 total=62963712 physical=62963712 external=0 rust-provenance-estimate=63867124
+v8-stats stage=after-final-gc used=27056724 total=29229056 physical=29229056 external=0 rust-provenance-estimate=26441320
+rust-alloc stage=after-session-drop live=196537678 peak=658056060 requested=15226118504
+program-tables exprs=1220906 locals=110119 globals=13392 strings=336622 names=204735
+rust-alloc stage=after-prepare live=197752988 peak=658056060 requested=15261238279
+rust-alloc stage=after-output live=264959850 peak=658056060 requested=15744917517
+       21.07 real        25.11 user         0.63 sys
+          1183498240  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               77846  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                1884  voluntary context switches
+              103902  involuntary context switches
+          1094193792  peak memory footprint

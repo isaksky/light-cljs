@@ -1,0 +1,123 @@
+Main-thread exclusive sample counts; total: 5942
+743 <deduplicated_symbol>  (in light-cljs-bindings)
+276 _RNvNtCsexYMt5MYMHp_10light_cljs7emitter15emit_unit_parts  (in light-cljs-bindings)
+241 tiny_malloc_from_free_list  (in libsystem_malloc.dylib)
+223 tiny_free_no_lock  (in libsystem_malloc.dylib)
+171 tiny_free_list_add_ptr  (in libsystem_malloc.dylib)
+147 Builtins_WeakMapLookupHashIndex  (in light-cljs-bindings)
+141 _RNvXs3_NtNtCs33v9mEcCS3W_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCsexYMt5MYMHp_10light_cljs  (in light-cljs-bindings)
+132 free_tiny  (in libsystem_malloc.dylib)
+132 _platform_memmove  (in libsystem_platform.dylib)
+117 Builtins_KeyedLoadIC_Megamorphic  (in light-cljs-bindings)
+114 Builtins_KeyedHasIC_Megamorphic  (in light-cljs-bindings)
+98 _platform_memset  (in libsystem_platform.dylib)
+77 _RNvNtCsexYMt5MYMHp_10light_cljs18compiler_bootstrap20elidable_environment  (in light-cljs-bindings)
+75 tiny_malloc_should_clear  (in libsystem_malloc.dylib)
+73 Builtins_FindOrderedHashMapEntry  (in light-cljs-bindings)
+64 _malloc_zone_malloc  (in libsystem_malloc.dylib)
+63 _szone_free  (in libsystem_malloc.dylib)
+57 tiny_free_list_remove_ptr  (in libsystem_malloc.dylib)
+56 _free  (in libsystem_malloc.dylib)
+56 v8::internal::MarkCompactCollector::ApplyEphemeronSemantics(v8::internal::Tagged<v8::internal::HeapObject>, v8::internal::Tagged<v8::internal::HeapObject>)  (in light-cljs-bindings)
+55 v8::internal::HashTable<v8::internal::EphemeronHashTable, v8::internal::EphemeronHashTableShape>::Rehash()  (in light-cljs-bindings)
+55 get_tiny_previous_free_msize  (in libsystem_malloc.dylib)
+49 mach_absolute_time  (in libsystem_kernel.dylib)
+44 szone_malloc_should_clear  (in libsystem_malloc.dylib)
+43 Builtins_LoadIC_Megamorphic  (in light-cljs-bindings)
+39 Builtins_WeakCollectionSet  (in light-cljs-bindings)
+36 _RNvNtCsexYMt5MYMHp_10light_cljs7emitter6quoted  (in light-cljs-bindings)
+36 _platform_memcmp  (in libsystem_platform.dylib)
+30 Builtins_KeyedHasIC  (in light-cljs-bindings)
+28 _RINvYNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateNtNtCs33v9mEcCS3W_4core4hash11BuildHasher8hash_oneRNtNtCs87L1bv5kwMu_5alloc6string6StringECsexYMt5MYMHp_10light_cljs  (in light-cljs-bindings)
+27 Builtins_WeakMapPrototypeHas  (in light-cljs-bindings)
+27 _tiny_check_and_zero_inline_meta_from_freelist  (in libsystem_malloc.dylib)
+25 _RINvNtCs33v9mEcCS3W_4core3ptr9drop_glueNtNtCsexYMt5MYMHp_10light_cljs13compiler_data9DatumKindEBF_  (in light-cljs-bindings)
+25 v8::internal::Scanner::ScanString()  (in light-cljs-bindings)
+23 rack_get_thread_index  (in libsystem_malloc.dylib)
+23 v8::internal::Object::GetSimpleHash(v8::internal::Tagged<v8::internal::Object>)  (in light-cljs-bindings)
+22 v8::internal::Scanner::Next()  (in light-cljs-bindings)
+22 absl::container_internal::raw_hash_set<absl::container_internal::FlatHashSetPolicy<int>>::find_or_prepare_insert_large<int>(int const&)  (in light-cljs-bindings)
+21 _RNvNvMsb_NtCsexYMt5MYMHp_10light_cljs13compiler_dataNtB7_4Form21from_bridge_expansion3add  (in light-cljs-bindings)
+21 _RNvMs0_NtCsexYMt5MYMHp_10light_cljs9v8_bridgeNtB5_11BridgeState11decode_node  (in light-cljs-bindings)
+20 tiny_size  (in libsystem_malloc.dylib)
+19 v8::internal::LookupIterator::LookupInRegularHolder<false>(v8::internal::Tagged<v8::internal::Map>, v8::internal::Tagged<v8::internal::JSReceiver>)  (in light-cljs-bindings)
+17 v8::internal::LookupIterator::LookupInRegularHolder<true>(v8::internal::Tagged<v8::internal::Map>, v8::internal::Tagged<v8::internal::JSReceiver>)  (in light-cljs-bindings)
+16 Builtins_Typeof  (in light-cljs-bindings)
+16 Builtins_ObjectConstructor  (in light-cljs-bindings)
+16 v8::internal::ScavengerEphemeronProcessor::ClearOldEphemerons(v8::internal::Heap*)  (in light-cljs-bindings)
+16 v8::Object::Get(v8::Local<v8::Context>, unsigned int)  (in light-cljs-bindings)
+16 Builtins_CallFunction_ReceiverIsNullOrUndefined  (in light-cljs-bindings)
+16 madvise  (in libsystem_kernel.dylib)
+15 _RINvNtCs33v9mEcCS3W_4core3ptr9drop_glueINtNtCs87L1bv5kwMu_5alloc5boxed3BoxSNtNtCsexYMt5MYMHp_10light_cljs13compiler_data5DatumEEB1f_  (in light-cljs-bindings)
+15 Builtins_MapPrototypeSet  (in light-cljs-bindings)
+14 _RNvMs0_NtCsexYMt5MYMHp_10light_cljs9v8_bridgeNtB5_11BridgeState11encode_node  (in light-cljs-bindings)
+14 DYLD-STUB$$free  (in light-cljs-bindings)
+14 _RNvMs6_NtCs87L1bv5kwMu_5alloc2rcINtB5_2RcNtNtCsexYMt5MYMHp_10light_cljs13compiler_data5FormsE9drop_slowBH_  (in light-cljs-bindings)
+14 Builtins_ArrayPrototypeJoinImpl  (in light-cljs-bindings)
+14 Builtins_StringAdd_NoMapCheck  (in light-cljs-bindings)
+13 _RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer11import_form  (in light-cljs-bindings)
+13 v8::internal::Object::GetProperty(v8::internal::LookupIterator*, bool)  (in light-cljs-bindings)
+13 v8::internal::PropertyDescriptor::ToPropertyDescriptor(v8::internal::Isolate*, v8::internal::Handle<v8::internal::Union<v8::internal::Smi, v8::internal::HeapNumber, v8::internal::BigInt, v8::internal::String, v8::internal::Symbol, v8::internal::Boolean, v8::internal::Null, v8::internal::Undefined, v8::internal::JSReceiver>>, v8::internal::PropertyDescriptor*)  (in light-cljs-bindings)
+13 Builtins_LoadICGenericBaseline  (in light-cljs-bindings)
+13 _RNvNtCsexYMt5MYMHp_10light_cljs16program_fragment6append  (in light-cljs-bindings)
+12 _RNvMs1_NtCs2WxTXoQY03F_9hashbrown3mapINtB5_7HashMapjNtNtCsexYMt5MYMHp_10light_cljs13compiler_data4FormNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE6insertBS_  (in light-cljs-bindings)
+12 _RNvXs4_NtCs87L1bv5kwMu_5alloc6stringNtB5_6StringNtNtCs33v9mEcCS3W_4core5clone5Clone5clone  (in light-cljs-bindings)
+12 _RNvMs0_NtCsexYMt5MYMHp_10light_cljs9v8_bridgeNtB5_11BridgeState6retain  (in light-cljs-bindings)
+12 Builtins_SetPrototypeAdd  (in light-cljs-bindings)
+12 Builtins_LoadIC  (in light-cljs-bindings)
+11 v8::internal::LookupIterator::FetchValue(v8::base::StrongAlias<v8::internal::AllowAllocationTag, bool>) const  (in light-cljs-bindings)
+11 v8::internal::LookupIterator::Start<true>()  (in light-cljs-bindings)
+11 std::__Cr::__hash_table<std::__Cr::__hash_value_type<v8::internal::Tagged<v8::internal::EphemeronHashTable>, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>, std::__Cr::__unordered_map_hasher<v8::internal::Tagged<v8::internal::EphemeronHashTable>, std::__Cr::pair<v8::internal::Tagged<v8::internal::EphemeronHashTable> const, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>, v8::internal::Object::Hasher, std::__Cr::equal_to<v8::internal::Tagged<v8::internal::EphemeronHashTable>>>, std::__Cr::__unordered_map_equal<v8::internal::Tagged<v8::internal::EphemeronHashTable>, std::__Cr::pair<v8::internal::Tagged<v8::internal::EphemeronHashTable> const, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>, std::__Cr::equal_to<v8::internal::Tagged<v8::internal::EphemeronHashTable>>, v8::internal::Object::Hasher>, std::__Cr::allocator<std::__Cr::pair<v8::internal::Tagged<v8::internal::EphemeronHashTable> const, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>>>::__emplace_unique[abi:sqn230000]<std::__Cr::pair<v8::internal::Tagged<v8::internal::EphemeronHashTable> const, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>>(std::__Cr::pair<v8::internal::Tagged<v8::internal::EphemeronHashTable> const, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>&&)::'lambda'(v8::internal::Tagged<v8::internal::EphemeronHashTable> const&, std::__Cr::pair<v8::internal::Tagged<v8::internal::EphemeronHashTable> const, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>&&)::operator()[abi:sqn230000](v8::internal::Tagged<v8::internal::EphemeronHashTable> const&, std::__Cr::pair<v8::internal::Tagged<v8::internal::EphemeronHashTable> const, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>&&) const  (in light-cljs-bindings)
+11 tiny_try_realloc_in_place  (in libsystem_malloc.dylib)
+11 v8::internal::JSObject::MigrateToMap(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::JSObject>, v8::internal::DirectHandle<v8::internal::Map>, int)  (in light-cljs-bindings)
+11 v8::internal::HashTable<v8::internal::EphemeronHashTable, v8::internal::EphemeronHashTableShape>::Rehash(v8::internal::Tagged<v8::internal::EphemeronHashTable>)  (in light-cljs-bindings)
+11 v8::internal::AstValueFactory::GetString(unsigned int, bool, v8::base::Vector<unsigned char const>)  (in light-cljs-bindings)
+11 DYLD-STUB$$_platform_memset  (in libsystem_malloc.dylib)
+11 v8::internal::LookupIterator::LookupIterator(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::Union<v8::internal::Smi, v8::internal::HeapNumber, v8::internal::BigInt, v8::internal::String, v8::internal::Symbol, v8::internal::Boolean, v8::internal::Null, v8::internal::Undefined, v8::internal::JSReceiver>>, v8::internal::DirectHandle<v8::internal::Name>, unsigned long, v8::internal::DirectHandle<v8::internal::Union<v8::internal::Smi, v8::internal::HeapNumber, v8::internal::BigInt, v8::internal::String, v8::internal::Symbol, v8::internal::Boolean, v8::internal::Null, v8::internal::Undefined, v8::internal::JSReceiver>>, v8::internal::LookupIterator::Configuration)  (in light-cljs-bindings)
+11 Builtins_CallFunction_ReceiverIsNotNullOrUndefined  (in light-cljs-bindings)
+11 _malloc_zone_realloc  (in libsystem_malloc.dylib)
+11 _RNvCs75cfRe1uXhb_7___rustc11___rdl_alloc  (in light-cljs-bindings)
+10 v8::internal::Factory::AllocateRaw(int, v8::internal::AllocationType, v8::internal::AllocationAlignment, v8::internal::AllocationHint)  (in light-cljs-bindings)
+10 _realloc  (in libsystem_malloc.dylib)
+
+Deduplicated functions by entry address and immediate caller
+223 ["0x104517f2c" "_RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer18compiler_read_form  (in light-cljs-bindings)"]
+148 ["0x104519c14" "_RINvMsk_NtCs87L1bv5kwMu_5alloc3vecINtB6_3VecTNtNtB8_6string6StringBH_BH_EE16extend_desugaredINtNtNtNtCs33v9mEcCS3W_4core4iter8adapters3map3MapINtNtB1x_6filter6FilterINtNtCsexYMt5MYMHp_10light_cljs5arena4IterNtNtB2I_8analyzer13GlobalBindingENCNvMs5_B3l_NtB3l_8Analyzer15reader_bindingss0_0ENCB3S_s1_0EEB2I_  (in light-cljs-bindings)"]
+81 ["0x104519c14" "_RNvXNtNtCs87L1bv5kwMu_5alloc3vec21spec_from_iter_nestedINtB4_3VecNtNtB6_6string6StringEINtB2_18SpecFromIterNestedB11_INtNtNtNtCs33v9mEcCS3W_4core4iter8adapters3map3MapINtNtB1W_6filter6FilterINtNtCsexYMt5MYMHp_10light_cljs5arena4IterNtNtB37_8analyzer13GlobalBindingENCNvMs_NtB37_10macro_hostNtB4m_9MacroHost18reader_environments0_0ENCB4h_s1_0EE9from_iterB37_  (in light-cljs-bindings)"]
+56 ["0x1044fbac0" "_RNvNtCsexYMt5MYMHp_10light_cljs7emitter15emit_unit_parts  (in light-cljs-bindings)"]
+56 ["0x104519c14" "_RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer19definition_snapshot  (in light-cljs-bindings)"]
+46 ["0x104519c14" "_RNvNtCsexYMt5MYMHp_10light_cljs7emitter12emit_js_mode  (in light-cljs-bindings)"]
+15 ["0x104519c14" "_RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer17array_environment  (in light-cljs-bindings)"]
+11 ["0x1044fbfa4" "<deduplicated_symbol>  (in light-cljs-bindings)"]
+10 ["0x104517f2c" "_RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer14metadata_value  (in light-cljs-bindings)"]
+9 ["0x104519c14" "_RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer23record_constructor_args  (in light-cljs-bindings)"]
+9 ["0x104517f2c" "_RNvNtCsexYMt5MYMHp_10light_cljs11application6retain  (in light-cljs-bindings)"]
+8 ["0x1044fbac0" "_RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer14metadata_value  (in light-cljs-bindings)"]
+7 ["0x104517f2c" "_RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer7resolve  (in light-cljs-bindings)"]
+6 ["0x1044fbac0" "_RNvNtCsexYMt5MYMHp_10light_cljs16program_fragment6append  (in light-cljs-bindings)"]
+6 ["0x10448cb28" "_RNvMs1_NtCs2WxTXoQY03F_9hashbrown3mapINtB5_7HashMapjNtNtCsexYMt5MYMHp_10light_cljs13compiler_data4FormNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE6insertBS_  (in light-cljs-bindings)"]
+6 ["0x104517f2c" "_RNvMs_NtCsexYMt5MYMHp_10light_cljs7emitterNtB4_7Emitter6global  (in light-cljs-bindings)"]
+4 ["0x104527328" "_RINvNtCs33v9mEcCS3W_4core3ptr9drop_glueNtNtCsexYMt5MYMHp_10light_cljs10macro_host9MacroHostEBF_  (in light-cljs-bindings)"]
+3 ["0x104371570" "_RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer11import_form  (in light-cljs-bindings)"]
+3 ["0x10448cb28" "_RNvNvMsb_NtCsexYMt5MYMHp_10light_cljs13compiler_dataNtB7_4Form21from_bridge_expansion3add  (in light-cljs-bindings)"]
+3 ["0x104517f2c" "_RNvMs_NtCsexYMt5MYMHp_10light_cljs7emitterNtB4_7Emitter10value_expr  (in light-cljs-bindings)"]
+2 ["0x10452926c" "_RNvMs0_NtCsexYMt5MYMHp_10light_cljs9v8_bridgeNtB5_11BridgeState18encode_environment  (in light-cljs-bindings)"]
+2 ["0x104524ef8" "_RNvMs_NtCsexYMt5MYMHp_10light_cljs10macro_hostNtB4_9MacroHost20macro_analysis_frame  (in light-cljs-bindings)"]
+2 ["0x104519c14" "_RNvNtCsexYMt5MYMHp_10light_cljs7emitter15emit_unit_parts  (in light-cljs-bindings)"]
+2 ["0x10448cb28" "_RINvMs6_NtCs2WxTXoQY03F_9hashbrown3rawINtB6_8RawTableTjNtNtCsexYMt5MYMHp_10light_cljs13compiler_data4FormEE14reserve_rehashNCINvNtB8_3map11make_hasherjBR_NtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE0EBV_  (in light-cljs-bindings)"]
+2 ["0x10448cb28" "_RINvMs6_NtCs2WxTXoQY03F_9hashbrown3rawINtB6_8RawTableTNtNtCsexYMt5MYMHp_10light_cljs8analyzer6ExprIduEE14reserve_rehashNCINvNtB8_3map11make_hasherBQ_uNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE0EBU_  (in light-cljs-bindings)"]
+2 ["0x104519c14" "_RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer10form_inner  (in light-cljs-bindings)"]
+1 ["0x104370588" "_RNvNtCsexYMt5MYMHp_10light_cljs7emitter12emit_js_mode  (in light-cljs-bindings)"]
+1 ["0x10448cb28" "_RNvMs0_NtCsexYMt5MYMHp_10light_cljs9v8_bridgeNtB5_11BridgeState11encode_node  (in light-cljs-bindings)"]
+1 ["0x104517f2c" "_RNvNtCsexYMt5MYMHp_10light_cljs11application7flatten  (in light-cljs-bindings)"]
+1 ["0x10456e2f4" "_RNvMs0_NtCsexYMt5MYMHp_10light_cljs9v8_bridgeNtB5_11BridgeState11encode_node  (in light-cljs-bindings)"]
+1 ["0x10441cd08" "_RNvNtCsexYMt5MYMHp_10light_cljs7emitter12emit_js_mode  (in light-cljs-bindings)"]
+1 ["0x10448cb28" "_RNvMs1_NtCs2WxTXoQY03F_9hashbrown3mapINtB5_7HashMapNtNtCsexYMt5MYMHp_10light_cljs8analyzer6ExprIduNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE6insertBR_  (in light-cljs-bindings)"]
+1 ["0x10448cde4" "_RNvMNtCsexYMt5MYMHp_10light_cljs10name_indexNtB2_9NameIndex3get  (in light-cljs-bindings)"]
+1 ["0x104519c14" "_RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer7fn_form  (in light-cljs-bindings)"]
+1 ["0x10456ed68" "_RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer12expand_macro  (in light-cljs-bindings)"]
+1 ["0x1043732c0" "_RINvNtNtCs33v9mEcCS3W_4core4iter8adapters11try_processINtNtB2_3map3MapINtNtNtB6_5slice4iter4IterNtNtCsexYMt5MYMHp_10light_cljs6parser6NodeIdENCNvMs5_NtB1A_8analyzerNtB2n_8Analyzer9call_forms2_0ENtB2n_6ExprIdINtNtB6_6result6ResultNtNtB6_7convert10InfallibleNtB2n_13AnalysisErrorENCINvXso_B3m_IB3k_INtNtCs87L1bv5kwMu_5alloc3vec3VecB36_EB46_EINtNtNtB4_6traits7collect12FromIteratorIB3k_B36_B46_EE9from_iterBQ_E0B4K_EB1A_  (in light-cljs-bindings)"]
+1 ["0x104519c14" "_RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer12expand_macro  (in light-cljs-bindings)"]
+1 ["0x104519c14" "_RNvNtCsexYMt5MYMHp_10light_cljs16program_fragment6append  (in light-cljs-bindings)"]
+1 ["0x1044fbac0" "_RNvMs_NtCsexYMt5MYMHp_10light_cljs7emitterNtB4_7Emitter15construct_named  (in light-cljs-bindings)"]
+1 ["0x10448cb28" "_RINvMs6_NtCs2WxTXoQY03F_9hashbrown3rawINtB6_8RawTableTNtNtCsexYMt5MYMHp_10light_cljs8analyzer7LocalIdhEE14reserve_rehashNCINvNtB8_3map11make_hasherBQ_hNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE0EBU_  (in light-cljs-bindings)"]

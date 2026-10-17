@@ -1,0 +1,92 @@
+diff --git a/src/analyzer.rs b/src/analyzer.rs
+index 4d6832f..260384e 100644
+--- a/src/analyzer.rs
++++ b/src/analyzer.rs
+@@ -2929,6 +2929,8 @@ struct Analyzer<'a> {
+ /// extended with the declarations made since it was built.
+ struct ReaderView {
+     view: crate::compiler_reader::NamespaceView,
++    /// Only these namespaces can override qualification in this private view.
++    binding_namespaces: std::collections::HashSet<String>,
+     /// The globals the view covers.
+     globals: usize,
+     /// Covered globals that were not declared when they were seen.
+@@ -9590,8 +9592,20 @@ impl Analyzer<'_> {
+                 .map(|n| Name::new(None, n))
+                 .collect();
+             self.macro_host.register_macro_view(&mut view);
++            // The compiler reader only asks this private view to qualify names.
++            // A qualified binding outside aliases, refers and the current namespace
++            // would return its input unchanged, just like ordinary qualification.
++            // Keep every namespace that can override that result; the public
++            // NamespaceView binding-introspection surface is unchanged.
++            let binding_namespaces = globals
++                .iter()
++                .map(|(_, namespace, _)| namespace.clone())
++                .chain(aliases.iter().map(|(alias, _)| alias.clone()))
++                .chain(std::iter::once(self.namespace.to_owned()))
++                .collect();
+             self.reader_view = Some(ReaderView {
+                 view,
++                binding_namespaces,
+                 globals: 0,
+                 undeclared: Vec::new(),
+                 exprs: self.first_expr,
+@@ -9647,6 +9661,10 @@ impl Analyzer<'_> {
+                 cache.undeclared.push(index);
+                 continue;
+             }
++            cache.view.declaration_frontier = cache.view.declaration_frontier.max(index + 1);
++            if !cache.binding_namespaces.contains(&global.namespace) {
++                continue;
++            }
+             let qualified = Name::new(Some(&global.namespace), &global.name);
+             let binding = ResolvedBinding {
+                 id: BindingId(index),
+@@ -9670,7 +9688,6 @@ impl Analyzer<'_> {
+             for local in cache.refer_locals.get(&qualified).into_iter().flatten() {
+                 cache.view.bindings.insert(local.clone(), binding.clone());
+             }
+-            cache.view.declaration_frontier = cache.view.declaration_frontier.max(index + 1);
+         }
+     }
+     fn expand_reader(&mut self, id: NodeId) -> Result<NodeId, AnalysisError> {
+diff --git a/tests/compiler/macros.rs b/tests/compiler/macros.rs
+index 6c8bd1b..974ecd8 100644
+--- a/tests/compiler/macros.rs
++++ b/tests/compiler/macros.rs
+@@ -13,6 +13,34 @@ use std::{
+     sync::atomic::{AtomicUsize, Ordering},
+ };
+ 
++#[test]
++fn reader_qualification_preserves_alias_collisions_refers_and_definition_views() {
++    let sources = Sources::new();
++    sources.write("real.cljs", "(ns real) (def hit 1)");
++    sources.write("target.cljs", "(ns target) (def hit 2)");
++    sources.write("third.cljs", "(ns third) (def value 3)");
++    sources.write("unrelated.cljs", "(ns unrelated (:require [real] [third]))");
++    sources.write(
++        "app.cljs",
++        r#"(ns app
++             (:require [target :as real :refer [hit] :rename {hit imported}]
++                       [unrelated])
++             (:refer-clojure :exclude [map]))
++           (def map 4)
++           (def before `[real/hit real/missing imported map third/value])
++           (defmacro captured []
++             (list 'quote `[real/hit real/missing imported map third/value]))
++           (def after (captured))
++           (js/console.log (pr-str before))
++           (js/console.log (pr-str after))"#,
++    );
++    assert_eq!(
++        execute(&sources.compile("app").unwrap()),
++        "[real/hit target/missing target/hit app/map third/value]\n\
++         [real/hit target/missing target/hit app/map third/value]\n"
++    );
++}
++
+ struct Sources(TempDir);
+ impl Sources {
+     fn new() -> Self {

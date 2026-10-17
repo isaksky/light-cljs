@@ -1,0 +1,66 @@
+main: 435760 interrupt-check samples, zero dropped.
+These measure poll occurrences, not wall-clock percentages.
+
+Top frame
+{:top 62746, :inclusive 102373, :at "eval_script:3112:7 visit"}
+{:top 31713, :inclusive 31775, :at "<input>:146:31 <null>"}
+{:top 30018, :inclusive 138755, :at "eval_script:4754:3 publicMethod"}
+{:top 23115, :inclusive 23115, :at "eval_script:46:14 <null>"}
+{:top 18420, :inclusive 18420, :at "eval_script:48:14 <null>"}
+{:top 16019, :inclusive 21671, :at "eval_script:4731:3 externalMethod"}
+{:top 14706, :inclusive 100145, :at "eval_script:3026:5 decode"}
+{:top 14557, :inclusive 46273, :at "eval_script:3682:22 <null>"}
+{:top 12928, :inclusive 29389, :at "eval_script:3766:12 <null>"}
+{:top 11481, :inclusive 47427, :at "eval_script:3067:5 decodeNode"}
+{:top 11247, :inclusive 56282, :at "eval_script:3683:20 <null>"}
+{:top 8456, :inclusive 14762, :at "eval_script:1298:25 <null>"}
+{:top 8304, :inclusive 8304, :at "eval_script:1294:14 <null>"}
+{:top 8092, :inclusive 8092, :at "eval_script:20:12 <null>"}
+{:top 8057, :inclusive 8057, :at "eval_script:5047:12 <null>"}
+{:top 6420, :inclusive 14057, :at "eval_script:2804:3 structuralEqualPair"}
+{:top 5659, :inclusive 5659, :at "eval_script:4699:3 nativeType"}
+{:top 5476, :inclusive 5477, :at "eval_script:4701:3 protocolSlot"}
+{:top 5429, :inclusive 12016, :at "eval_script:3757:3 seqValue"}
+{:top 4854, :inclusive 13881, :at "eval_script:475:3 first"}
+{:top 4755, :inclusive 17288, :at "eval_script:5057:22 <null>"}
+{:top 4545, :inclusive 26710, :at "eval_script:4716:3 directMethod"}
+{:top 4259, :inclusive 8581, :at "eval_script:3772:3 indexedValue"}
+{:top 3878, :inclusive 41705, :at "eval_script:2797:3 equalPair"}
+{:top 3629, :inclusive 93777, :at "eval_script:395:3 seq"}
+{:top 3558, :inclusive 167358, :at "eval_script:418:34 <null>"}
+{:top 3341, :inclusive 32753, :at "eval_script:4726:3 builtin"}
+{:top 3050, :inclusive 62791, :at "eval_script:524:3 next"}
+{:top 2500, :inclusive 2500, :at "eval_script:4742:3 publicMethodInfo"}
+{:top 2329, :inclusive 15720, :at "eval_script:3824:3 coreProtocolImplementation"}
+
+Inclusive (deduplicated within each sampled stack)
+{:top 86, :inclusive 262602, :at "eval_script:7532:23 <null>"}
+{:top 637, :inclusive 247580, :at "eval_script:4412:3 withMacroReaderContext"}
+{:top 3, :inclusive 247571, :at "eval_script:4402:21 <null>"}
+{:top 3558, :inclusive 167358, :at "eval_script:418:34 <null>"}
+{:top 30018, :inclusive 138755, :at "eval_script:4754:3 publicMethod"}
+{:top 150, :inclusive 102523, :at "eval_script:3109:5 encode"}
+{:top 62746, :inclusive 102373, :at "eval_script:3112:7 visit"}
+{:top 184, :inclusive 100509, :at "eval_script:921:48 <null>"}
+{:top 14706, :inclusive 100145, :at "eval_script:3026:5 decode"}
+{:top 1316, :inclusive 99424, :at "eval_script:807:3 reduce"}
+{:top 3629, :inclusive 93777, :at "eval_script:395:3 seq"}
+{:top 505, :inclusive 92428, :at "eval_script:4485:3 deferredValue"}
+{:top 274, :inclusive 87535, :at "eval_script:424:23 <null>"}
+{:top 282, :inclusive 86189, :at "<input>:1269:11 <null>"}
+{:top 41, :inclusive 85965, :at "<input>:1270:17 <null>"}
+{:top 85, :inclusive 85912, :at "<input>:1273:17 <null>"}
+{:top 2, :inclusive 85424, :at "<input>:1286:15 <null>"}
+{:top 22, :inclusive 82957, :at "eval_script:7516:36 <null>"}
+{:top 6, :inclusive 77191, :at "eval_script:3956:5 <null>"}
+{:top 7, :inclusive 77012, :at "<input>:1292:17 <null>"}
+{:top 2, :inclusive 75645, :at "<input>:1343:20 <null>"}
+{:top 72, :inclusive 75239, :at "<input>:1291:11 <null>"}
+{:top 7, :inclusive 73416, :at "eval_script:5544:3 mapv"}
+{:top 7, :inclusive 71755, :at "eval_script:5545:48 <null>"}
+{:top 51, :inclusive 64793, :at "eval_script:7517:29 <null>"}
+{:top 3050, :inclusive 62791, :at "eval_script:524:3 next"}
+{:top 7, :inclusive 59390, :at "<input>:1269:120 <null>"}
+{:top 86, :inclusive 57333, :at "eval_script:5153:3 apply"}
+{:top 11247, :inclusive 56282, :at "eval_script:3683:20 <null>"}
+{:top 4, :inclusive 54095, :at "<input>:1298:15 <null>"}

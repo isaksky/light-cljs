@@ -1,0 +1,42 @@
+diff --git a/src/form_bridge.rs b/src/form_bridge.rs
+index 5f9815c..c0431da 100644
+--- a/src/form_bridge.rs
++++ b/src/form_bridge.rs
+@@ -613,11 +613,12 @@ impl BridgeState {
+             if snapshot {
+                 borrowed.canonical = Some(canonical.clone());
+             }
+-            if borrowed
+-                .canonical
+-                .as_ref()
+-                .is_some_and(|c| exact(c, &canonical))
++            if let Some(previous) = borrowed.canonical.as_ref()
++                && exact(previous, &canonical)
+             {
++                // Parent comparisons can reuse an unchanged child's identity.
++                // Every descriptor was still traversed and validated above.
++                canonical = previous.clone();
+                 value = borrowed.original.clone();
+                 if !snapshot && let Some(form) = &borrowed.form {
+                     // Reusing a collection restores its original children too,
+diff --git a/src/v8_bridge.rs b/src/v8_bridge.rs
+index 3bd87db..2084c48 100644
+--- a/src/v8_bridge.rs
++++ b/src/v8_bridge.rs
+@@ -697,11 +697,12 @@ impl BridgeState {
+             if snapshot {
+                 borrowed.canonical = Some(canonical.clone());
+             }
+-            if borrowed
+-                .canonical
+-                .as_ref()
+-                .is_some_and(|c| crate::form_bridge::exact(c, &canonical))
++            if let Some(previous) = borrowed.canonical.as_ref()
++                && crate::form_bridge::exact(previous, &canonical)
+             {
++                // Parent comparisons can reuse an unchanged child's identity.
++                // Every descriptor was still traversed and validated above.
++                canonical = previous.clone();
+                 value = borrowed.original.clone();
+                 if !snapshot && let Some(form) = &borrowed.form {
+                     self.retain(form);

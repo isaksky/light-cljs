@@ -1,6 +1,31 @@
 //! Independently frozen complete map contracts, including ordered operand effects.
 use light_cljs::MacroHost;
 
+#[test]
+fn reader_identity_checks_do_not_retain_executable_names() {
+    use light_cljs::compiler_data::Source;
+    for (source, names, strings) in [
+        ("{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}", 9, 9),
+        ("'{[:a ns/b] :c}", 3, 4),
+        ("'#{{:a ns/b} [:c ns/d]}", 4, 6),
+        ("'{:a 1 ::b 2 :foo/c 3}", 3, 5),
+    ] {
+        let syntax = light_cljs::parse(source).unwrap();
+        let direct = light_cljs::analyze(source, &syntax).unwrap();
+        // The owned-form path has already resolved reader keywords, just as
+        // macro-produced data does. Both paths retain only executable names.
+        let form = MacroHost::new()
+            .read_compiler_form(&Source::new("identity.cljs", source))
+            .unwrap()
+            .unwrap();
+        let owned = light_cljs::analyzer::analyze_compiler_form(&form).unwrap();
+        for program in [direct, owned] {
+            assert_eq!(program.named_literals.len(), names, "{source}");
+            assert_eq!(program.strings.len(), strings, "{source}");
+        }
+    }
+}
+
 fn canonical(context: &rquickjs::Context, value: &str) -> String {
     let script = format!(
         "JSON.stringify((function sort(v) {{ if(Array.isArray(v)) return v.map(sort); if(v && typeof v==='object') {{ const out={{}}; Object.keys(v).sort().forEach(k=>out[k]=sort(v[k])); return out; }} return v; }})(JSON.parse({value:?})))"

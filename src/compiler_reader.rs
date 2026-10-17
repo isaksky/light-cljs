@@ -255,6 +255,7 @@ struct Limits {
 }
 struct Lowerer<'a> {
     data_reader: Option<&'a DataReader<'a>>,
+    bindings: Option<&'a BindingResolver<'a>>,
     builder: DataBuilder,
     source: &'a Source,
     syntax: Syntax<'a>,
@@ -333,7 +334,7 @@ impl Lowerer<'_> {
         }
     }
     fn syntax_quote_name(&self, name: &Name) -> Name {
-        self.view.qualify(name)
+        self.view.qualify_with(name, self.bindings)
     }
     fn error(&self, kind: LowerErrorKind, bytes: Range<usize>) -> ReadError {
         ReadError {
@@ -1492,6 +1493,12 @@ impl NamespaceView {
             .or_else(|| self.core_bindings.get(&self.qualify(name)))
     }
     pub fn qualify(&self, name: &Name) -> Name {
+        self.qualify_with(name, None)
+    }
+    pub(crate) fn qualify_with(&self, name: &Name, bindings: Option<&BindingResolver<'_>>) -> Name {
+        if let Some(resolved) = bindings.and_then(|lookup| lookup(name)) {
+            return resolved;
+        }
         if let Some(binding) = self.bindings.get(name) {
             return binding.name.clone();
         }
@@ -1536,7 +1543,7 @@ impl NamespaceView {
         }
         if text.contains('.') {
             if !text.starts_with('.') && text.ends_with('.') {
-                let base = self.qualify(&Name::new(None, &text[..text.len() - 1]));
+                let base = self.qualify_with(&Name::new(None, &text[..text.len() - 1]), bindings);
                 let mut suffix = base.name().to_vec();
                 suffix.push(46);
                 return Name::from_utf16(base.namespace(), &suffix);
@@ -1578,8 +1585,9 @@ pub fn lower_form(
     view: &NamespaceView,
     discards: &[NodeId],
 ) -> Result<Form, ReadError> {
-    lower_form_with_reader(source, tree, root, view, discards, None)
+    lower_form_with_reader(source, tree, root, view, discards, None, None)
 }
+pub(crate) type BindingResolver<'a> = dyn Fn(&Name) -> Option<Name> + 'a;
 pub(crate) type DataReader<'a> =
     dyn Fn(&Name, &Datum, &crate::compiler_data::SourceSpan) -> Result<Option<Datum>, String> + 'a;
 pub(crate) fn lower_form_with_reader(
@@ -1589,6 +1597,7 @@ pub(crate) fn lower_form_with_reader(
     view: &NamespaceView,
     discards: &[NodeId],
     data_reader: Option<&DataReader<'_>>,
+    bindings: Option<&BindingResolver<'_>>,
 ) -> Result<Form, ReadError> {
     let span = &tree.nodes[root.0].span;
     let mut discarded = discards
@@ -1599,6 +1608,7 @@ pub(crate) fn lower_form_with_reader(
     discarded.sort_by_key(|id| tree.nodes[id.0].span.start);
     let mut lower = Lowerer {
         data_reader,
+        bindings,
         builder: DataBuilder,
         source,
         syntax: Syntax(&tree.nodes),

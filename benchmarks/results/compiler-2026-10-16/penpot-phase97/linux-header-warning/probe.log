@@ -1,0 +1,18 @@
+aarch64
+g++ (GCC) 16.1.1 20260430
+Copyright (C) 2026 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+In file included from include/v8-handle-base.h:8,
+                 from include/v8-local-handle.h:13,
+                 from include/v8-array-buffer.h:13,
+                 from include/v8-isolate.h:18,
+                 from v8_stack.cc:7:
+include/v8-internal.h:471:1: error: multi-line comment [-Werror=comment]
+  471 | //         / \
+      | ^
+include/v8-internal.h:473:1: error: multi-line comment [-Werror=comment]
+  473 | //       / \
+      | ^
+cc1plus: all warnings being treated as errors

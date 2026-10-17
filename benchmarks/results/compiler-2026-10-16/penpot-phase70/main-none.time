@@ -1,0 +1,20 @@
+v8-namespace-cache hits=131239 misses=1292 compiled-bytes=1050924 entries=851 source-bytes=717833
+v8-source units=14977 bytes=4463749
+v8-stats stage=before-final-gc used=45463024 total=78839808 physical=78839808 external=0 rust-provenance-estimate=68777014
+v8-stats stage=after-final-gc used=27614724 total=30539776 physical=30539776 external=0 rust-provenance-estimate=26441320
+       22.89 real        27.49 user         0.68 sys
+          1186889728  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               79074  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                1803  voluntary context switches
+              111120  involuntary context switches
+           999903808  peak memory footprint

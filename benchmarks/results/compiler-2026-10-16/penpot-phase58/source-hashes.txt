@@ -1,0 +1,6 @@
+b9cc15ce6c0c109f3853673559f058d5011a9311cc2098c6cac3c16ef7dcd925  /private/tmp/light-cljs-phase58/light-cljs-callbacks
+2f7ee4c7570bcb288abb35bc02f7f76e3e7e2b192d36122f0bf6c45dca989655  /private/tmp/light-cljs-phase58/render.js
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase58/main-none.js
+82d4cf05527a4120e22eb7302063c3dd8759dbc8fb35e6a3b7efce63d10c7077  /private/tmp/light-cljs-phase58/main-advanced.js
+63929221043e1e4f67bc10a6cfc5b0caf43a7c3654794e065455d2283171590f  /private/tmp/light-cljs-phase58/project/src/v8_evaluator.rs
+cbcd84667b8dcf7ce31727e44b79f70dfe9bb56ead1ac7ebfdef8e4e1c465769  /private/tmp/light-cljs-phase58/project/Cargo.lock

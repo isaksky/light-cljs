@@ -1,0 +1,5 @@
+Undefined symbols for architecture arm64:
+  "_light_v8_backing_store_budget_abi_v1", referenced from:
+      _main in archive-marker-3161ae.o
+ld: symbol(s) not found for architecture arm64
+clang++: error: linker command failed with exit code 1 (use -v to see invocation)

@@ -1,0 +1,270 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase21/project)
+   Compiling rquickjs-sys v0.14.0 (/private/tmp/light-cljs-phase21/project/vendor/rquickjs-sys)
+   Compiling rquickjs-core v0.14.0
+   Compiling rquickjs v0.14.0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.75s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase13-storage-profile/target/debug/deps/light_cljs-ad9e157a4734fe2e)
+
+running 9 tests
+test macro_host::compiler_pure_tests::reader_environment_reuse_obeys_declaration_acknowledgement_and_old_views ... ok
+test macro_host::compiler_pure_tests::environment_reuse_preserves_local_shadow_chains_and_location ... ok
+test macro_host::compiler_pure_tests::reader_seed_declarations_and_metadata_use_owned_forms ... ok
+test evaluator::active_tests::failed_macro_environments_release_pending_input_graphs ... ok
+test evaluator::active_tests::failed_macro_calls_release_their_imported_object_arguments ... ok
+test macro_host::compiler_default_reader_tests::default_reader_is_compiled_typed_and_preserves_reader_precedence ... ok
+test evaluator::active_tests::shared_macro_arguments_restore_provenance_after_environment_import ... ok
+test application::tests::macro_calls_do_not_prepare_applications_or_recompile_unchanged_units ... ok
+test eval_compiler::tests::failed_macro_call_preserves_interactive_compiler ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 107 filtered out; finished in 0.21s
+
+     Running unittests src/main.rs (/private/tmp/light-cljs-phase13-storage-profile/target/debug/deps/light_cljs-4f7111d2e66935ef)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/benchmark_variants.rs (/private/tmp/light-cljs-phase13-storage-profile/target/debug/deps/benchmark_variants-8f652ec59dbe8753)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/cli.rs (/private/tmp/light-cljs-phase13-storage-profile/target/debug/deps/cli-b99daf41417d628a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s
+
+     Running tests/compiler/main.rs (/private/tmp/light-cljs-phase13-storage-profile/target/debug/deps/compiler-e13b30adac4f02bb)
+
+running 111 tests
+test case_char_string_accepted::accepted_case_constants_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test case_char_string_gap::original_case_char_string_rejection_and_actual_macro_recovery ... ignored, explicit narrow original case diagnostic; no semantic credit
+test case_numeric::numeric_case_constants_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test hash_map_from_arrays::hash_map_from_arrays_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test hash_map_source::hash_map_source_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test iterator_name::iterator_name_original_rejects_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test literal_char_string::literal_char_string_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test literal_map_traversal::literal_map_traversal_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test literal_numeric::literal_numeric_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test literal_set_traversal::literal_set_traversal_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test boundary_completion::inline_macro_arity_errors_are_compile_time_diagnostics ... ok
+test macros::generated_collections_remain_macro_data_until_used_as_runtime_expressions ... ok
+test macros::default_interpreter_user_identity_does_not_hide_user_macro_source ... ok
+test macros::delayed_macro_expansion_excludes_future_extensions_even_after_new_dispatch_is_ready ... ok
+test macros::exhausted_expansion_depth_does_not_run_macro_effects ... ok
+test macros::collection_macro_compilation_obeys_shared_limits_and_recovers_with_the_same_host ... ok
+test deferred::namespace_aliases_compiled_macro_output_and_captured_bindings_are_deferred ... ok
+test macros::control_macros_execute_directly_and_from_source_macro_namespaces ... ok
+test macros::legacy_macro_import_syntax_has_located_migration_diagnostics ... ok
+test boundary_completion::inline_defmacro_multiple_and_variadic_methods_execute_during_compilation ... ok
+test boundary_completion::inline_defmacro_is_a_compile_time_function_with_hidden_form_and_environment ... ok
+test eduction_contracts::eduction_public_arities_run_as_shared_macro_and_application_helpers ... ok
+test macros::javascript_form_bridge::saved_scalars_keep_provenance_between_macro_calls ... ok
+test array_settings::named_function_macro_environments_capture_boolean_array_settings ... ok
+test host_hooks::host_hooks_have_macro_application_phase_witnesses ... ok
+test eduction_contracts::throwing_application_and_macro_views_recover_in_fresh_sessions ... ok
+test destructuring_completion::lazy_cat_compiler_macro_defers_each_collection_expression ... ok
+test core_extension_demand::core_macro_frontier_restores_ordered_user_equality_extensions ... ok
+test lazy::a_macro_expansion_can_write_a_loadable ... ok
+test macros::direct_auto_keywords_use_the_same_ordinary_aliases_as_macro_input ... ok
+test macros::generated_metadata_evaluates_runtime_forms_and_preserves_macro_definition_metadata ... ok
+test macros::javascript_form_bridge::numeric_macro_failures_keep_call_definition_and_helper_provenance ... ok
+test macros::javascript_form_bridge::pinned_numeric_bodies_execute_inside_the_javascript_macro_bridge ... ok
+test macros::javascript_form_bridge::reader_numeric_spellings_are_number_values_before_macro_execution ... ok
+test array_settings::array_setting_var_and_macro_state_execute_in_both_phases ... ok
+test macros::macro_import_effects_follow_runtime_dependency_analysis_order ... ok
+test macros::macro_code_uses_cljs_dependencies_and_caller_aliases_without_allowing_cljs_conditionals ... ok
+test macros::macro_arguments_share_form_elements_and_mutations ... ok
+test macros::macro_call_context_matches_cljs_and_recovers_after_expansion_failure ... ok
+test map_value_equiv::map_value_equiv_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test macros::overload_macro_environments_keep_method_parameters_and_rest_argument_identity ... ok
+test macros::namespace_metadata_and_docstrings_reach_the_macro_environment_and_refresh_on_reuse ... ok
+test macros::imported_macro_environment_keeps_qualified_ids_across_a_long_shadow_chain ... ok
+test macros::macro_namespaces_select_cljs_and_refresh_on_each_compilation ... ok
+test namespace_completion::ordinary_alias_conflicts_for_value_and_macro_namespaces_fail_in_both_modes ... ok
+test integer_predicates::predicate_receiver_errors_leave_macro_host_reusable ... ok
+test macros::macro_import_validation_and_loader_failures_are_located ... ok
+test namespace_completion::retired_macro_import_syntax_reports_located_migration_diagnostics_in_both_modes ... ok
+test macros::imported_macro_values_and_private_macros_remain_phase_errors ... ok
+test macros::same_file_javascript_macros::source_order_preserves_expansions_and_macro_definition_generations ... ok
+test macros::shared_conditional_arguments_are_selected_before_macro_lowering ... ok
+test macros::top_level_definition_groups::generations_and_macro_expansion_are_source_ordered_without_replay ... ok
+test macros::same_file_javascript_macros::explicit_quoted_js_forms_do_not_authorize_arbitrary_host_macro_results ... ok
+test positional_constructors::positional_constructors_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test macros::quoted_macro_values_preserve_symbols_effects_and_generated_provenance ... ok
+test macros::macro_namespace_effects_are_shared_once_per_compilation_with_fresh_reused_hosts ... ok
+test public_print_helper_gap::public_print_helper_rejection_and_actual_macro_recovery ... ignored, explicit public printing source diagnostic; zero semantic credit
+test public_print_helpers::public_print_helpers_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit public printing helper actual phase audit
+test multimethods::macro_demands_methods_without_unrelated_initializers_and_keeps_phase_state ... ok
+test destructuring_completion::destructuring_all_binding_macro_contexts_and_recur ... ok
+test multimethods::macro_method_replacements_follow_declaration_frontiers ... ok
+test namespace_completion::namespace_reflection_uses_real_vars_and_includes_macro_generated_definitions ... ok
+test macros::ordinary_macro_imports_also_expose_runtime_bindings ... ok
+test lazy::phase_oracles::loadable_in_macro_generated_code ... ok
+test multimethods::public_api_arities_execute_in_macro_phase ... ok
+test macros::same_file_javascript_macros::compile_and_analyze_emit_expand_hygienically_without_runtime_macro_roots ... ok
+test macros::same_file_javascript_macros::macro_and_value_binding_conflicts_include_declare_and_generated_definitions ... ok
+test runtime_map_traversal::runtime_map_traversal_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test runtime_set_traversal::runtime_set_traversal_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test sci_cljc_accepted_probe::accepted_original_cljc_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test sci_cljc_source_probe::original_cljc_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test sci_gap_phase_probe::original_gap_sources_execute_through_actual_macro_hosts ... ignored, Explicit unchanged source applications and demanded macro observation audit
+test optimization::inert_macro_data_and_functions_containing_raw_js_do_not_become_runtime_roots ... ok
+test macros::reentrant_deferred_units::snapshots_freeze_visibility_and_macro_generations_but_roots_are_late_bound ... ok
+test optimization::macro_only_require_retains_namespace_initialization_effects ... ok
+test reader::local_macro_shadows_referred_value_in_syntax_quote ... ok
+test edn_stream::edn_macro_failures_retain_source_locations_and_separate_result_domain ... ok
+test reader::runtime_reader_macro_and_reused_session_contexts_are_explicit ... ok
+project phase: reuse=false, macro=false, body=(project-contract)
+test object_equiv::failed_equiv_calls_leave_reused_application_and_macro_hosts_usable ... ok
+test reader::macro_values_keep_semantic_types ... ok
+test sci_service_probes::expansion_limits_and_finite_macro_returns_recover ... ok
+test reader::reader_api_arities_and_rest_execute_in_application_and_macro_phases ... ok
+join phase: reuse=false, macro=false, body=(join-contract)
+test reflection_completion::source_reflection_has_private_macro_metadata_and_lazy_identity ... ok
+test optimization::macro_only_helpers_are_removed_after_expansion_but_shared_helpers_survive ... ok
+test namespace_completion::repeated_header_aliases_preserve_function_identity_and_macro_invocation ... ok
+test ns_name::ns_name_result_types_execute_in_both_engines_and_macro_phase ... ok
+test public_print_helpers::writer_macro_results_reject_and_reused_hosts_recover_without_phase_state ... ok
+test sequence_contracts::sequence_public_arities_run_as_shared_macro_and_application_helpers ... ok
+test macros::macro_source_selection_splices_discards_conflicts_and_recovery_are_current ... ok
+test macros::unsupported_generated_collection_program_forms_keep_file_macro_and_callsite_diagnostics ... ok
+test reader::anonymous_nonpositive_bindings_execute_in_application_and_macro_phases ... ok
+test sequences::namespaces_aliases_and_compiled_macro_output_use_compiled_comprehensions ... ok
+test regex::regex_macro_results_preserve_flags_tags_and_diagnose_host_values ... ok
+test sequence_object_equiv::failed_sequence_equiv_leaves_reused_application_and_macro_hosts_usable ... ok
+test predicate_macro::function_predicate_rejects_wrong_macro_arities_and_recovers ... ok
+test source_metadata::ordinary_namespace_files_and_macro_generated_definitions_keep_paths ... ok
+Node/QuickJS literal: true
+project phase: reuse=false, macro=false, body=(project-arity-domain-contract)
+syntax-observation	namespace-header-context	macro=false	QuickJS	true
+Node/QuickJS literal: true
+join phase: reuse=false, macro=false, body=(original-five)
+Node/QuickJS literal: 1null2
+syntax-observation	namespace-header-context	macro=false	Node	true
+test source_metadata::reserved_metadata_and_macro_definitions_keep_source_sites_in_both_engines ... ok
+test edn_stream::edn_stream_contract_executes_in_fresh_and_reused_application_and_macro_phases ... ok
+syntax-observation	namespace-header-context	macro=true	QuickJS	true
+test sorted_contracts::sorted_contract_executes_in_application_and_macro_phases ... ok
+test transients::transient_api_arities_protocols_and_macro_phase_execute ... ok
+Node/QuickJS literal: ["falsexa" ",1,:x" "1null2" "1-2" "1:x2"]
+join phase: reuse=false, macro=true, body=(join-contract)
+Node/QuickJS literal: true
+project phase: reuse=false, macro=false, body=(original-relation-meta)
+syntax-observation	namespace-header-context	macro=true	Node	true
+test syntax_context::syntax_namespace_context_executes_with_actual_macro_environment ... ok
+test sci_source_context::original_source_macro_declarations_execute_phase_and_application_contracts ... ok
+Node/QuickJS literal: 1null2
+Node/QuickJS literal: true
+join phase: reuse=false, macro=true, body=(original-five)
+test namespace_shadowing::located_unknown_namespaces_and_vars_recover_in_the_same_macro_host ... ok
+Node/QuickJS literal: nil
+project phase: reuse=false, macro=false, body=(original-key-representative)
+Node/QuickJS literal: 1null2
+test string_join::join_macro_execution_errors_and_result_domain_are_distinct ... ok
+test sci_service_probes::quoted_expansion_runs_without_services_in_application_and_macro_phases ... ok
+test syntax_context::raw_nsstar_imports_keep_ordinary_cljs_macro_and_definition_ownership ... ok
+Node/QuickJS literal: ["falsexa" ",1,:x" "1null2" "1-2" "1:x2"]
+join phase: reuse=true, macro=false, body=(join-contract)
+Node/QuickJS literal: {:new true}
+project phase: reuse=false, macro=true, body=(project-contract)
+Node/QuickJS literal: true
+join phase: reuse=true, macro=false, body=(original-five)
+Node/QuickJS literal: true
+project phase: reuse=false, macro=true, body=(project-arity-domain-contract)
+Node/QuickJS literal: ["falsexa" ",1,:x" "1null2" "1-2" "1:x2"]
+join phase: reuse=true, macro=true, body=(join-contract)
+test syntax_context::syntax_raw_nsstar_alias_executes_in_fresh_and_reused_macro_hosts ... ok
+Node/QuickJS literal: true
+join phase: reuse=true, macro=true, body=(original-five)
+Node/QuickJS literal: true
+project phase: reuse=false, macro=true, body=(original-relation-meta)
+Node/QuickJS literal: ["falsexa" ",1,:x" "1null2" "1-2" "1:x2"]
+test string_join::join_contract_executes_in_fresh_and_reused_application_and_macro_phases ... ok
+Node/QuickJS literal: nil
+project phase: reuse=false, macro=true, body=(original-key-representative)
+Node/QuickJS literal: {:new true}
+project phase: reuse=true, macro=false, body=(project-contract)
+test public_protocols::public_protocol_api_arities_and_macro_phase_execute ... ok
+Node/QuickJS literal: true
+project phase: reuse=true, macro=false, body=(project-arity-domain-contract)
+Node/QuickJS literal: true
+project phase: reuse=true, macro=false, body=(original-relation-meta)
+Node/QuickJS literal: nil
+project phase: reuse=true, macro=false, body=(original-key-representative)
+Node/QuickJS literal: {:new true}
+project phase: reuse=true, macro=true, body=(project-contract)
+Node/QuickJS literal: true
+project phase: reuse=true, macro=true, body=(project-arity-domain-contract)
+Node/QuickJS literal: true
+project phase: reuse=true, macro=true, body=(original-relation-meta)
+Node/QuickJS literal: nil
+project phase: reuse=true, macro=true, body=(original-key-representative)
+Node/QuickJS literal: {:new true}
+test set_project::project_contract_executes_in_fresh_and_reused_application_and_macro_phases ... ok
+test public_constructors::public_constructor_api_arities_and_macro_phase_execute ... ok
+
+test result: ok. 92 passed; 0 failed; 19 ignored; 0 measured; 903 filtered out; finished in 12.80s
+
+     Running tests/dev_repl.rs (/private/tmp/light-cljs-phase13-storage-profile/target/debug/deps/dev_repl-8f0073f55f08c009)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/dev_server.rs (/private/tmp/light-cljs-phase13-storage-profile/target/debug/deps/dev_server-cb0f973622fc4864)
+
+running 1 test
+test a_macro_change_loads_the_users_unit ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.37s
+
+     Running tests/dev_watch.rs (/private/tmp/light-cljs-phase13-storage-profile/target/debug/deps/dev_watch-5edfae54fee2219b)
+
+running 1 test
+dev_watch: light-cljs: built app.main (4 namespaces) into /var/folders/hm/d7rr9ds96qx995ns72ry9g4m0000gn/T/light-dev-watch-macro-94392-000000/dev in 217 ms; watching every 20 ms
+test a_macro_change_rewrites_the_units_that_use_it ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.33s
+
+     Running tests/evaluation/main.rs (/private/tmp/light-cljs-phase13-storage-profile/target/debug/deps/evaluation-7e5db7e7b76c7292)
+
+running 8 tests
+test evaluator_conformance::quoted_macro_diagnostic_receipts_preserve_exact_historical_gap_bodies ... ok
+test eval_sessions::failed_macro_compile_can_recover_in_same_session ... ok
+test eval_cli::imported_macro_helpers_run_script_initializers_once ... ok
+test dev_session::ns_metadata_reaches_the_macro_environment_and_refreshes ... ok
+test eval_sessions::incremental_application_roots_and_macro_roots_are_independent ... ok
+test evaluator_migration::quoted_js_macro_literals_retain_explicit_descriptors ... ok
+test evaluator::wide_radix_literals_round_once_in_applications_and_macro_arguments ... ok
+test evaluator::quoted_javascript_macro_literals_execute_in_fresh_quickjs_and_node_heaps ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 103 filtered out; finished in 1.62s
+
+     Running tests/execution.rs (/private/tmp/light-cljs-phase13-storage-profile/target/debug/deps/execution-5e210dd8de4de1df)
+
+running 3 tests
+test shared_namespaces_and_macro_inference_match_standard_clojurescript ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test namespace_macro_generated_overloads_and_metadata_execute ... ok
+test compiled_definitions_preserve_namespace_macro_and_callback_scopes ... ok
+
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 93 filtered out; finished in 0.34s
+
+     Running tests/frontend/main.rs (/private/tmp/light-cljs-phase13-storage-profile/target/debug/deps/frontend-427829dc38bbc00d)
+
+running 4 tests
+test analyzer::keyword_literals_own_names_and_resolve_namespace_aliases_without_macro_execution ... ok
+test analyzer::reduction_core_values_have_resolved_ids_without_native_macro_initialization ... ok
+test analyzer::quote_lowers_owned_data_without_runtime_resolution_or_macro_execution ... ok
+test analyzer::recurrence_targets_are_distinct_and_macro_generated_spans_remain_at_the_call ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 105 filtered out; finished in 0.18s
+
+     Running tests/provenance.rs (/private/tmp/light-cljs-phase13-storage-profile/target/debug/deps/provenance-24a5eb3007f320ff)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

@@ -1,0 +1,56 @@
+--- /private/tmp/light-cljs-phase23/before.js	2026-10-17 01:26:22
++++ /private/tmp/light-cljs-phase23/after.js	2026-10-17 01:26:22
+@@ -5838,23 +5838,42 @@
+     if (protocol && builtinCoreImplementation(protocol, value)) return undefined;
+     return dispatch ?? nativeMethods.get(key)?.get(nativeType(value))?.get(arity) ?? nativeMethods.get(key)?.get("_")?.get(arity);
+   }
+-  //@unit publicMethod requires: builtin, builtinCoreImplementation, coreProtocolsByName, IMeta,
+-  //@ implementsProtocol, satisfies
+-  // Public consumers test protocol membership before selecting an arity. A
+-  // declared but omitted method must not silently fall back to another API.
++  //@unit publicMethodInfo requires: coreProtocolNames, coreProtocolsByName,
++  //@ nativeImplementations, protocolMasks, protocolSlot
++  function publicMethodInfo(key) {
++    let info = publicMethodInfos.get(key);
++    if (info === undefined) {
++      const protocol = coreProtocolsByName.get(key.split("/")[0]);
++      const name = coreProtocolNames.get(protocol);
++      info = {protocol, name, mask: protocolMasks.get(name),
++        marker: name && protocolSlot(name, 0), native: nativeImplementations.get(protocol), slots: []};
++      publicMethodInfos.set(key, info);
++    }
++    return info;
++  }
++  const publicMethodInfos = new Map();
++  //@unit publicMethod requires: demandMethod, IMeta, protocolHooks, protocolSentinel,
++  //@ protocolSlot, publicMethodInfo, satisfies
+   function publicMethod(value, key, arity, fast = false, directOnly = false) {
+-    const protocol = coreProtocolsByName.get(key.split("/")[0]);
+-    const direct = implementsProtocol(protocol, value);
++    const info = publicMethodInfo(key), protocol = info.protocol, mask = info.mask, native = info.native;
++    let direct = !!(mask && (value?.[mask[0]] & mask[1]));
++    if (!direct && info.name) {
++      demandMethod(info.name, 0, value);
++      direct = value != null && value[info.marker] === protocolSentinel;
++    }
++    if (!direct) direct = !!native?.(value);
+     if (!direct && (directOnly || (fast && (Array.isArray(value) || typeof value === "string")))) return undefined;
+     if (!direct && !satisfies(protocol, value)) return undefined;
+-    const method = builtin(value, key, arity);
++    let slot = info.slots[arity];
++    if (slot === undefined) info.slots[arity] = slot = protocolSlot(key, arity);
++    demandMethod(key, arity, value);
++    let method = value == null ? undefined : value[slot];
++    if (method == null) method = protocolHooks.externalMethod?.(value, key, arity);
+     if (method) return method;
+     if (protocol === IMeta && typeof value === "function") return undefined;
+-    if (!builtinCoreImplementation(protocol, value))
+-      throw new Error("No protocol method " + key + " defined for this value");
++    if (!native?.(value)) throw new Error("No protocol method " + key + " defined for this value");
+     return undefined;
+-  }
+-  //@unit ownProtocol requires: directMethod, protocolMasks
++  }  //@unit ownProtocol requires: directMethod, protocolMasks
+   // `true` where the value declares the core protocol `name` (its mask bit
+   // or marker, as `implementsProtocol` reads them), else nothing, for the
+   // caller's native test (`?? countedValue(value)`).

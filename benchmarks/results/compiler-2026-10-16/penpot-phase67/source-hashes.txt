@@ -1,0 +1,4 @@
+007d55beb683f53bf6564aed5a8eff993e61e8121e0ba071e2139db758984155  /private/tmp/light-cljs-phase67/light-cljs-deferred-stats
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase67/main-none.js
+cbcd84667b8dcf7ce31727e44b79f70dfe9bb56ead1ac7ebfdef8e4e1c465769  /private/tmp/light-cljs-phase67/project/Cargo.lock
+da0769385f83fd5de64368575ac28976d6fecb142d74c0ac803522f00ef46171  /private/tmp/light-cljs-phase67/project/src/emitter.rs

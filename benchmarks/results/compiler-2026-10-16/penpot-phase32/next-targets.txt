@@ -1,0 +1,33 @@
+Production is validated phase32. Main none 122.11s/1275019264 bytes;
+advanced 126.80s/1390968832; shadow dev30.73s/2421358592;
+shadow release55.79s/4160765952. Goal remains active/unmet.
+
+Next promising transport target: macro_host.rs imports whole &form, then
+environment, then imports every argument separately. Phase28 measured
+7.947s whole-form import +6.794s argument imports, before this phase.
+argument-sharing-probe.bb confirms independently imported object identities
+for vectors, symbols, regexes and #js arrays. Upstream analyzer.cljc at
+macroexpand-1* applies mac-var to form/env/(rest form), sharing actual elements.
+No argument-sharing implementation has been made.
+
+Critical pitfall: bridge primitives Map is latest provenance by scalar value,
+and keyword objects are interned so their borrowed WeakMap entry also changes
+across imports. Importing env after &form can overwrite both. Old argument
+imports restore argument provenance after env and initialize canonical
+snapshots for those opaque IDs. Simply passing existing &form child objects
+will lose lexical/source recovery, even though structural macro output often
+looks identical. Root/argument metadata and repeated scalar values affect
+the overwrite order. Date/regex/#js constructors and conversion budgets also
+need coverage. Do not skip canonical snapshots based only on Rust immutability:
+mutable symbols were already demonstrated in phase29.
+
+Possible design to investigate: one descriptor/value graph for a macro call,
+reuse decoded arguments but restore the per-argument provenance walk and
+canonical snapshots in the original order after env import. Need explicit
+bounded ownership and release on every failure/reentry path. No code yet.
+
+Phase30 root-ready cache ruled out (~.31s main). Phase31 consecutive-demand
+cache rejected (10.94/10.98s versus10.97/11.00s). Record lookup fixed inphase32
+with upstream oracle +regression everyopt+macro. Prod realmacroreplay9.56/9.42s,
+but fullbuild change withinnoise. QuickJS versusNode replay~11s/1.4s, exact
+encoded results; this is one macro, not a whole-build prediction/backend decision.

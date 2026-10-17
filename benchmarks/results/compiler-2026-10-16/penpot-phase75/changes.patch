@@ -1,0 +1,98 @@
+diff --git a/src/analyzer.rs b/src/analyzer.rs
+index 6f6945c..3fafdf3 100644
+--- a/src/analyzer.rs
++++ b/src/analyzer.rs
+@@ -2940,9 +2940,9 @@ struct ReaderView {
+     kinds: HashMap<usize, crate::compiler_reader::BindingKind>,
+     /// The locals referring to each qualified name.
+     refer_locals: HashMap<crate::compiler_data::Name, Vec<crate::compiler_data::Name>>,
+-    /// A hash of the inputs a view is rebuilt for rather than extended with:
+-    /// the aliases, refers, excludes and macro count.
+-    inputs: u64,
++    /// Macro import revision and declaration count. This analyzer's runtime
++    /// aliases, refers and excludes stay fixed throughout its lifetime.
++    inputs: (u64, usize),
+ }
+ 
+ fn compiler_syntax<'a>(source: &str, syntax: &'a SyntaxTree) -> (Cow<'a, SyntaxTree>, Vec<NodeId>) {
+@@ -9547,21 +9547,7 @@ impl Analyzer<'_> {
+     fn update_reader_view(&mut self) {
+         use crate::compiler_data::Name;
+         use crate::compiler_reader::{BindingId, BindingKind, ResolvedBinding};
+-        let aliases = self
+-            .macro_host
+-            .reader_aliases(self.namespace, self.aliases, self.requires);
+-        let inputs = {
+-            use std::hash::{Hash, Hasher};
+-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+-            aliases.hash(&mut hasher);
+-            self.resolution.refers.hash(&mut hasher);
+-            self.macro_host
+-                .reader_refers(self.namespace)
+-                .hash(&mut hasher);
+-            self.resolution.excludes.hash(&mut hasher);
+-            self.macro_host.javascript_macros.len().hash(&mut hasher);
+-            hasher.finish()
+-        };
++        let inputs = self.macro_host.reader_view_inputs();
+         if self
+             .reader_view
+             .as_ref()
+@@ -9570,6 +9556,9 @@ impl Analyzer<'_> {
+             self.reader_view = None;
+         }
+         if self.reader_view.is_none() {
++            let aliases =
++                self.macro_host
++                    .reader_aliases(self.namespace, self.aliases, self.requires);
+             let globals = self.reader_bindings();
+             let source = self.macro_source.get_or_insert_with(|| {
+                 Source::new(
+diff --git a/src/macro_host.rs b/src/macro_host.rs
+index 7c2212e..f68ac54 100644
+--- a/src/macro_host.rs
++++ b/src/macro_host.rs
+@@ -84,6 +84,8 @@ pub struct MacroHost {
+     compiler_data_readers: std::rc::Rc<std::cell::RefCell<CompilerDataReaders>>,
+     imports: crate::layered::Layered<String, Vec<MacroImport>>,
+     renames: crate::layered::Layered<String, Vec<(String, String, String)>>,
++    /// Changes to macro aliases/refers invalidate an analyzer's private reader view.
++    reader_view_revision: u64,
+     namespace_symbols: crate::layered::Layered<String, crate::compiler_data::Datum>,
+     namespace_docs: crate::layered::Layered<String, crate::compiler_data::Datum>,
+     /// By `namespace/name`, whether the Var is private.
+@@ -539,6 +541,7 @@ impl MacroHost {
+         caller: &str,
+         imports: Vec<MacroImport>,
+     ) -> Result<(), String> {
++        self.reader_view_revision = self.reader_view_revision.wrapping_add(1);
+         let current = self.imports.entry_or_default(caller.to_owned());
+         for import in imports {
+             if let Some(alias) = &import.alias
+@@ -625,6 +628,7 @@ impl MacroHost {
+                 }
+             }
+         }
++        self.reader_view_revision = self.reader_view_revision.wrapping_add(1);
+         self.imports.insert(caller.to_owned(), imports);
+         self.renames.remove(caller);
+         self.namespace_symbols.remove(caller);
+@@ -664,13 +668,18 @@ impl MacroHost {
+         }
+     }
+     pub(crate) fn set_renames(&mut self, caller: &str, renames: Vec<(String, String, String)>) {
++        self.reader_view_revision = self.reader_view_revision.wrapping_add(1);
+         self.renames.insert(caller.to_owned(), renames);
+     }
++    pub(crate) fn reader_view_inputs(&self) -> (u64, usize) {
++        (self.reader_view_revision, self.javascript_macros.len())
++    }
+     pub(crate) fn macro_analysis_frame(&self) -> Self {
+         Self {
+             compiler_data_readers: self.compiler_data_readers.clone(),
+             imports: self.imports.clone(),
+             renames: self.renames.clone(),
++            reader_view_revision: self.reader_view_revision,
+             namespace_symbols: self.namespace_symbols.clone(),
+             namespace_docs: self.namespace_docs.clone(),
+             runtime_vars: self.runtime_vars.clone(),

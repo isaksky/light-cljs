@@ -17,11 +17,21 @@ pub struct Name {
     name: Rc<[u16]>,
 }
 
+// ASCII's exact-size byte iterator lets Rc allocate the final slice directly.
+// EncodeUtf16's unknown exact length otherwise requires a temporary Vec.
+fn name_utf16(text: &str) -> Rc<[u16]> {
+    if text.is_ascii() {
+        text.bytes().map(u16::from).collect()
+    } else {
+        text.encode_utf16().collect()
+    }
+}
+
 impl Name {
     pub fn new(namespace: Option<&str>, name: &str) -> Self {
         Self {
-            namespace: namespace.map(|s| s.encode_utf16().collect()),
-            name: name.encode_utf16().collect(),
+            namespace: namespace.map(name_utf16),
+            name: name_utf16(name),
         }
     }
 
@@ -135,11 +145,12 @@ impl Source {
         &self.0.text
     }
     pub fn line_column(&self, offset: usize) -> Option<(usize, usize)> {
-        self.0
-            .lines
-            .get_or_init(|| LineIndex::new(self.text()))
+        self.line_index()
             .line_column(offset)
             .and_then(|(line, column)| Some((line.checked_add(self.0.line_offset)?, column)))
+    }
+    pub(crate) fn line_index(&self) -> &LineIndex {
+        self.0.lines.get_or_init(|| LineIndex::new(self.text()))
     }
     pub fn span(&self, bytes: Range<usize>) -> Option<SourceSpan> {
         self.text().get(bytes.clone())?;

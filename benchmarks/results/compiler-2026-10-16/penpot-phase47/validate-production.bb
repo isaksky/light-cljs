@@ -1,0 +1,31 @@
+(require '[babashka.process :as p] '[babashka.fs :as fs] '[clojure.java.io :as io])
+(def here (fs/parent *file*))
+(def repo (fs/file "/Users/admin/src/light-cljs"))
+(def evidence (fs/file repo "benchmarks/results/compiler-2026-10-16"))
+(def output (fs/file here "production"))
+(def tests (slurp (fs/file here "tests-v8-4threads.log")))
+(assert (not (re-find #"test result: FAILED" tests)))
+(assert (= 1402 (reduce + (map #(parse-long (second %)) (re-seq #"test result: ok\. (\d+) passed" tests)))))
+(def patches (mapv #(str (fs/file evidence %))
+               ["penpot-phase46/name-allocation.patch" "penpot-phase47/reader-bindings.patch"]))
+(apply p/shell {:dir (str repo)} "git" "apply" "--check" patches)
+(apply p/shell {:dir (str repo)} "git" "apply" patches)
+(fs/create-dirs output)
+(defn logged [name & command]
+  (println "Validating production" name) (flush)
+  (with-open [out (io/output-stream (fs/file output (str name ".log")))]
+    (apply p/shell {:dir (str repo) :out out :err :out} command)))
+(logged "tests" "cargo" "test")
+(logged "clippy" "cargo" "clippy" "--all-targets" "--" "-D" "warnings")
+(p/shell {:dir (str repo)} "cargo" "fmt" "--check")
+(p/shell {:dir (str repo)} "git" "diff" "--check")
+(doseq [[label script] [["node-runtime" "tests/support/js_runtime.test.js"]
+                        ["node-core" "tests/support/js_core_helpers.test.js"]
+                        ["node-execution" "tests/support/execution.test.js"]]]
+  (logged label "node" script))
+(logged "build" "cargo" "build" "--release")
+(fs/copy (fs/file repo "target/release/light-cljs") (fs/file output "light-cljs") {:replace-existing true})
+(fs/copy (fs/file repo "src/name_index.rs") (fs/file output "name_index.rs") {:replace-existing true})
+(spit (fs/file output "implementation.patch")
+  (:out (p/shell {:dir (str repo) :out :string} "git" "diff" "--binary")))
+(p/shell {:dir (str repo)} "bb" "benchmarks/penpot.bb" (str output))

@@ -1,0 +1,362 @@
+diff --git a/src/v8_evaluator.rs b/src/v8_evaluator.rs
+index 8006d33..c32aba0 100644
+--- a/src/v8_evaluator.rs
++++ b/src/v8_evaluator.rs
+@@ -12,14 +12,13 @@ use std::{
+     cell::{Cell, RefCell},
+     collections::{HashMap, VecDeque},
+     rc::Rc,
+-    sync::{
+-        Arc, OnceLock,
+-        atomic::{AtomicBool, AtomicUsize, Ordering},
+-    },
+-    time::Duration,
++    sync::{Arc, OnceLock, atomic::Ordering},
+ };
+ use v8::{Local, PinScope};
+ 
++#[path = "v8_watchdog.rs"]
++mod watchdog;
++
+ pub(crate) type UnitService = Rc<dyn Fn(&dyn MacroEvaluator, u64) -> Result<String, String>>;
+ pub(crate) trait CompilerEvaluator: MacroEvaluator {
+     fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError>;
+@@ -59,8 +58,7 @@ struct State {
+     bridge: RefCell<BridgeState>,
+     services: RefCell<Option<v8::Global<v8::Object>>>,
+     callbacks: RefCell<Vec<UnitService>>,
+-    active: Arc<AtomicUsize>,
+-    interrupt_pending: Arc<AtomicBool>,
++    interrupt: Arc<watchdog::Task>,
+     pending_error: RefCell<Option<EvalError>>,
+     source_bytes: Cell<usize>,
+     source_units: Cell<usize>,
+@@ -112,8 +110,6 @@ pub(crate) struct V8Evaluator {
+     context: Option<v8::Global<v8::Context>>,
+     isolate: RefCell<v8::OwnedIsolate>,
+     state: Rc<State>,
+-    stop: Option<std::sync::mpsc::Sender<()>>,
+-    watchdog: Option<std::thread::JoinHandle<()>>,
+     memory: Box<MemoryGuard>,
+ }
+ struct MemoryGuard {
+@@ -143,7 +139,7 @@ extern "C" fn interrupt(isolate: v8::UnsafeRawIsolatePtr, _: *mut std::ffi::c_vo
+     // is entered. At most one request is queued while Rust is analyzing.
+     let isolate = unsafe { v8::Isolate::ref_from_raw_isolate_ptr(&isolate) };
+     let state = isolate.get_slot::<Rc<State>>().unwrap();
+-    state.interrupt_pending.store(false, Ordering::Relaxed);
++    state.interrupt.completed();
+     if state.control.poll().is_err() {
+         isolate.terminate_execution();
+     }
+@@ -239,8 +235,7 @@ impl V8Evaluator {
+             bridge: RefCell::new(BridgeState::default()),
+             services: RefCell::new(None),
+             callbacks: RefCell::new(Vec::new()),
+-            active: Arc::new(AtomicUsize::new(0)),
+-            interrupt_pending: Arc::new(AtomicBool::new(false)),
++            interrupt: watchdog::Task::new(isolate.thread_safe_handle()),
+             pending_error: RefCell::new(None),
+             source_bytes: Cell::new(0),
+             source_units: Cell::new(0),
+@@ -274,20 +269,6 @@ impl V8Evaluator {
+             near_heap_limit,
+             (&*memory as *const MemoryGuard).cast_mut().cast(),
+         );
+-        let (stop, wait) = std::sync::mpsc::channel();
+-        let handle = isolate.thread_safe_handle();
+-        let active = state.active.clone();
+-        let pending = state.interrupt_pending.clone();
+-        let watchdog = std::thread::spawn(move || {
+-            while wait.recv_timeout(Duration::from_micros(100)).is_err() {
+-                if active.load(Ordering::Relaxed) != 0
+-                    && !pending.swap(true, Ordering::Relaxed)
+-                    && !handle.request_interrupt(interrupt, std::ptr::null_mut())
+-                {
+-                    break;
+-                }
+-            }
+-        });
+         // OwnedIsolate begins entered. Sessions may outlive or be dropped in
+         // any order, so release that constructor entry between operations.
+         unsafe {
+@@ -297,8 +278,6 @@ impl V8Evaluator {
+             context: Some(context),
+             isolate: RefCell::new(isolate),
+             state,
+-            stop: Some(stop),
+-            watchdog: Some(watchdog),
+             memory,
+         })
+     }
+@@ -320,12 +299,6 @@ impl V8Evaluator {
+ }
+ impl Drop for V8Evaluator {
+     fn drop(&mut self) {
+-        if let Some(stop) = self.stop.take() {
+-            let _ = stop.send(());
+-        }
+-        if let Some(watchdog) = self.watchdog.take() {
+-            let _ = watchdog.join();
+-        }
+         // Restore the entry OwnedIsolate's destructor consumes. This also
+         // permits dropping an old session while another one remains alive.
+         unsafe {
+@@ -389,7 +362,7 @@ impl Active<'_, '_, '_> {
+         f: impl for<'s, 'i> FnOnce(&mut PinScope<'s, 'i>) -> Result<T, EvalError>,
+     ) -> Result<T, EvalError> {
+         self.state.control.poll()?;
+-        self.state.active.fetch_add(1, Ordering::Relaxed);
++        let execution = self.state.interrupt.enter();
+         let result = {
+             let mut parent = self.scope.borrow_mut();
+             v8::scope!(let scope, &mut **parent);
+@@ -410,7 +383,7 @@ impl Active<'_, '_, '_> {
+                 result => result,
+             }
+         };
+-        self.state.active.fetch_sub(1, Ordering::Relaxed);
++        drop(execution);
+         if let Err(error) = self.state.control.poll()
+             && (result.is_ok() || !error.0.contains("invalidated"))
+         {
+@@ -952,6 +925,99 @@ impl CompilerEvaluator for V8Evaluator {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use std::time::Duration;
++
++    #[test]
++    fn shared_scheduler_interrupts_concurrent_sessions_and_keeps_failures_terminal() {
++        let ready = Arc::new(std::sync::Barrier::new(4));
++        let jobs: Vec<_> = (0..4)
++            .map(|_| {
++                let ready = ready.clone();
++                std::thread::spawn(move || {
++                    let evaluator = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
++                    ready.wait();
++                    evaluator
++                        .state
++                        .control
++                        .begin(&EvaluatorOptions {
++                            timeout: Duration::from_millis(100),
++                            ..Default::default()
++                        })
++                        .unwrap();
++                    let error = evaluator
++                        .evaluate_js("(() => { for (;;) {} })()")
++                        .unwrap_err();
++                    assert!(error.0.contains("deadline exceeded"), "{error}");
++                    assert!(
++                        evaluator
++                            .evaluate_js("1")
++                            .unwrap_err()
++                            .0
++                            .contains("deadline exceeded")
++                    );
++                })
++            })
++            .collect();
++        for job in jobs {
++            job.join().unwrap();
++        }
++        let evaluator = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
++        let result = evaluator.evaluate_js("42").unwrap();
++        assert_eq!(evaluator.number(result).unwrap(), 42.0);
++        evaluator.release(result).unwrap();
++    }
++
++    #[test]
++    fn shared_scheduler_does_not_consume_idle_session_fuel() {
++        let idle = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
++        idle.state
++            .control
++            .begin(&EvaluatorOptions {
++                poll_budget: 32,
++                ..Default::default()
++            })
++            .unwrap();
++        let active = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
++        active
++            .state
++            .control
++            .begin(&EvaluatorOptions {
++                timeout: Duration::from_millis(100),
++                ..Default::default()
++            })
++            .unwrap();
++        assert!(
++            active
++                .evaluate_js("(() => { for (;;) {} })()")
++                .unwrap_err()
++                .0
++                .contains("deadline exceeded")
++        );
++        for _ in 0..31 {
++            idle.state.control.poll().unwrap();
++        }
++        assert!(
++            idle.state
++                .control
++                .poll()
++                .unwrap_err()
++                .0
++                .contains("poll budget exhausted")
++        );
++    }
++
++    #[test]
++    fn execution_activity_is_released_when_a_host_operation_unwinds() {
++        let evaluator = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
++        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            evaluator.with_active::<()>(|active| active.enter(|_| panic!("host operation failed")))
++        }));
++        assert!(panic.is_err());
++        assert!(!evaluator.state.interrupt.running());
++        let result = evaluator.evaluate_js("42").unwrap();
++        assert_eq!(evaluator.number(result).unwrap(), 42.0);
++        evaluator.release(result).unwrap();
++    }
+ 
+     #[test]
+     fn direct_root_registration_preserves_values_and_dynamic_callbacks() {
+diff --git a/after/src/v8_watchdog.rs b/src/v8_watchdog.rs
+new file mode 100644
+index 0000000..53cff2a
+--- /dev/null
++++ b/src/v8_watchdog.rs
+@@ -0,0 +1,134 @@
++//! One interrupt scheduler per process. Idle compiler sessions do not poll or
++//! own operating-system threads. It holds only weak tasks and thread-safe V8
++//! handles; JavaScript and compiler data stay on each isolate's owning thread.
++use std::sync::{
++    Arc, Mutex, OnceLock, Weak,
++    atomic::{AtomicBool, AtomicUsize, Ordering},
++    mpsc::{self, Receiver, SyncSender},
++};
++use std::time::Duration;
++
++pub(super) struct Task {
++    handle: v8::IsolateHandle,
++    active: AtomicUsize,
++    pending: AtomicBool,
++}
++
++impl Task {
++    pub(super) fn new(handle: v8::IsolateHandle) -> Arc<Self> {
++        let task = Arc::new(Self {
++            handle,
++            active: AtomicUsize::new(0),
++            pending: AtomicBool::new(false),
++        });
++        scheduler()
++            .tasks
++            .lock()
++            .unwrap()
++            .push(Arc::downgrade(&task));
++        task
++    }
++
++    pub(super) fn enter(&self) -> Execution<'_> {
++        if self.active.fetch_add(1, Ordering::SeqCst) == 0 {
++            scheduler().wake();
++        }
++        Execution(self)
++    }
++
++    pub(super) fn completed(&self) {
++        self.pending.store(false, Ordering::Release);
++    }
++
++    pub(super) fn running(&self) -> bool {
++        self.active.load(Ordering::SeqCst) != 0
++    }
++}
++
++pub(super) struct Execution<'a>(&'a Task);
++
++impl Drop for Execution<'_> {
++    fn drop(&mut self) {
++        self.0.active.fetch_sub(1, Ordering::SeqCst);
++    }
++}
++
++struct Scheduler {
++    tasks: Mutex<Vec<Weak<Task>>>,
++    // SeqCst pairs entry with the scheduler's second check before sleeping.
++    awake: AtomicBool,
++    notify: SyncSender<()>,
++}
++
++fn scheduler() -> &'static Arc<Scheduler> {
++    static SCHEDULER: OnceLock<Arc<Scheduler>> = OnceLock::new();
++    SCHEDULER.get_or_init(|| {
++        let (notify, receiver) = mpsc::sync_channel(1);
++        let scheduler = Arc::new(Scheduler {
++            tasks: Mutex::new(Vec::new()),
++            awake: AtomicBool::new(true),
++            notify,
++        });
++        let worker = scheduler.clone();
++        std::thread::Builder::new()
++            .name("light-cljs-v8-interrupts".into())
++            .spawn(move || worker.run(receiver))
++            .expect("start V8 interrupt scheduler");
++        scheduler
++    })
++}
++
++impl Scheduler {
++    fn wake(&self) {
++        if !self.awake.swap(true, Ordering::SeqCst) {
++            // A queued wake already suffices, including when it arrived just
++            // before recv. The scheduler owns the receiver for process life.
++            let _ = self.notify.try_send(());
++        }
++    }
++
++    fn scan(&self, interrupt: bool) -> bool {
++        let mut tasks = Vec::new();
++        self.tasks.lock().unwrap().retain(|weak| {
++            if let Some(task) = weak.upgrade() {
++                tasks.push(task);
++                true
++            } else {
++                false
++            }
++        });
++        let mut active = false;
++        // Do not hold the registry lock while entering V8's handle locks.
++        for task in tasks {
++            if task.running() {
++                active = true;
++                if interrupt
++                    && !task.pending.swap(true, Ordering::AcqRel)
++                    && !task
++                        .handle
++                        .request_interrupt(super::interrupt, std::ptr::null_mut())
++                {
++                    task.pending.store(false, Ordering::Release);
++                }
++            }
++        }
++        active
++    }
++
++    fn run(&self, receiver: Receiver<()>) {
++        loop {
++            if self.scan(true) {
++                let _ = receiver.recv_timeout(Duration::from_micros(100));
++            } else {
++                self.awake.store(false, Ordering::SeqCst);
++                // Revisit the registry as well as the activity flags: a new
++                // session may have registered since the first scan. Its entry
++                // either appears here or queues a wake after observing asleep.
++                if !self.scan(false) && receiver.recv().is_err() {
++                    return;
++                }
++                self.awake.store(true, Ordering::SeqCst);
++            }
++        }
++    }
++}

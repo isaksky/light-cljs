@@ -1,0 +1,116 @@
+Main-thread exclusive sample counts; total: 7784
+4130 JS_CallInternal  (in light-cljs)
+205 <deduplicated_symbol>  (in light-cljs)
+172 js_strict_eq2  (in light-cljs)
+169 js_call_c_function  (in light-cljs)
+162 js_free_rt  (in light-cljs)
+139 JS_GetPropertyInternal  (in light-cljs)
+131 hash_string  (in light-cljs)
+111 js_map_has  (in light-cljs)
+94 js_map_get  (in light-cljs)
+90 __JS_AtomToValue  (in light-cljs)
+78 _platform_memmove  (in libsystem_platform.dylib)
+76 JS_NewObjectFromShape  (in light-cljs)
+74 js_strict_eq_slow  (in light-cljs)
+72 js_arena_malloc  (in light-cljs)
+67 _platform_memcmp  (in libsystem_platform.dylib)
+64 map_hash_key  (in light-cljs)
+62 JS_DefineProperty  (in light-cljs)
+58 js_realloc_rt  (in light-cljs)
+52 __JS_NewAtom  (in light-cljs)
+44 _RNvXs3_NtNtCs33v9mEcCS3W_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCscLk9QBgeCdJ_10light_cljs  (in light-cljs)
+43 js_eq_slow  (in light-cljs)
+39 js_free_value_rt  (in light-cljs)
+37 js_string_memcmp  (in light-cljs)
+36 _RNvNtCscLk9QBgeCdJ_10light_cljs18compiler_bootstrap20elidable_environment  (in light-cljs)
+35 ___chkstk_darwin  (in libsystem_pthread.dylib)
+33 JS_ValueToAtomInternal  (in light-cljs)
+33 js_parse_string  (in light-cljs)
+33 js_map_set  (in light-cljs)
+32 mi_free  (in light-cljs)
+30 string_buffer_putc  (in light-cljs)
+29 unicode_general_category1  (in light-cljs)
+27 map_add_record  (in light-cljs)
+27 free_gc_object  (in light-cljs)
+27 JS_RunGC  (in light-cljs)
+26 add_property  (in light-cljs)
+24 mach_absolute_time  (in libsystem_kernel.dylib)
+23 _RNvXsf_NtCscLk9QBgeCdJ_10light_cljs5arenaINtB5_4IterNtNtCs87L1bv5kwMu_5alloc6string6StringENtNtNtNtCs33v9mEcCS3W_4core4iter6traits8iterator8Iterator4nextB7_  (in light-cljs)
+22 mi_malloc_aligned  (in light-cljs)
+21 JS_ToBoolFree  (in light-cljs)
+20 JS_GetPropertyValue  (in light-cljs)
+20 free_property  (in light-cljs)
+20 add_shape_property  (in light-cljs)
+20 js_get_fast_array_element  (in light-cljs)
+20 js_parse_expr_binary  (in light-cljs)
+19 mark_children  (in light-cljs)
+18 JS_CreateProperty  (in light-cljs)
+18 js_array_finalizer  (in light-cljs)
+17 js_free_shape0  (in light-cljs)
+17 next_token  (in light-cljs)
+17 JS_FreeContext  (in light-cljs)
+17 JS_GetOwnPropertyNamesInternal  (in light-cljs)
+16 JS_ToStringInternal  (in light-cljs)
+14 OUTLINED_FUNCTION_47  (in light-cljs)
+14 _RNvNtCscLk9QBgeCdJ_10light_cljs7emitter6quoted  (in light-cljs)
+14 _RNvMs2_NtCscLk9QBgeCdJ_10light_cljs11form_bridgeNtB5_11BridgeState11decode_node  (in light-cljs)
+13 js_clone_shape  (in light-cljs)
+13 DYLD-STUB$$memcpy  (in light-cljs)
+13 js_array_iterator_next  (in light-cljs)
+13 JS_SetPropertyInternal2  (in light-cljs)
+13 JS_GetOwnPropertyInternal2  (in light-cljs)
+12 js_alloc_string  (in light-cljs)
+11 cr_op  (in light-cljs)
+11 JS_GetPropertyInt64  (in light-cljs)
+11 JS_ToObject  (in light-cljs)
+10 js_new_shape2  (in light-cljs)
+9 js_parse_skip_parens_token  (in light-cljs)
+9 js_map_mark  (in light-cljs)
+9 is_num_string  (in light-cljs)
+9 gc_decref_child  (in light-cljs)
+9 _RNvMs6_NtCs87L1bv5kwMu_5alloc2rcINtB5_2RcNtNtCscLk9QBgeCdJ_10light_cljs13compiler_data9DatumNodeE9drop_slowBH_  (in light-cljs)
+9 string_buffer_end  (in light-cljs)
+9 js_closure2  (in light-cljs)
+9 JS_ConcatString2  (in light-cljs)
+8 resize_properties  (in light-cljs)
+8 js_map_delete  (in light-cljs)
+8 _RNvNvMsb_NtCscLk9QBgeCdJ_10light_cljs13compiler_dataNtB7_4Form21from_bridge_expansion3add  (in light-cljs)
+8 JS_CallConstructorInternal  (in light-cljs)
+8 js_update_property_flags  (in light-cljs)
+7 _platform_memset  (in libsystem_platform.dylib)
+7 DYLD-STUB$$memcmp  (in light-cljs)
+
+Deduplicated functions by entry address and immediate caller
+49 ["0x100d26080" "_RINvMsk_NtCs87L1bv5kwMu_5alloc3vecINtB6_3VecTNtNtB8_6string6StringBH_BH_EE16extend_desugaredINtNtNtNtCs33v9mEcCS3W_4core4iter8adapters3map3MapINtNtB1x_6filter6FilterINtNtCscLk9QBgeCdJ_10light_cljs5arena4IterNtNtB2I_8analyzer13GlobalBindingENCNvMs5_B3l_NtB3l_8Analyzer15reader_bindingss0_0ENCB3S_s1_0EEB2I_  (in light-cljs)"]
+45 ["0x100d26080" "_RNvXNtNtCs87L1bv5kwMu_5alloc3vec21spec_from_iter_nestedINtB4_3VecNtNtB6_6string6StringEINtB2_18SpecFromIterNestedB11_INtNtNtNtCs33v9mEcCS3W_4core4iter8adapters3map3MapINtNtB1W_6filter6FilterINtNtCscLk9QBgeCdJ_10light_cljs5arena4IterNtNtB37_8analyzer13GlobalBindingENCNvMs_NtB37_10macro_hostNtB4m_9MacroHost18reader_environments0_0ENCB4h_s1_0EE9from_iterB37_  (in light-cljs)"]
+26 ["0x100d26080" "_RNvMs5_NtCscLk9QBgeCdJ_10light_cljs8analyzerNtB5_8Analyzer19definition_snapshot  (in light-cljs)"]
+17 ["0x100d26080" "_RNvNtCscLk9QBgeCdJ_10light_cljs7emitter12emit_js_mode  (in light-cljs)"]
+8 ["0x100d26080" "_RNvMs5_NtCscLk9QBgeCdJ_10light_cljs8analyzerNtB5_8Analyzer17array_environment  (in light-cljs)"]
+6 ["0x100d252c0" "_RNvMs5_NtCscLk9QBgeCdJ_10light_cljs8analyzerNtB5_8Analyzer14metadata_value  (in light-cljs)"]
+6 ["0x100d1c884" "_RNvMs5_NtCscLk9QBgeCdJ_10light_cljs8analyzerNtB5_8Analyzer14metadata_value  (in light-cljs)"]
+6 ["0x100d26080" "_RNvMs5_NtCscLk9QBgeCdJ_10light_cljs8analyzerNtB5_8Analyzer23record_constructor_args  (in light-cljs)"]
+5 ["0x100d1c884" "_RNvNtCscLk9QBgeCdJ_10light_cljs16program_fragment6append  (in light-cljs)"]
+4 ["0x100d252c0" "_RNvNtCscLk9QBgeCdJ_10light_cljs11application6retain  (in light-cljs)"]
+3 ["0x100b87e10" "_RNvMs5_NtCscLk9QBgeCdJ_10light_cljs8analyzerNtB5_8Analyzer11import_form  (in light-cljs)"]
+3 ["0x100d252c0" "_RNvMs_NtCscLk9QBgeCdJ_10light_cljs7emitterNtB4_7Emitter10value_expr  (in light-cljs)"]
+3 ["0x100d1d148" "<deduplicated_symbol>  (in light-cljs)"]
+2 ["0x100cb4d84" "_RNvMs1_NtCs2WxTXoQY03F_9hashbrown3mapINtB5_7HashMapjNtNtCscLk9QBgeCdJ_10light_cljs13compiler_data4FormNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE6insertBS_  (in light-cljs)"]
+2 ["0x100c750a4" "_RNvMs2_NtCscLk9QBgeCdJ_10light_cljs11form_bridgeNtB5_11BridgeState11encode_node  (in light-cljs)"]
+2 ["0x100d252c0" "_RNvMs5_NtCscLk9QBgeCdJ_10light_cljs8analyzerNtB5_8Analyzer7resolve  (in light-cljs)"]
+2 ["0x100c77500" "_RNvMs0_NtCscLk9QBgeCdJ_10light_cljs18compiler_bootstrapNtNtB7_10macro_host9MacroHost16source_macro_key  (in light-cljs)"]
+1 ["0x100d1c884" "_RNvMs5_NtCscLk9QBgeCdJ_10light_cljs8analyzerNtB5_8Analyzer9js_global  (in light-cljs)"]
+1 ["0x100c784d0" "_RNvMs_NtCscLk9QBgeCdJ_10light_cljs10macro_hostNtB4_9MacroHost16has_source_value  (in light-cljs)"]
+1 ["0x100db6f90" "_RNvMs1_NtCscLk9QBgeCdJ_10light_cljs7layeredINtB5_7LayeredNtNtCs87L1bv5kwMu_5alloc6string6StringNtNtB7_10macro_host17SourceBindingKindE6insertB7_  (in light-cljs)"]
+1 ["0x100cb4d84" "_RNvNvMsb_NtCscLk9QBgeCdJ_10light_cljs13compiler_dataNtB7_4Form21from_bridge_expansion3add  (in light-cljs)"]
+1 ["0x100d26080" "_RNvXNtNtCs87L1bv5kwMu_5alloc3vec11spec_extendINtB4_3VecNtNtCscLk9QBgeCdJ_10light_cljs8analyzer4ExprEINtB2_10SpecExtendBR_INtNtNtNtCs33v9mEcCS3W_4core4iter8adapters3map3MapINtNtB20_6cloned6ClonedINtNtBV_5arena4IterBR_EENCNvNtBV_16program_fragment6appendsg_0EE11spec_extendBV_  (in light-cljs)"]
+1 ["0x100cb4d84" "_RINvMs6_NtCs2WxTXoQY03F_9hashbrown3rawINtB6_8RawTableTNtNtCscLk9QBgeCdJ_10light_cljs8analyzer6ExprIduEE14reserve_rehashNCINvNtB8_3map11make_hasherBQ_uNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE0EBU_  (in light-cljs)"]
+1 ["0x100d26080" "_RNvNtCscLk9QBgeCdJ_10light_cljs8analyzer13analyze_input  (in light-cljs)"]
+1 ["0x100d56978" "_RNvNtCscLk9QBgeCdJ_10light_cljs7emitter12emit_js_mode  (in light-cljs)"]
+1 ["0x100db6f90" "_RNvMs1_NtCscLk9QBgeCdJ_10light_cljs7layeredINtB5_7LayeredNtNtCs87L1bv5kwMu_5alloc6string6StringbE6insertB7_  (in light-cljs)"]
+1 ["0x100c77500" "_RNvMs_NtCscLk9QBgeCdJ_10light_cljs10macro_hostNtB4_9MacroHost16definition_macro  (in light-cljs)"]
+1 ["0x100cb4d84" "_RNvMs2_NtCscLk9QBgeCdJ_10light_cljs11form_bridgeNtB5_11BridgeState11encode_node  (in light-cljs)"]
+1 ["0x100d26080" "_RNvMs5_NtCscLk9QBgeCdJ_10light_cljs8analyzerNtB5_8Analyzer18compiler_read_form  (in light-cljs)"]
+1 ["0x100cb4d84" "_RINvMs1_NtCs2WxTXoQY03F_9hashbrown3mapINtB6_7HashMapjNtNtCscLk9QBgeCdJ_10light_cljs11form_bridge16EnvironmentEntryNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE12contains_keyjEBT_  (in light-cljs)"]
+1 ["0x100db8d34" "_RNvMs6_NtCs87L1bv5kwMu_5alloc2rcINtB5_2RcINtNtNtNtCs1IrzuoRvWaH_3std11collections4hash3map7HashMapNtNtB7_6string6StringINtNtCs33v9mEcCS3W_4core6option6OptionbEEE9drop_slowCscLk9QBgeCdJ_10light_cljs  (in light-cljs)"]
+1 ["0x100d26080" "_RNvMs5_NtCscLk9QBgeCdJ_10light_cljs8analyzerNtB5_8Analyzer21fn_method_with_fields  (in light-cljs)"]
+1 ["0x100d26080" "_RNvMs5_NtCscLk9QBgeCdJ_10light_cljs8analyzerNtB5_8Analyzer10form_inner  (in light-cljs)"]

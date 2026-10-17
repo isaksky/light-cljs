@@ -1,0 +1,6 @@
+34ee85ccafc58125dbf2f6bb6bbbc93c171c5cda4b435902ce49a6cd1c4a20b6  /private/tmp/light-cljs-phase42/heap/light-cljs
+a209b9108cff36ac4634e07f52ae823ccbc31d4027a3b2baaeb1ea30c2b6b0c7  /private/tmp/light-cljs-phase42/heap/before-heap.txt
+569276201f69bb17bdbe6d229db675a1615f3a61182c3a7a6f7e5714677036b7  /private/tmp/light-cljs-phase42/heap/after-heap.txt
+8663cd2757181494cfdd3ac9bd58f0e500d34289e412a727166f3ebad4c11ac7  /private/tmp/light-cljs-phase41/light-cljs
+1b779bf2a2717f1e55e111c261233325ff7fa3f0f912b31fe659b72d27a1285d  /private/tmp/light-cljs-phase41/before-heap.txt
+9780f0588babb60de5ae4e7c0ef66448c3c6bc85e61cc1c8609a86d22683a6d5  /private/tmp/light-cljs-phase41/after-heap.txt

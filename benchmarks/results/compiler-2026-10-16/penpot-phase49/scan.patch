@@ -1,0 +1,34 @@
+diff --git a/src/emitter.rs b/src/emitter.rs
+index e6d4cf3..366f270 100644
+--- a/src/emitter.rs
++++ b/src/emitter.rs
+@@ -152,14 +152,22 @@ fn unit_parameter_occurs(program: &Program, candidate: &str) -> bool {
+         fallback[i] = matched;
+     }
+     let mut matched = 0;
+-    for &unit in program.strings.iter().flatten() {
+-        while matched > 0 && unit != u16::from(needle[matched]) {
+-            matched = fallback[matched - 1];
++    for units in program.strings.iter() {
++        // Most strings cannot start this generated identifier. Slice::contains
++        // uses a vectorizable search; keep the scalar state machine when a
++        // match crosses a string boundary or a first character is present.
++        if matched == 0 && !units.contains(&u16::from(needle[0])) {
++            continue;
+         }
+-        if unit == u16::from(needle[matched]) {
+-            matched += 1;
+-            if matched == needle.len() {
+-                return true;
++        for &unit in units {
++            while matched > 0 && unit != u16::from(needle[matched]) {
++                matched = fallback[matched - 1];
++            }
++            if unit == u16::from(needle[matched]) {
++                matched += 1;
++                if matched == needle.len() {
++                    return true;
++                }
+             }
+         }
+     }

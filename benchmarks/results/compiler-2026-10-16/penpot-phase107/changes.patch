@@ -1,0 +1,343 @@
+diff --git a/src/v8_evaluator.rs b/src/v8_evaluator.rs
+index 4d3e068..23c6a6e 100644
+--- a/src/v8_evaluator.rs
++++ b/src/v8_evaluator.rs
+@@ -198,20 +198,30 @@ fn invoke<'s>(
+ }
+ impl V8Evaluator {
+     pub(crate) fn new(options: EvaluatorOptions) -> Result<Self, EvalError> {
++        Self::new_with_startup(options, || {
++            include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", RUNTIME_SOURCE)
++        })
++    }
++
++    fn new_with_startup(
++        options: EvaluatorOptions,
++        source: impl FnOnce() -> String,
++    ) -> Result<Self, EvalError> {
+         if options.memory_limit < 1024 * 1024 {
+             return Err(bridge::error(
+                 "JavaScript memory limit must be at least 1048576 bytes for engine startup",
+             ));
+         }
+-        // Until startup has a terminating near-limit callback, reject heaps
+-        // below the probe's measured startup requirement instead of risking a
+-        // fatal V8 OOM. This intentionally remains prototype-only behavior.
++        // Isolate allocation precedes the near-limit callback. Retain the
++        // conservative prototype minimum until that native startup allocation
++        // has a separate failure boundary.
+         if options.memory_limit < 16 * 1024 * 1024 {
+             return Err(bridge::error(
+                 "JavaScript session memory limit exhausted during V8 startup",
+             ));
+         }
+         let control = ExecutionControl::new(&options)?;
++        control.poll()?;
+         let platform = platform();
+         let heap = v8::cppgc::Heap::create(
+             platform,
+@@ -243,32 +253,12 @@ impl V8Evaluator {
+             bridge: RefCell::new(BridgeState::default()),
+             services: RefCell::new(None),
+             callbacks: RefCell::new(Vec::new()),
+-            interrupt: watchdog::Task::new(isolate.thread_safe_handle()),
++            interrupt: watchdog::Task::new(isolate.thread_safe_handle())?,
+             pending_error: RefCell::new(None),
+             source_bytes: Cell::new(0),
+             source_units: Cell::new(0),
+         });
+         isolate.set_slot(state.clone());
+-        let context;
+-        {
+-            v8::scope!(let scope, &mut isolate);
+-            let local = v8::Context::new(scope, Default::default());
+-            context = v8::Global::new(scope, local);
+-            let scope = &mut v8::ContextScope::new(scope, local);
+-            v8::tc_scope!(let scope, scope);
+-            let source =
+-                include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", RUNTIME_SOURCE);
+-            if let Err(error) = script(scope, &source) {
+-                return Err(scope
+-                    .exception()
+-                    .map(|e| EvalError(e.to_rust_string_lossy(scope)))
+-                    .unwrap_or(error));
+-            }
+-            let services: Local<v8::Object> = script(scope, "__lightEvaluator")?
+-                .try_into()
+-                .map_err(|_| bridge::error("Invalid evaluator services"))?;
+-            *state.services.borrow_mut() = Some(v8::Global::new(scope, services));
+-        }
+         let memory = Box::new(MemoryGuard {
+             handle: isolate.thread_safe_handle(),
+             control: control.clone(),
+@@ -282,13 +272,51 @@ impl V8Evaluator {
+         unsafe {
+             isolate.exit();
+         }
+-        Ok(Self {
+-            context: Some(context),
++        let mut evaluator = Self {
++            context: None,
+             isolate: RefCell::new(isolate),
+             state,
+             stack,
+             memory,
+-        })
++        };
++        evaluator.initialize(source)?;
++        Ok(evaluator)
++    }
++
++    fn initialize(&mut self, source: impl FnOnce() -> String) -> Result<(), EvalError> {
++        self.state.control.poll()?;
++        let entered = Entered::new(self.isolate.get_mut());
++        self.stack.refresh(entered.0)?;
++        let result = (|| {
++            v8::scope!(let scope, &mut **entered.0);
++            let local = v8::Context::new(scope, Default::default());
++            // Publish the root immediately so normal Drop handles partial
++            // initialization, including a terminated script or failed service.
++            self.context = Some(v8::Global::new(scope, local));
++            // Context::new's native prelude is not fallible in rusty_v8.
++            // Check its elapsed time before enabling interrupts for JS startup.
++            self.state.control.poll()?;
++            let _execution = self.state.interrupt.enter();
++            let scope = &mut v8::ContextScope::new(scope, local);
++            v8::tc_scope!(let scope, scope);
++            let result = script(scope, &source()).and_then(|_| {
++                let services: Local<v8::Object> = script(scope, "__lightEvaluator")?
++                    .try_into()
++                    .map_err(|_| bridge::error("Invalid evaluator services"))?;
++                *self.state.services.borrow_mut() = Some(v8::Global::new(scope, services));
++                Ok(())
++            });
++            result.map_err(|error| {
++                scope
++                    .exception()
++                    .map(|e| EvalError(e.to_rust_string_lossy(scope)))
++                    .unwrap_or(error)
++            })
++        })();
++        // Termination has no catchable JS exception. Preserve the owned
++        // timeout/fuel/memory diagnostic instead of the generic engine error.
++        self.state.control.poll()?;
++        result
+     }
+     fn with_active<T>(
+         &self,
+@@ -937,6 +965,92 @@ mod tests {
+     use super::*;
+     use std::time::Duration;
+ 
++    fn startup_error(options: EvaluatorOptions, source: &str) -> EvalError {
++        match V8Evaluator::new_with_startup(options, || source.into()) {
++            Ok(_) => panic!("startup must fail"),
++            Err(error) => error,
++        }
++    }
++
++    #[test]
++    fn startup_interrupts_catch_and_spin_and_leaves_other_sessions_usable() {
++        let other = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
++        let error = startup_error(
++            EvaluatorOptions {
++                timeout: Duration::from_millis(200),
++                ..Default::default()
++            },
++            "try { for (;;) {} } catch (_) { for (;;) {} }",
++        );
++        assert!(error.0.contains("deadline exceeded"), "{error}");
++        let result = other.evaluate_js("42").unwrap();
++        assert_eq!(other.number(result).unwrap(), 42.0);
++        other.release(result).unwrap();
++        let next = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
++        let result = next.evaluate_js("43").unwrap();
++        assert_eq!(next.number(result).unwrap(), 43.0);
++        next.release(result).unwrap();
++    }
++
++    #[test]
++    fn startup_heap_exhaustion_is_owned_even_when_javascript_catches() {
++        let error = startup_error(
++            EvaluatorOptions {
++                memory_limit: 32 * 1024 * 1024,
++                ..Default::default()
++            },
++            "try { const kept = []; for (;;) kept.push(new Array(10000).fill(1)); } catch (_) { for (;;) {} }",
++        );
++        assert!(error.0.contains("memory limit exhausted"), "{error}");
++        let next = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
++        let result = next.evaluate_js("42").unwrap();
++        assert_eq!(next.number(result).unwrap(), 42.0);
++        next.release(result).unwrap();
++    }
++
++    #[test]
++    fn startup_rejects_exhausted_control_before_generating_source() {
++        for (options, diagnostic) in [
++            (
++                EvaluatorOptions {
++                    timeout: Duration::ZERO,
++                    ..Default::default()
++                },
++                "deadline exceeded",
++            ),
++            (
++                EvaluatorOptions {
++                    poll_budget: 0,
++                    ..Default::default()
++                },
++                "poll budget exhausted",
++            ),
++        ] {
++            let result =
++                V8Evaluator::new_with_startup(options, || panic!("source must not be evaluated"));
++            let Err(error) = result else {
++                panic!("exhausted startup must fail")
++            };
++            assert!(error.0.contains(diagnostic), "{error}");
++        }
++    }
++
++    #[test]
++    fn startup_exceptions_and_invalid_services_clean_up_partial_sessions() {
++        let other = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
++        for (source, diagnostic) in [
++            ("throw new Error('startup sentinel')", "startup sentinel"),
++            ("const __lightEvaluator = 1", "Invalid evaluator services"),
++            ("const __lightEvaluator =", "SyntaxError"),
++        ] {
++            let error = startup_error(EvaluatorOptions::default(), source);
++            assert!(error.0.contains(diagnostic), "{error}");
++            let result = other.evaluate_js("42").unwrap();
++            assert_eq!(other.number(result).unwrap(), 42.0);
++            other.release(result).unwrap();
++        }
++    }
++
+     fn recursion_depth(stack_limit: usize) -> f64 {
+         let evaluator = V8Evaluator::new(EvaluatorOptions {
+             stack_limit,
+diff --git a/src/v8_watchdog.rs b/src/v8_watchdog.rs
+index 53cff2a..73d749b 100644
+--- a/src/v8_watchdog.rs
++++ b/src/v8_watchdog.rs
+@@ -1,6 +1,7 @@
+ //! One interrupt scheduler per process. Idle compiler sessions do not poll or
+ //! own operating-system threads. It holds only weak tasks and thread-safe V8
+ //! handles; JavaScript and compiler data stay on each isolate's owning thread.
++use crate::evaluator::EvalError;
+ use std::sync::{
+     Arc, Mutex, OnceLock, Weak,
+     atomic::{AtomicBool, AtomicUsize, Ordering},
+@@ -12,26 +13,25 @@ pub(super) struct Task {
+     handle: v8::IsolateHandle,
+     active: AtomicUsize,
+     pending: AtomicBool,
++    scheduler: Arc<Scheduler>,
+ }
+ 
+ impl Task {
+-    pub(super) fn new(handle: v8::IsolateHandle) -> Arc<Self> {
++    pub(super) fn new(handle: v8::IsolateHandle) -> Result<Arc<Self>, EvalError> {
++        let scheduler = scheduler()?.clone();
+         let task = Arc::new(Self {
+             handle,
+             active: AtomicUsize::new(0),
+             pending: AtomicBool::new(false),
++            scheduler: scheduler.clone(),
+         });
+-        scheduler()
+-            .tasks
+-            .lock()
+-            .unwrap()
+-            .push(Arc::downgrade(&task));
+-        task
++        scheduler.tasks.lock().unwrap().push(Arc::downgrade(&task));
++        Ok(task)
+     }
+ 
+     pub(super) fn enter(&self) -> Execution<'_> {
+         if self.active.fetch_add(1, Ordering::SeqCst) == 0 {
+-            scheduler().wake();
++            self.scheduler.wake();
+         }
+         Execution(self)
+     }
+@@ -60,9 +60,31 @@ struct Scheduler {
+     notify: SyncSender<()>,
+ }
+ 
+-fn scheduler() -> &'static Arc<Scheduler> {
++fn scheduler() -> Result<&'static Arc<Scheduler>, EvalError> {
+     static SCHEDULER: OnceLock<Arc<Scheduler>> = OnceLock::new();
+-    SCHEDULER.get_or_init(|| {
++    static INITIALIZE: Mutex<()> = Mutex::new(());
++    if let Some(scheduler) = SCHEDULER.get() {
++        return Ok(scheduler);
++    }
++    let _initialize = INITIALIZE.lock().unwrap();
++    if let Some(scheduler) = SCHEDULER.get() {
++        return Ok(scheduler);
++    }
++    // A failed thread allocation belongs to this constructor. It neither
++    // panics nor permanently poisons later session creation.
++    let scheduler = Scheduler::start_with(|run| {
++        std::thread::Builder::new()
++            .name("light-cljs-v8-interrupts".into())
++            .spawn(run)
++            .map(|_| ())
++    })?;
++    Ok(SCHEDULER.get_or_init(|| scheduler))
++}
++
++impl Scheduler {
++    fn start_with(
++        spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
++    ) -> Result<Arc<Self>, EvalError> {
+         let (notify, receiver) = mpsc::sync_channel(1);
+         let scheduler = Arc::new(Scheduler {
+             tasks: Mutex::new(Vec::new()),
+@@ -70,15 +92,10 @@ fn scheduler() -> &'static Arc<Scheduler> {
+             notify,
+         });
+         let worker = scheduler.clone();
+-        std::thread::Builder::new()
+-            .name("light-cljs-v8-interrupts".into())
+-            .spawn(move || worker.run(receiver))
+-            .expect("start V8 interrupt scheduler");
+-        scheduler
+-    })
+-}
+-
+-impl Scheduler {
++        spawn(Box::new(move || worker.run(receiver)))
++            .map_err(|error| EvalError(format!("start V8 interrupt scheduler: {error}")))?;
++        Ok(scheduler)
++    }
+     fn wake(&self) {
+         if !self.awake.swap(true, Ordering::SeqCst) {
+             // A queued wake already suffices, including when it arrived just
+@@ -132,3 +149,22 @@ impl Scheduler {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn scheduler_thread_allocation_failure_is_owned() {
++        let result = Scheduler::start_with(|_| {
++            Err(std::io::Error::new(
++                std::io::ErrorKind::WouldBlock,
++                "thread quota",
++            ))
++        });
++        let Err(error) = result else {
++            panic!("thread creation must fail")
++        };
++        assert_eq!(error.0, "start V8 interrupt scheduler: thread quota");
++    }
++}

@@ -1,0 +1,27 @@
+    Checking light-cljs v0.1.0 (/private/tmp/light-cljs-phase58/project)
+error: couldn't read `benches/../benchmarks/fixtures/compiler/collections/value.cljs`: No such file or directory (os error 2)
+  --> benches/compiler.rs:40:26
+   |
+40 | const COLLECTION: &str = include_str!("../benchmarks/fixtures/compiler/collections/value.cljs");
+   |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `benches/../benchmarks/fixtures/compiler/collections/bench/data.cljs`: No such file or directory (os error 2)
+  --> benches/compiler.rs:44:20
+   |
+44 | const DATA: &str = include_str!("../benchmarks/fixtures/compiler/collections/bench/data.cljs");
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `benches/../benchmarks/fixtures/compiler/collections/bench/main.cljs`: No such file or directory (os error 2)
+  --> benches/compiler.rs:45:20
+   |
+45 | const MAIN: &str = include_str!("../benchmarks/fixtures/compiler/collections/bench/main.cljs");
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: couldn't read `benches/../benchmarks/fixtures/compiler/collections/bench/single.cljs`: No such file or directory (os error 2)
+  --> benches/compiler.rs:46:22
+   |
+46 | const SINGLE: &str = include_str!("../benchmarks/fixtures/compiler/collections/bench/single.cljs");
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: could not compile `light-cljs` (bench "compiler") due to 4 previous errors
+warning: build failed, waiting for other jobs to finish...

@@ -1,0 +1,1 @@
+{:binary "/private/tmp/light-cljs-phase45/light-cljs-counts", :entry "app.main", :options ["--optimize" "none"], :environment {"LIGHT_V8_MACROS" "1", "LIGHT_V8_HEAP_BYTES" "268435456", "LIGHT_V8_STATS" nil, "LIGHT_V8_FLAGS" nil, "LIGHT_V8_SNAPSHOT" nil}}

@@ -1,0 +1,1 @@
+{:binary "/private/tmp/light-cljs-phase111/light-cljs-v8-adaptive-budget", :entry "app.main", :options ["--optimize" "advanced" "--pseudo-names" "--elide-asserts"], :environment {"LIGHT_V8_MACROS" "1", "LIGHT_V8_HEAP_BYTES" nil, "LIGHT_V8_STATS" nil, "LIGHT_V8_FLAGS" nil, "LIGHT_V8_SNAPSHOT" nil}}

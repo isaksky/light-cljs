@@ -2,6 +2,7 @@
 ;; Sequential cold-process builds of the existing Penpot port on macOS.
 ;; Build the release binary and finish tests before running this script.
 ;; Usage: bb benchmarks/penpot.bb OUTPUT-DIR [render main-none main-advanced shadow-release shadow-compile]
+;; LIGHT_CLJS_BINARY optionally selects an immutable candidate binary.
 (require '[babashka.fs :as fs]
          '[babashka.process :as process]
          '[clojure.java.io :as io]
@@ -13,7 +14,8 @@
 (fs/create-dirs output)
 (def port (fs/path repo "research/penpot-light"))
 (def frontend (fs/path repo "research/penpot/frontend"))
-(def binary (str (fs/path repo "target/release/light-cljs")))
+(def binary (or (System/getenv "LIGHT_CLJS_BINARY")
+                (str (fs/path repo "target/release/light-cljs"))))
 (def common [binary "--compile" "--esm"
              "--macro-expansions" "100000000" "--macro-nodes" "4000000000"
              "--macro-timeout-ms" "3600000" "--macro-memory-limit" "4000000000"
@@ -51,6 +53,8 @@
           [_ real user system] (re-find #"([0-9.]+)\s+real\s+([0-9.]+)\s+user\s+([0-9.]+)\s+sys" timing)
           rss (second (re-find #"(\d+)\s+maximum resident set size" timing))
           record {:job job :exit (:exit result) :command (vec command)
+                  :environment (into {} (for [name ["LIGHT_V8_MACROS" "LIGHT_V8_HEAP_BYTES" "LIGHT_V8_FLAGS" "LIGHT_V8_STATS" "LIGHT_V8_SNAPSHOT"]]
+                                          [name (System/getenv name)]))
                   :wall-seconds (some-> real parse-double)
                   :user-seconds (some-> user parse-double)
                   :system-seconds (some-> system parse-double)

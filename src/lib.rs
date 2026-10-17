@@ -37,9 +37,14 @@ pub mod inference;
 pub mod inlining;
 mod js_syntax;
 mod layered;
+mod name_index;
 mod program_fragment;
 mod rta;
 pub mod shared;
+#[cfg(light_v8)]
+mod v8_bridge;
+#[cfg(light_v8)]
+mod v8_evaluator;
 pub use eval_session::{
     EvalDiagnostic, EvalOptions, EvalResult, EvalSession, HostArity, HostCall, HostFunction,
     UnhandledRejections, WarningOutput,
@@ -389,3 +394,4 @@ impl Iterator for Tokenizer<'_> {
 impl FusedIterator for Tokenizer<'_> {}
 
 mod compiler_bootstrap;
+mod compiler_evaluator;

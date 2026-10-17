@@ -1,0 +1,12 @@
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling foldhash v0.2.0
+   Compiling equivalent v1.0.2
+   Compiling allocator-api2 v0.2.21
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase21/project)
+   Compiling cc v1.7.0
+   Compiling hashbrown v0.17.1
+   Compiling rquickjs-sys v0.14.0 (/private/tmp/light-cljs-phase21/project/vendor/rquickjs-sys)
+   Compiling rquickjs-core v0.14.0
+   Compiling rquickjs v0.14.0
+    Finished `release` profile [optimized] target(s) in 20.63s

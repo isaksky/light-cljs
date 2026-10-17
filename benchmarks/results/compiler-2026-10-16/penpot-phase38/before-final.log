@@ -1,0 +1,17 @@
+{"recordedMilliseconds":11101,"trials":[{"milliseconds":9376,"equivalent":true},{"milliseconds":9402,"equivalent":true}]}
+       19.01 real        18.95 user         0.05 sys
+           182616064  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               11756  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                  19  involuntary context switches
+           176440448  peak memory footprint

@@ -1,0 +1,180 @@
+PROGRAM exprs=476709 expr-size=96 globals=6695 locals=37987 strings=295080 units=6541 namespaces=268
+ARENA_STORAGE exprs entries=944321 table_bytes=109754352 chunks=43261
+ARENA_STORAGE globals entries=7266 table_bytes=3295392 chunks=14702
+ARENA_STORAGE js_globals entries=1085 table_bytes=59424 chunks=134
+ARENA_STORAGE locals entries=75674 table_bytes=4632384 chunks=1830
+ARENA_STORAGE named_literals entries=410648 table_bytes=14689488 chunks=23286
+ARENA_STORAGE reader_context_bases entries=417 table_bytes=26248 chunks=4
+ARENA_STORAGE reader_context_layers entries=37964 table_bytes=3985202 chunks=1089
+ARENA_STORAGE reader_context_values entries=1099 table_bytes=825173 chunks=1099
+ARENA_STORAGE recur_targets entries=21793 table_bytes=2089544 chunks=908
+ARENA_STORAGE shared/field_bindings entries=96855 table_bytes=3214832 chunks=68
+ARENA_STORAGE shared/lazy_namespaces entries=0 table_bytes=40 chunks=1
+ARENA_STORAGE shared/lazy_targets entries=0 table_bytes=40 chunks=1
+ARENA_STORAGE shared/macro_functions entries=0 table_bytes=64 chunks=1
+ARENA_STORAGE shared/namespace_entries entries=35378 table_bytes=2398754 chunks=263
+ARENA_STORAGE shared/namespace_lazy_only entries=268 table_bytes=348 chunks=2
+ARENA_STORAGE shared/namespace_requires entries=268 table_bytes=22896 chunks=2
+ARENA_STORAGE shared/namespaces entries=35372 table_bytes=2406507 chunks=262
+ARENA_STORAGE shared/protocols entries=3265 table_bytes=1330462 chunks=93
+ARENA_STORAGE shared/record_constructors entries=871 table_bytes=17776 chunks=116
+ARENA_STORAGE shared/type_methods entries=18840 table_bytes=243232 chunks=81
+ARENA_STORAGE strings entries=532863 table_bytes=16828368 chunks=23891
+PROFILE analysis-other seconds=4.267085 calls=1
+PROFILE argument-import seconds=1.746334 calls=31125
+PROFILE build-environment seconds=0.116329 calls=10372
+PROFILE build-reader-environment seconds=0.082609 calls=10372
+PROFILE environment-decode-js seconds=3.528428 calls=10372
+PROFILE environment-encode seconds=0.294021 calls=10372
+PROFILE environment-import seconds=0.055839 calls=10372
+PROFILE environment-snapshot-rust seconds=0.343856 calls=10372
+PROFILE form-export seconds=1.415103 calls=10372
+PROFILE form-import seconds=2.060312 calls=10372
+PROFILE macro-call/app.common.buffer/read-bool seconds=0.000458 calls=1
+PROFILE macro-call/app.common.buffer/read-byte seconds=0.000772 calls=2
+PROFILE macro-call/app.common.buffer/read-float seconds=0.028653 calls=56
+PROFILE macro-call/app.common.buffer/read-int seconds=0.001605 calls=4
+PROFILE macro-call/app.common.buffer/read-short seconds=0.003793 calls=7
+PROFILE macro-call/app.common.buffer/read-unsigned-byte seconds=0.001145 calls=3
+PROFILE macro-call/app.common.buffer/read-uuid seconds=0.003896 calls=3
+PROFILE macro-call/app.common.buffer/write-bool seconds=0.001266 calls=3
+PROFILE macro-call/app.common.buffer/write-byte seconds=0.003162 calls=8
+PROFILE macro-call/app.common.buffer/write-f32 seconds=0.022178 calls=43
+PROFILE macro-call/app.common.buffer/write-float seconds=0.037752 calls=75
+PROFILE macro-call/app.common.buffer/write-i32 seconds=0.001135 calls=3
+PROFILE macro-call/app.common.buffer/write-int seconds=0.002632 calls=7
+PROFILE macro-call/app.common.buffer/write-short seconds=0.003094 calls=6
+PROFILE macro-call/app.common.buffer/write-u32 seconds=0.003862 calls=7
+PROFILE macro-call/app.common.buffer/write-u8 seconds=0.014312 calls=27
+PROFILE macro-call/app.common.buffer/write-uuid seconds=0.006364 calls=5
+PROFILE macro-call/app.common.data.macros/assert! seconds=0.040656 calls=50
+PROFILE macro-call/app.common.data.macros/export seconds=0.025260 calls=52
+PROFILE macro-call/app.common.data.macros/fmt seconds=0.009200 calls=16
+PROFILE macro-call/app.common.data.macros/get-in seconds=0.039138 calls=77
+PROFILE macro-call/app.common.data.macros/get-prop seconds=0.505071 calls=617
+PROFILE macro-call/app.common.data.macros/number seconds=0.001478 calls=4
+PROFILE macro-call/app.common.data.macros/str seconds=0.080239 calls=143
+PROFILE macro-call/app.common.exceptions/error seconds=0.017058 calls=23
+PROFILE macro-call/app.common.exceptions/ignoring seconds=0.001891 calls=4
+PROFILE macro-call/app.common.exceptions/raise seconds=0.012305 calls=21
+PROFILE macro-call/app.common.exceptions/try! seconds=0.000929 calls=1
+PROFILE macro-call/app.common.logging/dbg seconds=0.004124 calls=5
+PROFILE macro-call/app.common.logging/debug seconds=0.008417 calls=10
+PROFILE macro-call/app.common.logging/err seconds=0.001547 calls=1
+PROFILE macro-call/app.common.logging/error seconds=0.011251 calls=14
+PROFILE macro-call/app.common.logging/inf seconds=0.001265 calls=2
+PROFILE macro-call/app.common.logging/info seconds=0.000601 calls=1
+PROFILE macro-call/app.common.logging/log! seconds=0.065381 calls=51
+PROFILE macro-call/app.common.logging/set-level! seconds=0.006688 calls=9
+PROFILE macro-call/app.common.logging/trc seconds=0.003691 calls=6
+PROFILE macro-call/app.common.logging/warn seconds=0.003210 calls=3
+PROFILE macro-call/app.common.logging/wrn seconds=0.006307 calls=9
+PROFILE macro-call/app.common.math/max seconds=0.020075 calls=36
+PROFILE macro-call/app.common.math/min seconds=0.011689 calls=29
+PROFILE macro-call/app.common.record/caching-hash seconds=0.004370 calls=4
+PROFILE macro-call/app.common.record/clone seconds=0.000364 calls=1
+PROFILE macro-call/app.common.record/defrecord seconds=0.070267 calls=4
+PROFILE macro-call/app.common.render-wasm.enums/serializers seconds=0.007512 calls=1
+PROFILE macro-call/app.common.render-wasm.helpers/call seconds=0.518274 calls=179
+PROFILE macro-call/app.common.schema.generators/let seconds=0.001097 calls=1
+PROFILE macro-call/app.common.schema/ignoring seconds=0.001718 calls=2
+PROFILE macro-call/app.common.types.path.impl/with-cache seconds=0.001306 calls=1
+PROFILE macro-call/app.render-wasm.performance/begin-measure seconds=0.017141 calls=6
+PROFILE macro-call/app.render-wasm.performance/end-measure seconds=0.011803 calls=7
+PROFILE macro-call/app.util.object/class seconds=0.001371 calls=1
+PROFILE macro-call/app.util.perf-macros/with-measure seconds=0.000879 calls=1
+PROFILE macro-call/cljs.core/-> seconds=0.061235 calls=856
+PROFILE macro-call/cljs.core/->> seconds=0.146530 calls=549
+PROFILE macro-call/cljs.core/.. seconds=0.003636 calls=161
+PROFILE macro-call/cljs.core/amap seconds=0.000139 calls=1
+PROFILE macro-call/cljs.core/and seconds=0.140814 calls=993
+PROFILE macro-call/cljs.core/areduce seconds=0.000110 calls=1
+PROFILE macro-call/cljs.core/as-> seconds=0.007070 calls=30
+PROFILE macro-call/cljs.core/case seconds=0.112946 calls=150
+PROFILE macro-call/cljs.core/comment seconds=0.000011 calls=1
+PROFILE macro-call/cljs.core/cond seconds=0.073740 calls=1758
+PROFILE macro-call/cljs.core/cond-> seconds=0.071480 calls=316
+PROFILE macro-call/cljs.core/cond->> seconds=0.008126 calls=24
+PROFILE macro-call/cljs.core/condp seconds=0.003195 calls=4
+PROFILE macro-call/cljs.core/defmethod seconds=0.006395 calls=222
+PROFILE macro-call/cljs.core/defmulti seconds=0.007583 calls=24
+PROFILE macro-call/cljs.core/doseq seconds=0.052320 calls=26
+PROFILE macro-call/cljs.core/doto seconds=0.000136 calls=7
+PROFILE macro-call/cljs.core/for seconds=0.096587 calls=34
+PROFILE macro-call/cljs.core/hash-map seconds=0.000273 calls=6
+PROFILE macro-call/cljs.core/if-let seconds=0.010335 calls=99
+PROFILE macro-call/cljs.core/if-not seconds=0.001846 calls=52
+PROFILE macro-call/cljs.core/if-some seconds=0.001971 calls=18
+PROFILE macro-call/cljs.core/js-obj seconds=0.010738 calls=2
+PROFILE macro-call/cljs.core/or seconds=0.118633 calls=877
+PROFILE macro-call/cljs.core/some-> seconds=0.017745 calls=93
+PROFILE macro-call/cljs.core/some->> seconds=0.006268 calls=14
+PROFILE macro-call/cljs.core/vswap! seconds=0.000348 calls=10
+PROFILE macro-call/cljs.core/when seconds=0.030405 calls=1251
+PROFILE macro-call/cljs.core/when-first seconds=0.000402 calls=4
+PROFILE macro-call/cljs.core/when-let seconds=0.014638 calls=177
+PROFILE macro-call/cljs.core/when-not seconds=0.003596 calls=125
+PROFILE macro-call/cljs.core/when-some seconds=0.000607 calls=7
+PROFILE macro-call/clojure.test.check.generators/let seconds=0.001498 calls=2
+PROFILE macro-call/cuerdas.core/concat seconds=0.165087 calls=209
+PROFILE macro-call/cuerdas.core/ffmt seconds=0.038882 calls=49
+PROFILE macro-call/cuerdas.core/nilv seconds=0.000412 calls=1
+PROFILE macro-call/cuerdas.core/unsafe-concat seconds=0.007283 calls=10
+PROFILE macro-call/garden.color/defcolor-operation seconds=0.001415 calls=4
+PROFILE macro-call/garden.compiler/with-media-query-context seconds=0.001216 calls=2
+PROFILE macro-call/garden.compiler/with-selector-context seconds=0.000614 calls=1
+PROFILE macro-call/garden.selectors/defpseudoclass seconds=0.017140 calls=38
+PROFILE macro-call/garden.selectors/defpseudoelement seconds=0.001273 calls=4
+PROFILE macro-call/garden.selectors/defselector seconds=0.109983 calls=258
+PROFILE macro-call/garden.selectors/gen-pseudo-class-defs seconds=0.009440 calls=1
+PROFILE macro-call/garden.selectors/gen-type-selector-defs seconds=0.009328 calls=1
+PROFILE macro-call/garden.units/defunit seconds=0.032050 calls=53
+PROFILE macro-call/malli.impl.util/predicate-schemas* seconds=0.000442 calls=1
+PROFILE macro-call/potok.v2.core/reify seconds=0.027175 calls=38
+PROFILE macro-call/promesa.core/do* seconds=0.000619 calls=1
+PROFILE macro-call/promesa.core/let seconds=0.000846 calls=1
+PROFILE macro-call/promesa.core/let* seconds=0.002588 calls=1
+PROFILE macro-call/rumext.v2/defc seconds=0.705759 calls=75
+PROFILE macro-call/rumext.v2/fnc seconds=0.324460 calls=12
+PROFILE macro-call/rumext.v2/html seconds=0.029895 calls=16
+PROFILE macro-call/rumext.v2/props seconds=0.002350 calls=1
+PROFILE macro-call/rumext.v2/spread-props seconds=0.013285 calls=2
+PROFILE macro-call/rumext.v2/with-effect seconds=0.010047 calls=13
+PROFILE macro-call/rumext.v2/with-memo seconds=0.027813 calls=34
+PROFILE namespace-registration seconds=0.559503 calls=269
+PROFILE unit-emission seconds=0.998875 calls=269
+PROFILE unit-evaluation seconds=1.768605 calls=72241
+PROFILE warnings seconds=0.642350 calls=6945
+COUNT environment-cached-nodes 16689535
+COUNT environment-child-cached-nodes 416980
+COUNT local-cache-hit 4484
+COUNT local-cache-miss 5888
+COUNT local-rows-described 46744
+COUNT local-rows-reused 29604
+COUNT reader-cache-hit 5969
+COUNT reader-cache-miss 4403
+READER_PREPARATION {"total":{"calls":2480,"seconds":1.2294777679999602},"parts":{"namespace":0.04986458499999813,"aliases":0.9352226599999618,"view-fields":0.1515245890000294,"declarations":0.08835896499998341,"overlay":0.003795417000031165},"environments":{"locals":{"decode":1.1324575629999067,"snapshot":0.7956017089999203,"hits":4484,"misses":5888},"light-cljs/macros":{"decode":0.23983885299998697,"snapshot":0.11903358199999856,"hits":10310,"misses":62},"context":{"decode":0.01610480200002242,"snapshot":0.02591219000021023,"hits":0,"misses":10372},"ns":{"decode":0.0719333239999704,"snapshot":0.013363377000017019,"hits":10152,"misses":220},"line":{"decode":0.020865895999955857,"snapshot":0.01291197200006301,"hits":0,"misses":10372},"column":{"decode":0.01439457900013027,"snapshot":0.011225016000049787,"hits":0,"misses":10372},"light-cljs/reader-context":{"decode":0.3098375829999249,"snapshot":0.11727101099987193,"hits":5969,"misses":4403},"light-cljs/unchecked-arrays":{"decode":0.013775612000042422,"snapshot":0.011047936000122093,"hits":0,"misses":10372}}}
+JS_FUNCTION_STORAGE source=1374425 vardefs=172720 cpool=13408 closures=58984
+JS_MEMORY_BEFORE JSMemoryUsage { malloc_size: 28062240, malloc_limit: 0, memory_used_size: 15576850, malloc_count: 373153, memory_used_count: 279708, atom_count: 24649, atom_size: 2262981, str_count: 11536, str_size: 768339, obj_count: 74014, obj_size: 5329008, prop_count: 133646, prop_size: 3302176, shape_count: 12585, shape_size: 1298248, js_func_count: 3195, js_func_size: 2028497, js_func_code_size: 406818, js_func_pc2line_count: 3052, js_func_pc2line_size: 103471, c_func_count: 208, array_count: 3651, fast_array_count: 2690, fast_array_elements: 4084, binary_object_count: 0, binary_object_size: 0 }
+MALLOC MallocStats { blocks: 2672842, used: 302333360, max: 532507776, reserved: 391118848 }
+RUST_DATA datum_nodes=49291 datum_node_size=64 form_nodes=3092 form_buffer_bytes=321808
+JS_FUNCTION_STORAGE source=1374425 vardefs=172720 cpool=13408 closures=58984
+JS_MEMORY_AFTER JSMemoryUsage { malloc_size: 20614280, malloc_limit: 0, memory_used_size: 11722118, malloc_count: 258087, memory_used_count: 179759, atom_count: 24649, atom_size: 2262981, str_count: 5950, str_size: 397303, obj_count: 48412, obj_size: 3485664, prop_count: 91999, prop_size: 2279504, shape_count: 6626, shape_size: 696744, js_func_count: 3195, js_func_size: 2028497, js_func_code_size: 406818, js_func_pc2line_count: 3052, js_func_pc2line_size: 103471, c_func_count: 208, array_count: 2312, fast_array_count: 1790, fast_array_elements: 3073, binary_object_count: 0, binary_object_size: 0 }
+MALLOC MallocStats { blocks: 2653992, used: 299871440, max: 532507776, reserved: 391118848 }
+RUST_DATA datum_nodes=41842 datum_node_size=64 form_nodes=3092 form_buffer_bytes=321808
+       22.49 real        22.32 user         0.13 sys
+           583532544  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               38614  page reclaims
+                 343  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                 660  voluntary context switches
+                 121  involuntary context switches
+           368773056  peak memory footprint

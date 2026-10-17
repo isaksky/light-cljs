@@ -1,0 +1,3 @@
+b4168a113781a44db3b384167a24db2f5939c8daece7670fc31094fe0c2af90d  /private/tmp/light-cljs-phase47/light-cljs-bindings
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase48/main.js
+65dbae2212ca8f416c4ae31777eb62b37c416ba2c4c8b8fe0e43eda384c042a6  /private/tmp/light-cljs-phase48/sample.txt

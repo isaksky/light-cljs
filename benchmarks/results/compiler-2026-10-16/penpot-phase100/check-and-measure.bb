@@ -1,0 +1,5 @@
+(require '[babashka.fs :as fs] '[babashka.process :as p])
+(def here (fs/parent *file*))
+(p/shell "bb" (str (fs/file here "validate.bb")))
+(p/shell "bb" (str (fs/file here "run.bb")))
+(p/shell "cmp" (str (fs/file here "main-none.js")) "/private/tmp/light-cljs-phase42/production/main-none.js")

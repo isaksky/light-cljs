@@ -1,0 +1,3 @@
+https://github.com/purpleprotocol/mimalloc_rust/blob/master/Cargo.toml
+https://github.com/microsoft/mimalloc
+Exact crate version 0.1.52; Cargo.lock will record the resolved native dependency.

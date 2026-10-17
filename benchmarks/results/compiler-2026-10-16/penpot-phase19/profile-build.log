@@ -1,0 +1,11 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase13-storage-profile)
+warning: function `flag` is never used
+ --> src/profile.rs:9:8
+  |
+9 | pub fn flag(name:&str)->bool{std::env::var_os(name).is_some()}
+  |        ^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `light-cljs` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 8.70s

@@ -1,0 +1,3 @@
+CompileCommand: blackhole criterium/blackhole/Blackhole.consume bool blackhole = true
+[:main] Compiling ...
+[:main] Build completed. (1176 files, 916 compiled, 0 warnings, 50.80s)

@@ -1,0 +1,22 @@
+(require '[babashka.fs :as fs] '[clojure.string :as str])
+(def here (fs/parent *file*))
+(def project (fs/file "/private/tmp/light-cljs-phase21/project"))
+(doseq [path ["Cargo.toml" "Cargo.lock" "build.rs"]]
+  (fs/copy path (fs/file project path) {:replace-existing true}))
+(doseq [path ["src" "vendor" "benches" "tests" "examples"]]
+  (fs/copy-tree path (fs/file project path) {:replace-existing true}))
+(fs/copy "/private/tmp/light-cljs-phase11/probe.rs" (fs/file project "examples/replay_probe.rs") {:replace-existing true})
+(def c-text (slurp "vendor/rquickjs-sys/quickjs/quickjs.c"))
+(spit (fs/file here "before.c") c-text)
+(def anchor "static JSValue js_call_c_function(JSContext *ctx, JSValueConst func_obj,")
+(def at (str/index-of c-text anchor))
+(assert at)
+(def declared (str (subs c-text 0 at)
+  "static JSValue js_function_call(JSContext *ctx, JSValueConst this_val,\n                                int argc, JSValueConst *argv);\n"
+  (subs c-text at)))
+(def before "    case JS_CFUNC_generic:\n        ret_val = func.generic(ctx, this_obj, argc, arg_buf);\n        break;")
+(def after "    case JS_CFUNC_generic:\n        if (func.generic == js_function_call) {\n            /* Preserve ownership of interpreter stack arguments. The C frame,\n               realm and nested interrupt check remain the ordinary call path. */\n            ret_val = JS_CallInternal(ctx, this_obj,\n                argc > 0 ? arg_buf[0] : JS_UNDEFINED, JS_UNDEFINED,\n                argc > 0 ? argc - 1 : 0, argc > 0 ? arg_buf + 1 : NULL,\n                flags & JS_CALL_FLAG_COPY_ARGV);\n        } else {\n            ret_val = func.generic(ctx, this_obj, argc, arg_buf);\n        }\n        break;")
+(assert (str/includes? declared before))
+(spit (fs/file here "after.c") (str/replace declared before after))
+(spit (fs/file here "runtime.js") (slurp "src/js_runtime.js"))
+(println "Prepared Function.call argument-ownership diagnostic; production unchanged")

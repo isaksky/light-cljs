@@ -1,0 +1,22 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase59/project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.56s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/light_cljs-c245fc672d71037e)
+
+running 1 test
+test v8_evaluator::tests::resizable_and_growable_backing_stores_obey_the_memory_limit ... FAILED
+
+failures:
+
+---- v8_evaluator::tests::resizable_and_growable_backing_stores_obey_the_memory_limit stdout ----
+
+thread 'v8_evaluator::tests::resizable_and_growable_backing_stores_obey_the_memory_limit' (137862430) panicked at src/v8_evaluator.rs:868:59:
+called `Result::unwrap_err()` on an `Ok` value: ValueId { session: 1, index: 1 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    v8_evaluator::tests::resizable_and_growable_backing_stores_obey_the_memory_limit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 122 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

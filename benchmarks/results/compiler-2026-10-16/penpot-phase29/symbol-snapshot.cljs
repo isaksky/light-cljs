@@ -1,0 +1,1 @@
+(defmacro renamed [value] (set! (.-name value) "changed") value) (let [original 1 changed 2] (renamed original))

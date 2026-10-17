@@ -20,6 +20,18 @@ impl<T: Clone> Shared<T> {
     pub fn into_inner(self) -> T {
         Rc::try_unwrap(self.0).unwrap_or_else(|rc| (*rc).clone())
     }
+
+    /// An empty extension is a read, not a write. In particular, fragment
+    /// iterators often filter out every entry because the prefix is shared.
+    pub fn extend<A>(&mut self, entries: impl IntoIterator<Item = A>)
+    where
+        T: Extend<A>,
+    {
+        let mut entries = entries.into_iter().peekable();
+        if entries.peek().is_some() {
+            Rc::make_mut(&mut self.0).extend(entries);
+        }
+    }
 }
 
 impl<T> Deref for Shared<T> {
@@ -111,5 +123,22 @@ where
 {
     fn from_iter<I: IntoIterator<Item = A>>(iter: I) -> Self {
         Self::new(T::from_iter(iter))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Shared;
+    use std::rc::Rc;
+
+    #[test]
+    fn empty_fragment_extension_keeps_the_shared_table() {
+        let mut table = Shared::new(vec![1, 2, 3]);
+        let snapshot = table.clone();
+        table.extend([4, 5].into_iter().filter(|_| false));
+        assert!(Rc::ptr_eq(&table.0, &snapshot.0));
+        table.extend([4]);
+        assert_eq!(table, [1, 2, 3, 4]);
+        assert_eq!(snapshot, [1, 2, 3]);
     }
 }

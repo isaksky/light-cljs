@@ -58,6 +58,7 @@ pub(crate) fn emit_application(
         Some(application),
         module,
         mapped,
+        None,
     )
 }
 
@@ -127,37 +128,137 @@ pub fn emit_js_unit(program: &Program) -> String {
 }
 
 /// Compile-time globals use the session demand registry; all semantic lowering is shared.
-pub(crate) fn emit_deferred_unit(program: &Program) -> String {
-    emit_unit_mode(program, true)
+#[derive(Default)]
+pub(crate) struct NamespaceRegistration {
+    pub source: String,
+    pub chunks: Vec<(String, std::ops::Range<usize>)>,
+    deferred: bool,
 }
 
-fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
-    let raw = program
-        .strings
-        .iter()
-        .map(|s| String::from_utf16_lossy(s))
-        .collect::<String>();
-    let mut index = 0;
-    let parameter = loop {
-        let candidate = format!("__lightSessionRuntime{index}");
-        if !raw.contains(&candidate) {
-            break candidate;
+/// The application already owns the analyzed body. Retain executable source
+/// and only the immutable tables that lazy namespace registration reads.
+pub(crate) struct DeferredUnit {
+    source: String,
+    namespaces: crate::arena::Arena<String>,
+    globals: crate::arena::Arena<crate::analyzer::GlobalBinding>,
+    reader_contexts: crate::shared::Shared<
+        crate::layered::Layered<
+            String,
+            crate::shared::Shared<crate::analyzer::RuntimeReaderNamespace>,
+        >,
+    >,
+}
+
+impl DeferredUnit {
+    pub(crate) fn prepare(program: &Program) -> Self {
+        let mut registration = NamespaceRegistration {
+            deferred: true,
+            ..Default::default()
+        };
+        Self {
+            source: emit_unit_parts(program, true, Some(&mut registration)),
+            namespaces: program.namespaces.clone(),
+            globals: program.globals.clone(),
+            reader_contexts: program.reader_contexts.clone(),
         }
-        index += 1;
-    };
-    format!(
-        "({parameter}) => {}",
-        emit_js_mode(
-            program,
-            Some(&parameter),
-            demand_roots,
-            None,
-            None,
-            false,
-            false
+    }
+
+    pub(crate) fn emit(&self) -> (NamespaceRegistration, String) {
+        // Registration reads names and reader context only. Global metadata
+        // expression IDs are deliberately never followed by this operation.
+        let mut program = crate::analyzer::empty_program();
+        program.namespaces = self.namespaces.clone();
+        program.globals = self.globals.clone();
+        program.reader_contexts = self.reader_contexts.clone();
+        let mut emitter = Emitter::new(
+            &program,
+            Setup {
+                demand_roots: true,
+                application_roots: false,
+                module: false,
+                mapped: false,
+                application: None,
+                direct: None,
+                function_names: &[],
+            },
+            true,
+        );
+        let source = emitter.registration(None, false, |_| true);
+        (
+            NamespaceRegistration {
+                source,
+                chunks: emitter.registration_chunks,
+                deferred: false,
+            },
+            self.source.clone(),
         )
-        .0
+    }
+}
+pub(crate) fn emit_deferred_unit(program: &Program) -> (NamespaceRegistration, String) {
+    let mut registration = NamespaceRegistration::default();
+    let unit = emit_unit_parts(program, true, Some(&mut registration));
+    (registration, unit)
+}
+
+#[cfg(test)]
+mod deferred_storage_tests {
+    use super::*;
+
+    #[test]
+    fn prepared_source_matches_direct_emission_and_freezes_reader_registration() {
+        for source in [
+            "nil",
+            "(defn f [x] (+ x 1))",
+            "(def ^{:doc \"old metadata\"} x {:answer 42})",
+            "(defprotocol P (f [this])) (defrecord R [x] P (f [this] x))",
+            "(let [x 42] (reify Object (toString [this] (str x))))",
+            "(js* \"((x) => x + 1)(~{})\" 41)",
+        ] {
+            let mut program = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
+            let (expected_registration, expected_code) = emit_deferred_unit(&program);
+            let prepared = DeferredUnit::prepare(&program);
+            program.namespaces.push("later.namespace".into());
+            if let Some(global) = program.globals.get_mut(0) {
+                global.name = "later-name".into();
+            }
+            let (registration, code) = prepared.emit();
+            assert_eq!(code, expected_code, "{source}");
+            assert_eq!(
+                registration.source, expected_registration.source,
+                "{source}"
+            );
+            assert_eq!(
+                registration.chunks, expected_registration.chunks,
+                "{source}"
+            );
+        }
+    }
+}
+
+// This generated binding participates in the same raw-JavaScript hygiene as
+// locals and helpers. It never needs a scan through unrelated prior literals.
+const UNIT_RUNTIME: &str = "__lightSessionRuntime";
+
+fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
+    emit_unit_parts(program, demand_roots, None)
+}
+
+fn emit_unit_parts(
+    program: &Program,
+    demand_roots: bool,
+    registration: Option<&mut NamespaceRegistration>,
+) -> String {
+    emit_js_mode(
+        program,
+        Some(UNIT_RUNTIME),
+        demand_roots,
+        None,
+        None,
+        false,
+        false,
+        registration,
     )
+    .0
 }
 
 /// An interactive unit: a function of the runtime,
@@ -187,6 +288,8 @@ struct Interactive<'a> {
 /// report lists every runtime name the output reads. With `mapped` the output
 /// also has a source map. With `interactive` the output is an interactive
 /// unit ([`Interactive`]) instead of an expression defining its own globals.
+// Application and compiler unit emission share these explicit mode arguments.
+#[allow(clippy::too_many_arguments)]
 fn emit_js_mode(
     program: &Program,
     shared: Option<&str>,
@@ -195,6 +298,7 @@ fn emit_js_mode(
     application: Option<Application<'_>>,
     module: bool,
     mapped: bool,
+    detached_registration: Option<&mut NamespaceRegistration>,
 ) -> (String, EmittedRuntime, Option<SourceMapping>) {
     let application_roots = interactive.is_some();
     let entry = interactive.and_then(|interactive| interactive.entry);
@@ -231,7 +335,7 @@ fn emit_js_mode(
         emitter.output.push_str(PRELUDE_TRUTH);
         let mut prelude_end = emitter.output.len();
         for global in 0..program.globals.len() {
-            if application_roots {
+            if application_roots || demand_roots {
                 break;
             }
             if application.is_some_and(|application| !application.globals[global]) {
@@ -260,6 +364,7 @@ fn emit_js_mode(
         }
         emitter.operand_scope(|emitter| emitter.emit(root, ExprContext::Return));
         emitter.record_application_roots(application);
+        emitter.allow_js_local_assignment();
         // `Advanced` output that tests no value with `truth` does not declare it.
         if emitter.inference.is_some() && !emitter.truth_used {
             let start = PRELUDE_OPEN.len();
@@ -331,7 +436,11 @@ fn emit_js_mode(
         let retained = |global: usize| {
             !slice || application.is_none_or(|application| application.globals[global])
         };
-        let registration = emitter.registration(registered, shared.is_none(), retained);
+        let registration = if detached_registration.as_ref().is_some_and(|r| r.deferred) {
+            String::new()
+        } else {
+            emitter.registration(registered, shared.is_none(), retained)
+        };
         // Marks of the runtime text, by offset in `runtime`.
         let mut runtime_marks = Marks::default();
         let mut runtime = if let Some(parameter) = shared {
@@ -405,7 +514,12 @@ fn emit_js_mode(
             runtime.push_str(&constants.declarations);
         }
         let registration_at = runtime.len();
-        runtime.push_str(&registration);
+        if let Some(detached) = detached_registration {
+            detached.source = registration;
+            detached.chunks = std::mem::take(&mut emitter.registration_chunks);
+        } else {
+            runtime.push_str(&registration);
+        }
         for range in &mut emitter.raw_segments {
             if range.start >= prelude_end {
                 range.start += runtime.len();
@@ -468,6 +582,18 @@ fn emit_js_mode(
                 marks.named(range.start, None, name);
             }
         }
+    }
+    // Include the shared-runtime parameter in raw-text hygiene. Only emitted
+    // syntax can capture it; unrelated literals in prior snapshots cannot.
+    // Unit emission never requests source maps or application minification.
+    if shared == Some(UNIT_RUNTIME) {
+        debug_assert!(!mapped && !terse);
+        let open = format!("({UNIT_RUNTIME}) => ");
+        for range in &mut emitter.raw_segments {
+            range.start += open.len();
+            range.end += open.len();
+        }
+        emitter.output.insert_str(0, &open);
     }
     let output = if terse {
         crate::terse::terse_program(
@@ -1165,6 +1291,7 @@ struct Operands {
 }
 
 struct Emitter<'a> {
+    registration_chunks: Vec<(String, std::ops::Range<usize>)>,
     program: &'a Program,
     demand_roots: bool,
     application_roots: bool,
@@ -1273,6 +1400,43 @@ struct Setup<'a> {
 }
 
 impl<'a> Emitter<'a> {
+    /// A local passed directly to `js*` may be assigned by that JavaScript.
+    /// Use lexical `let`, including for per-iteration copies, so closures keep
+    /// their own iteration's binding. The equal-length replacement preserves
+    /// source-map anchors and the recorded raw-text boundaries.
+    fn allow_js_local_assignment(&mut self) {
+        let mut exposed = HashSet::new();
+        for &id in &self.used {
+            if let ExprKind::JsTemplate { args, .. } = &self.program.exprs[id.0].kind {
+                for &arg in args {
+                    if let ExprKind::Local(local) = self.program.exprs[arg.0].kind {
+                        exposed.insert(local.0);
+                    }
+                }
+            }
+        }
+        if exposed.is_empty() {
+            return;
+        }
+        let mut raw = self.raw_segments.clone();
+        raw.sort_by_key(|range| range.start);
+        let replacements = crate::terse::scanned_names(&self.output, &raw)
+            .into_iter()
+            .filter_map(|(range, name)| {
+                let local: usize = name.strip_prefix('l')?.parse().ok()?;
+                let start = range.start.checked_sub("const ".len())?;
+                let prior_raw = raw.partition_point(|range| range.start < start + 5);
+                (exposed.contains(&local)
+                    && self.output.get(start..range.start) == Some("const ")
+                    && (prior_raw == 0 || raw[prior_raw - 1].end <= start))
+                    .then_some(start)
+            })
+            .collect::<Vec<_>>();
+        for start in replacements {
+            self.output.replace_range(start..start + 5, "let  ");
+        }
+    }
+
     /// A fresh emitter of `program` for `setup`, which registers its
     /// namespaces when `register_namespaces`.
     fn new(program: &'a Program, setup: Setup<'a>, register_namespaces: bool) -> Self {
@@ -1292,6 +1456,7 @@ impl<'a> Emitter<'a> {
             .and_then(|application| application.shapes)
             .filter(|_| direct.is_some());
         Emitter {
+            registration_chunks: Vec::new(),
             program,
             demand_roots,
             application_roots,
@@ -1370,10 +1535,32 @@ impl<'a> Emitter<'a> {
         let program = self.program;
         let mut registration = String::new();
         let register_namespaces = self.register_namespaces;
+        let demand_roots = self.demand_roots;
+        let js_string = |text: &str| {
+            if demand_roots {
+                quoted(text)
+            } else {
+                js_string(text)
+            }
+        };
+        // Group once in global ID order. Looking through every global for
+        // every namespace repeats the complete catalog scan in each unit.
+        let mut bindings: HashMap<&str, Vec<&str>> = HashMap::new();
+        if register_namespaces {
+            for (id, global) in program.globals.iter().enumerate() {
+                if retained(id) {
+                    bindings
+                        .entry(&global.namespace)
+                        .or_default()
+                        .push(&global.name);
+                }
+            }
+        }
         for namespace in program.namespaces.iter().filter(|namespace| {
             register_namespaces
                 && registered.is_none_or(|registered| registered.contains(&namespace.as_str()))
         }) {
+            let registration_start = registration.len();
             let previous = std::mem::take(&mut self.output);
             self.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
             let literal = std::mem::replace(&mut self.output, previous);
@@ -1421,12 +1608,11 @@ impl<'a> Emitter<'a> {
             writeln!(
                 registration,
                 "  bindings: [{}]}});",
-                program
-                    .globals
-                    .iter()
-                    .enumerate()
-                    .filter(|(id, g)| g.namespace == *namespace && retained(*id))
-                    .map(|(_, g)| js_string(&g.name))
+                bindings
+                    .get(namespace.as_str())
+                    .into_iter()
+                    .flatten()
+                    .map(|name| js_string(name))
                     .chain(
                         program
                             .reader_contexts
@@ -1439,6 +1625,10 @@ impl<'a> Emitter<'a> {
                     .join(",")
             )
             .unwrap();
+            if demand_roots {
+                self.registration_chunks
+                    .push((namespace.clone(), registration_start..registration.len()));
+            }
         }
         if current
             && register_namespaces
@@ -3014,14 +3204,14 @@ impl<'a> Emitter<'a> {
             return false;
         };
         let program = self.program;
-        let ExprKind::DefType { fields, .. } = &program.exprs[definition.0].kind else {
+        let ExprKind::DefType { layout, .. } = &program.exprs[definition.0].kind else {
             return false;
         };
         let name = &program.named_literals[literal.0];
         let Ok(spelling) = String::from_utf16(&program.strings[name.name.0]) else {
             return false;
         };
-        if name.namespace.is_some() || !fields.contains(&spelling) {
+        if name.namespace.is_some() || !layout.fields.contains(&spelling) {
             return false;
         }
         self.output.push('(');
@@ -4618,12 +4808,18 @@ impl<'a> Emitter<'a> {
         let ExprKind::DefType {
             record,
             global,
+            layout,
+            methods,
+        } = &program.exprs[id.0].kind
+        else {
+            unreachable!("a program type with a constructor")
+        };
+        let crate::analyzer::TypeLayout {
             constructor: Some(constructor),
             map_constructor,
             fields,
-            methods,
             ..
-        } = &program.exprs[id.0].kind
+        } = layout.as_ref()
         else {
             unreachable!("a program type with a constructor")
         };
@@ -4721,16 +4917,12 @@ impl<'a> Emitter<'a> {
     /// `defrecord` with a positional factory, unless a field takes the name
     /// of a mask, which `makeType`'s constructor assigns after the fields.
     fn defines_constructor(&self, id: ExprId) -> bool {
-        let ExprKind::DefType {
-            constructor: Some(_),
-            fields,
-            ..
-        } = &self.program.exprs[id.0].kind
-        else {
+        let ExprKind::DefType { layout, .. } = &self.program.exprs[id.0].kind else {
             return false;
         };
-        self.replaced_core.is_some()
-            && !fields.iter().any(|field| {
+        layout.constructor.is_some()
+            && self.replaced_core.is_some()
+            && !layout.fields.iter().any(|field| {
                 crate::analyzer::munge_js_member(field)
                     .strip_prefix("cljs$lang$protocol_mask$partition")
                     .is_some_and(|rest| rest == "0$" || rest == "1$")
@@ -5011,13 +5203,16 @@ impl<'a> Emitter<'a> {
             ExprKind::DefType {
                 record,
                 global,
-                constructor,
-                body,
-                masks,
-                map_constructor,
-                fields,
+                layout,
                 methods,
             } => {
+                let crate::analyzer::TypeLayout {
+                    constructor,
+                    body,
+                    masks,
+                    map_constructor,
+                    fields,
+                } = layout.as_ref();
                 let wrapper = self.iife_open(id, true);
                 self.output.push(' ');
                 self.product(*global);
@@ -5863,6 +6058,7 @@ fn emit_interactive(
         None,
         false,
         mapped,
+        None,
     );
     (unit, mapping)
 }
@@ -5891,6 +6087,7 @@ pub(crate) fn emit_namespace_unit(
         None,
         false,
         true,
+        None,
     );
     (unit, mapping.expect("a mapped emission has a source map"))
 }

@@ -1,0 +1,75 @@
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.65s
+     Running unittests src/lib.rs (target/debug/deps/light_cljs-ad9e157a4734fe2e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 113 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/light_cljs-4f7111d2e66935ef)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/benchmark_variants.rs (target/debug/deps/benchmark_variants-8f652ec59dbe8753)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/cli.rs (target/debug/deps/cli-b99daf41417d628a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s
+
+     Running tests/compiler/main.rs (target/debug/deps/compiler-e13b30adac4f02bb)
+
+running 1 test
+test builtin_types::record_field_lookup_uses_keyword_identity_without_equivalence_dispatch ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 2.03s
+
+     Running tests/dev_repl.rs (target/debug/deps/dev_repl-8f0073f55f08c009)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/dev_server.rs (target/debug/deps/dev_server-cb0f973622fc4864)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+     Running tests/dev_watch.rs (target/debug/deps/dev_watch-5edfae54fee2219b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+     Running tests/evaluation/main.rs (target/debug/deps/evaluation-7e5db7e7b76c7292)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 111 filtered out; finished in 0.00s
+
+     Running tests/execution.rs (target/debug/deps/execution-5e210dd8de4de1df)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 96 filtered out; finished in 0.00s
+
+     Running tests/frontend/main.rs (target/debug/deps/frontend-427829dc38bbc00d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 109 filtered out; finished in 0.00s
+
+     Running tests/provenance.rs (target/debug/deps/provenance-24a5eb3007f320ff)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

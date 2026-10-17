@@ -1,0 +1,3 @@
+render: complete output matches phase33 byte for byte and passes node --check.
+main-none: complete output matches phase33 byte for byte and passes node --check.
+main-advanced: complete output matches phase33 byte for byte and passes node --check.

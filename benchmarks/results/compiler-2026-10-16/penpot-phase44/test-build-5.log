@@ -1,0 +1,26 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase44/project)
+warning: method `number` is never used
+  --> src/v8_evaluator.rs:31:8
+   |
+23 | pub(crate) trait CompilerEvaluator: MacroEvaluator {
+   |                  ----------------- method in this trait
+...
+31 |     fn number(&self, id: ValueId) -> Result<f64, EvalError>;
+   |        ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `light-cljs` (lib test) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 16.71s
+  Executable unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/light_cljs-7cf00c802526fcb3)
+  Executable unittests src/main.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/light_cljs-d500b540d11e36b2)
+  Executable tests/benchmark_variants.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/benchmark_variants-53976a944d054844)
+  Executable tests/cli.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/cli-eed60c4b3a8f412b)
+  Executable tests/compiler/main.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/compiler-45f903421da5e09e)
+  Executable tests/dev_repl.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/dev_repl-6efbc206aca1ae85)
+  Executable tests/dev_server.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/dev_server-31d2ff61c34e6e05)
+  Executable tests/dev_watch.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/dev_watch-294e98cc6276ecfe)
+  Executable tests/evaluation/main.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/evaluation-024e243959e0b568)
+  Executable tests/execution.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/execution-3ca1b8d6297ee542)
+  Executable tests/frontend/main.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/frontend-ce02591930ea340a)
+  Executable tests/provenance.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/provenance-45b2df5e6294a4a2)

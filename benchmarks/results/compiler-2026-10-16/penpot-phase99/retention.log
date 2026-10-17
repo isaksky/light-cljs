@@ -1,0 +1,13 @@
+   Compiling rquickjs-sys v0.14.0 (/private/tmp/light-cljs-phase99/project/vendor/rquickjs-sys)
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase99/project)
+   Compiling rquickjs-core v0.14.0
+   Compiling rquickjs v0.14.0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.99s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/light_cljs-7da03a0464a17970)
+
+running 2 tests
+test compilation_session::retention_tests::application_assembly_releases_programs_but_retains_lazy_source ... ok
+test compilation_session::retention_tests::completed_units_release_their_analysis_inputs ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 131 filtered out; finished in 0.15s
+

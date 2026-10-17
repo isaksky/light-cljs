@@ -1,0 +1,6 @@
+83d9d5828c5d6d959ac2fe0d427bb0ba8de686f0540d2f3e55753f24aec50004  /private/tmp/light-cljs-phase96/light-cljs-shared-watchdog
+2f7ee4c7570bcb288abb35bc02f7f76e3e7e2b192d36122f0bf6c45dca989655  /private/tmp/light-cljs-phase96/clean/render.js
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase96/clean/main-none.js
+82d4cf05527a4120e22eb7302063c3dd8759dbc8fb35e6a3b7efce63d10c7077  /private/tmp/light-cljs-phase96/clean/main-advanced.js
+f88c0a20b9009a7d82cdc033c59b1fb0fd5271855b8361140c2185b73b01e4f2  /private/tmp/light-cljs-phase96/project/src/v8_evaluator.rs
+ac1853691c0795be23f21ca075e444c4c4c048587a655b918e3f486027825a83  /private/tmp/light-cljs-phase96/project/src/v8_watchdog.rs

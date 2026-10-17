@@ -1,0 +1,7 @@
+e698b04b4d8e46d0914d46018298f544398ead1a6f8651d1dbb08b79031a095d  /private/tmp/light-cljs-phase71/light-cljs-direct-roots
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase71/main-none.js
+cbcd84667b8dcf7ce31727e44b79f70dfe9bb56ead1ac7ebfdef8e4e1c465769  /private/tmp/light-cljs-phase71/project/Cargo.lock
+b554454f500c769dc645f975b57c9709362a0fa1681ca3bf7413785205c59d9e  /private/tmp/light-cljs-phase71/project/src/evaluator.rs
+e830573c38f9238f2e7a8b794aed8af538bbfa547705fc2268981d9aeec5283a  /private/tmp/light-cljs-phase71/project/src/compilation_session.rs
+9e805db438cfee7308b5222db523359da5190b85d39874cf699460af76c50d75  /private/tmp/light-cljs-phase71/project/src/v8_evaluator.rs
+25fb0769f60b2564e1617590c98999959a42c2f467cf664b17b9281b8f66ca7c  /private/tmp/light-cljs-phase71/project/src/v8_services.js

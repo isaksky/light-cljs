@@ -1,0 +1,9 @@
+aarch64
+g++ (GCC) 16.1.1 20260430
+Copyright (C) 2026 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+main: reservation=8388608 available=8385992
+one-MiB worker: reservation=1048576 available=1042568
+PASS: exact production shim, stable bounds through 256 KiB recursion and one-MiB worker

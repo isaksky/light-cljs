@@ -1,0 +1,11 @@
+(require '[babashka.fs :as fs] '[babashka.process :as p] '[clojure.string :as str])
+(def here (fs/parent *file*))
+(def project (fs/file here "project"))
+(when-not (fs/exists? project)
+  (p/shell "cp" "-a" "/private/tmp/light-cljs-phase101/project" (str project)))
+(fs/copy "/private/tmp/light-cljs-phase105/project/src/js_runtime.js"
+  (fs/file project "src/js_runtime.js") {:replace-existing true})
+(spit (fs/file here "run.bb")
+  (str/replace (slurp "/private/tmp/light-cljs-phase101/run.bb")
+    "light-cljs-lexical-js-vars" "light-cljs-lazy-error-paths-quickjs"))
+(fs/copy "/private/tmp/light-cljs-phase58/run-bench.bb" (fs/file here "run-bench.bb") {:replace-existing true})

@@ -1,0 +1,1 @@
+fn main() { let source="{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}"; let p=light_cljs::analyze(source,&light_cljs::parse(source).unwrap()).unwrap(); println!("names={} strings={} expected=9/9", p.named_literals.len(), p.strings.len()); }

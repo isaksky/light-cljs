@@ -1,0 +1,1 @@
+(defmacro ignored {:probe #"["} [] nil) (when true 42)

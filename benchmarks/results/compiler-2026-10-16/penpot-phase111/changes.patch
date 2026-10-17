@@ -1,0 +1,132 @@
+--- a/src/v8_evaluator.rs
++++ b/src/v8_evaluator.rs
+@@ -152,6 +152,11 @@
+ struct MemoryGuard {
+     handle: v8::IsolateHandle,
+     control: ExecutionControl,
++    buffers: Arc<buffers::Budget>,
++    maximum: usize,
++    adaptive: bool,
++    #[cfg(test)]
++    growths: Cell<usize>,
+ }
+ struct Entered<'a>(&'a mut v8::OwnedIsolate);
+ impl<'a> Entered<'a> {
+@@ -199,6 +204,16 @@
+ }
+ extern "C" fn near_heap_limit(data: *mut std::ffi::c_void, current: usize, _: usize) -> usize {
+     let state = unsafe { &*data.cast::<MemoryGuard>() };
++    let available = state.maximum.saturating_sub(state.buffers.used());
++    if state.adaptive && current < available {
++        // Start with a modest collection threshold, but allow genuinely live
++        // heaps to grow toward the configured session budget after V8 has
++        // collected. The initial threshold is not an extra hard memory cap.
++        let next = current.saturating_add((current / 2).max(16 * 1024 * 1024));
++        #[cfg(test)]
++        state.growths.set(state.growths.get() + 1);
++        return next.min(available);
++    }
+     state.control.memory_exhausted();
+     state.handle.terminate_execution();
+     current.saturating_add(16 * 1024 * 1024)
+@@ -254,7 +269,19 @@
+     }
+ 
+     fn new_with_startup(
++        options: EvaluatorOptions,
++        source: impl FnOnce() -> String,
++    ) -> Result<Self, EvalError> {
++        let initial_heap_limit = std::env::var("LIGHT_V8_HEAP_BYTES")
++            .ok()
++            .map(|value| value.parse::<usize>().expect("V8 initial heap limit"))
++            .unwrap_or(256 * 1024 * 1024);
++        Self::new_with_initial_heap_limit(options, initial_heap_limit, source)
++    }
++
++    fn new_with_initial_heap_limit(
+         options: EvaluatorOptions,
++        initial_heap_limit: usize,
+         source: impl FnOnce() -> String,
+     ) -> Result<Self, EvalError> {
+         if options.memory_limit < 1024 * 1024 {
+@@ -280,11 +307,7 @@
+                 sweeping_support: v8::cppgc::SweepingType::Atomic,
+             },
+         );
+-        let heap_limit = std::env::var("LIGHT_V8_HEAP_BYTES")
+-            .ok()
+-            .map(|value| value.parse::<usize>().expect("V8 probe heap limit"))
+-            .unwrap_or(options.memory_limit)
+-            .min(options.memory_limit);
++        let heap_limit = initial_heap_limit.clamp(16 * 1024 * 1024, options.memory_limit);
+         let stack = stack::StackLimit::new(options.stack_limit)?;
+         let buffers = buffers::Budget::new(options.memory_limit, control.clone());
+         // SAFETY: the stack helper verifies a boundary within this thread's
+@@ -317,6 +340,11 @@
+         let memory = Box::new(MemoryGuard {
+             handle: isolate.thread_safe_handle(),
+             control: control.clone(),
++            buffers: state.buffers.clone(),
++            maximum: options.memory_limit,
++            adaptive: heap_limit < options.memory_limit,
++            #[cfg(test)]
++            growths: Cell::new(0),
+         });
+         isolate.add_near_heap_limit_callback(
+             near_heap_limit,
+--- a/src/v8_buffer_tests.rs
++++ b/src/v8_buffer_tests.rs
+@@ -1,6 +1,53 @@
+ use super::*;
+ 
+ #[test]
++fn initial_heap_threshold_can_grow_for_live_data_within_the_session_budget() {
++    let evaluator = V8Evaluator::new_with_initial_heap_limit(
++        EvaluatorOptions {
++            memory_limit: 128 * 1024 * 1024,
++            timeout: Duration::from_secs(5),
++            ..Default::default()
++        },
++        16 * 1024 * 1024,
++        || include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", RUNTIME_SOURCE),
++    )
++    .unwrap();
++    assert_eq!(
++        number(
++            &evaluator,
++            "(() => { globalThis.keep = []; for (let i = 0; i < 48; i++) keep.push(new Array(262144).fill(3)); return keep.length; })()"
++        ),
++        48.0
++    );
++    assert!(
++        evaluator.memory.growths.get() > 0,
++        "the test must exercise adaptive growth"
++    );
++    assert_eq!(number(&evaluator, "keep[0][0] + keep[47][262143]"), 6.0);
++}
++
++#[test]
++fn adaptive_heap_growth_still_stops_at_the_session_budget() {
++    let evaluator = V8Evaluator::new_with_initial_heap_limit(
++        EvaluatorOptions {
++            memory_limit: 64 * 1024 * 1024,
++            timeout: Duration::from_secs(5),
++            ..Default::default()
++        },
++        16 * 1024 * 1024,
++        || include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", RUNTIME_SOURCE),
++    )
++    .unwrap();
++    let error = evaluator
++        .evaluate_js(
++            "(() => { const keep = []; while (true) keep.push(new Array(262144).fill(1)); })()",
++        )
++        .unwrap_err();
++    assert!(error.0.contains("memory limit exhausted"), "{error}");
++    assert!(evaluator.memory.growths.get() > 0);
++}
++
++#[test]
+ fn heap_and_backing_stores_share_one_session_budget() {
+     let mut failures = Vec::new();
+     for source in [

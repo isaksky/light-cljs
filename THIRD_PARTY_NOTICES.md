@@ -63,6 +63,27 @@ committed beyond the adapted files listed above.
   normal Cargo dependency.
 - License: MIT.
 
+## mimalloc
+
+- Upstream: <https://github.com/purpleprotocol/mimalloc_rust>, version 0.1.52,
+  with `libmimalloc-sys` 0.1.49 and its bundled allocator from
+  <https://github.com/microsoft/mimalloc>.
+- License: MIT. These are normal Cargo dependencies for the native CLI;
+  the library and WebAssembly targets keep their allocator selection.
+
+## rusty_v8 and V8
+
+- Rust bindings: <https://github.com/denoland/rusty_v8>, published crate 152.2.0,
+  recorded commit `2768994f664e8a6e3aba27503606c58339136e2a`. Copyright the Deno
+  authors. MIT license in `vendor/v8/LICENSE`.
+- V8 15.2.124.1: <https://chromium.googlesource.com/v8/v8>. Copyright the V8
+  project authors. BSD license and upstream notices in `vendor/v8/LICENSE.v8`.
+- Vendored Rust bindings/build files are in `vendor/v8`; corresponding public
+  C++ headers are in `vendor/v8-headers/include`. `vendor/v8/engine-budget.patch`
+  extends allocator accounting. `vendor/v8/prepare.bb` verifies the published
+  source crate and pinned ICU/Rust inputs; `vendor/v8/README.md` records the
+  source-build recipe and build-script changes.
+
 ## Other Cargo dependencies
 
 Transitive crates are listed in `Cargo.lock` with their own licenses in their

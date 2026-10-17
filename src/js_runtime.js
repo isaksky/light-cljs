@@ -472,10 +472,17 @@
     return value;
   }
 
-  //@unit listFromArray requires: cons, emptyList
+  //@unit listFromArray requires: cells, emptyList, ListValue
+  // Each tail was just built here. Its stored count is intrinsic, independent
+  // of public ICounted overrides, as in List.-conj; no protocol dispatch is
+  // needed to construct it. Later public count calls still honor overrides.
   function listFromArray(items) {
-    let result = emptyList;
-    for (let i = items.length - 1; i >= 0; i--) result = cons(items[i], result, "list");
+    let result = emptyList, count = 0;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const value = Object.create(ListValue.prototype);
+      cells.set(value, Object.freeze({kind: "list", head: items[i], tail: result, count: ++count}));
+      result = value;
+    }
     return result;
   }
 
@@ -596,12 +603,13 @@
     if (queues.has(value) && publicCollectionSlots.has(value)) return first(publicCollectionSlots.get(value).front);
     if (chunks.get(value)?.integer) return chunks.get(value).start;
     if (lazyValues.has(value)) { seq(value); return first(lazyValues.get(value).value); }
-    const current = seq(value);
+    // Existing ISeq values do not redispatch ISeqable.
+    const current = cells.has(value) || views.has(value) || iteratorSeqs.has(value) ? value : seq(value);
     if (current === null) return null;
     const cell = cells.get(current);
-    if (cell) return cell.head;
+    if (cell) return cell.kind === "list" && cell.count === 0 && !publicCollectionSlots.has(current) ? null : cell.head;
     const slice = views.get(current);
-    if (slice) return slice.storage[slice.offset];
+    if (slice) return slice.offset < slice.storage.length ? slice.storage[slice.offset] : null;
     const own = iteratorSeqs.get(current);
     if (own) return own.first;
     const firstMethod = protocolHooks.builtin?.(current, "ISeq/-first", 1);
@@ -611,18 +619,19 @@
 
   //@unit first.protocol effect: installMethods when: first requires: behindProtocol, first,
   //@ protocolHooks
-  first = behindProtocol(first, value => protocolHooks.implements?.("ISeq", value) ? protocolHooks.publicMethod(value, "ISeq/-first", 1) : null);
+  first = behindProtocol(first, value => protocolHooks.publicMethod?.(value, "ISeq/-first", 1, false, true));
 
   //@unit rest requires: cells, emptyList, iteratorSeqs, kindHooks, lazyValues, protocolHooks,
   //@ publicCollectionSlots, seq, view, views
   function rest(value) {
     if (value == null) return emptyList;
     if (lazyValues.has(value)) { seq(value); return rest(lazyValues.get(value).value); }
-    const current = seq(value);
+    const current = cells.has(value) || views.has(value) || iteratorSeqs.has(value) ? value : seq(value);
     if (current === null) return emptyList;
     const cell = cells.get(current);
-    if (cell) return cell.kind === "list" ? cell.count === 1 ? emptyList : cell.tail : cell.tail ?? emptyList;
+    if (cell) return cell.kind === "list" ? cell.count === 1 || cell.count === 0 && !publicCollectionSlots.has(current) ? emptyList : cell.tail : cell.tail ?? emptyList;
     const slice = views.get(current);
+    if (slice && !(slice.offset < slice.storage.length)) return emptyList;
     const slots = publicCollectionSlots.get(current);
     if (slice && slots?.vec) return kindHooks.restChunkedSeq(current, slice, slots);
     if (!slice) {
@@ -638,7 +647,7 @@
   }
   //@unit rest.protocol effect: installMethods when: rest requires: behindProtocol, protocolHooks,
   //@ rest
-  rest = behindProtocol(rest, value => protocolHooks.implements?.("ISeq", value) ? protocolHooks.publicMethod(value, "ISeq/-rest", 1) : null);
+  rest = behindProtocol(rest, value => protocolHooks.publicMethod?.(value, "ISeq/-rest", 1, false, true));
   //@unit ChunkedSeqValue.rest effect: ChunkedSeqValue when: rest requires: ChunkedSeqValue,
   //@ chunkedVectorRest, kindHooks
   // A view with the `vec` slot is a ChunkedSeq its public constructor built.
@@ -648,19 +657,23 @@
   //@ kindHooks, meta
   kindHooks.restQueue = (tail, current) => collectionWithMeta(tail, meta(current));
 
-  //@unit next requires: cells, lazyValues, publicCollectionSlots, rest, seq
+  //@unit next requires: cells, lazyValues, publicCollectionSlots, rest, seq, view, views
   function next(value) {
     if (value == null) return null;
     if (lazyValues.has(value)) { seq(value); return next(lazyValues.get(value).value); }
     const cell = cells.get(value);
     if (cell?.kind === "list") return cell.count === 1 || cell.count === 0 && !publicCollectionSlots.has(value) ? null : cell.tail;
     if (cell?.kind === "repeat") return cell.state?.following ?? (cell.remaining === -1 ? value : cell.remaining > 1 ? cell.tail : null);
+    // Flat views advance directly; other kinds keep their rest/seq behavior.
+    const slice = views.get(value);
+    if (slice && slice.tail == null && (slice.kind === "indexed" || slice.kind === "hash-map" || slice.kind === "array-map" || slice.kind === "set"))
+      return slice.offset + 1 < slice.storage.length ? view(slice.Type, slice.storage, slice.offset + 1, slice.indexed, slice.kind) : null;
     return seq(rest(value));
   }
 
   //@unit next.protocol effect: installMethods when: next requires: behindProtocol, next,
   //@ protocolHooks
-  next = behindProtocol(next, value => protocolHooks.implements?.("INext", value) ? protocolHooks.publicMethod(value, "INext/-next", 1) : null);
+  next = behindProtocol(next, value => protocolHooks.publicMethod?.(value, "INext/-next", 1, false, true));
 
   //@unit seqToMap requires: first, into, mapFromArray, next, seq, toArray
   function seqToMap(value) {
@@ -2927,7 +2940,7 @@
     }
     return result;
   }
-  //@unit count.seqs effect: ChunkedCons, compilerFormBridge, cons, Cons, cycleNode, emptyList,
+  //@unit count.seqs effect: ChunkedCons, compilerFormBridge, cons, listFromArray, Cons, cycleNode, emptyList,
   //@ EmptyListValue, Eduction, extendInstance, extendType, iterateNode, iteration, iteratorSeq,
   //@ ISeqable, LazySeq, ListValue, mapProjection, rangeNode, RepeatValue, reSeq,
   //@ treeMapSeqConstructor when: count requires: accumulatingCount, kindHooks
@@ -3477,7 +3490,7 @@
     }
     return !other;
   };
-  //@unit cons.equiv effect: emptyList, Cons, ListValue, EmptyListValue, RepeatValue, cons,
+  //@unit cons.equiv effect: emptyList, Cons, ListValue, EmptyListValue, RepeatValue, cons, listFromArray,
   //@ compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq, iterateNode,
   //@ ChunkedCons, rangeNode, view, IndexedSeqValue, queueFromArray, LazySeq, Eduction, ISequential,
   //@ extendType, extendInstance when: structuralEqualPair requires: count, countedValue, equalPair,
@@ -3630,7 +3643,7 @@
   }
 
   //@unit makeVector.hash effect: makeVector, emptyList, Cons, ListValue, EmptyListValue,
-  //@ RepeatValue, cons, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
+  //@ RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
   //@ iterateNode, ChunkedCons, rangeNode, view, IndexedSeqValue, queueFromArray, LazySeq when: hash
   //@ requires: cells, constructorHashes, hashOrderedColl, kindHooks, lazyValues,
   //@ publicCollectionSlots, queues, vectors
@@ -3665,68 +3678,72 @@
   // Versioned in-process compiler bridge. Descriptors are private arrays,
   // never printed text or JSON. Only brands above authorize language values.
   function compilerFormBridge() {
-    const borrowed = new WeakMap(), literals = new WeakMap(), primitives = new Map(), environments = new Map();
+    const borrowed = new WeakMap(), literals = new WeakMap(), primitives = new Map(), environments = new Map(), macroInputs = new WeakMap();
     const negativeZero = Object.freeze({});
     const primitiveKey = v => typeof v === "number" && Object.is(v, -0) ? negativeZero : v;
     const dateTime = Function.prototype.call.bind(Date.prototype.getTime);
     const regexSource = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(RegExp.prototype, "source").get);
     const regexFlags = [["hasIndices","d"],["global","g"],["ignoreCase","i"],["multiline","m"],["dotAll","s"],["unicode","u"],["sticky","y"]]
       .map(([property, letter]) => [Object.getOwnPropertyDescriptor(RegExp.prototype, property)?.get, letter]);
-    const fromUnits = units => {
-      let result = "";
-      for (let i = 0; i < units.length; i += 4096)
-        result += String.fromCharCode(...units.slice(i, i + 4096));
-      return result;
-    };
-    const units = text => {
-      const result = [];
-      for (let i = 0; i < text.length; i++) result.push(text.charCodeAt(i));
-      return result;
-    };
     let terminal = null;
     const fail = (category, path) => {
       const message = "Unsupported macro result " + category + " at " + path;
       if (category.includes("limit")) terminal ??= message;
       throw new Error(message);
     };
-    function decode(root, snapshotLimits = null) {
+    function decode(root, snapshotLimits = null, macroInput = false) {
       // Bootstrap syntax quotations can be deep. Traverse descriptors explicitly
       // so the documented form depth budget does not consume the engine stack.
-      const values = new Map(), pending = [[root, false]];
+      const values = new Map(), pending = [root, false];
       while (pending.length) {
-        const [d, ready] = pending.pop();
+        const ready = pending.pop(), d = pending.pop();
         if (ready) {
           const value = decodeNode(d, values); values.set(d, value);
           if (d[5] != null) environments.set(d[5], value);
           continue;
         }
-        pending.push([d, true]);
-        const [kind, , metadata, a] = d;
-        if (metadata != null) pending.push([metadata, false]);
-        if (["list", "vector", "map", "set"].includes(kind)) {
-          for (let i = a.length - 1; i >= 0; --i) pending.push([a[i], false]);
-        } else if (["regex", "instant", "uuid", "queue", "js-array", "js-object"].includes(kind)) {
-          pending.push([a, false]);
+        pending.push(d, true);
+        const kind = d[0], metadata = d[2], a = d[3];
+        if (metadata != null) pending.push(metadata, false);
+        switch (kind) {
+          case "list": case "vector": case "map": case "set":
+            for (let i = a.length - 1; i >= 0; --i) pending.push(a[i], false);
+            break;
+          case "regex": case "instant": case "uuid": case "queue": case "js-array": case "js-object":
+            pending.push(a, false);
+            break;
         }
       }
       const value = values.get(root);
+      if (macroInput) macroInputs.set(value, {root, values});
       if (snapshotLimits === null) return value;
+      // Only final replacements matter when a large import recycles a slot.
+      // Discarded map/set entries and literal payloads may have no snapshot;
+      // never publish them with uninitialized canonical provenance.
+      const updates = new Map(root[6]), unseen = new Set();
+      for (const d of updates.values()) unseen.add(values.get(d));
       // Snapshot only fresh components. Cached immutable components already
       // have canonical provenance; walking them again would undo the cache.
       const inputs = root[0] === "map" && root[1] == null && root[2] == null
         ? root[3].filter((d, i) => i % 2 === 1 && d[0] !== "environment") : [root];
-      return [value, inputs.map(d => encode(values.get(d), ...snapshotLimits))];
+      const snapshots = inputs.map(d => encode(values.get(d), ...snapshotLimits, unseen));
+      const published = unseen.size === 0;
+      // References name the previous completed import. Commit only after
+      // resolving every descriptor and validating the normal snapshots.
+      if (published) for (const [slot, d] of updates) environments.set(slot, values.get(d));
+      return [value, snapshots, published];
     }
-    function decodeNode(d, values) {
+    function decodeNode(d, values, reuse = false) {
       const decode = child => values.get(child);
-      const [kind, id, metadata, a, b] = d;
+      const kind = d[0], id = d[1], metadata = d[2], a = d[3], b = d[4];
       let value;
-      switch (kind) {
+      if (reuse) value = values.get(d);
+      else switch (kind) {
         case "environment": return environments.get(a);
         case "nil": value = null; break;
         case "bool": case "number": value = a; break;
-        case "string": case "character": value = fromUnits(a); break;
-        case "symbol": case "keyword": value = (kind === "symbol" ? symbol : keyword)(a == null ? null : fromUnits(a), fromUnits(b)); if (kind === "symbol" && a == null) generatedNames.add(fromUnits(b)); break;
+        case "string": case "character": value = a; break;
+        case "symbol": case "keyword": value = (kind === "symbol" ? symbol : keyword)(a == null ? null : a, b); if (kind === "symbol" && a == null) generatedNames.add(b); break;
         case "list": value = listFromArray(a.map(decode));
           if (a.length === 0) { value = Object.create(EmptyListValue.prototype); cells.set(value, cells.get(emptyList)); }
           break;
@@ -3759,7 +3776,36 @@
       }
       return value;
     }
-    function encode(value, limit, depthLimit) {
+    function macroArguments(form, nodes, depth) {
+      const input = macroInputs.get(form);
+      if (!input || input.root[0] !== "list") throw new Error("Missing compiler macro input");
+      const args = [], snapshots = [];
+      try {
+        for (const descriptor of input.root[3].slice(1)) {
+          // Restore the same per-argument metadata/provenance order as a new
+          // import, without reconstructing the objects already in &form.
+          const pending = [descriptor, false];
+          while (pending.length) {
+            const ready = pending.pop(), d = pending.pop();
+            if (ready) { decodeNode(d, input.values, true); continue; }
+            pending.push(d, true);
+            if (d[2] != null) pending.push(d[2], false);
+            switch (d[0]) {
+              case "list": case "vector": case "map": case "set":
+                for (let i = d[3].length - 1; i >= 0; --i) pending.push(d[3][i], false);
+                break;
+              case "regex": case "instant": case "uuid": case "queue": case "js-array": case "js-object":
+                pending.push(d[3], false); break;
+            }
+          }
+          const value = input.values.get(descriptor);
+          args.push(value); snapshots.push(encode(value, nodes, depth));
+        }
+        return [args, snapshots];
+      } finally { macroInputs.delete(form); }
+    }
+
+    function encode(value, limit, depthLimit, unseen = null) {
       let remaining = limit;
       const active = new WeakSet();
       function visit(v, path, depth) {
@@ -3774,7 +3820,7 @@
           if (v === null) tag = "nil";
           else if (kind === "boolean") { tag = "bool"; a = v; }
           else if (kind === "number") { tag = "number"; a = v; }
-          else if (kind === "string") { tag = "string"; a = units(v); }
+          else if (kind === "string") { tag = "string"; a = v; }
           else if (kind !== "object") fail(kind, path);
           else if (vars.has(v)) fail("Var", path);
           else if (atoms.has(v)) fail("atom", path);
@@ -3782,7 +3828,7 @@
           else if (typeFields.has(v) || recordTypes.has(v) || reifyValues.has(v) || ifnValues.has(v)) fail("protocol/type instance", path);
           else if (symbols.has(v) || keywords.has(v)) {
             const n = symbols.get(v) || keywords.get(v); tag = symbols.has(v) ? "symbol" : "keyword";
-            a = n.namespace == null ? null : units(n.namespace); b = units(n.name);
+            a = n.namespace == null ? null : n.namespace; b = n.name;
           } else if (vectors.has(v)) {
             // Each item is read just before it is visited, within the limits.
             tag = "vector"; a = []; const store = vectors.get(v);
@@ -3882,12 +3928,13 @@
           // A lazy seq or chunked cons has metadata, nil where none is stored.
           const metadata = object && (metadataValues.has(v) || lazyValues.has(v) || cells.get(v)?.kind === "chunked-cons")
             ? visit(metadataValues.has(v) ? metadataValues.get(v) : null, path + ".meta", depth + 1) : null;
+          if (object) unseen?.delete(v);
           return [tag, object ? borrowed.get(v) ?? null : primitives.get(primitiveKey(v)) ?? null, metadata, a, b];
         } finally { if (object) active.delete(v); }
       }
       return visit(value, "$", 0);
     }
-    return Object.freeze({version: 2, decode, encode,
+    return Object.freeze({version: 5, decode, encode, macroArguments, releaseMacroInput: value => macroInputs.delete(value),
       check: () => { if (terminal != null) throw new Error(terminal); },
       // Explicit descriptors authorize host literal data; ordinary objects remain invalid.
       jsArray: items => { const v = Array.from(items); literals.set(v, "js-array"); return v; },
@@ -4456,15 +4503,13 @@
     if (!include(first(s))) s = next(s);
     return arguments.length === 3 ? s : takeWhile(mkBoundFn(sc, test, key), s);
   }
-  //@unit metaSupported requires: atoms, cells, lazyValues, maps, metaFunctions, protocolHooks,
-  //@ queues, reifyValues, sets, symbols, vars, vectors, views
+  //@unit metaSupported requires: metaValue, protocolHooks
   function metaSupported(value) {
-    return typeof value === "function" || !!protocolHooks.builtin?.(value, "IMeta/-meta", 1) || [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, atoms, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
+    return typeof value === "function" || !!protocolHooks.builtin?.(value, "IMeta/-meta", 1) || metaValue(value);
   }
-  //@unit withMetaSupported requires: cells, lazyValues, maps, metaFunctions, protocolHooks, queues,
-  //@ reifyValues, sets, symbols, vars, vectors, views
+  //@unit withMetaSupported requires: protocolHooks, withMetaValue
   function withMetaSupported(value) {
-    return !!protocolHooks.builtin?.(value, "IWithMeta/-with-meta", 2) || [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
+    return !!protocolHooks.builtin?.(value, "IWithMeta/-with-meta", 2) || withMetaValue(value);
   }
   //@unit declarationJournal
   // The open declarationTransaction's undo journal; applications open none.
@@ -4475,8 +4520,17 @@
   //@unit setDeclarationDemand compile-time requires: demandMethod, demandMulti, demandProtocol,
   //@ print, typeNames
   function setDeclarationDemand(demand) {
+    const methodProtocols = new Map();
     demandProtocol = (key, value) => { if (demand) demand(key, value, typeNames.get(value?.constructor)); };
-    demandMethod = (key, arity, value) => demandProtocol(arity === 0 ? key : key.slice(0, key.lastIndexOf("/")), value);
+    demandMethod = (key, arity, value) => {
+      if (arity === 0) return demandProtocol(key, value);
+      let protocol = methodProtocols.get(key);
+      if (protocol === undefined) {
+        protocol = key.slice(0, key.lastIndexOf("/"));
+        methodProtocols.set(key, protocol);
+      }
+      return demandProtocol(protocol, value);
+    };
     demandMulti = mf => { if (demand) demand("multifn:" + print(mf.name, false), mf); };
   }
   //@unit declarationReceiver compile-time requires: demandProtocol
@@ -4530,7 +4584,7 @@
     return coreProtocolImplementation(protocol, value);
   }
   //@unit satisfies requires: coreProtocolNames, demandProtocol, implementsProtocol, nativeMethods,
-  //@ nativeType, ownedProtocolValue, protocolMaskNames, protocolNames
+  //@ nativeType, ownedProtocolValue, protocolMasks, protocolNames
   function satisfies(protocol, value) {
     demandProtocol(protocolNames.get(protocol) ?? coreProtocolNames.get(protocol), value);
     if (implementsProtocol(protocol, value)) return true;
@@ -4538,12 +4592,18 @@
     if (key) return !!(protocol[nativeType(value)] || protocol._);
     if (ownedProtocolValue(value)) return false;
     const coreName = coreProtocolNames.get(protocol);
-    const index = protocolMaskNames.lastIndexOf(coreName);
-    if (index >= 0 && value?.["cljs$lang$protocol_mask$partition" + (index >> 5) + "$"]) return false;
+    const mask = protocolMasks.get(coreName);
+    if (mask && value?.[mask[0]]) return false;
     return coreName ? !!(protocol[nativeType(value)] || protocol._ || nativeMethods.get(coreName)?.get(nativeType(value)) || nativeMethods.get(coreName)?.get("_")) : false;
   }
   //@unit protocolMaskNames
   const protocolMaskNames = "IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq INext ILookup IAssociative IMap IMapEntry ISet IStack IVector IDeref IDerefWithTimeout IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable ISequential IList IRecord IReversible ISorted IPrintWithWriter IWriter IPrintWithWriter IPending IWatchable IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet IMultiFn IChunkedSeq IChunkedNext IComparable INamed ICloneable IAtom IReset ISwap IIterable IDrop".split(" ");
+  //@unit protocolMasks requires: protocolMaskNames
+  // Membership checks are on every generic collection operation. Resolve the
+  // fixed ABI once as [property, bit], including the last occurrence of
+  // duplicate protocol names.
+  const protocolMasks = new Map(protocolMaskNames.map((name, index) => [name,
+    ["cljs$lang$protocol_mask$partition" + (index >> 5) + "$", 1 << (index % 32)]]));
   //@unit countedValue requires: cells, chunkBuffers, chunks, maps, queues, sets, transients,
   //@ vectors, views
   // A core protocol's native test, without the protocol objects (one per
@@ -4560,10 +4620,18 @@
   function nextValue(value) {
     return cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value);
   }
-  //@unit seqableValue requires: cells, iteratorSeqs, lazyValues, maps, queues, sets, vectors, views
-  function seqableValue(value) {
-    return [vectors, maps, sets, cells, views, queues, lazyValues, iteratorSeqs].some(store => store.has(value));
+  //@unit storesPredicate
+  // Brand inventories are fixed. Build one private inventory per predicate,
+  // without allocating an array and invoking a callback for each probe.
+  function storesPredicate(...stores) {
+    return value => {
+      for (let i = 0; i < stores.length; i++) if (stores[i].has(value)) return true;
+      return false;
+    };
   }
+  //@unit seqableValue requires: cells, iteratorSeqs, lazyValues, maps, queues, sets, storesPredicate,
+  //@ vectors, views
+  const seqableValue = storesPredicate(vectors, maps, sets, cells, views, queues, lazyValues, iteratorSeqs);
   //@unit indexedValue requires: cells, chunks, transients, vectors, views
   function indexedValue(value) {
     const transient = transients.get(value);
@@ -4577,8 +4645,9 @@
   const lookupValue = value => transients.has(value) || vectors.has(value) || maps.has(value) || sets.has(value);
   //@unit associativeValue requires: maps, vectors
   const associativeValue = value => vectors.has(value) || maps.has(value);
-  //@unit collectionValue requires: cells, lazyValues, maps, queues, sets, vectors, views
-  const collectionValue = value => [vectors, maps, sets, cells, views, queues, lazyValues].some(store => store.has(value));
+  //@unit collectionValue requires: cells, lazyValues, maps, queues, sets, storesPredicate, vectors,
+  //@ views
+  const collectionValue = storesPredicate(vectors, maps, sets, cells, views, queues, lazyValues);
   //@unit emptyableValue requires: collectionValue, recordTypes
   const emptyableValue = value => !recordTypes.has(value) && collectionValue(value);
   //@unit editableValue requires: mapEntries, maps, recordTypes, sets, sortedComparators,
@@ -4626,11 +4695,11 @@
   //@unit dropValue requires: cells, mapKinds, vectors, views
   const dropValue = value => mapKinds.get(value) === "array-map" || cells.get(value)?.integer === true || cells.get(value)?.kind === "repeat" || vectors.has(value) || ["indexed", "chunked", "array-map"].includes(views.get(value)?.kind);
   //@unit metaValue requires: atoms, cells, lazyValues, maps, metaFunctions, queues, reifyValues,
-  //@ sets, symbols, vars, vectors, views
-  const metaValue = value => [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, atoms, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
+  //@ sets, storesPredicate, symbols, vars, vectors, views
+  const metaValue = storesPredicate(symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, atoms, metaFunctions, reifyValues);
   //@unit withMetaValue requires: cells, lazyValues, maps, metaFunctions, queues, reifyValues, sets,
-  //@ symbols, vars, vectors, views
-  const withMetaValue = value => [symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, metaFunctions].some(store => store.has(value)) || reifyValues.has(value);
+  //@ storesPredicate, symbols, vars, vectors, views
+  const withMetaValue = storesPredicate(symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, metaFunctions, reifyValues);
   //@unit instValue
   const instValue = value => value instanceof Date;
   //@unit uuidImplementation requires: uuids
@@ -4667,11 +4736,11 @@
   //@unit writerValue requires: stringBufferWriters
   const writerValue = value => stringBufferWriters.has(value);
   //@unit coreProtocolImplementation requires: builtinCoreImplementation, coreProtocolNames,
-  //@ directMethod, protocolMaskNames
+  //@ directMethod, protocolMasks
   function coreProtocolImplementation(protocol, value) {
     const name = coreProtocolNames.get(protocol);
-    const maskIndex = protocolMaskNames.lastIndexOf(name);
-    if (maskIndex >= 0 && (value?.["cljs$lang$protocol_mask$partition" + (maskIndex >> 5) + "$"] & (1 << (maskIndex % 32)))) return true;
+    const mask = protocolMasks.get(name);
+    if (mask && (value?.[mask[0]] & mask[1])) return true;
     if (name && directMethod(value, name, 0)) return true;
     return builtinCoreImplementation(protocol, value);
   }
@@ -5777,8 +5846,8 @@
   //@unit protocolStores requires: atoms, cells, delays, keywords, lazyValues, maps, metaFunctions,
   //@ multiFns, queues, reducedValues, sets, symbols, transients, vars, vectors, views, volatiles
   const protocolStores = [multiFns, transients, keywords, symbols, vectors, maps, sets, cells, views, queues, lazyValues, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
-  //@unit ownedProtocolValue requires: protocolStores
-  function ownedProtocolValue(value) { return protocolStores.some(store => store.has(value)); }
+  //@unit ownedProtocolValue requires: protocolStores, storesPredicate
+  const ownedProtocolValue = storesPredicate(...protocolStores);
   //@unit builtin requires: directMethod, protocolHooks
   // The value's own implementation, else one that `extend-type` of a host
   // type, `object` or `default` gave (`externalMethod`).
@@ -5800,31 +5869,54 @@
     if (protocol && builtinCoreImplementation(protocol, value)) return undefined;
     return dispatch ?? nativeMethods.get(key)?.get(nativeType(value))?.get(arity) ?? nativeMethods.get(key)?.get("_")?.get(arity);
   }
-  //@unit publicMethod requires: builtin, builtinCoreImplementation, coreProtocolsByName, IMeta,
-  //@ implementsProtocol, satisfies
-  // Public consumers test protocol membership before selecting an arity. A
-  // declared but omitted method must not silently fall back to another API.
+  //@unit publicMethodInfo requires: coreProtocolNames, coreProtocolsByName,
+  //@ nativeImplementations, protocolMasks, protocolSlot
+  // Only the private, fixed ABI belongs in this cache. Membership, demanded
+  // extensions and receiver properties must still be observed on every call.
+  function publicMethodInfo(key) {
+    let info = publicMethodInfos.get(key);
+    if (info === undefined) {
+      const protocol = coreProtocolsByName.get(key.split("/")[0]);
+      const name = coreProtocolNames.get(protocol);
+      info = {protocol, name, mask: protocolMasks.get(name),
+        marker: name && protocolSlot(name, 0), native: nativeImplementations.get(protocol), slots: Object.create(null)};
+      publicMethodInfos.set(key, info);
+    }
+    return info;
+  }
+  const publicMethodInfos = new Map();
+  //@unit publicMethod requires: demandMethod, IMeta, protocolHooks, protocolSentinel,
+  //@ protocolSlot, publicMethodInfo, satisfies
   function publicMethod(value, key, arity, fast = false, directOnly = false) {
-    const protocol = coreProtocolsByName.get(key.split("/")[0]);
-    const direct = implementsProtocol(protocol, value);
+    const info = publicMethodInfo(key), protocol = info.protocol, mask = info.mask, native = info.native;
+    let direct = !!(mask && (value?.[mask[0]] & mask[1]));
+    if (!direct && info.name) {
+      demandMethod(info.name, 0, value);
+      direct = value != null && value[info.marker] === protocolSentinel;
+    }
+    if (!direct) direct = !!native?.(value);
     if (!direct && (directOnly || (fast && (Array.isArray(value) || typeof value === "string")))) return undefined;
     if (!direct && !satisfies(protocol, value)) return undefined;
-    const method = builtin(value, key, arity);
+    let slot = info.slots[arity];
+    if (slot === undefined) info.slots[arity] = slot = protocolSlot(key, arity);
+    demandMethod(key, arity, value);
+    let method = value == null ? undefined : value[slot];
+    if (method == null) method = protocolHooks.externalMethod?.(value, key, arity);
     if (method) return method;
     if (protocol === IMeta && typeof value === "function") return undefined;
-    if (satisfies(protocol, value) && !builtinCoreImplementation(protocol, value))
-      throw new Error("No protocol method " + key + " defined for this value");
+    // A method getter may have changed the receiver since membership testing.
+    if (!native?.(value)) throw new Error("No protocol method " + key + " defined for this value");
     return undefined;
   }
-  //@unit ownProtocol requires: directMethod, protocolMaskNames
+  //@unit ownProtocol requires: directMethod, protocolMasks
   // `true` where the value declares the core protocol `name` (its mask bit
   // or marker, as `implementsProtocol` reads them), else nothing, for the
   // caller's native test (`?? countedValue(value)`).
   function ownProtocol(name, value) {
-    const mask = protocolMaskNames.lastIndexOf(name);
-    return mask >= 0 && value?.["cljs$lang$protocol_mask$partition" + (mask >> 5) + "$"] & (1 << (mask % 32)) || directMethod(value, name, 0) ? true : undefined;
+    const mask = protocolMasks.get(name);
+    return mask && value?.[mask[0]] & mask[1] || directMethod(value, name, 0) ? true : undefined;
   }
-  //@unit ownMethod requires: directMethod, protocolMaskNames, reifyValues
+  //@unit ownMethod requires: directMethod, protocolMasks, reifyValues
   // `publicMethod` where no `extend-type` or `specify!` exists: only values of
   // the program's types, `reify` and the runtime's types built with
   // `installMethods` implement protocols, each declaring the protocols it
@@ -5834,9 +5926,9 @@
   // without the marker. (A record has the method of every operation the
   // program keeps.)
   function ownMethod(value, key, arity) {
-    const name = key.slice(0, key.indexOf("/")), mask = protocolMaskNames.lastIndexOf(name);
+    const name = key.slice(0, key.indexOf("/")), mask = protocolMasks.get(name);
     const meta = name === "IMeta" && typeof value === "function";
-    const declared = directMethod(value, name, 0) || mask >= 0 && value?.["cljs$lang$protocol_mask$partition" + (mask >> 5) + "$"] & (1 << (mask % 32));
+    const declared = directMethod(value, name, 0) || mask && value?.[mask[0]] & mask[1];
     const method = declared || meta ? directMethod(value, key, arity) : undefined;
     if (method) return method;
     if (!declared || meta || name === "IMeta" && reifyValues.has(value)) return undefined;
@@ -6056,6 +6148,14 @@
   typeHooks.recordMethods = recordMethods;
   //@unit recordFieldIndex requires: equalPair, keyword
   function recordFieldIndex(Type, key) { return Type.fieldNames.findIndex(name => equalPair(key, keyword(null, name))); }
+  //@unit recordKeywordFieldIndex requires: keywordFqn
+  // Defrecord's lookup/contains use keyword case; assoc uses keyword identity.
+  // General IEquiv dispatch can incorrectly match a different field (or even
+  // a non-keyword key), and repeats protocol work for each preceding field.
+  function recordKeywordFieldIndex(Type, key) {
+    const spelling = keywordFqn(key);
+    return spelling === null ? -1 : Type.fieldNames.indexOf(spelling);
+  }
   //@unit recordMethods.clone effect: recordMethods when: clone requires: recordCopy,
   //@ recordMethodTable
   recordMethodTable.push(Type => [
@@ -6084,11 +6184,11 @@
   recordMethodTable.push(Type => [
     ["IWithMeta/-with-meta", 2, function (_self, metadata) { return recordCopy(this, Type, metadata, this.__extmap, this.__hash); }]]);
   //@unit recordMethods.lookup effect: recordMethods when: get, lookupProtocol requires: field, get,
-  //@ recordFieldIndex, recordMethodTable
+  //@ recordKeywordFieldIndex, recordMethodTable
   recordMethodTable.push(Type => [
     ["ILookup/-lookup", 2, function (_self, key) { return get(this, key, null); }],
     ["ILookup/-lookup", 3, function (_self, key, fallback) {
-      const index = recordFieldIndex(Type, key); return index < 0 ? get(this.__extmap, key, fallback) : field(this, Type.fieldNames[index]);
+      const index = recordKeywordFieldIndex(Type, key); return index < 0 ? get(this.__extmap, key, fallback) : field(this, Type.fieldNames[index]);
     }]]);
   //@unit recordMethods.count effect: recordMethods when: count, countProtocol requires: count,
   //@ recordMethodTable
@@ -6102,14 +6202,14 @@
       return reduce((result, pair) => conj(result, pair), this, entry);
     }]]);
   //@unit recordMethods.contains effect: recordMethods when: contains, containsProtocol requires: contains,
-  //@ recordFieldIndex, recordMethodTable
+  //@ recordKeywordFieldIndex, recordMethodTable
   recordMethodTable.push(Type => [
-    ["IAssociative/-contains-key?", 2, function (_self, key) { return recordFieldIndex(Type, key) >= 0 || contains(this.__extmap, key); }]]);
+    ["IAssociative/-contains-key?", 2, function (_self, key) { return recordKeywordFieldIndex(Type, key) >= 0 || contains(this.__extmap, key); }]]);
   //@unit recordMethods.assoc effect: recordMethods when: assoc, assocProtocol requires: assoc,
-  //@ field, recordCopy, recordFieldIndex, recordMethodTable
+  //@ field, recordCopy, recordKeywordFieldIndex, recordMethodTable
   recordMethodTable.push(Type => [
     ["IAssociative/-assoc", 3, function (_self, key, value) {
-      const index = recordFieldIndex(Type, key);
+      const index = recordKeywordFieldIndex(Type, key);
       if (index < 0) return recordCopy(this, Type, this.__meta, assoc(this.__extmap, key, value), null);
       const Constructor = Type.currentConstructor?.() ?? Type;
       return new Constructor(...Type.fieldNames.map((name, i) => i === index ? value : field(this, name)), this.__meta, this.__extmap, null);
@@ -7260,7 +7360,7 @@
     return write(writer, "#object[" + (value.constructor?.cljs$lang$ctorStr?.replaceAll("/", ".") || value.constructor?.name || "Object") + " " + String(value) + "]");
   }
   //@unit printsMeta.print effect: Atom, ChunkedCons, collectionWithMeta, compilerFormBridge, Cons,
-  //@ cons, cycleNode, emptyList, EmptyListValue, fnWithMeta, IndexedSeqValue, installMethods,
+  //@ cons, listFromArray, cycleNode, emptyList, EmptyListValue, fnWithMeta, IndexedSeqValue, installMethods,
   //@ iterateNode, LazySeq, ListValue, makeIFn, makeMap, makeReify, makeSet, recordMethods, makeVar,
   //@ makeVector, mapProjection, queueFromArray, rangeNode, reify, RepeatValue, reSeq, symbol,
   //@ SymbolValue, treeMapConstructor, treeMapSeqConstructor, treeSetConstructor, view when: printWriterImpl
@@ -7314,7 +7414,7 @@
     const storage = vectorStorage(value) ?? [];
     return printSequential(writer, printWriter, "[", " ", "]", options, Array.isArray(storage) ? storage : Array.from(storage));
   });
-  //@unit cons.print effect: ChunkedCons, compilerFormBridge, Cons, cons, cycleNode, emptyList,
+  //@unit cons.print effect: ChunkedCons, compilerFormBridge, Cons, cons, listFromArray, cycleNode, emptyList,
   //@ EmptyListValue, IndexedSeqValue, iterateNode, LazySeq, ListValue, mapProjection,
   //@ queueFromArray, rangeNode, RepeatValue, reSeq, treeMapSeqConstructor, view when: printWriterImpl
   //@ requires: cells, kindHooks, lazyValues, printKind, printSequential, printWriter, queues, views
@@ -7327,7 +7427,7 @@
   //@ printKind, printSequential, printWriter, sets, setTraversal
   kindHooks.print = printKind(kindHooks.print, value => sets.has(value),
     (value, writer, options) => printSequential(writer, (e, target, opts) => printWriter(e.key, target, opts), "#{", " ", "}", options, setTraversal(value)));
-  //@unit printSequential.seq effect: ChunkedCons, compilerFormBridge, Cons, cons, cycleNode,
+  //@unit printSequential.seq effect: ChunkedCons, compilerFormBridge, Cons, cons, listFromArray, cycleNode,
   //@ emptyList, EmptyListValue, IndexedSeqValue, installMethods, iterateNode, LazySeq, ListValue,
   //@ mapProjection, prSequentialWriter, queueFromArray, rangeNode, RepeatValue, reSeq,
   //@ treeMapSeqConstructor, view when: printSequential requires: first, next, printHooks, seq
@@ -7410,7 +7510,7 @@
   //@unit str requires: kindHooks, maps, recordTypes, sequential, sets
   function str(...values) { return values.map(value => value == null ? "" : typeof value === "string" ? value : sequential(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) ? kindHooks.strCollection(value) : String(value)).join(""); }
   //@unit str.collections effect: makeVector, emptyList, Cons, ListValue, EmptyListValue,
-  //@ RepeatValue, cons, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
+  //@ RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
   //@ iterateNode, ChunkedCons, rangeNode, view, IndexedSeqValue, queueFromArray, LazySeq, makeMap,
   //@ treeMapConstructor, recordMethods, makeSet, treeSetConstructor when: str requires: kindHooks,
   //@ print
@@ -8265,7 +8365,7 @@
   //@ metaSupported, name, namespace, notifyWatches, objectEquiv, peek, pop, removeWatchProtocol,
   //@ rest, rseq, stateProtocol, vresetProtocol, withMetaSupported requires: builtin, protocolHooks
   protocolHooks.builtin = builtin;
-  //@unit protocolHooks.external effect: extendType when: builtin requires: externalMethod,
+  //@unit protocolHooks.external effect: extendType when: builtin, publicMethod requires: externalMethod,
   //@ protocolHooks
   // Only `extend-type` gives implementations that are not the value's own.
   protocolHooks.externalMethod = externalMethod;
@@ -8296,8 +8396,8 @@
   // or `specify!` the protocols a value declares, then their native tests ...
   protocolHooks.satisfies = ownProtocol;
   //@unit protocolHooks.ownImplements effect: installMethods when: chunkNext, concatMany, concatTwo,
-  //@ cons, count, drop, filter, first, hash, indexedSequence, into, isChunkedSeq, isMapEntry,
-  //@ isUuid, mapSeq, name, namespace, next, nth, printsMeta, rest requires: ownProtocol,
+  //@ cons, count, drop, filter, hash, indexedSequence, into, isChunkedSeq, isMapEntry,
+  //@ isUuid, mapSeq, name, namespace, nth, printsMeta requires: ownProtocol,
   //@ protocolHooks
   protocolHooks.implements = ownProtocol;
   //@unit protocolHooks.satisfies effect: extendType, extendInstance when: accumulatingCount,
@@ -8309,8 +8409,8 @@
   // ... and with them also what those give the runtime's and host values.
   protocolHooks.satisfies = (name, value) => satisfies(coreProtocolsByName.get(name), value);
   //@unit protocolHooks.implements effect: extendType, extendInstance when: chunkNext, concatMany,
-  //@ concatTwo, cons, count, drop, filter, first, hash, indexedSequence, into, isChunkedSeq,
-  //@ isMapEntry, isUuid, mapSeq, name, namespace, next, nth, printsMeta, rest requires: coreProtocolsByName,
+  //@ concatTwo, cons, count, drop, filter, hash, indexedSequence, into, isChunkedSeq,
+  //@ isMapEntry, isUuid, mapSeq, name, namespace, nth, printsMeta requires: coreProtocolsByName,
   //@ implementsProtocol, protocolHooks
   protocolHooks.implements = (name, value) => implementsProtocol(coreProtocolsByName.get(name), value);
   //@unit protocolHooks.countProtocol effect: installMethods when: accumulatingCount requires: countProtocol,

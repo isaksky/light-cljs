@@ -1,0 +1,12 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase94/project)
+   Compiling rquickjs-sys v0.14.0 (/private/tmp/light-cljs-phase94/project/vendor/rquickjs-sys)
+   Compiling rquickjs-core v0.14.0
+   Compiling rquickjs v0.14.0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.36s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/light_cljs-0cf441d3ce5f8104)
+
+running 1 test
+test evaluator::active_tests::declaration_demand_cache_observes_types_registration_frontiers_and_receivers ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 117 filtered out; finished in 0.03s
+

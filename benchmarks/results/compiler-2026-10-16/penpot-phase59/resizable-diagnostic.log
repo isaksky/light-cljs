@@ -1,0 +1,23 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase59/project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.18s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/light_cljs-c245fc672d71037e)
+
+running 1 test
+test v8_evaluator::tests::resizable_and_growable_backing_stores_obey_the_memory_limit ... FAILED
+
+failures:
+
+---- v8_evaluator::tests::resizable_and_growable_backing_stores_obey_the_memory_limit stdout ----
+unbounded new SharedArrayBuffer(33 * 1024 * 1024, { maxByteLength: 34 * 1024 * 1024 }): heap=1347224, external=0, allocator=0
+
+thread 'v8_evaluator::tests::resizable_and_growable_backing_stores_obey_the_memory_limit' (137869864) panicked at src/v8_evaluator.rs:878:32:
+new SharedArrayBuffer(33 * 1024 * 1024, { maxByteLength: 34 * 1024 * 1024 }): ValueId { session: 2, index: 1 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    v8_evaluator::tests::resizable_and_growable_backing_stores_obey_the_memory_limit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 122 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `--lib`

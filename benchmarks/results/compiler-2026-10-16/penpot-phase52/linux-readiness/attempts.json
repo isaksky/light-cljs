@@ -1,0 +1,10 @@
+[
+  {
+    "attempt": 1,
+    "exit_code": 0,
+    "outcome": "ready",
+    "seconds": 0.17,
+    "last_stage": "reused Linux connection",
+    "outer_timeout": false
+  }
+]

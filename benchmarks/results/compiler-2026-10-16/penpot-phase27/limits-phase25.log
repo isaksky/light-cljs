@@ -1,0 +1,2 @@
+exit 1
+light-cljs: 1:129: macro expansion: while expanding when: /private/tmp/light-cljs-phase27/limits.cljs:1:129: macro cljs.core/when: Error converting from js 'compiler descriptor' into type 'form': compiler input conversion limit; definition compiler_core_macros.cljs:29:1 (bytes 128..142)

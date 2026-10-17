@@ -1,0 +1,38 @@
+diff --git a/src/v8_evaluator.rs b/src/v8_evaluator.rs
+index 702e79e..9394979 100644
+--- a/src/v8_evaluator.rs
++++ b/src/v8_evaluator.rs
+@@ -501,7 +501,8 @@ impl MacroEvaluator for Active<'_, '_, '_> {
+             return self.release(value);
+         }
+         self.enter(|scope| {
+-            for (name, range) in chunks {
++            let functions = v8::Array::new(scope, 0);
++            for (index, (name, range)) in chunks.iter().enumerate() {
+                 self.state.control.poll()?;
+                 v8::scope!(let scope, scope);
+                 let source = &source[range.clone()];
+@@ -529,8 +530,9 @@ impl MacroEvaluator for Active<'_, '_, '_> {
+                     cache.insert(name, source, v8::Global::new(scope, function));
+                     function
+                 };
+-                invoke(scope, self.state, "registerNamespace", &[function.into()])?;
++                bridge::put(scope, functions, index as u32, function.into())?;
+             }
++            invoke(scope, self.state, "registerNamespaces", &[functions.into()])?;
+             Ok(())
+         })
+     }
+diff --git a/src/v8_services.js b/src/v8_services.js
+index 78fe872..62aebb2 100644
+--- a/src/v8_services.js
++++ b/src/v8_services.js
+@@ -16,7 +16,7 @@
+               const get = id => { if (!values.has(id)) throw new Error('Released or unknown value ID'); return values.get(id); };
+               return Object.freeze({
+                 save,
+-                registerNamespace: fn => fn(rt),
++                registerNamespaces: functions => { for (const fn of functions) fn(rt); },
+                 canCacheRegistration: () => globalThis.eval === compilerEval,
+                 bind: (name, id) => { (globalThis.__lightApplicationRoots ??= Object.create(null))[name] = get(id); },
+                 coreBinding: (name, id) => { rt.core[name] = get(id); },

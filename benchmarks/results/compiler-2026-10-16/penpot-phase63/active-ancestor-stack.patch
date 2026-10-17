@@ -1,0 +1,33 @@
+diff --git a/src/js_runtime.js b/src/js_runtime.js
+index eada146..a3ef521 100644
+--- a/src/js_runtime.js
++++ b/src/js_runtime.js
+@@ -3807,14 +3807,16 @@
+ 
+     function encode(value, limit, depthLimit, unseen = null) {
+       let remaining = limit;
+-      const active = new WeakSet();
++      // Only ancestors are active, bounded by the form depth limit. A stack
++      // avoids weak-table insertion and deletion for every imported node.
++      const active = [];
+       function visit(v, path, depth) {
+         if (--remaining < 0) fail("node limit", path);
+         if (depth > depthLimit) fail("depth limit", path);
+         const kind = typeof v;
+         const object = v != null && (kind === "object" || kind === "function");
+-        if (object && active.has(v)) fail("cyclic data", path);
+-        if (object) active.add(v);
++        if (object && active.includes(v)) fail("cyclic data", path);
++        if (object) active.push(v);
+         try {
+           let tag, a, b;
+           if (v === null) tag = "nil";
+@@ -3930,7 +3932,7 @@
+             ? visit(metadataValues.has(v) ? metadataValues.get(v) : null, path + ".meta", depth + 1) : null;
+           if (object) unseen?.delete(v);
+           return [tag, object ? borrowed.get(v) ?? null : primitives.get(primitiveKey(v)) ?? null, metadata, a, b];
+-        } finally { if (object) active.delete(v); }
++        } finally { if (object) active.pop(); }
+       }
+       return visit(value, "$", 0);
+     }

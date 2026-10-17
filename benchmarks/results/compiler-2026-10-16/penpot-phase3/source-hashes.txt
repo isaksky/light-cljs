@@ -1,0 +1,4 @@
+c1499cedd3d60880cd480b059805910c90288ae111a93f007129efc0b5864b35  /private/tmp/light-cljs-phase3/light-cljs
+a6db87687eb257ed21d0e3b870ea350b0b13eef2cadba0992f41173e4d8d79b9  /private/tmp/light-cljs-phase3/implementation.patch
+35e67e18e9539a08781737bea93c45fdc57d5000b10c2b0e2525440af074aea1  /private/tmp/light-cljs-phase3/name_index.rs
+6a711254a7271665e14eb87fb125cbfdecda1e792ccdd59ef2a969b5375ddbcc  /private/tmp/light-cljs-phase3-profile/light-cljs-profile3

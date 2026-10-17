@@ -1,0 +1,1 @@
+All source, test, vendor, bench and build inputs match the candidate that passed 1406 tests, strict Clippy, formatting and three Node workflows. Compiler documentation was updated after validation.

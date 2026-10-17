@@ -1,0 +1,333 @@
+warning: light-cljs@0.1.0: In file included from src/v8_buffers.cc:3:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-array-buffer.h:13:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-local-handle.h:13:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-handle-base.h:8:
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-internal.h:1227:55: warning: unused parameter 'isolate' [-Wunused-parameter]
+warning: light-cljs@0.1.0:  1227 |   V8_INLINE static void CheckInitialized(v8::Isolate* isolate) {
+warning: light-cljs@0.1.0:       |                                                       ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-internal.h:1470:66: warning: unused parameter 'isolate' [-Wunused-parameter]
+warning: light-cljs@0.1.0:  1470 |   V8_INLINE static Address ReadExternalPointerField(v8::Isolate* isolate,
+warning: light-cljs@0.1.0:       |                                                                  ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-internal.h:1501:20: warning: unused parameter 'isolate' [-Wunused-parameter]
+warning: light-cljs@0.1.0:  1501 |       v8::Isolate* isolate, Address heap_object_ptr, int offset,
+warning: light-cljs@0.1.0:       |                    ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-internal.h:1502:31: warning: unused parameter 'tag_range' [-Wunused-parameter]
+warning: light-cljs@0.1.0:  1502 |       ExternalPointerTagRange tag_range) {
+warning: light-cljs@0.1.0:       |                               ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-internal.h:1564:35: warning: unused parameter 'data' [-Wunused-parameter]
+warning: light-cljs@0.1.0:  1564 | void CastCheck<false>::Perform(T* data) {}
+warning: light-cljs@0.1.0:       |                                   ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-internal.h:1616:53: warning: unused parameter 'other' [-Wunused-parameter]
+warning: light-cljs@0.1.0:  1616 |   StrongRootAllocator(const StrongRootAllocator<U>& other) noexcept {}
+warning: light-cljs@0.1.0:       |                                                     ^
+warning: light-cljs@0.1.0: In file included from src/v8_buffers.cc:3:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-array-buffer.h:13:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-local-handle.h:13:
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-handle-base.h:22:59: warning: unused parameter 'other' [-Wunused-parameter]
+warning: light-cljs@0.1.0:    22 |   V8_INLINE explicit StackAllocated(const StackAllocated& other,
+warning: light-cljs@0.1.0:       |                                                           ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-handle-base.h:35:50: warning: unused parameter 'other' [-Wunused-parameter]
+warning: light-cljs@0.1.0:    35 |   V8_INLINE StackAllocated(const StackAllocated& other) { VerifyOnStack(); }
+warning: light-cljs@0.1.0:       |                                                  ^
+warning: light-cljs@0.1.0: In file included from src/v8_buffers.cc:3:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-array-buffer.h:13:
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-local-handle.h:607:49: warning: unused parameter 'isolate' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   607 |   static allocator_type make_allocator(Isolate* isolate) noexcept {
+warning: light-cljs@0.1.0:       |                                                 ^
+warning: light-cljs@0.1.0: In file included from src/v8_buffers.cc:3:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-array-buffer.h:14:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-object.h:8:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/cppgc/garbage-collected.h:9:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/cppgc/platform.h:11:
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:187:51: warning: unused parameter 'task' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   187 |   virtual void PostTaskImpl(std::unique_ptr<Task> task,
+warning: light-cljs@0.1.0:       |                                                   ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:188:51: warning: unused parameter 'location' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   188 |                             const SourceLocation& location) {}
+warning: light-cljs@0.1.0:       |                                                   ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:189:62: warning: unused parameter 'task' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   189 |   virtual void PostNonNestableTaskImpl(std::unique_ptr<Task> task,
+warning: light-cljs@0.1.0:       |                                                              ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:190:62: warning: unused parameter 'location' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   190 |                                        const SourceLocation& location) {}
+warning: light-cljs@0.1.0:       |                                                              ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:191:58: warning: unused parameter 'task' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   191 |   virtual void PostDelayedTaskImpl(std::unique_ptr<Task> task,
+warning: light-cljs@0.1.0:       |                                                          ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:192:43: warning: unused parameter 'delay_in_seconds' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   192 |                                    double delay_in_seconds,
+warning: light-cljs@0.1.0:       |                                           ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:193:58: warning: unused parameter 'location' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   193 |                                    const SourceLocation& location) {}
+warning: light-cljs@0.1.0:       |                                                          ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:194:69: warning: unused parameter 'task' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   194 |   virtual void PostNonNestableDelayedTaskImpl(std::unique_ptr<Task> task,
+warning: light-cljs@0.1.0:       |                                                                     ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:195:54: warning: unused parameter 'delay_in_seconds' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   195 |                                               double delay_in_seconds,
+warning: light-cljs@0.1.0:       |                                                      ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:196:69: warning: unused parameter 'location' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   196 |                                               const SourceLocation& location) {}
+warning: light-cljs@0.1.0:       |                                                                     ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:197:59: warning: unused parameter 'task' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   197 |   virtual void PostIdleTaskImpl(std::unique_ptr<IdleTask> task,
+warning: light-cljs@0.1.0:       |                                                           ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:198:55: warning: unused parameter 'location' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   198 |                                 const SourceLocation& location) {}
+warning: light-cljs@0.1.0:       |                                                       ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:293:44: warning: unused parameter 'new_priority' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   293 |   virtual void UpdatePriority(TaskPriority new_priority) {}
+warning: light-cljs@0.1.0:       |                                            ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:412:62: warning: unused parameter 'name' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   412 |   virtual const uint8_t* GetCategoryGroupEnabled(const char* name) {
+warning: light-cljs@0.1.0:       |                                                              ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:426:12: warning: unused parameter 'phase' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   426 |       char phase, const uint8_t* category_enabled_flag, const char* name,
+warning: light-cljs@0.1.0:       |            ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:426:34: warning: unused parameter 'category_enabled_flag' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   426 |       char phase, const uint8_t* category_enabled_flag, const char* name,
+warning: light-cljs@0.1.0:       |                                  ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:426:69: warning: unused parameter 'name' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   426 |       char phase, const uint8_t* category_enabled_flag, const char* name,
+warning: light-cljs@0.1.0:       |                                                                     ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:427:19: warning: unused parameter 'scope' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   427 |       const char* scope, uint64_t id, uint64_t bind_id, int32_t num_args,
+warning: light-cljs@0.1.0:       |                   ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:427:35: warning: unused parameter 'id' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   427 |       const char* scope, uint64_t id, uint64_t bind_id, int32_t num_args,
+warning: light-cljs@0.1.0:       |                                   ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:427:48: warning: unused parameter 'bind_id' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   427 |       const char* scope, uint64_t id, uint64_t bind_id, int32_t num_args,
+warning: light-cljs@0.1.0:       |                                                ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:427:65: warning: unused parameter 'num_args' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   427 |       const char* scope, uint64_t id, uint64_t bind_id, int32_t num_args,
+warning: light-cljs@0.1.0:       |                                                                 ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:428:20: warning: unused parameter 'arg_names' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   428 |       const char** arg_names, const uint8_t* arg_types,
+warning: light-cljs@0.1.0:       |                    ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:428:46: warning: unused parameter 'arg_types' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   428 |       const char** arg_names, const uint8_t* arg_types,
+warning: light-cljs@0.1.0:       |                                              ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:429:23: warning: unused parameter 'arg_values' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   429 |       const uint64_t* arg_values,
+warning: light-cljs@0.1.0:       |                       ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:430:50: warning: unused parameter 'arg_convertables' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   430 |       std::unique_ptr<ConvertableToTraceFormat>* arg_convertables,
+warning: light-cljs@0.1.0:       |                                                  ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:431:20: warning: unused parameter 'flags' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   431 |       unsigned int flags) {
+warning: light-cljs@0.1.0:       |                    ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:435:12: warning: unused parameter 'phase' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   435 |       char phase, const uint8_t* category_enabled_flag, const char* name,
+warning: light-cljs@0.1.0:       |            ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:435:34: warning: unused parameter 'category_enabled_flag' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   435 |       char phase, const uint8_t* category_enabled_flag, const char* name,
+warning: light-cljs@0.1.0:       |                                  ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:435:69: warning: unused parameter 'name' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   435 |       char phase, const uint8_t* category_enabled_flag, const char* name,
+warning: light-cljs@0.1.0:       |                                                                     ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:436:19: warning: unused parameter 'scope' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   436 |       const char* scope, uint64_t id, uint64_t bind_id, int32_t num_args,
+warning: light-cljs@0.1.0:       |                   ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:436:35: warning: unused parameter 'id' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   436 |       const char* scope, uint64_t id, uint64_t bind_id, int32_t num_args,
+warning: light-cljs@0.1.0:       |                                   ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:436:48: warning: unused parameter 'bind_id' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   436 |       const char* scope, uint64_t id, uint64_t bind_id, int32_t num_args,
+warning: light-cljs@0.1.0:       |                                                ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:436:65: warning: unused parameter 'num_args' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   436 |       const char* scope, uint64_t id, uint64_t bind_id, int32_t num_args,
+warning: light-cljs@0.1.0:       |                                                                 ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:437:20: warning: unused parameter 'arg_names' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   437 |       const char** arg_names, const uint8_t* arg_types,
+warning: light-cljs@0.1.0:       |                    ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:437:46: warning: unused parameter 'arg_types' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   437 |       const char** arg_names, const uint8_t* arg_types,
+warning: light-cljs@0.1.0:       |                                              ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:438:23: warning: unused parameter 'arg_values' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   438 |       const uint64_t* arg_values,
+warning: light-cljs@0.1.0:       |                       ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:439:50: warning: unused parameter 'arg_convertables' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   439 |       std::unique_ptr<ConvertableToTraceFormat>* arg_convertables,
+warning: light-cljs@0.1.0:       |                                                  ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:440:20: warning: unused parameter 'flags' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   440 |       unsigned int flags, int64_t timestamp) {
+warning: light-cljs@0.1.0:       |                    ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:440:35: warning: unused parameter 'timestamp' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   440 |       unsigned int flags, int64_t timestamp) {
+warning: light-cljs@0.1.0:       |                                   ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:448:56: warning: unused parameter 'category_enabled_flag' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   448 |   virtual void UpdateTraceEventDuration(const uint8_t* category_enabled_flag,
+warning: light-cljs@0.1.0:       |                                                        ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:449:53: warning: unused parameter 'name' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   449 |                                         const char* name, uint64_t handle) {}
+warning: light-cljs@0.1.0:       |                                                     ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:449:68: warning: unused parameter 'handle' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   449 |                                         const char* name, uint64_t handle) {}
+warning: light-cljs@0.1.0:       |                                                                    ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:643:41: warning: unused parameter 'address' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   643 |   virtual bool ResizeAllocationAt(void* address, size_t old_length,
+warning: light-cljs@0.1.0:       |                                         ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:643:57: warning: unused parameter 'old_length' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   643 |   virtual bool ResizeAllocationAt(void* address, size_t old_length,
+warning: light-cljs@0.1.0:       |                                                         ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:644:42: warning: unused parameter 'new_length' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   644 |                                   size_t new_length, Permission permissions) {
+warning: light-cljs@0.1.0:       |                                          ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:644:65: warning: unused parameter 'permissions' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   644 |                                   size_t new_length, Permission permissions) {
+warning: light-cljs@0.1.0:       |                                                                 ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:670:36: warning: unused parameter 'address' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   670 |   virtual bool RecommitPages(void* address, size_t length,
+warning: light-cljs@0.1.0:       |                                    ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:670:52: warning: unused parameter 'length' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   670 |   virtual bool RecommitPages(void* address, size_t length,
+warning: light-cljs@0.1.0:       |                                                    ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:671:41: warning: unused parameter 'permissions' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   671 |                              Permission permissions) {
+warning: light-cljs@0.1.0:       |                                         ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:683:41: warning: unused parameter 'address' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   683 |   virtual bool DiscardSystemPages(void* address, size_t size) { return true; }
+warning: light-cljs@0.1.0:       |                                         ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:683:57: warning: unused parameter 'size' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   683 |   virtual bool DiscardSystemPages(void* address, size_t size) { return true; }
+warning: light-cljs@0.1.0:       |                                                         ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:703:32: warning: unused parameter 'address' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   703 |   virtual bool SealPages(void* address, size_t length) {
+warning: light-cljs@0.1.0:       |                                ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:703:48: warning: unused parameter 'length' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   703 |   virtual bool SealPages(void* address, size_t length) {
+warning: light-cljs@0.1.0:       |                                                ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:743:52: warning: unused parameter 'address' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   743 |   virtual bool ReserveForSharedMemoryMapping(void* address, size_t size) {
+warning: light-cljs@0.1.0:       |                                                    ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:743:68: warning: unused parameter 'size' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   743 |   virtual bool ReserveForSharedMemoryMapping(void* address, size_t size) {
+warning: light-cljs@0.1.0:       |                                                                    ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:757:14: warning: unused parameter 'length' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   757 |       size_t length, const void* original_address) {
+warning: light-cljs@0.1.0:       |              ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:757:34: warning: unused parameter 'original_address' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   757 |       size_t length, const void* original_address) {
+warning: light-cljs@0.1.0:       |                                  ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:1212:65: warning: unused parameter 'address' [-Wunused-parameter]
+warning: light-cljs@0.1.0:  1212 |   virtual V8_WARN_UNUSED_RESULT bool DiscardSystemPages(Address address,
+warning: light-cljs@0.1.0:       |                                                                 ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:1213:64: warning: unused parameter 'size' [-Wunused-parameter]
+warning: light-cljs@0.1.0:  1213 |                                                         size_t size) {
+warning: light-cljs@0.1.0:       |                                                                ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:1243:43: warning: unused parameter 'name' [-Wunused-parameter]
+warning: light-cljs@0.1.0:  1243 |   virtual bool SetName(const std::string& name) { return false; }
+warning: light-cljs@0.1.0:       |                                           ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:1421:42: warning: unused parameter 'isolate' [-Wunused-parameter]
+warning: light-cljs@0.1.0:  1421 |   virtual bool IdleTasksEnabled(Isolate* isolate) { return false; }
+warning: light-cljs@0.1.0:       |                                          ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-platform.h:1509:20: warning: unused parameter 'blocking_type' [-Wunused-parameter]
+warning: light-cljs@0.1.0:  1509 |       BlockingType blocking_type) {
+warning: light-cljs@0.1.0:       |                    ^
+warning: light-cljs@0.1.0: In file included from src/v8_buffers.cc:3:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-array-buffer.h:14:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-object.h:8:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/cppgc/garbage-collected.h:9:
+warning: light-cljs@0.1.0: vendor/v8-headers/include/cppgc/platform.h:63:20: warning: unused parameter 'priority' [-Wunused-parameter]
+warning: light-cljs@0.1.0:    63 |       TaskPriority priority) {
+warning: light-cljs@0.1.0:       |                    ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/cppgc/platform.h:127:20: warning: unused parameter 'priority' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   127 |       TaskPriority priority, std::unique_ptr<JobTask> job_task) {
+warning: light-cljs@0.1.0:       |                    ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/cppgc/platform.h:127:55: warning: unused parameter 'job_task' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   127 |       TaskPriority priority, std::unique_ptr<JobTask> job_task) {
+warning: light-cljs@0.1.0:       |                                                       ^
+warning: light-cljs@0.1.0: In file included from src/v8_buffers.cc:3:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-array-buffer.h:14:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-object.h:13:
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-persistent-handle.h:59:35: warning: unused parameter 'isolate' [-Wunused-parameter]
+warning: light-cljs@0.1.0:    59 |   V8_INLINE Local<T> Get(Isolate* isolate) const {
+warning: light-cljs@0.1.0:       |                                   ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-persistent-handle.h:232:54: warning: unused parameter 'source' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   232 |   V8_INLINE static void Copy(const Persistent<S, M>& source,
+warning: light-cljs@0.1.0:       |                                                      ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-persistent-handle.h:233:53: warning: unused parameter 'dest' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   233 |                              NonCopyablePersistent* dest) {
+warning: light-cljs@0.1.0:       |                                                     ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-persistent-handle.h:423:57: warning: unused parameter 'value' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   423 |   virtual void VisitPersistentHandle(Persistent<Value>* value,
+warning: light-cljs@0.1.0:       |                                                         ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-persistent-handle.h:424:47: warning: unused parameter 'class_id' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   424 |                                      uint16_t class_id) {}
+warning: light-cljs@0.1.0:       |                                               ^
+warning: light-cljs@0.1.0: In file included from src/v8_buffers.cc:3:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-array-buffer.h:14:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-object.h:14:
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-primitive.h:289:37: warning: unused parameter 'isolate' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   289 |     virtual void Unaccount(Isolate* isolate) {}
+warning: light-cljs@0.1.0:       |                                     ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-primitive.h:320:36: warning: unused parameter 'recorder' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   320 |         SharedMemoryUsageRecorder* recorder) const {}
+warning: light-cljs@0.1.0:       |                                    ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-primitive.h:746:36: warning: unused parameter 'literal' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   746 |     Isolate* isolate, const char (&literal)[1], NewStringType type) {
+warning: light-cljs@0.1.0:       |                                    ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-primitive.h:746:63: warning: unused parameter 'type' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   746 |     Isolate* isolate, const char (&literal)[1], NewStringType type) {
+warning: light-cljs@0.1.0:       |                                                               ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-primitive.h:756:50: warning: unused parameter 'string' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   756 |   virtual void VisitExternalString(Local<String> string) {}
+warning: light-cljs@0.1.0:       |                                                  ^
+warning: light-cljs@0.1.0: In file included from src/v8_buffers.cc:3:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-array-buffer.h:14:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-object.h:15:
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-sandbox.h:198:28: warning: unused parameter 'tag_range' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   198 |     CppHeapPointerTagRange tag_range) {
+warning: light-cljs@0.1.0:       |                            ^
+warning: light-cljs@0.1.0: In file included from src/v8_buffers.cc:3:
+warning: light-cljs@0.1.0: In file included from vendor/v8-headers/include/v8-array-buffer.h:14:
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-object.h:623:40: warning: unused parameter 'visitor' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   623 |     virtual void Trace(cppgc::Visitor* visitor) const {}
+warning: light-cljs@0.1.0:       |                                        ^
+warning: light-cljs@0.1.0: In file included from src/v8_buffers.cc:3:
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-array-buffer.h:211:51: warning: unused parameter 'length' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   211 |     virtual bool ReserveBackingStoreMemory(size_t length) { return true; }
+warning: light-cljs@0.1.0:       |                                                   ^
+warning: light-cljs@0.1.0: vendor/v8-headers/include/v8-array-buffer.h:212:51: warning: unused parameter 'length' [-Wunused-parameter]
+warning: light-cljs@0.1.0:   212 |     virtual void ReleaseBackingStoreMemory(size_t length) {}
+warning: light-cljs@0.1.0:       |                                                   ^
+warning: light-cljs@0.1.0: 88 warnings generated.
+warning: use of deprecated method `std::sync::atomic::Atomic::<usize>::fetch_update`: renamed to `try_update` for consistency
+    --> /private/tmp/light-cljs-phase109/v8/src/isolate.rs:2317:8
+     |
+2317 |       .fetch_update(
+     |        ^^^^^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+     |
+2317 -       .fetch_update(
+2317 +       .try_update(
+     |
+
+warning: `v8` (lib) generated 1 warning (run `cargo fix --lib -p v8` to apply 1 suggestion)
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase111/project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.31s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase111/target/debug/deps/light_cljs-2c0818016e227cad)
+
+running 16 tests
+test v8_evaluator::buffer_tests::backing_store_budget_applies_during_runtime_startup ... ok
+test v8_evaluator::buffer_tests::buffer_coercions_and_growth_preserve_native_semantics ... ok
+test v8_evaluator::buffer_tests::invalid_growth_is_a_catchable_language_error_without_budget_failure ... ok
+test v8_evaluator::buffer_tests::combined_budget_covers_runtime_initialization ... ok
+test v8_evaluator::buffer_tests::wasm_memory_grow_instruction_cannot_silently_exceed_the_budget ... ok
+test v8_evaluator::buffer_tests::combined_budget_interrupts_a_loop_after_heap_growth ... ok
+test v8_evaluator::buffer_tests::garbage_collection_refreshes_the_heap_share_before_allocation_retry ... ok
+test v8_evaluator::buffer_tests::reservations_charge_committed_pages_and_shrink_refunds_them ... ok
+test v8_evaluator::buffer_tests::heap_and_backing_stores_share_one_session_budget ... ok
+test v8_evaluator::buffer_tests::backing_store_allocator_lives_until_last_native_owner_drops ... ok
+test v8_evaluator::buffer_tests::backing_store_failure_cannot_be_hidden_by_javascript_catch ... ok
+test v8_evaluator::buffer_tests::initial_heap_threshold_can_grow_for_live_data_within_the_session_budget ... ok
+test v8_evaluator::buffer_tests::combined_storage_below_the_limit_is_not_double_counted ... ok
+test v8_evaluator::buffer_tests::unreachable_backing_stores_are_reclaimed_during_allocation_retry ... ok
+test v8_evaluator::buffer_tests::adaptive_heap_growth_still_stops_at_the_session_budget ... ok
+test v8_evaluator::buffer_tests::backing_store_budgets_cover_construction_growth_and_aggregate_storage ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 140 filtered out; finished in 0.19s
+

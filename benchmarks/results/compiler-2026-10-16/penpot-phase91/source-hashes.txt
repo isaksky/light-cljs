@@ -1,0 +1,3 @@
+4ece1960c1fde0fc15d555d1a5498748cf39f3301c8c94bd996157046de272c1  /private/tmp/light-cljs-phase91/light-cljs-macro-timing
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase91/main-none.js
+576b8999bed59f1b8bb19b77cda84cfeb08cb2551271180c25f4ed0369f05f82  /private/tmp/light-cljs-phase91/project/src/macro_host.rs

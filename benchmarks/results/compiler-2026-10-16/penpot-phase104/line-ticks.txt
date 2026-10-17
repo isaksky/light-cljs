@@ -1,0 +1,86 @@
+visit
+233 3234                 a.push(visit(head, path + "[" + a.length + "]", depth + 1));
+162 3148         if (object) active.add(v);
+114 3160           else if (symbols.has(v) || keywords.has(v)) {
+99 3200               if (seen.has(current)) fail("cyclic sequence", path); seen.add(current);
+92 3157           else if (atoms.has(v)) fail("atom", path);
+86 3169             for (const e of mapTraversal(v)) { a.push(visit(e.key, path + ".key[" + i + "]", depth + 1), visit(e.value, path + ".value[" + i++ + "]", depth + 1)); }
+58 3147         if (object && active.has(v)) fail("cyclic data", path);
+55 3264         } finally { if (object) active.delete(v); }
+49 3260           const metadata = object && (metadataValues.has(v) || lazyValues.has(v) || cells.get(v)?.kind === "chunked-cons")
+47 3166             for (let i = 0; i < store.cnt; i++) a.push(visit(vectorNth(store, i, null), path + "[" + i + "]", depth + 1));
+43 3159           else if (typeFields.has(v) || recordTypes.has(v) || reifyValues.has(v) || ifnValues.has(v)) fail("protocol/type instance", path);
+43 3263           return [tag, object ? borrowed.get(v) ?? null : primitives.get(primitiveKey(v)) ?? null, metadata, a, b];
+22 3156           else if (vars.has(v)) fail("Var", path);
+21 3215               const chunked = publicCollectionSlots.get(current)?.vec, store = vectors.get(chunked ?? current);
+15 3161             const n = symbols.get(v) || keywords.get(v); tag = symbols.has(v) ? "symbol" : "keyword";
+14 3143         if (--remaining < 0) fail("node limit", path);
+13 3158           else if (volatiles.has(v)) fail("volatile", path);
+11 3262           if (object) unseen?.delete(v);
+macroArguments
+49 7562                   try { for (const value of inputs) ids.push(save(value)); return [ids, snapshots]; }
+13 3120             const ready = pending.pop(), d = pending.pop();
+8 3123             if (d[2] != null) pending.push(d[2], false);
+7 3126                 for (let i = d[3].length - 1; i >= 0; --i) pending.push(d[3][i], false);
+5 3122             pending.push(d, true);
+5 3119           while (pending.length) {
+5 3124             switch (d[0]) {
+4 3115         for (const descriptor of input.root[3].slice(1)) {
+2 7563                   catch (error) { for (const id of ids) values.delete(id); throw error; }
+2 3133           args.push(value); snapshots.push(encode(value, nodes, depth));
+1 3121             if (ready) { decodeNode(d, input.values, true); continue; }
+1 3118           const pending = [descriptor, false];
+1 7561                   const [inputs, snapshots] = bridge.macroArguments(get(form), nodes, depth), ids = [];
+1 3110     function macroArguments(form, nodes, depth) {
+1 3112       if (!input || input.root[0] !== "list") throw new Error("Missing compiler macro input");
+decodeNode
+205 3103         if (value != null && typeof value === "object") borrowed.set(value, id);
+85 3077         case "symbol": case "keyword": value = (kind === "symbol" ? symbol : keyword)(a == null ? null : a, b); if (kind === "symbol" && a == null) generatedNames.add(b); break;
+31 3106         else primitives.set(primitiveKey(value), id);
+11 3071       if (reuse) value = values.get(d);
+9 3069       const kind = d[0], id = d[1], metadata = d[2], a = d[3], b = d[4];
+8 3078         case "list": value = listFromArray(a.map(decode));
+7 3072       else switch (kind) {
+7 3067     function decodeNode(d, values, reuse = false) {
+6 3082         case "map": value = mapFromArray(a.map(decode)); break;
+5 3099         if (value == null || (typeof value !== "object" && typeof value !== "function")) throw new Error("Invalid compiler metadata target");
+4 3081         case "vector": value = vectorFromArray(a.map(decode)); break;
+3 3068       const decode = child => values.get(child);
+2 3102       if (id != null && id !== 0) {
+1 3108       return value;
+1 3083         case "set": value = setFromArray(a.map(decode)); break;
+1 3079           if (a.length === 0) { value = Object.create(EmptyListValue.prototype); cells.set(value, cells.get(emptyList)); }
+decode
+89 3032           const value = decodeNode(d, values); values.set(d, value);
+26 3039         switch (kind) {
+19 3068       const decode = child => values.get(child);
+9 3054       const updates = new Map(root[6]), unseen = new Set();
+8 3031         if (ready) {
+8 3037         const kind = d[0], metadata = d[2], a = d[3];
+7 3041             for (let i = a.length - 1; i >= 0; --i) pending.push(a[i], false);
+6 3055       for (const d of updates.values()) unseen.add(values.get(d));
+6 3029       while (pending.length) {
+4 3036         pending.push(d, true);
+4 3059         ? root[3].filter((d, i) => i % 2 === 1 && d[0] !== "environment") : [root];
+3 3033           if (d[5] != null) environments.set(d[5], value);
+3 3049       if (macroInput) macroInputs.set(value, {root, values});
+1 3050       if (snapshotLimits === null) return value;
+1 3028       const values = new Map(), pending = [root, false];
+1 3030         const ready = pending.pop(), d = pending.pop();
+1 3025     function decode(root, snapshotLimits = null, macroInput = false) {
+publicMethod
+130 4793     if (!direct) direct = !!native?.(value);
+109 4804     if (!native?.(value)) throw new Error("No protocol method " + key + " defined for this value");
+56 4788     let direct = !!(mask && (value?.[mask[0]] & mask[1]));
+51 4798     demandMethod(key, arity, value);
+50 4790       demandMethod(info.name, 0, value);
+32 4791       direct = value != null && value[info.marker] === protocolSentinel;
+25 4796     let slot = info.slots[arity];
+16 4786   function publicMethod(value, key, arity, fast = false, directOnly = false) {
+15 4799     let method = value == null ? undefined : value[slot];
+8 4789     if (!direct && info.name) {
+3 4794     if (!direct && (directOnly || (fast && (Array.isArray(value) || typeof value === "string")))) return undefined;
+3 4787     const info = publicMethodInfo(key), protocol = info.protocol, mask = info.mask, native = info.native;
+2 4802     if (protocol === IMeta && typeof value === "function") return undefined;
+2 4801     if (method) return method;
+1 4795     if (!direct && !satisfies(protocol, value)) return undefined;

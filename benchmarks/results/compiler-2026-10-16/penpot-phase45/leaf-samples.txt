@@ -1,0 +1,191 @@
+Sort by top of stack, same collapsed (when >= 5):
+        __psynch_cvwait  (in libsystem_kernel.dylib)        125327
+        semaphore_timedwait_trap  (in libsystem_kernel.dylib)        7621
+        <deduplicated_symbol>  (in light-cljs-v12)        1387
+        tiny_malloc_from_free_list  (in libsystem_malloc.dylib)        332
+        _RNvNtCsexYMt5MYMHp_10light_cljs7emitter15emit_unit_parts  (in light-cljs-v12)        305
+        tiny_free_no_lock  (in libsystem_malloc.dylib)        298
+        tiny_free_list_add_ptr  (in libsystem_malloc.dylib)        269
+        _RNvXs3_NtNtCs33v9mEcCS3W_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCsexYMt5MYMHp_10light_cljs  (in light-cljs-v12)        252
+        free_tiny  (in libsystem_malloc.dylib)        252
+        _platform_memset  (in libsystem_platform.dylib)        165
+        Builtins_WeakMapLookupHashIndex  (in light-cljs-v12)        159
+        _platform_memmove  (in libsystem_platform.dylib)        136
+        Builtins_KeyedHasIC_Megamorphic  (in light-cljs-v12)        132
+        _RINvMsk_NtCs87L1bv5kwMu_5alloc3vecINtB6_3VectE16extend_desugaredNtNtNtCs33v9mEcCS3W_4core3str4iter11EncodeUtf16ECsexYMt5MYMHp_10light_cljs  (in light-cljs-v12)        128
+        v8::internal::ConcurrentMarking::RunMajor(v8::JobDelegate*, v8::base::EnumSet<v8::internal::CodeFlushMode, int>, unsigned int, bool)  (in light-cljs-v12)        114
+        _szone_free  (in libsystem_malloc.dylib)        108
+        Builtins_KeyedLoadIC_Megamorphic  (in light-cljs-v12)        106
+        _RNvNtCsexYMt5MYMHp_10light_cljs18compiler_bootstrap20elidable_environment  (in light-cljs-v12)        94
+        szone_malloc_should_clear  (in libsystem_malloc.dylib)        91
+        tiny_malloc_should_clear  (in libsystem_malloc.dylib)        90
+        Builtins_FindOrderedHashMapEntry  (in light-cljs-v12)        89
+        tiny_size  (in libsystem_malloc.dylib)        87
+        v8::internal::Scavenger::ScavengeObject<v8::internal::CompressedHeapObjectSlot>(v8::internal::CompressedHeapObjectSlot, v8::internal::Tagged<v8::internal::HeapObject>)  (in light-cljs-v12)        80
+        get_tiny_previous_free_msize  (in libsystem_malloc.dylib)        79
+        v8::internal::MarkingVisitorBase<v8::internal::ConcurrentMarkingVisitor>::ProcessStrongHeapObject<v8::internal::CompressedHeapObjectSlot>(v8::internal::Tagged<v8::internal::HeapObject>, v8::internal::CompressedHeapObjectSlot, v8::internal::Tagged<v8::internal::HeapObject>)  (in light-cljs-v12)        75
+        _malloc_zone_malloc  (in libsystem_malloc.dylib)        70
+        tiny_free_list_remove_ptr  (in libsystem_malloc.dylib)        70
+        v8::internal::HashTable<v8::internal::EphemeronHashTable, v8::internal::EphemeronHashTableShape>::Rehash()  (in light-cljs-v12)        66
+        mach_absolute_time  (in libsystem_kernel.dylib)        62
+        _free  (in libsystem_malloc.dylib)        61
+        _realloc  (in libsystem_malloc.dylib)        56
+        _tiny_check_and_zero_inline_meta_from_freelist  (in libsystem_malloc.dylib)        54
+        v8::internal::MarkCompactCollector::ApplyEphemeronSemantics(v8::internal::Tagged<v8::internal::HeapObject>, v8::internal::Tagged<v8::internal::HeapObject>)  (in light-cljs-v12)        52
+        Builtins_LoadIC_Megamorphic  (in light-cljs-v12)        51
+        v8::internal::Scavenger::Process(v8::JobDelegate*)  (in light-cljs-v12)        51
+        tiny_try_realloc_in_place  (in libsystem_malloc.dylib)        47
+        v8::internal::HeapObject::SizeFromMap(v8::internal::Tagged<v8::internal::Map>) const  (in light-cljs-v12)        47
+        Builtins_WeakCollectionSet  (in light-cljs-v12)        44
+        _RNvNtCsexYMt5MYMHp_10light_cljs7emitter6quoted  (in light-cljs-v12)        41
+        szone_realloc  (in libsystem_malloc.dylib)        35
+        Builtins_KeyedHasIC  (in light-cljs-v12)        34
+        v8::internal::ConcurrentMarkingVisitor::RecordSlot<v8::internal::CompressedHeapObjectSlot, (v8::internal::RecordYoungSlot)0>(v8::internal::Tagged<v8::internal::HeapObject>, v8::internal::CompressedHeapObjectSlot, v8::internal::Tagged<v8::internal::HeapObject>)  (in light-cljs-v12)        34
+        v8::internal::Scavenger::ScavengePage(v8::internal::MutablePage*)  (in light-cljs-v12)        33
+        rack_get_thread_index  (in libsystem_malloc.dylib)        30
+        madvise  (in libsystem_kernel.dylib)        29
+        _malloc_zone_realloc  (in libsystem_malloc.dylib)        27
+        v8::Object::Get(v8::Local<v8::Context>, unsigned int)  (in light-cljs-v12)        27
+        _RINvYNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateNtNtCs33v9mEcCS3W_4core4hash11BuildHasher8hash_oneRNtNtCs87L1bv5kwMu_5alloc6string6StringECsexYMt5MYMHp_10light_cljs  (in light-cljs-v12)        26
+        _RINvNtCs33v9mEcCS3W_4core3ptr9drop_glueNtNtCsexYMt5MYMHp_10light_cljs13compiler_data9DatumKindEBF_  (in light-cljs-v12)        25
+        v8::internal::Scanner::Next()  (in light-cljs-v12)        25
+        _RNvMs0_NtCsexYMt5MYMHp_10light_cljs9v8_bridgeNtB5_11BridgeState11decode_node  (in light-cljs-v12)        24
+        v8::internal::Scanner::ScanString()  (in light-cljs-v12)        23
+        DYLD-STUB$$free  (in light-cljs-v12)        22
+        _RNvNvMsb_NtCsexYMt5MYMHp_10light_cljs13compiler_dataNtB7_4Form21from_bridge_expansion3add  (in light-cljs-v12)        22
+        std::__Cr::__murmur2_or_cityhash<unsigned long, 64ul>::operator()[abi:sqe230000](void const*, unsigned long) const  (in light-cljs-v12)        22
+        szone_size  (in libsystem_malloc.dylib)        22
+        _platform_memcmp  (in libsystem_platform.dylib)        21
+        Builtins_MapPrototypeSet  (in light-cljs-v12)        19
+        Builtins_ObjectConstructor  (in light-cljs-v12)        19
+        Builtins_WeakMapPrototypeHas  (in light-cljs-v12)        19
+        DYLD-STUB$$_platform_memset  (in libsystem_malloc.dylib)        19
+        _RNvMs1_NtCs2WxTXoQY03F_9hashbrown3mapINtB5_7HashMapNtNtCsexYMt5MYMHp_10light_cljs13compiler_data4NameNtNtBR_15compiler_reader15ResolvedBindingNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE6insertBR_  (in light-cljs-v12)        19
+        v8::internal::BodyDescriptorBase::IteratePointers<v8::internal::ScavengerPromotedObjectVisitor>(v8::internal::Tagged<v8::internal::HeapObject>, int, int, v8::internal::ScavengerPromotedObjectVisitor*)  (in light-cljs-v12)        19
+        v8::internal::Object::GetSimpleHash(v8::internal::Tagged<v8::internal::Object>)  (in light-cljs-v12)        19
+        _RNvMs5_NtCs87L1bv5kwMu_5alloc7raw_vecNtB5_11RawVecInner11finish_growCsexYMt5MYMHp_10light_cljs  (in light-cljs-v12)        18
+        v8::internal::Sweeper::RawSweep(v8::internal::NormalPage*, v8::internal::FreeSpaceTreatmentMode, v8::internal::Sweeper::SweepingMode, bool, bool)  (in light-cljs-v12)        18
+        Builtins_ArrayPrototypeJoinImpl  (in light-cljs-v12)        17
+        Builtins_StringAdd_NoMapCheck  (in light-cljs-v12)        17
+        _RNvMNtCs87L1bv5kwMu_5alloc6stringNtB2_6String10from_utf16  (in light-cljs-v12)        17
+        _RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer11import_form  (in light-cljs-v12)        17
+        v8::internal::ScavengerEphemeronProcessor::ClearOldEphemerons(v8::internal::Heap*)  (in light-cljs-v12)        17
+        _RNvXs4_NtCs87L1bv5kwMu_5alloc6stringNtB5_6StringNtNtCs33v9mEcCS3W_4core5clone5Clone5clone  (in light-cljs-v12)        16
+        _RNvCs75cfRe1uXhb_7___rustc11___rdl_alloc  (in light-cljs-v12)        15
+        _RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer18compiler_read_form  (in light-cljs-v12)        15
+        v8::internal::LookupIterator::LookupIterator(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::Union<v8::internal::Smi, v8::internal::HeapNumber, v8::internal::BigInt, v8::internal::String, v8::internal::Symbol, v8::internal::Boolean, v8::internal::Null, v8::internal::Undefined, v8::internal::JSReceiver>>, v8::internal::DirectHandle<v8::internal::Name>, unsigned long, v8::internal::DirectHandle<v8::internal::Union<v8::internal::Smi, v8::internal::HeapNumber, v8::internal::BigInt, v8::internal::String, v8::internal::Symbol, v8::internal::Boolean, v8::internal::Null, v8::internal::Undefined, v8::internal::JSReceiver>>, v8::internal::LookupIterator::Configuration)  (in light-cljs-v12)        15
+        _RNvMs_NtNtCs1IrzuoRvWaH_3std6thread6threadNtB4_6Thread12park_timeout  (in light-cljs-v12)        14
+        __psynch_cvsignal  (in libsystem_kernel.dylib)        14
+        absl::container_internal::raw_hash_set<absl::container_internal::FlatHashSetPolicy<int>>::find_or_prepare_insert_large<int>(int const&)  (in light-cljs-v12)        14
+        Builtins_LoadICGenericBaseline  (in light-cljs-v12)        13
+        Builtins_StrictEqual  (in light-cljs-v12)        13
+        _RNvMs1_NtCs2WxTXoQY03F_9hashbrown3mapINtB5_7HashMapjNtNtCsexYMt5MYMHp_10light_cljs13compiler_data4FormNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE6insertBS_  (in light-cljs-v12)        13
+        v8::internal::Object::GetProperty(v8::internal::LookupIterator*, bool)  (in light-cljs-v12)        13
+        v8::internal::PretenuringHandler::UpdateAllocationSite(v8::internal::Heap*, v8::internal::Tagged<v8::internal::Map>, v8::internal::Tagged<v8::internal::HeapObject>, int, std::__Cr::unordered_map<v8::internal::Tagged<v8::internal::AllocationSite>, unsigned long, v8::internal::Object::Hasher, std::__Cr::equal_to<v8::internal::Tagged<v8::internal::AllocationSite>>, std::__Cr::allocator<std::__Cr::pair<v8::internal::Tagged<v8::internal::AllocationSite> const, unsigned long>>>*)  (in light-cljs-v12)        13
+        v8::internal::StringTable::TryLookupKey<v8::internal::InternalizedStringKey, v8::internal::Isolate>(v8::internal::Isolate*, v8::internal::InternalizedStringKey*)  (in light-cljs-v12)        13
+        _RINvNtCs33v9mEcCS3W_4core3ptr9drop_glueINtNtCs87L1bv5kwMu_5alloc5boxed3BoxSNtNtCsexYMt5MYMHp_10light_cljs13compiler_data5DatumEEB1f_  (in light-cljs-v12)        12
+        _RNvMs0_NtCsexYMt5MYMHp_10light_cljs9v8_bridgeNtB5_11BridgeState6retain  (in light-cljs-v12)        12
+        _RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer17array_environment  (in light-cljs-v12)        12
+        v8::internal::LookupIterator::LookupInRegularHolder<false>(v8::internal::Tagged<v8::internal::Map>, v8::internal::Tagged<v8::internal::JSReceiver>)  (in light-cljs-v12)        12
+        v8::internal::LookupIterator::LookupInRegularHolder<true>(v8::internal::Tagged<v8::internal::Map>, v8::internal::Tagged<v8::internal::JSReceiver>)  (in light-cljs-v12)        12
+        Builtins_CallFunction_ReceiverIsNullOrUndefined  (in light-cljs-v12)        11
+        Builtins_SetPrototypeAdd  (in light-cljs-v12)        11
+        _RINvMs6_NtCs2WxTXoQY03F_9hashbrown3rawINtB6_8RawTableTNtNtCsexYMt5MYMHp_10light_cljs13compiler_data4NameNtNtBU_15compiler_reader15ResolvedBindingEE14reserve_rehashNCINvNtB8_3map11make_hasherBQ_B1E_NtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE0EBU_  (in light-cljs-v12)        11
+        _RINvMs_NtCsexYMt5MYMHp_10light_cljs6sharedINtB5_6SharedINtNtNtNtCs1IrzuoRvWaH_3std11collections4hash3map7HashMapNtNtB7_8analyzer7LocalIdTNtB1O_13RecurTargetIdbEEE6extendTB1M_B2a_EINtNtNtNtCs33v9mEcCS3W_4core4iter8adapters3map3MapINtNtB2W_6filter6FilterINtBU_4IterB1M_B2a_ENCNvNtB7_16program_fragment6appendsa_0ENCB4o_sb_0EEB7_  (in light-cljs-v12)        11
+        _RINvNtCs33v9mEcCS3W_4core3ptr9drop_glueNtNtCsexYMt5MYMHp_10light_cljs9v8_bridge10ProvenanceEBF_  (in light-cljs-v12)        11
+        _RNvMs4_NtCs369L5I6Rl8G_2v86stringNtNtB7_4data6String20to_rust_string_lossy  (in light-cljs-v12)        11
+        v8::internal::AstValueFactory::GetString(unsigned int, bool, v8::base::Vector<unsigned char const>)  (in light-cljs-v12)        11
+        v8::internal::Factory::AllocateRaw(int, v8::internal::AllocationType, v8::internal::AllocationAlignment, v8::internal::AllocationHint)  (in light-cljs-v12)        11
+        v8::internal::StringTable::TryLookupKey<v8::internal::SequentialStringKey<unsigned char>, v8::internal::Isolate>(v8::internal::Isolate*, v8::internal::SequentialStringKey<unsigned char>*)  (in light-cljs-v12)        11
+        _RNvMs0_NtCsexYMt5MYMHp_10light_cljs9v8_bridgeNtB5_11BridgeState11encode_node  (in light-cljs-v12)        10
+        _RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer10form_inner  (in light-cljs-v12)        10
+        _dispatch_semaphore_wait_slow  (in libdispatch.dylib)        10
+        small_free_list_remove_ptr_no_clear  (in libsystem_malloc.dylib)        10
+        tiny_free_detach_region  (in libsystem_malloc.dylib)        10
+        v8::internal::HashTable<v8::internal::EphemeronHashTable, v8::internal::EphemeronHashTableShape>::Rehash(v8::internal::Tagged<v8::internal::EphemeronHashTable>)  (in light-cljs-v12)        10
+        v8::internal::JSAPIObjectWithEmbedderSlotsOrJSSpecialObjectBodyDescriptor::IterateJSAPIObjectWithEmbedderSlotsHeader<v8::internal::ConcurrentMarkingVisitor>(v8::internal::Tagged<v8::internal::Map>, v8::internal::Tagged<v8::internal::HeapObject>, int, v8::internal::ConcurrentMarkingVisitor*)  (in light-cljs-v12)        10
+        v8::internal::JSObject::MigrateToMap(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::JSObject>, v8::internal::DirectHandle<v8::internal::Map>, int)  (in light-cljs-v12)        10
+        v8::internal::compiler::GraphReducer::ReduceTop()  (in light-cljs-v12)        10
+        Builtins_CallFunction_ReceiverIsAny  (in light-cljs-v12)        9
+        Builtins_Call_ReceiverIsNullOrUndefined  (in light-cljs-v12)        9
+        Builtins_DefineKeyedOwnIC_Megamorphic  (in light-cljs-v12)        9
+        Builtins_EphemeronKeyBarrierSaveFP  (in light-cljs-v12)        9
+        Builtins_Typeof  (in light-cljs-v12)        9
+        DYLD-STUB$$malloc  (in light-cljs-v12)        9
+        _RNvMNtCsexYMt5MYMHp_10light_cljs10name_indexNtB2_9NameIndex3get  (in light-cljs-v12)        9
+        _RNvMs3_NtCsexYMt5MYMHp_10light_cljs13compiler_dataNtB5_5Datum7inspect  (in light-cljs-v12)        9
+        _RNvMs6_NtCs87L1bv5kwMu_5alloc2rcINtB5_2RcNtNtCsexYMt5MYMHp_10light_cljs13compiler_data5FormsE9drop_slowBH_  (in light-cljs-v12)        9
+        _RNvXNtNtCs87L1bv5kwMu_5alloc3vec21spec_from_iter_nestedINtB4_3VectEINtB2_18SpecFromIterNestedtNtNtNtCs33v9mEcCS3W_4core3str4iter11EncodeUtf16E9from_iterCsexYMt5MYMHp_10light_cljs  (in light-cljs-v12)        9
+        __ulock_wait2  (in libsystem_kernel.dylib)        9
+        tiny_free_reattach_region  (in libsystem_malloc.dylib)        9
+        v8::internal::LookupIterator::Start<true>()  (in light-cljs-v12)        9
+        v8::internal::String::SlowEqualsNonThinSameLength(unsigned int, v8::internal::Tagged<v8::internal::String>, v8::internal::SharedStringAccessGuardIfNeeded const&) const  (in light-cljs-v12)        9
+        Builtins_CallFunction_ReceiverIsNotNullOrUndefined  (in light-cljs-v12)        8
+        Builtins_WeakCollectionDelete  (in light-cljs-v12)        8
+        DYLD-STUB$$memcpy  (in light-cljs-v12)        8
+        _RINvYNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateNtNtCs33v9mEcCS3W_4core4hash11BuildHasher8hash_oneRNtNtCsexYMt5MYMHp_10light_cljs13compiler_data4NameEB1J_  (in light-cljs-v12)        8
+        _tlv_get_addr  (in libdyld.dylib)        8
+        free_small  (in libsystem_malloc.dylib)        8
+        v8::internal::LookupIterator::FetchValue(v8::base::StrongAlias<v8::internal::AllowAllocationTag, bool>) const  (in light-cljs-v12)        8
+        v8::internal::String::IsEqualTo<(v8::internal::String::EqualityType)2, unsigned char>(v8::base::Vector<unsigned char const>, v8::internal::Isolate*) const  (in light-cljs-v12)        8
+        v8::internal::StringHasher::HashSequentialString<unsigned char>(unsigned char const*, unsigned int, v8::internal::HashSeed, bool*)  (in light-cljs-v12)        8
+        Builtins_KeyedStoreIC_Megamorphic  (in light-cljs-v12)        7
+        Builtins_LoadIC  (in light-cljs-v12)        7
+        Builtins_StringEqual  (in light-cljs-v12)        7
+        _RINvNvMs2_NtCs87L1bv5kwMu_5alloc7raw_vecINtB8_11RawVecInnerpE7reserve21do_reserve_and_handleNtNtBa_5alloc6GlobalECsexYMt5MYMHp_10light_cljs  (in light-cljs-v12)        7
+        _RNvCs75cfRe1uXhb_7___rustc13___rdl_realloc  (in light-cljs-v12)        7
+        _RNvMs8_NtCs369L5I6Rl8G_2v85scopeNtB5_9ScopeData19get_current_context  (in light-cljs-v12)        7
+        _RNvMs_NtCsexYMt5MYMHp_10light_cljs7emitterNtB4_7Emitter10value_expr  (in light-cljs-v12)        7
+        _RNvNtCsexYMt5MYMHp_10light_cljs16program_fragment6append  (in light-cljs-v12)        7
+        _RNvXsb_NtCs87L1bv5kwMu_5alloc3vecINtB5_3VecNtNtCsexYMt5MYMHp_10light_cljs10macro_host11MacroImportENtNtCs33v9mEcCS3W_4core5clone5Clone5cloneBJ_  (in light-cljs-v12)        7
+        small_malloc_from_free_list  (in libsystem_malloc.dylib)        7
+        std::__Cr::__hash_memory(void const*, unsigned long)  (in light-cljs-v12)        7
+        v8::internal::FreeListManyCached::Free(v8::internal::Isolate const*, v8::internal::WritableFreeSpace const&, v8::internal::FreeMode)  (in light-cljs-v12)        7
+        v8::internal::MarkCompactCollector::ClearWeakCollections()  (in light-cljs-v12)        7
+        v8::internal::Scavenger::EvacuateInPlaceInternalizableString<v8::internal::CompressedHeapObjectSlot>(v8::internal::Tagged<v8::internal::Map>, v8::internal::CompressedHeapObjectSlot, v8::internal::Tagged<v8::internal::String>, v8::base::StrongAlias<v8::internal::HeapObjectSizeTag, unsigned int>, v8::internal::ObjectFields)  (in light-cljs-v12)        7
+        Builtins_FindOrderedHashSetEntry  (in light-cljs-v12)        6
+        Builtins_ToBoolean  (in light-cljs-v12)        6
+        Builtins_WeakMapPrototypeGet  (in light-cljs-v12)        6
+        DYLD-STUB$$realloc  (in light-cljs-v12)        6
+        _RINvMs6_NtCs2WxTXoQY03F_9hashbrown3rawINtB6_8RawTableTjNtNtCsexYMt5MYMHp_10light_cljs13compiler_data4FormEE14reserve_rehashNCINvNtB8_3map11make_hasherjBR_NtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE0EBV_  (in light-cljs-v12)        6
+        _RINvNtCs33v9mEcCS3W_4core3ptr9drop_glueNtNtCsexYMt5MYMHp_10light_cljs13compiler_data15ExpansionOriginEBF_  (in light-cljs-v12)        6
+        _RNvMNtCsexYMt5MYMHp_10light_cljs13compiler_dataNtB2_4Name3new  (in light-cljs-v12)        6
+        _RNvXsb_NtCs87L1bv5kwMu_5alloc3vecINtB5_3VecNtNtB7_6string6StringENtNtCs33v9mEcCS3W_4core5clone5Clone5cloneCsexYMt5MYMHp_10light_cljs  (in light-cljs-v12)        6
+        absl::Mutex::lock()  (in light-cljs-v12)        6
+        clock_gettime_nsec_np  (in libsystem_c.dylib)        6
+        std::__Cr::__hash_table<std::__Cr::__hash_value_type<v8::internal::Tagged<v8::internal::EphemeronHashTable>, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>, std::__Cr::__unordered_map_hasher<v8::internal::Tagged<v8::internal::EphemeronHashTable>, std::__Cr::pair<v8::internal::Tagged<v8::internal::EphemeronHashTable> const, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>, v8::internal::Object::Hasher, std::__Cr::equal_to<v8::internal::Tagged<v8::internal::EphemeronHashTable>>>, std::__Cr::__unordered_map_equal<v8::internal::Tagged<v8::internal::EphemeronHashTable>, std::__Cr::pair<v8::internal::Tagged<v8::internal::EphemeronHashTable> const, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>, std::__Cr::equal_to<v8::internal::Tagged<v8::internal::EphemeronHashTable>>, v8::internal::Object::Hasher>, std::__Cr::allocator<std::__Cr::pair<v8::internal::Tagged<v8::internal::EphemeronHashTable> const, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>>>::__emplace_unique[abi:sqn230000]<std::__Cr::pair<v8::internal::Tagged<v8::internal::EphemeronHashTable> const, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>>(std::__Cr::pair<v8::internal::Tagged<v8::internal::EphemeronHashTable> const, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>&&)::'lambda'(v8::internal::Tagged<v8::internal::EphemeronHashTable> const&, std::__Cr::pair<v8::internal::Tagged<v8::internal::EphemeronHashTable> const, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>&&)::operator()[abi:sqn230000](v8::internal::Tagged<v8::internal::EphemeronHashTable> const&, std::__Cr::pair<v8::internal::Tagged<v8::internal::EphemeronHashTable> const, absl::flat_hash_set<int, absl::hash_internal::Hash<int>, std::__Cr::equal_to<int>, std::__Cr::allocator<int>>>&&) const  (in light-cljs-v12)        6
+        v8::internal::BodyDescriptorBase::IterateJSObjectBodyImpl<v8::internal::ScavengerCopiedObjectVisitor>(v8::internal::Tagged<v8::internal::Map>, v8::internal::Tagged<v8::internal::HeapObject>, int, int, v8::internal::ScavengerCopiedObjectVisitor*)  (in light-cljs-v12)        6
+        v8::internal::CopyChars<unsigned char, unsigned short>(unsigned short*, unsigned char const*, unsigned long)  (in light-cljs-v12)        6
+        v8::internal::Heap::NotifyObjectLayoutChangeDone(v8::internal::Tagged<v8::internal::HeapObject>)  (in light-cljs-v12)        6
+        v8::internal::JSObject::PreventExtensionsWithTransition<(v8::internal::PropertyAttributes)5>(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::JSObject>, v8::internal::ShouldThrow)  (in light-cljs-v12)        6
+        v8::internal::ObjectHashTableBase<v8::internal::EphemeronHashTable, v8::internal::EphemeronHashTableShape>::Put(v8::internal::Isolate*, v8::internal::Handle<v8::internal::EphemeronHashTable>, v8::internal::DirectHandle<v8::internal::Object>, v8::internal::DirectHandle<v8::internal::Object>, int)  (in light-cljs-v12)        6
+        v8::internal::TransitionsAccessor::SearchSpecial(v8::internal::Tagged<v8::internal::Symbol>)  (in light-cljs-v12)        6
+        v8::internal::compiler::BytecodeAnalysis::BytecodeAnalysisImpl::Analyze()  (in light-cljs-v12)        6
+        ???  (in <unknown binary>)  [0x17013e69c]        5
+        Builtins_Call_ReceiverIsNotNullOrUndefined_Baseline_Compact  (in light-cljs-v12)        5
+        DYLD-STUB$$memcmp  (in light-cljs-v12)        5
+        _RINvMs1_NtCsexYMt5MYMHp_10light_cljs7layeredINtB6_7LayeredNtNtCs87L1bv5kwMu_5alloc6string6StringINtNtB8_6shared6SharedNtNtB8_8analyzer22RuntimeReaderNamespaceEE3getBU_EB8_  (in light-cljs-v12)        5
+        _RINvNtNtCs1IrzuoRvWaH_3std3sys9backtrace28___rust_begin_short_backtraceNCNvMs2_NtCsexYMt5MYMHp_10light_cljs12v8_evaluatorNtB1f_11V8Evaluator3news1_0uEB1h_  (in light-cljs-v12)        5
+        _RNvCs75cfRe1uXhb_7___rustc13___rdl_dealloc  (in light-cljs-v12)        5
+        _RNvCs75cfRe1uXhb_7___rustc35___rust_no_alloc_shim_is_unstable_v2  (in light-cljs-v12)        5
+        _RNvMs5_NtCs87L1bv5kwMu_5alloc7raw_vecNtB5_11RawVecInner15try_allocate_inCsexYMt5MYMHp_10light_cljs  (in light-cljs-v12)        5
+        _RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer19check_compiler_sets  (in light-cljs-v12)        5
+        _RNvMs5_NtCsexYMt5MYMHp_10light_cljs8analyzerNtB5_8Analyzer7resolve  (in light-cljs-v12)        5
+        _RNvMs6_NtCs2WxTXoQY03F_9hashbrown3rawINtB5_8RawTableTjNtNtCsexYMt5MYMHp_10light_cljs13compiler_data4FormEE5clearBU_  (in light-cljs-v12)        5
+        _RNvMs6_NtCs87L1bv5kwMu_5alloc2rcINtB5_2RcNtNtCsexYMt5MYMHp_10light_cljs13compiler_data9DatumNodeE9drop_slowBH_  (in light-cljs-v12)        5
+        _RNvNtCs33v9mEcCS3W_4core3fmt5write  (in light-cljs-v12)        5
+        _RNvNtCs87L1bv5kwMu_5alloc2rc32rc_inner_layout_for_value_layout  (in light-cljs-v12)        5
+        _RNvNtCsexYMt5MYMHp_10light_cljs7emitter12emit_js_mode  (in light-cljs-v12)        5
+        _RNvXs9_NtCsexYMt5MYMHp_10light_cljs5arenaINtB5_5ArenaNtNtB7_8analyzer12LocalBindingEINtNtNtCs33v9mEcCS3W_4core3ops5index5IndexjE5indexB7_  (in light-cljs-v12)        5
+        _RNvXsI_NtCsexYMt5MYMHp_10light_cljs6parserNtB5_8NodeKindNtNtCs33v9mEcCS3W_4core5clone5Clone5clone  (in light-cljs-v12)        5
+        absl::Mutex::unlock()  (in light-cljs-v12)        5
+        absl::container_internal::raw_hash_set<absl::container_internal::FlatHashMapPolicy<v8::internal::Tagged<v8::internal::HeapObject>, v8::base::SmallVector<v8::internal::Tagged<v8::internal::HeapObject>, 1ul, std::__Cr::allocator<v8::internal::Tagged<v8::internal::HeapObject>>>>, v8::internal::Object::Hasher, v8::internal::Object::KeyEqualSafe>::find_or_prepare_insert<v8::internal::Tagged<v8::internal::HeapObject>>(v8::internal::Tagged<v8::internal::HeapObject> const&)  (in light-cljs-v12)        5
+        small_free_list_add_ptr  (in libsystem_malloc.dylib)        5
+        v8::String::ValueView::ValueView(v8::Isolate*, v8::Local<v8::String>)  (in light-cljs-v12)        5
+        v8::internal::ConcurrentMarkingVisitor::RecordSlot<v8::internal::CompressedObjectSlot, (v8::internal::RecordYoungSlot)1>(v8::internal::Tagged<v8::internal::HeapObject>, v8::internal::CompressedObjectSlot, v8::internal::Tagged<v8::internal::HeapObject>)  (in light-cljs-v12)        5
+        v8::internal::FactoryBase<v8::internal::Factory>::NewFixedArrayWithFiller(v8::internal::DirectHandle<v8::internal::Map>, unsigned int, v8::internal::DirectHandle<v8::internal::HeapObject>, v8::internal::AllocationType)  (in light-cljs-v12)        5
+        v8::internal::MarkCompactCollector::MarkTransitiveClosureFixpoint()::$_0::operator()() const  (in light-cljs-v12)        5
+        v8::internal::ScavengerCollector::CollectGarbage()  (in light-cljs-v12)        5
+        v8::internal::compiler::LinearScanAllocator::ForwardStateTo(v8::internal::compiler::LifetimePosition)  (in light-cljs-v12)        5
+        v8::internal::compiler::TopLevelLiveRange::AddUseInterval(v8::internal::compiler::LifetimePosition, v8::internal::compiler::LifetimePosition, v8::internal::Zone*)  (in light-cljs-v12)        5
+

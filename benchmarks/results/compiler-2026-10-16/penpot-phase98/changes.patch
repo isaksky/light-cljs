@@ -1,0 +1,159 @@
+diff --git a/after/src/allocation_probe.rs b/src/allocation_probe.rs
+new file mode 100644
+index 0000000..e68da6b
+--- /dev/null
++++ b/src/allocation_probe.rs
+@@ -0,0 +1,50 @@
++//! Isolated diagnostic: requested Rust allocation bytes, not RSS or V8 heap.
++use std::alloc::{GlobalAlloc, Layout};
++use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
++
++static LIVE: AtomicUsize = AtomicUsize::new(0);
++static PEAK: AtomicUsize = AtomicUsize::new(0);
++static REQUESTED: AtomicUsize = AtomicUsize::new(0);
++
++fn allocated(bytes: usize) {
++    let current = LIVE.fetch_add(bytes, Relaxed) + bytes;
++    PEAK.fetch_max(current, Relaxed);
++    REQUESTED.fetch_add(bytes, Relaxed);
++}
++pub struct Allocator;
++unsafe impl GlobalAlloc for Allocator {
++    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
++        let result = unsafe { mimalloc::MiMalloc.alloc(layout) };
++        if !result.is_null() {
++            allocated(layout.size());
++        }
++        result
++    }
++    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
++        let result = unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) };
++        if !result.is_null() {
++            allocated(layout.size());
++        }
++        result
++    }
++    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
++        LIVE.fetch_sub(layout.size(), Relaxed);
++        unsafe { mimalloc::MiMalloc.dealloc(ptr, layout) };
++    }
++    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
++        let result = unsafe { mimalloc::MiMalloc.realloc(ptr, layout, size) };
++        if !result.is_null() {
++            LIVE.fetch_sub(layout.size(), Relaxed);
++            allocated(size);
++        }
++        result
++    }
++}
++pub fn report(stage: &str) {
++    eprintln!(
++        "rust-alloc stage={stage} live={} peak={} requested={}",
++        LIVE.load(Relaxed),
++        PEAK.load(Relaxed),
++        REQUESTED.load(Relaxed)
++    );
++}
+diff --git a/src/compilation_session.rs b/src/compilation_session.rs
+index c54048e..2848280 100644
+--- a/src/compilation_session.rs
++++ b/src/compilation_session.rs
+@@ -88,6 +88,52 @@ struct Catalog {
+ pub(crate) struct CompilationSession {
+     catalog: RefCell<Catalog>,
+ }
++// Diagnostic only: after analysis has completed, measure disjoint release groups.
++impl Drop for CompilationSession {
++    fn drop(&mut self) {
++        use crate::allocation_probe::report;
++        let catalog = self.catalog.get_mut();
++        let mut counts = [0; 3];
++        let mut sizes = [0; 2];
++        for unit in &catalog.units {
++            let unit = unit.borrow();
++            if let AnalysisState::Analyzed(program, _) = &unit.state {
++                let group = usize::from(unit.emitted);
++                counts[group] += 1;
++                sizes[group] += program.exprs.len();
++                counts[2] += usize::from(Rc::strong_count(program) == 1);
++            }
++        }
++        eprintln!(
++            "retained-programs un-emitted={} emitted={} unique={} logical-exprs-un-emitted={} logical-exprs-emitted={}",
++            counts[0], counts[1], counts[2], sizes[0], sizes[1]
++        );
++        report("session-before-program-release");
++        for unit in &catalog.units {
++            let mut unit = unit.borrow_mut();
++            if unit.emitted && matches!(unit.state, AnalysisState::Analyzed(..)) {
++                unit.state = AnalysisState::Unstarted;
++            }
++        }
++        report("session-emitted-programs-released");
++        for unit in &catalog.units {
++            let mut unit = unit.borrow_mut();
++            if matches!(unit.state, AnalysisState::Analyzed(..)) {
++                unit.state = AnalysisState::Unstarted;
++            }
++        }
++        report("session-all-programs-released");
++        catalog.units.clear();
++        catalog.registrations.clear();
++        catalog.bindings.clear();
++        catalog.active.clear();
++        catalog.multifn_targets.clear();
++        report("session-catalog-released");
++        catalog.bootstrap = None;
++        report("session-bootstrap-released");
++    }
++}
++
+ impl CompilationSession {
+     pub fn bootstrap(&self) -> Option<Bootstrap> {
+         self.catalog.borrow().bootstrap.clone()
+diff --git a/src/lib.rs b/src/lib.rs
+index b285b48..8e3ace3 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -9,6 +9,7 @@
+ 
+ use std::{iter::FusedIterator, ops::Range};
+ 
++pub mod allocation_probe;
+ pub mod analyzer;
+ pub mod application;
+ pub mod arena;
+diff --git a/src/main.rs b/src/main.rs
+index 9a42d2b..fd39713 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,6 +1,6 @@
+ // Isolated CLI allocation experiment; library consumers keep their allocator.
+ #[global_allocator]
+-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
++static ALLOCATOR: light_cljs::allocation_probe::Allocator = light_cljs::allocation_probe::Allocator;
+ 
+ use std::{
+     env,
+@@ -420,16 +420,20 @@ fn run_namespace(
+         options.warning_mode = true;
+     }
+     let mut warnings = Vec::new();
++    let mut host = flags.host();
+     let program = light_cljs::compiler::analyze_namespace_entry_with_sources(
+         &entry,
+         &roots,
+-        &mut flags.host(),
++        &mut host,
+         options,
+         &mut warnings,
+     );
+     if options.warning_mode {
+         print_warnings(&warnings);
+     }
++    light_cljs::allocation_probe::report("after-analysis");
++    drop(host);
++    light_cljs::allocation_probe::report("after-session-drop");
+     let (program, files) = program?;
+     if let (true, Some(out_dir)) = (reloadable, &out_dir) {
+         return write_dev_build(&program, &files, out_dir);

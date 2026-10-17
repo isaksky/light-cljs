@@ -1,0 +1,66 @@
+render: 52285 interrupt-check samples, zero dropped.
+These measure poll occurrences, not wall-clock percentages.
+
+Top frame
+{:top 10944, :inclusive 18615, :at "eval_script:3109:7 visit"}
+{:top 2930, :inclusive 17950, :at "eval_script:3023:5 decode"}
+{:top 2531, :inclusive 2531, :at "eval_script:46:14 <null>"}
+{:top 2180, :inclusive 3035, :at "<input>:150:3 selectFrontier"}
+{:top 2139, :inclusive 8676, :at "eval_script:3064:5 decodeNode"}
+{:top 1878, :inclusive 1878, :at "eval_script:48:14 <null>"}
+{:top 1868, :inclusive 1933, :at "<input>:128:31 <null>"}
+{:top 1462, :inclusive 2012, :at "eval_script:4728:3 externalMethod"}
+{:top 1416, :inclusive 1417, :at "eval_script:4698:3 protocolSlot"}
+{:top 1232, :inclusive 6545, :at "eval_script:4713:3 directMethod"}
+{:top 1171, :inclusive 3058, :at "eval_script:3679:22 <null>"}
+{:top 1144, :inclusive 1144, :at "eval_script:5026:12 <null>"}
+{:top 1070, :inclusive 12370, :at "eval_script:4741:3 publicMethod"}
+{:top 1043, :inclusive 2467, :at "eval_script:3763:12 <null>"}
+{:top 960, :inclusive 6415, :at "eval_script:3821:3 coreProtocolImplementation"}
+{:top 889, :inclusive 3896, :at "eval_script:3680:20 <null>"}
+{:top 810, :inclusive 838, :at "eval_script:2801:3 structuralEqualPair"}
+{:top 790, :inclusive 1401, :at "eval_script:1295:25 <null>"}
+{:top 776, :inclusive 776, :at "eval_script:20:12 <null>"}
+{:top 756, :inclusive 756, :at "eval_script:1291:14 <null>"}
+{:top 727, :inclusive 6755, :at "eval_script:4723:3 builtin"}
+{:top 553, :inclusive 5255, :at "eval_script:3828:3 builtinCoreImplementation"}
+{:top 552, :inclusive 4280, :at "eval_script:2794:3 equalPair"}
+{:top 550, :inclusive 550, :at "eval_script:4696:3 nativeType"}
+{:top 435, :inclusive 989, :at "eval_script:3754:3 seqValue"}
+{:top 432, :inclusive 2542, :at "<input>:161:45 <null>"}
+{:top 419, :inclusive 1576, :at "eval_script:5036:22 <null>"}
+{:top 393, :inclusive 393, :at "<input>:153:23 <null>"}
+{:top 362, :inclusive 913, :at "eval_script:472:3 first"}
+{:top 359, :inclusive 4537, :at "eval_script:1558:56 <null>"}
+
+Inclusive (deduplicated within each sampled stack)
+{:top 36, :inclusive 18651, :at "eval_script:3106:5 encode"}
+{:top 10944, :inclusive 18615, :at "eval_script:3109:7 visit"}
+{:top 2930, :inclusive 17950, :at "eval_script:3023:5 decode"}
+{:top 15, :inclusive 17328, :at "eval_script:7511:23 <null>"}
+{:top 9, :inclusive 15218, :at "eval_script:7495:36 <null>"}
+{:top 0, :inclusive 13462, :at "eval_script:4399:21 <null>"}
+{:top 43, :inclusive 13462, :at "eval_script:4409:3 withMacroReaderContext"}
+{:top 227, :inclusive 12974, :at "eval_script:415:34 <null>"}
+{:top 9, :inclusive 12372, :at "eval_script:7496:29 <null>"}
+{:top 1070, :inclusive 12370, :at "eval_script:4741:3 publicMethod"}
+{:top 2139, :inclusive 8676, :at "eval_script:3064:5 decodeNode"}
+{:top 727, :inclusive 6755, :at "eval_script:4723:3 builtin"}
+{:top 331, :inclusive 6746, :at "eval_script:3726:3 implementsProtocol"}
+{:top 57, :inclusive 6690, :at "eval_script:4482:3 deferredValue"}
+{:top 1232, :inclusive 6545, :at "eval_script:4713:3 directMethod"}
+{:top 960, :inclusive 6415, :at "eval_script:3821:3 coreProtocolImplementation"}
+{:top 16, :inclusive 6321, :at "eval_script:3057:36 <null>"}
+{:top 273, :inclusive 5679, :at "eval_script:392:3 seq"}
+{:top 150, :inclusive 5644, :at "eval_script:1600:3 mapFromArray"}
+{:top 236, :inclusive 5433, :at "eval_script:1566:3 putEntry"}
+{:top 553, :inclusive 5255, :at "eval_script:3828:3 builtinCoreImplementation"}
+{:top 17, :inclusive 5226, :at "eval_script:421:23 <null>"}
+{:top 11, :inclusive 4896, :at "eval_script:918:48 <null>"}
+{:top 226, :inclusive 4763, :at "eval_script:1554:3 entryIndex"}
+{:top 83, :inclusive 4710, :at "eval_script:804:3 reduce"}
+{:top 9, :inclusive 4631, :at "<input>:1:1 <null>"}
+{:top 359, :inclusive 4537, :at "eval_script:1558:56 <null>"}
+{:top 12, :inclusive 4473, :at "eval_script:7506:27 <null>"}
+{:top 42, :inclusive 4367, :at "eval_script:420:29 <null>"}
+{:top 552, :inclusive 4280, :at "eval_script:2794:3 equalPair"}

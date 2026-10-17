@@ -1,0 +1,46 @@
+   Compiling v8 v152.2.0 (/private/tmp/light-cljs-phase109/v8)
+warning: use of deprecated method `std::sync::atomic::Atomic::<usize>::fetch_update`: renamed to `try_update` for consistency
+    --> /private/tmp/light-cljs-phase109/v8/src/isolate.rs:2317:8
+     |
+2317 |       .fetch_update(
+     |        ^^^^^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+     |
+2317 -       .fetch_update(
+2317 +       .try_update(
+     |
+
+warning: `v8` (lib) generated 1 warning (run `cargo fix --lib -p v8` to apply 1 suggestion)
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase109/project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.75s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase108/target/debug/deps/light_cljs-2c0818016e227cad)
+
+running 1 test
+
+thread 'v8_evaluator::buffer_tests::backing_store_budgets_cover_construction_growth_and_aggregate_storage' (140656661) panicked at src/v8_buffer_tests.rs:80:5:
+fixed ArrayBuffer: exceeded budget without error
+fixed SharedArrayBuffer: exceeded budget without error
+resizable ArrayBuffer: exceeded budget without error
+growable SharedArrayBuffer: exceeded budget without error
+ArrayBuffer.resize: exceeded budget without error
+SharedArrayBuffer.grow: exceeded budget without error
+Wasm memory: exceeded budget without error
+shared Wasm memory: exceeded budget without error
+Wasm memory.grow: exceeded budget without error
+shared Wasm memory.grow: exceeded budget without error
+aggregate fixed buffers: exceeded budget without error
+aggregate growable buffers: exceeded budget without error
+aggregate mixed buffers: exceeded budget without error
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test v8_evaluator::buffer_tests::backing_store_budgets_cover_construction_growth_and_aggregate_storage ... FAILED
+
+failures:
+
+failures:
+    v8_evaluator::buffer_tests::backing_store_budgets_cover_construction_growth_and_aggregate_storage
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 140 filtered out; finished in 0.10s
+
+error: test failed, to rerun pass `--lib`

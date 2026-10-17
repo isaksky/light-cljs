@@ -1,0 +1,2 @@
+render: application body matches phase20 outside embedded runtime; complete output passes node --check.
+main: application body matches phase20 outside embedded runtime; complete output passes node --check.

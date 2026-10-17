@@ -1,0 +1,10 @@
+b848281f44d9f70896dd7fdff344ac2e1e4cfeb1a680b905f8211d2aa0fb0c5e  /private/tmp/light-cljs-phase70/light-cljs-unit-hygiene
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase70/main-none.js
+2f7ee4c7570bcb288abb35bc02f7f76e3e7e2b192d36122f0bf6c45dca989655  /private/tmp/light-cljs-phase70/clean/render.js
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase70/clean/main-none.js
+82d4cf05527a4120e22eb7302063c3dd8759dbc8fb35e6a3b7efce63d10c7077  /private/tmp/light-cljs-phase70/clean/main-advanced.js
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase70/heaps/main-128.js
+cbcd84667b8dcf7ce31727e44b79f70dfe9bb56ead1ac7ebfdef8e4e1c465769  /private/tmp/light-cljs-phase70/project/Cargo.lock
+9f89661a55586ebe7886a447bd10106769f9d62d144645bcb7bad64025cba020  /private/tmp/light-cljs-phase70/project/src/emitter.rs
+c459d8b1d783dfd12d456d38f6da9b41694c80059e5dd478ace6710cab25ec49  /private/tmp/light-cljs-phase70/project/src/terse.rs
+b869e54345b118e0de824730a004fb852bd2e54ddf71cbe7ff990e051f1c231c  /private/tmp/light-cljs-phase70/project/tests/evaluation/evaluator.rs

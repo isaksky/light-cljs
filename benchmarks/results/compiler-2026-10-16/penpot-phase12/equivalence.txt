@@ -1,0 +1,1 @@
+render: complete output matches phase11 byte for byte; node --check passes.

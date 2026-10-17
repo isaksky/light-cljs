@@ -1,0 +1,6 @@
+80e5a91586c098642d3375d4939c3868b55626b5cb76273ed43036f08f1ac13a  /private/tmp/light-cljs-phase81/light-cljs-session-allocation-probe
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase81/main-none.js
+cbcd84667b8dcf7ce31727e44b79f70dfe9bb56ead1ac7ebfdef8e4e1c465769  /private/tmp/light-cljs-phase81/project/Cargo.lock
+24c0b76cf5defccf21d0d1832d1ed4c08f22e375c648f90dbb0988a8a9156952  /private/tmp/light-cljs-phase81/project/src/main.rs
+8aaff4572dfcf7a4b6c7d5afcf2689c6556d2d0f8856b1680883b068cc58b29a  /private/tmp/light-cljs-phase81/project/src/lib.rs
+4925f1de79972399c6634ecfd7554dfa96a421249d2c1825ee9ea6437149f645  /private/tmp/light-cljs-phase81/project/src/compilation_session.rs

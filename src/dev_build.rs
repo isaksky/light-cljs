@@ -278,11 +278,15 @@ impl DevManifest {
 /// puts its hooks in source order and drops the flag a definition lost; a
 /// definition removed from the source keeps its last metadata, as it stays
 /// defined. A client runs the before-load hooks in reverse.
-pub(crate) fn program_hooks(program: &Program, namespaces: &[String]) -> [Vec<DevHook>; 2] {
+pub(crate) fn program_hooks<'a>(
+    program: &Program,
+    namespaces: impl IntoIterator<Item = &'a String>,
+) -> [Vec<DevHook>; 2] {
+    let namespaces = namespaces.into_iter().collect::<Vec<_>>();
     let position = |namespace: &str| {
         namespaces
             .iter()
-            .position(|known| known == namespace)
+            .position(|known| known.as_str() == namespace)
             .unwrap_or(namespaces.len())
     };
     let mut definitions = program

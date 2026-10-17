@@ -1,0 +1,7 @@
+c6b7ef71fdf9b48a56f4aefd457b5b50c6115f7c55a9c2898a0237cb9b3f8065  /private/tmp/light-cljs-phase55/light-cljs-namespace-ids
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase55/main-namespace-ids.js
+8fde956ba3b6e7dbd86fdb302d8659b48426e08c6e8acc71be36bf427e472500  /private/tmp/light-cljs-phase55/stale-target-light-cljs-namespace-ids
+f64c5a22ae36828b0a88f968b00af2529a577e35685e191d4bae12a494d1402b  /private/tmp/light-cljs-phase55/project/src/analyzer.rs
+2fcdb08a808539dbb30fb8b16a2eb5b6b71b146d262aa49d230aa2b924e5cfab  /private/tmp/light-cljs-phase55/project/src/macro_host.rs
+3ab93927028e348ce94d3dfe012e45adab5de611dbab2c16c388311015913d3b  /private/tmp/light-cljs-phase55/project/src/compilation_session.rs
+2ea28218a9a3f104e11fb18c6337a5bf9b2dc790bd2e20a4534b9063a316b0c4  /private/tmp/light-cljs-phase55/project/src/eval_compiler.rs

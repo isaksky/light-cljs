@@ -281,12 +281,6 @@ pub(crate) fn append(
     (remap.map_expr)(fragment.root)
 }
 
-/// Preserve the definition-time resolution environment and its metadata, without
-/// retaining unrelated executable expression graphs, and return what the
-/// snapshot shares with `program` for [`append`]. Global IDs, protocols and
-/// record constructors remain stable. Only the strings and named literals that
-/// metadata uses are kept, renumbered, so a snapshot grows with the program's
-/// declarations rather than with all of its code.
 /// A deferred unit's view of `program`: the program itself, frozen so the
 /// snapshot shares its tables instead of copying them, and what it shares
 /// with `program` for [`append`].
@@ -768,22 +762,19 @@ impl<F: Fn(ExprId) -> ExprId> Remap<F> {
             }
             DefType {
                 global,
-                constructor,
-                body,
-                masks,
-                map_constructor,
+                layout,
                 methods,
                 ..
             } => {
                 self.global(global);
-                if let Some(id) = constructor {
+                if let Some(id) = &mut layout.constructor {
                     self.global(id);
                 }
-                if let Some(id) = map_constructor {
+                if let Some(id) = &mut layout.map_constructor {
                     self.global(id);
                 }
-                self.optional(body);
-                self.optional(masks);
+                self.optional(&mut layout.body);
+                self.optional(&mut layout.masks);
                 self.methods(methods);
             }
             Construct { callee, args } | Call { callee, args } => {

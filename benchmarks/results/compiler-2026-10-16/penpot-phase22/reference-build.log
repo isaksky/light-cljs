@@ -1,0 +1,5 @@
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}
+REFERENCE SETTINGS {:optimizations :none, :static-fns false, :def-emits-var false}
+REFERENCE IDENTITY release 1.12.134
+REFERENCE RUNTIME {:clojurescript "1.12.134", :clojure "1.12.4", :java "25.0.2"}

@@ -1,0 +1,15 @@
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.94s
+     Running unittests src/lib.rs (target/debug/deps/light_cljs-ad9e157a4734fe2e)
+
+running 7 tests
+test macro_host::compiler_pure_tests::environment_reuse_preserves_local_shadow_chains_and_location ... ok
+test macro_host::compiler_pure_tests::reader_environment_reuse_obeys_declaration_acknowledgement_and_old_views ... ok
+test evaluator::active_tests::environment_cache_preserves_lexical_data_and_copies_mutable_literals ... ok
+test evaluator::active_tests::failed_environment_import_does_not_publish_uninstalled_cache_slots ... ok
+test evaluator::active_tests::environment_import_can_reenter_before_its_cache_slots_are_installed ... ok
+test evaluator::active_tests::environment_child_eviction_preserves_values_and_metadata_order ... ok
+test evaluator::active_tests::reused_environment_children_still_count_against_node_and_depth_limits ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 97 filtered out; finished in 0.06s
+

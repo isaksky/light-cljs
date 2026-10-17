@@ -1,0 +1,28 @@
+PROFILE analysis-other seconds=28.328171 calls=1
+PROFILE argument-import seconds=18.633423 calls=128871
+PROFILE build-environment seconds=3.021842 calls=48216
+PROFILE build-reader-environment seconds=1.083034 calls=48216
+PROFILE environment-import seconds=128.134394 calls=48216
+PROFILE form-export seconds=16.148149 calls=48216
+PROFILE form-import seconds=22.055545 calls=48216
+PROFILE macro-call seconds=156.557115 calls=48216
+PROFILE namespace-registration seconds=67.466517 calls=441
+PROFILE unit-emission seconds=6.397971 calls=441
+PROFILE unit-evaluation seconds=12.250814 calls=195017
+PROFILE warnings seconds=9.985336 calls=14447
+      472.40 real       471.14 user         1.21 sys
+          3193061376  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              252311  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                1926  voluntary context switches
+                 787  involuntary context switches
+          2045680384  peak memory footprint

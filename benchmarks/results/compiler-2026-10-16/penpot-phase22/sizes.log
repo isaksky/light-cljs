@@ -1,0 +1,90 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running tests/compiler/main.rs (target/debug/deps/compiler-e13b30adac4f02bb)
+
+running 1 test
+bytes / ceiling                  none              prepare             advanced
+console-log-sum    438,086 / 438,000!   438,086 / 438,000!           151 / 200 
+println-hi         437,973 / 438,000    437,973 / 438,000        4,771 / 4,800 
+vector-printed     437,998 / 438,000    437,998 / 438,000      10,837 / 11,000 
+map-printed        438,001 / 438,000!   438,001 / 438,000!     14,648 / 15,000 
+seq-pipeline       438,317 / 438,000!   438,317 / 438,000!     26,110 / 27,000 
+add                437,926 / 438,000    437,926 / 438,000             19 / 100 
+rest-fn            438,270 / 438,000!   438,270 / 438,000!     10,489 / 11,000 
+keyword-case       438,558 / 439,000    438,558 / 439,000        3,859 / 3,900 
+record-protocol    438,970 / 439,000    438,970 / 439,000        5,385 / 5,400 
+pure-defs          439,606 / 440,000    439,528 / 440,000        5,294 / 5,300 
+keyword-lookups    439,050 / 439,000!   439,050 / 439,000!     31,227 / 32,000 
+constant-literals   438,827 / 439,000    438,827 / 439,000      22,290 / 23,000 
+constant-lookups   439,245 / 439,000!   439,245 / 439,000!       4,239 / 4,300 
+three-records      441,264 / 441,000!   441,264 / 441,000!       5,380 / 5,400 
+eight-records      449,766 / 450,000    449,766 / 450,000      32,189 / 33,000 
+constant-keys      439,043 / 439,000!   439,043 / 439,000!     43,793 / 44,000 
+event-maps         438,575 / 439,000    438,575 / 439,000      31,461 / 32,000 
+vector-only        438,125 / 438,000!   438,125 / 438,000!       5,270 / 5,300 
+keyword-only       438,093 / 438,000!   438,093 / 438,000!       3,786 / 3,800 
+map-only           438,131 / 438,000!   438,131 / 438,000!     10,190 / 11,000 
+atom-str           438,141 / 438,000!   438,141 / 438,000!       2,711 / 2,800 
+set-only           438,162 / 438,000!   438,162 / 438,000!       5,503 / 5,600 
+mapv-count         438,153 / 438,000!   438,153 / 438,000!     32,280 / 33,000 
+raw-js             438,925 / 439,000    438,925 / 439,000             26 / 100 
+multi-arity        440,754 / 441,000    440,754 / 441,000            318 / 400 
+closed-params      440,580 / 441,000    440,580 / 441,000      13,993 / 14,000 
+debug-logging      439,245 / 439,000!   439,245 / 439,000!            31 / 100 
+local-arities      441,177 / 441,000!   441,177 / 441,000!           490 / 500 
+callbacks          440,066 / 440,000!   440,066 / 440,000!     38,317 / 39,000 
+protocol-params    441,413 / 442,000    441,413 / 442,000      43,198 / 44,000 
+features           459,072 / 459,000!   459,072 / 459,000!     70,012 / 70,000!
+features-direct    457,968 / 458,000    457,968 / 458,000      69,620 / 70,000 
+loadable-site      439,626 / 440,000    439,496 / 440,000            587 / 600 
+direct-site        438,843 / 439,000    438,843 / 439,000            280 / 300 
+
+
+thread 'size_ratchet::emitted_sizes_stay_under_their_ceilings' (133394218) panicked at tests/compiler/size_ratchet.rs:136:5:
+emitted JavaScript grew past its ratchet ceiling for console-log-sum at none, console-log-sum at prepare, map-printed at none, map-printed at prepare, seq-pipeline at none, seq-pipeline at prepare, rest-fn at none, rest-fn at prepare, keyword-lookups at none, keyword-lookups at prepare, constant-lookups at none, constant-lookups at prepare, three-records at none, three-records at prepare, constant-keys at none, constant-keys at prepare, vector-only at none, vector-only at prepare, keyword-only at none, keyword-only at prepare, map-only at none, map-only at prepare, atom-str at none, atom-str at prepare, set-only at none, set-only at prepare, mapv-count at none, mapv-count at prepare, debug-logging at none, debug-logging at prepare, local-arities at none, local-arities at prepare, callbacks at none, callbacks at prepare, features at none, features at prepare, features at advanced; shrink the output or raise the ceiling with a reason (marked !):
+bytes / ceiling                  none              prepare             advanced
+console-log-sum    438,086 / 438,000!   438,086 / 438,000!           151 / 200 
+println-hi         437,973 / 438,000    437,973 / 438,000        4,771 / 4,800 
+vector-printed     437,998 / 438,000    437,998 / 438,000      10,837 / 11,000 
+map-printed        438,001 / 438,000!   438,001 / 438,000!     14,648 / 15,000 
+seq-pipeline       438,317 / 438,000!   438,317 / 438,000!     26,110 / 27,000 
+add                437,926 / 438,000    437,926 / 438,000             19 / 100 
+rest-fn            438,270 / 438,000!   438,270 / 438,000!     10,489 / 11,000 
+keyword-case       438,558 / 439,000    438,558 / 439,000        3,859 / 3,900 
+record-protocol    438,970 / 439,000    438,970 / 439,000        5,385 / 5,400 
+pure-defs          439,606 / 440,000    439,528 / 440,000        5,294 / 5,300 
+keyword-lookups    439,050 / 439,000!   439,050 / 439,000!     31,227 / 32,000 
+constant-literals   438,827 / 439,000    438,827 / 439,000      22,290 / 23,000 
+constant-lookups   439,245 / 439,000!   439,245 / 439,000!       4,239 / 4,300 
+three-records      441,264 / 441,000!   441,264 / 441,000!       5,380 / 5,400 
+eight-records      449,766 / 450,000    449,766 / 450,000      32,189 / 33,000 
+constant-keys      439,043 / 439,000!   439,043 / 439,000!     43,793 / 44,000 
+event-maps         438,575 / 439,000    438,575 / 439,000      31,461 / 32,000 
+vector-only        438,125 / 438,000!   438,125 / 438,000!       5,270 / 5,300 
+keyword-only       438,093 / 438,000!   438,093 / 438,000!       3,786 / 3,800 
+map-only           438,131 / 438,000!   438,131 / 438,000!     10,190 / 11,000 
+atom-str           438,141 / 438,000!   438,141 / 438,000!       2,711 / 2,800 
+set-only           438,162 / 438,000!   438,162 / 438,000!       5,503 / 5,600 
+mapv-count         438,153 / 438,000!   438,153 / 438,000!     32,280 / 33,000 
+raw-js             438,925 / 439,000    438,925 / 439,000             26 / 100 
+multi-arity        440,754 / 441,000    440,754 / 441,000            318 / 400 
+closed-params      440,580 / 441,000    440,580 / 441,000      13,993 / 14,000 
+debug-logging      439,245 / 439,000!   439,245 / 439,000!            31 / 100 
+local-arities      441,177 / 441,000!   441,177 / 441,000!           490 / 500 
+callbacks          440,066 / 440,000!   440,066 / 440,000!     38,317 / 39,000 
+protocol-params    441,413 / 442,000    441,413 / 442,000      43,198 / 44,000 
+features           459,072 / 459,000!   459,072 / 459,000!     70,012 / 70,000!
+features-direct    457,968 / 458,000    457,968 / 458,000      69,620 / 70,000 
+loadable-site      439,626 / 440,000    439,496 / 440,000            587 / 600 
+direct-site        438,843 / 439,000    438,843 / 439,000            280 / 300 
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test size_ratchet::emitted_sizes_stay_under_their_ceilings ... FAILED
+
+failures:
+
+failures:
+    size_ratchet::emitted_sizes_stay_under_their_ceilings
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1010 filtered out; finished in 0.62s
+
+error: test failed, to rerun pass `--test compiler`

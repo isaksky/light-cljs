@@ -1,0 +1,316 @@
+--- a/src/v8_evaluator.rs
++++ b/src/v8_evaluator.rs
+@@ -13,6 +13,7 @@
+     collections::{HashMap, VecDeque},
+     rc::Rc,
+     sync::{Arc, OnceLock, atomic::Ordering},
++    time::{Duration, Instant},
+ };
+ use v8::{Local, PinScope};
+ 
+@@ -60,6 +61,7 @@
+ }
+ struct State {
+     buffers: Arc<buffers::Budget>,
++    memory_sample: Cell<Instant>,
+     namespaces: RefCell<NamespaceCache>,
+     control: ExecutionControl,
+     generation: u64,
+@@ -103,6 +105,32 @@
+     }
+ }
+ impl State {
++    fn check_memory(&self, isolate: &mut v8::Isolate, force: bool) {
++        // Without backing storage the existing near-heap-limit callback owns
++        // enforcement. Heap statistics retire V8's allocation areas, so avoid
++        // asking for them on every compiler/bridge call or interrupt.
++        if self.buffers.used() == 0
++            || (!force && self.memory_sample.get().elapsed() < Duration::from_millis(5))
++        {
++            return;
++        }
++        self.memory_sample.set(Instant::now());
++        self.buffers
++            .observe_heap(isolate.get_heap_statistics().used_heap_size());
++        if self.buffers.exhausted() {
++            // The first snapshot may include unreachable heap objects and
++            // backing stores. Give the collector its normal chance to release
++            // them before making the session terminal.
++            isolate.low_memory_notification();
++            self.buffers
++                .observe_heap(isolate.get_heap_statistics().used_heap_size());
++            if self.buffers.exhausted() {
++                self.control.memory_exhausted();
++                isolate.terminate_execution();
++            }
++        }
++    }
++
+     fn remember_error(&self, error: &EvalError) {
+         let mut pending = self.pending_error.borrow_mut();
+         if pending.is_none()
+@@ -143,15 +171,31 @@
+         }
+     }
+ }
+-extern "C" fn interrupt(isolate: v8::UnsafeRawIsolatePtr, _: *mut std::ffi::c_void) {
++extern "C" fn interrupt(mut isolate: v8::UnsafeRawIsolatePtr, _: *mut std::ffi::c_void) {
+     // V8 invokes this on the isolate's owning execution thread. No JavaScript
+     // is entered. At most one request is queued while Rust is analyzing.
+-    let isolate = unsafe { v8::Isolate::ref_from_raw_isolate_ptr(&isolate) };
+-    let state = isolate.get_slot::<Rc<State>>().unwrap();
++    let isolate = unsafe { v8::Isolate::ref_from_raw_isolate_ptr_mut(&mut isolate) };
++    let state = isolate.get_slot::<Rc<State>>().unwrap().clone();
+     state.interrupt.completed();
+     if state.control.poll().is_err() {
+         isolate.terminate_execution();
++    } else {
++        state.check_memory(isolate, false);
+     }
++}
++unsafe extern "C" fn after_gc(
++    mut isolate: v8::UnsafeRawIsolatePtr,
++    _: v8::GCType,
++    _: v8::GCCallbackFlags,
++    _: *mut std::ffi::c_void,
++) {
++    // Runs on the isolate's owning thread, including allocation retries. Only
++    // refresh accounting here: a minor collection need not reclaim all garbage.
++    let isolate = unsafe { v8::Isolate::ref_from_raw_isolate_ptr_mut(&mut isolate) };
++    let state = isolate.get_slot::<Rc<State>>().unwrap().clone();
++    state
++        .buffers
++        .observe_heap(isolate.get_heap_statistics().used_heap_size());
+ }
+ extern "C" fn near_heap_limit(data: *mut std::ffi::c_void, current: usize, _: usize) -> usize {
+     let state = unsafe { &*data.cast::<MemoryGuard>() };
+@@ -256,6 +300,7 @@
+         isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+         let state = Rc::new(State {
+             buffers,
++            memory_sample: Cell::new(Instant::now()),
+             namespaces: RefCell::new(NamespaceCache::default()),
+             control: control.clone(),
+             generation: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
+@@ -268,6 +313,7 @@
+             source_units: Cell::new(0),
+         });
+         isolate.set_slot(state.clone());
++        isolate.add_gc_epilogue_callback(after_gc, std::ptr::null_mut(), v8::GCType::kGCTypeAll);
+         let memory = Box::new(MemoryGuard {
+             handle: isolate.thread_safe_handle(),
+             control: control.clone(),
+@@ -302,6 +348,9 @@
+             // Publish the root immediately so normal Drop handles partial
+             // initialization, including a terminated script or failed service.
+             self.context = Some(v8::Global::new(scope, local));
++            self.state
++                .buffers
++                .observe_heap(scope.get_heap_statistics().used_heap_size());
+             // Context::new's native prelude is not fallible in rusty_v8.
+             // Check its elapsed time before enabling interrupts for JS startup.
+             self.state.control.poll()?;
+@@ -324,6 +373,7 @@
+         })();
+         // Termination has no catchable JS exception. Preserve the owned
+         // timeout/fuel/memory diagnostic instead of the generic engine error.
++        self.state.check_memory(entered.0, true);
+         self.state.control.poll()?;
+         result
+     }
+@@ -392,6 +442,9 @@
+         self.isolate
+             .get_mut()
+             .remove_near_heap_limit_callback(near_heap_limit, 0);
++        self.isolate
++            .get_mut()
++            .remove_gc_epilogue_callback(after_gc, std::ptr::null_mut());
+         self.state.services.borrow_mut().take();
+         self.state.namespaces.borrow_mut().entries.clear();
+         self.state.bridge.borrow_mut().clear_engine_roots();
+@@ -420,6 +473,7 @@
+                 invoke(scope, self.state, "checkBridge", &[])?;
+                 Ok(value)
+             });
++            self.state.check_memory(scope, true);
+             match result {
+                 Err(error) if scope.has_terminated() => {
+                     Err(self.state.pending_error.borrow().clone().unwrap_or(error))
+--- a/src/v8_buffers.rs
++++ b/src/v8_buffers.rs
+@@ -9,6 +9,7 @@
+ 
+ pub(super) struct Budget {
+     used: AtomicUsize,
++    heap: AtomicUsize,
+     limit: usize,
+     control: ExecutionControl,
+ }
+@@ -32,6 +33,7 @@
+     pub(super) fn new(limit: usize, control: ExecutionControl) -> Arc<Self> {
+         Arc::new(Self {
+             used: AtomicUsize::new(0),
++            heap: AtomicUsize::new(0),
+             limit,
+             control,
+         })
+@@ -41,6 +43,16 @@
+         self.used.load(Ordering::Relaxed)
+     }
+ 
++    pub(super) fn observe_heap(&self, bytes: usize) {
++        self.heap.store(bytes, Ordering::Relaxed);
++    }
++
++    pub(super) fn exhausted(&self) -> bool {
++        self.used()
++            .saturating_add(self.heap.load(Ordering::Relaxed))
++            > self.limit
++    }
++
+     pub(super) fn allocator(self: &Arc<Self>) -> Result<v8::UniqueRef<v8::Allocator>, EvalError> {
+         static CALLBACKS: Callbacks = Callbacks {
+             reserve,
+@@ -69,7 +81,11 @@
+     let state = unsafe { &*state.cast::<Budget>() };
+     let mut current = state.used.load(Ordering::Relaxed);
+     loop {
+-        let Some(next) = current.checked_add(length).filter(|&n| n <= state.limit) else {
++        let Some(next) = current.checked_add(length).filter(|&n| {
++            n <= state
++                .limit
++                .saturating_sub(state.heap.load(Ordering::Relaxed))
++        }) else {
+             // V8 may collect garbage and retry. Failure becomes terminal only
+             // through `failed`, after the engine exhausts its allocation retries.
+             return false;
+--- a/src/v8_buffer_tests.rs
++++ b/src/v8_buffer_tests.rs
+@@ -1,5 +1,127 @@
+ use super::*;
++
++#[test]
++fn heap_and_backing_stores_share_one_session_budget() {
++    let mut failures = Vec::new();
++    for source in [
++        "[new Array(5 * 1024 * 1024).fill(1), new ArrayBuffer(20 * 1024 * 1024)]",
++        "[new SharedArrayBuffer(20 * 1024 * 1024, {maxByteLength: 24 * 1024 * 1024}), new Array(5 * 1024 * 1024).fill(1)]",
++    ] {
++        let evaluator = session();
++        let result = evaluator.evaluate_js(source);
++        let diagnostic = match result {
++            Err(error) => error.0,
++            Ok(value) => {
++                let mut isolate = evaluator.isolate.borrow_mut();
++                let entered = Entered::new(&mut isolate);
++                let stats = entered.0.get_heap_statistics();
++                let diagnostic = format!(
++                    "budget bypass: heap={} backing={}",
++                    stats.used_heap_size(),
++                    evaluator.state.buffers.used()
++                );
++                drop(entered);
++                drop(isolate);
++                evaluator.release(value).unwrap();
++                diagnostic
++            }
++        };
++        if !diagnostic.contains("memory limit exhausted") {
++            failures.push(format!("{source}: {diagnostic}"));
++        }
++    }
++    assert!(failures.is_empty(), "{}", failures.join("\n"));
++}
++
++#[test]
++fn combined_storage_below_the_limit_is_not_double_counted() {
++    for buffer in [
++        "new ArrayBuffer(12 * 1024 * 1024)",
++        "new SharedArrayBuffer(12 * 1024 * 1024)",
++        "new ArrayBuffer(12 * 1024 * 1024, {maxByteLength: 32 * 1024 * 1024})",
++        "new SharedArrayBuffer(12 * 1024 * 1024, {maxByteLength: 32 * 1024 * 1024})",
++        "new WebAssembly.Memory({initial: 192, maximum: 1024})",
++        "new WebAssembly.Memory({initial: 192, maximum: 1024, shared: true})",
++    ] {
++        let evaluator = session();
++        assert_eq!(
++            number(
++                &evaluator,
++                &format!(
++                    "(() => {{ globalThis.keep = [new Array(3 * 1024 * 1024).fill(1), {buffer}]; return 777; }})()"
++                )
++            ),
++            777.0,
++            "{buffer}"
++        );
++        assert_eq!(evaluator.state.buffers.used(), 12 * 1024 * 1024);
++        assert_eq!(number(&evaluator, "42"), 42.0);
++    }
++}
++
++#[test]
++fn combined_budget_interrupts_a_loop_after_heap_growth() {
++    let evaluator = session();
++    let error = evaluator
++        .evaluate_js(
++            r#"(() => {
++        globalThis.keep = [new SharedArrayBuffer(20 * 1024 * 1024,
++            {maxByteLength: 24 * 1024 * 1024}), new Array(5 * 1024 * 1024).fill(1)];
++        while (true) {}
++    })()"#,
++        )
++        .unwrap_err();
++    assert!(error.0.contains("memory limit exhausted"), "{error}");
++    assert!(
++        evaluator
++            .evaluate_js("1")
++            .unwrap_err()
++            .0
++            .contains("memory limit exhausted")
++    );
++}
++
++#[test]
++fn combined_budget_covers_runtime_initialization() {
++    let result = V8Evaluator::new_with_startup(
++        EvaluatorOptions {
++            memory_limit: 32 * 1024 * 1024,
++            timeout: std::time::Duration::from_secs(5),
++            ..Default::default()
++        },
++        || {
++            "globalThis.keep = [new SharedArrayBuffer(20 * 1024 * 1024, {maxByteLength: 24 * 1024 * 1024}), new Array(5 * 1024 * 1024).fill(1)]; while (true) {}".into()
++        },
++    );
++    let Err(error) = result else {
++        panic!("startup must fail")
++    };
++    assert!(error.0.contains("memory limit exhausted"), "{error}");
++}
+ 
++#[test]
++fn garbage_collection_refreshes_the_heap_share_before_allocation_retry() {
++    let evaluator = session();
++    assert_eq!(
++        number(
++            &evaluator,
++            "(() => { globalThis.discard = new Array(5 * 1024 * 1024).fill(1); return 1; })()"
++        ),
++        1.0
++    );
++    // Publish the size of the still-live heap. The next allocation must collect
++    // the now-unreachable array and refresh that observation before retrying.
++    collect(&evaluator);
++    assert_eq!(
++        number(
++            &evaluator,
++            "(() => { globalThis.discard = null; globalThis.keep = new ArrayBuffer(20 * 1024 * 1024); return keep.byteLength; })()"
++        ),
++        (20 * 1024 * 1024) as f64
++    );
++    assert_eq!(number(&evaluator, "42"), 42.0);
++}
++
+ fn session() -> V8Evaluator {
+     V8Evaluator::new(EvaluatorOptions {
+         memory_limit: 32 * 1024 * 1024,

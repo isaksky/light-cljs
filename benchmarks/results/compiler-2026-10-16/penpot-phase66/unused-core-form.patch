@@ -1,0 +1,356 @@
+diff --git a/src/compiler_bootstrap.rs b/src/compiler_bootstrap.rs
+index 334fbd1..33b21e5 100644
+--- a/src/compiler_bootstrap.rs
++++ b/src/compiler_bootstrap.rs
+@@ -66,6 +66,7 @@ pub(crate) struct Bootstrap {
+ struct BootstrapUnit {
+     source: String,
+     environment_reads: HashMap<String, bool>,
++    form_reads: HashMap<String, bool>,
+ }
+ impl std::ops::Deref for BootstrapUnit {
+     type Target = str;
+@@ -77,13 +78,16 @@ impl std::ops::Deref for BootstrapUnit {
+ // two parameters; inspect resolved local IDs, including nested captures, so
+ // shadowing and quoted symbols do not look like reads of the hidden &env.
+ fn reads_macro_environment(program: &crate::Program, root: crate::ExprId) -> bool {
++    reads_macro_parameter(program, root, 1)
++}
++fn reads_macro_parameter(program: &crate::Program, root: crate::ExprId, parameter: usize) -> bool {
+     use crate::ExprKind;
+     let ExprKind::Fn { methods, .. } = &program.exprs[root.0].kind else {
+         return true;
+     };
+     let mut environments = Vec::new();
+     for method in methods {
+-        let Some(environment) = method.params.get(1) else {
++        let Some(environment) = method.params.get(parameter) else {
+             return true;
+         };
+         environments.push(*environment);
+@@ -153,6 +157,45 @@ fn elidable_environment(
+     }
+ }
+ 
++// A skipped whole-call import must not change shared keyword metadata, run
++// literal constructors, or hide conversion failures. Only core macros whose
++// resolved first formal is unused may take this path, at declaration frontier
++// zero. Positional arguments still use the normal independent import/snapshot.
++fn elidable_call_data(
++    data: &Datum,
++    remaining: &mut usize,
++    depth: usize,
++    control: &crate::evaluator::ExecutionControl,
++) -> bool {
++    use crate::compiler_data::DatumKind as D;
++    if depth == 0 || *remaining == 0 {
++        return false;
++    }
++    if *remaining & 1023 == 0 && control.poll().is_err() {
++        return false;
++    }
++    *remaining -= 1;
++    if matches!(data.kind(), D::CompilerLiteral { .. }) {
++        return false;
++    }
++    if let Some(metadata) = data.metadata() {
++        // Keywords are interned; a later argument's metadata may already be
++        // visible when an earlier argument is snapshotted. Scalar metadata
++        // also has an observable bridge-conversion failure.
++        if !matches!(data.kind(), D::Symbol(_) | D::Collection { .. })
++            || !elidable_call_data(&metadata, remaining, depth - 1, control)
++        {
++            return false;
++        }
++    }
++    match data.kind() {
++        D::Collection { children, .. } => children
++            .iter()
++            .all(|child| elidable_call_data(child, remaining, depth - 1, control)),
++        _ => true,
++    }
++}
++
+ thread_local! {
+     // Generated in memory from these exact include_str! inputs by this binary.
+     // No disk artifact, source hash ambiguity or mutable JS state is retained.
+@@ -184,9 +227,25 @@ fn compile(source: &str, host: &mut MacroHost) -> Result<BootstrapUnit, String>
+             }
+         })
+         .collect();
++    let form_reads = program
++        .exprs
++        .iter()
++        .filter_map(|expr| match &expr.kind {
++            crate::ExprKind::Def {
++                global,
++                init: Some(init),
++                ..
++            } => Some((
++                program.globals[global.0].name.clone(),
++                program.macro_functions.contains(init) || reads_macro_parameter(&program, *init, 0),
++            )),
++            _ => None,
++        })
++        .collect();
+     Ok(BootstrapUnit {
+         source: crate::emitter::emit_js_unit(&program),
+         environment_reads,
++        form_reads,
+     })
+ }
+ fn core_source() -> String {
+@@ -250,6 +309,7 @@ fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> R
+                 definition,
+                 metadata: None,
+                 generation: 0,
++                reads_form: unit.form_reads.get(&declared).copied().unwrap_or(true),
+                 reads_environment: unit
+                     .environment_reads
+                     .get(&declared)
+@@ -365,7 +425,27 @@ impl MacroHost {
+         } else {
+             env
+         };
+-        let result = self.expand_javascript(engine, declaration.function, call, env, origin);
++        let data = call.data();
++        let mut remaining = self
++            .limits
++            .generated_nodes
++            .saturating_sub(self.generated_nodes.get())
++            / 2;
++        let elide_form = !declaration.reads_form
++            && data.metadata().is_none()
++            && call
++                .children()
++                .first()
++                .is_some_and(|head| head.data().metadata().is_none())
++            && elidable_call_data(&data, &mut remaining, 128, &engine.control());
++        let result = self.expand_javascript_with_inputs(
++            engine,
++            declaration.function,
++            call,
++            env,
++            origin,
++            elide_form,
++        );
+         if result.is_err() {
+             self.bootstrap = None;
+         }
+@@ -380,6 +460,7 @@ pub(crate) struct CompiledMacro {
+     pub(crate) metadata: Option<Datum>,
+     generation: usize,
+     reads_environment: bool,
++    reads_form: bool,
+ }
+ 
+ /// Declaration seed: add the hidden ABI parameters without evaluating a macro.
+@@ -533,6 +614,7 @@ impl MacroHost {
+                 metadata: Some(metadata),
+                 generation,
+                 reads_environment: true,
++                reads_form: true,
+             },
+         );
+         self.macro_environment = Default::default();
+@@ -609,6 +691,156 @@ impl MacroHost {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn unused_core_form_matches_full_transport_and_preserves_limits() {
++        fn same(a: &Datum, b: &Datum) -> bool {
++            use crate::compiler_data::DatumKind as D;
++            // The bridge's `exact` compares canonical JS numbers, not source
++            // Integer/Character nodes. Compare restored source data here.
++            let value = match (a.kind(), b.kind()) {
++                (
++                    D::Collection {
++                        kind: ak,
++                        children: ac,
++                    },
++                    D::Collection {
++                        kind: bk,
++                        children: bc,
++                    },
++                ) => ak == bk && ac.len() == bc.len() && ac.iter().zip(bc).all(|(a, b)| same(a, b)),
++                (
++                    D::CompilerLiteral {
++                        kind: ak,
++                        payload: ac,
++                    },
++                    D::CompilerLiteral {
++                        kind: bk,
++                        payload: bc,
++                    },
++                ) => ak == bk && same(ac, bc),
++                (D::Double(a), D::Double(b)) => a.to_bits() == b.to_bits(),
++                (a, b) => format!("{a:?}") == format!("{b:?}"),
++            };
++            value
++                && match (a.metadata(), b.metadata()) {
++                    (None, None) => true,
++                    (Some(a), Some(b)) => same(&a, &b),
++                    _ => false,
++                }
++        }
++        fn expand(name: &str, text: &str, full: bool, nodes: usize) -> Result<Form, String> {
++            let mut host = MacroHost::new();
++            host.bootstrap = Some(build(&host, true).unwrap());
++            assert!(!host.bootstrap.as_ref().unwrap().functions["when"].reads_form);
++            if full {
++                for declaration in host.bootstrap.as_mut().unwrap().functions.values_mut() {
++                    declaration.reads_form = true;
++                }
++            }
++            let source = Source::new(
++                "form-transport.cljs",
++                if text == "keyword-metadata" {
++                    "(when true :same :same)"
++                } else {
++                    text
++                },
++            );
++            let mut call = host.read_compiler_form(&source).unwrap().unwrap();
++            if text == "keyword-metadata" {
++                // Native compiler forms can carry metadata that the surface
++                // reader rejects. An interned keyword must retain full import.
++                let mut children = call.data().elements().unwrap();
++                children[3] = children[3].with_metadata(
++                    DataBuilder
++                        .map(&[(
++                            DataBuilder.keyword(Name::new(None, "kept")),
++                            DataBuilder.boolean(true),
++                        )])
++                        .unwrap(),
++                );
++                call = Form::from_data(
++                    DataBuilder.list(&children).unwrap(),
++                    call.span(),
++                    call.node().origin.clone(),
++                );
++            }
++            host.limits.generated_nodes = nodes;
++            host.expand_core_javascript(name, &call, &DataBuilder.nil(), None)
++        }
++        for (name, text) in [
++            (
++                "when",
++                "(when true [nil false 0 0.0 \\a :same] {:same 1 :other 2} #{:same :other})",
++            ),
++            (
++                "when",
++                "(when true ^{:source :same} [^{:tag same} x] :same)",
++            ),
++            ("when", "^{:source :same} (when true :same)"),
++            ("when", "keyword-metadata"),
++            ("and", "(and ^{:left true} x ^{:right true} y)"),
++            ("->", "(-> 1 ^:kept (inc))"),
++            ("when", "(when true #js [1 2] #\"x\" #inst \"2020-01-01\")"),
++        ] {
++            let expected = expand(name, text, true, 100_000).unwrap();
++            let actual = expand(name, text, false, 100_000).unwrap();
++            assert!(
++                same(&actual.data(), &expected.data()),
++                "{text}\nexpected: {:?}\nactual: {:?}",
++                expected.data(),
++                actual.data()
++            );
++        }
++        let text = format!(
++            "(when true {})",
++            (0..250)
++                .map(|n| n.to_string())
++                .collect::<Vec<_>>()
++                .join(" ")
++        );
++        for full in [false, true] {
++            let error = expand("when", &text, full, 200).unwrap_err();
++            assert!(error.contains("compiler input conversion limit"), "{error}");
++            let error = expand("when", "(when true #\"[\")", full, 100_000).unwrap_err();
++            assert!(error.contains("macro cljs.core/when"), "{error}");
++        }
++    }
++
++    #[test]
++    fn bootstrap_form_reads_preserve_reflection_and_captures() {
++        for (body, expected) in [
++            ("&env", false),
++            ("'&form", false),
++            ("(let* [&form 7] &form)", false),
++            ("&form", true),
++            ("(fn* [] &form)", true),
++            ("js/arguments", true),
++            ("(js-arguments)", true),
++            ("(copy-arguments #js [])", true),
++            ("(js* \"arguments[0]\")", true),
++        ] {
++            let mut host = MacroHost::new();
++            host.bootstrap_seed = true;
++            let source = format!("(def sample (fn* [&form &env] {body}))");
++            let program =
++                crate::analyze_with_macros(&source, &crate::parse(&source).unwrap(), &mut host)
++                    .unwrap();
++            let init = program
++                .exprs
++                .iter()
++                .find_map(|expr| match &expr.kind {
++                    crate::ExprKind::Def { global, init, .. }
++                        if program.globals[global.0].name == "sample" =>
++                    {
++                        *init
++                    }
++                    _ => None,
++                })
++                .unwrap();
++            assert_eq!(reads_macro_parameter(&program, init, 0), expected, "{body}");
++        }
++    }
++
+     #[test]
+     fn bootstrap_environment_reads_follow_resolved_locals_and_reflection() {
+         for (body, expected) in [
+diff --git a/src/macro_host.rs b/src/macro_host.rs
+index b486c94..ff21ed3 100644
+--- a/src/macro_host.rs
++++ b/src/macro_host.rs
+@@ -213,6 +213,17 @@ impl MacroHost {
+         call: &Form,
+         environment: &crate::compiler_data::Datum,
+         origin: crate::compiler_data::ExpansionOrigin,
++    ) -> Result<Form, String> {
++        self.expand_javascript_with_inputs(evaluator, function, call, environment, origin, false)
++    }
++    pub(crate) fn expand_javascript_with_inputs(
++        &mut self,
++        evaluator: &dyn crate::evaluator::MacroEvaluator,
++        function: crate::evaluator::ValueId,
++        call: &Form,
++        environment: &crate::compiler_data::Datum,
++        origin: crate::compiler_data::ExpansionOrigin,
++        elide_form: bool,
+     ) -> Result<Form, String> {
+         if self.expansions.get() >= self.limits.expansions {
+             return Err("compiler macro expansion limit exceeded".into());
+@@ -229,9 +240,19 @@ impl MacroHost {
+             let mut args = Vec::new();
+             let mut result = None;
+             let expanded = (|| {
+-                args.push(evaluator.import_macro_form(call, limits)?);
++                args.push(if elide_form {
++                    evaluator.import_data(&crate::compiler_data::DataBuilder.nil(), limits)?
++                } else {
++                    evaluator.import_macro_form(call, limits)?
++                });
+                 args.push(evaluator.import_environment(environment, limits)?);
+-                args.extend(evaluator.macro_arguments(args[0], call, limits)?);
++                if elide_form {
++                    for argument in call.children().iter().skip(1) {
++                        args.push(evaluator.import_form(argument, limits)?);
++                    }
++                } else {
++                    args.extend(evaluator.macro_arguments(args[0], call, limits)?);
++                }
+                 let value = evaluator.call(function, &args)?;
+                 result = Some(value);
+                 evaluator.export_form(value, call, origin.clone(), limits)

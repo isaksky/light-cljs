@@ -26,7 +26,7 @@ Numbers. See [known boundaries](#known-boundaries).
 source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─▶ application prep ─▶ Emitter ─▶ JavaScript
           (lib.rs)    (parser.rs) (compiler_reader.rs) (analyzer.rs) (application.rs)   (emitter.rs)  + js_runtime.js
                                          ▲                    │
-                                         └── macro expansion ◀┘ compiled to JS, run in QuickJS (evaluator.rs)
+                                         └── macro expansion ◀┘ compiled to JS, run in an embedded engine
 ```
 
 - **Tokenizer** (`src/lib.rs`) borrows the source and yields raw tokens with byte
@@ -44,7 +44,8 @@ source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─
   parameter and return types, purity and its runtime units from
   `src/core_operations.tsv` (`src/core_operations.rs`).
 - **Macros** run as JavaScript emitted by this same compiler, inside a separate
-  QuickJS heap (`macro_host.rs`, `evaluator.rs`, `form_bridge.rs`). Core macros
+  heap: V8 for native clean compilations, QuickJS for interactive sessions and
+  WebAssembly (`macro_host.rs`, `compiler_evaluator.rs`). Core macros
   are bootstrapped from `src/compiler_core_macros.cljs` and
   `src/compiler_sequence_macros.cljs`; user macros are ordinary `defmacro`s in
   `.cljs`/`.cljc` files. Ordinary helpers that macros call are compiled on demand
@@ -61,13 +62,20 @@ source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─
 
 ## Building
 
-Requires a Rust toolchain with edition 2024 support (Rust 1.85+) and a C compiler
-(QuickJS is built from source by `rquickjs`). Node.js is only needed to run the
-compiler output outside the embedded engine and for parts of the test suite.
+The default native build requires Rust 1.91+, babashka (`bb`), Git, curl, tar,
+Python 3, a C/C++ toolchain and libclang. The first build compiles a pinned V8
+source patch; subsequent builds reuse it. See [engine build details](vendor/v8/README.md),
+including `LIBCLANG_PATH` setup on macOS. Node.js is needed for parts of the test
+suite and for running emitted JavaScript outside the embedded evaluator.
 
 ```sh
 cargo build --release
 ```
+
+`cargo build --release --no-default-features` selects the QuickJS-only compiler
+and needs Rust and a C compiler. WebAssembly builds also use QuickJS. The native
+V8 backend changes macro execution only; the runner and REPL continue to use
+QuickJS, and generated applications carry the same JavaScript runtime.
 
 ## Command-line usage
 
@@ -413,8 +421,8 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   pipeline takes about 4× upstream's time in Node
   ([benchmarks/compiler.md](benchmarks/compiler.md#seq-payloads-in-private-fields--october-15-2026)).
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
-  and run in QuickJS, not the JVM.
-- **Embedded engine:** the QuickJS environment provides ECMAScript intrinsics only:
+  and run in an embedded JavaScript engine.
+- **Embedded engines:** the macro environment provides ECMAScript intrinsics only:
   no DOM, Node APIs, filesystem, network or process access unless the host supplies
   them, and no timers. `NamePolicy` restricts name resolution but is not a
   sandbox. Under `--eval` and `--repl` promise jobs (`.then` callbacks,
@@ -556,4 +564,5 @@ upstream copyright notices, and are listed in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); the EPL text is in
 [epl-v10.html](epl-v10.html). Compiled programs that use `clojure.string` or
 `clojure.set` embed JavaScript compiled from those EPL-1.0 files. The embedded
-QuickJS-ng engine is MIT-licensed.
+QuickJS-ng engine and rusty_v8 bindings are MIT-licensed; V8 carries its BSD
+license and upstream dependency notices listed in the third-party notices.

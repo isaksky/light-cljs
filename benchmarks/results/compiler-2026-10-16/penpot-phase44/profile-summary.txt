@@ -1,0 +1,63 @@
+main-v12-wide-profile.time
+Exclusive totals subtract nested instrumented stages only.
+{:stage "namespace-analysis", :calls 922, :inclusive 45.616163, :exclusive 14.608502}
+{:stage "deferred-analysis", :calls 13361, :inclusive 25.881911, :exclusive 10.187973}
+{:stage "call", :calls 48216, :inclusive 10.555256, :exclusive 7.687545000000003}
+{:stage "form", :calls 48216, :inclusive 3.5661290000000014, :exclusive 3.5661290000000014}
+{:stage "unit-emission", :calls 441, :inclusive 3.565577, :exclusive 3.565577}
+{:stage "environment", :calls 48216, :inclusive 2.416693, :exclusive 2.4116370000000003}
+{:stage "result", :calls 48216, :inclusive 2.27357, :exclusive 2.27357}
+{:stage "arguments", :calls 48216, :inclusive 1.3152329999999997, :exclusive 1.3152329999999997}
+{:stage "initial-load", :calls 1, :inclusive 0.079418, :exclusive 0.079418}
+{:stage "analysis-finish", :calls 1, :inclusive 0.016128, :exclusive 0.016128}
+Top macro calls
+{:macro "rumext.v2/defc", :stage "call", :calls 1033, :inclusive 2.343716, :exclusive 2.264425}
+{:macro "instaparse.abnf/precompile-cljs-grammar", :stage "call", :calls 1, :inclusive 4.379407, :exclusive 1.95742}
+{:macro "rumext.v2/html", :stage "call", :calls 418, :inclusive 0.660208, :exclusive 0.660208}
+{:macro "app.main.style/css", :stage "call", :calls 5131, :inclusive 0.545494, :exclusive 0.521875}
+{:macro "app.main.style/css*", :stage "call", :calls 5131, :inclusive 0.47441, :exclusive 0.47441}
+{:macro "app.util.object/add-properties!", :stage "call", :calls 44, :inclusive 0.156688, :exclusive 0.156354}
+{:macro "potok.v2.core/reify", :stage "call", :calls 1062, :inclusive 0.147589, :exclusive 0.147589}
+{:macro "cuerdas.core/concat", :stage "call", :calls 1074, :inclusive 0.111961, :exclusive 0.111961}
+{:macro "app.common.data.macros/get-prop", :stage "call", :calls 844, :inclusive 0.094544, :exclusive 0.093055}
+{:macro "cljs.core/js-obj", :stage "call", :calls 762, :inclusive 0.089525, :exclusive 0.089525}
+{:macro "rumext.v2/fnc", :stage "call", :calls 32, :inclusive 0.237236, :exclusive 0.0863}
+{:macro "app.main.style/css-case", :stage "call", :calls 519, :inclusive 0.090275, :exclusive 0.073505}
+{:macro "app.common.data.macros/str", :stage "call", :calls 886, :inclusive 0.070796, :exclusive 0.070796}
+{:macro "rumext.v2/with-memo", :stage "call", :calls 524, :inclusive 0.064698, :exclusive 0.064698}
+{:macro "cljs.core/and", :stage "call", :calls 3626, :inclusive 0.058972, :exclusive 0.058972}
+{:macro "cljs.core/->>", :stage "call", :calls 2068, :inclusive 0.058045, :exclusive 0.058045}
+{:macro "app.common.render-wasm.helpers/call", :stage "call", :calls 186, :inclusive 0.05569, :exclusive 0.05569}
+{:macro "cljs.core/case", :stage "call", :calls 527, :inclusive 0.048018, :exclusive 0.048018}
+{:macro "cljs.core/or", :stage "call", :calls 2692, :inclusive 0.044705, :exclusive 0.044705}
+{:macro "app.common.data.macros/get-in", :stage "call", :calls 465, :inclusive 0.043448, :exclusive 0.043448}
+main-v12-profile.time
+Exclusive totals subtract nested instrumented stages only.
+{:stage "deferred-analysis", :calls 13361, :inclusive 26.075344, :exclusive 10.166897}
+{:stage "call", :calls 48216, :inclusive 10.659688000000001, :exclusive 7.717884999999999}
+{:stage "form", :calls 48216, :inclusive 3.6502719999999997, :exclusive 3.6502719999999997}
+{:stage "unit-emission", :calls 441, :inclusive 3.635543, :exclusive 3.635543}
+{:stage "environment", :calls 48216, :inclusive 2.4208299999999996, :exclusive 2.4157119999999996}
+{:stage "result", :calls 48216, :inclusive 2.2873520000000003, :exclusive 2.2873520000000003}
+{:stage "arguments", :calls 48216, :inclusive 1.287992, :exclusive 1.287992}
+Top macro calls
+{:macro "rumext.v2/defc", :stage "call", :calls 1033, :inclusive 2.343901, :exclusive 2.258409}
+{:macro "instaparse.abnf/precompile-cljs-grammar", :stage "call", :calls 1, :inclusive 4.445973, :exclusive 1.961642}
+{:macro "rumext.v2/html", :stage "call", :calls 418, :inclusive 0.653883, :exclusive 0.653883}
+{:macro "app.main.style/css", :stage "call", :calls 5131, :inclusive 0.542719, :exclusive 0.518013}
+{:macro "app.main.style/css*", :stage "call", :calls 5131, :inclusive 0.432207, :exclusive 0.432207}
+{:macro "app.util.object/add-properties!", :stage "call", :calls 44, :inclusive 0.193399, :exclusive 0.193098}
+{:macro "cuerdas.core/concat", :stage "call", :calls 1074, :inclusive 0.159371, :exclusive 0.159371}
+{:macro "potok.v2.core/reify", :stage "call", :calls 1062, :inclusive 0.130892, :exclusive 0.130892}
+{:macro "cljs.core/and", :stage "call", :calls 3626, :inclusive 0.095344, :exclusive 0.095344}
+{:macro "cljs.core/js-obj", :stage "call", :calls 762, :inclusive 0.088448, :exclusive 0.088448}
+{:macro "app.common.data.macros/get-prop", :stage "call", :calls 844, :inclusive 0.088374, :exclusive 0.086714}
+{:macro "app.common.data.macros/str", :stage "call", :calls 886, :inclusive 0.079106, :exclusive 0.079106}
+{:macro "app.main.style/css-case", :stage "call", :calls 519, :inclusive 0.092246, :exclusive 0.074061}
+{:macro "app.common.logging/log!", :stage "call", :calls 267, :inclusive 0.069765, :exclusive 0.067753}
+{:macro "rumext.v2/fnc", :stage "call", :calls 32, :inclusive 0.22335, :exclusive 0.064686}
+{:macro "rumext.v2/with-memo", :stage "call", :calls 524, :inclusive 0.064473, :exclusive 0.064473}
+{:macro "cljs.core/->>", :stage "call", :calls 2068, :inclusive 0.05891, :exclusive 0.05891}
+{:macro "app.common.render-wasm.helpers/call", :stage "call", :calls 186, :inclusive 0.052736, :exclusive 0.052736}
+{:macro "cljs.core/case", :stage "call", :calls 527, :inclusive 0.048673, :exclusive 0.048673}
+{:macro "cljs.core/or", :stage "call", :calls 2692, :inclusive 0.042631, :exclusive 0.042631}

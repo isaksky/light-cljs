@@ -1,0 +1,22 @@
+[type name id self_size edge_count detachedness]
+(["string" 80212500] ["array" 4306540] ["code" 3747436] ["native" 1072676] ["object" 980392] ["closure" 214472] ["object shape" 185980] ["concatenated string" 58220] ["number" 8424] ["symbol" 128] ["regexp" 72] ["sliced string" 40] ["synthetic" 0])
+{:type "array", :bytes 1048596, :length 0, :name ""}
+{:type "array", :bytes 1048596, :length 0, :name ""}
+{:type "string", :bytes 814712, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const truth = (value) => v"}
+{:type "string", :bytes 814580, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const truth = (value) => v"}
+{:type "string", :bytes 810600, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const truth = (value) => v"}
+{:type "string", :bytes 804600, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const truth = (value) => v"}
+{:type "string", :bytes 801920, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const truth = (value) => v"}
+{:type "string", :bytes 801620, :length 1024, :name "(__lightSessionRuntime0) => (() => {\n  const truth = (value) => value != null && value !== false;\n  "}
+{:type "string", :bytes 801620, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const truth = (value) => v"}
+{:type "string", :bytes 799336, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const truth = (value) => v"}
+{:type "string", :bytes 797932, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const truth = (value) => v"}
+{:type "string", :bytes 797812, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const truth = (value) => v"}
+{:type "string", :bytes 797760, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const truth = (value) => v"}
+{:type "string", :bytes 794012, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const truth = (value) => v"}
+{:type "string", :bytes 639772, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const __light0_truth = (va"}
+{:type "string", :bytes 636988, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const __light0_truth = (va"}
+{:type "string", :bytes 636020, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const truth = (value) => v"}
+{:type "string", :bytes 634144, :length 1024, :name "(__lightSessionRuntime0) => (() => {\n  const truth = (value) => value != null && value !== false;\n  "}
+{:type "string", :bytes 618540, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const truth = (value) => v"}
+{:type "string", :bytes 546112, :length 1024, :name "rt => rt.core.macroReaderFunction(((__lightSessionRuntime0) => (() => {\n  const truth = (value) => v"}

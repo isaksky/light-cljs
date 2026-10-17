@@ -1,0 +1,57 @@
+    Checking stable_deref_trait v1.2.1
+    Checking writeable v0.6.4
+    Checking litemap v0.8.3
+    Checking libm v0.2.16
+    Checking serde_core v1.0.229
+    Checking icu_locale_fallback_data v2.3.0
+    Checking icu_calendar_data v2.3.0
+    Checking foldhash v0.2.0
+    Checking num-traits v0.2.19
+    Checking allocator-api2 v0.2.21
+    Checking ixdtf v0.6.6
+    Checking equivalent v1.0.2
+    Checking rquickjs-sys v0.14.0 (/private/tmp/light-cljs-phase112/project/vendor/rquickjs-sys)
+    Checking diplomat-runtime v0.16.0
+    Checking libmimalloc-sys v0.1.49
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase112/project)
+    Checking bitflags v2.13.2
+    Checking zerotrie v0.2.5
+    Checking zerofrom v0.1.8
+    Checking mimalloc v0.1.52
+    Checking yoke v0.8.3
+    Checking zerovec v0.11.8
+    Checking hashbrown v0.17.1
+    Checking rquickjs-core v0.14.0
+    Checking core_maths v0.1.1
+    Checking calendrical_calculations v0.2.4
+    Checking tinystr v0.8.4
+    Checking potential_utf v0.1.6
+    Checking icu_locale_core v2.3.0
+    Checking resb v0.1.2
+    Checking serde v1.0.229
+    Checking rquickjs v0.14.0
+    Checking icu_provider v2.3.1
+    Checking zoneinfo64 v0.3.0
+    Checking timezone_provider v0.2.6
+    Checking icu_locale_fallback v2.3.0
+   Compiling diplomat_core v0.16.1
+    Checking icu_calendar v2.3.0
+    Checking temporal_rs v0.2.6
+   Compiling diplomat v0.16.1
+    Checking temporal_capi v0.2.6
+    Checking v8 v152.2.0 (/private/tmp/light-cljs-phase112/project/vendor/v8)
+warning: use of deprecated method `std::sync::atomic::Atomic::<usize>::fetch_update`: renamed to `try_update` for consistency
+    --> vendor/v8/src/isolate.rs:2317:8
+     |
+2317 |       .fetch_update(
+     |        ^^^^^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+     |
+2317 -       .fetch_update(
+2317 +       .try_update(
+     |
+
+warning: `v8` (lib) generated 1 warning (run `cargo clippy --fix --lib -p v8 -- -D warnings` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.43s

@@ -1,0 +1,13 @@
+(require '[babashka.fs :as fs] '[clojure.string :as str])
+(def here (fs/parent *file*))
+(def rows (for [line (str/split-lines (slurp (fs/file here "main-none.time"))) :when (str/starts-with? line "deferred-stats ")]
+            (into {} (for [[_ key value] (re-seq #"([a-z-]+)=([^ ]+)" line)] [(keyword key) (if (= key "registration-hash") value (parse-long value))]))))
+(def summary {:units (count rows)
+              :totals (into {} (for [k [:registration :code :emission-us :globals :expressions :strings]] [k (reduce + (map k rows))]))
+              :namespace-counts (frequencies (map :ns rows))
+              :unique-registration-hashes (count (distinct (map :registration-hash rows)))
+              :unique-registration-bytes (reduce + (map (comp :registration first val) (group-by :registration-hash rows)))
+              :largest (take 20 (sort-by :registration > rows))})
+(spit (fs/file here "summary.edn") (pr-str summary))
+(prn (dissoc summary :largest))
+(doseq [row (:largest summary)] (prn row))

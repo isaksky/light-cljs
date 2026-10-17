@@ -1,0 +1,246 @@
+diff --git a/src/analyzer.rs b/src/analyzer.rs
+index 1c963a5..6f6945c 100644
+--- a/src/analyzer.rs
++++ b/src/analyzer.rs
+@@ -2919,7 +2919,7 @@ struct Analyzer<'a> {
+     reader_view: Option<ReaderView>,
+     /// How many of the shared globals seen so far are this namespace's own:
+     /// the count up to a position, for macro environments.
+-    namespace_globals: (usize, usize),
++    namespace_globals: (usize, crate::arena::Arena<GlobalId>),
+     /// What the last macro environment built names for the session, recorded
+     /// once an expansion has used it.
+     pending_reader_registration: Option<crate::macro_host::ReaderRegistration>,
+@@ -3249,7 +3249,7 @@ fn analyze_input(
+         first_expr: 0,
+         deferred_unit: false,
+         reader_view: None,
+-        namespace_globals: snapshot.map_or((0, 0), |s| s.namespace_globals),
++        namespace_globals: snapshot.map_or_else(Default::default, |s| s.namespace_globals.clone()),
+         pending_reader_registration: None,
+     };
+     if let Some(previous) = previous {
+@@ -3548,7 +3548,7 @@ impl NamespaceAnalysis {
+             first_expr: 0,
+             deferred_unit: false,
+             reader_view: None,
+-            namespace_globals: (0, 0),
++            namespace_globals: Default::default(),
+             pending_reader_registration: None,
+         };
+         analyzer.first_expr = analyzer.program.exprs.len();
+@@ -6172,6 +6172,7 @@ impl Analyzer<'_> {
+         let (resolution_program, shared) =
+             crate::program_fragment::resolution_snapshot(&mut self.program);
+         self.count_namespace_globals(self.program.globals.len());
++        self.namespace_globals.1.freeze();
+         let snapshot = crate::compilation_session::DefinitionSnapshot {
+             namespace: self.namespace.into(),
+             aliases: self.aliases.to_vec(),
+@@ -6179,7 +6180,7 @@ impl Analyzer<'_> {
+             resolution: self.resolution.clone(),
+             resolution_program,
+             global_names: self.globals.clone(),
+-            namespace_globals: self.namespace_globals,
++            namespace_globals: self.namespace_globals.clone(),
+             options: self.options,
+             unchecked_arrays: self.unchecked_arrays,
+             source_index: self.source_index,
+@@ -9377,14 +9378,14 @@ impl Analyzer<'_> {
+         } else {
+             self.program.globals.len()
+         };
+-        let count = self.count_namespace_globals(shared);
++        self.count_namespace_globals(shared);
+         let (environment, registration) = self.macro_host.reader_environment(
+             environment,
+             self.namespace,
+             &self.resolution,
+             &self.program.globals,
+             shared,
+-            count,
++            &self.namespace_globals.1,
+         )?;
+         self.pending_reader_registration = registration;
+         let environment = c.assoc(
+@@ -9407,20 +9408,20 @@ impl Analyzer<'_> {
+         Ok(environment)
+     }
+ 
+-    /// Snapshots preserve this prefix count, so a new deferred analyzer only
++    /// Snapshots preserve these namespace member IDs, so a new deferred analyzer only
+     /// examines declarations added after its definition-time view.
+     fn count_namespace_globals(&mut self, shared: usize) -> usize {
+-        let (seen, count) = self.namespace_globals;
+-        debug_assert!(seen <= shared);
+-        let count = count
+-            + self
+-                .program
+-                .globals
+-                .range(seen..shared)
+-                .filter(|g| g.namespace == self.namespace)
+-                .count();
+-        self.namespace_globals = (shared, count);
+-        count
++        let (seen, ids) = &mut self.namespace_globals;
++        debug_assert!(*seen <= shared);
++        ids.extend(
++            (*seen..shared)
++                .zip(self.program.globals.range(*seen..shared))
++                .filter_map(|(index, global)| {
++                    (global.namespace == self.namespace).then_some(GlobalId(index))
++                }),
++        );
++        *seen = shared;
++        ids.len()
+     }
+ 
+     fn needs_reader(&self, root: NodeId) -> bool {
+@@ -9478,7 +9479,13 @@ impl Analyzer<'_> {
+         Ok(())
+     }
+ 
+-    fn reader_bindings(&self) -> Vec<(String, String, String)> {
++    fn reader_bindings(&mut self) -> Vec<(String, String, String)> {
++        let shared = if self.deferred_unit {
++            self.program.globals.frozen()
++        } else {
++            self.program.globals.len()
++        };
++        self.count_namespace_globals(shared);
+         // Resolve compiler exception class/helper names against the JS core,
+         // independently of the native class/Var surface, before
+         // applying explicit excludes, refers and namespace definitions below.
+@@ -9503,10 +9510,16 @@ impl Analyzer<'_> {
+         bindings.extend(self.resolution.refers.clone());
+         bindings.extend(self.macro_host.reader_refers(self.namespace));
+         bindings.extend(
+-            self.program
+-                .globals
++            self.namespace_globals
++                .1
+                 .iter()
+-                .filter(|g| g.namespace == self.namespace)
++                .map(|id| &self.program.globals[id.0])
++                .chain(
++                    self.program
++                        .globals
++                        .range(shared..self.program.globals.len())
++                        .filter(|g| g.namespace == self.namespace),
++                )
+                 .map(|g| (g.name.clone(), g.namespace.clone(), g.name.clone())),
+         );
+         bindings.extend(self.macro_host.javascript_macros.keys().filter_map(|key| {
+diff --git a/src/compilation_session.rs b/src/compilation_session.rs
+index 4fc91b2..8c75fd5 100644
+--- a/src/compilation_session.rs
++++ b/src/compilation_session.rs
+@@ -17,7 +17,7 @@ pub(crate) struct DefinitionSnapshot {
+     pub resolution: NamespaceResolution,
+     pub resolution_program: Program,
+     pub global_names: crate::name_index::NameIndex,
+-    pub namespace_globals: (usize, usize),
++    pub namespace_globals: (usize, crate::arena::Arena<crate::analyzer::GlobalId>),
+     pub options: AnalysisOptions,
+     pub unchecked_arrays: bool,
+     pub source_index: usize,
+@@ -484,7 +484,7 @@ impl Clone for DefinitionSnapshot {
+             resolution: self.resolution.clone(),
+             resolution_program: self.resolution_program.clone(),
+             global_names: self.global_names.clone(),
+-            namespace_globals: self.namespace_globals,
++            namespace_globals: self.namespace_globals.clone(),
+             options: self.options,
+             unchecked_arrays: self.unchecked_arrays,
+             source_index: self.source_index,
+diff --git a/src/eval_compiler.rs b/src/eval_compiler.rs
+index 95b6207..fa27e7d 100644
+--- a/src/eval_compiler.rs
++++ b/src/eval_compiler.rs
+@@ -544,17 +544,20 @@ impl InteractiveCompiler {
+     > {
+         let empty = crate::arena::Arena::new();
+         let globals = self.program.as_ref().map_or(&empty, |p| &p.globals);
+-        let visible = globals
++        let namespace_globals = globals
+             .iter()
+-            .filter(|g| g.namespace == self.namespace)
+-            .count();
++            .enumerate()
++            .filter_map(|(index, global)| {
++                (global.namespace == self.namespace).then_some(crate::analyzer::GlobalId(index))
++            })
++            .collect();
+         self.host.reader_environment(
+             environment,
+             &self.namespace,
+             &self.resolution,
+             globals,
+             globals.len(),
+-            visible,
++            &namespace_globals,
+         )
+     }
+     fn check_policy(&self, program: &Program, start: usize) -> Result<(), AnalysisError> {
+diff --git a/src/macro_host.rs b/src/macro_host.rs
+index 8de3532..7c2212e 100644
+--- a/src/macro_host.rs
++++ b/src/macro_host.rs
+@@ -1190,7 +1190,7 @@ impl MacroHost {
+ 
+     /// Add the reader context of `namespace` to a macro's environment. The
+     /// first `shared` globals are the compilation's, in its order, of which
+-    /// `visible` belong to `namespace`: the session registers each of those
++    /// `namespace_globals` identifies the members of `namespace`: the session registers each of those
+     /// once, so a context names only the ones registered since, and how many
+     /// it sees. The globals after `shared` are this analysis's own.
+     pub(crate) fn reader_environment(
+@@ -1200,8 +1200,9 @@ impl MacroHost {
+         resolution: &crate::analyzer::NamespaceResolution,
+         globals: &crate::arena::Arena<crate::GlobalBinding>,
+         shared: usize,
+-        visible: usize,
++        namespace_globals: &crate::arena::Arena<crate::analyzer::GlobalId>,
+     ) -> Result<(crate::compiler_data::Datum, Option<ReaderRegistration>), String> {
++        let visible = namespace_globals.len();
+         let c = crate::compiler_data::DataBuilder;
+         let string = |s: &str| c.string(s.encode_utf16().collect::<Vec<_>>());
+         let key = |s| c.keyword(Name::new(None, s));
+@@ -1214,10 +1215,9 @@ impl MacroHost {
+             .unwrap_or((0, 0));
+         let mut names = Vec::new();
+         if position <= shared {
+-            names = globals
+-                .range(position..shared)
+-                .filter(|g| g.namespace == namespace)
+-                .map(|g| g.name.clone())
++            names = namespace_globals
++                .range(count..visible)
++                .map(|id| globals[id.0].name.clone())
+                 .collect();
+             debug_assert_eq!(count + names.len(), visible);
+             registration = Some(ReaderRegistration {
+@@ -1645,6 +1645,14 @@ mod compiler_pure_tests {
+                        resolution: &crate::analyzer::NamespaceResolution,
+                        shared,
+                        visible| {
++            let ids = globals
++                .range(0..shared)
++                .enumerate()
++                .filter_map(|(index, global)| {
++                    (global.namespace == "demo").then_some(crate::analyzer::GlobalId(index))
++                })
++                .collect::<crate::arena::Arena<_>>();
++            assert_eq!(ids.len(), visible);
+             let (env, registration) = host
+                 .reader_environment(
+                     DataBuilder.map(&[]).unwrap(),
+@@ -1652,7 +1660,7 @@ mod compiler_pure_tests {
+                     resolution,
+                     &globals,
+                     shared,
+-                    visible,
++                    &ids,
+                 )
+                 .unwrap();
+             (field(&env, "light-cljs/reader-context"), registration)

@@ -3,6 +3,41 @@
 (() => {
   const units = new Map(), slots = new Map(), overlays = new Map(), path = [], extensions = new Map(), installing = [], bundles = [], frontiers = [];
   let frontier = Infinity, declarationFrontier = Infinity;
+  // Most bundles only produce roots. Frontier replay needs initialized
+  // extensions, ordered by declaration rather than by initialization time.
+  const readyExtensions = [];
+  // First initialized extension after this declaration order.
+  function readyAfter(order) {
+    let low = 0, high = readyExtensions.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (readyExtensions[middle].order <= order) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+  function changesFrontier(next) {
+    const low = Math.min(frontier, next), high = Math.max(frontier, next);
+    const index = readyAfter(low);
+    return index < readyExtensions.length && readyExtensions[index].order <= high;
+  }
+  function snapshotExtensions() {
+    const saved = [], limit = bundles.length;
+    for (let order = 0;;) {
+      const bundle = readyExtensions[readyAfter(order)];
+      if (!bundle || bundle.order > limit) break;
+      order = bundle.order;
+      for (const patch of __lightRuntimeForCompiler.snapshotDeclarationPatches(bundle.patches)) saved.push(patch);
+    }
+    return saved;
+  }
+
+  // Demanding a protocol only initializes matching pending bundles. Once a
+  // selector has completed in this declaration view, repeating the scan cannot
+  // do work. Never publish a result across registration or frontier reentry.
+  const demanded = new Map();
+  let demandEpoch = 0;
+  function invalidateDemands() { demanded.clear(); demandEpoch++; }
   // Initializers retain the declaration products visible at their source site.
   // This is a dynamic execution view, not a closure capture: an escaped factory
   // or record assoc method still reads the current constructor Var when called.
@@ -55,7 +90,12 @@
     } catch (error) {
       if (error instanceof Error) error.message = slot.location + ': ' + name + ': ' + error.message;
       slot.state = 'failed'; slot.error = error; throw error;
-    } finally { declarationFrontier = previousDeclarationFrontier; path.pop(); }
+    } finally {
+      // Ready roots retain their value, failed roots their exception. Neither
+      // runs its initializer again; keeping it also keeps its source/catalog.
+      slot.code = undefined;
+      declarationFrontier = previousDeclarationFrontier; path.pop();
+    }
   }
   // A conditional owner can finish without installing its advertised product.
   // Plain pending roots still count as definitions without forcing their value.
@@ -76,11 +116,15 @@
       const installed = __lightRuntimeForCompiler.declarationTransaction(() => bundle.code(__lightRuntimeForCompiler), true);
       bundle.patches = installed.patches;
       bundle.state = 'ready';
+      if (bundle.indices.length) readyExtensions.splice(readyAfter(bundle.order), 0, bundle);
     } catch (error) {
       bundle.products.clear(); bundle.state = 'failed'; bundle.error = error;
       if (error instanceof Error) error.message = bundle.location + ': ' + bundle.name + ': ' + error.message;
       throw error;
-    } finally { installing.pop(); path.pop(); }
+    } finally {
+      bundle.code = undefined;
+      installing.pop(); path.pop();
+    }
   }
   globalThis.__lightCompilerBundleProducts = new Proxy(Object.create(null), {
     get(_, name) {
@@ -96,6 +140,7 @@
     }
   });
   globalThis.__lightRegisterBundle = (names, code, indices, location, once = false, group = false) => {
+    invalidateDemands();
     const bundle = {group, previous: new Map(names.map(name => [name, slots.get(name)])), order: bundles.length + 1, names, indices, name: names[0] ?? 'extension ' + location, code, location, state: 'pending', products: new Map()};
     bundles.push(bundle);
     // Even a skipped defonce occupies its source frontier position. Rust's
@@ -111,7 +156,10 @@
       entries.push({bundle, selector, identity});
     }
     __lightRuntimeForCompiler.setDeclarationDemand((protocol, value, typeName) => {
+      if (frontier === 0) return;
       const native = value == null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+      if (demanded.get(protocol)?.get(native)?.has(typeName)) return;
+      const epoch = demandEpoch;
       const entries = typeof protocol === 'string' && protocol.startsWith('multifn:') && protocol !== 'multifn:*'
         ? [...(extensions.get(protocol) ?? []), ...(extensions.get('multifn:*') ?? [])]
             .sort((left, right) => left.bundle.order - right.bundle.order)
@@ -120,21 +168,39 @@
         if (bundle.order > frontier || superseded && frontier >= superseded) continue;
         if (selector === null || selector === '_' || selector === native || selector === '@' + typeName) forceBundle(bundle);
       }
+      if (epoch === demandEpoch) {
+        let selectors = demanded.get(protocol);
+        if (!selectors) demanded.set(protocol, selectors = new Map());
+        let types = selectors.get(native);
+        if (!types) selectors.set(native, types = new Set());
+        types.add(typeName);
+      }
     });
   };
   function selectFrontier(next) {
     if (frontier === next) return;
-    if (!bundles.some(bundle => bundle.indices.length && bundle.state === 'ready' && (bundle.order <= frontier) !== (bundle.order <= next))) { frontier = next; return; }
-    for (let i = bundles.length - 1; i >= 0; i--) {
-      const bundle = bundles[i];
-      if (bundle.indices.length && bundle.state === 'ready' && bundle.order <= frontier) __lightRuntimeForCompiler.applyDeclarationPatches(bundle.patches, false);
+    invalidateDemands();
+    if (!changesFrontier(next)) { frontier = next; return; }
+    // A Proxy's declaration patch may reenter and initialize another bundle.
+    // Advance by source order so inserting a ready entry cannot revisit or
+    // skip one. As before, reverse replay excludes newly registered bundles.
+    for (let order = bundles.length + 1;;) {
+      const bundle = readyExtensions[readyAfter(order - 1) - 1];
+      if (!bundle) break;
+      order = bundle.order;
+      if (bundle.order <= frontier) __lightRuntimeForCompiler.applyDeclarationPatches(bundle.patches, false);
     }
     frontier = next;
-    for (const bundle of bundles) if (bundle.indices.length && bundle.state === 'ready' && bundle.order <= frontier) __lightRuntimeForCompiler.applyDeclarationPatches(bundle.patches, true);
+    for (let order = 0;;) {
+      const bundle = readyExtensions[readyAfter(order)];
+      if (!bundle) break;
+      order = bundle.order;
+      if (bundle.order <= frontier) __lightRuntimeForCompiler.applyDeclarationPatches(bundle.patches, true);
+    }
   }
   globalThis.__lightEnterCompilerFrontier = next => {
-    const changesView = bundles.some(bundle => bundle.indices.length && bundle.state === 'ready' && (bundle.order <= frontier) !== (bundle.order <= next));
-    const saved = changesView ? bundles.flatMap(bundle => bundle.indices.length && bundle.state === 'ready' ? __lightRuntimeForCompiler.snapshotDeclarationPatches(bundle.patches) : []) : null;
+    const changesView = changesFrontier(next);
+    const saved = changesView ? snapshotExtensions() : null;
     frontiers.push({previous: frontier, saved}); selectFrontier(next); return null;
   };
   globalThis.__lightLeaveCompilerFrontier = () => {

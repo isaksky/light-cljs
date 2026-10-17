@@ -1,0 +1,162 @@
+diff --git a/src/emitter.rs b/src/emitter.rs
+index 7331306..0753510 100644
+--- a/src/emitter.rs
++++ b/src/emitter.rs
+@@ -131,93 +131,21 @@ pub(crate) fn emit_deferred_unit(program: &Program) -> String {
+     emit_unit_mode(program, true)
+ }
+ 
+-// Search the concatenated UTF-16 table without allocating its UTF-8 copy.
+-// The candidate is ASCII, so this preserves lossy conversion's old answer,
+-// including matches spanning adjacent strings and overlapping prefixes.
+-fn unit_parameter_occurs(program: &Program, candidate: &str) -> bool {
+-    debug_assert!(!candidate.is_empty() && candidate.is_ascii());
+-    let needle = candidate.as_bytes();
+-    let mut fallback = vec![0; needle.len()];
+-    for i in 1..needle.len() {
+-        let mut matched = fallback[i - 1];
+-        while matched > 0 && needle[i] != needle[matched] {
+-            matched = fallback[matched - 1];
+-        }
+-        if needle[i] == needle[matched] {
+-            matched += 1;
+-        }
+-        fallback[i] = matched;
+-    }
+-    let mut matched = 0;
+-    for &unit in program.strings.iter().flatten() {
+-        while matched > 0 && unit != u16::from(needle[matched]) {
+-            matched = fallback[matched - 1];
+-        }
+-        if unit == u16::from(needle[matched]) {
+-            matched += 1;
+-            if matched == needle.len() {
+-                return true;
+-            }
+-        }
+-    }
+-    false
+-}
+-
+-#[cfg(test)]
+-mod unit_parameter_tests {
+-    use super::*;
+-
+-    #[test]
+-    fn streamed_name_scan_preserves_string_boundaries_and_lossy_utf16() {
+-        let mut program = crate::analyze("", &crate::parse("").unwrap()).unwrap();
+-        let mut units = vec![0xd800];
+-        units.extend(
+-            "___lightSessionRuntime0 __lightSessionRuntime10 __lightSessionRuntime3".encode_utf16(),
+-        );
+-        units.extend([0xdc00, 0x03bb]);
+-        // Preserve the old concatenated-table answer at every possible split,
+-        // including empty strings, partial prefixes and unpaired surrogates.
+-        for split in 0..=units.len() {
+-            program.strings = vec![units[..split].to_vec(), vec![], units[split..].to_vec()].into();
+-            let original = program
+-                .strings
+-                .iter()
+-                .map(|s| String::from_utf16_lossy(s))
+-                .collect::<String>();
+-            for index in 0..14 {
+-                let candidate = format!("__lightSessionRuntime{index}");
+-                assert_eq!(
+-                    unit_parameter_occurs(&program, &candidate),
+-                    original.contains(&candidate),
+-                    "split {split}, candidate {candidate}"
+-                );
+-            }
+-        }
+-    }
+-}
++// This generated binding participates in the same raw-JavaScript hygiene as
++// locals and helpers. It never needs a scan through unrelated prior literals.
++const UNIT_RUNTIME: &str = "__lightSessionRuntime";
+ 
+ fn emit_unit_mode(program: &Program, demand_roots: bool) -> String {
+-    let mut index = 0;
+-    let parameter = loop {
+-        let candidate = format!("__lightSessionRuntime{index}");
+-        if !unit_parameter_occurs(program, &candidate) {
+-            break candidate;
+-        }
+-        index += 1;
+-    };
+-    format!(
+-        "({parameter}) => {}",
+-        emit_js_mode(
+-            program,
+-            Some(&parameter),
+-            demand_roots,
+-            None,
+-            None,
+-            false,
+-            false
+-        )
+-        .0
++    emit_js_mode(
++        program,
++        Some(UNIT_RUNTIME),
++        demand_roots,
++        None,
++        None,
++        false,
++        false,
+     )
++    .0
+ }
+ 
+ /// An interactive unit: a function of the runtime,
+@@ -529,6 +457,18 @@ fn emit_js_mode(
+             }
+         }
+     }
++    // Include the shared-runtime parameter in raw-text hygiene. Only emitted
++    // syntax can capture it; unrelated literals in prior snapshots cannot.
++    // Unit emission never requests source maps or application minification.
++    if shared == Some(UNIT_RUNTIME) {
++        debug_assert!(!mapped && !terse);
++        let open = format!("({UNIT_RUNTIME}) => ");
++        for range in &mut emitter.raw_segments {
++            range.start += open.len();
++            range.end += open.len();
++        }
++        emitter.output.insert_str(0, &open);
++    }
+     let output = if terse {
+         crate::terse::terse_program(
+             &emitter.output,
+diff --git a/src/terse.rs b/src/terse.rs
+index 8714d3d..2d90821 100644
+--- a/src/terse.rs
++++ b/src/terse.rs
+@@ -309,7 +309,8 @@ pub(crate) fn compiler_name(word: &str) -> bool {
+             .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+         || matches!(
+             word,
+-            "rt" | "truth"
++            "rt" | "__lightSessionRuntime"
++                | "truth"
+                 | "host"
+                 | "pkg"
+                 | "f"
+diff --git a/tests/evaluation/evaluator.rs b/tests/evaluation/evaluator.rs
+index 78d31f9..984b501 100644
+--- a/tests/evaluation/evaluator.rs
++++ b/tests/evaluation/evaluator.rs
+@@ -241,10 +241,12 @@ fn teardown_does_not_invoke_mutated_collection_methods() {
+ #[test]
+ fn unit_runtime_parameter_preserves_raw_javascript_hygiene() {
+     let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+-    let p = program("[(js* \"typeof __lightSessionRuntime0\") 42]");
++    let p = program(
++        "[(js* \"typeof __lightSessionRuntime0\") (js* \"typeof __lightSessionRuntime\") (js* \"typeof __light0___lightSessionRuntime\") 42]",
++    );
+     assert_eq!(
+         e.print(e.evaluate(&p).unwrap()).unwrap(),
+-        "[\"undefined\" 42]"
++        "[\"undefined\" \"undefined\" \"undefined\" 42]"
+     );
+ }
+ 

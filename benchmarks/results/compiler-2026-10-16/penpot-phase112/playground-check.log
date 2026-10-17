@@ -1,0 +1,36 @@
+> node /private/tmp/light-cljs-phase112/project/playground/check.mjs
+playground 0.1.0
+hello @ none: 22 ms, 441486 bytes
+hello @ prepare: 0 ms, 441486 bytes
+hello @ advanced: 25 ms, 185 bytes
+macro @ none: 163 ms, 441652 bytes
+macro @ prepare: 45 ms, 441652 bytes
+macro @ advanced: 46 ms, 193 bytes
+destructuring @ none: 1 ms, 443070 bytes
+destructuring @ prepare: 1 ms, 443070 bytes
+destructuring @ advanced: 9 ms, 46561 bytes
+lazy @ none: 0 ms, 442011 bytes
+lazy @ prepare: 0 ms, 442011 bytes
+lazy @ advanced: 1 ms, 22712 bytes
+atoms @ none: 0 ms, 441854 bytes
+atoms @ prepare: 1 ms, 441854 bytes
+atoms @ advanced: 1 ms, 17438 bytes
+protocols @ none: 3 ms, 443521 bytes
+protocols @ prepare: 0 ms, 443521 bytes
+protocols @ advanced: 3 ms, 5880 bytes
+multimethods @ none: 48 ms, 442492 bytes
+multimethods @ prepare: 46 ms, 442492 bytes
+multimethods @ advanced: 48 ms, 52036 bytes
+printing @ none: 0 ms, 441698 bytes
+printing @ prepare: 0 ms, 441698 bytes
+printing @ advanced: 1 ms, 17569 bytes
+namespaces @ none: 0 ms, 442520 bytes
+namespaces @ prepare: 1 ms, 442520 bytes
+namespaces @ advanced: 0 ms, 318 bytes
+calculator @ none: 82 ms, 481215 bytes
+calculator @ prepare: 81 ms, 481215 bytes
+calculator @ advanced: 87 ms, 75395 bytes
+lazy features @ none: 50 ms, app.main.js 447263, app.editor+app.reports.js 11715, app.editor.js 657, app.reports.js 575 bytes
+lazy features @ prepare: 48 ms, app.main.js 447263, app.editor+app.reports.js 11715, app.editor.js 657, app.reports.js 575 bytes
+lazy features @ advanced: 53 ms, app.main.js 64190, app.editor+app.reports.js 902, app.editor.js 295, app.reports.js 161 bytes
+playground check passed

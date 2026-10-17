@@ -1,0 +1,30 @@
+diff --git a/src/analyzer.rs b/src/analyzer.rs
+index 260384e..1c963a5 100644
+--- a/src/analyzer.rs
++++ b/src/analyzer.rs
+@@ -9640,8 +9640,7 @@ impl Analyzer<'_> {
+         let pending = std::mem::take(&mut cache.undeclared);
+         let added = cache.globals..self.program.globals.len();
+         cache.globals = self.program.globals.len();
+-        for index in added.clone() {
+-            let global = &self.program.globals[index];
++        for global in self.program.globals.range(added.clone()) {
+             if global.namespace == self.namespace {
+                 let (local, target) = (
+                     Name::new(None, &global.name),
+@@ -9655,8 +9654,13 @@ impl Analyzer<'_> {
+                 cache.refer_locals.entry(target).or_default().push(local);
+             }
+         }
+-        for index in pending.into_iter().chain(added).chain(changed) {
+-            let global = &self.program.globals[index];
++        let existing = |index| (index, &self.program.globals[index]);
++        for (index, global) in pending
++            .into_iter()
++            .map(existing)
++            .chain(added.clone().zip(self.program.globals.range(added)))
++            .chain(changed.into_iter().map(existing))
++        {
+             if !global.declared {
+                 cache.undeclared.push(index);
+                 continue;

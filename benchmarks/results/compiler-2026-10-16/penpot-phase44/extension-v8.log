@@ -1,0 +1,8 @@
+    Finished `release` profile [optimized] target(s) in 0.04s
+     Running tests/compiler/main.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/compiler-45f903421da5e09e)
+
+running 1 test
+test core_extension_demand::failed_extension_demand_recovers_without_hiding_real_cycles ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1014 filtered out; finished in 0.28s
+

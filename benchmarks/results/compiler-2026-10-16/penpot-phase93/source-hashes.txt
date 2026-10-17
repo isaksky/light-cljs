@@ -1,0 +1,4 @@
+28d6dce33547c17acf46fa2cee09a1e6fb4316d50a1239e22b1334e02ef5dc67  /private/tmp/light-cljs-phase93/light-cljs-quickjs-ready-roots
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase93/main-none.js
+13fcc3bb0ad25f520726400b1f297b42057fd85090fd45a57dc987133cbd1326  /private/tmp/light-cljs-phase93/project/vendor/rquickjs-sys/quickjs/quickjs.c
+bef88794e26b538142bda230dfd295205bf103b172708422f1b2bd67aec95db9  /private/tmp/light-cljs-phase93/project/src/compiler_roots.js

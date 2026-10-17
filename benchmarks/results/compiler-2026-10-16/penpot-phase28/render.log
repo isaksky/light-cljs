@@ -1,0 +1,25 @@
+PHASE28 argument-import 31125 1.104812
+PHASE28 environment-import 10372 1.151506
+PHASE28 environment-proof 7868 0.075961
+PHASE28 form-import 10372 1.246597
+PHASE28 fragment-append 6536 0.074548
+PHASE28 macro-call 10372 4.173243
+PHASE28 result-export 10372 1.374648
+PHASE28 unit-emission 269 1.551825
+PHASE28 unit-name-scan 269 0.973432
+       15.88 real        15.74 user         0.12 sys
+           586448896  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               40222  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                 692  voluntary context switches
+                  20  involuntary context switches
+           358533056  peak memory footprint

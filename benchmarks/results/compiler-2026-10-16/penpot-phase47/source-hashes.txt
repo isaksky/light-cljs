@@ -1,0 +1,4 @@
+b4168a113781a44db3b384167a24db2f5939c8daece7670fc31094fe0c2af90d  /private/tmp/light-cljs-phase47/light-cljs-bindings
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase47/main-bindings.js
+2a85160ed8ff8648fcb8c9be69e979b98a65ceb75b731783d2fbc1ee0291d219  /private/tmp/light-cljs-phase47/project/src/analyzer.rs
+5321a7d8edcd3d839084a8a69da0e3879d08c2057370022c22a18a5857873242  /private/tmp/light-cljs-phase47/project/tests/compiler/macros.rs

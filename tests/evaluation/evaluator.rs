@@ -241,10 +241,12 @@ fn teardown_does_not_invoke_mutated_collection_methods() {
 #[test]
 fn unit_runtime_parameter_preserves_raw_javascript_hygiene() {
     let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    let p = program("[(js* \"typeof __lightSessionRuntime0\") 42]");
+    let p = program(
+        "[(js* \"typeof __lightSessionRuntime0\") (js* \"typeof __lightSessionRuntime\") (js* \"typeof __light0___lightSessionRuntime\") 42]",
+    );
     assert_eq!(
         e.print(e.evaluate(&p).unwrap()).unwrap(),
-        "[\"undefined\" 42]"
+        "[\"undefined\" \"undefined\" \"undefined\" 42]"
     );
 }
 

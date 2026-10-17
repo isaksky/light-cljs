@@ -1,0 +1,12 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase80/project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.10s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/light_cljs-c245fc672d71037e)
+
+running 4 tests
+test arena::tests::mixed_direction_iteration_crosses_leaves_and_chunks ... ok
+test arena::tests::frozen_clone_mutation_and_truncation_are_isolated ... ok
+test arena::tests::frozen_versions_preserve_values_and_ids ... ok
+test arena::tests::snapshots_do_not_copy_entries_and_writes_copy_a_bounded_leaf ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.00s
+

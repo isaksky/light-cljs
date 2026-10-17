@@ -5,10 +5,47 @@ use crate::compiler_data::{CompilerLiteralKind as L, Datum, DatumKind as D, Form
 use crate::evaluator::ExecutionControl;
 use rquickjs::class::{JsClass, Trace, Tracer, Writable};
 use rquickjs::{Array, Class, Ctx, JsLifetime};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// In-process descriptor ABI version shared with the canonical runtime.
-pub const FORM_BRIDGE_VERSION: u32 = 2;
+pub const FORM_BRIDGE_VERSION: u32 = 5;
+const ENVIRONMENT_SLOTS: usize = 64;
+const ENVIRONMENT_CHILD_SLOTS: usize = 128;
+
+/// Transport text as a native engine string, without an array allocation and
+/// property operation for every code unit. The UTF-16 API preserves unpaired
+/// surrogates, which converting through a Rust UTF-8 string would lose.
+fn engine_string<'js>(ctx: &Ctx<'js>, units: &[u16]) -> rquickjs::Result<rquickjs::String<'js>> {
+    // SAFETY: QuickJS copies this live slice and returns an owned value in ctx.
+    let value = unsafe {
+        let raw = rquickjs::qjs::JS_NewStringUTF16(
+            ctx.as_raw().as_ptr(),
+            units.as_ptr(),
+            units.len() as _,
+        );
+        rquickjs::Value::from_raw(ctx.clone(), raw)
+    };
+    if value.is_exception() {
+        return Err(rquickjs::Error::Exception);
+    }
+    rquickjs::String::from_value(value)
+}
+
+fn string_units(value: rquickjs::String<'_>) -> rquickjs::Result<Vec<u16>> {
+    let ctx = value.ctx().as_raw().as_ptr();
+    let mut len = 0;
+    // SAFETY: value belongs to this live context. The returned buffer is owned
+    // by QuickJS until freed with the matching UTF-16 deallocator below.
+    let ptr = unsafe { rquickjs::qjs::JS_ToCStringLenUTF16(ctx, &mut len, value.as_raw()) };
+    if ptr.is_null() {
+        return Err(rquickjs::Error::Exception);
+    }
+    // SAFETY: QuickJS returned exactly len initialized UTF-16 code units.
+    let units = unsafe { std::slice::from_raw_parts(ptr, len as usize) }.to_vec();
+    // SAFETY: This is the buffer returned above, freed once after copying.
+    unsafe { rquickjs::qjs::JS_FreeCStringUTF16(ctx, ptr) };
+    Ok(units)
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct ConversionLimits {
@@ -30,14 +67,26 @@ pub(crate) struct BridgeState {
     // A bounded cache of immutable environment components. Holding the Datum
     // prevents allocator address reuse from masquerading as an identity hit.
     environments: Vec<EnvironmentEntry>,
+    // Separate slots for immutable descendants. The FIFO bound keeps changed
+    // lexical views from retaining every binding ever imported.
+    environment_children: HashMap<usize, EnvironmentEntry>,
+    environment_child_order: VecDeque<usize>,
     #[cfg(test)]
     pub(crate) live_provenance: std::rc::Rc<std::cell::Cell<usize>>,
 }
+#[derive(Clone)]
 struct EnvironmentEntry {
     data: Datum,
     slot: usize,
     nodes: usize,
     depth: usize,
+}
+struct ChildImport<'js> {
+    // Only previous imports are eligible references. A new descriptor may
+    // decode after another reference to it, particularly through metadata.
+    previous: HashMap<usize, EnvironmentEntry>,
+    // Scoped engine arrays, never stored in BridgeState or a persistent root.
+    updates: Vec<(usize, Array<'js>)>,
 }
 
 /// The engine owns object provenance through its weak map of imported objects;
@@ -79,6 +128,11 @@ impl BridgeState {
         // A failed import may have installed only some engine slots. Never
         // reference them on a later interactive operation; refill from slot 0.
         self.environments.clear();
+        self.reset_environment_children();
+    }
+    pub(crate) fn reset_environment_children(&mut self) {
+        self.environment_children.clear();
+        self.environment_child_order.clear();
     }
     pub(crate) fn retain(&mut self, form: &Form) {
         self.forms.insert(form.data().identity(), form.clone());
@@ -100,7 +154,14 @@ impl BridgeState {
         limits: ConversionLimits,
     ) -> rquickjs::Result<Array<'js>> {
         let mut remaining = limits.nodes;
-        let result = self.encode_node(ctx, data, control, limits.depth, &mut remaining, true);
+        let result = self.encode_node(
+            ctx,
+            data,
+            control,
+            limits.depth,
+            &mut remaining,
+            (true, None),
+        );
         self.forms.clear();
         result
     }
@@ -117,11 +178,25 @@ impl BridgeState {
         } = data.kind()
         else {
             let mut remaining = limits.nodes;
-            return self.encode_node(ctx, data, control, limits.depth, &mut remaining, true);
+            return self.encode_node(
+                ctx,
+                data,
+                control,
+                limits.depth,
+                &mut remaining,
+                (true, None),
+            );
         };
         if data.metadata().is_some() {
             let mut remaining = limits.nodes;
-            return self.encode_node(ctx, data, control, limits.depth, &mut remaining, true);
+            return self.encode_node(
+                ctx,
+                data,
+                control,
+                limits.depth,
+                &mut remaining,
+                (true, None),
+            );
         }
         control.poll().map_err(|e| error(e.0))?;
         if limits.depth < 2 || limits.nodes == 0 {
@@ -129,6 +204,10 @@ impl BridgeState {
             return Err(error("compiler input conversion limit"));
         }
         let mut remaining = limits.nodes - 1;
+        let mut child_import = ChildImport {
+            previous: self.environment_children.clone(),
+            updates: Vec::new(),
+        };
         let items = Array::new(ctx.clone())?;
         for (i, child) in children.iter().enumerate() {
             let cached = (i % 2 == 1)
@@ -162,10 +241,17 @@ impl BridgeState {
                     control,
                     limits.depth - 1,
                     &mut remaining,
-                    i % 2 == 1,
+                    (
+                        i % 2 == 1,
+                        if i % 2 == 1 {
+                            Some(&mut child_import)
+                        } else {
+                            None
+                        },
+                    ),
                 )?;
                 if i % 2 == 1 && matches!(child.kind(), D::Collection { .. }) && immutable(child) {
-                    let slot = if self.environments.len() < 64 {
+                    let slot = if self.environments.len() < ENVIRONMENT_SLOTS {
                         self.environments.len()
                     } else {
                         self.environments.remove(0).slot
@@ -188,6 +274,17 @@ impl BridgeState {
         result.set(1, ())?;
         result.set(2, ())?;
         result.set(3, items)?;
+        // Child slots are read from the completed previous import. Publish
+        // replacements only after every descriptor was decoded, in encoding
+        // order: metadata and children need not decode in that same order.
+        let updates = Array::new(ctx.clone())?;
+        for (i, (slot, descriptor)) in child_import.updates.into_iter().enumerate() {
+            let pair = Array::new(ctx.clone())?;
+            pair.set(0, slot)?;
+            pair.set(1, descriptor)?;
+            updates.set(i, pair)?;
+        }
+        result.set(6, updates)?;
         Ok(result)
     }
     fn encode_node<'js>(
@@ -197,12 +294,26 @@ impl BridgeState {
         control: &ExecutionControl,
         depth: usize,
         remaining: &mut usize,
-        provenance: bool,
+        (provenance, mut sharing): (bool, Option<&mut ChildImport<'js>>),
     ) -> rquickjs::Result<Array<'js>> {
         control.poll().map_err(|e| error(e.0))?;
         if depth == 0 || *remaining == 0 {
             control.invalidate();
             return Err(error("compiler input conversion limit"));
+        }
+        if let Some(entry) = sharing
+            .as_ref()
+            .and_then(|sharing| sharing.previous.get(&data.identity()))
+        {
+            if entry.nodes > *remaining || entry.depth > depth {
+                control.invalidate();
+                return Err(error("compiler input conversion limit"));
+            }
+            *remaining -= entry.nodes;
+            let reference = Array::new(ctx.clone())?;
+            reference.set(0, "environment")?;
+            reference.set(3, entry.slot)?;
+            return Ok(reference);
         }
         *remaining -= 1;
         let result = Array::new(ctx.clone())?;
@@ -228,7 +339,14 @@ impl BridgeState {
         if let Some(meta) = data.metadata() {
             result.set(
                 2,
-                self.encode_node(ctx, &meta, control, depth - 1, remaining, provenance)?,
+                self.encode_node(
+                    ctx,
+                    &meta,
+                    control,
+                    depth - 1,
+                    remaining,
+                    (provenance, sharing.as_deref_mut()),
+                )?,
             )?;
         } else {
             result.set(2, ())?;
@@ -255,16 +373,16 @@ impl BridgeState {
                 "number"
             }
             D::Character(v) => {
-                result.set(3, vec![*v])?;
+                result.set(3, engine_string(ctx, &[*v])?)?;
                 "character"
             }
             D::String(v) => {
-                result.set(3, v.to_vec())?;
+                result.set(3, engine_string(ctx, v)?)?;
                 "string"
             }
             D::Symbol(n) | D::Keyword(n) => {
-                result.set(3, n.namespace().map(|s| s.to_vec()))?;
-                result.set(4, n.name().to_vec())?;
+                result.set(3, n.namespace().map(|s| engine_string(ctx, s)).transpose()?)?;
+                result.set(4, engine_string(ctx, n.name())?)?;
                 if matches!(data.kind(), D::Symbol(_)) {
                     "symbol"
                 } else {
@@ -276,7 +394,14 @@ impl BridgeState {
                 for (i, child) in children.iter().enumerate() {
                     items.set(
                         i,
-                        self.encode_node(ctx, child, control, depth - 1, remaining, provenance)?,
+                        self.encode_node(
+                            ctx,
+                            child,
+                            control,
+                            depth - 1,
+                            remaining,
+                            (provenance, sharing.as_deref_mut()),
+                        )?,
                     )?;
                 }
                 result.set(3, items)?;
@@ -304,7 +429,14 @@ impl BridgeState {
             D::CompilerLiteral { kind, payload } => {
                 result.set(
                     3,
-                    self.encode_node(ctx, payload, control, depth - 1, remaining, provenance)?,
+                    self.encode_node(
+                        ctx,
+                        payload,
+                        control,
+                        depth - 1,
+                        remaining,
+                        (provenance, sharing.as_deref_mut()),
+                    )?,
                 )?;
                 match kind {
                     L::Regex => "regex",
@@ -318,6 +450,30 @@ impl BridgeState {
             }
         };
         result.set(0, tag)?;
+        if let Some(sharing) = sharing
+            && matches!(data.kind(), D::Collection { .. })
+            && immutable(data)
+            && !self.environment_children.contains_key(&data.identity())
+        {
+            let slot = if self.environment_children.len() < ENVIRONMENT_CHILD_SLOTS {
+                ENVIRONMENT_SLOTS + self.environment_children.len()
+            } else {
+                let old = self.environment_child_order.pop_front().unwrap();
+                self.environment_children.remove(&old).unwrap().slot
+            };
+            let (nodes, depth) = dimensions(data);
+            self.environment_children.insert(
+                data.identity(),
+                EnvironmentEntry {
+                    data: data.clone(),
+                    slot,
+                    nodes,
+                    depth,
+                },
+            );
+            self.environment_child_order.push_back(data.identity());
+            sharing.updates.push((slot, result.clone()));
+        }
         Ok(result)
     }
     pub(crate) fn decode(
@@ -366,12 +522,15 @@ impl BridgeState {
                 (D::Double(v), D::Double(v))
             }
             "string" | "character" => {
-                let v: Vec<u16> = d.get(3)?;
+                let v = string_units(d.get(3)?)?;
                 (D::String(v.clone().into()), D::String(v.into()))
             }
             "symbol" | "keyword" => {
-                let ns: Option<Vec<u16>> = d.get(3)?;
-                let name: Vec<u16> = d.get(4)?;
+                let ns = d
+                    .get::<Option<rquickjs::String<'_>>>(3)?
+                    .map(string_units)
+                    .transpose()?;
+                let name = string_units(d.get(4)?)?;
                 let name = crate::compiler_data::Name::from_utf16(ns.as_deref(), &name);
                 let kind = if tag == "symbol" {
                     D::Symbol(name)
@@ -471,7 +630,7 @@ impl BridgeState {
         Ok((value, canonical))
     }
 }
-fn exact(a: &Datum, b: &Datum) -> bool {
+pub(crate) fn exact(a: &Datum, b: &Datum) -> bool {
     if a.identity() == b.identity() {
         return true;
     }

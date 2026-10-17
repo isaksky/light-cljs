@@ -1,0 +1,4 @@
+clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 53d18800eda3b7407e53366f27ca78e922c6e0db)
+Target: arm64-apple-darwin24.6.0
+Thread model: posix
+InstalledDir: /private/tmp/light-cljs-phase108/target/release/clang/bin

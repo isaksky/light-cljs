@@ -1,0 +1,8 @@
+(require '[babashka.fs :as fs] '[clojure.string :as str])
+(def here (fs/parent *file*))
+(def original (slurp "src/js_runtime.js"))
+(spit (fs/file here "runtime-before.js") original)
+(def before "  function storesPredicate(...stores) {\n    return value => {\n      for (let i = 0; i < stores.length; i++)")
+(def after "  function storesPredicate(...stores) {\n    return value => {\n      if (value === null || typeof value !== \"object\" && typeof value !== \"function\") return false;\n      for (let i = 0; i < stores.length; i++)")
+(assert (str/includes? original before))
+(spit (fs/file here "runtime-after.js") (str/replace original before after))

@@ -1,0 +1,1 @@
+Replacing only the expected compilerFormBridge function restores byte identity with phase101. All other output is unchanged.

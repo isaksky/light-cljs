@@ -1,0 +1,51 @@
+diff --git a/src/compilation_session.rs b/src/compilation_session.rs
+index afa7cdf..ee69e1e 100644
+--- a/src/compilation_session.rs
++++ b/src/compilation_session.rs
+@@ -118,6 +118,46 @@ impl Drop for CompilationSession {
+             unit.borrow_mut().snapshot = None;
+         }
+         report("session-snapshots-cleared");
++        let unique = catalog.units.iter().filter(|unit| matches!(&unit.borrow().state, AnalysisState::Analyzed(p, _) if Rc::strong_count(p) == 1)).count();
++        eprintln!(
++            "session-programs unique={unique} unit-bytes={} snapshot-bytes={} host-bytes={}",
++            std::mem::size_of::<Unit>(),
++            std::mem::size_of::<DefinitionSnapshot>(),
++            std::mem::size_of::<MacroHost>()
++        );
++        macro_rules! clear_tables {
++            ($stage:literal, $($field:ident),+) => {{
++                for unit in &catalog.units {
++                    if let AnalysisState::Analyzed(program, _) = &mut unit.borrow_mut().state {
++                        if let Some(program) = Rc::get_mut(program) {
++                            $(program.$field = Default::default();)+
++                        }
++                    }
++                }
++                report($stage);
++            }};
++        }
++        clear_tables!("program-reader-contexts-cleared", reader_contexts);
++        clear_tables!(
++            "program-namespace-tables-cleared",
++            namespaces,
++            namespace_entries,
++            namespace_requires,
++            namespace_lazy_only
++        );
++        clear_tables!(
++            "program-protocol-tables-cleared",
++            protocols,
++            record_constructors,
++            field_bindings,
++            type_methods,
++            macro_functions
++        );
++        clear_tables!("program-expressions-cleared", exprs);
++        clear_tables!("program-globals-cleared", globals, js_globals);
++        clear_tables!("program-locals-cleared", locals, recur_targets);
++        clear_tables!("program-literals-cleared", strings, named_literals);
++        clear_tables!("program-lazy-cleared", lazy_targets, lazy_namespaces);
+         for unit in &catalog.units {
+             unit.borrow_mut().state = AnalysisState::Unstarted;
+         }

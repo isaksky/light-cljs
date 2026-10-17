@@ -1,0 +1,1 @@
+All source, tests, vendor, benches, manifests, build.rs and changed documentation match the candidate that passed 1401 tests, strict Clippy, formatting and three Node workflows.

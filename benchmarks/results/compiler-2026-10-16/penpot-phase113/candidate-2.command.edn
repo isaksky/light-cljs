@@ -1,0 +1,1 @@
+{:binary "/private/tmp/light-cljs-phase113/light-cljs-specialized-stores", :entry "app.main", :options ["--optimize" "none"], :environment {"LIGHT_V8_MACROS" "1", "LIGHT_V8_HEAP_BYTES" nil, "LIGHT_V8_STATS" nil, "LIGHT_V8_FLAGS" nil, "LIGHT_V8_SNAPSHOT" nil}}

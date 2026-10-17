@@ -1,0 +1,1 @@
+Profile main application body matches phase6b main-none byte for byte after excluding the instrumented embedded runtime.

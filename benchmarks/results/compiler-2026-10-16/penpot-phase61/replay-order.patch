@@ -1,0 +1,57 @@
+diff --git a/src/js_runtime.js b/src/js_runtime.js
+index eada146..efa5965 100644
+--- a/src/js_runtime.js
++++ b/src/js_runtime.js
+@@ -3695,13 +3695,20 @@
+       // Bootstrap syntax quotations can be deep. Traverse descriptors explicitly
+       // so the documented form depth budget does not consume the engine stack.
+       const values = new Map(), pending = [root, false];
++      const replay = macroInput ? [] : null;
++      const arguments_ = macroInput && root[0] === "list" ? new Map(root[3].map(d => [d, null])) : null;
+       while (pending.length) {
+         const ready = pending.pop(), d = pending.pop();
+         if (ready) {
+           const value = decodeNode(d, values); values.set(d, value);
++          if (replay) {
++            replay.push(d);
++            if (arguments_?.has(d)) arguments_.get(d)[1] = replay.length;
++          }
+           if (d[5] != null) environments.set(d[5], value);
+           continue;
+         }
++        if (arguments_?.has(d)) arguments_.set(d, [replay.length, 0]);
+         pending.push(d, true);
+         const kind = d[0], metadata = d[2], a = d[3];
+         if (metadata != null) pending.push(metadata, false);
+@@ -3715,7 +3722,7 @@
+         }
+       }
+       const value = values.get(root);
+-      if (macroInput) macroInputs.set(value, {root, values});
++      if (macroInput) macroInputs.set(value, {root, values, replay, arguments_});
+       if (snapshotLimits === null) return value;
+       // Only final replacements matter when a large import recycles a slot.
+       // Discarded map/set entries and literal payloads may have no snapshot;
+@@ -3784,20 +3791,8 @@
+         for (const descriptor of input.root[3].slice(1)) {
+           // Restore the same per-argument metadata/provenance order as a new
+           // import, without reconstructing the objects already in &form.
+-          const pending = [descriptor, false];
+-          while (pending.length) {
+-            const ready = pending.pop(), d = pending.pop();
+-            if (ready) { decodeNode(d, input.values, true); continue; }
+-            pending.push(d, true);
+-            if (d[2] != null) pending.push(d[2], false);
+-            switch (d[0]) {
+-              case "list": case "vector": case "map": case "set":
+-                for (let i = d[3].length - 1; i >= 0; --i) pending.push(d[3][i], false);
+-                break;
+-              case "regex": case "instant": case "uuid": case "queue": case "js-array": case "js-object":
+-                pending.push(d[3], false); break;
+-            }
+-          }
++          const [start, end] = input.arguments_.get(descriptor);
++          for (let i = start; i < end; i++) decodeNode(input.replay[i], input.values, true);
+           const value = input.values.get(descriptor);
+           args.push(value); snapshots.push(encode(value, nodes, depth));
+         }

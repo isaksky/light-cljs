@@ -1,0 +1,123 @@
+Main-thread exclusive sample counts; total: 4322
+567 <deduplicated_symbol>  (in light-cljs-mimalloc)
+245 _RNvNtCsk5HqL0BBSq1_10light_cljs7emitter15emit_unit_parts  (in light-cljs-mimalloc)
+140 Builtins_WeakMapLookupHashIndex  (in light-cljs-mimalloc)
+136 _RNvXs3_NtNtCs33v9mEcCS3W_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCsk5HqL0BBSq1_10light_cljs  (in light-cljs-mimalloc)
+118 Builtins_KeyedHasIC_Megamorphic  (in light-cljs-mimalloc)
+114 Builtins_KeyedLoadIC_Megamorphic  (in light-cljs-mimalloc)
+107 _platform_memmove  (in libsystem_platform.dylib)
+73 Builtins_FindOrderedHashMapEntry  (in light-cljs-mimalloc)
+70 _RNvNtCsk5HqL0BBSq1_10light_cljs18compiler_bootstrap20elidable_environment  (in light-cljs-mimalloc)
+64 mi_free  (in light-cljs-mimalloc)
+55 v8::internal::MarkCompactCollector::ApplyEphemeronSemantics(v8::internal::Tagged<v8::internal::HeapObject>, v8::internal::Tagged<v8::internal::HeapObject>)  (in light-cljs-mimalloc)
+53 v8::internal::HashTable<v8::internal::EphemeronHashTable, v8::internal::EphemeronHashTableShape>::Rehash()  (in light-cljs-mimalloc)
+49 mi_malloc_aligned  (in light-cljs-mimalloc)
+48 mach_absolute_time  (in libsystem_kernel.dylib)
+47 Builtins_KeyedHasIC  (in light-cljs-mimalloc)
+41 Builtins_LoadIC_Megamorphic  (in light-cljs-mimalloc)
+33 Builtins_WeakCollectionSet  (in light-cljs-mimalloc)
+32 v8::Object::Get(v8::Local<v8::Context>, unsigned int)  (in light-cljs-mimalloc)
+29 OUTLINED_FUNCTION_41  (in light-cljs-mimalloc)
+27 v8::internal::Scanner::Next()  (in light-cljs-mimalloc)
+26 Builtins_WeakMapPrototypeHas  (in light-cljs-mimalloc)
+25 _RINvYNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateNtNtCs33v9mEcCS3W_4core4hash11BuildHasher8hash_oneRNtNtCs87L1bv5kwMu_5alloc6string6StringECsk5HqL0BBSq1_10light_cljs  (in light-cljs-mimalloc)
+25 v8::internal::Object::GetSimpleHash(v8::internal::Tagged<v8::internal::Object>)  (in light-cljs-mimalloc)
+25 _RNvNtCsk5HqL0BBSq1_10light_cljs7emitter6quoted  (in light-cljs-mimalloc)
+24 _RNvXs4_NtCs87L1bv5kwMu_5alloc6stringNtB5_6StringNtNtCs33v9mEcCS3W_4core5clone5Clone5clone  (in light-cljs-mimalloc)
+23 v8::internal::Scanner::ScanString()  (in light-cljs-mimalloc)
+22 v8::internal::LookupIterator::LookupInRegularHolder<true>(v8::internal::Tagged<v8::internal::Map>, v8::internal::Tagged<v8::internal::JSReceiver>)  (in light-cljs-mimalloc)
+21 _platform_memcmp  (in libsystem_platform.dylib)
+20 Builtins_CallFunction_ReceiverIsNullOrUndefined  (in light-cljs-mimalloc)
+19 _RINvNtCs33v9mEcCS3W_4core3ptr9drop_glueNtNtCsk5HqL0BBSq1_10light_cljs13compiler_data9DatumKindEBF_  (in light-cljs-mimalloc)
+18 absl::container_internal::raw_hash_set<absl::container_internal::FlatHashSetPolicy<int>>::find_or_prepare_insert_large<int>(int const&)  (in light-cljs-mimalloc)
+18 _RNvMs0_NtCsk5HqL0BBSq1_10light_cljs9v8_bridgeNtB5_11BridgeState11decode_node  (in light-cljs-mimalloc)
+17 _RNvNvMsb_NtCsk5HqL0BBSq1_10light_cljs13compiler_dataNtB7_4Form21from_bridge_expansion3add  (in light-cljs-mimalloc)
+16 v8::internal::ScavengerEphemeronProcessor::ClearOldEphemerons(v8::internal::Heap*)  (in light-cljs-mimalloc)
+16 Builtins_MapPrototypeSet  (in light-cljs-mimalloc)
+16 Builtins_ObjectConstructor  (in light-cljs-mimalloc)
+16 Builtins_SetPrototypeAdd  (in light-cljs-mimalloc)
+16 _RNvMs5_NtCsk5HqL0BBSq1_10light_cljs8analyzerNtB5_8Analyzer11import_form  (in light-cljs-mimalloc)
+15 _RNvMNtCs87L1bv5kwMu_5alloc6stringNtB2_6String10from_utf16  (in light-cljs-mimalloc)
+15 v8::internal::LookupIterator::LookupInRegularHolder<false>(v8::internal::Tagged<v8::internal::Map>, v8::internal::Tagged<v8::internal::JSReceiver>)  (in light-cljs-mimalloc)
+15 v8::internal::LookupIterator::FetchValue(v8::base::StrongAlias<v8::internal::AllowAllocationTag, bool>) const  (in light-cljs-mimalloc)
+15 Builtins_LoadICGenericBaseline  (in light-cljs-mimalloc)
+15 v8::internal::LookupIterator::LookupIterator(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::Union<v8::internal::Smi, v8::internal::HeapNumber, v8::internal::BigInt, v8::internal::String, v8::internal::Symbol, v8::internal::Boolean, v8::internal::Null, v8::internal::Undefined, v8::internal::JSReceiver>>, v8::internal::DirectHandle<v8::internal::Name>, unsigned long, v8::internal::DirectHandle<v8::internal::Union<v8::internal::Smi, v8::internal::HeapNumber, v8::internal::BigInt, v8::internal::String, v8::internal::Symbol, v8::internal::Boolean, v8::internal::Null, v8::internal::Undefined, v8::internal::JSReceiver>>, v8::internal::LookupIterator::Configuration)  (in light-cljs-mimalloc)
+14 Builtins_Typeof  (in light-cljs-mimalloc)
+14 Builtins_ArrayPrototypeJoinImpl  (in light-cljs-mimalloc)
+13 Builtins_Call_ReceiverIsNullOrUndefined  (in light-cljs-mimalloc)
+12 v8::internal::Object::GetProperty(v8::internal::LookupIterator*, bool)  (in light-cljs-mimalloc)
+12 _RINvXNvMNtCs87L1bv5kwMu_5alloc5sliceSp9to_vec_inNtNtCsk5HqL0BBSq1_10light_cljs13compiler_data15ExpansionOriginNtB3_10ConvertVec6to_vecNtNtB8_5alloc6GlobalEBO_  (in light-cljs-mimalloc)
+12 Builtins_WeakCollectionDelete  (in light-cljs-mimalloc)
+12 _RINvNtCs33v9mEcCS3W_4core3ptr9drop_glueINtNtCs87L1bv5kwMu_5alloc5boxed3BoxSNtNtCsk5HqL0BBSq1_10light_cljs13compiler_data5DatumEEB1f_  (in light-cljs-mimalloc)
+12 Builtins_EphemeronKeyBarrierSaveFP  (in light-cljs-mimalloc)
+12 _RNvNtCsk5HqL0BBSq1_10light_cljs11form_bridge5exact  (in light-cljs-mimalloc)
+12 v8::internal::PropertyDescriptor::ToPropertyDescriptor(v8::internal::Isolate*, v8::internal::Handle<v8::internal::Union<v8::internal::Smi, v8::internal::HeapNumber, v8::internal::BigInt, v8::internal::String, v8::internal::Symbol, v8::internal::Boolean, v8::internal::Null, v8::internal::Undefined, v8::internal::JSReceiver>>, v8::internal::PropertyDescriptor*)  (in light-cljs-mimalloc)
+12 Builtins_CallFunction_ReceiverIsNotNullOrUndefined  (in light-cljs-mimalloc)
+11 _RNvXsb_NtCs87L1bv5kwMu_5alloc3vecINtB5_3VecNtNtCsk5HqL0BBSq1_10light_cljs10macro_host11MacroImportENtNtCs33v9mEcCS3W_4core5clone5Clone5cloneBJ_  (in light-cljs-mimalloc)
+10 v8::internal::StringTable::TryLookupKey<v8::internal::SequentialStringKey<unsigned char>, v8::internal::Isolate>(v8::internal::Isolate*, v8::internal::SequentialStringKey<unsigned char>*)  (in light-cljs-mimalloc)
+10 OUTLINED_FUNCTION_58  (in light-cljs-mimalloc)
+10 _RNvNtCsk5HqL0BBSq1_10light_cljs5terse13scanned_names  (in light-cljs-mimalloc)
+10 _mi_theap_realloc_zero  (in light-cljs-mimalloc)
+10 __psynch_cvwait  (in libsystem_kernel.dylib)
+10 _RNvXs_NtNtCs87L1bv5kwMu_5alloc3vec21spec_from_iter_nestedINtB6_3VecNtNtCsk5HqL0BBSq1_10light_cljs13compiler_data4FormEINtB4_18SpecFromIterNestedB13_INtNtNtNtCs33v9mEcCS3W_4core4iter8adapters3map3MapINtNtNtB2v_5slice4iter4IterNtB15_6FormIdENCNvMs4_B15_B13_8children0EE9from_iterB17_  (in light-cljs-mimalloc)
+10 Builtins_StrictEqual  (in light-cljs-mimalloc)
+10 v8::internal::FactoryBase<v8::internal::Factory>::NewFixedArrayWithFiller(v8::internal::DirectHandle<v8::internal::Map>, unsigned int, v8::internal::DirectHandle<v8::internal::HeapObject>, v8::internal::AllocationType)  (in light-cljs-mimalloc)
+10 Builtins_CallFunction_ReceiverIsAny  (in light-cljs-mimalloc)
+9 v8::internal::JSObject::MigrateToMap(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::JSObject>, v8::internal::DirectHandle<v8::internal::Map>, int)  (in light-cljs-mimalloc)
+9 Builtins_WeakMapPrototypeGet  (in light-cljs-mimalloc)
+9 _RNvNtCsk5HqL0BBSq1_10light_cljs13compiler_data10name_utf16  (in light-cljs-mimalloc)
+9 _tlv_get_addr  (in libdyld.dylib)
+9 _RNvNtCs33v9mEcCS3W_4core3fmt5write  (in light-cljs-mimalloc)
+9 madvise  (in libsystem_kernel.dylib)
+9 Builtins_StringAdd_NoMapCheck  (in light-cljs-mimalloc)
+8 OUTLINED_FUNCTION_32  (in light-cljs-mimalloc)
+8 mi_page_free_list_extend  (in light-cljs-mimalloc)
+8 v8::internal::StringTable::TryLookupKey<v8::internal::InternalizedStringKey, v8::internal::Isolate>(v8::internal::Isolate*, v8::internal::InternalizedStringKey*)  (in light-cljs-mimalloc)
+8 v8::internal::Factory::AllocateRaw(int, v8::internal::AllocationType, v8::internal::AllocationAlignment, v8::internal::AllocationHint)  (in light-cljs-mimalloc)
+8 v8::internal::LookupIterator::Start<true>()  (in light-cljs-mimalloc)
+8 v8::internal::Scavenger::Process(v8::JobDelegate*)  (in light-cljs-mimalloc)
+8 Builtins_RecordWriteSaveFP  (in light-cljs-mimalloc)
+7 _RNvMs5_NtCsk5HqL0BBSq1_10light_cljs8analyzerNtB5_8Analyzer27collect_expression_warnings  (in light-cljs-mimalloc)
+7 _RNvMs0_NtCsk5HqL0BBSq1_10light_cljs9v8_bridgeNtB5_11BridgeState6retain  (in light-cljs-mimalloc)
+
+Deduplicated functions by entry address and immediate caller
+138 ["0x10247f72c" "_RNvMs5_NtCsk5HqL0BBSq1_10light_cljs8analyzerNtB5_8Analyzer18compiler_read_form  (in light-cljs-mimalloc)"]
+113 ["0x102481414" "_RINvMsk_NtCs87L1bv5kwMu_5alloc3vecINtB6_3VecTNtNtB8_6string6StringBH_BH_EE16extend_desugaredINtNtNtNtCs33v9mEcCS3W_4core4iter8adapters3map3MapINtNtB1x_6filter6FilterINtNtCsk5HqL0BBSq1_10light_cljs5arena4IterNtNtB2I_8analyzer13GlobalBindingENCNvMs5_B3l_NtB3l_8Analyzer15reader_bindingss0_0ENCB3S_s1_0EEB2I_  (in light-cljs-mimalloc)"]
+76 ["0x102481414" "_RNvXNtNtCs87L1bv5kwMu_5alloc3vec21spec_from_iter_nestedINtB4_3VecNtNtB6_6string6StringEINtB2_18SpecFromIterNestedB11_INtNtNtNtCs33v9mEcCS3W_4core4iter8adapters3map3MapINtNtB1W_6filter6FilterINtNtCsk5HqL0BBSq1_10light_cljs5arena4IterNtNtB37_8analyzer13GlobalBindingENCNvMs_NtB37_10macro_hostNtB4m_9MacroHost18reader_environments0_0ENCB4h_s1_0EE9from_iterB37_  (in light-cljs-mimalloc)"]
+55 ["0x102481414" "_RNvMs5_NtCsk5HqL0BBSq1_10light_cljs8analyzerNtB5_8Analyzer19definition_snapshot  (in light-cljs-mimalloc)"]
+37 ["0x1024632c0" "_RNvNtCsk5HqL0BBSq1_10light_cljs7emitter15emit_unit_parts  (in light-cljs-mimalloc)"]
+32 ["0x102481414" "_RNvNtCsk5HqL0BBSq1_10light_cljs7emitter12emit_js_mode  (in light-cljs-mimalloc)"]
+12 ["0x102481414" "_RNvMs5_NtCsk5HqL0BBSq1_10light_cljs8analyzerNtB5_8Analyzer17array_environment  (in light-cljs-mimalloc)"]
+9 ["0x1024632c0" "_RNvNtCsk5HqL0BBSq1_10light_cljs16program_fragment6append  (in light-cljs-mimalloc)"]
+8 ["0x1024637a4" "<deduplicated_symbol>  (in light-cljs-mimalloc)"]
+8 ["0x102481414" "_RNvMs5_NtCsk5HqL0BBSq1_10light_cljs8analyzerNtB5_8Analyzer23record_constructor_args  (in light-cljs-mimalloc)"]
+7 ["0x10247f72c" "_RNvMs5_NtCsk5HqL0BBSq1_10light_cljs8analyzerNtB5_8Analyzer7resolve  (in light-cljs-mimalloc)"]
+7 ["0x10247f72c" "_RNvNtCsk5HqL0BBSq1_10light_cljs11application6retain  (in light-cljs-mimalloc)"]
+6 ["0x1023f4328" "_RINvMs6_NtCs2WxTXoQY03F_9hashbrown3rawINtB6_8RawTableTjNtNtCsk5HqL0BBSq1_10light_cljs13compiler_data4FormEE14reserve_rehashNCINvNtB8_3map11make_hasherjBR_NtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE0EBV_  (in light-cljs-mimalloc)"]
+6 ["0x1024632c0" "_RNvMs5_NtCsk5HqL0BBSq1_10light_cljs8analyzerNtB5_8Analyzer14metadata_value  (in light-cljs-mimalloc)"]
+4 ["0x102481414" "_RNvMs5_NtCsk5HqL0BBSq1_10light_cljs8analyzerNtB5_8Analyzer10form_inner  (in light-cljs-mimalloc)"]
+3 ["0x10247f72c" "_RNvMs_NtCsk5HqL0BBSq1_10light_cljs7emitterNtB4_7Emitter6global  (in light-cljs-mimalloc)"]
+3 ["0x1022d8d70" "_RNvMs5_NtCsk5HqL0BBSq1_10light_cljs8analyzerNtB5_8Analyzer11import_form  (in light-cljs-mimalloc)"]
+2 ["0x102490aa4" "_RNvMs0_NtCsk5HqL0BBSq1_10light_cljs9v8_bridgeNtB5_11BridgeState18encode_environment  (in light-cljs-mimalloc)"]
+2 ["0x102481414" "_RNvMs5_NtCsk5HqL0BBSq1_10light_cljs8analyzerNtB5_8Analyzer27collect_expression_warnings  (in light-cljs-mimalloc)"]
+2 ["0x10248eb60" "_RINvNtCs33v9mEcCS3W_4core3ptr9drop_glueNtNtCsk5HqL0BBSq1_10light_cljs10macro_host9MacroHostEBF_  (in light-cljs-mimalloc)"]
+2 ["0x102481414" "_RNvMs_NtCsk5HqL0BBSq1_10light_cljs10macro_hostNtB4_9MacroHost18reader_environment  (in light-cljs-mimalloc)"]
+2 ["0x10247f72c" "_RNvMs5_NtCsk5HqL0BBSq1_10light_cljs8analyzerNtB5_8Analyzer14metadata_value  (in light-cljs-mimalloc)"]
+2 ["0x10247f72c" "_RNvMs5_NtCsk5HqL0BBSq1_10light_cljs8analyzerNtB5_8Analyzer13expand_reader  (in light-cljs-mimalloc)"]
+2 ["0x1023f4328" "_RNvMs1_NtCs2WxTXoQY03F_9hashbrown3mapINtB5_7HashMapNtNtCsk5HqL0BBSq1_10light_cljs8analyzer6ExprIduNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE6insertBR_  (in light-cljs-mimalloc)"]
+2 ["0x1024d7238" "_RNvMs_NtCsk5HqL0BBSq1_10light_cljs10macro_hostNtB4_9MacroHost16has_source_value  (in light-cljs-mimalloc)"]
+2 ["0x10247f72c" "_RNvMs_NtCsk5HqL0BBSq1_10light_cljs7emitterNtB4_7Emitter10value_expr  (in light-cljs-mimalloc)"]
+2 ["0x10247f72c" "_RNvMs_NtCsk5HqL0BBSq1_10light_cljs7emitterNtB4_7Emitter9emit_expr  (in light-cljs-mimalloc)"]
+2 ["0x1023f4328" "_RINvMs6_NtCs2WxTXoQY03F_9hashbrown3rawINtB6_8RawTableTNtNtCsk5HqL0BBSq1_10light_cljs8analyzer6ExprIduEE14reserve_rehashNCINvNtB8_3map11make_hasherBQ_uNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE0EBU_  (in light-cljs-mimalloc)"]
+2 ["0x10247f72c" "_RNvMs5_NtCsk5HqL0BBSq1_10light_cljs8analyzerNtB5_8Analyzer17check_private_var  (in light-cljs-mimalloc)"]
+1 ["0x1024632c0" "_RNvMs_NtCsk5HqL0BBSq1_10light_cljs7emitterNtB4_7Emitter15construct_named  (in light-cljs-mimalloc)"]
+1 ["0x1023f4328" "_RNvMs1_NtCs2WxTXoQY03F_9hashbrown3mapINtB5_7HashMapjNtNtCsk5HqL0BBSq1_10light_cljs13compiler_data4FormNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE6insertBS_  (in light-cljs-mimalloc)"]
+1 ["0x10248cfc4" "_RNvMs1_NtCsk5HqL0BBSq1_10light_cljs7layeredINtB5_7LayeredNtNtCs87L1bv5kwMu_5alloc6string6StringNtNtB7_10macro_host17SourceBindingKindE6insertB7_  (in light-cljs-mimalloc)"]
+1 ["0x1023f4328" "_RNvXs0_NtNtNtCs33v9mEcCS3W_4core4iter8adapters3mapINtB5_3MapINtNtB7_7flatten7FlatMapINtNtNtBb_5slice4iter4IterINtNtCs87L1bv5kwMu_5alloc3vec3VecNtNtCsk5HqL0BBSq1_10light_cljs8analyzer7LocalIdEEIB1l_B2h_ENCNvMs5_B2j_NtB2j_8Analyzer12expand_macrosd_0ENCB3g_se_0ENtNtNtB9_6traits8iterator8Iterator4nextB2l_  (in light-cljs-mimalloc)"]
+1 ["0x102481414" "_RNvNtCsk5HqL0BBSq1_10light_cljs16program_fragment6append  (in light-cljs-mimalloc)"]
+1 ["0x1023f45e4" "_RNvMNtCsk5HqL0BBSq1_10light_cljs10name_indexNtB2_9NameIndex6insert  (in light-cljs-mimalloc)"]
+1 ["0x10247f72c" "_RNvNtCsk5HqL0BBSq1_10light_cljs11application7flatten  (in light-cljs-mimalloc)"]
+1 ["0x1024d65e8" "_RNvMs_NtCsk5HqL0BBSq1_10light_cljs10macro_hostNtB4_9MacroHost10macro_name  (in light-cljs-mimalloc)"]
+1 ["0x10247f72c" "_RNvMs5_NtCsk5HqL0BBSq1_10light_cljs8analyzerNtB5_8Analyzer12expand_macro  (in light-cljs-mimalloc)"]
+1 ["0x1022daac0" "_RINvNtNtCs33v9mEcCS3W_4core4iter8adapters11try_processINtNtB2_3map3MapINtNtNtB6_5slice4iter4IterNtNtCsk5HqL0BBSq1_10light_cljs6parser6NodeIdENCNvMs5_NtB1A_8analyzerNtB2n_8Analyzer9call_forms2_0ENtB2n_6ExprIdINtNtB6_6result6ResultNtNtB6_7convert10InfallibleNtB2n_13AnalysisErrorENCINvXso_B3m_IB3k_INtNtCs87L1bv5kwMu_5alloc3vec3VecB36_EB46_EINtNtNtB4_6traits7collect12FromIteratorIB3k_B36_B46_EE9from_iterBQ_E0B4K_EB1A_  (in light-cljs-mimalloc)"]
+1 ["0x1023f4328" "_RNvMs1_NtCs2WxTXoQY03F_9hashbrown3mapINtB5_7HashMapNtNtCsk5HqL0BBSq1_10light_cljs8analyzer7LocalIduNtNtNtCs1IrzuoRvWaH_3std4hash6random11RandomStateE6insertBR_  (in light-cljs-mimalloc)"]

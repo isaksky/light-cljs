@@ -1,0 +1,1 @@
+Clean render and instrumented main-none are byte-identical to phase2f outputs. Full main profile included a separate 2-second sampling window; its timing is diagnostic, not a clean benchmark.

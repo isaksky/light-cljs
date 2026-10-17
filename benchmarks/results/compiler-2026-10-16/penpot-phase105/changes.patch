@@ -1,0 +1,189 @@
+diff --git a/src/js_runtime.js b/src/js_runtime.js
+index eada146..bc1802b 100644
+--- a/src/js_runtime.js
++++ b/src/js_runtime.js
+@@ -3806,56 +3806,68 @@
+     }
+ 
+     function encode(value, limit, depthLimit, unseen = null) {
+-      let remaining = limit;
++      let remaining = limit, pathLength = 0;
+       const active = new WeakSet();
+-      function visit(v, path, depth) {
+-        if (--remaining < 0) fail("node limit", path);
+-        if (depth > depthLimit) fail("depth limit", path);
++      // Reuse path components; format a diagnostic only when conversion fails.
++      // A null prototype prevents inherited setters from observing this stack.
++      const path = {__proto__: null};
++      const pathStep = (part, index) => part === undefined ? "" : typeof part === "number"
++        ? "[" + part + "]" : part + (index === undefined ? "" : "[" + index + "]");
++      function failAt(category, part, index) {
++        let text = "$";
++        for (let i = 0; i < pathLength; i += 2) text += pathStep(path[i], path[i + 1]);
++        fail(category, text + pathStep(part, index));
++      }
++      function visit(v, part, depth, index) {
++        const at = pathLength; path[at] = part; path[at + 1] = index; pathLength += 2;
+         const kind = typeof v;
+         const object = v != null && (kind === "object" || kind === "function");
+-        if (object && active.has(v)) fail("cyclic data", path);
+-        if (object) active.add(v);
++        let entered = false;
+         try {
++          if (--remaining < 0) failAt("node limit");
++          if (depth > depthLimit) failAt("depth limit");
++          if (object && active.has(v)) failAt("cyclic data");
++          if (object) { active.add(v); entered = true; }
+           let tag, a, b;
+           if (v === null) tag = "nil";
+           else if (kind === "boolean") { tag = "bool"; a = v; }
+           else if (kind === "number") { tag = "number"; a = v; }
+           else if (kind === "string") { tag = "string"; a = v; }
+-          else if (kind !== "object") fail(kind, path);
+-          else if (vars.has(v)) fail("Var", path);
+-          else if (atoms.has(v)) fail("atom", path);
+-          else if (volatiles.has(v)) fail("volatile", path);
+-          else if (typeFields.has(v) || recordTypes.has(v) || reifyValues.has(v) || ifnValues.has(v)) fail("protocol/type instance", path);
++          else if (kind !== "object") failAt(kind);
++          else if (vars.has(v)) failAt("Var");
++          else if (atoms.has(v)) failAt("atom");
++          else if (volatiles.has(v)) failAt("volatile");
++          else if (typeFields.has(v) || recordTypes.has(v) || reifyValues.has(v) || ifnValues.has(v)) failAt("protocol/type instance");
+           else if (symbols.has(v) || keywords.has(v)) {
+             const n = symbols.get(v) || keywords.get(v); tag = symbols.has(v) ? "symbol" : "keyword";
+             a = n.namespace == null ? null : n.namespace; b = n.name;
+           } else if (vectors.has(v)) {
+             // Each item is read just before it is visited, within the limits.
+             tag = "vector"; a = []; const store = vectors.get(v);
+-            for (let i = 0; i < store.cnt; i++) a.push(visit(vectorNth(store, i, null), path + "[" + i + "]", depth + 1));
++            for (let i = 0; i < store.cnt; i++) a.push(visit(vectorNth(store, i, null), i, depth + 1));
+           }
+           else if (maps.has(v)) { tag = "map"; a = []; let i = 0;
+-            for (const e of mapTraversal(v)) { a.push(visit(e.key, path + ".key[" + i + "]", depth + 1), visit(e.value, path + ".value[" + i++ + "]", depth + 1)); }
+-          } else if (sets.has(v)) { tag = "set"; a = setTraversal(v).map((e, i) => visit(e.key, path + "[" + i + "]", depth + 1)); }
+-          else if (queues.has(v)) { tag = "queue"; a = visit(vectorFromArray(toArray(v)), path + ".payload", depth + 1); }
+-          else if (uuids.has(v)) { tag = "uuid"; a = visit(uuids.get(v), path + ".payload", depth + 1); }
++            for (const e of mapTraversal(v)) { a.push(visit(e.key, ".key", depth + 1, i), visit(e.value, ".value", depth + 1, i++)); }
++          } else if (sets.has(v)) { tag = "set"; a = setTraversal(v).map((e, i) => visit(e.key, i, depth + 1)); }
++          else if (queues.has(v)) { tag = "queue"; a = visit(vectorFromArray(toArray(v)), ".payload", depth + 1); }
++          else if (uuids.has(v)) { tag = "uuid"; a = visit(uuids.get(v), ".payload", depth + 1); }
+           else if (literals.has(v)) {
+             tag = literals.get(v);
+-            if (--remaining < 0) fail("node limit", path + ".payload");
+-            if (depth + 1 > depthLimit) fail("depth limit", path + ".payload");
++            if (--remaining < 0) failAt("node limit", ".payload");
++            if (depth + 1 > depthLimit) failAt("depth limit", ".payload");
+             const data = Object.getOwnPropertyDescriptors(v), items = [];
+             if (tag === "js-array") {
+               const length = data.length.value;
+-              if (length > remaining) fail("node limit", path);
++              if (length > remaining) failAt("node limit");
+               for (let i = 0; i < length; i++) {
+-                const d = data[i]; if (!d || !("value" in d)) fail("accessor/hole in #js array", path + "[" + i + "]");
+-                items.push(visit(d.value, path + "[" + i + "]", depth + 2));
++                const d = data[i]; if (!d || !("value" in d)) failAt("accessor/hole in #js array", i);
++                items.push(visit(d.value, i, depth + 2));
+               }
+             } else {
+               for (const key of Reflect.ownKeys(data)) {
+-                if (typeof key !== "string") fail("symbol key in #js object", path);
+-                const d = data[key]; if (!("value" in d)) fail("accessor in #js object", path);
+-                items.push(visit(key, path + ".key", depth + 2), visit(d.value, path + "." + key, depth + 2));
++                if (typeof key !== "string") failAt("symbol key in #js object");
++                const d = data[key]; if (!("value" in d)) failAt("accessor in #js object");
++                items.push(visit(key, ".key", depth + 2), visit(d.value, "." + key, depth + 2));
+               }
+             }
+             a = [tag === "js-array" ? "vector" : "map", null, null, items];
+@@ -3863,19 +3875,19 @@
+             tag = "list"; a = [];
+             const seen = new WeakSet(); let current = v;
+             while (true) {
+-              if (--remaining < 0) fail("sequence limit", path);
++              if (--remaining < 0) failAt("sequence limit");
+               if (current == null) break;
+-              if (!cells.has(current) && !views.has(current) && !lazyValues.has(current)) fail("noncanonical sequence tail", path);
+-              if (seen.has(current)) fail("cyclic sequence", path); seen.add(current);
++              if (!cells.has(current) && !views.has(current) && !lazyValues.has(current)) failAt("noncanonical sequence tail");
++              if (seen.has(current)) failAt("cyclic sequence"); seen.add(current);
+               // Lazy realization is intentionally executable but shares limits.
+               // Work only with private payloads. User protocol objects are not
+               // expansion trees; realization cannot call their getters to diagnose.
+               try {
+                 while (lazyValues.has(current)) {
+-                  if (--remaining < 0) fail("sequence limit", path);
++                  if (--remaining < 0) failAt("sequence limit");
+                   current = deferredValue(lazyValues.get(current), true);
+                 }
+-              } catch (_) { fail("lazy realization failure", path); }
++              } catch (_) { failAt("lazy realization failure"); }
+               if (current == null) break;
+               // A vector, or a chunked seq over one, ends the sequence: a chunked
+               // seq's node from its offset, as its `first` and `rest` read it,
+@@ -3886,12 +3898,12 @@
+                 const slots = chunked && publicCollectionSlots.get(current);
+                 let first = true;
+                 if (slots) for (let j = slots.off; j < slots.node.length; j++, first = false) {
+-                  if (!first && --remaining < 0) fail("sequence limit", path);
+-                  a.push(visit(slots.node[j], path + "[" + a.length + "]", depth + 1));
++                  if (!first && --remaining < 0) failAt("sequence limit");
++                  a.push(visit(slots.node[j], a.length, depth + 1));
+                 }
+                 for (let i = slots ? slots.i + slots.node.length : 0; i < store.cnt; i++, first = false) {
+-                  if (!first && --remaining < 0) fail("sequence limit", path);
+-                  a.push(visit(vectorNth(store, i, null), path + "[" + a.length + "]", depth + 1));
++                  if (!first && --remaining < 0) failAt("sequence limit");
++                  a.push(visit(vectorNth(store, i, null), a.length, depth + 1));
+                 }
+                 break;
+               }
+@@ -3899,19 +3911,19 @@
+                 const cell = cells.get(current);
+                 if (cell.kind === "list" && cell.count === 0) break;
+                 let head, tail;
+-                try { head = cell.head; tail = cell.tail; } catch (_) { fail("sequence realization failure", path); }
+-                a.push(visit(head, path + "[" + a.length + "]", depth + 1));
++                try { head = cell.head; tail = cell.tail; } catch (_) { failAt("sequence realization failure"); }
++                a.push(visit(head, a.length, depth + 1));
+                 current = tail;
+               } else if (views.has(current)) {
+                 const slice = views.get(current);
+                 if (slice.offset >= slice.storage.length) break;
+-                a.push(visit(slice.storage[slice.offset], path + "[" + a.length + "]", depth + 1));
++                a.push(visit(slice.storage[slice.offset], a.length, depth + 1));
+                 current = slice.offset + 1 < slice.storage.length ? view(slice.Type, slice.storage, slice.offset + 1, slice.indexed, slice.kind, slice.tail) : slice.tail;
+-              } else fail("noncanonical sequence tail", path);
++              } else failAt("noncanonical sequence tail");
+             }
+           } else {
+             // Intrinsic brand checks avoid getters, custom toString and instanceof.
+-            try { const ms = dateTime(v); tag = "instant"; if (!Number.isFinite(ms)) fail("invalid instant", path); a = visit(ms, path + ".payload", depth + 1); } catch (e) { if (tag) throw e; }
++            try { const ms = dateTime(v); tag = "instant"; if (!Number.isFinite(ms)) failAt("invalid instant"); a = visit(ms, ".payload", depth + 1); } catch (e) { if (tag) throw e; }
+             if (!tag) {
+               let pattern;
+               try { pattern = regexSource(v); } catch (_) {}
+@@ -3920,19 +3932,19 @@
+                 for (const [g, letter] of regexFlags) {
+                   if (g && g.call(v)) flags += letter;
+                 }
+-                tag = "regex"; a = visit(flags ? "(?" + flags + ")" + pattern : pattern, path + ".payload", depth + 1);
++                tag = "regex"; a = visit(flags ? "(?" + flags + ")" + pattern : pattern, ".payload", depth + 1);
+               }
+             }
+-            if (!tag) fail("arbitrary object (including promise)", path);
++            if (!tag) failAt("arbitrary object (including promise)");
+           }
+           // A lazy seq or chunked cons has metadata, nil where none is stored.
+           const metadata = object && (metadataValues.has(v) || lazyValues.has(v) || cells.get(v)?.kind === "chunked-cons")
+-            ? visit(metadataValues.has(v) ? metadataValues.get(v) : null, path + ".meta", depth + 1) : null;
++            ? visit(metadataValues.has(v) ? metadataValues.get(v) : null, ".meta", depth + 1) : null;
+           if (object) unseen?.delete(v);
+           return [tag, object ? borrowed.get(v) ?? null : primitives.get(primitiveKey(v)) ?? null, metadata, a, b];
+-        } finally { if (object) active.delete(v); }
++        } finally { if (entered) active.delete(v); pathLength = at; }
+       }
+-      return visit(value, "$", 0);
++      return visit(value, undefined, 0);
+     }
+     return Object.freeze({version: 5, decode, encode, macroArguments, releaseMacroInput: value => macroInputs.delete(value),
+       check: () => { if (terminal != null) throw new Error(terminal); },

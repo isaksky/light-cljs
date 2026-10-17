@@ -1,0 +1,37 @@
+diff --git a/src/v8_evaluator.rs b/src/v8_evaluator.rs
+index c689f4f..35f8193 100644
+--- a/src/v8_evaluator.rs
++++ b/src/v8_evaluator.rs
+@@ -219,8 +219,31 @@ impl V8Evaluator {
+             context = v8::Global::new(scope, local);
+             let scope = &mut v8::ContextScope::new(scope, local);
+             v8::tc_scope!(let scope, scope);
++            let mut runtime = RUNTIME_SOURCE.to_owned();
++            if let Ok(trial) = std::env::var("LIGHT_V8_RUNTIME_TRIAL") {
++                let store = "class Store extends (function (value) { return value; }) { #s; static has(value) { return (typeof value === 'object' ? value !== null : typeof value === 'function') && #s in value; } static get(value) { if ((typeof value === 'object' ? value !== null : typeof value === 'function') && #s in value) return value.#s; } static set(value, payload) { if (#s in value) value.#s = payload; else new Store(value).#s = payload; } }";
++                if trial == "seq-stores" || trial == "all-stores" {
++                    for name in ["cells", "views", "lazyValues", "chunks"] {
++                        let old = format!("const {name} = privateStore()");
++                        assert!(runtime.contains(&old));
++                        runtime = runtime.replace(&old, &format!("const {name} = {store}"));
++                    }
++                }
++                if trial == "borrowed-store" || trial == "all-stores" {
++                    runtime = runtime.replace(
++                        "const borrowed = new WeakMap()",
++                        &format!("const borrowed = {store}"),
++                    );
++                }
++                if trial == "metadata-store" || trial == "all-stores" {
++                    runtime = runtime.replace(
++                        "const metadataValues = new WeakMap()",
++                        &format!("const metadataValues = {store}"),
++                    );
++                }
++            }
+             let source =
+-                include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", RUNTIME_SOURCE);
++                include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", &runtime);
+             if let Err(error) = script(scope, &source) {
+                 return Err(scope
+                     .exception()

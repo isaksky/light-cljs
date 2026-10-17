@@ -1,0 +1,3 @@
+Byte-identical to phase42 render.
+node --check --input-type=module < /private/tmp/light-cljs-phase44/render-v12-256m-repeat.js
+Exit: 0

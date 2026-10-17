@@ -1,0 +1,11 @@
+{
+  "run" : "C:/WT/r51f6e29c8c4a/w0d57602a691b/261017163813-3e9593",
+  "exit" : 1,
+  "socket" : "/private/tmp/p97-windows-6068018678808118915/s",
+  "purpose" : "Native V8 stack-boundary shim probe; not a full V8 runtime build",
+  "start-time" : "2026-10-17T16:38:13.385022Z",
+  "command" : "powershell -NoLogo -NoProfile -NonInteractive -EncodedCommand JgAgACcAQwA6AC8AVwBUAC8AcgA1ADEAZgA2AGUAMgA5AGMAOABjADQAYQAvAHcAMABkADUANwA2ADAAMgBhADYAOQAxAGIALwAyADYAMQAwADEANwAxADYAMwA4ADEAMwAtADMAZQA5ADUAOQAzAC8AdwAvAHcAaQBuAGQAbwB3AHMALQByAHUAbgAuAHAAcwAxACcAIAAtAFIAdQBuACAAJwBDADoALwBXAFQALwByADUAMQBmADYAZQAyADkAYwA4AGMANABhAC8AdwAwAGQANQA3ADYAMAAyAGEANgA5ADEAYgAvADIANgAxADAAMQA3ADEANgAzADgAMQAzAC0AMwBlADkANQA5ADMAJwA7ACAAZQB4AGkAdAAgACQATABBAFMAVABFAFgASQBUAEMATwBEAEUA",
+  "end-time" : "2026-10-17T16:38:20.029273Z",
+  "state" : "completed",
+  "local-results" : "/private/tmp/light-cljs-phase97/windows-results"
+}

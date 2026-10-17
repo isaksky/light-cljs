@@ -1,0 +1,27 @@
+warning: method `number` is never used
+  --> src/v8_evaluator.rs:30:8
+   |
+23 | pub(crate) trait CompilerEvaluator: MacroEvaluator {
+   |                  ----------------- method in this trait
+...
+30 |     fn number(&self, id: ValueId) -> Result<f64, EvalError>;
+   |        ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `light-cljs` (lib test) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.04s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/light_cljs-97417acdb44c0248)
+
+running 8 tests
+test compiler_bootstrap::tests::bootstrap_environment_reads_follow_resolved_locals_and_reflection ... ok
+test compiler_bootstrap::tests::declaration_products_are_atomic_and_unfinished_value_reads_cycle ... ok
+test compiler_bootstrap::tests::cancelled_extension_bundle_rolls_back_before_reusing_host ... ok
+test compiler_bootstrap::tests::cancelled_demand_discards_roots_before_reusing_host ... ok
+test compiler_bootstrap::tests::unused_core_environment_keeps_literal_conversion_failures ... ok
+test compiler_bootstrap::tests::asynchronous_bootstrap_cancellation_recovers_reused_host ... ok
+test compiler_bootstrap::tests::unused_core_environment_keeps_conversion_limits_and_host_recovery ... ok
+test compiler_bootstrap::tests::regenerate_from_first_party_sources_and_collect_during_bootstrap ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 109 filtered out; finished in 0.32s
+

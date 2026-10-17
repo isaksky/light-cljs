@@ -1,0 +1,16 @@
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.36s
+     Running unittests src/lib.rs (target/debug/deps/light_cljs-ad9e157a4734fe2e)
+
+running 8 tests
+test compiler_bootstrap::tests::bootstrap_environment_reads_follow_resolved_locals_and_reflection ... ok
+test compiler_bootstrap::tests::unused_core_environment_keeps_literal_conversion_failures ... ok
+test compiler_bootstrap::tests::declaration_products_are_atomic_and_unfinished_value_reads_cycle ... ok
+test compiler_bootstrap::tests::cancelled_extension_bundle_rolls_back_before_reusing_host ... ok
+test compiler_bootstrap::tests::unused_core_environment_keeps_conversion_limits_and_host_recovery ... ok
+test compiler_bootstrap::tests::cancelled_demand_discards_roots_before_reusing_host ... ok
+test compiler_bootstrap::tests::asynchronous_bootstrap_cancellation_recovers_reused_host ... ok
+test compiler_bootstrap::tests::regenerate_from_first_party_sources_and_collect_during_bootstrap ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 104 filtered out; finished in 0.46s
+

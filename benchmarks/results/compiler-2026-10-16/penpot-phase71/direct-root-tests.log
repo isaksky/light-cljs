@@ -1,0 +1,16 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase71/project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.95s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/light_cljs-c245fc672d71037e)
+
+running 8 tests
+test v8_evaluator::tests::direct_root_registration_failure_is_owned_and_terminal ... ok
+test v8_evaluator::tests::compiler_callback_panic_is_owned_and_terminal ... ok
+test v8_evaluator::tests::cached_namespace_registration_reexecutes_and_restores_each_source_view ... ok
+test v8_evaluator::tests::direct_root_registration_preserves_values_and_dynamic_callbacks ... ok
+test v8_evaluator::tests::namespace_registration_allows_reentry_and_stops_at_first_exception ... ok
+test v8_evaluator::tests::namespace_cache_eviction_keeps_execution_and_observes_eval_replacement ... ok
+test v8_evaluator::tests::poisoned_callback_keeps_owned_diagnostic_when_javascript_catches_and_spins ... ok
+test v8_evaluator::tests::compiler_callback_rejects_invalid_ids_without_running_coercion_hooks ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 116 filtered out; finished in 0.05s
+

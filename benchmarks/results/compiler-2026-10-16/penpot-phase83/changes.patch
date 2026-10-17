@@ -1,0 +1,86 @@
+diff --git a/src/compilation_session.rs b/src/compilation_session.rs
+index 34766a6..6d24160 100644
+--- a/src/compilation_session.rs
++++ b/src/compilation_session.rs
+@@ -48,9 +48,11 @@ struct Unit {
+     name: String,
+     // Consumed by the one analysis. The analyzed result keeps any resolution
+     // data it needs; these inputs must not pin an obsolete second snapshot.
++    // Keep large inputs out of line so completed units retain no empty space
++    // for the definition snapshot or the macro host's many shared tables.
+     form: Option<Form>,
+-    snapshot: Option<DefinitionSnapshot>,
+-    host: MacroHost,
++    snapshot: Option<Box<DefinitionSnapshot>>,
++    host: Option<Box<MacroHost>>,
+     state: AnalysisState,
+     analyses: usize,
+     // The engine requests source when it first initializes a root. Its ready
+@@ -223,7 +225,7 @@ impl CompilationSession {
+             unit.analyses = 1;
+             unit.form = None;
+             unit.snapshot = None;
+-            unit.host = MacroHost::default();
++            unit.host = None;
+         }
+         let code = format!(
+             "(() => {{ let code; return rt => {{ code ??= (0,eval)(globalThis.__lightCompileUnit({unit})); return code(rt); }}; }})()"
+@@ -310,8 +312,8 @@ impl CompilationSession {
+                     request,
+                     name: name.clone(),
+                     form: Some(form),
+-                    snapshot: Some(snapshot),
+-                    host,
++                    snapshot: Some(Box::new(snapshot)),
++                    host: Some(Box::new(host)),
+                     state: AnalysisState::Unstarted,
+                     analyses: 0,
+                     emitted: false,
+@@ -389,13 +391,21 @@ impl CompilationSession {
+                 }
+                 AnalysisState::Unstarted => (),
+             }
+-            if self.catalog.borrow().stack.len() >= unit.host.limits.expansion_depth.min(64) {
++            if self.catalog.borrow().stack.len()
++                >= unit
++                    .host
++                    .as_ref()
++                    .expect("unstarted unit host")
++                    .limits
++                    .expansion_depth
++                    .min(64)
++            {
+                 let message =
+                     "compiler macro expansion depth limit exceeded in deferred units".to_owned();
+                 unit.state = AnalysisState::Failed(message.clone(), None);
+                 unit.form = None;
+                 unit.snapshot = None;
+-                unit.host = MacroHost::default();
++                unit.host = None;
+                 return Err(message);
+             }
+             unit.state = AnalysisState::Analyzing;
+@@ -405,10 +415,13 @@ impl CompilationSession {
+             let request = unit.request;
+             debug_assert!(request.generation > 0);
+             debug_assert_eq!(self.catalog.borrow().bindings[&unit.name].0, request.var);
+-            let mut host = unit.host.macro_analysis_frame();
+             // A unit is analyzed once; its registration-time host is not needed
+             // after its analysis frame is taken.
+-            unit.host = MacroHost::default();
++            let mut host = unit
++                .host
++                .take()
++                .expect("unstarted unit host")
++                .macro_analysis_frame();
+             if host.bootstrap.is_none() {
+                 host.bootstrap = bootstrap;
+             }
+@@ -532,6 +545,7 @@ mod retention_tests {
+                 completed += 1;
+                 assert!(unit.form.is_none());
+                 assert!(unit.snapshot.is_none());
++                assert!(unit.host.is_none());
+             }
+         }
+         assert!(completed > 0);

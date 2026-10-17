@@ -2383,12 +2383,8 @@ pub enum ExprKind {
     DefType {
         record: bool,
         global: GlobalId,
-        constructor: Option<GlobalId>,
-        body: Option<ExprId>,
-        masks: Option<ExprId>,
-        map_constructor: Option<GlobalId>,
-        fields: Vec<String>,
         methods: Vec<(MethodDispatch, FnMethod)>,
+        layout: Box<TypeLayout>,
     },
     Construct {
         callee: ExprId,
@@ -2493,6 +2489,18 @@ pub enum ExprKind {
     },
 }
 
+/// Constructor data is rare and larger than an ordinary expression. Keeping it
+/// out of line prevents every AST node from paying for four optional IDs and
+/// the field vector. Cloning a definition still owns its independent layout.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypeLayout {
+    pub constructor: Option<GlobalId>,
+    pub body: Option<ExprId>,
+    pub masks: Option<ExprId>,
+    pub map_constructor: Option<GlobalId>,
+    pub fields: Vec<String>,
+}
+
 /// Each overload owns a separate parameter scope and shares the function name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FnMethod {
@@ -2572,12 +2580,12 @@ pub struct RuntimeReaderNamespace {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     /// Source namespaces present in this unit, including namespaces without Vars.
-    pub namespaces: crate::shared::Shared<Vec<String>>,
+    pub namespaces: crate::arena::Arena<String>,
     /// Explicit source reader contexts; runtime reads never consult a loader.
     pub reader_contexts: crate::shared::Shared<
         crate::layered::Layered<String, crate::shared::Shared<RuntimeReaderNamespace>>,
     >,
-    pub namespace_entries: crate::shared::Shared<HashMap<ExprId, String>>,
+    pub namespace_entries: crate::shared::Shared<crate::layered::Layered<ExprId, String>>,
     pub compilation_uses: Vec<CompilationUse>,
     pub exprs: crate::arena::Arena<Expr>,
     pub locals: crate::arena::Arena<LocalBinding>,
@@ -2624,6 +2632,7 @@ impl Program {
     /// Freeze every table, so a clone shares the entries so far instead of
     /// copying them; see [`crate::arena::Arena::freeze`].
     pub fn freeze(&mut self) {
+        self.namespaces.freeze();
         self.exprs.freeze();
         self.locals.freeze();
         self.recur_targets.freeze();
@@ -2631,6 +2640,17 @@ impl Program {
         self.js_globals.freeze();
         self.strings.freeze();
         self.named_literals.freeze();
+    }
+
+    pub(crate) fn shrink_to_fit(&mut self) {
+        self.namespaces.shrink_to_fit();
+        self.exprs.shrink_to_fit();
+        self.locals.shrink_to_fit();
+        self.recur_targets.shrink_to_fit();
+        self.globals.shrink_to_fit();
+        self.js_globals.shrink_to_fit();
+        self.strings.shrink_to_fit();
+        self.named_literals.shrink_to_fit();
     }
 }
 
@@ -2859,6 +2879,8 @@ pub(crate) struct NamespaceResolution {
     pub source_name: Option<String>,
 }
 
+type DiagnosticArities = HashMap<GlobalId, Vec<(usize, bool)>>;
+
 struct Analyzer<'a> {
     source: &'a str,
     syntax: Cow<'a, SyntaxTree>,
@@ -2881,7 +2903,7 @@ struct Analyzer<'a> {
     program: Program,
     env: Environment,
     recur_target: Option<RecurTargetId>,
-    globals: HashMap<(String, String), GlobalId>,
+    globals: crate::name_index::NameIndex,
     namespace: &'a str,
     aliases: &'a [(String, String)],
     requires: &'a [String],
@@ -2909,7 +2931,7 @@ struct Analyzer<'a> {
     reader_view: Option<ReaderView>,
     /// How many of the shared globals seen so far are this namespace's own:
     /// the count up to a position, for macro environments.
-    namespace_globals: (usize, usize),
+    namespace_globals: (usize, crate::arena::Arena<GlobalId>),
     /// What the last macro environment built names for the session, recorded
     /// once an expansion has used it.
     pending_reader_registration: Option<crate::macro_host::ReaderRegistration>,
@@ -2919,15 +2941,8 @@ struct Analyzer<'a> {
 /// extended with the declarations made since it was built.
 struct ReaderView {
     view: crate::compiler_reader::NamespaceView,
-    /// The globals the view covers.
+    /// The globals whose namespace-local refers are already installed.
     globals: usize,
-    /// Covered globals that were not declared when they were seen.
-    undeclared: Vec<usize>,
-    /// The expressions scanned for declaration kinds.
-    exprs: usize,
-    kinds: HashMap<usize, crate::compiler_reader::BindingKind>,
-    /// The locals referring to each qualified name.
-    refer_locals: HashMap<crate::compiler_data::Name, Vec<crate::compiler_data::Name>>,
     /// A hash of the inputs a view is rebuilt for rather than extended with:
     /// the aliases, refers, excludes and macro count.
     inputs: u64,
@@ -2964,7 +2979,7 @@ fn compiler_syntax<'a>(source: &str, syntax: &'a SyntaxTree) -> (Cow<'a, SyntaxT
     (Cow::Owned(SyntaxTree { nodes, roots }), discards)
 }
 
-fn empty_program() -> Program {
+pub(crate) fn empty_program() -> Program {
     Program {
         namespaces: Default::default(),
         reader_contexts: Default::default(),
@@ -3216,11 +3231,11 @@ fn analyze_input(
         deferred: Vec::new(),
         macro_depth: 0,
         analysis_depth: 0,
-        macro_source: None,
+        macro_source: owned_form.map(|form| form.span().source().clone()),
         program: empty_program(),
         env: Environment::default(),
         recur_target: None,
-        globals: HashMap::new(),
+        globals: Default::default(),
         namespace,
         aliases,
         requires,
@@ -3237,7 +3252,7 @@ fn analyze_input(
         first_expr: 0,
         deferred_unit: false,
         reader_view: None,
-        namespace_globals: (0, 0),
+        namespace_globals: snapshot.map_or_else(Default::default, |s| s.namespace_globals.clone()),
         pending_reader_registration: None,
     };
     if let Some(previous) = previous {
@@ -3251,13 +3266,7 @@ fn analyze_input(
     }
     if let Some(snapshot) = snapshot {
         analyzer.program = snapshot.resolution_program.clone();
-        analyzer.globals = analyzer
-            .program
-            .globals
-            .iter()
-            .enumerate()
-            .map(|(i, g)| ((g.namespace.clone(), g.name.clone()), GlobalId(i)))
-            .collect();
+        analyzer.globals = snapshot.global_names.clone();
         analyzer.source_index = snapshot.source_index;
         analyzer.definition_name = snapshot.definition_name.clone();
     }
@@ -3308,6 +3317,7 @@ fn analyze_input(
             &crate::program_fragment::SharedPrefix::same(&snapshot.resolution_program),
             true,
         );
+        session.release_application_ir(unit);
         analyzer.warnings.extend(warnings);
         let test = analyzer.push(
             ExprKind::DefinitionTest { value, unit },
@@ -3363,7 +3373,7 @@ fn analyze_input(
     }
     analyzer.read_discards_before(source.len())?;
     analyzer.drain_deferred()?;
-    analyzer.collect_expression_warnings();
+    analyzer.collect_expression_warnings(None);
     if snapshot.is_none()
         && let Some(session) = analyzer.macro_host.session_handle()
     {
@@ -3444,8 +3454,11 @@ pub(crate) const LAZY_NAMESPACE: &str = "light.lazy";
 /// ([`NamespaceAnalysis::lazy_namespaces_since`]) follow everything analyzed
 /// before them.
 pub(crate) struct NamespaceAnalysis {
+    // Only the monotonically appended namespace program shares this index.
+    // Deferred/interactive analyses retain their own declaration ranges.
+    arities: DiagnosticArities,
     program: Program,
-    globals: HashMap<(String, String), GlobalId>,
+    globals: crate::name_index::NameIndex,
     /// The body of each source, by source index.
     roots: Vec<ExprId>,
     /// The namespaces each source requires, by source index.
@@ -3456,8 +3469,9 @@ impl NamespaceAnalysis {
     pub(crate) fn new(macro_host: &mut MacroHost) -> Self {
         macro_host.begin_compilation();
         Self {
+            arities: Default::default(),
             program: empty_program(),
-            globals: HashMap::new(),
+            globals: Default::default(),
             roots: Vec::new(),
             requires: Vec::new(),
         }
@@ -3538,7 +3552,7 @@ impl NamespaceAnalysis {
             first_expr: 0,
             deferred_unit: false,
             reader_view: None,
-            namespace_globals: (0, 0),
+            namespace_globals: Default::default(),
             pending_reader_registration: None,
         };
         analyzer.first_expr = analyzer.program.exprs.len();
@@ -3609,7 +3623,7 @@ impl NamespaceAnalysis {
             .namespace_entries
             .insert(root, input.name.into());
         analyzer.drain_deferred()?;
-        analyzer.collect_expression_warnings();
+        analyzer.collect_expression_warnings(Some(&mut self.arities));
         if !analyzer
             .program
             .namespaces
@@ -3970,7 +3984,7 @@ impl Analyzer<'_> {
         }
     }
 
-    fn collect_expression_warnings(&mut self) {
+    fn collect_expression_warnings(&mut self, prior_arities: Option<&mut DiagnosticArities>) {
         let mut locals = HashMap::new();
         // Each local's type is a finite union. Iterate recurrence edges until
         // no union changes; unknown operands remain unknown, never guessed.
@@ -3999,25 +4013,25 @@ impl Analyzer<'_> {
                 break;
             }
         }
-        let declarations = if self.deferred_unit {
+        let declarations = if self.deferred_unit || prior_arities.is_some() {
             self.first_expr
         } else {
             0
         };
-        // Index the same declaration range once, preserving the union of
-        // overloads and redefinitions visible to this diagnostic pass.
-        let mut arities: HashMap<GlobalId, Vec<(usize, bool)>> = HashMap::new();
+        // The namespace loader retains its earlier declaration index. Extend
+        // it with this source's finalized expressions, preserving the union of
+        // overloads and redefinitions without rescanning the entire program.
+        let mut local_arities = DiagnosticArities::new();
+        let arities = prior_arities.unwrap_or(&mut local_arities);
         for definition in self.program.exprs.tail_from(declarations) {
             match &definition.kind {
-                ExprKind::DefType {
-                    constructor: Some(global),
-                    fields,
-                    ..
-                } => {
-                    arities
-                        .entry(*global)
-                        .or_default()
-                        .push((fields.len(), false));
+                ExprKind::DefType { layout, .. } => {
+                    if let Some(global) = layout.constructor {
+                        arities
+                            .entry(global)
+                            .or_default()
+                            .push((layout.fields.len(), false));
+                    }
                 }
                 ExprKind::Def {
                     global,
@@ -4038,6 +4052,22 @@ impl Analyzer<'_> {
                 _ => {}
             }
         }
+        // Assignment targets are children, not separate array reads. Build
+        // their index once: checking each access by scanning all expressions
+        // makes checked-array diagnostics quadratic in large programs.
+        let assignment_targets: std::collections::HashSet<ExprId> =
+            if self.checked_array_exprs.is_empty() {
+                std::collections::HashSet::new()
+            } else {
+                self.program
+                    .exprs
+                    .iter()
+                    .filter_map(|expr| match expr.kind {
+                        ExprKind::SetGlobal { target, .. } => Some(target),
+                        _ => None,
+                    })
+                    .collect()
+            };
         for (expr_index, expr) in
             (self.first_expr..).zip(self.program.exprs.tail_from(self.first_expr))
         {
@@ -4134,7 +4164,8 @@ impl Analyzer<'_> {
                 };
                 if let Some((receiver, indices, value)) = indexed {
                     // The assignment target is a child, not a separate aget.
-                    let assignment_target = value.is_none() && self.program.exprs.iter().any(|parent| matches!(parent.kind, ExprKind::SetGlobal { target, .. } if std::ptr::eq(expr, &self.program.exprs[target.0])));
+                    let assignment_target =
+                        value.is_none() && assignment_targets.contains(&ExprId(expr_index));
                     if !assignment_target {
                         let mut types = vec![diagnostic_type(&self.program, receiver, &locals, 0)];
                         types.extend(
@@ -5396,25 +5427,7 @@ impl Analyzer<'_> {
             format!("Use of undeclared Var {namespace}/{symbol}"),
         );
         if self.options.warning_mode || self.type_fields.is_some() {
-            let global = *self
-                .globals
-                .entry((namespace.clone(), symbol.clone()))
-                .or_insert_with(|| {
-                    let global = GlobalId(self.program.globals.len());
-                    self.program.globals.push(GlobalBinding {
-                        type_descriptor: false,
-                        declared: false,
-                        constant: false,
-                        boolean_tag: false,
-                        define: false,
-                        metadata: None,
-                        namespace,
-                        name: symbol,
-                        span: self.syntax.nodes[id.0].span.clone(),
-                        source_index: self.source_index,
-                    });
-                    global
-                });
+            let global = self.reserve_global(&namespace, &symbol, id);
             Ok(ExprKind::Global(global))
         } else {
             Err(self.error(id, AnalysisErrorKind::UnresolvedSymbol(name.into())))
@@ -5422,6 +5435,23 @@ impl Analyzer<'_> {
     }
 
     fn keyword(&mut self, id: NodeId, auto_resolve: bool) -> Result<ExprKind, AnalysisError> {
+        let (namespace, name) = self.keyword_name(id, auto_resolve)?;
+        let namespace = namespace.map(|units| self.own_string(units));
+        let name = self.own_string(name);
+        let id = NamedLiteralId(self.program.named_literals.len());
+        self.program
+            .named_literals
+            .push(NamedLiteral { namespace, name });
+        Ok(ExprKind::Keyword(id))
+    }
+
+    // Reader validation needs the resolved name, but must not insert a dead
+    // literal into the executable tables for every identity/hash comparison.
+    fn keyword_name(
+        &self,
+        id: NodeId,
+        auto_resolve: bool,
+    ) -> Result<(Option<Vec<u16>>, Vec<u16>), AnalysisError> {
         // Macro-produced names are semantic data. Their spans may cover an
         // entire invocation, so they must never be decoded from that source.
         let (namespace, name) = if let Some(form) =
@@ -5465,13 +5495,7 @@ impl Analyzer<'_> {
                 name.encode_utf16().collect(),
             )
         };
-        let namespace = namespace.map(|units| self.own_string(units));
-        let name = self.own_string(name);
-        let id = NamedLiteralId(self.program.named_literals.len());
-        self.program
-            .named_literals
-            .push(NamedLiteral { namespace, name });
-        Ok(ExprKind::Keyword(id))
+        Ok((namespace, name))
     }
 
     fn own_string(&mut self, units: Vec<u16>) -> StringId {
@@ -5499,8 +5523,18 @@ impl Analyzer<'_> {
     }
 
     fn symbol_literal(&mut self, id: NodeId) -> ExprKind {
-        let (namespace, name) = if let Some(form) =
-            self.generated.get(id.0).and_then(Option::as_ref)
+        let (namespace, name) = self.symbol_name(id);
+        let namespace = namespace.map(|ns| self.own_string(ns));
+        let name = self.own_string(name);
+        let literal = NamedLiteralId(self.program.named_literals.len());
+        self.program
+            .named_literals
+            .push(NamedLiteral { namespace, name });
+        ExprKind::Symbol(literal)
+    }
+
+    fn symbol_name(&self, id: NodeId) -> (Option<Vec<u16>>, Vec<u16>) {
+        if let Some(form) = self.generated.get(id.0).and_then(Option::as_ref)
             && let DatumView::Symbol(name) = form.data().inspect()
         {
             (name.namespace().map(<[u16]>::to_vec), name.name().to_vec())
@@ -5516,14 +5550,7 @@ impl Analyzer<'_> {
                 namespace.map(|ns| ns.encode_utf16().collect()),
                 name.encode_utf16().collect(),
             )
-        };
-        let namespace = namespace.map(|ns| self.own_string(ns));
-        let name = self.own_string(name);
-        let literal = NamedLiteralId(self.program.named_literals.len());
-        self.program
-            .named_literals
-            .push(NamedLiteral { namespace, name });
-        ExprKind::Symbol(literal)
+        }
     }
 
     fn check_map_keys(&mut self, children: &[NodeId]) -> Result<(), AnalysisError> {
@@ -5889,16 +5916,12 @@ impl Analyzer<'_> {
             NodeKind::String(value) => ReaderDatum::String(value.to_utf16(self.source)),
             NodeKind::Character(value) => ReaderDatum::Character(value as u16),
             NodeKind::Keyword { auto_resolve } => {
-                let ExprKind::Keyword(name) = self.keyword(id, auto_resolve)? else {
-                    unreachable!()
-                };
-                self.reader_named(true, name)
+                let (namespace, name) = self.keyword_name(id, auto_resolve)?;
+                ReaderDatum::Named(true, namespace, name)
             }
             NodeKind::Symbol => {
-                let ExprKind::Symbol(name) = self.symbol_literal(id) else {
-                    unreachable!()
-                };
-                self.reader_named(false, name)
+                let (namespace, name) = self.symbol_name(id);
+                ReaderDatum::Named(false, namespace, name)
             }
             NodeKind::Prefix {
                 kind: PrefixKind::Quote,
@@ -5958,15 +5981,6 @@ impl Analyzer<'_> {
             _ => return Ok(None),
         };
         Ok(Some(data))
-    }
-
-    fn reader_named(&self, keyword: bool, id: NamedLiteralId) -> ReaderDatum {
-        let named = &self.program.named_literals[id.0];
-        ReaderDatum::Named(
-            keyword,
-            named.namespace.map(|ns| self.program.strings[ns.0].clone()),
-            self.program.strings[named.name.0].clone(),
-        )
     }
 
     /// Quote traverses source/owned macro data directly, without resolution,
@@ -6161,12 +6175,16 @@ impl Analyzer<'_> {
     ) {
         let (resolution_program, shared) =
             crate::program_fragment::resolution_snapshot(&mut self.program);
+        self.count_namespace_globals(self.program.globals.len());
+        self.namespace_globals.1.freeze();
         let snapshot = crate::compilation_session::DefinitionSnapshot {
             namespace: self.namespace.into(),
             aliases: self.aliases.to_vec(),
             requires: self.requires.to_vec(),
             resolution: self.resolution.clone(),
             resolution_program,
+            global_names: self.globals.clone(),
+            namespace_globals: self.namespace_globals.clone(),
             options: self.options,
             unchecked_arrays: self.unchecked_arrays,
             source_index: self.source_index,
@@ -6198,6 +6216,7 @@ impl Analyzer<'_> {
             // globals must not roll back a later source declaration's live
             // metadata/flags, so those stay as they are.
             let root = crate::program_fragment::append(&mut self.program, &program, &shared, false);
+            session.release_application_ir(unit);
             for (index, global) in self.program.globals.iter().enumerate().skip(defined) {
                 self.globals.insert(
                     (global.namespace.clone(), global.name.clone()),
@@ -6492,6 +6511,21 @@ impl Analyzer<'_> {
         ))
     }
 
+    fn source_line_column(&mut self, offset: usize) -> Option<(usize, usize)> {
+        self.macro_source
+            .get_or_insert_with(|| {
+                Source::new(
+                    self.resolution
+                        .source_name
+                        .as_deref()
+                        .unwrap_or(self.namespace),
+                    self.source,
+                )
+            })
+            .line_index()
+            .line_column(offset)
+    }
+
     fn definition_provenance(
         &mut self,
         id: NodeId,
@@ -6506,8 +6540,8 @@ impl Analyzer<'_> {
                 let (line, column) = span.source().line_column(span.bytes().start).unwrap();
                 (span.source().name().to_owned(), line, column)
             } else {
-                let (line, column) = crate::LineIndex::new(self.source)
-                    .line_column(self.syntax.nodes[id.0].span.start)
+                let (line, column) = self
+                    .source_line_column(self.syntax.nodes[id.0].span.start)
                     .unwrap();
                 (
                     self.resolution
@@ -6768,8 +6802,8 @@ impl Analyzer<'_> {
         }
         let resolved = self.existence_target(symbol)?;
         let value = if let ExprKind::Local(local) = resolved {
-            let (line, column) = crate::LineIndex::new(self.source)
-                .line_column(self.program.locals[local.0].span.start)
+            let (line, column) = self
+                .source_line_column(self.program.locals[local.0].span.start)
                 .unwrap();
             let metadata = self.data_source(&format!("{{:ns nil :name {name} :doc nil :file nil :line {line} :column {column} :test nil :arglists ()}}"))?;
             let value = self.push(
@@ -6862,7 +6896,9 @@ impl Analyzer<'_> {
                     (self.namespace, name.as_str())
                 };
                 let key = (namespace.to_owned(), name.to_owned());
-                let global = *self.globals.entry(key).or_insert_with(|| {
+                let global = if let Some(&global) = self.globals.get(&key) {
+                    global
+                } else {
                     let g = GlobalId(self.program.globals.len());
                     self.program.globals.push(GlobalBinding {
                         type_descriptor: false,
@@ -6876,8 +6912,9 @@ impl Analyzer<'_> {
                         span: self.syntax.nodes[node.0].span.clone(),
                         source_index: self.source_index,
                     });
+                    self.globals.insert(key, g);
                     g
-                });
+                };
                 Ok(ExprKind::Global(global))
             }
             Err(error) => Err(error),
@@ -7022,25 +7059,25 @@ impl Analyzer<'_> {
     /// The global `namespace/name`, reserved by name as an existence probe
     /// reserves one when nothing has defined it yet.
     fn reserve_global(&mut self, namespace: &str, name: &str, node: NodeId) -> GlobalId {
-        *self
-            .globals
-            .entry((namespace.to_owned(), name.to_owned()))
-            .or_insert_with(|| {
-                let global = GlobalId(self.program.globals.len());
-                self.program.globals.push(GlobalBinding {
-                    type_descriptor: false,
-                    declared: false,
-                    constant: false,
-                    boolean_tag: false,
-                    define: false,
-                    metadata: None,
-                    namespace: namespace.to_owned(),
-                    name: name.to_owned(),
-                    span: self.syntax.nodes[node.0].span.clone(),
-                    source_index: self.source_index,
-                });
-                global
-            })
+        let key = (namespace.to_owned(), name.to_owned());
+        if let Some(&global) = self.globals.get(&key) {
+            return global;
+        }
+        let global = GlobalId(self.program.globals.len());
+        self.program.globals.push(GlobalBinding {
+            type_descriptor: false,
+            declared: false,
+            constant: false,
+            boolean_tag: false,
+            define: false,
+            metadata: None,
+            namespace: namespace.to_owned(),
+            name: name.to_owned(),
+            span: self.syntax.nodes[node.0].span.clone(),
+            source_index: self.source_index,
+        });
+        self.globals.insert(key, global);
+        global
     }
 
     fn assignment_target(&mut self, node: NodeId) -> Result<ExprId, AnalysisError> {
@@ -7497,15 +7534,10 @@ impl Analyzer<'_> {
                     products.push(*global);
                     products.extend(methods.iter().map(|m| m.global));
                 }
-                ExprKind::DefType {
-                    global,
-                    constructor,
-                    map_constructor,
-                    ..
-                } => {
+                ExprKind::DefType { global, layout, .. } => {
                     products.push(*global);
-                    products.extend(*constructor);
-                    products.extend(*map_constructor);
+                    products.extend(layout.constructor);
+                    products.extend(layout.map_constructor);
                 }
                 ExprKind::Do(forms) => work.extend(forms.iter().rev()),
                 ExprKind::ExtendType {
@@ -8538,12 +8570,14 @@ impl Analyzer<'_> {
             ExprKind::DefType {
                 record,
                 global,
-                constructor: Some(constructor),
-                body: None,
-                masks: None,
-                map_constructor,
-                fields: fields.into_iter().map(|(name, _)| name).collect(),
                 methods,
+                layout: Box::new(TypeLayout {
+                    constructor: Some(constructor),
+                    body: None,
+                    masks: None,
+                    map_constructor,
+                    fields: fields.into_iter().map(|(name, _)| name).collect(),
+                }),
             },
             self.syntax.nodes[id.0].span.clone(),
             context,
@@ -8638,12 +8672,14 @@ impl Analyzer<'_> {
             ExprKind::DefType {
                 record,
                 global,
-                constructor: None,
-                map_constructor: None,
-                body: Some(body),
-                masks: Some(masks),
-                fields: fields.into_iter().map(|(name, _)| name).collect(),
                 methods: Vec::new(),
+                layout: Box::new(TypeLayout {
+                    constructor: None,
+                    map_constructor: None,
+                    body: Some(body),
+                    masks: Some(masks),
+                    fields: fields.into_iter().map(|(name, _)| name).collect(),
+                }),
             },
             self.syntax.nodes[id.0].span.clone(),
             context,
@@ -8793,9 +8829,9 @@ impl Analyzer<'_> {
             if let Some(fields) = self.program.exprs.iter().find_map(|expr| match &expr.kind {
                 ExprKind::DefType {
                     global: target,
-                    fields,
+                    layout,
                     ..
-                } if *target == global => Some(fields.len()),
+                } if *target == global => Some(layout.fields.len()),
                 _ => None,
             }) && args.len() != fields
                 && args.len() != fields + 2
@@ -8935,7 +8971,7 @@ impl Analyzer<'_> {
             tail = &tail[end + 1..];
         }
         segments.push(tail.to_owned());
-        let args = if operands.is_empty() {
+        let mut args = if operands.is_empty() {
             let mut args = Vec::new();
             for name in placeholders {
                 if name.is_empty() {
@@ -8966,6 +9002,53 @@ impl Analyzer<'_> {
                 .map(|&arg| self.non_tail_form(arg, ExprContext::Value))
                 .collect::<Result<_, _>>()?
         };
+        // Upstream macros may use `var` to destructure into existing CLJS
+        // bindings. Keep those bindings lexical: redeclaration becomes an
+        // assignment rather than a second declaration in the generated JS.
+        if segments.iter().any(|segment| segment.contains("var"))
+            && args
+                .iter()
+                .any(|arg| matches!(self.program.exprs[arg.0].kind, ExprKind::Local(_)))
+        {
+            let mut prefix = "__lightJsHole$".to_string();
+            while segments.iter().any(|segment| segment.contains(&prefix)) {
+                prefix.push('$');
+            }
+            let names = (0..args.len())
+                .map(|i| format!("{prefix}{i}$"))
+                .collect::<Vec<_>>();
+            let mut source = String::new();
+            for (index, segment) in segments.iter().enumerate() {
+                source.push_str(segment);
+                if let Some(name) = names.get(index) {
+                    source.push_str(name);
+                }
+            }
+            let locals = args
+                .iter()
+                .zip(&names)
+                .filter_map(|(arg, name)| {
+                    matches!(self.program.exprs[arg.0].kind, ExprKind::Local(_))
+                        .then_some(name.as_str())
+                })
+                .collect::<Vec<_>>();
+            if let Some(source) = crate::js_syntax::assign_existing_vars(&source, &locals) {
+                let mut rebuilt_segments = Vec::new();
+                let mut rebuilt_args = Vec::new();
+                let mut tail = source.as_str();
+                while let Some(start) = tail.find(&prefix) {
+                    let number = start + prefix.len();
+                    let end = number + tail[number..].find('$').expect("a placeholder suffix");
+                    let index: usize = tail[number..end].parse().expect("a placeholder index");
+                    rebuilt_segments.push(tail[..start].to_string());
+                    rebuilt_args.push(args[index]);
+                    tail = &tail[end + 1..];
+                }
+                rebuilt_segments.push(tail.to_string());
+                segments = rebuilt_segments;
+                args = rebuilt_args;
+            }
+        }
         Ok(self.push(
             ExprKind::JsTemplate { segments, args },
             self.syntax.nodes[id.0].span.clone(),
@@ -9101,8 +9184,8 @@ impl Analyzer<'_> {
                     (self.program.locals[id.0].name.clone(), id.0, kind, argument)
                 })
                 .collect::<Vec<_>>();
-            let location = crate::LineIndex::new(self.source)
-                .line_column(self.syntax.nodes[call.0].span.start)
+            let location = self
+                .source_line_column(self.syntax.nodes[call.0].span.start)
                 .unwrap();
             let env = self
                 .macro_host
@@ -9198,8 +9281,8 @@ impl Analyzer<'_> {
                     (self.program.locals[id.0].name.clone(), id.0, kind, argument)
                 })
                 .collect::<Vec<_>>();
-            let location = crate::LineIndex::new(self.source)
-                .line_column(self.syntax.nodes[call.0].span.start)
+            let location = self
+                .source_line_column(self.syntax.nodes[call.0].span.start)
                 .unwrap();
             let environment = self
                 .macro_host
@@ -9347,22 +9430,14 @@ impl Analyzer<'_> {
         } else {
             self.program.globals.len()
         };
-        let (seen, count) = self.namespace_globals;
-        let count = count
-            + self
-                .program
-                .globals
-                .range(seen.min(shared)..shared)
-                .filter(|g| g.namespace == self.namespace)
-                .count();
-        self.namespace_globals = (shared, count);
+        self.count_namespace_globals(shared);
         let (environment, registration) = self.macro_host.reader_environment(
             environment,
             self.namespace,
             &self.resolution,
             &self.program.globals,
             shared,
-            count,
+            &self.namespace_globals.1,
         )?;
         self.pending_reader_registration = registration;
         let environment = c.assoc(
@@ -9383,6 +9458,22 @@ impl Analyzer<'_> {
             );
         }
         Ok(environment)
+    }
+
+    /// Snapshots preserve these namespace member IDs, so a new deferred analyzer only
+    /// examines declarations added after its definition-time view.
+    fn count_namespace_globals(&mut self, shared: usize) -> usize {
+        let (seen, ids) = &mut self.namespace_globals;
+        debug_assert!(*seen <= shared);
+        ids.extend(
+            (*seen..shared)
+                .zip(self.program.globals.range(*seen..shared))
+                .filter_map(|(index, global)| {
+                    (global.namespace == self.namespace).then_some(GlobalId(index))
+                }),
+        );
+        *seen = shared;
+        ids.len()
     }
 
     fn needs_reader(&self, root: NodeId) -> bool {
@@ -9440,7 +9531,13 @@ impl Analyzer<'_> {
         Ok(())
     }
 
-    fn reader_bindings(&self) -> Vec<(String, String, String)> {
+    fn reader_bindings(&mut self) -> Vec<(String, String, String)> {
+        let shared = if self.deferred_unit {
+            self.program.globals.frozen()
+        } else {
+            self.program.globals.len()
+        };
+        self.count_namespace_globals(shared);
         // Resolve compiler exception class/helper names against the JS core,
         // independently of the native class/Var surface, before
         // applying explicit excludes, refers and namespace definitions below.
@@ -9465,10 +9562,16 @@ impl Analyzer<'_> {
         bindings.extend(self.resolution.refers.clone());
         bindings.extend(self.macro_host.reader_refers(self.namespace));
         bindings.extend(
-            self.program
-                .globals
+            self.namespace_globals
+                .1
                 .iter()
-                .filter(|g| g.namespace == self.namespace)
+                .map(|id| &self.program.globals[id.0])
+                .chain(
+                    self.program
+                        .globals
+                        .range(shared..self.program.globals.len())
+                        .filter(|g| g.namespace == self.namespace),
+                )
                 .map(|g| (g.name.clone(), g.namespace.clone(), g.name.clone())),
         );
         bindings.extend(self.macro_host.javascript_macros.keys().filter_map(|key| {
@@ -9485,8 +9588,27 @@ impl Analyzer<'_> {
         self.update_reader_view();
         let source = self.macro_source.as_ref().expect("reader view source");
         let view = &self.reader_view.as_ref().expect("reader view").view;
-        self.macro_host
-            .lower_form_in_view(source, &self.syntax, id, view, &self.discards)
+        // Only the spelling of a binding affects syntax quotation. Resolve
+        // names that are actually read against this analyzer's current snapshot.
+        let bindings = |name: &crate::compiler_data::Name| {
+            let target = if name.namespace().is_some() {
+                name
+            } else {
+                view.refers.get(name)?
+            };
+            let namespace = String::from_utf16(target.namespace()?).ok()?;
+            let member = String::from_utf16(target.name()).ok()?;
+            let id = self.globals.get(&(namespace, member))?;
+            self.program.globals[id.0].declared.then(|| target.clone())
+        };
+        self.macro_host.lower_form_in_view(
+            source,
+            &self.syntax,
+            id,
+            view,
+            &self.discards,
+            Some(&bindings),
+        )
     }
 
     /// Build the reader's view of this namespace, or extend the one built for
@@ -9495,7 +9617,6 @@ impl Analyzer<'_> {
     /// changed.
     fn update_reader_view(&mut self) {
         use crate::compiler_data::Name;
-        use crate::compiler_reader::{BindingId, BindingKind, ResolvedBinding};
         let aliases = self
             .macro_host
             .reader_aliases(self.namespace, self.aliases, self.requires);
@@ -9538,15 +9659,6 @@ impl Analyzer<'_> {
                 .iter()
                 .map(|(a, n, v)| (Name::new(None, a), Name::new(Some(n), v)))
                 .collect();
-            // By target, the locals referring to it, from the final mapping: a
-            // later entry for a local replaces an earlier one.
-            let mut refer_locals: HashMap<Name, Vec<Name>> = HashMap::new();
-            for (local, target) in &view.refers {
-                refer_locals
-                    .entry(target.clone())
-                    .or_default()
-                    .push(local.clone());
-            }
             view.excludes = self
                 .resolution
                 .excludes
@@ -9556,85 +9668,22 @@ impl Analyzer<'_> {
             self.macro_host.register_macro_view(&mut view);
             self.reader_view = Some(ReaderView {
                 view,
-                globals: 0,
-                undeclared: Vec::new(),
-                exprs: self.first_expr,
-                kinds: HashMap::new(),
-                refer_locals,
+                globals: self.program.globals.len(),
                 inputs,
             });
         }
         let cache = self.reader_view.as_mut().unwrap();
-        // Declaration kinds from the expressions since the last form; a
-        // covered global whose kind changed is bound again.
-        let mut changed = Vec::new();
-        for expr in self.program.exprs.tail_from(cache.exprs) {
-            let (global, kind) = match &expr.kind {
-                ExprKind::DefProtocol { global, .. } => (global.0, BindingKind::Protocol),
-                ExprKind::DefType { global, record, .. } => (
-                    global.0,
-                    if *record {
-                        BindingKind::Record
-                    } else {
-                        BindingKind::Type
-                    },
-                ),
-                _ => continue,
-            };
-            if cache.kinds.insert(global, kind) != Some(kind) && global < cache.globals {
-                changed.push(global);
-            }
-        }
-        cache.exprs = self.program.exprs.len();
-        // The globals since the last form, and earlier ones declared only now.
-        let pending = std::mem::take(&mut cache.undeclared);
+        // A newly introduced local name shadows a refer even before its value
+        // is declared. Declared binding precedence is resolved on demand above.
         let added = cache.globals..self.program.globals.len();
         cache.globals = self.program.globals.len();
-        for index in added.clone() {
-            let global = &self.program.globals[index];
+        for global in self.program.globals.range(added) {
             if global.namespace == self.namespace {
-                let (local, target) = (
+                cache.view.refers.insert(
                     Name::new(None, &global.name),
                     Name::new(Some(&global.namespace), &global.name),
                 );
-                if let Some(previous) = cache.view.refers.insert(local.clone(), target.clone())
-                    && let Some(locals) = cache.refer_locals.get_mut(&previous)
-                {
-                    locals.retain(|name| *name != local);
-                }
-                cache.refer_locals.entry(target).or_default().push(local);
             }
-        }
-        for index in pending.into_iter().chain(added).chain(changed) {
-            let global = &self.program.globals[index];
-            if !global.declared {
-                cache.undeclared.push(index);
-                continue;
-            }
-            let qualified = Name::new(Some(&global.namespace), &global.name);
-            let binding = ResolvedBinding {
-                id: BindingId(index),
-                kind: cache
-                    .kinds
-                    .get(&index)
-                    .copied()
-                    .unwrap_or(BindingKind::Value),
-                name: qualified.clone(),
-            };
-            cache
-                .view
-                .bindings
-                .insert(qualified.clone(), binding.clone());
-            if global.namespace == self.namespace {
-                cache
-                    .view
-                    .bindings
-                    .insert(Name::new(None, &global.name), binding.clone());
-            }
-            for local in cache.refer_locals.get(&qualified).into_iter().flatten() {
-                cache.view.bindings.insert(local.clone(), binding.clone());
-            }
-            cache.view.declaration_frontier = cache.view.declaration_frontier.max(index + 1);
         }
     }
     fn expand_reader(&mut self, id: NodeId) -> Result<NodeId, AnalysisError> {

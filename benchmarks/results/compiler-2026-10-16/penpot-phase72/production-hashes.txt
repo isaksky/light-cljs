@@ -1,0 +1,11 @@
+dc34ebb4650610430a6bd507fbba55e3ecff52f339667bd07c9fa6ba0217ae16  /private/tmp/light-cljs-phase72/production/light-cljs
+b9710a853df1ee34afb2ea32635ec14a28ffa4875c6a55bfc5e20781de8f8ef3  /private/tmp/light-cljs-phase72/production/implementation.patch
+35e67e18e9539a08781737bea93c45fdc57d5000b10c2b0e2525440af074aea1  /private/tmp/light-cljs-phase72/production/name_index.rs
+2f7ee4c7570bcb288abb35bc02f7f76e3e7e2b192d36122f0bf6c45dca989655  /private/tmp/light-cljs-phase72/production/render.js
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase72/production/main-none.js
+82d4cf05527a4120e22eb7302063c3dd8759dbc8fb35e6a3b7efce63d10c7077  /private/tmp/light-cljs-phase72/production/main-advanced.js
+2a85160ed8ff8648fcb8c9be69e979b98a65ceb75b731783d2fbc1ee0291d219  /Users/admin/src/light-cljs/src/analyzer.rs
+3a576060a773d70705e0245005b9dc195ac4e3e99519fed5304c10a0d0f21135  /Users/admin/src/light-cljs/src/compiler_data.rs
+54068b9d53f5f389fc20149ca2f7ca19f15ae70b33b1854be0cc0fe248aac1f5  /Users/admin/src/light-cljs/src/emitter.rs
+c459d8b1d783dfd12d456d38f6da9b41694c80059e5dd478ace6710cab25ec49  /Users/admin/src/light-cljs/src/terse.rs
+b869e54345b118e0de824730a004fb852bd2e54ddf71cbe7ff990e051f1c231c  /Users/admin/src/light-cljs/tests/evaluation/evaluator.rs

@@ -53,6 +53,30 @@ struct NamespaceEnvironment {
     // The data owns symbol/doc, so their addresses cannot be reused while cached.
 }
 
+type LocalDescription = (String, usize, &'static str, Option<usize>);
+struct LocalEnvironment {
+    locals: Vec<LocalDescription>,
+    // Per binding, including shadowed ones, so extending or leaving a lexical
+    // scope can reuse the unchanged prefix without retaining a map per prefix.
+    rows: Vec<(crate::compiler_data::Datum, crate::compiler_data::Datum)>,
+    data: crate::compiler_data::Datum,
+}
+
+#[derive(PartialEq)]
+struct ReaderEnvironmentKey {
+    refers: Vec<(String, String, String)>,
+    excludes: Vec<String>,
+    generation: u64,
+    from: usize,
+    names: Vec<String>,
+    visible: usize,
+    bindings: Vec<String>,
+}
+struct ReaderEnvironment {
+    key: ReaderEnvironmentKey,
+    data: crate::compiler_data::Datum,
+}
+
 /// Macro configuration and compiler metadata. Each clean compilation owns a fresh
 /// QuickJS bootstrap session; reusing this host never reuses JavaScript macro roots.
 #[derive(Default)]
@@ -80,6 +104,9 @@ pub struct MacroHost {
     pub(crate) macro_environment:
         std::rc::Rc<std::cell::RefCell<Option<crate::compiler_data::Datum>>>,
     namespace_environment: std::rc::Rc<std::cell::RefCell<Option<NamespaceEnvironment>>>,
+    // Shared by analysis frames, but bounded to one complete lexical view.
+    local_environment: std::rc::Rc<std::cell::RefCell<Option<LocalEnvironment>>>,
+    reader_environment: std::rc::Rc<std::cell::RefCell<Option<ReaderEnvironment>>>,
     pub(crate) source_bindings: crate::layered::Layered<String, SourceBindingKind>,
     pub(crate) session: Option<std::rc::Rc<crate::compilation_session::CompilationSession>>,
     pub(crate) session_ref: std::rc::Weak<crate::compilation_session::CompilationSession>,
@@ -148,6 +175,29 @@ const OPAQUE_PACKAGES_PRELUDE: &str = r#"rt => {
 }"#;
 
 impl MacroHost {
+    pub(crate) fn new_compiler_evaluator(
+        &self,
+    ) -> Result<
+        std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
+        crate::evaluator::EvalError,
+    > {
+        #[cfg(light_v8)]
+        if !self.interactive {
+            use crate::evaluator::MacroEvaluator;
+            let evaluator = crate::v8_evaluator::V8Evaluator::new(self.evaluator_options.clone())?;
+            if self.assertions_disabled {
+                let done = evaluator
+                    .evaluate_unit("rt => { rt.core.assertions = false; return null; }")?;
+                evaluator.release(done)?;
+            }
+            if self.opaque_packages {
+                let done = evaluator.evaluate_unit(OPAQUE_PACKAGES_PRELUDE)?;
+                evaluator.release(done)?;
+            }
+            return Ok(std::rc::Rc::new(evaluator));
+        }
+        Ok(std::rc::Rc::new(self.new_evaluator()?))
+    }
     /// Allocate a fresh synchronous heap for a clean compilation. Its dynamic
     /// `*assert*` follows [`Self::set_assertions`], so the macros, functions and
     /// data readers it runs read the setting, as upstream's `:elide-asserts`
@@ -199,17 +249,22 @@ impl MacroHost {
             depth: 128,
         };
         let run = || -> Result<Form, crate::evaluator::EvalError> {
-            let mut args = vec![
-                evaluator.import_form(call, limits)?,
-                evaluator.import_environment(environment, limits)?,
-            ];
-            for argument in call.children().iter().skip(1) {
-                args.push(evaluator.import_form(argument, limits)?);
-            }
-            let result = evaluator.call(function, &args)?;
-            let expanded = evaluator.export_form(result, call, origin.clone(), limits);
+            let mut args = Vec::new();
+            let mut result = None;
+            let expanded = (|| {
+                args.push(evaluator.import_macro_form(call, limits)?);
+                args.push(evaluator.import_environment(environment, limits)?);
+                args.extend(evaluator.macro_arguments(args[0], call, limits)?);
+                let value = evaluator.call(function, &args)?;
+                result = Some(value);
+                evaluator.export_form(value, call, origin.clone(), limits)
+            })();
             // Root release is best effort after terminal engine failure.
-            let _ = evaluator.release(result);
+            // Ordinary exceptions must not leave successfully imported args
+            // rooted for the remainder of an interactive compilation.
+            if let Some(value) = result {
+                let _ = evaluator.release(value);
+            }
             for id in args {
                 let _ = evaluator.release(id);
             }
@@ -297,6 +352,7 @@ impl MacroHost {
                     discard,
                     &crate::compiler_reader::NamespaceView::new("cljs.user", source),
                     &discards,
+                    None,
                 )?;
                 end = span.end;
             }
@@ -308,6 +364,7 @@ impl MacroHost {
             root,
             &crate::compiler_reader::NamespaceView::new("cljs.user", source),
             &discards,
+            None,
         )
         .map(Some)
     }
@@ -450,6 +507,7 @@ impl MacroHost {
         root: crate::NodeId,
         view: &crate::compiler_reader::NamespaceView,
         discards: &[crate::NodeId],
+        bindings: Option<&crate::compiler_reader::BindingResolver<'_>>,
     ) -> Result<Form, crate::compiler_data::ReadError> {
         let reader = |tag: &Name,
                       value: &crate::compiler_data::Datum,
@@ -478,6 +536,7 @@ impl MacroHost {
             view,
             discards,
             Some(&reader),
+            bindings,
         )
     }
     /// Configure imports without loading or evaluating code. Filesystem compilation
@@ -634,6 +693,8 @@ impl MacroHost {
             javascript_macros: self.javascript_macros.clone(),
             macro_environment: self.macro_environment.clone(),
             namespace_environment: self.namespace_environment.clone(),
+            local_environment: self.local_environment.clone(),
+            reader_environment: self.reader_environment.clone(),
             source_bindings: self.source_bindings.clone(),
             session_ref: self
                 .session_handle()
@@ -668,6 +729,8 @@ impl MacroHost {
             self.javascript_macros.clear();
             self.macro_environment = Default::default();
             self.namespace_environment = Default::default();
+            self.local_environment = Default::default();
+            self.reader_environment = Default::default();
             self.source_bindings.clear();
             self.session = Some(crate::compilation_session::CompilationSession::new());
             self.session_ref = std::rc::Weak::new();
@@ -1134,7 +1197,7 @@ impl MacroHost {
 
     /// Add the reader context of `namespace` to a macro's environment. The
     /// first `shared` globals are the compilation's, in its order, of which
-    /// `visible` belong to `namespace`: the session registers each of those
+    /// `namespace_globals` identifies the members of `namespace`: the session registers each of those
     /// once, so a context names only the ones registered since, and how many
     /// it sees. The globals after `shared` are this analysis's own.
     pub(crate) fn reader_environment(
@@ -1144,12 +1207,12 @@ impl MacroHost {
         resolution: &crate::analyzer::NamespaceResolution,
         globals: &crate::arena::Arena<crate::GlobalBinding>,
         shared: usize,
-        visible: usize,
+        namespace_globals: &crate::arena::Arena<crate::analyzer::GlobalId>,
     ) -> Result<(crate::compiler_data::Datum, Option<ReaderRegistration>), String> {
+        let visible = namespace_globals.len();
         let c = crate::compiler_data::DataBuilder;
         let string = |s: &str| c.string(s.encode_utf16().collect::<Vec<_>>());
         let key = |s| c.keyword(Name::new(None, s));
-        let (refers, excludes) = (&resolution.refers, &resolution.excludes);
         let mut registration = None;
         let (position, count) = self
             .reader_declared
@@ -1159,10 +1222,9 @@ impl MacroHost {
             .unwrap_or((0, 0));
         let mut names = Vec::new();
         if position <= shared {
-            names = globals
-                .range(position..shared)
-                .filter(|g| g.namespace == namespace)
-                .map(|g| string(&g.name))
+            names = namespace_globals
+                .range(count..visible)
+                .map(|id| globals[id.0].name.clone())
                 .collect();
             debug_assert_eq!(count + names.len(), visible);
             registration = Some(ReaderRegistration {
@@ -1171,53 +1233,63 @@ impl MacroHost {
                 visible,
             });
         }
-        let declared = c
-            .map(&[
-                (key("generation"), c.integer(self.reader_generation as i64)),
-                (key("from"), c.integer(count as i64)),
-                (key("names"), c.vector(&names).map_err(|e| e.to_string())?),
-            ])
-            .map_err(|e| e.to_string())?;
-        let context = c
-            .map(&[
-                (
-                    key("refers"),
-                    c.vector(
-                        &refers
-                            .iter()
-                            .chain(self.reader_refers(namespace).iter())
-                            .map(|(local, ns, name)| {
-                                c.vector(&[string(local), string(ns), string(name)])
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                    )
-                    .map_err(|e| e.to_string())?,
-                ),
-                (
-                    key("excludes"),
-                    c.vector(&excludes.iter().map(|s| string(s)).collect::<Vec<_>>())
-                        .map_err(|e| e.to_string())?,
-                ),
-                (key("declared"), declared),
-                (key("visible"), c.integer(visible as i64)),
-                (
-                    key("bindings"),
-                    c.vector(
-                        &globals
-                            .range(shared..globals.len())
-                            .filter(|g| g.namespace == namespace)
-                            .map(|g| string(&g.name))
-                            .chain(
-                                self.source_macro_names(namespace)
-                                    .iter()
-                                    .map(|name| string(name)),
-                            )
-                            .collect::<Vec<_>>(),
-                    )
-                    .map_err(|e| e.to_string())?,
-                ),
-            ])
-            .map_err(|e| e.to_string())?;
+        let context_key = ReaderEnvironmentKey {
+            refers: resolution
+                .refers
+                .iter()
+                .cloned()
+                .chain(self.reader_refers(namespace))
+                .collect(),
+            excludes: resolution.excludes.clone(),
+            generation: self.reader_generation,
+            from: count,
+            names,
+            visible,
+            bindings: globals
+                .range(shared..globals.len())
+                .filter(|g| g.namespace == namespace)
+                .map(|g| g.name.clone())
+                .chain(self.source_macro_names(namespace))
+                .collect(),
+        };
+        let context = {
+            let mut cache = self.reader_environment.borrow_mut();
+            if let Some(cached) = cache.as_ref().filter(|c| c.key == context_key) {
+                cached.data.clone()
+            } else {
+                let strings = |names: &[String]| {
+                    c.vector(&names.iter().map(|s| string(s)).collect::<Vec<_>>())
+                };
+                let declared = c.map(&[
+                    (key("generation"), c.integer(context_key.generation as i64)),
+                    (key("from"), c.integer(context_key.from as i64)),
+                    (key("names"), strings(&context_key.names)?),
+                ])?;
+                let context = c.map(&[
+                    (
+                        key("refers"),
+                        c.vector(
+                            &context_key
+                                .refers
+                                .iter()
+                                .map(|(local, ns, name)| {
+                                    c.vector(&[string(local), string(ns), string(name)])
+                                })
+                                .collect::<Result<Vec<_>, _>>()?,
+                        )?,
+                    ),
+                    (key("excludes"), strings(&context_key.excludes)?),
+                    (key("declared"), declared),
+                    (key("visible"), c.integer(context_key.visible as i64)),
+                    (key("bindings"), strings(&context_key.bindings)?),
+                ])?;
+                *cache = Some(ReaderEnvironment {
+                    key: context_key,
+                    data: context.clone(),
+                });
+                context
+            }
+        };
         let environment = c.assoc(
             &environment,
             &c.keyword(Name::new(Some("light-cljs"), "reader-context")),
@@ -1244,7 +1316,7 @@ impl MacroHost {
         &self,
         namespace: &str,
         context: ExprContext,
-        locals: &[(String, usize, &'static str, Option<usize>)],
+        locals: &[LocalDescription],
         aliases: &[(String, String)],
         requires: &[String],
         location: (usize, usize),
@@ -1356,27 +1428,72 @@ impl MacroHost {
             }
         };
         let build = || -> Result<crate::compiler_data::Datum, String> {
-            let mut local_map = c.map(&[])?;
-            for (name, id, kind, argument) in locals {
-                let name = sym(name);
-                let mut details = vec![
-                    (key("name"), name.clone()),
-                    (key("form"), name.clone()),
-                    (key("op"), key("binding")),
-                    (key("local"), key(kind)),
-                    (key("light-cljs/id"), c.integer(*id as i64)),
-                ];
-                if *kind != "fn" {
-                    details.push((key("binding-form?"), c.boolean(true)));
+            let local_map = {
+                let mut cache = self.local_environment.borrow_mut();
+                if let Some(cached) = cache.as_ref().filter(|c| c.locals == locals) {
+                    cached.data.clone()
+                } else {
+                    let prefix = cache.as_ref().map_or(0, |cached| {
+                        cached
+                            .locals
+                            .iter()
+                            .zip(locals)
+                            .take_while(|(a, b)| a == b)
+                            .count()
+                    });
+                    let mut rows = cache
+                        .as_ref()
+                        .map_or_else(Vec::new, |cached| cached.rows[..prefix].to_vec());
+                    let mut entries: Vec<(
+                        crate::compiler_data::Datum,
+                        crate::compiler_data::Datum,
+                    )> = Vec::new();
+                    let mut positions: HashMap<&str, usize> = HashMap::new();
+                    for ((name, ..), (symbol, details)) in locals.iter().zip(&rows) {
+                        if let Some(&index) = positions.get(name.as_str()) {
+                            entries[index].1 = details.clone();
+                        } else {
+                            positions.insert(name.as_str(), entries.len());
+                            entries.push((symbol.clone(), details.clone()));
+                        }
+                    }
+                    for (local, id, kind, argument) in locals.iter().skip(prefix) {
+                        let position = positions.get(local.as_str()).copied();
+                        let name = sym(local);
+                        let mut details = vec![
+                            (key("name"), name.clone()),
+                            (key("form"), name.clone()),
+                            (key("op"), key("binding")),
+                            (key("local"), key(kind)),
+                            (key("light-cljs/id"), c.integer(*id as i64)),
+                        ];
+                        if *kind != "fn" {
+                            details.push((key("binding-form?"), c.boolean(true)));
+                        }
+                        if let Some(argument) = argument {
+                            details.push((key("arg-id"), c.integer(*argument as i64)));
+                        }
+                        if let Some(index) = position {
+                            details.push((key("shadow"), entries[index].1.clone()));
+                        }
+                        let details = c.map(&details)?;
+                        rows.push((name.clone(), details.clone()));
+                        if let Some(index) = position {
+                            entries[index].1 = details;
+                        } else {
+                            positions.insert(local.as_str(), entries.len());
+                            entries.push((name, details));
+                        }
+                    }
+                    let local_map = c.map(&entries)?;
+                    *cache = Some(LocalEnvironment {
+                        locals: locals.to_vec(),
+                        rows,
+                        data: local_map.clone(),
+                    });
+                    local_map
                 }
-                if let Some(argument) = argument {
-                    details.push((key("arg-id"), c.integer(*argument as i64)));
-                }
-                if let Some(shadow) = local_map.get(&name)? {
-                    details.push((key("shadow"), shadow));
-                }
-                local_map = c.assoc(&local_map, &name, &c.map(&details)?)?;
-            }
+            };
             c.map(&[
                 (key("locals"), local_map),
                 // Descriptive compiler bindings only: no runtime Var or callable
@@ -1405,6 +1522,206 @@ impl MacroHost {
 #[cfg(test)]
 mod compiler_pure_tests {
     use super::*;
+    use crate::compiler_data::{DataBuilder, Datum, DatumKind};
+
+    fn field(data: &Datum, key: &str) -> Datum {
+        let (ns, name) = key
+            .split_once('/')
+            .map_or((None, key), |(ns, name)| (Some(ns), name));
+        data.get(&DataBuilder.keyword(Name::new(ns, name)))
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn environment_reuse_preserves_local_shadow_chains_and_location() {
+        let host = MacroHost::new();
+        let mut locals = vec![
+            ("x".to_owned(), 1, "let", None),
+            ("x".to_owned(), 2, "arg", Some(0)),
+        ];
+        let env = |locals: &[LocalDescription], location| {
+            host.compiler_environment("demo", ExprContext::Value, locals, &[], &[], location)
+                .unwrap()
+        };
+        let first = env(&locals, (1, 2));
+        let repeated = env(&locals, (3, 4));
+        assert_eq!(
+            field(&first, "locals").identity(),
+            field(&repeated, "locals").identity()
+        );
+        assert!(matches!(
+            field(&repeated, "line").kind(),
+            DatumKind::Integer(3)
+        ));
+        let local = |env: &Datum| {
+            field(env, "locals")
+                .get(&DataBuilder.symbol(Name::new(None, "x")))
+                .unwrap()
+                .unwrap()
+        };
+        assert!(matches!(
+            field(&local(&first), "arg-id").kind(),
+            DatumKind::Integer(0)
+        ));
+        assert!(matches!(
+            field(&field(&local(&first), "shadow"), "light-cljs/id").kind(),
+            DatumKind::Integer(1)
+        ));
+        locals[1] = ("x".to_owned(), 3, "fn", None);
+        let changed = env(&locals, (5, 6));
+        assert_ne!(
+            field(&first, "locals").identity(),
+            field(&changed, "locals").identity()
+        );
+        assert!(
+            local(&changed)
+                .get(&DataBuilder.keyword(Name::new(None, "binding-form?")))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            local(&changed)
+                .get(&DataBuilder.keyword(Name::new(None, "arg-id")))
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            field(&local(&changed), "light-cljs/id").kind(),
+            DatumKind::Integer(3)
+        ));
+        let mut nested = locals.clone();
+        nested.push(("x".into(), 4, "let", None));
+        nested.push(("y".into(), 5, "let", None));
+        let inner = env(&nested, (5, 7));
+        let outer = env(&locals[..1], (5, 8));
+        assert!(matches!(
+            field(&field(&local(&inner), "shadow"), "light-cljs/id").kind(),
+            DatumKind::Integer(3)
+        ));
+        assert!(matches!(
+            field(&local(&outer), "light-cljs/id").kind(),
+            DatumKind::Integer(1)
+        ));
+        assert!(
+            local(&outer)
+                .get(&DataBuilder.keyword(Name::new(None, "shadow")))
+                .unwrap()
+                .is_none()
+        );
+        // Sharing the cache across demand-analysis frames must not mix their
+        // lexical views, or mutate an earlier environment saved by a macro.
+        let frame = host.macro_analysis_frame();
+        let empty = frame
+            .compiler_environment("demo", ExprContext::Return, &[], &[], &[], (7, 8))
+            .unwrap();
+        assert!(
+            matches!(field(&empty, "locals").kind(), DatumKind::Collection { children, .. } if children.is_empty())
+        );
+        assert!(matches!(
+            field(&local(&first), "light-cljs/id").kind(),
+            DatumKind::Integer(2)
+        ));
+        assert_eq!(
+            field(&local(&env(&locals, (9, 10))), "local").inspect(),
+            DataBuilder.keyword(Name::new(None, "fn")).inspect()
+        );
+    }
+
+    #[test]
+    fn reader_environment_reuse_obeys_declaration_acknowledgement_and_old_views() {
+        let mut host = MacroHost::new();
+        host.begin_compilation();
+        let mut globals = crate::arena::Arena::default();
+        for name in ["a", "b", "c"] {
+            globals.push(crate::GlobalBinding {
+                namespace: "demo".into(),
+                name: name.into(),
+                type_descriptor: false,
+                declared: true,
+                constant: false,
+                define: false,
+                boolean_tag: false,
+                metadata: None,
+                span: 0..0,
+                source_index: 0,
+            });
+        }
+        let mut resolution = crate::analyzer::NamespaceResolution::default();
+        let context = |host: &MacroHost,
+                       resolution: &crate::analyzer::NamespaceResolution,
+                       shared,
+                       visible| {
+            let ids = globals
+                .range(0..shared)
+                .enumerate()
+                .filter_map(|(index, global)| {
+                    (global.namespace == "demo").then_some(crate::analyzer::GlobalId(index))
+                })
+                .collect::<crate::arena::Arena<_>>();
+            assert_eq!(ids.len(), visible);
+            let (env, registration) = host
+                .reader_environment(
+                    DataBuilder.map(&[]).unwrap(),
+                    "demo",
+                    resolution,
+                    &globals,
+                    shared,
+                    &ids,
+                )
+                .unwrap();
+            (field(&env, "light-cljs/reader-context"), registration)
+        };
+        let (first, ack) = context(&host, &resolution, 2, 2);
+        let (repeated, _) = context(&host, &resolution, 2, 2);
+        assert_eq!(first.identity(), repeated.identity());
+        assert_eq!(
+            field(&field(&first, "declared"), "names")
+                .elements()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(field(&first, "bindings").elements().unwrap().len(), 1);
+        host.register_reader_declarations(ack);
+        let (registered, _) = context(&host, &resolution, 2, 2);
+        assert_ne!(first.identity(), registered.identity());
+        assert!(
+            field(&field(&registered, "declared"), "names")
+                .elements()
+                .unwrap()
+                .is_empty()
+        );
+        let (older, ack) = context(&host, &resolution, 1, 1);
+        assert!(ack.is_none());
+        assert!(matches!(
+            field(&older, "visible").kind(),
+            DatumKind::Integer(1)
+        ));
+        assert_eq!(field(&older, "bindings").elements().unwrap().len(), 2);
+        resolution
+            .refers
+            .push(("renamed".into(), "other".into(), "original".into()));
+        resolution.excludes.push("map".into());
+        let (changed, _) = context(&host, &resolution, 2, 2);
+        assert_ne!(registered.identity(), changed.identity());
+        assert_eq!(field(&changed, "refers").elements().unwrap().len(), 1);
+        assert_eq!(field(&changed, "excludes").elements().unwrap().len(), 1);
+        host.begin_compilation();
+        let (fresh, _) = context(&host, &resolution, 2, 2);
+        assert_ne!(
+            field(&field(&first, "declared"), "generation").inspect(),
+            field(&field(&fresh, "declared"), "generation").inspect()
+        );
+        assert_eq!(
+            field(&field(&fresh, "declared"), "names")
+                .elements()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
     #[test]
     fn reader_seed_declarations_and_metadata_use_owned_forms() {
         let mut host = MacroHost::new();

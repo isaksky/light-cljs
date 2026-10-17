@@ -53339,7 +53339,6 @@ static JSValueConst map_normalize_key_const(JSContext *ctx, JSValueConst key)
     return safe_const(map_normalize_key(ctx, unsafe_unconst(key)));
 }
 
-/* XXX: better hash ? */
 static uint32_t map_hash_key(JSContext *ctx, JSValueConst key)
 {
     uint32_t tag = JS_VALUE_GET_NORM_TAG(key);
@@ -53386,7 +53385,17 @@ static uint32_t map_hash_key(JSContext *ctx, JSValueConst key)
         h = 0;
         break;
     }
-    return h ^ ctx->hash_seed ^ hash32(tag);
+    /* Buckets use the low bits of the hash. Multiplication alone leaves
+       aligned object pointers and small integer double encodings clustered
+       in a few buckets, even after the table grows. Avalanche the key bits
+       before masking; record order and SameValueZero comparison are unchanged. */
+    h ^= ctx->hash_seed ^ hash32(tag);
+    h ^= h >> 16;
+    h *= 0x85ebca6b;
+    h ^= h >> 13;
+    h *= 0xc2b2ae35;
+    h ^= h >> 16;
+    return h;
 }
 
 static JSMapRecord *map_find_record(JSContext *ctx, JSMapState *s,

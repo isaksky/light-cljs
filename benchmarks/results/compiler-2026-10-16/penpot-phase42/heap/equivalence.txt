@@ -1,0 +1,1 @@
+Complete instrumented render output matches validated phase42 output and passes node --check.

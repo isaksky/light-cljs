@@ -1,0 +1,17 @@
+{
+  "name": "rust",
+  "path": "third_party/rust",
+  "sha": "afbc96607d0e659715d803cc099607dd1737fc41",
+  "size": 0,
+  "url": "https://api.github.com/repos/denoland/rusty_v8/contents/third_party/rust?ref=2768994f664e8a6e3aba27503606c58339136e2a",
+  "html_url": null,
+  "git_url": null,
+  "download_url": null,
+  "type": "submodule",
+  "submodule_git_url": "https://chromium.googlesource.com/chromium/src/third_party/rust",
+  "_links": {
+    "self": "https://api.github.com/repos/denoland/rusty_v8/contents/third_party/rust?ref=2768994f664e8a6e3aba27503606c58339136e2a",
+    "git": null,
+    "html": null
+  }
+}

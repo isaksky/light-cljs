@@ -1,0 +1,4 @@
+HEAD 415620c83428d5a8fb6b761364305e1a63bf8031
+8e0a22ff03f2216e9d95410b052f7cd934835b24188a1a293bc019b61f51697a  /private/tmp/light-cljs-phase6b/light-cljs
+ab79f09956e5a68d8aca02b0f0d46ad68d1cd426ed0d4871996051f29fc7aa63  /private/tmp/light-cljs-phase6b/implementation.patch
+35e67e18e9539a08781737bea93c45fdc57d5000b10c2b0e2525440af074aea1  /private/tmp/light-cljs-phase6b/name_index.rs

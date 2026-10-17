@@ -1,0 +1,83 @@
+diff --git a/src/macro_host.rs b/src/macro_host.rs
+index 8875bea..17b5ffe 100644
+--- a/src/macro_host.rs
++++ b/src/macro_host.rs
+@@ -214,6 +214,7 @@ impl MacroHost {
+         environment: &crate::compiler_data::Datum,
+         origin: crate::compiler_data::ExpansionOrigin,
+     ) -> Result<Form, String> {
++        let _macro_timing = macro_timing::begin(0, format!("{}/{}", String::from_utf16_lossy(origin.macro_name.namespace().unwrap_or(&[])), String::from_utf16_lossy(origin.macro_name.name())));
+         if self.expansions.get() >= self.limits.expansions {
+             return Err("compiler macro expansion limit exceeded".into());
+         }
+@@ -229,16 +230,17 @@ impl MacroHost {
+             let mut args = Vec::new();
+             let mut result = None;
+             let expanded = (|| {
+-                args.push(evaluator.import_macro_form(call, limits)?);
+-                args.push(evaluator.import_environment(environment, limits)?);
+-                args.extend(evaluator.macro_arguments(args[0], call, limits)?);
+-                let value = evaluator.call(function, &args)?;
++                { let _timer = macro_timing::begin(1, "import_form"); args.push(evaluator.import_macro_form(call, limits)?); }
++                { let _timer = macro_timing::begin(1, "import_environment"); args.push(evaluator.import_environment(environment, limits)?); }
++                { let _timer = macro_timing::begin(1, "macro_arguments"); args.extend(evaluator.macro_arguments(args[0], call, limits)?); }
++                let value = { let _timer = macro_timing::begin(1, "call"); evaluator.call(function, &args)? }; 
+                 result = Some(value);
+-                evaluator.export_form(value, call, origin.clone(), limits)
++                { let _timer = macro_timing::begin(1, "export_form"); evaluator.export_form(value, call, origin.clone(), limits) }
+             })();
+             // Root release is best effort after terminal engine failure.
+             // Ordinary exceptions must not leave successfully imported args
+             // rooted for the remainder of an interactive compilation.
++            let _release_timer = macro_timing::begin(1, "release");
+             if let Some(value) = result {
+                 let _ = evaluator.release(value);
+             }
+@@ -1796,3 +1798,47 @@ mod compiler_default_reader_tests {
+         assert_eq!(number(&read(&mut host, "#unknown 9")), 42.0);
+     }
+ }
++
++// Diagnostic only: separate nested macro and bridge-stage timing stacks.
++mod macro_timing {
++    use std::{cell::RefCell, collections::HashMap, time::Instant};
++    #[derive(Default)]
++    struct Group {
++        stack: Vec<u128>,
++        rows: HashMap<String, (u64, u128, u128)>,
++    }
++    #[derive(Default)]
++    struct Profile { groups: [Group; 2] }
++    impl Drop for Profile {
++        fn drop(&mut self) {
++            for (index, group) in self.groups.iter().enumerate() {
++                let mut rows: Vec<_> = group.rows.iter().collect();
++                rows.sort_by_key(|(_, row)| std::cmp::Reverse(row.2));
++                for (label, (count, total, own)) in rows {
++                    eprintln!("MACRO_TIMING\t{}\t{}\t{}\t{}\t{}", index, label, count, total, own);
++                }
++            }
++        }
++    }
++    thread_local! { static PROFILE: RefCell<Profile> = RefCell::new(Profile::default()); }
++    pub(super) struct Guard { group: usize, label: String, start: Instant }
++    pub(super) fn begin(group: usize, label: impl Into<String>) -> Guard {
++        PROFILE.with(|p| p.borrow_mut().groups[group].stack.push(0));
++        Guard { group, label: label.into(), start: Instant::now() }
++    }
++    impl Drop for Guard {
++        fn drop(&mut self) {
++            let duration = self.start.elapsed().as_nanos();
++            PROFILE.with(|p| {
++                let mut p = p.borrow_mut();
++                let group = &mut p.groups[self.group];
++                let children = group.stack.pop().unwrap();
++                if let Some(parent) = group.stack.last_mut() { *parent += duration; }
++                let entry = group.rows.entry(self.label.clone()).or_default();
++                entry.0 += 1;
++                entry.1 += duration;
++                entry.2 += duration.saturating_sub(children);
++            });
++        }
++    }
++}

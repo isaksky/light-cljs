@@ -1,0 +1,108 @@
+diff --git a/src/analyzer.rs b/src/analyzer.rs
+index db41455..96fbad2 100644
+--- a/src/analyzer.rs
++++ b/src/analyzer.rs
+@@ -2580,12 +2580,12 @@ pub struct RuntimeReaderNamespace {
+ #[derive(Clone, Debug, PartialEq)]
+ pub struct Program {
+     /// Source namespaces present in this unit, including namespaces without Vars.
+-    pub namespaces: crate::shared::Shared<Vec<String>>,
++    pub namespaces: crate::arena::Arena<String>,
+     /// Explicit source reader contexts; runtime reads never consult a loader.
+     pub reader_contexts: crate::shared::Shared<
+         crate::layered::Layered<String, crate::shared::Shared<RuntimeReaderNamespace>>,
+     >,
+-    pub namespace_entries: crate::shared::Shared<HashMap<ExprId, String>>,
++    pub namespace_entries: crate::shared::Shared<crate::layered::Layered<ExprId, String>>,
+     pub compilation_uses: Vec<CompilationUse>,
+     pub exprs: crate::arena::Arena<Expr>,
+     pub locals: crate::arena::Arena<LocalBinding>,
+@@ -2632,6 +2632,7 @@ impl Program {
+     /// Freeze every table, so a clone shares the entries so far instead of
+     /// copying them; see [`crate::arena::Arena::freeze`].
+     pub fn freeze(&mut self) {
++        self.namespaces.freeze();
+         self.exprs.freeze();
+         self.locals.freeze();
+         self.recur_targets.freeze();
+diff --git a/src/arena.rs b/src/arena.rs
+index c249f0b..883c2d2 100644
+--- a/src/arena.rs
++++ b/src/arena.rs
+@@ -162,6 +162,24 @@ impl<T: PartialEq> PartialEq for Arena<T> {
+ 
+ impl<T: Eq> Eq for Arena<T> {}
+ 
++impl<T, U> PartialEq<Vec<U>> for Arena<T>
++where
++    T: PartialEq<U>,
++{
++    fn eq(&self, other: &Vec<U>) -> bool {
++        self.len() == other.len() && self.iter().zip(other).all(|(a, b)| a == b)
++    }
++}
++
++impl<T, U, const N: usize> PartialEq<[U; N]> for Arena<T>
++where
++    T: PartialEq<U>,
++{
++    fn eq(&self, other: &[U; N]) -> bool {
++        self.len() == N && self.iter().zip(other).all(|(a, b)| a == b)
++    }
++}
++
+ impl<T> From<Vec<T>> for Arena<T> {
+     fn from(tail: Vec<T>) -> Self {
+         Self {
+diff --git a/src/dev_build.rs b/src/dev_build.rs
+index a53b451..b93e690 100644
+--- a/src/dev_build.rs
++++ b/src/dev_build.rs
+@@ -278,11 +278,15 @@ impl DevManifest {
+ /// puts its hooks in source order and drops the flag a definition lost; a
+ /// definition removed from the source keeps its last metadata, as it stays
+ /// defined. A client runs the before-load hooks in reverse.
+-pub(crate) fn program_hooks(program: &Program, namespaces: &[String]) -> [Vec<DevHook>; 2] {
++pub(crate) fn program_hooks<'a>(
++    program: &Program,
++    namespaces: impl IntoIterator<Item = &'a String>,
++) -> [Vec<DevHook>; 2] {
++    let namespaces = namespaces.into_iter().collect::<Vec<_>>();
+     let position = |namespace: &str| {
+         namespaces
+             .iter()
+-            .position(|known| known == namespace)
++            .position(|known| known.as_str() == namespace)
+             .unwrap_or(namespaces.len())
+     };
+     let mut definitions = program
+diff --git a/src/layered.rs b/src/layered.rs
+index 5d90267..e87917e 100644
+--- a/src/layered.rs
++++ b/src/layered.rs
+@@ -51,6 +51,10 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
+         self.len
+     }
+ 
++    pub fn is_empty(&self) -> bool {
++        self.len == 0
++    }
++
+     pub fn get<Q>(&self, key: &Q) -> Option<&V>
+     where
+         K: Borrow<Q>,
+@@ -190,6 +194,14 @@ impl<K: Eq + Hash + Clone, V: Clone> FromIterator<(K, V)> for Layered<K, V> {
+     }
+ }
+ 
++impl<K: Eq + Hash + Clone, V: Clone> Extend<(K, V)> for Layered<K, V> {
++    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, entries: I) {
++        for (key, value) in entries {
++            self.insert(key, value);
++        }
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::Layered;

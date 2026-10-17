@@ -1,0 +1,237 @@
+diff --git a/src/arena.rs b/src/arena.rs
+index c249f0b..4a81512 100644
+--- a/src/arena.rs
++++ b/src/arena.rs
+@@ -5,16 +5,18 @@
+ //! snapshot shares the frozen chunks by reference and only the entries added
+ //! after the last freeze are copied. Frozen chunks are trees of bounded leaves:
+ //! merging chunks shares their entries, and writes copy only the path to a
+-//! leaf. A snapshot keeps its definition-time entries.
++//! leaf. Once a shared leaf has been written, its entries are individually
++//! shared so later versions copy only the changed entry. A snapshot keeps its
++//! definition-time entries.
+ 
+ use std::ops::{Index, IndexMut};
+ use std::rc::Rc;
+ 
+ const LEAF_SIZE: usize = 64;
+ 
+-#[derive(Clone)]
+ enum Chunk<T> {
+     Leaf(Vec<T>),
++    SharedLeaf(Vec<Rc<T>>),
+     Branch {
+         left: Rc<Chunk<T>>,
+         right: Rc<Chunk<T>>,
+@@ -22,10 +24,52 @@ enum Chunk<T> {
+     },
+ }
+ 
++impl<T: Clone> Clone for Chunk<T> {
++    fn clone(&self) -> Self {
++        match self {
++            // Only a shared leaf being written needs entry-level ownership.
++            // Later versions copy references and the single modified entry.
++            Self::Leaf(entries) => Self::SharedLeaf(entries.iter().cloned().map(Rc::new).collect()),
++            Self::SharedLeaf(entries) => Self::SharedLeaf(entries.clone()),
++            Self::Branch { left, right, len } => Self::Branch {
++                left: left.clone(),
++                right: right.clone(),
++                len: *len,
++            },
++        }
++    }
++}
++
++enum Leaf<'a, T> {
++    Dense(&'a [T]),
++    Shared(&'a [Rc<T>]),
++}
++impl<T> Copy for Leaf<'_, T> {}
++impl<T> Clone for Leaf<'_, T> {
++    fn clone(&self) -> Self {
++        *self
++    }
++}
++impl<'a, T> Leaf<'a, T> {
++    fn len(self) -> usize {
++        match self {
++            Self::Dense(entries) => entries.len(),
++            Self::Shared(entries) => entries.len(),
++        }
++    }
++    fn get(self, index: usize) -> Option<&'a T> {
++        match self {
++            Self::Dense(entries) => entries.get(index),
++            Self::Shared(entries) => entries.get(index).map(Rc::as_ref),
++        }
++    }
++}
++
+ impl<T> Chunk<T> {
+     fn len(&self) -> usize {
+         match self {
+             Self::Leaf(entries) => entries.len(),
++            Self::SharedLeaf(entries) => entries.len(),
+             Self::Branch { len, .. } => *len,
+         }
+     }
+@@ -52,12 +96,13 @@ impl<T> Chunk<T> {
+     }
+ 
+     /// The leaf containing `index`, and its starting offset in this chunk.
+-    fn leaf(&self, mut index: usize) -> (usize, &[T]) {
++    fn leaf(&self, mut index: usize) -> (usize, Leaf<'_, T>) {
+         let mut node = self;
+         let mut start = 0;
+         loop {
+             match node {
+-                Self::Leaf(entries) => return (start, entries),
++                Self::Leaf(entries) => return (start, Leaf::Dense(entries)),
++                Self::SharedLeaf(entries) => return (start, Leaf::Shared(entries)),
+                 Self::Branch { left, right, .. } => {
+                     if index < left.len() {
+                         node = left;
+@@ -76,6 +121,7 @@ impl<T: Clone> Chunk<T> {
+     fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+         match self {
+             Self::Leaf(entries) => entries.get_mut(index),
++            Self::SharedLeaf(entries) => entries.get_mut(index).map(Rc::make_mut),
+             Self::Branch { left, right, .. } => {
+                 if index < left.len() {
+                     Rc::make_mut(left).get_mut(index)
+@@ -89,6 +135,10 @@ impl<T: Clone> Chunk<T> {
+     fn append_entries(chunk: Rc<Self>, entries: &mut Vec<T>) {
+         match Rc::try_unwrap(chunk) {
+             Ok(Self::Leaf(mut leaf)) => entries.append(&mut leaf),
++            Ok(Self::SharedLeaf(leaf)) => entries.extend(
++                leaf.into_iter()
++                    .map(|entry| Rc::try_unwrap(entry).unwrap_or_else(|entry| (*entry).clone())),
++            ),
+             Ok(Self::Branch { left, right, .. }) => {
+                 Self::append_entries(left, entries);
+                 Self::append_entries(right, entries);
+@@ -100,6 +150,7 @@ impl<T: Clone> Chunk<T> {
+     fn copy_entries(&self, entries: &mut Vec<T>) {
+         match self {
+             Self::Leaf(leaf) => entries.extend_from_slice(leaf),
++            Self::SharedLeaf(leaf) => entries.extend(leaf.iter().map(|entry| (**entry).clone())),
+             Self::Branch { left, right, .. } => {
+                 left.copy_entries(entries);
+                 right.copy_entries(entries);
+@@ -256,8 +307,8 @@ impl<T> Arena<T> {
+             arena: self,
+             front: 0,
+             back: self.len(),
+-            front_leaf: (0, &[]),
+-            back_leaf: (0, &[]),
++            front_leaf: (0, Leaf::Dense(&[])),
++            back_leaf: (0, Leaf::Dense(&[])),
+         }
+     }
+ 
+@@ -267,8 +318,8 @@ impl<T> Arena<T> {
+             arena: self,
+             front: range.start.min(self.len()),
+             back: range.end.min(self.len()),
+-            front_leaf: (0, &[]),
+-            back_leaf: (0, &[]),
++            front_leaf: (0, Leaf::Dense(&[])),
++            back_leaf: (0, Leaf::Dense(&[])),
+         }
+     }
+ 
+@@ -291,9 +342,9 @@ impl<T> Arena<T> {
+         self.iter().cloned().collect()
+     }
+ 
+-    fn leaf(&self, id: usize) -> (usize, &[T]) {
++    fn leaf(&self, id: usize) -> (usize, Leaf<'_, T>) {
+         if id >= self.frozen {
+-            return (self.frozen, &self.tail);
++            return (self.frozen, Leaf::Dense(&self.tail));
+         }
+         let (chunk, index) = self.chunk(id);
+         let (start, leaf) = self.chunks[chunk].leaf(index);
+@@ -379,7 +430,7 @@ impl<T> Index<usize> for Arena<T> {
+             return &self.tail[id - self.frozen];
+         }
+         let (start, leaf) = self.leaf(id);
+-        &leaf[id - start]
++        leaf.get(id - start).expect("arena index")
+     }
+ }
+ 
+@@ -408,8 +459,8 @@ pub struct Iter<'a, T> {
+     front: usize,
+     back: usize,
+     /// Leaves for sequential access without descending the tree per entry.
+-    front_leaf: (usize, &'a [T]),
+-    back_leaf: (usize, &'a [T]),
++    front_leaf: (usize, Leaf<'a, T>),
++    back_leaf: (usize, Leaf<'a, T>),
+ }
+ 
+ impl<T> Clone for Iter<'_, T> {
+@@ -451,7 +502,11 @@ impl<'a, T> Iterator for Iter<'a, T> {
+         if self.front < start || self.front - start >= leaf.len() {
+             self.front_leaf = self.arena.leaf(self.front);
+         }
+-        let entry = &self.front_leaf.1[self.front - self.front_leaf.0];
++        let entry = self
++            .front_leaf
++            .1
++            .get(self.front - self.front_leaf.0)
++            .unwrap();
+         self.front += 1;
+         Some(entry)
+     }
+@@ -480,7 +535,7 @@ impl<T> DoubleEndedIterator for Iter<'_, T> {
+         if self.back < start || self.back - start >= leaf.len() {
+             self.back_leaf = self.arena.leaf(self.back);
+         }
+-        Some(&self.back_leaf.1[self.back - self.back_leaf.0])
++        self.back_leaf.1.get(self.back - self.back_leaf.0)
+     }
+ }
+ 
+@@ -522,6 +577,10 @@ mod tests {
+         arena[2000] = Counted(copies.clone());
+         assert!(copies.get() <= super::LEAF_SIZE);
+         assert_eq!(versions.last().unwrap().len(), 21000);
++        versions.push(arena.clone());
++        let before = copies.get();
++        arena[2000] = Counted(copies.clone());
++        assert_eq!(copies.get() - before, 1, "later writes copy only one entry");
+     }
+ 
+     #[test]
+@@ -533,9 +592,15 @@ mod tests {
+             arena.freeze();
+         }
+         arena.extend(arena.len()..1200);
++        let snapshot = arena.clone();
++        let mut oracle: Vec<_> = (0..1200).collect();
++        for id in [300, 950, 1000] {
++            arena[id] += 10_000;
++            oracle[id] += 10_000;
++        }
+         let mut entries = arena.range(11..1192);
+-        let mut expected = 11..1192;
+-        while !expected.is_empty() {
++        let mut expected = oracle[11..1192].iter().copied();
++        while expected.len() != 0 {
+             assert_eq!(entries.len(), expected.len());
+             assert_eq!(entries.next().copied(), expected.next());
+             assert_eq!(entries.next_back().copied(), expected.next_back());
+@@ -544,8 +609,9 @@ mod tests {
+         assert_eq!(entries.next_back(), None);
+         assert_eq!(
+             arena.iter().rev().copied().collect::<Vec<_>>(),
+-            (0..1200).rev().collect::<Vec<_>>()
++            oracle.iter().rev().copied().collect::<Vec<_>>()
+         );
++        assert_eq!(snapshot.to_vec(), (0..1200).collect::<Vec<_>>());
+         let mut entries = arena.iter();
+         assert_eq!(entries.nth(299), Some(&299));
+         assert_eq!(entries.nth_back(299), Some(&900));

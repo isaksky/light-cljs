@@ -1,0 +1,3 @@
+main: reservation=2097152 available=2094752 committed=2097152
+one-MiB worker: reservation=1048576 available=1046592 committed=1048576
+PASS: exact production shim, stable bounds through 256 KiB recursion and one-MiB worker

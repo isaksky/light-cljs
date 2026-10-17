@@ -13,7 +13,19 @@ license = "MIT AND EPL-1.0"
 [dependencies]
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+mimalloc = "=0.1.52"
+
+[target.'cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), any(target_os = "macos", target_os = "linux", target_os = "windows")))'.dependencies]
+v8 = { version = "=152.2.0", path = "vendor/v8", optional = true, features = ["v8_enable_pointer_compression"] }
+
+[build-dependencies]
+cc = "=1.7.0"
+
 [features]
+default = ["v8-macros"]
+# Native clean compilations use V8; interactive sessions and wasm use QuickJS.
+v8-macros = ["dep:v8"]
 # Benchmark-only allocation instrumentation, absent from normal timing runs.
 count-allocations = []
 
@@ -44,6 +56,11 @@ harness = false
 # under src/ took about 3 s longer (light-cljs-223).
 [profile.dev.package."*"]
 opt-level = 3
+
+# Ship the same optimized compiler configuration used by the cold-build runs.
+[profile.release]
+lto = "thin"
+codegen-units = 1
 
 # Bundled QuickJS carries a local fix; see vendor/rquickjs-sys/PATCHES.md.
 [patch.crates-io]

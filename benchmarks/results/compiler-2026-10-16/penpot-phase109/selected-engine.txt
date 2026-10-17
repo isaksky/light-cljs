@@ -1,0 +1,2 @@
+v8 v152.2.0 (/private/tmp/light-cljs-phase109/v8)
+[build-dependencies]

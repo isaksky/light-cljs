@@ -1,0 +1,258 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index b285b48..37539a1 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -41,6 +41,7 @@ mod name_index;
+ mod program_fragment;
+ mod rta;
+ pub mod shared;
++mod v8_allocator;
+ mod v8_bridge;
+ mod v8_evaluator;
+ pub use eval_session::{
+diff --git a/src/v8_allocator.rs b/src/v8_allocator.rs
+new file mode 100644
+index 0000000..f1f41ef
+--- /dev/null
++++ b/src/v8_allocator.rs
+@@ -0,0 +1,94 @@
++//! Prototype backing-store limit, separate from V8's managed heap limit.
++use crate::evaluator::ExecutionControl;
++use std::{
++    alloc::{Layout, alloc_zeroed, dealloc},
++    ffi::c_void,
++    sync::{
++        Arc, OnceLock,
++        atomic::{AtomicUsize, Ordering},
++    },
++};
++
++pub(crate) struct BufferBudget {
++    used: AtomicUsize,
++    limit: usize,
++    control: ExecutionControl,
++    handle: OnceLock<v8::IsolateHandle>,
++}
++
++impl BufferBudget {
++    pub(crate) fn used(&self) -> usize {
++        self.used.load(Ordering::Relaxed)
++    }
++
++    pub(crate) fn attach(&self, handle: v8::IsolateHandle) {
++        let _ = self.handle.set(handle);
++    }
++
++    fn refuse(&self) -> *mut c_void {
++        self.control.memory_exhausted();
++        if let Some(handle) = self.handle.get() {
++            handle.terminate_execution();
++        }
++        std::ptr::null_mut()
++    }
++}
++
++unsafe extern "C" fn allocate(state: &Arc<BufferBudget>, length: usize) -> *mut c_void {
++    let bytes = length.max(1);
++    let Ok(layout) = Layout::from_size_align(bytes, 8) else {
++        return state.refuse();
++    };
++    #[allow(deprecated)]
++    let reserved = state
++        .used
++        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
++            used.checked_add(bytes).filter(|next| *next <= state.limit)
++        });
++    if reserved.is_err() {
++        return state.refuse();
++    }
++    let pointer = unsafe { alloc_zeroed(layout) };
++    if pointer.is_null() {
++        state.used.fetch_sub(bytes, Ordering::Relaxed);
++        return state.refuse();
++    }
++    pointer.cast()
++}
++
++unsafe extern "C" fn free(state: &Arc<BufferBudget>, pointer: *mut c_void, length: usize) {
++    if pointer.is_null() {
++        return;
++    }
++    // V8 returns the allocation's original length; allocate validated this layout.
++    let bytes = length.max(1);
++    let layout = unsafe { Layout::from_size_align_unchecked(bytes, 8) };
++    unsafe { dealloc(pointer.cast(), layout) };
++    state.used.fetch_sub(bytes, Ordering::Relaxed);
++}
++
++unsafe extern "C" fn drop_allocator(state: *const Arc<BufferBudget>) {
++    drop(unsafe { Box::from_raw(state.cast_mut()) });
++}
++
++static VTABLE: v8::RustAllocatorVtable<Arc<BufferBudget>> = v8::RustAllocatorVtable {
++    allocate,
++    allocate_uninitialized: allocate,
++    free,
++    drop: drop_allocator,
++};
++
++pub(crate) fn allocator(
++    limit: usize,
++    control: ExecutionControl,
++) -> (v8::UniqueRef<v8::Allocator>, Arc<BufferBudget>) {
++    let budget = Arc::new(BufferBudget {
++        used: AtomicUsize::new(0),
++        limit,
++        control,
++        handle: OnceLock::new(),
++    });
++    let allocator =
++        unsafe { v8::new_rust_allocator(Box::into_raw(Box::new(budget.clone())), &VTABLE) };
++    (allocator, budget)
++}
+diff --git a/src/v8_evaluator.rs b/src/v8_evaluator.rs
+index 9604e0a..a378055 100644
+--- a/src/v8_evaluator.rs
++++ b/src/v8_evaluator.rs
+@@ -53,6 +53,8 @@ impl CompilerEvaluator for Evaluator {
+ }
+ struct State {
+     control: ExecutionControl,
++    buffers: Arc<crate::v8_allocator::BufferBudget>,
++    memory_limit: usize,
+     generation: u64,
+     bridge: RefCell<BridgeState>,
+     services: RefCell<Option<v8::Global<v8::Object>>>,
+@@ -105,12 +107,22 @@ impl Drop for Entered<'_> {
+         }
+     }
+ }
+-extern "C" fn interrupt(isolate: v8::UnsafeRawIsolatePtr, _: *mut std::ffi::c_void) {
++extern "C" fn interrupt(mut isolate: v8::UnsafeRawIsolatePtr, _: *mut std::ffi::c_void) {
+     // V8 invokes this on the isolate's owning execution thread. No JavaScript
+     // is entered. At most one request is queued while Rust is analyzing.
+-    let isolate = unsafe { v8::Isolate::ref_from_raw_isolate_ptr(&isolate) };
+-    let state = isolate.get_slot::<Rc<State>>().unwrap();
++    let isolate = unsafe { v8::Isolate::ref_from_raw_isolate_ptr_mut(&mut isolate) };
++    let state = isolate.get_slot::<Rc<State>>().cloned().unwrap();
+     state.interrupt_pending.store(false, Ordering::Relaxed);
++    let stats = isolate.get_heap_statistics();
++    // Resizable/growable stores use V8's page allocator, not our buffer
++    // allocator. Include V8's external total, including reported provenance.
++    if stats
++        .used_heap_size()
++        .saturating_add(stats.external_memory().max(state.buffers.used()))
++        > state.memory_limit
++    {
++        state.control.memory_exhausted();
++    }
+     if state.control.poll().is_err() {
+         isolate.terminate_execution();
+     }
+@@ -193,14 +205,20 @@ impl V8Evaluator {
+             .map(|value| value.parse::<usize>().expect("V8 probe heap limit"))
+             .unwrap_or(options.memory_limit)
+             .min(options.memory_limit);
++        let (allocator, buffers) =
++            crate::v8_allocator::allocator(options.memory_limit, control.clone());
+         let mut isolate = v8::Isolate::new(
+             v8::CreateParams::default()
++                .array_buffer_allocator(allocator)
+                 .cpp_heap(heap)
+                 .heap_limits(0, heap_limit),
+         );
++        buffers.attach(isolate.thread_safe_handle());
+         isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+         let state = Rc::new(State {
+             control: control.clone(),
++            buffers,
++            memory_limit: options.memory_limit,
+             generation: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
+             bridge: RefCell::new(BridgeState::default()),
+             services: RefCell::new(None),
+@@ -355,6 +373,15 @@ impl Active<'_, '_, '_> {
+                 invoke(scope, self.state, "checkBridge", &[])?;
+                 Ok(value)
+             });
++            let stats = scope.get_heap_statistics();
++            if stats
++                .used_heap_size()
++                .saturating_add(stats.external_memory().max(self.state.buffers.used()))
++                > self.state.memory_limit
++            {
++                self.state.control.memory_exhausted();
++                scope.terminate_execution();
++            }
+             match result {
+                 Err(error) if scope.has_terminated() => {
+                     Err(self.state.pending_error.borrow().clone().unwrap_or(error))
+@@ -799,6 +826,69 @@ impl CompilerEvaluator for V8Evaluator {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn array_buffer_limit_is_terminal_even_when_javascript_catches() {
++        let evaluator = V8Evaluator::new(EvaluatorOptions {
++            memory_limit: 32 * 1024 * 1024,
++            ..Default::default()
++        })
++        .unwrap();
++        let error = evaluator.evaluate_js(
++            "(() => { try { new ArrayBuffer(32 * 1024 * 1024 + 1); } catch (_) {} for (;;) {} })()"
++        ).unwrap_err();
++        assert!(error.0.contains("memory limit exhausted"), "{error}");
++        assert!(evaluator.evaluate_js("1").is_err());
++    }
++
++    #[test]
++    fn array_buffer_bytes_are_zeroed_and_reclaimed_at_session_drop() {
++        let evaluator = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
++        let budget = evaluator.state.buffers.clone();
++        let baseline = budget.used();
++        let result = evaluator.evaluate_js(
++            "(() => { globalThis.keptBuffer = new Uint8Array(8192); return keptBuffer.every(value => value === 0) ? 1 : 0; })()"
++        ).unwrap();
++        assert_eq!(evaluator.number(result).unwrap(), 1.0);
++        evaluator.release(result).unwrap();
++        assert_eq!(budget.used(), baseline + 8192);
++        drop(evaluator);
++        assert_eq!(budget.used(), 0);
++    }
++
++    #[test]
++    fn resizable_and_growable_backing_stores_obey_the_memory_limit() {
++        for expression in [
++            "new ArrayBuffer(33 * 1024 * 1024, { maxByteLength: 34 * 1024 * 1024 })",
++            "new SharedArrayBuffer(33 * 1024 * 1024, { maxByteLength: 34 * 1024 * 1024 })",
++            "(() => { const a = new ArrayBuffer(8, { maxByteLength: 34 * 1024 * 1024 }); a.resize(33 * 1024 * 1024); return a; })()",
++            "(() => { const a = new SharedArrayBuffer(8, { maxByteLength: 34 * 1024 * 1024 }); a.grow(33 * 1024 * 1024); return a; })()",
++        ] {
++            let evaluator = V8Evaluator::new(EvaluatorOptions {
++                memory_limit: 32 * 1024 * 1024,
++                ..Default::default()
++            })
++            .unwrap();
++            let result = evaluator.evaluate_js(expression);
++            if result.is_ok() {
++                let mut isolate = evaluator.isolate.borrow_mut();
++                let entered = Entered::new(&mut isolate);
++                let stats = entered.0.get_heap_statistics();
++                eprintln!(
++                    "unbounded {expression}: heap={}, external={}, allocator={}",
++                    stats.used_heap_size(),
++                    stats.external_memory(),
++                    evaluator.state.buffers.used()
++                );
++            }
++            let error = result.expect_err(expression);
++            assert!(
++                error.0.contains("memory limit exhausted"),
++                "{expression}: {error}"
++            );
++            assert!(evaluator.evaluate_js("1").is_err());
++        }
++    }
++
+     #[test]
+     fn compiler_callback_rejects_invalid_ids_without_running_coercion_hooks() {
+         for argument in [

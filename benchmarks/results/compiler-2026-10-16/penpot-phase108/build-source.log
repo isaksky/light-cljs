@@ -1,0 +1,18 @@
+   Compiling v8 v152.2.0 (/private/tmp/light-cljs-phase108/v8)
+warning: v8@152.2.0: Not using sccache or ccache
+warning: use of deprecated method `std::sync::atomic::Atomic::<usize>::fetch_update`: renamed to `try_update` for consistency
+    --> /private/tmp/light-cljs-phase108/v8/src/isolate.rs:2317:8
+     |
+2317 |       .fetch_update(
+     |        ^^^^^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+     |
+2317 -       .fetch_update(
+2317 +       .try_update(
+     |
+
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase108/project)
+warning: `v8` (lib) generated 1 warning (run `cargo fix --lib -p v8` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 5m 40s

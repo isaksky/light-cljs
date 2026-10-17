@@ -1,0 +1,21 @@
+gensym and configurable macro expansion service assertions passed
+bounded JavaScript runtime assertions passed
+symbol, list, sequence and update assertions passed
+structural map, collision, sharing and mutation assertions passed
+hash array mapped trie assertions passed
+structural set, collision, representative, sharing and mutation assertions passed
+hash set trie assertions passed
+finite reduction assertions passed
+numeric and predicate runtime assertions passed
+exception value assertions passed
+metadata copy, hashing, lazy sharing, protocols and invocation assertions passed
+atom, volatile, validator, watch and state protocol assertions passed
+Var identity, metadata, live getter and callback receiver assertions passed
+JavaScript interop and public-object mutation assertions passed
+protocol identities, receiver, metadata and fallback assertions passed
+public core protocol consumers and reduction boundaries passed
+persistent helper snapshots, metadata, map entries and traversal assertions passed
+transient ownership, persistence, protocol and lookup assertions passed
+public constructor fields preserve canonical payload brands
+seq payloads are private fields that host objects cannot copy
+public find preserves one search and direct receiver dispatch

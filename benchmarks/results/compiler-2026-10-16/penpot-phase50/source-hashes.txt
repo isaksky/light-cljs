@@ -1,0 +1,5 @@
+7996410a124d478064087e402b9f8355a64be49da753b7e48fa7f51badb39261  /private/tmp/light-cljs-phase50/light-cljs-mimalloc
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase50/main-mimalloc.js
+676166a5732cbe758c92b5e7c32821b9cd947849e0c3a86018624b4e7f96fe26  /private/tmp/light-cljs-phase50/project/Cargo.toml
+cbcd84667b8dcf7ce31727e44b79f70dfe9bb56ead1ac7ebfdef8e4e1c465769  /private/tmp/light-cljs-phase50/project/Cargo.lock
+cc2af2cb0f17aeea22f65d1f35e47152cba598a73735d771405ebec03a2c6ee3  /private/tmp/light-cljs-phase50/project/src/main.rs

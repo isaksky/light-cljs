@@ -1,0 +1,5 @@
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+   Compiling rquickjs-sys v0.14.0 (/Users/admin/src/light-cljs/vendor/rquickjs-sys)
+   Compiling rquickjs-core v0.14.0
+   Compiling rquickjs v0.14.0
+    Finished `release` profile [optimized] target(s) in 19.02s

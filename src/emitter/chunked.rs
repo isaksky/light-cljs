@@ -447,6 +447,7 @@ pub(crate) fn emit_chunked(
             emitter.operand_scope(|emitter| {
                 emitter.chunk_forms(program.root, ExprContext::Return, entry, &sources, &forms)
             });
+            emitter.allow_js_local_assignment();
             bodies.push((
                 std::mem::take(&mut emitter.output),
                 std::mem::take(&mut emitter.raw_segments),

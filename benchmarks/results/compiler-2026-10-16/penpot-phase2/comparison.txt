@@ -1,0 +1,10 @@
+render 45.04 0.759 GiB
+main-none 481.76 2.977 GiB
+main-advanced 481.44 3.027 GiB
+shadow-release 60.38 4.323 GiB
+shadow-compile 31.8 2.122 GiB
+render speedup 4.773090586145648 memory-saving-percent 83.4156327832996 first-pass-speedup 1.3239342806394316
+main-none speedup 4.2707779807372965 memory-saving-percent 83.98521537922322 first-pass-speedup 1.0905637661906344
+main-advanced speedup 4.243519441674975 memory-saving-percent 83.69426657362867 first-pass-speedup 1.1818087404453308
+advanced/shadow-release 7.973501159324279
+none/shadow-dev 15.149685534591194

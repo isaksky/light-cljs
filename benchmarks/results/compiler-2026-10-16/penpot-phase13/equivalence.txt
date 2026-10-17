@@ -1,0 +1,2 @@
+render: application body matches phase6b byte for byte outside embedded runtime; complete output passes node --check.
+instrumented main: application body matches phase6b byte for byte outside embedded runtime; complete output passes node --check.

@@ -7,7 +7,7 @@ use crate::form_bridge::{BridgeState, ConversionLimits, FORM_BRIDGE_VERSION};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use host_clock::Instant;
 use rquickjs::allocator::{Allocator, RustAllocator};
-use rquickjs::{Array, CatchResultExt, Context, Ctx, Function, Runtime};
+use rquickjs::{Array, CatchResultExt, Context, Ctx, Function, Object, Runtime};
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
 use std::{
@@ -54,7 +54,7 @@ mod host_clock {
 /// The shared runtime factory: `src/js_runtime.js` without its unit manifest
 /// headers (see [`crate::runtime_manifest`]).
 pub const RUNTIME_SOURCE: &str = crate::runtime_manifest::RUNTIME;
-static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+pub(crate) static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
 pub struct EvaluatorOptions {
@@ -174,13 +174,20 @@ impl ExecutionControl {
             .terminal
             .compare_exchange(0, 4, Ordering::Relaxed, Ordering::Relaxed);
     }
+    #[cfg(light_v8)]
+    pub(crate) fn memory_exhausted(&self) {
+        let _ = self
+            .0
+            .terminal
+            .compare_exchange(0, 5, Ordering::Relaxed, Ordering::Relaxed);
+    }
 }
 
 /// Opaque identity, valid only in its originating session, until release/drop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ValueId {
-    session: u64,
-    index: u64,
+    pub(crate) session: u64,
+    pub(crate) index: u64,
 }
 
 pub struct Evaluator {
@@ -270,7 +277,13 @@ impl Evaluator {
                 }},
                 inputProvider: (name, provider) => save(rt.core.readerInputProvider(name, provider)),
                 importForm: descriptor => save(bridge.decode(descriptor)),
-                importEnvironment: (descriptor, nodes, depth) => {{ const [value, snapshots] = bridge.decode(descriptor, [nodes, depth]); return [save(value), snapshots]; }},
+                importMacroForm: descriptor => save(bridge.decode(descriptor, null, true)),
+                macroArguments: (form, nodes, depth) => {{
+                  const [inputs, snapshots] = bridge.macroArguments(get(form), nodes, depth), ids = [];
+                  try {{ for (const value of inputs) ids.push(save(value)); return [ids, snapshots]; }}
+                  catch (error) {{ for (const id of ids) values.delete(id); throw error; }}
+                }},
+                importEnvironment: (descriptor, nodes, depth) => {{ const [value, snapshots, published] = bridge.decode(descriptor, [nodes, depth]); return [save(value), snapshots, published]; }},
                 exportForm: (id, nodes, depth) => bridge.encode(get(id), nodes, depth),
                 formServices: (one, all, nodes, depth) => rt.setMacroexpandServices({{macroexpand1: form => bridge.decode(one(bridge.encode(form, nodes, depth))), macroexpand: form => bridge.decode(all(bridge.encode(form, nodes, depth)))}}),
                 bridgeVersion: bridge.version,
@@ -285,6 +298,14 @@ impl Evaluator {
                   lastError = null;
                   try {{ const result = save((0, eval)(source)(rt)); hostDiagnostic = null; return result; }}
                   catch (error) {{ lastError = error; const message = exceptionMessage(error); if (message !== undefined) throw new Error(message); throw error; }}
+                }},
+                compilerFrontier: next => {{
+                  lastError = null;
+                  try {{
+                    if (next == null) globalThis.__lightLeaveCompilerFrontier();
+                    else globalThis.__lightEnterCompilerFrontier(next);
+                    hostDiagnostic = null;
+                  }} catch (error) {{ lastError = error; const message = exceptionMessage(error); if (message !== undefined) throw new Error(message); throw error; }}
                 }},
                 call: (id, ids) => {{
                   try {{ const result = save(Reflect.apply(get(id), null, ids.map(get))); hostDiagnostic = null; return result; }}
@@ -332,7 +353,7 @@ impl Evaluator {
                 inputCompact: () => rt.core.compilerInputCompact(),
                 print: id => {{ try {{ return rt.core.printForHost(get(id)); }} catch (error) {{ lastError = error; const message = rt.compilerExceptionMessage(error); if (message !== undefined) throw new Error(message); throw error; }} }},
                 validate: id => {{ get(id); }},
-                release: id => {{ get(id); values.delete(id); }},
+                release: id => {{ bridge.releaseMacroInput(get(id)); values.delete(id); }},
                 clear: clearValues
               }});
             }})();
@@ -392,6 +413,10 @@ impl Evaluator {
             ));
         }
         Ok(ActiveEvaluator {
+            services: ctx
+                .eval::<Object, _>("__lightEvaluator")
+                .catch(&ctx)
+                .map_err(|error| EvalError(error.to_string()))?,
             ctx,
             control: &self.control,
             generation: self.generation,
@@ -758,6 +783,7 @@ impl Evaluator {
                 }
                 let call = HostCall {
                     active: ActiveEvaluator {
+                        services: ctx.eval("__lightEvaluator")?,
                         ctx: ctx.clone(),
                         control: &control,
                         generation,
@@ -896,13 +922,97 @@ impl Evaluator {
         self.runtime.memory_usage().memory_used_size
     }
 }
+pub(crate) fn compiler_root_source(
+    name: &str,
+    unit: Option<usize>,
+    once: bool,
+    location: &str,
+    test: Option<usize>,
+) -> String {
+    let escape = |text: &str| {
+        text.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+    };
+    format!(
+        "rt => globalThis.__lightRegisterUnit(\"{}\",{}, {once}, \"{}\", {})",
+        escape(name),
+        unit.map_or("null".into(), |n| n.to_string()),
+        escape(location),
+        test.map_or("null".into(), |n| n.to_string())
+    )
+}
 /// Common macro operations at either an outer boundary or an active callback.
 pub trait MacroEvaluator {
     fn control(&self) -> ExecutionControl;
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError>;
+    fn register_compiler_root(
+        &self,
+        name: &str,
+        unit: Option<usize>,
+        once: bool,
+        location: &str,
+        test: Option<usize>,
+    ) -> Result<(), EvalError> {
+        let value = self.evaluate_unit(&compiler_root_source(name, unit, once, location, test))?;
+        self.release(value)
+    }
+    /// Execute all namespace registrations in order. Engines may cache the
+    /// compiled chunks, but must execute every registration on every call.
+    fn evaluate_registration(
+        &self,
+        source: &str,
+        _chunks: &[(String, std::ops::Range<usize>)],
+    ) -> Result<(), EvalError> {
+        let value = self.evaluate_unit(&format!("rt => {{ {source} return null; }}"))?;
+        self.release(value)
+    }
+    /// Enter a source declaration view, or restore its caller's view with None.
+    /// The default preserves compatibility with external evaluator adapters.
+    fn compiler_frontier(&self, next: Option<usize>) -> Result<(), EvalError> {
+        let source = match next {
+            Some(next) => format!("rt => globalThis.__lightEnterCompilerFrontier({next})"),
+            None => "rt => globalThis.__lightLeaveCompilerFrontier()".into(),
+        };
+        let value = self.evaluate_unit(&source)?;
+        self.release(value)
+    }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError>;
     fn import_form(&self, form: &Form, limits: ConversionLimits) -> Result<ValueId, EvalError>;
     fn import_data(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError>;
+    /// Begin a call input batch. Native evaluators keep its decoded graph until
+    /// arguments are prepared or the input is released; adapters may use the
+    /// ordinary independent-import path below.
+    fn import_macro_form(
+        &self,
+        form: &Form,
+        limits: ConversionLimits,
+    ) -> Result<ValueId, EvalError> {
+        self.import_form(form, limits)
+    }
+    /// Prepare arguments from the matching call after importing its environment.
+    /// Returned IDs are owned by the caller, including when a later call fails.
+    fn macro_arguments(
+        &self,
+        _form: ValueId,
+        call: &Form,
+        limits: ConversionLimits,
+    ) -> Result<Vec<ValueId>, EvalError> {
+        let mut values = Vec::new();
+        for argument in call.children().iter().skip(1) {
+            match self.import_form(argument, limits) {
+                Ok(value) => values.push(value),
+                Err(error) => {
+                    for value in values {
+                        let _ = self.release(value);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(values)
+    }
     fn import_environment(
         &self,
         data: &Datum,
@@ -926,11 +1036,32 @@ impl MacroEvaluator for Evaluator {
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
         Evaluator::evaluate_unit(self, source)
     }
+    fn compiler_frontier(&self, next: Option<usize>) -> Result<(), EvalError> {
+        self.with_active(|active| active.compiler_frontier(next))
+    }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
         Evaluator::call(self, function, arguments)
     }
     fn import_form(&self, form: &Form, limits: ConversionLimits) -> Result<ValueId, EvalError> {
         Evaluator::import_form(self, form, limits)
+    }
+    fn import_macro_form(
+        &self,
+        form: &Form,
+        limits: ConversionLimits,
+    ) -> Result<ValueId, EvalError> {
+        self.with_active(|active| {
+            active.bridge.borrow_mut().retain(form);
+            active.import_data_with_service(&form.data(), limits, "importMacroForm")
+        })
+    }
+    fn macro_arguments(
+        &self,
+        form: ValueId,
+        _call: &Form,
+        limits: ConversionLimits,
+    ) -> Result<Vec<ValueId>, EvalError> {
+        self.with_active(|active| active.macro_arguments(form, limits))
     }
     fn import_data(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {
         Evaluator::import_data(self, data, limits)
@@ -954,15 +1085,23 @@ impl MacroEvaluator for Evaluator {
                     .encode_environment(&ctx, data, &self.control, limits)?;
             let import: Function = ctx.eval("__lightEvaluator.importEnvironment")?;
             let result: Array = import.call((descriptor, limits.nodes, limits.depth))?;
-            let snapshots: Array = result.get(1)?;
-            for snapshot in snapshots.iter::<Array>() {
-                self.bridge
-                    .borrow_mut()
-                    .decode(snapshot?, &self.control, limits, true)?;
-            }
+            let index = result.get(0)?;
+            let snapshot = (|| {
+                let snapshots: Array = result.get(1)?;
+                for snapshot in snapshots.iter::<Array>() {
+                    self.bridge
+                        .borrow_mut()
+                        .decode(snapshot?, &self.control, limits, true)?;
+                }
+                if !result.get::<bool>(2)? {
+                    self.bridge.borrow_mut().reset_environment_children();
+                }
+                Ok(())
+            })();
+            snapshot.map_err(|error| release_failed_import(&ctx, index, error))?;
             Ok(ValueId {
                 session: self.generation,
-                index: result.get(0)?,
+                index,
             })
         });
         self.bridge.borrow_mut().importing_environment = false;
@@ -991,11 +1130,35 @@ impl MacroEvaluator for ActiveEvaluator<'_, '_> {
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
         ActiveEvaluator::evaluate_unit(self, source)
     }
+    fn compiler_frontier(&self, next: Option<usize>) -> Result<(), EvalError> {
+        // A frontier transition has no result to retain and no source to parse.
+        // Keep the normal control/error boundary, including compiler reentry.
+        self.enter(|_| {
+            let f: Function = self.services.get("compilerFrontier")?;
+            f.call((next,))
+        })
+    }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
         ActiveEvaluator::call(self, function, arguments)
     }
     fn import_form(&self, form: &Form, limits: ConversionLimits) -> Result<ValueId, EvalError> {
         ActiveEvaluator::import_form(self, form, limits)
+    }
+    fn import_macro_form(
+        &self,
+        form: &Form,
+        limits: ConversionLimits,
+    ) -> Result<ValueId, EvalError> {
+        self.bridge.borrow_mut().retain(form);
+        self.import_data_with_service(&form.data(), limits, "importMacroForm")
+    }
+    fn macro_arguments(
+        &self,
+        form: ValueId,
+        _call: &Form,
+        limits: ConversionLimits,
+    ) -> Result<Vec<ValueId>, EvalError> {
+        ActiveEvaluator::macro_arguments(self, form, limits)
     }
     fn import_data(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {
         ActiveEvaluator::import_data(self, data, limits)
@@ -1017,17 +1180,25 @@ impl MacroEvaluator for ActiveEvaluator<'_, '_> {
                 self.bridge
                     .borrow_mut()
                     .encode_environment(&ctx, data, self.control, limits)?;
-            let import: Function = ctx.eval("__lightEvaluator.importEnvironment")?;
+            let import: Function = self.services.get("importEnvironment")?;
             let result: Array = import.call((descriptor, limits.nodes, limits.depth))?;
-            let snapshots: Array = result.get(1)?;
-            for snapshot in snapshots.iter::<Array>() {
-                self.bridge
-                    .borrow_mut()
-                    .decode(snapshot?, self.control, limits, true)?;
-            }
+            let index = result.get(0)?;
+            let snapshot = (|| {
+                let snapshots: Array = result.get(1)?;
+                for snapshot in snapshots.iter::<Array>() {
+                    self.bridge
+                        .borrow_mut()
+                        .decode(snapshot?, self.control, limits, true)?;
+                }
+                if !result.get::<bool>(2)? {
+                    self.bridge.borrow_mut().reset_environment_children();
+                }
+                Ok(())
+            })();
+            snapshot.map_err(|error| release_failed_import(&ctx, index, error))?;
             Ok(ValueId {
                 session: self.generation,
-                index: result.get(0)?,
+                index,
             })
         });
         self.bridge.borrow_mut().importing_environment = false;
@@ -1053,11 +1224,43 @@ impl MacroEvaluator for ActiveEvaluator<'_, '_> {
 /// Nested compiler services must use this handle instead of entering Context::with.
 pub struct ActiveEvaluator<'a, 'js> {
     ctx: Ctx<'js>,
+    // Borrow the immutable service table for this active scope. Nested compiler
+    // work can use it without reparsing a JS expression for every operation.
+    // No Persistent root or engine value survives the scoped context lifetime.
+    services: Object<'js>,
     control: &'a ExecutionControl,
     generation: u64,
     bridge: &'a Rc<RefCell<BridgeState>>,
     preserve_language_errors: bool,
 }
+
+/// An import owns its temporary roots until canonical validation succeeds and
+/// hands its ID to the caller. Preserve a pending JS exception across cleanup;
+/// a terminal engine failure can prevent release, but ordinary errors cannot
+/// keep an unreachable imported value rooted for the rest of the session.
+fn release_failed_import(ctx: &Ctx<'_>, index: u64, error: rquickjs::Error) -> rquickjs::Error {
+    release_failed_imports(ctx, &[index], error)
+}
+fn release_failed_imports(
+    ctx: &Ctx<'_>,
+    indices: &[u64],
+    error: rquickjs::Error,
+) -> rquickjs::Error {
+    let exception = error.is_exception().then(|| ctx.catch());
+    for index in indices {
+        let released = ctx
+            .eval::<Function, _>("__lightEvaluator.release")
+            .and_then(|release| release.call::<_, ()>((*index,)));
+        if released.is_err() {
+            let _ = ctx.catch();
+        }
+    }
+    if let Some(exception) = exception {
+        let _ = ctx.throw(exception);
+    }
+    error
+}
+
 impl<'js> ActiveEvaluator<'_, 'js> {
     pub fn control(&self) -> ExecutionControl {
         self.control.clone()
@@ -1066,7 +1269,9 @@ impl<'js> ActiveEvaluator<'_, 'js> {
         self.control.poll()?;
         let result = f(self.ctx.clone())
             .and_then(|value| {
-                self.ctx.eval::<(), _>("__lightEvaluator.checkBridge()")?;
+                self.services
+                    .get::<_, Function>("checkBridge")?
+                    .call::<_, ()>(())?;
                 Ok(value)
             })
             .catch(&self.ctx)
@@ -1094,8 +1299,8 @@ impl<'js> ActiveEvaluator<'_, 'js> {
     }
     /// Execute a compiler unit produced by emit_js_unit against this heap's runtime.
     pub fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
-        let index = self.enter(|ctx| {
-            let f: Function = ctx.eval("__lightEvaluator.evaluate")?;
+        let index = self.enter(|_| {
+            let f: Function = self.services.get("evaluate")?;
             f.call((source,))
         })?;
         Ok(ValueId {
@@ -1119,8 +1324,8 @@ impl<'js> ActiveEvaluator<'_, 'js> {
             .iter()
             .map(|id| self.check(*id))
             .collect::<Result<Vec<_>, _>>()?;
-        let index = self.enter(|ctx| {
-            let f: Function = ctx.eval("__lightEvaluator.call")?;
+        let index = self.enter(|_| {
+            let f: Function = self.services.get("call")?;
             f.call((function, arguments))
         })?;
         Ok(ValueId {
@@ -1130,22 +1335,18 @@ impl<'js> ActiveEvaluator<'_, 'js> {
     }
     pub(crate) fn bind(&self, name: &str, id: ValueId, core: bool) -> Result<(), EvalError> {
         let id = self.check(id)?;
-        self.enter(|ctx| {
-            let f: Function = ctx.eval(if core {
-                "__lightEvaluator.coreBinding"
-            } else {
-                "__lightEvaluator.bind"
-            })?;
+        self.enter(|_| {
+            let f: Function = self
+                .services
+                .get(if core { "coreBinding" } else { "bind" })?;
             f.call((name, id))
         })
     }
     pub(crate) fn lookup(&self, name: &str, core: bool) -> Result<ValueId, EvalError> {
-        let index = self.enter(|ctx| {
-            let f: Function = ctx.eval(if core {
-                "__lightEvaluator.coreLookup"
-            } else {
-                "__lightEvaluator.lookup"
-            })?;
+        let index = self.enter(|_| {
+            let f: Function = self
+                .services
+                .get(if core { "coreLookup" } else { "lookup" })?;
             f.call((name,))
         })?;
         Ok(ValueId {
@@ -1155,29 +1356,29 @@ impl<'js> ActiveEvaluator<'_, 'js> {
     }
     pub fn number(&self, id: ValueId) -> Result<f64, EvalError> {
         let id = self.check(id)?;
-        self.enter(|ctx| {
-            let f: Function = ctx.eval("__lightEvaluator.number")?;
+        self.enter(|_| {
+            let f: Function = self.services.get("number")?;
             f.call((id,))
         })
     }
     pub fn string(&self, id: ValueId) -> Result<String, EvalError> {
         let id = self.check(id)?;
-        self.enter(|ctx| {
-            let f: Function = ctx.eval("__lightEvaluator.string")?;
+        self.enter(|_| {
+            let f: Function = self.services.get("string")?;
             f.call((id,))
         })
     }
     pub fn print(&self, id: ValueId) -> Result<String, EvalError> {
         let id = self.check(id)?;
-        self.enter(|ctx| {
-            let f: Function = ctx.eval("__lightEvaluator.print")?;
+        self.enter(|_| {
+            let f: Function = self.services.get("print")?;
             f.call((id,))
         })
     }
     pub fn release(&self, id: ValueId) -> Result<(), EvalError> {
         let id = self.check(id)?;
-        self.enter(|ctx| {
-            let f: Function = ctx.eval("__lightEvaluator.release")?;
+        self.enter(|_| {
+            let f: Function = self.services.get("release")?;
             f.call((id,))
         })
     }
@@ -1191,20 +1392,62 @@ impl<'js> ActiveEvaluator<'_, 'js> {
         data: &Datum,
         limits: ConversionLimits,
     ) -> Result<ValueId, EvalError> {
+        self.import_data_with_service(data, limits, "importForm")
+    }
+    fn macro_arguments(
+        &self,
+        form: ValueId,
+        limits: ConversionLimits,
+    ) -> Result<Vec<ValueId>, EvalError> {
+        let form = self.check(form)?;
+        let indices: Vec<u64> = self.enter(|ctx| {
+            let import: Function = self.services.get("macroArguments")?;
+            let result: Array = import.call((form, limits.nodes, limits.depth))?;
+            let indices: Vec<u64> = result.get(0)?;
+            let snapshot: rquickjs::Result<()> = (|| {
+                let snapshots: Array = result.get(1)?;
+                for item in snapshots.iter::<Array>() {
+                    self.bridge
+                        .borrow_mut()
+                        .decode(item?, self.control, limits, true)?;
+                }
+                Ok(())
+            })();
+            snapshot.map_err(|error| release_failed_imports(&ctx, &indices, error))?;
+            Ok(indices)
+        })?;
+        Ok(indices
+            .into_iter()
+            .map(|index| ValueId {
+                session: self.generation,
+                index,
+            })
+            .collect())
+    }
+    fn import_data_with_service(
+        &self,
+        data: &Datum,
+        limits: ConversionLimits,
+        service: &str,
+    ) -> Result<ValueId, EvalError> {
         let index = self.enter(|ctx| {
             let descriptor = self
                 .bridge
                 .borrow_mut()
                 .encode(&ctx, data, self.control, limits)?;
-            let f: Function = ctx.eval("__lightEvaluator.importForm")?;
+            let f: Function = self.services.get(service)?;
             let index: u64 = f.call((descriptor,))?;
             // Snapshot canonical payloads so mutable host literals are never reused
             // after modification. Reader lexical distinctions remain in originals.
-            let export: Function = ctx.eval("__lightEvaluator.exportForm")?;
-            let snapshot: Array = export.call((index, limits.nodes, limits.depth))?;
-            self.bridge
-                .borrow_mut()
-                .decode(snapshot, self.control, limits, true)?;
+            let snapshot = (|| {
+                let export: Function = self.services.get("exportForm")?;
+                let snapshot: Array = export.call((index, limits.nodes, limits.depth))?;
+                self.bridge
+                    .borrow_mut()
+                    .decode(snapshot, self.control, limits, true)?;
+                Ok(())
+            })();
+            snapshot.map_err(|error| release_failed_import(&ctx, index, error))?;
             Ok(index)
         })?;
         Ok(ValueId {
@@ -1214,8 +1457,8 @@ impl<'js> ActiveEvaluator<'_, 'js> {
     }
     pub fn export_data(&self, id: ValueId, limits: ConversionLimits) -> Result<Datum, EvalError> {
         let id = self.check(id)?;
-        self.enter(|ctx| {
-            let f: Function = ctx.eval("__lightEvaluator.exportForm")?;
+        self.enter(|_| {
+            let f: Function = self.services.get("exportForm")?;
             let descriptor: Array = f.call((id, limits.nodes, limits.depth))?;
             self.bridge
                 .borrow_mut()
@@ -1381,6 +1624,508 @@ mod active_tests {
     use crate::compiler_data::DatumKind;
 
     #[test]
+    fn protocol_arity_cache_does_not_inherit_array_properties() {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let result = evaluator
+            .evaluate_js(
+                r#"(() => {
+            const value = rt.extendInstance({}, [['ILookup', 0],
+                ['ILookup/-lookup', 2, () => 20], ['ILookup/-lookup', 3, () => 30]], true);
+            const previous = Object.getOwnPropertyDescriptor(Array.prototype, '3');
+            try {
+                Object.defineProperty(Array.prototype, '3', {
+                    value: 'wrong-slot', configurable: true, writable: true
+                });
+                return rt.core.get(value, 'key', 'fallback');
+            } finally {
+                if (previous) Object.defineProperty(Array.prototype, '3', previous);
+                else delete Array.prototype[3];
+            }
+        })()"#,
+            )
+            .unwrap();
+        assert_eq!(evaluator.number(result).unwrap(), 30.0);
+        evaluator.release(result).unwrap();
+    }
+
+    #[test]
+    fn frontier_service_preserves_errors_dynamic_lookup_and_cancellation() {
+        let evaluator = Evaluator::interactive(EvaluatorOptions::default()).unwrap();
+        let setup = evaluator.evaluate_js(r#"(() => {
+            globalThis.frontierEvents = [];
+            globalThis.frontierError = rt.core.exInfo('frontier failed', rt.core.hashMap('code', 42));
+            globalThis.__lightEnterCompilerFrontier = next => {
+                frontierEvents.push(next);
+                if (next === 7) throw frontierError;
+                return {unneeded: new Array(10000)};
+            };
+            globalThis.__lightLeaveCompilerFrontier = () => frontierEvents.push('leave');
+        })()"#).unwrap();
+        evaluator.release(setup).unwrap();
+        evaluator.compiler_frontier(Some(0)).unwrap();
+        evaluator
+            .with_active(|active| active.compiler_frontier(None))
+            .unwrap();
+        let error = evaluator.compiler_frontier(Some(7)).unwrap_err();
+        assert!(error.0.contains("frontier failed"), "{error}");
+        evaluator
+            .enter(|ctx| {
+                assert!(ctx.eval::<bool, _>("__lightEvaluator.errorValue() === frontierError")?);
+                Ok(())
+            })
+            .unwrap();
+        let change = evaluator
+            .evaluate_js(
+                "globalThis.__lightEnterCompilerFrontier = next => frontierEvents.push(next + 100)",
+            )
+            .unwrap();
+        evaluator.release(change).unwrap();
+        evaluator.compiler_frontier(Some(3)).unwrap();
+        evaluator
+            .enter(|ctx| {
+                assert!(ctx.eval::<bool, _>("__lightEvaluator.errorValue() === null")?);
+                assert_eq!(
+                    ctx.eval::<String, _>("JSON.stringify(frontierEvents)")?,
+                    "[0,\"leave\",7,103]"
+                );
+                Ok(())
+            })
+            .unwrap();
+        evaluator.control().cancel();
+        assert!(
+            evaluator
+                .compiler_frontier(None)
+                .unwrap_err()
+                .0
+                .contains("cancelled")
+        );
+    }
+
+    #[test]
+    fn frontier_service_can_reenter_an_active_compilation() {
+        let evaluator = Rc::new(Evaluator::new(EvaluatorOptions::default()).unwrap());
+        let weak = Rc::downgrade(&evaluator);
+        evaluator
+            .install_unit_service("nestedFrontier", move |ctx, next| {
+                let evaluator = weak.upgrade().unwrap();
+                let active = evaluator.active(ctx).map_err(|e| e.0)?;
+                active
+                    .compiler_frontier(Some(next.try_into().unwrap()))
+                    .map_err(|e| e.0)?;
+                active.compiler_frontier(None).map_err(|e| e.0)?;
+                Ok("nested".into())
+            })
+            .unwrap();
+        let setup = evaluator
+            .evaluate_js(
+                r#"(() => {
+            globalThis.frontierEvents = [];
+            globalThis.__lightEnterCompilerFrontier = next => {
+                frontierEvents.push(next);
+                if (next > 0) nestedFrontier(next - 1);
+            };
+            globalThis.__lightLeaveCompilerFrontier = () => frontierEvents.push('leave');
+        })()"#,
+            )
+            .unwrap();
+        evaluator.release(setup).unwrap();
+        evaluator.compiler_frontier(Some(2)).unwrap();
+        evaluator.compiler_frontier(None).unwrap();
+        let result = evaluator
+            .evaluate_js("JSON.stringify(frontierEvents)")
+            .unwrap();
+        assert_eq!(
+            evaluator.string(result).unwrap(),
+            "[2,1,0,\"leave\",\"leave\",\"leave\"]"
+        );
+        evaluator.release(result).unwrap();
+        assert_eq!(Rc::strong_count(&evaluator), 1);
+    }
+
+    #[test]
+    fn frontier_replay_includes_an_earlier_bundle_initialized_by_a_proxy_patch() {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let setup = evaluator
+            .evaluate_unit("rt => { globalThis.__lightRuntimeForCompiler = rt; }")
+            .unwrap();
+        evaluator.release(setup).unwrap();
+        let registry = evaluator
+            .evaluate_js(include_str!("compiler_roots.js"))
+            .unwrap();
+        evaluator.release(registry).unwrap();
+        let result = evaluator.evaluate_js(r#"(() => {
+            const a = {}, b = {}, rawC = {};
+            let armed = false, calls = 0;
+            const c = new Proxy(rawC, {deleteProperty(target, key) {
+                if (armed) {
+                    armed = false;
+                    void __lightCompilerRoots.b;
+                }
+                return Reflect.deleteProperty(target, key);
+            }});
+            for (const [name, value, number] of [['a', a, 1], ['b', b, 2], ['c', c, 3]]) {
+                __lightRegisterBundle([name], rt => {
+                    calls++;
+                    rt.extendInstance(value, [['ICounted', 0], ['ICounted/-count', 1, () => number]], true);
+                    __lightCompilerBundleProducts[name] = value;
+                }, [['probe', '_', name]], 'probe');
+            }
+            void __lightCompilerRoots.c;
+            void __lightCompilerRoots.a;
+            armed = true;
+            __lightEnterCompilerFrontier(0);
+            const absent = !Object.hasOwn(b, 'cljs$core$ICounted$_count$arity$1');
+            __lightLeaveCompilerFrontier();
+            return JSON.stringify([absent, calls, rt.core.count(a), rt.core.count(b), rt.core.count(c)]);
+        })()"#).unwrap();
+        assert_eq!(evaluator.string(result).unwrap(), "[true,3,1,2,3]");
+        evaluator.release(result).unwrap();
+    }
+
+    #[test]
+    fn engine_maps_preserve_key_semantics_across_growth_and_deletion() {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let result = evaluator.evaluate_js(r#"(() => {
+            const keys = Array.from({length: 4096}, (_, i) => [i, {i}, Symbol(String(i))]).flat();
+            const map = new Map(keys.map((key, i) => [key, i]));
+            const weak = new WeakMap(keys.filter(key => typeof key === 'object').map(key => [key, key.i]));
+            for (let i = 0; i < keys.length; i++) {
+                if (map.get(keys[i]) !== i) throw Error('lost key ' + i);
+                if (typeof keys[i] === 'object' && weak.get(keys[i]) !== keys[i].i) throw Error('weak key');
+            }
+            for (let i = 0; i < keys.length; i += 3) map.delete(keys[i]);
+            let position = 0;
+            for (const [key, value] of map) {
+                while (position % 3 === 0) position++;
+                if (key !== keys[position] || value !== position++) throw Error('iteration order');
+            }
+            map.set(-0, 'zero'); map.set(0, 'updated');
+            map.set(NaN, 'nan'); map.set(Number('nan'), 'updated nan');
+            map.set(1n, 'bigint'); map.set(1, 'number'); map.set('1', 'string');
+            if (map.get(-0) !== 'updated' || map.get(NaN) !== 'updated nan' ||
+                map.get(BigInt('1')) !== 'bigint' || map.get(1.0) !== 'number' || map.get('1') !== 'string') throw Error('key equality');
+            const set = new Set([NaN, NaN, -0, 0, 1n, 1, '1']);
+            if (set.size !== 5 || !set.has(NaN) || !set.has(+0)) throw Error('set equality');
+            return true;
+        })()"#).unwrap();
+        assert_eq!(evaluator.print(result).unwrap(), "true");
+    }
+
+    #[test]
+    fn failed_macro_calls_release_their_imported_object_arguments() {
+        use crate::compiler_data::{DataBuilder, ExpansionOrigin, Name, Source};
+        let evaluator = Evaluator::interactive(EvaluatorOptions::default()).unwrap();
+        let function = evaluator
+            .evaluate_js("() => { throw new Error('expected failure'); }")
+            .unwrap();
+        let mut host = crate::MacroHost::new();
+        let form = host
+            .read_compiler_form(&Source::new("failed.cljs", "(explode [some-name])"))
+            .unwrap()
+            .unwrap();
+        let env = DataBuilder.map(&[]).unwrap();
+        let live = evaluator.bridge.borrow().live_provenance.clone();
+        for _ in 0..25 {
+            let error = host
+                .expand_javascript(
+                    &evaluator,
+                    function,
+                    &form,
+                    &env,
+                    ExpansionOrigin {
+                        macro_name: Name::new(Some("cljs.user"), "explode"),
+                        call: form.span(),
+                        definition: None,
+                        helpers: vec![],
+                    },
+                )
+                .unwrap_err();
+            assert!(error.contains("expected failure"), "{error}");
+        }
+        evaluator.collect_garbage();
+        assert_eq!(live.get(), 0, "failed calls must not pin their input forms");
+        evaluator.release(function).unwrap();
+    }
+
+    #[test]
+    fn shared_macro_arguments_restore_provenance_after_environment_import() {
+        use crate::compiler_data::{DataBuilder, Name, Origin, Source};
+        let c = DataBuilder;
+        let keyword = c.keyword(Name::new(None, "shared"));
+        let cases = [
+            (
+                Datum::new(DatumKind::Ratio {
+                    numerator: 3,
+                    denominator: 2,
+                }),
+                Datum::new(DatumKind::Double(1.5)),
+            ),
+            (
+                c.integer(9007199254740993),
+                Datum::new(DatumKind::Double(9007199254740992.0)),
+            ),
+            (Datum::new(DatumKind::Character(97)), c.string(vec![97])),
+            (
+                keyword.clone(),
+                keyword.with_metadata(
+                    c.map(&[(c.keyword(Name::new(None, "environment")), c.boolean(true))])
+                        .unwrap(),
+                ),
+            ),
+        ];
+        for (argument, environment) in cases {
+            let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            let source = Source::new("shared.cljs", "(identity value)");
+            let data = c
+                .list(&[c.symbol(Name::new(None, "identity")), argument.clone()])
+                .unwrap();
+            let form = Form::from_data(
+                data,
+                source.span(0..source.text().len()).unwrap(),
+                Origin::Source,
+            );
+            let limits = ConversionLimits::default();
+            let input = evaluator.import_macro_form(&form, limits).unwrap();
+            let env = evaluator.import_environment(&environment, limits).unwrap();
+            let access = evaluator
+                .evaluate_js("form => rt.core.nth(form, 1)")
+                .unwrap();
+            let naive = evaluator.call(access, &[input]).unwrap();
+            let stale = evaluator.export_data(naive, limits).unwrap();
+            assert_ne!(
+                stale.identity(),
+                argument.identity(),
+                "the naive shortcut must lose this input's provenance"
+            );
+            evaluator.release(naive).unwrap();
+            let arguments = evaluator.macro_arguments(input, &form, limits).unwrap();
+            assert_eq!(arguments.len(), 1);
+            let output = evaluator.export_data(arguments[0], limits).unwrap();
+            assert_eq!(
+                output.identity(),
+                argument.identity(),
+                "shared input must recover the exact original datum"
+            );
+            let same = evaluator
+                .evaluate_js("(form, argument) => rt.core.nth(form, 1) === argument")
+                .unwrap();
+            let result = evaluator.call(same, &[input, arguments[0]]).unwrap();
+            assert_eq!(evaluator.print(result).unwrap(), "true");
+            for value in [input, env, access, arguments[0], same, result] {
+                evaluator.release(value).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn failed_macro_environments_release_pending_input_graphs() {
+        use crate::compiler_data::{
+            CompilerLiteralKind, DataBuilder, ExpansionOrigin, Name, Source,
+        };
+        let evaluator = Evaluator::interactive(EvaluatorOptions::default()).unwrap();
+        let function = evaluator
+            .evaluate_js("(_form, _env, value) => value")
+            .unwrap();
+        let mut host = crate::MacroHost::new();
+        let form = host
+            .read_compiler_form(&Source::new("pending.cljs", "(identity [some-name])"))
+            .unwrap()
+            .unwrap();
+        let environment = Datum::new(DatumKind::CompilerLiteral {
+            kind: CompilerLiteralKind::Uuid,
+            payload: DataBuilder.string("not-valid".encode_utf16().collect::<Vec<_>>()),
+        });
+        let live = evaluator.bridge.borrow().live_provenance.clone();
+        for _ in 0..25 {
+            let error = host
+                .expand_javascript(
+                    &evaluator,
+                    function,
+                    &form,
+                    &environment,
+                    ExpansionOrigin {
+                        macro_name: Name::new(Some("cljs.user"), "identity"),
+                        call: form.span(),
+                        definition: None,
+                        helpers: vec![],
+                    },
+                )
+                .unwrap_err();
+            assert!(error.contains("invalid UUID"), "{error}");
+        }
+        evaluator.collect_garbage();
+        assert_eq!(
+            live.get(),
+            1,
+            "only the latest scalar provenance may remain"
+        );
+        evaluator.release(function).unwrap();
+        drop(evaluator);
+        assert_eq!(live.get(), 0);
+    }
+
+    #[test]
+    fn shared_macro_literals_are_constructed_once() {
+        use crate::compiler_data::{DataBuilder, ExpansionOrigin, Name, Source};
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let setup = evaluator.evaluate_js("(() => { const NativeDate = Date; globalThis.dateInputs = 0; globalThis.Date = class extends NativeDate { constructor(...args) { super(...args); dateInputs++; } }; return null; })()").unwrap();
+        evaluator.release(setup).unwrap();
+        let function = evaluator
+            .evaluate_js(
+                "(form, _env, value) => rt.core.nth(form, 1) === value && dateInputs === 1",
+            )
+            .unwrap();
+        let mut host = crate::MacroHost::new();
+        let form = host
+            .read_compiler_form(&Source::new(
+                "literal.cljs",
+                "(identity #inst \"2024-01-01T00:00:00.000Z\")",
+            ))
+            .unwrap()
+            .unwrap();
+        let result = host
+            .expand_javascript(
+                &evaluator,
+                function,
+                &form,
+                &DataBuilder.nil(),
+                ExpansionOrigin {
+                    macro_name: Name::new(Some("cljs.user"), "identity"),
+                    call: form.span(),
+                    definition: None,
+                    helpers: vec![],
+                },
+            )
+            .unwrap();
+        assert!(matches!(result.data().kind(), DatumKind::Boolean(true)));
+        evaluator.release(function).unwrap();
+    }
+
+    #[test]
+    fn failed_argument_snapshots_drop_the_pending_graph_and_partial_results() {
+        use crate::compiler_data::Source;
+        let evaluator = Evaluator::interactive(EvaluatorOptions::default()).unwrap();
+        let mut host = crate::MacroHost::new();
+        let form = host
+            .read_compiler_form(&Source::new(
+                "arguments.cljs",
+                "(identity [first] #js [second])",
+            ))
+            .unwrap()
+            .unwrap();
+        let mutate = evaluator
+            .evaluate_js("form => { rt.core.nth(form, 2).push(() => null); return null; }")
+            .unwrap();
+        let live = evaluator.bridge.borrow().live_provenance.clone();
+        let limits = ConversionLimits::default();
+        for _ in 0..25 {
+            let input = evaluator.import_macro_form(&form, limits).unwrap();
+            let result = evaluator.call(mutate, &[input]).unwrap();
+            evaluator.release(result).unwrap();
+            let error = evaluator.macro_arguments(input, &form, limits).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("Unsupported macro result function"),
+                "{error}"
+            );
+            evaluator.release(input).unwrap();
+        }
+        evaluator.collect_garbage();
+        assert_eq!(
+            live.get(),
+            0,
+            "failed preparation must not retain snapshots or descriptor graphs"
+        );
+        evaluator.release(mutate).unwrap();
+    }
+
+    #[test]
+    fn native_bridge_strings_preserve_every_utf16_code_unit_in_both_directions() {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let units: Vec<u16> = (0..=u16::MAX).collect();
+        let input = evaluator
+            .import_data(
+                &Datum::new(DatumKind::String(units.into())),
+                ConversionLimits::default(),
+            )
+            .unwrap();
+        let check = evaluator.evaluate_js("text => { for (let i = 0; i < 65536; i++) if (text.charCodeAt(i) !== i) throw Error('code unit ' + i); return text.length; }").unwrap();
+        let result = evaluator.call(check, &[input]).unwrap();
+        assert_eq!(evaluator.number(result).unwrap(), 65536.0);
+        // Independently constructed ropes exercise export without borrowed
+        // provenance restoring the original Rust text and hiding a bad copy.
+        let output = evaluator.evaluate_js("(() => { let text = ''; for (let i = 65535; i >= 0; i--) text += String.fromCharCode(i); return text; })()").unwrap();
+        let data = evaluator
+            .export_data(output, ConversionLimits::default())
+            .unwrap();
+        let DatumKind::String(text) = data.kind() else {
+            panic!("string");
+        };
+        assert_eq!(text.as_ref(), (0..=u16::MAX).rev().collect::<Vec<_>>());
+        for id in [input, check, result, output] {
+            evaluator.release(id).unwrap();
+        }
+    }
+
+    #[test]
+    fn native_bridge_name_components_and_empty_text_preserve_utf16() {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let output = evaluator
+            .evaluate_unit(
+                r#"rt => rt.core.vector(
+            "", rt.core.symbol("n\u0000\ud800", "k\udc00\ud83d\ude00"),
+            rt.core.keyword("n\u0000\ud800", "k\udc00\ud83d\ude00"))"#,
+            )
+            .unwrap();
+        let data = evaluator
+            .export_data(output, ConversionLimits::default())
+            .unwrap();
+        let entries = data.elements().unwrap();
+        assert!(matches!(entries[0].kind(), DatumKind::String(text) if text.is_empty()));
+        let name = crate::compiler_data::Name::from_utf16(
+            Some(&[110, 0, 0xd800]),
+            &[107, 0xdc00, 0xd83d, 0xde00],
+        );
+        assert!(matches!(entries[1].kind(), DatumKind::Symbol(n) if n == &name));
+        assert!(matches!(entries[2].kind(), DatumKind::Keyword(n) if n == &name));
+        let imported = evaluator
+            .import_data(&data, ConversionLimits::default())
+            .unwrap();
+        let check = evaluator.evaluate_unit(r#"rt => items => {
+            const a = rt.core.nth(items, 1), b = rt.core.nth(items, 2);
+            return rt.core.nth(items, 0) === "" && rt.core.namespace(a) === "n\u0000\ud800"
+              && rt.core.name(a) === "k\udc00\ud83d\ude00"
+              && rt.core.namespace(b) === "n\u0000\ud800" && rt.core.name(b) === rt.core.name(a) ? 1 : 0;
+        }"#).unwrap();
+        let result = evaluator.call(check, &[imported]).unwrap();
+        assert_eq!(evaluator.number(result).unwrap(), 1.0);
+        for id in [output, imported, check, result] {
+            evaluator.release(id).unwrap();
+        }
+    }
+
+    #[test]
+    fn native_bridge_unqualified_names_keep_a_null_namespace() {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let c = crate::compiler_data::DataBuilder;
+        let name = crate::compiler_data::Name::new(None, "readers");
+        for data in [c.symbol(name.clone()), c.keyword(name)] {
+            let input = evaluator
+                .import_data(&data, ConversionLimits::default())
+                .unwrap();
+            let check = evaluator
+                .evaluate_unit("rt => value => rt.core.namespace(value) === null ? 1 : 0")
+                .unwrap();
+            let result = evaluator.call(check, &[input]).unwrap();
+            assert_eq!(evaluator.number(result).unwrap(), 1.0);
+            for id in [input, check, result] {
+                evaluator.release(id).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn released_bridge_inputs_release_native_provenance() {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let c = crate::compiler_data::DataBuilder;
@@ -1420,6 +2165,65 @@ mod active_tests {
         assert_eq!(live.get(), 3);
         drop(evaluator);
         assert_eq!(live.get(), 0);
+    }
+
+    #[test]
+    fn failed_import_validation_releases_temporary_roots() {
+        let c = crate::compiler_data::DataBuilder;
+        // The engine can construct this UUID, but canonical validation rejects
+        // its payload after the value has been imported and assigned an ID.
+        let invalid_cases = [
+            (
+                crate::compiler_data::CompilerLiteralKind::Uuid,
+                "invalid UUID",
+            ),
+            (
+                crate::compiler_data::CompilerLiteralKind::Instant,
+                "invalid instant",
+            ),
+        ];
+        for (kind, message) in invalid_cases {
+            let invalid = Datum::new(DatumKind::CompilerLiteral {
+                kind,
+                payload: c.string("not-valid".encode_utf16().collect::<Vec<_>>()),
+            });
+            for mode in 0..3 {
+                let evaluator = Evaluator::interactive(EvaluatorOptions::default()).unwrap();
+                let live = evaluator.bridge.borrow().live_provenance.clone();
+                let data = if mode == 0 {
+                    c.vector(std::slice::from_ref(&invalid)).unwrap()
+                } else {
+                    c.map(&[(
+                        c.keyword(crate::compiler_data::Name::new(None, "invalid")),
+                        invalid.clone(),
+                    )])
+                    .unwrap()
+                };
+                for _ in 0..100 {
+                    let result = match mode {
+                        0 => evaluator.import_data(&data, ConversionLimits::default()),
+                        1 => evaluator.import_environment(&data, ConversionLimits::default()),
+                        _ => evaluator.with_active(|active| {
+                            active.import_environment(&data, ConversionLimits::default())
+                        }),
+                    };
+                    assert!(result.unwrap_err().to_string().contains(message));
+                }
+                evaluator.collect_garbage();
+                assert_eq!(
+                    live.get(),
+                    1,
+                    "only the latest string provenance survives, mode {mode}"
+                );
+                let valid = evaluator
+                    .import_data(&c.vector(&[]).unwrap(), ConversionLimits::default())
+                    .unwrap();
+                assert_eq!(evaluator.print(valid).unwrap(), "[]");
+                evaluator.release(valid).unwrap();
+                drop(evaluator);
+                assert_eq!(live.get(), 0);
+            }
+        }
     }
 
     #[test]
@@ -1495,6 +2299,142 @@ mod active_tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn environment_child_eviction_preserves_values_and_metadata_order() {
+        use crate::compiler_data::{DataBuilder, Name};
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let c = DataBuilder;
+        let key = |name| c.keyword(Name::new(None, name));
+        let rows = (0..512)
+            .map(|i| c.vector(&[c.integer(i)]).unwrap())
+            .collect::<Vec<_>>();
+        let inspect = evaluator
+            .evaluate_js(
+                r#"env => {
+                  const value = rt.core.get(env, rt.core.keyword(null, 'values'));
+                  const read = xs => Array.from({length: rt.core.count(xs)},
+                    (_, i) => rt.core.nth(rt.core.nth(xs, i), 0));
+                  return JSON.stringify([read(value),
+                    read(rt.core.get(rt.core.meta(value), rt.core.keyword(null, 'rows')))]);
+                }"#,
+            )
+            .unwrap();
+        // More children than cache slots, with metadata encoded before the
+        // payload but decoded after it. Later imports reuse both old and new
+        // children in a different order. Observe JS values directly: restoring
+        // borrowed Rust provenance alone could hide a wrongly resolved slot.
+        for round in 0..4 {
+            let mut values = (round * 71..round * 71 + 192).collect::<Vec<_>>();
+            if round % 2 == 1 {
+                values.reverse();
+            }
+            let metadata = (0..160)
+                .map(|i| (i * 3 + round * 43) % rows.len())
+                .collect::<Vec<_>>();
+            let vector = |ids: &[usize]| {
+                c.vector(&ids.iter().map(|&i| rows[i].clone()).collect::<Vec<_>>())
+                    .unwrap()
+            };
+            let value =
+                vector(&values).with_metadata(c.map(&[(key("rows"), vector(&metadata))]).unwrap());
+            let data = c.map(&[(key("values"), value)]).unwrap();
+            let input = evaluator
+                .import_environment(&data, ConversionLimits::default())
+                .unwrap();
+            let output = evaluator.call(inspect, &[input]).unwrap();
+            let numbers = |ids: &[usize]| {
+                ids.iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            assert_eq!(
+                evaluator.string(output).unwrap(),
+                format!("[[{}],[{}]]", numbers(&values), numbers(&metadata))
+            );
+            evaluator.release(output).unwrap();
+            evaluator.release(input).unwrap();
+        }
+    }
+
+    #[test]
+    fn discarded_environment_children_preserve_spelling_when_reused() {
+        use crate::compiler_data::{DataBuilder, Name};
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let c = DataBuilder;
+        let key = |name| c.keyword(Name::new(None, name));
+        let hidden = c
+            .vector(&[
+                Datum::new(DatumKind::Ratio {
+                    numerator: 3,
+                    denominator: 2,
+                }),
+                c.integer(9007199254740993),
+            ])
+            .unwrap();
+        // The first value is decoded but discarded by the duplicate map key.
+        // It has no canonical snapshot and must not become a reusable child.
+        let duplicates = c
+            .map(&[(key("same"), hidden.clone()), (key("same"), c.nil())])
+            .unwrap();
+        let warm = c.map(&[(key("discarded"), duplicates)]).unwrap();
+        let limits = ConversionLimits::default();
+        let value = evaluator.import_environment(&warm, limits).unwrap();
+        assert_eq!(evaluator.print(value).unwrap(), "{:discarded {:same nil}}");
+        evaluator.release(value).unwrap();
+        let data = c.map(&[(key("kept"), hidden)]).unwrap();
+        let value = evaluator.import_environment(&data, limits).unwrap();
+        let exported = evaluator.export_data(value, limits).unwrap();
+        let kept = exported.get(&key("kept")).unwrap().unwrap();
+        let DatumKind::Collection { children, .. } = kept.kind() else {
+            panic!("vector")
+        };
+        assert!(matches!(
+            children[0].kind(),
+            DatumKind::Ratio {
+                numerator: 3,
+                denominator: 2
+            }
+        ));
+        assert!(matches!(
+            children[1].kind(),
+            DatumKind::Integer(9007199254740993)
+        ));
+        evaluator.release(value).unwrap();
+    }
+
+    #[test]
+    fn reused_environment_children_still_count_against_node_and_depth_limits() {
+        use crate::compiler_data::{DataBuilder, Name};
+        let c = DataBuilder;
+        let key = c.keyword(Name::new(None, "values"));
+        let child = c.vector(&[c.integer(1), c.integer(2)]).unwrap();
+        let warm = c
+            .map(&[(key.clone(), c.vector(std::slice::from_ref(&child)).unwrap())])
+            .unwrap();
+        let changed = c
+            .map(&[(key, c.vector(&[child, c.integer(9)]).unwrap())])
+            .unwrap();
+        for limits in [
+            ConversionLimits {
+                nodes: 6,
+                depth: 128,
+            },
+            ConversionLimits {
+                nodes: 100,
+                depth: 3,
+            },
+        ] {
+            let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            let value = evaluator
+                .import_environment(&warm, ConversionLimits::default())
+                .unwrap();
+            evaluator.release(value).unwrap();
+            let error = evaluator.import_environment(&changed, limits).unwrap_err();
+            assert!(error.to_string().contains("conversion limit"), "{error}");
+        }
     }
 
     #[test]

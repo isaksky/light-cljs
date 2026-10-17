@@ -1,0 +1,193 @@
+diff --git a/src/emitter.rs b/src/emitter.rs
+index e6d4cf3..2b1dbdf 100644
+--- a/src/emitter.rs
++++ b/src/emitter.rs
+@@ -259,6 +259,8 @@ struct Interactive<'a> {
+ /// report lists every runtime name the output reads. With `mapped` the output
+ /// also has a source map. With `interactive` the output is an interactive
+ /// unit ([`Interactive`]) instead of an expression defining its own globals.
++// Application and compiler unit emission share these explicit mode arguments.
++#[allow(clippy::too_many_arguments)]
+ fn emit_js_mode(
+     program: &Program,
+     shared: Option<&str>,
+diff --git a/src/v8_bridge.rs b/src/v8_bridge.rs
+index c821e26..3bd87db 100644
+--- a/src/v8_bridge.rs
++++ b/src/v8_bridge.rs
+@@ -291,6 +291,8 @@ impl BridgeState {
+         put(scope, result, 6, updates.into())?;
+         Ok(result)
+     }
++    // Recursion threads the scope, limits, provenance and child-cache state together.
++    #[allow(clippy::too_many_arguments)]
+     fn encode_node<'s>(
+         &mut self,
+         scope: &mut PinScope<'s, '_>,
+diff --git a/src/v8_evaluator.rs b/src/v8_evaluator.rs
+index c689f4f..9604e0a 100644
+--- a/src/v8_evaluator.rs
++++ b/src/v8_evaluator.rs
+@@ -246,10 +246,11 @@ impl V8Evaluator {
+         let pending = state.interrupt_pending.clone();
+         let watchdog = std::thread::spawn(move || {
+             while wait.recv_timeout(Duration::from_micros(100)).is_err() {
+-                if active.load(Ordering::Relaxed) != 0 && !pending.swap(true, Ordering::Relaxed) {
+-                    if !handle.request_interrupt(interrupt, std::ptr::null_mut()) {
+-                        break;
+-                    }
++                if active.load(Ordering::Relaxed) != 0
++                    && !pending.swap(true, Ordering::Relaxed)
++                    && !handle.request_interrupt(interrupt, std::ptr::null_mut())
++                {
++                    break;
+                 }
+             }
+         });
+@@ -366,10 +367,10 @@ impl Active<'_, '_, '_> {
+             }
+         };
+         self.state.active.fetch_sub(1, Ordering::Relaxed);
+-        if let Err(error) = self.state.control.poll() {
+-            if result.is_ok() || !error.0.contains("invalidated") {
+-                return Err(error);
+-            }
++        if let Err(error) = self.state.control.poll()
++            && (result.is_ok() || !error.0.contains("invalidated"))
++        {
++            return Err(error);
+         }
+         if let Err(error) = &result {
+             self.state.remember_error(error);
+@@ -698,11 +699,29 @@ fn compile_unit(
+     args: v8::FunctionCallbackArguments,
+     mut result: v8::ReturnValue,
+ ) {
+-    let state = scope.get_slot::<Rc<State>>().unwrap().clone();
+-    let callback_index = args.data().integer_value(scope).unwrap() as usize;
+-    let callback = state.callbacks.borrow()[callback_index].clone();
+-    let id = args.get(0).integer_value(scope).unwrap() as u64;
++    let Some(state) = scope.get_slot::<Rc<State>>().cloned() else {
++        scope.terminate_execution();
++        return;
++    };
+     let output = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        // Do not coerce objects here: valueOf can throw, reenter or never
++        // return. Compiler unit IDs are nonnegative, exact Number integers.
++        let index = |value| -> Result<u64, String> {
++            let number = bridge::number(scope, value)
++                .map_err(|_| "invalid compiler unit service ID".to_owned())?;
++            if !(0.0..=9_007_199_254_740_991.0).contains(&number) || number.fract() != 0.0 {
++                return Err("invalid compiler unit service ID".into());
++            }
++            Ok(number as u64)
++        };
++        let callback_index = index(args.data())? as usize;
++        let id = index(args.get(0))?;
++        let callback = state
++            .callbacks
++            .borrow()
++            .get(callback_index)
++            .cloned()
++            .ok_or("unknown compiler unit service")?;
+         let active = Active {
+             scope: RefCell::new(scope),
+             state: &state,
+@@ -712,26 +731,29 @@ fn compile_unit(
+         state.control.poll().map_err(|e| e.to_string())?;
+         Ok::<_, String>(source)
+     }));
+-    match output {
++    let failure = match output {
+         Ok(Ok(source)) => {
+             state
+                 .source_bytes
+                 .set(state.source_bytes.get() + source.len());
+             state.source_units.set(state.source_units.get() + 1);
+-            result.set(bridge::string(scope, &source).unwrap().into());
+-        }
+-        failure => {
+-            state.control.invalidate();
+-            let message = match failure {
+-                Ok(Err(error)) => error,
+-                _ => "compiler unit service panicked".into(),
+-            };
+-            state.remember_error(&EvalError(message.clone()));
+-            let message = bridge::string(scope, &message).unwrap();
+-            let exception = v8::Exception::error(scope, message);
+-            scope.throw_exception(exception);
++            match bridge::string(scope, &source) {
++                Ok(source) => {
++                    result.set(source.into());
++                    return;
++                }
++                Err(error) => error,
++            }
+         }
+-    }
++        Ok(Err(error)) => EvalError(error),
++        Err(_) => bridge::error("compiler unit service panicked"),
++    };
++    // A failed compiler callback already poisons the session. Keep the owned
++    // diagnostic without allocating a JS exception, and terminate immediately
++    // so a catch-and-spin cannot conceal it or wait for the watchdog.
++    state.remember_error(&failure);
++    state.control.invalidate();
++    scope.terminate_execution();
+ }
+ impl CompilerEvaluator for V8Evaluator {
+     fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError> {
+@@ -777,6 +799,53 @@ impl CompilerEvaluator for V8Evaluator {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn compiler_callback_rejects_invalid_ids_without_running_coercion_hooks() {
++        for argument in [
++            "Symbol('bad')",
++            "NaN",
++            "Infinity",
++            "-1",
++            "1.5",
++            "9007199254740992",
++            "({ valueOf() { for (;;) {} } })",
++        ] {
++            let evaluator = Rc::new(V8Evaluator::new(EvaluatorOptions::default()).unwrap());
++            evaluator
++                .clone()
++                .install_compiler_service("unitService", Rc::new(|_, id| Ok(id.to_string())))
++                .unwrap();
++            let valid = evaluator.evaluate_js("Number(unitService(7))").unwrap();
++            assert_eq!(evaluator.number(valid).unwrap(), 7.0);
++            evaluator.release(valid).unwrap();
++            let error = evaluator
++                .evaluate_js(&format!("unitService({argument})"))
++                .unwrap_err();
++            assert!(
++                error.0.contains("invalid compiler unit service ID"),
++                "{argument}: {error}"
++            );
++            assert!(evaluator.evaluate_js("1").is_err());
++        }
++    }
++
++    #[test]
++    fn compiler_callback_panic_is_owned_and_terminal() {
++        let evaluator = Rc::new(V8Evaluator::new(EvaluatorOptions::default()).unwrap());
++        evaluator
++            .clone()
++            .install_compiler_service("panicUnitService", Rc::new(|_, _| panic!("service failed")))
++            .unwrap();
++        let error = evaluator
++            .evaluate_js("(() => { try { panicUnitService(0); } catch (_) { for (;;) {} } })()")
++            .unwrap_err();
++        assert!(
++            error.0.contains("compiler unit service panicked"),
++            "{error}"
++        );
++        assert!(evaluator.evaluate_js("1").is_err());
++    }
++
+     #[test]
+     fn poisoned_callback_keeps_owned_diagnostic_when_javascript_catches_and_spins() {
+         let evaluator = Rc::new(

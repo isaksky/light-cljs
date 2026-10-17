@@ -1,0 +1,1 @@
+Every complete output is byte-identical to phase42. Both main outputs retain the known ESM syntax defect; no application execution is claimed.

@@ -1,0 +1,16 @@
+c5dfadbce12322ac6c4f9d400ad686d3fa593800b3f2912ff1d4fc872f2f5db8  /private/tmp/light-cljs-phase87/production/light-cljs
+b67fdd8b29f5edb065994259b2965a9a3a840eae5a75a35973fc908275b64681  /private/tmp/light-cljs-phase87/production/implementation.patch
+35e67e18e9539a08781737bea93c45fdc57d5000b10c2b0e2525440af074aea1  /private/tmp/light-cljs-phase87/production/name_index.rs
+2f7ee4c7570bcb288abb35bc02f7f76e3e7e2b192d36122f0bf6c45dca989655  /private/tmp/light-cljs-phase87/production/render.js
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase87/production/main-none.js
+82d4cf05527a4120e22eb7302063c3dd8759dbc8fb35e6a3b7efce63d10c7077  /private/tmp/light-cljs-phase87/production/main-advanced.js
+ac7d36f7594cbdaa700b4297d64d51b9abb04a42ca2083e39560691c9198c2fc  /Users/admin/src/light-cljs/src/analyzer.rs
+94a7bdf3dcdd05eebf601e5ee82a14d6ee682c8f5607023292edfb25e48ce8e1  /Users/admin/src/light-cljs/src/arena.rs
+72fbc9714d1607080328d7e4130c8b8300bfaf3c1732d15d6b97dac4c99d6fad  /Users/admin/src/light-cljs/src/compilation_session.rs
+4242d6fbec1baedd7eb7346ef46192629d610b680d358bc3e9cc9287e753c8d1  /Users/admin/src/light-cljs/src/compiler_reader.rs
+6c32d7837e50594287d6b3385d53463c78f58beb24972e5667095b438aeb02ab  /Users/admin/src/light-cljs/src/dev_build.rs
+531293891f8849ecc89a22621996b5036483cb123322ebe429b016f6b816a7f6  /Users/admin/src/light-cljs/src/eval_compiler.rs
+cd506e09d481d04b9fa27644c5abb2559c8174281848a5f650de6fe1d89348de  /Users/admin/src/light-cljs/src/layered.rs
+c23e08da6d6efacdf3af194d4ed167e9b7e3367d6349e5dccc897079660f4263  /Users/admin/src/light-cljs/src/macro_host.rs
+9e75ab7dc3e9f1cf8841b94d46cb731059ff2bdb58bdfae59068ea60247d3d68  /Users/admin/src/light-cljs/docs/compiler.md
+2f6359ae0c6cfec7221a9721cbba99b8b1b9c6a982038c07098758ded1adfdad  /Users/admin/src/light-cljs/docs/evaluator.md

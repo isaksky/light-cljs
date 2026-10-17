@@ -1,0 +1,9 @@
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.97s
+     Running tests/compiler/main.rs (target/debug/deps/compiler-e13b30adac4f02bb)
+
+running 1 test
+test builtin_types::selected_protocol_missing_method_does_not_fall_back_after_a_getter_mutation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1008 filtered out; finished in 0.72s
+

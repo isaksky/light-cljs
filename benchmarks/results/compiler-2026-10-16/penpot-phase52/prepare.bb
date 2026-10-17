@@ -1,0 +1,22 @@
+(require '[babashka.fs :as fs] '[babashka.process :as p] '[clojure.string :as str])
+(def here (fs/parent *file*))
+(def project (fs/file here "project"))
+(fs/create-dirs project)
+(p/shell "rsync" "-a" "--exclude=target" "--exclude=.git"
+  "/private/tmp/light-cljs-phase51/project/" (str project "/"))
+(def manifest (fs/file project "Cargo.toml"))
+(spit manifest (str/replace (slurp manifest) "[features]\n"
+                 "[target.'cfg(not(target_arch = \"wasm32\"))'.dependencies]\nmimalloc = \"=0.1.52\"\n\n[features]\n"))
+(def main-file (fs/file project "src/main.rs"))
+(spit main-file (str "// Keep the library and WebAssembly targets' allocator selection unchanged.\n#[cfg(not(target_arch = \"wasm32\"))]\n#[global_allocator]\nstatic ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;\n\n" (slurp main-file)))
+(def notices (slurp "/Users/admin/src/light-cljs/THIRD_PARTY_NOTICES.md"))
+(spit (fs/file project "THIRD_PARTY_NOTICES.md")
+  (str/replace notices "## Other Cargo dependencies"
+    "## mimalloc\n\n- Upstream: <https://github.com/purpleprotocol/mimalloc_rust>, version 0.1.52,\n  with `libmimalloc-sys` 0.1.49 and its bundled allocator from\n  <https://github.com/microsoft/mimalloc>.\n- License: MIT. These are normal Cargo dependencies for the native CLI;\n  the library and WebAssembly targets keep their allocator selection.\n\n## Other Cargo dependencies"))
+(spit (fs/file here "run.bb")
+  (-> (slurp "/private/tmp/light-cljs-phase51/run.bb")
+      (str/replace "light-cljs-quotes" "light-cljs-quickjs-mimalloc")
+      (str/replace "main-quotes" "main-quickjs-mimalloc")
+      (str/replace "QuickJS compact registration trial completed." "QuickJS allocator and compact registration trial completed.")))
+(p/shell {:dir (str project)} "cargo" "fmt")
+(println "Prepared native CLI allocator plus compact registration with QuickJS; not built.")

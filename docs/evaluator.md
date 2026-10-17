@@ -1,8 +1,21 @@
 # Synchronous evaluator
 
 For supported scripting and embedding use [EvalSession](evaluation.md). The
-low-level `Evaluator` remains the compiler execution boundary; it does not itself
+low-level `Evaluator` remains the QuickJS execution boundary; it does not itself
 provide interactive compiler symbol state.
+
+Native clean compilations use the private V8 implementation through
+`compiler_evaluator::CompilerEvaluator`. Interactive sessions, WebAssembly and
+builds without the `v8-macros` feature use `Evaluator`. Both engines load the
+same runtime and execute the same compiler-emitted macro bodies. The V8 bridge
+preserves immutable form identity and namespace snapshots while releasing
+session roots on completion. Its timeout, polling and stack limits are terminal;
+the shared interrupt scheduler has no per-idle-session thread. Heap and buffer
+storage share a cooperative memory budget (not an RSS ceiling), including
+resizable/shared buffers and Wasm memory. The initial collection threshold is
+at most 256 MiB; live heaps can grow toward the configured budget. Startup
+requires at least 16 MiB. See [native engine build details](../vendor/v8/README.md).
+The remainder of this document describes the public QuickJS evaluator API.
 
 `evaluator::Evaluator` executes compiler-produced JavaScript with exactly
 `rquickjs = "=0.14.0"`, default features disabled and only `std` enabled.
@@ -143,16 +156,29 @@ promise jobs run only where `EvalSession` runs them, at its outer boundary after
 ## Compiler form bridge
 
 `form_bridge::FORM_BRIDGE_VERSION` and `rt.compilerForms.version` identify the
-in-process descriptor ABI (currently 1). `Evaluator::import_form`/`import_data`
+in-process descriptor ABI (currently 4). `Evaluator::import_form`/`import_data`
 and `export_form`/`export_data` transport actual engine arrays with primitive
-payloads. Strings and name components cross as UTF-16 code units; Number payloads
+payloads. Strings and name components cross as native engine strings through
+QuickJS's UTF-16 API, preserving lone surrogates without per-character arrays. Number payloads
 cross as doubles, preserving signed zero and nonfinite values. Neither ordinary
 JSON nor printing/reading is used. Symbols and keywords retain separate namespace
 and name components; list/vector/map/set kinds remain distinct. Metadata stays in
 the canonical runtime's private metadata store and never affects equality/hash.
 
-A session-private identity table retains borrowed compiler data, original ordered
-children and locations. Conversion snapshots the canonical form once on import.
+An engine-private weak map retains borrowed compiler data, original ordered
+children and locations for live imported objects. Scalars keep only their latest
+provenance by value. Conversion snapshots the canonical form once on import;
+immutable environment components reuse a bounded cache: 64 complete components
+and 128 child collections. Locals descriptions share the unchanged lexical
+prefix, including shadowed bindings. Child references name the previous completed
+import; final slot replacements publish only after decoding the complete tree
+and taking its normal snapshots. A discarded map/set entry or literal payload
+can lack a snapshot; in that case the child cache is cleared without additional
+traversal. This preserves lexical provenance as well as conversion limits.
+Encoder ordering prevents eviction or differing metadata traversal order from
+resolving a reference to the wrong value. Cache hits consume the complete logical
+node/depth budget, failed imports invalidate both caches, and reentrant imports
+use the uncached path.
 Unchanged returned values recover their original data/source nodes, including
 reader lexical distinctions. Mutated Date or explicit `#js` values instead create
 new forms. Constructed forms retain call location and an owned `ExpansionOrigin`
@@ -167,6 +193,28 @@ builds bounded lexical IDs/names/kinds/arguments, shadow records, context,
 namespace/import information and line/column using compiler data alone. Source
 macro registration and the default core bootstrap both execute compiler-emitted
 JavaScript.
+
+The native bridge imports the call once, so each object argument is the same
+object as its element in `&form`, as in upstream macro application. A temporary
+weakly keyed descriptor/value graph survives the environment import. Argument
+preparation restores metadata and provenance in the original per-argument
+order and validates each canonical snapshot before invoking the macro. This
+restoration matters for equal scalars and interned keywords whose provenance
+the environment can overwrite. The whole call's input conversion bounds also
+cover every argument; output snapshot bounds still apply per argument.
+Preparation or input release discards the graph, including on ordinary failure;
+failed snapshot validation releases all newly assigned argument IDs. The
+in-process bridge ABI is version 5. External evaluator adapters retain the
+independent-import defaults unless they implement batching.
+
+Compiler-owned bootstrap macros can omit transport of an unread hidden `&env`
+parameter. A proof over resolved locals rejects captures, raw JavaScript and
+argument reflection; reader wrappers and source macros keep the complete view.
+The fast path runs at the bootstrap declaration frontier and checks immutable
+input size and depth first. Compiler literals and tight conversion budgets use
+the original transport so omitting an unused value cannot hide conversion
+failures or literal-constructor behavior. The macro function still executes
+normally, with nil in the unused slot.
 
 Finite canonical lists, sequences, vectors, maps and sets are readable results.
 Lazy sequences may realize under the same engine control and conversion bounds;
@@ -263,13 +311,23 @@ runtime, collect garbage or call `Context::with`.
 
 Successful semantic IR is reused by compile-time emission and final application
 assembly. `program_fragment` remaps arena IDs while preserving binding identity
-and original locations. A unit's snapshot keeps the program's declarations and
-metadata, with only the literals (and, for executable metadata, the locals) that
-metadata uses, and records where those entries live in the program it was taken
-from. Assembly appends only what the unit itself added, so the assembled
-program grows linearly with its definitions. Compile-time emission uses the ordinary emitter with
-root access hooks and never invokes an application optimizer. Ready root reads
-stay in JS. Unrequested initializers drain in source order; standalone runtime
+and original locations. Definition snapshots share frozen program tables and
+record their prefix lengths. Changes copy a bounded leaf and its tree path,
+preserving the older view. Assembly appends only what the unit itself added, so
+the assembled program grows linearly with its definitions. Namespace names use
+the same frozen arena, and namespace entry maps share bounded write layers.
+Macro metadata frames share both their base and their pending write layer until
+mutation. Completed units release their boxed definition snapshot and macro host.
+After application assembly consumes a unit's IR, the session prepares its source
+and retains only that source and immutable reader-registration tables; it holds
+the analyzed program weakly so an active reentrant owner can finish using it.
+Preparing source executes no user code. Namespace registration and initialization
+remain lazy, and compilation-use emission counts still record actual engine demand.
+Compile-time emission uses the ordinary emitter with root access hooks and never
+invokes an application optimizer. Ready root reads stay in JS. Completed or failed
+roots release their initializer closures and retain their value or error. Prepared
+source remains available for compilation reentry. Unrequested initializers drain
+in source order; standalone runtime
 expressions are not replayed during macro setup. The warning API drains each
 source form early to preserve diagnostics before later errors.
 

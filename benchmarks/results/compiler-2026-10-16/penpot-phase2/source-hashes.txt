@@ -1,0 +1,2 @@
+08ccb3494c069041c93651fb0ed667d8a892c3302ae52506e9a14dd5340b8cb4  /private/tmp/light-cljs-phase2f/light-cljs
+35e67e18e9539a08781737bea93c45fdc57d5000b10c2b0e2525440af074aea1  src/name_index.rs

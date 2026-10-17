@@ -1,0 +1,37 @@
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.47s
+     Running tests/compiler/main.rs (target/debug/deps/compiler-e13b30adac4f02bb)
+
+running 1 test
+
+thread 'builtin_types::list_construction_keeps_intrinsic_count_while_public_count_remains_live' (133392922) panicked at tests/compiler/builtin_types.rs:51:9:
+assertion `left == right` failed: at none: (pr-str (let [prototype (.-prototype List)
+                       slot "cljs$core$ICounted$_count$arity$1"
+                       previous (js/Object.getOwnPropertyDescriptor prototype slot)
+                       calls (atom 0)
+                       value (atom nil)
+                       observed (atom nil)]
+                   (try
+                     (js/Object.defineProperty prototype slot
+                       #js {:configurable true :writable true
+                            :value (fn [_] (swap! calls inc) 999)})
+                     (reset! value (list 10 20 30))
+                     (reset! observed (count @value))
+                     (finally
+                       (if previous
+                         (js/Object.defineProperty prototype slot previous)
+                         (js-delete prototype slot))))
+                   [@calls @observed (count @value) (into [] @value)]))
+  left: "[3 999 1000 [10 20 30]]\n"
+ right: "[1 999 3 [10 20 30]]\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test builtin_types::list_construction_keeps_intrinsic_count_while_public_count_remains_live ... FAILED
+
+failures:
+
+failures:
+    builtin_types::list_construction_keeps_intrinsic_count_while_public_count_remains_live
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1010 filtered out; finished in 0.07s
+
+error: test failed, to rerun pass `--test compiler`

@@ -1,0 +1,3 @@
+render: application body matches phase6b byte for byte after excluding the embedded runtime; complete output passes node --check.
+main-none: application body matches phase6b byte for byte after excluding the embedded runtime; complete output passes node --check.
+main-advanced: application body matches phase6b byte for byte after excluding the embedded runtime; complete output passes node --check.

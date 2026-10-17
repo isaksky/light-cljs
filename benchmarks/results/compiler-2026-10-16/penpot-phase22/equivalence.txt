@@ -1,0 +1,3 @@
+render: application body matches phase6b outside embedded runtime; complete output passes node --check.
+main-none: application body matches phase6b outside embedded runtime; complete output passes node --check.
+main-advanced: application body matches phase6b outside embedded runtime; complete output passes node --check.

@@ -1,0 +1,24 @@
+diff --git a/src/js_runtime.js b/src/js_runtime.js
+index eada146..0783d32 100644
+--- a/src/js_runtime.js
++++ b/src/js_runtime.js
+@@ -52,14 +52,12 @@
+   // which the seq operations do not feel; `vectors` keeps its own, since
+   // sharing slowed `conj` and `nth` on a vector by a third.
+   function privateStore() {
+-    const Store = class extends (function (value) { return value; }) {
+-      #s;
+-      static has(value) { return (typeof value === "object" ? value !== null : typeof value === "function") && #s in value; }
+-      // Not `Store.has`: QuickJS, which does not inline it, would call it.
+-      static get(value) { if ((typeof value === "object" ? value !== null : typeof value === "function") && #s in value) return value.#s; }
+-      static set(value, payload) { if (#s in value) value.#s = payload; else new Store(value).#s = payload; }
++    const store = new WeakMap();
++    return {
++      has: WeakMap.prototype.has.bind(store),
++      get: WeakMap.prototype.get.bind(store),
++      set: WeakMap.prototype.set.bind(store)
+     };
+-    return Store;
+   }
+   //@unit cells requires: privateStore
+   const cells = privateStore();

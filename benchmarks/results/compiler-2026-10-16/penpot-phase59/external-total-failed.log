@@ -1,0 +1,26 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase59/project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.70s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/light_cljs-c245fc672d71037e)
+
+running 6 tests
+test v8_evaluator::tests::array_buffer_bytes_are_zeroed_and_reclaimed_at_session_drop ... ok
+test v8_evaluator::tests::array_buffer_limit_is_terminal_even_when_javascript_catches ... ok
+test v8_evaluator::tests::compiler_callback_panic_is_owned_and_terminal ... ok
+test v8_evaluator::tests::compiler_callback_rejects_invalid_ids_without_running_coercion_hooks ... ok
+test v8_evaluator::tests::poisoned_callback_keeps_owned_diagnostic_when_javascript_catches_and_spins ... ok
+test v8_evaluator::tests::resizable_and_growable_backing_stores_obey_the_memory_limit ... FAILED
+
+failures:
+
+---- v8_evaluator::tests::resizable_and_growable_backing_stores_obey_the_memory_limit stdout ----
+
+thread 'v8_evaluator::tests::resizable_and_growable_backing_stores_obey_the_memory_limit' (137866011) panicked at src/v8_evaluator.rs:871:59:
+called `Result::unwrap_err()` on an `Ok` value: ValueId { session: 13, index: 1 }
+
+
+failures:
+    v8_evaluator::tests::resizable_and_growable_backing_stores_obey_the_memory_limit
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 117 filtered out; finished in 0.10s
+
+error: test failed, to rerun pass `--lib`

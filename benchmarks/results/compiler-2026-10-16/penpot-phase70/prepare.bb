@@ -1,0 +1,18 @@
+(require '[babashka.fs :as fs] '[clojure.string :as str])
+(def here (fs/parent *file*))
+(def emitter (fs/file here "project/src/emitter.rs"))
+(def original-text (slurp emitter))
+(def start (str/index-of original-text "// Search the concatenated UTF-16 table"))
+(def end (str/index-of original-text "fn emit_unit_mode(" start))
+(assert (and start end))
+(def without-scan (str (subs original-text 0 start)
+  "// This generated binding participates in the same raw-JavaScript hygiene as\n// locals and helpers. It never needs a scan through unrelated prior literals.\nconst UNIT_RUNTIME: &str = \"__lightSessionRuntime\";\n\n"
+  (subs original-text end)))
+(def unit-start (str/index-of without-scan "    let mut index = 0;" (str/index-of without-scan "fn emit_unit_parts(")))
+(def unit-end (str/index-of without-scan "/// An interactive unit:" unit-start))
+(assert (and unit-start unit-end))
+(spit emitter (str (subs without-scan 0 unit-start)
+  "    emit_js_mode(\n        program, Some(UNIT_RUNTIME), demand_roots, None, None, false, false, registration,\n    ).0\n}\n\n"
+  (subs without-scan unit-end)))
+(spit (fs/file here "run.bb") (-> (slurp "/private/tmp/light-cljs-phase69/run.bb")
+  (str/replace "light-cljs-namespace-cache" "light-cljs-unit-hygiene")))

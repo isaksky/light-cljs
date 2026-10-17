@@ -1,0 +1,11 @@
+(require '[babashka.fs :as fs] '[clojure.string :as str])
+(def here (fs/parent *file*))
+(def file (fs/file here "project/src/compilation_session.rs"))
+(def original-text (slurp file))
+(def begin (str/index-of original-text "        // Qualified CLJS names cannot contain these escaped JS string delimiters."))
+(def end (str/index-of original-text "    pub fn register(" begin))
+(assert (and begin end))
+(spit file (str (subs original-text 0 begin)
+  "        engine.register_compiler_root(name, unit, once, location, test).map_err(|e| e.to_string())\n    }\n"
+  (subs original-text end)))
+(spit (fs/file here "run.bb") (-> (slurp "/private/tmp/light-cljs-phase70/run.bb") (str/replace "light-cljs-unit-hygiene" "light-cljs-direct-roots")))

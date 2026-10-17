@@ -1,0 +1,89 @@
+diff --git a/src/analyzer.rs b/src/analyzer.rs
+index 0823695..4d6832f 100644
+--- a/src/analyzer.rs
++++ b/src/analyzer.rs
+@@ -3247,7 +3247,7 @@ fn analyze_input(
+         first_expr: 0,
+         deferred_unit: false,
+         reader_view: None,
+-        namespace_globals: (0, 0),
++        namespace_globals: snapshot.map_or((0, 0), |s| s.namespace_globals),
+         pending_reader_registration: None,
+     };
+     if let Some(previous) = previous {
+@@ -6169,6 +6169,7 @@ impl Analyzer<'_> {
+     ) {
+         let (resolution_program, shared) =
+             crate::program_fragment::resolution_snapshot(&mut self.program);
++        self.count_namespace_globals(self.program.globals.len());
+         let snapshot = crate::compilation_session::DefinitionSnapshot {
+             namespace: self.namespace.into(),
+             aliases: self.aliases.to_vec(),
+@@ -6176,6 +6177,7 @@ impl Analyzer<'_> {
+             resolution: self.resolution.clone(),
+             resolution_program,
+             global_names: self.globals.clone(),
++            namespace_globals: self.namespace_globals,
+             options: self.options,
+             unchecked_arrays: self.unchecked_arrays,
+             source_index: self.source_index,
+@@ -9373,15 +9375,7 @@ impl Analyzer<'_> {
+         } else {
+             self.program.globals.len()
+         };
+-        let (seen, count) = self.namespace_globals;
+-        let count = count
+-            + self
+-                .program
+-                .globals
+-                .range(seen.min(shared)..shared)
+-                .filter(|g| g.namespace == self.namespace)
+-                .count();
+-        self.namespace_globals = (shared, count);
++        let count = self.count_namespace_globals(shared);
+         let (environment, registration) = self.macro_host.reader_environment(
+             environment,
+             self.namespace,
+@@ -9411,6 +9405,22 @@ impl Analyzer<'_> {
+         Ok(environment)
+     }
+ 
++    /// Snapshots preserve this prefix count, so a new deferred analyzer only
++    /// examines declarations added after its definition-time view.
++    fn count_namespace_globals(&mut self, shared: usize) -> usize {
++        let (seen, count) = self.namespace_globals;
++        debug_assert!(seen <= shared);
++        let count = count
++            + self
++                .program
++                .globals
++                .range(seen..shared)
++                .filter(|g| g.namespace == self.namespace)
++                .count();
++        self.namespace_globals = (shared, count);
++        count
++    }
++
+     fn needs_reader(&self, root: NodeId) -> bool {
+         if self
+             .generated
+diff --git a/src/compilation_session.rs b/src/compilation_session.rs
+index 6696162..4fc91b2 100644
+--- a/src/compilation_session.rs
++++ b/src/compilation_session.rs
+@@ -17,6 +17,7 @@ pub(crate) struct DefinitionSnapshot {
+     pub resolution: NamespaceResolution,
+     pub resolution_program: Program,
+     pub global_names: crate::name_index::NameIndex,
++    pub namespace_globals: (usize, usize),
+     pub options: AnalysisOptions,
+     pub unchecked_arrays: bool,
+     pub source_index: usize,
+@@ -483,6 +484,7 @@ impl Clone for DefinitionSnapshot {
+             resolution: self.resolution.clone(),
+             resolution_program: self.resolution_program.clone(),
+             global_names: self.global_names.clone(),
++            namespace_globals: self.namespace_globals,
+             options: self.options,
+             unchecked_arrays: self.unchecked_arrays,
+             source_index: self.source_index,

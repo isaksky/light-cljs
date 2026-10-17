@@ -1,0 +1,21 @@
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling allocator-api2 v0.2.21
+   Compiling equivalent v1.0.2
+   Compiling foldhash v0.2.0
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase13-storage-profile)
+   Compiling cc v1.7.0
+   Compiling hashbrown v0.17.1
+   Compiling rquickjs-sys v0.14.0 (/private/tmp/light-cljs-phase13-storage-profile/vendor/rquickjs-sys)
+   Compiling rquickjs-core v0.14.0
+   Compiling rquickjs v0.14.0
+warning: function `flag` is never used
+ --> src/profile.rs:9:8
+  |
+9 | pub fn flag(name:&str)->bool{std::env::var_os(name).is_some()}
+  |        ^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `light-cljs` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 36.51s

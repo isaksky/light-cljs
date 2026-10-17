@@ -1,0 +1,1 @@
+{:dir "/private/tmp/light-cljs-phase108/project", :environment {"CARGO_TARGET_DIR" "/private/tmp/light-cljs-phase108/target", "V8_FROM_SOURCE" "1", "LIBCLANG_PATH" "/opt/homebrew/opt/llvm@23/lib", "CARGO_PROFILE_RELEASE_LTO" "thin", "CARGO_PROFILE_RELEASE_CODEGEN_UNITS" "1"}, :command ["cargo" "build" "--release" "--locked" "-j" "20"]}

@@ -1,0 +1,15 @@
+Byte-identical to phase42.
+Explicit ESM syntax exit: 1
+[stdin]:174797
+        var {"iconId": __light0_l39347, "size": __light0_l39348, "className": __light0_l39349, ...__light0_l39350} = __light0_l39340;
+                       ^
+
+SyntaxError: Identifier '__light0_l39347' has already been declared
+    at checkSyntax (node:internal/main/check_syntax:72:5)
+    at node:internal/main/check_syntax:45:5
+    at Socket.<anonymous> (node:internal/process/execution:205:5)
+    at Socket.emit (node:events:521:24)
+    at endReadableNT (node:internal/streams/readable:1729:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+
+Node.js v24.18.0

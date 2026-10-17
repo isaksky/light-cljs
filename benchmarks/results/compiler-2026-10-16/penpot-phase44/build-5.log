@@ -1,0 +1,22 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase44/project)
+warning: unused import: `Evaluator`
+ --> src/compiler_bootstrap.rs:6:17
+  |
+6 |     evaluator::{Evaluator, ValueId},
+  |                 ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `number` is never used
+  --> src/v8_evaluator.rs:10:8
+   |
+ 7 | pub(crate) trait CompilerEvaluator: MacroEvaluator {
+   |                  ----------------- method in this trait
+...
+10 |     fn number(&self, id: ValueId) -> Result<f64, EvalError>;
+   |        ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `light-cljs` (lib) generated 2 warnings (run `cargo fix --lib -p light-cljs` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 8.94s

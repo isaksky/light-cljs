@@ -1,0 +1,16 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase59/project)
+error[E0596]: cannot borrow `*isolate` as mutable, as it is behind a `&` reference
+   --> src/v8_evaluator.rs:116:8
+    |
+116 |     if isolate
+    |        ^^^^^^^ `isolate` is a `&` reference, so it cannot be borrowed as mutable
+    |
+help: consider specifying this binding's type
+    |
+113 |     let isolate: &mut Isolate = unsafe { v8::Isolate::ref_from_raw_isolate_ptr(&isolate) };
+    |                ++++++++++++++
+
+For more information about this error, try `rustc --explain E0596`.
+error: could not compile `light-cljs` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `light-cljs` (lib test) due to 1 previous error

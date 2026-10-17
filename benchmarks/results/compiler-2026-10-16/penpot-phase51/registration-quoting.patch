@@ -1,0 +1,19 @@
+diff --git a/src/emitter.rs b/src/emitter.rs
+index 5552915..7331306 100644
+--- a/src/emitter.rs
++++ b/src/emitter.rs
+@@ -1430,6 +1430,14 @@ impl<'a> Emitter<'a> {
+         let program = self.program;
+         let mut registration = String::new();
+         let register_namespaces = self.register_namespaces;
++        let demand_roots = self.demand_roots;
++        let js_string = |text: &str| {
++            if demand_roots {
++                quoted(text)
++            } else {
++                js_string(text)
++            }
++        };
+         // Group once in global ID order. Looking through every global for
+         // every namespace repeats the complete catalog scan in each unit.
+         let mut bindings: HashMap<&str, Vec<&str>> = HashMap::new();

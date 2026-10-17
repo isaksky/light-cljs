@@ -1,0 +1,23 @@
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.79s
+     Running tests/compiler/main.rs (target/debug/deps/compiler-e13b30adac4f02bb)
+
+running 15 tests
+test runtime_manifest::print_runtime_unit_sizes ... ignored, measurement; prints the unit table
+test runtime_manifest::conditional_effects_wait_for_a_condition ... ok
+test runtime_manifest::record_methods_name_a_condition_of_the_effect_installing_each ... ok
+test runtime_manifest::every_unit_is_reachable_from_the_export_list ... ok
+test runtime_manifest::slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root ... ok
+test runtime_manifest::protocol_roots_are_the_protocols_effects_wait_for ... ok
+test runtime_manifest::kind_hooks_skip_records ... ok
+test runtime_manifest::names_bindings_and_effect_targets_resolve_to_units ... ok
+test runtime_manifest::an_owned_type_is_decorated_wherever_it_can_be_observed ... ok
+test runtime_manifest::units_concatenate_back_to_the_annotated_file_and_the_embedded_runtime ... ok
+test runtime_manifest::every_unit_declares_exactly_the_runtime_bindings_it_references ... ok
+test runtime_manifest::conditional_effects_name_every_unit_that_can_use_them ... ok
+test runtime_manifest::hidden_edges_and_stale_requires_in_the_runtime_fail_validation ... ok
+test runtime_manifest::undeclared_load_time_effects_fail_validation ... ok
+test runtime_manifest::kind_hooks_are_installed_wherever_their_kind_can_be_built ... ok
+
+test result: ok. 14 passed; 0 failed; 1 ignored; 0 measured; 997 filtered out; finished in 0.29s
+

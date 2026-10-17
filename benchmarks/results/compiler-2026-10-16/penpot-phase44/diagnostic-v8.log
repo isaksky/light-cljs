@@ -1,0 +1,20 @@
+warning: method `number` is never used
+  --> src/v8_evaluator.rs:31:8
+   |
+23 | pub(crate) trait CompilerEvaluator: MacroEvaluator {
+   |                  ----------------- method in this trait
+...
+31 |     fn number(&self, id: ValueId) -> Result<f64, EvalError>;
+   |        ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `light-cljs` (lib test) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.04s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/light_cljs-7cf00c802526fcb3)
+
+running 1 test
+test v8_evaluator::tests::poisoned_callback_keeps_owned_diagnostic_when_javascript_catches_and_spins ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 117 filtered out; finished in 0.01s
+

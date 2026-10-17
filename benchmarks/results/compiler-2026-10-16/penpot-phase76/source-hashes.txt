@@ -1,0 +1,10 @@
+e8334ae3bd1c19511831c9ed272a1cba98cc7fd9453c7635758b3824ecbb8b8d  /private/tmp/light-cljs-phase76/light-cljs-reader-lookup
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase76/main-none.js
+2f7ee4c7570bcb288abb35bc02f7f76e3e7e2b192d36122f0bf6c45dca989655  /private/tmp/light-cljs-phase76/clean/render.js
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase76/clean/main-none.js
+82d4cf05527a4120e22eb7302063c3dd8759dbc8fb35e6a3b7efce63d10c7077  /private/tmp/light-cljs-phase76/clean/main-advanced.js
+cbcd84667b8dcf7ce31727e44b79f70dfe9bb56ead1ac7ebfdef8e4e1c465769  /private/tmp/light-cljs-phase76/project/Cargo.lock
+9a59e0bf1d287258c4117fda8554b674315d3deea4b364ffe29dc21e9b171a09  /private/tmp/light-cljs-phase76/project/src/analyzer.rs
+4242d6fbec1baedd7eb7346ef46192629d610b680d358bc3e9cc9287e753c8d1  /private/tmp/light-cljs-phase76/project/src/compiler_reader.rs
+54ccae0f38ac044fc7a581ae59808c912aebc6a427ec3cefcf737401f9c378b6  /private/tmp/light-cljs-phase76/project/src/macro_host.rs
+56ad6aa043a6099711eee7beceedb790be978a9726d0a44f535c6dfc7b1e86d8  /private/tmp/light-cljs-phase76/project/src/eval_compiler.rs

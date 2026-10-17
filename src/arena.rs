@@ -3,15 +3,114 @@
 //! A deferred unit is analyzed from a snapshot of the program it was defined
 //! in. Every table of that snapshot is a prefix of the live program's, so the
 //! snapshot shares the frozen chunks by reference and only the entries added
-//! after the last freeze are copied. Writes to a shared chunk copy that chunk
-//! alone, so a snapshot keeps its definition-time entries.
+//! after the last freeze are copied. Frozen chunks are trees of bounded leaves:
+//! merging chunks shares their entries, and writes copy only the path to a
+//! leaf. A snapshot keeps its definition-time entries.
 
 use std::ops::{Index, IndexMut};
 use std::rc::Rc;
 
+const LEAF_SIZE: usize = 64;
+
+#[derive(Clone)]
+enum Chunk<T> {
+    Leaf(Vec<T>),
+    Branch {
+        left: Rc<Chunk<T>>,
+        right: Rc<Chunk<T>>,
+        len: usize,
+    },
+}
+
+impl<T> Chunk<T> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Leaf(entries) => entries.len(),
+            Self::Branch { len, .. } => *len,
+        }
+    }
+
+    fn join(left: Rc<Self>, right: Rc<Self>) -> Self {
+        let len = left.len() + right.len();
+        Self::Branch { left, right, len }
+    }
+
+    fn from_entries(entries: Vec<T>) -> Self {
+        if entries.len() <= LEAF_SIZE {
+            return Self::Leaf(entries);
+        }
+        fn build<T>(entries: &mut std::vec::IntoIter<T>, len: usize) -> Chunk<T> {
+            if len <= LEAF_SIZE {
+                return Chunk::Leaf(entries.take(len).collect());
+            }
+            let left = Rc::new(build(entries, len / 2));
+            let right = Rc::new(build(entries, len - len / 2));
+            Chunk::join(left, right)
+        }
+        let len = entries.len();
+        build(&mut entries.into_iter(), len)
+    }
+
+    /// The leaf containing `index`, and its starting offset in this chunk.
+    fn leaf(&self, mut index: usize) -> (usize, &[T]) {
+        let mut node = self;
+        let mut start = 0;
+        loop {
+            match node {
+                Self::Leaf(entries) => return (start, entries),
+                Self::Branch { left, right, .. } => {
+                    if index < left.len() {
+                        node = left;
+                    } else {
+                        index -= left.len();
+                        start += left.len();
+                        node = right;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<T: Clone> Chunk<T> {
+    fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        match self {
+            Self::Leaf(entries) => entries.get_mut(index),
+            Self::Branch { left, right, .. } => {
+                if index < left.len() {
+                    Rc::make_mut(left).get_mut(index)
+                } else {
+                    Rc::make_mut(right).get_mut(index - left.len())
+                }
+            }
+        }
+    }
+
+    fn append_entries(chunk: Rc<Self>, entries: &mut Vec<T>) {
+        match Rc::try_unwrap(chunk) {
+            Ok(Self::Leaf(mut leaf)) => entries.append(&mut leaf),
+            Ok(Self::Branch { left, right, .. }) => {
+                Self::append_entries(left, entries);
+                Self::append_entries(right, entries);
+            }
+            Err(chunk) => chunk.copy_entries(entries),
+        }
+    }
+
+    fn copy_entries(&self, entries: &mut Vec<T>) {
+        match self {
+            Self::Leaf(leaf) => entries.extend_from_slice(leaf),
+            Self::Branch { left, right, .. } => {
+                left.copy_entries(entries);
+                right.copy_entries(entries);
+            }
+        }
+    }
+}
+
 pub struct Arena<T> {
     /// Frozen entries, shared with every table snapshotted from this one.
-    chunks: Vec<Rc<Vec<T>>>,
+    chunks: Vec<Rc<Chunk<T>>>,
     /// The ID of each chunk's first entry, parallel to `chunks`.
     starts: Vec<usize>,
     /// The number of frozen entries: the ID of the first tail entry.
@@ -63,6 +162,24 @@ impl<T: PartialEq> PartialEq for Arena<T> {
 
 impl<T: Eq> Eq for Arena<T> {}
 
+impl<T, U> PartialEq<Vec<U>> for Arena<T>
+where
+    T: PartialEq<U>,
+{
+    fn eq(&self, other: &Vec<U>) -> bool {
+        self.len() == other.len() && self.iter().zip(other).all(|(a, b)| a == b)
+    }
+}
+
+impl<T, U, const N: usize> PartialEq<[U; N]> for Arena<T>
+where
+    T: PartialEq<U>,
+{
+    fn eq(&self, other: &[U; N]) -> bool {
+        self.len() == N && self.iter().zip(other).all(|(a, b)| a == b)
+    }
+}
+
 impl<T> From<Vec<T>> for Arena<T> {
     fn from(tail: Vec<T>) -> Self {
         Self {
@@ -98,6 +215,14 @@ impl<T> Arena<T> {
 
     pub fn push(&mut self, value: T) {
         self.tail.push(value);
+    }
+
+    /// Release spare capacity before retaining a completed analysis. Frozen
+    /// entries stay shared; no IDs or values change.
+    pub(crate) fn shrink_to_fit(&mut self) {
+        self.chunks.shrink_to_fit();
+        self.starts.shrink_to_fit();
+        self.tail.shrink_to_fit();
     }
 
     pub fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
@@ -140,7 +265,8 @@ impl<T> Arena<T> {
             return self.tail.get(id - self.frozen);
         }
         let (chunk, index) = self.chunk(id);
-        self.chunks[chunk].get(index)
+        let (start, leaf) = self.chunks[chunk].leaf(index);
+        leaf.get(index - start)
     }
 
     pub fn first(&self) -> Option<&T> {
@@ -156,7 +282,8 @@ impl<T> Arena<T> {
             arena: self,
             front: 0,
             back: self.len(),
-            chunk: 0,
+            front_leaf: (0, &[]),
+            back_leaf: (0, &[]),
         }
     }
 
@@ -166,7 +293,8 @@ impl<T> Arena<T> {
             arena: self,
             front: range.start.min(self.len()),
             back: range.end.min(self.len()),
-            chunk: 0,
+            front_leaf: (0, &[]),
+            back_leaf: (0, &[]),
         }
     }
 
@@ -188,6 +316,15 @@ impl<T> Arena<T> {
     {
         self.iter().cloned().collect()
     }
+
+    fn leaf(&self, id: usize) -> (usize, &[T]) {
+        if id >= self.frozen {
+            return (self.frozen, &self.tail);
+        }
+        let (chunk, index) = self.chunk(id);
+        let (start, leaf) = self.chunks[chunk].leaf(index);
+        (self.starts[chunk] + start, leaf)
+    }
 }
 
 impl<T: Clone> Arena<T> {
@@ -195,16 +332,16 @@ impl<T: Clone> Arena<T> {
     /// copying it. The entries keep their IDs. A new chunk at least half as
     /// long as the one before it is merged with it into a new chunk, so the
     /// chunks stay logarithmic in the entries: a clone shares that many and
-    /// a lookup searches that many, while the merges copy each entry a
-    /// logarithmic number of times in all. Chunks shared with a clone are
-    /// copied, not changed.
+    /// a lookup searches that many. A merge joins tree roots without copying
+    /// entries retained by earlier snapshots.
     pub fn freeze(&mut self) {
         if self.tail.is_empty() {
             return;
         }
         self.starts.push(self.frozen);
         self.frozen += self.tail.len();
-        self.chunks.push(Rc::new(std::mem::take(&mut self.tail)));
+        self.chunks
+            .push(Rc::new(Chunk::from_entries(std::mem::take(&mut self.tail))));
         while self.chunks.len() >= 2 {
             let last = self.chunks.len() - 1;
             if self.chunks[last].len() * 2 < self.chunks[last - 1].len() {
@@ -214,11 +351,8 @@ impl<T: Clone> Arena<T> {
             self.starts.pop();
             let older = self.chunks.pop().expect("chunk");
             let start = self.starts.pop().expect("start");
-            let mut merged = Vec::with_capacity(older.len() + newer.len());
-            merged.extend(Rc::try_unwrap(older).unwrap_or_else(|chunk| (*chunk).clone()));
-            merged.extend(Rc::try_unwrap(newer).unwrap_or_else(|chunk| (*chunk).clone()));
             self.starts.push(start);
-            self.chunks.push(Rc::new(merged));
+            self.chunks.push(Rc::new(Chunk::join(older, newer)));
         }
         self.hint.set(0);
     }
@@ -248,7 +382,7 @@ impl<T: Clone> Arena<T> {
         }
         let mut entries = Vec::with_capacity(self.len());
         for chunk in self.chunks.drain(..) {
-            entries.extend(Rc::try_unwrap(chunk).unwrap_or_else(|chunk| (*chunk).clone()));
+            Chunk::append_entries(chunk, &mut entries);
         }
         entries.append(&mut self.tail);
         self.starts.clear();
@@ -270,8 +404,8 @@ impl<T> Index<usize> for Arena<T> {
         if id >= self.frozen {
             return &self.tail[id - self.frozen];
         }
-        let (chunk, index) = self.chunk(id);
-        &self.chunks[chunk][index]
+        let (start, leaf) = self.leaf(id);
+        &leaf[id - start]
     }
 }
 
@@ -281,7 +415,9 @@ impl<T: Clone> IndexMut<usize> for Arena<T> {
             return &mut self.tail[id - self.frozen];
         }
         let (chunk, index) = self.chunk(id);
-        &mut Rc::make_mut(&mut self.chunks[chunk])[index]
+        Rc::make_mut(&mut self.chunks[chunk])
+            .get_mut(index)
+            .expect("arena index")
     }
 }
 
@@ -289,12 +425,7 @@ impl<'a, T> IntoIterator for &'a Arena<T> {
     type Item = &'a T;
     type IntoIter = Iter<'a, T>;
     fn into_iter(self) -> Iter<'a, T> {
-        Iter {
-            arena: self,
-            front: 0,
-            back: self.len(),
-            chunk: 0,
-        }
+        self.iter()
     }
 }
 
@@ -302,8 +433,9 @@ pub struct Iter<'a, T> {
     arena: &'a Arena<T>,
     front: usize,
     back: usize,
-    /// The chunk holding `front`, once found.
-    chunk: usize,
+    /// Leaves for sequential access without descending the tree per entry.
+    front_leaf: (usize, &'a [T]),
+    back_leaf: (usize, &'a [T]),
 }
 
 impl<T> Clone for Iter<'_, T> {
@@ -312,29 +444,40 @@ impl<T> Clone for Iter<'_, T> {
             arena: self.arena,
             front: self.front,
             back: self.back,
-            chunk: self.chunk,
+            front_leaf: self.front_leaf,
+            back_leaf: self.back_leaf,
         }
     }
 }
 
 impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        if n >= self.back.saturating_sub(self.front) {
+            self.front = self.back;
+            return None;
+        }
+        self.front += n;
+        self.next()
+    }
+
+    fn count(self) -> usize {
+        self.back.saturating_sub(self.front)
+    }
+
+    fn last(mut self) -> Option<Self::Item> {
+        self.next_back()
+    }
+
     fn next(&mut self) -> Option<&'a T> {
         if self.front >= self.back {
             return None;
         }
-        let arena = self.arena;
-        let entry = if self.front >= arena.frozen {
-            &arena.tail[self.front - arena.frozen]
-        } else {
-            if self.chunk >= arena.chunks.len()
-                || self.front < arena.starts[self.chunk]
-                || self.front - arena.starts[self.chunk] >= arena.chunks[self.chunk].len()
-            {
-                self.chunk = arena.chunk(self.front).0;
-            }
-            &arena.chunks[self.chunk][self.front - arena.starts[self.chunk]]
-        };
+        let (start, leaf) = self.front_leaf;
+        if self.front < start || self.front - start >= leaf.len() {
+            self.front_leaf = self.arena.leaf(self.front);
+        }
+        let entry = &self.front_leaf.1[self.front - self.front_leaf.0];
         self.front += 1;
         Some(entry)
     }
@@ -345,12 +488,25 @@ impl<'a, T> Iterator for Iter<'a, T> {
 }
 
 impl<T> DoubleEndedIterator for Iter<'_, T> {
+    fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
+        if n >= self.back.saturating_sub(self.front) {
+            self.front = self.back;
+            return None;
+        }
+        self.back -= n;
+        self.next_back()
+    }
+
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.front >= self.back {
             return None;
         }
         self.back -= 1;
-        Some(&self.arena[self.back])
+        let (start, leaf) = self.back_leaf;
+        if self.back < start || self.back - start >= leaf.len() {
+            self.back_leaf = self.arena.leaf(self.back);
+        }
+        Some(&self.back_leaf.1[self.back - self.back_leaf.0])
     }
 }
 
@@ -367,6 +523,63 @@ impl<'a, T: Clone> IntoIterator for &'a mut Arena<T> {
 #[cfg(test)]
 mod tests {
     use super::Arena;
+
+    #[test]
+    fn snapshots_do_not_copy_entries_and_writes_copy_a_bounded_leaf() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct Counted(Rc<Cell<usize>>);
+        impl Clone for Counted {
+            fn clone(&self) -> Self {
+                self.0.set(self.0.get() + 1);
+                Self(self.0.clone())
+            }
+        }
+        let copies = Rc::new(Cell::new(0));
+        let mut arena = Arena::new();
+        let mut versions = Vec::new();
+        for _ in 0..300 {
+            arena.extend((0..70).map(|_| Counted(copies.clone())));
+            arena.freeze();
+            versions.push(arena.clone());
+        }
+        assert_eq!(copies.get(), 0, "freezing and merging only share entries");
+        arena[2000] = Counted(copies.clone());
+        assert!(copies.get() <= super::LEAF_SIZE);
+        assert_eq!(versions.last().unwrap().len(), 21000);
+    }
+
+    #[test]
+    fn mixed_direction_iteration_crosses_leaves_and_chunks() {
+        let mut arena = Arena::new();
+        for count in [900, 170, 13] {
+            let start = arena.len();
+            arena.extend(start..start + count);
+            arena.freeze();
+        }
+        arena.extend(arena.len()..1200);
+        let mut entries = arena.range(11..1192);
+        let mut expected = 11..1192;
+        while !expected.is_empty() {
+            assert_eq!(entries.len(), expected.len());
+            assert_eq!(entries.next().copied(), expected.next());
+            assert_eq!(entries.next_back().copied(), expected.next_back());
+        }
+        assert_eq!(entries.next(), None);
+        assert_eq!(entries.next_back(), None);
+        assert_eq!(
+            arena.iter().rev().copied().collect::<Vec<_>>(),
+            (0..1200).rev().collect::<Vec<_>>()
+        );
+        let mut entries = arena.iter();
+        assert_eq!(entries.nth(299), Some(&299));
+        assert_eq!(entries.nth_back(299), Some(&900));
+        assert_eq!(entries.clone().count(), 600);
+        assert_eq!(entries.clone().last(), Some(&899));
+        assert_eq!(entries.nth(usize::MAX), None);
+        assert_eq!(entries.len(), 0);
+    }
 
     #[test]
     fn frozen_versions_preserve_values_and_ids() {

@@ -1,0 +1,11 @@
+    Checking equivalent v1.0.2
+    Checking allocator-api2 v0.2.21
+    Checking foldhash v0.2.0
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase52/project)
+    Checking rquickjs-sys v0.14.0 (/private/tmp/light-cljs-phase52/project/vendor/rquickjs-sys)
+    Checking libmimalloc-sys v0.1.49
+    Checking mimalloc v0.1.52
+    Checking hashbrown v0.17.1
+    Checking rquickjs-core v0.14.0
+    Checking rquickjs v0.14.0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.61s

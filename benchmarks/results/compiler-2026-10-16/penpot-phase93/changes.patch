@@ -1,0 +1,18 @@
+diff --git a/src/compiler_roots.js b/src/compiler_roots.js
+index b99baa1..b19976c 100644
+--- a/src/compiler_roots.js
++++ b/src/compiler_roots.js
+@@ -50,7 +50,12 @@
+     if (overlays.has(name)) return overlays.get(name);
+     const owner = installing.at(-1);
+     if (owner?.group && owner.names.includes(name)) return forceSlot(name, {unit: -1, bundle: owner});
+-    return forceSlot(name, declarationSlot(name));
++    // Ready ordinary roots no longer need declaration traversal or forcing.
++    // Overlays and an executing declaration group still take precedence.
++    let slot = slots.get(name);
++    if (slot?.state === 'ready' && !slot.bundle) return slot.value;
++    while (slot?.bundle && !slot.bundle.group && slot.bundle.order > declarationFrontier) slot = slot.bundle.previous.get(name);
++    return forceSlot(name, slot);
+   }
+   function forceSlot(name, slot) {
+     if (!slot || slot.unit === null) throw new Error((slot?.location ? slot.location + ': ' : '') + 'unavailable definition: ' + name);

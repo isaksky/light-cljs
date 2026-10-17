@@ -1,0 +1,111 @@
+diff --git a/src/compiler_roots.js b/src/compiler_roots.js
+index b99baa1..6053976 100644
+--- a/src/compiler_roots.js
++++ b/src/compiler_roots.js
+@@ -158,7 +158,11 @@
+     __lightRuntimeForCompiler.setDeclarationDemand((protocol, value, typeName) => {
+       if (frontier === 0) return;
+       const native = value == null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+-      if (demanded.get(protocol)?.get(native)?.has(typeName)) return;
++      const cached = demanded.get(protocol);
++      if (cached?.native === native && cached.type === typeName) return;
++      if (cached?.selectors.get(native)?.has(typeName)) {
++        cached.native = native; cached.type = typeName; return;
++      }
+       const epoch = demandEpoch;
+       const entries = typeof protocol === 'string' && protocol.startsWith('multifn:') && protocol !== 'multifn:*'
+         ? [...(extensions.get(protocol) ?? []), ...(extensions.get('multifn:*') ?? [])]
+@@ -169,11 +173,12 @@
+         if (selector === null || selector === '_' || selector === native || selector === '@' + typeName) forceBundle(bundle);
+       }
+       if (epoch === demandEpoch) {
+-        let selectors = demanded.get(protocol);
+-        if (!selectors) demanded.set(protocol, selectors = new Map());
+-        let types = selectors.get(native);
+-        if (!types) selectors.set(native, types = new Set());
++        let cached = demanded.get(protocol);
++        if (!cached) demanded.set(protocol, cached = {selectors: new Map()});
++        let types = cached.selectors.get(native);
++        if (!types) cached.selectors.set(native, types = new Set());
+         types.add(typeName);
++        cached.native = native; cached.type = typeName;
+       }
+     });
+   };
+diff --git a/src/js_runtime.js b/src/js_runtime.js
+index eada146..17091bc 100644
+--- a/src/js_runtime.js
++++ b/src/js_runtime.js
+@@ -4523,13 +4523,16 @@
+     const methodProtocols = new Map();
+     demandProtocol = (key, value) => { if (demand) demand(key, value, typeNames.get(value?.constructor)); };
+     demandMethod = (key, arity, value) => {
+-      if (arity === 0) return demandProtocol(key, value);
+-      let protocol = methodProtocols.get(key);
+-      if (protocol === undefined) {
+-        protocol = key.slice(0, key.lastIndexOf("/"));
+-        methodProtocols.set(key, protocol);
++      if (!demand) return;
++      let protocol = key;
++      if (arity !== 0) {
++        protocol = methodProtocols.get(key);
++        if (protocol === undefined) {
++          protocol = key.slice(0, key.lastIndexOf("/"));
++          methodProtocols.set(key, protocol);
++        }
+       }
+-      return demandProtocol(protocol, value);
++      return demand(protocol, value, typeNames.get(value?.constructor));
+     };
+     demandMulti = mf => { if (demand) demand("multifn:" + print(mf.name, false), mf); };
+   }
+diff --git a/src/evaluator.rs b/src/evaluator.rs
+index f9b1d84..6455a5d 100644
+--- a/src/evaluator.rs
++++ b/src/evaluator.rs
+@@ -1693,6 +1693,45 @@ mod active_tests {
+         assert_eq!(Rc::strong_count(&evaluator), 1);
+     }
+ 
++    #[test]
++    fn declaration_demand_cache_observes_types_registration_frontiers_and_receivers() {
++        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
++        let setup = evaluator.evaluate_unit(r#"rt => {
++            globalThis.__lightRuntimeForCompiler = {...rt, setDeclarationDemand(demand) {
++                globalThis.probeDemand = demand;
++                rt.setDeclarationDemand(demand);
++            }};
++        }"#).unwrap();
++        evaluator.release(setup).unwrap();
++        let registry = evaluator.evaluate_js(include_str!("compiler_roots.js")).unwrap();
++        evaluator.release(registry).unwrap();
++        let result = evaluator.evaluate_js(r#"(() => {
++            const events = [];
++            const register = (selector, name) => __lightRegisterBundle([], () => events.push(name),
++                [['Probe', selector, name]], name);
++            register('@A', 'A'); register('@B', 'B');
++            probeDemand('Probe', {}, 'A'); probeDemand('Probe', {}, 'A');
++            probeDemand('Probe', {}, 'B'); probeDemand('Probe', {}, 'A');
++            probeDemand('Probe', 'text', undefined);
++            register('string', 'string');
++            probeDemand('Probe', 'text', undefined);
++            probeDemand('Probe', {}, 'B'); probeDemand('Probe', 'text', undefined);
++            __lightEnterCompilerFrontier(0);
++            register('number', 'number'); probeDemand('Probe', 1, undefined);
++            const beforeLeave = events.join(',');
++            __lightLeaveCompilerFrontier();
++            probeDemand('Probe', 1, undefined); probeDemand('Probe', 1, undefined);
++            const value = rt.core.vector(1);
++            let reads = 0;
++            Object.defineProperty(value, 'constructor', {get() { reads++; return Object; }});
++            const first = rt.core.count(value), afterFirst = reads;
++            const second = rt.core.count(value);
++            return JSON.stringify([beforeLeave, events.join(','), first, second, afterFirst > 0, reads > afterFirst]);
++        })()"#).unwrap();
++        assert_eq!(evaluator.string(result).unwrap(), "[\"A,B,string\",\"A,B,string,number\",1,1,true,true]");
++        evaluator.release(result).unwrap();
++    }
++
+     #[test]
+     fn frontier_replay_includes_an_earlier_bundle_initialized_by_a_proxy_patch() {
+         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

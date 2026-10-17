@@ -1,0 +1,2 @@
+render: application body matches phase6b after excluding instrumented runtime; node --check passes.
+main: application body matches phase6b after excluding instrumented runtime; node --check passes.

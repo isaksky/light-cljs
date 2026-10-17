@@ -1,0 +1,123 @@
+diff --git a/src/layered.rs b/src/layered.rs
+index 4aba83f..5d90267 100644
+--- a/src/layered.rs
++++ b/src/layered.rs
+@@ -6,14 +6,14 @@ use std::hash::Hash;
+ use std::rc::Rc;
+ 
+ /// A map whose frames share its entries by reference. Entries are written to
+-/// a small layer of this map's own, over a base shared with every frame taken
+-/// from it; when the layer grows past a bound, the two are merged into a new
+-/// base, so a frame costs the layer and a lookup costs two probes.
++/// a small layer over a shared base. Both are shared until a write, so a frame
++/// costs two reference increments and a lookup costs two probes. Once the
++/// layer grows past a bound, the two are merged into a new base.
+ #[derive(Debug)]
+ pub struct Layered<K, V> {
+     base: Rc<HashMap<K, V>>,
+     /// This map's entries over `base`; `None` removes a base entry.
+-    own: HashMap<K, Option<V>>,
++    own: Rc<HashMap<K, Option<V>>>,
+     len: usize,
+ }
+ 
+@@ -30,7 +30,7 @@ impl<K, V> Default for Layered<K, V> {
+     fn default() -> Self {
+         Self {
+             base: Rc::new(HashMap::new()),
+-            own: HashMap::new(),
++            own: Rc::new(HashMap::new()),
+             len: 0,
+         }
+     }
+@@ -91,13 +91,13 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
+             // Compact first: the entry must stay in the own layer to be
+             // returned from it.
+             self.compact();
+-            self.own.insert(key.to_owned(), Some(value));
++            Rc::make_mut(&mut self.own).insert(key.to_owned(), Some(value));
+         }
+-        self.own.get_mut(key)?.as_mut()
++        Rc::make_mut(&mut self.own).get_mut(key)?.as_mut()
+     }
+ 
+     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+-        let previous = match self.own.insert(key.clone(), Some(value)) {
++        let previous = match Rc::make_mut(&mut self.own).insert(key.clone(), Some(value)) {
+             Some(previous) => previous,
+             None => self.base.get(&key).cloned(),
+         };
+@@ -114,12 +114,12 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
+         Q: ?Sized + Hash + Eq + ToOwned<Owned = K>,
+     {
+         let previous = if self.base.contains_key(key) {
+-            match self.own.insert(key.to_owned(), None) {
++            match Rc::make_mut(&mut self.own).insert(key.to_owned(), None) {
+                 Some(previous) => previous,
+                 None => self.base.get(key).cloned(),
+             }
+         } else {
+-            self.own.remove(key).flatten()
++            Rc::make_mut(&mut self.own).remove(key).flatten()
+         };
+         if previous.is_some() {
+             self.len -= 1;
+@@ -153,7 +153,7 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
+             return;
+         }
+         let mut merged = (*self.base).clone();
+-        for (key, value) in self.own.drain() {
++        for (key, value) in Rc::make_mut(&mut self.own).drain() {
+             match value {
+                 Some(value) => {
+                     merged.insert(key, value);
+@@ -185,7 +185,7 @@ impl<K: Eq + Hash + Clone, V: Clone> FromIterator<(K, V)> for Layered<K, V> {
+         Self {
+             len: base.len(),
+             base: Rc::new(base),
+-            own: HashMap::new(),
++            own: Rc::new(HashMap::new()),
+         }
+     }
+ }
+@@ -194,6 +194,40 @@ impl<K: Eq + Hash + Clone, V: Clone> FromIterator<(K, V)> for Layered<K, V> {
+ mod tests {
+     use super::Layered;
+ 
++    #[test]
++    fn frames_keep_own_entries_across_mutation_removal_and_compaction() {
++        let mut map = Layered::<String, Vec<usize>>::default();
++        let mut oracle = std::collections::HashMap::<String, Vec<usize>>::new();
++        let mut frames = Vec::new();
++        for i in 0..240 {
++            let key = format!("k{i}");
++            map.insert(key.clone(), vec![i]);
++            oracle.insert(key, vec![i]);
++            if i % 7 == 0 {
++                frames.push((map.clone(), oracle.clone()));
++            }
++            let previous = format!("k{}", i / 2);
++            map.entry_or_default(previous.clone()).push(i + 1000);
++            oracle.entry(previous.clone()).or_default().push(i + 1000);
++            if i % 3 == 0 {
++                assert_eq!(map.remove(&previous), oracle.remove(&previous));
++            }
++            if let Some(value) = map.get_mut("k0") {
++                value.push(i);
++                oracle.get_mut("k0").unwrap().push(i);
++            }
++        }
++        frames.push((map.clone(), oracle));
++        map.clear();
++        for (frame, expected) in frames {
++            assert_eq!(frame.len(), expected.len());
++            assert_eq!(frame.iter().count(), expected.len());
++            for (key, value) in expected {
++                assert_eq!(frame.get(&key), Some(&value));
++            }
++        }
++    }
++
+     #[test]
+     fn get_mut_survives_compaction_boundary() {
+         let mut map: Layered<String, Vec<u32>> =

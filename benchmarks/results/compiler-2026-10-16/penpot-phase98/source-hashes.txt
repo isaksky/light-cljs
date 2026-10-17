@@ -1,0 +1,6 @@
+e0ec0e760d55b9c8e67f86247bf8eaaf5906b266cd7dc20f9d9fad8cc8130f84  /private/tmp/light-cljs-phase98/light-cljs-retained-program-probe
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase98/main-none.js
+3d70de3e1f135a47c0f84f7b2fa23430909890655e91f2eb2f9eef3b34d148f8  /private/tmp/light-cljs-phase98/project/src/allocation_probe.rs
+8aaff4572dfcf7a4b6c7d5afcf2689c6556d2d0f8856b1680883b068cc58b29a  /private/tmp/light-cljs-phase98/project/src/lib.rs
+ee5aabbaecacca3ff0f26e7f38af64f2702919da11d573fb315f48fc306ac5ea  /private/tmp/light-cljs-phase98/project/src/main.rs
+25ee5b25f73438b061d84b0fe5cd6a3dcd656ab0204667d591bf5a4b80874aa5  /private/tmp/light-cljs-phase98/project/src/compilation_session.rs

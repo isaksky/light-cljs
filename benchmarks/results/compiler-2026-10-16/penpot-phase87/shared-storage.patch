@@ -1,0 +1,713 @@
+diff --git a/docs/compiler.md b/docs/compiler.md
+index 9f3701a..2d60e2c 100644
+--- a/docs/compiler.md
++++ b/docs/compiler.md
+@@ -73,6 +73,11 @@ come from a pinned public declaration table (`src/core_var_metadata.tsv`,
+ `src/core_public_bindings.tsv`) filtered by the executable compiler registry.
+ Source macro metadata remains inspectable without exposing its closure.
+ 
++The analyzer's private reader view resolves declared binding spellings only
++when syntax quotation reads them, using the current definition snapshot's name
++index. It does not rebuild binding-kind tables by scanning earlier expressions.
++The public `NamespaceView` still exposes its complete binding introspection.
++
+ The pure compiler seed in `compiler_binding_macros` and `compiler_destructuring`
+ expands binding/function declarations and their extended map patterns.
+ Protocol/type/record analysis is compiler-owned; method forms use the same seed.
+diff --git a/docs/evaluator.md b/docs/evaluator.md
+index 8ec4994..e2830c9 100644
+--- a/docs/evaluator.md
++++ b/docs/evaluator.md
+@@ -301,7 +301,12 @@ assembly. `program_fragment` remaps arena IDs while preserving binding identity
+ and original locations. Definition snapshots share frozen program tables and
+ record their prefix lengths. Changes copy a bounded leaf and its tree path,
+ preserving the older view. Assembly appends only what the unit itself added, so
+-the assembled program grows linearly with its definitions. Compile-time emission uses the ordinary emitter with
++the assembled program grows linearly with its definitions. Namespace names use
++the same frozen arena, and namespace entry maps share bounded write layers.
++Macro metadata frames share both their base and their pending write layer until
++mutation. Completed units release their boxed definition snapshot and macro host;
++their retained program tables shed spare capacity without changing IDs or values.
++Compile-time emission uses the ordinary emitter with
+ root access hooks and never invokes an application optimizer. Ready root reads
+ stay in JS. Completed or failed roots release their initializer closures and
+ retain their value or error; Rust records that emission occurred without keeping
+diff --git a/src/analyzer.rs b/src/analyzer.rs
+index 260384e..c433dc0 100644
+--- a/src/analyzer.rs
++++ b/src/analyzer.rs
+@@ -2580,12 +2580,12 @@ pub struct RuntimeReaderNamespace {
+ #[derive(Clone, Debug, PartialEq)]
+ pub struct Program {
+     /// Source namespaces present in this unit, including namespaces without Vars.
+-    pub namespaces: crate::shared::Shared<Vec<String>>,
++    pub namespaces: crate::arena::Arena<String>,
+     /// Explicit source reader contexts; runtime reads never consult a loader.
+     pub reader_contexts: crate::shared::Shared<
+         crate::layered::Layered<String, crate::shared::Shared<RuntimeReaderNamespace>>,
+     >,
+-    pub namespace_entries: crate::shared::Shared<HashMap<ExprId, String>>,
++    pub namespace_entries: crate::shared::Shared<crate::layered::Layered<ExprId, String>>,
+     pub compilation_uses: Vec<CompilationUse>,
+     pub exprs: crate::arena::Arena<Expr>,
+     pub locals: crate::arena::Arena<LocalBinding>,
+@@ -2632,6 +2632,7 @@ impl Program {
+     /// Freeze every table, so a clone shares the entries so far instead of
+     /// copying them; see [`crate::arena::Arena::freeze`].
+     pub fn freeze(&mut self) {
++        self.namespaces.freeze();
+         self.exprs.freeze();
+         self.locals.freeze();
+         self.recur_targets.freeze();
+@@ -2640,6 +2641,17 @@ impl Program {
+         self.strings.freeze();
+         self.named_literals.freeze();
+     }
++
++    pub(crate) fn shrink_to_fit(&mut self) {
++        self.namespaces.shrink_to_fit();
++        self.exprs.shrink_to_fit();
++        self.locals.shrink_to_fit();
++        self.recur_targets.shrink_to_fit();
++        self.globals.shrink_to_fit();
++        self.js_globals.shrink_to_fit();
++        self.strings.shrink_to_fit();
++        self.named_literals.shrink_to_fit();
++    }
+ }
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+@@ -2929,17 +2941,8 @@ struct Analyzer<'a> {
+ /// extended with the declarations made since it was built.
+ struct ReaderView {
+     view: crate::compiler_reader::NamespaceView,
+-    /// Only these namespaces can override qualification in this private view.
+-    binding_namespaces: std::collections::HashSet<String>,
+-    /// The globals the view covers.
++    /// The globals whose namespace-local refers are already installed.
+     globals: usize,
+-    /// Covered globals that were not declared when they were seen.
+-    undeclared: Vec<usize>,
+-    /// The expressions scanned for declaration kinds.
+-    exprs: usize,
+-    kinds: HashMap<usize, crate::compiler_reader::BindingKind>,
+-    /// The locals referring to each qualified name.
+-    refer_locals: HashMap<crate::compiler_data::Name, Vec<crate::compiler_data::Name>>,
+     /// A hash of the inputs a view is rebuilt for rather than extended with:
+     /// the aliases, refers, excludes and macro count.
+     inputs: u64,
+@@ -9523,8 +9526,27 @@ impl Analyzer<'_> {
+         self.update_reader_view();
+         let source = self.macro_source.as_ref().expect("reader view source");
+         let view = &self.reader_view.as_ref().expect("reader view").view;
+-        self.macro_host
+-            .lower_form_in_view(source, &self.syntax, id, view, &self.discards)
++        // Only the spelling of a binding affects syntax quotation. Resolve
++        // names that are actually read against this analyzer's current snapshot.
++        let bindings = |name: &crate::compiler_data::Name| {
++            let target = if name.namespace().is_some() {
++                name
++            } else {
++                view.refers.get(name)?
++            };
++            let namespace = String::from_utf16(target.namespace()?).ok()?;
++            let member = String::from_utf16(target.name()).ok()?;
++            let id = self.globals.get(&(namespace, member))?;
++            self.program.globals[id.0].declared.then(|| target.clone())
++        };
++        self.macro_host.lower_form_in_view(
++            source,
++            &self.syntax,
++            id,
++            view,
++            &self.discards,
++            Some(&bindings),
++        )
+     }
+ 
+     /// Build the reader's view of this namespace, or extend the one built for
+@@ -9533,7 +9555,6 @@ impl Analyzer<'_> {
+     /// changed.
+     fn update_reader_view(&mut self) {
+         use crate::compiler_data::Name;
+-        use crate::compiler_reader::{BindingId, BindingKind, ResolvedBinding};
+         let aliases = self
+             .macro_host
+             .reader_aliases(self.namespace, self.aliases, self.requires);
+@@ -9576,15 +9597,6 @@ impl Analyzer<'_> {
+                 .iter()
+                 .map(|(a, n, v)| (Name::new(None, a), Name::new(Some(n), v)))
+                 .collect();
+-            // By target, the locals referring to it, from the final mapping: a
+-            // later entry for a local replaces an earlier one.
+-            let mut refer_locals: HashMap<Name, Vec<Name>> = HashMap::new();
+-            for (local, target) in &view.refers {
+-                refer_locals
+-                    .entry(target.clone())
+-                    .or_default()
+-                    .push(local.clone());
+-            }
+             view.excludes = self
+                 .resolution
+                 .excludes
+@@ -9592,101 +9604,23 @@ impl Analyzer<'_> {
+                 .map(|n| Name::new(None, n))
+                 .collect();
+             self.macro_host.register_macro_view(&mut view);
+-            // The compiler reader only asks this private view to qualify names.
+-            // A qualified binding outside aliases, refers and the current namespace
+-            // would return its input unchanged, just like ordinary qualification.
+-            // Keep every namespace that can override that result; the public
+-            // NamespaceView binding-introspection surface is unchanged.
+-            let binding_namespaces = globals
+-                .iter()
+-                .map(|(_, namespace, _)| namespace.clone())
+-                .chain(aliases.iter().map(|(alias, _)| alias.clone()))
+-                .chain(std::iter::once(self.namespace.to_owned()))
+-                .collect();
+             self.reader_view = Some(ReaderView {
+                 view,
+-                binding_namespaces,
+-                globals: 0,
+-                undeclared: Vec::new(),
+-                exprs: self.first_expr,
+-                kinds: HashMap::new(),
+-                refer_locals,
++                globals: self.program.globals.len(),
+                 inputs,
+             });
+         }
+         let cache = self.reader_view.as_mut().unwrap();
+-        // Declaration kinds from the expressions since the last form; a
+-        // covered global whose kind changed is bound again.
+-        let mut changed = Vec::new();
+-        for expr in self.program.exprs.tail_from(cache.exprs) {
+-            let (global, kind) = match &expr.kind {
+-                ExprKind::DefProtocol { global, .. } => (global.0, BindingKind::Protocol),
+-                ExprKind::DefType { global, record, .. } => (
+-                    global.0,
+-                    if *record {
+-                        BindingKind::Record
+-                    } else {
+-                        BindingKind::Type
+-                    },
+-                ),
+-                _ => continue,
+-            };
+-            if cache.kinds.insert(global, kind) != Some(kind) && global < cache.globals {
+-                changed.push(global);
+-            }
+-        }
+-        cache.exprs = self.program.exprs.len();
+-        // The globals since the last form, and earlier ones declared only now.
+-        let pending = std::mem::take(&mut cache.undeclared);
++        // A newly introduced local name shadows a refer even before its value
++        // is declared. Declared binding precedence is resolved on demand above.
+         let added = cache.globals..self.program.globals.len();
+         cache.globals = self.program.globals.len();
+-        for index in added.clone() {
+-            let global = &self.program.globals[index];
++        for global in self.program.globals.range(added) {
+             if global.namespace == self.namespace {
+-                let (local, target) = (
++                cache.view.refers.insert(
+                     Name::new(None, &global.name),
+                     Name::new(Some(&global.namespace), &global.name),
+                 );
+-                if let Some(previous) = cache.view.refers.insert(local.clone(), target.clone())
+-                    && let Some(locals) = cache.refer_locals.get_mut(&previous)
+-                {
+-                    locals.retain(|name| *name != local);
+-                }
+-                cache.refer_locals.entry(target).or_default().push(local);
+-            }
+-        }
+-        for index in pending.into_iter().chain(added).chain(changed) {
+-            let global = &self.program.globals[index];
+-            if !global.declared {
+-                cache.undeclared.push(index);
+-                continue;
+-            }
+-            cache.view.declaration_frontier = cache.view.declaration_frontier.max(index + 1);
+-            if !cache.binding_namespaces.contains(&global.namespace) {
+-                continue;
+-            }
+-            let qualified = Name::new(Some(&global.namespace), &global.name);
+-            let binding = ResolvedBinding {
+-                id: BindingId(index),
+-                kind: cache
+-                    .kinds
+-                    .get(&index)
+-                    .copied()
+-                    .unwrap_or(BindingKind::Value),
+-                name: qualified.clone(),
+-            };
+-            cache
+-                .view
+-                .bindings
+-                .insert(qualified.clone(), binding.clone());
+-            if global.namespace == self.namespace {
+-                cache
+-                    .view
+-                    .bindings
+-                    .insert(Name::new(None, &global.name), binding.clone());
+-            }
+-            for local in cache.refer_locals.get(&qualified).into_iter().flatten() {
+-                cache.view.bindings.insert(local.clone(), binding.clone());
+             }
+         }
+     }
+diff --git a/src/arena.rs b/src/arena.rs
+index c249f0b..05decc1 100644
+--- a/src/arena.rs
++++ b/src/arena.rs
+@@ -162,6 +162,24 @@ impl<T: PartialEq> PartialEq for Arena<T> {
+ 
+ impl<T: Eq> Eq for Arena<T> {}
+ 
++impl<T, U> PartialEq<Vec<U>> for Arena<T>
++where
++    T: PartialEq<U>,
++{
++    fn eq(&self, other: &Vec<U>) -> bool {
++        self.len() == other.len() && self.iter().zip(other).all(|(a, b)| a == b)
++    }
++}
++
++impl<T, U, const N: usize> PartialEq<[U; N]> for Arena<T>
++where
++    T: PartialEq<U>,
++{
++    fn eq(&self, other: &[U; N]) -> bool {
++        self.len() == N && self.iter().zip(other).all(|(a, b)| a == b)
++    }
++}
++
+ impl<T> From<Vec<T>> for Arena<T> {
+     fn from(tail: Vec<T>) -> Self {
+         Self {
+@@ -199,6 +217,14 @@ impl<T> Arena<T> {
+         self.tail.push(value);
+     }
+ 
++    /// Release spare capacity before retaining a completed analysis. Frozen
++    /// entries stay shared; no IDs or values change.
++    pub(crate) fn shrink_to_fit(&mut self) {
++        self.chunks.shrink_to_fit();
++        self.starts.shrink_to_fit();
++        self.tail.shrink_to_fit();
++    }
++
+     pub fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+         self.tail.extend(iter);
+     }
+diff --git a/src/compilation_session.rs b/src/compilation_session.rs
+index 98deb70..7ff5080 100644
+--- a/src/compilation_session.rs
++++ b/src/compilation_session.rs
+@@ -48,9 +48,11 @@ struct Unit {
+     name: String,
+     // Consumed by the one analysis. The analyzed result keeps any resolution
+     // data it needs; these inputs must not pin an obsolete second snapshot.
++    // Keep large inputs out of line so completed units retain no empty space
++    // for the definition snapshot or the macro host's many shared tables.
+     form: Option<Form>,
+-    snapshot: Option<DefinitionSnapshot>,
+-    host: MacroHost,
++    snapshot: Option<Box<DefinitionSnapshot>>,
++    host: Option<Box<MacroHost>>,
+     state: AnalysisState,
+     analyses: usize,
+     // The engine requests source when it first initializes a root. Its ready
+@@ -211,14 +213,15 @@ impl CompilationSession {
+             .register(name, Some(form), snapshot, host, false, location.clone())?
+             .unwrap();
+         let group = analyzed.is_some();
+-        if let Some(program) = analyzed {
++        if let Some(mut program) = analyzed {
++            program.shrink_to_fit();
+             let unit = self.catalog.borrow().units[unit].clone();
+             let mut unit = unit.borrow_mut();
+             unit.state = AnalysisState::Analyzed(Rc::new(program), Vec::new());
+             unit.analyses = 1;
+             unit.form = None;
+             unit.snapshot = None;
+-            unit.host = MacroHost::default();
++            unit.host = None;
+         }
+         let code = format!(
+             "(() => {{ let code; return rt => {{ code ??= (0,eval)(globalThis.__lightCompileUnit({unit})); return code(rt); }}; }})()"
+@@ -321,8 +324,8 @@ impl CompilationSession {
+                     request,
+                     name: name.clone(),
+                     form: Some(form),
+-                    snapshot: Some(snapshot),
+-                    host,
++                    snapshot: Some(Box::new(snapshot)),
++                    host: Some(Box::new(host)),
+                     state: AnalysisState::Unstarted,
+                     analyses: 0,
+                     emitted: false,
+@@ -400,13 +403,21 @@ impl CompilationSession {
+                 }
+                 AnalysisState::Unstarted => (),
+             }
+-            if self.catalog.borrow().stack.len() >= unit.host.limits.expansion_depth.min(64) {
++            if self.catalog.borrow().stack.len()
++                >= unit
++                    .host
++                    .as_ref()
++                    .expect("unstarted unit host")
++                    .limits
++                    .expansion_depth
++                    .min(64)
++            {
+                 let message =
+                     "compiler macro expansion depth limit exceeded in deferred units".to_owned();
+                 unit.state = AnalysisState::Failed(message.clone(), None);
+                 unit.form = None;
+                 unit.snapshot = None;
+-                unit.host = MacroHost::default();
++                unit.host = None;
+                 return Err(message);
+             }
+             unit.state = AnalysisState::Analyzing;
+@@ -416,10 +427,13 @@ impl CompilationSession {
+             let request = unit.request;
+             debug_assert!(request.generation > 0);
+             debug_assert_eq!(self.catalog.borrow().bindings[&unit.name].0, request.var);
+-            let mut host = unit.host.macro_analysis_frame();
+             // A unit is analyzed once; its registration-time host is not needed
+             // after its analysis frame is taken.
+-            unit.host = MacroHost::default();
++            let mut host = unit
++                .host
++                .take()
++                .expect("unstarted unit host")
++                .macro_analysis_frame();
+             if host.bootstrap.is_none() {
+                 host.bootstrap = bootstrap;
+             }
+@@ -451,16 +465,21 @@ impl CompilationSession {
+         };
+         let analysis = crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
+         let diagnostic = analysis.as_ref().err().cloned();
+-        let result = analysis.map(|(p, w)| (Rc::new(p), w)).map_err(|e| {
+-            let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
+-            format!(
+-                "{}:{}:{}: {}: {e}",
+-                loc.source,
+-                loc.line,
+-                loc.column,
+-                unit.borrow().name
+-            )
+-        });
++        let result = analysis
++            .map(|(mut p, w)| {
++                p.shrink_to_fit();
++                (Rc::new(p), w)
++            })
++            .map_err(|e| {
++                let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
++                format!(
++                    "{}:{}:{}: {}: {e}",
++                    loc.source,
++                    loc.line,
++                    loc.column,
++                    unit.borrow().name
++                )
++            });
+         unit.borrow_mut().state = match &result {
+             Ok((p, w)) => AnalysisState::Analyzed(p.clone(), w.clone()),
+             Err(e) => AnalysisState::Failed(e.clone(), diagnostic),
+@@ -543,6 +562,7 @@ mod retention_tests {
+                 completed += 1;
+                 assert!(unit.form.is_none());
+                 assert!(unit.snapshot.is_none());
++                assert!(unit.host.is_none());
+             }
+         }
+         assert!(completed > 0);
+diff --git a/src/compiler_reader.rs b/src/compiler_reader.rs
+index 93b985e..22b4cd9 100644
+--- a/src/compiler_reader.rs
++++ b/src/compiler_reader.rs
+@@ -255,6 +255,7 @@ struct Limits {
+ }
+ struct Lowerer<'a> {
+     data_reader: Option<&'a DataReader<'a>>,
++    bindings: Option<&'a BindingResolver<'a>>,
+     builder: DataBuilder,
+     source: &'a Source,
+     syntax: Syntax<'a>,
+@@ -333,7 +334,7 @@ impl Lowerer<'_> {
+         }
+     }
+     fn syntax_quote_name(&self, name: &Name) -> Name {
+-        self.view.qualify(name)
++        self.view.qualify_with(name, self.bindings)
+     }
+     fn error(&self, kind: LowerErrorKind, bytes: Range<usize>) -> ReadError {
+         ReadError {
+@@ -1492,6 +1493,12 @@ impl NamespaceView {
+             .or_else(|| self.core_bindings.get(&self.qualify(name)))
+     }
+     pub fn qualify(&self, name: &Name) -> Name {
++        self.qualify_with(name, None)
++    }
++    pub(crate) fn qualify_with(&self, name: &Name, bindings: Option<&BindingResolver<'_>>) -> Name {
++        if let Some(resolved) = bindings.and_then(|lookup| lookup(name)) {
++            return resolved;
++        }
+         if let Some(binding) = self.bindings.get(name) {
+             return binding.name.clone();
+         }
+@@ -1536,7 +1543,7 @@ impl NamespaceView {
+         }
+         if text.contains('.') {
+             if !text.starts_with('.') && text.ends_with('.') {
+-                let base = self.qualify(&Name::new(None, &text[..text.len() - 1]));
++                let base = self.qualify_with(&Name::new(None, &text[..text.len() - 1]), bindings);
+                 let mut suffix = base.name().to_vec();
+                 suffix.push(46);
+                 return Name::from_utf16(base.namespace(), &suffix);
+@@ -1578,8 +1585,9 @@ pub fn lower_form(
+     view: &NamespaceView,
+     discards: &[NodeId],
+ ) -> Result<Form, ReadError> {
+-    lower_form_with_reader(source, tree, root, view, discards, None)
++    lower_form_with_reader(source, tree, root, view, discards, None, None)
+ }
++pub(crate) type BindingResolver<'a> = dyn Fn(&Name) -> Option<Name> + 'a;
+ pub(crate) type DataReader<'a> =
+     dyn Fn(&Name, &Datum, &crate::compiler_data::SourceSpan) -> Result<Option<Datum>, String> + 'a;
+ pub(crate) fn lower_form_with_reader(
+@@ -1589,6 +1597,7 @@ pub(crate) fn lower_form_with_reader(
+     view: &NamespaceView,
+     discards: &[NodeId],
+     data_reader: Option<&DataReader<'_>>,
++    bindings: Option<&BindingResolver<'_>>,
+ ) -> Result<Form, ReadError> {
+     let span = &tree.nodes[root.0].span;
+     let mut discarded = discards
+@@ -1599,6 +1608,7 @@ pub(crate) fn lower_form_with_reader(
+     discarded.sort_by_key(|id| tree.nodes[id.0].span.start);
+     let mut lower = Lowerer {
+         data_reader,
++        bindings,
+         builder: DataBuilder,
+         source,
+         syntax: Syntax(&tree.nodes),
+diff --git a/src/dev_build.rs b/src/dev_build.rs
+index a53b451..b93e690 100644
+--- a/src/dev_build.rs
++++ b/src/dev_build.rs
+@@ -278,11 +278,15 @@ impl DevManifest {
+ /// puts its hooks in source order and drops the flag a definition lost; a
+ /// definition removed from the source keeps its last metadata, as it stays
+ /// defined. A client runs the before-load hooks in reverse.
+-pub(crate) fn program_hooks(program: &Program, namespaces: &[String]) -> [Vec<DevHook>; 2] {
++pub(crate) fn program_hooks<'a>(
++    program: &Program,
++    namespaces: impl IntoIterator<Item = &'a String>,
++) -> [Vec<DevHook>; 2] {
++    let namespaces = namespaces.into_iter().collect::<Vec<_>>();
+     let position = |namespace: &str| {
+         namespaces
+             .iter()
+-            .position(|known| known == namespace)
++            .position(|known| known.as_str() == namespace)
+             .unwrap_or(namespaces.len())
+     };
+     let mut definitions = program
+diff --git a/src/eval_compiler.rs b/src/eval_compiler.rs
+index 95b6207..de03eae 100644
+--- a/src/eval_compiler.rs
++++ b/src/eval_compiler.rs
+@@ -285,7 +285,7 @@ impl InteractiveCompiler {
+             self.host.register_macro_view(&mut view);
+             return self
+                 .host
+-                .lower_form_in_view(&source, &syntax, root, &view, &discards)
++                .lower_form_in_view(&source, &syntax, root, &view, &discards, None)
+                 .map(Some);
+         }
+     }
+diff --git a/src/layered.rs b/src/layered.rs
+index 4aba83f..e87917e 100644
+--- a/src/layered.rs
++++ b/src/layered.rs
+@@ -6,14 +6,14 @@ use std::hash::Hash;
+ use std::rc::Rc;
+ 
+ /// A map whose frames share its entries by reference. Entries are written to
+-/// a small layer of this map's own, over a base shared with every frame taken
+-/// from it; when the layer grows past a bound, the two are merged into a new
+-/// base, so a frame costs the layer and a lookup costs two probes.
++/// a small layer over a shared base. Both are shared until a write, so a frame
++/// costs two reference increments and a lookup costs two probes. Once the
++/// layer grows past a bound, the two are merged into a new base.
+ #[derive(Debug)]
+ pub struct Layered<K, V> {
+     base: Rc<HashMap<K, V>>,
+     /// This map's entries over `base`; `None` removes a base entry.
+-    own: HashMap<K, Option<V>>,
++    own: Rc<HashMap<K, Option<V>>>,
+     len: usize,
+ }
+ 
+@@ -30,7 +30,7 @@ impl<K, V> Default for Layered<K, V> {
+     fn default() -> Self {
+         Self {
+             base: Rc::new(HashMap::new()),
+-            own: HashMap::new(),
++            own: Rc::new(HashMap::new()),
+             len: 0,
+         }
+     }
+@@ -51,6 +51,10 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
+         self.len
+     }
+ 
++    pub fn is_empty(&self) -> bool {
++        self.len == 0
++    }
++
+     pub fn get<Q>(&self, key: &Q) -> Option<&V>
+     where
+         K: Borrow<Q>,
+@@ -91,13 +95,13 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
+             // Compact first: the entry must stay in the own layer to be
+             // returned from it.
+             self.compact();
+-            self.own.insert(key.to_owned(), Some(value));
++            Rc::make_mut(&mut self.own).insert(key.to_owned(), Some(value));
+         }
+-        self.own.get_mut(key)?.as_mut()
++        Rc::make_mut(&mut self.own).get_mut(key)?.as_mut()
+     }
+ 
+     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+-        let previous = match self.own.insert(key.clone(), Some(value)) {
++        let previous = match Rc::make_mut(&mut self.own).insert(key.clone(), Some(value)) {
+             Some(previous) => previous,
+             None => self.base.get(&key).cloned(),
+         };
+@@ -114,12 +118,12 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
+         Q: ?Sized + Hash + Eq + ToOwned<Owned = K>,
+     {
+         let previous = if self.base.contains_key(key) {
+-            match self.own.insert(key.to_owned(), None) {
++            match Rc::make_mut(&mut self.own).insert(key.to_owned(), None) {
+                 Some(previous) => previous,
+                 None => self.base.get(key).cloned(),
+             }
+         } else {
+-            self.own.remove(key).flatten()
++            Rc::make_mut(&mut self.own).remove(key).flatten()
+         };
+         if previous.is_some() {
+             self.len -= 1;
+@@ -153,7 +157,7 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
+             return;
+         }
+         let mut merged = (*self.base).clone();
+-        for (key, value) in self.own.drain() {
++        for (key, value) in Rc::make_mut(&mut self.own).drain() {
+             match value {
+                 Some(value) => {
+                     merged.insert(key, value);
+@@ -185,7 +189,15 @@ impl<K: Eq + Hash + Clone, V: Clone> FromIterator<(K, V)> for Layered<K, V> {
+         Self {
+             len: base.len(),
+             base: Rc::new(base),
+-            own: HashMap::new(),
++            own: Rc::new(HashMap::new()),
++        }
++    }
++}
++
++impl<K: Eq + Hash + Clone, V: Clone> Extend<(K, V)> for Layered<K, V> {
++    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, entries: I) {
++        for (key, value) in entries {
++            self.insert(key, value);
+         }
+     }
+ }
+@@ -194,6 +206,40 @@ impl<K: Eq + Hash + Clone, V: Clone> FromIterator<(K, V)> for Layered<K, V> {
+ mod tests {
+     use super::Layered;
+ 
++    #[test]
++    fn frames_keep_own_entries_across_mutation_removal_and_compaction() {
++        let mut map = Layered::<String, Vec<usize>>::default();
++        let mut oracle = std::collections::HashMap::<String, Vec<usize>>::new();
++        let mut frames = Vec::new();
++        for i in 0..240 {
++            let key = format!("k{i}");
++            map.insert(key.clone(), vec![i]);
++            oracle.insert(key, vec![i]);
++            if i % 7 == 0 {
++                frames.push((map.clone(), oracle.clone()));
++            }
++            let previous = format!("k{}", i / 2);
++            map.entry_or_default(previous.clone()).push(i + 1000);
++            oracle.entry(previous.clone()).or_default().push(i + 1000);
++            if i % 3 == 0 {
++                assert_eq!(map.remove(&previous), oracle.remove(&previous));
++            }
++            if let Some(value) = map.get_mut("k0") {
++                value.push(i);
++                oracle.get_mut("k0").unwrap().push(i);
++            }
++        }
++        frames.push((map.clone(), oracle));
++        map.clear();
++        for (frame, expected) in frames {
++            assert_eq!(frame.len(), expected.len());
++            assert_eq!(frame.iter().count(), expected.len());
++            for (key, value) in expected {
++                assert_eq!(frame.get(&key), Some(&value));
++            }
++        }
++    }
++
+     #[test]
+     fn get_mut_survives_compaction_boundary() {
+         let mut map: Layered<String, Vec<u32>> =
+diff --git a/src/macro_host.rs b/src/macro_host.rs
+index b486c94..8875bea 100644
+--- a/src/macro_host.rs
++++ b/src/macro_host.rs
+@@ -329,6 +329,7 @@ impl MacroHost {
+                     discard,
+                     &crate::compiler_reader::NamespaceView::new("cljs.user", source),
+                     &discards,
++                    None,
+                 )?;
+                 end = span.end;
+             }
+@@ -340,6 +341,7 @@ impl MacroHost {
+             root,
+             &crate::compiler_reader::NamespaceView::new("cljs.user", source),
+             &discards,
++            None,
+         )
+         .map(Some)
+     }
+@@ -482,6 +484,7 @@ impl MacroHost {
+         root: crate::NodeId,
+         view: &crate::compiler_reader::NamespaceView,
+         discards: &[crate::NodeId],
++        bindings: Option<&crate::compiler_reader::BindingResolver<'_>>,
+     ) -> Result<Form, crate::compiler_data::ReadError> {
+         let reader = |tag: &Name,
+                       value: &crate::compiler_data::Datum,
+@@ -510,6 +513,7 @@ impl MacroHost {
+             view,
+             discards,
+             Some(&reader),
++            bindings,
+         )
+     }
+     /// Configure imports without loading or evaluating code. Filesystem compilation

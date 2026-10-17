@@ -1,0 +1,4 @@
+js_runtime.test.js: exit 0
+execution.test.js: exit 0
+js_core_helpers.test.js: exit 0
+cargo fmt --check: exit 0

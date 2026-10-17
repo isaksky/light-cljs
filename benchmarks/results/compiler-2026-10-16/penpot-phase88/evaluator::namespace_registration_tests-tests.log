@@ -1,0 +1,12 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase88/project)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.64s
+     Running unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/debug/deps/light_cljs-0cf441d3ce5f8104)
+
+running 4 tests
+test evaluator::namespace_registration_tests::cached_namespace_registration_reexecutes_and_restores_each_source_view ... ok
+test evaluator::namespace_registration_tests::registration_callbacks_can_reenter_the_same_namespace ... ok
+test evaluator::namespace_registration_tests::registration_exception_stops_later_chunks_and_poison_is_terminal ... ok
+test evaluator::namespace_registration_tests::namespace_cache_eviction_keeps_execution_and_observes_eval_replacement ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 117 filtered out; finished in 0.03s
+

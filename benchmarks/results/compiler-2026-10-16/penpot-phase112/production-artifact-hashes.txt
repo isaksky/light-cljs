@@ -1,0 +1,4 @@
+c4ebf58b2154396ab276ae23fa65d49cfeedb029993fe8a7748fbdd92d6df3ef  /Users/admin/src/light-cljs/target/release/light-cljs
+6a08672c1c953627a78d6fa5e9d871901ae324a4fb92c1db4f06e085eb2fda4f  /private/tmp/light-cljs-phase112/production-bench/render.js
+ede2d0d766a439339ce037c50257592ea8044392fd8e2d1f9cd13dd01afd41b0  /private/tmp/light-cljs-phase112/production-bench/main-none.js
+d26eafee6d24ebda222caa4d3d197d2294217210e589d2305c980555b0c88ca9  /private/tmp/light-cljs-phase112/production-bench/main-advanced.js

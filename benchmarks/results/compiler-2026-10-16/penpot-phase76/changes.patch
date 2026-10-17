@@ -1,0 +1,307 @@
+diff --git a/src/analyzer.rs b/src/analyzer.rs
+index 6f6945c..db41455 100644
+--- a/src/analyzer.rs
++++ b/src/analyzer.rs
+@@ -2929,17 +2929,8 @@ struct Analyzer<'a> {
+ /// extended with the declarations made since it was built.
+ struct ReaderView {
+     view: crate::compiler_reader::NamespaceView,
+-    /// Only these namespaces can override qualification in this private view.
+-    binding_namespaces: std::collections::HashSet<String>,
+-    /// The globals the view covers.
++    /// The globals whose namespace-local refers are already installed.
+     globals: usize,
+-    /// Covered globals that were not declared when they were seen.
+-    undeclared: Vec<usize>,
+-    /// The expressions scanned for declaration kinds.
+-    exprs: usize,
+-    kinds: HashMap<usize, crate::compiler_reader::BindingKind>,
+-    /// The locals referring to each qualified name.
+-    refer_locals: HashMap<crate::compiler_data::Name, Vec<crate::compiler_data::Name>>,
+     /// A hash of the inputs a view is rebuilt for rather than extended with:
+     /// the aliases, refers, excludes and macro count.
+     inputs: u64,
+@@ -9536,8 +9527,27 @@ impl Analyzer<'_> {
+         self.update_reader_view();
+         let source = self.macro_source.as_ref().expect("reader view source");
+         let view = &self.reader_view.as_ref().expect("reader view").view;
+-        self.macro_host
+-            .lower_form_in_view(source, &self.syntax, id, view, &self.discards)
++        // Only the spelling of a binding affects syntax quotation. Resolve
++        // names that are actually read against this analyzer's current snapshot.
++        let bindings = |name: &crate::compiler_data::Name| {
++            let target = if name.namespace().is_some() {
++                name
++            } else {
++                view.refers.get(name)?
++            };
++            let namespace = String::from_utf16(target.namespace()?).ok()?;
++            let member = String::from_utf16(target.name()).ok()?;
++            let id = self.globals.get(&(namespace, member))?;
++            self.program.globals[id.0].declared.then(|| target.clone())
++        };
++        self.macro_host.lower_form_in_view(
++            source,
++            &self.syntax,
++            id,
++            view,
++            &self.discards,
++            Some(&bindings),
++        )
+     }
+ 
+     /// Build the reader's view of this namespace, or extend the one built for
+@@ -9546,7 +9556,6 @@ impl Analyzer<'_> {
+     /// changed.
+     fn update_reader_view(&mut self) {
+         use crate::compiler_data::Name;
+-        use crate::compiler_reader::{BindingId, BindingKind, ResolvedBinding};
+         let aliases = self
+             .macro_host
+             .reader_aliases(self.namespace, self.aliases, self.requires);
+@@ -9589,15 +9598,6 @@ impl Analyzer<'_> {
+                 .iter()
+                 .map(|(a, n, v)| (Name::new(None, a), Name::new(Some(n), v)))
+                 .collect();
+-            // By target, the locals referring to it, from the final mapping: a
+-            // later entry for a local replaces an earlier one.
+-            let mut refer_locals: HashMap<Name, Vec<Name>> = HashMap::new();
+-            for (local, target) in &view.refers {
+-                refer_locals
+-                    .entry(target.clone())
+-                    .or_default()
+-                    .push(local.clone());
+-            }
+             view.excludes = self
+                 .resolution
+                 .excludes
+@@ -9605,105 +9605,23 @@ impl Analyzer<'_> {
+                 .map(|n| Name::new(None, n))
+                 .collect();
+             self.macro_host.register_macro_view(&mut view);
+-            // The compiler reader only asks this private view to qualify names.
+-            // A qualified binding outside aliases, refers and the current namespace
+-            // would return its input unchanged, just like ordinary qualification.
+-            // Keep every namespace that can override that result; the public
+-            // NamespaceView binding-introspection surface is unchanged.
+-            let binding_namespaces = globals
+-                .iter()
+-                .map(|(_, namespace, _)| namespace.clone())
+-                .chain(aliases.iter().map(|(alias, _)| alias.clone()))
+-                .chain(std::iter::once(self.namespace.to_owned()))
+-                .collect();
+             self.reader_view = Some(ReaderView {
+                 view,
+-                binding_namespaces,
+-                globals: 0,
+-                undeclared: Vec::new(),
+-                exprs: self.first_expr,
+-                kinds: HashMap::new(),
+-                refer_locals,
++                globals: self.program.globals.len(),
+                 inputs,
+             });
+         }
+         let cache = self.reader_view.as_mut().unwrap();
+-        // Declaration kinds from the expressions since the last form; a
+-        // covered global whose kind changed is bound again.
+-        let mut changed = Vec::new();
+-        for expr in self.program.exprs.tail_from(cache.exprs) {
+-            let (global, kind) = match &expr.kind {
+-                ExprKind::DefProtocol { global, .. } => (global.0, BindingKind::Protocol),
+-                ExprKind::DefType { global, record, .. } => (
+-                    global.0,
+-                    if *record {
+-                        BindingKind::Record
+-                    } else {
+-                        BindingKind::Type
+-                    },
+-                ),
+-                _ => continue,
+-            };
+-            if cache.kinds.insert(global, kind) != Some(kind) && global < cache.globals {
+-                changed.push(global);
+-            }
+-        }
+-        cache.exprs = self.program.exprs.len();
+-        // The globals since the last form, and earlier ones declared only now.
+-        let pending = std::mem::take(&mut cache.undeclared);
++        // A newly introduced local name shadows a refer even before its value
++        // is declared. Declared binding precedence is resolved on demand above.
+         let added = cache.globals..self.program.globals.len();
+         cache.globals = self.program.globals.len();
+-        for global in self.program.globals.range(added.clone()) {
++        for global in self.program.globals.range(added) {
+             if global.namespace == self.namespace {
+-                let (local, target) = (
++                cache.view.refers.insert(
+                     Name::new(None, &global.name),
+                     Name::new(Some(&global.namespace), &global.name),
+                 );
+-                if let Some(previous) = cache.view.refers.insert(local.clone(), target.clone())
+-                    && let Some(locals) = cache.refer_locals.get_mut(&previous)
+-                {
+-                    locals.retain(|name| *name != local);
+-                }
+-                cache.refer_locals.entry(target).or_default().push(local);
+-            }
+-        }
+-        let existing = |index| (index, &self.program.globals[index]);
+-        for (index, global) in pending
+-            .into_iter()
+-            .map(existing)
+-            .chain(added.clone().zip(self.program.globals.range(added)))
+-            .chain(changed.into_iter().map(existing))
+-        {
+-            if !global.declared {
+-                cache.undeclared.push(index);
+-                continue;
+-            }
+-            cache.view.declaration_frontier = cache.view.declaration_frontier.max(index + 1);
+-            if !cache.binding_namespaces.contains(&global.namespace) {
+-                continue;
+-            }
+-            let qualified = Name::new(Some(&global.namespace), &global.name);
+-            let binding = ResolvedBinding {
+-                id: BindingId(index),
+-                kind: cache
+-                    .kinds
+-                    .get(&index)
+-                    .copied()
+-                    .unwrap_or(BindingKind::Value),
+-                name: qualified.clone(),
+-            };
+-            cache
+-                .view
+-                .bindings
+-                .insert(qualified.clone(), binding.clone());
+-            if global.namespace == self.namespace {
+-                cache
+-                    .view
+-                    .bindings
+-                    .insert(Name::new(None, &global.name), binding.clone());
+-            }
+-            for local in cache.refer_locals.get(&qualified).into_iter().flatten() {
+-                cache.view.bindings.insert(local.clone(), binding.clone());
+             }
+         }
+     }
+diff --git a/src/compiler_reader.rs b/src/compiler_reader.rs
+index 93b985e..22b4cd9 100644
+--- a/src/compiler_reader.rs
++++ b/src/compiler_reader.rs
+@@ -255,6 +255,7 @@ struct Limits {
+ }
+ struct Lowerer<'a> {
+     data_reader: Option<&'a DataReader<'a>>,
++    bindings: Option<&'a BindingResolver<'a>>,
+     builder: DataBuilder,
+     source: &'a Source,
+     syntax: Syntax<'a>,
+@@ -333,7 +334,7 @@ impl Lowerer<'_> {
+         }
+     }
+     fn syntax_quote_name(&self, name: &Name) -> Name {
+-        self.view.qualify(name)
++        self.view.qualify_with(name, self.bindings)
+     }
+     fn error(&self, kind: LowerErrorKind, bytes: Range<usize>) -> ReadError {
+         ReadError {
+@@ -1492,6 +1493,12 @@ impl NamespaceView {
+             .or_else(|| self.core_bindings.get(&self.qualify(name)))
+     }
+     pub fn qualify(&self, name: &Name) -> Name {
++        self.qualify_with(name, None)
++    }
++    pub(crate) fn qualify_with(&self, name: &Name, bindings: Option<&BindingResolver<'_>>) -> Name {
++        if let Some(resolved) = bindings.and_then(|lookup| lookup(name)) {
++            return resolved;
++        }
+         if let Some(binding) = self.bindings.get(name) {
+             return binding.name.clone();
+         }
+@@ -1536,7 +1543,7 @@ impl NamespaceView {
+         }
+         if text.contains('.') {
+             if !text.starts_with('.') && text.ends_with('.') {
+-                let base = self.qualify(&Name::new(None, &text[..text.len() - 1]));
++                let base = self.qualify_with(&Name::new(None, &text[..text.len() - 1]), bindings);
+                 let mut suffix = base.name().to_vec();
+                 suffix.push(46);
+                 return Name::from_utf16(base.namespace(), &suffix);
+@@ -1578,8 +1585,9 @@ pub fn lower_form(
+     view: &NamespaceView,
+     discards: &[NodeId],
+ ) -> Result<Form, ReadError> {
+-    lower_form_with_reader(source, tree, root, view, discards, None)
++    lower_form_with_reader(source, tree, root, view, discards, None, None)
+ }
++pub(crate) type BindingResolver<'a> = dyn Fn(&Name) -> Option<Name> + 'a;
+ pub(crate) type DataReader<'a> =
+     dyn Fn(&Name, &Datum, &crate::compiler_data::SourceSpan) -> Result<Option<Datum>, String> + 'a;
+ pub(crate) fn lower_form_with_reader(
+@@ -1589,6 +1597,7 @@ pub(crate) fn lower_form_with_reader(
+     view: &NamespaceView,
+     discards: &[NodeId],
+     data_reader: Option<&DataReader<'_>>,
++    bindings: Option<&BindingResolver<'_>>,
+ ) -> Result<Form, ReadError> {
+     let span = &tree.nodes[root.0].span;
+     let mut discarded = discards
+@@ -1599,6 +1608,7 @@ pub(crate) fn lower_form_with_reader(
+     discarded.sort_by_key(|id| tree.nodes[id.0].span.start);
+     let mut lower = Lowerer {
+         data_reader,
++        bindings,
+         builder: DataBuilder,
+         source,
+         syntax: Syntax(&tree.nodes),
+diff --git a/src/eval_compiler.rs b/src/eval_compiler.rs
+index fa27e7d..2d0ec8c 100644
+--- a/src/eval_compiler.rs
++++ b/src/eval_compiler.rs
+@@ -285,7 +285,7 @@ impl InteractiveCompiler {
+             self.host.register_macro_view(&mut view);
+             return self
+                 .host
+-                .lower_form_in_view(&source, &syntax, root, &view, &discards)
++                .lower_form_in_view(&source, &syntax, root, &view, &discards, None)
+                 .map(Some);
+         }
+     }
+diff --git a/src/macro_host.rs b/src/macro_host.rs
+index 7c2212e..8608d1d 100644
+--- a/src/macro_host.rs
++++ b/src/macro_host.rs
+@@ -349,6 +349,7 @@ impl MacroHost {
+                     discard,
+                     &crate::compiler_reader::NamespaceView::new("cljs.user", source),
+                     &discards,
++                    None,
+                 )?;
+                 end = span.end;
+             }
+@@ -360,6 +361,7 @@ impl MacroHost {
+             root,
+             &crate::compiler_reader::NamespaceView::new("cljs.user", source),
+             &discards,
++            None,
+         )
+         .map(Some)
+     }
+@@ -502,6 +504,7 @@ impl MacroHost {
+         root: crate::NodeId,
+         view: &crate::compiler_reader::NamespaceView,
+         discards: &[crate::NodeId],
++        bindings: Option<&crate::compiler_reader::BindingResolver<'_>>,
+     ) -> Result<Form, crate::compiler_data::ReadError> {
+         let reader = |tag: &Name,
+                       value: &crate::compiler_data::Datum,
+@@ -530,6 +533,7 @@ impl MacroHost {
+             view,
+             discards,
+             Some(&reader),
++            bindings,
+         )
+     }
+     /// Configure imports without loading or evaluating code. Filesystem compilation

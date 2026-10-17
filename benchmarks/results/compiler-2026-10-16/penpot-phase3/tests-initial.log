@@ -1,0 +1,8 @@
+        FAIL [   0.006s] (  78/1375) light-cljs macro_host::compiler_pure_tests::environment_reuse_preserves_local_shadow_chains_and_location
+    test macro_host::compiler_pure_tests::environment_reuse_preserves_local_shadow_chains_and_location ... FAILED
+        macro_host::compiler_pure_tests::environment_reuse_preserves_local_shadow_chains_and_location
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 99 filtered out; finished in 0.00s
+    thread 'macro_host::compiler_pure_tests::environment_reuse_preserves_local_shadow_chains_and_location' (130047254) panicked at src/macro_host.rs:1538:52:
+        PASS [   0.006s] (  79/1375) light-cljs macro_host::compiler_pure_tests::reader_environment_reuse_obeys_declaration_acknowledgement_and_old_views
+     Summary [ 122.541s] 1375 tests run: 1374 passed, 1 failed, 106 skipped
+        FAIL [   0.006s] (  78/1375) light-cljs macro_host::compiler_pure_tests::environment_reuse_preserves_local_shadow_chains_and_location

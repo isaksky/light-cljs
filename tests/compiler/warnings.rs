@@ -321,3 +321,67 @@ fn deferred_warning_placeholders_reuse_later_definition_identity() {
         42.0
     );
 }
+
+#[test]
+fn namespace_arity_index_retains_overloads_redefinitions_and_namespace_identity() {
+    use std::fs;
+    let root = TempDir::new("namespace-arity-index");
+    fs::create_dir_all(root.join("arity")).unwrap();
+    fs::write(
+        root.join("arity/a.cljs"),
+        "(ns arity.a)
+         (let [] (def f (fn [x] x)) (def f (fn [] nil)) (defrecord Pair [x y]))",
+    )
+    .unwrap();
+    fs::write(
+        root.join("arity/b.cljs"),
+        "(ns arity.b (:require [arity.a :as a]))
+         (let [] (defn f [x y] x)) (a/f) (a/f 1) (a/f 1 2)",
+    )
+    .unwrap();
+    fs::write(
+        root.join("arity/c.cljs"),
+        "(ns arity.c (:require [arity.b :as b] [arity.a :as a]))
+         (a/f) (a/f 1) (a/f 1 2) (a/->Pair 1) (b/f 1) (b/f 1 2)",
+    )
+    .unwrap();
+    let mut diagnostics = Vec::new();
+    light_cljs::compiler::compile_namespace_with_warnings(
+        "arity.c",
+        std::slice::from_ref(root.path()),
+        AnalysisOptions {
+            warning_mode: true,
+            ..AnalysisOptions::default()
+        },
+        &mut diagnostics,
+    )
+    .unwrap();
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|warning| (warning.source_index, warning.kind, warning.message.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                1,
+                "fn-arity",
+                "Wrong number of args (2) passed to arity.a/f"
+            ),
+            (
+                2,
+                "fn-arity",
+                "Wrong number of args (2) passed to arity.a/f"
+            ),
+            (
+                2,
+                "fn-arity",
+                "Wrong number of args (1) passed to arity.a/->Pair"
+            ),
+            (
+                2,
+                "fn-arity",
+                "Wrong number of args (1) passed to arity.b/f"
+            ),
+        ]
+    );
+}

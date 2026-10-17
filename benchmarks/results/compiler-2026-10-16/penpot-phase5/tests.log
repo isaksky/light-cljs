@@ -1,0 +1,1382 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID ce6295ce-394d-4619-9687-97794f6c4cad with nextest profile: default
+    Starting 1376 tests across 12 binaries (106 tests skipped)
+        PASS [   1.367s] (   1/1376) light-cljs::compiler hash_branch_effects::hash_branch_failures_leave_fresh_and_reused_hosts_usable
+        PASS [   1.456s] (   2/1376) light-cljs::compiler hash_branch_effects::phase_oracles::fixed_hash_collisions
+        PASS [   1.876s] (   3/1376) light-cljs::compiler residual_bodies::phase_oracles::residual_body_10
+        PASS [   1.876s] (   4/1376) light-cljs::compiler residual_bodies::phase_oracles::residual_body_0
+        PASS [   1.892s] (   5/1376) light-cljs::compiler residual_bodies::phase_oracles::residual_body_2
+        PASS [   2.084s] (   6/1376) light-cljs::compiler residual_source_context::phase_oracles::apply_test_namespace
+        PASS [   8.355s] (   7/1376) light-cljs::compiler hash_branch_effects::hash_branch_effects_execute_in_fresh_and_reused_phases_2
+        PASS [   8.715s] (   8/1376) light-cljs::compiler hash_branch_effects::hash_branch_effects_execute_in_fresh_and_reused_phases_3
+        PASS [   8.724s] (   9/1376) light-cljs::compiler hash_branch_effects::hash_branch_effects_execute_in_fresh_and_reused_phases_1
+        PASS [   8.755s] (  10/1376) light-cljs::compiler hash_branch_effects::hash_branch_effects_execute_in_fresh_and_reused_phases_5
+        PASS [   8.767s] (  11/1376) light-cljs::compiler hash_branch_effects::hash_branch_effects_execute_in_fresh_and_reused_phases_4
+        PASS [   9.061s] (  12/1376) light-cljs::compiler hash_branch_effects::hash_branch_effects_execute_in_fresh_and_reused_phases_0
+        PASS [  10.889s] (  13/1376) light-cljs::evaluation evaluator_conformance::historical_sci_cases_execute_their_dispositions_0
+        PASS [  10.657s] (  14/1376) light-cljs::evaluation evaluator_conformance::historical_sci_cases_execute_their_dispositions_3
+        PASS [   0.412s] (  15/1376) light-cljs application::tests::advanced_inertness_checks_replaced_operations_extensions_and_constructors
+        PASS [   0.328s] (  16/1376) light-cljs application::tests::generation_counters_distinguish_compile_demand_from_application_analysis
+        PASS [   0.011s] (  17/1376) light-cljs application::tests::optimization_levels_parse_print_order_and_convert_from_the_former_boolean
+        PASS [   0.008s] (  18/1376) light-cljs arena::tests::frozen_clone_mutation_and_truncation_are_isolated
+        PASS [   0.008s] (  19/1376) light-cljs arena::tests::frozen_versions_preserve_values_and_ids
+        PASS [   0.009s] (  20/1376) light-cljs arena::tests::mixed_direction_iteration_crosses_leaves_and_chunks
+        PASS [   0.008s] (  21/1376) light-cljs arena::tests::snapshots_do_not_copy_entries_and_writes_copy_a_bounded_leaf
+        PASS [   0.008s] (  22/1376) light-cljs chunks::tests::chunks_are_named_by_their_roots_and_long_names_by_a_hash
+        PASS [   0.007s] (  23/1376) light-cljs chunks::tests::signatures_are_bitsets_by_root_index
+        PASS [   0.321s] (  24/1376) light-cljs application::tests::macro_calls_do_not_prepare_applications_or_recompile_unchanged_units
+        PASS [  11.140s] (  25/1376) light-cljs::evaluation evaluator_conformance::historical_sci_cases_execute_their_dispositions_4
+        PASS [   0.306s] (  26/1376) light-cljs compilation_session::retention_tests::completed_units_release_their_analysis_inputs
+        PASS [   0.430s] (  27/1376) light-cljs compiler_bootstrap::tests::asynchronous_bootstrap_cancellation_recovers_reused_host
+        PASS [   0.346s] (  28/1376) light-cljs compiler_bootstrap::tests::cancelled_extension_bundle_rolls_back_before_reusing_host
+        PASS [   0.433s] (  29/1376) light-cljs compiler_bootstrap::tests::cancelled_demand_discards_roots_before_reusing_host
+        PASS [   0.011s] (  30/1376) light-cljs compiler_reader::namespace_snapshot_tests::snapshots_keep_frontier_kinds_aliases_excludes_and_exact_names
+        PASS [   0.010s] (  31/1376) light-cljs core_operations::tests::callback_shapes_element_types_and_arity_returns_parse
+        PASS [   0.010s] (  32/1376) light-cljs core_operations::tests::calls_outside_the_domain_are_unknown
+        PASS [   0.011s] (  33/1376) light-cljs core_operations::tests::every_row_parses_and_names_its_variant
+        PASS [   0.007s] (  34/1376) light-cljs core_operations::tests::malformed_callback_shapes_are_rejected
+        PASS [   0.008s] (  35/1376) light-cljs core_operations::tests::malformed_rows_are_rejected_with_their_line
+        PASS [   0.006s] (  36/1376) light-cljs core_operations::tests::types_form_a_lattice_and_round_trip
+        PASS [   0.007s] (  37/1376) light-cljs dev_repl::tests::stacks_keep_what_they_cannot_map
+        PASS [   0.008s] (  38/1376) light-cljs dev_repl::tests::vlq_segments_decode_and_look_up
+        PASS [   0.008s] (  39/1376) light-cljs dev_server::tests::json_reads_what_javascript_writes
+        PASS [   0.008s] (  40/1376) light-cljs dev_server::tests::source_roots_are_served_where_source_maps_name_them
+        PASS [   0.008s] (  41/1376) light-cljs emitter::chunked::tests::names_resolve_to_globals_and_constant_entries
+        PASS [   0.310s] (  42/1376) light-cljs compiler_bootstrap::tests::declaration_products_are_atomic_and_unfinished_value_reads_cycle
+        PASS [   0.049s] (  43/1376) light-cljs eval_compiler::tests::incremental_catalog_does_not_duplicate_literal_or_local_arenas
+        PASS [  13.887s] (  44/1376) light-cljs::compiler map_value_equiv::map_value_equiv_preserves_exact_contracts_and_same_host_recovery
+        PASS [   0.040s] (  45/1376) light-cljs eval_compiler::tests::namespace_reader_and_policy_are_incremental
+        PASS [   0.064s] (  46/1376) light-cljs evaluator::active_tests::active_handle_rejects_other_contexts
+        PASS [   0.104s] (  47/1376) light-cljs evaluator::active_tests::backtracking_deadline_is_terminal_and_fresh_operations_recover
+        PASS [   0.339s] (  48/1376) light-cljs eval_compiler::tests::failed_macro_call_preserves_interactive_compiler
+        PASS [   0.046s] (  49/1376) light-cljs evaluator::active_tests::engine_maps_preserve_key_semantics_across_growth_and_deletion
+        PASS [   0.036s] (  50/1376) light-cljs evaluator::active_tests::environment_cache_preserves_lexical_data_and_copies_mutable_literals
+        PASS [   0.038s] (  51/1376) light-cljs evaluator::active_tests::environment_import_can_reenter_before_its_cache_slots_are_installed
+        PASS [   0.038s] (  52/1376) light-cljs evaluator::active_tests::failed_environment_import_does_not_publish_uninstalled_cache_slots
+        PASS [   0.337s] (  53/1376) light-cljs eval_compiler::tests::incremental_roots_closures_and_macros_have_separate_heaps
+        PASS [   0.042s] (  54/1376) light-cljs evaluator::active_tests::failed_macro_calls_release_their_imported_object_arguments
+        PASS [   0.035s] (  55/1376) light-cljs evaluator::active_tests::native_bridge_name_components_and_empty_text_preserve_utf16
+        PASS [   0.047s] (  56/1376) light-cljs evaluator::active_tests::native_bridge_strings_preserve_every_utf16_code_unit_in_both_directions
+        PASS [   0.036s] (  57/1376) light-cljs evaluator::active_tests::native_bridge_unqualified_names_keep_a_null_namespace
+        PASS [   0.057s] (  58/1376) light-cljs evaluator::active_tests::released_bridge_inputs_release_native_provenance
+        PASS [   0.037s] (  59/1376) light-cljs evaluator::active_tests::unit_service_cancellation_is_sticky_even_when_js_catches
+        PASS [   0.707s] (  60/1376) light-cljs compiler_bootstrap::tests::regenerate_from_first_party_sources_and_collect_during_bootstrap
+        PASS [   0.061s] (  61/1376) light-cljs evaluator::active_tests::scalar_provenance_retains_values_instead_of_import_history
+        PASS [   0.008s] (  62/1376) light-cljs folding::tests::keys_compare_as_the_runtime_compares_them
+        PASS [   0.035s] (  63/1376) light-cljs evaluator::active_tests::unit_service_failure_is_sticky_even_when_js_catches
+        PASS [   0.007s] (  64/1376) light-cljs folding::tests::numbers_print_as_javascript_prints_them
+        PASS [   0.035s] (  65/1376) light-cljs evaluator::active_tests::unit_service_recurses_with_active_context_and_bridge
+        PASS [   0.008s] (  66/1376) light-cljs folding::tests::lookups_and_counts_follow_the_builders
+        PASS [   0.008s] (  67/1376) light-cljs inference::tests::known_representations_survive_joins_with_values_outside_their_class
+        PASS [   0.009s] (  68/1376) light-cljs js_syntax::tests::arrows_regexes_and_templates_scope_and_lex_correctly
+        PASS [   0.009s] (  69/1376) light-cljs js_syntax::tests::adjacent_declarations_join
+        PASS [   0.007s] (  70/1376) light-cljs js_syntax::tests::locals_get_short_names_that_capture_nothing
+        PASS [   0.007s] (  71/1376) light-cljs js_syntax::tests::generated_names_follow_closure_order_and_skip_reserved_words
+        PASS [   0.007s] (  72/1376) light-cljs js_syntax::tests::locals_shadow_runtime_bindings_through_every_scope_kind
+        PASS [   0.007s] (  73/1376) light-cljs js_syntax::tests::malformed_bodies_are_rejected
+        PASS [   0.008s] (  74/1376) light-cljs js_syntax::tests::statements_without_semicolons_still_split_at_declarations
+        PASS [   0.008s] (  75/1376) light-cljs js_syntax::tests::properties_keys_and_labels_are_not_references
+        PASS [   0.069s] (  76/1376) light-cljs evaluator::bridge_interrupt_tests::interrupted_bridge_array_map_build_releases_each_value_once
+        PASS [   0.009s] (  77/1376) light-cljs layered::tests::get_mut_survives_compaction_boundary
+        PASS [   0.009s] (  78/1376) light-cljs js_syntax::tests::the_terse_writer_keeps_only_separators_the_parse_needs
+        PASS [   0.009s] (  79/1376) light-cljs js_syntax::tests::top_level_names_avoid_the_locals_visible_where_they_are_read
+        PASS [   0.011s] (  80/1376) light-cljs macro_host::compiler_pure_tests::reader_environment_reuse_obeys_declaration_acknowledgement_and_old_views
+        PASS [   0.011s] (  81/1376) light-cljs macro_host::compiler_pure_tests::environment_reuse_preserves_local_shadow_chains_and_location
+        PASS [   0.019s] (  82/1376) light-cljs macro_host::compiler_pure_tests::reader_seed_declarations_and_metadata_use_owned_forms
+        PASS [   0.009s] (  83/1376) light-cljs name_index::tests::collision_leaves_and_last_hash_bits_preserve_every_key
+        PASS [   0.024s] (  84/1376) light-cljs name_index::tests::definition_versions_preserve_overwritten_and_new_names
+        PASS [   0.074s] (  85/1376) light-cljs macro_host::compiler_default_reader_tests::default_reader_is_compiled_typed_and_preserves_reader_precedence
+        PASS [   0.020s] (  86/1376) light-cljs program_fragment::tests::deferred_prefix_allows_patched_initializers
+        PASS [   0.013s] (  87/1376) light-cljs program_fragment::tests::metadata_is_remapped_and_absent_metadata_preserves_existing_value
+        PASS [   0.108s] (  88/1376) light-cljs program_fragment::tests::appended_fragments_execute_with_shared_globals_and_distinct_arenas
+        PASS [   0.009s] (  89/1376) light-cljs rta::tests::protocol_slots_follow_the_runtime
+        PASS [   0.008s] (  90/1376) light-cljs runtime_manifest::tests::compile_time_units_parse_and_round_trip_with_their_other_flags
+        PASS [   0.067s] (  91/1376) light-cljs program_fragment::tests::resolution_snapshot_retains_metadata_but_excludes_initializers
+        PASS [   0.008s] (  92/1376) light-cljs runtime_manifest::tests::conditional_effects_parse_round_trip_and_wait_for_a_condition
+        PASS [   0.008s] (  93/1376) light-cljs runtime_manifest::tests::installs_follow_escaping_values_and_mutator_calls_are_effects
+        PASS [   0.007s] (  94/1376) light-cljs runtime_manifest::tests::manifests_round_trip_validate_and_reach_effects_through_targets
+        PASS [   0.008s] (  95/1376) light-cljs runtime_slice::tests::runtime_names_print_as_emitted_and_roots_keep_their_first_site
+        PASS [   0.008s] (  96/1376) light-cljs runtime_manifest::tests::validation_reports_missing_stale_unknown_and_effect_errors
+        PASS [   0.008s] (  97/1376) light-cljs shared::tests::empty_fragment_extension_keeps_the_shared_table
+        PASS [   0.008s] (  98/1376) light-cljs source_map::tests::data_url_is_base64
+        PASS [   0.007s] (  99/1376) light-cljs source_map::tests::lines_continue_their_origin
+        PASS [   0.008s] ( 100/1376) light-cljs source_map::tests::marks_map_lines_and_utf16_columns
+        PASS [   0.008s] ( 101/1376) light-cljs source_map::tests::vlq_matches_the_specification_examples
+        PASS [   0.008s] ( 102/1376) light-cljs terse::tests::a_hole_inside_raw_strings_or_comments_keeps_the_hygienic_layout
+        PASS [   0.080s] ( 103/1376) light-cljs source_map::tests::readable_runtime_lines_map_to_their_text
+        PASS [   0.011s] ( 104/1376) light-cljs terse::tests::raw_comments_are_kept_where_they_cannot_end_a_statement
+        PASS [   0.007s] ( 105/1376) light-cljs terse::tests::raw_text_keeps_its_tokens_and_names_in_a_terse_program
+        PASS [   0.008s] ( 106/1376) light-cljs terse::tests::raw_text_the_lexer_may_misread_keeps_the_hygienic_layout
+        PASS [   0.348s] ( 107/1376) light-cljs program_fragment::tests::deferred_definitions_share_snapshot_metadata
+        PASS [   0.008s] ( 108/1376) light-cljs terse::tests::the_checker_finds_captures_and_escapes
+        PASS [  14.913s] ( 109/1376) light-cljs::compiler public_constructors::public_constructor_api_arities_and_macro_phase_execute
+        PASS [   0.010s] ( 110/1376) light-cljs value_hash::tests::builders_merge_equal_keys_and_unknown_equality_leaves_no_hash
+        PASS [   0.007s] ( 111/1376) light-cljs value_hash::tests::collections_hash_as_the_runtime_does
+        PASS [   0.009s] ( 112/1376) light-cljs value_hash::tests::key_shapes_need_keys_known_to_be_distinct
+        PASS [   0.008s] ( 113/1376) light-cljs value_hash::tests::scalars_hash_as_the_runtime_does
+        PASS [   0.008s] ( 114/1376) light-cljs::benchmark_variants compact_source_limit_is_checked_before_narrowing
+        PASS [   0.623s] ( 115/1376) light-cljs program_fragment::tests::deferred_definitions_append_only_what_they_add
+        PASS [   0.370s] ( 116/1376) light-cljs terse::tests::slice_marks_point_at_the_tokens_they_map
+        PASS [   0.338s] ( 117/1376) light-cljs terse::tests::the_whole_terse_runtime_renames_without_capture
+        PASS [   0.690s] ( 118/1376) light-cljs terse::tests::partial_slices_rename_without_capture
+        PASS [   0.248s] ( 119/1376) light-cljs::cli analysis_cli_shows_ids_and_compile_errors_never_emit_partial_javascript
+        PASS [  15.398s] ( 120/1376) light-cljs::compiler residual_source_context::complete_residual_namespace_bodies_execute_in_both_phases
+        PASS [   0.334s] ( 121/1376) light-cljs::cli compiles_files_and_stdin_to_executable_javascript
+        PASS [   0.021s] ( 122/1376) light-cljs::cli optimize_rejects_unknown_levels_and_non_compile_modes
+        PASS [  13.704s] ( 123/1376) light-cljs::evaluation evaluator_conformance::historical_sci_cases_execute_their_dispositions_1
+        PASS [   0.009s] ( 124/1376) light-cljs::cli prints_example
+        PASS [   0.012s] ( 125/1376) light-cljs::cli prints_parser_nodes_and_reports_locations
+        PASS [   0.009s] ( 126/1376) light-cljs::cli reads_stdin_and_escapes_text
+        PASS [   0.010s] ( 127/1376) light-cljs::cli rejects_missing_text
+        PASS [   0.008s] ( 128/1376) light-cljs::cli reports_lexical_errors_with_spans_and_nonzero_status
+        PASS [  13.923s] ( 129/1376) light-cljs::evaluation evaluator_conformance::historical_sci_cases_execute_their_dispositions_2
+        PASS [   0.602s] ( 130/1376) light-cljs::cli optimize_selects_the_application_level_for_text_and_namespace_compiles
+        PASS [   0.094s] ( 131/1376) light-cljs::cli vector_keyword_acceptance_compiles_and_executes_from_cli
+        PASS [   0.978s] ( 132/1376) light-cljs::cli define_replaces_goog_define_defaults_at_every_level
+        PASS [   1.408s] ( 133/1376) light-cljs::benchmark_variants experimental_scanners_agree_with_library
+        PASS [   0.457s] ( 134/1376) light-cljs::compiler array_settings::checked_options_reset_between_loaded_files_and_capture_definitions
+        PASS [   1.253s] ( 135/1376) light-cljs::cli size_report_prints_the_retention_table_on_stderr_without_changing_output
+        PASS [   0.585s] ( 136/1376) light-cljs::compiler array_settings::checked_array_options_follow_source_order_and_preserve_argument_effects
+        PASS [   0.712s] ( 137/1376) light-cljs::compiler array_settings::array_setting_var_and_macro_state_execute_in_both_phases
+        PASS [   1.687s] ( 138/1376) light-cljs::cli elide_asserts_omits_assertions_at_every_level
+        PASS [   0.275s] ( 139/1376) light-cljs::compiler array_settings::cli_array_check_modes_execute_the_compiled_program
+        PASS [   0.296s] ( 140/1376) light-cljs::compiler async_await::async_calls_are_not_inert_initializers
+        PASS [   0.461s] ( 141/1376) light-cljs::compiler array_settings::named_function_macro_environments_capture_boolean_array_settings
+        PASS [   0.512s] ( 142/1376) light-cljs::compiler async_await::advanced_passes_keep_awaits_and_promises
+        PASS [   0.632s] ( 143/1376) light-cljs::compiler array_settings::complete_source_bodies_retain_modules_and_file_isolation
+        PASS [   2.237s] ( 144/1376) light-cljs::cli elide_asserts_reaches_the_assert_source_macros_read
+        PASS [   0.516s] ( 145/1376) light-cljs::compiler async_await::refer_global_static_methods_keep_their_class_as_this
+        PASS [   0.674s] ( 146/1376) light-cljs::compiler async_await::devirtualized_calls_keep_their_operands_across_awaits
+        PASS [   0.511s] ( 147/1376) light-cljs::compiler async_await::static_method_values_stay_detached_when_inlined
+        PASS [   0.808s] ( 148/1376) light-cljs::compiler async_await::await_outside_an_async_function_is_a_located_analysis_error
+        PASS [   1.241s] ( 149/1376) light-cljs::compiler async_await::async_functions_and_their_wrappers_at_every_level
+        PASS [   0.520s] ( 150/1376) light-cljs::compiler async_await::wrappers_keep_values_and_dispatchers_reject
+        PASS [   0.412s] ( 151/1376) light-cljs::compiler bootstrap::bootstrap_failure_and_expansion_limits_leave_reused_host_clean
+        PASS [   1.171s] ( 152/1376) light-cljs::compiler async_await::upstream_async_await_tests_pass_at_every_level
+        PASS [   0.525s] ( 153/1376) light-cljs::compiler bootstrap::case_and_condp_preserve_grouping_defaults_and_predicate_results
+        PASS [   0.834s] ( 154/1376) light-cljs::compiler atom_object_equiv::failed_atom_equiv_leaves_fresh_and_reused_hosts_usable
+        PASS [   0.453s] ( 155/1376) light-cljs::compiler bootstrap::comprehensions_lazy_cat_and_selector_use_source_macros
+        PASS [   0.446s] ( 156/1376) light-cljs::compiler bootstrap::conditional_bindings_distinguish_false_from_nil_and_destructure
+        PASS [   0.342s] ( 157/1376) light-cljs::compiler bootstrap::interop_macros_execute_in_quickjs
+        PASS [   0.464s] ( 158/1376) light-cljs::compiler bootstrap::default_compile_and_analyze_emit_have_identical_literal_results
+        PASS [   0.330s] ( 159/1376) light-cljs::compiler bootstrap::logical_and_conditional_macros_preserve_short_circuit_values_and_effects
+        PASS [   0.415s] ( 160/1376) light-cljs::compiler bootstrap::iteration_and_volatile_macros_preserve_input_evaluation_counts
+        PASS [  10.965s] ( 161/1376) light-cljs::evaluation evaluator_conformance::historical_sci_cases_execute_their_dispositions_5
+        PASS [  10.595s] ( 162/1376) light-cljs::evaluation evaluator_conformance::historical_sci_cases_execute_their_dispositions_7
+        PASS [   0.012s] ( 163/1376) light-cljs::compiler boundary_completion::anonymous_raw_overloads_match_ordered_public_warning_messages
+        PASS [   0.013s] ( 164/1376) light-cljs::compiler boundary_completion::dotted_host_var_metadata_reports_both_test_reference_resolutions
+        PASS [   0.334s] ( 165/1376) light-cljs::compiler bootstrap::seed_bindings_assertions_and_reflection_remain_native_free
+        PASS [  10.629s] ( 166/1376) light-cljs::evaluation evaluator_conformance::historical_sci_cases_execute_their_dispositions_8
+        PASS [   0.341s] ( 167/1376) light-cljs::compiler bootstrap::volatile_swap_rechecks_target_after_evaluating_the_function
+        PASS [   0.431s] ( 168/1376) light-cljs::compiler bootstrap::source_declarations_are_compile_time_only_and_can_use_ecmascript
+        PASS [   0.415s] ( 169/1376) light-cljs::compiler bootstrap::threading_families_preserve_order_and_nil_semantics
+        PASS [   0.308s] ( 170/1376) light-cljs::compiler boundary_completion::inline_macro_arity_errors_are_compile_time_diagnostics
+        PASS [  10.989s] ( 171/1376) light-cljs::evaluation evaluator_conformance::historical_sci_cases_execute_their_dispositions_6
+        PASS [   0.380s] ( 172/1376) light-cljs::compiler boundary_completion::dotted_def_uses_host_assignment_and_amp_is_a_valid_global_name
+        PASS [   0.382s] ( 173/1376) light-cljs::compiler boundary_completion::double_dots_munge_before_host_path_splitting_and_qualified_members_keep_receiver
+        PASS [   0.072s] ( 174/1376) light-cljs::compiler builtin_types::a_keyword_keeps_no_collection
+        PASS [   0.423s] ( 175/1376) light-cljs::compiler boundary_completion::inline_defmacro_is_a_compile_time_function_with_hidden_form_and_environment
+        PASS [   0.069s] ( 176/1376) light-cljs::compiler builtin_types::a_vector_keeps_no_map_set_or_protocol_machinery
+        PASS [   0.068s] ( 177/1376) light-cljs::compiler builtin_types::an_empty_map_keeps_only_its_own_map_type
+        PASS [   0.412s] ( 178/1376) light-cljs::compiler boundary_completion::inline_defmacro_multiple_and_variadic_methods_execute_during_compilation
+        PASS [  11.030s] ( 179/1376) light-cljs::evaluation evaluator_conformance::historical_sci_cases_execute_their_dispositions_9
+        PASS [   1.854s] ( 180/1376) light-cljs::compiler atom_object_equiv::atom_equiv_contracts_execute_in_both_phases
+        PASS [   0.298s] ( 181/1376) light-cljs::compiler builtin_types::a_set_keeps_no_seq_hash_map_or_hashing
+        PASS [   0.383s] ( 182/1376) light-cljs::compiler boundary_completion::unqualified_host_paths_keep_receiver_and_lexical_shadowing
+        PASS [   0.452s] ( 183/1376) light-cljs::compiler boundary_completion::unknown_namespace_warning_mode_keeps_actual_host_namespace_values
+        PASS [   0.526s] ( 184/1376) light-cljs::compiler builtin_types::a_program_type_opens_the_protocol_hooks
+        PASS [   0.593s] ( 185/1376) light-cljs::compiler builtin_types::array_maps_keep_no_hash_map_trie
+        PASS [   0.876s] ( 186/1376) light-cljs::compiler builtin_types::conj_assoc_and_with_meta_over_every_kind
+        PASS [   0.893s] ( 187/1376) light-cljs::compiler builtin_types::each_kind_branch_of_the_generic_operations
+        PASS [   1.334s] ( 188/1376) light-cljs::compiler builtin_types::core_protocol_tables_written_directly_reach_the_protocol_tests
+        PASS [   0.799s] ( 189/1376) light-cljs::compiler builtin_types::hash_sets_are_tries
+        PASS [   6.778s] ( 190/1376) light-cljs::benchmark_variants level_benchmark_harness_checks_and_records_every_level
+        PASS [   1.298s] ( 191/1376) light-cljs::compiler builtin_types::host_facing_methods_of_builtin_prototypes
+        PASS [   7.698s] ( 192/1376) light-cljs::cli source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level
+        PASS [  23.974s] ( 193/1376) light-cljs::compiler runtime_map_order::independent_runtime_maps_preserve_complete_order_effects_and_recovery
+        PASS [   5.598s] ( 194/1376) light-cljs::compiler builtin_types::core_helpers_corpus
+        PASS [   5.568s] ( 195/1376) light-cljs::compiler builtin_types::find_effects_corpus
+        PASS [   6.135s] ( 196/1376) light-cljs::compiler builtin_types::count_walks_the_seqs_of_the_values_that_need_it
+        PASS [   0.559s] ( 197/1376) light-cljs::compiler builtin_types::map_hooks_for_records_wait_for_records
+        PASS [   6.371s] ( 198/1376) light-cljs::compiler builtin_types::equality_corpus
+        PASS [   0.620s] ( 199/1376) light-cljs::compiler builtin_types::maps_answer_host_facing_methods_from_their_entries
+        PASS [   0.325s] ( 200/1376) light-cljs::compiler builtin_types::metadata_through_the_generic_operations
+        PASS [   0.640s] ( 201/1376) light-cljs::compiler builtin_types::membership_in_value_position_keeps_no_set
+        PASS [   0.666s] ( 202/1376) light-cljs::compiler builtin_types::printing_with_options_dispatchers_and_into
+        PASS [   8.112s] ( 203/1376) light-cljs::compiler builtin_types::applied_array_maps_accept_large_argument_sequences
+        PASS [   1.429s] ( 204/1376) light-cljs::compiler builtin_types::program_types_keep_no_machinery_for_builtin_values
+        PASS [   1.426s] ( 205/1376) light-cljs::compiler builtin_types::program_types_keep_the_dispatch_of_interop
+        PASS [   2.786s] ( 206/1376) light-cljs::compiler builtin_types::object_equiv_corpus
+        PASS [   0.310s] ( 207/1376) light-cljs::compiler builtin_types::promoted_transient_maps_look_up_without_a_persistent_hash_map
+        PASS [   1.333s] ( 208/1376) light-cljs::compiler builtin_types::program_types_reach_the_runtime_kinds_they_implement
+        PASS [  10.465s] ( 209/1376) light-cljs::compiler builtin_types::hash_branches_corpus_00
+        PASS [   1.133s] ( 210/1376) light-cljs::compiler builtin_types::protocol_extensions_of_builtin_and_host_types_reach_the_generic_operations
+        PASS [   1.358s] ( 211/1376) light-cljs::compiler builtin_types::protocol_tests_of_program_types_need_no_protocol_tables
+        PASS [   4.516s] ( 212/1376) light-cljs::compiler builtin_types::named_generated_record_slots_remain_callable
+        PASS [  10.882s] ( 213/1376) light-cljs::compiler builtin_types::hash_branches_corpus_35
+        PASS [   0.547s] ( 214/1376) light-cljs::compiler builtin_types::replaced_protocol_predicates_keep_the_full_protocol_tests
+        PASS [   0.563s] ( 215/1376) light-cljs::compiler builtin_types::seqs_of_host_iterables
+        PASS [   0.640s] ( 216/1376) light-cljs::compiler builtin_types::sets_answer_host_facing_methods_from_their_members
+        PASS [   0.083s] ( 217/1376) light-cljs::compiler builtin_types::small_programs_keep_only_what_they_use
+        PASS [  32.062s] ( 218/1376) light-cljs::compiler sequences::phase_oracles::iteration_seq_equals_reduce
+        PASS [   0.386s] ( 219/1376) light-cljs::compiler builtin_types::subvecs_are_views_of_their_vectors
+        PASS [   3.330s] ( 220/1376) light-cljs::compiler builtin_types::reduce_kv_corpus
+        PASS [   0.318s] ( 221/1376) light-cljs::compiler builtin_types::subvecs_of_caller_arrays_read_them_live
+        PASS [   0.568s] ( 222/1376) light-cljs::compiler builtin_types::transients_chunks_and_entries_through_the_generic_operations
+        PASS [   3.807s] ( 223/1376) light-cljs::compiler builtin_types::sequence_contracts_corpus
+        PASS [   0.433s] ( 224/1376) light-cljs::compiler builtin_types::upstream_members_are_every_other_member_of_the_runtime_types
+        PASS [   0.324s] ( 225/1376) light-cljs::compiler builtin_types::vector_fast_paths_honor_direct_protocol_slots
+        PASS [   1.506s] ( 226/1376) light-cljs::compiler builtin_types::upstream_fields_need_a_program_that_names_them
+        PASS [   0.348s] ( 227/1376) light-cljs::compiler builtin_types::vector_reductions_keep_protocol_implementations
+        PASS [   5.293s] ( 228/1376) light-cljs::compiler builtin_types::sequence_object_equiv_corpus
+        PASS [  11.147s] ( 229/1376) light-cljs::compiler builtin_types::language_corpus_700
+        PASS [   0.651s] ( 230/1376) light-cljs::compiler builtin_types::vectors_answer_host_facing_methods_from_their_items
+        PASS [   0.633s] ( 231/1376) light-cljs::compiler builtin_types::vectors_of_caller_arrays_print_and_iterate_as_they_read
+        PASS [   0.577s] ( 232/1376) light-cljs::compiler call_shapes::calls_across_namespaces_are_direct
+        PASS [   0.140s] ( 233/1376) light-cljs::compiler call_shapes::exports_keep_their_dispatcher
+        PASS [   0.569s] ( 234/1376) light-cljs::compiler call_shapes::escaping_functions_keep_their_dispatcher_over_the_same_entries
+        PASS [   5.485s] ( 235/1376) light-cljs::compiler builtin_types::sorted_collections_corpus
+        PASS [   0.599s] ( 236/1376) light-cljs::compiler call_shapes::factories_and_dispatchers_are_called_plainly
+        PASS [   0.016s] ( 237/1376) light-cljs::compiler call_shapes::levels_below_advanced_keep_the_generic_shapes
+        PASS [   1.366s] ( 238/1376) light-cljs::compiler call_shapes::calls_before_the_definition_still_throw_type_errors
+        PASS [   0.528s] ( 239/1376) light-cljs::compiler call_shapes::hoisted_methods_need_no_runtime
+        PASS [   0.559s] ( 240/1376) light-cljs::compiler call_shapes::known_functions_are_called_through_the_selected_method
+        PASS [   8.081s] ( 241/1376) light-cljs::compiler builtin_types::public_constructors_corpus
+        PASS [   0.606s] ( 242/1376) light-cljs::compiler call_shapes::local_functions_call_the_entries_of_their_methods
+        PASS [   0.611s] ( 243/1376) light-cljs::compiler call_shapes::local_functions_whose_value_escapes_keep_their_dispatcher
+        PASS [   0.548s] ( 244/1376) light-cljs::compiler call_shapes::local_functions_with_one_method_are_called_plainly
+        PASS [   0.558s] ( 245/1376) light-cljs::compiler call_shapes::methods_keep_recur_arguments_and_parameters
+        PASS [   0.548s] ( 246/1376) light-cljs::compiler call_shapes::methods_that_may_read_this_keep_call_null
+        PASS [   0.571s] ( 247/1376) light-cljs::compiler call_shapes::methods_that_read_their_scope_or_hold_raw_text_stay_in_it
+        PASS [   4.939s] ( 248/1376) light-cljs::compiler builtin_types::transients_corpus
+        PASS [   0.565s] ( 249/1376) light-cljs::compiler call_shapes::named_functions_call_their_entries_through_the_name
+        PASS [   0.571s] ( 250/1376) light-cljs::compiler call_shapes::redefined_assigned_and_rerun_definitions
+        PASS [   0.560s] ( 251/1376) light-cljs::compiler call_shapes::value_position_do_is_a_comma_expression
+        PASS [   0.019s] ( 252/1376) light-cljs::compiler chunks::a_feature_assigning_a_startup_var_goes_through_the_owner_setter
+        PASS [   0.572s] ( 253/1376) light-cljs::compiler call_shapes::variadic_calls_build_the_dispatchers_rest_sequence
+        PASS [   0.383s] ( 254/1376) light-cljs::compiler chunks::a_feature_loads_its_sub_feature_chunk
+        PASS [   3.873s] ( 255/1376) light-cljs::compiler builtin_types::vectors_are_tries_across_leaf_and_level_boundaries
+        PASS [   0.374s] ( 256/1376) light-cljs::compiler chunks::a_feature_reads_the_namespace_that_loads_it
+        PASS [   1.298s] ( 257/1376) light-cljs::compiler chunks::a_dropped_chunk_s_importers_import_its_imports
+        PASS [   0.016s] ( 258/1376) light-cljs::compiler chunks::a_feature_that_loads_a_sub_feature_is_a_chain_whose_edges_point_up
+        PASS [   0.013s] ( 259/1376) light-cljs::compiler chunks::a_global_read_imports_its_owner_without_a_require
+        PASS [   0.021s] ( 260/1376) light-cljs::compiler chunks::a_hashed_shared_name_does_not_collide_with_a_namespace
+        PASS [   0.016s] ( 261/1376) light-cljs::compiler chunks::a_helper_two_features_require_is_one_shared_chunk
+        PASS [   0.017s] ( 262/1376) light-cljs::compiler chunks::a_lazy_target_that_requires_the_loading_namespace_leaves_it_in_startup
+        PASS [   1.241s] ( 263/1376) light-cljs::compiler chunks::a_dropped_chunk_s_roots_still_get_their_constants
+        PASS [   9.580s] ( 264/1376) light-cljs::compiler builtin_types::sequence_completion_corpus
+        PASS [   1.169s] ( 265/1376) light-cljs::compiler chunks::a_feature_probes_a_var_startup_declares
+        PASS [   0.381s] ( 266/1376) light-cljs::compiler chunks::a_namespace_loadable_runs_its_methods_when_loaded
+        PASS [   0.014s] ( 267/1376) light-cljs::compiler chunks::a_program_without_namespace_sources_is_one_chunk
+        PASS [   0.358s] ( 268/1376) light-cljs::compiler chunks::a_package_only_a_feature_requires_is_imported_by_its_chunk
+        PASS [   1.116s] ( 269/1376) light-cljs::compiler chunks::a_feature_reaching_reflection_finds_every_namespace
+        PASS [   0.372s] ( 270/1376) light-cljs::compiler chunks::a_program_reaching_reflection_keeps_definitions_in_their_namespaces
+        PASS [   1.046s] ( 271/1376) light-cljs::compiler chunks::a_feature_rebinds_a_core_function_through_startup
+        PASS [   0.727s] ( 272/1376) light-cljs::compiler chunks::a_program_without_namespace_sources_runs_as_one_chunk
+        PASS [   0.367s] ( 273/1376) light-cljs::compiler chunks::constants_go_to_the_chunks_of_their_readers
+        PASS [   1.066s] ( 274/1376) light-cljs::compiler chunks::a_program_reaching_reflection_keeps_a_chunk_of_no_code
+        PASS [   2.685s] ( 275/1376) light-cljs::compiler case_char_string_accepted::canonical_case_constants_and_same_host_diagnostic_recovery
+        PASS [   0.741s] ( 276/1376) light-cljs::compiler chunks::an_entry_without_forms_returns_nil_from_startup
+        PASS [   1.070s] ( 277/1376) light-cljs::compiler chunks::a_shared_namespace_whose_definitions_all_move_is_no_file
+        PASS [   1.059s] ( 278/1376) light-cljs::compiler chunks::a_silent_chunk_owning_a_global_other_chunks_read_is_kept
+        PASS [   0.374s] ( 279/1376) light-cljs::compiler chunks::definitions_move_toward_their_readers_and_methods_stay
+        PASS [   0.429s] ( 280/1376) light-cljs::compiler chunks::explicit_exports_root_their_movable_dependencies
+        PASS [   1.043s] ( 281/1376) light-cljs::compiler chunks::loading_one_target_marks_other_targets_in_the_same_chunk_loaded
+        PASS [   1.127s] ( 282/1376) light-cljs::compiler chunks::definitions_move_with_their_constructors_and_setters
+        PASS [   4.215s] ( 283/1376) light-cljs::compiler case_numeric::canonical_numeric_reader_identity_and_same_host_recovery
+        PASS [  23.027s] ( 284/1376) light-cljs::compiler builtin_types::language_corpus_100
+        PASS [  23.035s] ( 285/1376) light-cljs::compiler builtin_types::language_corpus_200
+        PASS [  23.471s] ( 286/1376) light-cljs::compiler builtin_types::language_corpus_000
+        PASS [   2.934s] ( 287/1376) light-cljs::compiler chunks::matrix_constants_go_to_their_readers
+        PASS [   2.858s] ( 288/1376) light-cljs::compiler chunks::matrix_feature_assigning_startup_vars
+        PASS [   2.866s] ( 289/1376) light-cljs::compiler chunks::matrix_diamond
+        PASS [   0.016s] ( 290/1376) light-cljs::compiler chunks::out_dir_refuses_the_source_map_flags
+        PASS [   3.052s] ( 291/1376) light-cljs::compiler chunks::matrix_definitions_move_toward_their_readers
+        PASS [   3.041s] ( 292/1376) light-cljs::compiler chunks::matrix_features_example
+        PASS [   2.874s] ( 293/1376) light-cljs::compiler chunks::matrix_package_only_a_feature_requires
+        PASS [   2.976s] ( 294/1376) light-cljs::compiler chunks::matrix_namespace_of_methods
+        PASS [  24.006s] ( 295/1376) light-cljs::compiler builtin_types::language_corpus_300
+        PASS [   0.008s] ( 296/1376) light-cljs::compiler chunks::the_matrix_runs_every_fixture_directory
+        PASS [   1.153s] ( 297/1376) light-cljs::compiler chunks::methods_shapes_and_lazy_cells_are_placed_by_their_readers
+        PASS [   0.994s] ( 298/1376) light-cljs::compiler chunks::out_dir_of_a_program_without_loadables_is_its_esm_file
+        PASS [   0.070s] ( 299/1376) light-cljs::compiler cljc_prefixes::nested_discarded_readers_keep_canonical_effect_order
+        PASS [   0.321s] ( 300/1376) light-cljs::compiler chunks::the_features_example_plans_startup_and_one_chunk_per_feature
+        PASS [   0.380s] ( 301/1376) light-cljs::compiler chunks::the_features_startup_declares_only_the_constants_it_reads
+        PASS [   0.328s] ( 302/1376) light-cljs::compiler cljc_prefixes::nested_discarded_readers_execute_once_in_plain_and_shared_source_hosts
+        PASS [   0.047s] ( 303/1376) light-cljs::compiler cljc_prefixes::selected_targets_keep_metadata_quote_ownership_and_source_locations
+        PASS [   2.911s] ( 304/1376) light-cljs::compiler chunks::matrix_reflection_keeps_namespaces_whole
+        PASS [   1.074s] ( 305/1376) light-cljs::compiler chunks::raw_type_bodies_stay_in_their_namespace
+        PASS [   0.107s] ( 306/1376) light-cljs::compiler compile_time_units::application_roots_reach_compile_time_units_only_through_reflection
+        PASS [   0.301s] ( 307/1376) light-cljs::compiler compile_time_units::a_registered_namespace_lists_only_retained_definitions
+        PASS [   0.350s] ( 308/1376) light-cljs::compiler compile_time_units::namespace_entries_switch_ns_only_when_the_program_reaches_reflection
+        PASS [   0.292s] ( 309/1376) light-cljs::compiler constant_hashes::a_pooled_constant_shows_its_hash_field_before_its_first_hash
+        PASS [   0.546s] ( 310/1376) light-cljs::compiler compile_time_units::application_slices_keep_plain_declaration_hooks
+        PASS [   1.826s] ( 311/1376) light-cljs::compiler chunks::raw_javascript_in_a_feature_keeps_names_consistent_across_chunks
+        PASS [   0.194s] ( 312/1376) light-cljs::compiler constant_hashes::edge_case_constants_embed_the_runtime_hash
+        PASS [   2.889s] ( 313/1376) light-cljs::compiler chunks::matrix_shared_top_level_effect
+        PASS [   2.857s] ( 314/1376) light-cljs::compiler chunks::matrix_sub_feature
+        PASS [   0.539s] ( 315/1376) light-cljs::compiler constant_hashes::cached_hashes_never_go_stale
+        PASS [   2.936s] ( 316/1376) light-cljs::compiler chunks::matrix_target_requiring_its_loader
+        PASS [  25.316s] ( 317/1376) light-cljs::compiler builtin_types::language_corpus_400
+        PASS [   0.213s] ( 318/1376) light-cljs::compiler constant_hashes::random_scalars_embed_the_runtime_hash
+        PASS [   0.287s] ( 319/1376) light-cljs::compiler constant_hashes::hashes_are_embedded_only_at_advanced_with_intact_core_protocols
+        PASS [   0.612s] ( 320/1376) light-cljs::compiler constant_hashes::equal_values_hash_alike_whether_pooled_or_built
+        PASS [   0.447s] ( 321/1376) light-cljs::compiler constant_lookups::calls_that_may_throw_or_are_undecided_stay
+        PASS [   0.440s] ( 322/1376) light-cljs::compiler constant_lookups::destructuring_constants_binds_locals_statically
+        PASS [   0.444s] ( 323/1376) light-cljs::compiler constant_lookups::folded_items_keep_identity_and_metadata
+        PASS [   1.910s] ( 324/1376) light-cljs::compiler cljc_prefixes::located_active_and_missing_target_errors_recover_in_hosts_and_sessions
+        PASS [   0.485s] ( 325/1376) light-cljs::compiler constant_lookups::lookups_in_maps_with_constant_keys_read_their_entries
+        PASS [   2.939s] ( 326/1376) light-cljs::compiler chunks::out_dir_writes_the_features_example_chunks_and_manifest_at_every_level
+        PASS [   2.026s] ( 327/1376) light-cljs::compiler cljc_prefixes::original_reader_rejections::unchanged_original_reader_rejections_preserve_source_and_host_recovery
+        PASS [   0.506s] ( 328/1376) light-cljs::compiler constant_lookups::lookups_of_constants_fold_to_the_runtime_results
+        PASS [   0.318s] ( 329/1376) light-cljs::compiler constant_pool::advanced_hash_conses_constants_on_their_emitted_structure
+        PASS [   0.280s] ( 330/1376) light-cljs::compiler constant_pool::discarded_constants_add_no_entries
+        PASS [   0.810s] ( 331/1376) light-cljs::compiler constant_lookups::folds_need_the_runtime_operations
+        PASS [   0.473s] ( 332/1376) light-cljs::compiler constant_lookups::membership_in_value_position_compares_with_each_member
+        PASS [   0.294s] ( 333/1376) light-cljs::compiler constant_pool::equal_literals_at_two_sites_are_identical_only_at_advanced
+        PASS [   0.303s] ( 334/1376) light-cljs::compiler constant_pool::literals_built_by_a_replaced_core_operation_stay_at_their_site
+        PASS [   0.368s] ( 335/1376) light-cljs::compiler constant_pool::hot_loop_allocations_and_pool_size_are_pinned
+        PASS [   0.397s] ( 336/1376) light-cljs::compiler constant_pool::large_constants_are_lazy_cells_built_on_first_read
+        PASS [   2.214s] ( 337/1376) light-cljs::compiler compile_time_units::advanced_programs_register_namespaces_only_when_they_reach_reflection
+        PASS [   0.069s] ( 338/1376) light-cljs::compiler constant_table::advanced_output_without_literals_has_no_table
+        PASS [   0.311s] ( 339/1376) light-cljs::compiler constant_pool::reader_distinct_constants_are_distinct_entries
+        PASS [   0.047s] ( 340/1376) light-cljs::compiler constant_table::literal_keyword_identity_holds_across_repl_inputs_and_redefinition
+        PASS [   0.682s] ( 341/1376) light-cljs::compiler constant_pool::empty_literals_read_the_runtime_singletons_at_every_level
+        PASS [   0.609s] ( 342/1376) light-cljs::compiler constant_pool::pooled_constants_keep_metadata_transients_equality_and_hashes
+        PASS [  25.232s] ( 343/1376) light-cljs::compiler builtin_types::language_corpus_500
+        PASS [   0.289s] ( 344/1376) light-cljs::compiler constant_table::literal_symbols_share_one_value_only_at_advanced_and_keywords_at_every_level
+        PASS [   0.628s] ( 345/1376) light-cljs::compiler constant_table::advanced_declares_each_distinct_literal_once_after_the_runtime
+        PASS [   1.131s] ( 346/1376) light-cljs::compiler constant_lookups::membership_tests_switch_on_spellings
+        PASS [   0.603s] ( 347/1376) light-cljs::compiler constant_table::keyword_case_switches_on_the_spelling_without_printing_at_advanced
+        PASS [   0.572s] ( 348/1376) light-cljs::compiler constant_table::keywords_that_spell_alike_with_other_parts_stay_equal_and_distinct
+        PASS [   0.589s] ( 349/1376) light-cljs::compiler constant_table::literal_keywords_are_interned_and_keywords_built_from_data_are_fresh
+        PASS [   1.068s] ( 350/1376) light-cljs::compiler constant_pool::mutable_dynamic_and_possibly_throwing_literals_are_built_at_their_site
+        PASS [   0.769s] ( 351/1376) light-cljs::compiler constant_table::keyword_equality_is_spelling_equality_and_literals_are_equal_only_when_identical
+        PASS [   0.567s] ( 352/1376) light-cljs::compiler core_extension_demand::core_macro_frontier_restores_ordered_user_equality_extensions
+        PASS [   0.642s] ( 353/1376) light-cljs::compiler core_extension_demand::failed_extension_demand_recovers_without_hiding_real_cycles
+        PASS [   2.573s] ( 354/1376) light-cljs::compiler constant_hashes::generated_program_constants_embed_the_runtime_hash
+        PASS [  26.034s] ( 355/1376) light-cljs::compiler builtin_types::language_corpus_600
+        PASS [   0.129s] ( 356/1376) light-cljs::compiler core_helpers::helper_callbacks_and_owned_runtime_values_follow_the_callable_abi
+        PASS [   1.513s] ( 357/1376) light-cljs::compiler core_extension_demand::core_macros_expand_collection_extensions_in_fresh_and_reused_hosts
+        PASS [   0.011s] ( 358/1376) light-cljs::compiler core_operations::every_core_operation_has_exactly_one_row
+        PASS [   1.339s] ( 359/1376) light-cljs::compiler core_factories::factory_phase_isolation_diagnostics_and_bounded_repetition
+        PASS [   0.926s] ( 360/1376) light-cljs::compiler core_helpers::applied_partial_and_juxt_constructors_preserve_lazy_tails_in_both_phases
+        PASS [   0.076s] ( 361/1376) light-cljs::compiler core_operations::every_runtime_unit_in_the_table_exists_in_the_manifest
+        PASS [   0.073s] ( 362/1376) light-cljs::compiler core_operations::runtime_units_are_the_units_that_define_each_core_value
+        PASS [   1.384s] ( 363/1376) light-cljs::compiler core_gate::core_exceptions_applications_and_macros_execute
+        PASS [   0.231s] ( 364/1376) light-cljs::compiler core_operations::moving_an_operation_into_its_own_unit_moves_its_units
+        PASS [   0.535s] ( 365/1376) light-cljs::compiler core_var_metadata::recovered_core_var_metadata_executes_in_applications_and_macros
+        PASS [   0.606s] ( 366/1376) light-cljs::compiler data_libraries::compiler_owned_data_readers_keep_source_order_origins_and_typed_results
+        PASS [   0.570s] ( 367/1376) light-cljs::compiler data_libraries::library_type_arity_and_ordered_failure_boundaries
+        PASS [   1.046s] ( 368/1376) light-cljs::compiler data_libraries::all_supported_native_set_and_walk_fixtures_migrate_with_values_and_effects
+        PASS [   0.482s] ( 369/1376) light-cljs::compiler data_libraries::macros_use_libraries_without_native_registration
+        PASS [   3.216s] ( 370/1376) light-cljs::compiler control::phase_oracles::control_test_bodies
+        PASS [   2.416s] ( 371/1376) light-cljs::compiler core_helpers::helper_arities_order_lazy_tails_and_collections_match_expected_values
+        PASS [   0.618s] ( 372/1376) light-cljs::compiler data_libraries::persistent_set_algebra_and_relations
+        PASS [   0.709s] ( 373/1376) light-cljs::compiler data_libraries::upstream_set_and_walk_witnesses_execute_with_full_setup
+        PASS [   3.221s] ( 374/1376) light-cljs::compiler core_gate::core_numeric_applications_and_macros_execute
+        PASS [   0.566s] ( 375/1376) light-cljs::compiler data_libraries::walks_preserve_types_metadata_records_order_and_opaque_values
+        PASS [   0.272s] ( 376/1376) light-cljs::compiler deferred::deferred_effects_and_metadata_pending_states_have_direct_host_expectations
+        PASS [   1.162s] ( 377/1376) light-cljs::compiler data_libraries::traversal_limits_and_session_recovery
+        PASS [   0.399s] ( 378/1376) light-cljs::compiler deferred::namespace_aliases_compiled_macro_output_and_captured_bindings_are_deferred
+        PASS [   0.593s] ( 379/1376) light-cljs::compiler deferred::long_nested_wrappers_and_abandoned_failures_survive_normal_gc
+        PASS [   1.128s] ( 380/1376) light-cljs::compiler declare_values::declaration_demand_failures_ownership_and_generations_recover
+        PASS [   4.236s] ( 381/1376) light-cljs::compiler core_gate::core_state_applications_and_macros_execute
+        PASS [   0.549s] ( 382/1376) light-cljs::compiler destructuring_completion::checkout_helpers_distinguish_absent_nil_and_false
+        PASS [   5.358s] ( 383/1376) light-cljs::compiler control::phase_oracles::conditional_bindings
+        PASS [   4.963s] ( 384/1376) light-cljs::compiler core_gate::core_control_applications_and_macros_execute
+        PASS [   0.594s] ( 385/1376) light-cljs::compiler destructuring_completion::extension_effect_order_and_literal_provenance
+        PASS [   0.472s] ( 386/1376) light-cljs::compiler destructuring_completion::lazy_cat_compiler_macro_defers_each_collection_expression
+        PASS [   0.011s] ( 387/1376) light-cljs::compiler destructuring_completion::malformed_extensions_are_compile_errors
+        PASS [   1.882s] ( 388/1376) light-cljs::compiler deferred::phase_oracles::deferred_constructors
+        PASS [   1.137s] ( 389/1376) light-cljs::compiler destructuring_completion::destructuring_all_binding_macro_contexts_and_recur
+        PASS [  45.926s] ( 390/1376) light-cljs::execution tiny_programs_execute_with_expected_values_and_effects
+        PASS [   0.439s] ( 391/1376) light-cljs::compiler destructuring_completion::required_keys_and_unbound_amp_keys
+        PASS [   4.744s] ( 392/1376) light-cljs::compiler core_operations::signatures_hold_on_sample_arguments
+        PASS [   0.095s] ( 393/1376) light-cljs::compiler dev_build::dev_builds_analyze_in_warning_mode
+        PASS [   0.467s] ( 394/1376) light-cljs::compiler destructuring_completion::selector_requires_literal_map_with_result_directive
+        PASS [   0.970s] ( 395/1376) light-cljs::compiler destructuring_completion::recursive_select_defaults_excess_and_missing
+        PASS [   1.075s] ( 396/1376) light-cljs::compiler destructuring_completion::phase_oracles::trailing_map_destructuring
+        PASS [   0.103s] ( 397/1376) light-cljs::compiler dev_build::hooks_run_in_order_around_the_applied_units
+        PASS [   2.012s] ( 398/1376) light-cljs::compiler destructuring_completion::complete_pinned_checkout_destructuring_bodies
+        PASS [   0.085s] ( 399/1376) light-cljs::compiler dev_build::index_rejects_in_a_page_when_a_unit_throws
+        PASS [   2.575s] ( 400/1376) light-cljs::compiler definitions::phase_oracles::definition_test_bodies
+        PASS [   0.806s] ( 401/1376) light-cljs::compiler dev_build::a_replaced_record_definition_keeps_old_instances_usable
+        PASS [   0.017s] ( 402/1376) light-cljs::compiler dev_build::reloadable_flags_are_checked
+        PASS [   0.278s] ( 403/1376) light-cljs::compiler dev_build::namespaces_loading_first_find_the_later_ones_as_at_none
+        PASS [   0.783s] ( 404/1376) light-cljs::compiler dev_build::a_replaced_unit_changes_the_next_render_and_keeps_the_state
+        PASS [   0.356s] ( 405/1376) light-cljs::compiler dev_build::namespaces_named_like_build_files_keep_their_own_unit_files
+        PASS [   0.160s] ( 406/1376) light-cljs::compiler edn::cljs_builtin_js_literals_empty_input_timestamps_and_duplicate_errors
+        PASS [   0.164s] ( 407/1376) light-cljs::compiler edn::cljs_reader_public_read_arities_and_option_defaults_match_pinned_source
+        PASS [   0.577s] ( 408/1376) light-cljs::compiler dev_build::features_example_dev_build_prints_what_the_none_build_prints
+        PASS [   0.858s] ( 409/1376) light-cljs::compiler dev_build::example_dev_build_prints_what_the_none_build_prints
+        PASS [   0.165s] ( 410/1376) light-cljs::compiler edn::cljs_reader_public_timestamp_helpers_and_dynamic_parser_atoms
+        PASS [   0.370s] ( 411/1376) light-cljs::compiler dev_build::unit_source_maps_point_node_stack_traces_at_the_sources
+        PASS [   0.119s] ( 412/1376) light-cljs::compiler edn::reader_limits_and_cancelled_providers_share_sticky_session_control
+        PASS [   0.041s] ( 413/1376) light-cljs::compiler edn::rust_providers_supply_chunks_only_and_errors_remain_bounded_and_located
+        PASS [   0.445s] ( 414/1376) light-cljs::compiler edn::compiled_reader_registration_builtins_metadata_unicode_and_macros
+        PASS [   0.447s] ( 415/1376) light-cljs::compiler edn::reader_atom_mutations_bindings_and_absent_tags_are_observed_in_both_phases
+        PASS [   0.439s] ( 416/1376) light-cljs::compiler edn::scoped_input_closes_escaped_handles_and_restores_outer_cursor_on_throw
+        PASS [   3.766s] ( 417/1376) light-cljs::compiler definitions::phase_oracles::declarations
+        PASS [   0.448s] ( 418/1376) light-cljs::compiler edn::source_reader_syntax_exports_compiler_owned_macros_and_suppresses_skipped_tags
+        PASS [   0.156s] ( 419/1376) light-cljs::compiler edn::typed_results_reject_host_objects_cycles_and_deferred_values_without_effects
+        PASS [   0.583s] ( 420/1376) light-cljs::compiler edn::streams_share_cursor_reentry_is_located_and_nested_inputs_restore
+        PASS [   0.232s] ( 421/1376) light-cljs::compiler eduction_contracts::cancellation_in_eduction_construction_demand_and_completion_is_terminal
+        PASS [   1.750s] ( 422/1376) light-cljs::compiler dev_build::ratchet_fixtures_print_what_the_none_build_prints
+        PASS [   0.559s] ( 423/1376) light-cljs::compiler eduction_contracts::abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines
+        PASS [   0.007s] ( 424/1376) light-cljs::compiler eductions::eduction_fixture_provenance_retains_complete_body_and_effects
+        PASS [   8.949s] ( 425/1376) light-cljs::compiler core_factories::core_factories_execute_in_applications_and_macros
+        PASS [   0.407s] ( 426/1376) light-cljs::compiler eduction_contracts::eduction_public_arities_run_as_shared_macro_and_application_helpers
+        PASS [   2.105s] ( 427/1376) light-cljs::compiler dev_build::reload_fixtures_print_their_output_through_the_driver
+        PASS [   0.450s] ( 428/1376) light-cljs::compiler eduction_contracts::throwing_application_and_macro_views_recover_in_fresh_sessions
+        PASS [   5.730s] ( 429/1376) light-cljs::compiler declare_values::phase_oracles::namespace_declarations
+        PASS [   1.342s] ( 430/1376) light-cljs::compiler edn_stream::edn_macro_failures_retain_source_locations_and_separate_result_domain
+        PASS [   0.730s] ( 431/1376) light-cljs::compiler equality::keyword_map_keys_use_canonical_equality_hashing_and_representatives
+        PASS [   0.541s] ( 432/1376) light-cljs::compiler equality_contracts::custom_protocols_records_and_vars_in_both_phases
+        PASS [   2.714s] ( 433/1376) light-cljs::compiler edn::complete_pinned_upstream_reader_bodies_execute_in_both_engines
+        PASS [   0.568s] ( 434/1376) light-cljs::compiler extensions::builtin_class_extensions_and_nonmutating_specify
+        PASS [   0.924s] ( 435/1376) light-cljs::compiler equality_contracts::canonical_values_hash_metadata_and_effects_in_both_phases
+        PASS [   0.288s] ( 436/1376) light-cljs::compiler extensions::native_extension_preserves_core_fast_paths_and_raw_protocol_dispatch
+        PASS [   0.280s] ( 437/1376) light-cljs::compiler extensions::native_selectors_default_and_saved_dispatch
+        PASS [   2.881s] ( 438/1376) light-cljs::compiler edn::migrated_native_core_stream_reader_arities_eof_values_and_data
+        PASS [   2.116s] ( 439/1376) light-cljs::compiler edn_stream::edn_stream_contract_executes_in_fresh_and_reused_application_and_macro_phases
+        PASS [   0.290s] ( 440/1376) light-cljs::compiler extensions::old_instances_instance_precedence_and_metadata
+        PASS [   8.865s] ( 441/1376) light-cljs::compiler core_helpers::phase_oracles::helper_workflows
+        PASS [   0.272s] ( 442/1376) light-cljs::compiler extensions::replacement_keeps_current_method_and_changes_later_calls
+        PASS [   0.412s] ( 443/1376) light-cljs::compiler features_example::chunked_driver_waits_for_dynamic_imports_and_reports_errors
+        PASS [   1.820s] ( 444/1376) light-cljs::compiler eductions::eduction_values_effects_and_errors_match_in_quickjs_and_node
+        PASS [   0.493s] ( 445/1376) light-cljs::compiler folding_inlining::bodies_that_depend_on_their_function_stay_functions
+        PASS [   0.498s] ( 446/1376) light-cljs::compiler folding_inlining::built_literals_stay_built_and_keys_stay_as_written
+        PASS [   0.476s] ( 447/1376) light-cljs::compiler folding_inlining::calls_that_may_run_before_the_definition_stay_calls
+        PASS [   1.301s] ( 448/1376) light-cljs::compiler folding_inlining::calls_outside_the_domain_or_of_replaceable_operations_stay
+        PASS [   0.889s] ( 449/1376) light-cljs::compiler folding_inlining::constant_core_calls_fold_to_the_runtime_results
+        PASS [   1.165s] ( 450/1376) light-cljs::compiler folding_inlining::const_reads_are_their_value_after_the_definition_runs
+        PASS [  14.534s] ( 451/1376) light-cljs::compiler cljc_prefixes::scalar_splice_and_nested_prefix_controls_execute_both_phases_and_lifecycles
+        PASS [  11.598s] ( 452/1376) light-cljs::compiler core_gate::core_collections_applications_and_macros_execute
+        PASS [   0.284s] ( 453/1376) light-cljs::compiler folding_inlining::defines_and_goog_define_reject_what_does_not_fit
+        PASS [   1.235s] ( 454/1376) light-cljs::compiler folding_inlining::debug_logging_vanishes_completely
+        PASS [   0.497s] ( 455/1376) light-cljs::compiler folding_inlining::let_bound_constants_and_unread_bindings_fold
+        PASS [   0.504s] ( 456/1376) light-cljs::compiler folding_inlining::mutable_fields_are_bound_before_the_body_runs
+        PASS [   2.246s] ( 457/1376) light-cljs::compiler features_example::features_example_logs_its_menu_and_both_features_at_every_level
+        PASS [   0.772s] ( 458/1376) light-cljs::compiler folding_inlining::function_scope_stays_where_arguments_or_raw_text_see_it
+        PASS [   3.414s] ( 459/1376) light-cljs::compiler equality::phase_oracles::hashing_test_bodies
+        PASS [   0.013s] ( 460/1376) light-cljs::compiler generated_optimization::garbage_never_changes_the_program_text_and_every_tag_occurs
+        PASS [   1.680s] ( 461/1376) light-cljs::compiler folding_inlining::constant_tests_select_their_branch_and_drop_what_only_the_other_reads
+        PASS [   2.663s] ( 462/1376) light-cljs::compiler extensions::phase_oracles::extension_test_bodies
+        PASS [   0.486s] ( 463/1376) light-cljs::compiler folding_inlining::recursion_reaches_a_fixed_point
+        PASS [   0.937s] ( 464/1376) light-cljs::compiler folding_inlining::inlined_arguments_run_once_and_in_order
+        PASS [   0.506s] ( 465/1376) light-cljs::compiler folding_inlining::rest_parameters_inline_only_when_unread
+        PASS [   0.497s] ( 466/1376) light-cljs::compiler folding_inlining::single_use_functions_move_into_their_only_call
+        PASS [   0.498s] ( 467/1376) light-cljs::compiler folding_inlining::small_pure_functions_inline_where_that_shrinks_the_program
+        PASS [   0.548s] ( 468/1376) light-cljs::compiler generated_optimization::checks_reject_changed_records_surviving_garbage_and_residue
+        PASS [   0.534s] ( 469/1376) light-cljs::compiler generated_optimization::lazy_checks_reject_lazy_only_definitions_in_startup
+        PASS [   1.243s] ( 470/1376) light-cljs::compiler folding_inlining::goog_define_takes_its_value_from_the_build_at_every_level
+        PASS [   9.813s] ( 471/1376) light-cljs::compiler declare_values::complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phases
+        PASS [   1.012s] ( 472/1376) light-cljs::compiler generated_optimization::lazy_seed_00
+        PASS [   3.486s] ( 473/1376) light-cljs::compiler extensions::phase_oracles::instance_extensions
+        PASS [   1.011s] ( 474/1376) light-cljs::compiler generated_optimization::lazy_seed_01
+        PASS [   0.954s] ( 475/1376) light-cljs::compiler generated_optimization::lazy_seed_03
+        PASS [   1.017s] ( 476/1376) light-cljs::compiler generated_optimization::lazy_seed_02
+        PASS [   0.995s] ( 477/1376) light-cljs::compiler generated_optimization::lazy_seed_04
+        PASS [   0.959s] ( 478/1376) light-cljs::compiler generated_optimization::lazy_seed_06
+        PASS [   1.010s] ( 479/1376) light-cljs::compiler generated_optimization::lazy_seed_05
+        PASS [   1.017s] ( 480/1376) light-cljs::compiler generated_optimization::lazy_seed_08
+        PASS [   1.045s] ( 481/1376) light-cljs::compiler generated_optimization::lazy_seed_07
+        PASS [   0.964s] ( 482/1376) light-cljs::compiler generated_optimization::lazy_seed_10
+        PASS [   1.055s] ( 483/1376) light-cljs::compiler generated_optimization::lazy_seed_09
+        PASS [   0.948s] ( 484/1376) light-cljs::compiler generated_optimization::lazy_seed_11
+        PASS [   1.450s] ( 485/1376) light-cljs::compiler generated_optimization::programs_read_constants_through_folded_lookups
+        PASS [   6.234s] ( 486/1376) light-cljs::compiler equality::complete_upstream_equality_bodies_execute_in_both_engines
+        PASS [   1.644s] ( 487/1376) light-cljs::compiler generated_optimization::seed_02
+        PASS [   1.526s] ( 488/1376) light-cljs::compiler generated_optimization::seed_05
+        PASS [   1.591s] ( 489/1376) light-cljs::compiler generated_optimization::seed_04
+        PASS [   1.406s] ( 490/1376) light-cljs::compiler generated_optimization::seed_08
+        PASS [   1.805s] ( 491/1376) light-cljs::compiler generated_optimization::seed_00
+        PASS [   0.072s] ( 492/1376) light-cljs::compiler host_hooks::clocks_random_sources_and_taps_are_explicit_session_capabilities
+        PASS [   0.099s] ( 493/1376) light-cljs::compiler host_hooks::file_diagnostics_history_recovery_and_capability_denial_are_stable
+        PASS [   1.839s] ( 494/1376) light-cljs::compiler generated_optimization::seed_01
+        PASS [   1.585s] ( 495/1376) light-cljs::compiler generated_optimization::seed_07
+        PASS [   0.111s] ( 496/1376) light-cljs::compiler host_hooks::runtime_scheduler_admission_bounded_reentrancy_and_arities
+        PASS [   1.627s] ( 497/1376) light-cljs::compiler generated_optimization::seed_09
+        PASS [   1.890s] ( 498/1376) light-cljs::compiler generated_optimization::seed_03
+        PASS [   0.317s] ( 499/1376) light-cljs::compiler host_hooks::load_file_uses_one_compiler_and_heap_with_macros_namespaces_and_require
+        PASS [   0.421s] ( 500/1376) light-cljs::compiler host_hooks::host_hooks_have_macro_application_phase_witnesses
+        PASS [   1.491s] ( 501/1376) light-cljs::compiler generated_optimization::seed_10
+        PASS [   2.031s] ( 502/1376) light-cljs::compiler generated_optimization::seed_06
+        PASS [   0.752s] ( 503/1376) light-cljs::compiler ifn_public_context::ifn_receiver_metadata_failure_and_recovery_execute_in_both_phases
+        PASS [   1.392s] ( 504/1376) light-cljs::compiler generated_optimization::seed_11
+        PASS [   0.011s] ( 505/1376) light-cljs::compiler interop::malformed_special_forms_fail_with_source_spans_before_emission
+        PASS [   0.550s] ( 506/1376) light-cljs::compiler ifn_rest::invalid_rest_forms_and_failed_invocations_leave_reused_sessions_usable
+        PASS [   0.796s] ( 507/1376) light-cljs::compiler ifn_public_context::ifn_receiver_terminal_rest_slot_executes_in_both_phases
+        PASS [   0.085s] ( 508/1376) light-cljs::compiler interop::referred_global_names_and_qualified_methods_survive_namespace_compilation
+        PASS [   0.537s] ( 509/1376) light-cljs::compiler integer_predicates::predicates_keep_number_boundaries_once_only_effects_and_phase_isolation
+        PASS [   0.903s] ( 510/1376) light-cljs::compiler ifn_public_context::ifn_receiver_zero_through_six_execute_in_both_phases
+        PASS [   1.061s] ( 511/1376) light-cljs::compiler ifn_public_context::ifn_receiver_fifteen_through_twenty_execute_in_both_phases
+        PASS [   1.050s] ( 512/1376) light-cljs::compiler ifn_public_context::ifn_receiver_seven_through_fourteen_execute_in_both_phases
+        PASS [   0.070s] ( 513/1376) light-cljs::compiler iterator_helpers::iterator_helpers_preserve_session_owned_progress
+        PASS [   0.367s] ( 514/1376) light-cljs::compiler interop::interop_has_direct_host_expectations_without_the_shared_encoder
+        PASS [   0.942s] ( 515/1376) light-cljs::compiler integer_predicates::predicate_receiver_errors_leave_macro_host_reusable
+        PASS [   1.099s] ( 516/1376) light-cljs::compiler ifn_rest::phase_oracles::apply_to
+        PASS [   0.344s] ( 517/1376) light-cljs::compiler key_shapes::event_map_allocations_per_evaluation_are_pinned
+        PASS [   0.957s] ( 518/1376) light-cljs::compiler iterator_helpers::iterator_helper_phase_isolation_diagnostics_and_repetition
+        PASS [   0.547s] ( 519/1376) light-cljs::compiler key_shapes::set_literals_add_their_other_members_to_a_shape_of_their_first_members
+        PASS [   0.553s] ( 520/1376) light-cljs::compiler key_shapes::shape_key_hashes_are_the_runtime_hashes
+        PASS [   0.798s] ( 521/1376) light-cljs::compiler key_shapes::keys_the_pool_cannot_tell_apart_are_built_at_their_site
+        PASS [   1.009s] ( 522/1376) light-cljs::compiler iterator_name::canonical_iterator_name_preserves_rejection_and_same_host_recovery
+        PASS [   1.944s] ( 523/1376) light-cljs::compiler ifn_rest::callable_rest_sequences_receivers_effects_and_lazy_values_match_references
+        PASS [   0.229s] ( 524/1376) light-cljs::compiler key_shapes::transient_hash_maps_edit_the_nodes_they_own_in_place
+        PASS [   1.261s] ( 525/1376) light-cljs::compiler iterator_helpers::iterator_helpers_execute_in_applications_and_macros
+        PASS [   1.198s] ( 526/1376) light-cljs::compiler key_shapes::generated_programs_build_shaped_maps_and_sets
+        PASS [   0.241s] ( 527/1376) light-cljs::compiler key_shapes::transient_hash_sets_edit_the_nodes_they_own_in_place
+        PASS [   0.290s] ( 528/1376) light-cljs::compiler lazy::a_loadable_needs_light_lazy_loaded_before_its_namespace
+        PASS [   0.476s] ( 529/1376) light-cljs::compiler lazy::a_lazy_target_follows_its_unvisited_dependencies_and_a_loaded_one_is_resident
+        PASS [   0.264s] ( 530/1376) light-cljs::compiler lazy::a_standalone_loadable_type_embeds_the_runtime_at_every_level
+        PASS [   0.019s] ( 531/1376) light-cljs::compiler lazy::analysis_errors_name_the_site
+        PASS [   0.011s] ( 532/1376) light-cljs::compiler lazy::analyzing_given_namespaces_requires_lazy_targets_among_them
+        PASS [   0.078s] ( 533/1376) light-cljs::compiler lazy::load_file_loads_the_namespaces_its_loadables_name
+        PASS [   0.552s] ( 534/1376) light-cljs::compiler lazy::a_macro_expansion_can_write_a_loadable
+        PASS [   0.870s] ( 535/1376) light-cljs::compiler key_shapes::shapes_build_the_entries_and_tries_the_builders_build
+        PASS [   0.275s] ( 536/1376) light-cljs::compiler lazy::an_alias_of_light_lazy_names_the_special_form
+        PASS [   0.606s] ( 537/1376) light-cljs::compiler lazy::a_namespace_target_keeps_its_effects_and_drops_its_unread_definitions
+        PASS [   0.300s] ( 538/1376) light-cljs::compiler lazy::loadable_getters_keep_cljs_invocation_semantics_at_every_level
+        PASS [   0.283s] ( 539/1376) light-cljs::compiler lazy::loadable_sites_and_the_require_graph_of_three_namespaces
+        PASS [   0.609s] ( 540/1376) light-cljs::compiler lazy::a_var_only_a_loadable_reads_keeps_its_arities_and_what_it_reaches
+        PASS [  11.428s] ( 541/1376) light-cljs::compiler edn::migrated_native_edn_values_effects_and_errors_execute_without_interpreter
+        PASS [   0.042s] ( 542/1376) light-cljs::compiler lazy::the_repl_checks_lazy_targets_after_their_namespaces_load
+        PASS [   0.079s] ( 543/1376) light-cljs::compiler lazy::the_repl_loads_the_namespace_a_loadable_names
+        PASS [   0.573s] ( 544/1376) light-cljs::compiler lazy::loadable_ideref_overrides_are_honored_at_every_level
+        PASS [   0.576s] ( 545/1376) light-cljs::compiler lazy::loadables_deref_and_load_their_resident_targets_at_every_level
+        PASS [   0.571s] ( 546/1376) light-cljs::compiler lazy::loadables_read_the_current_value_of_a_reassigned_target_at_every_level
+        PASS [   1.834s] ( 547/1376) light-cljs::compiler key_shapes::shaped_maps_behave_as_maps_built_at_their_site
+        PASS [   0.879s] ( 548/1376) light-cljs::compiler lazy::the_entry_value_survives_lazy_namespaces_analyzed_after_it
+        PASS [   1.158s] ( 549/1376) light-cljs::compiler lazy::phase_oracles::loadable_in_macro_generated_code
+        PASS [   3.153s] ( 550/1376) light-cljs::compiler iterator_helpers::phase_oracles::iterator_test_bodies
+        PASS [   3.670s] ( 551/1376) light-cljs::compiler interop::phase_oracles::interop_test_bodies
+        PASS [   1.190s] ( 552/1376) light-cljs::compiler library_bodies::phase_oracles::string_test_bodies
+        PASS [   1.537s] ( 553/1376) light-cljs::compiler lazy::the_features_example_loads_its_features_in_one_file
+        PASS [   3.971s] ( 554/1376) light-cljs::compiler interop::phase_oracles::object_and_array_access
+        PASS [   6.150s] ( 555/1376) light-cljs::compiler hash_map_from_arrays::public_from_arrays_preserves_exact_contracts_and_same_host_recovery
+        PASS [  11.646s] ( 556/1376) light-cljs::compiler find_effects::find_effects_execute_in_fresh_and_reused_phases
+        PASS [   4.523s] ( 557/1376) light-cljs::compiler lazy::a_loadable_is_a_type_implementing_ideref_to_each_observer_at_every_level
+        PASS [   4.182s] ( 558/1376) light-cljs::compiler literal_char_string::canonical_literal_constants_and_same_host_diagnostic_recovery
+        PASS [   8.360s] ( 559/1376) light-cljs::compiler hash_map_source::hash_map_source_preserves_exact_contracts_and_same_host_recovery
+        PASS [  27.743s] ( 560/1376) light-cljs::compiler constant_hashes::corpus_constants_embed_the_runtime_hash
+        PASS [   6.970s] ( 561/1376) light-cljs::compiler library_bodies::phase_oracles::walk_test_bodies
+        PASS [   0.012s] ( 562/1376) light-cljs::compiler macros::clj_companions_are_never_compiler_sources
+        PASS [   0.799s] ( 563/1376) light-cljs::compiler macros::cljs_env_has_binding_records_context_namespace_and_unevaluated_form
+        PASS [   0.373s] ( 564/1376) light-cljs::compiler macros::collection_macro_compilation_obeys_shared_limits_and_recovers_with_the_same_host
+        PASS [   0.285s] ( 565/1376) light-cljs::compiler macros::companion_files_alone_do_not_enable_inference_and_generated_errors_stay_located
+        PASS [   0.347s] ( 566/1376) light-cljs::compiler macros::compiled_source_macros_preserve_form_env_and_caller_owned_syntax
+        PASS [   0.420s] ( 567/1376) light-cljs::compiler macros::compiler_assertion_configuration_removes_conditions_messages_and_prepost_checks
+        PASS [   8.929s] ( 568/1376) light-cljs::compiler literal_numeric::canonical_numeric_literal_constants_and_same_host_diagnostic_recovery
+        PASS [   0.372s] ( 569/1376) light-cljs::compiler macros::control_macros_execute_directly_and_from_source_macro_namespaces
+        PASS [   9.212s] ( 570/1376) light-cljs::compiler local_api_source_context::original_local_api_sources_011_through_020_execute_in_both_phases
+        PASS [   9.272s] ( 571/1376) light-cljs::compiler local_api_source_context::original_local_api_sources_001_through_010_execute_in_both_phases
+        PASS [   9.183s] ( 572/1376) light-cljs::compiler local_api_source_context::original_local_api_sources_021_through_030_execute_in_both_phases
+        PASS [   0.361s] ( 573/1376) light-cljs::compiler macros::core_extension_queries_and_saved_protocol_methods_demand_visible_candidates
+        PASS [  10.370s] ( 574/1376) light-cljs::compiler library_bodies::complete_promised_library_bodies_execute_in_both_phases
+        PASS [   0.362s] ( 575/1376) light-cljs::compiler macros::declaration_bundle_demand::computed_targets_are_protocol_specific_and_initialized_once
+        PASS [   0.399s] ( 576/1376) light-cljs::compiler macros::declaration_bundle_demand::bundle_cycles_report_paths_and_declaration_products_support_redefinition
+        PASS [   1.138s] ( 577/1376) light-cljs::compiler macros::control_iteration_captures_have_direct_expected_values_and_do_not_leak_recur
+        PASS [   9.189s] ( 578/1376) light-cljs::compiler local_api_source_context::original_local_api_sources_041_through_050_execute_in_both_phases
+        PASS [   9.234s] ( 579/1376) light-cljs::compiler local_api_source_context::original_local_api_sources_051_through_060_execute_in_both_phases
+        PASS [   0.374s] ( 580/1376) light-cljs::compiler macros::declaration_bundle_demand::native_marker_higher_order_extend_protocol_and_replacement_follow_source_frontier
+        PASS [   0.397s] ( 581/1376) light-cljs::compiler macros::declaration_bundle_demand::failed_bundle_is_sticky_and_fresh_compilation_repairs_it
+        PASS [   0.376s] ( 582/1376) light-cljs::compiler macros::declaration_bundle_demand::record_type_protocols_and_core_operations_share_lowering_with_separate_state
+        PASS [   9.467s] ( 583/1376) light-cljs::compiler local_api_source_context::original_local_api_sources_031_through_040_execute_in_both_phases
+        PASS [   0.365s] ( 584/1376) light-cljs::compiler macros::declaration_bundle_demand::reify_captures_and_executed_specify_use_canonical_expression_semantics
+        PASS [   0.359s] ( 585/1376) light-cljs::compiler macros::default_interpreter_user_identity_does_not_hide_user_macro_source
+        PASS [   0.363s] ( 586/1376) light-cljs::compiler macros::deferred_declaration_methods_expand_once_at_the_definition_site
+        PASS [   0.363s] ( 587/1376) light-cljs::compiler macros::delayed_macro_expansion_excludes_future_extensions_even_after_new_dispatch_is_ready
+        PASS [   0.291s] ( 588/1376) light-cljs::compiler macros::failed_extension_generation_can_be_replaced_without_repeating_host_effects
+        PASS [   0.360s] ( 589/1376) light-cljs::compiler macros::exhausted_expansion_depth_does_not_run_macro_effects
+        PASS [   0.358s] ( 590/1376) light-cljs::compiler macros::explicit_use_and_core_require_preserve_renamed_namespace_identity
+        PASS [   0.419s] ( 591/1376) light-cljs::compiler macros::demanded_record_initializers_restore_generation_views_after_nested_demand_and_failure
+        PASS [   0.354s] ( 592/1376) light-cljs::compiler macros::generated_collections_remain_macro_data_until_used_as_runtime_expressions
+        PASS [   0.383s] ( 593/1376) light-cljs::compiler macros::generated_diagnostics_point_to_call_sites_and_explain_unsupported_runtime
+        PASS [   0.569s] ( 594/1376) light-cljs::compiler macros::direct_auto_keywords_use_the_same_ordinary_aliases_as_macro_input
+        PASS [   0.433s] ( 595/1376) light-cljs::compiler macros::generated_exception_forms_keep_default_catches_and_original_values
+        PASS [   0.544s] ( 596/1376) light-cljs::compiler macros::generated_destructured_methods_and_qualified_assertions_execute_in_javascript
+        PASS [   0.042s] ( 597/1376) light-cljs::compiler macros::javascript_form_bridge::caught_nested_conversion_limits_cannot_reset_the_session_budget
+        PASS [   0.370s] ( 598/1376) light-cljs::compiler macros::generated_metadata_evaluates_runtime_forms_and_preserves_macro_definition_metadata
+        PASS [   0.371s] ( 599/1376) light-cljs::compiler macros::generated_qualified_operations_keep_core_identity_under_lexical_and_global_shadowing
+        PASS [   0.043s] ( 600/1376) light-cljs::compiler macros::javascript_form_bridge::chunked_sequence_export_preserves_supplied_node
+        PASS [   0.041s] ( 601/1376) light-cljs::compiler macros::javascript_form_bridge::definition_namespace_syntax_quote_and_gensym_are_hygienic
+        PASS [   0.041s] ( 602/1376) light-cljs::compiler macros::javascript_form_bridge::form_and_bounded_environment_use_actual_nested_call_and_shadow_ids
+        PASS [   0.039s] ( 603/1376) light-cljs::compiler macros::javascript_form_bridge::generated_code_executes_in_order_and_preserves_number_bits
+        PASS [   0.074s] ( 604/1376) light-cljs::compiler macros::javascript_form_bridge::finite_lazy_results_realize_under_shared_control_and_handles_stay_session_owned
+        PASS [   0.043s] ( 605/1376) light-cljs::compiler macros::javascript_form_bridge::identity_preserves_owned_forms_and_executes_returned_code
+        PASS [   0.040s] ( 606/1376) light-cljs::compiler macros::javascript_form_bridge::literal_mutations_and_constructed_metadata_decode_without_stale_origins
+        PASS [   0.039s] ( 607/1376) light-cljs::compiler macros::javascript_form_bridge::nested_services_share_forms_and_survive_gc_without_rust_collection_callbacks
+        PASS [   0.521s] ( 608/1376) light-cljs::compiler macros::generated_maps_preserve_owned_children_order_keys_and_quoted_data
+        PASS [   0.070s] ( 609/1376) light-cljs::compiler macros::javascript_form_bridge::qualified_environment_keys_keep_a_long_shadow_chain_and_binding_shape
+        PASS [   9.215s] ( 610/1376) light-cljs::compiler local_api_source_context::original_local_api_sources_061_through_070_execute_in_both_phases
+        PASS [   0.471s] ( 611/1376) light-cljs::compiler macros::generated_vectors_and_keyword_names_execute_with_owned_semantic_values
+        PASS [   0.040s] ( 612/1376) light-cljs::compiler macros::javascript_form_bridge::quoted_js_literals_preserve_nested_metadata_and_expansion_origins
+        PASS [   0.587s] ( 613/1376) light-cljs::compiler macros::imported_macro_environment_keeps_qualified_ids_across_a_long_shadow_chain
+        PASS [   0.122s] ( 614/1376) light-cljs::compiler macros::javascript_form_bridge::rejection_never_calls_arbitrary_getters_or_to_string
+        PASS [   0.721s] ( 615/1376) light-cljs::compiler macros::generated_sets_preserve_members_source_effects_and_quoted_data
+        PASS [   0.348s] ( 616/1376) light-cljs::compiler macros::javascript_form_bridge::numeric_macro_failures_keep_call_definition_and_helper_provenance
+        PASS [   0.066s] ( 617/1376) light-cljs::compiler macros::javascript_form_bridge::saved_scalars_keep_provenance_between_macro_calls
+        PASS [   0.039s] ( 618/1376) light-cljs::compiler macros::javascript_form_bridge::saved_subforms_keep_provenance_after_input_release_and_collection
+        PASS [   0.009s] ( 619/1376) light-cljs::compiler macros::legacy_macro_import_syntax_has_located_migration_diagnostics
+        PASS [   0.355s] ( 620/1376) light-cljs::compiler macros::javascript_form_bridge::pinned_numeric_bodies_execute_inside_the_javascript_macro_bridge
+        PASS [   0.067s] ( 621/1376) light-cljs::compiler macros::javascript_form_bridge::vector_sequence_export_reads_only_within_its_limit
+        PASS [   0.971s] ( 622/1376) light-cljs::compiler macros::generated_map_keys_keep_reader_name_parts_before_runtime_spelling_equality
+        PASS [   0.123s] ( 623/1376) light-cljs::compiler macros::javascript_form_bridge::unchanged_scalar_arguments_keep_their_original_location
+        PASS [   0.706s] ( 624/1376) light-cljs::compiler macros::imported_macro_values_and_private_macros_remain_phase_errors
+        PASS [   0.352s] ( 625/1376) light-cljs::compiler macros::javascript_form_bridge::reader_numeric_spellings_are_number_values_before_macro_execution
+        PASS [   0.502s] ( 626/1376) light-cljs::compiler macros::javascript_form_bridge::quoted_js_literal_export_is_bounded_and_unbranded_nested_values_are_rejected
+        PASS [   9.196s] ( 627/1376) light-cljs::compiler local_api_source_context::original_local_api_sources_071_through_080_execute_in_both_phases
+        PASS [   0.807s] ( 628/1376) light-cljs::compiler macros::javascript_form_bridge::number_expansion_data_matches_independent_application_heaps
+        PASS [   0.357s] ( 629/1376) light-cljs::compiler macros::macro_import_effects_follow_runtime_dependency_analysis_order
+        PASS [   0.397s] ( 630/1376) light-cljs::compiler macros::macro_code_uses_cljs_dependencies_and_caller_aliases_without_allowing_cljs_conditionals
+        PASS [   0.505s] ( 631/1376) light-cljs::compiler macros::javascript_form_bridge::unsupported_and_unbounded_results_are_located_and_fresh_sessions_recover
+        PASS [   0.502s] ( 632/1376) light-cljs::compiler macros::macro_call_context_matches_cljs_and_recovers_after_expansion_failure
+        PASS [   9.203s] ( 633/1376) light-cljs::compiler local_api_source_context::original_local_api_sources_081_through_090_execute_in_both_phases
+        PASS [   0.617s] ( 634/1376) light-cljs::compiler macros::locals_shadow_imported_macros_and_qualified_calls_keep_namespace_identity
+        PASS [   0.578s] ( 635/1376) light-cljs::compiler macros::macro_import_validation_and_loader_failures_are_located
+        PASS [   0.576s] ( 636/1376) light-cljs::compiler macros::macro_namespaces_select_cljs_and_refresh_on_each_compilation
+        PASS [   0.478s] ( 637/1376) light-cljs::compiler macros::macros_emit_mutual_letfn_with_the_complete_lexical_environment
+        PASS [   0.694s] ( 638/1376) light-cljs::compiler macros::macro_namespace_effects_are_shared_once_per_compilation_with_fresh_reused_hosts
+        PASS [  12.692s] ( 639/1376) light-cljs::compiler library_bodies::phase_oracles::set_test_bodies
+        PASS [   0.405s] ( 640/1376) light-cljs::compiler macros::ordinary_core_macros_expand_inside_lexical_environments
+        PASS [   0.468s] ( 641/1376) light-cljs::compiler macros::namespace_metadata_and_docstrings_reach_the_macro_environment_and_refresh_on_reuse
+        PASS [   0.513s] ( 642/1376) light-cljs::compiler macros::macros_generate_resolved_reductions_and_fixed_callbacks_without_native_execution
+        PASS [   0.363s] ( 643/1376) light-cljs::compiler macros::ordinary_helper_demand::defonce_preserves_pending_nil_false_undefined_and_allows_declared_slots
+        PASS [   0.289s] ( 644/1376) light-cljs::compiler macros::ordinary_helper_demand::failed_generation_retains_effects_error_and_defonce_until_redefined
+        PASS [   0.361s] ( 645/1376) light-cljs::compiler macros::ordinary_helper_demand::executed_nested_definitions_change_only_compilation_roots
+        PASS [   0.578s] ( 646/1376) light-cljs::compiler macros::ordinary_helper_demand::connection_is_application_only_and_initializer_order_is_preserved
+        PASS [   0.292s] ( 647/1376) light-cljs::compiler macros::ordinary_helper_demand::scopes_preserve_pending_failed_roots_parallel_initializers_and_overlay_set
+        PASS [   0.433s] ( 648/1376) light-cljs::compiler macros::ordinary_helper_demand::higher_order_collections_closures_apply_composition_and_branches_demand_values
+        PASS [   0.422s] ( 649/1376) light-cljs::compiler macros::ordinary_helper_demand::mutual_recursion_and_located_unavailable_and_initialization_cycles
+        PASS [   0.360s] ( 650/1376) light-cljs::compiler macros::ordinary_helper_demand::saved_function_code_captures_and_active_global_generations
+        PASS [   0.402s] ( 651/1376) light-cljs::compiler macros::ordinary_helper_demand::var_identity_quote_metadata_and_resolve_are_lazy_until_consumed
+        PASS [   0.361s] ( 652/1376) light-cljs::compiler macros::overload_macro_environments_keep_method_parameters_and_rest_argument_identity
+        PASS [   0.398s] ( 653/1376) light-cljs::compiler macros::quoted_generated_symbols_preserve_lone_surrogates_but_executable_names_reject_them
+        PASS [   0.690s] ( 654/1376) light-cljs::compiler macros::ordinary_helper_demand::roots_are_fresh_on_reuse_and_standalone_mutation_is_never_replayed
+        PASS [   1.287s] ( 655/1376) light-cljs::compiler macros::macro_source_selection_splices_discards_conflicts_and_recovery_are_current
+        PASS [   0.631s] ( 656/1376) light-cljs::compiler macros::ordinary_requires_share_transitive_helpers_preserve_effects_privacy_and_shadowing
+        PASS [   0.544s] ( 657/1376) light-cljs::compiler macros::quoted_macro_values_preserve_symbols_effects_and_generated_provenance
+        PASS [   0.724s] ( 658/1376) light-cljs::compiler macros::ordinary_macro_imports_also_expose_runtime_bindings
+        PASS [   0.365s] ( 659/1376) light-cljs::compiler macros::reentrant_deferred_units::nested_demands_expand_each_source_occurrence_once_and_share_ir
+        PASS [   0.408s] ( 660/1376) light-cljs::compiler macros::reentrant_deferred_units::nested_execution_limit_is_terminal_and_a_clean_host_can_be_reused
+        PASS [   1.278s] ( 661/1376) light-cljs::compiler macros::ordinary_dual_use_require_executes_exact_tools_example_through_api_and_cli
+        PASS [   0.625s] ( 662/1376) light-cljs::compiler macros::reentrant_deferred_units::analysis_cycles_are_distinct_from_ordinary_function_recursion
+        PASS [   0.689s] ( 663/1376) light-cljs::compiler macros::recursive_and_growing_expansions_obey_depth_count_size_and_execution_limits
+        PASS [   9.198s] ( 664/1376) light-cljs::compiler local_api_source_context::original_local_api_sources_091_through_100_execute_in_both_phases
+        PASS [   0.365s] ( 665/1376) light-cljs::compiler macros::restoring_a_dispatch_frontier_preserves_executed_helper_mutation
+        PASS [   0.467s] ( 666/1376) light-cljs::compiler macros::required_unrelated_initializers_run_only_in_application_and_failure_is_not_swallowed
+        PASS [   0.477s] ( 667/1376) light-cljs::compiler macros::returned_forms_keep_utf16_negative_zero_and_number_boundaries
+        PASS [   0.906s] ( 668/1376) light-cljs::compiler macros::reentrant_deferred_units::failed_nested_analysis_execution_and_conversion_do_not_poison_reused_host
+        PASS [   0.478s] ( 669/1376) light-cljs::compiler macros::same_file_javascript_macros::fixed_multiple_variadic_and_destructured_methods_use_hidden_abi
+        PASS [   9.204s] ( 670/1376) light-cljs::compiler local_api_source_context::original_local_api_sources_101_through_110_execute_in_both_phases
+        PASS [   0.503s] ( 671/1376) light-cljs::compiler macros::same_file_javascript_macros::explicit_quoted_js_forms_do_not_authorize_arbitrary_host_macro_results
+        PASS [   0.365s] ( 672/1376) light-cljs::compiler macros::same_file_javascript_macros::namespace_and_cljc_macros_use_definition_site_names_and_selected_branch
+        PASS [   0.493s] ( 673/1376) light-cljs::compiler macros::same_file_javascript_macros::generated_declarations_and_top_level_do_interleave_in_source_order
+        PASS [   0.671s] ( 674/1376) light-cljs::compiler macros::same_file_javascript_macros::compile_and_analyze_emit_expand_hygienically_without_runtime_macro_roots
+        PASS [   0.968s] ( 675/1376) light-cljs::compiler macros::reentrant_deferred_units::snapshots_freeze_visibility_and_macro_generations_but_roots_are_late_bound
+        PASS [   1.164s] ( 676/1376) light-cljs::compiler macros::reentrant_deferred_units::definition_aliases_metadata_and_clean_session_options_are_frozen
+        PASS [   0.399s] ( 677/1376) light-cljs::compiler macros::same_file_javascript_macros::source_order_preserves_expansions_and_macro_definition_generations
+        PASS [   0.614s] ( 678/1376) light-cljs::compiler macros::same_file_javascript_macros::local_calls_shadow_unqualified_macros_but_phase_misuses_are_located
+        PASS [   0.570s] ( 679/1376) light-cljs::compiler macros::same_file_javascript_macros::reused_host_refreshes_source_macros_and_preserves_configuration
+        PASS [   0.641s] ( 680/1376) light-cljs::compiler macros::same_file_javascript_macros::macro_and_value_binding_conflicts_include_declare_and_generated_definitions
+        PASS [   0.359s] ( 681/1376) light-cljs::compiler macros::shared_conditional_arguments_are_selected_before_macro_lowering
+        PASS [   0.360s] ( 682/1376) light-cljs::compiler macros::shared_macros_and_runtime_refers_preserve_renamed_identity
+        PASS [   0.415s] ( 683/1376) light-cljs::compiler macros::top_level_definition_groups::executed_bindings_restore_overlays_without_installing_temporary_roots
+        PASS [   0.491s] ( 684/1376) light-cljs::compiler macros::top_level_definition_groups::earlier_products_and_recursive_functions_do_not_hide_real_cycles
+        PASS [   0.421s] ( 685/1376) light-cljs::compiler macros::top_level_definition_groups::generations_and_macro_expansion_are_source_ordered_without_replay
+        PASS [   0.008s] ( 686/1376) light-cljs::compiler multimethod_evidence::multimethod_fixture_provenance_retains_pinned_origins
+        PASS [   0.592s] ( 687/1376) light-cljs::compiler macros::top_level_definition_groups::complete_owners_preserve_captures_order_once_and_phase_roots
+        PASS [   0.420s] ( 688/1376) light-cljs::compiler macros::top_level_definition_groups::own_initializers_observe_prior_generations_and_defonce_checks_conditional_installation
+        PASS [   0.434s] ( 689/1376) light-cljs::compiler macros::top_level_definition_groups::terminal_limit_in_owner_cannot_be_caught_and_host_recovers
+        PASS [   0.596s] ( 690/1376) light-cljs::compiler macros::top_level_definition_groups::exists_observes_unavailable_roots_values_and_conditional_products
+        PASS [   0.985s] ( 691/1376) light-cljs::compiler macros::same_file_javascript_macros::source_macros_read_the_host_assertion_setting_as_assert
+        PASS [   0.119s] ( 692/1376) light-cljs::compiler multimethods::javascript_prototypes_and_custom_hierarchy_queries_preserve_cljs_behavior
+        PASS [   0.644s] ( 693/1376) light-cljs::compiler macros::top_level_definition_groups::throwing_owner_is_sticky_and_fresh_or_reused_hosts_recover
+        PASS [   0.731s] ( 694/1376) light-cljs::compiler macros::top_level_definition_groups::selected_groups_and_conditional_products_keep_lazy_availability
+        PASS [   0.719s] ( 695/1376) light-cljs::compiler macros::two_runtime_namespaces_use_cljs_macros_through_api_and_cli
+        PASS [   0.401s] ( 696/1376) light-cljs::compiler multimethods::alias_and_computed_method_targets_are_demanded_in_source_order
+        PASS [   0.406s] ( 697/1376) light-cljs::compiler multimethods::dispatch_cache_mutations_defaults_ambiguity_and_preferences
+        PASS [   0.413s] ( 698/1376) light-cljs::compiler multimethods::functions_protocols_constructor_metadata_and_apply_preserve_arguments
+        PASS [   0.394s] ( 699/1376) light-cljs::compiler multimethods::hierarchy_closure_diamonds_vectors_and_failure_categories
+        PASS [   1.165s] ( 700/1376) light-cljs::compiler macros::top_level_definition_groups::exists_preserves_initializer_errors_cycles_visibility_and_reuse
+        PASS [   0.395s] ( 701/1376) light-cljs::compiler multimethods::macro_demands_methods_without_unrelated_initializers_and_keeps_phase_state
+        PASS [   0.394s] ( 702/1376) light-cljs::compiler multimethods::macro_method_replacements_follow_declaration_frontiers
+        PASS [   0.015s] ( 703/1376) light-cljs::compiler namespace_completion::namespace_operation_errors_are_located_and_nested_requires_stay_invalid
+        PASS [   0.391s] ( 704/1376) light-cljs::compiler multimethods::method_body_macros_expand_once_at_the_declaration_site
+        PASS [   0.008s] ( 705/1376) light-cljs::compiler namespace_completion::ordinary_alias_conflicts_for_value_and_macro_namespaces_fail_in_both_modes
+        PASS [   0.395s] ( 706/1376) light-cljs::compiler multimethods::public_api_arities_execute_in_macro_phase
+        PASS [   0.394s] ( 707/1376) light-cljs::compiler multimethods::sessions_and_dynamic_hierarchy_roots_invalidate_independently
+        PASS [   0.399s] ( 708/1376) light-cljs::compiler multimethods::skipped_defmulti_declarations_do_not_shift_later_method_frontiers
+        PASS [   1.214s] ( 709/1376) light-cljs::compiler macros::unsupported_generated_collection_program_forms_keep_file_macro_and_callsite_diagnostics
+        PASS [   0.009s] ( 710/1376) light-cljs::compiler namespace_completion::retired_macro_import_syntax_reports_located_migration_diagnostics_in_both_modes
+        PASS [   0.467s] ( 711/1376) light-cljs::compiler namespace_completion::bare_imports_are_ignored_and_reflection_does_not_leak_across_compilations
+        PASS [   0.082s] ( 712/1376) light-cljs::compiler namespace_completion::reserved_js_alias_warns_only_under_the_explicit_warning_api
+        PASS [   0.368s] ( 713/1376) light-cljs::compiler namespace_completion::host_globals_and_imports_keep_constructor_function_identity
+        PASS [   0.008s] ( 714/1376) light-cljs::compiler npm_packages::bundler_import_bindings_are_distinct_identifiers_for_similar_package_names
+        PASS [   0.374s] ( 715/1376) light-cljs::compiler namespace_completion::namespace_reflection_uses_real_vars_and_includes_macro_generated_definitions
+        PASS [   0.438s] ( 716/1376) light-cljs::compiler namespace_completion::closure_host_namespaces_resolve_aliases_refers_and_dotted_paths
+        PASS [   0.041s] ( 717/1376) light-cljs::compiler npm_packages::name_policy_checks_package_lookups_as_the_registry_global
+        PASS [   0.103s] ( 718/1376) light-cljs::compiler npm_packages::bundler_module_imports_only_surviving_package_references
+        PASS [   1.206s] ( 719/1376) light-cljs::compiler multimethod_evidence::multimethod_values_effects_and_errors_match_in_quickjs_and_node
+        PASS [   0.012s] ( 720/1376) light-cljs::compiler npm_packages::package_diagnostics_match_contract_probes
+        PASS [   0.084s] ( 721/1376) light-cljs::compiler npm_packages::package_as_alias_is_reader_only
+        PASS [   0.483s] ( 722/1376) light-cljs::compiler namespace_completion::ordinary_top_level_requires_import_values_macros_and_shared_alias_metadata
+        PASS [   0.013s] ( 723/1376) light-cljs::compiler npm_packages::string_libspecs_without_bindings_warn_instead_of_failing
+        PASS [   0.387s] ( 724/1376) light-cljs::compiler npm_packages::bundler_chunks_import_packages_only_in_the_feature_chunk
+        PASS [   0.365s] ( 725/1376) light-cljs::compiler npm_packages::bundler_modules_run_at_every_optimization_level
+        PASS [   0.708s] ( 726/1376) light-cljs::compiler namespace_completion::repeated_header_aliases_preserve_function_identity_and_macro_invocation
+        PASS [   0.362s] ( 727/1376) light-cljs::compiler npm_packages::repl_requires_bind_packages_and_resolve_them_at_each_use
+        PASS [   0.348s] ( 728/1376) light-cljs::compiler ns_name::metadata_names_preserve_qualification_and_session_isolation
+        PASS [   2.071s] ( 729/1376) light-cljs::compiler map_entries::phase_oracles::map_entry_test_bodies
+        PASS [   0.619s] ( 730/1376) light-cljs::compiler npm_packages::unbundled_output_reads_the_registry_at_each_use
+        PASS [   0.536s] ( 731/1376) light-cljs::compiler object_equiv::complete_non_lite_object_equiv_body_executes_in_both_phases
+        PASS [   0.562s] ( 732/1376) light-cljs::compiler object_equiv::failed_equiv_calls_leave_reused_application_and_macro_hosts_usable
+        PASS [   0.822s] ( 733/1376) light-cljs::compiler ns_name::ns_name_result_types_execute_in_both_engines_and_macro_phase
+        PASS [   1.037s] ( 734/1376) light-cljs::compiler npm_packages::package_contract_cases_execute_against_a_host_registry
+        PASS [   0.069s] ( 735/1376) light-cljs::compiler optimization::explicit_exports_retain_otherwise_unused_definitions
+        PASS [   0.240s] ( 736/1376) light-cljs::compiler optimization::discarded_throwing_initializer_still_aborts_after_prior_effects
+        PASS [   0.488s] ( 737/1376) light-cljs::compiler optimization::advanced_treats_raw_javascript_as_an_opaque_leaf
+        PASS [  10.099s] ( 738/1376) light-cljs::compiler local_api_source_context::original_local_api_sources_111_through_121_execute_in_both_phases
+        PASS [   1.449s] ( 739/1376) light-cljs::compiler namespace_shadowing::located_unknown_namespaces_and_vars_recover_in_the_same_macro_host
+        PASS [   0.570s] ( 740/1376) light-cljs::compiler optimization::advanced_removes_unused_definitions_with_pure_initializers
+        PASS [   0.303s] ( 741/1376) light-cljs::compiler optimization::immutable_multi_arity_and_core_targets_specialize_in_rust
+        PASS [   1.530s] ( 742/1376) light-cljs::compiler namespace_shadowing::qualified_vars_and_recursive_functions_survive_collisions_redefinition_and_phase_isolation
+        PASS [   0.347s] ( 743/1376) light-cljs::compiler optimization::inert_macro_data_and_functions_containing_raw_js_do_not_become_runtime_roots
+        PASS [   0.365s] ( 744/1376) light-cljs::compiler optimization::macro_only_require_retains_namespace_initialization_effects
+        PASS [   0.291s] ( 745/1376) light-cljs::compiler optimization::retained_protocol_extensions_change_saved_dispatch
+        PASS [   0.247s] ( 746/1376) light-cljs::compiler optimization::unused_initializers_and_standalone_effects_keep_order_and_run_once
+        PASS [   0.452s] ( 747/1376) light-cljs::compiler optimization::mutable_escaped_dynamic_and_raw_targets_disable_fixed_entry_specialization
+        PASS [   0.445s] ( 748/1376) light-cljs::compiler optimization::observed_definition_results_and_nonconstant_set_failures_are_preserved
+        PASS [   0.708s] ( 749/1376) light-cljs::compiler optimization::macro_only_helpers_are_removed_after_expansion_but_shared_helpers_survive
+        PASS [   3.383s] ( 750/1376) light-cljs::compiler map_entries::phase_oracles::entry_helpers
+        PASS [   0.825s] ( 751/1376) light-cljs::compiler optimization::raw_js_the_terse_lexer_may_misread_runs_the_same_at_every_level
+        PASS [   0.532s] ( 752/1376) light-cljs::compiler predicate_macro::function_predicate_preserves_single_evaluation_and_separate_phase_roots
+        PASS [   0.908s] ( 753/1376) light-cljs::compiler optimization::specialization_preserves_mutable_callees_vars_and_dynamic_bindings
+        PASS [   0.638s] ( 754/1376) light-cljs::compiler prim_seq::prim_seq_preserves_original_probe_and_separate_phase_roots
+        PASS [   0.101s] ( 755/1376) light-cljs::compiler print_install::only_printing_operations_reach_the_printer
+        PASS [   0.787s] ( 756/1376) light-cljs::compiler predicate_macro::function_predicate_rejects_wrong_macro_arities_and_recovers
+        PASS [   2.033s] ( 757/1376) light-cljs::compiler optimization::advanced_keeps_initializers_that_may_throw_run_code_or_see_replaced_operations
+        PASS [   0.781s] ( 758/1376) light-cljs::compiler prim_seq::public_prim_seq_runs_full_literal_contract_in_applications_and_macros
+        PASS [   0.440s] ( 759/1376) light-cljs::compiler print_install::advanced_programs_keep_the_printer_only_when_they_print
+        PASS [   0.039s] ( 760/1376) light-cljs::compiler printing_completion::configured_host_output_and_error_sinks_remain_independent_after_failure
+        PASS [   0.301s] ( 761/1376) light-cljs::compiler print_install::records_and_eductions_print_through_the_installed_printer
+        PASS [   0.399s] ( 762/1376) light-cljs::compiler printing_completion::alternative_printers_receive_fallback_and_recurse_with_options
+        PASS [   2.629s] ( 763/1376) light-cljs::compiler object_equiv::collection_equiv_controls_execute_in_both_phases
+        PASS [   0.412s] ( 764/1376) light-cljs::compiler printing_completion::length_level_readability_metadata_and_option_overrides
+        PASS [   1.794s] ( 765/1376) light-cljs::compiler optimization::raw_js_names_resolve_only_to_holes_and_host_globals
+        PASS [   3.377s] ( 766/1376) light-cljs::compiler namespace_completion::phase_oracles::namespace_operations
+        PASS [   0.061s] ( 767/1376) light-cljs::compiler printing_completion::rust_display_escapes_isolated_surrogates_and_preserves_valid_pairs
+        PASS [   0.409s] ( 768/1376) light-cljs::compiler printing_completion::output_sinks_capture_nesting_flush_and_restoration
+        PASS [   0.558s] ( 769/1376) light-cljs::compiler printing_completion::javascript_object_prefixes_survive_depth_limits_in_both_phases_and_sessions
+        PASS [   0.012s] ( 770/1376) light-cljs::compiler protocols::malformed_protocol_declarations_and_implementations_keep_locations
+        PASS [   1.504s] ( 771/1376) light-cljs::compiler prim_seq::prim_seq_arity_and_result_domain_failures_are_located_and_recover
+        PASS [   0.113s] ( 772/1376) light-cljs::compiler printing_completion::utf16_strings_preserve_code_units_in_printing_and_captured_output
+        PASS [   0.008s] ( 773/1376) light-cljs::compiler protocols::primitive_programs_still_omit_the_runtime
+        PASS [   4.519s] ( 774/1376) light-cljs::compiler map_reader_order::independent_map_sources_preserve_thresholds_groups_metadata_and_recovery
+        PASS [   0.114s] ( 775/1376) light-cljs::compiler public_constructors::constructors_report_invalid_arities_and_tail_arguments_without_overflow
+        PASS [   0.406s] ( 776/1376) light-cljs::compiler printing_completion::public_writer_helpers_and_console_hooks_execute_in_both_phases
+        PASS [   1.307s] ( 777/1376) light-cljs::compiler print_install::collection_to_string_exists_only_where_printing_is_reachable
+        PASS [   0.491s] ( 778/1376) light-cljs::compiler protocols::direct_saved_metadata_and_receiver_identity_have_literal_expectations
+        PASS [   4.400s] ( 779/1376) light-cljs::compiler multimethods::phase_oracles::multimethod_test_bodies
+        PASS [   0.696s] ( 780/1376) light-cljs::compiler protocols::protocol_dispatch_uses_public_slots_and_native_tables
+        PASS [   0.543s] ( 781/1376) light-cljs::compiler public_constructors::explicit_collection_slots_and_protocol_membership_survive_construction
+        PASS [   0.839s] ( 782/1376) light-cljs::compiler public_constructors::collection_constructor_phase_roots_and_bounded_repetition
+        PASS [   0.011s] ( 783/1376) light-cljs::compiler public_protocols::public_protocol_invalid_implementations_are_located
+        PASS [   2.561s] ( 784/1376) light-cljs::compiler positional_constructors::canonical_positional_constructors_and_same_host_diagnostic_recovery
+        PASS [   1.093s] ( 785/1376) light-cljs::compiler protocols::declared_fixed_protocol_arities_include_large_signatures
+        PASS [   0.576s] ( 786/1376) light-cljs::compiler public_print_helpers::writer_macro_results_reject_and_reused_hosts_recover_without_phase_state
+        PASS [   0.277s] ( 787/1376) light-cljs::compiler rapid_types::an_extension_without_methods_whose_value_is_used_compiles
+        PASS [   0.362s] ( 788/1376) light-cljs::compiler quoted_when::when_condition_and_body_keep_original_diagnostic_spans
+        PASS [   1.063s] ( 789/1376) light-cljs::compiler public_constructors::unsupported_constructor_results_keep_expansion_diagnostics_and_recover
+        PASS [   0.656s] ( 790/1376) light-cljs::compiler public_protocols::unsupported_protocol_values_keep_expansion_diagnostics_and_recover
+        PASS [   0.725s] ( 791/1376) light-cljs::compiler quoted_when::quoted_when_body_shape_and_effects_execute_in_both_phases
+        PASS [   2.404s] ( 792/1376) light-cljs::compiler printing_completion::complete_upstream_printing_bodies_execute_in_applications_and_macros
+        PASS [   0.498s] ( 793/1376) light-cljs::compiler rapid_types::callable_types_and_reify_keep_their_invoke_machinery
+        PASS [   2.083s] ( 794/1376) light-cljs::compiler printing_completion::phase_oracles::printing_test_namespaces
+        PASS [   3.320s] ( 795/1376) light-cljs::compiler primitives::phase_oracles::primitives_test_bodies
+        PASS [   0.495s] ( 796/1376) light-cljs::compiler rapid_types::reachable_methods_follow_construction_inside_methods_to_a_least_fixed_point
+        PASS [   0.945s] ( 797/1376) light-cljs::compiler rapid_types::devirtualized_calls_hold_their_operands_in_function_locals
+        PASS [   2.086s] ( 798/1376) light-cljs::compiler public_constructors::phase_oracles::constructor_test_bodies
+        PASS [   0.289s] ( 799/1376) light-cljs::compiler rapid_types::types_without_instances_and_uncalled_methods_leave_the_output
+        PASS [   0.290s] ( 800/1376) light-cljs::compiler reader::anonymous_bindings_retain_source_and_expansion_provenance
+        PASS [   0.694s] ( 801/1376) light-cljs::compiler rapid_types::types_keep_get_basis_only_where_the_program_names_it
+        PASS [   1.339s] ( 802/1376) light-cljs::compiler rapid_types::protocols_and_dispatchers_are_defined_only_where_read
+        PASS [   1.580s] ( 803/1376) light-cljs::compiler rapid_types::devirtualized_calls_keep_the_dispatcher_semantics
+        PASS [   0.008s] ( 804/1376) light-cljs::compiler reader::compiler_forms_can_be_constructed_without_any_evaluator
+        PASS [   0.070s] ( 805/1376) light-cljs::compiler reader::cljc_selection_metadata_and_inactive_forms_have_distinct_phase_evidence
+        PASS [   0.086s] ( 806/1376) light-cljs::compiler reader::compiler_forms_and_ir_survive_host_teardown_without_native_roots
+        PASS [   0.907s] ( 807/1376) light-cljs::compiler rapid_types::slots_named_through_javascript_global_paths_keep_their_methods
+        PASS [   0.012s] ( 808/1376) light-cljs::compiler reader::invalid_reader_syntax_stays_located
+        PASS [   1.116s] ( 809/1376) light-cljs::compiler rapid_types::slots_the_program_names_keep_their_methods
+        PASS [   7.797s] ( 810/1376) light-cljs::compiler mapv_apply::applied_mapv_shortest_inputs_execute_in_fresh_and_reused_phases
+        PASS [   0.011s] ( 811/1376) light-cljs::compiler reader::parser_acceptance_does_not_hide_contextual_reader_errors_or_numeric_duplicates
+        PASS [   2.703s] ( 812/1376) light-cljs::compiler public_protocols::public_protocol_api_arities_and_macro_phase_execute
+        PASS [   0.322s] ( 813/1376) light-cljs::compiler reader::local_macro_shadows_referred_value_in_syntax_quote
+        PASS [   0.378s] ( 814/1376) light-cljs::compiler reader::configured_readers_run_once_and_keep_effect_order_including_discards
+        PASS [   0.012s] ( 815/1376) light-cljs::compiler reader::runtime_reader_core_name_inventory_matches_the_source_reader_tables
+        PASS [   1.654s] ( 816/1376) light-cljs::compiler rapid_types::runtime_names_in_javascript_global_paths_and_strings_keep_their_units
+        PASS [   0.147s] ( 817/1376) light-cljs::compiler reader::runtime_reader_profiles_missing_alias_locations_and_nested_tag_reads
+        PASS [   0.715s] ( 818/1376) light-cljs::compiler reader::anonymous_nonpositive_bindings_execute_in_application_and_macro_phases
+        PASS [   0.367s] ( 819/1376) light-cljs::compiler reader::macro_values_keep_semantic_types
+        PASS [   0.712s] ( 820/1376) light-cljs::compiler reader::complete_pinned_syntax_quote_and_tagged_bodies_execute_in_both_engines
+        PASS [   2.234s] ( 821/1376) light-cljs::compiler rapid_types::every_way_to_make_or_reach_an_instance_keeps_its_methods
+        PASS [   0.143s] ( 822/1376) light-cljs::compiler reader::runtime_reader_uses_dynamic_namespace_and_restores_nested_reads
+        PASS [   0.316s] ( 823/1376) light-cljs::compiler reader::runtime_reader_macro_and_reused_session_contexts_are_explicit
+        PASS [   4.166s] ( 824/1376) light-cljs::compiler printing_completion::phase_oracles::printing_helpers
+        PASS [   0.451s] ( 825/1376) light-cljs::compiler reader::reader_api_arities_and_rest_execute_in_application_and_macro_phases
+        PASS [   0.433s] ( 826/1376) light-cljs::compiler reader::runtime_reader_registers_aliases_refers_and_source_namespace_entries
+        PASS [   0.014s] ( 827/1376) light-cljs::compiler records::invalid_record_fields_and_methods_have_located_diagnostics
+        PASS [   0.291s] ( 828/1376) light-cljs::compiler records::advanced_types_define_their_own_constructors
+        PASS [   0.279s] ( 829/1376) light-cljs::compiler records::advanced_types_hold_their_masks_on_the_prototype
+        PASS [   0.292s] ( 830/1376) light-cljs::compiler records::external_record_methods_affect_existing_instances_and_copies
+        PASS [   0.559s] ( 831/1376) light-cljs::compiler reader::spelling_metadata_gensyms_and_public_tagged_data_execute_in_both_phases
+        PASS [   0.283s] ( 832/1376) light-cljs::compiler records::nested_record_redefinitions_copy_to_the_current_constructor
+        PASS [   3.638s] ( 833/1376) light-cljs::compiler public_protocols::phase_oracles::public_protocol_bodies
+        PASS [   0.284s] ( 834/1376) light-cljs::compiler records::record_printing_metadata_and_constructor_internals_are_observable
+        PASS [   0.705s] ( 835/1376) light-cljs::compiler record_receiver_binding::demanded_receiver_methods_and_failure_recover_in_same_host
+        PASS [   0.711s] ( 836/1376) light-cljs::compiler record_map_constructor_metadata::reflected_factory_metadata_does_not_force_unrelated_roots_and_failure_recovers
+        PASS [   0.290s] ( 837/1376) light-cljs::compiler records::record_updates_preserve_fields_and_drop_nominal_type_only_on_field_dissociation
+        PASS [   0.285s] ( 838/1376) light-cljs::compiler records::records_expose_generated_protocols_without_gaining_map_callability
+        PASS [   0.293s] ( 839/1376) light-cljs::compiler records::records_have_nominal_equality_and_structural_key_lookup
+        PASS [   0.041s] ( 840/1376) light-cljs::compiler reflection_completion::namespace_refers_use_actual_public_var_identity
+        PASS [   0.011s] ( 841/1376) light-cljs::compiler reflection_completion::namespace_view_contains_core_binding_kinds_without_engine_roots
+        PASS [   0.149s] ( 842/1376) light-cljs::compiler reflection_completion::complete_upstream_var_test_runs_metadata_callbacks_in_both_engines
+        PASS [   0.118s] ( 843/1376) light-cljs::compiler reflection_completion::namespace_objects_keep_identity_equality_hash_and_explicit_host_objects
+        PASS [   0.287s] ( 844/1376) light-cljs::compiler records::type_instances_hold_fields_as_own_data_properties
+        PASS [   0.578s] ( 845/1376) light-cljs::compiler records::per_type_constructors_keep_receivers_redefinitions_and_field_names
+        PASS [   0.077s] ( 846/1376) light-cljs::compiler regex::regex_failures_reuse_sessions_and_reset_clears_state_and_bounds
+        PASS [   0.008s] ( 847/1376) light-cljs::compiler regex::upstream_regex_full_body_provenance_is_retained
+        PASS [   0.124s] ( 848/1376) light-cljs::compiler regex::built_in_backtracking_observes_budget_deadline_and_cancellation
+        PASS [   0.011s] ( 849/1376) light-cljs::compiler reify::malformed_methods_and_non_tail_recurrence_are_rejected
+        PASS [   6.053s] ( 850/1376) light-cljs::compiler primitives::phase_oracles::numeric_operations
+        PASS [   0.401s] ( 851/1376) light-cljs::compiler reflection_completion::namespace_api_arities_execute_in_applications_and_macros
+        PASS [   0.288s] ( 852/1376) light-cljs::compiler reify::anonymous_types_and_metadata_copies_preserve_receiver_fields
+        PASS [   0.277s] ( 853/1376) light-cljs::compiler reify::metadata_copies_retain_callable_and_object_overload_behavior
+        PASS [   0.479s] ( 854/1376) light-cljs::compiler reflection_completion::source_reflection_has_private_macro_metadata_and_lazy_identity
+        PASS [   0.273s] ( 855/1376) light-cljs::compiler reify::nested_reify_captures_each_receiver_independently
+        PASS [   0.562s] ( 856/1376) light-cljs::compiler regex::regex_api_arities_and_complete_upstream_bodies_execute_in_both_phases
+        PASS [   2.075s] ( 857/1376) light-cljs::compiler reader::host_types_and_lazy_regex_tails_have_direct_runtime_observations
+        PASS [   0.630s] ( 858/1376) light-cljs::compiler regex::regex_macro_results_preserve_flags_tags_and_diagnose_host_values
+        PASS [   0.478s] ( 859/1376) light-cljs::compiler reify::raw_protocol_slots_use_the_call_receiver_and_live_capture_fields
+        PASS [   5.367s] ( 860/1376) light-cljs::compiler protocols::phase_oracles::protocol_bodies
+        PASS [   1.699s] ( 861/1376) light-cljs::compiler record_map_constructor_metadata::record_factory_metadata_executes_in_actual_phases_and_lifecycles
+        PASS [   1.654s] ( 862/1376) light-cljs::compiler record_receiver_binding::record_receiver_binding_executes_in_actual_phases_and_lifecycles
+        PASS [   5.158s] ( 863/1376) light-cljs::compiler public_print_helpers::public_print_helper_contracts_preserve_callbacks_options_failures_and_sessions
+        PASS [   0.773s] ( 864/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_00
+        PASS [   0.777s] ( 865/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_02
+        PASS [   0.768s] ( 866/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_03
+        PASS [   0.774s] ( 867/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_04
+        PASS [   0.769s] ( 868/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_05
+        PASS [   0.768s] ( 869/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_06
+        PASS [   4.232s] ( 870/1376) light-cljs::compiler rapid_types::records_keep_the_record_methods_their_operations_dispatch
+        PASS [   0.773s] ( 871/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_07
+        PASS [   0.765s] ( 872/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_08
+        PASS [   0.772s] ( 873/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_09
+        PASS [   0.763s] ( 874/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_10
+        PASS [   0.761s] ( 875/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_11
+        PASS [   0.071s] ( 876/1376) light-cljs::compiler runtime_manifest::an_owned_type_is_decorated_wherever_it_can_be_observed
+        PASS [   0.769s] ( 877/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_12
+        PASS [   0.156s] ( 878/1376) light-cljs::compiler runtime_manifest::conditional_effects_name_every_unit_that_can_use_them
+        PASS [   0.065s] ( 879/1376) light-cljs::compiler runtime_manifest::conditional_effects_wait_for_a_condition
+        PASS [   0.777s] ( 880/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_13
+        PASS [   0.774s] ( 881/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_14
+        PASS [   0.072s] ( 882/1376) light-cljs::compiler runtime_manifest::every_unit_declares_exactly_the_runtime_bindings_it_references
+        PASS [   0.065s] ( 883/1376) light-cljs::compiler runtime_manifest::every_unit_is_reachable_from_the_export_list
+        PASS [   0.768s] ( 884/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_16
+        PASS [   0.771s] ( 885/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_15
+        PASS [   0.066s] ( 886/1376) light-cljs::compiler runtime_manifest::kind_hooks_skip_records
+        PASS [   0.067s] ( 887/1376) light-cljs::compiler runtime_manifest::names_bindings_and_effect_targets_resolve_to_units
+        PASS [   0.066s] ( 888/1376) light-cljs::compiler runtime_manifest::record_methods_name_a_condition_of_the_effect_installing_each
+        PASS [   0.068s] ( 889/1376) light-cljs::compiler runtime_manifest::protocol_roots_are_the_protocols_effects_wait_for
+        PASS [   0.066s] ( 890/1376) light-cljs::compiler runtime_manifest::slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root
+        PASS [   3.369s] ( 891/1376) light-cljs::compiler reader::reader_values
+        PASS [   0.769s] ( 892/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_17
+        PASS [   0.206s] ( 893/1376) light-cljs::compiler runtime_manifest::hidden_edges_and_stale_requires_in_the_runtime_fail_validation
+        PASS [   0.071s] ( 894/1376) light-cljs::compiler runtime_manifest::units_concatenate_back_to_the_annotated_file_and_the_embedded_runtime
+        PASS [   0.771s] ( 895/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_18
+        PASS [   0.020s] ( 896/1376) light-cljs::compiler runtime_references::shared_and_lower_level_output_keep_reading_the_core_hub
+        PASS [   0.136s] ( 897/1376) light-cljs::compiler runtime_references::every_core_operation_resolves_through_the_core_table
+        PASS [   0.306s] ( 898/1376) light-cljs::compiler runtime_manifest::kind_hooks_are_installed_wherever_their_kind_can_be_built
+        PASS [   0.855s] ( 899/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_20
+        PASS [   0.263s] ( 900/1376) light-cljs::compiler runtime_manifest::undeclared_load_time_effects_fail_validation
+        PASS [   0.201s] ( 901/1376) light-cljs::compiler runtime_references::raw_javascript_cannot_capture_direct_reads_or_cells
+        PASS [   0.918s] ( 902/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_19
+        PASS [   0.078s] ( 903/1376) light-cljs::compiler runtime_slicing::levels_below_advanced_embed_the_whole_runtime_and_programs_without_reads_none
+        PASS [   0.358s] ( 904/1376) light-cljs::compiler runtime_references::every_core_reference_slices_and_evaluates_on_its_own
+        PASS [   0.455s] ( 905/1376) light-cljs::compiler runtime_references::console_log_max_calls_the_max_unit_directly
+        PASS [   0.074s] ( 906/1376) light-cljs::compiler runtime_slicing::retention_attributes_each_unit_to_the_first_root_and_its_source_span
+        PASS [   0.311s] ( 907/1376) light-cljs::compiler runtime_slicing::builtin_type_members_travel_with_their_constructors
+        PASS [   2.864s] ( 908/1376) light-cljs::compiler reflection_completion::core_public_vars_are_callable_with_source_metadata_in_both_phases
+        PASS [   0.292s] ( 909/1376) light-cljs::compiler runtime_slicing::extended_core_protocols_keep_their_dispatchers
+        PASS [   1.157s] ( 910/1376) light-cljs::compiler residual_completion::phase_oracles::cljs_2866_test
+        PASS [   0.508s] ( 911/1376) light-cljs::compiler runtime_set_order::promoted_set_order_and_immutable_versions
+        PASS [   0.516s] ( 912/1376) light-cljs::compiler runtime_set_order::traversal_retains_key_representatives_without_rehash_or_equality_effects
+        PASS [   0.503s] ( 913/1376) light-cljs::compiler runtime_slicing::bundler_modules_embed_the_same_slice
+        PASS [   0.888s] ( 914/1376) light-cljs::compiler runtime_references::dynamic_vars_and_redefinition_hooks_keep_their_runtime_cells
+        PASS [   0.325s] ( 915/1376) light-cljs::compiler sci_service_probes::expansion_limits_and_finite_macro_returns_recover
+        PASS [   0.568s] ( 916/1376) light-cljs::compiler sci_library_context::library_import_fixture_preserves_values_and_callbacks_in_both_engines
+        PASS [   1.126s] ( 917/1376) light-cljs::compiler runtime_references::replaced_core_operations_read_through_output_cells
+        PASS [   0.822s] ( 918/1376) light-cljs::compiler sci_service_probes::quoted_expansion_contract_and_dynamic_host_service_are_independent
+        PASS [   0.420s] ( 919/1376) light-cljs::compiler sequence_completion::deferred_retry_self_realization_apply_and_reduction_preserve_effects
+        PASS [   0.498s] ( 920/1376) light-cljs::compiler sequence_completion::public_chunk_constructors_retain_backing_storage_and_custom_protocol_demand
+        PASS [   0.422s] ( 921/1376) light-cljs::compiler sequence_completion::public_sequence_conversion_chunk_and_traversal_run_in_both_phases
+        PASS [   0.603s] ( 922/1376) light-cljs::compiler sequence_completion::native_es6_iteration_has_cljs_construction_and_advance_demand
+        PASS [   0.122s] ( 923/1376) light-cljs::compiler sequence_contracts::cancellation_in_sequence_construction_demand_and_completion_is_terminal
+        PASS [   0.646s] ( 924/1376) light-cljs::compiler sequence_completion::iterator_demand_receivers_and_lazy_tail_retry_are_observable
+        PASS [   0.901s] ( 925/1376) light-cljs::compiler sci_source_context::original_source_macro_declarations_execute_phase_and_application_contracts
+        PASS [   0.121s] ( 926/1376) light-cljs::compiler sequence_contracts::user_iterators_and_callable_transforms_preserve_source_order
+        PASS [   0.008s] ( 927/1376) light-cljs::compiler sequence_transducers::sequence_fixture_provenance_retains_complete_body_hashes_and_literal_traces
+        PASS [   1.194s] ( 928/1376) light-cljs::compiler sci_service_probes::quoted_expansion_runs_without_services_in_application_and_macro_phases
+        PASS [   0.404s] ( 929/1376) light-cljs::compiler sequence_contracts::sequence_public_arities_run_as_shared_macro_and_application_helpers
+        PASS [   0.601s] ( 930/1376) light-cljs::compiler sequence_completion::shared_lazy_roots_are_phase_separated_and_failed_compilations_reset
+        PASS [   0.517s] ( 931/1376) light-cljs::compiler sequence_object_equiv::failed_sequence_equiv_leaves_reused_application_and_macro_hosts_usable
+        PASS [   2.133s] ( 932/1376) light-cljs::compiler runtime_slicing::advanced_output_embeds_exactly_the_units_its_runtime_reads_reach
+        PASS [   0.540s] ( 933/1376) light-cljs::compiler sequences::chunk_boundaries_and_repeated_traversal_have_literal_effect_counts
+        PASS [   0.469s] ( 934/1376) light-cljs::compiler sequences::malformed_comprehensions_are_rejected_and_transducer_constructors_are_callable
+        PASS [   0.402s] ( 935/1376) light-cljs::compiler sequences::namespaces_aliases_and_compiled_macro_output_use_compiled_comprehensions
+        PASS [   2.306s] ( 936/1376) light-cljs::compiler runtime_slicing::plain_calls_leave_out_the_variadic_arity_that_escaping_values_keep
+        PASS [   0.770s] ( 937/1376) light-cljs::compiler sequences::long_empty_prefixes_are_stack_safe_and_finite_demand_terminates
+        PASS [   4.458s] ( 938/1376) light-cljs::compiler residual_bodies::complete_residual_bodies_execute_in_both_phases::row_01
+        PASS [   3.421s] ( 939/1376) light-cljs::compiler residual_completion::remaining_complete_residual_bodies_execute_in_both_phases
+        PASS [   0.678s] ( 940/1376) light-cljs::compiler sequences::nested_modifiers_keep_per_iteration_captures_and_stop_at_each_level
+        PASS [   0.302s] ( 941/1376) light-cljs::compiler size_ratchet::each_type_of_eight_records_costs_at_most_its_budget
+        PASS [   0.452s] ( 942/1376) light-cljs::compiler size_ratchet::features_loadable_sites_cost_under_200_bytes_each_at_advanced
+        PASS [   0.774s] ( 943/1376) light-cljs::compiler size_ratchet::emitted_sizes_stay_under_their_ceilings
+        PASS [   1.986s] ( 944/1376) light-cljs::compiler sequence_contracts::abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines
+        PASS [   0.612s] ( 945/1376) light-cljs::compiler size_ratchet::removed_definitions_match_each_fixture
+        PASS [   0.153s] ( 946/1376) light-cljs::compiler sorted_contracts::sorted_callbacks_survive_reused_sessions_and_custom_protocol_dispatch
+        PASS [   0.117s] ( 947/1376) light-cljs::compiler sorted_contracts::sorted_membership_does_not_hash_keys
+        PASS [   3.290s] ( 948/1376) light-cljs::compiler runtime_slicing::the_slice_for_each_export_evaluates_on_its_own
+        PASS [   0.360s] ( 949/1376) light-cljs::compiler source_metadata::incremental_files_errors_and_fresh_sessions_preserve_source_identity
+        PASS [   0.413s] ( 950/1376) light-cljs::compiler source_metadata::generated_type_and_record_factories_keep_their_declaration_source
+        PASS [   0.439s] ( 951/1376) light-cljs::compiler source_metadata::ordinary_namespace_files_and_macro_generated_definitions_keep_paths
+        PASS [   6.694s] ( 952/1376) light-cljs::compiler reduce_kv_entries::map_entry_reduce_kv_fallback_executes_in_fresh_and_reused_phases
+        PASS [   0.007s] ( 953/1376) light-cljs::compiler string_fixtures::upstream_local_and_reference_witnesses_retain_identical_full_bodies
+        PASS [   0.794s] ( 954/1376) light-cljs::compiler sorted_contracts::sorted_contract_executes_in_application_and_macro_phases
+        PASS [   0.543s] ( 955/1376) light-cljs::compiler source_metadata::reserved_metadata_and_macro_definitions_keep_source_sites_in_both_engines
+        PASS [   1.809s] ( 956/1376) light-cljs::compiler sorted_contracts::phase_oracles::sorted_receivers
+        PASS [   0.924s] ( 957/1376) light-cljs::compiler string_join::join_macro_execution_errors_and_result_domain_are_distinct
+        PASS [   3.337s] ( 958/1376) light-cljs::compiler sequences::phase_oracles::iteration_test_bodies
+        PASS [   2.945s] ( 959/1376) light-cljs::compiler sorted_collections::complete_upstream_sorted_bodies_execute_in_both_engines
+        PASS [   0.453s] ( 960/1376) light-cljs::compiler strings::string_helpers_execute_in_compiled_macros_and_retain_namespace_vars
+        PASS [   1.893s] ( 961/1376) light-cljs::compiler string_join::join_contract_executes_in_fresh_and_reused_application_and_macro_phases
+        PASS [   0.503s] ( 962/1376) light-cljs::compiler syntax_context::syntax_control_rest_and_recursion_execute_in_both_phases
+        PASS [   4.345s] ( 963/1376) light-cljs::compiler sequences::phase_oracles::chunks_and_arities
+        PASS [   4.898s] ( 964/1376) light-cljs::compiler sequence_object_equiv::sequence_and_name_equiv_contracts_execute_in_both_phases
+        PASS [   0.987s] ( 965/1376) light-cljs::compiler syntax_context::raw_nsstar_imports_keep_ordinary_cljs_macro_and_definition_ownership
+        PASS [   0.506s] ( 966/1376) light-cljs::compiler syntax_context::syntax_definition_and_var_state_execute_in_both_phases
+        PASS [   1.948s] ( 967/1376) light-cljs::compiler strings::public_string_contracts_execute_in_quickjs_and_node
+        PASS [   0.499s] ( 968/1376) light-cljs::compiler syntax_context::syntax_exception_interop_and_template_execute_in_both_phases
+        PASS [   0.011s] ( 969/1376) light-cljs::compiler temp_dirs::a_failing_test_keeps_a_directory_its_variable_names
+        PASS [   0.017s] ( 970/1376) light-cljs::compiler temp_dirs::a_failing_test_removes_its_directory
+        PASS [   0.010s] ( 971/1376) light-cljs::compiler temp_dirs::keep_tmp_keeps_the_directory_of_a_failing_test
+        PASS [   0.016s] ( 972/1376) light-cljs::compiler temp_dirs::new_named_by_rejects_an_existing_directory_and_leaves_it_alone
+        PASS [   1.140s] ( 973/1376) light-cljs::compiler syntax_context::raw_nsstar_validation_keeps_source_ownership_and_recovers
+        PASS [   2.787s] ( 974/1376) light-cljs::compiler string_fixtures::verbatim_pinned_upstream_string_api_and_capitalization_property_execute
+        PASS [   0.504s] ( 975/1376) light-cljs::compiler syntax_context::syntax_quote_and_case_star_execute_in_both_phases
+        PASS [   0.509s] ( 976/1376) light-cljs::compiler syntax_context::syntax_raw_record_constructor_executes_in_both_phases
+        PASS [   4.735s] ( 977/1376) light-cljs::compiler set_project::project_contract_executes_in_fresh_and_reused_application_and_macro_phases
+        PASS [   0.632s] ( 978/1376) light-cljs::compiler syntax_context::syntax_namespace_context_executes_with_actual_macro_environment
+        PASS [   0.153s] ( 979/1376) light-cljs::compiler transducer_contracts::cancellation_at_each_boundary_stops_exactly_and_keeps_session_terminal
+        PASS [   0.510s] ( 980/1376) light-cljs::compiler syntax_context::syntax_raw_type_constructor_executes_in_both_phases
+        PASS [   0.217s] ( 981/1376) light-cljs::compiler transducer_contracts::ifn_and_ireduce_use_canonical_dispatch_and_complete_once
+        PASS [   0.215s] ( 982/1376) light-cljs::compiler transducer_contracts::random_sampling_observes_redefined_rand_and_lazy_collection_demand
+        PASS [   0.012s] ( 983/1376) light-cljs::compiler transducers::fixture_provenance_keeps_complete_upstream_bodies_and_native_case_identity
+        PASS [   3.616s] ( 984/1376) light-cljs::compiler state::phase_oracles::atoms_and_volatiles
+        PASS [   0.395s] ( 985/1376) light-cljs::compiler transducer_contracts::macros_transduce_in_canonical_js_and_export_persistent_forms
+        PASS [   0.577s] ( 986/1376) light-cljs::compiler transducer_contracts::long_nested_transduction_uses_bounded_stack
+        PASS [   0.833s] ( 987/1376) light-cljs::compiler test_metadata::callback_failure_preserves_same_host_recovery_and_nested_definitions
+        PASS [   0.222s] ( 988/1376) light-cljs::compiler transients::into_uses_custom_editable_protocol_and_real_transient_completion
+        PASS [   0.495s] ( 989/1376) light-cljs::compiler transducer_contracts::state_and_captures_survive_collection_and_failed_reentrant_completion
+        PASS [   0.889s] ( 990/1376) light-cljs::compiler test_metadata::callbacks_var_overrides_missing_and_non_callable_metadata_are_phase_local
+        PASS [   7.459s] ( 991/1376) light-cljs::compiler sci_record_duplicate_method_probe::original_duplicate_method_executes_with_last_dispatch_in_both_phases
+        PASS [   0.293s] ( 992/1376) light-cljs::compiler type_inference::arithmetic_edge_cases_keep_the_runtime_results_and_evaluation_order
+        PASS [   1.540s] ( 993/1376) light-cljs::compiler syntax_context::syntax_raw_nsstar_alias_executes_in_fresh_and_reused_macro_hosts
+        PASS [   0.591s] ( 994/1376) light-cljs::compiler transients::transient_api_arities_protocols_and_macro_phase_execute
+        PASS [   5.939s] ( 995/1376) light-cljs::compiler sequences::phase_oracles::seqs_test_bodies
+        PASS [   0.024s] ( 996/1376) light-cljs::compiler type_inference::callback_parameters_join_what_core_operations_pass
+        PASS [   0.024s] ( 997/1376) light-cljs::compiler type_inference::closed_atom_results_have_the_types_of_their_states
+        PASS [   0.493s] ( 998/1376) light-cljs::compiler type_inference::atom_prototype_accessors_keep_swap_state_unknown
+        PASS [   0.292s] ( 999/1376) light-cljs::compiler type_inference::callback_feedback_joins_return_classes
+        PASS [   0.482s] (1000/1376) light-cljs::compiler type_inference::boolean_tags_are_trusted_like_upstream
+        PASS [   0.814s] (1001/1376) light-cljs::compiler type_inference::and_or_become_short_circuits_when_the_first_operand_tests_as_it_is
+        PASS [   0.300s] (1002/1376) light-cljs::compiler type_inference::callback_shapes_respect_core_protocol_extensions
+        PASS [   1.743s] (1003/1376) light-cljs::compiler test_metadata::metadata_test_original_source_passes_both_phases_and_recovers
+        PASS [   0.326s] (1004/1376) light-cljs::compiler type_inference::every_callback_shape_matches_what_the_runtime_passes
+        PASS [   0.023s] (1005/1376) light-cljs::compiler type_inference::inference_types_literals_calls_locals_and_definitions
+        PASS [   1.011s] (1006/1376) light-cljs::compiler type_inference::arithmetic_comparisons_and_predicates_are_operators_for_every_operand
+        PASS [   1.376s] (1007/1376) light-cljs::compiler transducers::phase_oracles::transducer_test_bodies
+        PASS [   0.276s] (1008/1376) light-cljs::compiler type_inference::function_parameters_are_called_directly_unless_they_may_be_nil
+        PASS [   0.514s] (1009/1376) light-cljs::compiler type_inference::count_reads_the_length_of_strings_arrays_and_flat_vectors
+        PASS [   0.028s] (1010/1376) light-cljs::compiler type_inference::parameters_of_closed_functions_join_the_arguments_of_their_calls
+        PASS [   0.334s] (1011/1376) light-cljs::compiler type_inference::inference_narrows_locals_by_the_tests_of_enclosing_ifs
+        PASS [   0.283s] (1012/1376) light-cljs::compiler type_inference::nth_on_flat_vectors_uses_the_direct_index_path
+        PASS [   0.746s] (1013/1376) light-cljs::compiler type_inference::equality_lowers_to_identity_for_primitives_and_spelling_for_keyword_literals
+        PASS [   0.283s] (1014/1376) light-cljs::compiler type_inference::parameters_that_code_may_assign_are_not_narrowed
+        PASS [   7.467s] (1015/1376) light-cljs::compiler sequence_transducers::lazy_sequence_values_effects_and_errors_match_in_quickjs_and_node
+        PASS [   0.366s] (1016/1376) light-cljs::compiler type_inference::parameter_types_converge_along_long_call_chains
+        PASS [   0.308s] (1017/1376) light-cljs::compiler type_inference::parameters_with_unseen_or_mixed_callers_keep_the_runtime_operations
+        PASS [   0.032s] (1018/1376) light-cljs::compiler type_inference::swap_callback_parameters_join_atom_contents
+        PASS [   0.524s] (1019/1376) light-cljs::compiler type_inference::keyword_lookup_on_known_records_reads_the_field
+        PASS [   0.292s] (1020/1376) light-cljs::compiler type_inference::protocol_calls_on_parameters_of_one_program_type_are_devirtualized
+        PASS [   0.325s] (1021/1376) light-cljs::compiler type_inference::protocol_method_parameters_join_visible_calls
+        PASS [   0.287s] (1022/1376) light-cljs::compiler type_inference::replaced_core_operations_leave_callback_parameters_unknown
+        PASS [   0.301s] (1023/1376) light-cljs::compiler type_inference::truth_tests_drop_truth_when_javascript_truthiness_agrees
+        PASS [   0.310s] (1024/1376) light-cljs::compiler type_inference::typed_lowerings_apply_inside_callbacks_and_keep_the_results
+        PASS [   0.298s] (1025/1376) light-cljs::compiler type_inference::typed_lowerings_apply_to_atom_states_and_keep_the_results
+        PASS [   1.124s] (1026/1376) light-cljs::compiler type_inference::generated_namespace_programs_type_parameters
+        PASS [   0.283s] (1027/1376) light-cljs::compiler type_inference::unknown_swap_writers_poison_atom_contents
+        PASS [   0.292s] (1028/1376) light-cljs::compiler type_inference::unused_element_wise_calls_of_inert_functions_are_removed
+        PASS [   0.275s] (1029/1376) light-cljs::compiler types::constructors_and_redefinitions_retain_instance_identity
+        PASS [   2.297s] (1030/1376) light-cljs::compiler transients::phase_oracles::transient_bodies
+        PASS [   0.291s] (1031/1376) light-cljs::compiler types::constructors_keep_raw_masks_redefined_fields_and_proto_fields
+        PASS [   0.592s] (1032/1376) light-cljs::compiler type_inference::typed_lowerings_apply_to_the_parameters_of_closed_functions
+        PASS [   0.014s] (1033/1376) light-cljs::compiler types::immutable_fields_shadowed_fields_and_bad_methods_have_located_errors
+        PASS [   0.288s] (1034/1376) light-cljs::compiler types::custom_reduction_uses_protocols_without_requiring_a_sequence
+        PASS [   0.927s] (1035/1376) light-cljs::compiler type_inference::reassigned_call_properties_are_unsupported_at_advanced
+        PASS [   0.280s] (1036/1376) light-cljs::compiler types::field_reads_and_writes_remain_live_in_escaped_closures
+        PASS [   0.730s] (1037/1376) light-cljs::compiler type_inference::typed_lowerings_apply_to_closed_atom_results_and_keep_the_results
+        PASS [   2.649s] (1038/1376) light-cljs::compiler transients::complete_upstream_transient_bodies_execute_in_both_engines
+        PASS [   0.281s] (1039/1376) light-cljs::compiler types::field_receiver_is_the_actual_method_call_receiver
+        PASS [   0.290s] (1040/1376) light-cljs::compiler types::ifn_extensions_affect_existing_instances
+        PASS [   0.120s] (1041/1376) light-cljs::compiler utilities_completion::scalar_conversions_saved_functions_and_metadata_remain_public
+        PASS [   0.276s] (1042/1376) light-cljs::compiler types::mask_named_fields_read_as_at_none
+        PASS [   9.651s] (1043/1376) light-cljs::compiler sequence_bodies::complete_upstream_sequence_completion_bodies_execute_in_both_engines
+        PASS [   7.820s] (1044/1376) light-cljs::compiler size_ratchet::fixtures_print_identical_results_at_every_level
+        PASS [   0.499s] (1045/1376) light-cljs::compiler utilities_completion::array_initializers_preserve_lazy_demand_holes_and_receiver_effects
+        PASS [   0.528s] (1046/1376) light-cljs::compiler utilities_completion::public_utilities_execute_in_applications_and_macros
+        PASS [   1.379s] (1047/1376) light-cljs::compiler type_inference::typed_lowerings_apply_inside_protocol_methods_and_keep_the_results
+        PASS [   1.838s] (1048/1376) light-cljs::compiler type_inference::protocol_method_parameters_keep_hidden_callers
+        PASS [   0.700s] (1049/1376) light-cljs::compiler utility_macros::locking_evaluates_only_its_body
+        PASS [   0.418s] (1050/1376) light-cljs::compiler var_test_metadata::executed_nested_definitions_expose_callback_metadata_and_overlays
+        PASS [   0.586s] (1051/1376) light-cljs::compiler var_test_metadata::declarations_without_initializers_do_not_attach_executable_tests
+        PASS [   1.115s] (1052/1376) light-cljs::compiler types::phase_oracles::deftype_test_namespace
+        PASS [   0.010s] (1053/1376) light-cljs::compiler warnings::arithmetic_types_join_loop_recur_and_exclude_nonreturning_throw_paths
+        PASS [   0.010s] (1054/1376) light-cljs::compiler warnings::arity_index_keeps_metadata_overloads_variadics_and_redefinition_union
+        PASS [   0.704s] (1055/1376) light-cljs::compiler utility_macros::unchecked_max_and_min_compare_their_operands_once
+        PASS [   0.012s] (1056/1376) light-cljs::compiler warnings::declared_arglists_and_overload_warnings_keep_definition_names
+        PASS [   0.038s] (1057/1376) light-cljs::compiler warnings::deferred_warning_placeholders_reuse_later_definition_identity
+        PASS [   0.012s] (1058/1376) light-cljs::compiler warnings::local_shadowing_earmuffs_and_unbound_destructuring_are_public_diagnostics
+        PASS [   0.013s] (1059/1376) light-cljs::compiler warnings::namespace_private_access_and_reserved_alias_have_structured_locations
+        PASS [   0.011s] (1060/1376) light-cljs::compiler warnings::nested_namespace_operations_report_context_and_require_can_be_shadowed
+        PASS [   0.007s] (1061/1376) light-cljs::compiler warnings::numeric_warning_order_and_unary_division_preserve_source_operations
+        PASS [   0.011s] (1062/1376) light-cljs::compiler warnings::pure_function_expansion_locates_forward_reference_at_original_symbol
+        PASS [   0.012s] (1063/1376) light-cljs::compiler warnings::record_factory_and_constructor_arities_have_different_valid_signatures
+        PASS [   0.011s] (1064/1376) light-cljs::compiler warnings::warning_mode_retains_strict_default_and_reports_before_later_failure
+        PASS [   1.113s] (1065/1376) light-cljs::compiler utility_macros::js_debugger_and_js_comment_emit_raw_statements_whose_value_is_nil
+        PASS [   1.146s] (1066/1376) light-cljs::compiler utility_macros::simple_benchmark_runs_its_expression_and_prints_one_line
+        PASS [   0.362s] (1067/1376) light-cljs::compiler warnings::checked_array_warnings_use_inferred_receivers_and_are_opt_in
+        PASS [   0.593s] (1068/1376) light-cljs::compiler var_test_metadata::reflected_callback_generations_keep_saved_values_and_current_root_reads
+        PASS [   0.592s] (1069/1376) light-cljs::compiler var_test_metadata::reflected_callbacks_are_real_stable_and_do_not_force_pending_roots
+        PASS [   0.543s] (1070/1376) light-cljs::compiler var_test_metadata::var_metadata_snapshots_ready_callback_properties
+        PASS [   0.655s] (1071/1376) light-cljs::compiler var_test_metadata::reflected_metadata_failure_is_sticky_and_clean_hosts_recover
+        PASS [   1.350s] (1072/1376) light-cljs::compiler utility_macros::time_prints_the_elapsed_milliseconds_and_returns_the_value
+        PASS [   0.350s] (1073/1376) light-cljs::dev_repl pages_cannot_evaluate
+        PASS [   0.566s] (1074/1376) light-cljs::dev_repl a_form_round_trips_through_a_node_runtime
+        PASS [   0.508s] (1075/1376) light-cljs::dev_repl definitions_cross_between_the_repl_and_reloads
+        PASS [   0.492s] (1076/1376) light-cljs::dev_repl errors_come_back_located
+        PASS [   1.422s] (1077/1376) light-cljs::compiler var_test_metadata::direct_var_test_reflection_matches_exact_reference_source_in_both_phases
+        PASS [   2.066s] (1078/1376) light-cljs::compiler utilities_completion::seeded_number_parse_roundtrips_cover_one_hundred_thousand_inputs_in_both_phases
+        PASS [   0.518s] (1079/1376) light-cljs::dev_server a_connected_runtime_loads_a_saved_change
+        PASS [   0.637s] (1080/1376) light-cljs::dev_server a_compile_error_is_pushed_without_a_load
+        PASS [   0.494s] (1081/1376) light-cljs::dev_server a_macro_change_loads_the_users_unit
+        PASS [   0.502s] (1082/1376) light-cljs::dev_server a_late_runtime_catches_up
+        PASS [   0.491s] (1083/1376) light-cljs::dev_server a_once_edit_loads_the_always_namespaces_and_their_dependents
+        PASS [   0.642s] (1084/1376) light-cljs::dev_server a_failed_step_is_not_replayed
+        PASS [   0.856s] (1085/1376) light-cljs::dev_repl two_runtimes_and_selection
+        PASS [   0.640s] (1086/1376) light-cljs::dev_server a_once_namespace_is_never_reloaded
+        PASS [   1.328s] (1087/1376) light-cljs::dev_repl sessions_belong_to_one_server
+        PASS [   0.694s] (1088/1376) light-cljs::dev_server a_replay_runs_again_a_unit_that_threw
+        PASS [   0.449s] (1089/1376) light-cljs::dev_server get_serves_the_build_the_sources_and_a_page
+        PASS [   0.653s] (1090/1376) light-cljs::dev_server a_step_finds_the_hooks_again
+        PASS [   0.770s] (1091/1376) light-cljs::dev_server hooks_keep_their_namespace_order_across_steps
+        PASS [   1.008s] (1092/1376) light-cljs::dev_server an_always_namespace_loads_with_every_load
+        PASS [   0.794s] (1093/1376) light-cljs::dev_server reload_fixtures_print_their_output_through_the_server
+        PASS [   0.626s] (1094/1376) light-cljs::dev_server startup_warnings_reach_a_runtime
+        PASS [   1.315s] (1095/1376) light-cljs::dev_server a_runtime_reconnects_and_catches_up
+        PASS [   0.717s] (1096/1376) light-cljs::dev_server the_client_runs_hooks_in_order
+        PASS [   0.806s] (1097/1376) light-cljs::dev_watch a_failing_form_leaves_the_previous_unit
+        PASS [   0.511s] (1098/1376) light-cljs::dev_watch a_macro_change_rewrites_the_units_that_use_it
+        PASS [   5.431s] (1099/1376) light-cljs::compiler type_inference::generated_closed_functions_print_the_same_at_every_level
+        PASS [   1.528s] (1100/1376) light-cljs::dev_server reload_dependents_reload_downstream_namespaces_in_order
+        PASS [   0.617s] (1101/1376) light-cljs::dev_watch a_replaced_symbolic_link_is_still_its_namespace_source
+        PASS [   0.558s] (1102/1376) light-cljs::dev_watch a_require_cycle_is_refused
+        PASS [   0.026s] (1103/1376) light-cljs::dev_watch watch_refuses_missing_options_and_a_failing_first_build
+        PASS [   0.043s] (1104/1376) light-cljs::evaluation dev_session::a_failing_form_after_a_successful_one_ends_with_its_error
+        PASS [   1.266s] (1105/1376) light-cljs::dev_watch a_file_is_read_in_its_own_namespace
+        PASS [   0.067s] (1106/1376) light-cljs::evaluation dev_session::a_form_is_an_invoke_of_its_unit
+        PASS [   0.040s] (1107/1376) light-cljs::evaluation dev_session::a_require_loads_each_namespace_once_in_dependency_order
+        PASS [   1.031s] (1108/1376) light-cljs::dev_watch a_form_with_raw_javascript_runs_its_whole_unit
+        PASS [   0.042s] (1109/1376) light-cljs::evaluation dev_session::a_unit_registers_the_namespaces_that_changed
+        PASS [   0.044s] (1110/1376) light-cljs::evaluation dev_session::a_unit_that_throws_while_a_namespace_loads_stops_the_load_until_a_retry
+        PASS [   0.394s] (1111/1376) light-cljs::dev_watch a_unit_that_cannot_be_written_ends_the_watch
+        PASS [   0.041s] (1112/1376) light-cljs::evaluation dev_session::an_ns_form_replaces_its_namespace_requires
+        PASS [   1.987s] (1113/1376) light-cljs::dev_server an_invoke_replies_with_the_printed_value
+        PASS [   0.040s] (1114/1376) light-cljs::evaluation dev_session::load_file_loads_its_forms_and_stays_in_its_namespace
+        PASS [   0.031s] (1115/1376) light-cljs::evaluation dev_session::nsstar_honors_warning_mode_for_a_reserved_alias
+        PASS [   0.046s] (1116/1376) light-cljs::evaluation dev_session::reflection_sees_every_namespace_of_the_session
+        PASS [   0.044s] (1117/1376) light-cljs::evaluation dev_session::reload_spellings_compile_the_text_the_provider_returns_now
+        PASS [   0.041s] (1118/1376) light-cljs::evaluation dev_session::require_reload_compiles_the_source_the_provider_returns_now
+        PASS [   0.914s] (1119/1376) light-cljs::dev_watch a_saved_change_rewrites_the_unit_the_running_build_reloads
+        PASS [   0.063s] (1120/1376) light-cljs::evaluation dev_session::supplied_ns_forms_use_their_data
+        PASS [   0.100s] (1121/1376) light-cljs::evaluation dev_session::runtime_load_file_delivers_warnings_and_stops_on_receiver_error
+        PASS [   0.074s] (1122/1376) light-cljs::evaluation dev_session::units_carry_source_maps_of_their_forms
+        PASS [   0.103s] (1123/1376) light-cljs::evaluation dev_session::warning_mode_compiles_uses_of_vars_defined_later
+        PASS [   0.324s] (1124/1376) light-cljs::evaluation dev_session::ns_metadata_reaches_the_macro_environment_and_refreshes
+        PASS [   0.498s] (1125/1376) light-cljs::evaluation dev_session::an_ns_form_with_every_clause_behaves_as_in_compile
+        PASS [   0.227s] (1126/1376) light-cljs::evaluation eval_cli::async_functions_return_promises_under_eval_and_repl
+        PASS [   0.026s] (1127/1376) light-cljs::evaluation eval_cli::evaluation_options_are_validated_and_help_lists_both_families
+        PASS [   0.209s] (1128/1376) light-cljs::evaluation eval_cli::eval_text_stdin_empty_and_unicode_need_only_the_embedded_binary
+        PASS [   0.255s] (1129/1376) light-cljs::evaluation eval_cli::definition_metadata_uses_text_file_and_incremental_repl_locations
+        PASS [   1.476s] (1130/1376) light-cljs::dev_watch a_new_require_adds_a_unit
+        PASS [   0.844s] (1131/1376) light-cljs::dev_watch the_first_namespace_rewritten_registers_every_namespace
+        PASS [   0.038s] (1132/1376) light-cljs::evaluation eval_cli::invalid_utf8_repl_input_is_a_fatal_host_read_error
+        PASS [   0.949s] (1133/1376) light-cljs::dev_watch new_definitions_and_aliases_register_the_namespace_once
+        PASS [   0.146s] (1134/1376) light-cljs::evaluation eval_cli::file_execution_handles_utf8_paths_file_binding_and_runtime_stdin
+        PASS [   1.319s] (1135/1376) light-cljs::dev_watch a_source_root_library_overrides_the_bundled_one
+        PASS [   0.045s] (1136/1376) light-cljs::evaluation eval_cli::repl_continues_after_reader_analysis_execution_and_print_errors
+        PASS [   0.124s] (1137/1376) light-cljs::evaluation eval_cli::original_raw_nsstar_source_executes_with_explicit_roots
+        PASS [   0.160s] (1138/1376) light-cljs::evaluation eval_cli::isolated_copy_loads_only_explicit_cljs_and_cljc_roots
+        PASS [   0.133s] (1139/1376) light-cljs::evaluation eval_cli::repl_compacts_consumed_lines_and_preserves_original_locations
+        PASS [   0.079s] (1140/1376) light-cljs::evaluation eval_cli::repl_retains_history_definitions_namespace_and_current_reader_context
+        PASS [   0.131s] (1141/1376) light-cljs::evaluation eval_cli::repl_eof_reports_incomplete_input_once_and_errors_do_not_shift_history
+        PASS [   0.351s] (1142/1376) light-cljs::evaluation eval_cli::examples_dev_loads_and_reloads_through_require_in_the_repl
+        PASS [   0.138s] (1143/1376) light-cljs::evaluation eval_cli::repl_multiline_uses_parser_rules_and_preserves_single_execution
+        PASS [   0.114s] (1144/1376) light-cljs::evaluation eval_cli::repl_shares_the_language_input_cursor_and_recovers_runtime_reads
+        PASS [   0.669s] (1145/1376) light-cljs::evaluation dev_session::units_without_a_heap_reload_a_running_dev_build_in_node
+        PASS [   0.323s] (1146/1376) light-cljs::evaluation eval_cli::imported_macro_helpers_run_script_initializers_once
+        PASS [   1.347s] (1147/1376) light-cljs::dev_watch a_trailing_directive_keeps_the_namespace_value_nil
+        PASS [   0.367s] (1148/1376) light-cljs::evaluation eval_cli::number_js_macros_and_clj_migration_are_explicit
+        PASS [   0.147s] (1149/1376) light-cljs::evaluation eval_cli::script_failures_keep_output_and_never_print_a_success_result
+        PASS [   0.114s] (1150/1376) light-cljs::evaluation eval_cli::warnings_flag_turns_warning_mode_on_and_prints_warnings
+        PASS [   0.106s] (1151/1376) light-cljs::evaluation eval_nsstar::malformed_nsstar_is_located_and_failed_imports_do_not_publish_aliases
+        PASS [   0.151s] (1152/1376) light-cljs::evaluation eval_cli::unhandled_rejections_warn_in_the_repl_and_fail_a_script
+        PASS [   0.040s] (1153/1376) light-cljs::evaluation eval_sessions::compiler_policy_checks_aliases_and_runtime_eval
+        PASS [   0.047s] (1154/1376) light-cljs::evaluation eval_sessions::contextual_anonymous_reader_data_and_failures_reuse_the_session
+        PASS [   0.098s] (1155/1376) light-cljs::evaluation eval_sessions::configured_data_readers_analysis_and_host_bindings
+        PASS [   0.365s] (1156/1376) light-cljs::evaluation eval_cli::runtime_and_rendering_limits_fail_without_partial_results
+        PASS [   0.174s] (1157/1376) light-cljs::evaluation eval_nsstar::unchanged_complete_nsstar_source_executes_in_fresh_and_reused_sessions
+        PASS [   0.067s] (1158/1376) light-cljs::evaluation eval_sessions::default_reader_and_assertion_options
+        PASS [   0.356s] (1159/1376) light-cljs::evaluation eval_cli::script_output_and_final_result_are_distinct
+        PASS [   0.066s] (1160/1376) light-cljs::evaluation eval_sessions::exception_data_survives_the_session
+        PASS [   0.094s] (1161/1376) light-cljs::evaluation eval_sessions::handles_are_local_and_reset_invalidates_old_ids
+        PASS [   0.041s] (1162/1376) light-cljs::evaluation eval_sessions::language_errors_keep_effects_and_restore_scopes
+        PASS [   0.315s] (1163/1376) light-cljs::evaluation eval_sessions::failed_macro_compile_can_recover_in_same_session
+        PASS [   0.039s] (1164/1376) light-cljs::evaluation eval_sessions::name_policy_preserves_local_and_global_shadowing
+        PASS [   0.527s] (1165/1376) light-cljs::evaluation eval_sessions::cancellation_and_limits_require_reset_but_host_compilation_recovers
+        PASS [   0.345s] (1166/1376) light-cljs::evaluation eval_sessions::idle_time_does_not_expire_retained_values
+        PASS [   0.038s] (1167/1376) light-cljs::evaluation eval_sessions::output_input_arguments_and_print_scopes
+        PASS [   0.347s] (1168/1376) light-cljs::evaluation eval_sessions::incremental_application_roots_and_macro_roots_are_independent
+        PASS [   0.580s] (1169/1376) light-cljs::evaluation eval_sessions::canonical_libraries_transducers_and_number_semantics
+        PASS [   0.042s] (1170/1376) light-cljs::evaluation eval_sessions::promise_job_exceptions_keep_their_values
+        PASS [   0.650s] (1171/1376) light-cljs::evaluation eval_nsstar::source_macros_referrals_imports_and_ordered_effects_keep_the_declared_owner
+        PASS [   0.040s] (1172/1376) light-cljs::evaluation eval_sessions::promise_jobs_refresh_the_stack_boundary
+        PASS [   0.041s] (1173/1376) light-cljs::evaluation eval_sessions::promise_jobs_run_after_a_loaded_file
+        PASS [   0.316s] (1174/1376) light-cljs::evaluation eval_sessions::macroexpand_seed_preserves_pending_reader_declarations
+        PASS [   0.046s] (1175/1376) light-cljs::evaluation eval_sessions::promise_jobs_run_after_each_top_level_form
+        PASS [   0.068s] (1176/1376) light-cljs::evaluation eval_sessions::protocol_tables_are_session_local
+        PASS [   0.040s] (1177/1376) light-cljs::evaluation eval_sessions::typed_callbacks_reenter_and_preserve_owned_errors
+        PASS [   0.599s] (1178/1376) light-cljs::evaluation eval_sessions::embedding_eval_reference_cases_keep_portable_expected_results
+        PASS [   0.124s] (1179/1376) light-cljs::evaluation eval_sessions::source_output_limits_and_oom_are_explicit
+        PASS [   0.078s] (1180/1376) light-cljs::evaluation eval_sessions::unhandled_promise_rejections_are_reported_after_the_jobs
+        PASS [  12.101s] (1181/1376) light-cljs::compiler string_fixtures::all_131_native_string_bodies_execute_with_canonical_printing_evidence
+        PASS [   0.317s] (1182/1376) light-cljs::evaluation eval_sessions::namespaces_sources_and_reader_aliases_are_incremental
+        PASS [   0.239s] (1183/1376) light-cljs::evaluation eval_sessions::session_drop_releases_callback_captures_and_cyclic_application_roots
+        PASS [   0.109s] (1184/1376) light-cljs::evaluation evaluator::complete_collection_fixture_preserves_typed_values_and_printing_in_both_engines
+        PASS [   0.034s] (1185/1376) light-cljs::evaluation evaluator::teardown_does_not_invoke_mutated_collection_methods
+        PASS [   0.035s] (1186/1376) light-cljs::evaluation evaluator::unit_runtime_parameter_preserves_raw_javascript_hygiene
+        PASS [   0.316s] (1187/1376) light-cljs::evaluation eval_sessions::runtime_eval_and_macroexpand_use_the_compiler
+        PASS [   0.142s] (1188/1376) light-cljs::evaluation evaluator::javascript_capabilities_are_explicit_and_demanded
+        PASS [   0.008s] (1189/1376) light-cljs::evaluation evaluator_conformance::anonymous_parameter_ids_compare_by_rank_within_one_observation
+        PASS [   0.006s] (1190/1376) light-cljs::evaluation evaluator_conformance::canonical_anonymous_accounting_requires_exact_body_and_complete_observation
+        PASS [   0.205s] (1191/1376) light-cljs::evaluation evaluator::deadline_allocation_and_panics_produce_owned_failures
+        PASS [   0.006s] (1192/1376) light-cljs::evaluation evaluator_conformance::cljs_projection_keeps_numeric_bits_and_explicitly_rejects_jvm_only_numbers
+        PASS [   0.007s] (1193/1376) light-cljs::evaluation evaluator_conformance::quoted_macro_diagnostic_receipts_preserve_exact_historical_gap_bodies
+        PASS [   0.065s] (1194/1376) light-cljs::evaluation evaluator::units_share_brands_and_functions_but_sessions_reject_foreign_ids
+        PASS [   0.006s] (1195/1376) light-cljs::evaluation evaluator_conformance::stack_depth_accounting_requires_exhaustion_after_reentry
+        PASS [   0.132s] (1196/1376) light-cljs::evaluation evaluator::terminal_controls_survive_catch_and_fresh_host_sessions_recover
+        PASS [   0.025s] (1197/1376) light-cljs::evaluation evaluator_conformance::recorded_observations_contain_no_other_process_wide_ids
+        PASS [   0.031s] (1198/1376) light-cljs::evaluation sci_reference::committed_sci_corpus_is_typed_complete_and_pinned
+        PASS [   0.007s] (1199/1376) light-cljs::evaluation sci_reference::protocol_preserves_numeric_categories_utf16_and_collection_identity
+        PASS [   0.009s] (1200/1376) light-cljs::evaluation sci_reference::protocol_rejects_lossy_unknown_malformed_and_unbounded_results
+        PASS [   0.087s] (1201/1376) light-cljs::evaluation evaluator_conformance::every_historical_sci_case_has_an_evaluator_disposition
+        PASS [   1.268s] (1202/1376) light-cljs::evaluation eval_cli::time_prints_elapsed_milliseconds_under_eval_and_repl
+        PASS [   0.637s] (1203/1376) light-cljs::evaluation eval_sessions::promise_jobs_stay_within_the_session_limits
+        PASS [   0.099s] (1204/1376) light-cljs::execution compiled_deftype_namespace_identity_and_dispatch
+        PASS [   0.385s] (1205/1376) light-cljs::evaluation evaluator_migration::quoted_js_macro_literals_retain_explicit_descriptors
+        PASS [   0.683s] (1206/1376) light-cljs::evaluation evaluator::compiler_units_execute_with_identical_expected_results_in_quickjs_and_node
+        PASS [   0.100s] (1207/1376) light-cljs::execution compiled_extension_namespace_aliases
+        PASS [   6.729s] (1208/1376) light-cljs::compiler utilities_completion::phase_oracles::utility_test_bodies
+        PASS [   0.820s] (1209/1376) light-cljs::evaluation evaluator::clean_sessions_drop_cycles_callbacks_and_mutable_roots
+        PASS [   0.103s] (1210/1376) light-cljs::execution compiled_protocols_persist_across_namespaces
+        PASS [   0.455s] (1211/1376) light-cljs::execution compiled_definitions_preserve_namespace_macro_and_callback_scopes
+        PASS [   0.104s] (1212/1376) light-cljs::execution compiled_record_namespace_identity_and_dispatch
+        PASS [   0.108s] (1213/1376) light-cljs::execution compiled_reify_event_objects_cross_namespace_aliases
+        PASS [   1.941s] (1214/1376) light-cljs::evaluation eval_examples::every_compiled_example_runs_fresh_without_java_node_or_project_files
+        PASS [   0.215s] (1215/1376) light-cljs::execution deeply_nested_accepted_source_compiles_and_executes
+        PASS [   1.040s] (1216/1376) light-cljs::execution collection_namespace_macros_execute_typed_results_once_with_fresh_runtime_state
+        PASS [   0.381s] (1217/1376) light-cljs::execution compiled_state_persists_across_namespaces
+        PASS [   0.160s] (1218/1376) light-cljs::execution destructuring_and_assertions_execute_without_the_shared_encoder
+        PASS [   1.359s] (1219/1376) light-cljs::evaluation evaluator::wide_radix_literals_round_once_in_applications_and_macro_arguments
+        PASS [   0.111s] (1220/1376) light-cljs::execution exceptions_preserve_identity_and_abrupt_completion_without_the_encoder
+        PASS [   0.263s] (1221/1376) light-cljs::execution empty_files_and_top_level_forms_execute
+        PASS [   0.007s] (1222/1376) light-cljs::execution generated_execution::generated_seed_manifest_is_stable_and_bounded
+        PASS [   0.975s] (1223/1376) light-cljs::execution compiled_overloads_expose_callable_entries_and_keep_large_rest_off_the_js_stack
+        PASS [   0.131s] (1224/1376) light-cljs::execution generated_execution::generated_comparison_rejects_changed_traces_errors_and_missing_results
+        PASS [   0.068s] (1225/1376) light-cljs::execution harness_preserves_symbol_list_seq_vector_and_nil_tags_independently
+        PASS [   0.134s] (1226/1376) light-cljs::execution harness_distinguishes_trusted_language_values_and_forged_host_tags
+        PASS [   0.429s] (1227/1376) light-cljs::execution destructured_method_conditions_check_each_arity_and_receiver_context
+        PASS [   0.081s] (1228/1376) light-cljs::execution harness_encodes_special_values_and_continues_after_failures_independently
+        PASS [   3.525s] (1229/1376) light-cljs::evaluation dev_session::a_standalone_session_survives_idle_time_between_compilations
+        PASS [   0.069s] (1230/1376) light-cljs::execution harness_preserves_utf16_units_and_embedded_controls_independently
+        PASS [   1.921s] (1231/1376) light-cljs::evaluation evaluator::quoted_javascript_macro_literals_execute_in_fresh_quickjs_and_node_heaps
+        PASS [   0.360s] (1232/1376) light-cljs::execution harness_rejects_cycles_through_language_values_and_invalid_adapters
+        PASS [   1.950s] (1233/1376) light-cljs::evaluation evaluator_migration::acceptance_programs_execute_in_independent_heaps_with_fresh_and_reused_hosts
+        PASS [   0.563s] (1234/1376) light-cljs::execution harness_rejects_invalid_cases_and_unserializable_values
+        PASS [   0.378s] (1235/1376) light-cljs::execution language_combinations::doto_evaluates_its_target_once_and_preserves_order_and_identity
+        PASS [   0.826s] (1236/1376) light-cljs::execution generated_execution::generated_programs_preserve_results_and_traces_under_transformations
+        PASS [   0.624s] (1237/1376) light-cljs::execution language_combinations::completion_helpers_preserve_lazy_stops_metadata_and_callback_order
+        PASS [   0.411s] (1238/1376) light-cljs::execution language_combinations::integrated_language_program_combines_cljs_cljc_and_compiled_macros
+        PASS [   0.113s] (1239/1376) light-cljs::execution letfn_retains_independent_groups_and_recur_iteration_captures_without_the_encoder
+        PASS [   0.115s] (1240/1376) light-cljs::execution letfn_identity_guarantees_do_not_reuse_nested_or_iterated_group_slots
+        PASS [   0.383s] (1241/1376) light-cljs::execution language_combinations::run_bang_stops_at_reduced_even_on_an_unbounded_input
+        PASS [   0.072s] (1242/1376) light-cljs::execution missing_duplicate_reordered_and_extra_outcomes_fail
+        PASS [   0.450s] (1243/1376) light-cljs::execution large_emitted_reduction_is_iterative_and_keeps_the_ordinary_call_abi
+        PASS [   0.434s] (1244/1376) light-cljs::execution large_vector_literals_do_not_use_the_javascript_argument_stack
+        PASS [   2.185s] (1245/1376) light-cljs::execution compiled_helpers_preserve_values_effects_and_failures
+        PASS [   2.266s] (1246/1376) light-cljs::execution compiled_interop_preserves_host_results_effects_and_failures
+        PASS [   0.007s] (1247/1376) light-cljs::execution reference_selection_requires_explicit_checkout_identity
+        PASS [   0.390s] (1248/1376) light-cljs::execution namespace_macro_generated_overloads_and_metadata_execute
+        PASS [   0.161s] (1249/1376) light-cljs::execution recurrence_keeps_a_constant_stack_and_snapshot_closures_without_the_encoder
+        PASS [   0.498s] (1250/1376) light-cljs::execution map_source_order_and_numeric_literal_collisions_have_explicit_owned_semantics
+        PASS [   0.093s] (1251/1376) light-cljs::execution resolved_numeric_functions_evaluate_each_argument_once_in_order
+        PASS [   0.270s] (1252/1376) light-cljs::execution reduced_markers_are_opaque_harness_failures_even_when_nested_or_traced
+        PASS [   0.052s] (1253/1376) light-cljs::frontend analyzer::accepted_nesting_analyzes_on_the_default_thread_stack
+        PASS [   0.009s] (1254/1376) light-cljs::frontend analyzer::additional_numeric_categories_compile_in_nested_contexts
+        PASS [   0.008s] (1255/1376) light-cljs::frontend analyzer::analysis_owns_its_values_and_compile_distinguishes_error_stages
+        PASS [   0.007s] (1256/1376) light-cljs::frontend analyzer::closures_resolve_to_distinct_persistent_binding_ids
+        PASS [   0.684s] (1257/1376) light-cljs::execution map_encoder_checks_count_duplicates_types_and_unordered_entries_independently
+        PASS [   0.007s] (1258/1376) light-cljs::frontend analyzer::context_tracks_discarded_returned_and_argument_values
+        PASS [   0.011s] (1259/1376) light-cljs::frontend analyzer::core_functions_resolve_after_locals_and_globals_and_by_explicit_qualifier
+        PASS [   0.010s] (1260/1376) light-cljs::frontend analyzer::definitions_and_interop_distinguish_valid_paths_from_malformed_shapes
+        PASS [   0.007s] (1261/1376) light-cljs::frontend analyzer::different_spellings_have_distinct_ids_even_when_munging_would_collide
+        PASS [   0.016s] (1262/1376) light-cljs::frontend analyzer::definitions_and_temporary_scope_validation_report_source_errors
+        PASS [   0.011s] (1263/1376) light-cljs::frontend analyzer::exception_forms_validate_clauses_and_preserve_recur_boundaries
+        PASS [   0.007s] (1264/1376) light-cljs::frontend analyzer::fixed_function_signature_boundaries_have_precise_diagnostics
+        PASS [   0.011s] (1265/1376) light-cljs::frontend analyzer::global_identity_is_stable_and_distinct_from_lexical_and_host_identity
+        PASS [   0.011s] (1266/1376) light-cljs::frontend analyzer::globals_are_source_ordered_and_definition_self_reference_is_registered_first
+        PASS [   0.011s] (1267/1376) light-cljs::frontend analyzer::hash_map_reader_traversal_preserves_whole_pairs_and_original_spans
+        PASS [   0.007s] (1268/1376) light-cljs::frontend analyzer::initializer_references_the_previous_binding
+        PASS [   0.007s] (1269/1376) light-cljs::frontend analyzer::invalid_special_forms_have_source_diagnostics
+        PASS [   0.007s] (1270/1376) light-cljs::frontend analyzer::keyword_literals_own_names_and_resolve_namespace_aliases_without_macro_execution
+        PASS [   0.006s] (1271/1376) light-cljs::frontend analyzer::literal_keyword_arity_rejections_are_located_even_in_dead_branches
+        PASS [   0.007s] (1272/1376) light-cljs::frontend analyzer::letfn_allocates_group_identities_before_initializers_and_restores_scope
+        PASS [   0.010s] (1273/1376) light-cljs::frontend analyzer::malformed_letfn_reports_the_binding_or_initializer_source_span
+        PASS [   0.013s] (1274/1376) light-cljs::frontend analyzer::malformed_destructuring_and_conditions_retain_source_locations
+        PASS [   0.007s] (1275/1376) light-cljs::frontend analyzer::named_function_and_parameter_ids_restore_enclosing_local
+        PASS [   0.011s] (1276/1376) light-cljs::frontend analyzer::namespace_and_alias_references_ignore_same_spelled_lexical_bindings
+        PASS [   0.249s] (1277/1376) light-cljs::execution set_reader_rejection_and_distinct_operand_effects_stay_separate
+        PASS [   0.008s] (1278/1376) light-cljs::frontend analyzer::numeric_literals_use_cljs_number_rounding_without_safe_integer_restrictions
+        PASS [   0.007s] (1279/1376) light-cljs::frontend analyzer::quote_lowers_owned_data_without_runtime_resolution_or_macro_execution
+        PASS [   0.013s] (1280/1376) light-cljs::frontend analyzer::reader_data_compiles_without_execution_even_in_unselected_branches
+        PASS [   0.012s] (1281/1376) light-cljs::frontend analyzer::recur_rejects_non_tail_targets_and_cross_try_with_located_errors
+        PASS [   0.007s] (1282/1376) light-cljs::frontend analyzer::reduction_core_values_have_resolved_ids_without_native_macro_initialization
+        PASS [   0.013s] (1283/1376) light-cljs::frontend analyzer::repeated_quoted_literals_grow_linearly_without_duplicate_runtime_preludes
+        PASS [   0.012s] (1284/1376) light-cljs::frontend analyzer::runtime_inclusion_preserves_primitive_output_and_is_once_per_combined_unit
+        PASS [   0.007s] (1285/1376) light-cljs::frontend analyzer::scope_exit_retains_binding_ids_and_restores_reference_targets
+        PASS [   0.008s] (1286/1376) light-cljs::frontend analyzer::sets_lower_owned_values_and_reject_duplicate_readable_forms_with_spans
+        PASS [   0.007s] (1287/1376) light-cljs::frontend analyzer::small_map_literals_keep_source_order_and_reader_duplicates_keep_number_categories
+        PASS [   0.007s] (1288/1376) light-cljs::frontend analyzer::unresolved_bare_names_remain_strict_while_dotted_host_paths_resolve
+        PASS [   0.007s] (1289/1376) light-cljs::frontend analyzer::unresolved_initializers_and_exited_scopes_report_exact_byte_spans
+        PASS [   0.007s] (1290/1376) light-cljs::frontend analyzer::unsupported_reader_forms_macros_and_language_forms_are_explicit
+        PASS [   0.073s] (1291/1376) light-cljs::frontend boundaries::namespace_boundaries_retain_file_spans_and_emit_no_partial_javascript
+        PASS [   0.008s] (1292/1376) light-cljs::frontend full_lexer::all_collection_delimiters_without_matching
+        PASS [   0.009s] (1293/1376) light-cljs::frontend full_lexer::atoms_keep_classification_and_context_for_the_reader
+        PASS [   0.007s] (1294/1376) light-cljs::frontend full_lexer::backslash_parity_controls_string_and_regex_endings
+        PASS [   0.006s] (1295/1376) light-cljs::frontend full_lexer::character_literals_include_delimiters_and_names
+        PASS [   0.007s] (1296/1376) light-cljs::frontend full_lexer::context_sensitive_percent_notation_is_preserved_for_the_reader
+        PASS [   0.007s] (1297/1376) light-cljs::frontend full_lexer::discard_and_reader_conditionals_only_emit_prefixes
+        PASS [   0.006s] (1298/1376) light-cljs::frontend full_lexer::dispatch_tags_namespaced_maps_and_symbolic_values
+        PASS [   0.006s] (1299/1376) light-cljs::frontend full_lexer::lexical_errors_have_spans_and_iteration_recovers_or_finishes
+        PASS [   0.007s] (1300/1376) light-cljs::frontend full_lexer::line_comments_preserve_text_and_stop_at_cr_or_lf
+        PASS [   0.017s] (1301/1376) light-cljs::frontend full_lexer::malformed_and_utf8_combinations_always_progress_with_sliceable_spans
+        PASS [   0.007s] (1302/1376) light-cljs::frontend full_lexer::namespaced_map_headers_keep_symbol_boundaries_even_when_digit_leading
+        PASS [   0.453s] (1303/1376) light-cljs::execution try_analysis_follows_source_order_and_case_handles_vector_constants
+        PASS [   0.007s] (1304/1376) light-cljs::frontend full_lexer::number_candidates_have_different_terminators_than_symbols
+        PASS [   0.006s] (1305/1376) light-cljs::frontend full_lexer::quote_metadata_and_deref_prefixes
+        PASS [   2.885s] (1306/1376) light-cljs::execution compiled_extension_outcomes_in_fresh_processes
+        PASS [   0.008s] (1307/1376) light-cljs::frontend full_lexer::quoted_literals_preserve_raw_escapes_and_embedded_syntax
+        PASS [   0.007s] (1308/1376) light-cljs::frontend full_lexer::whitespace_matches_jvm_reader_including_unicode_exceptions
+        PASS [   0.007s] (1309/1376) light-cljs::frontend namespaces::aliases_cannot_redirect_namespace_qualifiers
+        PASS [   0.007s] (1310/1376) light-cljs::frontend namespaces::analyzer_diagnostics_name_the_original_dependency_source
+        PASS [   0.595s] (1311/1376) light-cljs::execution set_encoder_preserves_tags_checks_duplicates_and_sorts_only_members
+        PASS [   0.299s] (1312/1376) light-cljs::frontend analyzer::recurrence_targets_are_distinct_and_macro_generated_spans_remain_at_the_call
+        PASS [   0.090s] (1313/1376) light-cljs::frontend full_lexer::unicode_classes_agree_with_the_vendored_reader_snapshot
+        PASS [   0.008s] (1314/1376) light-cljs::frontend namespaces::cycles_report_the_dependency_path
+        PASS [   0.086s] (1315/1376) light-cljs::frontend namespaces::bounded_core_is_virtual_and_does_not_override_user_namespace_members
+        PASS [   0.007s] (1316/1376) light-cljs::frontend namespaces::distinct_sources_for_the_same_namespace_are_ambiguous
+        PASS [   0.082s] (1317/1376) light-cljs::frontend namespaces::conditional_selection_validates_splices_and_does_not_read_inactive_discarded_tags
+        PASS [   0.161s] (1318/1376) light-cljs::frontend namespaces::acceptance_program_prints_four_from_api_and_cli
+        PASS [   0.007s] (1319/1376) light-cljs::frontend namespaces::lexical_bindings_do_not_leak_between_namespaces
+        PASS [   0.007s] (1320/1376) light-cljs::frontend namespaces::lookup_requires_valid_names_and_existing_explicit_directories
+        PASS [   0.084s] (1321/1376) light-cljs::frontend namespaces::depth_first_dependencies_and_top_level_initializers_run_once_in_source_order
+        PASS [   0.007s] (1322/1376) light-cljs::frontend namespaces::missing_dependencies_report_the_requiring_file_and_span
+        PASS [   0.010s] (1323/1376) light-cljs::frontend namespaces::malformed_and_unsupported_namespace_specifications_have_explicit_diagnostics
+        PASS [   0.084s] (1324/1376) light-cljs::frontend namespaces::globals_keep_namespace_identity_and_lexical_shadowing
+        PASS [   0.019s] (1325/1376) light-cljs::frontend namespaces::namespace_cli_rejects_bad_flags_without_partial_javascript
+        PASS [   0.007s] (1326/1376) light-cljs::frontend namespaces::parse_errors_retain_file_line_and_byte_column
+        PASS [   0.084s] (1327/1376) light-cljs::frontend namespaces::lexical_captures_and_qualified_globals_survive_shadowing_and_redefinition
+        PASS [   0.225s] (1328/1376) light-cljs::frontend namespaces::cljs_precedes_cljc_across_roots_but_same_extension_duplicates_remain_ambiguous
+        PASS [   0.082s] (1329/1376) light-cljs::frontend namespaces::qualified_definitions_syntax_quotes_and_clojure_namespace_aliases_keep_identity
+        PASS [   0.008s] (1330/1376) light-cljs::frontend namespaces::reserved_core_qualifiers_cannot_be_redirected
+        PASS [   0.013s] (1331/1376) light-cljs::frontend namespaces::refer_conflicts_and_nonexistent_imports_are_diagnosed_even_when_unused
+        PASS [   0.095s] (1332/1376) light-cljs::frontend namespaces::recurrence_targets_and_protocol_methods_keep_namespace_identity
+        PASS [   0.162s] (1333/1376) light-cljs::frontend namespaces::namespace_paths_munge_hyphens_and_multiple_roots_are_explicit
+        PASS [   0.083s] (1334/1376) light-cljs::frontend namespaces::shared_primitive_selection_preserves_reader_context_and_matches_cli
+        PASS [   0.009s] (1335/1376) light-cljs::frontend namespaces::source_namespace_must_be_first_and_match_the_requested_name
+        PASS [   0.084s] (1336/1376) light-cljs::frontend namespaces::shared_sources_select_cljs_before_dependencies_and_preserve_splicing_and_locations
+        PASS [   0.085s] (1337/1376) light-cljs::frontend namespaces::slash_is_an_unqualified_name_and_qualified_namespace_member
+        PASS [   0.007s] (1338/1376) light-cljs::frontend parser::anonymous_arguments_use_contextual_boundaries
+        PASS [   0.007s] (1339/1376) light-cljs::frontend parser::characters_and_raw_regexes
+        PASS [   0.007s] (1340/1376) light-cljs::frontend parser::conditionals_preserve_branches_and_defer_collection_arity
+        PASS [   0.006s] (1341/1376) light-cljs::frontend parser::discards_consume_whole_forms_without_retaining_nodes
+        PASS [   0.007s] (1342/1376) light-cljs::frontend parser::empty_comments_commas_and_fused_eof
+        PASS [   0.030s] (1343/1376) light-cljs::frontend parser::collections_and_wide_siblings
+        PASS [   0.007s] (1344/1376) light-cljs::frontend parser::errors_have_locations_openers_and_terminal_behavior
+        PASS [   0.007s] (1345/1376) light-cljs::frontend parser::every_reader_family_truncation_preserves_incremental_progress_and_fused_failure
+        PASS [   0.006s] (1346/1376) light-cljs::frontend parser::example_arena_and_incremental_top_level_forms
+        PASS [   0.007s] (1347/1376) light-cljs::frontend parser::nesting_limit_includes_collections_prefixes_and_discards
+        PASS [   0.088s] (1348/1376) light-cljs::frontend namespaces::unknown_qualifiers_are_rejected_and_loaded_namespaces_qualify
+        PASS [   0.007s] (1349/1376) light-cljs::frontend parser::prefixes_metadata_tags_namespaces_and_specials
+        PASS [   0.007s] (1350/1376) light-cljs::frontend parser::strings_decode_utf16_and_preserve_unescaped_spans
+        PASS [   0.007s] (1351/1376) light-cljs::frontend parser::symbols_keywords_literals_and_numbers
+        PASS [   0.007s] (1352/1376) light-cljs::frontend parser_reference::literal_syntax_and_utf16_values_match_reference_snapshot
+        PASS [   0.036s] (1353/1376) light-cljs::frontend parser::malformed_combinations_and_truncations_keep_valid_spans
+        PASS [   0.007s] (1354/1376) light-cljs::frontend tokenizer::adjacent_nested_and_unmatched_parentheses
+        PASS [   0.007s] (1355/1376) light-cljs::frontend tokenizer::atoms_at_eof_and_commas
+        PASS [   0.007s] (1356/1376) light-cljs::frontend tokenizer::empty_and_all_ascii_whitespace
+        PASS [   0.007s] (1357/1376) light-cljs::frontend tokenizer::example
+        PASS [   0.006s] (1358/1376) light-cljs::frontend tokenizer::repeated_eof_is_fused
+        PASS [   0.007s] (1359/1376) light-cljs::frontend tokenizer::utf8_uses_byte_spans
+        PASS [   0.008s] (1360/1376) light-cljs::provenance derived_provenance_requires_pinned_traceable_sources
+        PASS [   0.361s] (1361/1376) light-cljs::frontend namespaces::namespaces_load_from_any_source_provider
+        PASS [   2.331s] (1362/1376) light-cljs::execution invocation_runtime_obeys_receivers_and_large_lazy_arguments_without_the_encoder
+        PASS [   0.042s] (1363/1376) light-cljs::frontend tokenizer::spans_are_sliceable_and_agree_with_character_scanner
+        PASS [   0.081s] (1364/1376) light-cljs::provenance fixture_ids_are_unique_and_have_complete_provenance
+        PASS [   0.134s] (1365/1376) light-cljs::frontend parser_corpus::pinned_reader_sources_accept_syntax_with_exact_body_byte_spans
+        PASS [   0.367s] (1366/1376) light-cljs::frontend namespaces::runtime_refers_renames_and_core_exclusions_keep_qualified_identity
+        PASS [   3.383s] (1367/1376) light-cljs::execution compiled_sequences_preserve_values_effects_and_failures
+        PASS [   4.200s] (1368/1376) light-cljs::execution compiled_core_protocol_outcomes_in_fresh_processes
+        PASS [   2.081s] (1369/1376) light-cljs::execution process_failures_and_timeouts_retain_current_case_identity_and_source
+        PASS [   3.761s] (1370/1376) light-cljs::execution language_combinations::bounded_language_combinations_execute_values_effects_stdout_and_failures
+        PASS [   2.909s] (1371/1376) light-cljs::execution numeric_fixture_applications_match_expected_outcomes_in_quickjs_and_node
+        PASS [  11.254s] (1372/1376) light-cljs::compiler watch_keys::watch_key_effects_execute_in_fresh_and_reused_phases
+        PASS [  13.095s] (1373/1376) light-cljs::compiler utilities_bodies::complete_upstream_utilities_completion_bodies_execute_in_both_engines
+        PASS [   5.469s] (1374/1376) light-cljs::execution runtime_values_have_private_immutable_storage
+        PASS [  11.923s] (1375/1376) light-cljs::frontend boundaries::expression_boundaries_retain_exact_diagnostics_in_unselected_branches
+        PASS [  26.061s] (1376/1376) light-cljs::compiler transducers::eager_transducer_values_effects_and_errors_match_in_quickjs_and_node
+────────────
+     Summary [ 126.860s] 1376 tests run: 1376 passed, 106 skipped

@@ -1,0 +1,1 @@
+{:total {:calls 1444726, :bytes 290492640}, :categories {:other {:calls 874650, :bytes 216245088}, :arena-clone {:calls 132420, :bytes 17001152}, :fragment-append {:calls 316931, :bytes 14701968}, :layered-maps {:calls 112814, :bytes 11596096}, :quickjs {:calls 7911, :bytes 30948336}}}

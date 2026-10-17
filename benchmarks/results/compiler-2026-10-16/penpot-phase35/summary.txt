@@ -1,0 +1,72 @@
+Stage totals; exclusive subtracts nested instrumented stages, not uninstrumented work.
+{:stage "call", :calls 48216, :inclusive 58.97326200000001, :exclusive 54.66946800000001}
+{:stage "deferred-analysis", :calls 13361, :inclusive 76.80735, :exclusive 14.299199}
+{:stage "form", :calls 48216, :inclusive 8.155332999999999, :exclusive 8.155332999999999}
+{:stage "result", :calls 48216, :inclusive 7.2573919999999985, :exclusive 7.2573919999999985}
+{:stage "environment", :calls 48216, :inclusive 6.928301000000001, :exclusive 6.920483000000001}
+{:stage "unit-emission", :calls 441, :inclusive 5.300804, :exclusive 5.300804}
+{:stage "arguments", :calls 48216, :inclusive 4.266177000000001, :exclusive 4.266177000000001}
+
+Top macro call costs
+{:macro "rumext.v2/defc", :stage "call", :calls 1033, :inclusive 16.912561, :exclusive 16.786864}
+{:macro "instaparse.abnf/precompile-cljs-grammar", :stage "call", :calls 1, :inclusive 16.365612, :exclusive 12.713065}
+{:macro "rumext.v2/html", :stage "call", :calls 418, :inclusive 4.77949, :exclusive 4.77949}
+{:macro "app.main.style/css", :stage "call", :calls 5131, :inclusive 4.354008, :exclusive 4.316335}
+{:macro "app.main.style/css*", :stage "call", :calls 5131, :inclusive 3.628372, :exclusive 3.628372}
+{:macro "app.util.object/add-properties!", :stage "call", :calls 44, :inclusive 1.295041, :exclusive 1.294553}
+{:macro "potok.v2.core/reify", :stage "call", :calls 1062, :inclusive 1.036788, :exclusive 1.036788}
+{:macro "cuerdas.core/concat", :stage "call", :calls 1074, :inclusive 0.862984, :exclusive 0.862984}
+{:macro "cljs.core/js-obj", :stage "call", :calls 762, :inclusive 0.744552, :exclusive 0.744552}
+{:macro "app.common.data.macros/get-prop", :stage "call", :calls 844, :inclusive 0.656612, :exclusive 0.654094}
+{:macro "app.common.data.macros/str", :stage "call", :calls 886, :inclusive 0.55948, :exclusive 0.55948}
+{:macro "app.main.style/css-case", :stage "call", :calls 519, :inclusive 0.55035, :exclusive 0.525991}
+{:macro "rumext.v2/with-memo", :stage "call", :calls 524, :inclusive 0.468843, :exclusive 0.468843}
+{:macro "cljs.core/->>", :stage "call", :calls 2068, :inclusive 0.426881, :exclusive 0.426881}
+{:macro "app.common.render-wasm.helpers/call", :stage "call", :calls 186, :inclusive 0.414414, :exclusive 0.414414}
+{:macro "rumext.v2/fnc", :stage "call", :calls 32, :inclusive 0.60158, :exclusive 0.384782}
+{:macro "cljs.core/and", :stage "call", :calls 3626, :inclusive 0.334341, :exclusive 0.334341}
+{:macro "cljs.core/case", :stage "call", :calls 527, :inclusive 0.331473, :exclusive 0.331473}
+{:macro "app.common.data.macros/get-in", :stage "call", :calls 465, :inclusive 0.320199, :exclusive 0.320199}
+{:macro "app.common.data.macros/assert!", :stage "call", :calls 292, :inclusive 0.29578, :exclusive 0.291508}
+{:macro "app.common.logging/log!", :stage "call", :calls 267, :inclusive 0.290515, :exclusive 0.287562}
+{:macro "app.common.data.macros/export", :stage "call", :calls 232, :inclusive 0.271345, :exclusive 0.271345}
+{:macro "rumext.v2/with-effect", :stage "call", :calls 291, :inclusive 0.267964, :exclusive 0.267964}
+{:macro "app.main.ui.icons/icon-xref", :stage "call", :calls 313, :inclusive 0.257961, :exclusive 0.257961}
+{:macro "rumext.v2/spread-props", :stage "call", :calls 102, :inclusive 0.269899, :exclusive 0.250371}
+{:macro "cljs.core/or", :stage "call", :calls 2692, :inclusive 0.239796, :exclusive 0.239796}
+{:macro "cljs.core/->", :stage "call", :calls 3337, :inclusive 0.205316, :exclusive 0.205316}
+{:macro "app.util.object/reify", :stage "call", :calls 44, :inclusive 0.166641, :exclusive 0.164261}
+{:macro "cljs.core/cond", :stage "call", :calls 6215, :inclusive 0.161213, :exclusive 0.161213}
+{:macro "cljs.core/cond->", :stage "call", :calls 876, :inclusive 0.153052, :exclusive 0.153052}
+
+Top total macro costs (sum of exclusive stages)
+{:macro "rumext.v2/defc", :seconds 21.575518000000002}
+{:macro "compiler", :seconds 19.600003}
+{:macro "instaparse.abnf/precompile-cljs-grammar", :seconds 12.733271999999998}
+{:macro "app.main.style/css", :seconds 5.621912}
+{:macro "rumext.v2/html", :seconds 5.223915}
+{:macro "app.main.style/css*", :seconds 4.1932529999999995}
+{:macro "potok.v2.core/reify", :seconds 2.63616}
+{:macro "cljs.core/cond", :seconds 2.550445}
+{:macro "app.util.object/add-properties!", :seconds 2.419968}
+{:macro "cljs.core/when", :seconds 1.9471640000000001}
+{:macro "rumext.v2/with-memo", :seconds 1.290283}
+{:macro "app.common.data.macros/str", :seconds 1.260783}
+{:macro "cljs.core/case", :seconds 1.173295}
+{:macro "cljs.core/->>", :seconds 1.1552799999999999}
+{:macro "cuerdas.core/concat", :seconds 1.104558}
+{:macro "app.common.data.macros/get-prop", :seconds 1.066278}
+{:macro "cljs.core/and", :seconds 1.030566}
+{:macro "cljs.core/js-obj", :seconds 0.991619}
+{:macro "cljs.core/->", :seconds 0.928824}
+{:macro "app.main.style/css-case", :seconds 0.903447}
+{:macro "app.common.data.macros/get-in", :seconds 0.8442990000000001}
+{:macro "cljs.core/cond->", :seconds 0.7925039999999999}
+{:macro "rumext.v2/with-effect", :seconds 0.758218}
+{:macro "cljs.core/or", :seconds 0.701309}
+{:macro "app.common.render-wasm.helpers/call", :seconds 0.650696}
+{:macro "app.util.object/reify", :seconds 0.614151}
+{:macro "cljs.core/defmethod", :seconds 0.5859209999999999}
+{:macro "rumext.v2/fnc", :seconds 0.462704}
+{:macro "cljs.core/when-let", :seconds 0.4507}
+{:macro "app.common.data.macros/assert!", :seconds 0.42317699999999997}

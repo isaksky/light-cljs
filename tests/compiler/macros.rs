@@ -13,7 +13,47 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+#[test]
+fn reader_qualification_preserves_alias_collisions_refers_and_definition_views() {
+    let sources = Sources::new();
+    sources.write("real.cljs", "(ns real) (def hit 1)");
+    sources.write("target.cljs", "(ns target) (def hit 2)");
+    sources.write("third.cljs", "(ns third) (def value 3)");
+    sources.write("unrelated.cljs", "(ns unrelated (:require [real] [third]))");
+    sources.write(
+        "app.cljs",
+        r#"(ns app
+             (:require [target :as real :refer [hit] :rename {hit imported}]
+                       [unrelated])
+             (:refer-clojure :exclude [map]))
+           (def map 4)
+           (def before `[real/hit real/missing imported map third/value])
+           (defmacro captured []
+             (list 'quote `[real/hit real/missing imported map third/value]))
+           (def after (captured))
+           (js/console.log (pr-str before))
+           (js/console.log (pr-str after))"#,
+    );
+    assert_eq!(
+        execute(&sources.compile("app").unwrap()),
+        "[real/hit target/missing target/hit app/map third/value]\n\
+         [real/hit target/missing target/hit app/map third/value]\n"
+    );
+}
+
 struct Sources(TempDir);
+
+#[test]
+fn raw_js_var_destructuring_assigns_locals_during_macro_execution() {
+    let source = r#"
+      (defmacro extracted []
+        (let [props #js {:a 4 :z 8} x (js* "undefined") rest (js* "undefined")]
+          (js* "var {~{}: ~{}, ...~{}} = ~{}" "a" x rest props)
+          (list 'quote [x (.-z rest)])))
+      (js/console.log (pr-str (extracted)))"#;
+    assert_eq!(execute(&compile(source).unwrap()), "[4 8]\n");
+}
+
 impl Sources {
     fn new() -> Self {
         let path = TempDir::new("cljs-macros");
@@ -409,6 +449,30 @@ fn macro_import_validation_and_loader_failures_are_located() {
     );
     s.write("macros.cljc", "(ns macros) (defmacro visible [] 5)");
     assert_eq!(result(&s.compile("main").unwrap()), "5\n");
+}
+
+#[test]
+fn macro_arguments_share_form_elements_and_mutations() {
+    // Upstream macroexpand-1* applies the expander to form, env and (rest form).
+    let source = r#"
+      (defmacro same [a b c d & more]
+        (list 'quote [(identical? a (nth &form 1))
+                      (identical? b (nth &form 2))
+                      (identical? c (nth &form 3))
+                      (identical? d (nth &form 4))
+                      (identical? (first more) (nth &form 5))]))
+      (defmacro rename-argument [value]
+        (set! (.-name value) "changed")
+        (second &form))
+      (pr-str [(same [1] {:key 2} #js [3] #"x" unresolved)
+               (let [original 1 changed 2] (rename-argument original))])"#;
+    let mut host = MacroHost::new();
+    for _ in 0..2 {
+        assert_eq!(
+            result(&compile_with_macros(source, &mut host).unwrap()),
+            "[[true true true true true] 2]\n"
+        );
+    }
 }
 
 #[test]
@@ -3159,6 +3223,25 @@ fn restoring_a_dispatch_frontier_preserves_executed_helper_mutation() {
     )
     .unwrap();
     assert_eq!(result(&js), "true\n");
+}
+
+#[test]
+fn frontier_replay_orders_extensions_by_declaration_after_late_initialization() {
+    let mut host = MacroHost::new();
+    let source = r#"
+      (defprotocol P (p [x])) (defprotocol Q (q [x])) (deftype T [])
+      (extend-type T P (p [_] 1))
+      (extend-type T Q (q [_] 10))
+      (defmacro snapshot [] [(p (T.)) (q (T.))])
+      (def earlier (snapshot))
+      (extend-type T P (p [_] 2))
+      (defmacro warm [] (q (T.)) (p (T.)) nil) (warm)
+      (defmacro read-earlier [] earlier)
+      (pr-str [(read-earlier) (snapshot) (p (T.)) (q (T.))])"#;
+    for _ in 0..2 {
+        let js = compile_with_macros(source, &mut host).unwrap();
+        assert_eq!(result(&js), "[[1 10] [2 10] 2 10]\n");
+    }
 }
 
 #[test]

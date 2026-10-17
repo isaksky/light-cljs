@@ -1,0 +1,3 @@
+render: application body byte-identical to phase6b outside the embedded runtime; complete output passes node --check.
+main-none: application body byte-identical to phase6b outside the embedded runtime; complete output passes node --check.
+main-advanced: application body byte-identical to phase6b outside the embedded runtime; complete output passes node --check.

@@ -1,0 +1,6 @@
+(require '[babashka.fs :as fs] '[clojure.string :as str])
+(def here (fs/parent *file*))
+(spit (fs/file here "run.bb")
+  (-> (slurp "/private/tmp/light-cljs-phase87/run.bb")
+      (str/replace "light-cljs-quickjs-shared-storage" "light-cljs-quickjs-demand-path")
+      (str/replace "QuickJS shared storage" "QuickJS demand path")))

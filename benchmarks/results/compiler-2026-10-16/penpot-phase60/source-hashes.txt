@@ -1,0 +1,5 @@
+7045be79552557e56439a243e88fe845245d242ebec8d7baadfac9bb2d0bcade  /private/tmp/light-cljs-phase60/light-cljs-profile
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase60/main-none.js
+e9c30bc9747aa1797fb439491f5ce4c89cc2367f55361420b0113354ca4ff3d7  /private/tmp/light-cljs-phase60/project/src/v8_evaluator.rs
+cbcd84667b8dcf7ce31727e44b79f70dfe9bb56ead1ac7ebfdef8e4e1c465769  /private/tmp/light-cljs-phase60/project/Cargo.lock
+be6e68284cd89ff48d5b340a61b3a159931eb3928ee423397770d7a06afec596  /private/tmp/light-cljs-phase60/main.cpuprofile

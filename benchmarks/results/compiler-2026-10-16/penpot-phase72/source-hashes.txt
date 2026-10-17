@@ -1,0 +1,7 @@
+1d231cbddc084a459cf03dd153e61a3e35624768f60100dc02180170d7719aa6  /private/tmp/light-cljs-phase72/light-cljs-quickjs-unit-hygiene
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase72/main-none.js
+165bbee1cd83522eea11163148e6d20cc63d525ba3c866d24367a4165747c2c9  /private/tmp/light-cljs-phase72/project/Cargo.toml
+c8d35620d2fccd410068c94a643f7b1842f8b2b76d719ab8a788f63fc7c3629a  /private/tmp/light-cljs-phase72/project/Cargo.lock
+54068b9d53f5f389fc20149ca2f7ca19f15ae70b33b1854be0cc0fe248aac1f5  /private/tmp/light-cljs-phase72/project/src/emitter.rs
+c459d8b1d783dfd12d456d38f6da9b41694c80059e5dd478ace6710cab25ec49  /private/tmp/light-cljs-phase72/project/src/terse.rs
+b869e54345b118e0de824730a004fb852bd2e54ddf71cbe7ff990e051f1c231c  /private/tmp/light-cljs-phase72/project/tests/evaluation/evaluator.rs

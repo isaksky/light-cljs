@@ -1,0 +1,203 @@
+diff --git a/src/compilation_session.rs b/src/compilation_session.rs
+index af9ba1e..34766a6 100644
+--- a/src/compilation_session.rs
++++ b/src/compilation_session.rs
+@@ -266,25 +266,9 @@ impl CompilationSession {
+         once: bool,
+         location: &str,
+     ) -> Result<(), String> {
+-        // Qualified CLJS names cannot contain these escaped JS string delimiters.
+-        let name = name
+-            .replace('\\', "\\\\")
+-            .replace('"', "\\\"")
+-            .replace('\n', "\\n")
+-            .replace('\r', "\\r");
+-        let location = location
+-            .replace('\\', "\\\\")
+-            .replace('"', "\\\"")
+-            .replace('\n', "\\n")
+-            .replace('\r', "\\r");
+-        let value = engine
+-            .evaluate_unit(&format!(
+-                "rt => globalThis.__lightRegisterUnit(\"{name}\",{}, {once}, \"{location}\", {})",
+-                unit.map_or("null".into(), |n| n.to_string()),
+-                test.map_or("null".into(), |n| n.to_string())
+-            ))
+-            .map_err(|e| e.to_string())?;
+-        engine.release(value).map_err(|e| e.to_string())
++        engine
++            .register_compiler_root(name, unit, once, location, test)
++            .map_err(|e| e.to_string())
+     }
+     pub fn register(
+         &self,
+diff --git a/src/evaluator.rs b/src/evaluator.rs
+index 1f0fc6e..a8d19be 100644
+--- a/src/evaluator.rs
++++ b/src/evaluator.rs
+@@ -921,10 +921,42 @@ impl Evaluator {
+         self.runtime.memory_usage().memory_used_size
+     }
+ }
++pub(crate) fn compiler_root_source(
++    name: &str,
++    unit: Option<usize>,
++    once: bool,
++    location: &str,
++    test: Option<usize>,
++) -> String {
++    let escape = |text: &str| {
++        text.replace('\\', "\\\\")
++            .replace('"', "\\\"")
++            .replace('\n', "\\n")
++            .replace('\r', "\\r")
++    };
++    format!(
++        "rt => globalThis.__lightRegisterUnit(\"{}\",{}, {once}, \"{}\", {})",
++        escape(name),
++        unit.map_or("null".into(), |n| n.to_string()),
++        escape(location),
++        test.map_or("null".into(), |n| n.to_string())
++    )
++}
+ /// Common macro operations at either an outer boundary or an active callback.
+ pub trait MacroEvaluator {
+     fn control(&self) -> ExecutionControl;
+     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError>;
++    fn register_compiler_root(
++        &self,
++        name: &str,
++        unit: Option<usize>,
++        once: bool,
++        location: &str,
++        test: Option<usize>,
++    ) -> Result<(), EvalError> {
++        let value = self.evaluate_unit(&compiler_root_source(name, unit, once, location, test))?;
++        self.release(value)
++    }
+     /// Execute all namespace registrations in order. Engines may cache the
+     /// compiled chunks, but must execute every registration on every call.
+     fn evaluate_registration(
+diff --git a/src/v8_evaluator.rs b/src/v8_evaluator.rs
+index 9394979..8006d33 100644
+--- a/src/v8_evaluator.rs
++++ b/src/v8_evaluator.rs
+@@ -480,6 +480,43 @@ impl MacroEvaluator for Active<'_, '_, '_> {
+     fn control(&self) -> ExecutionControl {
+         self.state.control.clone()
+     }
++    fn register_compiler_root(
++        &self,
++        name: &str,
++        unit: Option<usize>,
++        once: bool,
++        location: &str,
++        test: Option<usize>,
++    ) -> Result<(), EvalError> {
++        self.enter(|scope| {
++            if !invoke(scope, self.state, "canCacheRegistration", &[])?.is_true() {
++                let source =
++                    crate::evaluator::compiler_root_source(name, unit, once, location, test);
++                let source = bridge::string(scope, &source)?;
++                let id = invoke(scope, self.state, "evaluate", &[source.into()])?;
++                invoke(scope, self.state, "release", &[id])?;
++                return Ok(());
++            }
++            let name = bridge::string(scope, name)?.into();
++            let unit = unit.map_or_else(
++                || v8::null(scope).into(),
++                |n| v8::Number::new(scope, n as f64).into(),
++            );
++            let once = v8::Boolean::new(scope, once).into();
++            let location = bridge::string(scope, location)?.into();
++            let test = test.map_or_else(
++                || v8::null(scope).into(),
++                |n| v8::Number::new(scope, n as f64).into(),
++            );
++            invoke(
++                scope,
++                self.state,
++                "registerRoot",
++                &[name, unit, once, location, test],
++            )?;
++            Ok(())
++        })
++    }
+     fn evaluate_registration(
+         &self,
+         source: &str,
+@@ -744,6 +781,16 @@ impl MacroEvaluator for V8Evaluator {
+     fn control(&self) -> ExecutionControl {
+         self.state.control.clone()
+     }
++    fn register_compiler_root(
++        &self,
++        name: &str,
++        unit: Option<usize>,
++        once: bool,
++        location: &str,
++        test: Option<usize>,
++    ) -> Result<(), EvalError> {
++        self.with_active(|e| e.register_compiler_root(name, unit, once, location, test))
++    }
+     fn evaluate_registration(
+         &self,
+         source: &str,
+@@ -906,6 +953,45 @@ impl CompilerEvaluator for V8Evaluator {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn direct_root_registration_preserves_values_and_dynamic_callbacks() {
++        let evaluator = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
++        let done = evaluator.evaluate_unit("rt => { globalThis.__lightRegisterUnit = (...args) => { globalThis.registered = args; return 99; }; return null; }").unwrap();
++        evaluator.release(done).unwrap();
++        evaluator
++            .register_compiler_root("a\"\n\\λ", Some(3), false, "line\r\n\"\\x", None)
++            .unwrap();
++        let check = evaluator.evaluate_js(r#"Number(registered[0] === 'a"\n\\λ' && registered[1] === 3 && registered[2] === false && registered[3] === 'line\r\n"\\x' && registered[4] === null)"#).unwrap();
++        assert_eq!(evaluator.number(check).unwrap(), 1.0);
++        evaluator.release(check).unwrap();
++        evaluator
++            .register_compiler_root("next", None, true, "file", Some(7))
++            .unwrap();
++        let check = evaluator.evaluate_js("Number(registered[0] === 'next' && registered[1] === null && registered[2] === true && registered[4] === 7)").unwrap();
++        assert_eq!(evaluator.number(check).unwrap(), 1.0);
++        evaluator.release(check).unwrap();
++        let done = evaluator.evaluate_unit("rt => { globalThis.savedEval = globalThis.eval; globalThis.evalCalls = 0; globalThis.eval = source => { evalCalls++; return savedEval(source); }; return null; }").unwrap();
++        evaluator.release(done).unwrap();
++        evaluator
++            .register_compiler_root("fallback", Some(8), false, "fallback-location", None)
++            .unwrap();
++        let check = evaluator.evaluate_unit("rt => { globalThis.eval = savedEval; return Number(evalCalls === 2 && registered[0] === 'fallback' && registered[1] === 8); }").unwrap();
++        assert_eq!(evaluator.number(check).unwrap(), 1.0);
++        evaluator.release(check).unwrap();
++    }
++
++    #[test]
++    fn direct_root_registration_failure_is_owned_and_terminal() {
++        let evaluator = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
++        let done = evaluator.evaluate_unit("rt => { globalThis.__lightRegisterUnit = () => { throw new Error('root registration rejected'); }; return null; }").unwrap();
++        evaluator.release(done).unwrap();
++        let error = evaluator
++            .register_compiler_root("failed", None, false, "file", None)
++            .unwrap_err();
++        assert!(error.0.contains("root registration rejected"), "{error}");
++        assert!(evaluator.evaluate_js("1").is_err());
++    }
++
+     fn registration(evaluator: &dyn MacroEvaluator, name: &str, source: &str) {
+         evaluator
+             .evaluate_registration(source, &[(name.into(), 0..source.len())])
+diff --git a/src/v8_services.js b/src/v8_services.js
+index 62aebb2..e5d411f 100644
+--- a/src/v8_services.js
++++ b/src/v8_services.js
+@@ -18,6 +18,7 @@
+                 save,
+                 registerNamespaces: functions => { for (const fn of functions) fn(rt); },
+                 canCacheRegistration: () => globalThis.eval === compilerEval,
++                registerRoot: (name, unit, once, location, test) => globalThis.__lightRegisterUnit(name, unit, once, location, test),
+                 bind: (name, id) => { (globalThis.__lightApplicationRoots ??= Object.create(null))[name] = get(id); },
+                 coreBinding: (name, id) => { rt.core[name] = get(id); },
+                 coreLookup: name => save(rt.core[name]),

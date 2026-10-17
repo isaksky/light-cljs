@@ -1,0 +1,35 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase44/project)
+warning: unused import: `Evaluator`
+ --> src/compiler_bootstrap.rs:6:17
+  |
+6 |     evaluator::{Evaluator, ValueId},
+  |                 ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `number` is never used
+  --> src/v8_evaluator.rs:30:8
+   |
+23 | pub(crate) trait CompilerEvaluator: MacroEvaluator {
+   |                  ----------------- method in this trait
+...
+30 |     fn number(&self, id: ValueId) -> Result<f64, EvalError>;
+   |        ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `light-cljs` (lib) generated 2 warnings (run `cargo fix --lib -p light-cljs` to apply 1 suggestion)
+warning: `light-cljs` (lib test) generated 1 warning (1 duplicate)
+    Finished `release` profile [optimized] target(s) in 16.25s
+  Executable unittests src/lib.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/light_cljs-97417acdb44c0248)
+  Executable unittests src/main.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/light_cljs-3ed9baa2487657f7)
+  Executable tests/benchmark_variants.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/benchmark_variants-1c9e7d4df4fdd86a)
+  Executable tests/cli.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/cli-8d4a3f4fae6f6a4e)
+  Executable tests/compiler/main.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/compiler-bc35bd33fadfaaff)
+  Executable tests/dev_repl.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/dev_repl-5341327de67da35a)
+  Executable tests/dev_server.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/dev_server-8746f6bb7988baa1)
+  Executable tests/dev_watch.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/dev_watch-82eadb3400e38fab)
+  Executable tests/evaluation/main.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/evaluation-dd0a6eac861fdf11)
+  Executable tests/execution.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/execution-f5318757b745ae32)
+  Executable tests/frontend/main.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/frontend-65b57a27c8b816aa)
+  Executable tests/provenance.rs (/private/tmp/light-cljs-phase43/v8-probe/target/release/deps/provenance-3cdf7223a67f246f)

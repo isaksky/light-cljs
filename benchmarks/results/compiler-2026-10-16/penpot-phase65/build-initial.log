@@ -1,0 +1,14 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase65/project)
+error[E0425]: cannot find value `DataBuilder` in this scope
+   --> src/macro_host.rs:264:44
+    |
+264 |                     evaluator.import_data(&DataBuilder.nil(), limits)?
+    |                                            ^^^^^^^^^^^ not found in this scope
+    |
+help: consider importing this unit struct
+    |
+  2 + use crate::compiler_data::DataBuilder;
+    |
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `light-cljs` (lib) due to 1 previous error

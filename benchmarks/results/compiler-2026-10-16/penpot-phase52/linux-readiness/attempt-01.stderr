@@ -1,0 +1,1316 @@
+OpenSSH_9.9p2, LibreSSL 3.3.6
+debug1: Reading configuration data /Users/admin/.ssh/config
+debug1: /Users/admin/.ssh/config line 25: Applying options for oma
+debug1: Reading configuration data /etc/ssh/ssh_config
+debug1: Reading configuration data /etc/ssh/ssh_config.d/100-macos.conf
+debug1: /etc/ssh/ssh_config.d/100-macos.conf line 1: Applying options for *
+debug1: Reading configuration data /etc/ssh/crypto.conf
+debug2: resolve_canonicalize: hostname 192.168.1.240 is address
+debug1: Authenticator provider $SSH_SK_PROVIDER did not resolve; disabling
+debug1: auto-mux: Trying existing master at '/private/tmp/lt-p52-17404440933478375478/s'
+debug1: Control socket "/private/tmp/lt-p52-17404440933478375478/s" does not exist
+debug1: Connecting to 192.168.1.240 [192.168.1.240] port 22.
+debug2: fd 3 setting O_NONBLOCK
+debug1: fd 3 clearing O_NONBLOCK
+debug1: Connection established.
+debug1: identity file /Users/admin/.ssh/id_rsa type -1
+debug1: identity file /Users/admin/.ssh/id_rsa-cert type -1
+debug1: identity file /Users/admin/.ssh/id_ecdsa type -1
+debug1: identity file /Users/admin/.ssh/id_ecdsa-cert type -1
+debug1: identity file /Users/admin/.ssh/id_ecdsa_sk type -1
+debug1: identity file /Users/admin/.ssh/id_ecdsa_sk-cert type -1
+debug1: identity file /Users/admin/.ssh/id_ed25519 type 3
+debug1: identity file /Users/admin/.ssh/id_ed25519-cert type -1
+debug1: identity file /Users/admin/.ssh/id_ed25519_sk type -1
+debug1: identity file /Users/admin/.ssh/id_ed25519_sk-cert type -1
+debug1: identity file /Users/admin/.ssh/id_xmss type -1
+debug1: identity file /Users/admin/.ssh/id_xmss-cert type -1
+debug1: identity file /Users/admin/.ssh/id_dsa type -1
+debug1: identity file /Users/admin/.ssh/id_dsa-cert type -1
+debug1: Local version string SSH-2.0-OpenSSH_9.9
+debug1: Remote protocol version 2.0, remote software version OpenSSH_10.6
+debug1: compat_banner: match: OpenSSH_10.6 pat OpenSSH* compat 0x04000000
+debug2: fd 3 setting O_NONBLOCK
+debug1: Authenticating to 192.168.1.240:22 as 'isak'
+debug1: load_hostkeys: fopen /Users/admin/.ssh/known_hosts2: No such file or directory
+debug1: load_hostkeys: fopen /etc/ssh/ssh_known_hosts: No such file or directory
+debug1: load_hostkeys: fopen /etc/ssh/ssh_known_hosts2: No such file or directory
+debug1: SSH2_MSG_KEXINIT sent
+debug1: SSH2_MSG_KEXINIT received
+debug2: local client KEXINIT proposal
+debug2: KEX algorithms: ecdh-sha2-nistp256,sntrup761x25519-sha512,sntrup761x25519-sha512@openssh.com,mlkem768x25519-sha256,curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512,diffie-hellman-group14-sha256,ext-info-c,kex-strict-c-v00@openssh.com
+debug2: host key algorithms: ssh-ed25519-cert-v01@openssh.com,ecdsa-sha2-nistp256-cert-v01@openssh.com,ecdsa-sha2-nistp384-cert-v01@openssh.com,ecdsa-sha2-nistp521-cert-v01@openssh.com,sk-ssh-ed25519-cert-v01@openssh.com,sk-ecdsa-sha2-nistp256-cert-v01@openssh.com,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-256-cert-v01@openssh.com,ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com,rsa-sha2-512,rsa-sha2-256
+debug2: ciphers ctos: aes128-gcm@openssh.com,aes256-gcm@openssh.com,chacha20-poly1305@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr
+debug2: ciphers stoc: aes128-gcm@openssh.com,aes256-gcm@openssh.com,chacha20-poly1305@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr
+debug2: MACs ctos: hmac-sha2-256-etm@openssh.com,hmac-sha2-256,umac-64-etm@openssh.com,umac-128-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com,umac-64@openssh.com,umac-128@openssh.com,hmac-sha2-512,hmac-sha1
+debug2: MACs stoc: hmac-sha2-256-etm@openssh.com,hmac-sha2-256,umac-64-etm@openssh.com,umac-128-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com,umac-64@openssh.com,umac-128@openssh.com,hmac-sha2-512,hmac-sha1
+debug2: compression ctos: none,zlib@openssh.com
+debug2: compression stoc: none,zlib@openssh.com
+debug2: languages ctos: 
+debug2: languages stoc: 
+debug2: first_kex_follows 0 
+debug2: reserved 0 
+debug2: peer server KEXINIT proposal
+debug2: KEX algorithms: mlkem768x25519-sha256,sntrup761x25519-sha512,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,ext-info-s,kex-strict-s-v00@openssh.com
+debug2: host key algorithms: rsa-sha2-512,rsa-sha2-256,ecdsa-sha2-nistp256,ssh-ed25519,ssh-mldsa44-ed25519
+debug2: ciphers ctos: chacha20-poly1305@openssh.com,aes128-gcm@openssh.com,aes256-gcm@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr
+debug2: ciphers stoc: chacha20-poly1305@openssh.com,aes128-gcm@openssh.com,aes256-gcm@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr
+debug2: MACs ctos: umac-64-etm@openssh.com,umac-128-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com,umac-64@openssh.com,umac-128@openssh.com,hmac-sha2-256,hmac-sha2-512,hmac-sha1
+debug2: MACs stoc: umac-64-etm@openssh.com,umac-128-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com,umac-64@openssh.com,umac-128@openssh.com,hmac-sha2-256,hmac-sha2-512,hmac-sha1
+debug2: compression ctos: none,zlib@openssh.com
+debug2: compression stoc: none,zlib@openssh.com
+debug2: languages ctos: 
+debug2: languages stoc: 
+debug2: first_kex_follows 0 
+debug2: reserved 0 
+debug1: kex: algorithm: ecdh-sha2-nistp256
+debug1: kex: host key algorithm: ssh-ed25519
+debug1: kex: server->client cipher: aes128-gcm@openssh.com MAC: <implicit> compression: none
+debug1: kex: client->server cipher: aes128-gcm@openssh.com MAC: <implicit> compression: none
+debug1: expecting SSH2_MSG_KEX_ECDH_REPLY
+debug1: SSH2_MSG_KEX_ECDH_REPLY received
+debug1: Server host key: ssh-ed25519 SHA256:jcwgw1Z1Nuc+YcekY/0/RtdU7osiyNRSUtmgs+I6I2o
+debug1: load_hostkeys: fopen /Users/admin/.ssh/known_hosts2: No such file or directory
+debug1: load_hostkeys: fopen /etc/ssh/ssh_known_hosts: No such file or directory
+debug1: load_hostkeys: fopen /etc/ssh/ssh_known_hosts2: No such file or directory
+debug1: Host '192.168.1.240' is known and matches the ED25519 host key.
+debug1: Found key in /Users/admin/.ssh/known_hosts:9
+debug1: ssh_packet_send2_wrapped: resetting send seqnr 3
+debug2: ssh_set_newkeys: mode 1
+debug1: rekey out after 4294967296 blocks
+debug1: SSH2_MSG_NEWKEYS sent
+debug1: Sending SSH2_MSG_EXT_INFO
+debug1: expecting SSH2_MSG_NEWKEYS
+debug1: ssh_packet_read_poll2: resetting read seqnr 3
+debug1: SSH2_MSG_NEWKEYS received
+debug2: ssh_set_newkeys: mode 0
+debug1: rekey in after 4294967296 blocks
+debug2: KEX algorithms: ecdh-sha2-nistp256,sntrup761x25519-sha512,sntrup761x25519-sha512@openssh.com,mlkem768x25519-sha256,curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512,diffie-hellman-group14-sha256,ext-info-c,kex-strict-c-v00@openssh.com
+debug2: host key algorithms: ssh-ed25519-cert-v01@openssh.com,ecdsa-sha2-nistp256-cert-v01@openssh.com,ecdsa-sha2-nistp384-cert-v01@openssh.com,ecdsa-sha2-nistp521-cert-v01@openssh.com,sk-ssh-ed25519-cert-v01@openssh.com,sk-ecdsa-sha2-nistp256-cert-v01@openssh.com,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-256-cert-v01@openssh.com,ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com,rsa-sha2-512,rsa-sha2-256
+debug2: ciphers ctos: aes128-gcm@openssh.com,aes256-gcm@openssh.com,chacha20-poly1305@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr
+debug2: ciphers stoc: aes128-gcm@openssh.com,aes256-gcm@openssh.com,chacha20-poly1305@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr
+debug2: MACs ctos: hmac-sha2-256-etm@openssh.com,hmac-sha2-256,umac-64-etm@openssh.com,umac-128-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com,umac-64@openssh.com,umac-128@openssh.com,hmac-sha2-512,hmac-sha1
+debug2: MACs stoc: hmac-sha2-256-etm@openssh.com,hmac-sha2-256,umac-64-etm@openssh.com,umac-128-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com,umac-64@openssh.com,umac-128@openssh.com,hmac-sha2-512,hmac-sha1
+debug2: compression ctos: none,zlib@openssh.com
+debug2: compression stoc: none,zlib@openssh.com
+debug2: languages ctos: 
+debug2: languages stoc: 
+debug2: first_kex_follows 0 
+debug2: reserved 0 
+debug1: SSH2_MSG_EXT_INFO received
+debug1: kex_ext_info_client_parse: server-sig-algs=<ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com,rsa-sha2-512,rsa-sha2-256,ssh-mldsa44-ed25519,webauthn-sk-ecdsa-sha2-nistp256@openssh.com>
+debug1: kex_ext_info_check_ver: publickey-hostbound@openssh.com=<0>
+debug1: kex_ext_info_check_ver: ping@openssh.com=<0>
+debug1: kex_ext_info_client_parse: agent-forward (unrecognised)
+debug2: service_accept: ssh-userauth
+debug1: SSH2_MSG_SERVICE_ACCEPT received
+debug1: SSH2_MSG_EXT_INFO received
+debug1: kex_ext_info_client_parse: server-sig-algs=<ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com,rsa-sha2-512,rsa-sha2-256,ssh-mldsa44-ed25519,webauthn-sk-ecdsa-sha2-nistp256@openssh.com>
+debug1: Authentications that can continue: publickey,password
+debug1: Next authentication method: publickey
+debug1: get_agent_identities: bound agent to hostkey
+debug1: get_agent_identities: ssh_fetch_identitylist: agent contains no identities
+debug1: Will attempt key: /Users/admin/.ssh/id_rsa 
+debug1: Will attempt key: /Users/admin/.ssh/id_ecdsa 
+debug1: Will attempt key: /Users/admin/.ssh/id_ecdsa_sk 
+debug1: Will attempt key: /Users/admin/.ssh/id_ed25519 ED25519 SHA256:zQngaCjCLPFdnHoiZJRWSUDlrVJe2kwb0+AAhDgg2Z0
+debug1: Will attempt key: /Users/admin/.ssh/id_ed25519_sk 
+debug1: Will attempt key: /Users/admin/.ssh/id_xmss 
+debug1: Will attempt key: /Users/admin/.ssh/id_dsa 
+debug2: pubkey_prepare: done
+debug1: Trying private key: /Users/admin/.ssh/id_rsa
+debug1: Trying private key: /Users/admin/.ssh/id_ecdsa
+debug1: Trying private key: /Users/admin/.ssh/id_ecdsa_sk
+debug1: Offering public key: /Users/admin/.ssh/id_ed25519 ED25519 SHA256:zQngaCjCLPFdnHoiZJRWSUDlrVJe2kwb0+AAhDgg2Z0
+debug2: we sent a publickey packet, wait for reply
+debug1: Server accepts key: /Users/admin/.ssh/id_ed25519 ED25519 SHA256:zQngaCjCLPFdnHoiZJRWSUDlrVJe2kwb0+AAhDgg2Z0
+Authenticated to 192.168.1.240 ([192.168.1.240]:22) using "publickey".
+debug1: setting up multiplex master socket
+debug2: fd 4 setting O_NONBLOCK
+debug1: channel 0: new mux listener [/private/tmp/lt-p52-17404440933478375478/s] (inactive timeout: 0)
+debug2: fd 3 setting TCP_NODELAY
+debug1: control_persist_detach: backgrounding master process
+debug2: control_persist_detach: background process is 25465
+debug2: fd 4 setting O_NONBLOCK
+debug1: forking to background
+debug1: Entering interactive session.
+debug1: pledge: id
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_client_hello_exchange: master version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 0, term "dumb", cmd "whoami", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 7 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug1: client_input_global_request: rtype hostkeys-00@openssh.com want_reply 0
+debug1: client_input_hostkeys: convert key: unknown or unsupported key type
+debug1: client_input_hostkeys: searching /Users/admin/.ssh/known_hosts for 192.168.1.240 / (none)
+debug1: client_input_hostkeys: searching /Users/admin/.ssh/known_hosts2 for 192.168.1.240 / (none)
+debug1: client_input_hostkeys: hostkeys file /Users/admin/.ssh/known_hosts2 does not exist
+debug1: client_input_hostkeys: no new or deprecated keys from server
+debug1: Remote: /home/isak/.ssh/authorized_keys:2: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+debug1: Remote: /home/isak/.ssh/authorized_keys:2: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending command: whoami
+debug2: channel 2: request exec confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug1: mux_client_request_session: master session id: 2
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: exec request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug2: Received exit status from master 0
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 0, term "dumb", cmd "uname -m", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 7 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending command: uname -m
+debug2: channel 2: request exec confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: exec request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug2: channel 2: rcvd close
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 0, term "dumb", cmd "mise exec -- rustc --version", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 7 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending command: mise exec -- rustc --version
+debug2: channel 2: request exec confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: exec request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd ext data 192
+debug2: channel 2: written 192 to efd 8
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 0, term "dumb", cmd "mise exec -- cargo --version", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 7 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending command: mise exec -- cargo --version
+debug2: channel 2: request exec confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: exec request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd ext data 192
+debug2: channel 2: written 192 to efd 8
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 0, term "dumb", cmd "mise exec -- node --version", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 7 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending command: mise exec -- node --version
+debug2: channel 2: request exec confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: exec request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 0, term "dumb", cmd "df -h /home/isak", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 7 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending command: df -h /home/isak
+debug2: channel 2: request exec confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: exec request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 0, term "dumb", cmd "df -i /home/isak", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 7 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending command: df -i /home/isak
+debug2: channel 2: request exec confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: exec request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug2: channel 2: rcvd close
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 0, term "dumb", cmd "/home/isak/.cargo/bin/cargo --version", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 7 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending command: /home/isak/.cargo/bin/cargo --version
+debug2: channel 2: request exec confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: exec request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd ext data 69
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: obuf_empty delayed efd 8/(69)
+debug2: channel 2: written 69 to efd 8
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 0, term "dumb", cmd "cat '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/workspace.json'", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 7 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending command: cat '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/workspace.json'
+debug2: channel 2: request exec confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: exec request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd ext data 89
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: obuf_empty delayed efd 8/(89)
+debug2: channel 2: written 89 to efd 8
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 0, term "dumb", cmd "mkdir -p '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b' && mkdir '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/261017130156-fa1949' && mkdir '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/261017130156-fa1949/i' '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/261017130156-fa1949/w' '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/261017130156-fa1949/o'", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 7 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending command: mkdir -p '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b' && mkdir '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/261017130156-fa1949' && mkdir '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/261017130156-fa1949/i' '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/261017130156-fa1949/w' '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/261017130156-fa1949/o'
+debug2: channel 2: request exec confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: exec request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 1, term "dumb", cmd "sftp", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending subsystem: sftp
+debug2: channel 2: request subsystem confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: subsystem request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 1, term "dumb", cmd "sftp", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending subsystem: sftp
+debug2: channel 2: request subsystem confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: subsystem request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 1, term "dumb", cmd "sftp", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending subsystem: sftp
+debug2: channel 2: request subsystem confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: subsystem request accepted on channel 2
+debug2: channel 2: rcvd adjust 114930
+debug2: channel 2: rcvd adjust 108224
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 1, term "dumb", cmd "sftp", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending subsystem: sftp
+debug2: channel 2: request subsystem confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: subsystem request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 1, term "dumb", cmd "sftp", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending subsystem: sftp
+debug2: channel 2: request subsystem confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: subsystem request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 0, term "dumb", cmd "bash '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/261017130156-fa1949/w/run.sh' '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/261017130156-fa1949'", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 7 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending command: bash '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/261017130156-fa1949/w/run.sh' '/home/isak/LT/r51f6e29c8c4a/w0d57602a691b/261017130156-fa1949'
+debug2: channel 2: request exec confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: exec request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 1, term "dumb", cmd "sftp", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending subsystem: sftp
+debug2: channel 2: request subsystem confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: subsystem request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_alive_check: channel 1: alive check
+debug2: mux_master_process_new_session: channel 1: request tty 0, X 0, agent 0, subsys 1, term "dumb", cmd "sftp", env 3
+debug2: fd 6 setting O_NONBLOCK
+debug2: fd 8 setting O_NONBLOCK
+debug1: channel 2: new session [client-session] (inactive timeout: 0)
+debug2: mux_master_process_new_session: channel_new: 2 linked to control channel 1
+debug2: channel 2: send open
+debug2: channel_input_open_confirmation: channel 2: callback start
+debug2: client_session2_setup: id 2
+debug1: Sending environment.
+debug1: channel 2: setting env LANG = "en_US.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_ALL = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: channel 2: setting env LC_CTYPE = "C.UTF-8"
+debug2: channel 2: request env confirm 0
+debug1: Sending subsystem: sftp
+debug2: channel 2: request subsystem confirm 1
+debug2: channel_input_open_confirmation: channel 2: callback done
+debug2: channel 2: open confirm rwindow 0 rmax 32768
+debug2: channel 2: rcvd adjust 2097152
+debug2: channel_input_status_confirm: type 99 id 2
+debug2: subsystem request accepted on channel 2
+debug2: channel 2: read failed rfd 6 maxlen 32768: Broken pipe
+debug2: channel 2: read failed
+debug2: chan_shutdown_read: channel 2: (i0 o0 sock -1 wfd 6 efd 8 [write])
+debug2: channel 2: input open -> drain
+debug2: channel 2: ibuf empty
+debug2: channel 2: send eof
+debug2: channel 2: input drain -> closed
+debug2: channel 2: rcvd eof
+debug2: channel 2: output open -> drain
+debug2: channel 2: obuf empty
+debug2: chan_shutdown_write: channel 2: (i3 o1 sock -1 wfd 7 efd 8 [write])
+debug2: channel 2: output drain -> closed
+debug1: client_input_channel_req: channel 2 rtype exit-status reply 0
+debug2: channel 2: rcvd close
+debug2: channel 2: send_close2
+debug2: channel 2: send close for remote id 0
+debug2: channel 2: is dead
+debug2: channel 2: gc: notify user
+debug2: channel 1: rcvd close
+debug2: channel 1: output open -> drain
+debug2: chan_shutdown_read: channel 1: (i0 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: input open -> closed
+debug2: channel 2: gc: user detached
+debug2: channel 2: is dead
+debug2: channel 2: garbage collecting
+debug1: channel 2: free: client-session, nchannels 3
+debug2: channel 1: obuf empty
+debug2: chan_shutdown_write: channel 1: (i3 o1 sock 5 wfd 5 efd -1 [closed])
+debug2: channel 1: output drain -> closed
+debug2: channel 1: is dead (local)
+debug2: channel 1: gc: notify user
+debug2: channel 1: gc: user detached
+debug2: channel 1: is dead (local)
+debug2: channel 1: garbage collecting
+debug1: channel 1: free: mux-control, nchannels 2
+debug2: set_control_persist_exit_time: schedule exit in 600 seconds
+debug1: multiplexing control connection
+debug1: channel 1: new mux-control [mux-control] (inactive timeout: 0)
+debug2: set_control_persist_exit_time: cancel scheduled exit
+debug2: mux_master_process_hello: channel 1 client version 4
+debug2: mux_master_process_terminate: channel 1: terminate request
+debug1: channel 0: free: /private/tmp/lt-p52-17404440933478375478/s, nchannels 2
+debug1: channel 1: free: mux-control, nchannels 1
+Transferred: sent 238088, received 14076 bytes, in 411.8 seconds
+Bytes per second: sent 578.2, received 34.2
+debug1: Exit status -1

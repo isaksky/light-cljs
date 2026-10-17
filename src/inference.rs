@@ -579,10 +579,8 @@ impl ProgramFacts {
                 ExprKind::DefType {
                     record,
                     global,
-                    constructor,
-                    map_constructor,
+                    layout,
                     methods,
-                    ..
                 } if sole(*global) => {
                     let role = |role| Definition::Type {
                         definition: id,
@@ -591,10 +589,10 @@ impl ProgramFacts {
                         record: *record,
                     };
                     globals[global.0] = role(TypeRole::Constructor);
-                    if let Some(factory) = constructor.filter(|factory| sole(*factory)) {
+                    if let Some(factory) = layout.constructor.filter(|factory| sole(*factory)) {
                         globals[factory.0] = role(TypeRole::Factory);
                     }
-                    if let Some(factory) = map_constructor.filter(|factory| sole(*factory)) {
+                    if let Some(factory) = layout.map_constructor.filter(|factory| sole(*factory)) {
                         globals[factory.0] = role(TypeRole::MapFactory);
                     }
                     lookups[global.0] = methods.iter().any(lookup);
@@ -1506,19 +1504,16 @@ impl<'p> Walker<'p> {
                 Inferred::of(Type::OBJECT)
             }
             K::DefType {
-                body,
-                masks,
-                methods,
-                ..
+                layout, methods, ..
             } => {
-                if let Some(masks) = masks {
-                    self.walk(*masks);
+                if let Some(masks) = layout.masks {
+                    self.walk(masks);
                 }
                 for (_, method) in methods {
                     self.walk(method.body);
                 }
-                match body {
-                    Some(body) => self.walk(*body),
+                match layout.body {
+                    Some(body) => self.walk(body),
                     None => Inferred::of(Type::FN),
                 }
             }

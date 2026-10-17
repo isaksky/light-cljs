@@ -1,0 +1,11 @@
+0a5b42c59b6cc329ee35b07e9c7a156ac1e4b38c3bf5bf49e40de217bb450945  /private/tmp/light-cljs-phase85/light-cljs-compact-program-capacity
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase85/main-none.js
+2f7ee4c7570bcb288abb35bc02f7f76e3e7e2b192d36122f0bf6c45dca989655  /private/tmp/light-cljs-phase85/clean/render.js
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase85/clean/main-none.js
+82d4cf05527a4120e22eb7302063c3dd8759dbc8fb35e6a3b7efce63d10c7077  /private/tmp/light-cljs-phase85/clean/main-advanced.js
+cbcd84667b8dcf7ce31727e44b79f70dfe9bb56ead1ac7ebfdef8e4e1c465769  /private/tmp/light-cljs-phase85/project/Cargo.lock
+44630d949201c63d1566032266dad3309c66ab5775658ca35d54b4715b28f74a  /private/tmp/light-cljs-phase85/project/src/analyzer.rs
+94a7bdf3dcdd05eebf601e5ee82a14d6ee682c8f5607023292edfb25e48ce8e1  /private/tmp/light-cljs-phase85/project/src/arena.rs
+0c1952fb44a6220da7ee7e6b3a5ef94feacd5d8d9e663901b036b9c838a65661  /private/tmp/light-cljs-phase85/project/src/compilation_session.rs
+cd506e09d481d04b9fa27644c5abb2559c8174281848a5f650de6fe1d89348de  /private/tmp/light-cljs-phase85/project/src/layered.rs
+6c32d7837e50594287d6b3385d53463c78f58beb24972e5667095b438aeb02ab  /private/tmp/light-cljs-phase85/project/src/dev_build.rs

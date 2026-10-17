@@ -27,6 +27,28 @@ mod js_syntax;
 use js_syntax::{Join, Kind, Shape, TerseWriter};
 
 fn main() {
+    println!("cargo::rustc-check-cfg=cfg(light_v8)");
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    let os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    if env::var_os("CARGO_FEATURE_V8_MACROS").is_some()
+        && matches!(arch.as_str(), "aarch64" | "x86_64")
+        && matches!(os.as_str(), "macos" | "linux" | "windows")
+    {
+        println!("cargo::rustc-cfg=light_v8");
+        println!("cargo::rerun-if-changed=src/v8_stack.cc");
+        println!("cargo::rerun-if-changed=src/v8_thread_stack.cc");
+        println!("cargo::rerun-if-changed=src/v8_buffers.cc");
+        println!("cargo::rerun-if-changed=vendor/v8-headers/include");
+        cc::Build::new()
+            .cpp(true)
+            .std("c++20")
+            .include("vendor/v8-headers/include")
+            .define("V8_COMPRESS_POINTERS", None)
+            .file("src/v8_stack.cc")
+            .file("src/v8_thread_stack.cc")
+            .file("src/v8_buffers.cc")
+            .compile("light_cljs_v8_stack");
+    }
     let out = env::var_os("OUT_DIR").expect("OUT_DIR");
     let out = Path::new(&out);
 

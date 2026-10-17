@@ -1,0 +1,26 @@
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.87s
+     Running unittests src/lib.rs (target/debug/deps/light_cljs-ad9e157a4734fe2e)
+
+running 18 tests
+test evaluator::bridge_interrupt_tests::sweep_bridge_import_interrupt_points ... ignored, stress sweep; run explicitly to cover every interrupt point
+test evaluator::active_tests::unit_service_cancellation_is_sticky_even_when_js_catches ... ok
+test evaluator::active_tests::unit_service_recurses_with_active_context_and_bridge ... ok
+test evaluator::active_tests::environment_cache_preserves_lexical_data_and_copies_mutable_literals ... ok
+test evaluator::active_tests::native_bridge_name_components_and_empty_text_preserve_utf16 ... ok
+test evaluator::active_tests::unit_service_failure_is_sticky_even_when_js_catches ... ok
+test evaluator::active_tests::environment_import_can_reenter_before_its_cache_slots_are_installed ... ok
+test evaluator::active_tests::native_bridge_unqualified_names_keep_a_null_namespace ... ok
+test evaluator::active_tests::failed_environment_import_does_not_publish_uninstalled_cache_slots ... ok
+test evaluator::active_tests::failed_macro_calls_release_their_imported_object_arguments ... ok
+test evaluator::active_tests::engine_maps_preserve_key_semantics_across_growth_and_deletion ... ok
+test evaluator::active_tests::native_bridge_strings_preserve_every_utf16_code_unit_in_both_directions ... ok
+test evaluator::active_tests::released_bridge_inputs_release_native_provenance ... ok
+test evaluator::active_tests::scalar_provenance_retains_values_instead_of_import_history ... ok
+test evaluator::active_tests::active_handle_rejects_other_contexts ... ok
+test evaluator::bridge_interrupt_tests::interrupted_bridge_array_map_build_releases_each_value_once ... ok
+test evaluator::active_tests::backtracking_deadline_is_terminal_and_fresh_operations_recover ... ok
+test evaluator::active_tests::failed_import_validation_releases_temporary_roots ... ok
+
+test result: ok. 17 passed; 0 failed; 1 ignored; 0 measured; 84 filtered out; finished in 0.17s
+

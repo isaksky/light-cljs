@@ -1,0 +1,6 @@
+old: 304 ms for 3000000 components
+candidate: 144 ms for 3000000 components
+old: 319 ms for 3000000 components
+candidate: 139 ms for 3000000 components
+old: 29 allocations/reallocations, 856 requested bytes across 10 cases
+candidate: 12 allocations/reallocations, 392 requested bytes across 10 cases

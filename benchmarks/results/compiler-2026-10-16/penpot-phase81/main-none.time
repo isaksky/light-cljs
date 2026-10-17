@@ -1,0 +1,49 @@
+session-units unstarted=0 analyzing=0 analyzed=0 failed=0
+rust-alloc stage=session-drop-start live=68891257 peak=73583224 requested=153307536
+rust-alloc stage=session-hosts-cleared live=68891257 peak=73583224 requested=153307536
+rust-alloc stage=session-forms-cleared live=68891257 peak=73583224 requested=153307536
+rust-alloc stage=session-snapshots-cleared live=68891257 peak=73583224 requested=153307536
+rust-alloc stage=session-programs-cleared live=68891257 peak=73583224 requested=153307536
+rust-alloc stage=session-catalog-cleared live=68891257 peak=73583224 requested=153307536
+rust-alloc stage=session-bootstrap-cleared live=68891257 peak=73583224 requested=153307536
+session-units unstarted=0 analyzing=0 analyzed=0 failed=0
+rust-alloc stage=session-drop-start live=72960047 peak=77505996 requested=177496066
+rust-alloc stage=session-hosts-cleared live=72960047 peak=77505996 requested=177496066
+rust-alloc stage=session-forms-cleared live=72960047 peak=77505996 requested=177496066
+rust-alloc stage=session-snapshots-cleared live=72960047 peak=77505996 requested=177496066
+rust-alloc stage=session-programs-cleared live=72960047 peak=77505996 requested=177496066
+rust-alloc stage=session-catalog-cleared live=72960047 peak=77505996 requested=177496066
+rust-alloc stage=session-bootstrap-cleared live=72960047 peak=77505996 requested=177496066
+rust-alloc stage=after-analysis live=650702392 peak=663189659 requested=12908705260
+session-units unstarted=0 analyzing=0 analyzed=13367 failed=0
+rust-alloc stage=session-drop-start live=646899665 peak=663189659 requested=12908705260
+rust-alloc stage=session-hosts-cleared live=646899665 peak=663189659 requested=12932658924
+rust-alloc stage=session-forms-cleared live=646899665 peak=663189659 requested=12932658924
+rust-alloc stage=session-snapshots-cleared live=646899665 peak=663189659 requested=12932658924
+rust-alloc stage=session-programs-cleared live=333161612 peak=663189659 requested=12932658924
+rust-alloc stage=session-catalog-cleared live=280682990 peak=663189659 requested=12932658924
+v8-namespace-cache hits=131239 misses=1292 compiled-bytes=1050924 entries=851 source-bytes=717833
+v8-source units=993 bytes=1666732
+v8-stats stage=before-final-gc used=34935972 total=64798720 physical=64798720 external=0 rust-provenance-estimate=63859694
+v8-stats stage=after-final-gc used=27057220 total=28966912 physical=28966912 external=0 rust-provenance-estimate=26441320
+rust-alloc stage=session-bootstrap-cleared live=199392992 peak=663189659 requested=12932659245
+rust-alloc stage=after-session-drop live=196537702 peak=663189659 requested=12932659245
+program-tables exprs=1220906 locals=110119 globals=13392 strings=336622 names=204735
+rust-alloc stage=after-prepare live=197753012 peak=663189659 requested=12967779020
+rust-alloc stage=after-output live=264959874 peak=663189659 requested=13451458258
+       20.75 real        24.87 user         0.64 sys
+          1159413760  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               76373  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                1855  voluntary context switches
+              102374  involuntary context switches
+           958976192  peak memory footprint

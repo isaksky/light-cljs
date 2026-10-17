@@ -1,0 +1,19 @@
+v8-source units=7488 bytes=83091833
+v8-stats stage=before-final-gc used=164594220 total=206307328 physical=206307328 external=0 rust-provenance-estimate=104148112
+v8-stats stage=after-final-gc used=89892232 total=95617024 physical=95617024 external=0 rust-provenance-estimate=5463774
+        9.19 real         9.54 user         0.56 sys
+          2022227968  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              136627  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                 611  voluntary context switches
+               37173  involuntary context switches
+          1755273152  peak memory footprint

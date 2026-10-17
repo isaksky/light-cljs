@@ -450,7 +450,22 @@ struct Parser<'t, 'a> {
     /// Each `var`, `let` or `const` statement ended by a `;`: the keyword's
     /// token and the `;`'s.
     statements: Vec<(usize, usize)>,
+    variable_statements: Option<Vec<VariableStatement>>,
+    directive_end: usize,
     error: Option<(usize, String)>,
+}
+
+struct VariableStatement {
+    keyword: usize,
+    end: usize,
+    enumeration: bool,
+    declarators: Vec<VariableDeclarator>,
+}
+
+struct VariableDeclarator {
+    range: Range<usize>,
+    bindings: Vec<usize>,
+    initialized: bool,
 }
 
 /// An identifier reference: its scope, whether it is the callee of a call, its
@@ -485,6 +500,14 @@ const ASSIGNMENT: Stops = Stops {
 fn parse<'t, 'a>(
     source: &'a str,
     tokens: &'t [Token],
+) -> Result<(Parser<'t, 'a>, bool), (usize, String)> {
+    parse_with_variables(source, tokens, false)
+}
+
+fn parse_with_variables<'t, 'a>(
+    source: &'a str,
+    tokens: &'t [Token],
+    record_variables: bool,
 ) -> Result<(Parser<'t, 'a>, bool), (usize, String)> {
     let mut partners = vec![usize::MAX; tokens.len()];
     let mut open = Vec::new();
@@ -530,10 +553,14 @@ fn parse<'t, 'a>(
         references: Vec::new(),
         declarations: Vec::new(),
         statements: Vec::new(),
+        variable_statements: record_variables.then(Vec::new),
+        directive_end: 0,
         error: None,
     };
     let mut has_effect_statements = false;
+    let mut prologue = true;
     while parser.pos < tokens.len() && parser.error.is_none() {
+        let start = parser.pos;
         let declaration = match parser.word() {
             Some("var" | "let" | "const" | "function" | "class") => true,
             Some("async") => parser.word_at(parser.pos + 1) == Some("function"),
@@ -541,11 +568,89 @@ fn parse<'t, 'a>(
         };
         has_effect_statements |= !declaration;
         parser.statement_progressing(0);
+        if prologue
+            && tokens[start].kind == Kind::Str
+            && (parser.pos == start + 1
+                || (parser.pos == start + 2 && tokens[start + 1].text(source) == ";"))
+        {
+            parser.directive_end = tokens[parser.pos - 1].end;
+        } else {
+            prologue = false;
+        }
     }
     match parser.error.take() {
         Some(error) => Err(error),
         None => Ok((parser, has_effect_statements)),
     }
+}
+
+/// Lower `var` declarations of existing compiler locals to assignments. Raw
+/// names in the same declaration retain their function-scoped declaration;
+/// declarations inside a nested function keep their ordinary shadowing.
+/// `locals` are unique identifier placeholders, not user-authored JS names.
+pub(crate) fn assign_existing_vars(source: &str, locals: &[&str]) -> Option<String> {
+    let tokens = lex(source, 0..source.len()).ok()?;
+    let (parser, _) = parse_with_variables(source, &tokens, true).ok()?;
+    let mut edits = Vec::new();
+    let mut declared = Vec::new();
+    for statement in parser.variable_statements.unwrap() {
+        let bindings = statement.declarators.iter().flat_map(|d| &d.bindings);
+        if !bindings
+            .clone()
+            .any(|&i| locals.contains(&tokens[i].text(source)))
+        {
+            continue;
+        }
+        for &i in bindings {
+            let name = tokens[i].text(source);
+            if !locals.contains(&name) && !declared.contains(&name) {
+                declared.push(name);
+            }
+        }
+        // Parentheses make an object pattern an assignment in statement
+        // position. In a for-in/of head the grammar requires a bare target.
+        edits.push((
+            tokens[statement.keyword].start..tokens[statement.keyword].end,
+            if statement.enumeration { "" } else { "(" }.to_string(),
+        ));
+        if !statement.enumeration {
+            let end = tokens[statement.end - 1].end;
+            edits.push((end..end, ")".to_string()));
+            for declarator in statement.declarators {
+                if !declarator.initialized {
+                    let start = tokens[declarator.range.start].start;
+                    let end = tokens[declarator.range.end - 1].end;
+                    // A repeated `var x;` leaves an existing value alone.
+                    edits.push((start..end, "void 0".to_string()));
+                }
+            }
+        }
+    }
+    if edits.is_empty() {
+        return None;
+    }
+    // Apply disjoint edits in source order, including an insertion at the
+    // end of a replaced uninitialized declarator.
+    edits.sort_by_key(|(range, _)| (range.start, range.end));
+    let mut output = String::new();
+    let mut previous = 0;
+    if !declared.is_empty() {
+        output.push_str(&source[..parser.directive_end]);
+        if parser.directive_end > 0 {
+            output.push_str("; ");
+        }
+        output.push_str("var ");
+        output.push_str(&declared.join(", "));
+        output.push_str("; ");
+        previous = parser.directive_end;
+    }
+    for (range, text) in edits {
+        output.push_str(&source[previous..range.start]);
+        output.push_str(&text);
+        previous = range.end;
+    }
+    output.push_str(&source[previous..]);
+    Some(output)
 }
 
 /// The top-level bindings and free identifiers of a unit body.
@@ -745,7 +850,7 @@ impl<'a> Parser<'_, 'a> {
                 } else {
                     scope
                 };
-                self.declarations(target, scope, false);
+                self.declarations(target, scope, false, keyword);
                 if self.eat(";") {
                     self.statements.push((keyword, self.pos - 1));
                 }
@@ -888,13 +993,14 @@ impl<'a> Parser<'_, 'a> {
         let head = self.scope(scope, false);
         match self.word() {
             Some(word @ ("var" | "let" | "const")) => {
+                let keyword = self.pos;
                 self.pos += 1;
                 let target = if word == "var" {
                     self.function_scope(head)
                 } else {
                     head
                 };
-                self.declarations(target, head, true);
+                self.declarations(target, head, true, keyword);
             }
             _ if self.at_punct(";") => {}
             _ => self.expression(
@@ -924,17 +1030,49 @@ impl<'a> Parser<'_, 'a> {
 
     /// Declarators after `var`/`let`/`const`: names go to `target`,
     /// initializers and defaults resolve in `scope`.
-    fn declarations(&mut self, target: usize, scope: usize, for_head: bool) {
+    fn declarations(&mut self, target: usize, scope: usize, for_head: bool, keyword: usize) {
+        let record = self.variable_statements.is_some()
+            && target == 0
+            && self.word_at(keyword) == Some("var");
+        let mut declarators = Vec::new();
         loop {
+            let start = self.pos;
+            let first_binding = self.declarations.len();
             self.binding(target, scope);
-            if self.eat("=") {
+            let bindings = if record {
+                self.declarations[first_binding..]
+                    .iter()
+                    .filter_map(|&(token, declared, _, _)| (declared == target).then_some(token))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let initialized = self.eat("=");
+            if initialized {
                 self.expression(scope, ASSIGNMENT);
             }
-            if for_head && (self.at_word("of") || self.at_word("in")) {
-                return;
+            if record {
+                declarators.push(VariableDeclarator {
+                    range: start..self.pos,
+                    bindings,
+                    initialized,
+                });
             }
-            if !self.eat(",") {
-                return;
+            let enumeration = for_head && (self.at_word("of") || self.at_word("in"));
+            let end = self.pos;
+            if enumeration || !self.eat(",") {
+                if record {
+                    self.variable_statements
+                        .as_mut()
+                        .unwrap()
+                        .push(VariableStatement {
+                            keyword,
+                            end,
+                            enumeration,
+                            declarators,
+                        });
+                }
+                break;
             }
         }
     }
@@ -1934,6 +2072,43 @@ pub fn terse(source: &str, tokens: &[Token]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_var_assignment_respects_patterns_scopes_and_directives() {
+        for (source, expected) in [
+            (
+                "var {a: hole, ...rest} = obj;",
+                "var rest; ( {a: hole, ...rest} = obj);",
+            ),
+            ("var hole;", "( void 0);"),
+            ("for (var hole in obj) {}", "for ( hole in obj) {}"),
+            (
+                "'use strict'; var raw, hole = 3;",
+                "'use strict';; var raw;  ( void 0, hole = 3);",
+            ),
+            (
+                "'use strict'\nvar raw, hole = 3",
+                "'use strict'; var raw; \n( void 0, hole = 3)",
+            ),
+        ] {
+            let result = assign_existing_vars(source, &["hole"]).unwrap();
+            assert_eq!(result, expected);
+            let tokens = lex(&result, 0..result.len()).unwrap();
+            resolve(&result, &tokens).unwrap();
+        }
+        for source in [
+            "function f() { var hole = 3; }",
+            "(() => { var hole = 3; })()",
+            "{ let hole = 3; }",
+            "const text = 'var hole = 3';",
+            "var raw = hole;",
+        ] {
+            assert!(
+                assign_existing_vars(source, &["hole"]).is_none(),
+                "{source}"
+            );
+        }
+    }
 
     fn facts(body: &str) -> (Vec<&str>, Vec<&str>, bool) {
         let tokens =

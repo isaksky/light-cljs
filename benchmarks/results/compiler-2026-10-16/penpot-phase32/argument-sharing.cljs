@@ -1,0 +1,1 @@
+(defmacro shares [x y] (list 'quote [(identical? (second &form) x) (identical? (nth &form 2) y)])) (pr-str [(shares [1] #js [2]) (shares unresolved-name #"x")])

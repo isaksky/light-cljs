@@ -1,0 +1,102 @@
+diff --git a/src/v8_evaluator.rs b/src/v8_evaluator.rs
+index 4d3e068..aed0222 100644
+--- a/src/v8_evaluator.rs
++++ b/src/v8_evaluator.rs
+@@ -109,12 +109,39 @@ impl State {
+     }
+ }
+ pub(crate) struct V8Evaluator {
++    profile: Option<CpuProfile>,
+     context: Option<v8::Global<v8::Context>>,
+     isolate: RefCell<v8::OwnedIsolate>,
+     state: Rc<State>,
+     stack: stack::StackLimit,
+     memory: Box<MemoryGuard>,
+ }
++struct ProfileClient;
++impl v8::inspector::V8InspectorClientImpl for ProfileClient {}
++struct ProfileChannel(std::path::PathBuf);
++impl v8::inspector::ChannelImpl for ProfileChannel {
++    fn send_response(&self, call_id: i32, message: v8::UniquePtr<v8::inspector::StringBuffer>) {
++        let message = message.unwrap().string().to_string();
++        if call_id == 4 {
++            std::fs::write(&self.0, message).expect("write diagnostic CPU profile");
++        } else if message.contains("\"error\"") {
++            eprintln!("CPU profiler response: {message}");
++        }
++    }
++    fn send_notification(&self, _: v8::UniquePtr<v8::inspector::StringBuffer>) {}
++    fn flush_protocol_notifications(&self) {}
++}
++struct CpuProfile {
++    // Session must drop before its inspector, and both before the isolate.
++    session: v8::inspector::V8InspectorSession,
++    inspector: v8::inspector::V8Inspector,
++}
++impl CpuProfile {
++    fn command(&self, command: &str) {
++        self.session
++            .dispatch_protocol_message(command.as_bytes().into());
++    }
++}
+ struct MemoryGuard {
+     handle: v8::IsolateHandle,
+     control: ExecutionControl,
+@@ -249,11 +276,36 @@ impl V8Evaluator {
+             source_units: Cell::new(0),
+         });
+         isolate.set_slot(state.clone());
++        let profile = std::env::var_os("LIGHT_V8_CPU_PROFILE").map(|path| {
++            use v8::inspector::*;
++            let inspector = V8Inspector::create(
++                &mut isolate,
++                V8InspectorClient::new(Box::new(ProfileClient)),
++            );
++            let session = inspector.connect(
++                1,
++                Channel::new(Box::new(ProfileChannel(path.into()))),
++                b"{}".as_slice().into(),
++                V8InspectorClientTrustLevel::Untrusted,
++            );
++            CpuProfile { session, inspector }
++        });
+         let context;
+         {
+             v8::scope!(let scope, &mut isolate);
+             let local = v8::Context::new(scope, Default::default());
+             context = v8::Global::new(scope, local);
++            if let Some(profile) = &profile {
++                profile.inspector.context_created(
++                    local,
++                    1,
++                    b"compiler".as_slice().into(),
++                    b"".as_slice().into(),
++                );
++                profile.command(r#"{"id":1,"method":"Profiler.enable"}"#);
++                profile.command(r#"{"id":2,"method":"Profiler.setSamplingInterval","params":{"interval":1000}}"#);
++                profile.command(r#"{"id":3,"method":"Profiler.start"}"#);
++            }
+             let scope = &mut v8::ContextScope::new(scope, local);
+             v8::tc_scope!(let scope, scope);
+             let source =
+@@ -283,6 +335,7 @@ impl V8Evaluator {
+             isolate.exit();
+         }
+         Ok(Self {
++            profile,
+             context: Some(context),
+             isolate: RefCell::new(isolate),
+             state,
+@@ -314,6 +367,12 @@ impl Drop for V8Evaluator {
+         unsafe {
+             self.isolate.get_mut().enter();
+         }
++        if let Some(profile) = self.profile.take() {
++            profile.command(r#"{"id":4,"method":"Profiler.stop"}"#);
++            v8::scope!(let scope, self.isolate.get_mut());
++            let context = Local::new(scope, self.context.as_ref().unwrap());
++            profile.inspector.context_destroyed(context);
++        }
+         if std::env::var_os("LIGHT_V8_STATS").is_some() {
+             let cache = self.state.namespaces.borrow();
+             eprintln!(

@@ -1,0 +1,1 @@
+{:tests [1416 0 106], :concurrency :default, :clippy :passed, :format :passed, :node-workflows 3, :native-boundary-probes [:linux-arm64 :windows-x64]}

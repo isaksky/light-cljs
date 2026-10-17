@@ -1,0 +1,6 @@
+(require '[babashka.fs :as fs] '[babashka.process :as p])
+(def here (fs/parent *file*))
+(def project (fs/file here "project"))
+(fs/create-dirs project)
+(p/shell "rsync" "-a" "--exclude=target" "--exclude=.git" "/private/tmp/light-cljs-phase56/project/" (str project "/"))
+(println "Prepared callback hardening candidate from phase56; not modified or built.")

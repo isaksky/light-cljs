@@ -7,8 +7,10 @@ differs from upstream ClojureScript. It describes the current implementation.
 The compiler reads `.cljs`/`.cljc` source, analyzes it in Rust and emits one
 self-contained JavaScript expression. Macros (both first-party core macros and
 user `defmacro`s) are compiled by the same pipeline and executed in an embedded
-QuickJS heap through rquickjs; there is no separate interpreter. Evaluation
-sessions and the `--eval`/`--repl` commands use the same path; see
+JavaScript heap. Native clean compilations use V8 by default; interactive
+sessions, WebAssembly and builds without the `v8-macros` feature use QuickJS.
+Both engines execute the same emitted functions and runtime. Evaluation
+sessions and the `--eval`/`--repl` commands use QuickJS; see
 [evaluation](evaluation.md) and the [synchronous evaluator](evaluator.md).
 
 Supported today: lexical closures, multi-arity/variadic functions, mutable
@@ -36,7 +38,7 @@ analysis errors. `--compile` accepts files, stdin, or `--text`, and
 preparation](#application-preparation) level; `--analyze` prints the resolved
 representation.
 
-`Program` owns `Vec<Expr>`, lexical/global binding records, JavaScript paths, and
+`Program` owns an `Arena<Expr>`, lexical/global binding records, JavaScript paths, and
 UTF-16 string/name values. `NamedLiteralId` identifies an owned namespace/name pair;
 `CoreFnId` selects a runtime core function. `ExprId`, `LocalId`, `GlobalId`,
 `JsGlobalId`, and `StringId` are integer indices into those arrays. Expression and
@@ -58,6 +60,12 @@ from semantic map storage. Form spans retain lexical spelling; datum scalars kee
 reader number categories and all floating bits, while JS emission converts numbers
 to Number. Metadata and opaque reader literal payloads are owned datum/form edges.
 
+Reader identity checks resolve keyword and symbol names without inserting them
+into the program's executable literal tables. Duplicate-key checks, collection
+ordering and case validation use temporary reader data; only lowering an actual
+literal adds its name and UTF-16 strings to the program. This keeps discarded
+validation data out of deferred snapshots and fragment copies.
+
 `compiler_reader` constructs semantic forms directly from syntax and immutable
 `NamespaceView` snapshots. A view retains source identity, aliases, refers,
 excludes, resolved binding IDs/kinds and the visible declaration frontier.
@@ -67,13 +75,18 @@ come from a pinned public declaration table (`src/core_var_metadata.tsv`,
 `src/core_public_bindings.tsv`) filtered by the executable compiler registry.
 Source macro metadata remains inspectable without exposing its closure.
 
+The analyzer's private reader view resolves declared binding spellings only
+when syntax quotation reads them, using the current definition snapshot's name
+index. It does not rebuild binding-kind tables by scanning earlier expressions.
+The public `NamespaceView` still exposes its complete binding introspection.
+
 The pure compiler seed in `compiler_binding_macros` and `compiler_destructuring`
 expands binding/function declarations and their extended map patterns.
 Protocol/type/record analysis is compiler-owned; method forms use the same seed.
 Reading, seed expansion and namespace/core metadata inspection need no JavaScript
 runtime. `source_provider` owns the load request, input and error contracts.
 
-Macros use the structured compiler/QuickJS form bridge (`form_bridge`); configured
+Macros use a structured compiler/engine form bridge (`form_bridge`, `v8_bridge`); configured
 compiler readers execute JavaScript functions over immutable data. Filesystem
 imports use the same `.cljs`/`.cljc` namespace loader for both phases and never
 read `.clj` companions. Compile-time emission uses the same semantic IR and
@@ -530,7 +543,7 @@ extension points", "Constant folding extension points" and the
 analysis counts and compile-time emission counts. Analysis for application
 output does not imply compile-time execution; macro demand does not create a
 runtime root. Macro/bootstrap functions remain outside application IR. Deferred
-unit emission bypasses this pass, caches each generation's emitted code, and
+unit emission bypasses this pass, emits a generation when its root first needs it, and
 shares runtime operations. Applications have no deferred-unit compiler callback.
 
 ### Code-splitting contract
@@ -1383,7 +1396,7 @@ Evaluating output produces the program's value; explicit host calls such as
 
 List analysis dispatches primitive special forms before touching binding vectors
 or other operands. The macro hook resolves source/core macros, compiles their
-bodies through this compiler and executes the emitted JavaScript in QuickJS
+bodies through this compiler and executes the emitted JavaScript in its session
 with the current lexical environment and expression context. Each valid generation
 expands once; semantic IR is shared between compile-time and application emission.
 Lexical bindings shadow unqualified macros; qualified macro calls retain explicit
@@ -2030,7 +2043,7 @@ fresh source-defined mutable roots. Macro declarations and helpers live in
 
 Core macro algorithms are first-party `.cljs` declarations
 (`src/compiler_core_macros.cljs`, `src/compiler_sequence_macros.cljs`) compiled by
-the Rust analyzer/emitter and executed in QuickJS. A fresh heap is created for
+the Rust analyzer/emitter and executed in the session's engine. A fresh heap is created for
 each clean compilation; only immutable emitted unit strings are reused in memory.
 Pure binding/destructuring, syntax quote, declarations and namespace reflection
 remain compiler services.
@@ -2326,7 +2339,11 @@ top-level statement context.
 Default `MacroLimits` allow 1,024 expansions and 100,000 generated form nodes per
 compilation, with 64 nested macro expansions (also the hard cap). Generated
 runtime analysis has a 128-frame nesting bound. `evaluator_options` configures
-QuickJS memory, stack, timeout and polling bounds. Failures discard the
+engine memory, stack, timeout and polling bounds. V8 starts with a collection
+threshold of at most 256 MiB and allows live heaps to grow toward the configured
+budget. Its cooperative storage budget combines JavaScript heap and buffer
+backing stores, including resizable/shared buffers and Wasm memory; it is not a
+process-RSS ceiling. V8 sessions require at least 16 MiB for startup. Failures discard the
 JavaScript bootstrap session and produce no partial application output. A caught
 host cancellation or terminal limit still aborts the compilation. Later clean
 compilations allocate fresh roots, heaps and dispatch tables while retaining host
@@ -2373,10 +2390,15 @@ method with their first argument as receiver; `Type/new` uses `Reflect.construct
 `js*` accepts literal JavaScript with positional placeholders and expressions, or
 named placeholders resolved in the current lexical/namespace context. Analysis
 checks the template type, closed placeholders and exact positional arity before
-emission. Literal segments remain literal and generated identifiers are hygienic
-against those segments. Statement templates emit in statement context; value
-and return contexts retain their actual function scope. The compiler does not
-parse JavaScript source strings. `this-as`, `js-arguments`, function metadata and
+emission. Generated identifiers are hygienic against the literal segments.
+A local passed directly through a placeholder has a lexical, assignable binding.
+When a template uses `var` to destructure into an existing local, the compiler's
+JavaScript parser converts that declaration to assignment, retaining declarations
+for any raw names in the same pattern. Nested-function declarations still shadow
+normally, and loop closures retain their own iteration's binding. Templates the
+parser cannot recognize are left unchanged. Statement templates emit in statement
+context; value and return contexts retain their actual function scope.
+`this-as`, `js-arguments`, function metadata and
 `apply` preserve upstream function-context behavior, including non-strict
 parameter/arguments aliasing.
 

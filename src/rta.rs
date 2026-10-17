@@ -256,19 +256,14 @@ pub(crate) fn analyze(
                     slots.entry(prefix).or_default().push((Some(id), protocol));
                 }
             }
-            ExprKind::DefType {
-                global,
-                constructor,
-                map_constructor,
-                ..
-            } => {
+            ExprKind::DefType { global, layout, .. } => {
                 for g in std::iter::once(global)
-                    .chain(constructor)
-                    .chain(map_constructor)
+                    .chain(&layout.constructor)
+                    .chain(&layout.map_constructor)
                 {
                     type_of[g.0] = Some(*global);
                 }
-                if constructor.is_none() {
+                if layout.constructor.is_none() {
                     raw_types.push(*global);
                 }
             }
@@ -420,12 +415,11 @@ impl Walker<'_> {
         match &expr.kind {
             ExprKind::DefType {
                 global,
-                body,
-                masks,
+                layout,
                 methods,
                 ..
             } => {
-                self.pending.extend(body.iter().chain(masks));
+                self.pending.extend(layout.body.iter().chain(&layout.masks));
                 // The value of the form is the type, which then escapes.
                 if !self.discarded[id.0] {
                     self.read_global(*global, false);
@@ -696,11 +690,8 @@ impl Walker<'_> {
             return false;
         };
         matches!(
-            self.program.exprs[definition.0].kind,
-            ExprKind::DefType {
-                constructor: Some(_),
-                ..
-            }
+            &self.program.exprs[definition.0].kind,
+            ExprKind::DefType { layout, .. } if layout.constructor.is_some()
         ) && matches!(
             (facts.top_position(definition), facts.top_position(extension)),
             (Some(definition), Some(extension)) if definition < extension
@@ -855,13 +846,16 @@ impl TypeAnalysis {
                 ExprKind::DefType {
                     record,
                     global,
-                    constructor,
-                    body,
-                    masks,
-                    map_constructor,
+                    layout,
                     methods,
-                    ..
                 } => {
+                    let crate::analyzer::TypeLayout {
+                        constructor,
+                        body,
+                        masks,
+                        map_constructor,
+                        ..
+                    } = layout.as_mut();
                     if constructor.is_some() && !self.instantiated[global.0] {
                         rewrite.uninstantiated_types += 1;
                         rewrite.dropped_methods += methods.len();
@@ -972,12 +966,12 @@ fn named_record_methods(program: &Program, live: &[bool]) -> Vec<(&'static str, 
     };
     let records = reached().any(|(_, expr)| {
         matches!(
-            expr.kind,
+            &expr.kind,
             ExprKind::DefType {
                 record: true,
-                constructor: Some(_),
+                layout,
                 ..
-            }
+            } if layout.constructor.is_some()
         )
     });
     if !records {

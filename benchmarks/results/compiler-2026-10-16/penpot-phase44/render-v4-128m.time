@@ -1,0 +1,17 @@
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/garden/selectors.cljc:780:1: macro expansion: while expanding garden.selectors/defselector: /Users/admin/src/light-cljs/research/penpot-light/vendor/garden/selectors.cljc:780:1: macro garden.selectors/defselector: null; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/garden/selectors.cljc:556:1 (bytes 27457..27481)
+        8.04 real        10.13 user         0.24 sys
+           678248448  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               50605  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                9551  involuntary context switches
+           502382848  peak memory footprint

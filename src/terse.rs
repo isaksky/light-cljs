@@ -309,7 +309,8 @@ pub(crate) fn compiler_name(word: &str) -> bool {
             .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
         || matches!(
             word,
-            "rt" | "truth"
+            "rt" | "__lightSessionRuntime"
+                | "truth"
                 | "host"
                 | "pkg"
                 | "f"

@@ -1,0 +1,7 @@
+(require '[babashka.fs :as fs] '[clojure.string :as str])
+(def here (fs/parent *file*))
+(spit (fs/file here "remaining-checks.bb")
+  (-> (slurp (fs/file here "validate.bb"))
+      (str/replace "(logged \"tests-v8-4threads\" \"cargo\" \"test\" \"--\" \"--test-threads=4\")" "")
+      (str/replace "(logged \"callback-tests\" \"cargo\" \"test\" \"v8_evaluator::tests\" \"--\" \"--test-threads=1\")" "")))
+(load-file (str (fs/file here "remaining-checks.bb")))

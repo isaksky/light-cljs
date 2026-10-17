@@ -1,0 +1,1 @@
+Complete output byte-identical to phase42, including the unchanged known main ESM syntax defect.

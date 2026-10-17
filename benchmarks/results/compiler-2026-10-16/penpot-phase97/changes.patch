@@ -1,0 +1,374 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index dad5b9c..ed8b194 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -364,6 +364,7 @@ dependencies = [
+ name = "light-cljs"
+ version = "0.1.0"
+ dependencies = [
++ "cc",
+  "mimalloc",
+  "rquickjs",
+  "v8",
+diff --git a/Cargo.toml b/Cargo.toml
+index f97b34d..f318e84 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -15,6 +15,9 @@ mimalloc = "=0.1.52"
+ v8 = { version = "=152.2.0", features = ["v8_enable_pointer_compression"] }
+ rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
+ 
++[build-dependencies]
++cc = "=1.7.0"
++
+ [features]
+ # Benchmark-only allocation instrumentation, absent from normal timing runs.
+ count-allocations = []
+diff --git a/build.rs b/build.rs
+index a663f92..4c874a1 100644
+--- a/build.rs
++++ b/build.rs
+@@ -27,6 +27,17 @@ mod js_syntax;
+ use js_syntax::{Join, Kind, Shape, TerseWriter};
+ 
+ fn main() {
++    println!("cargo::rerun-if-changed=src/v8_stack.cc");
++    println!("cargo::rerun-if-changed=src/v8_thread_stack.cc");
++    println!("cargo::rerun-if-changed=vendor/v8-headers/include");
++    cc::Build::new()
++        .cpp(true)
++        .std("c++20")
++        .include("vendor/v8-headers/include")
++        .define("V8_COMPRESS_POINTERS", None)
++        .file("src/v8_stack.cc")
++        .file("src/v8_thread_stack.cc")
++        .compile("light_cljs_v8_stack");
+     let out = env::var_os("OUT_DIR").expect("OUT_DIR");
+     let out = Path::new(&out);
+ 
+diff --git a/src/v8_evaluator.rs b/src/v8_evaluator.rs
+index c32aba0..4d3e068 100644
+--- a/src/v8_evaluator.rs
++++ b/src/v8_evaluator.rs
+@@ -16,6 +16,8 @@ use std::{
+ };
+ use v8::{Local, PinScope};
+ 
++#[path = "v8_stack.rs"]
++mod stack;
+ #[path = "v8_watchdog.rs"]
+ mod watchdog;
+ 
+@@ -110,6 +112,7 @@ pub(crate) struct V8Evaluator {
+     context: Option<v8::Global<v8::Context>>,
+     isolate: RefCell<v8::OwnedIsolate>,
+     state: Rc<State>,
++    stack: stack::StackLimit,
+     memory: Box<MemoryGuard>,
+ }
+ struct MemoryGuard {
+@@ -222,11 +225,16 @@ impl V8Evaluator {
+             .map(|value| value.parse::<usize>().expect("V8 probe heap limit"))
+             .unwrap_or(options.memory_limit)
+             .min(options.memory_limit);
+-        let mut isolate = v8::Isolate::new(
++        let stack = stack::StackLimit::new(options.stack_limit)?;
++        // SAFETY: the stack helper verifies a boundary within this thread's
++        // stack. Rc state prevents moving the evaluator to another thread.
++        let params = unsafe {
+             v8::CreateParams::default()
+                 .cpp_heap(heap)
+-                .heap_limits(0, heap_limit),
+-        );
++                .heap_limits(0, heap_limit)
++                .set_stack_limit(stack.boundary()?)
++        };
++        let mut isolate = v8::Isolate::new(params);
+         isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+         let state = Rc::new(State {
+             namespaces: RefCell::new(NamespaceCache::default()),
+@@ -278,6 +286,7 @@ impl V8Evaluator {
+             context: Some(context),
+             isolate: RefCell::new(isolate),
+             state,
++            stack,
+             memory,
+         })
+     }
+@@ -288,6 +297,7 @@ impl V8Evaluator {
+         self.state.control.poll()?;
+         let mut isolate = self.isolate.borrow_mut();
+         let entered = Entered::new(&mut isolate);
++        self.stack.refresh(entered.0)?;
+         v8::scope!(let scope, &mut **entered.0);
+         let context = Local::new(scope, self.context.as_ref().unwrap());
+         let scope = &mut v8::ContextScope::new(scope, context);
+@@ -927,6 +937,117 @@ mod tests {
+     use super::*;
+     use std::time::Duration;
+ 
++    fn recursion_depth(stack_limit: usize) -> f64 {
++        let evaluator = V8Evaluator::new(EvaluatorOptions {
++            stack_limit,
++            ..Default::default()
++        })
++        .unwrap();
++        let result = evaluator.evaluate_js("(() => { function descend(n) { try { return descend(n + 1); } catch (e) { if (!(e instanceof RangeError)) throw e; return n; } } return descend(0); })()").unwrap();
++        let depth = evaluator.number(result).unwrap();
++        evaluator.release(result).unwrap();
++        let result = evaluator.evaluate_js("42").unwrap();
++        assert_eq!(evaluator.number(result).unwrap(), 42.0);
++        evaluator.release(result).unwrap();
++        depth
++    }
++
++    #[test]
++    fn configured_stack_budget_limits_recursion_and_caught_errors_recover() {
++        let small = recursion_depth(128 * 1024);
++        let large = recursion_depth(512 * 1024);
++        assert!(
++            small > 0.0 && large > small * 2.0,
++            "small={small}, large={large}"
++        );
++    }
++
++    #[test]
++    fn nested_compiler_callbacks_share_the_outer_stack_budget() {
++        fn depth(limit: usize) -> usize {
++            let evaluator = Rc::new(
++                V8Evaluator::new(EvaluatorOptions {
++                    stack_limit: limit,
++                    ..Default::default()
++                })
++                .unwrap(),
++            );
++            let calls = Rc::new(Cell::new(0));
++            let count = calls.clone();
++            evaluator
++                .clone()
++                .install_compiler_service(
++                    "recursiveUnit",
++                    Rc::new(move |active, _| {
++                        count.set(count.get() + 1);
++                        let value = active
++                            .evaluate_unit("rt => recursiveUnit(0)")
++                            .map_err(|e| e.to_string())?;
++                        active.release(value).map_err(|e| e.to_string())?;
++                        Ok("null".into())
++                    }),
++                )
++                .unwrap();
++            let error = evaluator.evaluate_js("recursiveUnit(0)").unwrap_err();
++            assert!(
++                error.0.contains("call stack") || error.0.contains("stack limit"),
++                "{error}"
++            );
++            assert!(evaluator.evaluate_js("1").is_err());
++            calls.get()
++        }
++        let small = depth(128 * 1024);
++        let large = depth(512 * 1024);
++        assert!(small > 0 && large > small, "small={small}, large={large}");
++    }
++
++    #[test]
++    fn outer_operations_refresh_stack_limits_after_deeper_rust_entry() {
++        let evaluator = V8Evaluator::new(EvaluatorOptions {
++            stack_limit: 256 * 1024,
++            ..Default::default()
++        })
++        .unwrap();
++        #[inline(never)]
++        fn deeper(evaluator: &V8Evaluator, depth: usize) {
++            let padding = std::hint::black_box([0_u8; 16 * 1024]);
++            if depth == 0 {
++                let result = evaluator.evaluate_js("42").unwrap();
++                assert_eq!(evaluator.number(result).unwrap(), 42.0);
++                evaluator.release(result).unwrap();
++            } else {
++                deeper(evaluator, depth - 1);
++            }
++            std::hint::black_box(&padding);
++        }
++        deeper(&evaluator, 32);
++        let result = evaluator.evaluate_js("42").unwrap();
++        assert_eq!(evaluator.number(result).unwrap(), 42.0);
++        evaluator.release(result).unwrap();
++    }
++
++    #[test]
++    fn unlimited_and_oversized_stack_budgets_respect_native_thread_bounds() {
++        for budget in [0, usize::MAX] {
++            std::thread::Builder::new()
++                .stack_size(1024 * 1024)
++                .spawn(move || {
++                    assert!(recursion_depth(budget) > 0.0);
++                })
++                .unwrap()
++                .join()
++                .unwrap();
++        }
++        let error = match V8Evaluator::new(EvaluatorOptions {
++            stack_limit: 1,
++            ..Default::default()
++        }) {
++            Ok(_) => panic!("one-byte stack budget must fail"),
++            Err(error) => error,
++        };
++        assert!(error.0.contains("stack limit exhausted"), "{error}");
++    }
++
+     #[test]
+     fn shared_scheduler_interrupts_concurrent_sessions_and_keeps_failures_terminal() {
+         let ready = Arc::new(std::sync::Barrier::new(4));
+diff --git a/after/src/v8_stack.cc b/src/v8_stack.cc
+new file mode 100644
+index 0000000..e4cd011
+--- /dev/null
++++ b/src/v8_stack.cc
+@@ -0,0 +1,17 @@
++// The pinned rusty_v8 bindings expose the initial ResourceConstraints boundary,
++// but not Isolate::SetStackLimit for refreshing an outer operation's boundary.
++#if defined(__clang__) || defined(__GNUC__)
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wunused-parameter"
++#pragma GCC diagnostic ignored "-Wcomment"
++#endif
++#include "v8-isolate.h"
++#if defined(__clang__) || defined(__GNUC__)
++#pragma GCC diagnostic pop
++#endif
++
++extern "C" void light_cljs_v8_set_stack_limit(v8::Isolate* isolate,
++                                             uintptr_t boundary) {
++  isolate->SetStackLimit(boundary);
++}
++
+diff --git a/after/src/v8_stack.rs b/src/v8_stack.rs
+new file mode 100644
+index 0000000..76ad996
+--- /dev/null
++++ b/src/v8_stack.rs
+@@ -0,0 +1,72 @@
++//! An engine stack budget is relative to the outer operation's native frame.
++//! Clamp it to the owning thread's OS stack bounds, including unwind headroom.
++use crate::evaluator::EvalError;
++
++pub(super) struct StackLimit {
++    low: usize,
++    high: usize,
++    bytes: usize,
++}
++
++unsafe extern "C" {
++    fn light_cljs_v8_set_stack_limit(isolate: v8::UnsafeRawIsolatePtr, boundary: usize);
++    fn light_cljs_thread_stack_bounds(low: *mut usize, high: *mut usize) -> bool;
++}
++
++impl StackLimit {
++    pub(super) fn new(bytes: usize) -> Result<Self, EvalError> {
++        let (low, high) = bounds()?;
++        let limit = Self { low, high, bytes };
++        limit.boundary()?;
++        Ok(limit)
++    }
++
++    pub(super) fn boundary(&self) -> Result<*mut u32, EvalError> {
++        let marker = 0_u32;
++        let here = std::hint::black_box(&marker) as *const u32 as usize;
++        let floor = self.low.checked_add(64 * 1024).ok_or_else(exhausted)?;
++        if !(floor..self.high).contains(&here) {
++            return Err(exhausted());
++        }
++        // A zero configured limit means no additional engine cap, as in
++        // QuickJS. The OS stack boundary still cannot safely be crossed.
++        let requested = if self.bytes == 0 {
++            floor
++        } else {
++            here.saturating_sub(self.bytes)
++        };
++        let boundary = requested.max(floor).checked_add(3).ok_or_else(exhausted)? & !3;
++        if boundary >= here {
++            return Err(exhausted());
++        }
++        Ok(std::ptr::with_exposed_provenance_mut(boundary))
++    }
++
++    pub(super) fn refresh(&self, isolate: &mut v8::Isolate) -> Result<(), EvalError> {
++        let boundary = self.boundary()?;
++        // SAFETY: the !Send evaluator stays on the thread whose bounds were
++        // recorded. boundary checks this operation's frame and leaves native
++        // unwind space. V8 compares the address; it never dereferences it.
++        unsafe {
++            light_cljs_v8_set_stack_limit(isolate.as_raw_isolate_ptr(), boundary as usize);
++        }
++        Ok(())
++    }
++}
++
++fn exhausted() -> EvalError {
++    EvalError("JavaScript session stack limit exhausted".into())
++}
++
++fn bounds() -> Result<(usize, usize), EvalError> {
++    let (mut low, mut high) = (0, 0);
++    // SAFETY: both outputs point to writable pointer-sized values. The shim
++    // queries only the calling thread and rejects unsupported platforms.
++    if unsafe { light_cljs_thread_stack_bounds(&mut low, &mut high) } && low < high {
++        Ok((low, high))
++    } else {
++        Err(EvalError(
++            "V8 stack bounds are unavailable on this thread".into(),
++        ))
++    }
++}
+diff --git a/after/src/v8_thread_stack.cc b/src/v8_thread_stack.cc
+new file mode 100644
+index 0000000..34dfdf7
+--- /dev/null
++++ b/src/v8_thread_stack.cc
+@@ -0,0 +1,44 @@
++// Native thread stack bounds, independent of the JavaScript engine.
++#include <cstdint>
++#if defined(__APPLE__) || defined(__linux__)
++#include <pthread.h>
++#elif defined(_WIN32)
++#ifndef _WIN32_WINNT
++#define _WIN32_WINNT 0x0602
++#endif
++#include <windows.h>
++#endif
++
++extern "C" bool light_cljs_thread_stack_bounds(uintptr_t* low,
++                                               uintptr_t* high) {
++#if defined(__APPLE__)
++  auto thread = pthread_self();
++  *high = reinterpret_cast<uintptr_t>(pthread_get_stackaddr_np(thread));
++  size_t size = pthread_get_stacksize_np(thread);
++  if (size > *high) return false;
++  *low = *high - size;
++#elif defined(__linux__)
++  pthread_attr_t attributes;
++  if (pthread_getattr_np(pthread_self(), &attributes) != 0) return false;
++  void* address = nullptr;
++  size_t size = 0;
++  int result = pthread_attr_getstack(&attributes, &address, &size);
++  pthread_attr_destroy(&attributes);
++  if (result != 0) return false;
++  *low = reinterpret_cast<uintptr_t>(address);
++  if (size > UINTPTR_MAX - *low) return false;
++  *high = *low + size;
++#elif defined(_WIN32)
++  ULONG_PTR committed_low, stack_high;
++  GetCurrentThreadStackLimits(&committed_low, &stack_high);
++  // Query the reservation base explicitly, without relying on undocumented TEB
++  // offsets. The system stack bounds do not measure physical committed bytes.
++  MEMORY_BASIC_INFORMATION memory;
++  if (VirtualQuery(&memory, &memory, sizeof(memory)) != sizeof(memory)) return false;
++  *low = reinterpret_cast<uintptr_t>(memory.AllocationBase);
++  *high = stack_high;
++#else
++  return false;
++#endif
++  return *low != 0 && *low < *high;
++}

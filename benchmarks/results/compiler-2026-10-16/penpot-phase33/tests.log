@@ -1,0 +1,1585 @@
+   Compiling light-cljs v0.1.0 (/Users/admin/src/light-cljs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.49s
+     Running unittests src/lib.rs (target/debug/deps/light_cljs-ad9e157a4734fe2e)
+
+running 117 tests
+test arena::tests::frozen_clone_mutation_and_truncation_are_isolated ... ok
+test arena::tests::frozen_versions_preserve_values_and_ids ... ok
+test chunks::tests::chunks_are_named_by_their_roots_and_long_names_by_a_hash ... ok
+test chunks::tests::signatures_are_bitsets_by_root_index ... ok
+test arena::tests::mixed_direction_iteration_crosses_leaves_and_chunks ... ok
+test arena::tests::snapshots_do_not_copy_entries_and_writes_copy_a_bounded_leaf ... ok
+test core_operations::tests::malformed_callback_shapes_are_rejected ... ok
+test core_operations::tests::malformed_rows_are_rejected_with_their_line ... ok
+test dev_repl::tests::stacks_keep_what_they_cannot_map ... ok
+test core_operations::tests::types_form_a_lattice_and_round_trip ... ok
+test application::tests::optimization_levels_parse_print_order_and_convert_from_the_former_boolean ... ok
+test dev_repl::tests::vlq_segments_decode_and_look_up ... ok
+test dev_server::tests::source_roots_are_served_where_source_maps_name_them ... ok
+test emitter::chunked::tests::names_resolve_to_globals_and_constant_entries ... ok
+test dev_server::tests::json_reads_what_javascript_writes ... ok
+test emitter::unit_parameter_tests::streamed_name_scan_preserves_string_boundaries_and_lossy_utf16 ... ok
+test core_operations::tests::callback_shapes_element_types_and_arity_returns_parse ... ok
+test core_operations::tests::calls_outside_the_domain_are_unknown ... ok
+test core_operations::tests::every_row_parses_and_names_its_variant ... ok
+test compiler_reader::namespace_snapshot_tests::snapshots_keep_frontier_kinds_aliases_excludes_and_exact_names ... ok
+test compiler_bootstrap::tests::bootstrap_environment_reads_follow_resolved_locals_and_reflection ... ok
+test evaluator::active_tests::discarded_environment_children_preserve_spelling_when_reused ... ok
+test evaluator::active_tests::environment_import_can_reenter_before_its_cache_slots_are_installed ... ok
+test evaluator::active_tests::environment_cache_preserves_lexical_data_and_copies_mutable_literals ... ok
+test eval_compiler::tests::namespace_reader_and_policy_are_incremental ... ok
+test evaluator::active_tests::failed_environment_import_does_not_publish_uninstalled_cache_slots ... ok
+test evaluator::active_tests::engine_maps_preserve_key_semantics_across_growth_and_deletion ... ok
+test evaluator::active_tests::failed_argument_snapshots_drop_the_pending_graph_and_partial_results ... ok
+test evaluator::active_tests::environment_child_eviction_preserves_values_and_metadata_order ... ok
+test evaluator::active_tests::active_handle_rejects_other_contexts ... ok
+test eval_compiler::tests::incremental_catalog_does_not_duplicate_literal_or_local_arenas ... ok
+test evaluator::active_tests::frontier_replay_includes_an_earlier_bundle_initialized_by_a_proxy_patch ... ok
+test evaluator::active_tests::frontier_service_can_reenter_an_active_compilation ... ok
+test evaluator::active_tests::failed_macro_calls_release_their_imported_object_arguments ... ok
+test evaluator::active_tests::native_bridge_name_components_and_empty_text_preserve_utf16 ... ok
+test evaluator::active_tests::frontier_service_preserves_errors_dynamic_lookup_and_cancellation ... ok
+test evaluator::active_tests::failed_macro_environments_release_pending_input_graphs ... ok
+test evaluator::active_tests::native_bridge_unqualified_names_keep_a_null_namespace ... ok
+test evaluator::active_tests::protocol_arity_cache_does_not_inherit_array_properties ... ok
+test evaluator::active_tests::native_bridge_strings_preserve_every_utf16_code_unit_in_both_directions ... ok
+test evaluator::active_tests::backtracking_deadline_is_terminal_and_fresh_operations_recover ... ok
+test evaluator::active_tests::unit_service_cancellation_is_sticky_even_when_js_catches ... ok
+test evaluator::bridge_interrupt_tests::sweep_bridge_import_interrupt_points ... ignored, stress sweep; run explicitly to cover every interrupt point
+test folding::tests::keys_compare_as_the_runtime_compares_them ... ok
+test folding::tests::lookups_and_counts_follow_the_builders ... ok
+test evaluator::active_tests::shared_macro_literals_are_constructed_once ... ok
+test folding::tests::numbers_print_as_javascript_prints_them ... ok
+test inference::tests::known_representations_survive_joins_with_values_outside_their_class ... ok
+test js_syntax::tests::adjacent_declarations_join ... ok
+test js_syntax::tests::arrows_regexes_and_templates_scope_and_lex_correctly ... ok
+test js_syntax::tests::generated_names_follow_closure_order_and_skip_reserved_words ... ok
+test js_syntax::tests::locals_get_short_names_that_capture_nothing ... ok
+test js_syntax::tests::locals_shadow_runtime_bindings_through_every_scope_kind ... ok
+test js_syntax::tests::malformed_bodies_are_rejected ... ok
+test js_syntax::tests::properties_keys_and_labels_are_not_references ... ok
+test js_syntax::tests::statements_without_semicolons_still_split_at_declarations ... ok
+test js_syntax::tests::the_terse_writer_keeps_only_separators_the_parse_needs ... ok
+test js_syntax::tests::top_level_names_avoid_the_locals_visible_where_they_are_read ... ok
+test layered::tests::get_mut_survives_compaction_boundary ... ok
+test evaluator::active_tests::unit_service_failure_is_sticky_even_when_js_catches ... ok
+test macro_host::compiler_pure_tests::reader_environment_reuse_obeys_declaration_acknowledgement_and_old_views ... ok
+test macro_host::compiler_pure_tests::environment_reuse_preserves_local_shadow_chains_and_location ... ok
+test name_index::tests::collision_leaves_and_last_hash_bits_preserve_every_key ... ok
+test evaluator::active_tests::released_bridge_inputs_release_native_provenance ... ok
+test evaluator::active_tests::unit_service_recurses_with_active_context_and_bridge ... ok
+test macro_host::compiler_pure_tests::reader_seed_declarations_and_metadata_use_owned_forms ... ok
+test evaluator::active_tests::scalar_provenance_retains_values_instead_of_import_history ... ok
+test evaluator::active_tests::reused_environment_children_still_count_against_node_and_depth_limits ... ok
+test program_fragment::tests::deferred_prefix_allows_patched_initializers ... ok
+test rta::tests::protocol_slots_follow_the_runtime ... ok
+test program_fragment::tests::metadata_is_remapped_and_absent_metadata_preserves_existing_value ... ok
+test runtime_manifest::tests::compile_time_units_parse_and_round_trip_with_their_other_flags ... ok
+test runtime_manifest::tests::conditional_effects_parse_round_trip_and_wait_for_a_condition ... ok
+test runtime_manifest::tests::installs_follow_escaping_values_and_mutator_calls_are_effects ... ok
+test name_index::tests::definition_versions_preserve_overwritten_and_new_names ... ok
+test runtime_manifest::tests::manifests_round_trip_validate_and_reach_effects_through_targets ... ok
+test runtime_manifest::tests::validation_reports_missing_stale_unknown_and_effect_errors ... ok
+test runtime_slice::tests::runtime_names_print_as_emitted_and_roots_keep_their_first_site ... ok
+test shared::tests::empty_fragment_extension_keeps_the_shared_table ... ok
+test source_map::tests::data_url_is_base64 ... ok
+test source_map::tests::lines_continue_their_origin ... ok
+test source_map::tests::marks_map_lines_and_utf16_columns ... ok
+test source_map::tests::vlq_matches_the_specification_examples ... ok
+test terse::tests::a_hole_inside_raw_strings_or_comments_keeps_the_hygienic_layout ... ok
+test terse::tests::raw_comments_are_kept_where_they_cannot_end_a_statement ... ok
+test terse::tests::raw_text_keeps_its_tokens_and_names_in_a_terse_program ... ok
+test terse::tests::raw_text_the_lexer_may_misread_keeps_the_hygienic_layout ... ok
+test evaluator::bridge_interrupt_tests::interrupted_bridge_array_map_build_releases_each_value_once ... ok
+test terse::tests::the_checker_finds_captures_and_escapes ... ok
+test macro_host::compiler_default_reader_tests::default_reader_is_compiled_typed_and_preserves_reader_precedence ... ok
+test value_hash::tests::builders_merge_equal_keys_and_unknown_equality_leaves_no_hash ... ok
+test value_hash::tests::collections_hash_as_the_runtime_does ... ok
+test value_hash::tests::key_shapes_need_keys_known_to_be_distinct ... ok
+test value_hash::tests::scalars_hash_as_the_runtime_does ... ok
+test evaluator::active_tests::shared_macro_arguments_restore_provenance_after_environment_import ... ok
+test program_fragment::tests::resolution_snapshot_retains_metadata_but_excludes_initializers ... ok
+test compiler_bootstrap::tests::unused_core_environment_keeps_literal_conversion_failures ... ok
+test evaluator::active_tests::failed_import_validation_releases_temporary_roots ... ok
+test application::tests::macro_calls_do_not_prepare_applications_or_recompile_unchanged_units ... ok
+test application::tests::generation_counters_distinguish_compile_demand_from_application_analysis ... ok
+test eval_compiler::tests::failed_macro_call_preserves_interactive_compiler ... ok
+test program_fragment::tests::appended_fragments_execute_with_shared_globals_and_distinct_arenas ... ok
+test source_map::tests::readable_runtime_lines_map_to_their_text ... ok
+test compilation_session::retention_tests::completed_units_release_their_analysis_inputs ... ok
+test compiler_bootstrap::tests::declaration_products_are_atomic_and_unfinished_value_reads_cycle ... ok
+test eval_compiler::tests::incremental_roots_closures_and_macros_have_separate_heaps ... ok
+test compiler_bootstrap::tests::cancelled_demand_discards_roots_before_reusing_host ... ok
+test compiler_bootstrap::tests::cancelled_extension_bundle_rolls_back_before_reusing_host ... ok
+test compiler_bootstrap::tests::unused_core_environment_keeps_conversion_limits_and_host_recovery ... ok
+test application::tests::advanced_inertness_checks_replaced_operations_extensions_and_constructors ... ok
+test compiler_bootstrap::tests::asynchronous_bootstrap_cancellation_recovers_reused_host ... ok
+test program_fragment::tests::deferred_definitions_share_snapshot_metadata ... ok
+test terse::tests::the_whole_terse_runtime_renames_without_capture ... ok
+test terse::tests::slice_marks_point_at_the_tokens_they_map ... ok
+test compiler_bootstrap::tests::regenerate_from_first_party_sources_and_collect_during_bootstrap ... ok
+test program_fragment::tests::deferred_definitions_append_only_what_they_add ... ok
+test terse::tests::partial_slices_rename_without_capture ... ok
+
+test result: ok. 116 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.99s
+
+     Running unittests src/main.rs (target/debug/deps/light_cljs-4f7111d2e66935ef)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/benchmark_variants.rs (target/debug/deps/benchmark_variants-8f652ec59dbe8753)
+
+running 3 tests
+test compact_source_limit_is_checked_before_narrowing ... ok
+test experimental_scanners_agree_with_library ... ok
+test level_benchmark_harness_checks_and_records_every_level ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.27s
+
+     Running tests/cli.rs (target/debug/deps/cli-b99daf41417d628a)
+
+running 15 tests
+test reads_stdin_and_escapes_text ... ok
+test prints_example ... ok
+test rejects_missing_text ... ok
+test reports_lexical_errors_with_spans_and_nonzero_status ... ok
+test prints_parser_nodes_and_reports_locations ... ok
+test analysis_cli_shows_ids_and_compile_errors_never_emit_partial_javascript ... ok
+test optimize_rejects_unknown_levels_and_non_compile_modes ... ok
+test vector_keyword_acceptance_compiles_and_executes_from_cli ... ok
+test compiles_files_and_stdin_to_executable_javascript ... ok
+test optimize_selects_the_application_level_for_text_and_namespace_compiles ... ok
+test define_replaces_goog_define_defaults_at_every_level ... ok
+test size_report_prints_the_retention_table_on_stderr_without_changing_output ... ok
+test elide_asserts_omits_assertions_at_every_level ... ok
+test elide_asserts_reaches_the_assert_source_macros_read ... ok
+test source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.24s
+
+     Running tests/compiler/main.rs (target/debug/deps/compiler-e13b30adac4f02bb)
+
+running 1014 tests
+test bootstrap::interop_macros_execute_in_quickjs ... ok
+test array_settings::cli_array_check_modes_execute_the_compiled_program ... ok
+test async_await::async_calls_are_not_inert_initializers ... ok
+test bootstrap::bootstrap_failure_and_expansion_limits_leave_reused_host_clean ... ok
+test array_settings::named_function_macro_environments_capture_boolean_array_settings ... ok
+test bootstrap::comprehensions_lazy_cat_and_selector_use_source_macros ... ok
+test boundary_completion::anonymous_raw_overloads_match_ordered_public_warning_messages ... ok
+test bootstrap::conditional_bindings_distinguish_false_from_nil_and_destructure ... ok
+test boundary_completion::dotted_host_var_metadata_reports_both_test_reference_resolutions ... ok
+test bootstrap::default_compile_and_analyze_emit_have_identical_literal_results ... ok
+test array_settings::checked_options_reset_between_loaded_files_and_capture_definitions ... ok
+test bootstrap::iteration_and_volatile_macros_preserve_input_evaluation_counts ... ok
+test bootstrap::case_and_condp_preserve_grouping_defaults_and_predicate_results ... ok
+test async_await::refer_global_static_methods_keep_their_class_as_this ... ok
+test async_await::wrappers_keep_values_and_dispatchers_reject ... ok
+test builtin_types::a_keyword_keeps_no_collection ... ok
+test async_await::static_method_values_stay_detached_when_inlined ... ok
+test async_await::advanced_passes_keep_awaits_and_promises ... ok
+test builtin_types::a_vector_keeps_no_map_set_or_protocol_machinery ... ok
+test builtin_types::an_empty_map_keeps_only_its_own_map_type ... ok
+test bootstrap::logical_and_conditional_macros_preserve_short_circuit_values_and_effects ... ok
+test bootstrap::seed_bindings_assertions_and_reflection_remain_native_free ... ok
+test array_settings::complete_source_bodies_retain_modules_and_file_isolation ... ok
+test array_settings::checked_array_options_follow_source_order_and_preserve_argument_effects ... ok
+test bootstrap::volatile_swap_rechecks_target_after_evaluating_the_function ... ok
+test array_settings::array_setting_var_and_macro_state_execute_in_both_phases ... ok
+test async_await::devirtualized_calls_keep_their_operands_across_awaits ... ok
+test async_await::await_outside_an_async_function_is_a_located_analysis_error ... ok
+test bootstrap::source_declarations_are_compile_time_only_and_can_use_ecmascript ... ok
+test boundary_completion::double_dots_munge_before_host_path_splitting_and_qualified_members_keep_receiver ... ok
+test bootstrap::threading_families_preserve_order_and_nil_semantics ... ok
+test boundary_completion::dotted_def_uses_host_assignment_and_amp_is_a_valid_global_name ... ok
+test boundary_completion::inline_macro_arity_errors_are_compile_time_diagnostics ... ok
+test boundary_completion::inline_defmacro_is_a_compile_time_function_with_hidden_form_and_environment ... ok
+test boundary_completion::inline_defmacro_multiple_and_variadic_methods_execute_during_compilation ... ok
+test builtin_types::a_set_keeps_no_seq_hash_map_or_hashing ... ok
+test atom_object_equiv::failed_atom_equiv_leaves_fresh_and_reused_hosts_usable ... ok
+test boundary_completion::unqualified_host_paths_keep_receiver_and_lexical_shadowing ... ok
+test boundary_completion::unknown_namespace_warning_mode_keeps_actual_host_namespace_values ... ok
+test builtin_types::a_program_type_opens_the_protocol_hooks ... ok
+test async_await::upstream_async_await_tests_pass_at_every_level ... ok
+test builtin_types::array_maps_keep_no_hash_map_trie ... ok
+test async_await::async_functions_and_their_wrappers_at_every_level ... ok
+test builtin_types::conj_assoc_and_with_meta_over_every_kind ... ok
+test builtin_types::hash_sets_are_tries ... ok
+test builtin_types::each_kind_branch_of_the_generic_operations ... ok
+test builtin_types::existing_sequences_dispatch_only_the_requested_protocol ... ok
+test builtin_types::list_construction_keeps_intrinsic_count_while_public_count_remains_live ... ok
+test builtin_types::metadata_through_the_generic_operations ... ok
+test builtin_types::map_hooks_for_records_wait_for_records ... ok
+test builtin_types::membership_in_value_position_keeps_no_set ... ok
+test builtin_types::core_protocol_tables_written_directly_reach_the_protocol_tests ... ok
+test builtin_types::maps_answer_host_facing_methods_from_their_entries ... ok
+test builtin_types::host_facing_methods_of_builtin_prototypes ... ok
+test builtin_types::promoted_transient_maps_look_up_without_a_persistent_hash_map ... ok
+test atom_object_equiv::atom_equiv_contracts_execute_in_both_phases ... ok
+test builtin_types::printing_with_options_dispatchers_and_into ... ok
+test builtin_types::protocol_extensions_of_builtin_and_host_types_reach_the_generic_operations ... ok
+test builtin_types::program_types_keep_no_machinery_for_builtin_values ... ok
+test builtin_types::record_field_lookup_uses_keyword_identity_without_equivalence_dispatch ... ok
+test builtin_types::program_types_reach_the_runtime_kinds_they_implement ... ok
+test builtin_types::program_types_keep_the_dispatch_of_interop ... ok
+test builtin_types::protocol_tests_of_program_types_need_no_protocol_tables ... ok
+test builtin_types::replaced_protocol_predicates_keep_the_full_protocol_tests ... ok
+test builtin_types::seqs_of_host_iterables ... ok
+test builtin_types::applied_array_maps_accept_large_argument_sequences ... ok
+test builtin_types::small_programs_keep_only_what_they_use ... ok
+test builtin_types::selected_protocol_missing_method_does_not_fall_back_after_a_getter_mutation ... ok
+test builtin_types::subvecs_are_views_of_their_vectors ... ok
+test builtin_types::sets_answer_host_facing_methods_from_their_members ... ok
+test builtin_types::object_equiv_corpus ... ok
+test builtin_types::subvecs_of_caller_arrays_read_them_live ... ok
+test builtin_types::transients_chunks_and_entries_through_the_generic_operations ... ok
+test builtin_types::upstream_members_are_every_other_member_of_the_runtime_types ... ok
+test builtin_types::vector_fast_paths_honor_direct_protocol_slots ... ok
+test builtin_types::vector_reductions_keep_protocol_implementations ... ok
+test builtin_types::upstream_fields_need_a_program_that_names_them ... ok
+test builtin_types::named_generated_record_slots_remain_callable ... ok
+test builtin_types::core_helpers_corpus ... ok
+test builtin_types::reduce_kv_corpus ... ok
+test builtin_types::find_effects_corpus ... ok
+test builtin_types::vectors_answer_host_facing_methods_from_their_items ... ok
+test call_shapes::exports_keep_their_dispatcher ... ok
+test builtin_types::vectors_of_caller_arrays_print_and_iterate_as_they_read ... ok
+test call_shapes::calls_across_namespaces_are_direct ... ok
+test call_shapes::escaping_functions_keep_their_dispatcher_over_the_same_entries ... ok
+test call_shapes::levels_below_advanced_keep_the_generic_shapes ... ok
+test builtin_types::count_walks_the_seqs_of_the_values_that_need_it ... ok
+test call_shapes::hoisted_methods_need_no_runtime ... ok
+test builtin_types::sequence_contracts_corpus ... ok
+test builtin_types::equality_corpus ... ok
+test call_shapes::factories_and_dispatchers_are_called_plainly ... ok
+test call_shapes::known_functions_are_called_through_the_selected_method ... ok
+test call_shapes::local_functions_call_the_entries_of_their_methods ... ok
+test call_shapes::local_functions_whose_value_escapes_keep_their_dispatcher ... ok
+test call_shapes::calls_before_the_definition_still_throw_type_errors ... ok
+test call_shapes::local_functions_with_one_method_are_called_plainly ... ok
+test case_char_string_accepted::accepted_case_constants_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test call_shapes::methods_keep_recur_arguments_and_parameters ... ok
+test case_char_string_gap::original_case_char_string_rejection_and_actual_macro_recovery ... ignored, explicit narrow original case diagnostic; no semantic credit
+test call_shapes::methods_that_may_read_this_keep_call_null ... ok
+test case_numeric::numeric_case_constants_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test call_shapes::methods_that_read_their_scope_or_hold_raw_text_stay_in_it ... ok
+test call_shapes::named_functions_call_their_entries_through_the_name ... ok
+test chunks::a_feature_assigning_a_startup_var_goes_through_the_owner_setter ... ok
+test builtin_types::vectors_are_tries_across_leaf_and_level_boundaries ... ok
+test call_shapes::redefined_assigned_and_rerun_definitions ... ok
+test call_shapes::value_position_do_is_a_comma_expression ... ok
+test chunks::a_feature_loads_its_sub_feature_chunk ... ok
+test call_shapes::variadic_calls_build_the_dispatchers_rest_sequence ... ok
+test chunks::a_feature_that_loads_a_sub_feature_is_a_chain_whose_edges_point_up ... ok
+test chunks::a_global_read_imports_its_owner_without_a_require ... ok
+test chunks::a_hashed_shared_name_does_not_collide_with_a_namespace ... ok
+test chunks::a_helper_two_features_require_is_one_shared_chunk ... ok
+test chunks::a_lazy_target_that_requires_the_loading_namespace_leaves_it_in_startup ... ok
+test chunks::a_feature_reads_the_namespace_that_loads_it ... ok
+test chunks::a_namespace_loadable_runs_its_methods_when_loaded ... ok
+test chunks::a_package_only_a_feature_requires_is_imported_by_its_chunk ... ok
+test chunks::a_dropped_chunk_s_importers_import_its_imports ... ok
+test chunks::a_program_without_namespace_sources_is_one_chunk ... ok
+test chunks::a_dropped_chunk_s_roots_still_get_their_constants ... ok
+test chunks::a_feature_probes_a_var_startup_declares ... ok
+test builtin_types::sequence_object_equiv_corpus ... ok
+test chunks::a_program_reaching_reflection_keeps_definitions_in_their_namespaces ... ok
+test chunks::a_feature_reaching_reflection_finds_every_namespace ... ok
+test chunks::a_feature_rebinds_a_core_function_through_startup ... ok
+test chunks::constants_go_to_the_chunks_of_their_readers ... ok
+test builtin_types::sorted_collections_corpus ... ok
+test chunks::definitions_move_toward_their_readers_and_methods_stay ... ok
+test builtin_types::transients_corpus ... ok
+test chunks::a_program_without_namespace_sources_runs_as_one_chunk ... ok
+test chunks::a_program_reaching_reflection_keeps_a_chunk_of_no_code ... ok
+test chunks::explicit_exports_root_their_movable_dependencies ... ok
+test chunks::an_entry_without_forms_returns_nil_from_startup ... ok
+test chunks::a_shared_namespace_whose_definitions_all_move_is_no_file ... ok
+test chunks::a_silent_chunk_owning_a_global_other_chunks_read_is_kept ... ok
+test chunks::definitions_move_with_their_constructors_and_setters ... ok
+test chunks::loading_one_target_marks_other_targets_in_the_same_chunk_loaded ... ok
+test builtin_types::language_corpus_700 ... ok
+test builtin_types::public_constructors_corpus ... ok
+test builtin_types::hash_branches_corpus_00 ... ok
+test case_char_string_accepted::canonical_case_constants_and_same_host_diagnostic_recovery ... ok
+test chunks::methods_shapes_and_lazy_cells_are_placed_by_their_readers ... ok
+test chunks::out_dir_refuses_the_source_map_flags ... ok
+test builtin_types::hash_branches_corpus_35 ... ok
+test chunks::matrix_constants_go_to_their_readers ... ok
+test chunks::matrix_diamond ... ok
+test chunks::the_features_example_plans_startup_and_one_chunk_per_feature ... ok
+test chunks::the_matrix_runs_every_fixture_directory ... ok
+test chunks::matrix_feature_assigning_startup_vars ... ok
+test chunks::matrix_definitions_move_toward_their_readers ... ok
+test cljc_prefixes::nested_discarded_readers_keep_canonical_effect_order ... ok
+test chunks::out_dir_of_a_program_without_loadables_is_its_esm_file ... ok
+test chunks::the_features_startup_declares_only_the_constants_it_reads ... ok
+test chunks::matrix_namespace_of_methods ... ok
+test cljc_prefixes::selected_targets_keep_metadata_quote_ownership_and_source_locations ... ok
+test chunks::matrix_features_example ... ok
+test compile_time_units::application_roots_reach_compile_time_units_only_through_reflection ... ok
+test chunks::matrix_package_only_a_feature_requires ... ok
+test cljc_prefixes::nested_discarded_readers_execute_once_in_plain_and_shared_source_hosts ... ok
+test configured_custom_source_context::complete_custom_reader_source_executes_in_both_phases_and_lifecycles ... ignored, Explicit exact original source and current both-pin provenance helper
+test configured_source_context::configured_original_body_executes_in_fresh_and_reused_hosts ... ignored, explicit original configured source-reader embedding audit
+test chunks::matrix_reflection_keeps_namespaces_whole ... ok
+test compile_time_units::a_registered_namespace_lists_only_retained_definitions ... ok
+test chunks::raw_type_bodies_stay_in_their_namespace ... ok
+test chunks::matrix_shared_top_level_effect ... ok
+test chunks::matrix_sub_feature ... ok
+test constant_hashes::a_pooled_constant_shows_its_hash_field_before_its_first_hash ... ok
+test constant_hashes::edge_case_constants_embed_the_runtime_hash ... ok
+test compile_time_units::namespace_entries_switch_ns_only_when_the_program_reaches_reflection ... ok
+test compile_time_units::application_slices_keep_plain_declaration_hooks ... ok
+test chunks::matrix_target_requiring_its_loader ... ok
+test builtin_types::sequence_completion_corpus ... ok
+test constant_hashes::random_scalars_embed_the_runtime_hash ... ok
+test constant_hashes::hashes_are_embedded_only_at_advanced_with_intact_core_protocols ... ok
+test constant_hashes::cached_hashes_never_go_stale ... ok
+test constant_hashes::equal_values_hash_alike_whether_pooled_or_built ... ok
+test constant_lookups::calls_that_may_throw_or_are_undecided_stay ... ok
+test constant_lookups::destructuring_constants_binds_locals_statically ... ok
+test constant_lookups::folded_items_keep_identity_and_metadata ... ok
+test chunks::raw_javascript_in_a_feature_keeps_names_consistent_across_chunks ... ok
+test constant_lookups::lookups_in_maps_with_constant_keys_read_their_entries ... ok
+test constant_lookups::lookups_of_constants_fold_to_the_runtime_results ... ok
+test constant_pool::advanced_hash_conses_constants_on_their_emitted_structure ... ok
+test constant_lookups::membership_in_value_position_compares_with_each_member ... ok
+test constant_pool::discarded_constants_add_no_entries ... ok
+test constant_pool::equal_literals_at_two_sites_are_identical_only_at_advanced ... ok
+test constant_pool::hot_loop_allocations_and_pool_size_are_pinned ... ok
+test constant_pool::literals_built_by_a_replaced_core_operation_stay_at_their_site ... ok
+test constant_table::advanced_output_without_literals_has_no_table ... ok
+test constant_lookups::folds_need_the_runtime_operations ... ok
+test constant_pool::large_constants_are_lazy_cells_built_on_first_read ... ok
+test case_numeric::canonical_numeric_reader_identity_and_same_host_recovery ... ok
+test constant_pool::reader_distinct_constants_are_distinct_entries ... ok
+test constant_table::literal_keyword_identity_holds_across_repl_inputs_and_redefinition ... ok
+test constant_pool::empty_literals_read_the_runtime_singletons_at_every_level ... ok
+test constant_pool::pooled_constants_keep_metadata_transients_equality_and_hashes ... ok
+test chunks::out_dir_writes_the_features_example_chunks_and_manifest_at_every_level ... ok
+test constant_table::literal_symbols_share_one_value_only_at_advanced_and_keywords_at_every_level ... ok
+test constant_table::keyword_case_switches_on_the_spelling_without_printing_at_advanced ... ok
+test constant_table::advanced_declares_each_distinct_literal_once_after_the_runtime ... ok
+test cljc_prefixes::located_active_and_missing_target_errors_recover_in_hosts_and_sessions ... ok
+test constant_lookups::membership_tests_switch_on_spellings ... ok
+test constant_table::keywords_that_spell_alike_with_other_parts_stay_equal_and_distinct ... ok
+test constant_table::keyword_equality_is_spelling_equality_and_literals_are_equal_only_when_identical ... ok
+test constant_table::literal_keywords_are_interned_and_keywords_built_from_data_are_fresh ... ok
+test cljc_prefixes::original_reader_rejections::unchanged_original_reader_rejections_preserve_source_and_host_recovery ... ok
+test constant_pool::mutable_dynamic_and_possibly_throwing_literals_are_built_at_their_site ... ok
+test core_extension_demand::core_macro_frontier_restores_ordered_user_equality_extensions ... ok
+test compile_time_units::advanced_programs_register_namespaces_only_when_they_reach_reflection ... ok
+test core_extension_demand::failed_extension_demand_recovers_without_hiding_real_cycles ... ok
+test core_helpers::helper_callbacks_and_owned_runtime_values_follow_the_callable_abi ... ok
+test core_operations::every_core_operation_has_exactly_one_row ... ok
+test core_operations::every_runtime_unit_in_the_table_exists_in_the_manifest ... ok
+test core_operations::moving_an_operation_into_its_own_unit_moves_its_units ... ok
+test core_operations::print_core_operation_units ... ignored, measurement; prints the operation units
+test core_operations::runtime_units_are_the_units_that_define_each_core_value ... ok
+test constant_hashes::generated_program_constants_embed_the_runtime_hash ... ok
+test core_factories::factory_phase_isolation_diagnostics_and_bounded_repetition ... ok
+test core_helpers::applied_partial_and_juxt_constructors_preserve_lazy_tails_in_both_phases ... ok
+test core_extension_demand::core_macros_expand_collection_extensions_in_fresh_and_reused_hosts ... ok
+test core_gate::core_exceptions_applications_and_macros_execute ... ok
+test core_var_metadata::recovered_core_var_metadata_executes_in_applications_and_macros ... ok
+test data_libraries::compiler_owned_data_readers_keep_source_order_origins_and_typed_results ... ok
+test data_libraries::macros_use_libraries_without_native_registration ... ok
+test data_libraries::library_type_arity_and_ordered_failure_boundaries ... ok
+test data_libraries::all_supported_native_set_and_walk_fixtures_migrate_with_values_and_effects ... ok
+test data_libraries::persistent_set_algebra_and_relations ... ok
+test data_libraries::walks_preserve_types_metadata_records_order_and_opaque_values ... ok
+test data_libraries::upstream_set_and_walk_witnesses_execute_with_full_setup ... ok
+test core_helpers::helper_arities_order_lazy_tails_and_collections_match_expected_values ... ok
+test deferred::deferred_effects_and_metadata_pending_states_have_direct_host_expectations ... ok
+test data_libraries::traversal_limits_and_session_recovery ... ok
+test deferred::namespace_aliases_compiled_macro_output_and_captured_bindings_are_deferred ... ok
+test control::phase_oracles::control_test_bodies ... ok
+test deferred::long_nested_wrappers_and_abandoned_failures_survive_normal_gc ... ok
+test declare_values::declaration_demand_failures_ownership_and_generations_recover ... ok
+test core_gate::core_numeric_applications_and_macros_execute ... ok
+test destructuring_completion::checkout_helpers_distinguish_absent_nil_and_false ... ok
+test destructuring_completion::extension_effect_order_and_literal_provenance ... ok
+test core_gate::core_state_applications_and_macros_execute ... ok
+test destructuring_completion::malformed_extensions_are_compile_errors ... ok
+test destructuring_completion::destructuring_all_binding_macro_contexts_and_recur ... ok
+test core_operations::signatures_hold_on_sample_arguments ... ok
+test destructuring_completion::lazy_cat_compiler_macro_defers_each_collection_expression ... ok
+test deferred::phase_oracles::deferred_constructors ... ok
+test control::phase_oracles::conditional_bindings ... ok
+test core_gate::core_control_applications_and_macros_execute ... ok
+test dev_build::dev_builds_analyze_in_warning_mode ... ok
+test destructuring_completion::required_keys_and_unbound_amp_keys ... ok
+test destructuring_completion::selector_requires_literal_map_with_result_directive ... ok
+test destructuring_completion::complete_pinned_checkout_destructuring_bodies ... ok
+test dev_build::hooks_run_in_order_around_the_applied_units ... ok
+test dev_build::index_rejects_in_a_page_when_a_unit_throws ... ok
+test dev_build::a_replaced_record_definition_keeps_old_instances_usable ... ok
+test dev_build::namespaces_loading_first_find_the_later_ones_as_at_none ... ok
+test dev_build::a_replaced_unit_changes_the_next_render_and_keeps_the_state ... ok
+test dev_build::reloadable_flags_are_checked ... ok
+test dev_build::features_example_dev_build_prints_what_the_none_build_prints ... ok
+test dev_build::namespaces_named_like_build_files_keep_their_own_unit_files ... ok
+test destructuring_completion::recursive_select_defaults_excess_and_missing ... ok
+test destructuring_completion::phase_oracles::trailing_map_destructuring ... ok
+test edn::cljs_builtin_js_literals_empty_input_timestamps_and_duplicate_errors ... ok
+test edn::cljs_reader_public_read_arities_and_option_defaults_match_pinned_source ... ok
+test edn::cljs_reader_public_timestamp_helpers_and_dynamic_parser_atoms ... ok
+test dev_build::unit_source_maps_point_node_stack_traces_at_the_sources ... ok
+test dev_build::example_dev_build_prints_what_the_none_build_prints ... ok
+test definitions::phase_oracles::definition_test_bodies ... ok
+test edn::reader_limits_and_cancelled_providers_share_sticky_session_control ... ok
+test edn::rust_providers_supply_chunks_only_and_errors_remain_bounded_and_located ... ok
+test edn::compiled_reader_registration_builtins_metadata_unicode_and_macros ... ok
+test edn::reader_atom_mutations_bindings_and_absent_tags_are_observed_in_both_phases ... ok
+test edn::scoped_input_closes_escaped_handles_and_restores_outer_cursor_on_throw ... ok
+test edn::source_reader_syntax_exports_compiler_owned_macros_and_suppresses_skipped_tags ... ok
+test edn::typed_results_reject_host_objects_cycles_and_deferred_values_without_effects ... ok
+test edn::streams_share_cursor_reentry_is_located_and_nested_inputs_restore ... ok
+test eduction_contracts::abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines ... ok
+test eduction_contracts::cancellation_in_eduction_construction_demand_and_completion_is_terminal ... ok
+test definitions::phase_oracles::declarations ... ok
+test eductions::eduction_fixture_provenance_retains_complete_body_and_effects ... ok
+test eductions::eduction_fixtures_match_pinned_release_and_checkout ... ignored, requires Clojure CLI, Java, Node, and both pinned CLJS references
+test dev_build::ratchet_fixtures_print_what_the_none_build_prints ... ok
+test dev_build::reload_fixtures_print_their_output_through_the_driver ... ok
+test equality::equality_fixtures_match_pinned_release_and_checkout ... ignored, requires Clojure CLI, Java, Node, and both pinned CLJS references
+test eduction_contracts::eduction_public_arities_run_as_shared_macro_and_application_helpers ... ok
+test eduction_contracts::throwing_application_and_macro_views_recover_in_fresh_sessions ... ok
+test equality::keyword_map_keys_use_canonical_equality_hashing_and_representatives ... ok
+test edn_stream::edn_macro_failures_retain_source_locations_and_separate_result_domain ... ok
+test equality_contracts::canonical_values_hash_metadata_and_effects_in_both_phases ... ok
+test extensions::native_extension_preserves_core_fast_paths_and_raw_protocol_dispatch ... ok
+test declare_values::phase_oracles::namespace_declarations ... ok
+test equality_contracts::custom_protocols_records_and_vars_in_both_phases ... ok
+test extensions::builtin_class_extensions_and_nonmutating_specify ... ok
+test extensions::old_instances_instance_precedence_and_metadata ... ok
+test extensions::native_selectors_default_and_saved_dispatch ... ok
+test edn_stream::edn_stream_contract_executes_in_fresh_and_reused_application_and_macro_phases ... ok
+test core_factories::core_factories_execute_in_applications_and_macros ... ok
+test extensions::replacement_keeps_current_method_and_changes_later_calls ... ok
+test edn::migrated_native_core_stream_reader_arities_eof_values_and_data ... ok
+test edn::complete_pinned_upstream_reader_bodies_execute_in_both_engines ... ok
+test features_example::chunked_driver_waits_for_dynamic_imports_and_reports_errors ... ok
+test eductions::eduction_values_effects_and_errors_match_in_quickjs_and_node ... ok
+test folding_inlining::bodies_that_depend_on_their_function_stay_functions ... ok
+test folding_inlining::built_literals_stay_built_and_keys_stay_as_written ... ok
+test folding_inlining::calls_that_may_run_before_the_definition_stay_calls ... ok
+test core_helpers::phase_oracles::helper_workflows ... ok
+test folding_inlining::defines_and_goog_define_reject_what_does_not_fit ... ok
+test folding_inlining::constant_core_calls_fold_to_the_runtime_results ... ok
+test builtin_types::language_corpus_100 ... ok
+test folding_inlining::const_reads_are_their_value_after_the_definition_runs ... ok
+test folding_inlining::calls_outside_the_domain_or_of_replaceable_operations_stay ... ok
+test features_example::features_example_logs_its_menu_and_both_features_at_every_level ... ok
+test builtin_types::language_corpus_200 ... ok
+test folding_inlining::debug_logging_vanishes_completely ... ok
+test builtin_types::language_corpus_000 ... ok
+test folding_inlining::function_scope_stays_where_arguments_or_raw_text_see_it ... ok
+test folding_inlining::let_bound_constants_and_unread_bindings_fold ... ok
+test generated_optimization::garbage_never_changes_the_program_text_and_every_tag_occurs ... ok
+test folding_inlining::mutable_fields_are_bound_before_the_body_runs ... ok
+test equality::phase_oracles::hashing_test_bodies ... ok
+test folding_inlining::rest_parameters_inline_only_when_unread ... ok
+test folding_inlining::recursion_reaches_a_fixed_point ... ok
+test folding_inlining::constant_tests_select_their_branch_and_drop_what_only_the_other_reads ... ok
+test folding_inlining::inlined_arguments_run_once_and_in_order ... ok
+test folding_inlining::single_use_functions_move_into_their_only_call ... ok
+test generated_optimization::checks_reject_changed_records_surviving_garbage_and_residue ... ok
+test folding_inlining::small_pure_functions_inline_where_that_shrinks_the_program ... ok
+test generated_optimization::lazy_checks_reject_lazy_only_definitions_in_startup ... ok
+test folding_inlining::goog_define_takes_its_value_from_the_build_at_every_level ... ok
+test builtin_types::language_corpus_300 ... ok
+test extensions::phase_oracles::extension_test_bodies ... ok
+test generated_optimization::lazy_seed_00 ... ok
+test generated_optimization::lazy_seed_01 ... ok
+test generated_optimization::lazy_seed_02 ... ok
+test generated_optimization::lazy_seed_03 ... ok
+test generated_optimization::lazy_seed_04 ... ok
+test generated_optimization::lazy_seed_06 ... ok
+test generated_optimization::lazy_seed_05 ... ok
+test generated_optimization::lazy_seed_08 ... ok
+test generated_optimization::lazy_seed_07 ... ok
+test generated_optimization::lazy_seed_10 ... ok
+test generated_optimization::lazy_seed_09 ... ok
+test core_gate::core_collections_applications_and_macros_execute ... ok
+test generated_optimization::lazy_seed_11 ... ok
+test extensions::phase_oracles::instance_extensions ... ok
+test builtin_types::language_corpus_500 ... ok
+test builtin_types::language_corpus_400 ... ok
+test generated_optimization::programs_read_constants_through_folded_lookups ... ok
+test declare_values::complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phases ... ok
+test builtin_types::language_corpus_600 ... ok
+test generated_optimization::seed_00 ... ok
+test generated_optimization::seed_02 ... ok
+test hash_map_from_arrays::hash_map_from_arrays_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test generated_optimization::seed_08 ... ok
+test generated_optimization::seed_05 ... ok
+test hash_map_source::hash_map_source_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test generated_optimization::seed_04 ... ok
+test host_hooks::clocks_random_sources_and_taps_are_explicit_session_capabilities ... ok
+test generated_optimization::seed_01 ... ok
+test generated_optimization::seed_03 ... ok
+test generated_optimization::seed_07 ... ok
+test hosted_import_source_context::original_import_body_executes_in_fresh_and_reused_hosts ... ignored, explicit complete original import body with genuine audited Closure bytes
+test hosted_namespace_source_context::original_namespace_bodies_execute_in_fresh_and_reused_hosts ... ignored, explicit exact original bodies with scoped real source providers
+test host_hooks::file_diagnostics_history_recovery_and_capability_denial_are_stable ... ok
+test generated_optimization::seed_11 ... ok
+test generated_optimization::seed_10 ... ok
+test equality::complete_upstream_equality_bodies_execute_in_both_engines ... ok
+test host_hooks::runtime_scheduler_admission_bounded_reentrancy_and_arities ... ok
+test generated_optimization::seed_09 ... ok
+test host_hooks::load_file_uses_one_compiler_and_heap_with_macros_namespaces_and_require ... ok
+test host_hooks::host_hooks_have_macro_application_phase_witnesses ... ok
+test integer_predicates::original_table::whole_original_integer_table_passes_in_actual_hosts ... ignored, explicit audited genuine Closure dependency input
+test generated_optimization::seed_06 ... ok
+test cljc_prefixes::scalar_splice_and_nested_prefix_controls_execute_both_phases_and_lifecycles ... ok
+test ifn_rest::invalid_rest_forms_and_failed_invocations_leave_reused_sessions_usable ... ok
+test interop::malformed_special_forms_fail_with_source_spans_before_emission ... ok
+test ifn_public_context::ifn_receiver_metadata_failure_and_recovery_execute_in_both_phases ... ok
+test ifn_public_context::ifn_receiver_terminal_rest_slot_executes_in_both_phases ... ok
+test ifn_public_context::ifn_receiver_seven_through_fourteen_execute_in_both_phases ... ok
+test invoke_program_scope::unchanged_invoke_fixture_preserves_its_original_declared_call_failure ... ignored, exact unchanged optimizer source with genuine pin Closure dependency profile
+test interop::interop_has_direct_host_expectations_without_the_shared_encoder ... ok
+test ifn_public_context::ifn_receiver_fifteen_through_twenty_execute_in_both_phases ... ok
+test interop::referred_global_names_and_qualified_methods_survive_namespace_compilation ... ok
+test ifn_public_context::ifn_receiver_zero_through_six_execute_in_both_phases ... ok
+test iterator_helpers::iterator_helpers_preserve_session_owned_progress ... ok
+test iterator_name::iterator_name_original_rejects_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test hash_branch_effects::hash_branch_failures_leave_fresh_and_reused_hosts_usable ... ok
+test integer_predicates::predicates_keep_number_boundaries_once_only_effects_and_phase_isolation ... ok
+test hash_branch_effects::phase_oracles::fixed_hash_collisions ... ok
+test key_shapes::event_map_allocations_per_evaluation_are_pinned ... ok
+test integer_predicates::predicate_receiver_errors_leave_macro_host_reusable ... ok
+test ifn_rest::phase_oracles::apply_to ... ok
+test key_shapes::set_literals_add_their_other_members_to_a_shape_of_their_first_members ... ok
+test key_shapes::shape_key_hashes_are_the_runtime_hashes ... ok
+test key_shapes::keys_the_pool_cannot_tell_apart_are_built_at_their_site ... ok
+test language_namespace::complete_namespace_observation_executes_in_quickjs ... ignored, explicit namespace report audit; Python checks the complete raw outcome
+test key_shapes::transient_hash_maps_edit_the_nodes_they_own_in_place ... ok
+test iterator_helpers::iterator_helper_phase_isolation_diagnostics_and_repetition ... ok
+test iterator_name::canonical_iterator_name_preserves_rejection_and_same_host_recovery ... ok
+test key_shapes::transient_hash_sets_edit_the_nodes_they_own_in_place ... ok
+test iterator_helpers::iterator_helpers_execute_in_applications_and_macros ... ok
+test lazy::a_loadable_needs_light_lazy_loaded_before_its_namespace ... ok
+test key_shapes::generated_programs_build_shaped_maps_and_sets ... ok
+test lazy::a_standalone_loadable_type_embeds_the_runtime_at_every_level ... ok
+test ifn_rest::callable_rest_sequences_receivers_effects_and_lazy_values_match_references ... ok
+test lazy::analyzing_given_namespaces_requires_lazy_targets_among_them ... ok
+test lazy::analysis_errors_name_the_site ... ok
+test lazy::a_lazy_target_follows_its_unvisited_dependencies_and_a_loaded_one_is_resident ... ok
+test lazy::load_file_loads_the_namespaces_its_loadables_name ... ok
+test lazy::a_macro_expansion_can_write_a_loadable ... ok
+test lazy::an_alias_of_light_lazy_names_the_special_form ... ok
+test lazy::a_namespace_target_keeps_its_effects_and_drops_its_unread_definitions ... ok
+test lazy::loadable_getters_keep_cljs_invocation_semantics_at_every_level ... ok
+test key_shapes::shapes_build_the_entries_and_tries_the_builders_build ... ok
+test lazy::loadable_sites_and_the_require_graph_of_three_namespaces ... ok
+test lazy::the_repl_checks_lazy_targets_after_their_namespaces_load ... ok
+test lazy::a_var_only_a_loadable_reads_keeps_its_arities_and_what_it_reaches ... ok
+test key_shapes::shaped_maps_behave_as_maps_built_at_their_site ... ok
+test lazy::the_repl_loads_the_namespace_a_loadable_names ... ok
+test lazy::loadable_ideref_overrides_are_honored_at_every_level ... ok
+test lazy::loadables_deref_and_load_their_resident_targets_at_every_level ... ok
+test lazy::loadables_read_the_current_value_of_a_reassigned_target_at_every_level ... ok
+test literal_char_string::literal_char_string_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test literal_map_traversal::literal_map_traversal_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test lazy::the_entry_value_survives_lazy_namespaces_analyzed_after_it ... ok
+test literal_numeric::literal_numeric_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test literal_set_traversal::literal_set_traversal_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test lazy::phase_oracles::loadable_in_macro_generated_code ... ok
+test lazy::the_features_example_loads_its_features_in_one_file ... ok
+test iterator_helpers::phase_oracles::iterator_test_bodies ... ok
+test library_bodies::phase_oracles::string_test_bodies ... ok
+test interop::phase_oracles::interop_test_bodies ... ok
+test interop::phase_oracles::object_and_array_access ... ok
+test edn::migrated_native_edn_values_effects_and_errors_execute_without_interpreter ... ok
+test hash_branch_effects::hash_branch_effects_execute_in_fresh_and_reused_phases_1 ... ok
+test hash_branch_effects::hash_branch_effects_execute_in_fresh_and_reused_phases_2 ... ok
+test hash_branch_effects::hash_branch_effects_execute_in_fresh_and_reused_phases_3 ... ok
+test hash_map_from_arrays::public_from_arrays_preserves_exact_contracts_and_same_host_recovery ... ok
+test hash_branch_effects::hash_branch_effects_execute_in_fresh_and_reused_phases_4 ... ok
+test macros::clj_companions_are_never_compiler_sources ... ok
+test hash_branch_effects::hash_branch_effects_execute_in_fresh_and_reused_phases_0 ... ok
+test hash_branch_effects::hash_branch_effects_execute_in_fresh_and_reused_phases_5 ... ok
+test lazy::a_loadable_is_a_type_implementing_ideref_to_each_observer_at_every_level ... ok
+test macros::companion_files_alone_do_not_enable_inference_and_generated_errors_stay_located ... ok
+test macros::collection_macro_compilation_obeys_shared_limits_and_recovers_with_the_same_host ... ok
+test macros::compiled_source_macros_preserve_form_env_and_caller_owned_syntax ... ok
+test macros::compiler_assertion_configuration_removes_conditions_messages_and_prepost_checks ... ok
+test macros::control_macros_execute_directly_and_from_source_macro_namespaces ... ok
+test macros::cljs_env_has_binding_records_context_namespace_and_unevaluated_form ... ok
+test literal_char_string::canonical_literal_constants_and_same_host_diagnostic_recovery ... ok
+test macros::core_extension_queries_and_saved_protocol_methods_demand_visible_candidates ... ok
+test macros::declaration_bundle_demand::bundle_cycles_report_paths_and_declaration_products_support_redefinition ... ok
+test macros::declaration_bundle_demand::computed_targets_are_protocol_specific_and_initialized_once ... ok
+test find_effects::find_effects_execute_in_fresh_and_reused_phases ... ok
+test macros::declaration_bundle_demand::native_marker_higher_order_extend_protocol_and_replacement_follow_source_frontier ... ok
+test macros::declaration_bundle_demand::failed_bundle_is_sticky_and_fresh_compilation_repairs_it ... ok
+test macros::declaration_bundle_demand::reify_captures_and_executed_specify_use_canonical_expression_semantics ... ok
+test macros::declaration_bundle_demand::record_type_protocols_and_core_operations_share_lowering_with_separate_state ... ok
+test macros::control_iteration_captures_have_direct_expected_values_and_do_not_leak_recur ... ok
+test macros::default_interpreter_user_identity_does_not_hide_user_macro_source ... ok
+test macros::deferred_declaration_methods_expand_once_at_the_definition_site ... ok
+test macros::delayed_macro_expansion_excludes_future_extensions_even_after_new_dispatch_is_ready ... ok
+test macros::demanded_record_initializers_restore_generation_views_after_nested_demand_and_failure ... ok
+test macros::exhausted_expansion_depth_does_not_run_macro_effects ... ok
+test macros::failed_extension_generation_can_be_replaced_without_repeating_host_effects ... ok
+test macros::explicit_use_and_core_require_preserve_renamed_namespace_identity ... ok
+test macros::direct_auto_keywords_use_the_same_ordinary_aliases_as_macro_input ... ok
+test macros::frontier_replay_orders_extensions_by_declaration_after_late_initialization ... ok
+test macros::generated_collections_remain_macro_data_until_used_as_runtime_expressions ... ok
+test macros::generated_diagnostics_point_to_call_sites_and_explain_unsupported_runtime ... ok
+test macros::generated_exception_forms_keep_default_catches_and_original_values ... ok
+test macros::generated_destructured_methods_and_qualified_assertions_execute_in_javascript ... ok
+test macros::generated_metadata_evaluates_runtime_forms_and_preserves_macro_definition_metadata ... ok
+test hash_map_source::hash_map_source_preserves_exact_contracts_and_same_host_recovery ... ok
+test macros::generated_qualified_operations_keep_core_identity_under_lexical_and_global_shadowing ... ok
+test macros::javascript_form_bridge::caught_nested_conversion_limits_cannot_reset_the_session_budget ... ok
+test macros::generated_maps_preserve_owned_children_order_keys_and_quoted_data ... ok
+test macros::javascript_form_bridge::chunked_sequence_export_preserves_supplied_node ... ok
+test macros::javascript_form_bridge::definition_namespace_syntax_quote_and_gensym_are_hygienic ... ok
+test macros::javascript_form_bridge::form_and_bounded_environment_use_actual_nested_call_and_shadow_ids ... ok
+test macros::javascript_form_bridge::finite_lazy_results_realize_under_shared_control_and_handles_stay_session_owned ... ok
+test macros::javascript_form_bridge::generated_code_executes_in_order_and_preserves_number_bits ... ok
+test macros::javascript_form_bridge::literal_mutations_and_constructed_metadata_decode_without_stale_origins ... ok
+test macros::javascript_form_bridge::identity_preserves_owned_forms_and_executes_returned_code ... ok
+test macros::javascript_form_bridge::nested_services_share_forms_and_survive_gc_without_rust_collection_callbacks ... ok
+test macros::generated_vectors_and_keyword_names_execute_with_owned_semantic_values ... ok
+test macros::imported_macro_environment_keeps_qualified_ids_across_a_long_shadow_chain ... ok
+test macros::generated_map_keys_keep_reader_name_parts_before_runtime_spelling_equality ... ok
+test macros::generated_sets_preserve_members_source_effects_and_quoted_data ... ok
+test macros::javascript_form_bridge::numeric_macro_failures_keep_call_definition_and_helper_provenance ... ok
+test macros::javascript_form_bridge::qualified_environment_keys_keep_a_long_shadow_chain_and_binding_shape ... ok
+test macros::javascript_form_bridge::quoted_js_literals_preserve_nested_metadata_and_expansion_origins ... ok
+test macros::javascript_form_bridge::pinned_numeric_bodies_execute_inside_the_javascript_macro_bridge ... ok
+test macros::javascript_form_bridge::saved_scalars_keep_provenance_between_macro_calls ... ok
+test macros::javascript_form_bridge::saved_subforms_keep_provenance_after_input_release_and_collection ... ok
+test macros::javascript_form_bridge::rejection_never_calls_arbitrary_getters_or_to_string ... ok
+test macros::imported_macro_values_and_private_macros_remain_phase_errors ... ok
+test macros::legacy_macro_import_syntax_has_located_migration_diagnostics ... ok
+test macros::javascript_form_bridge::vector_sequence_export_reads_only_within_its_limit ... ok
+test macros::javascript_form_bridge::unchanged_scalar_arguments_keep_their_original_location ... ok
+test macros::javascript_form_bridge::reader_numeric_spellings_are_number_values_before_macro_execution ... ok
+test macros::javascript_form_bridge::quoted_js_literal_export_is_bounded_and_unbranded_nested_values_are_rejected ... ok
+test macros::javascript_form_bridge::number_expansion_data_matches_independent_application_heaps ... ok
+test library_bodies::phase_oracles::walk_test_bodies ... ok
+test macros::macro_arguments_share_form_elements_and_mutations ... ok
+test macros::javascript_form_bridge::unsupported_and_unbounded_results_are_located_and_fresh_sessions_recover ... ok
+test macros::macro_code_uses_cljs_dependencies_and_caller_aliases_without_allowing_cljs_conditionals ... ok
+test macros::macro_call_context_matches_cljs_and_recovers_after_expansion_failure ... ok
+test macros::macro_import_effects_follow_runtime_dependency_analysis_order ... ok
+test macros::locals_shadow_imported_macros_and_qualified_calls_keep_namespace_identity ... ok
+test macros::macro_import_validation_and_loader_failures_are_located ... ok
+test macros::ordinary_core_macros_expand_inside_lexical_environments ... ok
+test macros::macros_emit_mutual_letfn_with_the_complete_lexical_environment ... ok
+test macros::namespace_metadata_and_docstrings_reach_the_macro_environment_and_refresh_on_reuse ... ok
+test macros::macros_generate_resolved_reductions_and_fixed_callbacks_without_native_execution ... ok
+test macros::macro_namespace_effects_are_shared_once_per_compilation_with_fresh_reused_hosts ... ok
+test macros::macro_namespaces_select_cljs_and_refresh_on_each_compilation ... ok
+test macros::ordinary_helper_demand::failed_generation_retains_effects_error_and_defonce_until_redefined ... ok
+test macros::ordinary_helper_demand::defonce_preserves_pending_nil_false_undefined_and_allows_declared_slots ... ok
+test macros::ordinary_helper_demand::executed_nested_definitions_change_only_compilation_roots ... ok
+test macros::ordinary_helper_demand::mutual_recursion_and_located_unavailable_and_initialization_cycles ... ok
+test macros::ordinary_helper_demand::higher_order_collections_closures_apply_composition_and_branches_demand_values ... ok
+test macros::ordinary_helper_demand::connection_is_application_only_and_initializer_order_is_preserved ... ok
+test macros::ordinary_helper_demand::scopes_preserve_pending_failed_roots_parallel_initializers_and_overlay_set ... ok
+test macros::ordinary_helper_demand::saved_function_code_captures_and_active_global_generations ... ok
+test macros::ordinary_helper_demand::var_identity_quote_metadata_and_resolve_are_lazy_until_consumed ... ok
+test macros::overload_macro_environments_keep_method_parameters_and_rest_argument_identity ... ok
+test macros::macro_source_selection_splices_discards_conflicts_and_recovery_are_current ... ok
+test macros::quoted_generated_symbols_preserve_lone_surrogates_but_executable_names_reject_them ... ok
+test macros::ordinary_helper_demand::roots_are_fresh_on_reuse_and_standalone_mutation_is_never_replayed ... ok
+test macros::ordinary_requires_share_transitive_helpers_preserve_effects_privacy_and_shadowing ... ok
+test macros::ordinary_dual_use_require_executes_exact_tools_example_through_api_and_cli ... ok
+test macros::ordinary_macro_imports_also_expose_runtime_bindings ... ok
+test macros::quoted_macro_values_preserve_symbols_effects_and_generated_provenance ... ok
+test macros::reentrant_deferred_units::nested_demands_expand_each_source_occurrence_once_and_share_ir ... ok
+test macros::reentrant_deferred_units::analysis_cycles_are_distinct_from_ordinary_function_recursion ... ok
+test macros::recursive_and_growing_expansions_obey_depth_count_size_and_execution_limits ... ok
+test macros::reentrant_deferred_units::nested_execution_limit_is_terminal_and_a_clean_host_can_be_reused ... ok
+test local_api_source_context::original_local_api_sources_001_through_010_execute_in_both_phases ... ok
+test macros::restoring_a_dispatch_frontier_preserves_executed_helper_mutation ... ok
+test macros::required_unrelated_initializers_run_only_in_application_and_failure_is_not_swallowed ... ok
+test macros::reentrant_deferred_units::failed_nested_analysis_execution_and_conversion_do_not_poison_reused_host ... ok
+test macros::returned_forms_keep_utf16_negative_zero_and_number_boundaries ... ok
+test local_api_source_context::original_local_api_sources_011_through_020_execute_in_both_phases ... ok
+test local_api_source_context::original_local_api_sources_021_through_030_execute_in_both_phases ... ok
+test macros::reentrant_deferred_units::snapshots_freeze_visibility_and_macro_generations_but_roots_are_late_bound ... ok
+test macros::same_file_javascript_macros::explicit_quoted_js_forms_do_not_authorize_arbitrary_host_macro_results ... ok
+test macros::reentrant_deferred_units::definition_aliases_metadata_and_clean_session_options_are_frozen ... ok
+test local_api_source_context::original_local_api_sources_041_through_050_execute_in_both_phases ... ok
+test macros::same_file_javascript_macros::fixed_multiple_variadic_and_destructured_methods_use_hidden_abi ... ok
+test local_api_source_context::original_local_api_sources_031_through_040_execute_in_both_phases ... ok
+test macros::same_file_javascript_macros::generated_declarations_and_top_level_do_interleave_in_source_order ... ok
+test macros::same_file_javascript_macros::namespace_and_cljc_macros_use_definition_site_names_and_selected_branch ... ok
+test macros::same_file_javascript_macros::compile_and_analyze_emit_expand_hygienically_without_runtime_macro_roots ... ok
+test macros::same_file_javascript_macros::local_calls_shadow_unqualified_macros_but_phase_misuses_are_located ... ok
+test macros::shared_conditional_arguments_are_selected_before_macro_lowering ... ok
+test macros::shared_macros_and_runtime_refers_preserve_renamed_identity ... ok
+test macros::same_file_javascript_macros::source_order_preserves_expansions_and_macro_definition_generations ... ok
+test macros::same_file_javascript_macros::macro_and_value_binding_conflicts_include_declare_and_generated_definitions ... ok
+test macros::top_level_definition_groups::executed_bindings_restore_overlays_without_installing_temporary_roots ... ok
+test macros::top_level_definition_groups::earlier_products_and_recursive_functions_do_not_hide_real_cycles ... ok
+test macros::same_file_javascript_macros::reused_host_refreshes_source_macros_and_preserves_configuration ... ok
+test macros::top_level_definition_groups::generations_and_macro_expansion_are_source_ordered_without_replay ... ok
+test macros::top_level_definition_groups::complete_owners_preserve_captures_order_once_and_phase_roots ... ok
+test macros::top_level_definition_groups::own_initializers_observe_prior_generations_and_defonce_checks_conditional_installation ... ok
+test map_value_equiv::map_value_equiv_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test macros::top_level_definition_groups::exists_observes_unavailable_roots_values_and_conditional_products ... ok
+test multimethod_evidence::multimethod_fixture_provenance_retains_pinned_origins ... ok
+test multimethod_evidence::multimethod_fixtures_match_pinned_release_and_checkout ... ignored, requires Clojure CLI, Java, Node, and both pinned CLJS references
+test library_bodies::complete_promised_library_bodies_execute_in_both_phases ... ok
+test multimethod_evidence::portable_multimethod_fixtures_match_pinned_sci ... ignored, requires Clojure CLI, Java, and the pinned SCI checkout
+test macros::top_level_definition_groups::terminal_limit_in_owner_cannot_be_caught_and_host_recovers ... ok
+test local_api_source_context::original_local_api_sources_051_through_060_execute_in_both_phases ... ok
+test macros::top_level_definition_groups::throwing_owner_is_sticky_and_fresh_or_reused_hosts_recover ... ok
+test macros::same_file_javascript_macros::source_macros_read_the_host_assertion_setting_as_assert ... ok
+test macros::two_runtime_namespaces_use_cljs_macros_through_api_and_cli ... ok
+test macros::top_level_definition_groups::selected_groups_and_conditional_products_keep_lazy_availability ... ok
+test literal_numeric::canonical_numeric_literal_constants_and_same_host_diagnostic_recovery ... ok
+test multimethods::javascript_prototypes_and_custom_hierarchy_queries_preserve_cljs_behavior ... ok
+test multimethods::dispatch_cache_mutations_defaults_ambiguity_and_preferences ... ok
+test multimethods::alias_and_computed_method_targets_are_demanded_in_source_order ... ok
+test multimethods::functions_protocols_constructor_metadata_and_apply_preserve_arguments ... ok
+test multimethods::hierarchy_closure_diamonds_vectors_and_failure_categories ... ok
+test macros::top_level_definition_groups::exists_preserves_initializer_errors_cycles_visibility_and_reuse ... ok
+test local_api_source_context::original_local_api_sources_061_through_070_execute_in_both_phases ... ok
+test local_api_source_context::original_local_api_sources_071_through_080_execute_in_both_phases ... ok
+test namespace_completion::namespace_operation_errors_are_located_and_nested_requires_stay_invalid ... ok
+test multimethods::method_body_macros_expand_once_at_the_declaration_site ... ok
+test namespace_completion::ordinary_alias_conflicts_for_value_and_macro_namespaces_fail_in_both_modes ... ok
+test multimethods::macro_demands_methods_without_unrelated_initializers_and_keeps_phase_state ... ok
+test multimethods::macro_method_replacements_follow_declaration_frontiers ... ok
+test multimethods::sessions_and_dynamic_hierarchy_roots_invalidate_independently ... ok
+test macros::unsupported_generated_collection_program_forms_keep_file_macro_and_callsite_diagnostics ... ok
+test multimethods::public_api_arities_execute_in_macro_phase ... ok
+test namespace_completion::retired_macro_import_syntax_reports_located_migration_diagnostics_in_both_modes ... ok
+test namespace_completion::reserved_js_alias_warns_only_under_the_explicit_warning_api ... ok
+test multimethods::skipped_defmulti_declarations_do_not_shift_later_method_frontiers ... ok
+test npm_packages::bundler_import_bindings_are_distinct_identifiers_for_similar_package_names ... ok
+test namespace_completion::host_globals_and_imports_keep_constructor_function_identity ... ok
+test namespace_completion::bare_imports_are_ignored_and_reflection_does_not_leak_across_compilations ... ok
+test namespace_completion::namespace_reflection_uses_real_vars_and_includes_macro_generated_definitions ... ok
+test npm_packages::bundler_module_imports_only_surviving_package_references ... ok
+test npm_packages::name_policy_checks_package_lookups_as_the_registry_global ... ok
+test npm_packages::package_diagnostics_match_contract_probes ... ok
+test namespace_completion::closure_host_namespaces_resolve_aliases_refers_and_dotted_paths ... ok
+test npm_packages::package_as_alias_is_reader_only ... ok
+test npm_packages::string_libspecs_without_bindings_warn_instead_of_failing ... ok
+test namespace_completion::ordinary_top_level_requires_import_values_macros_and_shared_alias_metadata ... ok
+test npm_packages::bundler_chunks_import_packages_only_in_the_feature_chunk ... ok
+test npm_packages::bundler_modules_run_at_every_optimization_level ... ok
+test multimethod_evidence::multimethod_values_effects_and_errors_match_in_quickjs_and_node ... ok
+test namespace_completion::repeated_header_aliases_preserve_function_identity_and_macro_invocation ... ok
+test npm_packages::repl_requires_bind_packages_and_resolve_them_at_each_use ... ok
+test ns_name::metadata_names_preserve_qualification_and_session_isolation ... ok
+test npm_packages::unbundled_output_reads_the_registry_at_each_use ... ok
+test local_api_source_context::original_local_api_sources_081_through_090_execute_in_both_phases ... ok
+test local_api_source_context::original_local_api_sources_091_through_100_execute_in_both_phases ... ok
+test optimization::discarded_throwing_initializer_still_aborts_after_prior_effects ... ok
+test optimization::explicit_exports_retain_otherwise_unused_definitions ... ok
+test optimization::advanced_removes_unused_definitions_with_pure_initializers ... ok
+test object_equiv::complete_non_lite_object_equiv_body_executes_in_both_phases ... ok
+test ns_name::ns_name_result_types_execute_in_both_engines_and_macro_phase ... ok
+test optimization::advanced_treats_raw_javascript_as_an_opaque_leaf ... ok
+test object_equiv::failed_equiv_calls_leave_reused_application_and_macro_hosts_usable ... ok
+test local_api_source_context::original_local_api_sources_101_through_110_execute_in_both_phases ... ok
+test library_bodies::phase_oracles::set_test_bodies ... ok
+test map_entries::phase_oracles::map_entry_test_bodies ... ok
+test optimization::immutable_multi_arity_and_core_targets_specialize_in_rust ... ok
+test original_eval_source_probe::whole_original_eval_body_uses_installed_application_service ... ignored, explicit original eval source diagnostic; no semantic coverage credit
+test npm_packages::package_contract_cases_execute_against_a_host_registry ... ok
+test positional_constructors::positional_constructors_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test optimization::inert_macro_data_and_functions_containing_raw_js_do_not_become_runtime_roots ... ok
+test optimization::macro_only_require_retains_namespace_initialization_effects ... ok
+test optimization::retained_protocol_extensions_change_saved_dispatch ... ok
+test optimization::unused_initializers_and_standalone_effects_keep_order_and_run_once ... ok
+test optimization::observed_definition_results_and_nonconstant_set_failures_are_preserved ... ok
+test namespace_shadowing::located_unknown_namespaces_and_vars_recover_in_the_same_macro_host ... ok
+test optimization::mutable_escaped_dynamic_and_raw_targets_disable_fixed_entry_specialization ... ok
+test namespace_shadowing::qualified_vars_and_recursive_functions_survive_collisions_redefinition_and_phase_isolation ... ok
+test optimization::macro_only_helpers_are_removed_after_expansion_but_shared_helpers_survive ... ok
+test print_install::only_printing_operations_reach_the_printer ... ok
+test predicate_macro::function_predicate_preserves_single_evaluation_and_separate_phase_roots ... ok
+test print_install::advanced_programs_keep_the_printer_only_when_they_print ... ok
+test print_install::records_and_eductions_print_through_the_installed_printer ... ok
+test printing_completion::configured_host_output_and_error_sinks_remain_independent_after_failure ... ok
+test prim_seq::prim_seq_preserves_original_probe_and_separate_phase_roots ... ok
+test optimization::raw_js_the_terse_lexer_may_misread_runs_the_same_at_every_level ... ok
+test predicate_macro::function_predicate_rejects_wrong_macro_arities_and_recovers ... ok
+test printing_completion::alternative_printers_receive_fallback_and_recurse_with_options ... ok
+test optimization::specialization_preserves_mutable_callees_vars_and_dynamic_bindings ... ok
+test prim_seq::public_prim_seq_runs_full_literal_contract_in_applications_and_macros ... ok
+test printing_completion::rust_display_escapes_isolated_surrogates_and_preserves_valid_pairs ... ok
+test printing_completion::length_level_readability_metadata_and_option_overrides ... ok
+test printing_completion::utf16_strings_preserve_code_units_in_printing_and_captured_output ... ok
+test printing_completion::output_sinks_capture_nesting_flush_and_restoration ... ok
+test protocols::malformed_protocol_declarations_and_implementations_keep_locations ... ok
+test printing_completion::public_writer_helpers_and_console_hooks_execute_in_both_phases ... ok
+test protocols::primitive_programs_still_omit_the_runtime ... ok
+test printing_completion::javascript_object_prefixes_survive_depth_limits_in_both_phases_and_sessions ... ok
+test local_api_source_context::original_local_api_sources_111_through_121_execute_in_both_phases ... ok
+test constant_hashes::corpus_constants_embed_the_runtime_hash ... ok
+test public_constructors::constructors_report_invalid_arities_and_tail_arguments_without_overflow ... ok
+test optimization::advanced_keeps_initializers_that_may_throw_run_code_or_see_replaced_operations ... ok
+test print_install::collection_to_string_exists_only_where_printing_is_reachable ... ok
+test protocols::direct_saved_metadata_and_receiver_identity_have_literal_expectations ... ok
+test public_print_helper_gap::public_print_helper_rejection_and_actual_macro_recovery ... ignored, explicit public printing source diagnostic; zero semantic credit
+test map_entries::phase_oracles::entry_helpers ... ok
+test public_print_helpers::public_print_helpers_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit public printing helper actual phase audit
+test optimization::raw_js_names_resolve_only_to_holes_and_host_globals ... ok
+test prim_seq::prim_seq_arity_and_result_domain_failures_are_located_and_recover ... ok
+test public_constructors::explicit_collection_slots_and_protocol_membership_survive_construction ... ok
+test public_protocols::public_protocol_invalid_implementations_are_located ... ok
+test public_constructors::collection_constructor_phase_roots_and_bounded_repetition ... ok
+test protocols::protocol_dispatch_uses_public_slots_and_native_tables ... ok
+test object_equiv::collection_equiv_controls_execute_in_both_phases ... ok
+test public_print_helpers::writer_macro_results_reject_and_reused_hosts_recover_without_phase_state ... ok
+test protocols::declared_fixed_protocol_arities_include_large_signatures ... ok
+test quoted_when::when_condition_and_body_keep_original_diagnostic_spans ... ok
+test rapid_types::an_extension_without_methods_whose_value_is_used_compiles ... ok
+test namespace_completion::phase_oracles::namespace_operations ... ok
+test public_protocols::unsupported_protocol_values_keep_expansion_diagnostics_and_recover ... ok
+test quoted_when::quoted_when_body_shape_and_effects_execute_in_both_phases ... ok
+test rapid_types::callable_types_and_reify_keep_their_invoke_machinery ... ok
+test public_constructors::unsupported_constructor_results_keep_expansion_diagnostics_and_recover ... ok
+test printing_completion::complete_upstream_printing_bodies_execute_in_applications_and_macros ... ok
+test rapid_types::reachable_methods_follow_construction_inside_methods_to_a_least_fixed_point ... ok
+test positional_constructors::canonical_positional_constructors_and_same_host_diagnostic_recovery ... ok
+test printing_completion::phase_oracles::printing_test_namespaces ... ok
+test multimethods::phase_oracles::multimethod_test_bodies ... ok
+test rapid_types::devirtualized_calls_hold_their_operands_in_function_locals ... ok
+test reader::cljc_selection_metadata_and_inactive_forms_have_distinct_phase_evidence ... ok
+test rapid_types::types_without_instances_and_uncalled_methods_leave_the_output ... ok
+test reader::compiler_forms_can_be_constructed_without_any_evaluator ... ok
+test reader::anonymous_bindings_retain_source_and_expansion_provenance ... ok
+test reader::compiler_forms_and_ir_survive_host_teardown_without_native_roots ... ok
+test rapid_types::slots_named_through_javascript_global_paths_keep_their_methods ... ok
+test reader::invalid_reader_syntax_stays_located ... ok
+test map_reader_order::independent_map_sources_preserve_thresholds_groups_metadata_and_recovery ... ok
+test public_constructors::phase_oracles::constructor_test_bodies ... ok
+test reader::parser_acceptance_does_not_hide_contextual_reader_errors_or_numeric_duplicates ... ok
+test primitives::phase_oracles::primitives_test_bodies ... ok
+test reader::configured_readers_run_once_and_keep_effect_order_including_discards ... ok
+test reader::anonymous_nonpositive_bindings_execute_in_application_and_macro_phases ... ok
+test reader::runtime_reader_core_name_inventory_matches_the_source_reader_tables ... ok
+test rapid_types::types_keep_get_basis_only_where_the_program_names_it ... ok
+test reader::local_macro_shadows_referred_value_in_syntax_quote ... ok
+test rapid_types::protocols_and_dispatchers_are_defined_only_where_read ... ok
+test reader::runtime_reader_profiles_missing_alias_locations_and_nested_tag_reads ... ok
+test reader::macro_values_keep_semantic_types ... ok
+test rapid_types::devirtualized_calls_keep_the_dispatcher_semantics ... ok
+test reader::runtime_reader_uses_dynamic_namespace_and_restores_nested_reads ... ok
+test reader::complete_pinned_syntax_quote_and_tagged_bodies_execute_in_both_engines ... ok
+test record_receiver_binding::replay_actual_quickjs_inputs ... ignored, Independent replay of retained actual QuickJS inputs
+test reader::runtime_reader_macro_and_reused_session_contexts_are_explicit ... ok
+test reader::reader_api_arities_and_rest_execute_in_application_and_macro_phases ... ok
+test rapid_types::slots_the_program_names_keep_their_methods ... ok
+test records::invalid_record_fields_and_methods_have_located_diagnostics ... ok
+test reader::runtime_reader_registers_aliases_refers_and_source_namespace_entries ... ok
+test records::original_record_tags::unchanged_record_tag_namespace_records_current_read_failures ... ignored, explicit unchanged record-tag diagnostic; no completion credit
+test records::advanced_types_define_their_own_constructors ... ok
+test records::advanced_types_hold_their_masks_on_the_prototype ... ok
+test records::external_record_methods_affect_existing_instances_and_copies ... ok
+test rapid_types::runtime_names_in_javascript_global_paths_and_strings_keep_their_units ... ok
+test records::nested_record_redefinitions_copy_to_the_current_constructor ... ok
+test records::record_printing_metadata_and_constructor_internals_are_observable ... ok
+test reader::spelling_metadata_gensyms_and_public_tagged_data_execute_in_both_phases ... ok
+test records::record_updates_preserve_fields_and_drop_nominal_type_only_on_field_dissociation ... ok
+test records::records_expose_generated_protocols_without_gaining_map_callability ... ok
+test public_protocols::public_protocol_api_arities_and_macro_phase_execute ... ok
+test records::records_have_nominal_equality_and_structural_key_lookup ... ok
+test reflection_completion::namespace_refers_use_actual_public_var_identity ... ok
+test reflection_completion::namespace_view_contains_core_binding_kinds_without_engine_roots ... ok
+test records::per_type_constructors_keep_receivers_redefinitions_and_field_names ... ok
+test records::type_instances_hold_fields_as_own_data_properties ... ok
+test record_map_constructor_metadata::reflected_factory_metadata_does_not_force_unrelated_roots_and_failure_recovers ... ok
+test regex::regex_contract_passes_both_pinned_references ... ignored, requires Java, Clojure CLI and both pinned CLJS references
+test reflection_completion::complete_upstream_var_test_runs_metadata_callbacks_in_both_engines ... ok
+test reflection_completion::namespace_objects_keep_identity_equality_hash_and_explicit_host_objects ... ok
+test regex::upstream_regex_full_body_provenance_is_retained ... ok
+test regex::regex_failures_reuse_sessions_and_reset_clears_state_and_bounds ... ok
+test reify::malformed_methods_and_non_tail_recurrence_are_rejected ... ok
+test regex::built_in_backtracking_observes_budget_deadline_and_cancellation ... ok
+test rapid_types::every_way_to_make_or_reach_an_instance_keeps_its_methods ... ok
+test record_receiver_binding::demanded_receiver_methods_and_failure_recover_in_same_host ... ok
+test reflection_completion::namespace_api_arities_execute_in_applications_and_macros ... ok
+test reify::anonymous_types_and_metadata_copies_preserve_receiver_fields ... ok
+test reify::metadata_copies_retain_callable_and_object_overload_behavior ... ok
+test reify::nested_reify_captures_each_receiver_independently ... ok
+test reflection_completion::source_reflection_has_private_macro_metadata_and_lazy_identity ... ok
+test regex::regex_api_arities_and_complete_upstream_bodies_execute_in_both_phases ... ok
+test reify::raw_protocol_slots_use_the_call_receiver_and_live_capture_fields ... ok
+test regex::regex_macro_results_preserve_flags_tags_and_diagnose_host_values ... ok
+test printing_completion::phase_oracles::printing_helpers ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_00 ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_02 ... ok
+test public_protocols::phase_oracles::public_protocol_bodies ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_03 ... ok
+test reader::host_types_and_lazy_regex_tails_have_direct_runtime_observations ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_04 ... ok
+test record_receiver_binding::record_receiver_binding_executes_in_actual_phases_and_lifecycles ... ok
+test record_map_constructor_metadata::record_factory_metadata_executes_in_actual_phases_and_lifecycles ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_05 ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_06 ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_07 ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_08 ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_09 ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_10 ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_12 ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_11 ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_15 ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_13 ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_14 ... ok
+test runtime_manifest::an_owned_type_is_decorated_wherever_it_can_be_observed ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_16 ... ok
+test runtime_manifest::conditional_effects_wait_for_a_condition ... ok
+test runtime_manifest::every_unit_declares_exactly_the_runtime_bindings_it_references ... ok
+test runtime_manifest::every_unit_is_reachable_from_the_export_list ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_17 ... ok
+test runtime_manifest::conditional_effects_name_every_unit_that_can_use_them ... ok
+test runtime_manifest::kind_hooks_skip_records ... ok
+test runtime_manifest::names_bindings_and_effect_targets_resolve_to_units ... ok
+test runtime_manifest::print_runtime_unit_sizes ... ignored, measurement; prints the unit table
+test runtime_manifest::protocol_roots_are_the_protocols_effects_wait_for ... ok
+test runtime_manifest::record_methods_name_a_condition_of_the_effect_installing_each ... ok
+test runtime_manifest::slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_18 ... ok
+test runtime_manifest::units_concatenate_back_to_the_annotated_file_and_the_embedded_runtime ... ok
+test mapv_apply::applied_mapv_shortest_inputs_execute_in_fresh_and_reused_phases ... ok
+test runtime_map_traversal::runtime_map_traversal_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test runtime_manifest::hidden_edges_and_stale_requires_in_the_runtime_fail_validation ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_19 ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_20 ... ok
+test runtime_manifest::kind_hooks_are_installed_wherever_their_kind_can_be_built ... ok
+test runtime_references::every_core_operation_resolves_through_the_core_table ... ok
+test runtime_manifest::undeclared_load_time_effects_fail_validation ... ok
+test runtime_references::shared_and_lower_level_output_keep_reading_the_core_hub ... ok
+test runtime_references::raw_javascript_cannot_capture_direct_reads_or_cells ... ok
+test runtime_references::console_log_max_calls_the_max_unit_directly ... ok
+test runtime_set_traversal::runtime_set_traversal_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test protocols::phase_oracles::protocol_bodies ... ok
+test runtime_references::every_core_reference_slices_and_evaluates_on_its_own ... ok
+test primitives::phase_oracles::numeric_operations ... ok
+test rapid_types::records_keep_the_record_methods_their_operations_dispatch ... ok
+test runtime_slicing::levels_below_advanced_embed_the_whole_runtime_and_programs_without_reads_none ... ok
+test runtime_slicing::builtin_type_members_travel_with_their_constructors ... ok
+test runtime_slicing::retention_attributes_each_unit_to_the_first_root_and_its_source_span ... ok
+test runtime_set_order::promoted_set_order_and_immutable_versions ... ok
+test sci_cljc_accepted_probe::accepted_original_cljc_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test sci_cljc_accepted_probe::transport::original_cljc_transport_values_execute_in_both_phases_and_host_lifecycles ... ignored, explicit complete original source transport proof
+test sci_cljc_source_probe::original_cljc_sources_execute_in_fresh_and_reused_macro_hosts ... ignored, explicit original .cljc filename and actual phase audit
+test sci_execution::retained_sci_sources_execute_in_node_and_quickjs ... ignored, explicit source-pinned SCI Node/QuickJS audit; Python checks every observation
+test sci_gap_phase_probe::original_gap_sources_execute_through_actual_macro_hosts ... ignored, Explicit unchanged source applications and demanded macro observation audit
+test runtime_set_order::traversal_retains_key_representatives_without_rehash_or_equality_effects ... ok
+test sci_library_context::retained_library_sources_execute_in_node_and_quickjs ... ignored, explicit complete SCI library/import original-contract audit
+test sci_library_reconciliation::exact_library_contexts_execute_in_both_phases_and_host_lifecycles ... ignored, The standalone helper supplies exact 22 contexts and records fresh provenance
+test sci_record_declaration_context::original_record_declarations_execute_in_both_phases_and_lifecycles ... ignored, Explicit exact original source and current both-pin provenance helper
+test public_print_helpers::public_print_helper_contracts_preserve_callbacks_options_failures_and_sessions ... ok
+test sci_record_method_closure_controls::original_closure_and_ownership_controls ... ignored, Explicit finite original source and phase-boundary diagnostic control
+test sci_record_method_dialect::original_record_methods_execute_in_both_phases_and_lifecycles ... ignored, Explicit exact original source and current both-pin provenance helper
+test sci_record_source_context::original_record_contexts_execute_in_both_phases_and_lifecycles ... ignored, Explicit exact original source and current both-pin provenance helper
+test sci_service_probes::audit_original_sci_macroexpand_phase_services ... ignored, explicit SCI service/phase diagnostic; records macro failures, no gate coverage
+test runtime_slicing::extended_core_protocols_keep_their_dispatchers ... ok
+test reader::reader_values ... ok
+test runtime_slicing::bundler_modules_embed_the_same_slice ... ok
+test residual_completion::phase_oracles::cljs_2866_test ... ok
+test sci_source_context::retained_sources_execute_with_original_namespace_and_positions ... ignored, explicit original SCI declaration/namespace context audit
+test sci_symbol_keyword_context::original_symbol_keyword_source_executes_in_both_phases_and_lifecycles ... ignored, Explicit exact original source and current both-pin provenance helper
+test sci_unresolved_source_probe::unchanged_seven_sources_execute_actual_phases_and_lifecycles ... ignored, Explicit independently owned seven-source evidence candidate
+test runtime_references::dynamic_vars_and_redefinition_hooks_keep_their_runtime_cells ... ok
+test sequence_bodies::sequence_completion_fixtures_match_pinned_release_and_checkout ... ignored, requires Clojure CLI, Java, Node, and both pinned CLJS references
+test sci_service_probes::expansion_limits_and_finite_macro_returns_recover ... ok
+test residual_bodies::phase_oracles::residual_body_0 ... ok
+test residual_bodies::phase_oracles::residual_body_10 ... ok
+test sci_library_context::library_import_fixture_preserves_values_and_callbacks_in_both_engines ... ok
+test runtime_references::replaced_core_operations_read_through_output_cells ... ok
+test residual_bodies::phase_oracles::residual_body_2 ... ok
+test sequence_completion::deferred_retry_self_realization_apply_and_reduction_preserve_effects ... ok
+test reflection_completion::core_public_vars_are_callable_with_source_metadata_in_both_phases ... ok
+test residual_source_context::phase_oracles::apply_test_namespace ... ok
+test sci_service_probes::quoted_expansion_contract_and_dynamic_host_service_are_independent ... ok
+test sequence_contracts::cancellation_in_sequence_construction_demand_and_completion_is_terminal ... ok
+test sequence_completion::public_sequence_conversion_chunk_and_traversal_run_in_both_phases ... ok
+test sequence_transducers::lazy_sequence_fixtures_match_pinned_release_and_checkout ... ignored, requires Clojure CLI, Java, Node, and both pinned CLJS references
+test sequence_completion::iterator_demand_receivers_and_lazy_tail_retry_are_observable ... ok
+test sequence_transducers::sequence_fixture_provenance_retains_complete_body_hashes_and_literal_traces ... ok
+test sequence_completion::public_chunk_constructors_retain_backing_storage_and_custom_protocol_demand ... ok
+test sequence_contracts::user_iterators_and_callable_transforms_preserve_source_order ... ok
+test sequence_completion::native_es6_iteration_has_cljs_construction_and_advance_demand ... ok
+test sequence_contracts::sequence_public_arities_run_as_shared_macro_and_application_helpers ... ok
+test sci_source_context::original_source_macro_declarations_execute_phase_and_application_contracts ... ok
+test sequence_completion::shared_lazy_roots_are_phase_separated_and_failed_compilations_reset ... ok
+test sequences::namespaces_aliases_and_compiled_macro_output_use_compiled_comprehensions ... ok
+test sequence_object_equiv::failed_sequence_equiv_leaves_reused_application_and_macro_hosts_usable ... ok
+test sequences::malformed_comprehensions_are_rejected_and_transducer_constructors_are_callable ... ok
+test sequences::chunk_boundaries_and_repeated_traversal_have_literal_effect_counts ... ok
+test sequences::long_empty_prefixes_are_stack_safe_and_finite_demand_terminates ... ok
+test sci_service_probes::quoted_expansion_runs_without_services_in_application_and_macro_phases ... ok
+test size_ratchet::each_type_of_eight_records_costs_at_most_its_budget ... ok
+test sequences::nested_modifiers_keep_per_iteration_captures_and_stop_at_each_level ... ok
+test sequence_contracts::abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines ... ok
+test size_ratchet::features_loadable_sites_cost_under_200_bytes_each_at_advanced ... ok
+test sorted_collections::sorted_fixtures_match_pinned_release_and_checkout ... ignored, requires Clojure CLI, Java, Node, and both pinned CLJS references
+test runtime_slicing::advanced_output_embeds_exactly_the_units_its_runtime_reads_reach ... ok
+test size_ratchet::emitted_sizes_stay_under_their_ceilings ... ok
+test sorted_contracts::sorted_callbacks_survive_reused_sessions_and_custom_protocol_dispatch ... ok
+test size_ratchet::removed_definitions_match_each_fixture ... ok
+test sorted_contracts::sorted_membership_does_not_hash_keys ... ok
+test runtime_slicing::plain_calls_leave_out_the_variadic_arity_that_escaping_values_keep ... ok
+test source_metadata::incremental_files_errors_and_fresh_sessions_preserve_source_identity ... ok
+test source_metadata::generated_type_and_record_factories_keep_their_declaration_source ... ok
+test sorted_contracts::sorted_contract_executes_in_application_and_macro_phases ... ok
+test source_metadata::ordinary_namespace_files_and_macro_generated_definitions_keep_paths ... ok
+test string_fixtures::full_upstream_bodies_pass_both_pinned_cljs_references ... ignored, requires Clojure CLI, Java, Node, and both pinned CLJS references
+test string_fixtures::upstream_local_and_reference_witnesses_retain_identical_full_bodies ... ok
+test residual_completion::remaining_complete_residual_bodies_execute_in_both_phases ... ok
+test residual_bodies::complete_residual_bodies_execute_in_both_phases::row_01 ... ok
+test source_metadata::reserved_metadata_and_macro_definitions_keep_source_sites_in_both_engines ... ok
+test sorted_contracts::phase_oracles::sorted_receivers ... ok
+test runtime_slicing::the_slice_for_each_export_evaluates_on_its_own ... ok
+test strings::string_helpers_execute_in_compiled_macros_and_retain_namespace_vars ... ok
+test string_join::join_macro_execution_errors_and_result_domain_are_distinct ... ok
+test string_fixtures::verbatim_pinned_upstream_string_api_and_capitalization_property_execute ... ok
+test syntax_context::syntax_control_rest_and_recursion_execute_in_both_phases ... ok
+test reduce_kv_entries::map_entry_reduce_kv_fallback_executes_in_fresh_and_reused_phases ... ok
+test sorted_collections::complete_upstream_sorted_bodies_execute_in_both_engines ... ok
+test syntax_context::raw_nsstar_imports_keep_ordinary_cljs_macro_and_definition_ownership ... ok
+test map_value_equiv::map_value_equiv_preserves_exact_contracts_and_same_host_recovery ... ok
+test sequences::phase_oracles::iteration_test_bodies ... ok
+test syntax_context::syntax_definition_and_var_state_execute_in_both_phases ... ok
+test temp_dirs::a_failing_test_keeps_a_directory_its_variable_names ... ok
+test temp_dirs::a_failing_test_removes_its_directory ... ok
+test temp_dirs::failing_child ... ignored, fails on purpose in the child process of the tests below; passes elsewhere
+test temp_dirs::keep_tmp_keeps_the_directory_of_a_failing_test ... ok
+test syntax_context::syntax_exception_interop_and_template_execute_in_both_phases ... ok
+test temp_dirs::new_named_by_rejects_an_existing_directory_and_leaves_it_alone ... ok
+test string_join::join_contract_executes_in_fresh_and_reused_application_and_macro_phases ... ok
+test syntax_context::raw_nsstar_validation_keeps_source_ownership_and_recovers ... ok
+test strings::public_string_contracts_execute_in_quickjs_and_node ... ok
+test transducer_contracts::cancellation_at_each_boundary_stops_exactly_and_keeps_session_terminal ... ok
+test syntax_context::syntax_quote_and_case_star_execute_in_both_phases ... ok
+test syntax_context::syntax_raw_record_constructor_executes_in_both_phases ... ok
+test syntax_context::syntax_namespace_context_executes_with_actual_macro_environment ... ok
+test syntax_context::syntax_raw_type_constructor_executes_in_both_phases ... ok
+test transducers::eager_transducer_fixtures_match_pinned_release_and_checkout ... ignored, requires Clojure CLI, Java, Node, and both pinned CLJS references
+test transducer_contracts::ifn_and_ireduce_use_canonical_dispatch_and_complete_once ... ok
+test transducers::fixture_provenance_keeps_complete_upstream_bodies_and_native_case_identity ... ok
+test transducer_contracts::random_sampling_observes_redefined_rand_and_lazy_collection_demand ... ok
+test transducer_contracts::macros_transduce_in_canonical_js_and_export_persistent_forms ... ok
+test transducer_contracts::long_nested_transduction_uses_bounded_stack ... ok
+test test_metadata::callback_failure_preserves_same_host_recovery_and_nested_definitions ... ok
+test transducer_contracts::state_and_captures_survive_collection_and_failed_reentrant_completion ... ok
+test transients::transient_fixtures_match_pinned_release_and_checkout ... ignored, requires Clojure CLI, Java, Node, and both pinned CLJS references
+test transients::into_uses_custom_editable_protocol_and_real_transient_completion ... ok
+test test_metadata::callbacks_var_overrides_missing_and_non_callable_metadata_are_phase_local ... ok
+test sequences::phase_oracles::chunks_and_arities ... ok
+test sequence_transducers::lazy_sequence_values_effects_and_errors_match_in_quickjs_and_node ... ok
+test set_project::project_contract_executes_in_fresh_and_reused_application_and_macro_phases ... ok
+test type_inference::arithmetic_edge_cases_keep_the_runtime_results_and_evaluation_order ... ok
+test type_inference::callback_parameters_join_what_core_operations_pass ... ok
+test transients::transient_api_arities_protocols_and_macro_phase_execute ... ok
+test type_inference::closed_atom_results_have_the_types_of_their_states ... ok
+test sequence_object_equiv::sequence_and_name_equiv_contracts_execute_in_both_phases ... ok
+test type_inference::callback_feedback_joins_return_classes ... ok
+test type_inference::atom_prototype_accessors_keep_swap_state_unknown ... ok
+test type_inference::callback_shapes_respect_core_protocol_extensions ... ok
+test type_inference::arithmetic_comparisons_and_predicates_are_operators_for_every_operand ... ok
+test syntax_context::syntax_raw_nsstar_alias_executes_in_fresh_and_reused_macro_hosts ... ok
+test type_inference::and_or_become_short_circuits_when_the_first_operand_tests_as_it_is ... ok
+test type_inference::boolean_tags_are_trusted_like_upstream ... ok
+test type_inference::inference_types_literals_calls_locals_and_definitions ... ok
+test state::phase_oracles::atoms_and_volatiles ... ok
+test type_inference::function_parameters_are_called_directly_unless_they_may_be_nil ... ok
+test type_inference::every_callback_shape_matches_what_the_runtime_passes ... ok
+test type_inference::parameters_of_closed_functions_join_the_arguments_of_their_calls ... ok
+test transducers::phase_oracles::transducer_test_bodies ... ok
+test type_inference::inference_narrows_locals_by_the_tests_of_enclosing_ifs ... ok
+test type_inference::count_reads_the_length_of_strings_arrays_and_flat_vectors ... ok
+test type_inference::nth_on_flat_vectors_uses_the_direct_index_path ... ok
+test type_inference::parameter_types_converge_along_long_call_chains ... ok
+test test_metadata::metadata_test_original_source_passes_both_phases_and_recovers ... ok
+test type_inference::parameters_that_code_may_assign_are_not_narrowed ... ok
+test type_inference::swap_callback_parameters_join_atom_contents ... ok
+test type_inference::parameters_with_unseen_or_mixed_callers_keep_the_runtime_operations ... ok
+test type_inference::protocol_calls_on_parameters_of_one_program_type_are_devirtualized ... ok
+test type_inference::protocol_method_parameters_join_visible_calls ... ok
+test type_inference::keyword_lookup_on_known_records_reads_the_field ... ok
+test type_inference::equality_lowers_to_identity_for_primitives_and_spelling_for_keyword_literals ... ok
+test type_inference::replaced_core_operations_leave_callback_parameters_unknown ... ok
+test type_inference::truth_tests_drop_truth_when_javascript_truthiness_agrees ... ok
+test type_inference::typed_lowerings_apply_inside_callbacks_and_keep_the_results ... ok
+test type_inference::typed_lowerings_apply_to_atom_states_and_keep_the_results ... ok
+test type_inference::unknown_swap_writers_poison_atom_contents ... ok
+test type_inference::unused_element_wise_calls_of_inert_functions_are_removed ... ok
+test types::constructors_and_redefinitions_retain_instance_identity ... ok
+test types::constructors_keep_raw_masks_redefined_fields_and_proto_fields ... ok
+test types::immutable_fields_shadowed_fields_and_bad_methods_have_located_errors ... ok
+test types::custom_reduction_uses_protocols_without_requiring_a_sequence ... ok
+test type_inference::typed_lowerings_apply_to_the_parameters_of_closed_functions ... ok
+test types::field_reads_and_writes_remain_live_in_escaped_closures ... ok
+test utilities_bodies::utilities_completion_fixtures_match_pinned_release_and_checkout ... ignored, requires Clojure CLI, Java, Node, and both pinned CLJS references
+test type_inference::generated_namespace_programs_type_parameters ... ok
+test types::field_receiver_is_the_actual_method_call_receiver ... ok
+test types::mask_named_fields_read_as_at_none ... ok
+test types::ifn_extensions_affect_existing_instances ... ok
+test type_inference::typed_lowerings_apply_to_closed_atom_results_and_keep_the_results ... ok
+test type_inference::reassigned_call_properties_are_unsupported_at_advanced ... ok
+test sequences::phase_oracles::seqs_test_bodies ... ok
+test utilities_completion::scalar_conversions_saved_functions_and_metadata_remain_public ... ok
+test transients::phase_oracles::transient_bodies ... ok
+test utilities_completion::array_initializers_preserve_lazy_demand_holes_and_receiver_effects ... ok
+test utilities_completion::public_utilities_execute_in_applications_and_macros ... ok
+test transients::complete_upstream_transient_bodies_execute_in_both_engines ... ok
+test utility_macros::locking_evaluates_only_its_body ... ok
+test type_inference::typed_lowerings_apply_inside_protocol_methods_and_keep_the_results ... ok
+test var_test_metadata::executed_nested_definitions_expose_callback_metadata_and_overlays ... ok
+test utility_macros::unchecked_max_and_min_compare_their_operands_once ... ok
+test var_test_metadata::declarations_without_initializers_do_not_attach_executable_tests ... ok
+test warnings::arithmetic_types_join_loop_recur_and_exclude_nonreturning_throw_paths ... ok
+test warnings::arity_index_keeps_metadata_overloads_variadics_and_redefinition_union ... ok
+test types::phase_oracles::deftype_test_namespace ... ok
+test warnings::declared_arglists_and_overload_warnings_keep_definition_names ... ok
+test warnings::deferred_warning_placeholders_reuse_later_definition_identity ... ok
+test sci_record_duplicate_method_probe::original_duplicate_method_executes_with_last_dispatch_in_both_phases ... ok
+test warnings::local_shadowing_earmuffs_and_unbound_destructuring_are_public_diagnostics ... ok
+test warnings::namespace_arity_index_retains_overloads_redefinitions_and_namespace_identity ... ok
+test warnings::nested_namespace_operations_report_context_and_require_can_be_shadowed ... ok
+test warnings::numeric_warning_order_and_unary_division_preserve_source_operations ... ok
+test warnings::pure_function_expansion_locates_forward_reference_at_original_symbol ... ok
+test warnings::namespace_private_access_and_reserved_alias_have_structured_locations ... ok
+test warnings::record_factory_and_constructor_arities_have_different_valid_signatures ... ok
+test warnings::warning_mode_retains_strict_default_and_reports_before_later_failure ... ok
+test type_inference::protocol_method_parameters_keep_hidden_callers ... ok
+test utility_macros::js_debugger_and_js_comment_emit_raw_statements_whose_value_is_nil ... ok
+test public_constructors::public_constructor_api_arities_and_macro_phase_execute ... ok
+test utility_macros::simple_benchmark_runs_its_expression_and_prints_one_line ... ok
+test warnings::checked_array_warnings_use_inferred_receivers_and_are_opt_in ... ok
+test var_test_metadata::reflected_callback_generations_keep_saved_values_and_current_root_reads ... ok
+test var_test_metadata::reflected_callbacks_are_real_stable_and_do_not_force_pending_roots ... ok
+test var_test_metadata::var_metadata_snapshots_ready_callback_properties ... ok
+test var_test_metadata::reflected_metadata_failure_is_sticky_and_clean_hosts_recover ... ok
+test utility_macros::time_prints_the_elapsed_milliseconds_and_returns_the_value ... ok
+test var_test_metadata::direct_var_test_reflection_matches_exact_reference_source_in_both_phases ... ok
+test utilities_completion::seeded_number_parse_roundtrips_cover_one_hundred_thousand_inputs_in_both_phases ... ok
+test size_ratchet::fixtures_print_identical_results_at_every_level ... ok
+test sequence_bodies::complete_upstream_sequence_completion_bodies_execute_in_both_engines ... ok
+test type_inference::generated_closed_functions_print_the_same_at_every_level ... ok
+test residual_source_context::complete_residual_namespace_bodies_execute_in_both_phases ... ok
+test utilities_completion::phase_oracles::utility_test_bodies ... ok
+test sequences::phase_oracles::iteration_seq_equals_reduce ... ok
+test string_fixtures::all_131_native_string_bodies_execute_with_canonical_printing_evidence ... ok
+test watch_keys::watch_key_effects_execute_in_fresh_and_reused_phases ... ok
+test utilities_bodies::complete_upstream_utilities_completion_bodies_execute_in_both_engines ... ok
+test runtime_map_order::independent_runtime_maps_preserve_complete_order_effects_and_recovery ... ok
+test transducers::eager_transducer_values_effects_and_errors_match_in_quickjs_and_node ... ok
+
+test result: ok. 958 passed; 0 failed; 56 ignored; 0 measured; 0 filtered out; finished in 83.22s
+
+     Running tests/dev_repl.rs (target/debug/deps/dev_repl-8f0073f55f08c009)
+
+running 6 tests
+test pages_cannot_evaluate ... ok
+test errors_come_back_located ... ok
+test definitions_cross_between_the_repl_and_reloads ... ok
+test a_form_round_trips_through_a_node_runtime ... ok
+test sessions_belong_to_one_server ... ok
+test two_runtimes_and_selection ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s
+
+     Running tests/dev_server.rs (target/debug/deps/dev_server-cb0f973622fc4864)
+
+running 18 tests
+test get_serves_the_build_the_sources_and_a_page ... ok
+test startup_warnings_reach_a_runtime ... ok
+test a_connected_runtime_loads_a_saved_change ... ok
+test a_macro_change_loads_the_users_unit ... ok
+test a_step_finds_the_hooks_again ... ok
+test a_late_runtime_catches_up ... ok
+test a_once_edit_loads_the_always_namespaces_and_their_dependents ... ok
+test reload_fixtures_print_their_output_through_the_server ... ok
+test hooks_keep_their_namespace_order_across_steps ... ok
+test the_client_runs_hooks_in_order ... ok
+test a_failed_step_is_not_replayed ... ok
+test a_compile_error_is_pushed_without_a_load ... ok
+test a_once_namespace_is_never_reloaded ... ok
+test a_replay_runs_again_a_unit_that_threw ... ok
+test an_always_namespace_loads_with_every_load ... ok
+test a_runtime_reconnects_and_catches_up ... ok
+test reload_dependents_reload_downstream_namespaces_in_order ... ok
+test an_invoke_replies_with_the_printed_value ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.60s
+
+     Running tests/dev_watch.rs (target/debug/deps/dev_watch-5edfae54fee2219b)
+
+running 14 tests
+test watch_refuses_missing_options_and_a_failing_first_build ... ok
+test a_unit_that_cannot_be_written_ends_the_watch ... ok
+test a_macro_change_rewrites_the_units_that_use_it ... ok
+test a_require_cycle_is_refused ... ok
+test a_replaced_symbolic_link_is_still_its_namespace_source ... ok
+test a_failing_form_leaves_the_previous_unit ... ok
+test the_first_namespace_rewritten_registers_every_namespace ... ok
+test new_definitions_and_aliases_register_the_namespace_once ... ok
+test a_form_with_raw_javascript_runs_its_whole_unit ... ok
+test a_saved_change_rewrites_the_unit_the_running_build_reloads ... ok
+test a_file_is_read_in_its_own_namespace ... ok
+test a_source_root_library_overrides_the_bundled_one ... ok
+test a_trailing_directive_keeps_the_namespace_value_nil ... ok
+test a_new_require_adds_a_unit ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.13s
+
+     Running tests/evaluation/main.rs (target/debug/deps/evaluation-7e5db7e7b76c7292)
+
+running 111 tests
+test dev_session::nsstar_honors_warning_mode_for_a_reserved_alias ... ok
+test eval_cli::evaluation_options_are_validated_and_help_lists_both_families ... ok
+test dev_session::a_failing_form_after_a_successful_one_ends_with_its_error ... ok
+test dev_session::load_file_loads_its_forms_and_stays_in_its_namespace ... ok
+test dev_session::an_ns_form_replaces_its_namespace_requires ... ok
+test dev_session::a_unit_registers_the_namespaces_that_changed ... ok
+test dev_session::reload_spellings_compile_the_text_the_provider_returns_now ... ok
+test dev_session::require_reload_compiles_the_source_the_provider_returns_now ... ok
+test dev_session::a_require_loads_each_namespace_once_in_dependency_order ... ok
+test dev_session::reflection_sees_every_namespace_of_the_session ... ok
+test dev_session::a_unit_that_throws_while_a_namespace_loads_stops_the_load_until_a_retry ... ok
+test dev_session::supplied_ns_forms_use_their_data ... ok
+test dev_session::a_form_is_an_invoke_of_its_unit ... ok
+test eval_cli::invalid_utf8_repl_input_is_a_fatal_host_read_error ... ok
+test dev_session::units_carry_source_maps_of_their_forms ... ok
+test eval_cli::repl_continues_after_reader_analysis_execution_and_print_errors ... ok
+test dev_session::warning_mode_compiles_uses_of_vars_defined_later ... ok
+test dev_session::runtime_load_file_delivers_warnings_and_stops_on_receiver_error ... ok
+test eval_cli::repl_retains_history_definitions_namespace_and_current_reader_context ... ok
+test eval_cli::repl_compacts_consumed_lines_and_preserves_original_locations ... ok
+test eval_cli::original_raw_nsstar_source_executes_with_explicit_roots ... ok
+test eval_cli::repl_eof_reports_incomplete_input_once_and_errors_do_not_shift_history ... ok
+test eval_cli::repl_multiline_uses_parser_rules_and_preserves_single_execution ... ok
+test eval_cli::repl_shares_the_language_input_cursor_and_recovers_runtime_reads ... ok
+test eval_cli::file_execution_handles_utf8_paths_file_binding_and_runtime_stdin ... ok
+test eval_cli::isolated_copy_loads_only_explicit_cljs_and_cljc_roots ... ok
+test eval_cli::eval_text_stdin_empty_and_unicode_need_only_the_embedded_binary ... ok
+test eval_cli::script_failures_keep_output_and_never_print_a_success_result ... ok
+test eval_cli::async_functions_return_promises_under_eval_and_repl ... ok
+test eval_sessions::compiler_policy_checks_aliases_and_runtime_eval ... ok
+test eval_cli::warnings_flag_turns_warning_mode_on_and_prints_warnings ... ok
+test dev_session::ns_metadata_reaches_the_macro_environment_and_refreshes ... ok
+test eval_cli::unhandled_rejections_warn_in_the_repl_and_fail_a_script ... ok
+test eval_nsstar::malformed_nsstar_is_located_and_failed_imports_do_not_publish_aliases ... ok
+test eval_sessions::contextual_anonymous_reader_data_and_failures_reuse_the_session ... ok
+test eval_cli::definition_metadata_uses_text_file_and_incremental_repl_locations ... ok
+test eval_cli::examples_dev_loads_and_reloads_through_require_in_the_repl ... ok
+test eval_sessions::default_reader_and_assertion_options ... ok
+test eval_sessions::language_errors_keep_effects_and_restore_scopes ... ok
+test eval_sessions::configured_data_readers_analysis_and_host_bindings ... ok
+test eval_sessions::exception_data_survives_the_session ... ok
+test eval_cli::imported_macro_helpers_run_script_initializers_once ... ok
+test eval_sessions::name_policy_preserves_local_and_global_shadowing ... ok
+test eval_sessions::output_input_arguments_and_print_scopes ... ok
+test eval_sessions::promise_jobs_refresh_the_stack_boundary ... ok
+test eval_sessions::promise_job_exceptions_keep_their_values ... ok
+test eval_cli::number_js_macros_and_clj_migration_are_explicit ... ok
+test eval_sessions::handles_are_local_and_reset_invalidates_old_ids ... ok
+test eval_sessions::promise_jobs_run_after_a_loaded_file ... ok
+test eval_sessions::promise_jobs_run_after_each_top_level_form ... ok
+test eval_nsstar::unchanged_complete_nsstar_source_executes_in_fresh_and_reused_sessions ... ok
+test eval_cli::script_output_and_final_result_are_distinct ... ok
+test eval_sessions::typed_callbacks_reenter_and_preserve_owned_errors ... ok
+test eval_sessions::protocol_tables_are_session_local ... ok
+test eval_sessions::unhandled_promise_rejections_are_reported_after_the_jobs ... ok
+test dev_session::an_ns_form_with_every_clause_behaves_as_in_compile ... ok
+test eval_cli::runtime_and_rendering_limits_fail_without_partial_results ... ok
+test evaluator::startup_measurement ... ignored, focused startup/retention measurement; run explicitly in release mode
+test eval_sessions::source_output_limits_and_oom_are_explicit ... ok
+test eval_sessions::failed_macro_compile_can_recover_in_same_session ... ok
+test evaluator::teardown_does_not_invoke_mutated_collection_methods ... ok
+test evaluator::complete_collection_fixture_preserves_typed_values_and_printing_in_both_engines ... ok
+test evaluator::unit_runtime_parameter_preserves_raw_javascript_hygiene ... ok
+test evaluator_conformance::anonymous_parameter_ids_compare_by_rank_within_one_observation ... ok
+test evaluator_conformance::audit_explicit_library_import_adaptations ... ignored, explicit supplemental library migration audit; never updates expectations
+test evaluator_conformance::audit_historical_corpus_with_compiler_evaluator ... ignored, explicit migration audit; prints observations, never updates expectations
+test evaluator_conformance::canonical_anonymous_accounting_requires_exact_body_and_complete_observation ... ok
+test evaluator_conformance::cljs_projection_keeps_numeric_bits_and_explicitly_rejects_jvm_only_numbers ... ok
+test eval_sessions::namespaces_sources_and_reader_aliases_are_incremental ... ok
+test eval_sessions::incremental_application_roots_and_macro_roots_are_independent ... ok
+test eval_sessions::macroexpand_seed_preserves_pending_reader_declarations ... ok
+test evaluator::units_share_brands_and_functions_but_sessions_reject_foreign_ids ... ok
+test dev_session::units_without_a_heap_reload_a_running_dev_build_in_node ... ok
+test evaluator::javascript_capabilities_are_explicit_and_demanded ... ok
+test eval_sessions::runtime_eval_and_macroexpand_use_the_compiler ... ok
+test eval_sessions::session_drop_releases_callback_captures_and_cyclic_application_roots ... ok
+test evaluator::terminal_controls_survive_catch_and_fresh_host_sessions_recover ... ok
+test eval_sessions::idle_time_does_not_expire_retained_values ... ok
+test evaluator_conformance::every_historical_sci_case_has_an_evaluator_disposition ... ok
+test evaluator::deadline_allocation_and_panics_produce_owned_failures ... ok
+test evaluator_conformance::quoted_macro_diagnostic_receipts_preserve_exact_historical_gap_bodies ... ok
+test evaluator_conformance::stack_depth_accounting_requires_exhaustion_after_reentry ... ok
+test evaluator_conformance::recorded_observations_contain_no_other_process_wide_ids ... ok
+test eval_sessions::cancellation_and_limits_require_reset_but_host_compilation_recovers ... ok
+test sci_reference::committed_sci_corpus_is_typed_complete_and_pinned ... ok
+test sci_reference::pinned_sci_reference_matches_committed_outcomes ... ignored, explicit SCI checkout/JVM reference job; requires LIGHT_CLJS_SCI_CHECKOUT
+test sci_reference::protocol_preserves_numeric_categories_utf16_and_collection_identity ... ok
+test sci_reference::protocol_rejects_lossy_unknown_malformed_and_unbounded_results ... ok
+test eval_sessions::canonical_libraries_transducers_and_number_semantics ... ok
+test eval_nsstar::source_macros_referrals_imports_and_ordered_effects_keep_the_declared_owner ... ok
+test eval_sessions::embedding_eval_reference_cases_keep_portable_expected_results ... ok
+test evaluator_migration::quoted_js_macro_literals_retain_explicit_descriptors ... ok
+test eval_sessions::promise_jobs_stay_within_the_session_limits ... ok
+test eval_cli::time_prints_elapsed_milliseconds_under_eval_and_repl ... ok
+test evaluator::compiler_units_execute_with_identical_expected_results_in_quickjs_and_node ... ok
+test evaluator::clean_sessions_drop_cycles_callbacks_and_mutable_roots ... ok
+test eval_examples::every_compiled_example_runs_fresh_without_java_node_or_project_files ... ok
+test evaluator::wide_radix_literals_round_once_in_applications_and_macro_arguments ... ok
+test evaluator::quoted_javascript_macro_literals_execute_in_fresh_quickjs_and_node_heaps ... ok
+test evaluator_migration::acceptance_programs_execute_in_independent_heaps_with_fresh_and_reused_hosts ... ok
+test dev_session::a_standalone_session_survives_idle_time_between_compilations ... ok
+test evaluator_conformance::historical_sci_cases_execute_their_dispositions_3 ... ok
+test evaluator_conformance::historical_sci_cases_execute_their_dispositions_7 ... ok
+test evaluator_conformance::historical_sci_cases_execute_their_dispositions_8 ... ok
+test evaluator_conformance::historical_sci_cases_execute_their_dispositions_0 ... ok
+test evaluator_conformance::historical_sci_cases_execute_their_dispositions_4 ... ok
+test evaluator_conformance::historical_sci_cases_execute_their_dispositions_5 ... ok
+test evaluator_conformance::historical_sci_cases_execute_their_dispositions_6 ... ok
+test evaluator_conformance::historical_sci_cases_execute_their_dispositions_9 ... ok
+test evaluator_conformance::historical_sci_cases_execute_their_dispositions_1 ... ok
+test evaluator_conformance::historical_sci_cases_execute_their_dispositions_2 ... ok
+
+test result: ok. 107 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 13.13s
+
+     Running tests/execution.rs (target/debug/deps/execution-5e210dd8de4de1df)
+
+running 96 tests
+test analyzer_boundary_classifications_match_reference ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test collection_namespace_macros_match_standard_clojurescript_typed_outcomes ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test compiled_control_matches_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_core_protocol_matches_pinned_isolated_references ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_deferred_match_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_definitions_match_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_definitions_namespaces_match_pinned_clojurescript ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_deftype_match_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_deftype_namespaces_match_pinned_clojurescript ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_destructuring_matches_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_exceptions_match_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_extension_matches_pinned_isolated_references ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_extension_namespaces_match_pinned_references ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_helpers_match_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_interop_match_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_invocation_matches_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_letfn_matches_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_metadata_match_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_overloads_match_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_protocols_match_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_protocols_namespaces_match_pinned_clojurescript ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_record_match_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_record_namespaces_match_pinned_clojurescript ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_recur_matches_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_reify_events_match_pinned_clojurescript ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_reify_match_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_sequences_match_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_state_matches_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test compiled_state_namespaces_match_pinned_clojurescript ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test dependency_initialization_matches_standard_clojurescript ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test generated_execution::generated_programs_match_standard_clojurescript ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test generated_execution::generated_seed_manifest_is_stable_and_bounded ... ok
+test harness_preserves_symbol_list_seq_vector_and_nil_tags_independently ... ok
+test harness_encodes_special_values_and_continues_after_failures_independently ... ok
+test compiled_deftype_namespace_identity_and_dispatch ... ok
+test compiled_extension_namespace_aliases ... ok
+test compiled_reify_event_objects_cross_namespace_aliases ... ok
+test compiled_record_namespace_identity_and_dispatch ... ok
+test language_combinations::bounded_language_combinations_match_pinned_compilers ... ignored, requires Clojure CLI, Java, Node, and pinned compiler references
+test exceptions_preserve_identity_and_abrupt_completion_without_the_encoder ... ok
+test compiled_protocols_persist_across_namespaces ... ok
+test harness_distinguishes_trusted_language_values_and_forged_host_tags ... ok
+test language_combinations::integrated_language_program_matches_pinned_compilers ... ignored, requires Clojure CLI, Java, Node, and pinned compiler references
+test language_combinations::late_language_helpers_match_pinned_compilers ... ignored, requires Clojure CLI, Java, Node, and pinned compiler references
+test generated_execution::generated_comparison_rejects_changed_traces_errors_and_missing_results ... ok
+test harness_preserves_utf16_units_and_embedded_controls_independently ... ok
+test destructuring_and_assertions_execute_without_the_shared_encoder ... ok
+test deeply_nested_accepted_source_compiles_and_executes ... ok
+test empty_files_and_top_level_forms_execute ... ok
+test lexical_namespace_bindings_match_standard_clojurescript ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test compiled_overloads_expose_callable_entries_and_keep_large_rest_off_the_js_stack ... ok
+test letfn_identity_guarantees_do_not_reuse_nested_or_iterated_group_slots ... ok
+test compiled_state_persists_across_namespaces ... ok
+test letfn_retains_independent_groups_and_recur_iteration_captures_without_the_encoder ... ok
+test namespace_program_matches_standard_clojurescript_stdout ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test invocation_runtime_obeys_receivers_and_large_lazy_arguments_without_the_encoder ... ok
+test missing_duplicate_reordered_and_extra_outcomes_fail ... ok
+test numeric_functions_match_pinned_values_effects_and_stdout ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test pinned_destructuring_differences_remain_explicit ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test pinned_letfn_var_reuse_differences_remain_explicit ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test programs_match_standard_clojurescript_results_and_effects ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test reader_forms_match_pinned_values_effects_and_stdout ... ignored, requires both pinned ClojureScript references, Java and Node
+test language_combinations::doto_evaluates_its_target_once_and_preserves_order_and_identity ... ok
+test language_combinations::run_bang_stops_at_reduced_even_on_an_unbounded_input ... ok
+test reference_selection_requires_explicit_checkout_identity ... ok
+test compiled_definitions_preserve_namespace_macro_and_callback_scopes ... ok
+test language_combinations::integrated_language_program_combines_cljs_cljc_and_compiled_macros ... ok
+test destructured_method_conditions_check_each_arity_and_receiver_context ... ok
+test harness_rejects_cycles_through_language_values_and_invalid_adapters ... ok
+test shared_namespaces_and_macro_inference_match_standard_clojurescript ... ignored, requires Clojure CLI, Java, Node, and both explicitly pinned references
+test slash_bindings_match_standard_clojurescript_across_namespaces ... ignored, requires Clojure CLI, Java, Node, and the pinned ClojureScript Maven dependencies
+test resolved_numeric_functions_evaluate_each_argument_once_in_order ... ok
+test recurrence_keeps_a_constant_stack_and_snapshot_closures_without_the_encoder ... ok
+test large_vector_literals_do_not_use_the_javascript_argument_stack ... ok
+test large_emitted_reduction_is_iterative_and_keeps_the_ordinary_call_abi ... ok
+test namespace_macro_generated_overloads_and_metadata_execute ... ok
+test harness_rejects_invalid_cases_and_unserializable_values ... ok
+test map_source_order_and_numeric_literal_collisions_have_explicit_owned_semantics ... ok
+test set_reader_rejection_and_distinct_operand_effects_stay_separate ... ok
+test reduced_markers_are_opaque_harness_failures_even_when_nested_or_traced ... ok
+test language_combinations::completion_helpers_preserve_lazy_stops_metadata_and_callback_order ... ok
+test try_analysis_follows_source_order_and_case_handles_vector_constants ... ok
+test collection_namespace_macros_execute_typed_results_once_with_fresh_runtime_state ... ok
+test generated_execution::generated_programs_preserve_results_and_traces_under_transformations ... ok
+test map_encoder_checks_count_duplicates_types_and_unordered_entries_independently ... ok
+test set_encoder_preserves_tags_checks_duplicates_and_sorts_only_members ... ok
+test compiled_helpers_preserve_values_effects_and_failures ... ok
+test runtime_values_have_private_immutable_storage ... ok
+test compiled_interop_preserves_host_results_effects_and_failures ... ok
+test process_failures_and_timeouts_retain_current_case_identity_and_source ... ok
+test compiled_extension_outcomes_in_fresh_processes ... ok
+test compiled_sequences_preserve_values_effects_and_failures ... ok
+test numeric_fixture_applications_match_expected_outcomes_in_quickjs_and_node ... ok
+test language_combinations::bounded_language_combinations_execute_values_effects_stdout_and_failures ... ok
+test compiled_core_protocol_outcomes_in_fresh_processes ... ok
+test tiny_programs_execute_with_expected_values_and_effects ... ok
+
+test result: ok. 53 passed; 0 failed; 43 ignored; 0 measured; 0 filtered out; finished in 34.45s
+
+     Running tests/frontend/main.rs (target/debug/deps/frontend-427829dc38bbc00d)
+
+running 109 tests
+test analyzer::fixed_function_signature_boundaries_have_precise_diagnostics ... ok
+test analyzer::keyword_literals_own_names_and_resolve_namespace_aliases_without_macro_execution ... ok
+test analyzer::analysis_owns_its_values_and_compile_distinguishes_error_stages ... ok
+test analyzer::initializer_references_the_previous_binding ... ok
+test analyzer::different_spellings_have_distinct_ids_even_when_munging_would_collide ... ok
+test analyzer::letfn_allocates_group_identities_before_initializers_and_restores_scope ... ok
+test analyzer::invalid_special_forms_have_source_diagnostics ... ok
+test analyzer::context_tracks_discarded_returned_and_argument_values ... ok
+test analyzer::literal_keyword_arity_rejections_are_located_even_in_dead_branches ... ok
+test analyzer::named_function_and_parameter_ids_restore_enclosing_local ... ok
+test analyzer::closures_resolve_to_distinct_persistent_binding_ids ... ok
+test analyzer::reduction_core_values_have_resolved_ids_without_native_macro_initialization ... ok
+test analyzer::additional_numeric_categories_compile_in_nested_contexts ... ok
+test analyzer::scope_exit_retains_binding_ids_and_restores_reference_targets ... ok
+test analyzer::numeric_literals_use_cljs_number_rounding_without_safe_integer_restrictions ... ok
+test analyzer::unresolved_bare_names_remain_strict_while_dotted_host_paths_resolve ... ok
+test analyzer::unresolved_initializers_and_exited_scopes_report_exact_byte_spans ... ok
+test analyzer::unsupported_reader_forms_macros_and_language_forms_are_explicit ... ok
+test analyzer::sets_lower_owned_values_and_reject_duplicate_readable_forms_with_spans ... ok
+test corpus::clojurescript_checkout_has_no_lexical_errors ... ignored, requires the gitignored research/clojurescript checkout
+test analyzer::small_map_literals_keep_source_order_and_reader_duplicates_keep_number_categories ... ok
+test full_lexer::all_collection_delimiters_without_matching ... ok
+test full_lexer::atoms_keep_classification_and_context_for_the_reader ... ok
+test analyzer::malformed_letfn_reports_the_binding_or_initializer_source_span ... ok
+test analyzer::quote_lowers_owned_data_without_runtime_resolution_or_macro_execution ... ok
+test full_lexer::backslash_parity_controls_string_and_regex_endings ... ok
+test full_lexer::character_literals_include_delimiters_and_names ... ok
+test full_lexer::context_sensitive_percent_notation_is_preserved_for_the_reader ... ok
+test analyzer::core_functions_resolve_after_locals_and_globals_and_by_explicit_qualifier ... ok
+test full_lexer::discard_and_reader_conditionals_only_emit_prefixes ... ok
+test full_lexer::dispatch_tags_namespaced_maps_and_symbolic_values ... ok
+test full_lexer::lexical_errors_have_spans_and_iteration_recovers_or_finishes ... ok
+test full_lexer::line_comments_preserve_text_and_stop_at_cr_or_lf ... ok
+test analyzer::global_identity_is_stable_and_distinct_from_lexical_and_host_identity ... ok
+test full_lexer::number_candidates_have_different_terminators_than_symbols ... ok
+test full_lexer::namespaced_map_headers_keep_symbol_boundaries_even_when_digit_leading ... ok
+test full_lexer::quote_metadata_and_deref_prefixes ... ok
+test analyzer::definitions_and_interop_distinguish_valid_paths_from_malformed_shapes ... ok
+test full_lexer::quoted_literals_preserve_raw_escapes_and_embedded_syntax ... ok
+test full_lexer::whitespace_matches_jvm_reader_including_unicode_exceptions ... ok
+test analyzer::globals_are_source_ordered_and_definition_self_reference_is_registered_first ... ok
+test analyzer::hash_map_reader_traversal_preserves_whole_pairs_and_original_spans ... ok
+test analyzer::exception_forms_validate_clauses_and_preserve_recur_boundaries ... ok
+test analyzer::recur_rejects_non_tail_targets_and_cross_try_with_located_errors ... ok
+test analyzer::namespace_and_alias_references_ignore_same_spelled_lexical_bindings ... ok
+test analyzer::malformed_destructuring_and_conditions_retain_source_locations ... ok
+test analyzer::reader_data_compiles_without_execution_even_in_unselected_branches ... ok
+test analyzer::runtime_inclusion_preserves_primitive_output_and_is_once_per_combined_unit ... ok
+test analyzer::repeated_quoted_literals_grow_linearly_without_duplicate_runtime_preludes ... ok
+test analyzer::definitions_and_temporary_scope_validation_report_source_errors ... ok
+test namespaces::analyzer_diagnostics_name_the_original_dependency_source ... ok
+test analyzer::accepted_nesting_analyzes_on_the_default_thread_stack ... ok
+test full_lexer::malformed_and_utf8_combinations_always_progress_with_sliceable_spans ... ok
+test namespaces::aliases_cannot_redirect_namespace_qualifiers ... ok
+test namespaces::missing_dependencies_report_the_requiring_file_and_span ... ok
+test namespaces::lookup_requires_valid_names_and_existing_explicit_directories ... ok
+test namespaces::distinct_sources_for_the_same_namespace_are_ambiguous ... ok
+test namespaces::cycles_report_the_dependency_path ... ok
+test namespaces::lexical_bindings_do_not_leak_between_namespaces ... ok
+test namespaces::parse_errors_retain_file_line_and_byte_column ... ok
+test namespaces::reserved_core_qualifiers_cannot_be_redirected ... ok
+test namespaces::source_namespace_must_be_first_and_match_the_requested_name ... ok
+test parser::anonymous_arguments_use_contextual_boundaries ... ok
+test parser::characters_and_raw_regexes ... ok
+test namespaces::malformed_and_unsupported_namespace_specifications_have_explicit_diagnostics ... ok
+test parser::conditionals_preserve_branches_and_defer_collection_arity ... ok
+test parser::discards_consume_whole_forms_without_retaining_nodes ... ok
+test parser::empty_comments_commas_and_fused_eof ... ok
+test parser::errors_have_locations_openers_and_terminal_behavior ... ok
+test parser::every_reader_family_truncation_preserves_incremental_progress_and_fused_failure ... ok
+test parser::example_arena_and_incremental_top_level_forms ... ok
+test namespaces::refer_conflicts_and_nonexistent_imports_are_diagnosed_even_when_unused ... ok
+test parser::nesting_limit_includes_collections_prefixes_and_discards ... ok
+test parser::prefixes_metadata_tags_namespaces_and_specials ... ok
+test parser::strings_decode_utf16_and_preserve_unescaped_spans ... ok
+test parser::symbols_keywords_literals_and_numbers ... ok
+test parser_corpus::parse_clojurescript_checkout ... ignored, requires the gitignored research/clojurescript checkout
+test namespaces::namespace_cli_rejects_bad_flags_without_partial_javascript ... ok
+test parser_reference::literal_syntax_and_utf16_values_match_reference_snapshot ... ok
+test tokenizer::adjacent_nested_and_unmatched_parentheses ... ok
+test tokenizer::atoms_at_eof_and_commas ... ok
+test tokenizer::empty_and_all_ascii_whitespace ... ok
+test tokenizer::example ... ok
+test tokenizer::repeated_eof_is_fused ... ok
+test parser::collections_and_wide_siblings ... ok
+test tokenizer::utf8_uses_byte_spans ... ok
+test parser::malformed_combinations_and_truncations_keep_valid_spans ... ok
+test tokenizer::spans_are_sliceable_and_agree_with_character_scanner ... ok
+test namespaces::lexical_captures_and_qualified_globals_survive_shadowing_and_redefinition ... ok
+test full_lexer::unicode_classes_agree_with_the_vendored_reader_snapshot ... ok
+test namespaces::globals_keep_namespace_identity_and_lexical_shadowing ... ok
+test namespaces::conditional_selection_validates_splices_and_does_not_read_inactive_discarded_tags ... ok
+test namespaces::bounded_core_is_virtual_and_does_not_override_user_namespace_members ... ok
+test boundaries::namespace_boundaries_retain_file_spans_and_emit_no_partial_javascript ... ok
+test namespaces::depth_first_dependencies_and_top_level_initializers_run_once_in_source_order ... ok
+test namespaces::slash_is_an_unqualified_name_and_qualified_namespace_member ... ok
+test namespaces::shared_sources_select_cljs_before_dependencies_and_preserve_splicing_and_locations ... ok
+test namespaces::shared_primitive_selection_preserves_reader_context_and_matches_cli ... ok
+test namespaces::qualified_definitions_syntax_quotes_and_clojure_namespace_aliases_keep_identity ... ok
+test namespaces::unknown_qualifiers_are_rejected_and_loaded_namespaces_qualify ... ok
+test namespaces::recurrence_targets_and_protocol_methods_keep_namespace_identity ... ok
+test namespaces::acceptance_program_prints_four_from_api_and_cli ... ok
+test namespaces::namespace_paths_munge_hyphens_and_multiple_roots_are_explicit ... ok
+test analyzer::recurrence_targets_are_distinct_and_macro_generated_spans_remain_at_the_call ... ok
+test parser_corpus::pinned_reader_sources_accept_syntax_with_exact_body_byte_spans ... ok
+test namespaces::cljs_precedes_cljc_across_roots_but_same_extension_duplicates_remain_ambiguous ... ok
+test namespaces::namespaces_load_from_any_source_provider ... ok
+test namespaces::runtime_refers_renames_and_core_exclusions_keep_qualified_identity ... ok
+test boundaries::expression_boundaries_retain_exact_diagnostics_in_unselected_branches ... ok
+
+test result: ok. 107 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 8.52s
+
+     Running tests/provenance.rs (target/debug/deps/provenance-24a5eb3007f320ff)
+
+running 2 tests
+test derived_provenance_requires_pinned_traceable_sources ... ok
+test fixture_ids_are_unique_and_have_complete_provenance ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+   Doc-tests light_cljs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

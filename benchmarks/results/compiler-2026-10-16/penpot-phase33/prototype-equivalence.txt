@@ -1,0 +1,2 @@
+render: application body matches phase32 outside runtime; complete output passes Node syntax checking.
+main: application body matches phase32 outside runtime; complete output passes Node syntax checking.

@@ -1,9 +1,11 @@
 //! First-party bootstrap compiled by the same Rust analyzer/emitter as applications.
-//! Only immutable emitted source is cached; every compilation has a fresh JS heap.
+//! Only immutable bootstrap artifacts are cached; every compilation has a fresh JS heap.
+#[cfg(test)]
+use crate::evaluator::Evaluator;
 use crate::{
     MacroHost,
     compiler_data::{DataBuilder, Datum, ExpansionOrigin, Form, Name, Source},
-    evaluator::{Evaluator, ValueId},
+    evaluator::ValueId,
     form_bridge::ConversionLimits,
 };
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
@@ -58,21 +60,136 @@ const MACROS: &[(&str, &str)] = &[
 ];
 #[derive(Clone)]
 pub(crate) struct Bootstrap {
-    pub(crate) evaluator: Rc<Evaluator>,
+    pub(crate) evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
     functions: HashMap<String, CompiledMacro>,
 }
+
+#[derive(Clone)]
+struct BootstrapUnit {
+    source: String,
+    environment_reads: HashMap<String, bool>,
+}
+impl std::ops::Deref for BootstrapUnit {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.source
+    }
+}
+// Only bootstrap definitions use this proof. The compiler supplies their first
+// two parameters; inspect resolved local IDs, including nested captures, so
+// shadowing and quoted symbols do not look like reads of the hidden &env.
+fn reads_macro_environment(program: &crate::Program, root: crate::ExprId) -> bool {
+    use crate::ExprKind;
+    let ExprKind::Fn { methods, .. } = &program.exprs[root.0].kind else {
+        return true;
+    };
+    let mut environments = Vec::new();
+    for method in methods {
+        let Some(environment) = method.params.get(1) else {
+            return true;
+        };
+        environments.push(*environment);
+    }
+    let mut pending: Vec<_> = methods.iter().map(|method| method.body).collect();
+    let mut seen = std::collections::HashSet::new();
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        match &program.exprs[id.0].kind {
+            ExprKind::Local(local) if environments.contains(local) => return true,
+            // Raw JavaScript and argument reflection can observe otherwise
+            // unused formals. Stay conservative about type/method captures.
+            ExprKind::JsArguments
+            | ExprKind::CopyArguments(_)
+            | ExprKind::JsTemplate { .. }
+            | ExprKind::Reify { .. }
+            | ExprKind::DefType { .. }
+            | ExprKind::ExtendType { .. } => return true,
+            ExprKind::JsGlobal(global) if program.js_globals[global.0].path[0] == "arguments" => {
+                return true;
+            }
+            ExprKind::Fn { methods, .. }
+                if methods
+                    .iter()
+                    .any(|m| m.captures.iter().any(|local| environments.contains(local))) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+        pending.extend(crate::program_fragment::children(program, id));
+    }
+    false
+}
+// Skipping an unread formal must not hide a conversion-limit failure or a
+// literal constructor's behavior. For plain immutable data, the canonical JS
+// snapshot visits at most twice the input nodes (list traversal adds a step
+// per cell). If that bound does not fit, retain the original import path.
+fn elidable_environment(
+    data: &Datum,
+    remaining: &mut usize,
+    depth: usize,
+    control: &crate::evaluator::ExecutionControl,
+) -> bool {
+    if depth == 0 || *remaining == 0 {
+        return false;
+    }
+    if *remaining & 1023 == 0 && control.poll().is_err() {
+        return false;
+    }
+    *remaining -= 1;
+    if let crate::compiler_data::DatumKind::CompilerLiteral { .. } = data.kind() {
+        return false;
+    }
+    if let Some(metadata) = data.metadata()
+        && !elidable_environment(&metadata, remaining, depth - 1, control)
+    {
+        return false;
+    }
+    match data.kind() {
+        crate::compiler_data::DatumKind::Collection { children, .. } => children
+            .iter()
+            .all(|child| elidable_environment(child, remaining, depth - 1, control)),
+        _ => true,
+    }
+}
+
 thread_local! {
     // Generated in memory from these exact include_str! inputs by this binary.
     // No disk artifact, source hash ambiguity or mutable JS state is retained.
-    static UNITS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    static UNITS: RefCell<Option<Vec<BootstrapUnit>>> = const { RefCell::new(None) };
 }
-fn compile(source: &str, host: &mut MacroHost) -> Result<String, String> {
+fn compile(source: &str, host: &mut MacroHost) -> Result<BootstrapUnit, String> {
     let syntax = crate::parse(source).map_err(|e| e.to_string())?;
     let program = crate::analyze_with_macros(source, &syntax, host).map_err(|e| {
         let loc = crate::LineIndex::new(source).line_column(e.span.start);
         format!("bootstrap {loc:?}: {e}")
     })?;
-    Ok(crate::emitter::emit_js_unit(&program))
+    let environment_reads = program
+        .exprs
+        .iter()
+        .filter_map(|expr| {
+            if let crate::ExprKind::Def {
+                global,
+                init: Some(init),
+                ..
+            } = &expr.kind
+            {
+                Some((
+                    program.globals[global.0].name.clone(),
+                    program.macro_functions.contains(init)
+                        || reads_macro_environment(&program, *init),
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+    Ok(BootstrapUnit {
+        source: crate::emitter::emit_js_unit(&program),
+        environment_reads,
+    })
 }
 fn core_source() -> String {
     let mut source = CORE.to_owned();
@@ -83,7 +200,7 @@ fn core_source() -> String {
     source.push('}');
     source
 }
-fn install(unit: &str, bootstrap: &mut Bootstrap, names: &[&str]) -> Result<(), String> {
+fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> Result<(), String> {
     let (file, text) = if names.first() == Some(&"for") {
         ("compiler_sequence_macros.cljs", SEQUENCES)
     } else {
@@ -135,6 +252,11 @@ fn install(unit: &str, bootstrap: &mut Bootstrap, names: &[&str]) -> Result<(), 
                 definition,
                 metadata: None,
                 generation: 0,
+                reads_environment: unit
+                    .environment_reads
+                    .get(&declared)
+                    .copied()
+                    .unwrap_or(true),
             },
         );
     }
@@ -151,7 +273,7 @@ fn build(owner: &MacroHost, cache: bool) -> Result<Bootstrap, String> {
         None
     };
     let mut bootstrap = Bootstrap {
-        evaluator: Rc::new(owner.new_evaluator().map_err(|e| e.to_string())?),
+        evaluator: owner.new_compiler_evaluator().map_err(|e| e.to_string())?,
         functions: HashMap::new(),
     };
     let mut host = MacroHost::new();
@@ -228,6 +350,23 @@ impl MacroHost {
             .filter(|session| session.extension_frontier() != 0)
             .map(|_| crate::compilation_session::FrontierGuard::bootstrap(engine))
             .transpose()?;
+        // Only unwrapped bootstrap functions with an unused &env qualify.
+        // Core macros execute at frontier zero, where user protocol extensions
+        // cannot observe the compiler-owned map during construction. Source
+        // macros and reader wrappers continue to receive the complete view.
+        let unused = DataBuilder.nil();
+        let mut remaining = self
+            .limits
+            .generated_nodes
+            .saturating_sub(self.generated_nodes.get())
+            / 2;
+        let env = if !declaration.reads_environment
+            && elidable_environment(env, &mut remaining, 128, &engine.control())
+        {
+            &unused
+        } else {
+            env
+        };
         let result = self.expand_javascript(engine, declaration.function, call, env, origin);
         if result.is_err() {
             self.bootstrap = None;
@@ -242,6 +381,7 @@ pub(crate) struct CompiledMacro {
     definition: crate::compiler_data::SourceSpan,
     pub(crate) metadata: Option<Datum>,
     generation: usize,
+    reads_environment: bool,
 }
 
 /// Declaration seed: add the hidden ABI parameters without evaluating a macro.
@@ -380,11 +520,15 @@ impl MacroHost {
         let (program, _) =
             crate::analyzer::analyze_deferred_form(&function, &mut frame, &snapshot, engine)
                 .map_err(|e| e.to_string())?;
+        let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
+        let (registration, unit) = crate::emitter::emit_deferred_unit(&program);
+        engine
+            .evaluate_registration(&registration.source, &registration.chunks)
+            .map_err(|e| e.to_string())?;
         let function = engine
-            .unwrap_or(bootstrap.evaluator.as_ref())
             .evaluate_unit(&format!(
                 "rt => rt.core.macroReaderFunction(({})(rt))",
-                crate::emitter::emit_deferred_unit(&program)
+                unit
             ))
             .map_err(|e| e.to_string())?;
         self.javascript_macros.insert(
@@ -394,6 +538,7 @@ impl MacroHost {
                 definition: form.span(),
                 metadata: Some(metadata),
                 generation,
+                reads_environment: true,
             },
         );
         self.macro_environment = Default::default();
@@ -469,6 +614,84 @@ impl MacroHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bootstrap_environment_reads_follow_resolved_locals_and_reflection() {
+        for (body, expected) in [
+            ("&form", false),
+            ("'&env", false),
+            ("(let* [&env 7] &env)", false),
+            ("&env", true),
+            ("(fn* [] &env)", true),
+            ("js/arguments", true),
+            ("(js-arguments)", true),
+            ("(copy-arguments #js [])", true),
+            ("(js* \"arguments[1]\")", true),
+        ] {
+            let mut host = MacroHost::new();
+            host.bootstrap_seed = true;
+            let source = format!("(def sample (fn* [&form &env] {body}))");
+            let syntax = crate::parse(&source).unwrap();
+            let program = crate::analyze_with_macros(&source, &syntax, &mut host).unwrap();
+            let init = program
+                .exprs
+                .iter()
+                .find_map(|expr| match &expr.kind {
+                    crate::ExprKind::Def { global, init, .. }
+                        if program.globals[global.0].name == "sample" =>
+                    {
+                        *init
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(reads_macro_environment(&program, init), expected, "{body}");
+        }
+        let mut host = MacroHost::new();
+        host.bootstrap_seed = true;
+        let source = "(def ^:macro sample (fn* [&form &env] 42))";
+        let syntax = crate::parse(source).unwrap();
+        let wrapped = crate::analyze_with_macros(source, &syntax, &mut host).unwrap();
+        assert!(!wrapped.macro_functions.is_empty());
+    }
+
+    #[test]
+    fn unused_core_environment_keeps_conversion_limits_and_host_recovery() {
+        let mut host = MacroHost::new();
+        host.limits.generated_nodes = 200;
+        let bindings = (0..20)
+            .map(|i| format!("x{i} {i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let source = format!("(let* [{bindings}] (when true 42))");
+        let error = crate::compile_with_macros(&source, &mut host)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("compiler input conversion limit"), "{error}");
+        assert!(error.contains("macro cljs.core/when"), "{error}");
+        host.limits.generated_nodes = 100_000;
+        let js = crate::compile_with_macros("(when true 42)", &mut host).unwrap();
+        let evaluator = Evaluator::new(Default::default()).unwrap();
+        let value = evaluator.evaluate_js(&js).unwrap();
+        assert_eq!(evaluator.number(value).unwrap(), 42.0);
+    }
+
+    #[test]
+    fn unused_core_environment_keeps_literal_conversion_failures() {
+        let mut host = MacroHost::new();
+        let error = crate::compile_with_macros(
+            r#"(defmacro ignored {:probe #"["} [] nil) (when true 42)"#,
+            &mut host,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("macro cljs.core/when"), "{error}");
+        assert!(
+            error.contains("RegExp") || error.contains("regular expression"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn cancelled_demand_discards_roots_before_reusing_host() {
         let mut host = MacroHost::new();
@@ -480,10 +703,14 @@ mod tests {
             let evaluator = host.bootstrap.as_ref().unwrap().evaluator.clone();
             let control = evaluator.control();
             evaluator
-                .install_unit_service("cancelDemand", move |_, _| {
-                    control.cancel();
-                    Ok("(rt) => 42".into())
-                })
+                .clone()
+                .install_compiler_service(
+                    "cancelDemand",
+                    Rc::new(move |_, _| {
+                        control.cancel();
+                        Ok("(rt) => 42".into())
+                    }),
+                )
                 .unwrap();
             let function = host.javascript_macros["cljs.user/m"].function;
             let error = evaluator.call(function, &[]).unwrap_err();
@@ -595,10 +822,14 @@ mod tests {
         let evaluator = host.bootstrap.as_ref().unwrap().evaluator.clone();
         let control = evaluator.control();
         evaluator
-            .install_unit_service("cancelTarget", move |_, _| {
-                control.cancel();
-                Ok("(rt) => 42".into())
-            })
+            .clone()
+            .install_compiler_service(
+                "cancelTarget",
+                Rc::new(move |_, _| {
+                    control.cancel();
+                    Ok("(rt) => 42".into())
+                }),
+            )
             .unwrap();
         let function = host.javascript_macros["cljs.user/m"].function;
         let error = evaluator.call(function, &[]).unwrap_err();

@@ -1,7 +1,7 @@
 # Vendored rquickjs-sys patches
 
-This directory holds an unmodified copy of the `rquickjs-sys` crate with a
-single engine fix on top. `Cargo.toml` selects it with:
+This directory holds the `rquickjs-sys` crate with local engine fixes on top.
+`Cargo.toml` selects it with:
 
 ```toml
 [patch.crates-io]
@@ -14,7 +14,8 @@ rquickjs-sys = { path = "vendor/rquickjs-sys" }
 - Engine: quickjs-ng 0.16.2, the `quickjs/` sources bundled by that crate.
 - Host crate: `light-cljs`, which pins `rquickjs = "=0.14.0"`.
 
-Only `quickjs/quickjs.c` differs from the crate. The wasm-only sources, the
+Engine changes are in `quickjs/quickjs.c`; `build.rs` also tracks their inputs.
+The wasm-only sources, the
 `Makefile` and the crate's `Cargo.lock` were removed because this project builds
 for native targets only.
 
@@ -80,12 +81,41 @@ so an upstream fix is not yet available.
 `js_array_every` and `js_array_reduce` already reset their locals after
 freeing; this change makes `js_array_find` follow the same pattern.
 
-## Removing the patch
+## Fix: distribute native Map and WeakMap keys across buckets
 
-Remove the `[patch.crates-io]` entry and this directory once a released
-`rquickjs-sys` bundles a quickjs-ng that resets `val` and `index_val` in
-`js_array_find`. A release that includes the upstream fix makes
-`vendor/rquickjs-sys/quickjs/quickjs.c` identical to the crate's copy again.
+File: `quickjs/quickjs.c`, function `map_hash_key`.
+
+The original key hash multiplies pointers or the XOR of a double's two words
+by an odd constant. The table selects a bucket using a power-of-two mask.
+Multiplication preserves low zero bits: aligned object addresses and the
+IEEE-754 encodings of small integers consequently use only a fraction of the
+buckets. Increasing the table does not adequately distribute those keys.
+Compiler value handles, provenance, runtime brands, and collection storage
+exercise these native maps throughout macro expansion.
+
+The patch avalanches the existing key/tag/seed hash with XOR shifts and two
+odd multipliers before bucket selection. It changes neither key normalization
+and SameValueZero comparison nor the separate insertion-order list. The
+language runtime's ClojureScript hash values and collection order are unchanged.
+`engine_maps_preserve_key_semantics_across_growth_and_deletion` checks native
+Map/Set/WeakMap growth, deletion, iteration, object/symbol identity, numeric
+equality, NaN, signed zero, and distinct BigInt/string/number keys.
+
+## Fix: rebuild the engine after source or header edits
+
+The build script copies engine inputs into `OUT_DIR` before invoking the C
+compiler. It emitted environment dependencies but no dependencies on the
+original C files and headers, so editing a vendored source could leave the
+previous engine library in use. Each copied source/header and `quickjs.bind.h`
+now emits `cargo:rerun-if-changed` for its original path.
+
+## Removing the patches
+
+Remove each change once a released `rquickjs-sys` bundles its equivalent:
+resetting `val` and `index_val` in `js_array_find`, and distributing native map
+hashes before their low bits select a bucket. Remove the `[patch.crates-io]`
+entry and this directory only when both engine fixes are present upstream.
+Keep input tracking while local engine sources are maintained.
 `src/evaluator.rs::bridge_interrupt_tests` is the regression test for the fix;
 it is expected to crash on an unpatched engine.
 

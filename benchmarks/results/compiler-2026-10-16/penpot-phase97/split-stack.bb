@@ -1,0 +1,12 @@
+(require '[babashka.fs :as fs] '[clojure.string :as str])
+(def project (fs/file (fs/parent *file*) "project"))
+(def input-text (slurp (fs/file project "src/v8_stack.cc")))
+(def includes-start (str/index-of input-text "#if defined(__APPLE__)"))
+(def shim-start (str/index-of input-text "extern \"C\" void light_cljs_v8_set_stack_limit"))
+(def bounds-start (str/index-of input-text "extern \"C\" bool light_cljs_thread_stack_bounds"))
+(assert (< includes-start shim-start bounds-start))
+(spit (fs/file project "src/v8_thread_stack.cc")
+  (str "// Native thread stack bounds, independent of the JavaScript engine.\n#include <cstdint>\n"
+       (subs input-text includes-start shim-start) (subs input-text bounds-start)))
+(spit (fs/file project "src/v8_stack.cc")
+  (str (subs input-text 0 includes-start) (subs input-text shim-start bounds-start)))

@@ -1,0 +1,5 @@
+   Compiling light-cljs v0.1.0 (/private/tmp/light-cljs-phase99/project)
+    Checking rquickjs-sys v0.14.0 (/private/tmp/light-cljs-phase99/project/vendor/rquickjs-sys)
+    Checking rquickjs-core v0.14.0
+    Checking rquickjs v0.14.0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.23s

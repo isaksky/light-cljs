@@ -1,0 +1,8 @@
+c95ab03c9d678ea8769bc10d6e7bdad6f52a707d94c89d488fec9be4d00803ab  /private/tmp/light-cljs-phase99/light-cljs-prepared-deferred-units
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase99/main-none.js
+2f7ee4c7570bcb288abb35bc02f7f76e3e7e2b192d36122f0bf6c45dca989655  /private/tmp/light-cljs-phase99/clean/render.js
+ff519413a6ba1d16e7260b78d2c830590e9aca9f14ec2b3f620ec6186e5f159d  /private/tmp/light-cljs-phase99/clean/main-none.js
+82d4cf05527a4120e22eb7302063c3dd8759dbc8fb35e6a3b7efce63d10c7077  /private/tmp/light-cljs-phase99/clean/main-advanced.js
+7d11e72742f72a72343598405fc2a67833cfca37de23363abf229431f31ae68b  /private/tmp/light-cljs-phase99/project/src/analyzer.rs
+dad6f686910b0bc9651e820d902a2dce01f79f209e406943c7fff660c4da620e  /private/tmp/light-cljs-phase99/project/src/emitter.rs
+c2bd2731b2a31a08d3b8db974c655f61f59c5e0426cf4d00522f07cacdf3e65e  /private/tmp/light-cljs-phase99/project/src/compilation_session.rs
