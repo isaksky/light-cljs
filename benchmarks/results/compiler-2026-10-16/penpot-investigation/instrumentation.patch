@@ -1,0 +1,236 @@
+--- a/src/analyzer.rs
++++ b/src/analyzer.rs
+@@ -3938,6 +3938,8 @@
+     }
+ 
+     fn collect_expression_warnings(&mut self) {
++        if crate::profile::flag("PROBE_NO_WARNINGS") {return;}
++        let _phase = crate::profile::scope("warnings");
+         let mut locals = HashMap::new();
+         // Each local's type is a finite union. Iterate recurrence edges until
+         // no union changes; unknown operands remain unknown, never guessed.
+@@ -4021,6 +4023,7 @@
+                     }
+                     ExprKind::Global(global) => {
+                         let mut arities = Vec::new();
++                        crate::profile::count("arity-expressions-scanned", (self.program.exprs.len()-declarations) as u64);
+                         for definition in self.program.exprs.tail_from(declarations) {
+                             if let ExprKind::DefType {
+                                 constructor: Some(constructor),
+--- a/src/compiler.rs
++++ b/src/compiler.rs
+@@ -1558,6 +1558,7 @@
+         ordered: Vec::new(),
+         warning_mode: options.warning_mode,
+     };
++    let _profile = crate::profile::scope("analysis-other");
+     loader.visit(entry)?;
+     let entry_index = loader.ordered.len() - 1;
+     source_warnings(&loader.ordered, 0, options, warnings);
+@@ -1565,6 +1566,7 @@
+     let mut index = 0;
+     while index < loader.ordered.len() {
+         let file = &loader.ordered[index];
++        if index % 50 == 0 {eprintln!("NAMESPACE {} {} live={}",index,file.name,crate::profile::live());}
+         let at = |error: AnalysisError| {
+             NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
+         };
+@@ -1612,6 +1614,8 @@
+         .into_iter()
+         .map(|file| (file.path, file.source))
+         .collect();
++    eprintln!("PROGRAM exprs={} globals={} units={} namespaces={}",program.exprs.len(),program.globals.len(),program.compilation_uses.len(),program.namespaces.len());
++    crate::profile::report();
+     Ok((program, files))
+ }
+ 
+--- a/src/compilation_session.rs
++++ b/src/compilation_session.rs
+@@ -517,4 +517,24 @@
+             let _ = self.engine.release(value);
+         }
+     }
++}
++
++impl Drop for CompilationSession {
++ fn drop(&mut self) {
++  let catalog = self.catalog.borrow();
++  let mut readers = std::collections::HashSet::new();
++  let (mut entries, mut aliases, mut refers, mut macros) = (0usize,0usize,0usize,0usize);
++  let mut inspect = |p:&Program| {
++   let address = (&*p.reader_contexts as *const _) as usize;
++   if readers.insert(address) {
++    entries += p.reader_contexts.len();
++    for c in p.reader_contexts.values(){ aliases+=c.aliases.len(); refers+=c.refers.len(); macros+=c.macros.len(); }
++   }
++  };
++  for unit in &catalog.units {
++   let unit=unit.borrow(); inspect(&unit.snapshot.resolution_program);
++   if let AnalysisState::Analyzed(p,_) = &unit.state { inspect(p); }
++  }
++  eprintln!("READERS units={} unique_tables={} copied_namespace_entries={} aliases={} refers={} macros={}",catalog.units.len(),readers.len(),entries,aliases,refers,macros);
++ }
+ }
+--- a/src/evaluator.rs
++++ b/src/evaluator.rs
+@@ -1111,22 +1111,37 @@
+         data: &Datum,
+         limits: ConversionLimits,
+     ) -> Result<ValueId, EvalError> {
++        let environment = data.get(&crate::compiler_data::DataBuilder.keyword(crate::compiler_data::Name::new(Some("light-cljs"), "reader-context"))).ok().flatten().is_some();
++        let ephemeral = environment && crate::profile::flag("PROBE_EPHEMERAL_ENV");
++        let before = self.bridge.borrow().originals.len();
++        let _import = crate::profile::scope(if environment { "import-env-other" } else { "import-form-other" });
+         let index = self.enter(|ctx| {
++            self.bridge.borrow_mut().ephemeral = ephemeral;
++            let phase = crate::profile::scope(if environment { "encode-env" } else { "encode-form" });
+             let descriptor = self
+                 .bridge
+                 .borrow_mut()
+                 .encode(&ctx, data, self.control, limits)?;
++            self.bridge.borrow_mut().ephemeral = false;
++            drop(phase);
++            let phase = crate::profile::scope(if environment { "js-import-env" } else { "js-import-form" });
+             let f: Function = ctx.eval("__lightEvaluator.importForm")?;
+             let index: u64 = f.call((descriptor,))?;
++            drop(phase);
++            if ephemeral || crate::profile::flag("PROBE_NO_SNAPSHOT") { return Ok(index); }
++            let phase = crate::profile::scope(if environment { "js-snapshot-env" } else { "js-snapshot-form" });
+             // Snapshot canonical payloads so mutable host literals are never reused
+             // after modification. Reader lexical distinctions remain in originals.
+             let export: Function = ctx.eval("__lightEvaluator.exportForm")?;
+             let snapshot: Array = export.call((index, limits.nodes, limits.depth))?;
++            drop(phase);
++            let _phase = crate::profile::scope(if environment { "decode-snapshot-env" } else { "decode-snapshot-form" });
+             self.bridge
+                 .borrow_mut()
+                 .decode(snapshot, self.control, limits, true)?;
+             Ok(index)
+         })?;
++        crate::profile::count(if environment {"env-new-retained"} else {"form-new-retained"}, (self.bridge.borrow().originals.len()-before) as u64);
+         Ok(ValueId {
+             session: self.generation,
+             index,
+@@ -1160,6 +1175,7 @@
+ }
+ impl Drop for Evaluator {
+     fn drop(&mut self) {
++        eprintln!("QUICKJS memory_used={} rust_live={}", self.runtime.memory_usage().memory_used_size, crate::profile::live());
+         // Interrupts may prevent explicit clear; Context/Runtime GC still owns all
+         // edges, including cycles, with no Persistent roots or strong callbacks.
+         if let Some(context) = self.context.take() {
+--- a/src/form_bridge.rs
++++ b/src/form_bridge.rs
+@@ -24,7 +24,8 @@
+ }
+ #[derive(Default)]
+ pub(crate) struct BridgeState {
+-    originals: Vec<Datum>,
++    pub(crate) ephemeral: bool,
++    pub(crate) originals: Vec<Datum>,
+     identities: HashMap<usize, usize>,
+     canonical: HashMap<usize, Datum>,
+     pub(crate) forms: HashMap<usize, Form>,
+@@ -50,7 +51,9 @@
+         limits: ConversionLimits,
+     ) -> rquickjs::Result<Array<'js>> {
+         let mut remaining = limits.nodes;
+-        self.encode_node(ctx, data, control, limits.depth, &mut remaining)
++        let result = self.encode_node(ctx, data, control, limits.depth, &mut remaining);
++        crate::profile::count("bridge-nodes-encoded", (limits.nodes-remaining) as u64);
++        result
+     }
+     fn encode_node<'js>(
+         &mut self,
+@@ -66,7 +69,7 @@
+             return Err(error("compiler input conversion limit"));
+         }
+         *remaining -= 1;
+-        let id = if let Some(id) = self.identities.get(&data.identity()) {
++        let id = if self.ephemeral { 0 } else if let Some(id) = self.identities.get(&data.identity()) {
+             *id
+         } else {
+             let id = self.originals.len() + 1;
+@@ -353,3 +356,5 @@
+         _ => false,
+     }
+ }
++
++impl Drop for BridgeState { fn drop(&mut self) { let before=crate::profile::live(); eprintln!("BRIDGE originals={} canonical={} forms={} live_before={}", self.originals.len(), self.canonical.len(), self.forms.len(), before); drop(std::mem::take(&mut self.originals)); drop(std::mem::take(&mut self.identities)); drop(std::mem::take(&mut self.canonical)); drop(std::mem::take(&mut self.forms)); eprintln!("BRIDGE freed_bytes={} live_after={}", before.saturating_sub(crate::profile::live()), crate::profile::live()); } }
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -9,6 +9,7 @@
+ 
+ use std::{iter::FusedIterator, ops::Range};
+ 
++pub(crate) mod profile;
+ pub mod analyzer;
+ pub mod application;
+ pub mod arena;
+--- a/src/macro_host.rs
++++ b/src/macro_host.rs
+@@ -185,7 +185,10 @@
+             for argument in call.children().iter().skip(1) {
+                 args.push(evaluator.import_form(argument, limits)?);
+             }
++            let phase = crate::profile::scope("macro-call");
+             let result = evaluator.call(function, &args)?;
++            drop(phase);
++            let _phase = crate::profile::scope("export-expanded");
+             let expanded = evaluator.export_form(result, call, origin.clone(), limits);
+             // Root release is best effort after terminal engine failure.
+             let _ = evaluator.release(result);
+@@ -1121,6 +1124,7 @@
+         shared: usize,
+         visible: usize,
+     ) -> Result<(crate::compiler_data::Datum, Option<ReaderRegistration>), String> {
++        let _phase = crate::profile::scope("build-reader-env");
+         let c = crate::compiler_data::DataBuilder;
+         let string = |s: &str| c.string(s.encode_utf16().collect::<Vec<_>>());
+         let key = |s| c.keyword(Name::new(None, s));
+@@ -1224,6 +1228,7 @@
+         requires: &[String],
+         location: (usize, usize),
+     ) -> Result<crate::compiler_data::Datum, String> {
++        let _phase = crate::profile::scope("build-env");
+         let imports = self.imports.get(namespace).cloned().unwrap_or_default();
+         let namespace_symbol = self.namespace_symbols.get(namespace).cloned();
+         let namespace_doc = self.namespace_docs.get(namespace).cloned();
+--- a/src/shared.rs
++++ b/src/shared.rs
+@@ -31,7 +31,11 @@
+ 
+ impl<T: Clone> DerefMut for Shared<T> {
+     fn deref_mut(&mut self) -> &mut T {
+-        Rc::make_mut(&mut self.0)
++        let copies = Rc::strong_count(&self.0) > 1;
++        let before = crate::profile::live();
++        let result = Rc::make_mut(&mut self.0);
++        if copies { crate::profile::count(std::any::type_name::<T>(), crate::profile::live().saturating_sub(before) as u64); }
++        result
+     }
+ }
+ 
+--- a/src/profile.rs
++++ b/src/profile.rs
+@@ -0,0 +1,20 @@
++use std::{alloc::{GlobalAlloc, Layout, System}, cell::RefCell, collections::BTreeMap, sync::atomic::{AtomicUsize, Ordering::Relaxed}, time::Instant};
++pub struct Alloc;
++static LIVE: AtomicUsize = AtomicUsize::new(0);
++#[global_allocator] static ALLOC: Alloc = Alloc;
++unsafe impl GlobalAlloc for Alloc {
++ unsafe fn alloc(&self,l:Layout)->*mut u8 { let p=unsafe{System.alloc(l)}; if !p.is_null(){LIVE.fetch_add(l.size(),Relaxed);} p }
++ unsafe fn alloc_zeroed(&self,l:Layout)->*mut u8 { let p=unsafe{System.alloc_zeroed(l)}; if !p.is_null(){LIVE.fetch_add(l.size(),Relaxed);} p }
++ unsafe fn dealloc(&self,p:*mut u8,l:Layout){LIVE.fetch_sub(l.size(),Relaxed);unsafe{System.dealloc(p,l)}}
++ unsafe fn realloc(&self,p:*mut u8,l:Layout,s:usize)->*mut u8 {let q=unsafe{System.realloc(p,l,s)};if !q.is_null(){LIVE.fetch_add(s,Relaxed);LIVE.fetch_sub(l.size(),Relaxed);}q}
++}
++pub fn live()->usize{LIVE.load(Relaxed)}
++#[derive(Default)] struct Stats { last:Option<Instant>, stack:Vec<&'static str>, times:BTreeMap<&'static str,(u128,usize)>, counts:BTreeMap<&'static str,u64> }
++impl Stats { fn tick(&mut self){let now=Instant::now(); if let (Some(last),Some(name))=(self.last,self.stack.last()){self.times.entry(name).or_default().0+=now.duration_since(last).as_nanos();} self.last=Some(now);} }
++thread_local! { static STATS:RefCell<Stats>=RefCell::new(Stats::default()); }
++pub struct Guard;
++pub fn scope(name:&'static str)->Guard{STATS.with(|s|{let mut s=s.borrow_mut();s.tick();s.stack.push(name);s.times.entry(name).or_default().1+=1;});Guard}
++impl Drop for Guard{fn drop(&mut self){STATS.with(|s|{let mut s=s.borrow_mut();s.tick();s.stack.pop();});}}
++pub fn count(name:&'static str,n:u64){STATS.with(|s|*s.borrow_mut().counts.entry(name).or_default()+=n);}
++pub fn flag(name:&str)->bool{std::env::var_os(name).is_some()}
++pub fn report(){STATS.with(|s|{let mut s=s.borrow_mut();s.tick();for(k,(ns,n))in &s.times{eprintln!("PROFILE {k} seconds={:.6} calls={n}",*ns as f64/1e9);}for(k,v)in &s.counts{eprintln!("COUNT {k} {v}");}eprintln!("LIVE {}",live());});}

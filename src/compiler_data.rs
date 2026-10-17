@@ -311,6 +311,25 @@ pub struct Form {
     id: FormId,
 }
 impl Form {
+    /// Leaf provenance must not pin the surrounding syntax arena: interned
+    /// keywords and last-seen scalar values can outlive their input collection.
+    pub(crate) fn compact_leaf(&self) -> Self {
+        let node = self.node();
+        if !matches!(node.kind, FormKind::Scalar)
+            || node.metadata.is_some()
+            || node.compiler_payload.is_some()
+        {
+            return self.clone();
+        }
+        let mut leaf = Self::from_parts(
+            vec![node.clone()],
+            vec![self.data()],
+            vec![self.span()],
+            FormId(0),
+        );
+        Rc::get_mut(&mut leaf.forms).unwrap().expansions = self.expansions().to_vec();
+        leaf
+    }
     pub(crate) fn from_parts(
         nodes: Vec<FormNode>,
         data: Vec<Datum>,

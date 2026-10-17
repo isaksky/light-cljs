@@ -1,0 +1,30 @@
+NAMESPACE 0 probe.main live=3895935
+PROGRAM exprs=136001 globals=8000 units=8000 namespaces=1
+PROFILE analysis-other seconds=4.039166 calls=1
+PROFILE warnings seconds=2.843626 calls=8001
+COUNT alloc::vec::Vec<alloc::string::String> 320040
+COUNT arity-expressions-scanned 1087903995
+COUNT std::collections::hash::map::HashMap<alloc::string::String, light_cljs::analyzer::RuntimeReaderNamespace> 512064
+COUNT std::collections::hash::map::HashMap<light_cljs::analyzer::ExprId, alloc::string::String> 64
+COUNT std::collections::hash::map::HashMap<light_cljs::analyzer::LocalId, (light_cljs::analyzer::RecurTargetId, bool)> 64
+COUNT std::collections::hash::set::HashSet<light_cljs::analyzer::ExprId> 64
+COUNT std::collections::hash::set::HashSet<light_cljs::analyzer::GlobalId> 64
+COUNT std::collections::hash::set::HashSet<light_cljs::analyzer::RecurTargetId> 64
+LIVE 299353117
+READERS units=8000 unique_tables=8001 copied_namespace_entries=8000 aliases=0 refers=0 macros=0
+        7.02 real         6.95 user         0.07 sys
+           540114944  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               34094  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                  19  involuntary context switches
+           487769856  peak memory footprint

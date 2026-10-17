@@ -3665,7 +3665,7 @@
   // Versioned in-process compiler bridge. Descriptors are private arrays,
   // never printed text or JSON. Only brands above authorize language values.
   function compilerFormBridge() {
-    const borrowed = new WeakMap(), literals = new WeakMap(), primitives = new Map();
+    const borrowed = new WeakMap(), literals = new WeakMap(), primitives = new Map(), environments = new Map();
     const negativeZero = Object.freeze({});
     const primitiveKey = v => typeof v === "number" && Object.is(v, -0) ? negativeZero : v;
     const dateTime = Function.prototype.call.bind(Date.prototype.getTime);
@@ -3689,13 +3689,17 @@
       if (category.includes("limit")) terminal ??= message;
       throw new Error(message);
     };
-    function decode(root) {
+    function decode(root, snapshotLimits = null) {
       // Bootstrap syntax quotations can be deep. Traverse descriptors explicitly
       // so the documented form depth budget does not consume the engine stack.
       const values = new Map(), pending = [[root, false]];
       while (pending.length) {
         const [d, ready] = pending.pop();
-        if (ready) { values.set(d, decodeNode(d, values)); continue; }
+        if (ready) {
+          const value = decodeNode(d, values); values.set(d, value);
+          if (d[5] != null) environments.set(d[5], value);
+          continue;
+        }
         pending.push([d, true]);
         const [kind, , metadata, a] = d;
         if (metadata != null) pending.push([metadata, false]);
@@ -3705,13 +3709,20 @@
           pending.push([a, false]);
         }
       }
-      return values.get(root);
+      const value = values.get(root);
+      if (snapshotLimits === null) return value;
+      // Snapshot only fresh components. Cached immutable components already
+      // have canonical provenance; walking them again would undo the cache.
+      const inputs = root[0] === "map" && root[1] == null && root[2] == null
+        ? root[3].filter((d, i) => i % 2 === 1 && d[0] !== "environment") : [root];
+      return [value, inputs.map(d => encode(values.get(d), ...snapshotLimits))];
     }
     function decodeNode(d, values) {
       const decode = child => values.get(child);
       const [kind, id, metadata, a, b] = d;
       let value;
       switch (kind) {
+        case "environment": return environments.get(a);
         case "nil": value = null; break;
         case "bool": case "number": value = a; break;
         case "string": case "character": value = fromUnits(a); break;
@@ -3740,8 +3751,12 @@
         if (value == null || (typeof value !== "object" && typeof value !== "function")) throw new Error("Invalid compiler metadata target");
         metadataValues.set(value, m);
       }
-      if (value != null && typeof value === "object") borrowed.set(value, id);
-      else primitives.set(primitiveKey(value), id);
+      if (id != null && id !== 0) {
+        if (value != null && typeof value === "object") borrowed.set(value, id);
+        // Scalars have no observable object lifetime. Keep only their latest
+        // provenance by value, including when a macro saves one for a later call.
+        else primitives.set(primitiveKey(value), id);
+      }
       return value;
     }
     function encode(value, limit, depthLimit) {
@@ -3797,7 +3812,7 @@
                 items.push(visit(key, path + ".key", depth + 2), visit(d.value, path + "." + key, depth + 2));
               }
             }
-            a = [tag === "js-array" ? "vector" : "map", 0, null, items];
+            a = [tag === "js-array" ? "vector" : "map", null, null, items];
           } else if (cells.has(v) || views.has(v) || lazyValues.has(v)) {
             tag = "list"; a = [];
             const seen = new WeakSet(); let current = v;
@@ -3867,12 +3882,13 @@
           // A lazy seq or chunked cons has metadata, nil where none is stored.
           const metadata = object && (metadataValues.has(v) || lazyValues.has(v) || cells.get(v)?.kind === "chunked-cons")
             ? visit(metadataValues.has(v) ? metadataValues.get(v) : null, path + ".meta", depth + 1) : null;
-          return [tag, object ? borrowed.get(v) || 0 : primitives.get(primitiveKey(v)) || 0, metadata, a, b];
+          return [tag, object ? borrowed.get(v) ?? null : primitives.get(primitiveKey(v)) ?? null, metadata, a, b];
         } finally { if (object) active.delete(v); }
       }
       return visit(value, "$", 0);
     }
-    return Object.freeze({version: 1, decode, encode, check: () => { if (terminal != null) throw new Error(terminal); },
+    return Object.freeze({version: 2, decode, encode,
+      check: () => { if (terminal != null) throw new Error(terminal); },
       // Explicit descriptors authorize host literal data; ordinary objects remain invalid.
       jsArray: items => { const v = Array.from(items); literals.set(v, "js-array"); return v; },
       jsObject: pairs => { const v = jsObject(pairs); literals.set(v, "js-object"); return v; },
@@ -5382,19 +5398,27 @@
     const wrapped = function (...args) { return withMacroReaderContext(fn, args); };
     return Object.assign(wrapped, fn);
   }
+  //@unit readerOverlay compile-time
+  // Reader contexts are immutable views. Nested macro expansion extends the
+  // current view without copying its namespace maps and sets.
+  function readerOverlay(base, own) {
+    if (own.size === 0) return base;
+    return {has: key => own.has(key) || base.has(key),
+      get: key => own.has(key) ? own.get(key) : base.get(key)};
+  }
   //@unit withMacroReaderContext compile-time requires: coreCells, createNs, get, keyword, nth, str,
-  //@ toArray
+  //@ readerOverlay, toArray
   function withMacroReaderContext(fn, args) {
     const saved = coreCells.currentNs, env = get(args[1], keyword(null, "ns"));
     const name = get(env, keyword(null, "name"));
     if (name == null) return Reflect.apply(fn, null, args);
     const ns = createNs(name);
     const context = ns.readerContext ?? {aliases: new Map(), refers: new Map(), excludes: new Set(), bindings: new Set()};
-    const aliases = new Map(context.aliases);
+    const aliases = new Map();
     for (const pair of toArray(get(env, keyword(null, "requires")))) aliases.set(str(nth(pair, 0)), str(nth(pair, 1)));
     const previous = ns.readerContext;
     const view = get(args[1], keyword("light-cljs", "reader-context"));
-    const refers = new Map(context.refers), excludes = new Set(context.excludes), bindings = new Set(context.bindings);
+    const refers = new Map(), excludes = new Set(), bindings = new Set();
     let declared = context.declared, visible = context.visible ?? 0;
     if (view != null) {
       for (const entry of toArray(get(view, keyword(null, "refers")))) refers.set(nth(entry, 0), [nth(entry, 1), nth(entry, 2)]);
@@ -5413,7 +5437,9 @@
         visible = get(view, keyword(null, "visible"));
       }
     }
-    ns.readerContext = {aliases, refers, excludes, bindings, declared, visible}; coreCells.currentNs = ns;
+    ns.readerContext = {aliases: readerOverlay(context.aliases, aliases),
+      refers: readerOverlay(context.refers, refers), excludes: readerOverlay(context.excludes, excludes),
+      bindings: readerOverlay(context.bindings, bindings), declared, visible}; coreCells.currentNs = ns;
     try { return Reflect.apply(fn, null, args); }
     finally { ns.readerContext = previous; coreCells.currentNs = saved; }
   }

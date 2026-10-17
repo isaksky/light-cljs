@@ -3,11 +3,12 @@
 use crate::CollectionKind as C;
 use crate::compiler_data::{CompilerLiteralKind as L, Datum, DatumKind as D, Form};
 use crate::evaluator::ExecutionControl;
-use rquickjs::{Array, Ctx};
+use rquickjs::class::{JsClass, Trace, Tracer, Writable};
+use rquickjs::{Array, Class, Ctx, JsLifetime};
 use std::collections::HashMap;
 
 /// In-process descriptor ABI version shared with the canonical runtime.
-pub const FORM_BRIDGE_VERSION: u32 = 1;
+pub const FORM_BRIDGE_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ConversionLimits {
@@ -24,15 +25,61 @@ impl Default for ConversionLimits {
 }
 #[derive(Default)]
 pub(crate) struct BridgeState {
-    originals: Vec<Datum>,
-    identities: HashMap<usize, usize>,
-    canonical: HashMap<usize, Datum>,
     pub(crate) forms: HashMap<usize, Form>,
+    pub(crate) importing_environment: bool,
+    // A bounded cache of immutable environment components. Holding the Datum
+    // prevents allocator address reuse from masquerading as an identity hit.
+    environments: Vec<EnvironmentEntry>,
+    #[cfg(test)]
+    pub(crate) live_provenance: std::rc::Rc<std::cell::Cell<usize>>,
+}
+struct EnvironmentEntry {
+    data: Datum,
+    slot: usize,
+    nodes: usize,
+    depth: usize,
+}
+
+/// The engine owns object provenance through its weak map of imported objects;
+/// scalars retain their latest provenance by value. There are no engine edges
+/// here: collecting an object releases its Rust data, while a macro that saves
+/// an input keeps its source and lexical spelling.
+struct BorrowedDatum {
+    original: Datum,
+    canonical: Option<Datum>,
+    form: Option<Form>,
+    #[cfg(test)]
+    live: std::rc::Rc<std::cell::Cell<usize>>,
+}
+#[cfg(test)]
+impl Drop for BorrowedDatum {
+    fn drop(&mut self) {
+        self.live.set(self.live.get() - 1);
+    }
+}
+// SAFETY: BorrowedDatum contains only owned Rust data, with no JS lifetimes.
+unsafe impl<'js> JsLifetime<'js> for BorrowedDatum {
+    type Changed<'to> = Self;
+}
+impl<'js> Trace<'js> for BorrowedDatum {
+    fn trace<'a>(&self, _: Tracer<'a, 'js>) {}
+}
+impl<'js> JsClass<'js> for BorrowedDatum {
+    const NAME: &'static str = "CompilerProvenance";
+    type Mutable = Writable;
+    fn constructor(_: &Ctx<'js>) -> rquickjs::Result<Option<rquickjs::function::Constructor<'js>>> {
+        Ok(None)
+    }
 }
 fn error(message: impl Into<String>) -> rquickjs::Error {
     rquickjs::Error::new_from_js_message("compiler descriptor", "form", message.into())
 }
 impl BridgeState {
+    pub(crate) fn reset_environment_cache(&mut self) {
+        // A failed import may have installed only some engine slots. Never
+        // reference them on a later interactive operation; refill from slot 0.
+        self.environments.clear();
+    }
     pub(crate) fn retain(&mut self, form: &Form) {
         self.forms.insert(form.data().identity(), form.clone());
         for child in form.children() {
@@ -40,6 +87,9 @@ impl BridgeState {
         }
         if let Some(metadata) = form.metadata() {
             self.retain(&metadata);
+        }
+        if let Some(payload) = form.node().compiler_payload.and_then(|id| form.at(id)) {
+            self.retain(&payload);
         }
     }
     pub(crate) fn encode<'js>(
@@ -50,7 +100,95 @@ impl BridgeState {
         limits: ConversionLimits,
     ) -> rquickjs::Result<Array<'js>> {
         let mut remaining = limits.nodes;
-        self.encode_node(ctx, data, control, limits.depth, &mut remaining)
+        let result = self.encode_node(ctx, data, control, limits.depth, &mut remaining, true);
+        self.forms.clear();
+        result
+    }
+    pub(crate) fn encode_environment<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        data: &Datum,
+        control: &ExecutionControl,
+        limits: ConversionLimits,
+    ) -> rquickjs::Result<Array<'js>> {
+        let D::Collection {
+            kind: C::Map,
+            children,
+        } = data.kind()
+        else {
+            let mut remaining = limits.nodes;
+            return self.encode_node(ctx, data, control, limits.depth, &mut remaining, true);
+        };
+        if data.metadata().is_some() {
+            let mut remaining = limits.nodes;
+            return self.encode_node(ctx, data, control, limits.depth, &mut remaining, true);
+        }
+        control.poll().map_err(|e| error(e.0))?;
+        if limits.depth < 2 || limits.nodes == 0 {
+            control.invalidate();
+            return Err(error("compiler input conversion limit"));
+        }
+        let mut remaining = limits.nodes - 1;
+        let items = Array::new(ctx.clone())?;
+        for (i, child) in children.iter().enumerate() {
+            let cached = (i % 2 == 1)
+                .then(|| {
+                    self.environments
+                        .iter()
+                        .position(|entry| entry.data.identity() == child.identity())
+                })
+                .flatten();
+            let descriptor = if let Some(position) = cached {
+                // Cache hits still account for the full logical input budget.
+                let (nodes, depth) = (
+                    self.environments[position].nodes,
+                    self.environments[position].depth,
+                );
+                if nodes > remaining || depth >= limits.depth {
+                    control.invalidate();
+                    return Err(error("compiler input conversion limit"));
+                }
+                remaining -= nodes;
+                let entry = self.environments.remove(position);
+                let reference = Array::new(ctx.clone())?;
+                reference.set(0, "environment")?;
+                reference.set(3, entry.slot)?;
+                self.environments.push(entry);
+                reference
+            } else {
+                let descriptor = self.encode_node(
+                    ctx,
+                    child,
+                    control,
+                    limits.depth - 1,
+                    &mut remaining,
+                    i % 2 == 1,
+                )?;
+                if i % 2 == 1 && matches!(child.kind(), D::Collection { .. }) && immutable(child) {
+                    let slot = if self.environments.len() < 64 {
+                        self.environments.len()
+                    } else {
+                        self.environments.remove(0).slot
+                    };
+                    descriptor.set(5, slot)?;
+                    let (nodes, depth) = dimensions(child);
+                    self.environments.push(EnvironmentEntry {
+                        data: child.clone(),
+                        slot,
+                        nodes,
+                        depth,
+                    });
+                }
+                descriptor
+            };
+            items.set(i, descriptor)?;
+        }
+        let result = Array::new(ctx.clone())?;
+        result.set(0, "map")?;
+        result.set(1, ())?;
+        result.set(2, ())?;
+        result.set(3, items)?;
+        Ok(result)
     }
     fn encode_node<'js>(
         &mut self,
@@ -59,6 +197,7 @@ impl BridgeState {
         control: &ExecutionControl,
         depth: usize,
         remaining: &mut usize,
+        provenance: bool,
     ) -> rquickjs::Result<Array<'js>> {
         control.poll().map_err(|e| error(e.0))?;
         if depth == 0 || *remaining == 0 {
@@ -66,20 +205,30 @@ impl BridgeState {
             return Err(error("compiler input conversion limit"));
         }
         *remaining -= 1;
-        let id = if let Some(id) = self.identities.get(&data.identity()) {
-            *id
-        } else {
-            let id = self.originals.len() + 1;
-            self.originals.push(data.clone());
-            self.identities.insert(data.identity(), id);
-            id
-        };
         let result = Array::new(ctx.clone())?;
-        result.set(1, id)?;
+        if provenance {
+            #[cfg(test)]
+            self.live_provenance.set(self.live_provenance.get() + 1);
+            result.set(
+                1,
+                Class::instance(
+                    ctx.clone(),
+                    BorrowedDatum {
+                        original: data.clone(),
+                        canonical: None,
+                        form: self.forms.get(&data.identity()).map(Form::compact_leaf),
+                        #[cfg(test)]
+                        live: self.live_provenance.clone(),
+                    },
+                )?,
+            )?;
+        } else {
+            result.set(1, ())?;
+        }
         if let Some(meta) = data.metadata() {
             result.set(
                 2,
-                self.encode_node(ctx, &meta, control, depth - 1, remaining)?,
+                self.encode_node(ctx, &meta, control, depth - 1, remaining, provenance)?,
             )?;
         } else {
             result.set(2, ())?;
@@ -127,7 +276,7 @@ impl BridgeState {
                 for (i, child) in children.iter().enumerate() {
                     items.set(
                         i,
-                        self.encode_node(ctx, child, control, depth - 1, remaining)?,
+                        self.encode_node(ctx, child, control, depth - 1, remaining, provenance)?,
                     )?;
                 }
                 result.set(3, items)?;
@@ -155,7 +304,7 @@ impl BridgeState {
             D::CompilerLiteral { kind, payload } => {
                 result.set(
                     3,
-                    self.encode_node(ctx, payload, control, depth - 1, remaining)?,
+                    self.encode_node(ctx, payload, control, depth - 1, remaining, provenance)?,
                 )?;
                 match kind {
                     L::Regex => "regex",
@@ -178,6 +327,7 @@ impl BridgeState {
         limits: ConversionLimits,
         snapshot: bool,
     ) -> rquickjs::Result<Datum> {
+        self.forms.clear();
         let mut remaining = limits.nodes;
         self.decode_node(descriptor, control, limits.depth, &mut remaining, snapshot)
             .map(|(resolved, _)| resolved)
@@ -197,7 +347,7 @@ impl BridgeState {
         }
         *remaining -= 1;
         let tag: String = d.get(0)?;
-        let id: usize = d.get(1)?;
+        let id: Option<Class<'_, BorrowedDatum>> = d.get(1)?;
         let metadata: Option<Array<'_>> = d.get(2)?;
         let (mut metadata_value, mut canonical_metadata) = (None, None);
         if let Some(meta) = metadata {
@@ -299,26 +449,32 @@ impl BridgeState {
         if let Some(meta) = canonical_metadata {
             canonical = canonical.with_metadata(meta);
         }
-        if id != 0 {
-            let original = self
-                .originals
-                .get(id - 1)
-                .ok_or_else(|| error("unknown borrowed form identity"))?;
+        if let Some(id) = id {
+            let mut borrowed = id.borrow_mut();
             if snapshot {
-                self.canonical.insert(id, canonical.clone());
+                borrowed.canonical = Some(canonical.clone());
             }
-            if self
+            if borrowed
                 .canonical
-                .get(&id)
+                .as_ref()
                 .is_some_and(|c| exact(c, &canonical))
             {
-                value = original.clone();
+                value = borrowed.original.clone();
+                if !snapshot && let Some(form) = &borrowed.form {
+                    // Reusing a collection restores its original children too,
+                    // including scalar spellings collapsed by JS Number (1M,
+                    // 1.0, 1). Their individual exported IDs can be ambiguous.
+                    self.retain(form);
+                }
             }
         }
         Ok((value, canonical))
     }
 }
 fn exact(a: &Datum, b: &Datum) -> bool {
+    if a.identity() == b.identity() {
+        return true;
+    }
     let data = match (a.kind(), b.kind()) {
         (D::Nil, D::Nil) => true,
         (D::Boolean(a), D::Boolean(b)) => a == b,
@@ -352,4 +508,32 @@ fn exact(a: &Datum, b: &Datum) -> bool {
         (Some(a), Some(b)) => exact(&a, &b),
         _ => false,
     }
+}
+
+fn immutable(data: &Datum) -> bool {
+    data.metadata().is_none_or(|m| immutable(&m))
+        && match data.kind() {
+            D::CompilerLiteral { .. } => false,
+            D::Collection { children, .. } => children.iter().all(immutable),
+            _ => true,
+        }
+}
+
+fn dimensions(data: &Datum) -> (usize, usize) {
+    let mut nodes = 1;
+    let mut depth = 1;
+    let mut include = |child: &Datum| {
+        let (n, d) = dimensions(child);
+        nodes += n;
+        depth = depth.max(d + 1);
+    };
+    if let Some(meta) = data.metadata() {
+        include(&meta);
+    }
+    match data.kind() {
+        D::Collection { children, .. } => children.iter().for_each(include),
+        D::CompilerLiteral { payload, .. } => include(payload),
+        _ => {}
+    }
+    (nodes, depth)
 }

@@ -1503,6 +1503,58 @@ mod javascript_form_bridge {
         }
     }
     #[test]
+    fn saved_subforms_keep_provenance_after_input_release_and_collection() {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let save = e
+            .evaluate_js(
+                "(form, env, x) => { globalThis.savedInput = rt.core.nth(x, 1); return null; }",
+            )
+            .unwrap();
+        let get = e.evaluate_js("() => globalThis.savedInput").unwrap();
+        let call = read("\n(macros/identity '(foo 1 1M 1.0))");
+        let saved = call.children()[1].children()[1].clone();
+        let mut host = MacroHost::new();
+        let nil = Datum::new(DatumKind::Nil);
+        host.expand_javascript(&e, save, &call, &nil, origin(&call))
+            .unwrap();
+        e.collect_garbage();
+        let later = read("(macros/identity)");
+        let result = host
+            .expand_javascript(&e, get, &later, &nil, origin(&later))
+            .unwrap();
+        assert_eq!(result.span().bytes(), saved.span().bytes());
+        assert_eq!(result.span().source().id(), saved.span().source().id());
+        for (actual, expected) in result.children().iter().zip(saved.children()) {
+            assert_eq!(actual.span().bytes(), expected.span().bytes());
+            assert_eq!(actual.span().source().id(), expected.span().source().id());
+            assert_eq!(actual.node().origin, expected.node().origin);
+        }
+    }
+    #[test]
+    fn saved_scalars_keep_provenance_between_macro_calls() {
+        for source in ["(macros/identity 1M)", "(macros/identity \"saved-scalar\")"] {
+            let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            let save = e
+                .evaluate_js("(form, env, x) => { globalThis.savedScalar = x; return null; }")
+                .unwrap();
+            let get = e.evaluate_js("() => globalThis.savedScalar").unwrap();
+            let call = read(source);
+            let scalar = call.children()[1].clone();
+            let mut host = MacroHost::new();
+            let nil = Datum::new(DatumKind::Nil);
+            host.expand_javascript(&e, save, &call, &nil, origin(&call))
+                .unwrap();
+            e.collect_garbage();
+            let later = read("(macros/identity)");
+            let result = host
+                .expand_javascript(&e, get, &later, &nil, origin(&later))
+                .unwrap();
+            assert_eq!(result.span().source().id(), scalar.span().source().id());
+            assert_eq!(result.span().bytes(), scalar.span().bytes());
+            assert_eq!(result.node().origin, scalar.node().origin);
+        }
+    }
+    #[test]
     fn generated_code_executes_in_order_and_preserves_number_bits() {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let call = read("\n(macros/identity)");

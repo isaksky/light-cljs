@@ -1,0 +1,4 @@
+aa56ce83ac8025fb84bdc3d2b9a1935693d0c64fb43325a18455d314a49c7ed1  target/release/light-cljs
+1f8d6058825e6efbba4e3f439b0bd111fe3e76fa154ade348da2ab2260c91c99  /private/tmp/light-cljs-investigation-20261016/baseline
+a8a4b35b1eb8fbb947eee5a553ddc7b623c5d2665308c1fb0544da6e3f481e29  /private/tmp/light-cljs-penpot-fixed-20261016/main-sample.txt
+1267266cc7320e70f198a9fe5d4bdae7b0a6a22de24c3db657cb0da7ef1df058  /private/tmp/light-cljs-penpot-fixed-20261016/implementation.patch

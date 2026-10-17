@@ -1,0 +1,54 @@
+NAMESPACE 0 light.core-bridge live=35732328
+READERS units=0 unique_tables=0 copied_namespace_entries=0 aliases=0 refers=0 macros=0
+READERS units=0 unique_tables=0 copied_namespace_entries=0 aliases=0 refers=0 macros=0
+NAMESPACE 50 app.common.geom.rect live=203571881
+NAMESPACE 100 app.common.types.shape.export live=430625289
+NAMESPACE 150 app.util.perf-macros live=762096524
+NAMESPACE 200 app.main.ui.shapes.export live=1236304745
+NAMESPACE 250 app.main.ui.shapes.image live=1529646254
+PROGRAM exprs=476709 globals=6695 units=6541 namespaces=268
+PROFILE analysis-other seconds=15.455698 calls=1
+PROFILE build-env seconds=0.913209 calls=10372
+PROFILE build-reader-env seconds=0.061809 calls=10372
+PROFILE decode-snapshot-form seconds=0.369781 calls=41543
+PROFILE encode-env seconds=8.533330 calls=10372
+PROFILE encode-form seconds=0.296843 calls=41543
+PROFILE export-expanded seconds=4.753624 calls=10372
+PROFILE import-env-other seconds=0.068490 calls=10372
+PROFILE import-form-other seconds=0.083089 calls=41543
+PROFILE js-import-env seconds=106.945321 calls=10372
+PROFILE js-import-form seconds=4.492127 calls=41543
+PROFILE js-snapshot-form seconds=1.509714 calls=41543
+PROFILE macro-call seconds=15.236284 calls=10372
+COUNT alloc::vec::Vec<alloc::string::String> 38889361
+COUNT bridge-nodes-encoded 18130302
+COUNT env-new-retained 0
+COUNT form-new-retained 132433
+COUNT std::collections::hash::map::HashMap<alloc::string::String, light_cljs::analyzer::RuntimeReaderNamespace> 509843942
+COUNT std::collections::hash::map::HashMap<light_cljs::analyzer::ExprId, alloc::string::String> 2676606
+COUNT std::collections::hash::map::HashMap<light_cljs::analyzer::GlobalId, alloc::vec::Vec<light_cljs::analyzer::ProtocolMethod>> 1755523
+COUNT std::collections::hash::map::HashMap<light_cljs::analyzer::LocalId, (light_cljs::analyzer::RecurTargetId, bool)> 19714184
+COUNT std::collections::hash::set::HashSet<light_cljs::analyzer::ExprId> 16768
+COUNT std::collections::hash::set::HashSet<light_cljs::analyzer::GlobalId> 86116
+COUNT std::collections::hash::set::HashSet<light_cljs::analyzer::RecurTargetId> 1654888
+LIVE 1672987275
+READERS units=6541 unique_tables=6798 copied_namespace_entries=869893 aliases=3691021 refers=137309 macros=378913
+QUICKJS memory_used=118042971 rust_live=394588404
+BRIDGE originals=132433 canonical=130869 forms=131361 live_before=242920736
+BRIDGE freed_bytes=131361521 live_after=111559215
+      159.90 real       159.24 user         0.62 sys
+          2204860416  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              142197  page reclaims
+                 310  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                 559  involuntary context switches
+          1858213184  peak memory footprint

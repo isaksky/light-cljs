@@ -36,6 +36,23 @@ pub(crate) enum SourceBindingKind {
     Macro,
 }
 
+#[derive(PartialEq)]
+struct NamespaceEnvironmentKey {
+    namespace: String,
+    aliases: Vec<(String, String)>,
+    requires: Vec<String>,
+    imports: Vec<MacroImport>,
+    renames: Vec<(String, String, String)>,
+    namespace_imports: Vec<(String, String)>,
+    symbol: Option<usize>,
+    doc: Option<usize>,
+}
+struct NamespaceEnvironment {
+    key: NamespaceEnvironmentKey,
+    data: crate::compiler_data::Datum,
+    // The data owns symbol/doc, so their addresses cannot be reused while cached.
+}
+
 /// Macro configuration and compiler metadata. Each clean compilation owns a fresh
 /// QuickJS bootstrap session; reusing this host never reuses JavaScript macro roots.
 #[derive(Default)]
@@ -59,6 +76,10 @@ pub struct MacroHost {
     pub(crate) bootstrap_seed: bool,
     pub(crate) javascript_macros:
         crate::layered::Layered<String, crate::compiler_bootstrap::CompiledMacro>,
+    /// Shared by frames with the same macro inventory; replaced on declaration.
+    pub(crate) macro_environment:
+        std::rc::Rc<std::cell::RefCell<Option<crate::compiler_data::Datum>>>,
+    namespace_environment: std::rc::Rc<std::cell::RefCell<Option<NamespaceEnvironment>>>,
     pub(crate) source_bindings: crate::layered::Layered<String, SourceBindingKind>,
     pub(crate) session: Option<std::rc::Rc<crate::compilation_session::CompilationSession>>,
     pub(crate) session_ref: std::rc::Weak<crate::compilation_session::CompilationSession>,
@@ -180,7 +201,7 @@ impl MacroHost {
         let run = || -> Result<Form, crate::evaluator::EvalError> {
             let mut args = vec![
                 evaluator.import_form(call, limits)?,
-                evaluator.import_data(environment, limits)?,
+                evaluator.import_environment(environment, limits)?,
             ];
             for argument in call.children().iter().skip(1) {
                 args.push(evaluator.import_form(argument, limits)?);
@@ -611,6 +632,8 @@ impl MacroHost {
             bootstrap: self.bootstrap.clone(),
             bootstrap_seed: true,
             javascript_macros: self.javascript_macros.clone(),
+            macro_environment: self.macro_environment.clone(),
+            namespace_environment: self.namespace_environment.clone(),
             source_bindings: self.source_bindings.clone(),
             session_ref: self
                 .session_handle()
@@ -643,6 +666,8 @@ impl MacroHost {
             drop(readers);
             self.bootstrap = None;
             self.javascript_macros.clear();
+            self.macro_environment = Default::default();
+            self.namespace_environment = Default::default();
             self.source_bindings.clear();
             self.session = Some(crate::compilation_session::CompilationSession::new());
             self.session_ref = std::rc::Weak::new();
@@ -1241,6 +1266,95 @@ impl MacroHost {
             c.keyword(name)
         };
         let sym = |s: &str| c.symbol(Name::new(None, s));
+        let macro_environment = {
+            let mut cache = self.macro_environment.borrow_mut();
+            if let Some(data) = cache.as_ref() {
+                data.clone()
+            } else {
+                let data = c.map(&{
+                    let mut declarations = self.javascript_macros.iter().collect::<Vec<_>>();
+                    declarations.sort_by(|a, b| a.0.cmp(b.0));
+                    declarations
+                        .into_iter()
+                        .map(|(name, declaration)| {
+                            let (ns, local) = name.split_once('/').unwrap();
+                            (
+                                c.symbol(Name::new(Some(ns), local)),
+                                declaration.metadata.clone().unwrap_or_else(|| c.nil()),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })?;
+                *cache = Some(data.clone());
+                data
+            }
+        };
+        let namespace_key = NamespaceEnvironmentKey {
+            namespace: namespace.to_owned(),
+            aliases: aliases.to_vec(),
+            requires: requires.to_vec(),
+            imports: imports.clone(),
+            renames: self.renames.get(namespace).cloned().unwrap_or_default(),
+            namespace_imports: namespace_imports.clone(),
+            symbol: namespace_symbol.as_ref().map(|d| d.identity()),
+            doc: namespace_doc.as_ref().map(|d| d.identity()),
+        };
+        let namespace_environment = {
+            let mut cache = self.namespace_environment.borrow_mut();
+            if let Some(cached) = cache.as_ref().filter(|c| c.key == namespace_key) {
+                cached.data.clone()
+            } else {
+                let mut macro_aliases = Vec::new();
+                let mut macro_refers = Vec::new();
+                for import in &imports {
+                    macro_aliases.push((sym(&import.namespace), sym(&import.namespace)));
+                    if let Some(alias) = &import.alias {
+                        macro_aliases.push((sym(alias), sym(&import.namespace)));
+                    }
+                    for name in &import.refers {
+                        macro_refers.push((sym(name), sym(&import.namespace)));
+                    }
+                }
+                for (local, target, _) in self.renames.get(namespace).into_iter().flatten() {
+                    macro_refers.push((sym(local), sym(target)));
+                }
+                let mut runtime = requires
+                    .iter()
+                    .map(|n| (sym(n), sym(n)))
+                    .collect::<Vec<_>>();
+                runtime.extend(aliases.iter().map(|(a, n)| (sym(a), sym(n))));
+                runtime.extend(macro_aliases);
+                let import_names = namespace_imports
+                    .iter()
+                    .map(|(a, n)| (sym(a), sym(n)))
+                    .collect::<Vec<_>>();
+                runtime.extend(import_names.iter().cloned());
+                // Repeated ordinary requires and shared phase aliases have one
+                // identity in the metadata map, just as in name resolution.
+                let mut seen_names = HashSet::new();
+                runtime.retain(|(key, _)| match key.inspect() {
+                    crate::compiler_data::DatumView::Symbol(name) => seen_names.insert(name),
+                    _ => unreachable!("namespace map keys are symbols"),
+                });
+                let data = c.map(&[
+                    (
+                        key("name"),
+                        namespace_symbol.clone().unwrap_or_else(|| sym(namespace)),
+                    ),
+                    (key("doc"), namespace_doc.clone().unwrap_or_else(|| c.nil())),
+                    (key("requires"), c.map(&runtime)?),
+                    (key("imports"), c.map(&import_names)?),
+                    (key("uses"), c.map(&macro_refers)?),
+                    (key("require-macros"), c.map(&[])?),
+                    (key("use-macros"), c.map(&[])?),
+                ])?;
+                *cache = Some(NamespaceEnvironment {
+                    key: namespace_key,
+                    data: data.clone(),
+                });
+                data
+            }
+        };
         let build = || -> Result<crate::compiler_data::Datum, String> {
             let mut local_map = c.map(&[])?;
             for (name, id, kind, argument) in locals {
@@ -1263,58 +1377,13 @@ impl MacroHost {
                 }
                 local_map = c.assoc(&local_map, &name, &c.map(&details)?)?;
             }
-            let mut macro_aliases = Vec::new();
-            let mut macro_refers = Vec::new();
-            for import in &imports {
-                macro_aliases.push((sym(&import.namespace), sym(&import.namespace)));
-                if let Some(alias) = &import.alias {
-                    macro_aliases.push((sym(alias), sym(&import.namespace)));
-                }
-                for name in &import.refers {
-                    macro_refers.push((sym(name), sym(&import.namespace)));
-                }
-            }
-            for (local, target, _) in self.renames.get(namespace).into_iter().flatten() {
-                macro_refers.push((sym(local), sym(target)));
-            }
-            let mut runtime = requires
-                .iter()
-                .map(|n| (sym(n), sym(n)))
-                .collect::<Vec<_>>();
-            runtime.extend(aliases.iter().map(|(a, n)| (sym(a), sym(n))));
-            runtime.extend(macro_aliases);
-            let import_names = namespace_imports
-                .iter()
-                .map(|(a, n)| (sym(a), sym(n)))
-                .collect::<Vec<_>>();
-            runtime.extend(import_names.iter().cloned());
-            // Repeated ordinary requires and shared phase aliases have one
-            // identity in the metadata map, just as in name resolution.
-            let mut seen_names = HashSet::new();
-            runtime.retain(|(key, _)| match key.inspect() {
-                crate::compiler_data::DatumView::Symbol(name) => seen_names.insert(name),
-                _ => unreachable!("namespace map keys are symbols"),
-            });
             c.map(&[
                 (key("locals"), local_map),
                 // Descriptive compiler bindings only: no runtime Var or callable
                 // macro value crosses this metadata service.
                 (
                     c.keyword(Name::new(Some("light-cljs"), "macros")),
-                    c.map(&{
-                        let mut declarations = self.javascript_macros.iter().collect::<Vec<_>>();
-                        declarations.sort_by(|a, b| a.0.cmp(b.0));
-                        declarations
-                            .into_iter()
-                            .map(|(name, declaration)| {
-                                let (ns, local) = name.split_once('/').unwrap();
-                                (
-                                    c.symbol(Name::new(Some(ns), local)),
-                                    declaration.metadata.clone().unwrap_or_else(|| c.nil()),
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                    })?,
+                    macro_environment.clone(),
                 ),
                 (
                     key("context"),
@@ -1324,21 +1393,7 @@ impl MacroHost {
                         ExprContext::Return => "return",
                     }),
                 ),
-                (
-                    key("ns"),
-                    c.map(&[
-                        (
-                            key("name"),
-                            namespace_symbol.clone().unwrap_or_else(|| sym(namespace)),
-                        ),
-                        (key("doc"), namespace_doc.clone().unwrap_or_else(|| c.nil())),
-                        (key("requires"), c.map(&runtime)?),
-                        (key("imports"), c.map(&import_names)?),
-                        (key("uses"), c.map(&macro_refers)?),
-                        (key("require-macros"), c.map(&[])?),
-                        (key("use-macros"), c.map(&[])?),
-                    ])?,
-                ),
+                (key("ns"), namespace_environment.clone()),
                 (key("line"), c.integer(location.0 as i64)),
                 (key("column"), c.integer(location.1 as i64)),
             ])

@@ -1,0 +1,10 @@
+calls-1000: OK
+calls-2000: OK
+calls-4000: OK
+calls-8000: OK
+namespaces-25: OK
+namespaces-50: OK
+namespaces-100: OK
+macros-0: OK
+macros-50: OK
+macros-100: OK

@@ -39,7 +39,9 @@ fn count_flag(
     flag: &str,
     args: &mut impl Iterator<Item = std::ffi::OsString>,
 ) -> Result<u64, Box<dyn Error>> {
-    let value = args.next().ok_or_else(|| format!("{flag} requires a number"))?;
+    let value = args
+        .next()
+        .ok_or_else(|| format!("{flag} requires a number"))?;
     let value = value.to_string_lossy();
     value
         .parse::<u64>()
@@ -107,7 +109,9 @@ impl CompileFlags {
             "--macro-expansions" => self.macro_expansions = Some(count_flag(flag, args)? as usize),
             "--macro-nodes" => self.macro_nodes = Some(count_flag(flag, args)? as usize),
             "--macro-timeout-ms" => self.macro_timeout_ms = Some(count_flag(flag, args)?),
-            "--macro-memory-limit" => self.macro_memory_limit = Some(count_flag(flag, args)? as usize),
+            "--macro-memory-limit" => {
+                self.macro_memory_limit = Some(count_flag(flag, args)? as usize)
+            }
             "--macro-poll-budget" => self.macro_poll_budget = Some(count_flag(flag, args)?),
             "--source-map" => {
                 self.source_map = Some(PathBuf::from(

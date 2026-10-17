@@ -1,0 +1,52 @@
+NAMESPACE 0 probe.main live=940012
+READERS units=0 unique_tables=0 copied_namespace_entries=0 aliases=0 refers=0 macros=0
+READERS units=0 unique_tables=0 copied_namespace_entries=0 aliases=0 refers=0 macros=0
+PROGRAM exprs=21102 globals=1000 units=1000 namespaces=1
+PROFILE analysis-other seconds=0.319580 calls=1
+PROFILE build-env seconds=0.033566 calls=1024
+PROFILE build-reader-env seconds=0.022929 calls=1024
+PROFILE decode-snapshot-env seconds=0.876159 calls=1024
+PROFILE decode-snapshot-form seconds=0.009114 calls=3157
+PROFILE encode-env seconds=0.755562 calls=1024
+PROFILE encode-form seconds=0.009185 calls=3157
+PROFILE export-expanded seconds=0.066610 calls=1024
+PROFILE import-env-other seconds=0.005707 calls=1024
+PROFILE import-form-other seconds=0.005287 calls=3157
+PROFILE js-import-env seconds=7.444330 calls=1024
+PROFILE js-import-form seconds=0.122971 calls=3157
+PROFILE js-snapshot-env seconds=2.936772 calls=1024
+PROFILE js-snapshot-form seconds=0.043974 calls=3157
+PROFILE macro-call seconds=0.047816 calls=1024
+PROFILE warnings seconds=0.001036 calls=1105
+COUNT alloc::vec::Vec<alloc::string::String> 44040
+COUNT arity-expressions-scanned 43856
+COUNT bridge-nodes-encoded 1586958
+COUNT env-new-retained 271711
+COUNT form-new-retained 4950
+COUNT std::collections::hash::map::HashMap<alloc::string::String, light_cljs::analyzer::RuntimeReaderNamespace> 70464
+COUNT std::collections::hash::map::HashMap<light_cljs::analyzer::ExprId, alloc::string::String> 64
+COUNT std::collections::hash::map::HashMap<light_cljs::analyzer::LocalId, (light_cljs::analyzer::RecurTargetId, bool)> 64
+COUNT std::collections::hash::set::HashSet<light_cljs::analyzer::ExprId> 64
+COUNT std::collections::hash::set::HashSet<light_cljs::analyzer::GlobalId> 64
+COUNT std::collections::hash::set::HashSet<light_cljs::analyzer::RecurTargetId> 64
+LIVE 255679685
+READERS units=1000 unique_tables=1001 copied_namespace_entries=1000 aliases=0 refers=0 macros=100000
+QUICKJS memory_used=3229651 rust_live=221211291
+BRIDGE originals=276661 canonical=267676 forms=4904 live_before=214782199
+BRIDGE freed_bytes=209403788 live_after=5378411
+       12.94 real        12.86 user         0.07 sys
+           371195904  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               23141  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                  40  involuntary context switches
+           343852864  peak memory footprint

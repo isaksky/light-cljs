@@ -1,0 +1,17 @@
+1f8d6058825e6efbba4e3f439b0bd111fe3e76fa154ade348da2ab2260c91c99  /private/tmp/light-cljs-investigation-20261016/baseline
+180741cdb64e8a7e09f664b79ac394c82035dab41e29977f9465588e2d91b6dd  /private/tmp/light-cljs-investigation-20261016/src-copy/target/release/light-cljs
+46f6747e98f4a88d004f8d45ce7ef9d5f99d1fcb0583b21434eec0b16681aefa  /private/tmp/light-cljs-investigation-20261016/results/synth4000-baseline.js
+46f6747e98f4a88d004f8d45ce7ef9d5f99d1fcb0583b21434eec0b16681aefa  /private/tmp/light-cljs-investigation-20261016/results/synth4000-ephemeral.js
+46f6747e98f4a88d004f8d45ce7ef9d5f99d1fcb0583b21434eec0b16681aefa  /private/tmp/light-cljs-investigation-20261016/results/synth4000-profile.js
+f7cbd4bdce25d5f7a5bfb1f5a370975bac78d6aa6a2f5605d5a4ddd5660b6b64  /private/tmp/light-cljs-investigation-20261016/results/render-profile.js
+f7cbd4bdce25d5f7a5bfb1f5a370975bac78d6aa6a2f5605d5a4ddd5660b6b64  /private/tmp/light-cljs-investigation-20261016/results/render-both.js
+f9d047709f417b72294ea4521bd0d77839babc1a1f177b2cac95f3a13bf9274a  /private/tmp/light-cljs-investigation-20261016/results/calls-1000.js
+bad5c0bfef60dad6f8de761c752572021397cce45619b44db39afb9024882f3f  /private/tmp/light-cljs-investigation-20261016/results/calls-2000.js
+1dca347c77f400fbc561efdc51b22175fcf8a67d6e22545f8a00f631486d3be5  /private/tmp/light-cljs-investigation-20261016/results/calls-4000.js
+0ca42ed39e0eaff3122093742a20a34724d26394e036bd3fd53a1109c743d24c  /private/tmp/light-cljs-investigation-20261016/results/calls-8000.js
+6c0be06f2b3fd2ea993560b4dc4f19221b14465964e176c59a24e3928b01c239  /private/tmp/light-cljs-investigation-20261016/results/namespaces-100.js
+a69ccb5c2325028950e444f2524ad51f9179786ac52fb6bc6d0b768bca90b88e  /private/tmp/light-cljs-investigation-20261016/results/namespaces-25.js
+c910f398bc4de081f080070cf12bbf97ee767e19e7f1663e7168107f024694a0  /private/tmp/light-cljs-investigation-20261016/results/namespaces-50.js
+a65310126d406c3a57817de75151e602795d7769535be058411f506690c27f0e  /private/tmp/light-cljs-investigation-20261016/results/macros-0.js
+6aad4b0d19c42b62bf2b2fd9920dd7e93c2c3caad0e111c3c85828aea64101d6  /private/tmp/light-cljs-investigation-20261016/results/macros-100.js
+7727c0e5faff26cfe8ba807a1d0f2a4554f05b4d61ebfdd02fc18ad3212979c4  /private/tmp/light-cljs-investigation-20261016/results/macros-50.js

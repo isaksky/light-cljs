@@ -1,0 +1,3 @@
+{:job "render", :runtime-equal false, :runtime-byte-delta 1344}
+{:job "main-none", :runtime-equal false, :runtime-byte-delta 1344}
+{:job "main-advanced", :runtime-equal true, :runtime-byte-delta 0}

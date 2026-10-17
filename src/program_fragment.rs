@@ -110,7 +110,7 @@ pub(crate) fn append(
             target.namespaces.push(namespace.clone());
         }
     }
-    for (namespace, context) in &fragment.reader_contexts {
+    for (namespace, context) in fragment.reader_contexts.iter() {
         if target.reader_contexts.get(namespace) != Some(context) {
             target
                 .reader_contexts

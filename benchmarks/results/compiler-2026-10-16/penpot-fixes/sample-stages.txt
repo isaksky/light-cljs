@@ -1,0 +1,13 @@
+Samples: 449
+macro-call 176 39.20%
+environment-import 89 19.82%
+javascript-unit-evaluation 50 11.14%
+form-import 46 10.24%
+namespace-analysis 24 5.35%
+arity-and-expression-warnings 20 4.45%
+deferred-analysis 20 4.45%
+form-export 19 4.23%
+environment-construction 2 0.45%
+reader-environment 2 0.45%
+macro-expansion-other 1 0.22%
+other 0 0.00%

@@ -1,0 +1,23 @@
+{:version "baseline", :fixture "calls-1000", :exit 0, :wall-seconds 0.18, :user-seconds 0.15, :system-seconds 0.0, :peak-rss-bytes 58540032, :output-bytes 572049}
+{:version "baseline", :fixture "calls-2000", :exit 0, :wall-seconds 0.56, :user-seconds 0.54, :system-seconds 0.01, :peak-rss-bytes 122716160, :output-bytes 718049}
+{:version "baseline", :fixture "calls-4000", :exit 0, :wall-seconds 1.96, :user-seconds 1.93, :system-seconds 0.02, :peak-rss-bytes 251445248, :output-bytes 1010049}
+{:version "baseline", :fixture "calls-8000", :exit 0, :wall-seconds 7.22, :user-seconds 7.16, :system-seconds 0.06, :peak-rss-bytes 546455552, :output-bytes 1594049}
+{:version "baseline", :fixture "namespaces-25", :exit 0, :wall-seconds 0.19, :user-seconds 0.18, :system-seconds 0.0, :peak-rss-bytes 66650112, :output-bytes 581848}
+{:version "baseline", :fixture "namespaces-50", :exit 0, :wall-seconds 0.62, :user-seconds 0.6, :system-seconds 0.01, :peak-rss-bytes 173309952, :output-bytes 734898}
+{:version "baseline", :fixture "namespaces-100", :exit 0, :wall-seconds 1.95, :user-seconds 1.9, :system-seconds 0.04, :peak-rss-bytes 458506240, :output-bytes 1040998}
+{:version "baseline", :fixture "macros-0", :exit 0, :wall-seconds 1.02, :user-seconds 1.0, :system-seconds 0.01, :peak-rss-bytes 105496576, :output-bytes 632843}
+{:version "baseline", :fixture "macros-50", :exit 0, :wall-seconds 6.8, :user-seconds 6.76, :system-seconds 0.03, :peak-rss-bytes 236912640, :output-bytes 634233}
+{:version "baseline", :fixture "macros-100", :exit 0, :wall-seconds 12.95, :user-seconds 12.89, :system-seconds 0.05, :peak-rss-bytes 359874560, :output-bytes 635683}
+{:version "baseline", :fixture "synthetic-4000", :exit 0, :wall-seconds 16.66, :user-seconds 16.55, :system-seconds 0.11, :peak-rss-bytes 757645312, :output-bytes 2260500}
+{:version "fixed", :fixture "calls-1000", :exit 0, :wall-seconds 0.11, :user-seconds 0.11, :system-seconds 0.0, :peak-rss-bytes 58654720, :output-bytes 573393}
+{:version "fixed", :fixture "calls-2000", :exit 0, :wall-seconds 0.34, :user-seconds 0.33, :system-seconds 0.0, :peak-rss-bytes 111591424, :output-bytes 719393}
+{:version "fixed", :fixture "calls-4000", :exit 0, :wall-seconds 1.12, :user-seconds 1.1, :system-seconds 0.02, :peak-rss-bytes 237846528, :output-bytes 1011393}
+{:version "fixed", :fixture "calls-8000", :exit 0, :wall-seconds 4.22, :user-seconds 4.16, :system-seconds 0.05, :peak-rss-bytes 550469632, :output-bytes 1595393}
+{:version "fixed", :fixture "namespaces-25", :exit 0, :wall-seconds 0.17, :user-seconds 0.17, :system-seconds 0.0, :peak-rss-bytes 54886400, :output-bytes 583192}
+{:version "fixed", :fixture "namespaces-50", :exit 0, :wall-seconds 0.56, :user-seconds 0.55, :system-seconds 0.01, :peak-rss-bytes 121159680, :output-bytes 736242}
+{:version "fixed", :fixture "namespaces-100", :exit 0, :wall-seconds 1.72, :user-seconds 1.69, :system-seconds 0.02, :peak-rss-bytes 243941376, :output-bytes 1042342}
+{:version "fixed", :fixture "macros-0", :exit 0, :wall-seconds 0.93, :user-seconds 0.92, :system-seconds 0.0, :peak-rss-bytes 88080384, :output-bytes 634187}
+{:version "fixed", :fixture "macros-50", :exit 0, :wall-seconds 1.21, :user-seconds 1.2, :system-seconds 0.01, :peak-rss-bytes 112214016, :output-bytes 635577}
+{:version "fixed", :fixture "macros-100", :exit 0, :wall-seconds 1.48, :user-seconds 1.47, :system-seconds 0.01, :peak-rss-bytes 101990400, :output-bytes 637027}
+{:version "fixed", :fixture "synthetic-4000", :exit 0, :wall-seconds 14.86, :user-seconds 14.81, :system-seconds 0.04, :peak-rss-bytes 360497152, :output-bytes 2261844}
+All 22 synthetic modules returned their expected results in Node.

@@ -396,6 +396,7 @@ impl MacroHost {
                 generation,
             },
         );
+        self.macro_environment = Default::default();
         Ok(())
     }
     pub(crate) fn source_macro_key(&self, namespace: &str, name: &str) -> Option<String> {

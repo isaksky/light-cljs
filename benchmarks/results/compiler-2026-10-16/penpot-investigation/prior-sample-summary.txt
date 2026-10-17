@@ -1,0 +1,8 @@
+expand-javascript 13178 82.43%
+import-data 12680 79.31%
+warnings 2423 15.16%
+bridge-encode 890 5.57%
+bridge-decode 859 5.37%
+build-env 45 0.28%
+reader-env 4 0.03%
+reader-view 1 0.01%

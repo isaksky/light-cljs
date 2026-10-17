@@ -1,0 +1,46 @@
+NAMESPACE 0 light.core-bridge live=35732328
+NAMESPACE 50 app.common.geom.rect live=365279313
+NAMESPACE 100 app.common.types.shape.export live=1036160617
+NAMESPACE 150 app.util.perf-macros live=1702475092
+NAMESPACE 200 app.main.ui.shapes.export live=2760433249
+NAMESPACE 250 app.main.ui.shapes.image live=3708339406
+PROGRAM exprs=476709 globals=6695 units=6541 namespaces=268
+PROFILE analysis-other seconds=16.372817 calls=1
+PROFILE build-env seconds=0.963599 calls=10372
+PROFILE build-reader-env seconds=0.072064 calls=10372
+PROFILE decode-snapshot-env seconds=14.832662 calls=10372
+PROFILE decode-snapshot-form seconds=0.376377 calls=41543
+PROFILE encode-env seconds=13.912413 calls=10372
+PROFILE encode-form seconds=0.388754 calls=41543
+PROFILE export-expanded seconds=3.536294 calls=10372
+PROFILE import-env-other seconds=0.113684 calls=10372
+PROFILE import-form-other seconds=0.086199 calls=41543
+PROFILE js-import-env seconds=117.211650 calls=10372
+PROFILE js-import-form seconds=4.994575 calls=41543
+PROFILE js-snapshot-env seconds=47.213128 calls=10372
+PROFILE js-snapshot-form seconds=1.632234 calls=41543
+PROFILE macro-call seconds=15.746124 calls=10372
+PROFILE warnings seconds=12.315808 calls=6945
+COUNT arity-expressions-scanned 3358001433
+COUNT env-new-retained 2917040
+COUNT form-new-retained 131842
+LIVE 4084066555
+QUICKJS memory_used=119662687 rust_live=2805957028
+BRIDGE originals=3048882 canonical=2388812 forms=131000 live_before=2638857776
+BRIDGE freed_bytes=2527298561 live_after=111559215
+      254.42 real       252.84 user         1.53 sys
+          4934860800  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              314747  page reclaims
+                  13  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                 216  voluntary context switches
+                 906  involuntary context switches
+          4234832192  peak memory footprint

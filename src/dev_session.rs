@@ -595,7 +595,10 @@ impl DevSession {
             .namespaces
             .iter()
             .filter_map(|namespace| {
-                let context = program.reader_contexts.get(namespace);
+                let context = program
+                    .reader_contexts
+                    .get(namespace)
+                    .map(|context| &**context);
                 let count = definitions.get(namespace.as_str()).copied().unwrap_or(0);
                 let known = registered
                     .get(namespace)

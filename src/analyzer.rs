@@ -2574,7 +2574,9 @@ pub struct Program {
     /// Source namespaces present in this unit, including namespaces without Vars.
     pub namespaces: crate::shared::Shared<Vec<String>>,
     /// Explicit source reader contexts; runtime reads never consult a loader.
-    pub reader_contexts: crate::shared::Shared<HashMap<String, RuntimeReaderNamespace>>,
+    pub reader_contexts: crate::shared::Shared<
+        crate::layered::Layered<String, crate::shared::Shared<RuntimeReaderNamespace>>,
+    >,
     pub namespace_entries: crate::shared::Shared<HashMap<ExprId, String>>,
     pub compilation_uses: Vec<CompilationUse>,
     pub exprs: crate::arena::Arena<Expr>,
@@ -3264,15 +3266,23 @@ fn analyze_input(
     if !analyzer.program.namespaces.iter().any(|ns| ns == namespace) {
         analyzer.program.namespaces.push(namespace.into());
     }
-    analyzer.program.reader_contexts.insert(
-        namespace.into(),
-        RuntimeReaderNamespace {
-            aliases: aliases.to_vec(),
-            refers: analyzer.resolution.refers.clone(),
-            excludes: analyzer.resolution.excludes.clone(),
-            macros: Vec::new(),
-        },
-    );
+    let reader_context = RuntimeReaderNamespace {
+        aliases: aliases.to_vec(),
+        refers: analyzer.resolution.refers.clone(),
+        excludes: analyzer.resolution.excludes.clone(),
+        macros: analyzer.macro_host.source_macro_names(namespace),
+    };
+    if analyzer
+        .program
+        .reader_contexts
+        .get(namespace)
+        .is_none_or(|old| **old != reader_context)
+    {
+        analyzer
+            .program
+            .reader_contexts
+            .insert(namespace.into(), reader_context.into());
+    }
     if let Some(form) = owned_form {
         roots = vec![analyzer.import_form(form)?];
     }
@@ -3342,12 +3352,15 @@ fn analyze_input(
             ExprContext::Return,
         );
     }
-    analyzer
-        .program
-        .reader_contexts
-        .get_mut(namespace)
-        .unwrap()
-        .macros = analyzer.macro_host.source_macro_names(namespace);
+    let macros = analyzer.macro_host.source_macro_names(namespace);
+    if analyzer.program.reader_contexts[namespace].macros != macros {
+        analyzer
+            .program
+            .reader_contexts
+            .get_mut(namespace)
+            .unwrap()
+            .macros = macros;
+    }
     analyzer.read_discards_before(source.len())?;
     analyzer.drain_deferred()?;
     analyzer.collect_expression_warnings();
@@ -3560,8 +3573,16 @@ impl NamespaceAnalysis {
         } else {
             ExprContext::Discard
         };
-        let root = analyzer.body(&source_roots[1..], 0..input.source.len(), context)?;
-        analyzer.read_discards_before(input.source.len())?;
+        // Definition snapshots include their own namespace, so analyzing each
+        // deferred definition need not insert another copy of its reader data.
+        if !analyzer
+            .program
+            .namespaces
+            .iter()
+            .any(|ns| ns == input.name)
+        {
+            analyzer.program.namespaces.push(input.name.into());
+        }
         analyzer.program.reader_contexts.insert(
             input.name.into(),
             RuntimeReaderNamespace {
@@ -3569,8 +3590,20 @@ impl NamespaceAnalysis {
                 refers: analyzer.resolution.refers.clone(),
                 excludes: analyzer.resolution.excludes.clone(),
                 macros: analyzer.macro_host.source_macro_names(input.name),
-            },
+            }
+            .into(),
         );
+        let root = analyzer.body(&source_roots[1..], 0..input.source.len(), context)?;
+        analyzer.read_discards_before(input.source.len())?;
+        let macros = analyzer.macro_host.source_macro_names(input.name);
+        if analyzer.program.reader_contexts[input.name].macros != macros {
+            analyzer
+                .program
+                .reader_contexts
+                .get_mut(input.name)
+                .unwrap()
+                .macros = macros;
+        }
         analyzer
             .program
             .namespace_entries
@@ -3971,6 +4004,40 @@ impl Analyzer<'_> {
         } else {
             0
         };
+        // Index the same declaration range once, preserving the union of
+        // overloads and redefinitions visible to this diagnostic pass.
+        let mut arities: HashMap<GlobalId, Vec<(usize, bool)>> = HashMap::new();
+        for definition in self.program.exprs.tail_from(declarations) {
+            match &definition.kind {
+                ExprKind::DefType {
+                    constructor: Some(global),
+                    fields,
+                    ..
+                } => {
+                    arities
+                        .entry(*global)
+                        .or_default()
+                        .push((fields.len(), false));
+                }
+                ExprKind::Def {
+                    global,
+                    init: Some(init),
+                    ..
+                } => {
+                    let mut init = *init;
+                    while let ExprKind::WithMeta { value, .. } = self.program.exprs[init.0].kind {
+                        init = value;
+                    }
+                    if let ExprKind::Fn { methods, .. } = &self.program.exprs[init.0].kind {
+                        arities
+                            .entry(*global)
+                            .or_default()
+                            .extend(methods.iter().map(|m| (m.params.len(), m.rest.is_some())));
+                    }
+                }
+                _ => {}
+            }
+        }
         for (expr_index, expr) in
             (self.first_expr..).zip(self.program.exprs.tail_from(self.first_expr))
         {
@@ -4020,39 +4087,7 @@ impl Analyzer<'_> {
                         }
                     }
                     ExprKind::Global(global) => {
-                        let mut arities = Vec::new();
-                        for definition in self.program.exprs.tail_from(declarations) {
-                            if let ExprKind::DefType {
-                                constructor: Some(constructor),
-                                fields,
-                                ..
-                            } = &definition.kind
-                                && *constructor == global
-                            {
-                                arities.push((fields.len(), false));
-                            }
-                            if let ExprKind::Def {
-                                global: target,
-                                init: Some(init),
-                                ..
-                            } = definition.kind
-                                && target == global
-                            {
-                                let mut init = init;
-                                while let ExprKind::WithMeta { value, .. } =
-                                    self.program.exprs[init.0].kind
-                                {
-                                    init = value;
-                                }
-                                if let ExprKind::Fn { methods, .. } =
-                                    &self.program.exprs[init.0].kind
-                                {
-                                    arities.extend(
-                                        methods.iter().map(|m| (m.params.len(), m.rest.is_some())),
-                                    );
-                                }
-                            }
-                        }
+                        let arities = arities.get(&global).map(Vec::as_slice).unwrap_or(&[]);
                         if !arities.is_empty()
                             && !arities.iter().any(|&(fixed, variadic)| {
                                 args.len() == fixed || (variadic && args.len() >= fixed)

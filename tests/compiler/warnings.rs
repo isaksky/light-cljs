@@ -141,6 +141,19 @@ fn record_factory_and_constructor_arities_have_different_valid_signatures() {
 }
 
 #[test]
+fn arity_index_keeps_metadata_overloads_variadics_and_redefinition_union() {
+    let source = "(let [] (def f ^{:doc \"f\"} (fn ([x] x) ([x y & more] more))) (f) (f 1) (f 1 2) (f 1 2 3) (def f (fn [] nil)) (f))";
+    assert!(
+        messages(source).is_empty(),
+        "all declaration arities remain visible"
+    );
+    assert_eq!(
+        messages("(let [] (def f ^{:doc \"f\"} (fn [x y] x)) (f 1))"),
+        ["Wrong number of args (1) passed to cljs.user/f"]
+    );
+}
+
+#[test]
 fn local_shadowing_earmuffs_and_unbound_destructuring_are_public_diagnostics() {
     assert_eq!(
         warnings("(fn [foo] (let [x js/foo] (println x)))", false)[0].kind,

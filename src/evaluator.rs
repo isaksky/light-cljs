@@ -270,6 +270,7 @@ impl Evaluator {
                 }},
                 inputProvider: (name, provider) => save(rt.core.readerInputProvider(name, provider)),
                 importForm: descriptor => save(bridge.decode(descriptor)),
+                importEnvironment: (descriptor, nodes, depth) => {{ const [value, snapshots] = bridge.decode(descriptor, [nodes, depth]); return [save(value), snapshots]; }},
                 exportForm: (id, nodes, depth) => bridge.encode(get(id), nodes, depth),
                 formServices: (one, all, nodes, depth) => rt.setMacroexpandServices({{macroexpand1: form => bridge.decode(one(bridge.encode(form, nodes, depth))), macroexpand: form => bridge.decode(all(bridge.encode(form, nodes, depth)))}}),
                 bridgeVersion: bridge.version,
@@ -902,6 +903,13 @@ pub trait MacroEvaluator {
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError>;
     fn import_form(&self, form: &Form, limits: ConversionLimits) -> Result<ValueId, EvalError>;
     fn import_data(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError>;
+    fn import_environment(
+        &self,
+        data: &Datum,
+        limits: ConversionLimits,
+    ) -> Result<ValueId, EvalError> {
+        self.import_data(data, limits)
+    }
     fn export_form(
         &self,
         id: ValueId,
@@ -926,6 +934,42 @@ impl MacroEvaluator for Evaluator {
     }
     fn import_data(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {
         Evaluator::import_data(self, data, limits)
+    }
+    fn import_environment(
+        &self,
+        data: &Datum,
+        limits: ConversionLimits,
+    ) -> Result<ValueId, EvalError> {
+        // Constructing a map can demand user hash/equality code and reenter
+        // the compiler. Pending cache slots are not installed in JS yet.
+        let nested = self.bridge.borrow().importing_environment;
+        if nested {
+            return self.import_data(data, limits);
+        }
+        self.bridge.borrow_mut().importing_environment = true;
+        let result = self.enter(|ctx| {
+            let descriptor =
+                self.bridge
+                    .borrow_mut()
+                    .encode_environment(&ctx, data, &self.control, limits)?;
+            let import: Function = ctx.eval("__lightEvaluator.importEnvironment")?;
+            let result: Array = import.call((descriptor, limits.nodes, limits.depth))?;
+            let snapshots: Array = result.get(1)?;
+            for snapshot in snapshots.iter::<Array>() {
+                self.bridge
+                    .borrow_mut()
+                    .decode(snapshot?, &self.control, limits, true)?;
+            }
+            Ok(ValueId {
+                session: self.generation,
+                index: result.get(0)?,
+            })
+        });
+        self.bridge.borrow_mut().importing_environment = false;
+        if result.is_err() {
+            self.bridge.borrow_mut().reset_environment_cache();
+        }
+        result
     }
     fn export_form(
         &self,
@@ -955,6 +999,42 @@ impl MacroEvaluator for ActiveEvaluator<'_, '_> {
     }
     fn import_data(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {
         ActiveEvaluator::import_data(self, data, limits)
+    }
+    fn import_environment(
+        &self,
+        data: &Datum,
+        limits: ConversionLimits,
+    ) -> Result<ValueId, EvalError> {
+        // Constructing a map can demand user hash/equality code and reenter
+        // the compiler. Pending cache slots are not installed in JS yet.
+        let nested = self.bridge.borrow().importing_environment;
+        if nested {
+            return self.import_data(data, limits);
+        }
+        self.bridge.borrow_mut().importing_environment = true;
+        let result = self.enter(|ctx| {
+            let descriptor =
+                self.bridge
+                    .borrow_mut()
+                    .encode_environment(&ctx, data, self.control, limits)?;
+            let import: Function = ctx.eval("__lightEvaluator.importEnvironment")?;
+            let result: Array = import.call((descriptor, limits.nodes, limits.depth))?;
+            let snapshots: Array = result.get(1)?;
+            for snapshot in snapshots.iter::<Array>() {
+                self.bridge
+                    .borrow_mut()
+                    .decode(snapshot?, self.control, limits, true)?;
+            }
+            Ok(ValueId {
+                session: self.generation,
+                index: result.get(0)?,
+            })
+        });
+        self.bridge.borrow_mut().importing_environment = false;
+        if result.is_err() {
+            self.bridge.borrow_mut().reset_environment_cache();
+        }
+        result
     }
     fn export_form(
         &self,
@@ -1299,6 +1379,185 @@ impl<'js> rquickjs::IntoJs<'js> for BridgeOutput {
 mod active_tests {
     use super::*;
     use crate::compiler_data::DatumKind;
+
+    #[test]
+    fn released_bridge_inputs_release_native_provenance() {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let c = crate::compiler_data::DataBuilder;
+        let live = evaluator.bridge.borrow().live_provenance.clone();
+        for n in 0..1000 {
+            let data = c
+                .vector(&[c.symbol(crate::compiler_data::Name::new(None, &format!("input-{n}")))])
+                .unwrap();
+            let input = evaluator
+                .import_data(&data, ConversionLimits::default())
+                .unwrap();
+            evaluator.release(input).unwrap();
+        }
+        evaluator.collect_garbage();
+        assert_eq!(
+            live.get(),
+            0,
+            "released input provenance must not be session-owned"
+        );
+    }
+
+    #[test]
+    fn scalar_provenance_retains_values_instead_of_import_history() {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let c = crate::compiler_data::DataBuilder;
+        let live = evaluator.bridge.borrow().live_provenance.clone();
+        for _ in 0..1000 {
+            let data = c
+                .vector(&[c.integer(42), c.nil(), c.boolean(true)])
+                .unwrap();
+            let input = evaluator
+                .import_data(&data, ConversionLimits::default())
+                .unwrap();
+            evaluator.release(input).unwrap();
+        }
+        evaluator.collect_garbage();
+        assert_eq!(live.get(), 3);
+        drop(evaluator);
+        assert_eq!(live.get(), 0);
+    }
+
+    #[test]
+    fn environment_cache_preserves_lexical_data_and_copies_mutable_literals() {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let limits = ConversionLimits::default();
+        let key = |name| {
+            crate::compiler_data::DataBuilder.keyword(crate::compiler_data::Name::new(None, name))
+        };
+        let c = crate::compiler_data::DataBuilder;
+        let data = c
+            .map(&[
+                (
+                    key("stable"),
+                    c.vector(&[
+                        Datum::new(DatumKind::Ratio {
+                            numerator: 3,
+                            denominator: 2,
+                        }),
+                        c.integer(9007199254740993),
+                    ])
+                    .unwrap(),
+                ),
+                (
+                    key("mutable"),
+                    Datum::new(DatumKind::CompilerLiteral {
+                        kind: crate::compiler_data::CompilerLiteralKind::JsArray,
+                        payload: c.vector(&[c.integer(1)]).unwrap(),
+                    }),
+                ),
+            ])
+            .unwrap();
+        let mutate = evaluator.evaluate_js("env => { rt.core.get(env, rt.core.keyword(null, 'mutable')).push(2); return null; }").unwrap();
+        for _ in 0..3 {
+            let input = evaluator.import_environment(&data, limits).unwrap();
+            let output = evaluator.export_data(input, limits).unwrap();
+            let stable = output.get(&key("stable")).unwrap().unwrap();
+            let DatumKind::Collection { children, .. } = stable.kind() else {
+                panic!("vector")
+            };
+            assert!(matches!(
+                children[0].kind(),
+                DatumKind::Ratio {
+                    numerator: 3,
+                    denominator: 2
+                }
+            ));
+            assert!(matches!(
+                children[1].kind(),
+                DatumKind::Integer(9007199254740993)
+            ));
+            let mutable = output.get(&key("mutable")).unwrap().unwrap();
+            let DatumKind::CompilerLiteral { payload, .. } = mutable.kind() else {
+                panic!("literal")
+            };
+            let DatumKind::Collection { children, .. } = payload.kind() else {
+                panic!("payload")
+            };
+            assert_eq!(children.len(), 1);
+            let result = evaluator.call(mutate, &[input]).unwrap();
+            evaluator.release(result).unwrap();
+            evaluator.release(input).unwrap();
+        }
+        // Cached components still count against the logical conversion limits.
+        assert!(
+            evaluator
+                .import_environment(
+                    &data,
+                    ConversionLimits {
+                        nodes: 3,
+                        depth: 128
+                    }
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn failed_environment_import_does_not_publish_uninstalled_cache_slots() {
+        let evaluator = Evaluator::interactive(EvaluatorOptions::default()).unwrap();
+        let c = crate::compiler_data::DataBuilder;
+        let key = |name| c.keyword(crate::compiler_data::Name::new(None, name));
+        let stable = c.vector(&[c.integer(222)]).unwrap();
+        let invalid = Datum::new(DatumKind::CompilerLiteral {
+            kind: crate::compiler_data::CompilerLiteralKind::BigInteger,
+            payload: c.nil(),
+        });
+        let bad = c
+            .map(&[(key("stable"), stable.clone()), (key("bad"), invalid)])
+            .unwrap();
+        assert!(
+            evaluator
+                .import_environment(&bad, ConversionLimits::default())
+                .is_err()
+        );
+        let good = c.map(&[(key("stable"), stable)]).unwrap();
+        let result = evaluator
+            .import_environment(&good, ConversionLimits::default())
+            .unwrap();
+        assert_eq!(evaluator.print(result).unwrap(), "{:stable [222]}");
+    }
+
+    #[test]
+    fn environment_import_can_reenter_before_its_cache_slots_are_installed() {
+        let evaluator = Rc::new(Evaluator::new(EvaluatorOptions::default()).unwrap());
+        let c = crate::compiler_data::DataBuilder;
+        let data = c
+            .map(&[(
+                c.keyword(crate::compiler_data::Name::new(None, "stable")),
+                c.vector(&[c.integer(42)]).unwrap(),
+            )])
+            .unwrap();
+        let nested_data = data.clone();
+        let weak = Rc::downgrade(&evaluator);
+        evaluator
+            .install_unit_service("reenterEnvironment", move |ctx, _| {
+                let evaluator = weak.upgrade().unwrap();
+                let active = evaluator.active(ctx).map_err(|e| e.0)?;
+                let input = active
+                    .import_environment(&nested_data, ConversionLimits::default())
+                    .map_err(|e| e.0)?;
+                assert_eq!(active.print(input).map_err(|e| e.0)?, "{:stable [42]}");
+                active.release(input).map_err(|e| e.0)?;
+                Ok("nested".into())
+            })
+            .unwrap();
+        // Force a callback during descriptor construction, as demanded user
+        // hash/equality implementations can do. Restore before reentering.
+        let hook = evaluator.evaluate_js("(() => { const map = Array.prototype.map; Array.prototype.map = function (...args) { Array.prototype.map = map; reenterEnvironment(0); return Reflect.apply(map, this, args); }; return null; })()").unwrap();
+        evaluator.release(hook).unwrap();
+        for _ in 0..2 {
+            let input = evaluator
+                .import_environment(&data, ConversionLimits::default())
+                .unwrap();
+            assert_eq!(evaluator.print(input).unwrap(), "{:stable [42]}");
+            evaluator.release(input).unwrap();
+        }
+    }
 
     #[test]
     fn unit_service_recurses_with_active_context_and_bridge() {

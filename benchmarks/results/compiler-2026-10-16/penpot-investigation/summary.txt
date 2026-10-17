@@ -1,0 +1,15 @@
+calls-1000.log wall 0.16 rss-MiB 55.9 phase-total 0.15 env+build 0.00 warnings 0.043061 call 0
+calls-2000.log wall 0.55 rss-MiB 114.6 phase-total 0.53 env+build 0.00 warnings 0.172908 call 0
+calls-4000.log wall 1.94 rss-MiB 237.5 phase-total 1.89 env+build 0.00 warnings 0.706992 call 0
+calls-8000.log wall 7.02 rss-MiB 515.1 phase-total 6.88 env+build 0.00 warnings 2.843626 call 0
+macros-0.log wall 1.01 rss-MiB 99.1 phase-total 0.97 env+build 0.50 warnings 7.3E-4 call 0.03613
+macros-100.log wall 12.94 rss-MiB 354.0 phase-total 12.70 env+build 12.08 warnings 0.001036 call 0.047816
+macros-50.log wall 6.80 rss-MiB 225.7 phase-total 6.66 env+build 6.10 warnings 8.99E-4 call 0.043229
+namespaces-100.log wall 1.94 rss-MiB 432.5 phase-total 1.70 env+build 0.00 warnings 0.001153 call 0
+namespaces-25.log wall 0.19 rss-MiB 63.8 phase-total 0.16 env+build 0.00 warnings 2.37E-4 call 0
+namespaces-50.log wall 0.61 rss-MiB 168.5 phase-total 0.53 env+build 0.00 warnings 5.29E-4 call 0
+render-both.log wall 159.90 rss-MiB 2102.7 phase-total 158.72 env+build 116.52 warnings 0 call 15.236284
+render-profile.log wall 254.42 rss-MiB 4706.3 phase-total 249.77 env+build 194.32 warnings 12.315808 call 15.746124
+synth4000-baseline.log wall 16.93 rss-MiB 727.8 phase-total 0.00 env+build 0.00 warnings 0 call 0
+synth4000-ephemeral.log wall 13.61 rss-MiB 414.0 phase-total 13.42 env+build 4.53 warnings 0.005823 call 1.307875
+synth4000-profile.log wall 16.91 rss-MiB 737.7 phase-total 16.32 env+build 7.40 warnings 0.006096 call 1.317912

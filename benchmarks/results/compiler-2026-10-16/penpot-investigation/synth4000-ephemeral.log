@@ -1,0 +1,39 @@
+NAMESPACE 0 demo.main live=7463993
+PROGRAM exprs=132002 globals=4000 units=4000 namespaces=1
+PROFILE analysis-other seconds=3.365432 calls=1
+PROFILE build-env seconds=0.076878 calls=16024
+PROFILE build-reader-env seconds=0.038544 calls=16024
+PROFILE decode-snapshot-form seconds=0.147213 calls=48157
+PROFILE encode-env seconds=0.396832 calls=16024
+PROFILE encode-form seconds=0.128902 calls=48157
+PROFILE export-expanded seconds=0.836500 calls=16024
+PROFILE import-env-other seconds=0.026485 calls=16024
+PROFILE import-form-other seconds=0.075561 calls=48157
+PROFILE js-import-env seconds=3.991934 calls=16024
+PROFILE js-import-form seconds=2.266436 calls=48157
+PROFILE js-snapshot-form seconds=0.752001 calls=48157
+PROFILE macro-call seconds=1.307875 calls=16024
+PROFILE warnings seconds=0.005823 calls=4005
+COUNT arity-expressions-scanned 43856
+COUNT env-new-retained 0
+COUNT form-new-retained 76950
+LIVE 271788843
+QUICKJS memory_used=3768955 rust_live=117595649
+BRIDGE originals=76950 canonical=76943 forms=76904 live_before=109116237
+BRIDGE freed_bytes=79589295 live_after=29526942
+       13.61 real        13.52 user         0.08 sys
+           434110464  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               27781  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                  63  involuntary context switches
+           391858112  peak memory footprint

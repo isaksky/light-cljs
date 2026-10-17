@@ -10,11 +10,20 @@ use std::rc::Rc;
 /// from it; when the layer grows past a bound, the two are merged into a new
 /// base, so a frame costs the layer and a lookup costs two probes.
 #[derive(Debug)]
-pub(crate) struct Layered<K, V> {
+pub struct Layered<K, V> {
     base: Rc<HashMap<K, V>>,
     /// This map's entries over `base`; `None` removes a base entry.
     own: HashMap<K, Option<V>>,
     len: usize,
+}
+
+impl<K: Eq + Hash + Clone, V: Clone + PartialEq> PartialEq for Layered<K, V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.len == other.len
+            && self
+                .iter()
+                .all(|(key, value)| other.get(key) == Some(value))
+    }
 }
 
 impl<K, V> Default for Layered<K, V> {
