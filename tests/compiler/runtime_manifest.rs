@@ -277,8 +277,17 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 /// `.fields` effects, which only an `Advanced` program that names one of
 /// `UPSTREAM_MEMBERS` roots (light-cljs-238). (`defineType`, which decorates the
 /// constructors only `Advanced` emission writes, is reached through
-/// `Loadable.type` since light-cljs-272.)
-const UNREACHABLE_FROM_EXPORTS: &[&str] = &["upstreamMembers"];
+/// `Loadable.type` since light-cljs-272.) `mapEntry.lean`, `entryPrototype`,
+/// `MapEntryType.lean` and `mapEntry.equiv` build map entries and give them
+/// their members and equality where no vector can be built (`unless:
+/// makeVector`, light-cljs-247), which the export list builds.
+const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
+    "entryPrototype",
+    "MapEntryType.lean",
+    "mapEntry.equiv",
+    "mapEntry.lean",
+    "upstreamMembers",
+];
 
 /// The string-literal protocol method keys of `text` (`"IHash/-hash"`), each
 /// with whether it is the first item of a method entry (`["IHash/-hash", 1,
@@ -475,6 +484,12 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
             ["resetMeta", "upstreamMembers"]
                 .map(|binding| manifest.unit_of(binding).unwrap())
                 .to_vec()
+        } else if unit.name == "MapEntryType.vector" || unit.name == "mapEntry.vector" {
+            // Map entries are vectors with the vectors' members where
+            // vectors can be built, and else stores of two items with members
+            // of their own (`mapEntry.lean`, `MapEntryType.lean`,
+            // light-cljs-247).
+            vec![manifest.unit_of("makeVector").unwrap()]
         } else {
             let hooks = installed_hooks(body(id));
             // A kind table entry is read where its operation's wrapper is.
@@ -536,8 +551,11 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // and the units filling in the kind tables' entries for lazy seqs and
     // cells that no kind hook unit fills in (9), wrapping five operations
     // behind them, and giving two view types and their `first` a kind
-    // (light-cljs-237).
-    assert_eq!(checked, 194);
+    // (light-cljs-237), and map entries as vectors with the vectors'
+    // members, their equality where no vector can be built, the sorted entry
+    // search and the sequential, UUID and Var tests of structural equality
+    // (light-cljs-247).
+    assert_eq!(checked, 200);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -712,12 +730,26 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
         ]),
     ),
     // Two vectors compare their items where no protocol implementation
-    // exists; other sequential values walk their seqs.
-    ("equivVectors", Kind::Stores(&["vectors"])),
+    // exists; other sequential values walk their seqs. Vectors' builder
+    // installs the full comparison, and map entries one of two items where
+    // no vector can be built (`unless: makeVector`, light-cljs-247).
+    (
+        "equivVectors/makeVector.equiv",
+        Kind::Units(&["makeVector"]),
+    ),
+    ("equivVectors/mapEntry.equiv", Kind::Units(&["mapEntry"])),
     (
         "equivSequential",
         Kind::Stores(&["cells", "views", "queues", "lazyValues"]),
     ),
+    // The sequential values other than vectors that equality and hashing
+    // compare by their items, and UUIDs and Vars, which compare their text
+    // and symbol (light-cljs-247).
+    (
+        "comparedSeq",
+        Kind::Stores(&["cells", "views", "queues", "lazyValues"]),
+    ),
+    ("equivNamed", Kind::Stores(&["uuids", "vars"])),
     ("metaDeferred", Kind::Stores(&["deferredVarMetadata"])),
     ("conjQueue", Kind::Stores(&["queues"])),
     ("conjVector", Kind::Stores(&["vectors"])),
@@ -746,9 +778,15 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("withMetaRecord", Kind::Stores(&["recordTypes"])),
     ("updatedRecord", Kind::Stores(&["recordTypes"])),
     ("lookupTransient", Kind::Stores(&["transients"])),
-    ("nthVector", Kind::Stores(&["vectors"])),
+    // Vectors other than map entries, whose lookup reads their tail.
+    ("nthVector", Kind::Units(&["makeVector"])),
     ("lookupTree", Kind::Units(&["treeMapConstructor"])),
     ("entryIndex", Kind::Maps(&["maps", "sets"])),
+    // Sorted maps and sets, which only their constructors build.
+    (
+        "sortedEntryIndex",
+        Kind::Units(&["treeMapConstructor", "treeSetConstructor"]),
+    ),
     // Maps and sets of the hash-map kind, and records. A set has another
     // kind than array-map only where `putMember` promoted it or the public
     // constructor (`publicHashSet`) took its map's kind (light-cljs-231).
@@ -861,8 +899,9 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
         Kind::Units(&["PersistentArrayMapValue"]),
     ),
     ("iteratorVector", Kind::Stores(&["vectors"])),
-    // A chunked seq that its public constructor did not build is a vector's.
-    ("vectorOfItems", Kind::Stores(&["vectors"])),
+    // A chunked seq that its public constructor did not build is a vector's
+    // of more than 32 items, which `makeVector` builds: a map entry has two.
+    ("vectorOfItems", Kind::Units(&["makeVector"])),
     ("dropChunkedSeq", Kind::Units(&["ChunkedSeqValue"])),
     ("dropVector", Kind::Stores(&["vectors"])),
     ("chunkedVectorRest", Kind::Units(&["ChunkedSeqValue"])),
@@ -886,18 +925,30 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
     let body = |unit: usize| &ANNOTATED_RUNTIME[manifest.units[unit].body_range.clone()];
     let writers = |store: &str| -> Vec<&str> {
         let calls = [format!("{store}.set("), format!("{store}.add(")];
+        // A unit declaring a binding, or an effect defining one of its targets
+        // (`mapEntry = ...` in `mapEntry.lean`, light-cljs-247), which is
+        // then the writer.
         let mut writers: Vec<&str> = (0..manifest.units.len())
             .filter(|&unit| {
-                !manifest.units[unit].declares.is_empty()
-                    && calls.iter().any(|call| {
-                        body(unit).match_indices(call.as_str()).any(|(start, _)| {
-                            !body(unit)[..start].ends_with(|c: char| {
-                                c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '.'
-                            })
+                calls.iter().any(|call| {
+                    body(unit).match_indices(call.as_str()).any(|(start, _)| {
+                        !body(unit)[..start].ends_with(|c: char| {
+                            c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '.'
                         })
                     })
+                })
             })
-            .map(|unit| manifest.units[unit].name)
+            .flat_map(|unit| {
+                let unit = &manifest.units[unit];
+                if !unit.declares.is_empty() {
+                    return vec![unit.name];
+                }
+                unit.effect
+                    .iter()
+                    .flat_map(|effect| effect.targets.iter().copied())
+                    .filter(|target| unit.assigns.contains(target))
+                    .collect()
+            })
             .collect();
         // Since light-cljs-258 `makeType` writes no store: it brands an
         // instance, and the effects wrapping `recordTypes`, `maps` and
@@ -1135,11 +1186,18 @@ fn kind_hooks_skip_records() {
     for effect in ["recordMethods.equiv", "protocolHooks.builtin"] {
         waits_for(effect, "equalPair");
     }
-    assert!(
-        manifest.units[unit("structuralEqualPair").0]
-            .requires
-            .contains(&"equalPair")
-    );
+    // Every unit keeping `structuralEqualPair` keeps `equalPair`.
+    for requirer in manifest
+        .units
+        .iter()
+        .filter(|other| other.requires.contains(&"structuralEqualPair"))
+    {
+        assert!(
+            requirer.name == "equalPair" || requirer.requires.contains(&"equalPair"),
+            "`{}` keeps `structuralEqualPair` without `equalPair`",
+            requirer.name
+        );
+    }
     let callers = |callee: &str| {
         let call = format!("{callee}(");
         manifest
@@ -1338,7 +1396,8 @@ fn conditional_effects_wait_for_a_condition() {
 /// chunk (light-cljs-279): the effects that wrap an operation by assigning
 /// its binding, the readers of a binding a function assigns after the
 /// runtime loads, and the effects that append to a list another unit
-/// enumerates (`recordMethods.*` to `recordMethodTable`). A new one moves no
+/// enumerates (`recordMethods.*` to `recordMethodTable`), and the two
+/// definitions of `mapEntry` and `MapEntryType` (light-cljs-247). A new one moves no
 /// unit out of its binding's chunk.
 #[test]
 fn units_assigning_a_binding_share_its_unit() {
@@ -1353,6 +1412,8 @@ fn units_assigning_a_binding_share_its_unit() {
     assert_eq!(
         shared,
         [
+            "MapEntryType <- MapEntryType.lean",
+            "MapEntryType <- MapEntryType.vector",
             "copyEntries <- copyEntries.trie",
             "count <- count.branches",
             "count <- count.protocol",
@@ -1383,6 +1444,8 @@ fn units_assigning_a_binding_share_its_unit() {
             "lookup <- lookup.trie",
             "macroexpandServices <- expansionService",
             "macroexpandServices <- setMacroexpandServices",
+            "mapEntry <- mapEntry.lean",
+            "mapEntry <- mapEntry.vector",
             "next <- next.branches",
             "next <- next.protocol",
             "nth <- nth.protocol",
@@ -1462,7 +1525,9 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
     // Effects travel with the bindings they mutate, and only with them; kind
     // hooks also with the bindings that build their kind, here the sequential
     // branches of `count`, structural equality, hashing, `str` and the
-    // printer, and the cells' kind table entries (light-cljs-237).
+    // printer, and the cells' kind table entries (light-cljs-237), and the
+    // test of the sequential values equality compares by items
+    // (light-cljs-247).
     assert_eq!(
         manifest.attached_effects(unit("ListValue")),
         [
@@ -1479,6 +1544,7 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
             unit("count.seqs"),
             unit("count.cells"),
             unit("cons.equiv"),
+            unit("cons.compared"),
             unit("makeVector.hash"),
             unit("printsMeta.print"),
             unit("cons.print"),

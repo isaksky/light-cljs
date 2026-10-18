@@ -4516,3 +4516,59 @@ sizes rounded up, for the pellet's speed target:
 
 examples/features as chunks (`chunks::terse_chunks_write_their_runtime_units_at_module_level`)
 grows from 71,891 to 74,835 bytes, and that test's bound by the same 2,944.
+
+## Map entries without the vector type — October 18, 2026
+
+light-cljs-247 builds the map entries a map's host iteration yields without
+the vector type where a program builds no vector, keeps sorted-map search
+only where sorted maps are built, and lets structural equality probe the
+seq kinds' stores, UUIDs and Vars only where a program builds them
+([advanced-optimization.md](../docs/advanced-optimization.md#phase-2-builtin-types-map-entries)).
+Bytes at `advanced` (gzip -9 after the slash where given), "before" master
+`4716053`:
+
+| Program | Before | After |
+| --- | ---: | ---: |
+| `(js/console.log (if (js/Math.random) {:k :a} nil))` | 10,264 / 3,586 | 7,606 / 2,769 |
+| `(js/console.log {})` | 8,979 | 6,342 |
+| `(js/console.log [1 2 3])` | 5,246 | 4,636 |
+| `(js/console.log (sorted-map :a 1))` | 38,381 | 38,199 |
+| `(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (m {:k :a}))` | 53,631 | 53,279 |
+| examples/features as chunks | 74,835 | 74,587 |
+
+The pellet's target for the first program was 7,000 bytes (7,350 with the
+user's 5% tolerance); it is 256 bytes over the tolerance. What it keeps
+beyond is generic (see the design doc's "Left for later").
+
+Size ratchet, at `advanced`; every other fixture is unchanged. The runtime
+that `none` and `prepare` outputs embed grew 3,500 bytes (`console-log-sum`
+451,616 to 455,116): the lean definitions of map entries, their members and
+the new hooks, with comments. Those ceilings rose to the new sizes rounded
+up to the next 1,000, and the advanced ceilings of the fixtures that shrank
+by a step dropped to their new sizes rounded up:
+
+| Fixture | Before | After | Ceiling before | Ceiling after |
+| --- | ---: | ---: | ---: | ---: |
+| map-only | 10,193 | 7,535 | 11,000 | 7,600 |
+| map-printed | 14,651 | 13,089 | 15,000 | 14,000 |
+| event-maps | 34,366 | 32,566 | 35,000 | 33,000 |
+| keyword-lookups | 34,132 | 33,690 | 35,000 | 34,000 |
+| constant-keys | 46,671 | 46,362 | 47,000 | 47,000 |
+| constant-lookups | 4,242 | 3,632 | 4,300 | 3,700 |
+| keyword-case | 3,862 | 3,252 | 3,900 | 3,300 |
+| keyword-only | 3,789 | 3,179 | 3,800 | 3,200 |
+| vector-only | 5,273 | 4,663 | 5,300 | 4,700 |
+| set-only | 5,506 | 4,533 | 5,600 | 4,600 |
+| atom-str | 2,745 | 2,594 | 2,800 | 2,600 |
+| closed-params | 14,003 | 13,378 | 15,000 | 14,000 |
+| features | 72,946 | 72,692 | 73,000 | 73,000 |
+| features-direct | 72,554 | 72,300 | 73,000 | 73,000 |
+| seq-pipeline | 29,040 | 28,964 | 30,000 | 30,000 |
+| callbacks | 41,242 | 41,184 | 42,000 | 42,000 |
+
+Equality and lookup did not slow down: a Node loop over 20,000 `=` of
+keywords, vectors, lists and map entries, `get` on a hash map and an array
+map, and 2,000 `hash` of lists, compiled at `advanced` with both binaries
+and run twice each (load 6.4), gave the same times within 5% except
+keyword `=` (1.42–1.48 to 1.22–1.25 ms) and list `hash` (0.86–1.00 to
+0.76 ms), which got faster.

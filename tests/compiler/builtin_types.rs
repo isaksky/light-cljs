@@ -1246,6 +1246,114 @@ fn maps_answer_host_facing_methods_from_their_entries() {
 }
 
 #[test]
+fn map_entries_keep_no_vector_type_where_no_vector_is_built() {
+    // light-cljs-247: a map's host iteration yields map entries, vectors of a
+    // key and a value. Where the program can build no vector, they have
+    // their own members (`MapEntryType.lean`) and equality
+    // (`mapEntry.equiv`), and each kind hook for vectors that the program's
+    // operations read; they answer as at `None`. The program names `next`,
+    // an upstream member, so it keeps the fields of the types it builds.
+    let source = "(defn t [f] (try (f) (catch :default x (.-message x))))
+         (defn drain [it] (let [a #js []] (loop [] (let [r (js/Object.values (.next it))] (.push a (aget r 0)) (if (aget r 1) a (recur))))))
+         (let [m (if (js/Math.random) {:a 1 :b \"x\"} nil) es (js/Array.from m) e (aget es 0) f (aget (js/Array.from m) 0) g (aget es 1)]
+           (.join (.map (array e (str e) (.toString g) (count e) (key e) (val g) (nth e 1) (get e 0) (get e 2 :nf) (e 1) (e 2 :nf) (.call e nil 0) (.apply e nil #js [1])
+                               (.indexOf e 1) (.indexOf e :x) (.lastIndexOf e :a) (.lastIndexOf e 1 0) (.indexOf e 1 -1) (t #(.indexOf e :a 0.5)) (.lastIndexOf e :a -1) (t #(.lastIndexOf e :b 1.5))
+                               (= e f) (= e g) (.equiv e f) (.equiv e g) (= (hash e) (hash f)) (vector? e) (map-entry? e) (seq e) (rest e)
+                               (js/Array.from e) (drain (.entries m)) (drain (.keys m)) (drain (.values m))
+                               (t #(.call e nil 5)) (t #(e)) (t #(nth e 5))
+                               (identical? (type e) (type g)) (contains? e 1) (contains? e 2) (meta e) (find m :a) (= (find m :a) e))
+                        #(pr-str %))
+                  \" \"))";
+    every_level(
+        source,
+        "[:a 1] \"[:a 1]\" \"[:b \\\"x\\\"]\" 2 :a \"x\" 1 :a :nf 1 :nf :a 1 1 -1 0 -1 1 \"Index out of bounds\" 0 -1 true false true false true true true (:a 1) (1) #js [:a 1] #js [#js [:a 1] #js [:b \"x\"] nil] #js [:a :b nil] #js [1 \"x\" nil] \"Index out of bounds\" \"Invalid arity: 0\" \"Index out of bounds\" true true false nil [:a 1] true",
+    );
+    let kept = units(source);
+    for absent in [
+        "makeVector",
+        "PersistentVectorValue",
+        "vectorPrototype",
+        "MapEntryType.vector",
+        "makeVector.equiv",
+    ] {
+        assert!(!kept.contains(&absent), "{absent}: {kept:?}");
+    }
+    for present in [
+        "MapEntryType.lean",
+        "mapEntry.equiv",
+        "makeVector.seq",
+        "makeVector.hash",
+        "makeVector.print",
+    ] {
+        assert!(kept.contains(&present), "{present}: {kept:?}");
+    }
+    // Without a printer, the host's view of the entries the map's iteration
+    // and `entries` give, and their members, as at `None`.
+    let source = "(let [m (if (js/Math.random) {:k :a :n 2} nil) e (aget (js/Array.from m) 1) d (.next (.entries m))]
+           (array (.indexOf e 2) (.lastIndexOf e :n) (.indexOf e :x) (.equiv e e) (e 1) (.call e nil 0 :nf)
+                  (.-length (js/Array.from e)) (aget (js/Array.from e) 1) (.-length (.-value d)) (.-done d)
+                  (.equiv (aget (js/Array.from m) 0) (aget (js/Array.from m) 0)) (.equiv e (aget (js/Array.from m) 0))))";
+    let kept = units(source);
+    assert!(
+        !kept.contains(&"makeVector") && !kept.contains(&"printWriterImpl"),
+        "{kept:?}"
+    );
+    every_level(
+        &format!("(.join {source} \" \")"),
+        "1 0 -1 true 2 :n 2 2 2 false true false",
+    );
+    // A map value alone keeps neither vectors nor sorted lookup.
+    let kept = assert_keeps_none(
+        "(js/console.log (if (js/Math.random) {:k :a} nil))",
+        &[
+            "makeVector",
+            "vectorPrototype",
+            "sortedPosition",
+            "treeMapConstructor.entryIndex",
+        ],
+    );
+    assert!(kept.contains(&"MapEntryType.lean"), "{kept:?}");
+    // A program that builds a vector gives map entries the vectors' members.
+    let kept = units("(js/console.log (pr-str (first {:a 1}) [1]))");
+    assert!(kept.contains(&"MapEntryType.vector") && !kept.contains(&"MapEntryType.lean"));
+    assert!(kept.contains(&"makeVector.equiv") && !kept.contains(&"mapEntry.equiv"));
+}
+
+#[test]
+fn lean_map_entries_answer_host_methods_through_protocol_extensions() {
+    // light-cljs-247, from the Sol review: with `extend-type`, the members of
+    // map entries where no vector can be built (`entryPrototype`) answer
+    // through the generic operations (`hostHooks`), as `vectorPrototype`'s
+    // do, so an extension of `MapEntry` is seen by host iteration and index
+    // search as at `None`.
+    let source = "(extend-type MapEntry
+           ICounted (-count [_] 3)
+           IIndexed (-nth ([_ i] (* 10 i)) ([_ i nf] (* 10 i))))
+         (let [e (aget (js/Array.from (if (js/Math.random) {:a 1} nil)) 0)]
+           (.join (array (.indexOf e 20) (.lastIndexOf e 0) (.lastIndexOf e 10 1) (count e) (nth e 2)
+                         (.join (js/Array.from e) \",\") (.-length (js/Array.from e)))
+                  \" \"))";
+    let kept = units(source);
+    assert!(
+        kept.contains(&"MapEntryType.lean") && !kept.contains(&"makeVector"),
+        "{kept:?}"
+    );
+    every_level(source, "2 0 1 3 20 :a,1 2");
+}
+
+#[test]
+fn keywords_and_symbols_from_public_constructors_compare_their_spelling() {
+    // From the Sol review of light-cljs-247: `.equiv` of a keyword or a
+    // symbol compares the spelling its public constructor received, NaN
+    // too, without the identity shortcut of `=`.
+    every_level(
+        "(let [k (Keyword. nil \"k\" js/NaN nil) s (Symbol. nil \"s\" js/NaN nil nil)]
+           (pr-str [(.equiv k k) (.equiv s s) (= k k) (= s s)]))",
+        "[false false true true]",
+    );
+}
+
+#[test]
 fn sets_answer_host_facing_methods_from_their_members() {
     // light-cljs-231: without protocol implementations a set iterates
     // (`keys`, `values`, `entries`) and searches (`has`) its own members in

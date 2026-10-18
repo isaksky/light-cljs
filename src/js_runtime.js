@@ -629,8 +629,8 @@
     if (publicCollectionSlots.has(value)) { const q = publicCollectionSlots.get(value); return seq(concat(q.front, q.rear)); }
     return queue.length ? view(IndexedSeqValue, queue, 0, false, "queue") : null;
   };
-  //@unit makeVector.seq effect: makeVector when: seq requires: ChunkedSeqValue, IndexedSeqValue,
-  //@ kindHooks, vectorChunk, view
+  //@unit makeVector.seq effect: makeVector, mapEntry when: seq requires: ChunkedSeqValue,
+  //@ IndexedSeqValue, kindHooks, vectorChunk, view
   // A vector of at most 32 items walks its tail; a longer one is upstream's
   // chunked seq over its trie's leaves.
   kindHooks.seqVector = (value, store) => !store.cnt ? null : store.cnt <= 32 ? view(IndexedSeqValue, vectorChunk(value, 0), 0, true)
@@ -1561,8 +1561,8 @@
       const entry = mapEntry(slots.arr[i], slots.arr[i + 1]); i += 2; return entry;
     }, remove() { return new Error("Unsupported operation"); }};
   };
-  //@unit makeVector.iterator effect: makeVector when: iterator requires: count, kindHooks,
-  //@ rangedIterator
+  //@unit makeVector.iterator effect: makeVector, mapEntry when: iterator requires: count,
+  //@ kindHooks, rangedIterator
   kindHooks.iteratorVector = value => rangedIterator(value, 0, count(value));
   //@unit equivMap requires: count, equalPair, first, get, isMap, missing, next, nth, seq
   function equivMap(value, other) {
@@ -1625,7 +1625,8 @@
     return q ? PersistentQueueValue(meta(result), q.count + 1, q.front != null ? q.front : conj(null, item), q.front != null ? conj(q.rear ?? makeVector([]), item) : makeVector([]), null)
       : queueFromArray([...queues.get(result), item]);
   };
-  //@unit makeVector.conj effect: makeVector when: conj requires: kindHooks, makeVector, vectorConj
+  //@unit makeVector.conj effect: makeVector, mapEntry when: conj requires: kindHooks, makeVector,
+  //@ vectorConj
   kindHooks.conjVector = (store, item) => makeVector(null, vectorConj(store, item));
   //@unit SubvecValue.conj effect: SubvecValue when: conj requires: assoc, kindHooks, meta,
   //@ publicCollectionSlots, subvecSources, SubvecValue
@@ -1701,7 +1702,7 @@
     const normalized = mapFromArray(Array.from({length: mapSlots.cnt * 2}, (_, i) => mapSlots.arr[i]), "hash-map");
     return collectionWithMeta(assoc(normalized, key, item, ...pairs), meta(value));
   };
-  //@unit makeVector.assoc effect: makeVector when: assoc requires: kindHooks, makeVector,
+  //@unit makeVector.assoc effect: makeVector, mapEntry when: assoc requires: kindHooks, makeVector,
   //@ outOfBounds, preserveMeta, vectorAssoc, vectorConj
   kindHooks.assocVector = (value, store, key, item, pairs) => {
     const assign = (index, value) => {
@@ -2093,14 +2094,14 @@
   }
 
   //@unit entryIndex requires: equalPair
-  function entryIndex(entries, key, keyHash, kind) {
+  // The index of `key` in the entries of an array map, or -1.
+  function entryIndex(entries, key) {
     // Canonical array maps compare keys without a hash guard. Keyword equality uses
     // fqn, while hashing uses namespace/name; unusual equal keywords can have
     // different hashes and therefore remain distinct in hash maps.
-    if (kind === "array-map") return entries.findIndex(entry =>
+    return entries.findIndex(entry =>
       key == null ? entry.key == null : typeof key === "string" || typeof key === "number"
         ? key === entry.key : equalPair(key, entry.key));
-    return entries.findIndex(entry => entry.hash === keyHash && equalPair(key, entry.key));
   }
 
   //@unit putEntry requires: entryHashing, entryIndex, kindHooks
@@ -2108,7 +2109,7 @@
   // equivalent keys are shared by subsequent immutable versions.
   function putEntry(entries, key, value, kind, edit = null) {
     if (kind === "array-map") {
-      const index = entryIndex(entries, key, undefined, kind), retained = index < 0 ? key : entries[index].key;
+      const index = entryIndex(entries, key), retained = index < 0 ? key : entries[index].key;
       let cachedHash;
       const entry = Object.freeze({key: retained, value, get hash() {
         return cachedHash === undefined ? cachedHash = entryHashing.hash(retained) : cachedHash;
@@ -2349,7 +2350,7 @@
   // past 8 members becomes the trie of it.
   function putMember(members, key, edit = null) {
     if (Array.isArray(members) && !hashRoots.has(members)) {
-      if (members.length < 8 || entryIndex(members, key, undefined, "array-map") >= 0) {
+      if (members.length < 8 || entryIndex(members, key) >= 0) {
         putEntry(members, key, null, "array-map"); return members;
       }
       const promoted = {root: null, nil: null, length: 0}, token = edit ?? {};
@@ -2491,14 +2492,14 @@
     if (state.kind === "map") return kindHooks.persistMap(state.entries, state.mapKind);
     return kindHooks.persistSet(state.entries, state.mapKind);
   }
-  //@unit makeVector.persist effect: makeVector when: persistTransient requires: kindHooks,
+  //@unit makeVector.persist effect: makeVector, mapEntry when: persistTransient requires: kindHooks,
   //@ makeVector, vectorTailOffset
   // A transient vector, map or set comes from a persistent one of its kind.
   // The vector's tail is trimmed to its count; the nodes it owned no longer
   // change, as nothing can edit them, and a leaf freezes where a seq first
   // shares it (`vectorChunk`).
   kindHooks.persistVector = ({cnt, shift, root, tail}) => makeVector(null, {cnt, shift, root, tail: tail.slice(0, cnt - vectorTailOffset(cnt))});
-  //@unit makeVector.transient effect: makeVector when: asTransient requires: kindHooks
+  //@unit makeVector.transient effect: makeVector, mapEntry when: asTransient requires: kindHooks
   // A transient vector edits a copy of the tail, and copies of the trie's
   // nodes along the paths it changes, which it owns (`vectorEditor`): a weak
   // set, which keeps no node a `pop!` discarded.
@@ -2538,7 +2539,7 @@
   }
   //@unit makeMap.transientLookup effect: makeMap, treeMapConstructor, recordMethods, makeSet,
   //@ treeSetConstructor when: transientLookup requires: entryIndex, hashEntryIndex, kindHooks
-  kindHooks.transientEntryIndex = (state, key) => state.mapKind === "array-map" ? entryIndex(state.entries, key, undefined, "array-map") : hashEntryIndex(state.entries, key);
+  kindHooks.transientEntryIndex = (state, key) => state.mapKind === "array-map" ? entryIndex(state.entries, key) : hashEntryIndex(state.entries, key);
   //@unit assocTransient requires: editableTransient, entryIndex, kindHooks, makeTransient,
   //@ putEntry, transients
   function assocTransient(value, key, item, indexed = false) {
@@ -2549,7 +2550,7 @@
       kindHooks.assocTransientVector(state.entries, key, item);
     } else {
       editableTransient(value, "assoc!");
-      if (state.mapKind === "array-map" && state.entries.length >= 8 && entryIndex(state.entries, key, undefined, "array-map") < 0) {
+      if (state.mapKind === "array-map" && state.entries.length >= 8 && entryIndex(state.entries, key) < 0) {
         const promoted = makeTransient("map", {root: null, nil: null, length: 0}, "hash-map"), target = transients.get(promoted);
         for (const entry of state.entries) putEntry(target.entries, entry.key, entry.value, "hash-map", target.edit);
         return assocTransient(promoted, key, item);
@@ -2568,10 +2569,10 @@
   // `conj!` onto the transient a core function's reduction holds, past the
   // protocol dispatch where no protocol implementation can answer for it.
   const conjBangOwn = (value, member) => !protocolHooks.builtin && transients.has(value) ? conjTransient(value, member) : conjBangProtocol(value, member);
-  //@unit makeVector.conjTransient effect: makeVector when: conjTransient requires: conjVectorBang,
+  //@unit makeVector.conjTransient effect: makeVector, mapEntry when: conjTransient requires: conjVectorBang,
   //@ kindHooks
   kindHooks.conjTransientVector = conjVectorBang;
-  //@unit makeVector.assocTransient effect: makeVector when: assocTransient requires: conjVectorBang,
+  //@unit makeVector.assocTransient effect: makeVector, mapEntry when: assocTransient requires: conjVectorBang,
   //@ kindHooks, outOfBounds, vectorAssocNode, vectorEditor, vectorTailOffset
   // `assoc!` of an index of a transient vector, or of its count.
   kindHooks.assocTransientVector = (store, key, item) => {
@@ -2610,7 +2611,7 @@
   function removeTransient(value, key, operation) {
     const state = editableTransient(value, operation);
     if (!Array.isArray(state.entries)) { state.entries = trieDissoc(state.entries, key, state.edit); return value; }
-    const index = state.mapKind === "array-map" ? entryIndex(state.entries, key, undefined, "array-map") : hashEntryIndex(state.entries, key);
+    const index = state.mapKind === "array-map" ? entryIndex(state.entries, key) : hashEntryIndex(state.entries, key);
     if (index >= 0) {
       if (state.mapKind === "array-map" && !hashRoots.has(state.entries)) state.entries[index] = state.entries[state.entries.length - 1];
       if (hashRoots.has(state.entries)) removeHashEntry(state.entries, index, state.edit);
@@ -2726,8 +2727,47 @@
   builtinType(PersistentVectorValue, vectorPrototype);
   //@unit SubvecValue.type effect: SubvecValue requires: builtinType, SubvecValue, vectorPrototype
   builtinType(SubvecValue, vectorPrototype);
-  //@unit MapEntryType effect requires: builtinType, mapEntry, vectorPrototype
-  const MapEntryType = builtinType(function (key, value) { return mapEntry(key, value); }, vectorPrototype);
+  //@unit entryPrototype requires: hostHooks, indexIn, invalidArity, itemIterator, objectEquiv,
+  //@ outOfBounds, printHooks, protocolHooks, vectors
+  // The host-facing members of map entries where no vector can be built
+  // (`MapEntryType.lean`): those of `vectorPrototype` for a vector of a key
+  // and a value, as map entries are, the only values with items there. An
+  // entry's store is a vector's of two items, which its tail holds.
+  const entryPrototype = Object.freeze({
+    equiv(other) { return objectEquiv(this, other); },
+    [Symbol.iterator]() { const items = entryItems(this); return items ? itemIterator(items, item => item) : hostHooks.iterator(this); },
+    apply(_self, args) { return this.call(null, ...Array.from(args)); },
+    toString() { return printHooks.collection(this); },
+    indexOf(value, start = 0) { return entryIndexOf(this, value, start, false); },
+    lastIndexOf(value, start) { return entryIndexOf(this, value, start, true); },
+    call(_self, index) {
+      const store = vectors.get(this);
+      if (!store) throw new Error("Expected vector");
+      if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length - 1);
+      return index === 0 || index === 1 ? store.tail[index] : arguments.length === 3 ? arguments[2] : outOfBounds();
+    }
+  });
+  // An entry's items, unless protocol implementations could answer for it
+  // or it is not one.
+  function entryItems(entry) { return !protocolHooks.extend && vectors.get(entry)?.tail; }
+  // `lastIndexOf` without a start searches from the end.
+  function entryIndexOf(entry, value, start, reverse) {
+    const items = entryItems(entry);
+    if (start === undefined) start = items ? 2 : hostHooks.count(entry);
+    return items ? indexIn(2, i => i === 0 || i === 1 ? items[i] : outOfBounds(), value, start, reverse) : hostHooks.index(entry, value, start, reverse);
+  }
+  //@unit MapEntryType
+  // The type of map entries, whose prototype has the vectors' members where
+  // vectors can be built (`MapEntryType.vector`), and else the members of
+  // map entries alone (`MapEntryType.lean`). The shared runtime defines it
+  // twice, the second time with the vectors'.
+  let MapEntryType;
+  //@unit MapEntryType.lean effect: MapEntryType unless: makeVector requires: builtinType,
+  //@ entryPrototype, mapEntry, MapEntryType
+  MapEntryType = builtinType(function (key, value) { return mapEntry(key, value); }, entryPrototype);
+  //@unit MapEntryType.vector effect: MapEntryType when: makeVector requires: builtinType, mapEntry,
+  //@ MapEntryType, vectorPrototype
+  MapEntryType = builtinType(function (key, value) { return mapEntry(key, value); }, vectorPrototype);
   //@unit makeKeyword requires: keywords, KeywordValue
   function makeKeyword(namespace, name, spelling) {
     const value = Object.create(KeywordValue.prototype);
@@ -3066,8 +3106,8 @@
   //@unit count.protocol effect: installMethods when: count requires: behindProtocol, count,
   //@ protocolHooks
   count = behindProtocol(count, value => protocolHooks.publicMethod?.(value, "ICounted/-count", 1, true, true));
-  //@unit count.host effect: count, extendType, extendInstance when: resetMeta, upstreamMembers,
-  //@ vectorPrototype requires: count, hostHooks
+  //@unit count.host effect: count, extendType, extendInstance when: entryPrototype, resetMeta,
+  //@ upstreamMembers, vectorPrototype requires: count, hostHooks
   hostHooks.count = count;
   //@unit accumulatingCount requires: count, countedValue, next, protocolHooks, seq
   function accumulatingCount(value) {
@@ -3561,7 +3601,7 @@
     for (let current = seq(value); current != null; current = next(current)) members = putMember(members, first(current), edit);
     return makeSet(PersistentHashSetValue, members, Array.isArray(members) ? "array-map" : "hash-map");
   }
-  //@unit objectEquiv requires: cells, equalPair, keywords, maps, protocolHooks, sequential, sets,
+  //@unit objectEquiv requires: comparedSequential, equalPair, keywords, maps, protocolHooks, sets,
   //@ structuralEqualPair, symbols
   // Object.equiv calls the receiver's IEquiv implementation directly, even
   // when an extension rejects an identical value. Language = keeps its own
@@ -3573,8 +3613,7 @@
     // Sequence/collection protocols compare contents even for the same receiver
     // (for example, a list containing NaN is not equivalent to itself). Cycle
     // and Iterate retain their default identity equality.
-    return sets.has(value) || keywords.has(value) || symbols.has(value) ||
-      (sequential(value) && !["cycle", "iterate"].includes(cells.get(value)?.kind))
+    return sets.has(value) || keywords.has(value) || symbols.has(value) || comparedSequential(value)
       ? structuralEqualPair(value, other) : equalPair(value, other);
   }
   //@unit equalPair requires: protocolHooks, structuralEqualPair
@@ -3585,12 +3624,10 @@
     if (equiv) return equiv.call(left, left, right);
     return structuralEqualPair(left, right);
   }
-  //@unit structuralEqualPair requires: cells, equalPair, keywords, kindHooks, maps, recordTypes,
-  //@ sequential, sets, symbols, uuids, vars
+  //@unit structuralEqualPair requires: comparedSequential, keywords, kindHooks, maps, recordTypes,
+  //@ sets, symbols
   function structuralEqualPair(left, right) {
     if (left instanceof Date) return right instanceof Date && left.valueOf() === right.valueOf();
-    if (uuids.has(left)) return uuids.has(right) && uuids.get(left) === uuids.get(right);
-    if (vars.has(left)) return vars.has(right) && equalPair(vars.get(left).symbol, vars.get(right).symbol);
     const leftKeyword = keywords.get(left);
     if (leftKeyword) {
       const rightKeyword = keywords.get(right);
@@ -3604,10 +3641,16 @@
     if (recordTypes.get(left) !== recordTypes.get(right)) return false;
     if (maps.has(left)) return kindHooks.equivMap(left, right);
     if (sets.has(left)) return kindHooks.equivSet(left, right);
-    if (sequential(left) && !["cycle", "iterate"].includes(cells.get(left)?.kind)) return (kindHooks.equivSequential ?? kindHooks.equivVectors)(left, right);
-    // Primitive NaN stays unequal; foreign objects use identity only.
-    return false;
+    if (comparedSequential(left)) return (kindHooks.equivSequential ?? kindHooks.equivVectors)(left, right);
+    // UUIDs and Vars, whose builders install their comparison; primitive
+    // NaN stays unequal, and foreign objects use identity only.
+    return kindHooks.equivNamed?.(left, right) ?? false;
   }
+  //@unit uuidValue.equiv effect: uuidValue, makeVar when: structuralEqualPair requires: equalPair,
+  //@ kindHooks, uuids, vars
+  // A UUID or a Var, or undefined for another value.
+  kindHooks.equivNamed = (left, right) => uuids.has(left) ? uuids.has(right) && uuids.get(left) === uuids.get(right)
+    : vars.has(left) ? vars.has(right) && equalPair(vars.get(left).symbol, vars.get(right).symbol) : undefined;
   //@unit makeMap.equiv effect: makeMap, treeMapConstructor when: structuralEqualPair requires: equalPair,
   //@ get, kindHooks, mapCount, mapKinds, maps, mapTraversal, missing, protocolHooks
   // A record is a map too, but compares through its `IEquiv` method
@@ -3642,6 +3685,14 @@
   //@ kindHooks
   // A set its public constructor built counts the map it received.
   kindHooks.countPublicSet = slots => count("tree-map" in slots ? slots["tree-map"] : slots["hash-map"]);
+  //@unit mapEntry.equiv effect: mapEntry when: structuralEqualPair unless: makeVector requires: equalPair,
+  //@ kindHooks, vectors
+  // `makeVector.equiv`, which follows, where map entries, of two items, are
+  // the only values with items.
+  kindHooks.equivVectors = (left, right) => {
+    const a = vectors.get(left).tail, b = vectors.get(right)?.tail;
+    return !!b && equalPair(a[0], b[0]) && equalPair(a[1], b[1]);
+  };
   //@unit makeVector.equiv effect: makeVector when: structuralEqualPair requires: equalPair,
   //@ kindHooks, vectorCount, vectors, vectorStorage
   // Where no other sequential value and no protocol implementation exists.
@@ -3687,6 +3738,19 @@
   function sequential(value) {
     return vectors.has(value) || cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value);
   }
+  //@unit comparedSequential requires: kindHooks, vectors
+  // The sequential values that equality and hashing compare by their items:
+  // all but cycle and iterate seqs, which keep identity. Values other than
+  // vectors only where the program builds them (`cons.compared`).
+  function comparedSequential(value) {
+    return vectors.has(value) || !!kindHooks.comparedSeq?.(value);
+  }
+  //@unit cons.compared effect: emptyList, Cons, ListValue, EmptyListValue, RepeatValue, cons,
+  //@ listFromArray, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
+  //@ iterateNode, ChunkedCons, rangeNode, view, IndexedSeqValue, queueFromArray, LazySeq when: comparedSequential
+  //@ requires: cells, kindHooks, lazyValues, queues, views
+  kindHooks.comparedSeq = value => cells.has(value) ? !["cycle", "iterate"].includes(cells.get(value).kind)
+    : views.has(value) || queues.has(value) || lazyValues.has(value);
 
   //@unit identityHashes
   const identityHashes = new WeakMap();
@@ -3752,9 +3816,9 @@
       result = (result + hash(first(current))) | 0;
     return mixCollectionHash(result, n);
   }
-  //@unit hash requires: cells, constructorHashes, hashDouble, hashInt, hashNamed, identityCounter,
-  //@ identityHashes, keywords, kindHooks, maps, mapTraversal, mixCollectionHash, protocolHooks,
-  //@ sequential, sets, setTraversal, stringHash, symbols, uuidHashes, uuids, vars
+  //@unit hash requires: comparedSequential, constructorHashes, hashDouble, hashInt, hashNamed,
+  //@ identityCounter, identityHashes, keywords, kindHooks, maps, mapTraversal, mixCollectionHash,
+  //@ protocolHooks, sets, setTraversal, stringHash, symbols, uuidHashes, uuids, vars
   // Weak identity bookkeeping never reads or mutates foreign object fields.
   function hash(value) {
     if (value == null) return 0;
@@ -3799,7 +3863,7 @@
       constructorHashes.set(value, resultHash);
       return resultHash;
     }
-    if (sequential(value) && !["cycle", "iterate"].includes(cells.get(value)?.kind)) return kindHooks.hashSequential(value);
+    if (comparedSequential(value)) return kindHooks.hashSequential(value);
     const nativeHash = protocolHooks.builtin?.(value, "IHash/-hash", 1);
     if (nativeHash) return nativeHash.call(value, value) | 0;
     if (typeof value === "symbol" || typeof value === "bigint") return hash(String(value));
@@ -3807,7 +3871,7 @@
     return identityHashes.get(value);
   }
 
-  //@unit makeVector.hash effect: makeVector, emptyList, Cons, ListValue, EmptyListValue,
+  //@unit makeVector.hash effect: makeVector, mapEntry, emptyList, Cons, ListValue, EmptyListValue,
   //@ RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
   //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, IndexedSeqValue,
   //@ queueFromArray, LazySeq when: hash requires: cells, constructorHashes, hashOrderedColl,
@@ -4465,8 +4529,8 @@
     }
     return -1;
   }
-  //@unit sequentialIndex.host effect: sequentialIndex, extendType, extendInstance when: vectorIndexOf
-  //@ requires: hostHooks, sequentialIndex
+  //@unit sequentialIndex.host effect: sequentialIndex, extendType, extendInstance when: entryPrototype,
+  //@ vectorIndexOf requires: hostHooks, sequentialIndex
   hostHooks.index = sequentialIndex;
   //@unit treeRoots
   // Comparator equality controls sorted membership; structural hashes remain
@@ -4552,27 +4616,27 @@
     return lo;
   }
   //@unit collectionEntryIndex requires: entryIndex, kindHooks, mapKinds, setKinds,
-  //@ sortedComparators, sortedPosition
+  //@ sortedComparators
   function collectionEntryIndex(value, entries, key) {
     const comparator = sortedComparators.get(value);
-    if (!comparator) {
-      const kind = mapKinds.get(value) ?? setKinds.get(value);
-      if (kind === "array-map") return entryIndex(entries, key, undefined, kind);
-      // Hash-map nil slots are separate from the trie and never hash a query.
-      if (kind === "hash-map") {
-        if (key == null) return entries.findIndex(entry => entry.key == null);
-        if (!entries.some(entry => entry.key != null)) return -1;
-      }
-      return kindHooks.hashEntryIndex(entries, key);
-    }
-    const i = sortedPosition(entries, key, comparator);
-    return i < entries.length && comparator.call(null, entries[i].key, key) === 0 ? i : -1;
+    if (comparator) return kindHooks.sortedEntryIndex(entries, key, comparator);
+    const kind = mapKinds.get(value) ?? setKinds.get(value);
+    return kind === "array-map" ? entryIndex(entries, key) : kindHooks.hashEntryIndex(entries, key, kind);
   }
   //@unit PersistentHashMapValue.entryIndex effect: PersistentHashMapValue, recordMethods,
   //@ publicHashSet, putMember when: collectionEntryIndex requires: hashEntryIndex, kindHooks
   // Maps and sets of a kind other than array-map or sorted: hash maps, hash
-  // sets (public hash sets keep their map's kind) and records.
-  kindHooks.hashEntryIndex = hashEntryIndex;
+  // sets (public hash sets keep their map's kind) and records. Hash-map nil
+  // slots are separate from the trie, and a hash map without other keys
+  // never hashes a query (`hashEntryIndex` finds the nil key).
+  kindHooks.hashEntryIndex = (entries, key, kind) => kind === "hash-map" && key != null && !entries.some(entry => entry.key != null) ? -1 : hashEntryIndex(entries, key);
+  //@unit treeMapConstructor.entryIndex effect: treeMapConstructor, treeSetConstructor when: collectionEntryIndex
+  //@ requires: kindHooks, sortedPosition
+  // Sorted maps and sets, which only their constructors build.
+  kindHooks.sortedEntryIndex = (entries, key, comparator) => {
+    const i = sortedPosition(entries, key, comparator);
+    return i < entries.length && comparator.call(null, entries[i].key, key) === 0 ? i : -1;
+  };
   //@unit putSortedEntry requires: entryHashing, equalPair, sortedPosition
   function putSortedEntry(entries, key, value, comparator, member = false) {
     const i = sortedPosition(entries, key, comparator);
@@ -4593,7 +4657,7 @@
       // A fresh nil map starts as an array map; the ninth distinct key promotes
       // it. Check existing keys before promotion, as canonical assoc does.
       const array = (coll == null || kind === "array-map") &&
-        (entries.length < 8 || entryIndex(entries, key, undefined, "array-map") >= 0);
+        (entries.length < 8 || entryIndex(entries, key) >= 0);
       if (!array && kind === "array-map") {
         const promoted = promoteEntries(entries, {});
         entries.splice(0, entries.length, ...promoted);
@@ -5833,7 +5897,7 @@
     }};
   }
   //@unit es6Iterator.host effect: es6Iterator, extendType, extendInstance, treeMapConstructor when: mapPrototype,
-  //@ setPrototype, vectorPrototype requires: es6Iterator, hostHooks
+  //@ entryPrototype, setPrototype, vectorPrototype requires: es6Iterator, hostHooks
   hostHooks.iterator = es6Iterator;
   //@unit es6EntriesIterator requires: es6Iterator, nth
   function es6EntriesIterator(value, setEntries = false) {
@@ -6296,11 +6360,25 @@
   function munge(value) { let result = mungeStr(str(value)); result = result === ".." ? "_DOT__DOT_" : reservedNames.has(result) ? result + "$" : result; return symbols.has(value) ? symbolCore(result) : result; }
   //@unit demunge requires: demungeCharacters, demungePattern, str, symbolCore, symbols
   function demunge(value) { let result = str(value); result = result === "_DOT__DOT_" ? ".." : result.replace(/\$$/, "").replace(demungePattern, key => key === "$" ? "/" : demungeCharacters[key]); return symbols.has(value) ? symbolCore(result) : result; }
-  //@unit mapEntry requires: makeVector, mapEntries, MapEntryType
+  //@unit mapEntry
+  // A map entry is a vector of its key and value of type `MapEntryType`: one
+  // `makeVector` builds where the program can build vectors
+  // (`mapEntry.vector`), and else one with the store it would build, a tail
+  // of two items (`mapEntry.lean`), so that it keeps no vector type. The
+  // shared runtime defines it twice, the second time with `makeVector`.
+  let mapEntry;
+  //@unit mapEntry.lean effect: mapEntry unless: makeVector requires: mapEntries, mapEntry,
+  //@ MapEntryType, vectors
+  mapEntry = (key, value) => {
+    const pair = Object.create(MapEntryType.prototype);
+    vectors.set(pair, {cnt: 2, shift: 5, root: [], tail: [key, value]}); mapEntries.add(pair); return pair;
+  };
+  //@unit mapEntry.vector effect: mapEntry when: makeVector requires: makeVector, mapEntries,
+  //@ mapEntry, MapEntryType
+  mapEntry = (key, value) => { const pair = Object.setPrototypeOf(makeVector([key, value]), MapEntryType.prototype); mapEntries.add(pair); return pair; };
+  //@unit recordEntries requires: field, keyword, mapEntry, toArray
   // Surface records supply protocol methods just as the upstream macro does.
   // Raw defrecord* only emits a constructor; its explicit body installs methods.
-  function mapEntry(key, value) { const pair = makeVector([key, value]); Object.setPrototypeOf(pair, MapEntryType.prototype); mapEntries.add(pair); return pair; }
-  //@unit recordEntries requires: field, keyword, mapEntry, toArray
   function recordEntries(value, Type) {
     return [...Type.fieldNames.map(name => mapEntry(keyword(null, name), field(value, name))), ...toArray(value.__extmap)];
   }
@@ -6767,7 +6845,7 @@
     const i = slots.i + offset, newOffset = i % 32;
     return i < count(slots.vec) ? ChunkedSeqValue(slots.vec, vectorChunk(slots.vec, i), i - newOffset, newOffset, null, null) : null;
   };
-  //@unit makeVector.drop effect: makeVector when: dropOwned requires: ChunkedSeqValue,
+  //@unit makeVector.drop effect: makeVector, mapEntry when: dropOwned requires: ChunkedSeqValue,
   //@ IndexedSeqValue, kindHooks, vectorChunk, vectors, view
   // As `makeVector.seq`, from index `n`.
   kindHooks.dropVector = (value, n) => {
@@ -7518,8 +7596,8 @@
   //@unit printHooks
   // The printer's hooks, which the units that can use them fill in.
   const printHooks = {};
-  //@unit printHooks.defaults effect: printHooks when: mapPrototype, sequencePrototype,
-  //@ setPrototype, transientPrototype, vectorPrototype requires: printHooks
+  //@unit printHooks.defaults effect: printHooks when: entryPrototype, mapPrototype,
+  //@ sequencePrototype, setPrototype, transientPrototype, vectorPrototype requires: printHooks
   // The printer for code that must not keep it; `printWriterImpl.install`
   // replaces it where the program can print. A collection's `toString`...
   printHooks.collection = value => Object.prototype.toString.call(value);
@@ -7578,7 +7656,7 @@
   //@unit printsMeta.print effect: Atom, ChunkedCons, collectionWithMeta, compilerFormBridge, Cons,
   //@ cons, listFromArray, cycleNode, emptyList, EmptyListValue, fnWithMeta, IndexedSeqValue,
   //@ installMethods, iterateNode, LazySeq, ListValue, makeIFn, makeMap, makeReify, makeSet,
-  //@ recordMethods, makeVar, makeVector, mapProjection, queueFromArray, rangeNode, reify,
+  //@ recordMethods, makeVar, makeVector, mapEntry, mapProjection, queueFromArray, rangeNode, reify,
   //@ RepeatValue, reSeq, symbol, SymbolValue, treeMapConstructor, treeMapSeqConstructor,
   //@ treeSetConstructor, view when: printWriterImpl requires: kindHooks, meta, printsMeta,
   //@ printWriter, write
@@ -7622,8 +7700,8 @@
   //@unit uuidValue.print effect: uuidValue when: printWriterImpl requires: kindHooks, printKind,
   //@ uuids, write
   kindHooks.print = printKind(kindHooks.print, value => uuids.has(value), (value, writer) => write(writer, '#uuid "' + uuids.get(value) + '"'));
-  //@unit makeVector.print effect: makeVector when: printWriterImpl requires: kindHooks, printKind,
-  //@ printSequential, printWriter, protocolHooks, vectors, vectorStorage
+  //@unit makeVector.print effect: makeVector, mapEntry when: printWriterImpl requires: kindHooks,
+  //@ printKind, printSequential, printWriter, protocolHooks, vectors, vectorStorage
   // A vector prints the items `seq` walks, through `seq` where protocol
   // implementations could see it.
   kindHooks.print = printKind(kindHooks.print, value => vectors.has(value), (value, writer, options) => {
@@ -7682,9 +7760,9 @@
     try { const {buffer, writer} = stringWriter(); printWriterImpl(value, writer, null, true); flushWriter(writer); return buffer.text; }
     finally { coreCells.printReadably = saved; }
   }
-  //@unit printWriterImpl.install effect: printWriterImpl when: derive, Eduction, getMethod,
-  //@ mapPrototype, MultiFn, preferMethod, sequencePrototype, setPrototype, transientPrototype,
-  //@ vectorPrototype requires: print, printHooks, printSequential, printWriter
+  //@unit printWriterImpl.install effect: printWriterImpl when: derive, entryPrototype, Eduction,
+  //@ getMethod, mapPrototype, MultiFn, preferMethod, sequencePrototype, setPrototype,
+  //@ transientPrototype, vectorPrototype requires: print, printHooks, printSequential, printWriter
   // Only a program that can print has collection `toString`, where it keeps a
   // collection type, and prints values into messages.
   printHooks.collection = value => print(value, true);
@@ -7726,7 +7804,7 @@
   }
   //@unit str requires: kindHooks, maps, recordTypes, sequential, sets
   function str(...values) { return values.map(value => value == null ? "" : typeof value === "string" ? value : sequential(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) ? kindHooks.strCollection(value) : String(value)).join(""); }
-  //@unit str.collections effect: makeVector, emptyList, Cons, ListValue, EmptyListValue,
+  //@unit str.collections effect: makeVector, mapEntry, emptyList, Cons, ListValue, EmptyListValue,
   //@ RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
   //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, IndexedSeqValue,
   //@ queueFromArray, LazySeq, makeMap, treeMapConstructor, recordMethods, makeSet,
@@ -8586,8 +8664,8 @@
   //@ protocolHooks
   // Only `extend-type` gives implementations that are not the value's own.
   protocolHooks.externalMethod = externalMethod;
-  //@unit protocolHooks.extend effect: extendType, extendInstance when: ownMap, ownSet, resetMeta,
-  //@ upstreamMembers, vectorIndexOf, vectorPrototype requires: protocolHooks
+  //@unit protocolHooks.extend effect: extendType, extendInstance when: entryPrototype, ownMap,
+  //@ ownSet, resetMeta, upstreamMembers, vectorIndexOf, vectorPrototype requires: protocolHooks
   // Only `extend-type` and `specify!` can give the runtime's own values
   // protocol implementations, which their host-facing methods and fields then
   // answer through the generic operations (`hostHooks`).

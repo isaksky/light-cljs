@@ -25,7 +25,7 @@
 //! # Header syntax
 //!
 //! ```text
-//! //@unit <name>[ compile-time][ mutator][ effect[: <binding>, ...[ when: <binding>, ...]] | install: <binding>, ...][ requires: <binding>, ...]
+//! //@unit <name>[ compile-time][ mutator][ effect[: <binding>, ...[ when: <binding>, ...][ unless: <binding>, ...]] | install: <binding>, ...][ requires: <binding>, ...]
 //! //@ <binding>, ...                    continues the header (any list wraps)
 //! //@exports
 //! ```
@@ -84,6 +84,14 @@
 //!   which is kept only where that effect is: a hook that the body of an
 //!   effect reads is needed where the effect is kept, not wherever one of
 //!   its own `when:` units is.
+//! - `effect: a [when: b] unless: c, d` is kept where it would be without
+//!   `unless:` but none of the `unless:` bindings' units is kept once
+//!   everything else is: the leaner form of something those units give in
+//!   full, such as the members of map entries where no vector can be built
+//!   (`MapEntryType.lean effect: MapEntryType unless: makeVector`). The
+//!   shared runtime keeps both, so an `unless:` unit must be harmless where
+//!   the full form is kept too: the full form follows it and replaces what
+//!   it installs, or installs with `??=` what it would not replace.
 //! - `install: a, b` is an effect that only adds properties to the targets'
 //!   values for code that receives them, such as the variadic arity ABI of a
 //!   core function (`add.variadic`), which `apply` reads. It is kept once a
@@ -170,6 +178,10 @@ pub struct Effect<'a> {
     /// (`makeMap.equiv`) whose bodies can. Empty for an effect needed wherever
     /// a target is.
     pub when: Vec<&'a str>,
+    /// `effect: a unless: b, c`: bindings none of whose units may be kept
+    /// once everything else is, the full form of what the effect gives
+    /// leanly. Empty for an effect kept whatever else is.
+    pub unless: Vec<&'a str>,
 }
 
 #[derive(Clone, Debug)]
@@ -287,6 +299,10 @@ pub struct RuntimeManifest<'a> {
     /// Per unit: the units whose bindings it shares, the inverse of
     /// `sharers`, sorted.
     shared: Vec<Vec<UnitId>>,
+    /// Per unit: the units declaring its `unless:` bindings, sorted.
+    blockers: Vec<Vec<UnitId>>,
+    /// The `effect: ... unless:` units, in source order.
+    lean: Vec<UnitId>,
 }
 
 /// How a program uses a root of a runtime slice
@@ -487,6 +503,7 @@ impl<'a> RuntimeManifest<'a> {
         let mut installs = vec![Vec::new(); units.len()];
         let mut conditions = vec![Vec::new(); units.len()];
         let mut conditional = vec![Vec::new(); units.len()];
+        let mut blockers = vec![Vec::new(); units.len()];
         for (index, unit) in units.iter().enumerate() {
             let mut required = unit
                 .requires
@@ -519,6 +536,13 @@ impl<'a> RuntimeManifest<'a> {
                 }
                 conditions[index].sort_unstable();
                 conditions[index].dedup();
+                blockers[index] = effect
+                    .unless
+                    .iter()
+                    .filter_map(|binding| bindings.get(binding).copied())
+                    .collect();
+                blockers[index].sort_unstable();
+                blockers[index].dedup();
             }
         }
         // A binding another unit assigns is shared with that unit, and one a
@@ -562,6 +586,10 @@ impl<'a> RuntimeManifest<'a> {
             .into_iter()
             .map(|(name, index)| (name, UnitId(index)))
             .collect();
+        let lean = (0..units.len())
+            .filter(|&index| !blockers[index].is_empty())
+            .map(UnitId)
+            .collect();
         Ok(Self {
             source,
             prologue: 0..prologue_end,
@@ -578,6 +606,8 @@ impl<'a> RuntimeManifest<'a> {
             conditional,
             sharers,
             shared,
+            blockers,
+            lean,
         })
     }
 
@@ -643,6 +673,12 @@ impl<'a> RuntimeManifest<'a> {
     /// other chunks' bindings as values, which an assignment cannot reach.
     pub fn sharers(&self, unit: UnitId) -> &[UnitId] {
         &self.sharers[unit.0]
+    }
+
+    /// The units declaring the `unless:` bindings of an `effect: ... unless:`
+    /// unit, sorted; empty for any other unit.
+    pub fn blockers(&self, unit: UnitId) -> &[UnitId] {
+        &self.blockers[unit.0]
     }
 
     /// The binding of the core protocol dispatcher registered for a protocol
@@ -716,7 +752,9 @@ impl<'a> RuntimeManifest<'a> {
     /// their `when:` units is kept too. Its `install:` units are kept once its
     /// value escapes: when it is a [`RootUse::Value`] root or another kept unit
     /// requires it, since the runtime may pass a binding it references
-    /// anywhere. A [`RootUse::Call`] root alone keeps none.
+    /// anywhere. A [`RootUse::Call`] root alone keeps none. An effect with
+    /// `unless:` is kept last, where it would be kept without `unless:` and
+    /// none of its `unless:` units is kept, and is attributed as a target.
     pub fn reached_by_uses(&self, roots: &[(UnitId, RootUse)]) -> Vec<Option<usize>> {
         let mut first = vec![None; self.units.len()];
         let mut escaped = vec![false; self.units.len()];
@@ -724,39 +762,92 @@ impl<'a> RuntimeManifest<'a> {
         for (index, &(root, root_use)) in roots.iter().enumerate() {
             // A unit an earlier root reached has its whole closure attributed.
             stack.push((root, root_use == RootUse::Value));
-            while let Some((unit, escapes)) = stack.pop() {
-                if escapes && !std::mem::replace(&mut escaped[unit.0], true) {
-                    stack.extend(self.installs[unit.0].iter().map(|&install| (install, true)));
-                }
-                if first[unit.0].is_some() {
+            self.close(&mut stack, index, &mut first, &mut escaped);
+        }
+        loop {
+            let kept = |unit: &UnitId| first[unit.0].is_some();
+            let ready = self
+                .lean
+                .iter()
+                .filter(|&&effect| !kept(&effect) && self.lean_ready(effect, kept))
+                .filter_map(|&effect| {
+                    let targets = &self.units[effect.0].effect.as_ref().unwrap().targets;
+                    targets
+                        .iter()
+                        .filter_map(|target| first[self.unit_of(target)?.0])
+                        .min()
+                        .map(|index| (effect, index))
+                })
+                .collect::<Vec<_>>();
+            if ready.is_empty() {
+                return first;
+            }
+            for (effect, index) in ready {
+                // One kept before it may have kept what it waits to be without.
+                if self.blockers[effect.0]
+                    .iter()
+                    .any(|unit| first[unit.0].is_some())
+                {
                     continue;
                 }
-                first[unit.0] = Some(index);
-                stack.extend(self.dependencies[unit.0].iter().map(|&unit| (unit, true)));
-                let kept = |unit: &UnitId| first[unit.0].is_some();
-                // An effect with `when:` waits for one of its conditions.
-                stack.extend(
-                    self.attached[unit.0]
-                        .iter()
-                        .filter(|effect| {
-                            let conditions = &self.conditions[effect.0];
-                            conditions.is_empty() || conditions.iter().any(kept)
-                        })
-                        .map(|&unit| (unit, true)),
-                );
-                // ... and is kept once a condition is, if a target is.
-                for &effect in &self.conditional[unit.0] {
-                    let targets = &self.units[effect.0].effect.as_ref().unwrap().targets;
-                    if targets
+                stack.push((effect, true));
+                self.close(&mut stack, index, &mut first, &mut escaped);
+            }
+        }
+    }
+
+    /// Whether an `effect: ... unless:` unit may be kept once everything else
+    /// is: one of its `when:` units (if any) is kept and none of its `unless:`
+    /// units.
+    fn lean_ready(&self, effect: UnitId, kept: impl Fn(&UnitId) -> bool) -> bool {
+        let conditions = &self.conditions[effect.0];
+        (conditions.is_empty() || conditions.iter().any(&kept))
+            && !self.blockers[effect.0].iter().any(&kept)
+    }
+
+    /// Keeps the closure of the units on `stack` for [`Self::reached_by_uses`],
+    /// attributing new units to the root at `index`.
+    fn close(
+        &self,
+        stack: &mut Vec<(UnitId, bool)>,
+        index: usize,
+        first: &mut [Option<usize>],
+        escaped: &mut [bool],
+    ) {
+        while let Some((unit, escapes)) = stack.pop() {
+            if escapes && !std::mem::replace(&mut escaped[unit.0], true) {
+                stack.extend(self.installs[unit.0].iter().map(|&install| (install, true)));
+            }
+            if first[unit.0].is_some() {
+                continue;
+            }
+            first[unit.0] = Some(index);
+            stack.extend(self.dependencies[unit.0].iter().map(|&unit| (unit, true)));
+            let kept = |unit: &UnitId| first[unit.0].is_some();
+            // An effect with `when:` waits for one of its conditions; one with
+            // `unless:` for everything else.
+            stack.extend(
+                self.attached[unit.0]
+                    .iter()
+                    .filter(|effect| {
+                        let conditions = &self.conditions[effect.0];
+                        self.blockers[effect.0].is_empty()
+                            && (conditions.is_empty() || conditions.iter().any(kept))
+                    })
+                    .map(|&unit| (unit, true)),
+            );
+            // ... and is kept once a condition is, if a target is.
+            for &effect in &self.conditional[unit.0] {
+                let targets = &self.units[effect.0].effect.as_ref().unwrap().targets;
+                if self.blockers[effect.0].is_empty()
+                    && targets
                         .iter()
                         .any(|target| self.unit_of(target).is_some_and(|owner| kept(&owner)))
-                    {
-                        stack.push((effect, true));
-                    }
+                {
+                    stack.push((effect, true));
                 }
             }
         }
-        first
     }
 
     /// The roots that need each unit when a program's demands are split among
@@ -848,41 +939,73 @@ impl<'a> RuntimeManifest<'a> {
                 })
                 .collect::<Vec<_>>()
         };
-        while let Some(unit) = walk.queue.pop_front() {
-            walk.queued[unit.0] = false;
-            let roots = walk.needed[unit.0].clone();
-            let values = walk.escaped[unit.0].clone();
-            for &dependency in &self.dependencies[unit.0] {
-                walk.grow(dependency, &roots, true);
+        loop {
+            while let Some(unit) = walk.queue.pop_front() {
+                walk.queued[unit.0] = false;
+                let roots = walk.needed[unit.0].clone();
+                let values = walk.escaped[unit.0].clone();
+                for &dependency in &self.dependencies[unit.0] {
+                    walk.grow(dependency, &roots, true);
+                }
+                for &install in &self.installs[unit.0] {
+                    walk.grow(install, &values, true);
+                }
+                for &effect in &self.attached[unit.0] {
+                    if !self.blockers[effect.0].is_empty() {
+                        continue;
+                    }
+                    let roots = if self.conditions[effect.0].is_empty() {
+                        roots.clone()
+                    } else {
+                        conditional(&walk.needed, effect)
+                    };
+                    walk.grow(effect, &roots, true);
+                }
+                for &effect in &self.conditional[unit.0] {
+                    if !self.blockers[effect.0].is_empty() {
+                        continue;
+                    }
+                    let roots = conditional(&walk.needed, effect);
+                    walk.grow(effect, &roots, true);
+                }
+                // A kept unit sharing state through another's binding has its
+                // roots ([`RuntimeManifest::sharers`]).
+                for &sharer in &self.sharers[unit.0] {
+                    if walk.needed[sharer.0].iter().any(|&word| word != 0) {
+                        walk.grow(sharer, &roots, true);
+                    }
+                }
+                for &owner in &self.shared[unit.0] {
+                    let roots = walk.needed[owner.0].clone();
+                    walk.grow(unit, &roots, true);
+                }
             }
-            for &install in &self.installs[unit.0] {
-                walk.grow(install, &values, true);
-            }
-            for &effect in &self.attached[unit.0] {
+            // An `effect: ... unless:` unit waits for everything else and is kept
+            // only where no root needs one of its `unless:` units, with the roots
+            // it would have without `unless:`.
+            let needed =
+                |walk: &Walk, unit: &UnitId| walk.needed[unit.0].iter().any(|&word| word != 0);
+            for &effect in &self.lean {
+                if !self.lean_ready(effect, |unit| needed(&walk, unit)) {
+                    continue;
+                }
                 let roots = if self.conditions[effect.0].is_empty() {
-                    roots.clone()
+                    let mut targets = vec![0u64; words];
+                    for target in &self.units[effect.0].effect.as_ref().unwrap().targets {
+                        if let Some(owner) = self.unit_of(target) {
+                            add(&mut targets, &walk.needed[owner.0]);
+                        }
+                    }
+                    targets
                 } else {
                     conditional(&walk.needed, effect)
                 };
                 walk.grow(effect, &roots, true);
             }
-            for &effect in &self.conditional[unit.0] {
-                let roots = conditional(&walk.needed, effect);
-                walk.grow(effect, &roots, true);
-            }
-            // A kept unit sharing state through another's binding has its
-            // roots ([`RuntimeManifest::sharers`]).
-            for &sharer in &self.sharers[unit.0] {
-                if walk.needed[sharer.0].iter().any(|&word| word != 0) {
-                    walk.grow(sharer, &roots, true);
-                }
-            }
-            for &owner in &self.shared[unit.0] {
-                let roots = walk.needed[owner.0].clone();
-                walk.grow(unit, &roots, true);
+            if walk.queue.is_empty() {
+                return walk.needed;
             }
         }
-        walk.needed
     }
 
     /// A runtime factory with only the `kept` units (indexed by [`UnitId`]):
@@ -1044,6 +1167,26 @@ impl<'a> RuntimeManifest<'a> {
                             ));
                         }
                     }
+                    // What the unit keeps once it is kept itself.
+                    let closure = (!effect.unless.is_empty()).then(|| self.reachable([id]));
+                    for (position, &binding) in effect.unless.iter().enumerate() {
+                        let owner = self.unit_of(binding);
+                        if effect.unless[..position].contains(&binding) {
+                            fail(format!("names `unless:` binding `{binding}` twice"));
+                        } else if self.unit_of(binding).is_none() {
+                            fail(format!(
+                                "`unless:` binding `{binding}` is not a runtime binding"
+                            ));
+                        } else if unit.requires.contains(&binding) {
+                            fail(format!(
+                                "requires its `unless:` binding `{binding}`, so it is never kept"
+                            ));
+                        } else if owner.is_some_and(|owner| closure.as_ref().unwrap()[owner.0]) {
+                            fail(format!(
+                                "keeps its `unless:` binding `{binding}` through what it requires"
+                            ));
+                        }
+                    }
                     for (position, &target) in effect.targets.iter().enumerate() {
                         if effect.targets[..position].contains(&target) {
                             fail(format!("names effect target `{target}` twice"));
@@ -1160,6 +1303,9 @@ impl<'a> RuntimeManifest<'a> {
                     );
                     if !effect.when.is_empty() {
                         list("when:", &effect.when);
+                    }
+                    if !effect.unless.is_empty() {
+                        list("unless:", &effect.unless);
                     }
                 }
                 None => {}
@@ -1339,7 +1485,7 @@ fn is_identifier(word: &str) -> bool {
 }
 
 /// The words of a header that end its lists.
-const HEADER_KEYWORDS: [&str; 4] = ["effect:", "install:", "when:", "requires:"];
+const HEADER_KEYWORDS: [&str; 5] = ["effect:", "install:", "when:", "unless:", "requires:"];
 
 /// A comma-separated header list: items up to one without a trailing comma,
 /// across continuation lines.
@@ -1387,6 +1533,7 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
             targets: Vec::new(),
             install: false,
             when: Vec::new(),
+            unless: Vec::new(),
         });
     } else if let Some(keyword) = words.next_if(|word| matches!(*word, "effect:" | "install:")) {
         let install = keyword == "install:";
@@ -1399,16 +1546,28 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
             targets,
             install,
             when: Vec::new(),
+            unless: Vec::new(),
         });
     }
-    if words.next_if_eq(&"when:").is_some() {
+    for keyword in ["when:", "unless:"] {
+        if words.next_if_eq(&keyword).is_none() {
+            continue;
+        }
         match &mut effect {
             Some(effect) if !effect.install && !effect.targets.is_empty() => {
-                effect.when = header_list(&mut words, name, "`when:` binding", true)?;
+                // A `when:` list may name effect units; an `unless:` list only
+                // bindings.
+                let when = keyword == "when:";
+                let list = header_list(&mut words, name, &format!("`{keyword}` binding"), when)?;
+                if when {
+                    effect.when = list;
+                } else {
+                    effect.unless = list;
+                }
             }
             _ => {
                 return Err(format!(
-                    "unit `{name}`: `when:` needs `effect:` with a target"
+                    "unit `{name}`: `{keyword}` needs `effect:` with a target"
                 ));
             }
         }
@@ -2008,6 +2167,89 @@ mod tests {
         );
         // Without `op` nothing keeps it.
         assert_eq!(wrapped(&[(unit("user"), RootUse::Value, &both[..])]), 0);
+    }
+
+    /// `table` gets `fallback` for `user` unless `op` is kept, whose own entry
+    /// follows it.
+    const LEAN: &str = "// Original bounded runtime\n(() => {\n  \"use strict\";\n\n  //@unit table\n  const table = [];\n  //@unit user requires: table\n  function user() { return table; }\n  //@unit op\n  function op() { return 1; }\n  //@unit other requires: op\n  function other() { return op; }\n  //@unit fallback\n  function fallback() { return 0; }\n  //@unit table.lean effect: user unless: op requires: fallback, table\n  table.push(fallback);\n  //@unit table.full effect: user when: op requires: op, table\n  table.push(op);\n  //@exports\n  return Object.freeze({user, op, other});\n})()\n";
+
+    #[test]
+    fn effects_with_unless_wait_for_everything_else() {
+        let manifest = RuntimeManifest::parse(LEAN).unwrap();
+        manifest.validate().unwrap();
+        assert_eq!(manifest.with_computed_requires(), LEAN);
+        let unit = |name| manifest.unit_named(name).unwrap();
+        let lean = unit("table.lean");
+        assert_eq!(
+            manifest.units[lean.0].effect.as_ref().unwrap().unless,
+            ["op"]
+        );
+        assert_eq!(manifest.blockers(lean), [unit("op")]);
+        // The target keeps the lean entry and its requires, attributed as the
+        // target is ...
+        let kept = manifest.reached_by(&[unit("op"), unit("user")]);
+        assert!(kept[lean.0].is_none() && kept[unit("table.full").0] == Some(1));
+        let kept = manifest.reached_by(&[unit("other"), unit("user")]);
+        assert!(kept[lean.0].is_none(), "`other` keeps `op`");
+        let kept = manifest.reached_by(&[unit("table"), unit("user")]);
+        assert_eq!(kept[lean.0], Some(1));
+        assert_eq!(kept[unit("fallback").0], Some(1));
+        assert!(kept[unit("op").0].is_none());
+        // ... and nothing without it.
+        assert!(!manifest.reachable([unit("op")])[lean.0]);
+        // Among roots, it goes with its target where no root keeps `op`, and
+        // nowhere where one does: there the full entry goes with the target.
+        let [first, second, both] = [[1u64], [2], [3]];
+        let roots = |demands: &[(UnitId, RootUse, &[u64])]| {
+            let signatures = manifest.signatures(demands, 1);
+            ["user", "table.lean", "fallback", "table.full", "op"]
+                .map(|name| signatures[unit(name).0][0])
+        };
+        assert_eq!(
+            roots(&[
+                (unit("user"), RootUse::Value, &first[..]),
+                (unit("table"), RootUse::Value, &second[..]),
+            ]),
+            [1, 3, 3, 0, 0]
+        );
+        assert_eq!(
+            roots(&[
+                (unit("user"), RootUse::Value, &first[..]),
+                (unit("other"), RootUse::Value, &second[..]),
+            ]),
+            [1, 0, 0, 1, 3]
+        );
+        assert_eq!(
+            roots(&[(unit("user"), RootUse::Value, &both[..])]),
+            [3, 3, 3, 0, 0]
+        );
+
+        let error = |source: &str| match RuntimeManifest::parse(source) {
+            Err(errors) => errors[0].message.clone(),
+            Ok(manifest) => manifest.validate().unwrap_err()[0].message.clone(),
+        };
+        assert_eq!(
+            error(&LEAN.replace("unless: op", "unless: missing")),
+            "unit `table.lean`: `unless:` binding `missing` is not a runtime binding"
+        );
+        assert_eq!(
+            error(&LEAN.replace("effect: user unless: op", "effect unless: op")),
+            "unit `table.lean`: `unless:` needs `effect:` with a target"
+        );
+        assert_eq!(
+            error(&LEAN.replace(
+                "unless: op requires: fallback, table\n  table.push(fallback);",
+                "unless: op requires: fallback, op, table\n  table.push(fallback, op);"
+            )),
+            "unit `table.lean`: requires its `unless:` binding `op`, so it is never kept"
+        );
+        assert_eq!(
+            error(&LEAN.replace(
+                "unless: op requires: fallback, table\n  table.push(fallback);",
+                "unless: op requires: fallback, other, table\n  table.push(fallback, other);"
+            )),
+            "unit `table.lean`: keeps its `unless:` binding `op` through what it requires"
+        );
     }
 
     #[test]

@@ -422,7 +422,7 @@ to under 1 KB and beat every upstream ceiling on its own.
 
 Step 1 is implemented (light-cljs-202). Later steps build on it:
 
-- **Format.** `//@unit <name>[ compile-time][ mutator][ effect[: <bindings>[ when: <bindings>]]][ requires: <bindings>]`
+- **Format.** `//@unit <name>[ compile-time][ mutator][ effect[: <bindings>[ when: <bindings>][ unless: <bindings>]]][ requires: <bindings>]`
   headers in `src/js_runtime.js`, with `//@ ` continuation lines (since
   light-cljs-227 any list of the header may wrap) and a final
   `//@exports` section; the module docs of `src/runtime_manifest.rs` give the
@@ -438,7 +438,9 @@ Step 1 is implemented (light-cljs-202). Later steps build on it:
   escapes (`add.variadic`); see "Phase 1 effects extension points". Since
   Phase 2 step 4, `effect: a when: b, c` is kept only where one of the `when:`
   bindings is kept as well; see "Phase 2 rapid type analysis extension
-  points".
+  points". Since light-cljs-247, `effect: a unless: b` is the lean form of
+  something `b` gives in full, kept last, where it would be kept without
+  `unless:` and `b` is not; see "Phase 2 builtin types, map entries".
 - **API.** `RuntimeManifest::embedded()` parses the compiled-in runtime once.
   `unit_of(binding)` maps a runtime name to its `UnitId` (dense, in file
   order); `dependencies`, `attached_effects` and `reachable(roots)`, which
@@ -1747,6 +1749,65 @@ slice keeps only where a program builds a lazy seq or a cell:
   and `assoc`, and protocol method keys as interned values instead of the
   strings `publicMethod` looks up in `publicMethodInfos` per call, are not
   converted.
+
+#### Phase 2 builtin types, map entries
+
+As built (light-cljs-247). A map's host-facing members (iteration, `keys`,
+`values`, `entries`; light-cljs-230 keeps them with the type) yield map
+entries, which are vectors of a key and a value. They kept the whole vector
+type, so a program that builds one small map the compiler cannot fold kept
+vectors' trie, members and equality; and a map lookup kept sorted-map
+search.
+
+- **Lean effects.** The manifest's `unless:` list (`effect: a [when: b]
+  unless: c`) marks the lean form of something `c` gives in full: the unit
+  is kept where it would be without `unless:` and no `unless:` unit is kept
+  once everything else is (`RuntimeManifest::reached_by_uses` keeps such
+  units last; `signatures` gives one the roots it would have only where no
+  root needs an `unless:` unit). The shared runtime keeps both forms, so the
+  full one follows the lean one and replaces what it installs. Validation
+  rejects a lean unit that keeps its `unless:` unit, directly or through
+  what it requires.
+- **Map entries.** `mapEntry` and `MapEntryType` are defined twice:
+  `mapEntry.vector` and `MapEntryType.vector` (`when: makeVector`) build an
+  entry with `makeVector` under a prototype based on `vectorPrototype`, as
+  before; `mapEntry.lean` and `MapEntryType.lean` (`unless: makeVector`)
+  store the two items as `makeVector` would (a tail of two, so every
+  vector branch of the generic operations reads them) under
+  `entryPrototype`, the vectors' host-facing members for two items, and
+  `mapEntry.equiv` compares two entries. The vector kind hooks that map
+  entries reach name `mapEntry` as a target too, so `seq`, `nth`, `count`,
+  `conj`, `assoc`, transients, hashing, `str` and the printer take an
+  entry's branch where no vector can be built; `lookup` reads an entry's
+  tail itself, and `nthVector` and `vectorOfItems` stay `makeVector`'s.
+- **Entry search.** `collectionEntryIndex` finds a sorted map's or set's key
+  through `kindHooks.sortedEntryIndex`, which the sorted constructors
+  install, and a hash map's nil key through `kindHooks.hashEntryIndex`;
+  `entryIndex` is the array-map search alone (its hash-guarded branch had
+  no caller).
+- **Structural equality.** `comparedSequential`, the sequential test of
+  equality and hashing, probes the seq kinds' stores (`cells`, `views`,
+  `queues`, `lazyValues`, and so `privateStore`) through
+  `kindHooks.comparedSeq`, which their builders install, and UUIDs and
+  Vars compare through `kindHooks.equivNamed`, after the other kinds.
+- **Tests.** `builtin_types` runs every host-facing member, generic
+  operation and the printer on map entries in a program that builds no
+  vector at every level, and checks which form small programs keep;
+  `runtime_manifest` checks `unless:` parsing, validation, reachability and
+  signatures, and lists the new kind hooks.
+- **Measured.** At `Advanced`, against master `4716053`:
+  `(js/console.log (if (js/Math.random) {:k :a} nil))` drops from 10,264 to
+  7,606 bytes, short of the pellet's 7,000 (7,350 with the user's 5%
+  tolerance); `map-only` from 10,193 to 7,535, `keyword-only` from 3,789 to
+  3,179 and no ratchet fixture grows. The shared runtime grows by 3,500
+  bytes (0.8%). Per-fixture sizes are in `benchmarks/compiler.md`.
+- **Left for later.** What the map program keeps above 7,000 is generic: the
+  public `PersistentArrayMap` constructor and the public slots its maps
+  have (about 500 bytes; the hash set's constructor became a hook with a
+  contract entry in light-cljs-231), the types' `EMPTY` statics, which only
+  empty literals and code naming them read (about 120), the set and
+  transient branches of `lookup` and equality (about 150), and the map
+  entries' own members (about 1.1 KB), which stay with the type.
 
 #### Phase 2 builtin types, program types
 

@@ -990,6 +990,36 @@ fn a_feature_probes_a_var_startup_declares() {
     assert_eq!(record, printed("app.main.js", r"false\n"));
 }
 
+/// Startup builds a map and keeps one of the map entries its iteration
+/// yields; only a feature builds vectors. Map entries are then vectors with
+/// the vectors' members in every chunk (`mapEntry.vector`): a lean entry
+/// (`unless: makeVector`, light-cljs-247) is kept by no chunk, since another
+/// chunk keeps `makeVector`.
+#[test]
+fn a_map_entry_from_startup_is_a_vector_where_a_feature_builds_vectors() {
+    static ENTRIES: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (def editor (lazy/loadable app.editor/start))\n\
+             (def entry (aget (js/Array.from (if (js/Math.random) {:a 1} nil)) 0))\n\
+             (defn start []\n\
+               (-> (lazy/load editor) (.then (fn [f] (js/console.log (f entry)) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor)\n\
+             (defn start [e] (pr-str [(= e [:a 1]) (conj e 2) (vector? e) (.indexOf e 1) (.lastIndexOf e :a) (e 1) (rseq e)]))\n",
+        ),
+    ];
+    let (record, _) = chunk_files(&analyze(ENTRIES));
+    assert_eq!(
+        record,
+        printed("app.main.js", r#"[true [:a 1 2] true 1 0 1 (1 :a)]\n"#)
+    );
+}
+
 /// A loadable of a namespace that only adds methods to a multimethod of
 /// startup loads its chunk and resolves to nil (the `methods` fixture, which
 /// [`matrix`] runs); the manifest writes a namespace target as its
