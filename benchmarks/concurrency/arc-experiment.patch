@@ -1,0 +1,97 @@
+diff --git a/src/arena.rs b/src/arena.rs
+index 05decc1..95a3ec6 100644
+--- a/src/arena.rs
++++ b/src/arena.rs
+@@ -8,7 +8,7 @@
+ //! leaf. A snapshot keeps its definition-time entries.
+ 
+ use std::ops::{Index, IndexMut};
+-use std::rc::Rc;
++use std::sync::Arc as Rc;
+ 
+ const LEAF_SIZE: usize = 64;
+ 
+@@ -527,7 +527,7 @@ mod tests {
+     #[test]
+     fn snapshots_do_not_copy_entries_and_writes_copy_a_bounded_leaf() {
+         use std::cell::Cell;
+-        use std::rc::Rc;
++        use std::sync::Arc as Rc;
+ 
+         struct Counted(Rc<Cell<usize>>);
+         impl Clone for Counted {
+diff --git a/src/compiler_data.rs b/src/compiler_data.rs
+index ecaa178..0ce24a0 100644
+--- a/src/compiler_data.rs
++++ b/src/compiler_data.rs
+@@ -5,8 +5,7 @@ use std::{
+     cell::OnceCell,
+     fmt,
+     ops::Range,
+-    rc::Rc,
+-    sync::atomic::{AtomicU64, Ordering},
++    sync::{Arc as Rc, atomic::{AtomicU64, Ordering}},
+ };
+ 
+ /// A name's exact UTF-16 components, without reader resolution or validation.
+diff --git a/src/compiler_reader.rs b/src/compiler_reader.rs
+index 22b4cd9..958d800 100644
+--- a/src/compiler_reader.rs
++++ b/src/compiler_reader.rs
+@@ -796,7 +796,7 @@ impl Lowerer<'_> {
+                     related: None,
+                 })?
+             {
+-                let form = Form::from_data(value, location, Origin::DataReader(Rc::new(tag)));
++                let form = Form::from_data(value, location, Origin::DataReader(std::sync::Arc::new(tag)));
+                 let offset = self.nodes.len();
+                 for node in form.nodes() {
+                     let mut node = node.clone();
+diff --git a/src/layered.rs b/src/layered.rs
+index e87917e..a44fc21 100644
+--- a/src/layered.rs
++++ b/src/layered.rs
+@@ -3,7 +3,7 @@
+ use std::borrow::Borrow;
+ use std::collections::HashMap;
+ use std::hash::Hash;
+-use std::rc::Rc;
++use std::sync::Arc as Rc;
+ 
+ /// A map whose frames share its entries by reference. Entries are written to
+ /// a small layer over a shared base. Both are shared until a write, so a frame
+diff --git a/src/name_index.rs b/src/name_index.rs
+index e0d6f42..7ca7969 100644
+--- a/src/name_index.rs
++++ b/src/name_index.rs
+@@ -3,7 +3,7 @@
+ use crate::analyzer::GlobalId;
+ use std::collections::hash_map::RandomState;
+ use std::hash::BuildHasher;
+-use std::rc::Rc;
++use std::sync::Arc as Rc;
+ 
+ type Key = (String, String);
+ 
+diff --git a/src/shared.rs b/src/shared.rs
+index 76ff2ca..885dc5a 100644
+--- a/src/shared.rs
++++ b/src/shared.rs
+@@ -1,7 +1,7 @@
+ //! A value shared between programs until one of them changes it.
+ 
+ use std::ops::{Deref, DerefMut};
+-use std::rc::Rc;
++use std::sync::Arc as Rc;
+ 
+ /// A program table shared by reference between a program and the snapshots
+ /// taken of it. Reading goes through [`Deref`]; writing through [`DerefMut`]
+@@ -129,7 +129,7 @@ where
+ #[cfg(test)]
+ mod tests {
+     use super::Shared;
+-    use std::rc::Rc;
++    use std::sync::Arc as Rc;
+ 
+     #[test]
+     fn empty_fragment_extension_keeps_the_shared_table() {

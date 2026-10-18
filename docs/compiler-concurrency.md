@@ -959,11 +959,12 @@ is part of the stage A gate.
 
 ## Method and reproduction
 
-The experiment code is not in the repository. The probe patch, the `Arc`
-experiment patch, the bb models, the sample data, the parse harness and the
-run script are in the gitignored `research/concurrency-opus/` of the main
-checkout. The first pellet retains them in version control with a portable
-driver.
+As built (light-cljs-330): the probe patch and module, the `Arc`
+experiment patch, the bb models, the probe data and the parse harness are
+retained in [benchmarks/concurrency/](../benchmarks/concurrency/README.md),
+with their hashes and a portable driver, `run.bb`. The 3.2 MB main-thread
+sample stays in the gitignored `research/concurrency-opus/` of the main
+checkout; its hash is recorded there.
 
 - **Sampling.** `sample PID 30 1` during a cold build. `phases.bb` attributes
   self samples to the outermost phase marker and the innermost
@@ -983,7 +984,7 @@ driver.
   separately by running 1, 4, 8 and 12 concurrent `app.render` compiles.
 
   ```sh
-  bb research/concurrency-opus/dag.bb research/concurrency-opus/main-probe.tsv
+  bb benchmarks/concurrency/dag.bb benchmarks/concurrency/main-probe.tsv
   ```
 - **`Arc` A/B.** Three alternating runs of each binary on Penpot main. Same
   output; medians 23.07 s (`Rc`) and 23.13 s (`Arc`).
@@ -993,9 +994,12 @@ driver.
   threads claiming one or four files at a time; one warm-up, seven samples,
   rotated order. Timing covers thread creation, parsing and joining, not
   loading or destruction.
-- **Run script.** `run.sh` embeds a temporary binary path and is not a
-  portable reproduction command; the retained driver takes explicit binary
-  and source-root arguments.
+- **Run script.** `run.sh` embedded a temporary binary path and was not a
+  portable reproduction command. It is replaced by
+  `benchmarks/concurrency/run.bb`, which takes the binary, the source roots
+  and the output directory as arguments, applies no patch, and can attach
+  the sampler (`--sample`). The model run above reproduces the summary's
+  schedule table unchanged.
 
 Recorded SHA-256 identities of the artifacts at the time of writing:
 

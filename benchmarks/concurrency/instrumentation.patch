@@ -1,0 +1,229 @@
+diff --git a/src/analyzer.rs b/src/analyzer.rs
+index 64a2e7c..f74e5b3 100644
+--- a/src/analyzer.rs
++++ b/src/analyzer.rs
+@@ -3607,7 +3607,12 @@ impl NamespaceAnalysis {
+             }
+             .into(),
+         );
++        let probe_t0 = std::time::Instant::now();
++        let probe_js0 = crate::conc_probe::js_nanos();
++        let probe_calls0 = crate::conc_probe::js_calls();
+         let root = analyzer.body(&source_roots[1..], 0..input.source.len(), context)?;
++        let probe_body = probe_t0.elapsed();
++        let probe_js_body = crate::conc_probe::js_nanos() - probe_js0;
+         analyzer.read_discards_before(input.source.len())?;
+         let macros = analyzer.macro_host.source_macro_names(input.name);
+         if analyzer.program.reader_contexts[input.name].macros != macros {
+@@ -3622,8 +3627,35 @@ impl NamespaceAnalysis {
+             .program
+             .namespace_entries
+             .insert(root, input.name.into());
++        let probe_units = analyzer.deferred.len();
++        let probe_t1 = std::time::Instant::now();
++        let probe_js1 = crate::conc_probe::js_nanos();
++        crate::conc_probe::TOP_DRAIN.with(|t| t.set(true));
+         analyzer.drain_deferred()?;
++        crate::conc_probe::TOP_DRAIN.with(|t| t.set(false));
++        let probe_drain = probe_t1.elapsed();
++        let probe_js_drain = crate::conc_probe::js_nanos() - probe_js1;
++        let probe_t2 = std::time::Instant::now();
+         analyzer.collect_expression_warnings(Some(&mut self.arities));
++        let probe_warn = probe_t2.elapsed();
++        if crate::conc_probe::enabled() {
++            let units = crate::conc_probe::UNIT_MICROS.with(|u| std::mem::take(&mut *u.borrow_mut()));
++            eprintln!(
++                "NSPROBE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
++                source_index,
++                input.name,
++                input.source.len(),
++                probe_body.as_micros(),
++                probe_js_body / 1000,
++                probe_drain.as_micros(),
++                probe_js_drain / 1000,
++                probe_warn.as_micros(),
++                probe_units,
++                crate::conc_probe::js_calls() - probe_calls0,
++                input.requires.join(","),
++                units.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(","),
++            );
++        }
+         if !analyzer
+             .program
+             .namespaces
+@@ -6204,12 +6236,19 @@ impl Analyzer<'_> {
+             return Ok(());
+         };
+         for (placeholder, unit, shared) in std::mem::take(&mut self.deferred) {
++            let probe_top = crate::conc_probe::TOP_DRAIN.with(|t| t.replace(false));
++            let probe_start = std::time::Instant::now();
+             let (program, warnings) = session.analyze(unit, self.engine).map_err(|message| {
+                 session.diagnostic(unit).unwrap_or_else(|| AnalysisError {
+                     span: self.program.exprs[placeholder.0].span.clone(),
+                     kind: AnalysisErrorKind::MacroExpansion(message),
+                 })
+             })?;
++            if probe_top {
++                let micros = probe_start.elapsed().as_micros() as u64;
++                crate::conc_probe::UNIT_MICROS.with(|u| u.borrow_mut().push(micros));
++            }
++            crate::conc_probe::TOP_DRAIN.with(|t| t.set(probe_top));
+             let defined = self.program.globals.len();
+             // The unit was analyzed from a snapshot of this program, so only
+             // what it added is appended. Its snapshot-time view of the shared
+@@ -6217,6 +6256,10 @@ impl Analyzer<'_> {
+             // metadata/flags, so those stay as they are.
+             let root = crate::program_fragment::append(&mut self.program, &program, &shared, false);
+             session.release_application_ir(unit);
++            if crate::conc_probe::enabled() && self.program.globals.len() > defined {
++                let names: Vec<String> = self.program.globals.iter().skip(defined).take(4).map(|g| format!("{}/{}{}", g.namespace, g.name, if g.declared { "" } else { "?" })).collect();
++                eprintln!("NSUNITGLOBALS\t{}\t{}\t{}\t{}", self.namespace, self.deferred_unit, self.program.globals.len() - defined, names.join(" "));
++            }
+             for (index, global) in self.program.globals.iter().enumerate().skip(defined) {
+                 self.globals.insert(
+                     (global.namespace.clone(), global.name.clone()),
+diff --git a/src/compiler.rs b/src/compiler.rs
+index 3a52af4..7cd72b9 100644
+--- a/src/compiler.rs
++++ b/src/compiler.rs
+@@ -1558,7 +1558,11 @@ fn analyze_entry(
+         ordered: Vec::new(),
+         warning_mode: options.warning_mode,
+     };
++    let probe_load = std::time::Instant::now();
+     loader.visit(entry)?;
++    if crate::conc_probe::enabled() {
++        eprintln!("NSLOAD\t{}\t{}", probe_load.elapsed().as_micros(), loader.ordered.len());
++    }
+     let entry_index = loader.ordered.len() - 1;
+     source_warnings(&loader.ordered, 0, options, warnings);
+     let mut analysis = NamespaceAnalysis::new(macros);
+@@ -1569,7 +1573,11 @@ fn analyze_entry(
+             NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
+         };
+         let first_lazy = analysis.lazy_target_count();
++        let probe_prep = std::time::Instant::now();
+         let resolution = prepare_source(macros, file).map_err(at)?;
++        if crate::conc_probe::enabled() {
++            eprintln!("NSPREP\t{}\t{}", index, probe_prep.elapsed().as_micros());
++        }
+         let input = NamespaceInput {
+             name: &file.name,
+             source: &file.source,
+@@ -1595,6 +1603,7 @@ fn analyze_entry(
+         syntax.nodes = Vec::new();
+         syntax.roots = Vec::new();
+         let loaded = loader.ordered.len();
++        let probe_lazy = std::time::Instant::now();
+         for (namespace, span) in analysis.lazy_namespaces_since(first_lazy) {
+             loader.visit_lazy(&namespace, index).map_err(|error| {
+                 if error.path.is_none() {
+@@ -1605,15 +1614,45 @@ fn analyze_entry(
+                 }
+             })?;
+         }
++        if crate::conc_probe::enabled() && loader.ordered.len() > loaded {
++            eprintln!("NSLAZYLOAD\t{}\t{}", probe_lazy.elapsed().as_micros(), loader.ordered.len() - loaded);
++        }
+         source_warnings(&loader.ordered, loaded, options, warnings);
+         index += 1;
+     }
++    let probe_finish = std::time::Instant::now();
+     let program = analysis
+         .finish(entry_index, macros)
+         .map_err(|(index, error)| {
+             let file = &loader.ordered[index];
+             NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
+         })?;
++    if crate::conc_probe::enabled() {
++        eprintln!("NSFINISH\t{}\t{}", probe_finish.elapsed().as_micros(), entry_index);
++        let reqs = &program.namespace_requires;
++        let n = reqs.len();
++        let mut closure: Vec<std::collections::HashSet<usize>> = Vec::with_capacity(n);
++        for i in 0..n {
++            let mut set = std::collections::HashSet::new();
++            set.insert(i);
++            for &d in &reqs[i] { if d < i { set.extend(closure[d].iter().copied()); } else { set.insert(d); } }
++            closure.push(set);
++        }
++        let mut outside = 0usize;
++        let mut pairs: std::collections::BTreeMap<(String, String), usize> = Default::default();
++        for expr in program.exprs.iter() {
++            if let crate::analyzer::ExprKind::Global(g) = &expr.kind {
++                let b = &program.globals[g.0];
++                let (t, s) = (expr.source_index, b.source_index);
++                if t < n && s < n && !closure[t].contains(&s) && !matches!(b.namespace.as_str(), "cljs.core") {
++                    outside += 1;
++                    *pairs.entry((program.namespaces[t].clone(), format!("{}/{}", b.namespace, b.name))).or_default() += 1;
++                }
++            }
++        }
++        eprintln!("NSOUTSIDE\t{}\t{}", outside, pairs.len());
++        for ((from, to), count) in pairs.iter().take(60) { eprintln!("NSOUTSIDE-PAIR\t{from}\t{to}\t{count}"); }
++    }
+     let files = loader
+         .ordered
+         .into_iter()
+diff --git a/src/lib.rs b/src/lib.rs
+index ec91bd2..e91b219 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -10,6 +10,7 @@
+ use std::{iter::FusedIterator, ops::Range};
+ 
+ pub mod analyzer;
++mod conc_probe;
+ pub mod application;
+ pub mod arena;
+ pub mod call_shapes;
+diff --git a/src/main.rs b/src/main.rs
+index 654f143..c037557 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -421,6 +421,8 @@ fn run_namespace(
+         options.warning_mode = true;
+     }
+     let mut warnings = Vec::new();
++    let probe = std::env::var_os("LIGHT_NS_PROBE").is_some();
++    let probe_t = std::time::Instant::now();
+     let program = light_cljs::compiler::analyze_namespace_entry_with_sources(
+         &entry,
+         &roots,
+@@ -435,7 +437,11 @@ fn run_namespace(
+     if let (true, Some(out_dir)) = (reloadable, &out_dir) {
+         return write_dev_build(&program, &files, out_dir);
+     }
++    if probe { eprintln!("NSANALYZE\t{}", probe_t.elapsed().as_micros()); }
++    let probe_t = std::time::Instant::now();
+     let prepared = prepare_application(&program, flags.options(&program)?);
++    if probe { eprintln!("NSPREPARE\t{}", probe_t.elapsed().as_micros()); }
++    let probe_t = std::time::Instant::now();
+     if let Some(out_dir) = out_dir {
+         write_chunks(&prepared.emit_chunks(), &out_dir)?;
+     } else {
+@@ -446,6 +452,7 @@ fn run_namespace(
+         let output = flags.output(&prepared, esm, &sources)?;
+         io::stdout().lock().write_all(output.as_bytes())?;
+     }
++    if probe { eprintln!("NSEMIT\t{}", probe_t.elapsed().as_micros()); }
+     if flags.size_report {
+         print_size_report(&prepared)?;
+     }
+diff --git a/src/v8_evaluator.rs b/src/v8_evaluator.rs
+index d596365..3f61bce 100644
+--- a/src/v8_evaluator.rs
++++ b/src/v8_evaluator.rs
+@@ -226,9 +226,10 @@ fn invoke<'s>(
+         .try_into()
+         .map_err(|_| bridge::error("V8 service is not callable"))?;
+     let receiver = v8::undefined(scope).into();
+-    function
+-        .call(scope, receiver, args)
+-        .ok_or_else(|| bridge::error("V8 service failed"))
++    crate::conc_probe::js_enter();
++    let result = function.call(scope, receiver, args);
++    crate::conc_probe::js_exit();
++    result.ok_or_else(|| bridge::error("V8 service failed"))
+ }
+ impl V8Evaluator {
+     pub(crate) fn new(options: EvaluatorOptions) -> Result<Self, EvalError> {
