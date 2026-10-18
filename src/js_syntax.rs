@@ -345,6 +345,10 @@ pub struct Facts<'a> {
     /// the body assigns, sorted and without duplicates: their value changes
     /// after the body has run.
     pub call_time_assigns: Vec<&'a str>,
+    /// The references whose list code run at load time appends to
+    /// (`table.push(...)`, `table.unshift(...)`), sorted and without
+    /// duplicates.
+    pub load_time_appends: Vec<&'a str>,
     /// Whether some top-level statement is not a declaration.
     pub has_effect_statements: bool,
 }
@@ -668,6 +672,7 @@ pub fn analyze<'a>(source: &'a str, tokens: &[Token]) -> Result<Facts<'a>, (usiz
     let mut load_time_calls = Vec::new();
     let mut assigns = Vec::new();
     let mut call_time_assigns = Vec::new();
+    let mut load_time_appends = Vec::new();
     let punct = |at: Option<usize>| {
         at.and_then(|at| tokens.get(at))
             .filter(|token| token.kind == Kind::Punct)
@@ -724,6 +729,17 @@ pub fn analyze<'a>(source: &'a str, tokens: &[Token]) -> Result<Facts<'a>, (usiz
             if assigned {
                 assigns.push(name);
             }
+            let appended = || {
+                punct(Some(token + 1)) == Some(".")
+                    && tokens.get(token + 2).is_some_and(|method| {
+                        method.kind == Kind::Name
+                            && matches!(method.text(source), "push" | "unshift")
+                    })
+                    && punct(Some(token + 3)) == Some("(")
+            };
+            if load_time && !shorthand && appended() {
+                load_time_appends.push(name);
+            }
         }
         // A top-level binding, this unit's or another's, that a function
         // assigns changes after the unit loads.
@@ -739,12 +755,15 @@ pub fn analyze<'a>(source: &'a str, tokens: &[Token]) -> Result<Facts<'a>, (usiz
     assigns.dedup();
     call_time_assigns.sort_unstable();
     call_time_assigns.dedup();
+    load_time_appends.sort_unstable();
+    load_time_appends.dedup();
     Ok(Facts {
         declares,
         references,
         load_time_calls,
         assigns,
         call_time_assigns,
+        load_time_appends,
         has_effect_statements,
     })
 }

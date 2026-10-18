@@ -205,6 +205,9 @@ pub struct Unit<'a> {
     /// body assigns, so that their values change after the runtime loads,
     /// sorted and without duplicates.
     pub call_time_assigns: Vec<&'a str>,
+    /// The [`Unit::references`] whose list the body appends to at load time,
+    /// `recordMethodTable.push(...)`: a table another unit may enumerate.
+    pub load_time_appends: Vec<&'a str>,
     /// Whether some top-level statement is not a declaration.
     pub has_effect_statements: bool,
 }
@@ -410,6 +413,7 @@ impl<'a> RuntimeManifest<'a> {
                             load_time_calls: facts.load_time_calls,
                             assigns: facts.assigns,
                             call_time_assigns: facts.call_time_assigns,
+                            load_time_appends: facts.load_time_appends,
                             has_effect_statements: facts.has_effect_statements,
                         }),
                         Err((offset, message)) => errors.push(ManifestError {
@@ -518,7 +522,11 @@ impl<'a> RuntimeManifest<'a> {
             }
         }
         // A binding another unit assigns is shared with that unit, and one a
-        // function assigns after loading with every unit that reads it.
+        // function assigns after loading with every unit that reads it. So is
+        // a list another unit appends to when it loads: a reader that
+        // enumerates the list (`recordMethods`, building a record type's
+        // methods when the type is defined) sees only what is appended
+        // before, so an append in a later chunk would come too late.
         let mut sharers = vec![Vec::new(); units.len()];
         let mut shared = vec![Vec::new(); units.len()];
         let mut share = |owner: UnitId, unit: usize| {
@@ -528,7 +536,7 @@ impl<'a> RuntimeManifest<'a> {
             }
         };
         for (index, unit) in units.iter().enumerate() {
-            for binding in &unit.assigns {
+            for binding in unit.assigns.iter().chain(&unit.load_time_appends) {
                 if let Some(&owner) = bindings.get(binding) {
                     share(owner, index);
                 }
@@ -1926,7 +1934,10 @@ mod tests {
             }
         }
 
-        let manifest = RuntimeManifest::parse(CONDITIONAL).unwrap();
+        // An entry that sets a property, which no reader enumerates, so that
+        // it may run after its readers loaded.
+        let keyed = CONDITIONAL.replace("table.push(op);", "table.op = op;");
+        let manifest = RuntimeManifest::parse(&keyed).unwrap();
         let unit = |name| manifest.unit_named(name).unwrap();
         let roots = |demands: &[(UnitId, RootUse, &[u64])]| {
             let signatures = manifest.signatures(demands, 1);
@@ -1952,6 +1963,25 @@ mod tests {
         assert_eq!(
             roots(&[(unit("op"), RootUse::Value, &second[..])]),
             [0, 0, 2, 0]
+        );
+
+        // An entry appending to `table` shares its roots once kept: a reader
+        // may enumerate the list before a later chunk loads (`recordMethods`
+        // builds a record type's methods when the type is defined), so the
+        // entry, and `op` with it, goes with `table`.
+        let manifest = RuntimeManifest::parse(CONDITIONAL).unwrap();
+        let unit = |name| manifest.unit_named(name).unwrap();
+        assert_eq!(manifest.sharers(unit("table")), [unit("table.entry")]);
+        let signatures = manifest.signatures(
+            &[
+                (unit("user"), RootUse::Value, &both[..]),
+                (unit("op"), RootUse::Value, &second[..]),
+            ],
+            1,
+        );
+        assert_eq!(
+            ["table", "user", "op", "table.entry"].map(|name| signatures[unit(name).0][0]),
+            [3, 3, 3, 3]
         );
 
         // A wrapper assigns `user`, so it shares `user`'s roots once kept:

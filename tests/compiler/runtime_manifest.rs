@@ -1133,8 +1133,10 @@ fn conditional_effects_wait_for_a_condition() {
 /// The units that share state through another unit's binding
 /// (`RuntimeManifest::sharers`), which a chunked build keeps in that unit's
 /// chunk (light-cljs-279): the effects that wrap an operation by assigning
-/// its binding, and the readers of a binding a function assigns after the
-/// runtime loads. A new one moves no unit out of its binding's chunk.
+/// its binding, the readers of a binding a function assigns after the
+/// runtime loads, and the effects that append to a list another unit
+/// enumerates (`recordMethods.*` to `recordMethodTable`). A new one moves no
+/// unit out of its binding's chunk.
 #[test]
 fn units_assigning_a_binding_share_its_unit() {
     let manifest = manifest();
@@ -1181,6 +1183,21 @@ fn units_assigning_a_binding_share_its_unit() {
             "patchDeclaration <- declarationTransaction",
             "patchDeclaration <- extendType",
             "patchDeclaration <- installMethods",
+            "recordMethodTable <- recordMethods.assoc",
+            "recordMethodTable <- recordMethods.clone",
+            "recordMethodTable <- recordMethods.conj",
+            "recordMethodTable <- recordMethods.contains",
+            "recordMethodTable <- recordMethods.count",
+            "recordMethodTable <- recordMethods.dissoc",
+            "recordMethodTable <- recordMethods.equiv",
+            "recordMethodTable <- recordMethods.hash",
+            "recordMethodTable <- recordMethods.iterator",
+            "recordMethodTable <- recordMethods.kvReduce",
+            "recordMethodTable <- recordMethods.lookup",
+            "recordMethodTable <- recordMethods.meta",
+            "recordMethodTable <- recordMethods.print",
+            "recordMethodTable <- recordMethods.seq",
+            "recordMethodTable <- recordMethods.withMeta",
             "reduce <- reduce.protocol",
             "rest <- rest.protocol",
             "seq <- seq.protocol",

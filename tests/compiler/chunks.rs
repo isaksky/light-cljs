@@ -2440,6 +2440,62 @@ fn an_install_one_feature_needs_runs_when_it_loads() {
     assert_eq!(holding(&chunks, "vector.variadic"), ["app.reports.js"]);
 }
 
+/// The program of [`an_install_one_feature_needs_runs_when_it_loads`] with
+/// `--pseudo-names`: the readable factories
+/// (`RuntimeManifest::chunk_factory_text`) take startup's runtime bindings
+/// as parameters, install `str`'s variadic arity when the editor loads, and
+/// print what the single file prints.
+#[test]
+fn readable_runtime_factories_match_the_single_file() {
+    let main = loads_both_calling_str();
+    let program = analyze(&[
+        ("app/main.cljs", &main),
+        (
+            "app/editor.cljs",
+            "(ns app.editor)\n(defn start [] (apply str [\"a\" (js/parseInt \"2\")]))\n",
+        ),
+        (
+            "app/reports.cljs",
+            "(ns app.reports)\n(defn start [] (apply vector [1 (js/parseInt \"2\")]))\n",
+        ),
+    ]);
+    let options = ApplicationOptions {
+        pseudo_names: true,
+        ..ApplicationOptions::new(OptimizationLevel::Advanced)
+    };
+    let prepared = prepare_application(&program, options);
+    let output = prepared.emit_chunks();
+    let startup = output.files[0].name.as_str();
+    let single = prepared.emit_esm();
+    let oracle = run_modules(&[(startup, single.as_str())], startup).unwrap();
+    let files = output
+        .files
+        .iter()
+        .map(|file| (file.name.as_str(), file.source.as_str()))
+        .collect::<Vec<_>>();
+    let listing = shown(&files);
+    let record = run_modules(&files, startup).unwrap_or_else(|error| panic!("{error}\n{listing}"));
+    assert_eq!(record, oracle, "{listing}");
+    assert_eq!(record, printed("app.main.js", r#"n1\n\"a2\"\n[1 2]\n"#));
+    check_imports(&output, OptimizationLevel::Advanced);
+    let editor = output
+        .files
+        .iter()
+        .find(|file| file.name == "app.editor.js")
+        .expect("the editor's chunk");
+    let from_startup = imported_names(&editor.source)
+        .into_iter()
+        .find(|(from, _)| from == "app.main.js")
+        .map(|(_, names)| names)
+        .unwrap_or_default();
+    assert!(
+        from_startup.iter().any(|name| name.starts_with("rt$")),
+        "{from_startup:?}\n{listing}"
+    );
+    // `str.variadic`, installed on the parameter bound to startup's `str`.
+    assert!(editor.source.contains("variadicCore(str, "), "{listing}");
+}
+
 /// Both features apply `str`, which startup only calls: its install is in
 /// their shared chunk, which each feature imports, so it has run before the
 /// feature's code, whichever feature loads first.
@@ -3131,4 +3187,32 @@ fn matrix(name: &str) {
             "{name} {level}: {linked}"
         );
     }
+}
+
+/// A feature that clones a record startup made before the feature loaded:
+/// the record's methods are built from `recordMethodTable` when its type is
+/// defined, so every builder the program reaches runs before startup's
+/// record definitions, wherever the operation that needs it is placed
+/// (light-cljs-279).
+#[test]
+fn a_lazy_operation_works_on_a_startup_record() {
+    static RECORD: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (defrecord Box [item])\n\
+             (def editor (lazy/loadable app.editor/start))\n\
+             (set! (.-saved js/globalThis) (->Box 7))\n\
+             (defn start []\n\
+               (-> (lazy/load editor) (.then (fn [f] (js/console.log (f)) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor)\n\
+             (defn start [] (.-item (clone (.-saved js/globalThis))))\n",
+        ),
+    ];
+    let (record, _) = chunk_files(&analyze(RECORD));
+    assert_eq!(record, printed("app.main.js", r"7\n"));
 }

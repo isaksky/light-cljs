@@ -1331,10 +1331,17 @@ runtime units toward their first readers; per-chunk runtime factories.
     through another unit's binding (`RuntimeManifest::sharers`: it assigns
     the binding, as the wrappers `lookup.trie` and `seq.protocol` do, or
     reads a binding a function assigns after loading, as `hash` does
-    `identityCounter`) takes that unit's roots, so both are in one chunk: a
-    chunk receives other chunks' bindings as values, which an assignment
-    cannot reach. `js_syntax::analyze` reports the assignments (`Unit::assigns`,
-    `Unit::call_time_assigns`); the `runtime_manifest` suite lists the 44
+    `identityCounter`, or appends to its list when it loads, as the
+    `recordMethods.*` builders do to `recordMethodTable`) takes that unit's
+    roots, so both are in one chunk: a chunk receives other chunks' bindings
+    as values, which an assignment cannot reach, and `recordMethods` reads
+    the list once per record type when the type is defined, so a builder a
+    feature appended later would miss the records startup defined (the Sol
+    review's finding, `chunks::a_lazy_operation_works_on_a_startup_record`).
+    A keyed registration (`cells.set(emptyList, ...)`) concerns only the
+    unit's own values and may run later. `js_syntax::analyze` reports the
+    assignments and appends (`Unit::assigns`, `Unit::call_time_assigns`,
+    `Unit::load_time_appends`); the `runtime_manifest` suite lists the 60
     pairs of the runtime.
   - `ChunkPlan::place` places the constants and the units together; a unit
     of a signature no chunk has gets a chunk of its own, named as a shared
