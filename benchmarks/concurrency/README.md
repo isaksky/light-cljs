@@ -102,7 +102,9 @@ the compiler as soon as it starts, writes the report to `ENTRY.sample.txt`
 and the main thread's call tree to `ENTRY.main-thread-sample.txt`, the input
 `phases.bb` and `jscallers2.bb` expect. The sampler attaches after loading
 has started, so load time comes from the probes, not the sample. Sampling
-works on an uninstrumented binary too.
+works on an uninstrumented binary too. Each run first deletes the entry's
+earlier sample files in OUTPUT-DIR, so a build the sampler missed never shows
+an older run's call tree.
 
 For the `Arc` A/B, build a second binary with `arc-experiment.patch` applied
 and alternate it with the baseline through `LIGHT_CLJS_BINARY` and

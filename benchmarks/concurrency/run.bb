@@ -90,10 +90,14 @@
     (when (seq from)
       (cons (first from) (take-while #(not (or (thread? %) (str/blank? %))) (rest from))))))
 
+;; Never report an earlier run's samples next to this run's timings.
+(fs/delete-if-exists sample-file)
+(fs/delete-if-exists main-thread-file)
+
 (println "Binary" binary)
 (println "Entry" entry "with" (count roots) "source roots")
 (flush)
-(let [compile (let [running (apply process/process {:dir (str repo) :extra-env {"LIGHT_NS_PROBE" "1"}
+(let [[compile sampled] (let [running (apply process/process {:dir (str repo) :extra-env {"LIGHT_NS_PROBE" "1"}
                                                 :out :write :out-file js-file
                                                 :err :write :err-file probe-file}
                                                command)
@@ -104,8 +108,10 @@
                                                    "sample" pid "30" "1" "-mayDie" "-file" (str sample-file))
                                   (binding [*out* *err*] (println "The build exited before sampling could attach") nil)))
                       result @running]
-                  (when sampler @sampler)
-                  result)
+                  [result (when sampler
+                            (let [done @sampler]
+                              (or (zero? (:exit done))
+                                  (binding [*out* *err*] (println "sample failed:" (str/trim (:err done))) false))))])
       timing (slurp probe-file)
       probes (count (re-seq #"(?m)^NSPROBE\t" timing))
       [_ real] (re-find #"([0-9.]+)\s+real" timing)
@@ -113,7 +119,7 @@
   (println "exit" (:exit compile) "wall" real "s" "peak RSS" rss "bytes" "NSPROBE lines" probes)
   (when (zero? probes)
     (println "No NSPROBE lines: the binary was not built with instrumentation.patch, so dag.bb has nothing to model."))
-  (when (and (:sample options) (fs/exists? sample-file))
+  (when (and sampled (fs/exists? sample-file))
     (if-let [tree (main-thread-tree (slurp sample-file))]
       (do (spit main-thread-file (str (str/join "\n" tree) "\n"))
           (println "Main thread samples in" (str main-thread-file)))
