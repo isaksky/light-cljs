@@ -15,6 +15,13 @@
 (def repo (fs/parent (fs/parent (fs/absolutize *file*))))
 (def output (some-> (first *command-line-args*) fs/absolutize))
 (when-not output (throw (ex-info "An output directory is required" {})))
+;; The script deletes and rewrites OUTPUT-DIR/src and OUTPUT-DIR/dev, so it
+;; writes only into a directory that is new, empty, or marked as its own.
+(def marker (fs/path output ".watch-startup-output"))
+(when (and (fs/exists? output) (not (fs/exists? marker)) (seq (fs/list-dir output)))
+  (throw (ex-info (str output " is not empty and was not made by this script") {})))
+(fs/create-dirs output)
+(spit (str marker) "")
 (def runs (parse-long (or (second *command-line-args*) "3")))
 (def namespaces (some-> (nth *command-line-args* 2 nil) parse-long))
 (def binary (or (System/getenv "LIGHT_CLJS_BINARY")
@@ -106,6 +113,5 @@
                   :when k]
               [(keyword k) (parse-double v)])))))
 
-(fs/create-dirs output)
 (doseq [_ (range runs)]
   (prn (run-once)))
