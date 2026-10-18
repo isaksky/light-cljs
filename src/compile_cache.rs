@@ -214,10 +214,19 @@ impl CompileCache {
                 .next(&self.environment, &self.prefix, id, text, &self.entry);
             let matched =
                 if key.digest != candidate.key || fields.front_end_key.digest != key.digest {
-                    Err(fields
-                        .front_end_key
-                        .mismatch(&key)
-                        .unwrap_or(Mismatch::Inconsistent))
+                    match fields.front_end_key.mismatch(&key) {
+                        // The key takes the inputs as stored, so only a
+                        // re-read finds that they changed, and that comes
+                        // before the view in the components' order: report
+                        // the namespace's own input, not that earlier
+                        // namespaces changed (a coarse namespace's view
+                        // covers every earlier key).
+                        Some(Mismatch::View) => {
+                            crate::cache_key::inputs_unchanged(&fields.inputs, sources)
+                                .and(Err(Mismatch::View))
+                        }
+                        mismatch => Err(mismatch.unwrap_or(Mismatch::Inconsistent)),
+                    }
                 } else {
                     crate::cache_key::inputs_unchanged(&fields.inputs, sources)
                 };

@@ -18,7 +18,16 @@
 //!   before it; the whole manifest still has it;
 //! - an input a helper unit records while a later namespace compiles goes to
 //!   the later namespaces it reaches, not back to the earlier consumers of
-//!   that helper, whose artifacts never saw it.
+//!   that helper, whose artifacts never saw it;
+//! - a helper input reaches a later namespace only through a helper unit of
+//!   another namespace than the one analyzed when it was read, and not
+//!   through the coarse fallback's edges (light-cljs-323). That namespace's
+//!   key covers the input, and every later namespace that could have used
+//!   the result covers that key: through its dependencies' keys or, when
+//!   coarse, its view. The whole manifest gives the input to every
+//!   namespace in the reverse closure of the reading namespace, so every
+//!   later source-macro user re-read each earlier namespace's resources on
+//!   every lookup and reported them as its own change.
 //!
 //! `LAZY` edges are left out: a lazy target may come later in source order
 //! and is not a compilation dependency, so no key covers it.
@@ -294,9 +303,17 @@ impl ManifestPrefix {
             if Some(record.own) == own {
                 owned.push(InputId(id));
             }
-            if !record.helpers.is_empty() {
-                self.helper_inputs
-                    .push((record.helpers.clone(), InputId(id)));
+            // The namespace being analyzed is among the helpers when the
+            // read ran in one of its own units; its key covers the input
+            // already, and so does that of every namespace depending on it.
+            let helpers: Vec<u32> = record
+                .helpers
+                .iter()
+                .copied()
+                .filter(|&helper| helper != record.own)
+                .collect();
+            if !helpers.is_empty() {
+                self.helper_inputs.push((helpers, InputId(id)));
             }
         }
         self.cursors.inputs = log.inputs.len();
@@ -401,15 +418,21 @@ impl ManifestPrefix {
     }
 
     /// Which namespaces, by id, the namespace `id` with edges `rows`
-    /// depends on through compilation edges, itself included, by id up to
-    /// `id`.
+    /// depends on through compilation edges other than the coarse
+    /// fallback's, itself included, by id up to `id`.
+    ///
+    /// A coarse edge needs no helper inputs: every input is recorded on the
+    /// namespace analyzed when it was read, whose key covers it, and a
+    /// coarse namespace's view covers the key of every earlier namespace.
+    /// Following it would give every later source-macro user each earlier
+    /// namespace's reads, to re-read on every lookup.
     fn reached(&self, rows: &[(NamespaceId, EdgeKinds)], id: u32) -> Vec<bool> {
         let mut reached = vec![false; id as usize + 1];
         reached[id as usize] = true;
         let mut stack: Vec<u32> = Vec::new();
+        let exact = EdgeKinds(EdgeKinds::COMPILATION.0 & !EdgeKinds::COARSE.0);
         let mut visit = |target: NamespaceId, kinds: EdgeKinds, stack: &mut Vec<u32>| {
-            if kinds.intersects(EdgeKinds::COMPILATION)
-                && !std::mem::replace(&mut reached[target.0 as usize], true)
+            if kinds.intersects(exact) && !std::mem::replace(&mut reached[target.0 as usize], true)
             {
                 stack.push(target.0);
             }

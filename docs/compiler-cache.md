@@ -1446,6 +1446,68 @@ asserting that every cache hit reproduces a fresh compilation's effects.
 | Session startup followed by edits | Valid registrations, helper demand, macro generations, and opt-out behavior |
 | Repeated builds and teardown | No unbounded growth from artifacts, bridge roots, or duplicate program tables |
 
+*As built (light-cljs-323), the contract matrix across processes:*
+`tests/cache_matrix.rs` runs each row below against `--compile --cache-dir`,
+one process per build: it populates the cache, changes one input, builds
+again, and asserts the `--stats` hits, misses and bypasses with their
+reasons, then the output bytes and their execution against a cache-off
+build of the same inputs. The custom data reader, which the command line
+cannot register, is a child process of the test binary through
+`analyze_namespace_entry_cached`. Each test is named after its row:
+
+| Row | Test |
+| --- | --- |
+| Warm fresh-process build | `compiler_cache::warm_fresh_process_build` |
+| Mixed hit/miss counter example | `compiler_cache::counter_example_across_processes` |
+| Timestamp macro | `cache_matrix::timestamp_macro`: an undeclared `js/Date` read keeps its expansion through an unrelated edit; `--config build/time=N` refreshes it when N changes; `^:light-cljs/no-cache` on the expanding namespace refreshes it on every build |
+| Resource change (`b/resource`, `b/resource?` absent to present, a new file in an earlier root) | `cache_matrix::resource_change`: the reading namespace misses for its input and its runtime consumer for that dependency; a later source-macro user misses for its view (the coarse fallback); a path in two roots is the uncached build's error, not a hit |
+| Config change | `cache_matrix::config_change`: every namespace misses with `config changed`, even with no `b/config` read; the first configuration's artifacts hit again while retention keeps them |
+| Input read through a helper or a custom reader | `cache_matrix::input_read_through_a_helper_or_a_custom_reader`: both namespaces that use a helper's resource-read value miss for their input, including the one that reused it in memory during population; a reader's resource reaches the namespace it reads |
+| Macro or helper implementation edit | `cache_matrix::macro_or_helper_implementation_edit_with_an_unchanged_signature` |
+| New source, changed alias, reader metadata, `:namespaces` view | `cache_matrix::resolution_and_views`: a `.cljs` file in a later root shadowing a `.cljc` namespace, a macro provider's alias, the `:doc` of a Var a macro resolves, and a `b/depend-on! :namespaces` consumer when a namespace is added (a bypass, see below) |
+| Cache off versus always compile | `compiler_cache::policy_changes_with_an_existing_artifact`; watch: `dev_watch::an_always_namespace_recompiles_on_every_step` and its neighbours (light-cljs-325) |
+| Blocker policy changes with an existing artifact | `compiler_cache::policy_changes_with_an_existing_artifact`, `compiler_cache::counter_example_across_processes` |
+| Generated names and source-order generations | `cache_matrix::mixed_generated_names_and_source_order_generations`, over `tests/compiler/cache_contract.rs` in process |
+| Lowered logical limits | `cache_matrix::lowered_limits` |
+| Corruption or concurrent writes | `compiler_cache::corrupted_artifact_is_a_miss_then_republished`, `compiler_cache::damaged_index_and_removed_require_report_their_first_reason`, `compiler_cache::two_concurrent_compiles_share_one_cache_directory`, `tests/artifact_store.rs` |
+| Cancellation | In process (`tests/compiler/cache_contract.rs`); no test cancels a decode through `--compile` |
+| Dev, ordinary output, advanced output, and lazy modules | light-cljs-324 |
+| Session startup followed by edits | light-cljs-325 to 327 |
+| Repeated builds and teardown | Store retention in `tests/artifact_store.rs`; sessions: light-cljs-325 to 327 |
+
+The matrix found two key and manifest faults, fixed here:
+
+- **Helper inputs over the coarse fallback.** `ManifestPrefix` gave an
+  input to every later namespace that reached a helper unit's namespace,
+  and the namespace being analyzed counts among the units running, through
+  any compilation edge, coarse ones included. So every later source-macro
+  user listed every earlier namespace's resources: it re-read them on each
+  lookup and reported their change as its own (`extra miss inputs` for a
+  file only `text` read). An input now reaches a later namespace only
+  through a helper unit of a namespace other than the one it was recorded
+  on, and not over coarse edges. Nothing that used it can go stale: the
+  namespace the input is recorded on has it in its key, and every later
+  namespace covers that key through its dependencies' keys or, when coarse,
+  its view. The whole manifest (`dependency_manifest::build`, which watch
+  uses) still attributes as before, which only over-invalidates.
+- **The first reason.** A lookup recomputes the key from the inputs as
+  stored, so a changed resource showed up only once the key matched, and a
+  coarse namespace whose view also changed reported the view. When the
+  first differing component is the view, the lookup now re-reads the inputs
+  first and reports `inputs: external input changed` when one changed, the
+  components' order.
+
+What the matrix pins rather than changes:
+
+- **A `b/depend-on! :namespaces` consumer is bypassed**, with its
+  compilation consumers, as `non-cacheable-input` (light-cljs-322): the
+  inventory includes namespaces later in the build, which a lookup cannot
+  know. It compiles on every build and sees an added namespace.
+- **The logical limits are in every key**, so lowering `--macro-expansions`
+  makes every namespace miss and analysis enforces the limit; an
+  artifact's recorded accounting is checked at installation as well, which
+  the in-process tests cover.
+
 Run the full compiler/evaluator suites for default V8 and QuickJS-only builds,
 the Node execution workflows, and relevant playground checks as implementation
 touches those paths. Large-project validation includes bundling and browser smoke
