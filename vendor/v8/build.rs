@@ -57,12 +57,19 @@ fn main() {
     let name = format!("v8-{}-{}-{}-{:016x}", env::var("CARGO_PKG_VERSION").unwrap(),
         env::var("TARGET").unwrap(), env::var("PROFILE").unwrap(), fnv1a(material.as_bytes()));
     let entry = cache.join(&name);
-    fs::create_dir_all(&cache)
-        .unwrap_or_else(|e| panic!("create the V8 cache {}: {e}", cache.display()));
     // One machine-wide lock per key: a second build of the same engine waits
     // for the first and then reuses its entry instead of building again.
-    let mut lock = fslock::LockFile::open(&cache.join(format!("{name}.lock")))
-        .unwrap_or_else(|e| panic!("open the V8 cache lock in {}: {e}", cache.display()));
+    let lock = fs::create_dir_all(&cache)
+        .and_then(|()| fslock::LockFile::open(&cache.join(format!("{name}.lock"))));
+    let mut lock = match lock {
+        Ok(lock) => lock,
+        Err(e) => {
+            assert!(mode != "require", "LIGHT_CLJS_V8_CACHE=require and the V8 cache {} is unusable: {e}",
+                cache.display());
+            println!("cargo:warning=the V8 cache {} is unusable ({e}); building V8 from source", cache.display());
+            return build_from_source(&manifest);
+        }
+    };
     if !lock.try_lock().unwrap_or(false) {
         eprintln!("waiting for another build of {name}");
         lock.lock().expect("lock the V8 cache entry");
@@ -146,7 +153,8 @@ fn key_material(manifest: &Path) -> String {
     for name in ["CARGO_PKG_VERSION", "TARGET", "HOST", "PROFILE"] {
         text.push_str(&format!("{name}={}\n", var(name)));
     }
-    let mut features: Vec<String> = env::vars().map(|(name, _)| name)
+    let mut features: Vec<String> = env::vars_os()
+        .filter_map(|(name, _)| name.into_string().ok())
         .filter(|name| name.starts_with("CARGO_FEATURE_")).collect();
     features.sort();
     text.push_str(&format!("features={}\n", features.join(",")));
