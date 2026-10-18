@@ -2496,6 +2496,93 @@ fn readable_runtime_factories_match_the_single_file() {
     assert!(editor.source.contains("variadicCore(str, "), "{listing}");
 }
 
+/// Terse output writes each chunk's runtime units at module level
+/// (light-cljs-303): no chunk has a factory, startup's `(()=>{"use
+/// strict";...})()` or another's `((a,b)=>{...})(c,d)` with its
+/// destructuring, a feature imports the runtime bindings its units and code
+/// read under the names their chunk declares them by, and examples/features
+/// is at least 1,000 raw bytes smaller than the 73,207 its factories wrote.
+#[test]
+fn terse_chunks_write_their_runtime_units_at_module_level() {
+    let program = fixture_program("features");
+    let prepared = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let output = prepared.emit_chunks();
+    let files = output
+        .files
+        .iter()
+        .map(|file| (file.name.as_str(), file.source.as_str()))
+        .collect::<Vec<_>>();
+    let listing = shown(&files);
+    for (name, source) in &files {
+        assert!(!source.contains("\"use strict\""), "{name}\n{listing}");
+        assert!(!source.contains("]=(("), "{name}\n{listing}");
+    }
+    check_imports(&output, OptimizationLevel::Advanced);
+    let editor = files
+        .iter()
+        .find(|(name, _)| *name == "app.editor.js")
+        .expect("the editor's chunk")
+        .1;
+    // The sorted collections' units name the shared chunk's bindings.
+    let from_shared = imported_names(editor)
+        .into_iter()
+        .find(|(from, _)| from == "app.editor+app.reports.js")
+        .map(|(_, names)| names)
+        .unwrap_or_default();
+    assert!(
+        from_shared
+            .iter()
+            .any(|name| name == "PersistentArrayMapValue"),
+        "{from_shared:?}\n{listing}"
+    );
+    let total = files.iter().map(|(_, source)| source.len()).sum::<usize>();
+    assert!(total + 1_000 <= 73_207, "{total} bytes\n{listing}");
+}
+
+/// A runtime binding that keeps its spelling, `Atom`, would capture at module
+/// level the raw text that names a global of that name, as written or with
+/// identifier escapes, so a build whose text has such a word, or raw text a
+/// `\u` escape, keeps the factories and prints what the single file prints.
+#[test]
+fn raw_text_naming_a_kept_runtime_spelling_keeps_the_factories() {
+    for spelled in ["Atom", r"\\u0041tom", r"\\u{41}tom"] {
+        let editor = format!(
+            "(ns app.editor)\n\
+             (defn start [] (let [a (atom (js/parseInt \"1\"))] (swap! a inc) [@a (js* \"typeof {spelled}\")]))\n"
+        );
+        let reports = format!("(ns app.reports)\n(defn start [] (js* \"typeof {spelled}\"))\n");
+        let program = analyze(&[
+            ("app/main.cljs", LOADS_BOTH),
+            ("app/editor.cljs", &editor),
+            ("app/reports.cljs", &reports),
+        ]);
+        let (record, outputs) = runs_as_chunks(&program);
+        assert_eq!(
+            record,
+            printed("app.main.js", r#"[2 \"undefined\"]\n\"undefined\"\n"#),
+            "{spelled}"
+        );
+        let (_, advanced) = outputs
+            .iter()
+            .find(|(level, _)| *level == OptimizationLevel::Advanced)
+            .unwrap();
+        let editor = advanced
+            .files
+            .iter()
+            .find(|file| file.name == "app.editor.js")
+            .expect("the editor's chunk");
+        assert!(
+            // Escapes keep the hygienic layout, `] = ((`.
+            editor.source.replace(' ', "").contains("]=(("),
+            "{spelled}: {}",
+            editor.source
+        );
+    }
+}
+
 /// Both features apply `str`, which startup only calls: its install is in
 /// their shared chunk, which each feature imports, so it has run before the
 /// feature's code, whichever feature loads first.

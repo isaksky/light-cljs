@@ -15,9 +15,16 @@
 //! ([`constant_signatures`]), and each unit in the chunk of the roots whose
 //! code and constants need it ([`unit_signatures`]), either of which may be
 //! a chunk the plan lacks; a hoisted method stays in its function's chunk.
-//! A chunk's slice is a function of the bindings its units take from earlier
-//! chunks, which it imports, and returns the bindings its code and later
-//! chunks read.
+//! Terse output writes a chunk's units at module level (light-cljs-303):
+//! the table that names the program's compiler names names their bindings
+//! too, a program read `rt$x` and the binding `x` one name, so the chunk
+//! exports the bindings later chunks read and imports those its units and
+//! code take from earlier chunks, live and read-only (a unit that assigns
+//! another's binding shares its chunk, `RuntimeManifest::sharers`).
+//! Readable output, and terse output whose text names a binding that keeps
+//! its spelling ([`names_kept_spelling`]), makes a chunk's slice a function
+//! of the bindings its units take from earlier chunks, which it imports,
+//! that returns the bindings its code and later chunks read.
 //!
 //! Which names a chunk imports is read off its text: every compiler name
 //! (`crate::terse::compiler_name`) that it reads and another chunk declares.
@@ -760,27 +767,42 @@ pub(crate) fn emit_chunked(
             ..ChunkRuntime::default()
         })
         .collect::<Vec<_>>();
-    if embed && slice {
+    // Each binding a chunk's units take from another chunk is that chunk's,
+    // whose signature strictly contains the taker's.
+    #[cfg(debug_assertions)]
+    for (chunk, slice) in slices.iter().enumerate() {
+        for &parameter in &slice.parameters {
+            let owner = runtime_owner(parameter);
+            let (outer, inner) = (
+                &plan.chunks[owner.0].signature,
+                &plan.chunks[chunk].signature,
+            );
+            debug_assert!(
+                outer != inner && outer.is_superset(inner),
+                "{} takes {parameter} of {}",
+                plan.chunks[chunk].name,
+                plan.chunks[owner.0].name
+            );
+        }
+    }
+    // Terse output writes each chunk's units at module level
+    // (light-cljs-303): their bindings are named by the chunks' one table,
+    // exported and imported as the program's names are, and the units'
+    // text is written once the table is known.
+    let module_units = embed && slice && terse && !names_kept_spelling(&written, &slices);
+    if module_units {
+        for (slice, runtime) in slices.iter().zip(&mut chunk_runtimes) {
+            if slice.kept.contains(&true) {
+                runtime.kept = slice.kept.clone();
+            }
+        }
+    } else if embed && slice {
         let factories = crate::runtime_slice::chunk_factories(&slices, terse);
         for (chunk, (text, (factory, unit_bytes))) in written.iter_mut().zip(factories).enumerate()
         {
             let slice = &slices[chunk];
             if !slice.kept.contains(&true) {
                 continue;
-            }
-            #[cfg(debug_assertions)]
-            for &parameter in &slice.parameters {
-                let owner = runtime_owner(parameter);
-                let (outer, inner) = (
-                    &plan.chunks[owner.0].signature,
-                    &plan.chunks[chunk].signature,
-                );
-                debug_assert!(
-                    outer != inner && outer.is_superset(inner),
-                    "{} takes {parameter} of {}",
-                    plan.chunks[chunk].name,
-                    plan.chunks[owner.0].name
-                );
             }
             let factory = factory.trim();
             let arguments = if chunk == STARTUP.0 {
@@ -937,17 +959,21 @@ pub(crate) fn emit_chunked(
     // One renaming of every text.
     let texts = written
         .iter()
-        .flat_map(|text| {
+        .zip(&chunk_runtimes)
+        .flat_map(|(text, runtime)| {
             [
                 Text {
                     source: &text.head,
                     raw: Vec::new(),
                     runtime: text.runtime.clone(),
+                    units: (module_units && !runtime.kept.is_empty())
+                        .then_some(runtime.kept.as_slice()),
                 },
                 Text {
                     source: &text.run,
                     raw: text.raw.clone(),
                     runtime: None,
+                    units: None,
                 },
             ]
         })
@@ -1008,7 +1034,7 @@ pub(crate) fn emit_chunked(
         .into_iter()
         .zip(chunk_runtimes)
         .enumerate()
-        .map(|(chunk, (text, runtime))| {
+        .map(|(chunk, (text, mut runtime))| {
             let (head, run) = (renamed.next().unwrap(), renamed.next().unwrap());
             let mut source = package_imports(&text.packages);
             // The chunks it imports, in the order their namespaces load in
@@ -1041,6 +1067,16 @@ pub(crate) fn emit_chunked(
                     )
                     .unwrap();
                 }
+            }
+            // The chunk's runtime units, at module level in terse output.
+            if module_units && !runtime.kept.is_empty() {
+                let table = table.as_ref().expect("terse output names every text");
+                let (units, unit_bytes) =
+                    crate::terse::terse_module_units(&runtime.kept, |word| table[word].as_str());
+                runtime.bytes = units.len();
+                runtime.unit_bytes = Some(unit_bytes);
+                source.push_str(&units);
+                source.push('\n');
             }
             if !head.trim().is_empty() {
                 source.push_str(&head);
@@ -1092,6 +1128,59 @@ pub(crate) fn emit_chunked(
         })
         .collect();
     Some((placed_plan, files))
+}
+
+/// Whether a text of the chunks, or a prelude helper, has a word that is a
+/// runtime binding the `slices` declare and that keeps its spelling
+/// (`crate::terse::keeps_spelling`): a constructor such as `Atom`, which
+/// units at module level declare under that name, so it would capture a
+/// global of that name that raw `js*` text reads (`typeof Atom`). The
+/// chunks then keep their factories. Any such word counts, in strings too,
+/// and so does any raw text with a `\u` escape.
+fn names_kept_spelling(written: &[Written], slices: &[ChunkSlice]) -> bool {
+    let manifest = RuntimeManifest::embedded();
+    let spelled = slices
+        .iter()
+        .flat_map(|slice| {
+            manifest
+                .units
+                .iter()
+                .zip(&slice.kept)
+                .filter(|(_, kept)| **kept)
+                .flat_map(|(unit, _)| unit.declares.iter().copied())
+        })
+        .filter(|binding| crate::terse::keeps_spelling(binding))
+        .collect::<BTreeSet<_>>();
+    if spelled.is_empty() {
+        return false;
+    }
+    // Raw text may spell an identifier with escapes, `Atom` or
+    // `\u{41}tom`, which only the emitter's own text never has.
+    if written.iter().any(|text| {
+        text.raw
+            .iter()
+            .any(|range| text.run[range.clone()].contains("\\u"))
+    }) {
+        return true;
+    }
+    let identifier = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$');
+    let helpers = helpers(true, true);
+    let fixed = [PRELUDE_TRUTH, LAZY, helpers.as_str()];
+    written
+        .iter()
+        .flat_map(|text| [text.head.as_str(), text.run.as_str()])
+        .chain(fixed)
+        .any(|text| {
+            let bytes = text.as_bytes();
+            spelled.iter().any(|word| {
+                text.match_indices(word).any(|(at, _)| {
+                    !(at > 0 && identifier(bytes[at - 1]))
+                        && !bytes
+                            .get(at + word.len())
+                            .is_some_and(|&byte| identifier(byte))
+                })
+            })
+        })
 }
 
 /// The order of declared global names: by global, then method entry.

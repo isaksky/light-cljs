@@ -46,8 +46,8 @@ Targets, measured in Phase 0 on the example application
 
 | Measurement | Today | Measured bound | Target |
 |---|---|---|---|
-| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646; chunked at namespace granularity (light-cljs-274), `app.main.js` 69,587 / 21,575, with the whole-program runtime slice and every constant still in startup; with definitions moved toward their readers (light-cljs-277), 69,539 / 21,551; with constants placed by their readers (light-cljs-278), 69,000 / 21,242, the whole-program runtime slice and the menu's two keywords; with the runtime sliced per chunk (light-cljs-279), 9,046 / 3,373: the units the menu needs (those of the lower bound, 4,184 bytes here), the `Loadable` type (255) and the `lazy$` helper, and 2,879 bytes of hash-trie units that share state with `lookup` ("Open questions") | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
-| Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds; with definitions moved (light-cljs-277), 361 / 255 and 874 / 531, each also importing the shared `app.editor+app.reports.js`, 63 / 81; with constants (light-cljs-278) the shared chunk holds `documents` with its table, 632 / 397, and the features 361 / 258 and 874 / 531; a shared chunk that would hold no code is not written (light-cljs-299), so a feature imports one only for code or constants it shares; with the runtime sliced per chunk (light-cljs-279) the shared chunk holds the runtime both features need, 54,195 / 17,412, and `app.editor.js` 5,453 / 2,459 and `app.reports.js` 4,513 / 2,096: the first feature loads 59,648 / 19,871 (editor) or 58,708 / 19,508 (reports), the second only its own file | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
+| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646; chunked at namespace granularity (light-cljs-274), `app.main.js` 69,587 / 21,575, with the whole-program runtime slice and every constant still in startup; with definitions moved toward their readers (light-cljs-277), 69,539 / 21,551; with constants placed by their readers (light-cljs-278), 69,000 / 21,242, the whole-program runtime slice and the menu's two keywords; with the runtime sliced per chunk (light-cljs-279), 9,046 / 3,373: the units the menu needs (those of the lower bound, 4,184 bytes here), the `Loadable` type (255) and the `lazy$` helper, and 2,879 bytes of hash-trie units that share state with `lookup` ("Open questions"); with the runtime's units at module level (light-cljs-303), 8,820 / 3,235 | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
+| Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds; with definitions moved (light-cljs-277), 361 / 255 and 874 / 531, each also importing the shared `app.editor+app.reports.js`, 63 / 81; with constants (light-cljs-278) the shared chunk holds `documents` with its table, 632 / 397, and the features 361 / 258 and 874 / 531; a shared chunk that would hold no code is not written (light-cljs-299), so a feature imports one only for code or constants it shares; with the runtime sliced per chunk (light-cljs-279) the shared chunk holds the runtime both features need, 54,195 / 17,412, and `app.editor.js` 5,453 / 2,459 and `app.reports.js` 4,513 / 2,096: the first feature loads 59,648 / 19,871 (editor) or 58,708 / 19,508 (reports), the second only its own file; with the runtime's units at module level (light-cljs-303), 58,780 / 19,278 or 57,937 / 18,966 | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
 | Observable behavior | n/a; chunked (light-cljs-274), the example and the Phase 2 fixtures print what the single file prints at every level; the fixture matrix (light-cljs-276) through `--out-dir` and `chunks.json` in Node, and the example in Chrome without a bundler and through Vite 8.0.8, at every level | n/a | identical to the single-file program at every level, given the same `load` calls |
 | Compile time of a chunked build | n/a | n/a | within 10% of the single-file build of the same program |
 
@@ -481,11 +481,31 @@ g7$(k14);                                        // a set! of app.main's g7 goes
 ...
 ```
 
-The sections, in order: imports; the chunk's runtime slice as a factory whose
-parameters are the runtime bindings of other chunks it references (so unit
-text is embedded as written, with no renaming inside unit bodies; a chunk is
-a module, so the factory needs no `"use strict"`, and startup's is the single
-file's, `(() => { "use strict"; ... })()`; light-cljs-279); constants;
+```js
+// app.editor.js (advanced, terse; one line per section here)
+import{a,r,k,s}from"./app.main.js";              // runtime bindings and program names alike
+import{PersistentArrayMapValue,au,h}from"./app.editor+app.reports.js";
+a(aJ,f);p.seqTree=a=>...;function eG(a,b){...}   // the chunk's runtime units, at module level
+const bC=k(null,"editor");                       // constants first read here
+export let aF;let bW,bZ;
+(()=>{...})();
+```
+
+The sections, in order: imports; the chunk's runtime slice. Terse output
+writes the slice's units at module level (light-cljs-303), as above: the one
+table that names the program's compiler names names the units' top-level
+bindings too, a program read `rt$x` and the binding `x` one name, so a
+chunk imports the bindings its units and code take from earlier chunks under
+the names their chunk declares and exports them by, and a binding that keeps
+its spelling (a constructor such as `PersistentArrayMapValue`) keeps it in
+every chunk. Readable output (`pseudo_names`), where renaming inside unit
+bodies would collide, and terse output whose text has a word that is such a
+spelling (raw `js*` naming a global `Atom` beside the runtime's), keep the
+factory of light-cljs-279 shown first, whose parameters are the runtime
+bindings of other chunks it references (so unit text is embedded as
+written, with no renaming inside unit bodies; a chunk is a module, so the
+factory needs no `"use strict"`, and startup's is the single file's, `(() =>
+{ "use strict"; ... })()`). Then constants;
 `let` declarations of the globals whose definitions are in this chunk,
 exported when another chunk reads them; the items in program order; nothing
 after. The startup chunk also carries the prelude helpers it needs and the
@@ -1424,6 +1444,66 @@ runtime units toward their first readers; per-chunk runtime factories.
     sharers; the fixture matrix and the generated lazy programs run as
     before.
 
+- **As built (light-cljs-303): runtime units at module level.**
+  - Terse `advanced` output writes each chunk's units as module-level
+    statements (`terse::terse_module_units`), with no factory, parameter,
+    argument, return or destructuring list. `terse::terse_texts` names the
+    units' top-level bindings in the chunks' one table: each placeholder of
+    a kept unit counts as an occurrence of `rt$<binding>`, the compiler
+    name a program read has, so a read and the binding are one name; a
+    binding's name avoids the units' locals visible where they read it (the
+    `avoid` lists `build.rs` writes, which `terse::slice_names` used), a
+    binding that keeps its spelling (`TERSE_KEPT`) keeps it, and no name is
+    one of those spellings or a free name the units read (`TERSE_GLOBALS`,
+    which `build.rs` now writes; all are ECMAScript globals the name
+    sequence skips already). The same-length batches of the table reorder
+    only the names of unconstrained words, so a single file's names are as
+    before. The units' text is written from the table after the renaming
+    and placed after the imports, before the prelude helpers.
+  - What a chunk takes from earlier chunks, the former parameters, it
+    imports, and what later chunks read its owner exports: the import and
+    export lines are those of the program's names. The imports are live
+    and read-only; a unit that assigns another unit's binding shares its
+    chunk (`RuntimeManifest::sharers`, light-cljs-279), so no unit assigns
+    an import.
+  - A binding that keeps its spelling is declared at module level under it,
+    where it would capture a word of the program's text (raw `js*` naming
+    a global `Atom` in a chunk whose units declare the runtime's): a build
+    whose texts or prelude helpers have such a word, in strings and raw
+    text too, or whose raw text has a `\u` escape, which may spell one
+    (`Atom`, the Sol review's finding), keeps the factories (`names_kept_spelling` in
+    `emitter::chunked`). Readable output (`pseudo_names`) keeps them
+    always, as the factories keep unit text as written.
+  - examples/features at `advanced`, terse, raw / `gzip -9 -n` bytes, on
+    master `20e88da` and after; every single file, the chunks at `none` and
+    `prepare` and the readable chunks are byte for byte as before:
+
+    | File | Before | After |
+    | --- | ---: | ---: |
+    | `app.main.js` | 9,046 / 3,373 | 8,820 / 3,235 |
+    | `app.editor+app.reports.js` | 54,195 / 17,412 | 53,646 / 17,027 |
+    | `app.editor.js` | 5,453 / 2,459 | 5,134 / 2,251 |
+    | `app.reports.js` | 4,513 / 2,096 | 4,291 / 1,939 |
+    | all four | 73,207 / 25,340 | 71,891 / 24,452 |
+
+    1,316 raw bytes (1.8%) and 888 gzip bytes (3.5%) fewer, of the 1,573 /
+    983 the lists and wrappers cost; the rest is the longer names of one
+    table and the import and export lines of the bindings the parameters
+    took. Loading the editor first costs 58,780 / 19,278 bytes and the
+    reports first 57,937 / 18,966.
+  - Tests: `chunks::terse_chunks_write_their_runtime_units_at_module_level`
+    (no chunk of examples/features has a factory, a feature imports the
+    runtime bindings it reads by their declared names, and the four files
+    are at least 1,000 raw bytes smaller than 73,207);
+    `chunks::raw_text_naming_a_kept_runtime_spelling_keeps_the_factories`
+    (`typeof Atom` in raw text prints `undefined` as in the single file,
+    which module-level units would make `function`); and
+    `terse::module_level_units_rename_without_capture` (units at module
+    level, wrapped in the single file's factory, are the readable slice
+    renamed without capture, at several densities). The fixture matrix, the
+    generated lazy programs and `--size-report`, which lists every unit
+    once, run as before.
+
 - **Item signatures.** Extend `chunks::plan` with the item reference graph
   over `flatten(program.root)`: per item, the globals it reads (one walk
   with `program_fragment::children`), the globals it defines
@@ -1648,7 +1728,10 @@ minification, against the 69,587 bytes `--out-dir` wrote.
   either way.
 - **Readable per-chunk runtime factories versus module-level units.**
   Settled by light-cljs-279 for module-level units, which light-cljs-303
-  writes; until then chunks keep the factory with parameters. The factory
+  writes in terse output: 71,891 / 24,452 bytes for the four files, 1,316 /
+  888 fewer (Phase 3, "As built (light-cljs-303)"); readable output, and
+  terse output whose text names a binding's kept spelling, keep the factory
+  with parameters. The estimate before it was built: the factory
   keeps `sliced_runtime` and the terse unit text as they are; units at
   module level remove one closure per chunk and its lists, at the cost of
   naming the runtime's bindings in the program's table. Measured on

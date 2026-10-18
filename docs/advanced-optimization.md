@@ -3593,7 +3593,8 @@ upstream states that advanced mode is unsafe for certain patterns.
   chunk's factory also lists the bindings it takes from earlier chunks
   twice, and on examples/features the lists cost 1,573 / 983 bytes raw /
   `gzip -9` against 154 raw bytes of longer names for one table, so
-  chunks move to module-level units (light-cljs-303). The single file pays
+  terse chunks write module-level units (light-cljs-303: 1,316 / 888
+  bytes fewer over the four files). The single file pays
   only its return and destructuring lists, and stays a factory until a
   measurement there says otherwise.
 - How deep type inference should go before diminishing returns. Step 3

@@ -29,8 +29,12 @@
 //!
 //! A chunked build at `Advanced` slices per chunk (docs/code-splitting.md,
 //! "Phase 3", runtime units): each unit goes to the chunk of the roots that
-//! need it ([`unit_signatures`]), and each chunk's slice is a function of the
-//! bindings its units take from earlier chunks ([`chunk_factories`]);
+//! need it ([`unit_signatures`]). Terse output writes each chunk's units at
+//! module level, their bindings named by the chunks' one table and imported
+//! from the chunks declaring them ([`crate::terse::terse_module_units`],
+//! light-cljs-303); readable output, and terse output whose text names a
+//! binding that keeps its spelling, makes each chunk's slice a function of
+//! the bindings its units take from earlier chunks ([`chunk_factories`]).
 //! `--size-report` lists every chunk's units ([`ChunkedRetention`]).
 
 use std::collections::HashMap;
@@ -542,7 +546,9 @@ pub(crate) struct ChunkSlice {
 /// is a function of its parameters, `((keywords, hash) => { ... return
 /// [compare]; })`, which the chunk calls with its imports of them. Terse
 /// slices are named by one table ([`crate::terse::slice_names`]), so a
-/// parameter has the name of the binding in the chunk declaring it.
+/// parameter has the name of the binding in the chunk declaring it. Terse
+/// output takes these only where units at module level would capture a
+/// name its text reads (`emitter::chunked`, `names_kept_spelling`).
 pub(crate) fn chunk_factories(
     slices: &[ChunkSlice],
     terse: bool,
@@ -776,8 +782,9 @@ fn report_roots(
 
 /// One chunk's runtime as a chunked build writes it at `Advanced`: the names
 /// its code and constants read, startup's also those it declares for every
-/// chunk, its units by [`UnitId`], and the bytes of its factory expression
-/// and of each unit in it (terse output).
+/// chunk, its units by [`UnitId`], and the bytes of its factory expression,
+/// or of its units' statements where terse output writes them at module
+/// level, and of each unit in it (terse output).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ChunkRuntime {
     pub(crate) roots: RuntimeRoots,
@@ -808,7 +815,8 @@ pub struct ChunkRetention {
     pub roots: Vec<RuntimeRoot>,
     /// The units its runtime holds, in runtime order.
     pub units: Vec<ChunkUnit>,
-    /// Bytes of its runtime factory expression; zero without units.
+    /// Bytes of its runtime factory expression, or of its units' statements
+    /// at module level (terse output); zero without units.
     pub runtime_bytes: usize,
 }
 

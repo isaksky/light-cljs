@@ -4365,3 +4365,32 @@ compressed in four files): the factories' parameter, argument, return and
 destructuring lists were 1,573 / 983 bytes at `3abc7ad`, which module-level
 units would save (light-cljs-303), and the variadic arity
 of `str`, whose output-level cell no chunk reads but to call, is left out.
+
+## Runtime units at module level in chunks — October 18, 2026
+
+light-cljs-303 writes each chunk's runtime units at module level in terse
+`advanced` output instead of a factory of the bindings it takes from earlier
+chunks: one name table over the program's compiler names and the runtime's
+bindings (a read `rt$x` and the binding `x` one name), the bindings later
+chunks read exported, those a chunk's units and code take from earlier
+chunks imported ([code-splitting design](../docs/code-splitting.md),
+Phase 3, "As built (light-cljs-303)"). Measured as for light-cljs-279, raw /
+`gzip -9 -n` bytes of each file, against master `20e88da`. Every single file,
+the chunks at `none` and `prepare`, and readable (`pseudo_names`) chunks are
+byte for byte as master's. Same machine; one-minute load average 13.6 (sizes
+do not depend on it). examples/features at `advanced`, terse:
+
+| File | Before | After |
+| --- | ---: | ---: |
+| `app.main.js`, startup | 9,046 / 3,373 | 8,820 / 3,235 |
+| `app.editor+app.reports.js` | 54,195 / 17,412 | 53,646 / 17,027 |
+| `app.editor.js` | 5,453 / 2,459 | 5,134 / 2,251 |
+| `app.reports.js` | 4,513 / 2,096 | 4,291 / 1,939 |
+| all four | 73,207 / 25,340 | 71,891 / 24,452 |
+
+The build is 1,316 raw bytes (1.8%) and 888 gzip bytes (3.5%) smaller, of
+the 1,573 / 983 the factories' lists and wrappers cost; the rest is what one
+table costs over two (the names outside the lists, 154 bytes estimated) and
+the import and export lines of the runtime bindings the factories' parameters
+took. Loading the editor first now costs 58,780 / 19,278 bytes (59,648 /
+19,871 before) and the reports first 57,937 / 18,966 (58,708 / 19,508).

@@ -9,6 +9,9 @@
 //!   replaces the hygiene pass: every compiler-bound name gets a short name
 //!   by frequency, members read with a constant identifier key become dotted,
 //!   redundant parentheses go and tokens are joined without whitespace.
+//! - A chunked build's texts share one such table ([`terse_texts`]), which
+//!   also names each chunk's runtime units written at module level
+//!   ([`terse_module_units`], light-cljs-303).
 //!
 //! [`crate::ApplicationOptions::pseudo_names`] keeps the readable output.
 
@@ -266,14 +269,6 @@ fn write_factory(
     returned: &[&str],
     mut marks: Option<&mut Vec<SliceMark>>,
 ) -> (String, Vec<usize>) {
-    debug_assert_eq!(kept.len(), TERSE_UNITS.len());
-    let units = TERSE_UNITS
-        .iter()
-        .enumerate()
-        .zip(kept)
-        .filter_map(|(unit, kept)| kept.then_some(unit))
-        .collect::<Vec<_>>();
-    let mut unit_bytes = vec![0; TERSE_UNITS.len()];
     let name = |index: usize| names.name(index);
     let returned = returned
         .iter()
@@ -289,11 +284,84 @@ fn write_factory(
         }
         None => String::from(TERSE_PROLOGUE),
     };
-    let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
     if let Some(marks) = marks.as_deref_mut() {
+        let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
         let prologue = &crate::runtime_manifest::ANNOTATED_RUNTIME[manifest.prologue.clone()];
         marks.push((0, prologue.find("(() =>").unwrap_or_default(), None));
     }
+    let unit_bytes = write_units(&mut text, kept, name, marks);
+    if parameters.is_none() || !returned.is_empty() {
+        text.push_str("return[");
+        for (position, &index) in returned.iter().enumerate() {
+            if position > 0 {
+                text.push(',');
+            }
+            text.push_str(name(index));
+        }
+        text.push(']');
+    }
+    text.push_str(if parameters.is_some() { "})" } else { "})()" });
+    (text, unit_bytes)
+}
+
+/// `rt$<binding>` for the top-level runtime binding at `index` in
+/// [`TERSE_BINDINGS`]: the compiler name a program reads it by, which names
+/// the binding itself where units are written at module level
+/// ([`terse_module_units`]).
+fn runtime_read(index: usize) -> &'static str {
+    static READS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    READS.get_or_init(|| {
+        TERSE_BINDINGS
+            .iter()
+            .map(|binding| format!("rt${binding}"))
+            .collect()
+    })[index]
+        .as_str()
+}
+
+/// The compiler names that the `kept` units (by unit index) name their
+/// top-level bindings by at module level, one per occurrence, in order:
+/// `rt$<binding>` ([`runtime_read`]).
+fn unit_words(kept: &[bool]) -> impl Iterator<Item = &'static str> + '_ {
+    TERSE_UNITS
+        .iter()
+        .zip(kept)
+        .filter(|(_, kept)| **kept)
+        .flat_map(|(unit, _)| placeholders(unit.text).map(|(_, index)| runtime_read(index)))
+}
+
+/// The terse runtime of one chunk of a chunked build written at module
+/// level (docs/code-splitting.md, "What a chunk file contains";
+/// light-cljs-303): the `kept` units' statements, each top-level binding
+/// named as `name` names its compiler name `rt$<binding>`, the name the
+/// chunks' one table gives a program read of it ([`terse_texts`]); and the
+/// bytes of each unit in it, by unit index.
+pub(crate) fn terse_module_units<'n>(
+    kept: &[bool],
+    name: impl Fn(&str) -> &'n str,
+) -> (String, Vec<usize>) {
+    let mut text = String::new();
+    let unit_bytes = write_units(&mut text, kept, |index| name(runtime_read(index)), None);
+    (text, unit_bytes)
+}
+
+/// Append the `kept` units to `text`, each top-level binding by index named
+/// by `name`, and return the bytes of each unit, by unit index.
+fn write_units<'n>(
+    text: &mut String,
+    kept: &[bool],
+    name: impl Fn(usize) -> &'n str,
+    mut marks: Option<&mut Vec<SliceMark>>,
+) -> Vec<usize> {
+    debug_assert_eq!(kept.len(), TERSE_UNITS.len());
+    let units = TERSE_UNITS
+        .iter()
+        .enumerate()
+        .zip(kept)
+        .filter_map(|(unit, kept)| kept.then_some(unit))
+        .collect::<Vec<_>>();
+    let mut unit_bytes = vec![0; TERSE_UNITS.len()];
+    let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
     let mut closes = None;
     for &(id, unit) in &units {
         let start = text.len();
@@ -322,29 +390,18 @@ fn write_factory(
             if range.start < at {
                 continue;
             }
-            copy(&text, at, range.start);
+            copy(text, at, range.start);
             text.push_str(&unit.text[at..range.start]);
-            copy(&text, range.start, range.end);
+            copy(text, range.start, range.end);
             text.push_str(name(index));
             at = range.end;
         }
-        copy(&text, at, usize::MAX);
+        copy(text, at, usize::MAX);
         text.push_str(&unit.text[at..]);
         unit_bytes[id] = text.len() - start;
         closes = unit.closes;
     }
-    if parameters.is_none() || !returned.is_empty() {
-        text.push_str("return[");
-        for (position, &index) in returned.iter().enumerate() {
-            if position > 0 {
-                text.push(',');
-            }
-            text.push_str(name(index));
-        }
-        text.push(']');
-    }
-    text.push_str(if parameters.is_some() { "})" } else { "})()" });
-    (text, unit_bytes)
+    unit_bytes
 }
 
 // ---------------------------------------------------------------------------
@@ -435,28 +492,91 @@ fn short_names<'s>(
     words: impl IntoIterator<Item = &'s str>,
     excluded: impl Fn(&str) -> bool,
 ) -> HashMap<&'s str, String> {
+    constrained_short_names(words, excluded, &HashMap::new(), |_| None)
+}
+
+/// [`short_names`] where some words have constraints: a word of `avoid`
+/// takes the first name of the sequence that no more frequent word has and
+/// that is none of its avoided names (a unit's locals visible where it reads
+/// the word's runtime binding), and a word that `fixed` names keeps that
+/// name (a runtime binding that keeps its spelling). The same-length
+/// batches reorder only the names of unconstrained words, so without
+/// constraints the names are [`short_names`]'s.
+fn constrained_short_names<'s>(
+    words: impl IntoIterator<Item = &'s str>,
+    excluded: impl Fn(&str) -> bool,
+    avoid: &HashMap<&str, HashSet<&str>>,
+    fixed: impl Fn(&str) -> Option<&'static str>,
+) -> HashMap<&'s str, String> {
     let mut stats: HashMap<&str, (usize, usize)> = HashMap::new();
     for (position, word) in words.into_iter().enumerate() {
         stats.entry(word).or_insert((0, position)).0 += 1;
     }
-    let mut order = stats.keys().copied().collect::<Vec<_>>();
-    order.sort_by_key(|word| (std::cmp::Reverse(stats[word].0), stats[word].1));
-    let generated = NameGenerator::default()
-        .filter(|name| !excluded(name))
-        .take(order.len())
-        .collect::<Vec<_>>();
-    let mut start = 0;
-    while start < order.len() {
-        let length = generated[start].len();
-        let end = start
-            + generated[start..]
-                .iter()
-                .take_while(|name| name.len() == length)
-                .count();
-        order[start..end].sort_by_key(|word| stats[word].1);
-        start = end;
+    let mut names = HashMap::with_capacity(stats.len());
+    let mut order = Vec::with_capacity(stats.len());
+    for &word in stats.keys() {
+        match fixed(word) {
+            Some(name) => {
+                names.insert(word, name.to_owned());
+            }
+            None => order.push(word),
+        }
     }
-    order.into_iter().zip(generated).collect()
+    order.sort_by_key(|word| (std::cmp::Reverse(stats[word].0), stats[word].1));
+    let mut candidates = NameGenerator::default().filter(|name| !excluded(name));
+    let mut generated: Vec<String> = Vec::new();
+    let mut taken: Vec<bool> = Vec::new();
+    let mut free = 0;
+    let mut chosen = Vec::with_capacity(order.len());
+    for word in &order {
+        let avoided = avoid.get(word);
+        while taken.get(free) == Some(&true) {
+            free += 1;
+        }
+        let mut at = free;
+        loop {
+            if at == generated.len() {
+                generated.push(candidates.next().expect("names never run out"));
+                taken.push(false);
+            }
+            if !taken[at]
+                && !avoided.is_some_and(|avoided| avoided.contains(generated[at].as_str()))
+            {
+                break;
+            }
+            at += 1;
+        }
+        taken[at] = true;
+        chosen.push(at);
+    }
+    // By name length: the words without constraints whose names have it, in
+    // order.
+    let mut batches: Vec<Vec<usize>> = Vec::new();
+    for (position, word) in order.iter().enumerate() {
+        if avoid.get(word).is_none_or(HashSet::is_empty) {
+            let length = generated[chosen[position]].len();
+            if batches.len() <= length {
+                batches.resize_with(length + 1, Vec::new);
+            }
+            batches[length].push(position);
+        }
+    }
+    for batch in batches {
+        let mut slots = batch
+            .iter()
+            .map(|&position| chosen[position])
+            .collect::<Vec<_>>();
+        slots.sort_unstable();
+        let mut words = batch;
+        words.sort_by_key(|&position| stats[order[position]].1);
+        for (position, slot) in words.into_iter().zip(slots) {
+            chosen[position] = slot;
+        }
+    }
+    for (word, at) in order.into_iter().zip(chosen) {
+        names.insert(word, std::mem::take(&mut generated[at]));
+    }
+    names
 }
 
 /// The terse output of an `Advanced` program, `source` as the emitter wrote
@@ -528,11 +648,59 @@ pub(crate) fn terse_program(
 
 /// One text of a chunked build for [`terse_texts`]: the source as the
 /// emitter wrote it, its raw `js*` ranges, and the embedded runtime factory
-/// in it, if any.
+/// in it, if any; or, `units`, the runtime units (by unit index) written at
+/// module level before it ([`terse_module_units`]), whose top-level
+/// bindings the table names too.
 pub(crate) struct Text<'s> {
     pub(crate) source: &'s str,
     pub(crate) raw: Vec<Range<usize>>,
     pub(crate) runtime: Option<Range<usize>>,
+    pub(crate) units: Option<&'s [bool]>,
+}
+
+/// Whether a runtime binding that keeps its spelling ([`TERSE_KEPT`]) is
+/// `name`: a unit written at module level declares it under that name.
+pub(crate) fn keeps_spelling(name: &str) -> bool {
+    keeps_name(name)
+}
+
+/// The constraints of the one name table of texts with runtime units at
+/// module level ([`terse_texts`]): per `rt$<binding>`, the locals of the
+/// units visible where they read the binding, which its name must avoid.
+fn module_avoid<'s>(texts: &[Text<'s>]) -> HashMap<&'static str, HashSet<&'static str>> {
+    let mut avoid: HashMap<&'static str, HashSet<&'static str>> = HashMap::new();
+    for kept in texts.iter().filter_map(|text| text.units) {
+        for (unit, _) in TERSE_UNITS.iter().zip(kept).filter(|(_, kept)| **kept) {
+            for &(binding, names) in unit.avoid {
+                avoid
+                    .entry(runtime_read(binding))
+                    .or_default()
+                    .extend(names.split(' '));
+            }
+        }
+    }
+    avoid
+}
+
+/// Where units are at module level, `rt$<binding>` for each binding that
+/// keeps its spelling: a chunk may import one that only its units read,
+/// which name it as written rather than by a placeholder.
+fn kept_reads(module: bool) -> impl Iterator<Item = &'static str> {
+    TERSE_KEPT
+        .iter()
+        .filter(move |_| module)
+        .filter_map(|binding| TERSE_BINDINGS.binary_search(binding).ok())
+        .map(runtime_read)
+}
+
+/// The name a runtime read keeps where units are at module level: the
+/// binding's own spelling, for one that keeps it.
+fn kept_read(word: &str) -> Option<&'static str> {
+    let binding = word.strip_prefix("rt$")?;
+    TERSE_KEPT
+        .binary_search(&binding)
+        .ok()
+        .map(|index| TERSE_KEPT[index])
 }
 
 /// The terse output of the texts of a chunked build (docs/code-splitting.md,
@@ -546,7 +714,19 @@ pub(crate) struct Text<'s> {
 /// When one text cannot be followed ([`terse_program`]), every text keeps
 /// its layout, and the compiler names are one hygiene prefix that no raw
 /// text of any chunk contains and a short name.
+///
+/// Where texts have runtime units at module level (light-cljs-303), the
+/// table also names the units' top-level bindings, a program read `rt$x`
+/// and the binding `x` one name: their occurrences count, each binding's
+/// name avoids the units' locals visible where they read it, a binding that
+/// keeps its spelling keeps it, and no name is one of those spellings or a
+/// global the units read ([`TERSE_GLOBALS`]). The units' text itself is
+/// written afterwards from the table ([`terse_module_units`]).
 pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s str, String>) {
+    let module = texts.iter().any(|text| text.units.is_some());
+    let fixed = |word: &str| if module { kept_read(word) } else { None };
+    let module_level =
+        |name: &str| module && (keeps_name(name) || TERSE_GLOBALS.binary_search(&name).is_ok());
     let raws = texts
         .iter()
         .map(|text| {
@@ -566,12 +746,21 @@ pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s s
         .map(|(text, raw)| Lexed::new(text.source, text.runtime.clone(), raw))
         .collect::<Option<Vec<_>>>();
     if let Some(lexed) = lexed {
-        let mut words = Vec::new();
+        let mut words: Vec<&'s str> = Vec::new();
         let mut excluded = HashSet::new();
-        for text in &lexed {
-            text.words(&mut words, &mut excluded);
+        for (text, lexed) in texts.iter().zip(&lexed) {
+            if let Some(kept) = text.units {
+                words.extend(unit_words(kept).map(|word| -> &'s str { word }));
+            }
+            lexed.words(&mut words, &mut excluded);
         }
-        let names = short_names(words, |name| excluded.contains(name));
+        words.extend(kept_reads(module).map(|word| -> &'s str { word }));
+        let names = constrained_short_names(
+            words,
+            |name| excluded.contains(name) || module_level(name),
+            &module_avoid(texts),
+            fixed,
+        );
         let outputs = lexed
             .into_iter()
             .map(|text| text.rewrite(&names).0)
@@ -593,15 +782,29 @@ pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s s
         .zip(&raws)
         .map(|(text, raw)| raw.iter().cloned().chain(text.runtime.clone()).collect())
         .collect::<Vec<Vec<_>>>();
+    // A unit's locals are short names, which no prefixed name is.
     let words = texts
         .iter()
         .zip(&skipped)
-        .flat_map(|(text, skipped)| scanned_names(text.source, skipped))
-        .map(|(_, word)| word)
+        .flat_map(|(text, skipped)| {
+            text.units
+                .into_iter()
+                .flat_map(unit_words)
+                .map(|word| -> &'s str { word })
+                .chain(
+                    scanned_names(text.source, skipped)
+                        .into_iter()
+                        .map(|(_, word)| word),
+                )
+        })
+        .chain(kept_reads(module).map(|word| -> &'s str { word }))
         .collect::<Vec<_>>();
-    let names = short_names(words, |_| false)
+    let names = constrained_short_names(words, |_| false, &HashMap::new(), fixed)
         .into_iter()
-        .map(|(word, name)| (word, format!("{prefix}{name}")))
+        .map(|(word, name)| match fixed(word) {
+            Some(_) => (word, name),
+            None => (word, format!("{prefix}{name}")),
+        })
         .collect::<HashMap<_, _>>();
     let outputs = texts
         .iter()
@@ -1755,6 +1958,93 @@ mod tests {
             let (renamed, _) = terse_slice(&kept, &returned);
             same_bindings(&original, &renamed)
                 .unwrap_or_else(|error| panic!("density {density}: {error}"));
+        }
+    }
+
+    /// Units at module level (light-cljs-303) named by the one table of
+    /// [`terse_texts`], beside a program text that reads some of their
+    /// bindings and declares compiler names of its own: wrapped in the
+    /// single file's factory, they are the readable slice renamed without
+    /// capture, a program read has its binding's name, a binding that keeps
+    /// its spelling keeps it, and no program name is a binding's.
+    #[test]
+    fn module_level_units_rename_without_capture() {
+        let manifest = RuntimeManifest::embedded();
+        let mut state = 0x9e37_79b9_u64;
+        for density in [3, 10, 40, 100] {
+            let kept = (0..manifest.units.len())
+                .map(|_| {
+                    state = state
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1);
+                    (state >> 33) % 100 < density
+                })
+                .collect::<Vec<_>>();
+            let returned = manifest
+                .units
+                .iter()
+                .zip(&kept)
+                .filter(|(_, kept)| **kept)
+                .flat_map(|(unit, _)| unit.declares.first().copied())
+                .take(4)
+                .collect::<Vec<_>>();
+            let program = returned
+                .iter()
+                .enumerate()
+                .map(|(local, binding)| format!("const l{local} = rt${binding};\n"))
+                .collect::<String>()
+                + "let g0 = (a) => a;\n";
+            let texts = [
+                Text {
+                    source: "",
+                    raw: Vec::new(),
+                    runtime: None,
+                    units: Some(&kept),
+                },
+                Text {
+                    source: &program,
+                    raw: Vec::new(),
+                    runtime: None,
+                    units: None,
+                },
+            ];
+            let (outputs, names) = terse_texts(&texts);
+            let (units, bytes) = terse_module_units(&kept, |word| names[word].as_str());
+            assert_eq!(
+                bytes.iter().sum::<usize>(),
+                units.len(),
+                "density {density}"
+            );
+            let mut wrapped = String::from(TERSE_PROLOGUE);
+            wrapped.push_str(&units);
+            wrapped.push_str("return[");
+            let read = returned
+                .iter()
+                .map(|binding| names[format!("rt${binding}").as_str()].as_str())
+                .collect::<Vec<_>>();
+            wrapped.push_str(&read.join(","));
+            wrapped.push_str("]})()");
+            let original = manifest.sliced_bindings_text(&kept, &returned);
+            same_bindings(&original, &wrapped)
+                .unwrap_or_else(|error| panic!("density {density}: {error}"));
+            for (binding, name) in returned.iter().zip(&read) {
+                assert_eq!(keeps_name(binding), name == binding, "{binding} is {name}");
+                assert!(
+                    [",", ";"]
+                        .iter()
+                        .any(|end| outputs[1].contains(&format!("={name}{end}"))),
+                    "{}",
+                    outputs[1]
+                );
+            }
+            let bindings = names
+                .iter()
+                .filter(|(word, _)| word.starts_with("rt$"))
+                .map(|(_, name)| name.as_str())
+                .collect::<HashSet<_>>();
+            for word in ["l0", "g0"] {
+                assert!(!bindings.contains(names[word].as_str()), "{word}");
+            }
         }
     }
 

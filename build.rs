@@ -230,13 +230,15 @@ fn compiler_runtime(runtime: &str) -> String {
 const OPEN: char = '\u{1}';
 const CLOSE: char = '\u{2}';
 
-/// Rust source for `TERSE_PROLOGUE`, `TERSE_BINDINGS`, `TERSE_KEPT` and
-/// `TERSE_UNITS`: the runtime's prologue and every unit body (in manifest
-/// order) written by `js_syntax::TerseWriter`, with locals renamed
-/// (`Resolution::local_names`) and each top-level binding, declared or read,
-/// as a placeholder; per unit, for each binding it names, the local names
-/// visible at some occurrence, which that binding's name must avoid; and the
-/// names that keep their spelling (`shows_name`). The manifest itself
+/// Rust source for `TERSE_PROLOGUE`, `TERSE_BINDINGS`, `TERSE_KEPT`,
+/// `TERSE_UNITS` and `TERSE_GLOBALS`: the runtime's prologue and every unit
+/// body (in manifest order) written by `js_syntax::TerseWriter`, with locals
+/// renamed (`Resolution::local_names`) and each top-level binding, declared
+/// or read, as a placeholder; per unit, for each binding it names, the local
+/// names visible at some occurrence, which that binding's name must avoid;
+/// the names that keep their spelling (`shows_name`); and the free names
+/// the units read, globals, which no name declared next to units written at
+/// module level may take. The manifest itself
 /// (`src/runtime_manifest.rs`) parses the annotated source at run time; the
 /// unit tests of `src/terse.rs` check that these units match it and rename
 /// without capture.
@@ -349,6 +351,7 @@ fn terse_runtime(source: &str) -> String {
         parsed.len()
     )
     .unwrap();
+    let mut globals = BTreeSet::new();
     for (tokens, resolution) in &parsed {
         let names = resolution.local_names(
             |declaration| shows_name(source, tokens, declaration),
@@ -401,7 +404,12 @@ fn terse_runtime(source: &str) -> String {
                 (None, Some(declaration)) => names[declaration]
                     .clone()
                     .unwrap_or_else(|| text.to_owned()),
-                (None, None) => text.to_owned(),
+                (None, None) => {
+                    if !index.contains_key(text) {
+                        globals.insert(text);
+                    }
+                    text.to_owned()
+                }
             };
             let shape = Shape {
                 kind: Kind::Name,
@@ -461,6 +469,13 @@ fn terse_runtime(source: &str) -> String {
         .unwrap();
     }
     code.push_str("];\n");
+    writeln!(
+        code,
+        "pub(crate) static TERSE_GLOBALS: [&str; {}] = {:?};",
+        globals.len(),
+        globals.iter().collect::<Vec<_>>()
+    )
+    .unwrap();
     code
 }
 
