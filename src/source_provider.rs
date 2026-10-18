@@ -61,6 +61,45 @@ pub trait SourceProvider {
         let _ = tried;
         self.load(request)
     }
+    /// The resources `light.build/resource` reads while this provider's
+    /// namespaces compile (docs/compiler.md, "Compile-time services:
+    /// light.build"). The default has none, and every resource request is
+    /// then an error.
+    fn resources(&self) -> Option<std::rc::Rc<dyn ResourceProvider>> {
+        None
+    }
+}
+
+/// A resource a [`ResourceProvider`] answered.
+#[derive(Clone, Debug)]
+pub struct ResourceInput {
+    /// Where it was found, for diagnostics.
+    pub file: String,
+    /// The stable identity of this resource, which a cache may key on: the
+    /// canonical file for source roots. `None` makes the work that read it
+    /// non-cacheable.
+    pub identity: Option<String>,
+    pub text: String,
+}
+
+/// Compile-time resources by logical path: `app/data.txt` with `/`
+/// separators, already normalized, never absolute. Answers are recorded in
+/// the dependency manifest, so a provider must not consult anything a later
+/// build could not observe again.
+pub trait ResourceProvider {
+    /// The resource at `path`, or `None` when it is absent, appending to
+    /// `tried` each location considered, in order, present or absent. A path
+    /// present in two places is an error.
+    fn load_resource(
+        &self,
+        path: &str,
+        tried: &mut Vec<crate::dependency_manifest::Candidate>,
+    ) -> Result<Option<ResourceInput>, LoadError>;
+    /// Whether absence and the identities answered are stable across
+    /// builds. The default is false: the consuming work is non-cacheable.
+    fn stable(&self) -> bool {
+        false
+    }
 }
 impl<F> SourceProvider for F
 where
@@ -91,6 +130,69 @@ impl SourceProvider for FileSourceProvider {
         tried: &mut Vec<crate::dependency_manifest::Candidate>,
     ) -> Result<Option<SourceInput>, LoadError> {
         self.locate(request, Some(tried))
+    }
+    fn resources(&self) -> Option<std::rc::Rc<dyn ResourceProvider>> {
+        Some(std::rc::Rc::new(self.clone()))
+    }
+}
+/// Resources across every root, like namespaces: a path in two roots is an
+/// error.
+impl ResourceProvider for FileSourceProvider {
+    fn load_resource(
+        &self,
+        path: &str,
+        tried: &mut Vec<crate::dependency_manifest::Candidate>,
+    ) -> Result<Option<ResourceInput>, LoadError> {
+        let mut found: Vec<PathBuf> = Vec::new();
+        for root in &self.roots {
+            let candidate = root.join(path);
+            let metadata = std::fs::metadata(&candidate);
+            let present = metadata.as_ref().is_ok_and(|m| m.is_file());
+            tried.push(crate::dependency_manifest::Candidate {
+                path: candidate.clone(),
+                present,
+            });
+            match metadata {
+                Ok(_) if present => {
+                    let canonical = std::fs::canonicalize(&candidate).map_err(|e| {
+                        LoadError::Provider(format!("cannot resolve {}: {e}", candidate.display()))
+                    })?;
+                    if !found.contains(&canonical) {
+                        found.push(canonical);
+                    }
+                }
+                Ok(_) => {
+                    return Err(LoadError::Provider(format!(
+                        "resource is not a file: {}",
+                        candidate.display()
+                    )));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(LoadError::Provider(format!(
+                        "cannot inspect {}: {e}",
+                        candidate.display()
+                    )));
+                }
+            }
+        }
+        if found.len() > 1 {
+            return Err(LoadError::AmbiguousSources(found));
+        }
+        let Some(file) = found.pop() else {
+            return Ok(None);
+        };
+        let text = std::fs::read_to_string(&file)
+            .map_err(|e| LoadError::Provider(format!("{}: {e}", file.display())))?;
+        let file = file.to_string_lossy().into_owned();
+        Ok(Some(ResourceInput {
+            identity: Some(file.clone()),
+            file,
+            text,
+        }))
+    }
+    fn stable(&self) -> bool {
+        true
     }
 }
 impl FileSourceProvider {

@@ -1913,6 +1913,8 @@ fn analyze_entry(
         *macros.dependency_log.borrow_mut() = Some(Default::default());
         ObservationGuard(macros.dependency_log.clone())
     });
+    // `light.build` serves this compilation, with the provider's resources.
+    let build = crate::build_services::BuildGuard::enter(&macros.build, sources.resources());
     let mut index = 0;
     while index < loader.ordered.len() {
         let file = &loader.ordered[index];
@@ -1922,6 +1924,7 @@ fn analyze_entry(
         };
         let first_lazy = analysis.lazy_target_count();
         macros.observe(|log| log.window = index as u32);
+        build.analyze(index, &file.name);
         // An artifact installs at the frontier its analysis would have run.
         let installed = match install.and_then(|lookup| lookup(&file.name)) {
             Some(artifact) => {
@@ -2058,6 +2061,7 @@ fn analyze_entry(
             let file = &loader.ordered[index];
             NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
         })?;
+    drop(build);
     if let (Some(stats), Some(analysis_started), Some(deferred)) =
         (stats, analysis_started, deferred_time)
     {

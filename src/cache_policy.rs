@@ -35,7 +35,7 @@
 //! leaves valid in-memory output alone. It is computed whether or not the
 //! persistent cache is on.
 
-use crate::dependency_manifest::{DependencyManifest, EdgeKinds, NamespaceId};
+use crate::dependency_manifest::{DependencyManifest, EdgeKinds, ExternalInput, NamespaceId};
 use std::collections::VecDeque;
 
 /// What the build's configuration says about the persistent cache.
@@ -120,6 +120,31 @@ pub struct NonCacheableInput {
     pub namespace: NamespaceId,
     /// What the input is, for the bypass report.
     pub description: String,
+}
+
+/// The `light.build` inputs of `manifest` that cannot be keyed, for
+/// [`evaluate`]: each resource a provider answered without a stable identity
+/// ([`crate::dependency_manifest::ResourceDependency::stable`]), on every
+/// namespace whose manifest carries it.
+pub fn non_cacheable_inputs(manifest: &DependencyManifest) -> Vec<NonCacheableInput> {
+    let mut inputs = Vec::new();
+    for id in 0..manifest.namespaces.len() as u32 {
+        let namespace = NamespaceId(id);
+        for input in manifest.external_inputs(namespace) {
+            if let ExternalInput::Resource(resource) = input
+                && !resource.stable
+            {
+                inputs.push(NonCacheableInput {
+                    namespace,
+                    description: format!(
+                        "resource {} from a provider without stable identities",
+                        resource.path
+                    ),
+                });
+            }
+        }
+    }
+    inputs
 }
 
 /// Why a namespace may not read or write the persistent cache. A namespace

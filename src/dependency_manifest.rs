@@ -18,8 +18,9 @@
 //!   `cljs.X`, or the implicit `light.lazy` require;
 //! - its edges by [`EdgeKinds`];
 //! - the namespace names its analysis looked for and did not find loaded;
-//! - its declared external inputs (none yet: light-cljs-312 and 313 add
-//!   them through `light.build`).
+//! - its external inputs: the resources, namespaces and provider tokens
+//!   `light.build` read or declared ([`ExternalInput`]), its own and those
+//!   of the helper units and data readers of any namespace it depends on.
 //!
 //! Matching source text is never enough on its own: a consumer's record
 //! changes when a lookup it depends on would now find another file.
@@ -90,7 +91,7 @@ impl std::ops::BitOrAssign for EdgeKinds {
 }
 
 /// One file a lookup tried, in the order tried.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Candidate {
     pub path: PathBuf,
     pub present: bool,
@@ -166,12 +167,62 @@ pub struct RequireRecord {
     pub lookups: Vec<LookupId>,
 }
 
-/// An input a namespace declares outside its source graph. The
-/// `light.build` services (light-cljs-312, light-cljs-313) add resources,
-/// configuration and providers here; a dependency's fingerprint covers its
-/// own declared inputs.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ExternalInput {}
+/// An input of [`DependencyManifest::inputs`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct InputId(pub u32);
+
+/// An input a namespace depends on outside its source graph, read or
+/// declared through `light.build` (docs/compiler.md, "Compile-time
+/// services: light.build"). Configuration and broad views are
+/// light-cljs-313's. A dependency's fingerprint covers its own inputs.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum ExternalInput {
+    /// A resource `resource` or `resource?` read, or `depend!` declared with
+    /// `{:resource path}`.
+    Resource(ResourceDependency),
+    /// `(depend! {:namespace sym})`. When the namespace loaded before the one
+    /// being analyzed, that one also gets an [`EdgeKinds::OBSERVED`] edge to
+    /// it; otherwise the name is among its `absent` names.
+    Namespace(String),
+    /// `(depend! {:provider token :fingerprint string})`: a host provider's
+    /// token and the fingerprint it gave of its current state.
+    Provider { token: String, fingerprint: String },
+}
+
+/// How a resource path resolved: one operation with reading it.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ResourceDependency {
+    /// The logical path searched in every root, `./` and `../` resolved.
+    pub path: String,
+    /// Every location tried, in order, present or absent. A file added in
+    /// another root, which would make the path ambiguous, is an absent one.
+    pub candidates: Vec<Candidate>,
+    /// The resource found, or `None` when absent (`resource?`'s nil, or a
+    /// `depend!` of a missing path).
+    pub found: Option<ResolvedResource>,
+    /// Whether the provider's answer has a stable identity. A provider that
+    /// cannot give one makes the consuming work non-cacheable.
+    pub stable: bool,
+}
+
+/// The resource a path resolved to.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ResolvedResource {
+    /// The provider's identity of the resource: the canonical file for
+    /// source roots, `None` when the provider has none.
+    pub identity: Option<String>,
+    /// A hash of the exact text returned: for now the 64-bit FNV-1a of its
+    /// UTF-8 bytes, which the cache's SHA-256 (light-cljs-319) replaces.
+    pub hash: u64,
+    pub bytes: u64,
+}
+
+/// The 64-bit FNV-1a hash of `bytes`, a temporary content hash.
+pub(crate) fn content_hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NamespaceRecord {
@@ -186,7 +237,13 @@ pub struct NamespaceRecord {
     /// Whether the namespace depends on every earlier one
     /// ([`EdgeKinds::COARSE`]) because it ran a source macro.
     pub coarse: bool,
-    pub external_inputs: Vec<ExternalInput>,
+    /// The [`DependencyManifest::inputs`] this namespace depends on,
+    /// ascending: those read or declared while it was analyzed, and those
+    /// recorded by a helper unit or data reader of it or of any namespace in
+    /// its [`DependencyManifest::closure`]. The second rule is conservative:
+    /// it covers a helper value computed while one namespace was compiled
+    /// and reused in memory by a later one.
+    pub external_inputs: Vec<InputId>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -214,6 +271,8 @@ pub struct DependencyManifest {
     pub namespaces: Vec<NamespaceRecord>,
     /// By [`LookupId`], in the order the loader asked.
     pub lookups: Vec<Lookup>,
+    /// By [`InputId`]: each distinct input once, in the order first recorded.
+    pub inputs: Vec<ExternalInput>,
     ids: HashMap<String, u32>,
     forward: Rows,
     reverse: Rows,
@@ -228,6 +287,16 @@ impl DependencyManifest {
     }
     pub fn lookup(&self, id: LookupId) -> &Lookup {
         &self.lookups[id.0 as usize]
+    }
+    pub fn input(&self, id: InputId) -> &ExternalInput {
+        &self.inputs[id.0 as usize]
+    }
+    /// The external inputs namespace `id` depends on.
+    pub fn external_inputs(&self, id: NamespaceId) -> impl Iterator<Item = &ExternalInput> + '_ {
+        self.record(id)
+            .external_inputs
+            .iter()
+            .map(|&input| self.input(input))
     }
     /// The namespaces `id` depends on directly, ascending, with the kinds.
     pub fn dependencies(
@@ -305,6 +374,20 @@ pub(crate) struct ObservationLog {
     pub absent: Vec<(u32, String)>,
     /// Sources that ran source macros.
     pub executes: Vec<u32>,
+    /// Each `light.build` read or declaration, in the order made.
+    pub inputs: Vec<InputRecord>,
+}
+
+/// One `light.build` input and the units it is recorded on.
+#[derive(Debug)]
+pub(crate) struct InputRecord {
+    /// The source being analyzed.
+    pub own: u32,
+    /// The sources whose helper units or data readers were running: each
+    /// deferred unit being analyzed or initialized, and the source a data
+    /// reader reads.
+    pub helpers: Vec<u32>,
+    pub input: ExternalInput,
 }
 
 impl ObservationLog {
@@ -521,12 +604,59 @@ pub(crate) fn build(
         row.iter()
             .all(|&(to, kinds)| kinds == EdgeKinds::LAZY || (to as usize) < from)
     }));
-    DependencyManifest {
+    let mut manifest = DependencyManifest {
         namespaces,
         lookups: loader.lookups,
+        inputs: Vec::new(),
         ids,
         forward,
         reverse,
+    };
+    attribute_inputs(&mut manifest, log.inputs);
+    manifest
+}
+
+/// Give each namespace its own inputs, and the inputs of the helper units
+/// and readers of each namespace it depends on: those recorded on a
+/// namespace's helpers go to it and to its whole reverse closure.
+fn attribute_inputs(manifest: &mut DependencyManifest, records: Vec<InputRecord>) {
+    if records.is_empty() {
+        return;
+    }
+    let count = manifest.namespaces.len();
+    let mut interned: HashMap<ExternalInput, u32> = HashMap::new();
+    let mut own: Vec<Vec<InputId>> = vec![Vec::new(); count];
+    let mut helpers: Vec<Vec<InputId>> = vec![Vec::new(); count];
+    for record in records {
+        let next = manifest.inputs.len() as u32;
+        let id = *interned.entry(record.input).or_insert_with_key(|input| {
+            manifest.inputs.push(input.clone());
+            next
+        });
+        if let Some(list) = own.get_mut(record.own as usize) {
+            list.push(InputId(id));
+        }
+        for helper in record.helpers {
+            if let Some(list) = helpers.get_mut(helper as usize) {
+                list.push(InputId(id));
+            }
+        }
+    }
+    for (source, mut inputs) in helpers.into_iter().enumerate() {
+        if inputs.is_empty() {
+            continue;
+        }
+        inputs.sort_unstable();
+        inputs.dedup();
+        let source = NamespaceId(source as u32);
+        for consumer in std::iter::once(source).chain(manifest.reverse_closure(source)) {
+            own[consumer.0 as usize].extend_from_slice(&inputs);
+        }
+    }
+    for (record, mut inputs) in manifest.namespaces.iter_mut().zip(own) {
+        inputs.sort_unstable();
+        inputs.dedup();
+        record.external_inputs = inputs;
     }
 }
 

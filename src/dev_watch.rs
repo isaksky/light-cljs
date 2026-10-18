@@ -242,6 +242,9 @@ impl SourceProvider for Recording {
         }
         Ok(source)
     }
+    fn resources(&self) -> Option<Rc<dyn light_cljs::source_provider::ResourceProvider>> {
+        self.roots.resources()
+    }
 }
 
 /// The state a watch keeps between steps.

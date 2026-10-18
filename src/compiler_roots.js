@@ -3,6 +3,29 @@
 (() => {
   const units = new Map(), slots = new Map(), overlays = new Map(), path = [], extensions = new Map(), installing = [], bundles = [], frontiers = [];
   let frontier = Infinity, declarationFrontier = Infinity;
+  // light.build records a read on every deferred unit whose initializer is
+  // running: pairs of a unit and the compile depth it started at. When the
+  // last one started at the current depth, its initializer is the innermost
+  // code; otherwise a unit compiled since is, which Rust's catalog knows.
+  const initializing = [];
+  let compiling = 0;
+  const compileService = globalThis.__lightCompileUnit;
+  if (typeof compileService === 'function') {
+    globalThis.__lightCompileUnit = unit => {
+      compiling++;
+      try { return compileService(unit); } finally { compiling--; }
+    };
+  }
+  function initialize(unit, run) {
+    initializing.push(unit, compiling);
+    try { return run(); } finally { initializing.length -= 2; }
+  }
+  globalThis.__lightBuildCaller = () => {
+    let units = '';
+    for (let i = 0; i < initializing.length; i += 2) units += (i ? ',' : '') + initializing[i];
+    const innermost = initializing.length > 0 && initializing[initializing.length - 1] === compiling;
+    return (innermost ? 'i' : 'e') + '\u0000' + units;
+  };
   // Most bundles only produce roots. Frontier replay needs initialized
   // extensions, ordered by declaration rather than by initialization time.
   const readyExtensions = [];
@@ -85,7 +108,7 @@
     try {
       const source = globalThis.__lightCompileUnit(slot.unit);
       slot.code = (0, eval)(source);
-      slot.value = slot.code(__lightRuntimeForCompiler);
+      slot.value = initialize(slot.unit, () => slot.code(__lightRuntimeForCompiler));
       slot.state = 'ready'; return slot.value;
     } catch (error) {
       if (error instanceof Error) error.message = slot.location + ': ' + name + ': ' + error.message;
@@ -113,7 +136,7 @@
     bundle.state = 'initializing'; path.push(bundle.name); installing.push(bundle);
     try {
       for (const [protocol] of bundle.indices) if (slots.has(protocol)) force(protocol);
-      const installed = __lightRuntimeForCompiler.declarationTransaction(() => bundle.code(__lightRuntimeForCompiler), true);
+      const installed = __lightRuntimeForCompiler.declarationTransaction(() => initialize(bundle.unit, () => bundle.code(__lightRuntimeForCompiler)), true);
       bundle.patches = installed.patches;
       bundle.state = 'ready';
       if (bundle.indices.length) readyExtensions.splice(readyAfter(bundle.order), 0, bundle);
@@ -139,9 +162,9 @@
       return true;
     }
   });
-  globalThis.__lightRegisterBundle = (names, code, indices, location, once = false, group = false) => {
+  globalThis.__lightRegisterBundle = (names, code, indices, location, once = false, group = false, unit = -1) => {
     invalidateDemands();
-    const bundle = {group, previous: new Map(names.map(name => [name, slots.get(name)])), order: bundles.length + 1, names, indices, name: names[0] ?? 'extension ' + location, code, location, state: 'pending', products: new Map()};
+    const bundle = {unit, group, previous: new Map(names.map(name => [name, slots.get(name)])), order: bundles.length + 1, names, indices, name: names[0] ?? 'extension ' + location, code, location, state: 'pending', products: new Map()};
     bundles.push(bundle);
     // Even a skipped defonce occupies its source frontier position. Rust's
     // catalog counts every declaration, including repeated product names.

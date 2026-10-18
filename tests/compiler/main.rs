@@ -52,6 +52,7 @@ mod async_await;
 mod atom_object_equiv;
 mod bootstrap;
 mod boundary_completion;
+mod build_resources;
 mod builtin_types;
 mod cache_contract;
 mod cache_policy;

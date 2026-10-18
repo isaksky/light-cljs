@@ -1189,7 +1189,7 @@ impl Installer<'_> {
                 })),
             })
             .collect();
-        session.install(prepared, registrations)
+        session.install(prepared, registrations, self.resolved.source_index as u32)
     }
 }
 

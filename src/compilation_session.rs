@@ -50,6 +50,9 @@ struct UnitRequest {
 struct Unit {
     request: UnitRequest,
     name: String,
+    /// The source index of the namespace that defined it, on which
+    /// `light.build` records what the unit reads.
+    source: u32,
     // Consumed by the one analysis. The analyzed result keeps any resolution
     // data it needs; these inputs must not pin an obsolete second snapshot.
     // Keep large inputs out of line so completed units retain no empty space
@@ -126,7 +129,7 @@ impl BundleRecord {
             "(() => {{ let code; return rt => {{ code ??= (0,eval)(globalThis.__lightCompileUnit({unit})); return code(rt); }}; }})()"
         );
         format!(
-            "rt => globalThis.__lightRegisterBundle([{names}], {code}, [{indices}], {}, {}, {})",
+            "rt => globalThis.__lightRegisterBundle([{names}], {code}, [{indices}], {}, {}, {}, {unit})",
             quoted(&self.location),
             self.once,
             self.group
@@ -372,6 +375,7 @@ impl CompilationSession {
         &self,
         units: Vec<crate::emitter::DeferredUnit>,
         registrations: Vec<InstalledRegistration>,
+        source: u32,
     ) -> Result<(), String> {
         let mut units = units.into_iter();
         for registration in registrations {
@@ -409,6 +413,7 @@ impl CompilationSession {
                             c.units.push(Rc::new(RefCell::new(Unit {
                                 request,
                                 name: name.clone(),
+                                source,
                                 form: None,
                                 snapshot: None,
                                 host: None,
@@ -598,11 +603,39 @@ impl CompilationSession {
     pub fn new() -> Rc<Self> {
         Rc::new(Self::default())
     }
-    pub fn attach(self: &Rc<Self>, bootstrap: &Bootstrap) -> Result<(), String> {
+    pub fn attach(self: &Rc<Self>, bootstrap: &Bootstrap, host: &MacroHost) -> Result<(), String> {
         if self.catalog.borrow().bootstrap.is_some() {
             return Ok(());
         }
         let evaluator = &bootstrap.evaluator;
+        // `light.build`: a request names the units whose initializers run;
+        // the catalog knows the units being analyzed.
+        let weak = Rc::downgrade(self);
+        let (build, log) = (host.build.clone(), host.dependency_log.clone());
+        evaluator
+            .install_string_service(
+                "__lightBuildService",
+                Rc::new(move |request| {
+                    let session = weak.upgrade();
+                    let catalog = session
+                        .as_ref()
+                        .and_then(|session| session.catalog.try_borrow().ok());
+                    let source = |unit: usize| {
+                        let catalog = catalog.as_ref()?;
+                        Some(catalog.units.get(unit)?.try_borrow().ok()?.source)
+                    };
+                    let analysis = catalog.as_ref().map_or_else(Vec::new, |catalog| {
+                        catalog
+                            .stack
+                            .iter()
+                            .filter_map(|&unit| source(unit))
+                            .collect()
+                    });
+                    let units = |unit| source(unit);
+                    crate::build_services::serve_request(&build, &log, request, units, analysis)
+                }),
+            )
+            .map_err(|e| e.to_string())?;
         let weak = Rc::downgrade(self);
         evaluator
             .clone()
@@ -632,6 +665,13 @@ impl CompilationSession {
         // Registry and root states stay in JS, so ready reads never cross Rust.
         let value = evaluator
             .evaluate_js(include_str!("compiler_roots.js"))
+            .map_err(|e| e.to_string())?;
+        evaluator.release(value).map_err(|e| e.to_string())?;
+        let value = evaluator
+            .evaluate_js(&format!(
+                "(globalThis.lightCljsBuild = ({})(globalThis.__lightBuildService, globalThis.__lightBuildCaller), null)",
+                crate::build_services::BUILD_OBJECT
+            ))
             .map_err(|e| e.to_string())?;
         evaluator.release(value).map_err(|e| e.to_string())?;
         // Capture the canonical runtime without a second runtime or native adapter.
@@ -838,6 +878,7 @@ impl CompilationSession {
                 c.units.push(Rc::new(RefCell::new(Unit {
                     request,
                     name: name.clone(),
+                    source: snapshot.source_index as u32,
                     form: Some(form),
                     snapshot: Some(Box::new(snapshot)),
                     host: Some(Box::new(host)),

@@ -8,6 +8,7 @@ pub(crate) fn source(namespace: &str) -> Option<&'static str> {
         "cljs.reader" => include_str!("compiler_libraries/cljs/reader.cljs"),
         "clojure.edn" => include_str!("compiler_libraries/clojure/edn.cljs"),
         "light.lazy" => include_str!("compiler_libraries/light/lazy.cljs"),
+        "light.build" => include_str!("compiler_libraries/light/build.cljs"),
         _ => return None,
     })
 }

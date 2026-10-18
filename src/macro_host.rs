@@ -130,6 +130,9 @@ pub struct MacroHost {
     /// compilation ([`crate::dependency_manifest`]).
     pub(crate) dependency_log:
         std::rc::Rc<std::cell::RefCell<Option<crate::dependency_manifest::ObservationLog>>>,
+    /// The compilation `light.build` serves, shared by the analysis frames
+    /// and the services installed in its heaps ([`crate::build_services`]).
+    pub(crate) build: crate::build_services::SharedBuild,
 }
 
 /// A namespace's entries in the macro host's tables, borrowed.
@@ -382,9 +385,33 @@ impl MacroHost {
         )
         .map(Some)
     }
+    /// Give a data reader heap `lightCljsBuild`, whose reads are recorded on
+    /// the namespace whose form is being read.
+    fn install_reader_build_services(
+        &self,
+        evaluator: &crate::evaluator::Evaluator,
+    ) -> Result<(), crate::evaluator::EvalError> {
+        use crate::compiler_evaluator::CompilerEvaluator;
+        let (build, log) = (self.build.clone(), self.dependency_log.clone());
+        evaluator.install_string_service(
+            "__lightBuildService",
+            std::rc::Rc::new(move |request| {
+                crate::build_services::serve_request(&build, &log, request, |_| None, Vec::new())
+            }),
+        )?;
+        let done = evaluator.evaluate_js(&format!(
+            "(globalThis.lightCljsBuild = ({})(globalThis.__lightBuildService, {}), null)",
+            crate::build_services::BUILD_OBJECT,
+            crate::build_services::READER_CALLER
+        ))?;
+        crate::evaluator::MacroEvaluator::release(evaluator, done)
+    }
     /// Register an explicit compiler-emitted function over immutable reader data.
     /// It executes in canonical JavaScript; only finite form-domain results cross
-    /// the typed bridge. Registration grants no stream or filesystem capability.
+    /// the typed bridge. Registration grants no stream or filesystem capability
+    /// beyond the `lightCljsBuild` services, which read resources across the
+    /// compilation's source roots and record them on the namespace being read
+    /// (docs/compiler.md, "Compile-time services: light.build").
     pub fn register_compiler_data_reader(
         &mut self,
         tag: Name,
@@ -445,9 +472,10 @@ impl MacroHost {
                     return Ok(None);
                 };
                 if readers.evaluator.is_none() {
-                    readers.evaluator = Some(std::rc::Rc::new(
-                        self.new_evaluator().map_err(|e| e.to_string())?,
-                    ));
+                    let evaluator = self.new_evaluator().map_err(|e| e.to_string())?;
+                    self.install_reader_build_services(&evaluator)
+                        .map_err(|e| e.to_string())?;
+                    readers.evaluator = Some(std::rc::Rc::new(evaluator));
                 }
                 let evaluator = readers.evaluator.as_ref().unwrap().clone();
                 let cached = if fallback {
@@ -774,6 +802,7 @@ impl MacroHost {
             reader_declared: self.reader_declared.clone(),
             reader_generation: self.reader_generation,
             dependency_log: self.dependency_log.clone(),
+            build: self.build.clone(),
             ..Self::default()
         }
     }

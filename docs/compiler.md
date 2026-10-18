@@ -903,7 +903,7 @@ JavaScript over immutable compiler-owned reader data. Only finite form-domain
 results cross the typed boundary; functions, mutable references, opaque host
 objects and cycles are rejected at the original tag span. Handler closures keep
 state within a compilation and reset before the next compilation. Unknown tags
-fail without dynamic class, filesystem or namespace lookup. Reader handlers run
+fail without dynamic class, filesystem or namespace lookup. Handlers read resources only through `light.build` ("Compile-time services: light.build"). Reader handlers run
 once in source order, including discarded forms and unselected runtime branches.
 Evaluation sessions can instead register source data readers (see
 [evaluation](evaluation.md)). Compiler-only opaque values keep regex/Date/UUID/
@@ -916,8 +916,8 @@ including collection splicing, before dependency discovery. `.cljs` and standalo
 
 ## Compiler-owned standard libraries and stream reading
 
-`clojure.string`, `clojure.set`, `clojure.walk`, `cljs.reader`, `clojure.edn` and
-`light.lazy` are embedded first-party sources (`src/compiler_libraries/`) compiled by the
+`clojure.string`, `clojure.set`, `clojure.walk`, `cljs.reader`, `clojure.edn`,
+`light.lazy` and `light.build` are embedded first-party sources (`src/compiler_libraries/`) compiled by the
 ordinary namespace resolver. Explicit source roots take precedence, as for other
 namespaces. Runtime imports, aliases, refers and unmarked macro helpers use the
 same sources and JavaScript runtime.
@@ -2353,6 +2353,77 @@ JavaScript bootstrap session and produce no partial application output. A caught
 host cancellation or terminal limit still aborts the compilation. Later clean
 compilations allocate fresh roots, heaps and dispatch tables while retaining host
 configuration.
+
+### Compile-time services: light.build
+
+The bundled namespace `light.build` (`src/compiler_libraries/light/build.cljs`)
+gives macros, the helper code they run at compile time and custom data readers
+explicit inputs that a compiler cache can key on
+([compiler-cache.md](compiler-cache.md), "Explicit dependency APIs"):
+
+```clojure
+(ns app.macros (:require [light.build :as b]))
+(defmacro inline [path] (b/resource path))          ; text, or an error when absent
+(defmacro optional [path] (or (b/resource? path) "")) ; text, or nil when absent
+(defmacro schema []
+  (b/depend! {:resource "app/schema.edn"})            ; a dependency, not read
+  (b/depend! {:namespace 'app.model})
+  (b/depend! {:provider :git/head :fingerprint "0abc12"})
+  nil)
+```
+
+- **Paths resolve like namespaces.** A logical path such as `app/data.txt` is
+  looked up in every source root, and a path present in two roots is an error,
+  for `resource?` too. A path starting with `./` or `../` resolves against the
+  directory of the file of the namespace whose macro expansion is running (the
+  expansion site, as Shadow's `shadow.resource/inline` does): namespace
+  `my-app.core` resolves `./x.txt` to `my_app/x.txt`. A data reader resolves
+  it against the namespace being read. Code that runs outside any expansion,
+  such as a helper `def`'s initializer that a macro's first use triggers, has
+  no site, and a relative path there is an error. Absolute paths, empty
+  segments, backslashes and paths that leave the roots are errors.
+- **Only at compile time.** In emitted application code every call throws
+  `light.build/... is only available at compile time`. A helper namespace that
+  the application also loads can test `(exists? js/lightCljsBuild)`.
+- **Data readers.** A handler registered with
+  `MacroHost::register_compiler_data_reader` calls the same services through
+  the host object `js/lightCljsBuild`: `.resource`, `.optionalResource`,
+  `.dependResource`, `.dependNamespace` and `.dependProvider` (token and
+  fingerprint strings).
+- **Embedding.** Resources come from `SourceProvider::resources`, a
+  `ResourceProvider` that answers a logical path and appends each location it
+  tried. `FileSourceProvider` serves the source roots with each file's
+  canonical path as its identity. A provider without resources makes every
+  read an error, and one whose `stable` is false (the default) or that answers
+  without an identity makes the reading namespaces non-cacheable
+  (`cache_policy::non_cacheable_inputs`).
+
+Reading and recording are one operation. With a dependency manifest
+(`analyze_namespace_entry_with_dependencies`), each read or declaration is an
+`ExternalInput` in `DependencyManifest::inputs`: a resource's logical path,
+every candidate location tried, present or absent, and, when found, its
+identity, byte length and a hash of the exact text returned (a temporary
+64-bit FNV-1a until the cache's SHA-256 replaces it); a namespace, which also
+gets an observed edge when that namespace loaded earlier; or a provider token
+with its fingerprint. An input is recorded on the namespace being analyzed.
+When a deferred helper unit is being analyzed or initialized, or a data reader
+runs, it is also recorded on that unit's (or the read form's) namespace, and
+then reaches every namespace whose dependency closure contains it. A helper
+value computed during one namespace's compilation and reused in memory by a
+later one is therefore a dependency of both. The records live in the
+compilation's log, not in the session's unit state, so releasing a unit's
+analysis does not lose them.
+
+**Macro-author responsibilities.** The cache contract assumes that an expansion
+depends only on its forms, the namespaces it uses and these recorded inputs.
+Read files through `resource` or `resource?`, not through host access, and
+declare anything else a macro consults with `depend!`: a provider token's
+fingerprint must change whenever the provider's answer would. A macro that
+needs clock or random values, other undeclared host state, or an effect on
+every build must opt out of the cache (`^:light-cljs/no-cache` on the
+namespaces that expand it, or a cache blocker on its namespace), as
+[compiler-cache.md](compiler-cache.md), "Macro-author responsibilities",
+explains.
 
 ### Generated names and the compiler cache
 

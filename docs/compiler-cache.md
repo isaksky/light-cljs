@@ -241,6 +241,39 @@ input or an opt-out.
 These services track explicit dependencies at known compiler boundaries. They
 do not log every runtime read, discover a general call graph, or replay writes.
 
+*As built (light-cljs-312):* the resource and declaration rows are
+`light.build/resource`, `resource?` and `depend!`, documented in
+[compiler.md](compiler.md), "Compile-time services: light.build";
+configuration and the broad views are light-cljs-313's. Both compile-time
+engines run one JavaScript object, `lightCljsBuild` (`src/build_services.js`),
+over a string service that `src/build_services.rs` answers, so V8 and QuickJS
+behave identically: the session heap gets it when the compilation session
+attaches, and the data-reader heap when it is created. These choices settle
+what the section leaves open:
+
+- The caller is described by the JavaScript side. `compiler_roots.js` keeps a
+  stack of the deferred units whose initializers are running, and the Rust
+  catalog knows the units being analyzed. A read is recorded on the namespace
+  being analyzed and, as helper reads, on the namespace of every such unit (or
+  of the form a data reader reads). The manifest gives helper reads to that
+  namespace and to its whole reverse closure through compilation edges, which
+  covers reuse in memory without tracking values.
+- Each record goes into the compilation's `ObservationLog` the moment the
+  service answers, so `release_application_ir` and nested deferred
+  compilation cannot lose it. Inputs are interned: `DependencyManifest::inputs`
+  holds each distinct input once and each `NamespaceRecord::external_inputs`
+  lists `InputId`s, ascending.
+- A relative path resolves against the expansion site: the innermost unit
+  being analyzed, or the namespace being analyzed. When an initializer is the
+  innermost code running there is no site, and `./` is an error.
+- `ResourceDependency::stable` is false when the `ResourceProvider` is not
+  `stable` or answered without an identity; `cache_policy::non_cacheable_inputs`
+  turns those into the policy's `NonCacheableInput` list. Ambiguity and
+  provider errors are compile errors, never recorded inputs.
+- `{:namespace sym}` records the name and, when that namespace loaded earlier,
+  an observed edge to it; otherwise the name is among the absent ones, so its
+  later appearance invalidates.
+
 ## Opt-outs and their propagation
 
 Expose separate controls for persistent storage and recompilation. The following

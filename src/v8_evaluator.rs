@@ -37,6 +37,7 @@ struct State {
     bridge: RefCell<BridgeState>,
     services: RefCell<Option<v8::Global<v8::Object>>>,
     callbacks: RefCell<Vec<UnitService>>,
+    string_services: RefCell<Vec<crate::compiler_evaluator::StringService>>,
     interrupt: Arc<watchdog::Task>,
     pending_error: RefCell<Option<EvalError>>,
     source_bytes: Cell<usize>,
@@ -295,6 +296,7 @@ impl V8Evaluator {
             bridge: RefCell::new(BridgeState::default()),
             services: RefCell::new(None),
             callbacks: RefCell::new(Vec::new()),
+            string_services: RefCell::new(Vec::new()),
             interrupt: watchdog::Task::new(isolate.thread_safe_handle())?,
             pending_error: RefCell::new(None),
             source_bytes: Cell::new(0),
@@ -977,7 +979,79 @@ fn compile_unit(
     state.control.invalidate();
     scope.terminate_execution();
 }
+/// A [`crate::compiler_evaluator::StringService`]: one primitive string in,
+/// one string out. A non-string argument is a TypeError, never coerced.
+fn string_service(
+    scope: &mut PinScope<'_, '_>,
+    args: v8::FunctionCallbackArguments,
+    mut result: v8::ReturnValue,
+) {
+    let Some(state) = scope.get_slot::<Rc<State>>().cloned() else {
+        scope.terminate_execution();
+        return;
+    };
+    let request = args.get(0);
+    if !request.is_string() {
+        let message = v8::String::new(scope, "compiler service expects a string").unwrap();
+        let error = v8::Exception::type_error(scope, message);
+        scope.throw_exception(error);
+        return;
+    }
+    let request = request.to_rust_string_lossy(scope);
+    let output = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let index = bridge::number(scope, args.data())
+            .map_err(|_| "invalid compiler string service".to_owned())?
+            as usize;
+        let callback = state
+            .string_services
+            .borrow()
+            .get(index)
+            .cloned()
+            .ok_or("unknown compiler string service")?;
+        state.control.poll().map_err(|e| e.to_string())?;
+        let answer = callback(&request);
+        state.control.poll().map_err(|e| e.to_string())?;
+        Ok::<_, String>(answer)
+    }));
+    let failure = match output {
+        Ok(Ok(answer)) => match bridge::string(scope, &answer) {
+            Ok(answer) => {
+                result.set(answer.into());
+                return;
+            }
+            Err(error) => error,
+        },
+        Ok(Err(error)) => EvalError(error),
+        Err(_) => bridge::error("compiler string service panicked"),
+    };
+    state.remember_error(&failure);
+    state.control.invalidate();
+    scope.terminate_execution();
+}
 impl CompilerEvaluator for V8Evaluator {
+    fn install_string_service(
+        &self,
+        name: &str,
+        callback: crate::compiler_evaluator::StringService,
+    ) -> Result<(), EvalError> {
+        let index = self.state.string_services.borrow().len();
+        self.state.string_services.borrow_mut().push(callback);
+        self.with_active(|e| {
+            e.enter(|scope| {
+                let data = v8::Number::new(scope, index as f64);
+                let callback = v8::Function::builder(string_service)
+                    .data(data.into())
+                    .build(scope)
+                    .ok_or_else(|| bridge::error("V8 callback allocation failed"))?;
+                let name = bridge::string(scope, name)?;
+                let global = scope.get_current_context().global(scope);
+                global
+                    .set(scope, name.into(), callback.into())
+                    .ok_or_else(|| bridge::error("V8 callback installation failed"))?;
+                Ok(())
+            })
+        })
+    }
     fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError> {
         self.evaluate_unit(&format!("(rt) => ({expression}\n)"))
     }

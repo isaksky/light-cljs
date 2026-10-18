@@ -109,7 +109,7 @@ pub(crate) fn capture(input: Input<'_>, entry: &str, blockers: &[&str]) -> Optio
             blockers: blockers.iter().map(|name| name.to_string()).collect(),
         },
         &cache_policy::source_metadata(&manifest, &host),
-        &[],
+        &cache_policy::non_cacheable_inputs(&manifest),
     );
     let eligible = namespaces
         .iter()

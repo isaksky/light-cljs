@@ -324,7 +324,7 @@ impl MacroHost {
         if engine.is_none()
             && let Some(session) = self.session_handle()
         {
-            session.attach(&bootstrap)?;
+            session.attach(&bootstrap, self)?;
         }
         let declaration = bootstrap
             .functions
@@ -584,7 +584,7 @@ impl MacroHost {
         }
         let bootstrap = self.bootstrap.as_ref().unwrap().clone();
         if let Some(session) = self.session_handle() {
-            session.attach(&bootstrap)?;
+            session.attach(&bootstrap, self)?;
         }
         let mut frame = self.macro_analysis_frame();
         let (program, _) =
@@ -692,7 +692,7 @@ impl MacroHost {
                 self.bootstrap = Some(build(self, true)?);
             }
             if let (Some(session), Some(bootstrap)) = (self.session_handle(), &self.bootstrap) {
-                session.attach(bootstrap)?;
+                session.attach(bootstrap, self)?;
             }
         }
         let bootstrap = self
