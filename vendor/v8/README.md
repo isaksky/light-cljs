@@ -22,8 +22,8 @@ directory, machine-specific path or separately installed V8 is required.
 Prerequisites: Rust 1.91 or newer, babashka (`bb`), Git, curl, tar, Python 3 for
 upstream V8 tools, a C/C++ toolchain and libclang for bindgen. On macOS install
 Xcode command-line tools and LLVM, then set `LIBCLANG_PATH` to LLVM's `lib`
-directory if bindgen cannot locate it. The initial source build takes several
-minutes; ordinary compiler edits reuse it. Upstream downloads its matching
+directory if bindgen cannot locate it. The initial source build takes from several
+minutes to hours under load, once per machine (see the cache below). Upstream downloads its matching
 Chromium clang/linker and Rust toolchains. `--no-default-features` avoids V8 and
 uses the existing QuickJS macro backend. WebAssembly targets do not build V8.
 
@@ -39,7 +39,55 @@ To reuse a previously built **patched** engine, set both `RUSTY_V8_ARCHIVE` and
 `RUSTY_V8_SRC_BINDING_PATH` to a copied archive/bindings pair from its `gn_out`
 directory. Keep that pair outside the build output that Cargo will overwrite.
 The ABI marker rejects official unpatched archives. No override is needed for a
-normal build; the source recipe is the default.
+normal build: the machine-wide cache below, then the source recipe, is the default.
+
+## Machine-wide engine cache
+
+A source build runs once per machine for a given engine. `build.rs` keeps each
+built archive and its generated `src_binding.rs` in a per-user cache and reuses
+them from every checkout, worktree and clean target directory, so no gn, ninja,
+source download or bindgen step runs on a hit. The default location is
+`~/Library/Caches/light-cljs/v8` on macOS, `$XDG_CACHE_HOME/light-cljs/v8` (or
+`~/.cache/light-cljs/v8`) on Linux and `%LOCALAPPDATA%\light-cljs\v8` on
+Windows. No setup is needed.
+
+An entry is keyed by the full text of `prepare.bb` (source pins), the engine
+patch and `upstream_build.rs` (GN and bindgen logic), the crate version, target
+and host triples, the Cargo profile, the enabled crate features, address
+sanitizer use and the environment upstream turns into GN or bindgen arguments
+(`V8_FORCE_DEBUG`, `GN_ARGS`, `EXTRA_GN_ARGS`, `DISABLE_CLANG`,
+`CLANG_BASE_PATH`, `RUSTY_V8_MUSL_SYSROOT`, `RUSTY_V8_GLIBC_PREFIX`,
+`RUSTY_V8_BINDGEN_RESOURCE_DIR`). Both profiles build a release engine, but
+their archives differ in the build-directory names embedded in source paths,
+so the debug and release profiles keep separate entries. The directory name
+carries a hash of this material and the entry records it in full; an entry is
+used only when the recorded material is identical. Changing any key input
+misses and builds from source. Bump `CACHE_SCHEMA` in `build.rs` when the
+wrapper itself changes what a source build produces. Tool locations (`GN`,
+`NINJA`, `PYTHON`, compiler caches, `LIBCLANG_PATH`) and the installed SDK are
+not keyed; after a toolchain change that should rebuild the engine, delete the
+cache directory.
+
+A build holds a per-entry lock, so a second build of the same engine waits for
+the first and then reuses its result. A source build publishes by copying the
+pair into a private `.tmp-` directory, flushing it and renaming it into place,
+so readers never see a partial entry. An interrupted publish leaves only the
+temporary directory, which no lookup reads and a later publish removes after a
+day. An entry whose recorded file sizes do not match is ignored and replaced.
+
+Settings, read by the build script:
+
+- `LIGHT_CLJS_V8_CACHE=require` fails the build on a miss instead of building
+  from source, for automated runs that must never spend hours on V8.
+  `off` always builds from source and publishes nothing. `on` is the default.
+- `LIGHT_CLJS_V8_CACHE_DIR=<absolute path>` moves the cache.
+- `LIGHT_CLJS_V8_CACHE_SEED=<dir>` publishes, on a miss, the
+  `librusty_v8.a`/`src_binding.rs` pair in `<dir>` as this build's entry
+  instead of building. Use it only for a pair built from these same sources,
+  configuration and Cargo profile, for example copies of `gn_out/obj/librusty_v8.a`
+  and `gn_out/src_binding.rs` from an earlier source build of that profile.
+
+Explicit `RUSTY_V8_ARCHIVE`/`RUSTY_V8_SRC_BINDING_PATH` pairs bypass the cache.
 
 Rust bindings: MIT, [LICENSE](LICENSE). V8: BSD and notices in
 [LICENSE.v8](LICENSE.v8). Public headers used by light-cljs's C++ adapter live in

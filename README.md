@@ -63,8 +63,9 @@ source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─
 ## Building
 
 The default native build requires Rust 1.91+, babashka (`bb`), Git, curl, tar,
-Python 3, a C/C++ toolchain and libclang. The first build compiles a pinned V8
-source patch; subsequent builds reuse it. See [engine build details](vendor/v8/README.md),
+Python 3, a C/C++ toolchain and libclang. The first build on a machine compiles a pinned V8
+source patch into a per-user cache; later builds in any checkout, worktree or clean
+target directory reuse it (`LIGHT_CLJS_V8_CACHE=require` fails instead of rebuilding). See [engine build details](vendor/v8/README.md),
 including `LIBCLANG_PATH` setup on macOS. Node.js is needed for parts of the test
 suite and for running emitted JavaScript outside the embedded evaluator.
 
