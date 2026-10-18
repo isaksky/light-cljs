@@ -548,6 +548,27 @@ output, then loads the entry again into `DevSession`. Measure this separately an
 evaluate a common startup compilation path. It is useful work, but not a
 prerequisite for the binary cache.
 
+*As built (light-cljs-326):* measured, and the startup path is kept
+([benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md), "Watch
+startup"; `bb benchmarks/watch_startup.bb`). Penpot does not start under
+`--watch`, which takes no `--macro-*` flags (light-cljs-349), so the large
+fixture is a generated 301-namespace program at the watch's 1,024-expansion
+limit. There the session load is 89% of a 4.55 s startup and grows
+quadratically, while the V8 build analyzes, emits and writes in under 0.5 s.
+Writing the dev build from the session's units would save at most 11% and
+changes the output (the session runs each form in a scope of its own and
+enters the namespace with `createNs`), so it is rejected. Seeding the
+session from the startup build is where the time is: a whole-program build
+in QuickJS writes a byte-identical dev build in about 0.7 s and would keep
+the macro heap in the session's engine. It is not adopted because the
+session's state for later edits (directive contexts, the macro host's
+interactive imports, renames and namespace metadata, runtime registrations,
+the loaded set and the file of each namespace) comes only from its own load
+today; installing it for namespaces compiled elsewhere is light-cljs-327's
+work, which validates first edits after the install, and a seeded session
+should reuse that installation. The quadratic session load itself, per-form
+copies of the whole retained program, is light-cljs-348.
+
 Native clean compilation uses V8 and the interactive session currently uses
 QuickJS. Registering cached definitions in a new evaluator does not transfer
 mutated roots or live function handles. Initial session loading may skip cached
