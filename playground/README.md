@@ -12,6 +12,7 @@ playground/
   app.js        files, compile options, result views, local-storage persistence
   compiler.js   the page's handle on the compiler worker: stale results, Stop
   compiler-worker.js  runs the wasm compiler off the page's thread
+  macro-host.js the browser engine's side of "browser macros"
   examples.js   the example programs in the dropdown, smallest first
   worker.js     runs one compiled program in a worker the page can terminate
   style.css
@@ -60,6 +61,20 @@ Two things differ from the native build:
   10 seconds. Call `(enable-console-print!)` before printing, as in
   ClojureScript.
 
+With the "browser macros" checkbox, a compile request carries `macros:
+"browser"` and its macros run in the compiler worker's own JavaScript engine
+instead of QuickJS: `set_browser_macros(true)` makes the crate hand
+`MacroHost::set_script_host` a host that calls `globalThis.lightCljsMacroHost`,
+which `macro-host.js` provides, and `serve_macro_host` is the way back in for
+the compiler services macros call. The output is the same; macro-heavy
+compiles are about three times faster, and a macro that never returns runs
+until Stop, since the 10 s deadline is not checked inside the browser's
+JavaScript. [docs/browser-macros.md](../docs/browser-macros.md) has the
+details, the isolation differences and the measurements. `check.mjs` compiles
+every example at every level, and programs that stress macro semantics, with
+both engines and requires identical results, and stops a spinning compile in
+each.
+
 The example dropdown replaces all files with one of the programs in
 `examples.js`, from a single namespace up to a calculator spread over several.
 Most log through `js/console.log` so the emitted JavaScript stays small and
@@ -83,7 +98,7 @@ an example, append to `EXAMPLES` and run `bb playground/build.bb check`.
 
 Compile time in the browser is a few hundred milliseconds for the first
 compile (the macro bootstrap) and tens of milliseconds after that. The wasm
-module is about 4.6 MB (around 1.3 MB gzipped).
+module is about 6.4 MB (around 2.0 MB gzipped).
 
 ## Building
 

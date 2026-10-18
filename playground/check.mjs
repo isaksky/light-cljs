@@ -22,7 +22,7 @@ const dist = path.join(here, "dist");
 const pkg = path.join(dist, "pkg");
 // The one Node driver for single-file `--esm` and chunked builds.
 const driver = path.join(here, "..", "tests", "support", "chunked_execution.mjs");
-const { default: init, compile, compile_chunks, version } = await import(path.join(pkg, "light_cljs_playground.js"));
+const { default: init, compile, compile_chunks, serve_macro_host, set_browser_macros, version } = await import(path.join(pkg, "light_cljs_playground.js"));
 const { EXAMPLES } = await import(path.join(dist, "examples.js"));
 await init({ module_or_path: fs.readFileSync(path.join(pkg, "light_cljs_playground_bg.wasm")) });
 
@@ -300,6 +300,97 @@ for (const [name, build] of [
   checkNoOutput(`${name} unknown level`, level);
 }
 
+// Browser macros (light-cljs-307, docs/browser-macros.md): with macro-host.js
+// installed, macros run in this engine instead of the module's QuickJS.
+// Every example at every level, and programs that lean on macro semantics
+// (a helper the compiler emits on demand, recursion, gensyms, &form and &env,
+// a form returned unchanged keeping its location, special numbers, unpaired
+// surrogates), compile to exactly what QuickJS gives. A macro's error differs
+// only in the stack trace QuickJS appends to its message.
+const { createMacroHost } = await import(path.join(dist, "macro-host.js"));
+globalThis.lightCljsMacroHost = createMacroHost(serve_macro_host);
+const SEMANTICS = `(ns demo.main)
+(defn helper [x] (list 'inc x))
+(defmacro via-helper [x] (helper x))
+(defmacro line-of [] (:line (meta &form)))
+(defmacro local-names [] (vec (sort (map str (keys (:locals &env))))))
+(defmacro ident [x] x)
+(defmacro my-and ([] true) ([x] x) ([x & more] \`(let [v# ~x] (if v# (my-and ~@more) v#))))
+(defmacro traced [label & body] (let [start (gensym "start")] \`(let [~start ~label r# (do ~@body)] [~start r#])))
+(defmacro nums [] [##NaN ##Inf ##-Inf -0.0 0.1 1e300 9007199254740993])
+(defmacro text [s] (str s "\\u00e9 \\ud83d\\ude00 \\ud800"))
+(defmacro same? [a] (identical? a (second &form)))
+(let [a 1 b 2] (js/console.log (local-names)))
+(js/console.log (via-helper 41) (line-of) (pr-str (nums)) (text "x") (same? (+ 1 2)) (my-and 1 2 3) (traced :t (+ 1 2)))
+(ident (undeclared-thing 1))
+`;
+const macroPrograms = [
+  ...EXAMPLES.map((example) => [example.id, example.files.map((file) => file.path), example.files.map((file) => file.source), example.entry]),
+  ["semantics", ["demo/main.cljs"], [SEMANTICS], "demo.main"],
+  ["throws", ["demo/main.cljs"], ['(ns demo.main)\n(defmacro boom [] (throw (ex-info "macro failed" {})))\n(boom)\n'], "demo.main"],
+  ["bad result", ["demo/main.cljs"], ["(ns demo.main)\n(defmacro bad [] (atom 1))\n(bad)\n"], "demo.main"],
+];
+// Programs whose browser-macro result is also checked on its own: a helper
+// keeps the macro generation and values it was defined against (22, not
+// 112); a compiler service that fails under a JavaScript catch still fails
+// the compile with its own diagnostic (QuickJS reports only that the session
+// was invalidated, so that one is not compared); a literal a macro mutates is
+// not restored from the compiler's original.
+const SNAPSHOTS = `(ns demo.main)
+(def factor 2)
+(defmacro old [] 10)
+(defn helper [x] (+ (old) (* factor x)))
+(defmacro old [] 100)
+(def factor 3)
+(defmacro run [] (helper 4))
+(pr-str [(run) (helper 4)])
+`;
+const CAUGHT = "(ns demo.main)\n(declare helper)\n(defmacro m [] (try (helper) (catch :default e :caught)))\n(defn helper [] (m))\n(m)\n";
+const MUTATED = '(ns demo.main)\n(defmacro bump [o] (aset o "x" 2) o)\n(.-x (bump #js {:x 1}))\n';
+macroPrograms.push(
+  ["definition snapshots", ["demo/main.cljs"], [SNAPSHOTS], "demo.main"],
+  ["mutated literal", ["demo/main.cljs"], [MUTATED], "demo.main"],
+);
+const withoutStack = (fields) => fields.map((field) => (typeof field === "string" ? field.replace(/\n {4}at [^\n]*/g, "").replace(/\n;/g, ";") : field));
+let browserCompiles = 0;
+for (const [name, paths, sources, entry] of macroPrograms) {
+  for (const level of ["none", "prepare", "advanced"]) {
+    set_browser_macros(false);
+    const embedded = fields(compile(paths, sources, entry, level, true, false, level === "advanced", false));
+    set_browser_macros(true);
+    const browser = fields(compile(paths, sources, entry, level, true, false, level === "advanced", false));
+    set_browser_macros(false);
+    check(isDeepStrictEqual(browser, withoutStack(embedded)), `${name} @ ${level} with browser macros: ${JSON.stringify(browser).slice(0, 400)} is not ${JSON.stringify(embedded).slice(0, 400)}`);
+    browserCompiles += 1;
+  }
+}
+// A macro sees the engine it runs in: QuickJS has neither `process` nor
+// `navigator`, and this one has one of them.
+const ENGINE = ["(ns demo.main)\n(defmacro hosted? [] (boolean (or (exists? js/process) (exists? js/navigator))))\n(hosted?)\n"];
+function hosted(js) {
+  return js == null ? js : String(run(js).value);
+}
+set_browser_macros(true);
+for (const level of ["none", "prepare", "advanced"]) {
+  const snapshots = compile(["demo/main.cljs"], [SNAPSHOTS], "demo.main", level, true, false, false, false);
+  check(hosted(snapshots.js) === "[22 22]", `browser macros, definition snapshots @ ${level}: ${snapshots.error ?? hosted(snapshots.js)}`);
+  const caught = compile(["demo/main.cljs"], [CAUGHT], "demo.main", level, true, false, false, false);
+  check(caught.js == null && String(caught.error).includes("compile dependency cycle"), `browser macros, caught service failure @ ${level}: ${caught.error ?? caught.js?.slice(0, 100)}`);
+  const mutated = compile(["demo/main.cljs"], [MUTATED], "demo.main", level, true, false, false, false);
+  check(hosted(mutated.js) === "2", `browser macros, mutated literal @ ${level}: ${mutated.error ?? hosted(mutated.js)}`);
+}
+check(hosted(compile(["demo/main.cljs"], ENGINE, "demo.main", "none", true, false, false, false).js) === "true", "browser macros ran in QuickJS");
+// Compiles share this realm, but a global one compile's macros define is gone
+// when the next one starts, even beside one they made non-configurable.
+const LEAK = ['(ns demo.main)\n(defmacro leak [] (.defineProperty js/Object js/globalThis "leakedFixed" #js {:value 1}) (set! js/globalThis.leaked 42) nil)\n(leak)\n'];
+const PEEK = ["(ns demo.main)\n(defmacro peek [] (js/String (.-leaked js/globalThis)))\n(peek)\n"];
+check(compile(["demo/main.cljs"], LEAK, "demo.main", "none", true, false, false, false).error == null, "browser macros: the leaking compile failed");
+const peeked = compile(["demo/main.cljs"], PEEK, "demo.main", "none", true, false, false, false);
+check(hosted(peeked.js) === "undefined", `browser macros: a global leaked into the next compile: ${peeked.error ?? hosted(peeked.js)}`);
+set_browser_macros(false);
+check(hosted(compile(["demo/main.cljs"], ENGINE, "demo.main", "none", true, false, false, false).js) === "false", "embedded macros ran in this engine");
+console.log(`browser macros: ${browserCompiles} compiles identical to the embedded engine's`);
+
 // The page compiles in compiler-worker.js through compiler.js. Here both run
 // in a worker_threads worker behind an adapter that gives it the web worker
 // globals it uses: its results are the direct compile's, a superseded request
@@ -358,6 +449,11 @@ const exampleSources = (example) => example.files.map((file) => file.source);
 for (const example of EXAMPLES) {
   await checkWorkerCompile(`${example.id} @ advanced`, request(examplePaths(example), exampleSources(example), example.entry, "advanced"));
 }
+for (const example of EXAMPLES) {
+  await checkWorkerCompile(`${example.id} @ none, browser macros`, { ...request(examplePaths(example), exampleSources(example), example.entry, "none"), macros: "browser" });
+}
+const hostedOutcome = await compiler.compile({ ...request(["demo/main.cljs"], ENGINE, "demo.main", "none"), macros: "browser" });
+check(hostedOutcome.status === "done" && hosted(hostedOutcome.result.js) === "true", `worker: browser macros ran in QuickJS: ${JSON.stringify(hostedOutcome).slice(0, 200)}`);
 await checkWorkerCompile("located error", request(["demo/main.cljs"], ["(ns demo.main)\n(defn f [x] (g x)"], "demo.main", "prepare"));
 const warned = await checkWorkerCompile("warning", request(["demo/main.cljs"], ["(ns demo.main)\n(defn f [x] (g x))\n1"], "demo.main", "prepare"));
 check(warned.result?.warnings.includes("undeclared"), `worker warning: ${JSON.stringify(warned.result?.warnings)}`);
@@ -371,25 +467,31 @@ check((await superseded).status === "stale", `worker: the superseded compile res
 await newest;
 
 // A macro that spins until the 10 s session deadline, stopped after 1 s.
-const spin = compiler.compile(
-  request(["demo/spin.cljs"], ["(ns demo.spin)\n(defmacro spin [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i)))\n(spin)\n"], "demo.spin", "none"),
-);
-let spinOutcome = null;
-spin.then((outcome) => (spinOutcome = outcome));
+// Browser macros have no deadline inside JavaScript, so stopping the worker
+// is what ends such a compile there.
 let ticks = 0;
-const ticker = setInterval(() => (ticks += 1), 20);
-await new Promise((resolve) => setTimeout(resolve, 1000));
-clearInterval(ticker);
-check(spinOutcome == null && compiler.busy, `worker: the spinning compile settled early: ${JSON.stringify(spinOutcome)}`);
-check(ticks >= 10, `worker: this thread ticked ${ticks} times in 1 s while the compile ran`);
-const workersBefore = threads.length;
-check(compiler.cancel(), "worker: cancel found no pending compile");
-check((await spin).status === "cancelled", `worker: the stopped compile resolved ${JSON.stringify(await spin)}`);
-check(threads.length === workersBefore + 1 && !compiler.busy, `worker: ${threads.length - workersBefore} workers started by cancel`);
-const after = await checkWorkerCompile(`${first.id} after cancel`, request(examplePaths(first), exampleSources(first), first.entry, "prepare"));
-if (after.status === "done") {
-  const text = String(run(after.result.js).value);
-  check(text === first.expect, `worker ${first.id} after cancel: value ${text}, expected ${first.expect}`);
+for (const macros of ["embedded", "browser"]) {
+  const spin = compiler.compile({
+    ...request(["demo/spin.cljs"], ["(ns demo.spin)\n(defmacro spin [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i)))\n(spin)\n"], "demo.spin", "none"),
+    macros,
+  });
+  let spinOutcome = null;
+  spin.then((outcome) => (spinOutcome = outcome));
+  ticks = 0;
+  const ticker = setInterval(() => (ticks += 1), 20);
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  clearInterval(ticker);
+  check(spinOutcome == null && compiler.busy, `worker, ${macros} macros: the spinning compile settled early: ${JSON.stringify(spinOutcome)}`);
+  check(ticks >= 10, `worker, ${macros} macros: this thread ticked ${ticks} times in 1 s while the compile ran`);
+  const workersBefore = threads.length;
+  check(compiler.cancel(), `worker, ${macros} macros: cancel found no pending compile`);
+  check((await spin).status === "cancelled", `worker, ${macros} macros: the stopped compile resolved ${JSON.stringify(await spin)}`);
+  check(threads.length === workersBefore + 1 && !compiler.busy, `worker, ${macros} macros: ${threads.length - workersBefore} workers started by cancel`);
+  const after = await checkWorkerCompile(`${first.id} after cancel, ${macros} macros`, request(examplePaths(first), exampleSources(first), first.entry, "prepare"));
+  if (after.status === "done") {
+    const text = String(run(after.result.js).value);
+    check(text === first.expect, `worker ${first.id} after cancel, ${macros} macros: value ${text}, expected ${first.expect}`);
+  }
 }
 
 // A worker that fails is dropped: its pending compiles resolve failed (the
@@ -434,7 +536,7 @@ for (const how of ["failed", "error", "before ready"]) {
     `worker ${how}: after the failure ${JSON.stringify(recovered).slice(0, 200)}`,
   );
 }
-console.log(`compiler worker: one compile stopped after ${ticks} ticks of this thread, three failures recovered`);
+console.log(`compiler worker: a compile stopped with each macro engine, the last after ${ticks} ticks of this thread, three failures recovered`);
 await Promise.all(threads.map((thread) => thread.terminate()));
 
 if (failures) {

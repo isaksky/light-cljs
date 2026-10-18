@@ -3,9 +3,15 @@
 // this worker (compiler.js then starts a fresh one). The page compiles the
 // wasm module once and sends it in the "init" message; each "compile" message
 // is answered by one "compiled" message with the same id, in order.
-import init, { compile, version } from "./pkg/light_cljs_playground.js";
+//
+// A request with `macros: "browser"` runs its macros in this worker's own
+// JavaScript engine through macro-host.js instead of in the module's QuickJS
+// (light-cljs-307's prototype, docs/browser-macros.md).
+import init, { compile, serve_macro_host, set_browser_macros, version } from "./pkg/light_cljs_playground.js";
+import { createMacroHost } from "./macro-host.js";
 
 let ready = null;
+globalThis.lightCljsMacroHost = createMacroHost(serve_macro_host);
 
 // The fields of a CompileResult the page reads, as a plain object: the
 // wasm-bindgen class does not survive postMessage.
@@ -34,7 +40,7 @@ async function receive(message) {
     return;
   }
   if (message.type !== "compile") return;
-  const { id, paths, sources, entry, optimize, warnings, pseudo, sizes } = message;
+  const { id, paths, sources, entry, optimize, warnings, pseudo, sizes, macros } = message;
   try {
     await ready;
   } catch (error) {
@@ -42,6 +48,7 @@ async function receive(message) {
   }
   let result;
   try {
+    set_browser_macros(macros === "browser");
     result = compile(paths, sources, entry, optimize, warnings, pseudo, sizes, false);
   } catch (error) {
     // A panic leaves the module unusable: report it, and the page replaces

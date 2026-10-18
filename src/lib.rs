@@ -63,6 +63,7 @@ pub use eval_session::{
 };
 mod eval_compiler;
 pub mod form_bridge;
+pub mod host_evaluator;
 mod literals;
 pub mod macro_host;
 pub mod manifest_prefix;

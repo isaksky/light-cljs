@@ -2,10 +2,13 @@
 //! and an entry namespace; this compiles them with light-cljs (macros expand in
 //! the embedded QuickJS, inside this module) and returns the JavaScript, which
 //! the page then runs in the browser's own engine.
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::compiler::analyze_namespace_entry_with_provider;
+use light_cljs::host_evaluator::ScriptHost;
 use light_cljs::source_provider::{LoadError, LoadRequest, SourceInput, SourceProvider};
 use light_cljs::{
     ApplicationOptions, MacroHost, OptimizationLevel, PreparedApplication, prepare_application,
@@ -18,6 +21,74 @@ extern "C" {
     fn now() -> f64;
     #[wasm_bindgen(js_namespace = console, js_name = error)]
     fn console_error(message: &str);
+}
+
+// The page's macro host (playground/macro-host.js), looked up when a call is
+// made, so a module that never selects browser macros needs none.
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = lightCljsMacroHost, js_name = engine)]
+    fn host_engine() -> String;
+    #[wasm_bindgen(catch, js_namespace = lightCljsMacroHost, js_name = open)]
+    fn host_open(session: f64, services: &str) -> Result<(), JsValue>;
+    #[wasm_bindgen(catch, js_namespace = lightCljsMacroHost, js_name = call)]
+    fn host_call(session: f64, name: &str, arguments: &str) -> Result<String, JsValue>;
+    #[wasm_bindgen(catch, js_namespace = lightCljsMacroHost, js_name = install)]
+    fn host_install(session: f64, name: &str, index: u32, strings: bool) -> Result<(), JsValue>;
+    #[wasm_bindgen(js_namespace = lightCljsMacroHost, js_name = close)]
+    fn host_close(session: f64);
+}
+
+fn host_error(error: JsValue) -> String {
+    error
+        .as_string()
+        .unwrap_or_else(|| "the macro host failed".to_owned())
+}
+
+/// Runs compiler macros in the JavaScript engine running this module,
+/// through `globalThis.lightCljsMacroHost`.
+struct BrowserHost;
+
+impl ScriptHost for BrowserHost {
+    fn engine(&self) -> String {
+        host_engine()
+    }
+    fn open(&self, session: u64, services: &str) -> Result<(), String> {
+        host_open(session as f64, services).map_err(host_error)
+    }
+    fn call(&self, session: u64, name: &str, arguments: &str) -> Result<String, String> {
+        host_call(session as f64, name, arguments).map_err(host_error)
+    }
+    fn install(&self, session: u64, name: &str, index: usize, strings: bool) -> Result<(), String> {
+        host_install(session as f64, name, index as u32, strings).map_err(host_error)
+    }
+    fn close(&self, session: u64) {
+        host_close(session as f64)
+    }
+}
+
+thread_local! {
+    static BROWSER_MACROS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Run the macros of later compilations in this JavaScript engine (true),
+/// through `globalThis.lightCljsMacroHost`, or in the embedded QuickJS
+/// (false, the default). light-cljs-307's prototype; see
+/// docs/browser-macros.md.
+#[wasm_bindgen]
+pub fn set_browser_macros(enabled: bool) {
+    BROWSER_MACROS.with(|cell| cell.set(enabled));
+}
+
+/// The macro host's way back in: a compiler service its session called.
+#[wasm_bindgen]
+pub fn serve_macro_host(
+    session: f64,
+    index: u32,
+    strings: bool,
+    request: &str,
+) -> Result<String, String> {
+    light_cljs::host_evaluator::serve(session as u64, index as usize, strings, request)
 }
 
 /// The clock that the engine's wasm shim and the evaluator's session deadline
@@ -183,10 +254,14 @@ fn prepare(
         ..AnalysisOptions::default()
     };
     let mut collected = Vec::new();
+    let mut host = MacroHost::new();
+    if BROWSER_MACROS.with(Cell::get) {
+        host.set_script_host(Rc::new(BrowserHost));
+    }
     let program = analyze_namespace_entry_with_provider(
         options.entry,
         &files,
-        &mut MacroHost::new(),
+        &mut host,
         analysis,
         &mut collected,
     );

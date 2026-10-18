@@ -29,7 +29,7 @@
 (def crate-dir (fs/path playground-dir "crate"))
 (def dist-dir (fs/path playground-dir "dist"))
 (def wasm-name "light_cljs_playground")
-(def static-files ["index.html" "app.js" "compiler.js" "compiler-worker.js" "examples.js" "worker.js" "style.css"])
+(def static-files ["index.html" "app.js" "compiler.js" "compiler-worker.js" "macro-host.js" "examples.js" "worker.js" "style.css"])
 
 (defn fail [& message]
   (binding [*out* *err*] (println (apply str message)))

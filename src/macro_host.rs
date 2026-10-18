@@ -281,6 +281,9 @@ pub struct MacroHost {
     /// target type a package builds) run without the host's packages, which
     /// only the application has.
     pub opaque_packages: bool,
+    /// The engine clean compilations run their macros in instead of the
+    /// built-in ones ([`Self::set_script_host`]).
+    pub(crate) script_host: Option<std::rc::Rc<dyn crate::host_evaluator::ScriptHost>>,
     /// Per namespace, the globals registered as its declared bindings in the
     /// compile-time session: the position after the last one registered and
     /// how many of the namespace's own globals were among them. Shared by
@@ -374,6 +377,23 @@ impl MacroHost {
         std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
         crate::evaluator::EvalError,
     > {
+        if let Some(host) = &self.script_host
+            && !self.interactive
+        {
+            use crate::evaluator::MacroEvaluator;
+            let evaluator =
+                crate::host_evaluator::HostEvaluator::new(host.clone(), &self.evaluator_options)?;
+            if self.assertions_disabled {
+                let done = evaluator
+                    .evaluate_unit("rt => { rt.core.assertions = false; return null; }")?;
+                evaluator.release(done)?;
+            }
+            if self.opaque_packages {
+                let done = evaluator.evaluate_unit(OPAQUE_PACKAGES_PRELUDE)?;
+                evaluator.release(done)?;
+            }
+            return Ok(std::rc::Rc::new(evaluator));
+        }
         #[cfg(light_v8)]
         if !self.interactive {
             use crate::evaluator::MacroEvaluator;
@@ -525,6 +545,13 @@ impl MacroHost {
 
     pub fn new() -> Self {
         Self::default()
+    }
+    /// Run the macros of clean compilations in `host`'s engine instead of
+    /// the built-in one (light-cljs-307, a prototype for the browser
+    /// playground; docs/browser-macros.md). Interactive sessions and data
+    /// readers keep the built-in QuickJS.
+    pub fn set_script_host(&mut self, host: std::rc::Rc<dyn crate::host_evaluator::ScriptHost>) {
+        self.script_host = Some(host);
     }
     /// Control assertion emission for this host (enabled by default). Disabled
     /// assertions omit both condition and message, including function pre/post checks.
@@ -1057,6 +1084,7 @@ impl MacroHost {
             generated_nodes: self.generated_nodes.clone(),
             work: self.work.clone(),
             opaque_packages: self.opaque_packages,
+            script_host: self.script_host.clone(),
             reader_declared: self.reader_declared.clone(),
             reader_generation: self.reader_generation,
             dependency_log: self.dependency_log.clone(),

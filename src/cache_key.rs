@@ -249,6 +249,12 @@ pub fn compiler_identity(host: &MacroHost) -> Digest {
         .digest(&build_identity())
         .number(u64::from(crate::artifact_codec::SCHEMA_VERSION))
         .digest(&crate::artifact_codec::core_table());
+    if let Some(script) = &host.script_host
+        && !host.interactive
+    {
+        fingerprint.text("host").text(&script.engine());
+        return fingerprint.finish();
+    }
     #[cfg(light_v8)]
     if !host.interactive {
         fingerprint.text("v8").text(v8::V8::get_version());

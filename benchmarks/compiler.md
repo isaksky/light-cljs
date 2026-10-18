@@ -4394,3 +4394,23 @@ table costs over two (the names outside the lists, 154 bytes estimated) and
 the import and export lines of the runtime bindings the factories' parameters
 took. Loading the editor first now costs 58,780 / 19,278 bytes (59,648 /
 19,871 before) and the reports first 57,937 / 18,966 (58,708 / 19,508).
+
+## Browser macros in the playground — October 18, 2026
+
+light-cljs-307 prototyped running the playground's macros in the browser's
+own engine instead of the module's QuickJS ([docs/browser-macros.md](../docs/browser-macros.md),
+which has the program and the method). A macro-heavy compile at `--optimize
+prepare` (455 KB of output, near the 1,024-expansion limit), median of five
+warm compiles in one worker, both engines alternating; output identical:
+
+| Engine | Embedded QuickJS | Browser macros | Speedup |
+|---|---|---|---|
+| Node 24.18 (V8), direct | 490 ms | 197 ms | 2.5x |
+| Chromium 153 (headless), worker | 468 ms | 152 ms | 3.1x |
+| Firefox 155, worker | 570 ms | 224 ms | 2.5x |
+| WebKit 26.6, worker | 454 ms | 143 ms | 3.2x |
+
+The module grows from 6,385,991 to 6,444,001 bytes (2,018,361 to 2,040,034
+gzip -9) while QuickJS stays linked. Without QuickJS it would lose about
+1.05 MB raw and 0.39 MB gzipped (a QuickJS-only module built with the same
+profile is 1,093,751 / 403,086 bytes).
