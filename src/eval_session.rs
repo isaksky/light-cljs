@@ -96,6 +96,9 @@ pub struct EvalOptions {
     /// produces them: before the form runs, and before what it loads. The
     /// session drops them without it.
     pub warnings: Option<WarningOutput>,
+    /// The build configuration `light.build/config` answers while forms
+    /// compile ([`crate::BuildConfiguration`]), as `--config` gives a build.
+    pub configuration: crate::BuildConfiguration,
 }
 /// The receiver of analysis warnings ([`EvalOptions::warnings`]); an error
 /// it returns is the error of the form.
@@ -138,6 +141,7 @@ impl Default for EvalOptions {
             unhandled_rejections: UnhandledRejections::default(),
             warning_mode: false,
             warnings: None,
+            configuration: crate::BuildConfiguration::default(),
         }
     }
 }

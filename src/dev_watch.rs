@@ -42,7 +42,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 pub const USAGE: &str = "Watch:
   light-cljs --watch --entry NAMESPACE --source-root DIR [--source-root DIR ...] --out-dir DIR
-             [--poll-ms N] [--elide-asserts] [--stats]
+             [--poll-ms N] [--elide-asserts] [--stats] [--config KEY=EDN ...]
              [--serve PORT [--serve-host HOST] [--reload-dependents]]
 
 Write the dev build of --compile --reloadable into DIR, then poll the .cljs
@@ -58,6 +58,9 @@ and the namespace keeps its previous unit. Runs until interrupted.
 With --stats, print the --compile --stats report of the startup build before
 that build's line, with the time the watch's session took to load the
 program as time.session-load-ms.
+
+With --config KEY=EDN, repeatable, give light.build/config the value EDN for
+the keyword KEY in the build and in every step, as --compile does.
 
 With --serve PORT (0 for any free port), also serve the build over HTTP on
 127.0.0.1, or on HOST with --serve-host (0.0.0.0 opens it to the network;
@@ -91,6 +94,8 @@ struct Options {
     reload_dependents: bool,
     /// `--stats`: report the startup build (`light_cljs::compile_stats`).
     stats: bool,
+    /// `--config KEY=EDN`: what `light.build/config` answers.
+    configuration: light_cljs::BuildConfiguration,
 }
 
 fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> {
@@ -99,6 +104,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
     let mut assertions = true;
     let (mut serve, mut serve_host, mut reload_dependents) = (None, None, false);
     let mut stats = false;
+    let mut configuration = light_cljs::BuildConfiguration::new();
     while let Some(arg) = args.next() {
         let flag = arg.to_str().unwrap_or("");
         let mut value = || {
@@ -149,6 +155,15 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
             }
             "--reload-dependents" => reload_dependents = true,
             "--stats" => stats = true,
+            "--config" => {
+                let text = value()
+                    .map_err(|_| "--config requires KEY=EDN")?
+                    .into_string()
+                    .map_err(|_| "--config must be valid UTF-8")?;
+                configuration
+                    .insert_text(&text)
+                    .map_err(|error| format!("--config {text}: {error}"))?;
+            }
             _ => return Err(format!("unexpected watch option: {flag}\n{USAGE}").into()),
         }
     }
@@ -173,6 +188,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
         serve_host,
         reload_dependents,
         stats,
+        configuration,
     }))
 }
 
@@ -309,6 +325,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     let mut stamps = scan(&roots);
     let mut host = MacroHost::new();
     host.set_assertions(options.assertions);
+    host.set_build_configuration(options.configuration.clone());
     // Dev compilation reports undeclared Vars and arity conflicts as
     // warnings (docs/dev-workflow.md, "Dev-mode contract").
     let analysis = AnalysisOptions {
@@ -378,6 +395,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     let session = DevSession::new(&EvalOptions {
         source_provider: Some(provider.clone()),
         assertions: options.assertions,
+        configuration: options.configuration.clone(),
         ..EvalOptions::default()
     })?;
     let actions = session.source(&SourceInput::new(

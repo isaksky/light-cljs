@@ -12,7 +12,8 @@
 //! message, which the object throws.
 
 use crate::dependency_manifest::{
-    EdgeKinds, ExternalInput, InputRecord, ObservationLog, ResolvedResource, ResourceDependency,
+    BroadView, EdgeKinds, ExternalInput, InputRecord, ObservationLog, ResolvedResource,
+    ResourceDependency,
 };
 use crate::source_provider::{LoadError, ResourceProvider};
 use std::{cell::RefCell, rc::Rc};
@@ -22,6 +23,8 @@ use std::{cell::RefCell, rc::Rc};
 /// ([`crate::eval_compiler`]), `None` otherwise.
 pub(crate) struct BuildContext {
     resources: Option<Rc<dyn ResourceProvider>>,
+    /// What `light.build/config` answers.
+    configuration: Rc<BuildConfiguration>,
     /// Each source by source index, as analysis reaches it.
     sources: Vec<Option<Site>>,
     /// The source being analyzed.
@@ -48,9 +51,14 @@ pub(crate) struct BuildGuard {
 }
 
 impl BuildGuard {
-    pub(crate) fn enter(build: &SharedBuild, resources: Option<Rc<dyn ResourceProvider>>) -> Self {
+    pub(crate) fn enter(
+        build: &SharedBuild,
+        resources: Option<Rc<dyn ResourceProvider>>,
+        configuration: Rc<BuildConfiguration>,
+    ) -> Self {
         let previous = build.borrow_mut().replace(BuildContext {
             resources,
+            configuration,
             sources: Vec::new(),
             window: 0,
         });
@@ -160,6 +168,7 @@ pub(crate) fn serve_request(
 fn public_name(operation: &str) -> &str {
     match operation {
         "depend-resource" | "depend-namespace" | "depend-provider" => "depend!",
+        "depend-on" => "depend-on!",
         other => other,
     }
 }
@@ -173,7 +182,7 @@ fn serve(
     second: &str,
 ) -> Result<Option<String>, String> {
     let name = format!("light.build/{}", public_name(operation));
-    let (resources, own, site) = {
+    let (resources, configuration, own, site) = {
         let context = build.borrow();
         let Some(context) = context.as_ref() else {
             return Err(format!(
@@ -187,7 +196,12 @@ fn serve(
             let source = caller.analyzing.map_or(context.window, |s| s as usize);
             context.sources.get(source).cloned().flatten()
         };
-        (context.resources.clone(), context.window as u32, site)
+        (
+            context.resources.clone(),
+            context.configuration.clone(),
+            context.window as u32,
+            site,
+        )
     };
     let mut helpers = caller.units.clone();
     if caller.reader {
@@ -304,6 +318,24 @@ fn serve(
             });
             Ok(None)
         }
+        // Every namespace depends on the whole configuration's
+        // fingerprint already ([`ObservationLog::configuration`]), so a read
+        // records nothing more.
+        "config" => Ok(configuration.get(first).map(str::to_owned)),
+        "depend-on" => {
+            let view = match first {
+                "namespaces" => BroadView::Namespaces,
+                "declarations" => BroadView::Declarations,
+                "config" => BroadView::Config,
+                other => {
+                    return Err(format!(
+                        "{name}: unknown view {other}; expected :namespaces, :declarations or :config"
+                    ));
+                }
+            };
+            record(ExternalInput::View(view));
+            Ok(None)
+        }
         _ => Err(format!("light.build: unknown service {operation}")),
     }
 }
@@ -376,6 +408,280 @@ fn resolve_path(
     Ok(segments.join("/"))
 }
 
+/// The build configuration `light.build/config` answers: each `--config
+/// KEY=EDN` of a build, or what an embedder inserts. A key is a keyword
+/// written without its colon (`app/flavor`), and a value is EDN data read
+/// with the compiler's reader: keywords, numbers, strings, booleans, nil and
+/// lists, vectors, maps and sets of them. Values are kept as canonical text,
+/// with single spaces between the elements of collections, which macros
+/// read back as data.
+///
+/// The first implementation keys every namespace of a build on
+/// [`Self::fingerprint`], the hash of the whole map, whether or not it reads
+/// a key (docs/compiler-cache.md, "Explicit dependency APIs").
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BuildConfiguration {
+    entries: std::collections::BTreeMap<String, String>,
+}
+
+impl BuildConfiguration {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add `key` (a keyword without its colon) with the EDN text `value`. A
+    /// malformed key or value, or a key already present, is an error.
+    pub fn insert(&mut self, key: &str, value: &str) -> Result<(), String> {
+        let key = configuration_key(key)?;
+        if self.entries.contains_key(&key) {
+            return Err(format!("the key {key} is given twice"));
+        }
+        let value = configuration_value(value)?;
+        self.entries.insert(key, value);
+        Ok(())
+    }
+
+    /// Add one `KEY=EDN` text, as `--config` gives it: KEY is everything
+    /// before the first `=`.
+    pub fn insert_text(&mut self, text: &str) -> Result<(), String> {
+        let (key, value) = text
+            .split_once('=')
+            .ok_or("expected KEY=EDN, such as app/flavor=:dev")?;
+        self.insert(key, value)
+    }
+
+    /// The canonical EDN text of `key`'s value, or `None` when unset.
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.entries.get(key).map(String::as_str)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The keys, ascending, with their canonical EDN text.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
+        self.entries
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+    }
+
+    /// The whole map as canonical EDN text, keys ascending: `{}` when empty.
+    pub fn text(&self) -> String {
+        let mut text = String::from("{");
+        for (index, (key, value)) in self.entries.iter().enumerate() {
+            if index > 0 {
+                text.push(' ');
+            }
+            text.push(':');
+            text.push_str(key);
+            text.push(' ');
+            text.push_str(value);
+        }
+        text.push('}');
+        text
+    }
+
+    /// The SHA-256 of [`Self::text`], which every namespace of a build
+    /// depends on: any change to any key changes it, and the empty map has
+    /// its own.
+    pub fn fingerprint(&self) -> [u8; 32] {
+        crate::sha256::digest(self.text().as_bytes())
+    }
+}
+
+/// `key` as the name of a keyword: the text after its colon.
+fn configuration_key(key: &str) -> Result<String, String> {
+    if key.starts_with(':') {
+        return Err(format!(
+            "the key {key} is written without its colon, as {}",
+            key.trim_start_matches(':')
+        ));
+    }
+    let text = format!(":{key}");
+    let tree = crate::parser::parse(&text).ok();
+    let single = tree.as_ref().and_then(|tree| match &tree.roots[..] {
+        [root] => Some(&tree.nodes[root.0]),
+        _ => None,
+    });
+    match single {
+        Some(node)
+            if matches!(
+                node.kind,
+                crate::parser::NodeKind::Keyword {
+                    auto_resolve: false
+                }
+            ) && node.span == (0..text.len()) =>
+        {
+            Ok(key.to_owned())
+        }
+        _ => Err(format!(
+            "invalid key {key:?}: expected a keyword name without its colon, such as app/flavor"
+        )),
+    }
+}
+
+/// The canonical text of the EDN value `value`.
+fn configuration_value(value: &str) -> Result<String, String> {
+    let tree = crate::parser::parse(value)
+        .map_err(|error| format!("cannot read the value {value:?}: {error}"))?;
+    let [root] = tree.roots[..] else {
+        return Err(if tree.roots.is_empty() {
+            "the value is empty: write nil for no value".into()
+        } else {
+            format!("the value {value:?} holds more than one form")
+        });
+    };
+    let mut text = String::new();
+    canonical_value(&tree, value, root, &mut text)?;
+    Ok(text)
+}
+
+/// Append the canonical text of node `id` to `out`, and return its value's
+/// identity as the EDN reader compares values: the canonical text of a
+/// scalar, lists and vectors alike, and maps and sets in sorted order.
+/// Scalars are canonical, so equal values spelled differently (`1` and
+/// `1.0`, `"a"` and `"a"`) have one text.
+fn canonical_value(
+    tree: &crate::parser::SyntaxTree,
+    source: &str,
+    id: crate::parser::NodeId,
+    out: &mut String,
+) -> Result<String, String> {
+    use crate::parser::{CollectionKind, NodeKind};
+    let node = &tree.nodes[id.0];
+    let spelled = &source[node.span.clone()];
+    let start = out.len();
+    match &node.kind {
+        NodeKind::Nil | NodeKind::Boolean(_) => out.push_str(spelled),
+        NodeKind::Keyword {
+            auto_resolve: false,
+        } => out.push_str(spelled),
+        NodeKind::Number(_) => out.push_str(&canonical_number(spelled)?),
+        NodeKind::String(value) => canonical_string(&value.to_utf16(source), out),
+        NodeKind::Collection { kind, children } if *kind != CollectionKind::AnonymousFn => {
+            let (open, close) = match kind {
+                CollectionKind::List => ("(", ")"),
+                CollectionKind::Vector => ("[", "]"),
+                CollectionKind::Map => ("{", "}"),
+                _ => ("#{", "}"),
+            };
+            out.push_str(open);
+            let mut identities = Vec::with_capacity(children.len());
+            for (index, &child) in children.iter().enumerate() {
+                if index > 0 {
+                    out.push(' ');
+                }
+                identities.push(canonical_value(tree, source, child, out)?);
+            }
+            out.push_str(close);
+            // Map keys and set elements are distinct, as their reader requires.
+            let identity = match kind {
+                CollectionKind::Map => {
+                    let mut entries: Vec<(String, String)> = Vec::new();
+                    let mut pairs = identities.into_iter();
+                    while let (Some(key), Some(value)) = (pairs.next(), pairs.next()) {
+                        entries.push((key, value));
+                    }
+                    entries.sort();
+                    if let Some(pair) = entries.windows(2).find(|pair| pair[0].0 == pair[1].0) {
+                        return Err(repeated(source, "key", &pair[0].0));
+                    }
+                    let entries: Vec<String> = entries
+                        .into_iter()
+                        .map(|(k, v)| format!("{k} {v}"))
+                        .collect();
+                    format!("{{{}}}", entries.join(" "))
+                }
+                CollectionKind::Set => {
+                    identities.sort();
+                    if let Some(pair) = identities.windows(2).find(|pair| pair[0] == pair[1]) {
+                        return Err(repeated(source, "element", &pair[0]));
+                    }
+                    format!("#{{{}}}", identities.join(" "))
+                }
+                _ => format!("[{}]", identities.join(" ")),
+            };
+            return Ok(identity);
+        }
+        _ => {
+            return Err(format!(
+                "{spelled:?} is not a configuration value: use keywords, numbers, strings, \
+                 booleans, nil and lists, vectors, maps and sets of them"
+            ));
+        }
+    }
+    Ok(out[start..].to_owned())
+}
+
+fn repeated(source: &str, what: &str, identity: &str) -> String {
+    format!(
+        "the value {:?} repeats the {what} {identity}",
+        source.trim()
+    )
+}
+
+/// A decimal integer or floating-point number, which the EDN reader reads
+/// as a JavaScript number, printed as that number: integral values without
+/// a fraction, others as Rust's shortest round-trip decimal.
+fn canonical_number(spelled: &str) -> Result<String, String> {
+    let bytes = spelled.as_bytes();
+    let digits = |from: usize| {
+        bytes[from..]
+            .iter()
+            .position(|b| !b.is_ascii_digit())
+            .map_or(bytes.len(), |n| from + n)
+    };
+    let mut at = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
+    let integer = digits(at);
+    let valid_integer = integer > at && (bytes[at] != b'0' || integer == at + 1);
+    at = integer;
+    if bytes.get(at) == Some(&b'.') {
+        at = digits(at + 1);
+    }
+    if matches!(bytes.get(at), Some(b'e' | b'E')) {
+        let sign = usize::from(matches!(bytes.get(at + 1), Some(b'+' | b'-')));
+        let end = digits(at + 1 + sign);
+        at = if end > at + 1 + sign { end } else { 0 };
+    }
+    let number = (valid_integer && at == bytes.len())
+        .then(|| spelled.parse::<f64>().ok())
+        .flatten()
+        .filter(|number| number.is_finite())
+        .ok_or_else(|| {
+            format!(
+                "{spelled:?} is not a configuration number: write a decimal integer or \
+                 floating-point number, such as 3, -2.5 or 1e3"
+            )
+        })?;
+    // -0 equals 0.
+    let number = if number == 0.0 { 0.0 } else { number };
+    Ok(if number.fract() == 0.0 && number.abs() < 1e21 {
+        format!("{number:.0}")
+    } else {
+        format!("{number}")
+    })
+}
+
+/// `units` as an EDN string: quotes, backslashes and control characters
+/// escaped, and a lone surrogate as `\uXXXX`.
+fn canonical_string(units: &[u16], out: &mut String) {
+    out.push('"');
+    for unit in char::decode_utf16(units.iter().copied()) {
+        match unit {
+            Ok('"') => out.push_str("\\\""),
+            Ok('\\') => out.push_str("\\\\"),
+            Ok('\n') => out.push_str("\\n"),
+            Ok('\t') => out.push_str("\\t"),
+            Ok('\r') => out.push_str("\\r"),
+            Ok(c) if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            Ok(c) => out.push(c),
+            Err(lone) => out.push_str(&format!("\\u{:04x}", lone.unpaired_surrogate())),
+        }
+    }
+    out.push('"');
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,7 +708,7 @@ mod tests {
     fn a_provider_without_stable_identities_makes_its_reads_non_cacheable() {
         let build: SharedBuild = Default::default();
         let log: SharedLog = Rc::new(RefCell::new(Some(ObservationLog::default())));
-        let guard = BuildGuard::enter(&build, Some(Rc::new(Anonymous)));
+        let guard = BuildGuard::enter(&build, Some(Rc::new(Anonymous)), Default::default());
         guard.analyze(0, "app.core", None);
         let ask = |request: &str| serve_request(&build, &log, request, |_| None, Vec::new());
         assert_eq!(ask("e\0\0resource\0x.txt\0"), "vtext");
@@ -430,13 +736,13 @@ mod tests {
         let build: SharedBuild = Default::default();
         let log: SharedLog = Default::default();
         let ask = |request: &str| serve_request(&build, &log, request, |_| None, Vec::new());
-        let outer = BuildGuard::enter(&build, Some(Rc::new(Anonymous)));
+        let outer = BuildGuard::enter(&build, Some(Rc::new(Anonymous)), Default::default());
         // Indices are names, whatever order analysis reaches them in.
         outer.analyze(2, "app.later", None);
         outer.analyze(0, "app.core", None);
         assert_eq!(ask("e\0\0resource?\0./x.txt\0"), "n");
         {
-            let inner = BuildGuard::enter(&build, None);
+            let inner = BuildGuard::enter(&build, None, Default::default());
             inner.analyze(0, "other.ns", None);
             assert!(ask("e\0\0resource\0x.txt\0").contains("supplies no resources"));
         }
@@ -502,7 +808,7 @@ mod tests {
         let build: SharedBuild = Default::default();
         let log: SharedLog = Default::default();
         let ask = |request: &str| serve_request(&build, &log, request, |_| None, Vec::new());
-        let guard = BuildGuard::enter(&build, Some(Rc::new(Generated)));
+        let guard = BuildGuard::enter(&build, Some(Rc::new(Generated)), Default::default());
         guard.analyze(0, "app.core", Some("gen/core.cljs"));
         assert_eq!(ask("e\0\0resource\0./x.txt\0"), "vgen/x.txt");
         // A file the provider cannot place resolves by the namespace's name.

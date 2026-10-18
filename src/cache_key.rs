@@ -17,7 +17,8 @@
 //!   A key from one engine never matches a key from the other.
 //! - **options**: the analysis and macro options of [`KeyEnvironment::new`].
 //! - **config**: the fingerprint of the `--config` map
-//!   ([`KeyEnvironment::with_config`]); the empty map until light-cljs-313.
+//!   ([`crate::BuildConfiguration::fingerprint`]), the host's
+//!   ([`KeyEnvironment::new`], or [`KeyEnvironment::with_config`]).
 //! - **source**: the namespace's name, whether it is the entry, its resolved
 //!   file (which diagnostics name), `.cljs` or `.cljc`, provider or bundled,
 //!   and the SHA-256 of its text.
@@ -252,9 +253,7 @@ pub fn compiler_identity(host: &MacroHost) -> Digest {
 
 /// The fingerprint of an empty `--config` map.
 pub fn empty_config() -> Digest {
-    let mut fingerprint = Fingerprint::new("light-cljs config");
-    fingerprint.count(0);
-    fingerprint.finish()
+    crate::BuildConfiguration::new().fingerprint()
 }
 
 impl KeyEnvironment {
@@ -307,7 +306,7 @@ impl KeyEnvironment {
         Self {
             compiler: compiler_identity(host),
             options: fingerprint.finish(),
-            config: empty_config(),
+            config: host.build_configuration().fingerprint(),
         }
     }
 
@@ -535,6 +534,16 @@ fn external_input(fingerprint: &mut Fingerprint, input: &ExternalInput) {
             fingerprint: value,
         } => {
             fingerprint.number(2).text(token).text(value);
+        }
+        ExternalInput::Configuration { sha256 } => {
+            fingerprint.number(3).digest(sha256);
+        }
+        ExternalInput::View(view) => {
+            fingerprint.number(4).number(match view {
+                crate::dependency_manifest::BroadView::Namespaces => 0,
+                crate::dependency_manifest::BroadView::Declarations => 1,
+                crate::dependency_manifest::BroadView::Config => 2,
+            });
         }
     }
 }

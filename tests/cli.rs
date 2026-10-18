@@ -399,6 +399,112 @@ fn define_replaces_goog_define_defaults_at_every_level() {
     }
 }
 
+/// `--config KEY=EDN` gives `light.build/config` its values in a namespace
+/// compile and a `--reloadable` build; a malformed flag, value or a key
+/// given twice is an error, in `--watch` too.
+#[test]
+fn config_gives_macros_build_configuration_values() {
+    let root = TempDir::new("cljs-cli-config");
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(
+        root.join("app/macros.cljs"),
+        "(ns app.macros (:require [light.build :as b]))\n\
+         (defmacro setting [key] (pr-str (b/config key)))",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app/main.cljs"),
+        "(ns app.main (:require [app.macros :refer [setting]]))\n\
+         (str (setting :app/flavor) \" \" (setting :app/ports) \" \" (setting :app/unset))",
+    )
+    .unwrap();
+    let root_arg = root.to_str().unwrap();
+    let namespace = [
+        "--compile",
+        "--entry",
+        "app.main",
+        "--source-root",
+        root_arg,
+    ];
+    let flags = [
+        "--config",
+        "app/flavor=:dev",
+        "--config",
+        "app/ports=[80 443]",
+    ];
+    let js = compiled(&[&namespace[..], &flags[..]].concat());
+    // The flags may come before --entry too.
+    assert_eq!(
+        compiled(&[&namespace[..1], &flags[..], &namespace[1..]].concat()),
+        js
+    );
+    let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+        .args(["--print", &js])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        ":dev [80 443] nil\n"
+    );
+    let out = root.join("dev");
+    let out_arg = out.to_str().unwrap();
+    compiled(
+        &[
+            &namespace[..],
+            &flags[..],
+            &["--reloadable", "--out-dir", out_arg],
+        ]
+        .concat(),
+    );
+    let unit = std::fs::read_to_string(out.join("app.main.js")).unwrap();
+    assert!(
+        unit.contains("\":dev\"") && unit.contains("\"[80 443]\""),
+        "{unit}"
+    );
+
+    let watch = [
+        "--watch",
+        "--entry",
+        "app.main",
+        "--source-root",
+        root_arg,
+        "--out-dir",
+        out_arg,
+    ];
+    for (args, message) in [
+        (&["--config"][..], "--config requires KEY=EDN"),
+        (
+            &["--config", "app/flavor"],
+            "--config app/flavor: expected KEY=EDN",
+        ),
+        (
+            &["--config", "app/n=1", "--config", "app/n=2"],
+            "--config app/n=2: the key app/n is given twice",
+        ),
+        (
+            &["--config", "app/n=[1"],
+            "--config app/n=[1: cannot read the value",
+        ),
+        (
+            &["--config", "app/mode=dev"],
+            "\"dev\" is not a configuration value",
+        ),
+        (
+            &["--config", ":app/n=1"],
+            "the key :app/n is written without its colon, as app/n",
+        ),
+    ] {
+        for command in [&namespace[..], &watch[..]] {
+            let args = [command, args].concat();
+            let output = light_cljs(&args);
+            assert!(!output.status.success(), "{args:?}");
+            assert!(output.stdout.is_empty(), "{args:?}");
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            assert!(stderr.contains(message), "{args:?}: {stderr}");
+        }
+    }
+}
+
 #[test]
 fn optimize_rejects_unknown_levels_and_non_compile_modes() {
     for (args, message) in [

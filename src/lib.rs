@@ -83,6 +83,7 @@ pub use application::{
     ApplicationOptions, ApplicationStats, OptimizationLevel, PreparedApplication,
     prepare_application,
 };
+pub use build_services::BuildConfiguration;
 pub use chunks::{ChunkFile, ChunkedOutput, LoadableSite};
 pub use compile_stats::CompileStats;
 pub use compiler::{

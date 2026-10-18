@@ -5,7 +5,9 @@
   compiler cache keys on. Paths resolve like namespaces, across every source
   root, and a path found in two roots is an error. A path starting with `./`
   or `../` resolves against the directory of the file of the namespace whose
-  macro expansion is running. They work only at compile time: in emitted
+  macro expansion is running. `config` answers the build configuration
+  (`--config KEY=EDN`), and `depend-on!` declares a coarse dependency on a
+  broad compiler view. They work only at compile time: in emitted
   application code, every call is an error.")
 
 (defn- service
@@ -51,4 +53,30 @@
       (throw (js/Error. (str "light.build/depend!: expected {:resource path}, {:namespace sym}"
                              " or {:provider token :fingerprint string}, got "
                              (pr-str dependency)))))
+    nil))
+
+(defn config
+  "The value of `key`, a keyword, in the build configuration (`--config
+  KEY=EDN`), or nil when the key is unset. Every namespace of a build
+  depends on the whole configuration, whether or not it reads a key, so
+  changing any key recompiles every namespace a compiler cache holds."
+  [key]
+  (let [build (service "config")]
+    (if (keyword? key)
+      (when-some [text (.config build (subs (str key) 1))]
+        (compiler-edn-read-string text))
+      (throw (js/Error. (str "light.build/config: expected a keyword, got " (pr-str key)))))))
+
+(defn depend-on!
+  "Declare a coarse dependency on a broad compiler view, for reflective
+  macros such as test discovery, and return nil. `view` is `:namespaces`,
+  the build's namespace inventory (names and resolved source identities);
+  `:declarations`, the declarations of every namespace earlier in source
+  order; or `:config`, the build configuration's fingerprint."
+  [view]
+  (let [build (service "depend-on!")]
+    (if (contains? #{:namespaces :declarations :config} view)
+      (.dependOn build (name view))
+      (throw (js/Error. (str "light.build/depend-on!: expected :namespaces, :declarations"
+                             " or :config, got " (pr-str view)))))
     nil))

@@ -902,6 +902,29 @@ fn macroexpand_seed_preserves_pending_reader_declarations() {
     assert_eq!(printed(&mut s, "(macroexpand '(+ 1 2))"), "(+ 1 2)");
     assert_eq!(printed(&mut s, "(probe)"), "cljs.user/map");
 }
+/// A session's macros read its build configuration, as `--watch --config`
+/// gives the watch's session.
+#[test]
+fn session_macros_read_the_build_configuration() {
+    let mut configuration = light_cljs::BuildConfiguration::new();
+    configuration.insert("app/flavor", ":dev").unwrap();
+    configuration.insert("app/ports", "[80 443]").unwrap();
+    let mut s = EvalSession::new(EvalOptions {
+        configuration,
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(
+        printed(
+            &mut s,
+            "(require '[light.build :as b]) \
+             (defmacro setting [key] (list 'quote (b/config key))) \
+             [(setting :app/flavor) (setting :app/ports) (setting :app/unset)]"
+        ),
+        "[:dev [80 443] nil]"
+    );
+}
+
 /// `light.build` serves a session's macros for its whole life with its
 /// source provider's resources: a `./` path resolves against the current
 /// namespace's directory, in an evaluation and in `macroexpand`.

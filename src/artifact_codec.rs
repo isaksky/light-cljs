@@ -66,7 +66,7 @@ use std::sync::OnceLock;
 
 pub const MAGIC: [u8; 8] = *b"LCLJSART";
 /// The encoding's version. Bump it with any change to the bytes written.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
@@ -492,16 +492,20 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
 }
 
 /// The manifest's external inputs: a count, then per input a tag (0 a
-/// resource, 1 a namespace, 2 a provider) and its fields. A resource is its
-/// path, its candidates (each a path and a presence byte), a found byte (0
-/// absent, 1 found without an identity, 2 found with one, then the
-/// identity), for a found one its SHA-256 as 32 bytes and its length,
-/// and a stability byte. Candidate paths must be UTF-8.
+/// resource, 1 a namespace, 2 a provider, 3 the configuration's fingerprint,
+/// 4 a broad view) and its fields. A resource is its path, its candidates
+/// (each a path and a presence byte), a found byte (0 absent, 1 found
+/// without an identity, 2 found with one, then the identity), for a found
+/// one its SHA-256 as 32 bytes and its length, and a stability byte.
+/// Candidate paths must be UTF-8. The configuration is its SHA-256 as 32
+/// bytes, and a view one byte (0 namespaces, 1 declarations, 2 config).
 fn external_inputs(
     manifest: &mut Vec<u8>,
     inputs: &[crate::dependency_manifest::ExternalInput],
 ) -> Result<(), String> {
-    use crate::dependency_manifest::{ExternalInput, ResolvedResource, ResourceDependency};
+    use crate::dependency_manifest::{
+        BroadView, ExternalInput, ResolvedResource, ResourceDependency,
+    };
     let put_str = |manifest: &mut Vec<u8>, text: &str| {
         varint(manifest, text.len() as u64);
         manifest.extend_from_slice(text.as_bytes());
@@ -554,6 +558,18 @@ fn external_inputs(
                 put_str(manifest, token);
                 put_str(manifest, fingerprint);
             }
+            ExternalInput::Configuration { sha256 } => {
+                manifest.push(3);
+                manifest.extend_from_slice(sha256);
+            }
+            ExternalInput::View(view) => {
+                manifest.push(4);
+                manifest.push(match view {
+                    BroadView::Namespaces => 0,
+                    BroadView::Declarations => 1,
+                    BroadView::Config => 2,
+                });
+            }
         }
     }
     Ok(())
@@ -564,7 +580,7 @@ fn read_external_inputs(
     budget: &Budget,
 ) -> Result<Vec<crate::dependency_manifest::ExternalInput>, DecodeError> {
     use crate::dependency_manifest::{
-        Candidate, ExternalInput, ResolvedResource, ResourceDependency,
+        BroadView, Candidate, ExternalInput, ResolvedResource, ResourceDependency,
     };
     let flag = |input: &mut Input<'_>, what: &'static str| match input.byte()? {
         0 => Ok(false),
@@ -622,6 +638,20 @@ fn read_external_inputs(
                 token: input.utf8_charged(budget)?,
                 fingerprint: input.utf8_charged(budget)?,
             },
+            3 => ExternalInput::Configuration {
+                sha256: input.hash()?,
+            },
+            4 => ExternalInput::View(match input.byte()? {
+                0 => BroadView::Namespaces,
+                1 => BroadView::Declarations,
+                2 => BroadView::Config,
+                tag => {
+                    return Err(DecodeError::Tag {
+                        what: "broad view",
+                        tag: tag.into(),
+                    });
+                }
+            }),
             tag => {
                 return Err(DecodeError::Tag {
                     what: "external input",
@@ -3031,7 +3061,7 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
     use crate::dependency_manifest::{
-        Candidate, ExternalInput, ResolvedResource, ResourceDependency,
+        BroadView, Candidate, ExternalInput, ResolvedResource, ResourceDependency,
     };
 
     fn units(text: &str) -> Vec<u16> {
@@ -3657,6 +3687,10 @@ mod tests {
                     token: ":host/schema".into(),
                     fingerprint: "v7".into(),
                 },
+                ExternalInput::Configuration { sha256: [0xc5; 32] },
+                ExternalInput::View(BroadView::Namespaces),
+                ExternalInput::View(BroadView::Declarations),
+                ExternalInput::View(BroadView::Config),
             ],
             coarse: true,
             no_cache: false,

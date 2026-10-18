@@ -291,6 +291,18 @@ table follows a `[macro-calls-by-namespace]` line, one `NAMESPACE COUNT` row
 each; `light_cljs::compiler::analyze_namespace_entry_with_stats` returns the
 same numbers as a `CompileStats`.
 
+`--config KEY=EDN` (repeatable) with `--compile --entry`, `--reloadable` or
+`--watch` gives macros a build configuration value, which they read with
+`(light.build/config :KEY)`: `--config app/flavor=:dev --config app/n=3`. KEY
+is a keyword written without its colon, and EDN is keywords, numbers,
+strings, booleans, nil and lists, vectors, maps and sets of them, read with
+the compiler's reader; an unset key reads as nil. A malformed value, a
+symbol, a tagged literal or a key given twice is an error. Use it for build
+inputs such as a build time or a flavor instead of host state a macro would
+read itself ([Compile-time services](docs/compiler.md#compile-time-services-lightbuild));
+embedders pass the same map with `MacroHost::set_build_configuration` and
+`EvalOptions::configuration`.
+
 `--source-map PATH` writes a Source Map v3 of the output to `PATH`, at every
 level and with `--esm` too, and ends the JavaScript with a
 `//# sourceMappingURL=` comment naming the map's file, so write the JavaScript

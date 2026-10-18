@@ -842,6 +842,41 @@ fn a_macro_inlining_a_resource_compiles_at_startup_and_in_steps() {
     );
 }
 
+/// `--config` reaches `light.build/config` in the startup build and in the
+/// steps the watch's session compiles.
+#[test]
+fn a_macro_reading_the_build_configuration_compiles_at_startup_and_in_steps() {
+    let mut watch = Watch::start_with_args(
+        "dev-watch-config",
+        &["--config", "app/separator=\" = \""],
+        |src| {
+            let macros = fs::read_to_string(src.join("app/macros.cljs")).unwrap();
+            let macros = macros
+                .replace(
+                    "\"A macro and the helper function its expansion calls.\")",
+                    "\"A macro and the helper function its expansion calls.\"\n  (:require [light.build :as b]))",
+                )
+                .replace("~label \": \"", "~label ~(b/config :app/separator)");
+            fs::write(src.join("app/macros.cljs"), macros).unwrap();
+        },
+    );
+    assert!(watch.startup.is_empty(), "{:#?}", watch.startup);
+    assert_eq!(watch.reload(&[]), record("start\nclicks = [1]\n"));
+    let view = watch
+        .source("app/view.cljs")
+        .replace("(->Card \"clicks\"", "(->Card \"taps\"");
+    let (lines, step) = watch.save("app/view.cljs", &view);
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.view in "),
+        "{step}"
+    );
+    assert_eq!(
+        watch.reload(&["app.view.js"]),
+        record("start\nclicks = [1]\nreloading\ntaps = [2]\n")
+    );
+}
+
 /// A source root's own file for a namespace the compiler also bundles wins,
 /// in the session as in the first build, and is watched.
 #[test]

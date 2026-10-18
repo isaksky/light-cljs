@@ -36,7 +36,8 @@ impl InteractiveCompiler {
     pub(crate) fn with_host(mut host: MacroHost) -> Self {
         host.begin_compilation();
         host.interactive = true;
-        let build = crate::build_services::BuildGuard::enter(&host.build, None);
+        let build =
+            crate::build_services::BuildGuard::enter(&host.build, None, host.configuration.clone());
         Self {
             build,
             host,

@@ -1918,11 +1918,18 @@ fn analyze_entry(
     // Analysis logs what it observes beyond the `ns` forms only while a
     // manifest is recorded, and stops when this compilation ends, however.
     let observations = manifest.is_some().then(|| {
-        *macros.dependency_log.borrow_mut() = Some(Default::default());
+        *macros.dependency_log.borrow_mut() = Some(crate::dependency_manifest::ObservationLog {
+            configuration: Some(macros.configuration.fingerprint()),
+            ..Default::default()
+        });
         ObservationGuard(macros.dependency_log.clone())
     });
     // `light.build` serves this compilation, with the provider's resources.
-    let build = crate::build_services::BuildGuard::enter(&macros.build, sources.resources());
+    let build = crate::build_services::BuildGuard::enter(
+        &macros.build,
+        sources.resources(),
+        macros.configuration.clone(),
+    );
     let mut index = 0;
     while index < loader.ordered.len() {
         let file = &loader.ordered[index];

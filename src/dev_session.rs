@@ -191,6 +191,7 @@ impl DevSession {
         host.limits = options.compiler;
         host.evaluator_options = options.engine.clone();
         host.interactive_control = Some(control.clone());
+        host.set_build_configuration(options.configuration.clone());
         for (tag, source) in &options.data_readers {
             host.register_compiler_data_reader(tag.clone(), source)
                 .map_err(EvalError)?;

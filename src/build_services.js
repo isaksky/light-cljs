@@ -30,6 +30,9 @@
     optionalResource: path => call("resource?", text("resource?", path), ""),
     dependResource: path => call("depend-resource", text("depend!", path), ""),
     dependNamespace: name => call("depend-namespace", text("depend!", name), ""),
-    dependProvider: (token, fingerprint) => call("depend-provider", text("depend!", token), text("depend!", fingerprint))
+    dependProvider: (token, fingerprint) => call("depend-provider", text("depend!", token), text("depend!", fingerprint)),
+    // The canonical EDN text of a key's value, or null when it is unset.
+    config: key => call("config", text("config", key), ""),
+    dependOn: view => call("depend-on", text("depend-on!", view), "")
   });
 }

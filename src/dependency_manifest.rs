@@ -18,9 +18,10 @@
 //!   `cljs.X`, or the implicit `light.lazy` require;
 //! - its edges by [`EdgeKinds`];
 //! - the namespace names its analysis looked for and did not find loaded;
-//! - its external inputs: the resources, namespaces and provider tokens
-//!   `light.build` read or declared ([`ExternalInput`]), its own and those
-//!   of the helper units and data readers of any namespace it depends on.
+//! - its external inputs: the build configuration's fingerprint, and the
+//!   resources, namespaces, provider tokens and broad views `light.build`
+//!   read or declared ([`ExternalInput`]), its own and those of the helper
+//!   units and data readers of any namespace it depends on.
 //!
 //! Matching source text is never enough on its own: a consumer's record
 //! changes when a lookup it depends on would now find another file.
@@ -176,8 +177,8 @@ pub struct InputId(pub u32);
 
 /// An input a namespace depends on outside its source graph, read or
 /// declared through `light.build` (docs/compiler.md, "Compile-time
-/// services: light.build"). Configuration and broad views are
-/// light-cljs-313's. A dependency's fingerprint covers its own inputs.
+/// services: light.build"). A dependency's fingerprint covers its own
+/// inputs.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ExternalInput {
     /// A resource `resource` or `resource?` read, or `depend!` declared with
@@ -190,6 +191,27 @@ pub enum ExternalInput {
     /// `(depend! {:provider token :fingerprint string})`: a host provider's
     /// token and the fingerprint it gave of its current state.
     Provider { token: String, fingerprint: String },
+    /// The fingerprint of the whole build configuration
+    /// ([`crate::BuildConfiguration::fingerprint`]), which every namespace
+    /// depends on, whether or not it reads a key with `light.build/config`.
+    Configuration { sha256: [u8; 32] },
+    /// `(depend-on! view)`: a coarse dependency on a broad compiler view.
+    View(BroadView),
+}
+
+/// A broad compiler view `light.build/depend-on!` names, for reflective
+/// macros such as test discovery. Each is coarse on purpose: a finer view,
+/// such as one namespace's declarations, is a later optimization.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum BroadView {
+    /// `:namespaces`: the build's namespace inventory, every namespace's name
+    /// and resolved source identity.
+    Namespaces,
+    /// `:declarations`: the declaration views of every namespace earlier in
+    /// source order.
+    Declarations,
+    /// `:config`: the build configuration's fingerprint.
+    Config,
 }
 
 /// How a resource path resolved: one operation with reading it.
@@ -371,6 +393,9 @@ pub(crate) struct ObservationLog {
     pub executes: Vec<u32>,
     /// Each `light.build` read or declaration, in the order made.
     pub inputs: Vec<InputRecord>,
+    /// The build configuration's fingerprint, which every namespace depends
+    /// on ([`ExternalInput::Configuration`]); `None` records no such input.
+    pub configuration: Option<[u8; 32]>,
 }
 
 /// One `light.build` input and the units it is recorded on.
@@ -607,20 +632,34 @@ pub(crate) fn build(
         forward,
         reverse,
     };
-    attribute_inputs(&mut manifest, log.inputs);
+    attribute_inputs(&mut manifest, log.inputs, log.configuration);
     manifest
 }
 
-/// Give each namespace its own inputs, and the inputs of the helper units
-/// and readers of each namespace it depends on: those recorded on a
-/// namespace's helpers go to it and to its whole reverse closure.
-fn attribute_inputs(manifest: &mut DependencyManifest, records: Vec<InputRecord>) {
-    if records.is_empty() {
+/// Give each namespace the configuration's fingerprint, its own inputs,
+/// and the inputs of the helper units and readers of each namespace it
+/// depends on: those recorded on a namespace's helpers go to it and to its
+/// whole reverse closure.
+fn attribute_inputs(
+    manifest: &mut DependencyManifest,
+    records: Vec<InputRecord>,
+    configuration: Option<[u8; 32]>,
+) {
+    if records.is_empty() && configuration.is_none() {
         return;
     }
     let count = manifest.namespaces.len();
     let mut interned: HashMap<ExternalInput, u32> = HashMap::new();
     let mut own: Vec<Vec<InputId>> = vec![Vec::new(); count];
+    if let Some(sha256) = configuration {
+        let input = ExternalInput::Configuration { sha256 };
+        let id = InputId(manifest.inputs.len() as u32);
+        manifest.inputs.push(input.clone());
+        interned.insert(input, id.0);
+        for list in &mut own {
+            list.push(id);
+        }
+    }
     let mut helpers: Vec<Vec<InputId>> = vec![Vec::new(); count];
     for record in records {
         let next = manifest.inputs.len() as u32;

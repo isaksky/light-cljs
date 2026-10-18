@@ -296,6 +296,9 @@ pub struct MacroHost {
     /// The compilation `light.build` serves, shared by the analysis frames
     /// and the services installed in its heaps ([`crate::build_services`]).
     pub(crate) build: crate::build_services::SharedBuild,
+    /// The build configuration `light.build/config` answers
+    /// ([`Self::set_build_configuration`]).
+    pub(crate) configuration: std::rc::Rc<crate::build_services::BuildConfiguration>,
 }
 
 /// A namespace's entries in the macro host's tables, borrowed.
@@ -1058,8 +1061,22 @@ impl MacroHost {
             reader_generation: self.reader_generation,
             dependency_log: self.dependency_log.clone(),
             build: self.build.clone(),
+            configuration: self.configuration.clone(),
             ..Self::default()
         }
+    }
+    /// The build configuration `light.build/config` answers in the
+    /// compilations this host analyzes, as `--config KEY=EDN` gives it.
+    /// Every namespace they record in a dependency manifest depends on its
+    /// fingerprint.
+    pub fn set_build_configuration(
+        &mut self,
+        configuration: crate::build_services::BuildConfiguration,
+    ) {
+        self.configuration = std::rc::Rc::new(configuration);
+    }
+    pub fn build_configuration(&self) -> &crate::build_services::BuildConfiguration {
+        &self.configuration
     }
     /// Log an observation for the dependency manifest, if one is recorded.
     pub(crate) fn observe(

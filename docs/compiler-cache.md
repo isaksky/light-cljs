@@ -244,7 +244,7 @@ do not log every runtime read, discover a general call graph, or replay writes.
 *As built (light-cljs-312):* the resource and declaration rows are
 `light.build/resource`, `resource?` and `depend!`, documented in
 [compiler.md](compiler.md), "Compile-time services: light.build";
-configuration and the broad views are light-cljs-313's. Both compile-time
+configuration and the broad views are light-cljs-313's (below). Both compile-time
 engines run one JavaScript object, `lightCljsBuild` (`src/build_services.js`),
 over a string service that `src/build_services.rs` answers, so V8 and QuickJS
 behave identically: the session heap gets it when the compilation session
@@ -300,6 +300,47 @@ what the section leaves open:
 - `{:namespace sym}` records the name and, when that namespace loaded earlier,
   an observed edge to it; otherwise the name is among the absent ones, so its
   later appearance invalidates.
+
+*As built (light-cljs-313):* the configuration and broad-view rows are
+`light.build/config` and `light.build/depend-on!`, over the same string
+service. These choices settle what the section leaves open:
+
+- `--config KEY=EDN` is repeatable with `--compile --entry`, `--reloadable`
+  and `--watch`; embedders pass a `BuildConfiguration` to
+  `MacroHost::set_build_configuration` and `EvalOptions::configuration`.
+  KEY is a keyword name without its colon, and EDN is read with the
+  compiler's syntax reader (`parser::parse`) and limited to keywords,
+  numbers, strings, booleans, nil and lists, vectors, maps and sets of them;
+  numbers are decimal integers and floats, the ones the EDN reader reads as
+  JavaScript numbers (`1N`, `1M`, `36rN`, `0x10` and ratios are refused). A
+  symbol, a tagged literal, an auto-resolved keyword, a map key or set
+  element repeated by value (`{"a" 1 "\u0061" 2}`, `#{1 1.0}`), more than
+  one form or a key given twice is an error. Each value is kept as canonical
+  text (numbers as the JavaScript number they read as, strings re-escaped,
+  collections single-spaced, discards dropped), which `config` reads back
+  with the EDN reader, so V8 and QuickJS see the same data.
+- The fingerprint is the SHA-256 of the whole map's canonical text, keys
+  ascending: `{}` for the empty map, which differs from every non-empty
+  one. `cache_key::KeyEnvironment::new` takes it from the host as the key's
+  config component, and the keys hash both new input variants. It is one interned `ExternalInput::Configuration` in
+  `DependencyManifest::inputs`, which every namespace's `external_inputs`
+  lists, whether or not it reads a key (the log carries it as
+  `ObservationLog::configuration`). Equal values spelled differently, such as
+  maps with their entries in another order, get different fingerprints:
+  over-invalidation, which the design allows. Keying each namespace on the
+  keys it reads is a later optimization.
+- A view is `ExternalInput::View(BroadView)`, recorded and attributed like a
+  resource read: on the namespace being analyzed, and as a helper read on the
+  namespaces of the deferred units running and so on their reverse closures.
+  The views carry no fingerprint of their own; the keys (light-cljs-319)
+  compute them: for `:namespaces` the inventory of the build's names and
+  source identities, for `:declarations` the declarations of every earlier
+  namespace, which a namespace that runs a source macro
+  already depends on through `EdgeKinds::COARSE`, and for `:config` the
+  configuration fingerprint every namespace already has. Finer views are a
+  later optimization.
+- The manifest encodes the configuration as tag 3 with its 32-byte SHA-256
+  and a view as tag 4 with one byte, artifact schema version 5.
 
 ## Opt-outs and their propagation
 
@@ -767,7 +808,8 @@ require, and SHA-256 is the in-tree `src/sha256.rs` (checked against the
 FIPS 180-4 vectors; light-cljs-319 builds the keys on it). The module's
 comment gives the layout. In short:
 
-- **Header.** The magic `LCLJSART`, `SCHEMA_VERSION` (4 since light-cljs-319
+- **Header.** The magic `LCLJSART`, `SCHEMA_VERSION` (5 since light-cljs-313
+  added the configuration and broad-view inputs, 4 since light-cljs-319
   added the key components and SHA-256 resource hashes, 3 since light-cljs-318
   added the analysis policy and the accounting, 2 since light-cljs-312 added
   the external inputs, 1 before) as a little-endian
@@ -824,6 +866,8 @@ exhaustively. Version 2 (light-cljs-312) adds the `ExternalInput`
 variants to the manifest's dependency fields, and version 3
 (light-cljs-318) writes the header's analysis policy, one byte in the
 declarations section, and the filled `Accounting` in the names section.
+Version 5 (light-cljs-313) adds the configuration and broad-view
+`ExternalInput` variants.
 The cache-contract suites (`cache_contract::round_trip`) and
 `tests/compiler/namespace_artifacts.rs` encode and decode every artifact
 they capture, check that it prints and re-encodes the same, and install

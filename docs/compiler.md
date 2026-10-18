@@ -2387,6 +2387,10 @@ explicit inputs that a compiler cache can key on
   (b/depend! {:namespace 'app.model})
   (b/depend! {:provider :git/head :fingerprint "0abc12"})
   nil)
+(defmacro flavor [] (b/config :app/flavor))          ; --config app/flavor=:dev, or nil
+(defmacro test-namespaces []
+  (b/depend-on! :namespaces)                          ; a coarse broad view
+  (list 'quote (map ns-name (all-ns))))
 ```
 
 - **Paths resolve like namespaces.** A logical path such as `app/data.txt` is
@@ -2407,11 +2411,35 @@ explicit inputs that a compiler cache can key on
 - **Only at compile time.** In emitted application code every call throws
   `light.build/... is only available at compile time`. A helper namespace that
   the application also loads can test `(exists? js/lightCljsBuild)`.
+- **Build configuration.** `(b/config :app/flavor)` returns the value the
+  build gave the key with `--config app/flavor=:dev` (repeatable, with
+  `--compile --entry`, `--reloadable` and `--watch`), or nil when the key is
+  unset. KEY is a keyword written without its colon. EDN is read with the
+  compiler's reader and must be keywords, decimal integer and floating-point
+  numbers, strings, booleans, nil and lists, vectors, maps and sets of them;
+  a symbol, a tagged literal, `1N`, `1M` or a radix or ratio number, a map
+  key or set element repeated by value, a malformed value or a key given
+  twice is a CLI error. The value is kept as canonical text (numbers as the
+  JavaScript number they read as, strings re-escaped, elements single-spaced,
+  comments and discards dropped) and read back as data at each call. Embedders pass the same map as a
+  `BuildConfiguration` to `MacroHost::set_build_configuration` and
+  `EvalOptions::configuration`; `BuildConfiguration::insert` takes a key and
+  EDN text, `insert_text` a `KEY=EDN` text.
+- **Broad views.** `(b/depend-on! view)` declares a coarse dependency for
+  reflective macros such as test discovery, and returns nil. `:namespaces` is
+  the build's namespace inventory, every namespace's name and resolved source
+  identity; `:declarations` is the declaration views of every namespace
+  earlier in source order; `:config` is the build configuration's
+  fingerprint. They are deliberately coarse: a finer view, such as the
+  declarations of the namespaces a macro actually lists, is a later
+  optimization. Any other view is an error.
 - **Data readers.** A handler registered with
   `MacroHost::register_compiler_data_reader` calls the same services through
   the host object `js/lightCljsBuild`: `.resource`, `.optionalResource`,
   `.dependResource`, `.dependNamespace` and `.dependProvider` (token and
-  fingerprint strings).
+  fingerprint strings), `.config` (a key's name without its colon, answering
+  its canonical EDN text or null) and `.dependOn` (`"namespaces"`,
+  `"declarations"` or `"config"`).
 - **Embedding.** Resources come from `SourceProvider::resources`, a
   `ResourceProvider` that answers a logical path and appends each location it
   tried. `FileSourceProvider` serves the source roots with each file's
@@ -2427,9 +2455,15 @@ Reading and recording are one operation. With a dependency manifest
 (`analyze_namespace_entry_with_dependencies`), each read or declaration is an
 `ExternalInput` in `DependencyManifest::inputs`: a resource's logical path,
 every candidate location tried, present or absent, and, when found, its
-identity, byte length and the SHA-256 of the exact text returned; a namespace, which also
-gets an observed edge when that namespace loaded earlier; or a provider token
-with its fingerprint. An input is recorded on the namespace being analyzed.
+identity, byte length and the SHA-256 of the exact text returned; a
+namespace, which also gets an observed edge when that namespace loaded earlier; a provider token
+with its fingerprint; or a broad view. Every namespace also depends on
+`ExternalInput::Configuration`, the fingerprint of the whole build
+configuration (`BuildConfiguration::fingerprint`, the SHA-256 of its canonical
+text, `{}` when empty), whether or not it reads a key: changing any key,
+read or not, changes every namespace's inputs. This first implementation
+over-invalidates on purpose; recording the keys each namespace reads is a
+later optimization. An input is recorded on the namespace being analyzed.
 When a deferred helper unit is being analyzed or initialized, or a data reader
 runs, it is also recorded on that unit's (or the read form's) namespace, and
 then reaches every namespace whose dependency closure contains it. A helper
@@ -2448,6 +2482,32 @@ every build must opt out of the cache (`^:light-cljs/no-cache` on the
 namespaces that expand it, or a cache blocker on its namespace), as
 [compiler-cache.md](compiler-cache.md), "Macro-author responsibilities",
 explains.
+
+For example, a timestamp macro that reads the clock keeps its first
+expansion on every cache hit, so the build time it reports goes stale:
+
+```clojure
+(defmacro built-at [] (.toISOString (js/Date.)))     ; undeclared clock: stale on a hit
+```
+
+Pass the build time in as configuration instead, so that it is a keyed input
+and a new value recompiles what uses it:
+
+```clojure
+(ns app.build-info (:require [light.build :as b]))
+(defmacro built-at []
+  (or (b/config :app/built-at)
+      (throw (js/Error. "pass --config app/built-at='\"2026-10-18T12:00:00Z\"'"))))
+```
+
+```sh
+light-cljs --compile --entry app.main --source-root src \
+  --config "app/built-at=\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+```
+
+Every namespace depends on the whole configuration, so with the compiler
+cache a new time recompiles the whole build, as an uncached build would, and
+only a build that passes the same time can reuse its artifacts.
 
 ### Generated names and the compiler cache
 

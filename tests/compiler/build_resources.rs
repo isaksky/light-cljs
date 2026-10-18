@@ -110,6 +110,13 @@ fn resource_paths(manifest: &DependencyManifest, name: &str) -> Vec<String> {
     paths
 }
 
+/// The input every namespace of a build without `--config` depends on.
+fn empty_configuration() -> ExternalInput {
+    ExternalInput::Configuration {
+        sha256: light_cljs::BuildConfiguration::new().fingerprint(),
+    }
+}
+
 const INLINE: &str = r#"(ns lib.macros (:require [light.build :as b]))
 (defmacro inline [path] (b/resource path))
 (defmacro optional [path] (or (b/resource? path) "missing"))"#;
@@ -358,7 +365,8 @@ fn a_helper_value_read_once_is_a_dependency_of_every_namespace_that_reuses_it() 
             .cloned()
             .collect::<Vec<_>>()
     );
-    assert_eq!(fields.inputs.len(), 1);
+    // The resource and the configuration's fingerprint.
+    assert_eq!(fields.inputs.len(), 2);
 
     // A helper's initializer runs outside any expansion: `./` is an error.
     roots.write(
@@ -468,7 +476,8 @@ fn depend_declares_resources_namespaces_and_providers_without_reading() {
     let inputs: Vec<_> = manifest
         .external_inputs(id(&manifest, "app.core"))
         .collect();
-    assert_eq!(inputs.len(), 3, "{inputs:?}");
+    assert_eq!(inputs.len(), 4, "{inputs:?}");
+    assert!(inputs.contains(&&empty_configuration()));
     assert!(inputs.iter().any(|input| matches!(input,
         ExternalInput::Resource(r) if r.path == "app/schema.edn" && r.found.is_none())));
     assert!(inputs.contains(&&ExternalInput::Namespace("lib.data".into())));
@@ -526,10 +535,13 @@ fn service_arguments_with_lone_surrogates_are_refused_in_both_engines() {
         .collect();
     assert_eq!(
         inputs,
-        [&ExternalInput::Provider {
-            token: "p".into(),
-            fingerprint: "\u{1F600}".into()
-        }]
+        [
+            &empty_configuration(),
+            &ExternalInput::Provider {
+                token: "p".into(),
+                fingerprint: "\u{1F600}".into()
+            }
+        ]
     );
 }
 
@@ -548,7 +560,8 @@ fn application_code_cannot_call_light_build() {
         "light.build/resource is only available at compile time: call it from a macro, \
          a helper a macro runs or a custom data reader"
     );
-    assert!(manifest.inputs.is_empty());
+    // Only the configuration's fingerprint, which every namespace has.
+    assert_eq!(manifest.inputs, [empty_configuration()]);
 }
 
 /// An embedding provider with in-memory sources and resources it cannot
