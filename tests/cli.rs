@@ -399,6 +399,51 @@ fn define_replaces_goog_define_defaults_at_every_level() {
     }
 }
 
+/// The warning-mode builds, `--warnings --compile` and `--reloadable`, let a
+/// macro call a helper its namespace declares first and defines after the
+/// macro's use, as cuerdas.core's `unsafe-concat` calls its `repeat` in
+/// Penpot.
+#[test]
+fn warning_mode_builds_let_macros_call_later_definitions_of_their_namespace() {
+    let root = TempDir::new("cljs-cli-forward-helper");
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(
+        root.join("app/text.cljc"),
+        "(ns app.text (:refer-clojure :exclude [repeat]))\n\
+         (declare repeat)\n\
+         (defmacro stars [& xs] (repeat \"*\" (count xs)))\n\
+         (defn three [] (stars 1 2 3))\n\
+         (defn repeat [s n] (apply str (clojure.core/repeat n s)))\n\
+         (three)",
+    )
+    .unwrap();
+    let root_arg = root.to_str().unwrap();
+    let namespace = ["--entry", "app.text", "--source-root", root_arg];
+    for flags in [&["--compile"][..], &["--warnings", "--compile"]] {
+        let output = light_cljs(&[flags, &namespace[..], &["--esm"]].concat());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stderr.is_empty(),
+            "{flags:?}: {stderr}"
+        );
+        let js = String::from_utf8(output.stdout).unwrap();
+        assert!(js.contains("\"***\""), "{flags:?}: {js}");
+    }
+    let out = root.join("dev");
+    let output = light_cljs(
+        &[
+            &["--compile"][..],
+            &namespace[..],
+            &["--reloadable", "--out-dir", out.to_str().unwrap()],
+        ]
+        .concat(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success() && stderr.is_empty(), "{stderr}");
+    let unit = std::fs::read_to_string(out.join("app.text.js")).unwrap();
+    assert!(unit.contains("\"***\""), "{unit}");
+}
+
 /// `--config KEY=EDN` gives `light.build/config` its values in a namespace
 /// compile and a `--reloadable` build; a malformed flag, value or a key
 /// given twice is an error, in `--watch` too.

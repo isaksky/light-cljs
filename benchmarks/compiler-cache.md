@@ -260,6 +260,31 @@ Times in s.
 These match light-cljs-349's runs with the stand-in, within load noise. The
 session's own load is still the quadratic per-form copy of light-cljs-348.
 
+## Warning mode in Penpot (light-cljs-360, October 18, 2026)
+
+In warning mode a namespace that defines macros of its own now drains its
+deferred units at its end, as without warnings, so `cuerdas.core/unsafe-concat`
+reaches `repeat`. Penpot `app.main` builds unmodified with the limits
+[penpot.bb](penpot.bb) passes. Release binary of this change, load 3 to 6
+(15 for the third reloadable run) with two other workers active; one run each
+unless noted:
+
+| Build | Wall | Peak RSS | Warnings |
+| --- | ---: | ---: | ---: |
+| `--compile --reloadable --out-dir` (three runs) | 46.3, 46.8, 47.4 s | 0.90, 0.92, 0.95 GB | 18 |
+| `--warnings --compile --esm --optimize none` | 24.8 s | 0.94 GB | 18 |
+
+The dev build writes 1,848 files, a unit and a source map for each of 923
+namespaces plus the runtime, client, manifest and index. An earlier run of the
+same build at load 3.2 took 39.1 s (0.90 GB). Without warnings nothing changes:
+`main-none` output is byte-identical to the parent commit's, and alternating
+three runs each with the parent's binary at load 3.6 to 5.8 gave medians of
+25.68 s and 0.947 GB against 24.89 s and 0.942 GB (+3.2% wall, +0.5% RSS; the
+means are 25.35 s against 25.03 s, +1.3%). With light-cljs-361 rebased in,
+`--watch --cache-dir` filling an empty cache now starts unmodified, with no
+overlay: 922 namespaces built and watching after 130.6 s, 0.81 GB peak RSS
+(one run, load about 10).
+
 ## Watch invalidation (light-cljs-325, October 18, 2026)
 
 `--watch` now records the startup build's dependency manifest and revises it

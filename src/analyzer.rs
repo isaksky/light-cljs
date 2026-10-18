@@ -2915,6 +2915,21 @@ fn extend_arities(program: &Program, from: usize, arities: &mut DiagnosticAritie
     }
 }
 
+/// A definition whose analysis waits for the end of its source's top-level
+/// forms, or in warning mode of its own form (see [`Analyzer::drain_deferred`]).
+struct DeferredUnit {
+    /// The expression the unit's analysis replaces.
+    placeholder: ExprId,
+    unit: usize,
+    /// What the unit's snapshot shares with this program.
+    shared: crate::program_fragment::SharedPrefix,
+    /// In warning mode, where the unit's warnings go in the source's list: its
+    /// length when the top-level form that registered the unit ended. They
+    /// come out in the order a drain after every form gave, as upstream
+    /// reports them form by form. `None` appends them when drained.
+    warnings_at: Option<usize>,
+}
+
 struct Analyzer<'a> {
     source: &'a str,
     syntax: Cow<'a, SyntaxTree>,
@@ -2928,9 +2943,9 @@ struct Analyzer<'a> {
     raw_type: bool,
     macro_host: &'a mut MacroHost,
     engine: Option<&'a dyn crate::evaluator::MacroEvaluator>,
-    /// Placeholders for deferred units, with what each unit's snapshot shares
-    /// with this program.
-    deferred: Vec<(ExprId, usize, crate::program_fragment::SharedPrefix)>,
+    /// Deferred units in registration order, drained when the source's
+    /// top-level forms are analyzed.
+    deferred: Vec<DeferredUnit>,
     macro_depth: usize,
     analysis_depth: usize,
     macro_source: Option<Source>,
@@ -2961,6 +2976,14 @@ struct Analyzer<'a> {
     /// Whether this analyzer is a deferred unit, whose diagnostics consult
     /// only its own declarations.
     deferred_unit: bool,
+    /// Whether the namespace has defined a macro of its own, after which a
+    /// warning-mode analysis no longer drains deferred units form by form
+    /// ([`Analyzer::drain_deferred`]).
+    defines_macros: bool,
+    /// In warning mode, the field count of each record this namespace
+    /// declared in a deferred unit, for constructor arity warnings before
+    /// the unit drains.
+    record_fields: HashMap<GlobalId, usize>,
     /// The reader's view of the namespace for compiler forms, once built.
     reader_view: Option<ReaderView>,
     /// How many of the shared globals seen so far are this namespace's own:
@@ -3285,6 +3308,8 @@ fn analyze_input(
         asynchronous: false,
         first_expr: 0,
         deferred_unit: false,
+        defines_macros: false,
+        record_fields: HashMap::new(),
         reader_view: None,
         namespace_globals: snapshot.map_or_else(Default::default, |s| s.namespace_globals.clone()),
         pending_reader_registration: None,
@@ -3329,7 +3354,8 @@ fn analyze_input(
     if let Some(form) = owned_form {
         roots = vec![analyzer.import_form(form)?];
     }
-    analyzer.program.root = analyzer.body(&roots, 0..source.len(), ExprContext::Return)?;
+    let root = analyzer.body(&roots, 0..source.len(), ExprContext::Return);
+    analyzer.program.root = analyzer.drained_before_failure(root)?;
     if let Some(snapshot) = snapshot
         && let Some(unit) = snapshot.definition_test_unit
     {
@@ -3396,17 +3422,11 @@ fn analyze_input(
             ExprContext::Return,
         );
     }
-    let macros = analyzer.macro_host.source_macro_names(namespace);
-    if analyzer.program.reader_contexts[namespace].macros != macros {
-        analyzer
-            .program
-            .reader_contexts
-            .get_mut(namespace)
-            .unwrap()
-            .macros = macros;
-    }
-    analyzer.read_discards_before(source.len())?;
+    analyzer.refresh_reader_macros();
+    let read = analyzer.read_discards_before(source.len());
+    analyzer.drained_before_failure(read)?;
     analyzer.drain_deferred()?;
+    analyzer.refresh_reader_macros_after_drain();
     analyzer.collect_expression_warnings(None);
     if snapshot.is_none()
         && let Some(session) = analyzer.macro_host.session_handle()
@@ -3604,6 +3624,8 @@ impl NamespaceAnalysis {
             asynchronous: false,
             first_expr: 0,
             deferred_unit: false,
+            defines_macros: false,
+            record_fields: HashMap::new(),
             reader_view: None,
             namespace_globals: Default::default(),
             pending_reader_registration: None,
@@ -3660,17 +3682,11 @@ impl NamespaceAnalysis {
             }
             .into(),
         );
-        let root = analyzer.body(&source_roots[1..], 0..input.source.len(), context)?;
-        analyzer.read_discards_before(input.source.len())?;
-        let macros = analyzer.macro_host.source_macro_names(input.name);
-        if analyzer.program.reader_contexts[input.name].macros != macros {
-            analyzer
-                .program
-                .reader_contexts
-                .get_mut(input.name)
-                .unwrap()
-                .macros = macros;
-        }
+        let root = analyzer.body(&source_roots[1..], 0..input.source.len(), context);
+        let root = analyzer.drained_before_failure(root)?;
+        let read = analyzer.read_discards_before(input.source.len());
+        analyzer.drained_before_failure(read)?;
+        analyzer.refresh_reader_macros();
         analyzer
             .program
             .namespace_entries
@@ -3684,6 +3700,7 @@ impl NamespaceAnalysis {
         if let Some(time) = &mut self.deferred_time {
             crate::compile_stats::add(time, drained);
         }
+        analyzer.refresh_reader_macros_after_drain();
         let traced =
             crate::compile_trace::enter(crate::compile_trace::Stage::Warnings, source_index, None);
         analyzer.collect_expression_warnings(Some(&mut self.arities));
@@ -5091,6 +5108,7 @@ impl Analyzer<'_> {
         self.macro_host
             .register_javascript_macro(self.namespace, &form, snapshot, self.engine)
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
+        self.defines_macros = true;
         Ok(self.push(ExprKind::Nil, self.syntax.nodes[id.0].span.clone(), context))
     }
 
@@ -6360,17 +6378,96 @@ impl Analyzer<'_> {
         (snapshot, shared)
     }
 
+    /// Analyze the deferred units registered so far, in registration
+    /// order: once the source's top-level forms are analyzed, and in warning
+    /// mode after each form until the namespace defines a macro of its own
+    /// (`Analyzer::body`). A macro an initializer expands can then call any
+    /// definition of its namespace, as when upstream loads a `.cljc` file as
+    /// Clojure before its macros expand (`(declare f)`, a macro calling `f`,
+    /// a use, then `(defn f ...)`, as in cuerdas.core).
+    ///
+    /// Each unit's warnings go where [`DeferredUnit::warnings_at`] says. When a
+    /// unit fails, the source's warnings end at that unit's, as if analysis
+    /// had stopped at its form.
     fn drain_deferred(&mut self) -> Result<(), AnalysisError> {
+        self.drain_deferred_keeping(false)
+    }
+
+    /// Record the namespace's macros in its reader context.
+    fn refresh_reader_macros(&mut self) {
+        let macros = self.macro_host.source_macro_names(self.namespace);
+        if self.program.reader_contexts[self.namespace].macros != macros {
+            self.program
+                .reader_contexts
+                .get_mut(self.namespace)
+                .unwrap()
+                .macros = macros;
+        }
+    }
+
+    /// Appending a drained unit restores the reader context of its snapshot,
+    /// which may predate the namespace's later macros. A warning-mode
+    /// namespace that defines macros drains its units only now, so its
+    /// macros are recorded again, as a drain after every form left them.
+    /// Without warnings the context stays the one the last unit restores,
+    /// keeping that output as it is.
+    fn refresh_reader_macros_after_drain(&mut self) {
+        if self.options.warning_mode && self.defines_macros {
+            self.refresh_reader_macros();
+        }
+    }
+
+    /// In warning mode, a source failure (`result`) still reports the
+    /// warnings of the units registered before it, as a drain after every
+    /// form did: they are drained first, keeping the later forms' warnings,
+    /// and the failure is the error, whether or not one of them fails.
+    fn drained_before_failure<T>(
+        &mut self,
+        result: Result<T, AnalysisError>,
+    ) -> Result<T, AnalysisError> {
+        if result.is_err() && self.options.warning_mode {
+            // The failure, not a unit's, is reported.
+            let _ = self.drain_deferred_keeping(true);
+        }
+        result
+    }
+
+    fn drain_deferred_keeping(&mut self, keep_later: bool) -> Result<(), AnalysisError> {
         let Some(session) = self.macro_host.session_handle() else {
             return Ok(());
         };
-        for (placeholder, unit, shared) in std::mem::take(&mut self.deferred) {
-            let (program, warnings) = session.analyze(unit, self.engine).map_err(|message| {
-                session.diagnostic(unit).unwrap_or_else(|| AnalysisError {
-                    span: self.program.exprs[placeholder.0].span.clone(),
-                    kind: AnalysisErrorKind::MacroExpansion(message),
-                })
-            })?;
+        let units = std::mem::take(&mut self.deferred);
+        // The source's warnings from the first unit's position on, which the
+        // units' warnings are merged into. Positions only grow, and the
+        // units without one come last.
+        let mut position = units
+            .first()
+            .and_then(|d| d.warnings_at)
+            .unwrap_or(usize::MAX)
+            .min(self.warnings.len());
+        let mut later = self.warnings.split_off(position).into_iter();
+        let mut failure = None;
+        for DeferredUnit {
+            placeholder,
+            unit,
+            shared,
+            warnings_at,
+        } in units
+        {
+            let at = warnings_at.unwrap_or(usize::MAX);
+            self.warnings
+                .extend(later.by_ref().take(at.saturating_sub(position)));
+            position = position.max(at);
+            let (program, warnings) = match session.analyze(unit, self.engine) {
+                Ok(analyzed) => analyzed,
+                Err(message) => {
+                    failure = Some(session.diagnostic(unit).unwrap_or_else(|| AnalysisError {
+                        span: self.program.exprs[placeholder.0].span.clone(),
+                        kind: AnalysisErrorKind::MacroExpansion(message),
+                    }));
+                    break;
+                }
+            };
             use crate::compile_trace::{Stage, enter};
             let defined = self.program.globals.len();
             // The unit was analyzed from a snapshot of this program, so only
@@ -6405,7 +6502,10 @@ impl Analyzer<'_> {
             self.program.exprs[placeholder.0].kind = ExprKind::Do(vec![root]);
             self.warnings.extend(warnings);
         }
-        Ok(())
+        if failure.is_none() || keep_later {
+            self.warnings.extend(later);
+        }
+        failure.map_or(Ok(()), Err)
     }
     /// `(goog-define name default)`: as upstream, a definition whose default
     /// is a string, number or boolean literal, which a build may replace
@@ -6652,7 +6752,12 @@ impl Analyzer<'_> {
                     self.syntax.nodes[initializer.unwrap().0].span.clone(),
                     ExprContext::Value,
                 );
-                self.deferred.push((placeholder, unit, shared));
+                self.deferred.push(DeferredUnit {
+                    placeholder,
+                    unit,
+                    shared,
+                    warnings_at: None,
+                });
                 placeholder
             }))
         } else {
@@ -7717,6 +7822,9 @@ impl Analyzer<'_> {
                     products.push(*global);
                     products.extend(layout.constructor);
                     products.extend(layout.map_constructor);
+                    if self.options.warning_mode {
+                        self.record_fields.insert(*global, layout.fields.len());
+                    }
                 }
                 ExprKind::Do(forms) => work.extend(forms.iter().rev()),
                 ExprKind::ExtendType {
@@ -7793,7 +7901,12 @@ impl Analyzer<'_> {
             )
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
         self.program.exprs[expr.0].kind = ExprKind::Nil;
-        self.deferred.push((expr, unit, shared));
+        self.deferred.push(DeferredUnit {
+            placeholder: expr,
+            unit,
+            shared,
+            warnings_at: None,
+        });
         Ok(expr)
     }
 
@@ -9005,13 +9118,15 @@ impl Analyzer<'_> {
             && self.program.record_constructors.contains(&global)
             && self.metadata_entry(node, "internal-ctor").is_none()
         {
-            if let Some(fields) = self.program.exprs.iter().find_map(|expr| match &expr.kind {
-                ExprKind::DefType {
-                    global: target,
-                    layout,
-                    ..
-                } if *target == global => Some(layout.fields.len()),
-                _ => None,
+            if let Some(fields) = self.record_fields.get(&global).copied().or_else(|| {
+                self.program.exprs.iter().find_map(|expr| match &expr.kind {
+                    ExprKind::DefType {
+                        global: target,
+                        layout,
+                        ..
+                    } if *target == global => Some(layout.fields.len()),
+                    _ => None,
+                })
             }) && args.len() != fields
                 && args.len() != fields + 2
             {
@@ -10149,9 +10264,26 @@ impl Analyzer<'_> {
             } else {
                 self.non_tail_form(form, ExprContext::Discard)?
             });
-            // Warning APIs report diagnostics before any later source failure.
+            // Warning APIs report diagnostics form by form, before any
+            // later source failure. Later forms' analysis sees what earlier
+            // units define, such as a record's fields for constructor arity
+            // warnings, so the units drain after each form until the namespace
+            // defines a macro of its own: its macros may call any definition
+            // of the namespace, which upstream loads as Clojure before they
+            // expand. Its units then drain at the end, as without warnings,
+            // and their warnings keep the order a drain here gives.
             if self.options.warning_mode {
-                self.drain_deferred()?;
+                if self.defines_macros {
+                    let at = self.warnings.len();
+                    for deferred in self.deferred.iter_mut().rev() {
+                        if deferred.warnings_at.is_some() {
+                            break;
+                        }
+                        deferred.warnings_at = Some(at);
+                    }
+                } else {
+                    self.drain_deferred()?;
+                }
             }
         }
         Ok(self.push(ExprKind::Do(exprs), span, context))

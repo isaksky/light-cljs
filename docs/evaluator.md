@@ -333,7 +333,15 @@ roots release their initializer closures and retain their value or error. Prepar
 source remains available for compilation reentry. Unrequested initializers drain
 in source order; standalone runtime
 expressions are not replayed during macro setup. The warning API drains each
-source form early to preserve diagnostics before later errors.
+source form early to preserve diagnostics before later errors, so later forms
+also see what earlier units define, such as a record's fields for constructor
+arity warnings. Once a namespace defines a macro of its own it stops: its
+units drain at the end, as without warnings, because its macros may call any
+definition of the namespace, which upstream loads as Clojure before they expand
+(a `(declare f)`, a macro calling `f`, a use, then the `defn f`, as in
+cuerdas.core). Their warnings keep the order a per-form drain gives, and a later
+source failure still drains them first, then is the error reported
+(light-cljs-360).
 
 The unit cache is scoped to a fresh compilation. No application-source artifact
 survives host reuse, so source, options, imports and selected conditional edits

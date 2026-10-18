@@ -138,6 +138,12 @@ fn record_factory_and_constructor_arities_have_different_valid_signatures() {
         messages("(do (defrecord Foo [a]) (Foo. nil nil))"),
         ["Wrong number of args (2) passed to Foo"]
     );
+    // A namespace that defines a macro drains its units at its end; the
+    // record's fields are known before.
+    assert_eq!(
+        messages("(do (defmacro unused [] nil) (defrecord Foo [a]) (Foo. nil nil))"),
+        ["Wrong number of args (2) passed to Foo"]
+    );
 }
 
 #[test]
@@ -173,6 +179,146 @@ fn local_shadowing_earmuffs_and_unbound_destructuring_are_public_diagnostics() {
     ] {
         assert_eq!(messages(source), ["Use of undeclared Var cljs.user/b"]);
     }
+}
+
+/// A macro may call a helper its namespace declares first and defines after
+/// the macro's uses, as cuerdas.core's `unsafe-concat` calls its `repeat`:
+/// upstream loads the `.cljc` file as Clojure before its macros expand. With
+/// warnings on as off, the namespace's deferred units are analyzed once its
+/// top-level forms are, and a later source failure is still reported after
+/// the warnings of the forms before it.
+#[test]
+fn warning_mode_macros_call_later_definitions_of_their_namespace() {
+    use std::fs;
+    let root = TempDir::new("forward-helper");
+    fs::create_dir_all(root.join("app")).unwrap();
+    let header = "(ns app.text (:refer-clojure :exclude [repeat]))\n\
+                  (declare repeat)\n\
+                  (defmacro stars [& xs] (repeat \"*\" (count xs)))\n";
+    let helper = "(defn repeat [s n] (apply str (clojure.core/repeat n s)))\n";
+    let compile = |warning_mode| {
+        let mut diagnostics = Vec::new();
+        let js = light_cljs::compiler::compile_namespace_with_warnings(
+            "app.text",
+            std::slice::from_ref(root.path()),
+            AnalysisOptions {
+                warning_mode,
+                ..AnalysisOptions::default()
+            },
+            &mut diagnostics,
+        );
+        (js, diagnostics)
+    };
+    fs::write(
+        root.join("app/text.cljc"),
+        format!(
+            "{header}(defn three [] (stars 1 2 3))\n(def two (stars 1 2))\n{helper}\
+             (js/console.log (three) two (repeat \"ab\" 2))"
+        ),
+    )
+    .unwrap();
+    for warning_mode in [false, true] {
+        let (js, diagnostics) = compile(warning_mode);
+        let js = js.unwrap_or_else(|error| panic!("warning mode {warning_mode}: {error}"));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        let output =
+            std::process::Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+                .args(["--eval", &js])
+                .output()
+                .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "*** ** abab\n");
+    }
+
+    // `three`'s macro cannot call `repeat` before the failure defines it, so
+    // the failure is the error, after the warnings of the forms before it in
+    // source order: a deferred unit's, then a top-level form's.
+    fs::write(
+        root.join("app/text.cljc"),
+        format!(
+            "{header}(defn warned [] missing)\n(js/console.log top-missing)\n\
+             (defn three [] (stars 1 2 3))\n(quote)\n{helper}"
+        ),
+    )
+    .unwrap();
+    let (error, diagnostics) = compile(true);
+    let error = error.unwrap_err().to_string();
+    assert!(error.contains("quote"), "{error}");
+    assert!(!error.contains("unavailable definition"), "{error}");
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|w| (w.kind, w.message.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("undeclared-var", "Use of undeclared Var app.text/missing"),
+            (
+                "undeclared-var",
+                "Use of undeclared Var app.text/top-missing"
+            )
+        ]
+    );
+}
+
+/// In warning mode a namespace that defines macros drains its units at its
+/// end. Its reader context still names its macros afterwards, although each
+/// appended unit restores the context of its snapshot. A unit that fails
+/// there ends the warnings at its own form's, as a drain after every form
+/// did: a later form's warning is not reported.
+#[test]
+fn warning_mode_units_drained_at_the_end_keep_macros_and_stop_warnings_at_a_failure() {
+    use std::fs;
+    let root = TempDir::new("end-drain");
+    fs::create_dir_all(root.join("app")).unwrap();
+    let options = AnalysisOptions {
+        warning_mode: true,
+        ..AnalysisOptions::default()
+    };
+    fs::write(
+        root.join("app/m.cljs"),
+        "(ns app.m) (defmacro one [] 1) (def value (one)) (defmacro two [] 2)",
+    )
+    .unwrap();
+    let mut diagnostics = Vec::new();
+    let program = light_cljs::compiler::analyze_namespace_entry(
+        "app.m",
+        std::slice::from_ref(root.path()),
+        &mut light_cljs::MacroHost::new(),
+        options,
+        &mut diagnostics,
+    )
+    .unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    assert_eq!(program.reader_contexts["app.m"].macros, ["one", "two"]);
+
+    fs::write(
+        root.join("app/m.cljs"),
+        "(ns app.m) (defmacro one [] 1)\n(defn warned [] missing)\n\
+         (defn bad [] (quote))\n(js/console.log later-missing)",
+    )
+    .unwrap();
+    let mut diagnostics = Vec::new();
+    let error = light_cljs::compiler::analyze_namespace_entry(
+        "app.m",
+        std::slice::from_ref(root.path()),
+        &mut light_cljs::MacroHost::new(),
+        options,
+        &mut diagnostics,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("quote"), "{error}");
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|w| (w.kind, w.message.as_str()))
+            .collect::<Vec<_>>(),
+        [("undeclared-var", "Use of undeclared Var app.m/missing")]
+    );
 }
 
 #[test]
