@@ -266,15 +266,21 @@ what the section leaves open:
 - A relative path resolves against the expansion site: the innermost unit
   being analyzed, or the namespace being analyzed. When an initializer is the
   innermost code running there is no site, and `./` is an error.
-- The site's directory comes from the site namespace's name, not from the
-  file the provider returned: `my-app.ui.core` resolves `./x.txt` to the
-  logical path `my_app/ui/x.txt`, searched in every root. For a namespace
-  found under a source root the two agree, since the provider found the file
-  at that logical path. They differ only for a source the provider serves
-  from elsewhere (an embedding `SourceProvider` with its own layout, or an
-  entry file outside the roots), whose real directory has no root-relative
-  logical path for the cache to key on; resolving by name keeps the key a
-  function of the namespace and the roots alone.
+- The site's directory is that of the file the provider returned for the
+  site namespace, as a logical path: `ResourceProvider::directory` places
+  the file under the roots (`FileSourceProvider` strips the first root that
+  holds it, as named, then canonically), and the result is searched in every
+  root like any path. A file the provider cannot place (REPL input, an entry
+  file outside every root, an embedding provider without `directory`)
+  resolves by the namespace's name instead: `my-app.ui.core` resolves
+  `./x.txt` to `my_app/ui/x.txt`. Each source's site is its namespace and
+  file by source index, so a deferred unit analyzed later resolves against
+  the namespace that defined it.
+- Service arguments must be well-formed text: a NUL or a lone surrogate is
+  refused in `src/build_services.js` before any request, because V8's bridge
+  would replace a lone surrogate and QuickJS's refuse it.
+- A read when the provider supplies no resources at all is an error, and is
+  recorded as a non-cacheable absent resource, since a macro can catch it.
 - Interactive compilation (`EvalSession`, `DevSession` and so a watch's
   session and the dev REPL) serves `light.build` for the compiler's whole
   life with its source provider's resources. Every form is source 0 there,

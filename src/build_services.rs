@@ -23,10 +23,18 @@ use std::{cell::RefCell, rc::Rc};
 /// ([`crate::eval_compiler`]), `None` otherwise.
 pub(crate) struct BuildContext {
     resources: Option<Rc<dyn ResourceProvider>>,
-    /// Each source's namespace by source index, as analysis reaches it.
-    namespaces: Vec<Option<String>>,
+    /// Each source by source index, as analysis reaches it.
+    sources: Vec<Option<Site>>,
     /// The source being analyzed.
     window: usize,
+}
+
+/// A source analysis reached: its namespace and the file its provider
+/// named, against whose directory `./` resolves.
+#[derive(Clone, PartialEq)]
+struct Site {
+    namespace: String,
+    file: Option<String>,
 }
 
 pub(crate) type SharedBuild = Rc<RefCell<Option<BuildContext>>>;
@@ -44,7 +52,7 @@ impl BuildGuard {
     pub(crate) fn enter(build: &SharedBuild, resources: Option<Rc<dyn ResourceProvider>>) -> Self {
         let previous = build.borrow_mut().replace(BuildContext {
             resources,
-            namespaces: Vec::new(),
+            sources: Vec::new(),
             window: 0,
         });
         Self {
@@ -58,19 +66,26 @@ impl BuildGuard {
             context.resources = resources;
         }
     }
-    /// Source `index`, namespace `name`, is analyzed next: the expansion
-    /// site of what runs until the next call, and the namespace on which
-    /// the units of that source record what they read. An interactive
-    /// compiler analyzes every form as source 0, in its current namespace.
-    pub(crate) fn analyze(&self, index: usize, name: &str) {
+    /// Source `index`, namespace `name` from the provider's `file`, is
+    /// analyzed next: the expansion site of what runs until the next call,
+    /// and the namespace on which the units of that source record what they
+    /// read. An interactive compiler analyzes every form as source 0, in its
+    /// current namespace, from the form's file.
+    pub(crate) fn analyze(&self, index: usize, name: &str, file: Option<&str>) {
         if let Some(context) = self.build.borrow_mut().as_mut() {
             context.window = index;
-            if context.namespaces.len() <= index {
-                context.namespaces.resize(index + 1, None);
+            if context.sources.len() <= index {
+                context.sources.resize(index + 1, None);
             }
-            let slot = &mut context.namespaces[index];
-            if slot.as_deref() != Some(name) {
-                *slot = Some(name.to_owned());
+            let slot = &mut context.sources[index];
+            if slot
+                .as_ref()
+                .is_none_or(|site| site.namespace != name || site.file.as_deref() != file)
+            {
+                *slot = Some(Site {
+                    namespace: name.to_owned(),
+                    file: file.map(str::to_owned),
+                });
             }
         }
     }
@@ -171,7 +186,7 @@ fn serve(
             None
         } else {
             let source = caller.analyzing.map_or(context.window, |s| s as usize);
-            context.namespaces.get(source).cloned().flatten()
+            context.sources.get(source).cloned().flatten()
         };
         (context.resources.clone(), context.window as u32, site)
     };
@@ -192,8 +207,20 @@ fn serve(
     };
     match operation {
         "resource" | "resource?" | "depend-resource" => {
-            let path = resolve_path(first, site.as_deref()).map_err(|e| format!("{name}: {e}"))?;
+            let directory = || {
+                let site = site.as_ref()?;
+                Some(site_directory(site, resources.as_deref()))
+            };
+            let path = resolve_path(first, directory).map_err(|e| format!("{name}: {e}"))?;
             let Some(resources) = resources else {
+                // A macro can catch the error, and a later provider may
+                // supply the resource: the lookup is non-cacheable.
+                record(ExternalInput::Resource(ResourceDependency {
+                    path,
+                    candidates: Vec::new(),
+                    found: None,
+                    stable: false,
+                }));
                 return Err(format!(
                     "{name}: the source provider of this compilation supplies no resources"
                 ));
@@ -282,9 +309,37 @@ fn serve(
     }
 }
 
-/// The logical path `path` names: root-relative, or relative to the
-/// directory of namespace `site`'s file when it starts with `./` or `../`.
-fn resolve_path(path: &str, site: Option<&str>) -> Result<String, String> {
+/// The logical directory of `site`'s file, as segments: where its provider
+/// says the file is under the roots ([`ResourceProvider::directory`]), or,
+/// for a file it cannot place (REPL input, a file outside every root), the
+/// directory the namespace's name maps to.
+fn site_directory(site: &Site, resources: Option<&dyn ResourceProvider>) -> Vec<String> {
+    if let (Some(file), Some(resources)) = (&site.file, resources)
+        && let Some(directory) = resources.directory(file)
+    {
+        return directory
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .map(str::to_owned)
+            .collect();
+    }
+    let mut segments: Vec<String> = site
+        .namespace
+        .replace('-', "_")
+        .split('.')
+        .map(str::to_owned)
+        .collect();
+    segments.pop();
+    segments
+}
+
+/// The logical path `path` names: root-relative, or, when it starts with
+/// `./` or `../`, relative to the expansion site's `directory`, which is
+/// None when there is no site.
+fn resolve_path(
+    path: &str,
+    directory: impl FnOnce() -> Option<Vec<String>>,
+) -> Result<String, String> {
     if path.is_empty() || path.contains(['\\', '\0']) {
         return Err(format!("invalid resource path {path:?}"));
     }
@@ -295,16 +350,14 @@ fn resolve_path(path: &str, site: Option<&str>) -> Result<String, String> {
     }
     let mut segments: Vec<String> = Vec::new();
     if path.starts_with("./") || path.starts_with("../") {
-        let Some(site) = site else {
+        let Some(directory) = directory() else {
             return Err(format!(
                 "relative resource path {path} has no expansion site: code that runs \
                  outside any macro expansion, such as a def's initializer, must use a \
                  path relative to the source roots"
             ));
         };
-        let file = site.replace('-', "_");
-        segments.extend(file.split('.').map(str::to_owned));
-        segments.pop();
+        segments = directory;
     }
     for segment in path.split('/') {
         match segment {
@@ -351,7 +404,7 @@ mod tests {
         let build: SharedBuild = Default::default();
         let log: SharedLog = Rc::new(RefCell::new(Some(ObservationLog::default())));
         let guard = BuildGuard::enter(&build, Some(Rc::new(Anonymous)));
-        guard.analyze(0, "app.core");
+        guard.analyze(0, "app.core", None);
         let ask = |request: &str| serve_request(&build, &log, request, |_| None, Vec::new());
         assert_eq!(ask("e\0\0resource\0x.txt\0"), "vtext");
         assert_eq!(ask("e\0\0resource?\0y.txt\0"), "n");
@@ -380,16 +433,16 @@ mod tests {
         let ask = |request: &str| serve_request(&build, &log, request, |_| None, Vec::new());
         let outer = BuildGuard::enter(&build, Some(Rc::new(Anonymous)));
         // Indices are names, whatever order analysis reaches them in.
-        outer.analyze(2, "app.later");
-        outer.analyze(0, "app.core");
+        outer.analyze(2, "app.later", None);
+        outer.analyze(0, "app.core", None);
         assert_eq!(ask("e\0\0resource?\0./x.txt\0"), "n");
         {
             let inner = BuildGuard::enter(&build, None);
-            inner.analyze(0, "other.ns");
+            inner.analyze(0, "other.ns", None);
             assert!(ask("e\0\0resource\0x.txt\0").contains("supplies no resources"));
         }
         assert_eq!(ask("e\0\0resource\0x.txt\0"), "vtext");
-        outer.analyze(2, "app.later");
+        outer.analyze(2, "app.later", None);
         assert_eq!(ask("e\0\0resource?\0./x.txt\0"), "n");
         drop(outer);
         assert!(ask("e\0\0resource\0x.txt\0").contains("only available at compile time"));
@@ -397,21 +450,66 @@ mod tests {
 
     #[test]
     fn paths_resolve_against_roots_or_the_expansion_site() {
-        assert_eq!(resolve_path("app/data.txt", None).unwrap(), "app/data.txt");
+        assert_eq!(at("app/data.txt", None).unwrap(), "app/data.txt");
         assert_eq!(
-            resolve_path("./data.txt", Some("my-app.core")).unwrap(),
+            at("./data.txt", Some("my-app.core")).unwrap(),
             "my_app/data.txt"
         );
         assert_eq!(
-            resolve_path("../shared/x.txt", Some("my-app.ui.core")).unwrap(),
+            at("../shared/x.txt", Some("my-app.ui.core")).unwrap(),
             "my_app/shared/x.txt"
         );
-        assert_eq!(resolve_path("./x.txt", Some("core")).unwrap(), "x.txt");
-        assert!(resolve_path("../x.txt", Some("core")).is_err());
-        assert!(resolve_path("./x.txt", None).is_err());
-        assert!(resolve_path("/x.txt", None).is_err());
-        assert!(resolve_path("a//b", None).is_err());
-        assert!(resolve_path("a/../..", None).is_err());
-        assert!(resolve_path("", None).is_err());
+        assert_eq!(at("./x.txt", Some("core")).unwrap(), "x.txt");
+        assert!(at("../x.txt", Some("core")).is_err());
+        assert!(at("./x.txt", None).is_err());
+        assert!(at("/x.txt", None).is_err());
+        assert!(at("a//b", None).is_err());
+        assert!(at("a/../..", None).is_err());
+        assert!(at("", None).is_err());
+    }
+
+    /// `path` resolved at namespace `site`, a file its provider cannot place.
+    fn at(path: &str, site: Option<&str>) -> Result<String, String> {
+        resolve_path(path, || {
+            let site = Site {
+                namespace: site?.into(),
+                file: None,
+            };
+            Some(site_directory(&site, None))
+        })
+    }
+
+    /// A provider that places its files under `gen/`.
+    struct Generated;
+    impl ResourceProvider for Generated {
+        fn load_resource(
+            &self,
+            path: &str,
+            _: &mut Vec<Candidate>,
+        ) -> Result<Option<ResourceInput>, LoadError> {
+            Ok(Some(ResourceInput {
+                file: path.into(),
+                identity: None,
+                text: path.into(),
+            }))
+        }
+        fn directory(&self, file: &str) -> Option<String> {
+            file.starts_with("gen/").then(|| "gen".into())
+        }
+    }
+
+    #[test]
+    fn a_relative_path_resolves_against_the_directory_the_provider_gives_the_file() {
+        let build: SharedBuild = Default::default();
+        let log: SharedLog = Default::default();
+        let ask = |request: &str| serve_request(&build, &log, request, |_| None, Vec::new());
+        let guard = BuildGuard::enter(&build, Some(Rc::new(Generated)));
+        guard.analyze(0, "app.core", Some("gen/core.cljs"));
+        assert_eq!(ask("e\0\0resource\0./x.txt\0"), "vgen/x.txt");
+        // A file the provider cannot place resolves by the namespace's name.
+        guard.analyze(0, "app.core", Some("<eval>.cljs"));
+        assert_eq!(ask("e\0\0resource\0./x.txt\0"), "vapp/x.txt");
+        guard.analyze(0, "app.core", None);
+        assert_eq!(ask("e\0\0resource\0./x.txt\0"), "vapp/x.txt");
     }
 }

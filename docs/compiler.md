@@ -2377,14 +2377,16 @@ explicit inputs that a compiler cache can key on
   for `resource?` too. A path starting with `./` or `../` resolves against the
   directory of the file of the namespace whose macro expansion is running (the
   expansion site, as Shadow's `shadow.resource/inline` does): namespace
-  `my-app.core` resolves `./x.txt` to `my_app/x.txt`. The directory comes from
-  the namespace's name, which for a namespace found under a source root is
-  where its file is; a source served from elsewhere still resolves by name.
-  In a REPL or watch session the site is the session's current namespace. A data reader resolves
-  it against the namespace being read. Code that runs outside any expansion,
-  such as a helper `def`'s initializer that a macro's first use triggers, has
-  no site, and a relative path there is an error. Absolute paths, empty
-  segments, backslashes and paths that leave the roots are errors.
+  `my-app.core` in `src/my_app/core.cljs` resolves `./x.txt` to
+  `my_app/x.txt`, which is then searched in every root. A file the provider
+  cannot place under the roots (REPL input, an entry file outside them)
+  resolves by the namespace's name, to the same `my_app/x.txt`. In a REPL or
+  watch session the site is the session's current namespace and the file of
+  the form. A data reader resolves it against the namespace being read. Code
+  that runs outside any expansion, such as a helper `def`'s initializer that
+  a macro's first use triggers, has no site, and a relative path there is an
+  error. Absolute paths, empty segments, backslashes and paths that leave the
+  roots are errors, and so is an argument with a NUL or a lone surrogate.
 - **Only at compile time.** In emitted application code every call throws
   `light.build/... is only available at compile time`. A helper namespace that
   the application also loads can test `(exists? js/lightCljsBuild)`.
@@ -2396,8 +2398,11 @@ explicit inputs that a compiler cache can key on
 - **Embedding.** Resources come from `SourceProvider::resources`, a
   `ResourceProvider` that answers a logical path and appends each location it
   tried. `FileSourceProvider` serves the source roots with each file's
-  canonical path as its identity. A provider without resources makes every
-  read an error, and one whose `stable` is false (the default) or that answers
+  canonical path as its identity. `ResourceProvider::directory` places a
+  source file the provider named under the roots, for `./` paths; the
+  default places none. A provider without resources makes every read an
+  error (and the reading namespace non-cacheable, since a macro can catch
+  it), and one whose `stable` is false (the default) or that answers
   without an identity makes the reading namespaces non-cacheable
   (`cache_policy::non_cacheable_inputs`).
 

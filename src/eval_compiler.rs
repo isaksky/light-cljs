@@ -62,11 +62,12 @@ impl InteractiveCompiler {
     ) {
         self.build.provide(resources);
     }
-    /// The current namespace is the expansion site of the macros, helpers
-    /// and data readers that run next, and records what they read. Every
-    /// form is source 0 of the interactive compiler.
-    fn build_site(&self) {
-        self.build.analyze(0, &self.namespace);
+    /// The current namespace, in `file` (the form's source), is the
+    /// expansion site of the macros, helpers and data readers that run
+    /// next, and records what they read. Every form is source 0 of the
+    /// interactive compiler.
+    fn build_site(&self, file: &str) {
+        self.build.analyze(0, &self.namespace, Some(file));
     }
     pub(crate) fn set_namespace(&mut self, namespace: &str) {
         if self.namespace == namespace {
@@ -271,7 +272,7 @@ impl InteractiveCompiler {
                 continue;
             };
             // Data readers run as the form is lowered.
-            self.build_site();
+            self.build_site(&input.file);
             let mut view = crate::compiler_reader::NamespaceView::new(&self.namespace, &source);
             for (alias, target) in &self.aliases {
                 view.aliases
@@ -311,7 +312,7 @@ impl InteractiveCompiler {
         }
     }
     pub(crate) fn analyze_form(&mut self, form: &Form) -> Result<Program, AnalysisError> {
-        self.build_site();
+        self.build_site(form.span().source().name());
         self.host.name_policy = Some(self.policy.clone());
         let mut resolution = self.resolution.clone();
         resolution.source_name = Some(form.span().source().name().into());
@@ -383,7 +384,7 @@ impl InteractiveCompiler {
         result
     }
     pub(crate) fn macroexpand(&mut self, form: &Form, once: bool) -> Result<Form, String> {
-        self.build_site();
+        self.build_site(form.span().source().name());
         let mut form = form.clone();
         for _ in 0..self.host.limits.expansion_depth {
             if !matches!(

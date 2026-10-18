@@ -1924,7 +1924,7 @@ fn analyze_entry(
         };
         let first_lazy = analysis.lazy_target_count();
         macros.observe(|log| log.window = index as u32);
-        build.analyze(index, &file.name);
+        build.analyze(index, &file.name, file.path.to_str());
         // An artifact installs at the frontier its analysis would have run.
         let installed = match install.and_then(|lookup| lookup(&file.name)) {
             Some(artifact) => {

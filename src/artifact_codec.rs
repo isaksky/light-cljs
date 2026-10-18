@@ -527,6 +527,7 @@ fn external_inputs(
 
 fn read_external_inputs(
     input: &mut Input<'_>,
+    budget: &Budget,
 ) -> Result<Vec<crate::dependency_manifest::ExternalInput>, DecodeError> {
     use crate::dependency_manifest::{
         Candidate, ExternalInput, ResolvedResource, ResourceDependency,
@@ -540,23 +541,27 @@ fn read_external_inputs(
         }),
     };
     let count = input.count()?;
-    let mut inputs = Vec::with_capacity(count);
+    let mut inputs = budget.vec(count)?;
     for _ in 0..count {
         inputs.push(match input.byte()? {
             0 => {
-                let path = input.utf8()?;
+                let path = input.utf8_charged(budget)?;
                 let count = input.count()?;
-                let mut candidates = Vec::with_capacity(count);
+                let mut candidates = budget.vec(count)?;
                 for _ in 0..count {
                     candidates.push(Candidate {
-                        path: input.utf8()?.into(),
+                        path: input.utf8_charged(budget)?.into(),
                         present: flag(input, "candidate presence")?,
                     });
                 }
                 let found = match input.byte()? {
                     0 => None,
                     tag @ (1 | 2) => {
-                        let identity = if tag == 2 { Some(input.utf8()?) } else { None };
+                        let identity = if tag == 2 {
+                            Some(input.utf8_charged(budget)?)
+                        } else {
+                            None
+                        };
                         let hash = u64::from_le_bytes(input.take(8)?.try_into().unwrap());
                         Some(ResolvedResource {
                             identity,
@@ -578,10 +583,10 @@ fn read_external_inputs(
                     stable: flag(input, "resource stability")?,
                 })
             }
-            1 => ExternalInput::Namespace(input.utf8()?),
+            1 => ExternalInput::Namespace(input.utf8_charged(budget)?),
             2 => ExternalInput::Provider {
-                token: input.utf8()?,
-                fingerprint: input.utf8()?,
+                token: input.utf8_charged(budget)?,
+                fingerprint: input.utf8_charged(budget)?,
             },
             tag => {
                 return Err(DecodeError::Tag {
@@ -1710,6 +1715,20 @@ fn literal_tag(kind: CompilerLiteralKind) -> u8 {
 /// Read the manifest of encoded bytes, checking the header, the manifest's
 /// integrity and the section table's layout, without decoding a section.
 pub fn read_manifest(bytes: &[u8], limits: &DecodeLimits) -> Result<Manifest, DecodeError> {
+    read_manifest_charged(
+        bytes,
+        limits,
+        &Budget(std::cell::Cell::new(limits.max_decoded_bytes)),
+    )
+}
+
+/// [`read_manifest`], charging what its external inputs allocate to
+/// `budget`, which the sections' decoding then shares.
+fn read_manifest_charged(
+    bytes: &[u8],
+    limits: &DecodeLimits,
+    budget: &Budget,
+) -> Result<Manifest, DecodeError> {
     if bytes.len() as u64 > limits.max_bytes {
         return Err(DecodeError::Limit {
             what: "bytes",
@@ -1798,7 +1817,7 @@ pub fn read_manifest(bytes: &[u8], limits: &DecodeLimits) -> Result<Manifest, De
             kinds: input.byte()?,
         });
     }
-    let inputs = read_external_inputs(&mut input)?;
+    let inputs = read_external_inputs(&mut input, budget)?;
     let policy = input.byte()?;
     if policy > 7 {
         return Err(DecodeError::Tag {
@@ -1841,7 +1860,8 @@ pub fn decode(
     if cancelled() {
         return Err(DecodeError::Cancelled);
     }
-    let manifest = read_manifest(bytes, limits)?;
+    let budget = Budget(std::cell::Cell::new(limits.max_decoded_bytes));
+    let manifest = read_manifest_charged(bytes, limits, &budget)?;
     if manifest.core_table != core_table() {
         return Err(DecodeError::CoreTable);
     }
@@ -1854,7 +1874,6 @@ pub fn decode(
         }
         Ok(content)
     };
-    let budget = Budget(std::cell::Cell::new(limits.max_decoded_bytes));
     let mut strings_input = Input {
         bytes: section(0)?,
         position: 0,
@@ -2067,6 +2086,17 @@ impl<'a> Input<'a> {
     }
     fn hash(&mut self) -> Result<[u8; 32], DecodeError> {
         Ok(self.take(32)?.try_into().unwrap())
+    }
+    /// [`Self::utf8`], its bytes charged to `budget` before they are copied.
+    fn utf8_charged(&mut self, budget: &Budget) -> Result<String, DecodeError> {
+        let start = self.position;
+        let length = self.uint()?;
+        if length > self.remaining() as u64 {
+            return Err(DecodeError::Truncated(self.part));
+        }
+        budget.charge(length)?;
+        self.position = start;
+        self.utf8()
     }
     fn utf8(&mut self) -> Result<String, DecodeError> {
         let length = self.uint()?;
@@ -3859,6 +3889,50 @@ mod tests {
             }
         ));
         decoded(&bytes).unwrap();
+    }
+
+    #[test]
+    fn external_inputs_respect_the_decoded_budget() {
+        let limits = DecodeLimits {
+            max_decoded_bytes: 1 << 20,
+            ..DecodeLimits::default()
+        };
+        let over = |inputs: Vec<ExternalInput>| {
+            let bytes = encode(&sample(0), &ManifestFields { inputs, ..fields() }).unwrap();
+            decoded(&bytes).unwrap();
+            for error in [
+                read_manifest(&bytes, &limits).unwrap_err(),
+                decode(&bytes, &limits, &|| false).unwrap_err(),
+            ] {
+                assert!(
+                    matches!(
+                        error,
+                        DecodeError::Limit {
+                            what: "decoded bytes",
+                            ..
+                        }
+                    ),
+                    "{error:?}"
+                );
+            }
+        };
+        // A 2 MiB fingerprint.
+        over(vec![ExternalInput::Provider {
+            token: "p".into(),
+            fingerprint: "f".repeat(2 << 20),
+        }]);
+        // 60,000 one-byte candidates, each a path of 24 bytes and more.
+        over(vec![ExternalInput::Resource(ResourceDependency {
+            path: "x".into(),
+            candidates: (0..60_000)
+                .map(|_| Candidate {
+                    path: "".into(),
+                    present: false,
+                })
+                .collect(),
+            found: None,
+            stable: true,
+        })]);
     }
 
     #[test]

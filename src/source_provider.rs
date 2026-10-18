@@ -1,6 +1,9 @@
 //! Owned source requests and provider results, independent of evaluation.
 use crate::compiler_data::Name;
-use std::{fmt, path::PathBuf};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 /// Whether a request reloads: not a loaded namespace, the namespace itself,
 /// or it and every namespace it requires, directly or not, each once. They
 /// are ordered by what they reload.
@@ -100,6 +103,15 @@ pub trait ResourceProvider {
     fn stable(&self) -> bool {
         false
     }
+    /// The logical directory, `/`-separated and relative to the roots, of
+    /// the source file this provider named `file` (`SourceInput::file`),
+    /// against which `./` and `../` resolve. `None`, the default, is a file
+    /// it cannot place, and a relative path then resolves against the
+    /// directory the namespace's name maps to.
+    fn directory(&self, file: &str) -> Option<String> {
+        let _ = file;
+        None
+    }
 }
 impl<F> SourceProvider for F
 where
@@ -193,6 +205,33 @@ impl ResourceProvider for FileSourceProvider {
     }
     fn stable(&self) -> bool {
         true
+    }
+    /// The directory of `file` under the first root that holds it, as the
+    /// provider named it (a symbolic link stays where it is), or else once
+    /// its directory and the roots are canonical; `None` for a file outside
+    /// every root.
+    fn directory(&self, file: &str) -> Option<String> {
+        let logical = |parent: &Path, root: &Path| {
+            parent
+                .strip_prefix(root)
+                .ok()?
+                .components()
+                .map(|component| match component {
+                    std::path::Component::Normal(name) => name.to_str(),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()
+                .map(|segments| segments.join("/"))
+        };
+        let parent = Path::new(file).parent()?;
+        if let Some(found) = self.roots.iter().find_map(|root| logical(parent, root)) {
+            return Some(found);
+        }
+        let parent = std::fs::canonicalize(parent).ok()?;
+        self.roots.iter().find_map(|root| {
+            let root = std::fs::canonicalize(root).ok()?;
+            logical(&parent, &root)
+        })
     }
 }
 impl FileSourceProvider {

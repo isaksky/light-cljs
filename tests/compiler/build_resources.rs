@@ -490,6 +490,49 @@ fn depend_declares_resources_namespaces_and_providers_without_reading() {
     assert!(error.contains("light.build/depend!: expected"), "{error}");
 }
 
+/// Service arguments are well-formed text, which both engines' bridges carry
+/// alike: a lone surrogate or a NUL is refused before any request, in a
+/// fingerprint as in a path, and a surrogate pair is kept.
+#[test]
+fn service_arguments_with_lone_surrogates_are_refused_in_both_engines() {
+    let roots = Roots::new(1);
+    roots.write(
+        0,
+        "lib/macros.cljs",
+        r#"(ns lib.macros (:require [light.build :as b]))
+(defn- attempt [f] (try (f) "ok" (catch :default e (.-message e))))
+(defmacro attempts []
+  (let [lone (js/String.fromCharCode 55296)
+        pair (js/String.fromCharCode 55357 56832)]
+    [(attempt #(b/depend! {:provider "p" :fingerprint lone}))
+     (attempt #(b/resource? (str "app/" lone ".txt")))
+     (attempt #(b/resource? (str "app/" (js/String.fromCharCode 0))))
+     (attempt #(b/depend! {:provider "p" :fingerprint pair}))]))"#,
+    );
+    roots.write(
+        0,
+        "app/core.cljs",
+        "(ns app.core (:require [lib.macros :refer [attempts]])) (pr-str (attempts))",
+    );
+    let (js, manifest) = roots.build("app.core").unwrap();
+    assert_eq!(
+        execute(&js),
+        "[\"light.build/depend!: a string with a lone surrogate\" \
+         \"light.build/resource?: a string with a lone surrogate\" \
+         \"light.build/resource?: a string with a NUL character\" \"ok\"]"
+    );
+    let inputs: Vec<_> = manifest
+        .external_inputs(id(&manifest, "app.core"))
+        .collect();
+    assert_eq!(
+        inputs,
+        [&ExternalInput::Provider {
+            token: "p".into(),
+            fingerprint: "\u{1F600}".into()
+        }]
+    );
+}
+
 #[test]
 fn application_code_cannot_call_light_build() {
     let roots = Roots::new(1);
@@ -580,5 +623,128 @@ fn a_provider_without_stable_identities_makes_its_readers_non_cacheable() {
         policy.describe(&manifest, core).unwrap(),
         "input without a stable identity (resource app/data.txt from a provider without \
          stable identities) through app.core"
+    );
+}
+
+/// Record a build of `entry` from `provider`: its output and manifest.
+fn build_from(entry: &str, provider: &dyn SourceProvider) -> (String, DependencyManifest) {
+    let mut manifest = DependencyManifest::default();
+    let (program, _) = analyze_namespace_entry_recorded_with_provider(
+        entry,
+        provider,
+        &mut MacroHost::new(),
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+        EntryRecorders {
+            manifest: Some(&mut manifest),
+            ..EntryRecorders::default()
+        },
+    )
+    .unwrap();
+    (light_cljs::emit_js(&program), manifest)
+}
+
+/// An embedding provider with its own layout: `app.core` is the file
+/// `generated/core.cljs`, and its resources sit beside it.
+struct Generated;
+
+impl SourceProvider for Generated {
+    fn load(&self, request: &LoadRequest) -> Result<Option<SourceInput>, LoadError> {
+        Ok(
+            match String::from_utf16_lossy(request.namespace.name()).as_str() {
+                "lib.macros" => Some(SourceInput::new("lib/macros.cljs", INLINE)),
+                "app.core" => Some(SourceInput::new(
+                    "generated/core.cljs",
+                    r#"(ns app.core (:require [lib.macros :refer [inline]])) (inline "./data.txt")"#,
+                )),
+                _ => None,
+            },
+        )
+    }
+    fn resources(&self) -> Option<Rc<dyn ResourceProvider>> {
+        Some(Rc::new(Generated))
+    }
+}
+
+impl ResourceProvider for Generated {
+    fn load_resource(
+        &self,
+        path: &str,
+        tried: &mut Vec<Candidate>,
+    ) -> Result<Option<ResourceInput>, LoadError> {
+        let present = path == "generated/data.txt";
+        tried.push(Candidate {
+            path: path.into(),
+            present,
+        });
+        Ok(present.then(|| ResourceInput {
+            file: path.into(),
+            identity: Some(path.into()),
+            text: "beside the generated file".into(),
+        }))
+    }
+    fn stable(&self) -> bool {
+        true
+    }
+    fn directory(&self, file: &str) -> Option<String> {
+        Some(
+            file.rsplit_once('/')
+                .map_or("", |(directory, _)| directory)
+                .into(),
+        )
+    }
+}
+
+#[test]
+fn a_relative_path_resolves_against_the_directory_of_the_providers_file() {
+    let (js, manifest) = build_from("app.core", &Generated);
+    assert_eq!(execute(&js), "beside the generated file");
+    assert_eq!(
+        resource_paths(&manifest, "app.core"),
+        ["generated/data.txt"]
+    );
+}
+
+/// A provider with no resources: `light.build/resource` is an error a
+/// macro can catch.
+struct NoResources;
+
+impl SourceProvider for NoResources {
+    fn load(&self, request: &LoadRequest) -> Result<Option<SourceInput>, LoadError> {
+        Ok(
+            match String::from_utf16_lossy(request.namespace.name()).as_str() {
+                "lib.macros" => Some(SourceInput::new(
+                    "lib/macros.cljs",
+                    r#"(ns lib.macros (:require [light.build :as b]))
+(defmacro inline [path] (try (b/resource path) (catch :default _ "fallback")))"#,
+                )),
+                "app.core" => Some(SourceInput::new(
+                    "app/core.cljs",
+                    r#"(ns app.core (:require [lib.macros :refer [inline]])) (inline "app/data.txt")"#,
+                )),
+                _ => None,
+            },
+        )
+    }
+}
+
+#[test]
+fn a_caught_read_without_a_resource_provider_is_non_cacheable() {
+    let (js, manifest) = build_from("app.core", &NoResources);
+    assert_eq!(execute(&js), "fallback");
+    let [read] = resources(&manifest, "app.core")[..] else {
+        panic!("one read expected");
+    };
+    assert_eq!(read.path, "app/data.txt");
+    assert!(!read.stable && read.found.is_none() && read.candidates.is_empty());
+    let inputs = cache_policy::non_cacheable_inputs(&manifest);
+    let settings = CacheSettings {
+        enabled: true,
+        blockers: Vec::new(),
+    };
+    let policy = cache_policy::evaluate(&manifest, &settings, &[], &inputs);
+    assert_eq!(
+        policy.reason(id(&manifest, "app.core")),
+        Some(Bypass::NonCacheableInput)
     );
 }
