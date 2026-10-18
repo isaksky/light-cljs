@@ -536,6 +536,8 @@ ratchet programs at every `--optimize` level, in Node and QuickJS:
   `--eval`/`--repl` commands.
 - [docs/evaluator.md](docs/evaluator.md) — the QuickJS evaluator, compile-time
   phase contract, form bridge, resource controls.
+- [docs/compiler-cache.md](docs/compiler-cache.md) — proposed persistent binary
+  cache, explicit dependencies, opt-outs, and development-session reuse.
 - [docs/parser.md](docs/parser.md) and [docs/lexer.md](docs/lexer.md) — syntax
   layers.
 - [docs/dos-and-donts.md](docs/dos-and-donts.md) — performance guidelines for
