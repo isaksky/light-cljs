@@ -11,6 +11,43 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Parse queue (light-cljs-337, October 18, 2026)
+
+Parent `460b91a` against the parse queue, Penpot `app.main --optimize
+none`, six alternating pairs (parent first in rounds 1-3, candidate first in
+4-6) at 1-minute load 3.0 to 10.2 while two other workers were active.
+Output is 33,604,484 bytes with the same SHA-256 in every run below, at
+`--jobs 1` and `--jobs 8` too.
+
+| Build | Wall (s), round 1-6 | Median wall | Peak RSS (GB), round 1-6 | Median RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `460b91a` | 25.73, 24.05, 28.29, 24.88, 27.02, 26.85 | 26.29 | 0.924, 0.949, 0.976, 0.940, 0.981, 0.962 | 0.956 |
+| Parse queue, default `--jobs 1` | 24.62, 32.77, 26.98, 25.65, 27.77, 27.02 | 27.00 | 0.938, 0.948, 0.987, 0.956, 0.941, 0.983 | 0.952 |
+
+The medians are +2.7% wall and -0.4% peak RSS; the median of the six paired
+differences is +0.46 s (+1.7%), and round 2's 32.77 s is an outlier the
+load does not explain. The change cannot account for that much: the whole
+load phase is about 0.1 s. Three more alternating pairs with `--stats`
+measured it directly, and there the build is even:
+
+| Build | `trace.load-ms`, 3 runs | `trace.wall-ms`, 3 runs |
+| --- | --- | --- |
+| Parent `460b91a` | 101.1, 103.3, 100.7 | 25,038.6, 26,335.4, 25,950.6 |
+| Parse queue, `--jobs 1` | 137.2, 103.5, 104.6 | 26,312.8, 25,160.6, 25,972.7 |
+
+The median load phase is 103.3 ms against 104.6 ms (+1.3 ms for the inline
+pool, the result table and the replay), and the median trace wall is
+25.95 s against 25.97 s.
+
+At `--jobs 8` the load phase (the coordinator's wall time from the first
+parse job to the end of the replay, `trace.load-ms`) is 34.1, 36.3 and
+34.8 ms, against 101.8, 104.8 and 104.1 ms at `--jobs 1` in the same
+alternating runs: 3.0x, from 7 workers. It is 0.1% of the build either
+way. It is probably held back by the graph (not profiled): the entry's file
+must be parsed before anything else is known, and each level of requires
+waits for its parent's job, so the frontier is narrow at first; and the
+coordinator replays the walk and records the result serially.
+
 ## `Arc` instead of `Rc` (light-cljs-333, October 18, 2026)
 
 Parent `d6439d4` against the `Arc` change with each `Arena` lookup hint

@@ -324,8 +324,10 @@ unit's position, demander and costs, for
 
 `--jobs N` with `--compile` is experimental. It allows the compilation N CPU
 work slots, the calling thread's included, so at most N-1 worker threads.
-The default is 1. Output does not depend on N. For now every phase still runs
-on the calling thread; the work pool it sizes is described in
+The default is 1. Output does not depend on N. Sources are read and parsed on
+that pool, the source order coming from the require edges and not from which
+file finished first; analysis and every later phase still run on the calling
+thread. The pool is described in
 [docs/compiler-concurrency.md](docs/compiler-concurrency.md#the-scheduler).
 
 `--cache-dir DIR` with `--compile --entry` (also with `--reloadable`, `--esm`

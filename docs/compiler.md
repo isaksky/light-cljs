@@ -107,8 +107,13 @@ the compiler. The calling thread coordinates: it submits ready jobs, consumes
 outcomes and alone declares the build done. With one slot it runs every job
 inline without spawning. `--jobs N` (experimental, default 1) counts these
 slots, the coordinator's included, and reaches the compile entry as
-`EntryRecorders::slots`; no compiler phase runs on the pool yet. The design,
-the as-built details and what the tests cover are in
+`EntryRecorders::slots`. The first phase on it is the parse queue: the
+loader reads and parses each source in a job, whose requires go back on the
+queue, then replays its depth-first walk over the results, so source order,
+diagnostics and the dependency manifest do not depend on completion order
+(a `SourceProvider` is called on the pool only when its `concurrent` method
+opts in, as source roots do). The design, the as-built details and what the
+tests cover are in
 [compiler-concurrency.md](compiler-concurrency.md#the-scheduler).
 
 ### Namespace reflection and reading

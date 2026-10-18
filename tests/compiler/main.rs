@@ -191,6 +191,7 @@ mod set_project;
 mod size_ratchet;
 mod sorted_collections;
 mod sorted_contracts;
+mod source_loading;
 mod source_metadata;
 mod state;
 mod string_fixtures;

@@ -71,6 +71,18 @@ pub trait SourceProvider {
     fn resources(&self) -> Option<std::rc::Rc<dyn ResourceProvider>> {
         None
     }
+    /// This provider as one the loader may call from worker threads, several
+    /// lookups at once, or `None`, the default, to be called on the
+    /// compiling thread alone, in the loader's depth-first order
+    /// (docs/compiler-concurrency.md, "Source discovery and readiness"). A
+    /// provider that opts in is asked once per namespace a build loads, from
+    /// whichever require the parse queue reached it by first, so its answers
+    /// must not depend on [`LoadRequest::requesting_namespace`] or on the
+    /// order of the requests; the dependency manifest still records the
+    /// depth-first requester.
+    fn concurrent(&self) -> Option<&(dyn SourceProvider + Send + Sync)> {
+        None
+    }
 }
 
 /// A resource a [`ResourceProvider`] answered.
@@ -145,6 +157,10 @@ impl SourceProvider for FileSourceProvider {
     }
     fn resources(&self) -> Option<std::rc::Rc<dyn ResourceProvider>> {
         Some(std::rc::Rc::new(self.clone()))
+    }
+    /// Source roots answer by name alone, from any thread.
+    fn concurrent(&self) -> Option<&(dyn SourceProvider + Send + Sync)> {
+        Some(self)
     }
 }
 /// Resources across every root, like namespaces: a path in two roots is an

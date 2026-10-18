@@ -851,6 +851,27 @@ pub(crate) fn executed(unit: usize, prepared: bool) {
     });
 }
 
+/// Whether this thread records a trace now: a pooled phase asks its jobs,
+/// which run where the pool puts them, to time themselves.
+#[inline]
+pub(crate) fn recording() -> bool {
+    active()
+}
+
+/// A load phase run on the pool (light-cljs-337): the coordinator's wall
+/// time in it is charged to [`Stage::Load`], as a frame with no inner frames
+/// would be, and the time of each source's parse job is its namespace's
+/// load, in `times`'s order, which is source order. The two differ once
+/// jobs run on workers: the stage is the wall time the phase took, the
+/// namespaces' loads are the work.
+pub(crate) fn pooled_loads(wall: Duration, times: impl IntoIterator<Item = Duration>) {
+    with_recorder(|recorder| {
+        recorder.trace.stages[Stage::Load as usize].time += wall;
+        recorder.frames.last_mut().expect("root frame").children += wall;
+        recorder.loads.extend(times);
+    });
+}
+
 /// Mark the namespace with source index `index` as installed from an
 /// artifact.
 pub(crate) fn installed(index: usize) {

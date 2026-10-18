@@ -711,7 +711,9 @@ about the compiler:
 - *CLI.* `--jobs N` is parsed in `CompileFlags::accept` and is threaded to
   the compile entry as `EntryRecorders::slots` (and to
   `analyze_namespace_entry_cached`). It is accepted with every
-  `--compile`, it defaults to 1, and nothing uses more than one slot yet.
+  `--compile` and defaults to 1. The parse queue is the first phase to use
+  more than one slot (light-cljs-337, under "Source discovery and
+  readiness").
 
 The tests cover the scheduler, liveness and completion rows of the
 validation table that do not need the compiler:
@@ -770,6 +772,90 @@ remain for the stage A pellets.
   currently prevents them, and needs its own compatibility decision.
 - Tag work with a build generation and the source bytes it saw, so a stale
   completion cannot publish into a newer watch build.
+
+*As built (light-cljs-337):* the parse queue is the first phase on the
+pool, in `src/compiler.rs` (`Loader::load`, `discover`, `parse_source`):
+
+- *The job.* `parse_source` is one file's whole job: the provider lookup
+  (with the bundled first-party fallback), the whole-file parse with
+  discarded forms retained, `.cljc` selection, the `ns` form and the raw
+  directives after it, the `goog.*` host checks and the `clojure.*` rewrite
+  lookups, and the implicit `light.lazy` require. Its result carries the
+  ordered requires, which are the edges, and the job's own lookups numbered
+  from 0. The same function runs wherever the job runs.
+- *Discovery.* `discover` seeds the queue with the root and, as each
+  outcome arrives, requests every require that is not the core, not loaded
+  and not requested yet, as one batch. `ParseRecords` holds one record per
+  namespace by dense id: absent (unrequested), `Queued` (queued or
+  running), `Done` (parsed or failed). A namespace that two requires reach
+  is requested once, whichever outcome names it first, so a diamond is
+  never mistaken for a cycle. A failed job reports no requires. The phase
+  ends when the pool is quiescent.
+- *Replay.* The depth-first walk (`visit`) then runs exactly as before,
+  but takes each namespace's result from the records instead of reading
+  it. Its post-order is the source order; the cycle check still uses the
+  walk's stack, so a cycle's path and the first error reported (a missing
+  source, a parse error, an ambiguity, a cycle) are the ones the serial
+  walk meets first, located at the same require. Each job's lookups are
+  appended to the manifest record when the walk reaches its namespace,
+  with the walk's requester, and its lookup numbers are offset by the
+  lookups recorded before it, so the record is identical too. Work the
+  queue did beyond a first error (files the walk never reaches) is
+  discarded with the records.
+- *Lazy targets.* `visit_lazy` asks the provider for the target on the
+  calling thread, as before, then loads it with `load`: a new phase whose
+  discovery skips every loaded namespace, so the target's unvisited
+  closure is appended by the walk's rules and a require of the requester
+  is no cycle. The static graph is still loaded and validated whole before
+  analysis starts.
+- *Providers.* `SourceProvider::concurrent` (default `None`) is the
+  `Send + Sync` opt-in; `FileSourceProvider` returns itself. Any other
+  provider is called by the walk on the calling thread, in today's order,
+  with no pool started. A concurrent provider is asked once per namespace,
+  with the requester that reached it first in the discovery, which need not
+  be the depth-first one, so its answers must not depend on the requester;
+  the manifest records the depth-first requester.
+- *Slots.* At `--jobs 1` (the default) the pool runs every parse job inline
+  on the calling thread, so every build with source roots goes through the
+  same discovery and replay. With N slots, N-1 workers parse and the
+  coordinator only consumes outcomes. QuickJS-only and WebAssembly builds keep one slot
+  whatever `--jobs` says (`parse_slots`), as the first delivery's scope
+  requires: their parse jobs all run inline. Each lazy target's phase is its own
+  `scheduler::run`.
+- *Generation.* Each phase takes a fresh generation from a process-wide
+  counter, its jobs and outcomes carry it, and an outcome of another
+  generation is dropped unpublished. With the pool scoped to one phase
+  this cannot happen yet; it is the guard for a persistent watch-build
+  pool.
+- *Trace.* With `--stats`, each job times itself and the walk records the
+  times as the namespaces' `load`, in source order; `trace.load-ms` is the
+  coordinator's wall time in load phases (discovery and replay), which at
+  `--jobs 1` is the sum of the jobs and at N slots the phase's wall time.
+- *Errors.* A panic in a parse job is reported as a compile error naming
+  the worker, after the pool joins.
+
+The tests are `tests/compiler/source_loading.rs`. Each scenario compiles at
+one and four slots, four rounds each, and compares JavaScript, source order,
+warnings, the dependency manifest or the error (message, file, span, line
+and column) with the serial walk of a provider that does not opt in: a
+diamond; a static cycle and a missing source, each reported first when the
+walk meets it first; a parse error deep in the graph against a later one; a
+mismatched `ns` name; `.cljs` over `.cljc` and an ambiguity across roots;
+`goog.*` host, explicit `goog.*` source, bundled `clojure.string` and the
+`clojure.*` rewrite; raw `require` forms after the `ns` form; and a lazy
+target that requires its requester, with a missing dependency in its
+closure; and a missing source later in the graph than a namespace whose
+macro would throw, which reports the missing source. A non-`Send` closure
+provider at four slots is asked on the
+calling thread, in walk order; an opted-in provider is asked once per
+namespace, on worker threads at four slots. The whole suite was also run
+once with the loader forced to four slots (not committed).
+
+On Penpot main the serial build measured +2.7% median wall in a noisy set
+(+1.7% on paired differences) and -0.4% peak RSS; the load phase itself is
+103 ms before and 105 ms after, of a 26 s build, and at `--jobs 8` the
+load phase takes 35 ms; see
+[benchmarks/compiler-concurrency.md](../benchmarks/compiler-concurrency.md).
 
 ## Building it in stages
 

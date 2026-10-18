@@ -15,7 +15,9 @@ use crate::analyzer::{
 use crate::compile_stats::{self, CompileStats};
 use crate::dependency_manifest::DependencyManifest;
 use crate::macro_host::{MacroHost, MacroImport};
-use crate::source_provider::{FileSourceProvider, LoadError, LoadRequest, Reload, SourceProvider};
+use crate::source_provider::{
+    FileSourceProvider, LoadError, LoadRequest, Reload, SourceInput, SourceProvider,
+};
 use crate::{
     AnalysisError, CollectionKind, LineIndex, NodeId, NodeKind, ParseError, PrefixKind, SyntaxTree,
     analyze, emit_js, parse,
@@ -1231,6 +1233,379 @@ enum LoadState {
     Loaded,
 }
 
+/// The bounded first-party core, emitted inside the unit: a require of it
+/// loads no file.
+fn core_namespace(name: &str) -> bool {
+    matches!(name, "cljs.core" | "clojure.core")
+}
+
+/// A provider's answer as the loader reads it: the file name and text, or
+/// `None` when the provider has no such namespace.
+type Found = Result<Option<(PathBuf, String)>, NamespaceCompileError>;
+
+/// A provider's answer read as a [`Found`].
+fn provided_source(loaded: Result<Option<SourceInput>, LoadError>) -> Found {
+    match loaded {
+        Ok(Some(input)) => Ok(Some((PathBuf::from(input.file), input.source))),
+        Ok(None) => Ok(None),
+        Err(LoadError::Provider(message)) => Err(NamespaceCompileError::new(message)),
+        Err(error) => Err(NamespaceCompileError::new(error.to_string())),
+    }
+}
+
+/// The file a provider's answer names, for a manifest lookup.
+fn found_file(loaded: &Result<Option<SourceInput>, LoadError>) -> Option<String> {
+    loaded
+        .as_ref()
+        .ok()
+        .and_then(|input| input.as_ref().map(|input| input.file.clone()))
+}
+
+/// A require of a parsed source for the manifest: as written, its target,
+/// its form and the job-numbered lookups that resolved it.
+type ParsedRequire = (
+    String,
+    String,
+    crate::dependency_manifest::RequireForm,
+    Vec<u32>,
+);
+
+/// One namespace's source as its parse job made it
+/// (docs/compiler-concurrency.md, "Source discovery and readiness"): read,
+/// parsed whole with its discarded forms, its `.cljc` branches selected and
+/// its namespace directives read, raw ones later in the file included, with
+/// `file.requires` in order as its edges. Lookups are numbered by the job's
+/// own provider lookups, in the order it made them.
+struct ParsedSource {
+    file: NamespaceSource,
+    origin: crate::dependency_manifest::SourceOrigin,
+    /// The lookup of the namespace itself.
+    lookup: u32,
+    /// Each of `file.requires` as written, with its form and the lookups
+    /// that resolved it.
+    forms: Vec<(String, crate::dependency_manifest::RequireForm, Vec<u32>)>,
+    /// The `goog.*` requires no source provides, which `file.requires` drops:
+    /// host namespaces.
+    hosts: Vec<ParsedRequire>,
+}
+
+/// The parse job of namespace `name`: ask `find` for its source (falling
+/// back to the bundled first-party library), parse it, select its `.cljc`
+/// branches and read its directives, asking `find` for each `goog.*` and
+/// `clojure.*` require's source too. It is the same job whether the loader
+/// runs it where its depth-first walk reaches `name` or the parse queue runs
+/// it on a worker.
+fn parse_source(
+    name: &str,
+    warning_mode: bool,
+    find: &mut dyn FnMut(&str) -> Found,
+) -> Result<ParsedSource, NamespaceCompileError> {
+    use crate::dependency_manifest::{RequireForm, SourceOrigin};
+    let mut made = 0;
+    let mut find = |namespace: &str| {
+        made += 1;
+        find(namespace).map(|found| (found, made - 1))
+    };
+    let (found, lookup) = find(name)?;
+    let mut origin = SourceOrigin::Provider;
+    let (path, source) = if let Some(found) = found {
+        found
+    } else if let Some(source) = crate::compiler_libraries::source(name) {
+        origin = SourceOrigin::Bundled;
+        (
+            PathBuf::from(format!("<first-party>/{}.cljs", name.replace('.', "/"))),
+            source.to_owned(),
+        )
+    } else {
+        return Err(NamespaceCompileError::new(format!(
+            "namespace {name} not found: expected {}.cljs or .cljc in explicit source roots",
+            name.replace('.', "/").replace('-', "_")
+        )));
+    };
+    let cljc = path.extension().is_some_and(|ext| ext == "cljc");
+    let mut parser = crate::Parser::new(&source).retaining_discards();
+    let mut roots = Vec::new();
+    while let Some(root) = parser.read_form().map_err(|error| {
+        NamespaceCompileError::new(error.to_string()).at(&path, &source, error.span)
+    })? {
+        roots.push(root);
+    }
+    let mut discards = parser.discarded().to_vec();
+    let mut syntax = SyntaxTree {
+        nodes: parser.into_nodes(),
+        roots,
+    };
+    if cljc {
+        crate::compiler_reader::select_cljs(&source, &mut syntax, &mut discards).map_err(
+            |error| NamespaceCompileError::new(error.to_string()).at(&path, &source, error.span),
+        )?;
+    }
+    let mut file = NamespaceSource {
+        name: name.to_owned(),
+        name_span: 0..0,
+        path: path.clone(),
+        source,
+        syntax,
+        aliases: Vec::new(),
+        requires: Vec::new(),
+        require_spans: Vec::new(),
+        runtime_specs: Vec::new(),
+        namespace_imports: Vec::new(),
+        warning_mode,
+        inert_packages: Vec::new(),
+        resolution: crate::analyzer::NamespaceResolution {
+            source_name: Some(path.to_string_lossy().into_owned()),
+            cljc,
+            ..Default::default()
+        },
+    };
+    file.read_header()?;
+    // Closure libraries are JavaScript host namespaces. A source namespace
+    // provided explicitly by the caller still takes precedence.
+    let mut host_namespaces = Vec::new();
+    // For a manifest: each `goog.*` source check, and the host requires.
+    let mut goog_checks = Vec::new();
+    let mut hosts = Vec::new();
+    for spec in file.runtime_specs.clone() {
+        let namespace = &spec.import.namespace;
+        if !namespace.starts_with("goog.") {
+            continue;
+        }
+        let (found, lookup) = find(namespace)?;
+        goog_checks.push((namespace.clone(), lookup));
+        if found.is_none() {
+            file.bind_host_namespace(&spec)?;
+            hosts.push((
+                namespace.clone(),
+                namespace.clone(),
+                RequireForm::Declared,
+                vec![lookup],
+            ));
+            host_namespaces.push(namespace.clone());
+        }
+    }
+    file.drop_host_namespaces(&host_namespaces);
+    let mut forms: Vec<(String, RequireForm, Vec<_>)> = file
+        .requires
+        .iter()
+        .map(|dependency| {
+            let checks = goog_checks
+                .iter()
+                .filter(|(namespace, _)| namespace == dependency)
+                .map(|(_, lookup)| *lookup)
+                .collect();
+            (dependency.clone(), RequireForm::Declared, checks)
+        })
+        .collect();
+    for (index, dependency) in file.requires.iter_mut().enumerate() {
+        if let Some(suffix) = dependency.strip_prefix("clojure.")
+            && dependency != "clojure.core"
+            && {
+                let (found, lookup) = find(dependency)?;
+                forms[index].2.push(lookup);
+                found.is_none()
+            }
+        {
+            let rewritten = format!("cljs.{suffix}");
+            let (found, lookup) = find(&rewritten)?;
+            forms[index].2.push(lookup);
+            if found.is_some() {
+                forms[index].1 = RequireForm::ClojureRewrite;
+                for (_, target) in &mut file.aliases {
+                    if target == dependency {
+                        *target = rewritten.clone();
+                    }
+                }
+                file.aliases.push((dependency.clone(), rewritten.clone()));
+                for spec in &mut file.runtime_specs {
+                    if spec.import.namespace == *dependency {
+                        spec.import.namespace = rewritten.clone();
+                    }
+                }
+                *dependency = rewritten;
+            }
+        }
+    }
+    // `light.lazy/loadable` is a special form that needs no require, but
+    // its sites construct a `light.lazy/Loadable` when the source runs: a
+    // source spelling it requires `light.lazy` after its own requires.
+    if name != LAZY_NAMESPACE
+        && !file
+            .requires
+            .iter()
+            .any(|required| required == LAZY_NAMESPACE)
+        && let Some(span) = file.spells_loadable()
+    {
+        file.requires.push(LAZY_NAMESPACE.to_owned());
+        file.require_spans.push(span);
+        forms.push((
+            LAZY_NAMESPACE.to_owned(),
+            RequireForm::ImplicitLazy,
+            Vec::new(),
+        ));
+    }
+    Ok(ParsedSource {
+        file,
+        origin,
+        lookup,
+        forms,
+        hosts,
+    })
+}
+
+/// A provider lookup a parse job made, for the manifest, which adds its
+/// depth-first requester when the walk reaches the job's namespace.
+struct JobLookup {
+    namespace: String,
+    candidates: Vec<crate::dependency_manifest::Candidate>,
+    found: Option<String>,
+}
+
+/// The build generation of each pooled load phase, so that a completion
+/// from an earlier phase, such as a previous watch build's, is never
+/// published into a later one.
+static PARSE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A parse queue job: read and parse namespace `name`, which `requester`'s
+/// require reached first. It carries names only; the request is built where
+/// it runs.
+struct ParseJob {
+    generation: u64,
+    id: u32,
+    name: String,
+    requester: String,
+    /// Whether to record its lookups for a manifest.
+    record: bool,
+    /// Whether to time it for `--stats`.
+    timed: bool,
+}
+
+impl crate::scheduler::Job for ParseJob {
+    fn phase(&self) -> usize {
+        0
+    }
+}
+
+/// What a parse job returns to the coordinator.
+struct ParseOutcome {
+    generation: u64,
+    id: u32,
+    lookups: Vec<JobLookup>,
+    result: Result<ParsedSource, NamespaceCompileError>,
+    time: Duration,
+}
+
+// Parse jobs and their results cross threads.
+const _: () = {
+    const fn sendable<T: Send>() {}
+    sendable::<ParseJob>();
+    sendable::<ParseOutcome>();
+};
+
+/// Run `job` against `provider`, on whichever thread the pool chose.
+fn run_parse_job(
+    provider: &(dyn SourceProvider + Send + Sync),
+    warning_mode: bool,
+    job: ParseJob,
+) -> ParseOutcome {
+    let started = job.timed.then(std::time::Instant::now);
+    let mut lookups = Vec::new();
+    let result = parse_source(&job.name, warning_mode, &mut |namespace| {
+        let request = LoadRequest {
+            namespace: crate::compiler_data::Name::new(None, namespace),
+            requesting_namespace: crate::compiler_data::Name::new(None, &job.requester),
+            requesting_file: None,
+            reload: Reload::None,
+        };
+        let loaded = if job.record {
+            let mut candidates = Vec::new();
+            let loaded = provider.load_traced(&request, &mut candidates);
+            lookups.push(JobLookup {
+                namespace: namespace.to_owned(),
+                candidates,
+                found: found_file(&loaded),
+            });
+            loaded
+        } else {
+            provider.load(&request)
+        };
+        provided_source(loaded)
+    });
+    ParseOutcome {
+        generation: job.generation,
+        id: job.id,
+        lookups,
+        result,
+        time: started.map_or(Duration::ZERO, |started| started.elapsed()),
+    }
+}
+
+/// The slots the parse queue may use: `slots` in a native V8 build, the
+/// first delivery of parallel compilation; one, which runs every parse job
+/// inline on the calling thread, in QuickJS-only builds and in WebAssembly
+/// (docs/compiler-concurrency.md, after "Engineering inventory").
+fn parse_slots(slots: crate::scheduler::Slots) -> crate::scheduler::Slots {
+    if cfg!(all(feature = "v8-macros", not(target_arch = "wasm32"))) {
+        slots
+    } else {
+        crate::scheduler::Slots::ONE
+    }
+}
+
+/// A namespace's parse in the current load phase.
+enum ParseRecord {
+    /// Requested: queued or running.
+    Queued,
+    /// Parsed or failed, waiting for the depth-first walk.
+    Done(Box<ParseOutcome>),
+    /// Taken by the walk.
+    Taken,
+}
+
+/// The parse queue's records of one load phase: one per resolved namespace
+/// requested, by dense id. A namespace two requires reach is requested once
+/// (a diamond), whichever reaches it first; cycles are the walk's to find.
+#[derive(Default)]
+struct ParseRecords {
+    ids: HashMap<String, u32>,
+    records: Vec<ParseRecord>,
+}
+
+impl ParseRecords {
+    /// Request `name`: its new id, or `None` when it was requested already.
+    fn request(&mut self, name: &str) -> Option<u32> {
+        if self.ids.contains_key(name) {
+            return None;
+        }
+        let id = u32::try_from(self.records.len()).expect("fewer than 2^32 sources");
+        self.ids.insert(name.to_owned(), id);
+        self.records.push(ParseRecord::Queued);
+        Some(id)
+    }
+
+    fn publish(&mut self, outcome: ParseOutcome) {
+        let record = &mut self.records[outcome.id as usize];
+        debug_assert!(matches!(record, ParseRecord::Queued));
+        *record = ParseRecord::Done(Box::new(outcome));
+    }
+
+    /// The parse of `name` for the walk, if this phase made one.
+    fn take(&mut self, name: &str) -> Option<ParseOutcome> {
+        let &id = self.ids.get(name)?;
+        match std::mem::replace(&mut self.records[id as usize], ParseRecord::Taken) {
+            ParseRecord::Done(outcome) => Some(*outcome),
+            ParseRecord::Queued | ParseRecord::Taken => {
+                unreachable!("the walk takes each parsed namespace once, after the phase")
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.ids.clear();
+        self.records.clear();
+    }
+}
+
 struct Loader<'a> {
     /// Where namespace sources come from: explicit roots on disk for the CLI
     /// (`FileSourceProvider`), or anything else the caller supplies.
@@ -1242,21 +1617,25 @@ struct Loader<'a> {
     warning_mode: bool,
     /// Lookups and requires for a dependency manifest, when one is asked for.
     record: Option<crate::dependency_manifest::LoaderRecord>,
+    /// The CPU work slots of the parse queue (`--jobs N`): one, inline,
+    /// outside native V8 builds ([`parse_slots`]).
+    slots: crate::scheduler::Slots,
+    /// The parses of the current pooled load phase, which the walk takes.
+    parses: ParseRecords,
+    /// With `--stats`, the time of each parse job the walk took, in source
+    /// order.
+    pooled_times: Vec<Duration>,
 }
 
 impl Loader<'_> {
     /// Ask the provider for `name`: its file name and text, or `None` when the
     /// provider has no such namespace.
-    /// With a manifest record, the lookup also becomes one, whose id
-    /// [`Self::last_lookup`] answers next.
-    fn find(&mut self, name: &str) -> Result<Option<(PathBuf, String)>, NamespaceCompileError> {
-        let requesting = self
-            .stack
-            .last()
-            .map_or(self.entry.as_str(), String::as_str);
+    /// With a manifest record, the lookup also becomes one.
+    fn find(&mut self, name: &str) -> Found {
+        let requesting = self.requester().to_owned();
         let request = LoadRequest {
             namespace: crate::compiler_data::Name::new(None, name),
-            requesting_namespace: crate::compiler_data::Name::new(None, requesting),
+            requesting_namespace: crate::compiler_data::Name::new(None, &requesting),
             requesting_file: None,
             reload: Reload::None,
         };
@@ -1266,38 +1645,134 @@ impl Loader<'_> {
                 let loaded = self.sources.load_traced(&request, &mut candidates);
                 record.lookups.push(crate::dependency_manifest::Lookup {
                     namespace: name.to_owned(),
-                    requester: requesting.to_owned(),
+                    requester: requesting,
                     candidates,
-                    found: loaded
-                        .as_ref()
-                        .ok()
-                        .and_then(|input| input.as_ref().map(|input| input.file.clone())),
+                    found: found_file(&loaded),
                 });
                 loaded
             }
             None => self.sources.load(&request),
         };
-        match loaded {
-            Ok(Some(input)) => Ok(Some((PathBuf::from(input.file), input.source))),
-            Ok(None) => Ok(None),
-            Err(LoadError::Provider(message)) => Err(NamespaceCompileError::new(message)),
-            Err(error) => Err(NamespaceCompileError::new(error.to_string())),
-        }
+        provided_source(loaded)
     }
 
-    /// The id of the last lookup [`Self::find`] recorded.
-    fn last_lookup(&self) -> crate::dependency_manifest::LookupId {
-        let count = self
-            .record
-            .as_ref()
-            .map_or(0, |record| record.lookups.len());
-        crate::dependency_manifest::LookupId(count.saturating_sub(1) as u32)
+    /// The namespace whose require the walk follows: the entry for the
+    /// entry itself.
+    fn requester(&self) -> &str {
+        self.stack
+            .last()
+            .map_or(self.entry.as_str(), String::as_str)
+    }
+
+    /// Load `name` and the dependencies it reaches that are not loaded yet,
+    /// appending them in depth-first post-order, which is source order.
+    ///
+    /// With a provider that may be called from several threads
+    /// ([`SourceProvider::concurrent`]), the parse queue first reads and
+    /// parses every namespace reached, on the pool: each job's requires go
+    /// back on the queue. The depth-first walk then replays the ordered
+    /// require edges of its results, so the order, the diagnostic reported
+    /// (the first the walk meets, a cycle's path included) and the manifest's
+    /// lookups are those of a walk that reads each source where it reaches
+    /// it, whatever order the jobs finished in. Any other provider is called
+    /// by that walk, on this thread.
+    fn load(&mut self, name: &str) -> Result<(), NamespaceCompileError> {
+        let sources = self.sources;
+        let Some(provider) = sources.concurrent() else {
+            return self.visit(name);
+        };
+        if core_namespace(name) || self.states.contains_key(name) {
+            return self.visit(name);
+        }
+        let started = crate::compile_trace::recording().then(std::time::Instant::now);
+        let result = self
+            .discover(name, provider)
+            .and_then(|()| self.visit(name));
+        self.parses.clear();
+        if let Some(started) = started {
+            crate::compile_trace::pooled_loads(
+                started.elapsed(),
+                std::mem::take(&mut self.pooled_times),
+            );
+        }
+        result
+    }
+
+    /// Read and parse `root` and every namespace its requires reach that is
+    /// not loaded yet, on a pool of [`Self::slots`], into [`Self::parses`].
+    /// The phase ends when no job is queued or running; jobs that failed
+    /// report no requires.
+    fn discover(
+        &mut self,
+        root: &str,
+        provider: &(dyn SourceProvider + Send + Sync),
+    ) -> Result<(), NamespaceCompileError> {
+        use crate::scheduler::{Config, Next};
+        let generation = PARSE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let record = self.record.is_some();
+        let timed = crate::compile_trace::recording();
+        let warning_mode = self.warning_mode;
+        let requester = self.requester().to_owned();
+        let states = &self.states;
+        let parses = &mut self.parses;
+        let job = |id, name: &str, requester: String| ParseJob {
+            generation,
+            id,
+            name: name.to_owned(),
+            requester,
+            record,
+            timed,
+        };
+        let pooled = crate::scheduler::run(
+            &Config::new(self.slots, 1),
+            |_slot| (),
+            |(), job, _worker| run_parse_job(provider, warning_mode, job),
+            |pool| {
+                let id = parses.request(root).expect("a fresh phase");
+                pool.submit(job(id, root, requester));
+                loop {
+                    match pool.next_outcome() {
+                        Ok(Next::Outcome(outcome)) => {
+                            // A stale completion is never published.
+                            if outcome.generation != generation {
+                                continue;
+                            }
+                            if let Ok(parsed) = &outcome.result {
+                                let found: Vec<_> = parsed
+                                    .file
+                                    .requires
+                                    .iter()
+                                    .filter(|dependency| {
+                                        !core_namespace(dependency)
+                                            && !states.contains_key(dependency.as_str())
+                                    })
+                                    .filter_map(|dependency| {
+                                        let id = parses.request(dependency)?;
+                                        Some(job(id, dependency, parsed.file.name.clone()))
+                                    })
+                                    .collect();
+                                if !found.is_empty() {
+                                    pool.submit_batch(found);
+                                }
+                            }
+                            parses.publish(outcome);
+                        }
+                        Ok(Next::Quiescent) => return Ok(()),
+                        Ok(Next::Stalled { .. }) => {
+                            unreachable!("the parse queue holds no demands")
+                        }
+                        Err(panic) => return Err(NamespaceCompileError::new(panic.to_string())),
+                    }
+                }
+            },
+        );
+        pooled.unwrap_or_else(|error| Err(NamespaceCompileError::new(error.to_string())))
     }
 
     fn visit(&mut self, name: &str) -> Result<(), NamespaceCompileError> {
         // The bounded first-party core is emitted inside the unit. A require
         // cannot replace it with a file found on a source root.
-        if matches!(name, "cljs.core" | "clojure.core") {
+        if core_namespace(name) {
             return Ok(());
         }
         match self.states.get(name).copied().unwrap_or(LoadState::Unseen) {
@@ -1317,150 +1792,49 @@ impl Loader<'_> {
             }
             LoadState::Unseen => {}
         }
-        // `--stats`: this source's own load, its requires' in their frames.
-        let _traced = crate::compile_trace::enter(crate::compile_trace::Stage::Load, 0, None);
-        use crate::dependency_manifest::{RequireForm, SourceOrigin};
-        let found = self.find(name)?;
-        let source_lookup = self.last_lookup();
-        let mut origin = SourceOrigin::Provider;
-        let (path, source) = if let Some(found) = found {
-            found
-        } else if let Some(source) = crate::compiler_libraries::source(name) {
-            origin = SourceOrigin::Bundled;
-            (
-                PathBuf::from(format!("<first-party>/{}.cljs", name.replace('.', "/"))),
-                source.to_owned(),
-            )
-        } else {
-            return Err(NamespaceCompileError::new(format!(
-                "namespace {name} not found: expected {}.cljs or .cljc in explicit source roots",
-                name.replace('.', "/").replace('-', "_")
-            )));
-        };
-        let cljc = path.extension().is_some_and(|ext| ext == "cljc");
-        let mut parser = crate::Parser::new(&source).retaining_discards();
-        let mut roots = Vec::new();
-        while let Some(root) = parser.read_form().map_err(|error| {
-            NamespaceCompileError::new(error.to_string()).at(&path, &source, error.span)
-        })? {
-            roots.push(root);
-        }
-        let mut discards = parser.discarded().to_vec();
-        let mut syntax = SyntaxTree {
-            nodes: parser.into_nodes(),
-            roots,
-        };
-        if cljc {
-            crate::compiler_reader::select_cljs(&source, &mut syntax, &mut discards).map_err(
-                |error| {
-                    NamespaceCompileError::new(error.to_string()).at(&path, &source, error.span)
-                },
-            )?;
-        }
-        let mut file = NamespaceSource {
-            name: name.to_owned(),
-            name_span: 0..0,
-            path: path.clone(),
-            source,
-            syntax,
-            aliases: Vec::new(),
-            requires: Vec::new(),
-            require_spans: Vec::new(),
-            runtime_specs: Vec::new(),
-            namespace_imports: Vec::new(),
-            warning_mode: self.warning_mode,
-            inert_packages: Vec::new(),
-            resolution: crate::analyzer::NamespaceResolution {
-                source_name: Some(path.to_string_lossy().into_owned()),
-                cljc,
-                ..Default::default()
-            },
-        };
-        file.read_header()?;
-        // Closure libraries are JavaScript host namespaces. A source namespace
-        // provided explicitly by the caller still takes precedence.
-        let mut host_namespaces = Vec::new();
-        // For a manifest: each `goog.*` source check, and the host requires.
-        let mut goog_checks = Vec::new();
-        let mut recorded_requires = Vec::new();
-        for spec in file.runtime_specs.clone() {
-            let namespace = &spec.import.namespace;
-            if !namespace.starts_with("goog.") {
-                continue;
-            }
-            let provided = self.find(namespace)?.is_some();
-            goog_checks.push((namespace.clone(), self.last_lookup()));
-            if !provided {
-                file.bind_host_namespace(&spec)?;
-                recorded_requires.push((
-                    namespace.clone(),
-                    namespace.clone(),
-                    RequireForm::Declared,
-                    vec![self.last_lookup()],
-                ));
-                host_namespaces.push(namespace.clone());
-            }
-        }
-        file.drop_host_namespaces(&host_namespaces);
-        let mut forms: Vec<(String, RequireForm, Vec<_>)> = file
-            .requires
-            .iter()
-            .map(|dependency| {
-                let checks = goog_checks
-                    .iter()
-                    .filter(|(namespace, _)| namespace == dependency)
-                    .map(|(_, lookup)| *lookup)
-                    .collect();
-                (dependency.clone(), RequireForm::Declared, checks)
-            })
-            .collect();
-        for (index, dependency) in file.requires.iter_mut().enumerate() {
-            if let Some(suffix) = dependency.strip_prefix("clojure.")
-                && dependency != "clojure.core"
-                && {
-                    let absent = self.find(dependency)?.is_none();
-                    forms[index].2.push(self.last_lookup());
-                    absent
+        use crate::dependency_manifest::{LookupId, SourceKind};
+        // The lookups this source's job makes are numbered from here.
+        let base = self
+            .record
+            .as_ref()
+            .map_or(0, |record| record.lookups.len() as u32);
+        let pooled = self.parses.take(name);
+        // `--stats`: this source's own load, its requires' in their frames,
+        // when it is read here; a pooled job timed itself.
+        let _traced = pooled
+            .is_none()
+            .then(|| crate::compile_trace::enter(crate::compile_trace::Stage::Load, 0, None));
+        let mut pooled_time = None;
+        let parsed = match pooled {
+            Some(outcome) => {
+                let requester = self.requester().to_owned();
+                if let Some(record) = &mut self.record {
+                    record
+                        .lookups
+                        .extend(outcome.lookups.into_iter().map(|lookup| {
+                            crate::dependency_manifest::Lookup {
+                                namespace: lookup.namespace,
+                                requester: requester.clone(),
+                                candidates: lookup.candidates,
+                                found: lookup.found,
+                            }
+                        }));
                 }
-            {
-                let rewritten = format!("cljs.{suffix}");
-                let provided = self.find(&rewritten)?.is_some();
-                forms[index].2.push(self.last_lookup());
-                if provided {
-                    forms[index].1 = RequireForm::ClojureRewrite;
-                    for (_, target) in &mut file.aliases {
-                        if target == dependency {
-                            *target = rewritten.clone();
-                        }
-                    }
-                    file.aliases.push((dependency.clone(), rewritten.clone()));
-                    for spec in &mut file.runtime_specs {
-                        if spec.import.namespace == *dependency {
-                            spec.import.namespace = rewritten.clone();
-                        }
-                    }
-                    *dependency = rewritten;
-                }
+                pooled_time = Some(outcome.time);
+                outcome.result?
             }
-        }
-        // `light.lazy/loadable` is a special form that needs no require, but
-        // its sites construct a `light.lazy/Loadable` when the source runs: a
-        // source spelling it requires `light.lazy` after its own requires.
-        if name != LAZY_NAMESPACE
-            && !file
-                .requires
-                .iter()
-                .any(|required| required == LAZY_NAMESPACE)
-            && let Some(span) = file.spells_loadable()
-        {
-            file.requires.push(LAZY_NAMESPACE.to_owned());
-            file.require_spans.push(span);
-            forms.push((
-                LAZY_NAMESPACE.to_owned(),
-                RequireForm::ImplicitLazy,
-                Vec::new(),
-            ));
-        }
+            None => {
+                let warning_mode = self.warning_mode;
+                parse_source(name, warning_mode, &mut |namespace| self.find(namespace))?
+            }
+        };
+        let ParsedSource {
+            file,
+            origin,
+            lookup,
+            forms,
+            hosts,
+        } = parsed;
         self.states.insert(name.to_owned(), LoadState::Loading);
         self.stack.push(name.to_owned());
         for (dependency, span) in file.requires.iter().zip(&file.require_spans) {
@@ -1475,26 +1849,43 @@ impl Loader<'_> {
         self.stack.pop();
         self.states.insert(name.to_owned(), LoadState::Loaded);
         if let Some(record) = &mut self.record {
+            let ids = |lookups: Vec<u32>| {
+                lookups
+                    .into_iter()
+                    .map(|lookup| LookupId(base + lookup))
+                    .collect()
+            };
             let mut requires: Vec<_> = forms
                 .into_iter()
                 .zip(&file.requires)
-                .map(|((written, form, lookups), target)| (written, target.clone(), form, lookups))
+                .map(|((written, form, lookups), target)| {
+                    (written, target.clone(), form, ids(lookups))
+                })
                 .collect();
-            requires.append(&mut recorded_requires);
+            requires.extend(
+                hosts
+                    .into_iter()
+                    .map(|(written, target, form, lookups)| (written, target, form, ids(lookups))),
+            );
             record
                 .sources
                 .push(crate::dependency_manifest::LoadedSource {
                     name: name.to_owned(),
-                    file: path.to_string_lossy().into_owned(),
-                    kind: if cljc {
-                        crate::dependency_manifest::SourceKind::Cljc
+                    file: file.path.to_string_lossy().into_owned(),
+                    kind: if file.resolution.cljc {
+                        SourceKind::Cljc
                     } else {
-                        crate::dependency_manifest::SourceKind::Cljs
+                        SourceKind::Cljs
                     },
                     origin,
-                    lookup: source_lookup,
+                    lookup: LookupId(base + lookup),
                     requires,
                 });
+        }
+        if let Some(time) = pooled_time
+            && crate::compile_trace::recording()
+        {
+            self.pooled_times.push(time);
         }
         self.ordered.push(file);
         Ok(())
@@ -1518,7 +1909,7 @@ impl Loader<'_> {
                     name.replace('.', "/").replace('-', "_")
                 )))
             }
-            Ok(_) => self.visit(name),
+            Ok(_) => self.load(name),
             Err(error) => Err(error),
         };
         self.stack.pop();
@@ -1832,8 +2223,10 @@ pub struct EntryRecorders<'a> {
     /// given. Without it nothing reads or writes a cache.
     pub cache: Option<&'a mut crate::compile_cache::CompileCache>,
     /// The CPU work slots the compilation may use (`--jobs N`,
-    /// [`crate::scheduler`]), the calling thread's included. Every phase
-    /// still runs on the calling thread; the default is one slot.
+    /// [`crate::scheduler`]), the calling thread's included: sources load
+    /// on that pool when the provider opts in
+    /// ([`SourceProvider::concurrent`]), and every later phase runs on the
+    /// calling thread. The default is one slot.
     pub slots: crate::scheduler::Slots,
 }
 
@@ -1975,9 +2368,7 @@ fn analyze_entry(
         reserve,
         control,
         mut cache,
-        // No phase runs on the pool yet; the parse queue is the first
-        // (docs/compiler-concurrency.md, "Gates and first steps").
-        slots: _,
+        slots,
     } = recorders;
     let cache_reservation = cache
         .as_deref()
@@ -2009,10 +2400,13 @@ fn analyze_entry(
         ordered: Vec::new(),
         warning_mode: options.warning_mode,
         record: (manifest.is_some() || cache.is_some()).then(Default::default),
+        slots: parse_slots(slots),
+        parses: ParseRecords::default(),
+        pooled_times: Vec::new(),
     };
     let mut resolve_parse = Duration::ZERO;
     let started = compile_stats::start(timed);
-    loader.visit(entry)?;
+    loader.load(entry)?;
     compile_stats::add(&mut resolve_parse, started);
     let entry_index = loader.ordered.len() - 1;
     source_warnings(&loader.ordered, 0, options, warnings);
