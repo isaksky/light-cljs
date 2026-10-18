@@ -1624,6 +1624,49 @@ pub fn analyze_namespace_entry_with_stats(
     )
 }
 
+/// [`analyze_namespace_entry_with_sources`] with the persistent compiler
+/// cache in `cache.dir` (`--cache-dir`, docs/compiler-cache.md): each
+/// namespace whose artifact matches its current inputs and policy is
+/// installed instead of analyzed, each other one is analyzed and, unless
+/// the policy bypasses it, published. After a successful analysis the
+/// directory is trimmed to its retention bounds. With `stats`, it is filled
+/// as [`analyze_namespace_entry_with_stats`] fills it, with
+/// [`CompileStats::cache`] too.
+pub fn analyze_namespace_entry_cached(
+    entry: &str,
+    source_roots: &[PathBuf],
+    macros: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+    cache: &crate::compile_cache::CacheOptions,
+    stats: Option<&mut CompileStats>,
+) -> Result<(crate::Program, SourceFiles), NamespaceCompileError> {
+    let mut store = crate::compile_cache::CompileCache::open(cache, macros, options, entry);
+    let mut stats = stats;
+    if let Some(stats) = stats.as_deref_mut() {
+        *stats = CompileStats::default();
+    }
+    let analyzed = analyze_from_roots(
+        entry,
+        source_roots,
+        macros,
+        options,
+        warnings,
+        EntryRecorders {
+            stats: stats.as_deref_mut(),
+            cache: Some(&mut store),
+            ..EntryRecorders::default()
+        },
+    );
+    if analyzed.is_ok() {
+        store.finish();
+    }
+    if let Some(stats) = stats {
+        stats.cache = Some(store.take_counts());
+    }
+    analyzed
+}
+
 /// [`analyze_namespace_entry_with_sources`], also capturing each namespace
 /// as a [`crate::namespace_artifact::NamespaceArtifact`] where its analysis
 /// returns, and handing it to `capture` in source order before the next
@@ -1724,6 +1767,12 @@ pub struct EntryRecorders<'a> {
     /// the compilation rather than letting a hit stand in for work that
     /// could not run.
     pub control: Option<&'a crate::evaluator::ExecutionControl>,
+    /// The persistent cache (`--cache-dir`, [`crate::compile_cache`]):
+    /// asked for each namespace, in source order, for an artifact to
+    /// install, and handed each analyzed namespace's capture to publish.
+    /// It reserves its candidates' generated names unless `reserve` is
+    /// given. Without it nothing reads or writes a cache.
+    pub cache: Option<&'a mut crate::compile_cache::CompileCache>,
 }
 
 /// The artifact to install for a namespace, if any ([`EntryRecorders::install`]).
@@ -1863,7 +1912,15 @@ fn analyze_entry(
         install,
         reserve,
         control,
+        mut cache,
     } = recorders;
+    let cache_reservation = cache
+        .as_deref()
+        .filter(|_| reserve.is_none())
+        .map(|cache| cache.reservation().clone());
+    let reserve = reserve.or(cache_reservation.as_ref());
+    // The cache captures each namespace it analyzes, to publish it.
+    let capturing = capture.is_some() || cache.is_some();
     if let Some(reservation) = reserve {
         crate::generated_names::reserve(&reservation.to);
     }
@@ -1884,7 +1941,7 @@ fn analyze_entry(
         stack: Vec::new(),
         ordered: Vec::new(),
         warning_mode: options.warning_mode,
-        record: manifest.is_some().then(Default::default),
+        record: (manifest.is_some() || cache.is_some()).then(Default::default),
     };
     let mut resolve_parse = Duration::ZERO;
     let started = compile_stats::start(timed);
@@ -1895,6 +1952,8 @@ fn analyze_entry(
     let analysis_started = compile_stats::start(timed);
     // Lazily reached sources are resolved and parsed between analyses.
     let mut lazy_parse = Duration::ZERO;
+    // The persistent cache's lookups and publications, outside `analysis`.
+    let mut cache_time = Duration::ZERO;
     let mut analysis = NamespaceAnalysis::new(macros);
     analysis.begin_generated_names(names_start);
     // The compilation's session exists from here on.
@@ -1909,15 +1968,13 @@ fn analyze_entry(
         analysis.deferred_time = Some(Duration::ZERO);
     }
     let mut capture_counts = crate::compile_stats::CaptureCounts::default();
-    if capture.is_some()
-        && let Some(session) = macros.session_handle()
-    {
+    if capturing && let Some(session) = macros.session_handle() {
         session.begin_capture();
         session.log_gensyms().map_err(NamespaceCompileError::new)?;
     }
     // Analysis logs what it observes beyond the `ns` forms only while a
     // manifest is recorded, and stops when this compilation ends, however.
-    let observations = manifest.is_some().then(|| {
+    let observations = (manifest.is_some() || cache.is_some()).then(|| {
         *macros.dependency_log.borrow_mut() = Some(crate::dependency_manifest::ObservationLog {
             configuration: Some(macros.configuration.fingerprint()),
             ..Default::default()
@@ -1948,7 +2005,23 @@ fn analyze_entry(
             )));
         }
         // An artifact installs at the frontier its analysis would have run.
-        let installed = match install.and_then(|lookup| lookup(&file.name)) {
+        let started = compile_stats::start(timed);
+        let cached = match (cache.as_deref_mut(), &loader.record) {
+            (Some(cache), Some(record)) => {
+                let cancelled = || macros.halted(control).is_some();
+                cache
+                    .lookup(record, &file.source, sources, &cancelled)
+                    .map_err(|message| {
+                        NamespaceCompileError::new(format!("loading {}: {message}", file.name))
+                    })?
+            }
+            _ => None,
+        };
+        compile_stats::add(&mut cache_time, started);
+        let installed = match cached
+            .as_ref()
+            .or_else(|| install.and_then(|lookup| lookup(&file.name)))
+        {
             Some(artifact) => {
                 let started = compile_stats::start(timed);
                 let path = file.path.to_string_lossy();
@@ -1968,10 +2041,16 @@ fn analyze_entry(
                 compile_stats::add(&mut install_counts.time, started);
                 match outcome {
                     Ok(()) => {
+                        if let (Some(cache), Some(_)) = (cache.as_deref_mut(), &cached) {
+                            cache.installed(macros);
+                        }
                         install_counts.installed.push(file.name.clone());
                         true
                     }
                     Err(crate::artifact_install::InstallError::Refused(reason)) => {
+                        if let (Some(cache), Some(_)) = (cache.as_deref_mut(), &cached) {
+                            cache.refused(&reason);
+                        }
                         install_counts.refused.push((file.name.clone(), reason));
                         false
                     }
@@ -1986,11 +2065,13 @@ fn analyze_entry(
             }
             None => false,
         };
+        // A decoded artifact is released once installed.
+        drop(cached);
         if !installed {
             let names_from = crate::generated_names::current();
-            let work = capture.is_some().then(|| macros.begin_namespace_work());
+            let work = capturing.then(|| macros.begin_namespace_work());
             let resolution = prepare_source(macros, file).map_err(at)?;
-            let captured = capture.is_some().then(|| {
+            let captured = capturing.then(|| {
                 let started = compile_stats::start(timed);
                 let start = analysis.begin_capture(warnings, macros);
                 compile_stats::add(&mut capture_counts.time, started);
@@ -2013,9 +2094,7 @@ fn analyze_entry(
                     warnings,
                 )
                 .map_err(at)?;
-            if let (Some(sink), Some((start, resolution)), Some(work)) =
-                (capture.as_deref_mut(), &captured, work)
-            {
+            if let (Some((start, resolution)), Some(work)) = (&captured, work) {
                 let started = compile_stats::start(timed);
                 let path = file.path.to_string_lossy();
                 let artifact = analysis.finish_capture(
@@ -2046,11 +2125,27 @@ fn analyze_entry(
                     Err(_) => capture_counts.skipped += 1,
                 }
                 drop(captured);
-                sink(crate::namespace_artifact::NamespaceCapture {
-                    namespace: file.name.clone(),
-                    artifact,
-                });
                 compile_stats::add(&mut capture_counts.time, started);
+                let started = compile_stats::start(timed);
+                match (cache.as_deref_mut(), &loader.record) {
+                    (Some(cache), Some(record)) => cache.analyzed(
+                        record,
+                        &file.source,
+                        sources,
+                        macros,
+                        analysis.program_namespaces(),
+                        Some(artifact),
+                    ),
+                    _ => {
+                        if let Some(sink) = capture.as_deref_mut() {
+                            sink(crate::namespace_artifact::NamespaceCapture {
+                                namespace: file.name.clone(),
+                                artifact,
+                            });
+                        }
+                    }
+                }
+                compile_stats::add(&mut cache_time, started);
             }
         }
         if let Some(stats) = stats.as_deref_mut() {
@@ -2099,13 +2194,13 @@ fn analyze_entry(
         let phases = &mut stats.phases;
         phases.resolve_parse += resolve_parse + lazy_parse;
         phases.deferred_units += deferred;
-        phases.analysis += analysis_started
-            .elapsed()
-            .saturating_sub(deferred + lazy_parse + capture_counts.time + install_counts.time);
-        if capture.is_some() {
+        phases.analysis += analysis_started.elapsed().saturating_sub(
+            deferred + lazy_parse + capture_counts.time + install_counts.time + cache_time,
+        );
+        if capturing {
             stats.capture = Some(capture_counts);
         }
-        if install.is_some() {
+        if install.is_some() || cache.is_some() {
             stats.install = Some(install_counts);
         }
         stats.macro_calls = macros.executed_expansions();

@@ -352,3 +352,38 @@ the keys run's extra second is capture (`cache.capture-ms` about 1.34 s),
 measured under light-cljs-315. Without the variable nothing computes a key:
 the cold path is unchanged apart from `light.build` resource reads hashing
 their text with SHA-256 instead of FNV-1a.
+
+## `--compile --cache-dir` (light-cljs-322, October 18, 2026)
+
+Penpot `app.main --optimize none` through `benchmarks/penpot.bb`, release
+binaries: the parent `f9016ff` (baseline) and this change, alternating in
+rounds of baseline cache-off, change cache-off, change populating an empty
+`--cache-dir`, then change warm on that directory with nothing edited. Every
+run had `--stats`. Rounds 1 and 2 ran at load 1.6 to 2.2; round 3 started at
+load 1.7 and rose to 11 when another worker began a build, so it is shown
+but not used.
+
+| Run | Round 1 | Round 2 | Round 3 (load 11) |
+| --- | --- | --- | --- |
+| Baseline, cache off: wall (s), RSS (GB) | 21.84, 0.958 | 21.79, 0.937 | 22.31, 0.942 |
+| Change, cache off | 21.80, 0.952 | 21.84, 0.975 | 33.99, 0.998 |
+| Change, populating | 24.52, 0.960 | 24.76, 0.982 | 28.57, 1.023 |
+| Change, warm | 1.83, 0.804 | 1.75, 0.798 | 1.96, 0.805 |
+
+- **Cache off** is +0.0% wall (21.82 against 21.82 s) and +1.7% RSS
+  (0.964 against 0.948 GB) on the means of rounds 1 and 2, within the +3%
+  and +5% gate. Without `--cache-dir` the compilation takes the same path
+  as before: nothing records a manifest, captures or reads a store.
+- **Populating** is +12.9% wall over cache off (24.64 s) and +0.8% RSS:
+  every namespace misses (`cache.miss.no-artifact` 922) and is published
+  (`cache.published` 922, `cache.bytes-written` 104,922,801). Capture costs
+  1.12 s (`cache.capture-ms`) and encoding and writing 1.32 to 1.37 s
+  (`cache.write-ms`), so the populating gate of +10% for the default flip
+  is missed by about 3 points; that is light-cljs-328's to weigh, and the
+  write time is the place to look.
+- **Warm, unchanged**: `cache.hits` 922, `cache.misses` 0, `macro-calls` 0,
+  output byte for byte the cache-off build's (33,588,607 bytes), 1.79 s on
+  average, 8.2% of the cache-off wall time (the gate is 50%), and 0.80 GB
+  peak RSS. Of that, reading and checking manifests and keys takes about
+  0.50 s (`cache.validate-ms`), decoding 0.48 s and installing 0.18 s.
+- **Disk**: 922 artifacts, 105 MB of objects, 108 MB with the indexes.

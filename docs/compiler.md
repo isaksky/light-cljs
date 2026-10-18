@@ -1567,8 +1567,25 @@ file. Loading an already-Loading namespace reports the cycle path. Missing
 sources, mismatched declarations, analysis errors, and parse errors include the
 originating file/location when available. No output is emitted on failure.
 The result is one combined JavaScript expression whose value is the entry
-namespace's final form (with `--esm`, an ES module whose default export it is; with `--out-dir`, a directory of ES modules, below). There is no caching, package manager, incremental
-invalidation, or parallel scheduler.
+namespace's final form (with `--esm`, an ES module whose default export it is; with `--out-dir`, a directory of ES modules, below). There is no package manager or parallel
+scheduler. Builds are fresh unless `--cache-dir DIR` asks for the persistent
+compiler cache: each namespace whose conservative key (its source and
+resolution, the keys of every namespace its compilation depends on, its
+`light.build` inputs, the analysis and macro options, the `--config` map and
+the compiler's own identity) matches a stored artifact is installed from it
+at its place in source order instead of being analyzed, so none of its macro
+calls run, and every other namespace is analyzed and stored. Lookup itself
+runs no macro; a corrupt, missing or mismatched artifact is a miss. For
+macros that only compute their expansion from their arguments, declared
+inputs and the namespaces they depend on, the output is byte for byte the
+uncached build's. A macro whose effects reach other namespaces' expansions
+(a counter in a macro namespace) is outside that contract: a hit does not
+repeat its calls, so mark the macro namespace `^:dev/always` or name it with
+`--cache-blocker`, which reach every namespace compiled with it.
+`^:light-cljs/no-cache` covers only the namespace it marks, so on a macro
+provider it does not make its consumers' calls run again; it must mark each
+consumer whose calls must. The contract, the keys
+and the store are in [compiler-cache.md](compiler-cache.md).
 
 A lazy reference, `(light.lazy/loadable app.editor/start)` or
 `(light.lazy/loadable app.editor)` (also through an alias of `light.lazy`),

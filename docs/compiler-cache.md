@@ -1,10 +1,9 @@
 # Persistent compiler cache design
 
-Status: proposed architecture, October 17, 2026. Persistent application caching
-is not implemented. This design builds on `b51af6a` and the existing
-[development workflow](dev-workflow.md). API and configuration names below describe
-proposed behavior; they are not available compiler options yet, except
-`--stats`, which reports cold-build phases and macro calls (light-cljs-310).
+Status: implemented behind `--cache-dir` for `--compile --entry`
+(light-cljs-322), opt-in during rollout; development sessions (Phase 4) are
+not cached yet. This design builds on `b51af6a` and the existing
+[development workflow](dev-workflow.md).
 
 Cache completed namespace compilation in a versioned binary format. Reuse it
 when conservative source, dependency, compiler, and configuration keys match.
@@ -1308,6 +1307,77 @@ persistence remain out of scope.
    re-validates inputs after compiling, as described under "Conservative
    keys and invalidation". The capture modes report `cache.keys.*`,
    `cache.keys-ms` and `cache.revalidate-ms`.
+
+   *As built (light-cljs-322), `--compile` integration:* `--cache-dir DIR`
+   and the repeatable `--cache-blocker NS` with `--compile --entry`
+   (`--reloadable`, `--esm` and `--out-dir` too), and
+   `compiler::analyze_namespace_entry_cached` for embedders, run the
+   compilation with `src/compile_cache.rs` as its `EntryRecorders::cache`.
+   It reads every index of the directory into one `Snapshot` and reserves
+   its names before the first namespace. Then, for each namespace in
+   source order:
+
+   - **Keys as the compilation goes.** A key covers the keys of earlier
+     namespaces, so they must exist when the next namespace is looked up,
+     long before the whole manifest is built. `src/manifest_prefix.rs`
+     builds the records one namespace at a time: an analyzed namespace's
+     from the loader and what the observation log recorded while it was the
+     source being analyzed, by the rules of `dependency_manifest::build`; an
+     installed one's from the loader and the edges, inputs and absent names
+     its manifest stored. `NamespaceKeys::next` and `revalidate` take either
+     (the `NamespaceRecords` trait). The published key is this incremental
+     key, so it is the one consumers record. It differs from the whole
+     manifest's only where that manifest gives a namespace something its
+     compilation never saw: an input a helper unit reads while a *later*
+     namespace compiles goes to the later namespaces it reaches, not back
+     to earlier consumers of the helper. `LAZY` edges are left out.
+   - **Lookup.** A `--cache-blocker` is not looked up. Otherwise each
+     candidate, newest first, is read (size and content hash), its manifest
+     decoded, and the key it would have now computed from the current
+     loader, the current keys of earlier namespaces and its stored edges,
+     inputs and absent names; it must equal the key it was published
+     under, and its resources must read as recorded
+     (`cache_key::inputs_unchanged`). Since a match means the stored edges
+     are the namespace's own, the policy is then checked on them: a
+     dependency a propagated bypass reaches makes it a bypass. The matching
+     candidate is decoded, installed and dropped. The manifest now stores
+     the absent names the view covers (`ManifestFields::absent`,
+     `SCHEMA_VERSION` 6).
+   - **Miss.** Otherwise the namespace is analyzed and captured, keyed,
+     and its policy decided from its real edges and its `ns` metadata.
+     Unless bypassed, it is published at once and the artifact dropped.
+     The miss reason is the newest candidate's first failure: a key
+     component (`source`, `dependencies`, ...) or `no-artifact`, `index`,
+     `unreadable`, `undecodable` or `refused` (installation refused it).
+   - **Policy.** As `cache_policy::evaluate`, in one forward pass: every
+     edge points to an earlier namespace. `^:light-cljs/no-cache` covers
+     only its namespace, whose consumers still hit while its key is the
+     one they recorded. A namespace with a `:namespaces` broad view is a
+     non-cacheable input here, with its consumers, because the inventory of
+     the build is not known until it ends.
+   - **Emission key.** Recorded as zeros: artifacts hold pre-emission IR
+     and nothing reuses by it; light-cljs-324 decides it with emitted
+     sections and the chunk plan.
+   - **After a successful analysis** the store is trimmed with what the
+     build used and published in use.
+
+   With `--stats` the report adds `cache.hits`, `cache.misses`,
+   `cache.miss.KIND`, `cache.bypasses`, `cache.bypass.REASON` (`no-cache`,
+   `always`, `blocked`, `non-cacheable-input`), `cache.published`,
+   `cache.unpublished`, `cache.bytes-read`, `cache.bytes-written`,
+   `cache.validate-ms`, `cache.decode-ms` and `cache.write-ms` beside the
+   existing `cache.install-*` and `cache.capture-*` lines; executed macro
+   calls stay `macro-calls`. After the macro table, `[cache-misses-and-bypasses]`
+   lists up to 20 misses and 20 bypasses: `main miss source: source changed`,
+   `dep bypass blocked macros > dep`. Lookup and publication time is not
+   counted in `time.analysis-ms`. `tests/compiler_cache.rs` runs the
+   binary across processes: a warm build (all hits, no macro calls, output
+   identical), the counter example (`1 2`, then `1 1` after editing only
+   `main`, `1 2` with `--cache-blocker macros`), blockers and both
+   metadata flags added over existing artifacts, corrupted and truncated
+   artifacts (misses, then republished) and concurrent builds on one
+   directory. Penpot's numbers are in
+   [benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md).
 4. **Integrate development startup and invalidation.** Reuse dependency manifests,
    preserve retained session semantics, apply always-compile policy before the
    memory fast path, and test subsequent edits. Address duplicate startup work

@@ -63,7 +63,7 @@
 
 use crate::artifact_codec::{self, DecodeLimits, ManifestFields};
 use crate::cache_key::{Digest, Mismatch};
-use crate::dependency_manifest::{DependencyManifest, NamespaceId};
+use crate::dependency_manifest::NamespaceId;
 use crate::generated_names::{Counters, GeneratedNames, Reservation};
 use crate::namespace_artifact::NamespaceArtifact;
 use crate::sha256::{Sha256, digest, hex};
@@ -127,7 +127,7 @@ impl Default for Retention {
 /// The inputs of the compilation an artifact came from, which
 /// [`Store::publish`] re-validates.
 pub struct Inputs<'a> {
-    pub manifest: &'a DependencyManifest,
+    pub manifest: &'a dyn crate::manifest_prefix::NamespaceRecords,
     pub id: NamespaceId,
     /// The namespace's source text as it compiled.
     pub text: &'a str,

@@ -291,6 +291,30 @@ table follows a `[macro-calls-by-namespace]` line, one `NAMESPACE COUNT` row
 each; `light_cljs::compiler::analyze_namespace_entry_with_stats` returns the
 same numbers as a `CompileStats`.
 
+`--cache-dir DIR` with `--compile --entry` (also with `--reloadable`, `--esm`
+and `--out-dir`, at every `--optimize` level) keeps a persistent compiler
+cache in DIR, created when missing. A namespace whose source, resolution,
+dependencies, `light.build` inputs, options, `--config` map and compiler are
+unchanged is installed from its stored artifact instead of being analyzed,
+so its macro calls do not run again; every other namespace is analyzed and
+stored. For macros that follow the cache contract
+([docs/compiler-cache.md](docs/compiler-cache.md#cache-contract)), the output
+is byte for byte the uncached build's; a macro with side effects across
+namespaces does not repeat them on a hit. `--cache-blocker NS` (repeatable)
+keeps NS and every namespace whose compilation depends on it from reading or
+writing the cache, as `^:dev/always` on a namespace does for it and its
+consumers and `^:light-cljs/no-cache` for that namespace alone. Without
+`--cache-dir` nothing reads or writes a cache. The directory is disposable
+derived data, bounded to three artifacts per namespace and 1 GiB; never
+commit it. With `--stats` the report adds `cache.hits`, `cache.misses` with
+`cache.miss.KIND` per first differing key component (`source`,
+`dependencies`, ...) or failure (`no-artifact`, `unreadable`, ...),
+`cache.bypasses` with `cache.bypass.REASON`, bytes read and written and the
+validation, decode and write times, then a `[cache-misses-and-bypasses]`
+table of up to 20 rows each, such as `app.main miss source: source changed`
+or `app.view bypass blocked app.macros > app.view`. Embedders call
+`light_cljs::compiler::analyze_namespace_entry_cached`.
+
 `--config KEY=EDN` (repeatable) with `--compile --entry`, `--reloadable` or
 `--watch` gives macros a build configuration value, which they read with
 `(light.build/config :KEY)`: `--config app/flavor=:dev --config app/n=3`. KEY

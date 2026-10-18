@@ -111,6 +111,79 @@ pub struct CompileStats {
     /// When every namespace's cache key was computed and its inputs
     /// re-validated ([`crate::cache_key`]), to measure them.
     pub keys: Option<KeyCounts>,
+    /// What the persistent cache did (`--cache-dir`,
+    /// [`crate::compile_cache`]).
+    pub cache: Option<CacheCounts>,
+}
+
+/// What a build's persistent cache did: each namespace is a hit, a miss
+/// with the first reason its candidates could not be used, or a policy
+/// bypass.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CacheCounts {
+    pub hits: usize,
+    /// `(namespace, kind, description)`, the kind being the first key
+    /// component that differed (`source`, `dependencies`, ...) or
+    /// `no-artifact`, `index`, `unreadable`, `undecodable` or `refused`.
+    pub misses: Vec<(String, &'static str, String)>,
+    /// `(namespace, reason, path)`, the path naming the namespace a
+    /// propagated reason came from and those it came through.
+    pub bypasses: Vec<(String, &'static str, String)>,
+    /// Artifacts published, and their bytes.
+    pub published: usize,
+    pub bytes_written: u64,
+    /// Missed namespaces that were not published, with the reason.
+    pub unpublished: Vec<(String, String)>,
+    /// Artifact bytes read, matching or not.
+    pub bytes_read: u64,
+    /// Reading indexes and artifacts, checking manifests and keys.
+    pub validate_time: Duration,
+    pub decode_time: Duration,
+    /// Encoding and writing artifacts and indexes.
+    pub write_time: Duration,
+}
+
+impl CacheCounts {
+    /// The `key value` lines of the report.
+    fn lines(&self, line: &mut dyn FnMut(&str, &dyn std::fmt::Display)) {
+        let ms = |duration: Duration| format!("{:.1}", duration.as_secs_f64() * 1000.0);
+        line("cache.hits", &self.hits);
+        line("cache.misses", &self.misses.len());
+        let mut kinds: Vec<&str> = self.misses.iter().map(|(_, kind, _)| *kind).collect();
+        kinds.sort_unstable();
+        for group in kinds.chunk_by(|a, b| a == b) {
+            line(&format!("cache.miss.{}", group[0]), &group.len());
+        }
+        line("cache.bypasses", &self.bypasses.len());
+        let mut reasons: Vec<&str> = self.bypasses.iter().map(|(_, reason, _)| *reason).collect();
+        reasons.sort_unstable();
+        for group in reasons.chunk_by(|a, b| a == b) {
+            line(&format!("cache.bypass.{}", group[0]), &group.len());
+        }
+        line("cache.published", &self.published);
+        line("cache.unpublished", &self.unpublished.len());
+        line("cache.bytes-read", &self.bytes_read);
+        line("cache.bytes-written", &self.bytes_written);
+        line("cache.validate-ms", &ms(self.validate_time));
+        line("cache.decode-ms", &ms(self.decode_time));
+        line("cache.write-ms", &ms(self.write_time));
+    }
+
+    /// The `[cache-misses-and-bypasses]` rows: up to `limit` misses, then up
+    /// to `limit` bypasses, each in source order, as `NAMESPACE miss KIND:
+    /// DESCRIPTION` and `NAMESPACE bypass REASON PATH`.
+    fn rows(&self, out: &mut String, limit: usize) {
+        for (name, kind, description) in self.misses.iter().take(limit) {
+            let _ = writeln!(out, "{name} miss {kind}: {description}");
+        }
+        for (name, reason, path) in self.bypasses.iter().take(limit) {
+            if path.is_empty() {
+                let _ = writeln!(out, "{name} bypass {reason}");
+            } else {
+                let _ = writeln!(out, "{name} bypass {reason} {path}");
+            }
+        }
+    }
 }
 
 /// What computing a compilation's namespace keys cost.
@@ -252,6 +325,9 @@ impl CompileStats {
             line("cache.keys-ms", &ms(keys.time));
             line("cache.revalidate-ms", &ms(keys.revalidate_time));
         }
+        if let Some(cache) = &self.cache {
+            cache.lines(&mut line);
+        }
         out.push_str("[macro-calls-by-namespace]\n");
         let mut order = (0..self.namespaces.len()).collect::<Vec<_>>();
         // Most calls first; ties in source order.
@@ -259,6 +335,10 @@ impl CompileStats {
         for index in order.into_iter().take(REPORT_NAMESPACES) {
             let namespace = &self.namespaces[index];
             let _ = writeln!(out, "{} {}", namespace.name, namespace.macro_calls);
+        }
+        if let Some(cache) = &self.cache {
+            out.push_str("[cache-misses-and-bypasses]\n");
+            cache.rows(&mut out, REPORT_NAMESPACES);
         }
         out
     }

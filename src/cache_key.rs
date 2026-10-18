@@ -56,6 +56,7 @@ use crate::dependency_manifest::{
     RequireTarget, ResolvedResource, ResourceDependency, SourceKind, SourceOrigin,
 };
 use crate::macro_host::MacroHost;
+use crate::manifest_prefix::NamespaceRecords;
 use crate::sha256::{Fingerprint, digest};
 use crate::source_provider::{LoadRequest, Reload, SourceProvider};
 use std::fmt;
@@ -328,7 +329,7 @@ pub struct NamespaceKeys {
     chain: Vec<Digest>,
     /// The `:namespaces` broad view, every namespace's name and source
     /// identity, once a namespace with that view needs it.
-    inventory: Option<Digest>,
+    inventory: std::cell::OnceCell<Digest>,
 }
 
 impl NamespaceKeys {
@@ -373,7 +374,10 @@ impl NamespaceKeys {
     /// The digest of every earlier namespace's name and key, in source
     /// order, before namespace `id`.
     fn earlier(&self, id: NamespaceId) -> Digest {
-        self.chain[id.0 as usize]
+        self.chain
+            .get(id.0 as usize)
+            .copied()
+            .unwrap_or_else(|| Fingerprint::new("light-cljs earlier namespaces").finish())
     }
 
     /// Compute the key of namespace `id`, the next in source order, whose
@@ -381,20 +385,56 @@ impl NamespaceKeys {
     pub fn push(
         &mut self,
         environment: &KeyEnvironment,
-        manifest: &DependencyManifest,
+        manifest: &(impl NamespaceRecords + ?Sized),
         id: NamespaceId,
         text: &str,
         entry: &str,
     ) -> &FrontEndKey {
+        let key = self.next(environment, manifest, id, text, entry);
+        self.append(&manifest.record(id).name, key)
+    }
+
+    /// Append `key`, the key of the next namespace, `name`
+    /// ([`Self::next`]).
+    pub fn append(&mut self, name: &str, key: FrontEndKey) -> &FrontEndKey {
+        let id = NamespaceId(self.keys.len() as u32);
+        if self.chain.is_empty() {
+            self.chain.push(self.earlier(id));
+        }
+        let mut chain = Fingerprint::new("light-cljs earlier namespaces");
+        chain
+            .digest(&self.earlier(id))
+            .text(name)
+            .digest(&key.digest);
+        self.chain.push(chain.finish());
+        self.keys.push(key);
+        &self.keys[id.0 as usize]
+    }
+
+    /// Remove the last key [`Self::append`] appended.
+    pub fn pop(&mut self) {
+        if self.keys.pop().is_some() {
+            self.chain.pop();
+        }
+    }
+
+    /// The key of namespace `id`, the next in source order, whose source is
+    /// `text`, from the keys of the namespaces before it, without appending
+    /// it: a lookup computes the key a stored artifact would have now and
+    /// keeps it only when it matches.
+    pub fn next(
+        &self,
+        environment: &KeyEnvironment,
+        manifest: &(impl NamespaceRecords + ?Sized),
+        id: NamespaceId,
+        text: &str,
+        entry: &str,
+    ) -> FrontEndKey {
         assert_eq!(
             id.0 as usize,
             self.keys.len(),
             "keys are computed in source order"
         );
-        if self.chain.is_empty() {
-            self.chain
-                .push(Fingerprint::new("light-cljs earlier namespaces").finish());
-        }
         let record = manifest.record(id);
         let mut components = [[0; 32]; Component::ALL.len()];
         components[Component::Compiler as usize] = environment.compiler;
@@ -439,7 +479,8 @@ impl NamespaceKeys {
         // not a compilation dependency and may come later.
         let exact = EdgeKinds(EdgeKinds::COMPILATION.0 & !EdgeKinds::COARSE.0);
         let dependencies: Vec<DependencyKey> = manifest
-            .dependencies(id)
+            .dependency_row(id)
+            .into_iter()
             .filter(|(_, kinds)| kinds.intersects(exact))
             .map(|(target, kinds)| DependencyKey {
                 namespace: manifest.record(target).name.clone(),
@@ -460,7 +501,8 @@ impl NamespaceKeys {
         let mut inputs = Fingerprint::new("light-cljs inputs");
         inputs.count(record.external_inputs.len());
         let (mut namespaces, mut declarations) = (false, false);
-        for input in manifest.external_inputs(id) {
+        for &input in &record.external_inputs {
+            let input = manifest.input(input);
             external_input(&mut inputs, input);
             match input {
                 ExternalInput::View(BroadView::Namespaces) => namespaces = true,
@@ -481,7 +523,7 @@ impl NamespaceKeys {
             view.digest(&self.earlier(id));
         }
         if namespaces {
-            let inventory = *self.inventory.get_or_insert_with(|| inventory(manifest));
+            let inventory = *self.inventory.get_or_init(|| manifest.inventory());
             view.digest(&inventory);
         }
         view.count(record.absent.len());
@@ -494,25 +536,17 @@ impl NamespaceKeys {
         }
         components[Component::View as usize] = view.finish();
 
-        let key = FrontEndKey::new(components, dependencies);
-        let mut chain = Fingerprint::new("light-cljs earlier namespaces");
-        chain
-            .digest(&self.earlier(id))
-            .text(&record.name)
-            .digest(&key.digest);
-        self.chain.push(chain.finish());
-        self.keys.push(key);
-        &self.keys[id.0 as usize]
+        FrontEndKey::new(components, dependencies)
     }
 }
 
-/// The `:namespaces` broad view of `manifest`: every namespace's name and
+/// The `:namespaces` broad view of `namespaces`: every namespace's name and
 /// source identity (file, `.cljs` or `.cljc`, provider or bundled), in source
 /// order.
-fn inventory(manifest: &DependencyManifest) -> Digest {
+pub(crate) fn inventory(namespaces: &[crate::dependency_manifest::NamespaceRecord]) -> Digest {
     let mut inventory = Fingerprint::new("light-cljs namespace inventory");
-    inventory.count(manifest.namespaces.len());
-    for record in &manifest.namespaces {
+    inventory.count(namespaces.len());
+    for record in namespaces {
         inventory
             .text(&record.name)
             .text(&record.source.file)
@@ -522,7 +556,11 @@ fn inventory(manifest: &DependencyManifest) -> Digest {
     inventory.finish()
 }
 
-fn lookup(fingerprint: &mut Fingerprint, manifest: &DependencyManifest, id: LookupId) {
+fn lookup(
+    fingerprint: &mut Fingerprint,
+    manifest: &(impl NamespaceRecords + ?Sized),
+    id: LookupId,
+) {
     let lookup = manifest.lookup(id);
     fingerprint.text(&lookup.namespace).text(&lookup.requester);
     candidates(fingerprint, &lookup.candidates);
@@ -699,7 +737,7 @@ pub fn emission_key(
 /// see. A bundled source is the compiler's own, and declared namespaces and
 /// provider fingerprints are values, so none of those is re-read.
 pub fn revalidate(
-    manifest: &DependencyManifest,
+    manifest: &(impl NamespaceRecords + ?Sized),
     id: NamespaceId,
     text: &str,
     sources: &dyn SourceProvider,
@@ -735,12 +773,29 @@ pub fn revalidate(
             }
         }
     }
-    let resources = sources.resources();
-    for input in manifest.external_inputs(id) {
+    inputs_unchanged(
+        record
+            .external_inputs
+            .iter()
+            .map(|&input| manifest.input(input)),
+        sources,
+    )
+}
+
+/// Re-read each resource of `inputs` from `sources` and report
+/// [`Mismatch::Inputs`] when one no longer resolves to the same candidates
+/// and content. A cache lookup checks a stored artifact's inputs with it,
+/// since the key it recomputes from them takes their recorded content.
+pub fn inputs_unchanged<'a>(
+    inputs: impl IntoIterator<Item = &'a ExternalInput>,
+    sources: &dyn SourceProvider,
+) -> Result<(), Mismatch> {
+    let mut resources = None;
+    for input in inputs {
         let ExternalInput::Resource(resource) = input else {
             continue;
         };
-        let Some(resources) = &resources else {
+        let Some(resources) = resources.get_or_insert_with(|| sources.resources()) else {
             return Err(Mismatch::Inputs);
         };
         let mut tried = Vec::new();

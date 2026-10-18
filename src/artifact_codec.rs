@@ -66,7 +66,7 @@ use std::sync::OnceLock;
 
 pub const MAGIC: [u8; 8] = *b"LCLJSART";
 /// The encoding's version. Bump it with any change to the bytes written.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
@@ -142,6 +142,10 @@ pub struct ManifestFields {
     /// The namespace depends on every earlier one
     /// ([`crate::dependency_manifest::EdgeKinds::COARSE`]).
     pub coarse: bool,
+    /// The names analysis looked for among the loaded namespaces and did
+    /// not find ([`crate::dependency_manifest::NamespaceRecord::absent`]),
+    /// which the key's view covers: a lookup recomputes it from them.
+    pub absent: Vec<String>,
     pub no_cache: bool,
     pub always: bool,
 }
@@ -168,6 +172,7 @@ impl ManifestFields {
                 .collect(),
             inputs: manifest.external_inputs(id).cloned().collect(),
             coarse: manifest.record(id).coarse,
+            absent: manifest.record(id).absent.clone(),
             no_cache: metadata.no_cache,
             always: metadata.always,
         }
@@ -463,6 +468,10 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
         manifest.extend_from_slice(&dependency.key);
     }
     external_inputs(&mut manifest, &fields.inputs)?;
+    varint(&mut manifest, fields.absent.len() as u64);
+    for name in &fields.absent {
+        put_str(&mut manifest, name);
+    }
     manifest.push(
         u8::from(fields.coarse) | u8::from(fields.no_cache) << 1 | u8::from(fields.always) << 2,
     );
@@ -1910,6 +1919,11 @@ fn read_manifest_charged(
         });
     }
     let inputs = read_external_inputs(&mut input, budget)?;
+    let count = input.count()?;
+    let mut absent = budget.vec(count)?;
+    for _ in 0..count {
+        absent.push(input.utf8_charged(budget)?);
+    }
     let policy = input.byte()?;
     if policy > 7 {
         return Err(DecodeError::Tag {
@@ -1937,6 +1951,7 @@ fn read_manifest_charged(
             dependencies,
             inputs,
             coarse: policy & 1 != 0,
+            absent,
             no_cache: policy & 2 != 0,
             always: policy & 4 != 0,
         },
@@ -3693,6 +3708,7 @@ mod tests {
                 ExternalInput::View(BroadView::Config),
             ],
             coarse: true,
+            absent: vec!["app.missing".into(), "Math".into()],
             no_cache: false,
             always: true,
         }

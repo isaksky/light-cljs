@@ -3506,6 +3506,12 @@ pub(crate) struct NamespaceAnalysis {
 }
 
 impl NamespaceAnalysis {
+    /// The program's namespaces so far, which the observation log's loaded
+    /// positions index.
+    pub(crate) fn program_namespaces(&self) -> &crate::arena::Arena<String> {
+        &self.program.namespaces
+    }
+
     pub(crate) fn new(macro_host: &mut MacroHost) -> Self {
         macro_host.begin_compilation();
         Self {
