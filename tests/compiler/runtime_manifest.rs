@@ -175,11 +175,21 @@ fn units_concatenate_back_to_the_annotated_file_and_the_embedded_runtime() {
     assert_eq!(stripped, RUNTIME);
     // The compile-time evaluators run it with the compiler's own hooks,
     // whole lines that output never embeds (build.rs `compiler_runtime`).
-    assert!(RUNTIME_SOURCE.contains("gensymLog") && !RUNTIME.contains("gensymLog"));
+    let hook = |line: &str| {
+        ["gensymLog", "encode.peak", "encode.active"]
+            .iter()
+            .any(|hook| line.contains(hook))
+    };
+    for name in ["gensymLog", "encode.peak", "encode.active"] {
+        assert!(
+            RUNTIME_SOURCE.contains(name) && !RUNTIME.contains(name),
+            "{name}"
+        );
+    }
     assert_eq!(
         RUNTIME_SOURCE
             .split_inclusive('\n')
-            .filter(|line| !line.contains("gensymLog"))
+            .filter(|line| !hook(line))
             .collect::<String>(),
         RUNTIME
     );

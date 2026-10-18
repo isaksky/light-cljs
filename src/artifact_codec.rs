@@ -64,7 +64,7 @@ use std::sync::OnceLock;
 
 pub const MAGIC: [u8; 8] = *b"LCLJSART";
 /// The encoding's version. Bump it with any change to the bytes written.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
@@ -338,6 +338,7 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
         source_name,
         entry,
         root,
+        policy,
     } = header;
     let mut strings = Interner::default();
     let max_depth = DecodeLimits::default().max_depth;
@@ -355,6 +356,7 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
             Section::Declarations => {
                 out.option_str(source_name.as_deref());
                 out.index(root.0);
+                out.policy(*policy);
                 out.declarations(declarations);
                 out.list(patches, |out, patch| {
                     let GlobalPatch {
@@ -390,7 +392,24 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
                 out.names(names);
                 match accounting {
                     None => out.u8(0),
-                    Some(Accounting {}) => out.u8(1),
+                    Some(Accounting {
+                        expansions,
+                        generated_nodes,
+                        node_peak,
+                        macro_depth,
+                        analysis_depth,
+                        unit_depth,
+                        conversion_peak,
+                    }) => {
+                        out.u8(1);
+                        out.uint(*expansions);
+                        out.uint(*generated_nodes);
+                        out.uint(*node_peak);
+                        out.index(*macro_depth);
+                        out.index(*analysis_depth);
+                        out.index(*unit_depth);
+                        out.uint(*conversion_peak);
+                    }
                 }
             }
         }
@@ -1664,6 +1683,21 @@ impl Writer<'_> {
         });
     }
 
+    /// The analysis policy as one byte: the warning mode, the static
+    /// array diagnostics, then the runtime array checks' tag.
+    fn policy(&mut self, policy: AnalysisPolicy) {
+        let AnalysisPolicy {
+            warning_mode,
+            checked_arrays,
+            array_checks,
+        } = policy;
+        let checks = match array_checks {
+            ArrayChecks::Off => 0,
+            ArrayChecks::Warn => 1,
+            ArrayChecks::Error => 2,
+        };
+        self.u8(u8::from(warning_mode) | u8::from(checked_arrays) << 1 | checks << 2);
+    }
     fn names(&mut self, names: &GeneratedNames) {
         let GeneratedNames {
             from,
@@ -1900,6 +1934,18 @@ pub fn decode(
     let mut r = reader(1)?;
     let source_name = r.option_string()?;
     let root = ExprRef(r.index()?);
+    let policy = match r.input.byte()? {
+        flags if flags >> 2 <= 2 => AnalysisPolicy {
+            warning_mode: flags & 1 != 0,
+            checked_arrays: flags & 2 != 0,
+            array_checks: match flags >> 2 {
+                0 => ArrayChecks::Off,
+                1 => ArrayChecks::Warn,
+                _ => ArrayChecks::Error,
+            },
+        },
+        tag => return Err(r.tag("analysis policy", tag)),
+    };
     let mut declarations = r.declarations()?;
     declarations.requires = manifest.requires.clone();
     let patches = r.list(|r| {
@@ -1935,7 +1981,15 @@ pub fn decode(
     let names = r.names()?;
     let accounting = match r.input.byte()? {
         0 => None,
-        1 => Some(Accounting {}),
+        1 => Some(Accounting {
+            expansions: r.uint()?,
+            generated_nodes: r.uint()?,
+            node_peak: r.uint()?,
+            macro_depth: r.index()?,
+            analysis_depth: r.index()?,
+            unit_depth: r.index()?,
+            conversion_peak: r.uint()?,
+        }),
         tag => return Err(r.tag("accounting", tag)),
     };
     r.input.end()?;
@@ -1949,6 +2003,7 @@ pub fn decode(
             source_name,
             entry: manifest.entry,
             root,
+            policy,
         },
         declarations,
         ir,
@@ -3310,6 +3365,11 @@ mod tests {
                 source_name: Some("app/core.cljs".into()),
                 entry: true,
                 root: ExprRef(count - 1),
+                policy: AnalysisPolicy {
+                    warning_mode: true,
+                    checked_arrays: false,
+                    array_checks: ArrayChecks::Error,
+                },
             },
             declarations: Declarations {
                 globals: vec![Global {
@@ -3496,7 +3556,15 @@ mod tests {
                 gensym_to: 99,
                 gensyms: vec![units("G__98"), units("x99")],
             },
-            accounting: Some(Accounting {}),
+            accounting: Some(Accounting {
+                expansions: 7,
+                generated_nodes: 300,
+                node_peak: u64::MAX,
+                macro_depth: 3,
+                analysis_depth: 129,
+                unit_depth: u32::MAX,
+                conversion_peak: 41,
+            }),
         }
     }
 

@@ -305,3 +305,27 @@ warm build is therefore expected to cost about 0.89 s plus decoding
 capture does (about 1.1 s), decoding is about 18%. Either way the expected
 warm build is under 11% of the cold build. The cold build without the
 variable runs no codec code.
+
+## Warnings and logical limits, cache off (light-cljs-318, October 18, 2026)
+
+Penpot `app.main --optimize none`, without installing anything. Three
+alternating rounds of the parent `9949f63` and the change, release builds,
+at 1-minute load 1.4 to 2.9. Output is 33,588,607 bytes and byte-identical:
+the `encode` hooks that record what each encoding charged are only in the
+compile-time evaluators' runtime, and the accounting is measured only while
+capturing.
+
+| Build | Wall (s), run 1-3 | Mean wall | Peak RSS (GB), run 1-3 | Mean RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `9949f63` | 23.53, 23.33, 23.55 | 23.47 | 0.985, 0.960, 0.972 | 0.972 |
+| Change | 22.62, 22.79, 22.73 | 22.71 | 0.942, 0.961, 0.947 | 0.950 |
+
+The change is -3.2% wall and -2.3% RSS against its parent, within the +3%
+and +5% gate; it does no more work cache-off, so the difference is noise.
+An earlier round, before the review fixes and against `ebeb14e` at load 3.1
+to 8.7, gave 23.34 and 23.44 s (+0.4%) and 0.973 and 0.962 GB. With capture on (`LIGHT_CLJS_CAPTURE_ARTIFACTS=1 --stats`, two
+alternating runs each at load 2.4 to 3.2, in that earlier round), reading the encode peak after
+each of the 93,997 expansions moves `cache.capture-ms` from 1,203 and 1,257
+to 1,216 and 1,388 and the wall from 23.75 and 25.12 s to 24.20 and
+26.76 s; the accounting and policy add 44,256 bytes to `cache.capture.bytes`
+(185,323,942 to 185,368,198). All 922 namespaces are still captured.

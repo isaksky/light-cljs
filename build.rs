@@ -77,43 +77,68 @@ fn main() {
 
 /// The runtime the compile-time evaluators run: the embedded runtime with
 /// hooks only the compiler uses, so that output, which embeds the runtime,
-/// carries none of their bytes. Each hook goes after an anchor that occurs
-/// once in the runtime.
+/// carries none of their bytes. Each hook goes into an anchor that occurs
+/// once in the runtime, before the anchor's text given with it, or at its
+/// end when that is empty; each is whole lines.
 ///
 /// - `gensym` logs what it returns once the form bridge's `takeGensyms` has
 ///   been called, and `takeGensyms` hands over the counter and the log and
 ///   clears the log, so that a namespace artifact records the spellings its
 ///   analysis generated and where the counter stood; `raiseGensyms` moves
 ///   the counter past an installed artifact's (`src/generated_names.rs`).
+/// - `encode` records what each encoding charged its node limit when it
+///   ends, and `takeEncodePeak` hands over the most that any encoding which
+///   ended since the last call charged and starts again, so that a
+///   capturing compilation can record the node budget an expansion's
+///   conversions needed (`src/macro_host.rs`, `WorkMarks`). An encoding
+///   can run another one, such as a macro expansion that a lazy sequence's
+///   realization demands; the active ones are a stack, so each records its
+///   own cost, and a nested `takeEncodePeak` leaves the outer ones running.
 fn compiler_runtime(runtime: &str) -> String {
-    const HOOKS: [(&str, &str); 3] = [
+    const ENCODE_END: &str = "      return visit(value, \"$\", 0);\n    }\n    return Object.freeze({version: 5, decode, encode,";
+    const HOOKS: [(&str, &str, &str); 5] = [
         (
             "  const generatedNames = new Set();\n",
+            "",
             "  let gensymLog = null;\n",
         ),
         (
             "    generatedNames.add(name);\n    return symbolCore(name);\n",
+            "    return",
             "    if (gensymLog !== null) gensymLog.push(name);\n",
         ),
         (
             "      check: () => { if (terminal != null) throw new Error(terminal); },\n",
-            "      takeGensyms: () => { const names = gensymLog ?? []; gensymLog = []; return vectorFromArray([gensymCounter, ...names]); }, raiseGensyms: floor => { if (floor > gensymCounter) gensymCounter = floor; },\n",
+            "",
+            concat!(
+                "      takeGensyms: () => { const names = gensymLog ?? []; gensymLog = []; return vectorFromArray([gensymCounter, ...names]); }, raiseGensyms: floor => { if (floor > gensymCounter) gensymCounter = floor; },\n",
+                "      takeEncodePeak: () => { const peak = encode.peak ?? 0; encode.peak = 0; return peak; },\n",
+            ),
+        ),
+        (
+            ENCODE_END,
+            "      return visit",
+            "      (encode.active ??= []).push(() => limit - remaining); try {\n",
+        ),
+        (
+            ENCODE_END,
+            "    }\n    return Object.freeze",
+            "      } finally { encode.peak = Math.max(encode.peak ?? 0, encode.active.pop()()); }\n",
         ),
     ];
     let mut runtime = runtime.to_owned();
-    for (anchor, hook) in HOOKS {
+    for (anchor, before, hook) in HOOKS {
         assert_eq!(
             runtime.matches(anchor).count(),
             1,
             "compile-time runtime hook anchor {anchor:?}"
         );
-        // The gensym hook goes before the return, the others after their anchors.
-        let at = if hook.contains("gensymLog.push") {
-            runtime.find(anchor).unwrap() + anchor.find("    return").unwrap()
+        let within = if before.is_empty() {
+            anchor.len()
         } else {
-            runtime.find(anchor).unwrap() + anchor.len()
+            anchor.find(before).unwrap()
         };
-        runtime.insert_str(at, hook);
+        runtime.insert_str(runtime.find(anchor).unwrap() + within, hook);
     }
     runtime
 }

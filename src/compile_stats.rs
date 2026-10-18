@@ -87,10 +87,13 @@ pub struct CompileStats {
     pub wall: Duration,
     /// The namespaces compiled, by source index.
     pub namespaces: Vec<NamespaceStats>,
-    /// Macro calls executed in the whole compilation.
+    /// Macro calls executed in the whole compilation. The expansions
+    /// installed namespaces charge against `--macro-expansions` are not
+    /// executed and not counted.
     pub macro_calls: usize,
     /// The most form nodes macro expansions and compile-time data readers
-    /// had generated, the count `--macro-nodes` limits.
+    /// had generated, the count `--macro-nodes` limits, including the nodes
+    /// installed namespaces charged.
     pub peak_macro_nodes: usize,
     pub deferred_units: DeferredUnitCounts,
     /// `--watch`: loading the program into the watch's development session

@@ -90,6 +90,9 @@ struct ControlState {
     remaining: AtomicU64,
     clock_origin: Instant,
     deadline_nanos: AtomicU64,
+    /// How many more [`ExecutionControl::check`]s pass before one cancels
+    /// ([`ExecutionControl::cancel_after_checks`]).
+    checks_left: AtomicU64,
 }
 /// Clones share sticky cancellation, deadline and fuel across nested Rust work.
 #[derive(Clone)]
@@ -106,6 +109,7 @@ impl ExecutionControl {
                 u64::try_from(options.timeout.as_nanos())
                     .map_err(|_| EvalError("invalid session timeout".into()))?,
             ),
+            checks_left: AtomicU64::new(u64::MAX),
         })))
     }
     /// Begin an operation: a new deadline and poll budget from `options`,
@@ -132,6 +136,13 @@ impl ExecutionControl {
     pub fn cancel(&self) {
         self.0.cancelled.store(true, Ordering::Relaxed);
     }
+    /// Cancel at the check after the next `checks` [`Self::check`]s pass, as
+    /// a cancellation arriving that far into compiler work would. Tests use
+    /// it to stop work between two of its checks.
+    #[doc(hidden)]
+    pub fn cancel_after_checks(&self, checks: u64) {
+        self.0.checks_left.store(checks, Ordering::Relaxed);
+    }
     #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
     pub fn poll(&self) -> Result<(), EvalError> {
         let cause = if self.0.cancelled.load(Ordering::Relaxed) {
@@ -156,6 +167,31 @@ impl ExecutionControl {
                     .terminal
                     .compare_exchange(0, cause, Ordering::Relaxed, Ordering::Relaxed);
         }
+        self.status()
+    }
+    /// Whether work may go on, without spending the poll budget or reading
+    /// the deadline: an error once the control is cancelled or terminal.
+    /// Compiler work that runs no JavaScript, such as installing namespace
+    /// artifacts, checks this; the deadline and budget bound engine work.
+    #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
+    pub fn check(&self) -> Result<(), EvalError> {
+        if self
+            .0
+            .checks_left
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .is_err()
+        {
+            self.cancel();
+        }
+        if self.0.cancelled.load(Ordering::Relaxed) {
+            let _ = self
+                .0
+                .terminal
+                .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed);
+        }
+        self.status()
+    }
+    fn status(&self) -> Result<(), EvalError> {
         match self.0.terminal.load(Ordering::Relaxed) {
             0 => Ok(()),
             1 => Err(EvalError("JavaScript session cancelled".into())),

@@ -360,9 +360,20 @@ impl MacroHost {
             .generated_nodes
             .saturating_sub(self.generated_nodes.get())
             / 2;
+        let budget = remaining;
         let env = if !declaration.reads_environment
             && elidable_environment(env, &mut remaining, 128, &engine.control())
         {
+            // With less budget the environment is converted instead, which
+            // can cost more, so a namespace needs the budget that elision
+            // needed: twice the environment's nodes
+            // ([`crate::macro_host::WorkMarks`]).
+            if self.work.measuring.get() {
+                crate::macro_host::WorkMarks::note(
+                    &self.work.node_peak,
+                    self.generated_nodes.get() + 2 * (budget - remaining),
+                );
+            }
             &unused
         } else {
             env

@@ -591,7 +591,8 @@ boundary. Its sections:
   declaration state and visibility. A program has one global per namespace and
   name, which capture checks against the name index.
 - **Names and accounting:** the generated-name marks (light-cljs-317, see
-  "Generated names") and an empty typed slot for light-cljs-318.
+  "Generated names") and the logical accounting (light-cljs-318, see "Loading, diagnostics, and
+  storage").
 
 Local references are dense indices into the artifact's own tables. A
 `(var x)` of an earlier Var shares that global's metadata expression; the
@@ -681,8 +682,9 @@ require, and SHA-256 is the in-tree `src/sha256.rs` (checked against the
 FIPS 180-4 vectors; light-cljs-319 builds the keys on it). The module's
 comment gives the layout. In short:
 
-- **Header.** The magic `LCLJSART`, `SCHEMA_VERSION` (2 since light-cljs-312
-  added the external inputs; 1 before) as a little-endian
+- **Header.** The magic `LCLJSART`, `SCHEMA_VERSION` (3 since light-cljs-318
+  added the analysis policy and the accounting, 2 since light-cljs-312 added
+  the external inputs, 1 before) as a little-endian
   u32, a byte-order mark, the manifest's length and the SHA-256 of the header
   and manifest.
 - **Manifest.** Readable with `artifact_codec::read_manifest`, which checks
@@ -731,9 +733,11 @@ The decoder reads only its own `SCHEMA_VERSION`; there is no migration,
 since artifacts are disposable. Any change to the bytes written bumps it.
 That includes a field added to an artifact type, which does not compile
 until it is encoded, because the encoder destructures every struct
-exhaustively. When light-cljs-318 fills `Accounting`, or light-cljs-312 adds
-`ExternalInput` variants to the manifest's dependency fields, the version
-becomes 2. The cache-contract suites (`cache_contract::round_trip`) and
+exhaustively. Version 2 (light-cljs-312) adds the `ExternalInput`
+variants to the manifest's dependency fields, and version 3
+(light-cljs-318) writes the header's analysis policy, one byte in the
+declarations section, and the filled `Accounting` in the names section.
+The cache-contract suites (`cache_contract::round_trip`) and
 `tests/compiler/namespace_artifacts.rs` encode and decode every artifact
 they capture, check that it prints and re-encodes the same, and install
 the decoded ones. With every eligible namespace a hit, the in-memory
@@ -871,6 +875,76 @@ compilation enforce its limits. Time and live-memory limits apply to actual work
 loading also needs cancellation polling and explicit size/structural bounds.
 A cache hit must never reset a terminal failure or replenish an enclosing budget.
 This is compiler-owned accounting, not an execution-effect log.
+
+*As built (light-cljs-318):*
+
+- **Warnings.** An installed namespace adds the warnings its artifact
+  captured, with their spans, at its source index, and the compilation's
+  warnings are then sorted by source and offset, stably, as the end of every
+  analysis sorts them; the `ns` form's warnings stay the loader's. Mixed
+  builds report the uncached build's warnings in its order, which
+  `check_mixed` now asserts for every fixture it runs. A warning kind is the
+  compiler's static string; installation finds it by its text in a
+  process-wide set bounded to 256 short kinds, and refuses an artifact
+  naming any other.
+- **Policy.** The header records the analysis policy (`--warnings` and the
+  two checked-array modes, which also change the IR), and installation
+  refuses an artifact of another policy before anything changes. The keys
+  pellet (light-cljs-319) puts the same policy in the key.
+- **Accounting.** `Accounting` records the namespace's expansions and
+  generated nodes, counted from before its source was prepared, deferred
+  units included; a node peak; and the expansion, generated-nesting and
+  deferred-unit depths its limit checks compared, each plus one. The peak is
+  there because each conversion of a macro call, its environment or its
+  expansion is bounded by the remaining node budget, not only the total: it
+  is the most, from the namespace's start, that the budget had to leave room
+  for, the nodes generated before an expansion plus the largest datum it
+  converted. The JavaScript side of a conversion charges the budget per
+  sequence cell and lazy realization step, so a wide or lazy expansion
+  (`(cons 'do (repeat n 1))`) costs about twice the nodes it exports; the
+  compile-time runtime's `encode` therefore records what each encoding
+  charged when it ends, and after each expansion the capturing compilation
+  reads the most any encoding that ended since the last read charged
+  (`takeEncodePeak`, a hook build.rs adds to the compile-time runtime only,
+  so output is unchanged) through a function handle it evaluates once per
+  session. Active encodings are a stack, since realizing a lazy result can
+  expand another macro in the middle of one, and a nested read leaves the
+  outer encodings to record their own cost. Measuring costs that call
+  and a datum count per expansion, done only while capturing, with the
+  environment's large shared entries counted once by identity. A bootstrap
+  macro whose unused environment was elided under half the remaining
+  budget counts twice the environment's nodes, the budget elision needed:
+  with less, the environment is converted instead, which can cost more. Compiler data readers convert their input and result under
+  the whole node limit, not what is left of it, so the largest of those
+  conversions is recorded apart, as the conversion peak, and must fit the
+  limit itself. A measurement that cannot be read leaves the namespace
+  without accounting. Installation admits an artifact only if the
+  expansions and peak fit what the compilation has left, the conversion
+  peak fits the node limit and the depths fit its limits; otherwise, or
+  without accounting, it is refused, and analysis enforces the limits as
+  uncached. An admitted artifact charges its counts
+  once, and the counters only grow. Charged expansions count against
+  `--macro-expansions` but are not executed macro calls, so `--stats` reports
+  executed calls without them, while its node peak includes the charge.
+- **Cancellation and failure.** `EntryRecorders::control` is the
+  compilation's cancellation control. The compilation checks it before each
+  namespace; installation checks it and the compile-time session's control
+  before it starts, every 4096 expressions and around the declarations,
+  with `ExecutionControl::check`, which spends no poll budget and reads no
+  deadline: installation runs no JavaScript, and the per-operation deadline
+  and budget bound engine work. (`ExecutionControl::cancel_after_checks`
+  lets a test cancel between two of these checks.) A cancelled or terminal
+  control fails the
+  compilation rather than letting a hit stand in for work that could not
+  run, and capture refuses a namespace whose analysis ended with the
+  control or the session halted. A namespace whose analysis failed produces
+  no artifact; namespaces completed before a later failure keep theirs,
+  since nothing a later namespace does changes them. A later error is the
+  ordinary error: a refusal happens before anything changes, and nothing
+  reruns installed work.
+- **Bounds.** `validate` also holds an artifact to its 32-bit tables, data
+  nesting at most `NamespaceArtifact::DATUM_DEPTH` (1024) deep, checked
+  without recursion, and warnings inside its own source.
 
 Write immutable content-addressed artifacts through temporary files and atomic
 publication. Update indexes only after their artifacts are complete. Concurrent

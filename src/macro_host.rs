@@ -30,6 +30,166 @@ impl Default for MacroLimits {
     }
 }
 
+/// The analysis nesting allowed under a macro expansion: deeper generated
+/// runtime forms are an error.
+pub(crate) const GENERATED_NESTING_LIMIT: usize = 128;
+
+/// High-water marks of a compilation's logical work, shared by its analysis
+/// frames like the expansion and node counters, which namespace capture
+/// reads as each namespace's accounting (docs/compiler-cache.md, "Loading,
+/// diagnostics, and storage"). Each depth is the value a limit check
+/// compared, plus one, so a namespace that needs a depth of `n` is admitted
+/// by a limit of at least `n`, and one that checked none needs nothing.
+#[derive(Default)]
+pub(crate) struct WorkMarks {
+    /// The most generated nodes the budget had to leave room for: the
+    /// nodes generated before an expansion plus the largest form one of its
+    /// conversions took, which the remaining budget bounds as well.
+    pub node_peak: std::cell::Cell<usize>,
+    /// [`MacroLimits::expansion_depth`] as the analyzer checks it.
+    pub macro_depth: std::cell::Cell<usize>,
+    /// [`GENERATED_NESTING_LIMIT`].
+    pub analysis_depth: std::cell::Cell<usize>,
+    /// [`MacroLimits::expansion_depth`] as the session checks nested
+    /// deferred-unit analyses.
+    pub unit_depth: std::cell::Cell<usize>,
+    /// The expansions installed artifacts charged, which count against
+    /// [`MacroLimits::expansions`] but were not executed.
+    pub charged_expansions: std::cell::Cell<usize>,
+    /// The largest conversion of a compiler data reader's input or result:
+    /// these take at most [`MacroLimits::generated_nodes`] each, not what is
+    /// left of it.
+    pub conversion_peak: std::cell::Cell<usize>,
+    /// Whether expansions measure their conversions for `node_peak`, which
+    /// only a capturing compilation needs.
+    pub measuring: std::cell::Cell<bool>,
+    /// A measurement failed, so the namespace's accounting is not recorded
+    /// and its artifact is never installed.
+    pub unmeasured: std::cell::Cell<bool>,
+    /// The macro evaluator's `takeEncodePeak` ([`take_encode_peak`]).
+    encode_peak: std::cell::Cell<Option<crate::evaluator::ValueId>>,
+    /// The node counts of recent large environment entries, by identity;
+    /// holding the datum keeps its address from being reused.
+    sizes: std::cell::RefCell<Vec<(crate::compiler_data::Datum, usize)>>,
+}
+
+/// The compilation's counters where a namespace's work began
+/// ([`MacroHost::begin_namespace_work`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WorkStart {
+    pub expansions: usize,
+    pub generated_nodes: usize,
+}
+
+/// The most nodes that any encoding of compile-time data on `evaluator`
+/// charged its node limit since the last call, which the JavaScript side of
+/// a conversion counts per sequence cell and lazy realization step, so a
+/// lazy or wide result costs more than the nodes it exports (the
+/// compile-time runtime's `takeEncodePeak`, written by build.rs). The
+/// function is evaluated once per JavaScript session and kept in `cached`.
+/// None if it cannot be read.
+fn take_encode_peak(
+    evaluator: &dyn crate::evaluator::MacroEvaluator,
+    cached: &std::cell::Cell<Option<crate::evaluator::ValueId>>,
+) -> Option<usize> {
+    use crate::compiler_data::{Datum, DatumKind};
+    let read = |function| -> Result<Option<usize>, crate::evaluator::EvalError> {
+        let value = evaluator.call(function, &[])?;
+        let source = crate::compiler_data::Source::new("<encode peak>", "");
+        let span = source.span(0..0).expect("an empty span");
+        let call = Form::from_data(
+            Datum::new(DatumKind::Nil),
+            span.clone(),
+            crate::compiler_data::Origin::SuppliedData,
+        );
+        let origin = crate::compiler_data::ExpansionOrigin {
+            macro_name: Name::new(None, "encode-peak"),
+            call: span,
+            definition: None,
+            helpers: Vec::new(),
+        };
+        let limits = crate::form_bridge::ConversionLimits { nodes: 1, depth: 1 };
+        let exported = evaluator.export_form(value, &call, origin, limits);
+        let _ = evaluator.release(value);
+        Ok(match exported?.data().kind() {
+            DatumKind::Integer(peak) => usize::try_from(*peak).ok(),
+            DatumKind::Double(peak) if *peak >= 0.0 => Some(*peak as usize),
+            _ => None,
+        })
+    };
+    // A function of another session, such as an evaluator's that was
+    // replaced, is refused without running anything: evaluate it again.
+    if let Some(function) = cached.get()
+        && let Ok(peak) = read(function)
+    {
+        return peak;
+    }
+    let function = evaluator
+        .evaluate_unit("rt => rt.compilerForms.takeEncodePeak")
+        .ok()?;
+    cached.set(Some(function));
+    read(function).ok().flatten()
+}
+
+impl WorkMarks {
+    /// Raise `mark` to `needed`.
+    pub(crate) fn note(mark: &std::cell::Cell<usize>, needed: usize) {
+        if needed > mark.get() {
+            mark.set(needed);
+        }
+    }
+
+    /// The nodes converting `data` takes: one per datum, its metadata and
+    /// compiler payloads included, as the form bridges count them.
+    pub(crate) fn nodes(data: &crate::compiler_data::Datum) -> usize {
+        use crate::compiler_data::DatumKind;
+        let mut count = 1;
+        if let Some(metadata) = data.metadata() {
+            count += Self::nodes(&metadata);
+        }
+        match data.kind() {
+            DatumKind::Collection { children, .. } => {
+                count += children.iter().map(Self::nodes).sum::<usize>();
+            }
+            DatumKind::CompilerLiteral { payload, .. } => count += Self::nodes(payload),
+            _ => {}
+        }
+        count
+    }
+
+    /// [`Self::nodes`] of a macro environment, whose large entries (the
+    /// macro inventory, the namespace and the locals) are shared by the
+    /// expansions that see them, so their counts are kept by identity.
+    fn environment_nodes(&self, environment: &crate::compiler_data::Datum) -> usize {
+        use crate::compiler_data::DatumKind;
+        let DatumKind::Collection { children, .. } = environment.kind() else {
+            return Self::nodes(environment);
+        };
+        if environment.metadata().is_some() {
+            return Self::nodes(environment);
+        }
+        let mut sizes = self.sizes.borrow_mut();
+        let mut count = 1;
+        for child in children {
+            let identity = child.identity();
+            count += match sizes.iter().find(|(data, _)| data.identity() == identity) {
+                Some(&(_, size)) => size,
+                None => {
+                    let size = Self::nodes(child);
+                    if size >= 64 {
+                        if sizes.len() == 16 {
+                            sizes.remove(0);
+                        }
+                        sizes.push((child.clone(), size));
+                    }
+                    size
+                }
+            };
+        }
+        count
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum SourceBindingKind {
     Value,
@@ -112,6 +272,9 @@ pub struct MacroHost {
     pub(crate) session_ref: std::rc::Weak<crate::compilation_session::CompilationSession>,
     pub(crate) expansions: std::rc::Rc<std::cell::Cell<usize>>,
     pub(crate) generated_nodes: std::rc::Rc<std::cell::Cell<usize>>,
+    /// The compilation's high-water marks and charges, shared like the
+    /// counters ([`WorkMarks`]).
+    pub(crate) work: std::rc::Rc<WorkMarks>,
     /// Give compile-time heaps an opaque JavaScript package registry: every
     /// package, export, call and construction answers an inert stub, so the
     /// initializers that macro expansion demands (such as an extension whose
@@ -166,6 +329,8 @@ struct CompilerDataReaders {
     default_function: Option<crate::evaluator::ValueId>,
     evaluator: Option<std::rc::Rc<crate::evaluator::Evaluator>>,
     functions: HashMap<Name, crate::evaluator::ValueId>,
+    /// The evaluator's `takeEncodePeak` ([`take_encode_peak`]).
+    encode_peak: std::cell::Cell<Option<crate::evaluator::ValueId>>,
 }
 
 /// The compile-time package registry of [`MacroHost::opaque_packages`]: a Proxy
@@ -258,6 +423,16 @@ impl MacroHost {
             return Err("compiler macro expansion limit exceeded".into());
         }
         self.expansions.set(self.expansions.get() + 1);
+        // The conversions below take at most the remaining node budget each,
+        // so a namespace needs room for the largest of its inputs too.
+        if self.work.measuring.get() {
+            let input =
+                WorkMarks::nodes(&call.data()).max(self.work.environment_nodes(environment));
+            WorkMarks::note(
+                &self.work.node_peak,
+                self.generated_nodes.get().saturating_add(input),
+            );
+        }
         let limits = crate::form_bridge::ConversionLimits {
             nodes: self
                 .limits
@@ -287,7 +462,19 @@ impl MacroHost {
             }
             expanded
         };
-        let expanded = run().map_err(|e| {
+        let expanded = run();
+        // What the conversions charged on the JavaScript side, which bounds
+        // them by the same remaining budget.
+        if self.work.measuring.get() && expanded.is_ok() {
+            match take_encode_peak(evaluator, &self.work.encode_peak) {
+                Some(peak) => WorkMarks::note(
+                    &self.work.node_peak,
+                    self.generated_nodes.get().saturating_add(peak),
+                ),
+                None => self.work.unmeasured.set(true),
+            }
+        }
+        let expanded = expanded.map_err(|e| {
             let location = crate::compiler_data::DiagnosticLocation::from_span(&origin.call);
             let mut message = format!(
                 "{}:{}:{}: macro {}/{}: {}",
@@ -500,6 +687,12 @@ impl MacroHost {
                 nodes: self.limits.generated_nodes,
                 depth: 128,
             };
+            // Each conversion takes at most the node limit itself, so a
+            // namespace needs a limit of at least its largest.
+            let measuring = self.work.measuring.get();
+            if measuring {
+                WorkMarks::note(&self.work.conversion_peak, WorkMarks::nodes(value));
+            }
             let argument = evaluator
                 .import_data(value, limits)
                 .map_err(|e| e.to_string())?;
@@ -531,6 +724,13 @@ impl MacroHost {
                 .export_data(result, limits)
                 .map_err(|e| e.to_string());
             let _ = evaluator.release(result);
+            if measuring && data.is_ok() {
+                let readers = self.compiler_data_readers.borrow();
+                match take_encode_peak(&*evaluator, &readers.encode_peak) {
+                    Some(peak) => WorkMarks::note(&self.work.conversion_peak, peak),
+                    None => self.work.unmeasured.set(true),
+                }
+            }
             data.map(Some)
         };
         let result = run();
@@ -539,6 +739,7 @@ impl MacroHost {
             readers.evaluator = None;
             readers.functions.clear();
             readers.default_function = None;
+            readers.encode_peak.set(None);
         }
         result
     }
@@ -798,6 +999,7 @@ impl MacroHost {
                 .map_or_else(std::rc::Weak::new, |s| std::rc::Rc::downgrade(&s)),
             expansions: self.expansions.clone(),
             generated_nodes: self.generated_nodes.clone(),
+            work: self.work.clone(),
             opaque_packages: self.opaque_packages,
             reader_declared: self.reader_declared.clone(),
             reader_generation: self.reader_generation,
@@ -817,6 +1019,44 @@ impl MacroHost {
     }
     pub(crate) fn defers_source_units(&self) -> bool {
         !self.bootstrap_seed
+    }
+    /// Begin measuring the next namespace's logical work
+    /// ([`WorkMarks`]): its counts start here, and its marks from nothing.
+    pub(crate) fn begin_namespace_work(&self) -> WorkStart {
+        let work = &self.work;
+        work.measuring.set(true);
+        work.node_peak.set(self.generated_nodes.get());
+        work.macro_depth.set(0);
+        work.analysis_depth.set(0);
+        work.unit_depth.set(0);
+        work.conversion_peak.set(0);
+        work.unmeasured.set(false);
+        WorkStart {
+            expansions: self.expansions.get(),
+            generated_nodes: self.generated_nodes.get(),
+        }
+    }
+    /// The macro calls the compilation executed: its expansions less those
+    /// installed artifacts charged.
+    pub(crate) fn executed_expansions(&self) -> usize {
+        self.expansions.get() - self.work.charged_expansions.get()
+    }
+    /// Why the compilation's compile-time work cannot go on: its session's
+    /// execution control, or `control`, is cancelled or terminal. Checked
+    /// without spending the poll budget ([`crate::evaluator::ExecutionControl::check`]).
+    pub(crate) fn halted(
+        &self,
+        control: Option<&crate::evaluator::ExecutionControl>,
+    ) -> Option<String> {
+        let session = self
+            .interactive_control
+            .clone()
+            .or_else(|| self.bootstrap.as_ref().map(|b| b.evaluator.control()));
+        control
+            .into_iter()
+            .chain(session.as_ref())
+            .find_map(|control| control.check().err())
+            .map(|error| error.0)
     }
     pub(crate) fn session_handle(
         &self,
@@ -845,6 +1085,7 @@ impl MacroHost {
         }
         self.expansions = Default::default();
         self.generated_nodes = Default::default();
+        self.work = Default::default();
         self.reader_declared = Default::default();
         self.reader_generation =
             READER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

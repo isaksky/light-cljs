@@ -108,16 +108,27 @@ pub(crate) struct Target<'a> {
     pub index: &'a mut InstallIndex,
     /// The source index the namespace takes.
     pub source_index: usize,
+    /// The compilation's warnings, which the namespace's join.
+    pub warnings: &'a mut Vec<ir::AnalysisWarning>,
 }
 
 /// The source the loader resolved for the namespace, which the artifact
-/// must describe.
+/// must describe, and the compilation it installs into.
 pub(crate) struct InstallSource<'a> {
     pub namespace: &'a str,
     pub path: &'a str,
     pub text: &'a str,
     pub entry: bool,
+    /// The compilation's analysis options, which must be the artifact's.
+    pub options: ir::AnalysisOptions,
+    /// The control that cancels the compilation, if any, which installation
+    /// checks besides the compile-time session's.
+    pub control: Option<&'a crate::evaluator::ExecutionControl>,
 }
+
+/// How many expressions installation converts between checks for
+/// cancellation.
+const CHECK_INTERVAL: usize = 4096;
 
 /// Why an artifact was not installed.
 #[derive(Debug)]
@@ -142,7 +153,13 @@ pub(crate) fn install(
         names,
         index,
         source_index,
+        warnings,
     } = target;
+    // A cancelled or failed compilation stays failed: a hit never stands in
+    // for the work it stopped.
+    if let Some(reason) = macro_host.halted(source.control) {
+        return Err(InstallError::Failed(reason));
+    }
     index.extend(program);
     index.take_fresh();
     let resolved = resolve(
@@ -163,6 +180,7 @@ pub(crate) fn install(
         source,
         resolved,
         bases: Bases::default(),
+        warnings,
     }
     .run(macro_host)
     .map_err(InstallError::Failed)
@@ -198,6 +216,8 @@ struct Resolved {
     new_namespace: bool,
     /// The session's next unit ID and bundle count.
     first_unit: usize,
+    /// The warning kinds, as the compiler spells them.
+    warning_kinds: Vec<&'static str>,
 }
 
 fn resolve(
@@ -210,6 +230,16 @@ fn resolve(
     macro_host: &MacroHost,
 ) -> Result<Resolved, String> {
     artifact.validate()?;
+    // Warnings, errors and array checks depend on the analysis options, so
+    // an artifact of other options would report what this build does not.
+    let policy = crate::artifact_capture::analysis_policy(source.options);
+    if artifact.header.policy != policy {
+        return Err(format!(
+            "it was compiled under {:?}, not {policy:?}",
+            artifact.header.policy
+        ));
+    }
+    admit(artifact.accounting.as_ref(), macro_host)?;
     // Generated names stay one per identity: an artifact whose window
     // overlaps numbers this compilation allocated or installed, as one
     // captured elsewhere can, or that spells a gensym an installed namespace
@@ -392,6 +422,12 @@ fn resolve(
         }
         None => return Err("the compilation has no compile-time session".into()),
     };
+    let warning_kinds = artifact
+        .diagnostics
+        .warnings
+        .iter()
+        .map(|warning| warning_kind(&warning.kind))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Resolved {
         source_index,
         namespaces,
@@ -399,7 +435,95 @@ fn resolve(
         metadata,
         new_namespace,
         first_unit,
+        warning_kinds,
     })
+}
+
+/// Whether the compilation's remaining budgets and its depth limits admit
+/// the logical work the artifact recorded, as they admitted it when the
+/// namespace was analyzed (docs/compiler-cache.md, "Loading, diagnostics,
+/// and storage"). The counts are those of the namespace alone, so they are
+/// charged on top of what the compilation used; the depths are the
+/// namespace's own, so they meet the limits directly.
+fn admit(accounting: Option<&Accounting>, macro_host: &MacroHost) -> Result<(), String> {
+    let accounting = accounting.ok_or("it records no accounting of its work")?;
+    let limits = &macro_host.limits;
+    let left = |limit: usize, used: usize| limit.saturating_sub(used) as u64;
+    let expansions = left(limits.expansions, macro_host.expansions.get());
+    if accounting.expansions > expansions {
+        return Err(format!(
+            "its {} macro expansions exceed the {expansions} the compilation has left",
+            accounting.expansions
+        ));
+    }
+    let nodes = left(limits.generated_nodes, macro_host.generated_nodes.get());
+    if accounting.node_peak > nodes {
+        return Err(format!(
+            "its {} generated nodes need room the compilation's {nodes} lack",
+            accounting.node_peak
+        ));
+    }
+    if accounting.conversion_peak > limits.generated_nodes as u64 {
+        return Err(format!(
+            "its data readers converted {} nodes, more than the limit of {}",
+            accounting.conversion_peak, limits.generated_nodes
+        ));
+    }
+    let depth = limits.expansion_depth.min(64) as u64;
+    if u64::from(accounting.macro_depth) > depth || u64::from(accounting.unit_depth) > depth {
+        return Err(format!(
+            "its expansions nest deeper than the depth limit of {depth}"
+        ));
+    }
+    if accounting.analysis_depth as usize > crate::macro_host::GENERATED_NESTING_LIMIT {
+        return Err("its generated forms nest deeper than analysis allows".into());
+    }
+    Ok(())
+}
+
+/// Charge the compilation's budgets with an admitted artifact's counts,
+/// once: the budgets only shrink, as its analysis would have shrunk them.
+fn charge(accounting: &Accounting, macro_host: &MacroHost) {
+    let expansions = accounting.expansions as usize;
+    macro_host
+        .expansions
+        .set(macro_host.expansions.get() + expansions);
+    let charged = &macro_host.work.charged_expansions;
+    charged.set(charged.get() + expansions);
+    macro_host
+        .generated_nodes
+        .set(macro_host.generated_nodes.get() + accounting.generated_nodes as usize);
+}
+
+/// The compiler's spelling of a warning kind an artifact names by its text.
+/// Each distinct kind is kept once for the process, and only so many, so
+/// artifacts cannot grow the set without bound.
+fn warning_kind(kind: &str) -> Result<&'static str, String> {
+    static KINDS: std::sync::Mutex<Option<std::collections::HashSet<&'static str>>> =
+        std::sync::Mutex::new(None);
+    if kind.is_empty()
+        || kind.len() > 64
+        || !kind
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err(format!(
+            "its warning kind {kind:?} is not one the compiler reports"
+        ));
+    }
+    let mut kinds = KINDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let kinds = kinds.get_or_insert_with(Default::default);
+    if let Some(&known) = kinds.get(kind) {
+        return Ok(known);
+    }
+    if kinds.len() >= 256 {
+        return Err("its warning kinds are more than the compiler reports".into());
+    }
+    let known: &'static str = Box::leak(kind.to_owned().into_boxed_str());
+    kinds.insert(known);
+    Ok(known)
 }
 
 fn source_binding(kind: BindingKind) -> SourceBindingKind {
@@ -430,6 +554,7 @@ struct Installer<'a> {
     source: &'a InstallSource<'a>,
     resolved: Resolved,
     bases: Bases,
+    warnings: &'a mut Vec<ir::AnalysisWarning>,
 }
 
 impl Installer<'_> {
@@ -479,6 +604,9 @@ impl Installer<'_> {
     fn run(mut self, macro_host: &mut MacroHost) -> Result<ir::ExprId, String> {
         let artifact = self.artifact;
         let namespace = artifact.header.namespace.as_str();
+        if let Some(accounting) = &artifact.accounting {
+            charge(accounting, macro_host);
+        }
         reserve_generated_names(&artifact.names, self.index, macro_host)?;
         if self.resolved.new_namespace {
             self.program.namespaces.push(namespace.to_owned());
@@ -600,16 +728,18 @@ impl Installer<'_> {
             })
             .collect::<Vec<_>>();
         self.program.recur_targets.extend(targets);
-        let exprs = ir
-            .exprs
-            .iter()
-            .map(|expr| ir::Expr {
+        let mut exprs = Vec::with_capacity(ir.exprs.len());
+        for (converted, expr) in ir.exprs.iter().enumerate() {
+            if converted % CHECK_INTERVAL == 0 {
+                self.check(macro_host)?;
+            }
+            exprs.push(ir::Expr {
                 kind: self.kind(&expr.kind),
                 span: span(expr.span),
                 context: expr.context,
                 source_index: self.source_index(expr.source),
-            })
-            .collect::<Vec<_>>();
+            });
+        }
         self.program.exprs.extend(exprs);
         let declarations = &artifact.declarations;
         for target in &declarations.lazy_targets {
@@ -685,8 +815,39 @@ impl Installer<'_> {
             .namespace_entries
             .insert(root, namespace.to_owned());
         self.index.extend(self.program);
+        self.check(macro_host)?;
         self.declare(macro_host, &views)?;
+        self.check(macro_host)?;
+        // The namespace's warnings where its analysis reported them: the
+        // analysis sorts the compilation's warnings by source and offset
+        // when it ends, stably, and its own were captured in that order.
+        let source_index = self.resolved.source_index;
+        for (warning, &kind) in artifact
+            .diagnostics
+            .warnings
+            .iter()
+            .zip(&self.resolved.warning_kinds)
+        {
+            self.warnings.push(ir::AnalysisWarning {
+                kind,
+                message: warning.message.clone(),
+                span: span(warning.span),
+                source_index,
+            });
+        }
+        self.warnings
+            .sort_by_key(|warning| (warning.source_index, warning.span.start));
         Ok(root)
+    }
+
+    /// Stop when the compilation is cancelled or its compile-time session
+    /// failed, without spending a poll budget: installation runs no
+    /// JavaScript.
+    fn check(&self, macro_host: &MacroHost) -> Result<(), String> {
+        match macro_host.halted(self.source.control) {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        }
     }
 
     fn protocol_method(&self, method: &ProtocolMethod) -> ir::ProtocolMethod {

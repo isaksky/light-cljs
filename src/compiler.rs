@@ -1717,6 +1717,12 @@ pub struct EntryRecorders<'a> {
     /// installed artifact reserves its names in any case, which keeps the
     /// namespaces after it apart from it.
     pub reserve: Option<&'a crate::generated_names::Reservation>,
+    /// The execution control that cancels this compilation, such as a
+    /// development session's. Installation checks it, and the compile-time
+    /// session's own, while it runs: a cancelled or terminal control stops
+    /// the compilation rather than letting a hit stand in for work that
+    /// could not run.
+    pub control: Option<&'a crate::evaluator::ExecutionControl>,
 }
 
 /// The artifact to install for a namespace, if any ([`EntryRecorders::install`]).
@@ -1855,6 +1861,7 @@ fn analyze_entry(
         mut capture,
         install,
         reserve,
+        control,
     } = recorders;
     if let Some(reservation) = reserve {
         crate::generated_names::reserve(&reservation.to);
@@ -1918,13 +1925,20 @@ fn analyze_entry(
     let mut index = 0;
     while index < loader.ordered.len() {
         let file = &loader.ordered[index];
-        let calls_before = macros.expansions.get();
+        let calls_before = macros.executed_expansions();
         let at = |error: AnalysisError| {
             NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
         };
         let first_lazy = analysis.lazy_target_count();
         macros.observe(|log| log.window = index as u32);
         build.analyze(index, &file.name, file.path.to_str());
+        // A cancelled compilation stops at the next namespace.
+        if let Some(reason) = control.and_then(|control| control.check().err()) {
+            return Err(NamespaceCompileError::new(format!(
+                "compiling {}: {}",
+                file.name, reason.0
+            )));
+        }
         // An artifact installs at the frontier its analysis would have run.
         let installed = match install.and_then(|lookup| lookup(&file.name)) {
             Some(artifact) => {
@@ -1937,8 +1951,11 @@ fn analyze_entry(
                         path: &path,
                         text: &file.source,
                         entry: index == entry_index,
+                        options,
+                        control,
                     },
                     macros,
+                    warnings,
                 );
                 compile_stats::add(&mut install_counts.time, started);
                 match outcome {
@@ -1963,6 +1980,7 @@ fn analyze_entry(
         };
         if !installed {
             let names_from = crate::generated_names::current();
+            let work = capture.is_some().then(|| macros.begin_namespace_work());
             let resolution = prepare_source(macros, file).map_err(at)?;
             let captured = capture.is_some().then(|| {
                 let started = compile_stats::start(timed);
@@ -1987,7 +2005,9 @@ fn analyze_entry(
                     warnings,
                 )
                 .map_err(at)?;
-            if let (Some(sink), Some((start, resolution))) = (capture.as_deref_mut(), &captured) {
+            if let (Some(sink), Some((start, resolution)), Some(work)) =
+                (capture.as_deref_mut(), &captured, work)
+            {
                 let started = compile_stats::start(timed);
                 let path = file.path.to_string_lossy();
                 let artifact = analysis.finish_capture(
@@ -2001,6 +2021,9 @@ fn analyze_entry(
                         aliases: &file.aliases,
                         requires: &file.requires,
                         names_from,
+                        options,
+                        work,
+                        control,
                     },
                     macros,
                     warnings,
@@ -2025,7 +2048,7 @@ fn analyze_entry(
         if let Some(stats) = stats.as_deref_mut() {
             stats.namespaces.push(compile_stats::NamespaceStats {
                 name: file.name.clone(),
-                macro_calls: macros.expansions.get() - calls_before,
+                macro_calls: macros.executed_expansions() - calls_before,
             });
         }
         // Deferred definitions own their forms and resolution snapshots now.
@@ -2077,7 +2100,7 @@ fn analyze_entry(
         if install.is_some() {
             stats.install = Some(install_counts);
         }
-        stats.macro_calls = macros.expansions.get();
+        stats.macro_calls = macros.executed_expansions();
         stats.peak_macro_nodes = macros.generated_nodes.get();
         if let Some(session) = macros.session_handle() {
             stats.deferred_units = session.unit_counts();

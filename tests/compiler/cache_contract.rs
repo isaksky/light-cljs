@@ -9,7 +9,7 @@
 //! fixtures: every mix of hits and misses it tries emits byte for byte what
 //! the uncached compilation emits at `none`, `prepare` and `advanced`.
 use crate::temp_dir::TempDir;
-use light_cljs::analyzer::AnalysisOptions;
+use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning, CheckedArrays};
 use light_cljs::artifact_codec::{self, DecodeLimits, ManifestFields};
 use light_cljs::cache_policy::{self, CacheSettings};
 use light_cljs::compiler::{
@@ -17,6 +17,7 @@ use light_cljs::compiler::{
     analyze_namespace_entry_recorded_with_provider, analyze_namespace_entry_with_sources,
 };
 use light_cljs::dependency_manifest::DependencyManifest;
+use light_cljs::evaluator::ExecutionControl;
 use light_cljs::generated_names;
 use light_cljs::namespace_artifact::NamespaceArtifact;
 use light_cljs::source_provider::SourceProvider;
@@ -48,17 +49,39 @@ impl Input<'_> {
         host: &mut MacroHost,
         recorders: EntryRecorders<'_>,
     ) -> Result<light_cljs::Program, light_cljs::NamespaceCompileError> {
-        let options = AnalysisOptions::default();
-        let warnings = &mut Vec::new();
+        self.analyze_with(entry, host, AnalysisOptions::default(), recorders)
+            .map(|(program, _)| program)
+    }
+
+    /// [`Self::analyze`] under `options`, with the compilation's warnings.
+    fn analyze_with(
+        self,
+        entry: &str,
+        host: &mut MacroHost,
+        options: AnalysisOptions,
+        recorders: EntryRecorders<'_>,
+    ) -> Result<(light_cljs::Program, Vec<AnalysisWarning>), light_cljs::NamespaceCompileError>
+    {
+        let mut warnings = Vec::new();
         match self {
-            Input::Roots(roots) => {
-                analyze_namespace_entry_recorded(entry, roots, host, options, warnings, recorders)
-            }
+            Input::Roots(roots) => analyze_namespace_entry_recorded(
+                entry,
+                roots,
+                host,
+                options,
+                &mut warnings,
+                recorders,
+            ),
             Input::Provider(sources) => analyze_namespace_entry_recorded_with_provider(
-                entry, sources, host, options, warnings, recorders,
+                entry,
+                sources,
+                host,
+                options,
+                &mut warnings,
+                recorders,
             ),
         }
-        .map(|(program, _)| program)
+        .map(|(program, _)| (program, warnings))
     }
 }
 
@@ -80,7 +103,27 @@ pub(crate) struct Captured {
 /// Capture every namespace of `entry`'s compilation, with the build's cache
 /// on and `blockers` as its `--cache-blocker` set.
 pub(crate) fn capture(input: Input<'_>, entry: &str, blockers: &[&str]) -> Option<Captured> {
-    let mut host = MacroHost::new();
+    capture_with(input, entry, blockers, AnalysisOptions::default())
+}
+
+/// [`capture`] under `options`.
+fn capture_with(
+    input: Input<'_>,
+    entry: &str,
+    blockers: &[&str],
+    options: AnalysisOptions,
+) -> Option<Captured> {
+    capture_in(input, entry, blockers, options, &mut MacroHost::new())
+}
+
+/// [`capture_with`] in `host`.
+fn capture_in(
+    input: Input<'_>,
+    entry: &str,
+    blockers: &[&str],
+    options: AnalysisOptions,
+    host: &mut MacroHost,
+) -> Option<Captured> {
     let mut manifest = DependencyManifest::default();
     let mut artifacts = HashMap::new();
     let mut namespaces = Vec::new();
@@ -90,10 +133,11 @@ pub(crate) fn capture(input: Input<'_>, entry: &str, blockers: &[&str]) -> Optio
             artifacts.insert(capture.namespace, artifact);
         }
     };
-    let program = input
-        .analyze(
+    let (program, _) = input
+        .analyze_with(
             entry,
-            &mut host,
+            host,
+            options,
             EntryRecorders {
                 manifest: Some(&mut manifest),
                 capture: Some(&mut sink),
@@ -108,7 +152,7 @@ pub(crate) fn capture(input: Input<'_>, entry: &str, blockers: &[&str]) -> Optio
             enabled: true,
             blockers: blockers.iter().map(|name| name.to_string()).collect(),
         },
-        &cache_policy::source_metadata(&manifest, &host),
+        &cache_policy::source_metadata(&manifest, host),
         &cache_policy::non_cacheable_inputs(&manifest),
     );
     let eligible = namespaces
@@ -116,7 +160,7 @@ pub(crate) fn capture(input: Input<'_>, entry: &str, blockers: &[&str]) -> Optio
         .filter(|name| manifest.id(name).is_some_and(|id| policy.may_use_cache(id)))
         .cloned()
         .collect();
-    let metadata = cache_policy::source_metadata(&manifest, &host);
+    let metadata = cache_policy::source_metadata(&manifest, host);
     let decoded = artifacts
         .iter()
         .map(|(name, artifact)| {
@@ -177,24 +221,56 @@ pub(crate) fn compile_mixed(
     captured: &Captured,
     hits: &[&str],
 ) -> (light_cljs::Program, CompileStats) {
-    compile_mixed_from(input, entry, captured, &captured.artifacts, hits)
+    let (program, stats, _) =
+        compile_mixed_with(input, entry, captured, hits, AnalysisOptions::default());
+    (program, stats)
 }
 
-/// [`compile_mixed`] installing `artifacts`, decoded ones or the originals.
+/// The artifacts of `captured` that `hits` names and the policy lets use
+/// the cache.
+fn chosen<'a>(captured: &'a Captured, hits: &[&str]) -> HashMap<&'a str, &'a NamespaceArtifact> {
+    chosen_from(captured, &captured.artifacts, hits)
+}
+
+/// [`chosen`] of `artifacts`, decoded ones or the originals.
+fn chosen_from<'a>(
+    captured: &Captured,
+    artifacts: &'a HashMap<String, NamespaceArtifact>,
+    hits: &[&str],
+) -> HashMap<&'a str, &'a NamespaceArtifact> {
+    artifacts
+        .iter()
+        .filter(|(name, _)| hits.contains(&name.as_str()) && captured.eligible.contains(name))
+        .map(|(name, artifact)| (name.as_str(), artifact))
+        .collect()
+}
+
+/// [`compile_mixed`] under `options`, with the compilation's warnings.
+fn compile_mixed_with(
+    input: Input<'_>,
+    entry: &str,
+    captured: &Captured,
+    hits: &[&str],
+    options: AnalysisOptions,
+) -> (light_cljs::Program, CompileStats, Vec<AnalysisWarning>) {
+    compile_mixed_from(input, entry, captured, &captured.artifacts, hits, options)
+}
+
+/// [`compile_mixed_with`] installing `artifacts`, decoded ones or the
+/// originals.
 fn compile_mixed_from(
     input: Input<'_>,
     entry: &str,
     captured: &Captured,
     artifacts: &HashMap<String, NamespaceArtifact>,
     hits: &[&str],
-) -> (light_cljs::Program, CompileStats) {
-    let chosen: HashMap<&str, &NamespaceArtifact> = artifacts
-        .iter()
-        .filter(|(name, _)| hits.contains(&name.as_str()) && captured.eligible.contains(name))
-        .map(|(name, artifact)| (name.as_str(), artifact))
-        .collect();
-    let (program, stats) = compile_installing(input, entry, &chosen, true)
-        .unwrap_or_else(|error| panic!("mixed compilation with hits {hits:?} failed: {error}"));
+    options: AnalysisOptions,
+) -> (light_cljs::Program, CompileStats, Vec<AnalysisWarning>) {
+    let chosen = chosen_from(captured, artifacts, hits);
+    let mut host = MacroHost::new();
+    let (program, stats, warnings) =
+        compile_installing_with(input, entry, &chosen, &mut host, options, None)
+            .unwrap_or_else(|error| panic!("mixed compilation with hits {hits:?} failed: {error}"));
     let install = stats.install.clone().expect("install counts");
     assert_eq!(install.refused, Vec::new(), "refused artifacts");
     let mut expected = chosen
@@ -212,7 +288,7 @@ fn compile_mixed_from(
             "installed namespace {name} executed macro calls"
         );
     }
-    (program, stats)
+    (program, stats, warnings)
 }
 
 /// Compile `entry` in a fresh host, offering the artifacts of `chosen` for
@@ -239,6 +315,38 @@ fn compile_installing(
         },
     )?;
     Ok((program, stats))
+}
+
+/// [`compile_installing`] in `host`, under `options`, with names reserved,
+/// cancelled by `control`; with the compilation's warnings.
+#[allow(clippy::type_complexity)]
+fn compile_installing_with(
+    input: Input<'_>,
+    entry: &str,
+    chosen: &HashMap<&str, &NamespaceArtifact>,
+    host: &mut MacroHost,
+    options: AnalysisOptions,
+    control: Option<&ExecutionControl>,
+) -> Result<(light_cljs::Program, CompileStats, Vec<AnalysisWarning>), String> {
+    let lookup = |name: &str| chosen.get(name).copied();
+    let reservation =
+        generated_names::Reservation::of(chosen.values().map(|artifact| &artifact.names));
+    let mut stats = CompileStats::new();
+    let (program, warnings) = input
+        .analyze_with(
+            entry,
+            host,
+            options,
+            EntryRecorders {
+                stats: Some(&mut stats),
+                install: Some(&lookup),
+                reserve: Some(&reservation),
+                control,
+                ..EntryRecorders::default()
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    Ok((program, stats, warnings))
 }
 
 /// What a program emits at each of [`LEVELS`]: one script, and the chunk
@@ -285,25 +393,33 @@ fn mixes(captured: &Captured) -> Vec<Vec<&str>> {
 
 /// Check that installing captured artifacts for any mix [`mixes`] tries
 /// leaves the output of `entry`'s compilation byte for byte what the
-/// uncached compilation emits, at `none`, `prepare` and `advanced`.
-/// Byte-identical JavaScript runs as the uncached build does. A fixture
-/// whose uncached compilation fails has nothing to compare.
+/// uncached compilation emits, at `none`, `prepare` and `advanced`, with
+/// the same warnings in the same order. Byte-identical JavaScript runs as
+/// the uncached build does. A fixture whose uncached compilation fails has
+/// nothing to compare.
 ///
 /// The artifacts installed are the decoded ones ([`round_trip`]); with every
 /// eligible namespace a hit, the in-memory artifacts are installed as well,
 /// and both emit the same.
 pub(crate) fn check_mixed_input(input: Input<'_>, entry: &str) {
-    let Ok(program) = input.analyze(entry, &mut MacroHost::new(), EntryRecorders::default()) else {
+    let options = AnalysisOptions::default();
+    let Ok((program, uncached_warnings)) = input.analyze_with(
+        entry,
+        &mut MacroHost::new(),
+        options,
+        EntryRecorders::default(),
+    ) else {
         return;
     };
     let expected = outputs(&program);
     let captured = capture(input, entry, &[]).expect("the capturing compilation fails");
     for (index, hits) in mixes(&captured).into_iter().enumerate() {
-        let (program, _) = compile_mixed(input, entry, &captured, &hits);
+        let (program, _, warnings) = compile_mixed_with(input, entry, &captured, &hits, options);
+        assert_eq!(warnings, uncached_warnings, "{entry} with hits {hits:?}");
         let actual = outputs(&program);
         if index == 0 {
-            let (in_memory, _) =
-                compile_mixed_from(input, entry, &captured, &captured.originals, &hits);
+            let (in_memory, _, _) =
+                compile_mixed_from(input, entry, &captured, &captured.originals, &hits, options);
             assert!(
                 outputs(&in_memory) == actual,
                 "{entry}: installing decoded artifacts differs from installing them in memory"
@@ -1220,4 +1336,653 @@ fn invalid_generated_name_marks_are_refused() {
         assert!(generated_names::current().binding < 1 << 48);
         assert_eq!(run(&program), expected);
     }
+}
+
+/// Warnings in every namespace: a single-segment namespace's header warning,
+/// undeclared Vars in bodies, in a macro's expansion and in a compile-time
+/// helper, and calls across namespaces.
+const WARNED: [(&str, &str); 4] = [
+    ("util.cljs", "(ns util) (defn f [x] (+ x missing-a))"),
+    (
+        "lib/macros.cljs",
+        "(ns lib.macros) (defn helper [] (when false missing-h)) (defmacro uses-missing [] (helper) 'missing-m)",
+    ),
+    (
+        "lib/b.cljs",
+        "(ns lib.b (:require [util :as u] [lib.macros :refer [uses-missing]])) (defn g [] (u/f 1 2)) (def y missing-b) (def z (uses-missing))",
+    ),
+    (
+        "app/main.cljs",
+        "(ns app.main (:require [lib.b :as b] [util :as u] [lib.macros :refer [uses-missing]])) (js/console.log (u/f 1 2 3) (uses-missing) missing-c)",
+    ),
+];
+
+fn warning_mode() -> AnalysisOptions {
+    AnalysisOptions {
+        warning_mode: true,
+        ..AnalysisOptions::default()
+    }
+}
+
+/// Installed namespaces restore their warnings with their spans, and every
+/// mix of hits and misses reports the uncached build's warnings, in its
+/// order.
+#[test]
+fn warnings_of_installed_and_fresh_namespaces_keep_the_uncached_order() {
+    let sources = Sources::new(&WARNED);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    let options = warning_mode();
+    let (program, expected) = input
+        .analyze_with(
+            "app.main",
+            &mut MacroHost::new(),
+            options,
+            EntryRecorders::default(),
+        )
+        .unwrap();
+    let kinds = expected
+        .iter()
+        .map(|warning| warning.kind)
+        .collect::<BTreeSet<_>>();
+    for kind in ["single-segment-namespace", "undeclared-var"] {
+        assert!(kinds.contains(kind), "{kind} in {expected:#?}");
+    }
+    let warned = expected
+        .iter()
+        .map(|warning| warning.source_index)
+        .collect::<BTreeSet<_>>();
+    assert!(warned.len() >= 3, "{expected:#?}");
+    let captured = capture_with(input, "app.main", &[], options).unwrap();
+    assert_eq!(captured.artifacts.len(), 4);
+    let b = WARNED[2].1;
+    let at = |text: &str| {
+        let start = b.find(text).unwrap() as u32;
+        (start, start + text.len() as u32)
+    };
+    let recorded = captured.artifacts["lib.b"]
+        .diagnostics
+        .warnings
+        .iter()
+        .map(|warning| (warning.kind.as_str(), warning.span))
+        .collect::<Vec<_>>();
+    assert!(
+        recorded.contains(&("undeclared-var", at("missing-b"))),
+        "{recorded:?}"
+    );
+    let expected_output = none_output(&program);
+    for hits in every_mix(&captured) {
+        let (program, _, warnings) =
+            compile_mixed_with(input, "app.main", &captured, &hits, options);
+        assert_eq!(warnings, expected, "hits {hits:?}");
+        assert_eq!(none_output(&program), expected_output, "hits {hits:?}");
+    }
+}
+
+/// An artifact captured under `--warnings` is refused by a strict build,
+/// which analyzes the namespace and fails as the uncached strict build
+/// does; an artifact without warnings is refused all the same, by its
+/// policy.
+#[test]
+fn an_artifact_captured_in_warning_mode_is_not_installed_in_a_strict_build() {
+    let sources = Sources::new(&[
+        ("lib/clean.cljs", "(ns lib.clean) (defn f [] 1)"),
+        ("lib/a.cljs", "(ns lib.a) (defn f [] undeclared-thing)"),
+        (
+            "app/clean.cljs",
+            "(ns app.clean (:require [lib.clean :as c])) (js/console.log (c/f))",
+        ),
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [lib.a :as a])) (js/console.log (a/f))",
+        ),
+    ]);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    let strict = AnalysisOptions::default();
+    let captured = capture_with(input, "app.main", &[], warning_mode()).unwrap();
+    let uncached = input
+        .analyze_with(
+            "app.main",
+            &mut MacroHost::new(),
+            strict,
+            EntryRecorders::default(),
+        )
+        .map(|_| ())
+        .unwrap_err()
+        .to_string();
+    assert!(uncached.contains("undeclared-thing"), "{uncached}");
+    let hits = chosen(&captured, &["lib.a", "app.main"]);
+    let mixed = compile_installing_with(
+        input,
+        "app.main",
+        &hits,
+        &mut MacroHost::new(),
+        strict,
+        None,
+    )
+    .map(|_| ())
+    .unwrap_err();
+    assert_eq!(mixed, uncached);
+    // In warning mode the same artifacts install, with their warning.
+    let (_, stats, warnings) = compile_installing_with(
+        input,
+        "app.main",
+        &hits,
+        &mut MacroHost::new(),
+        warning_mode(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(stats.install.unwrap().installed, ["lib.a", "app.main"]);
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.message.contains("undeclared-thing")),
+        "{warnings:?}"
+    );
+    // A clean namespace is refused by its policy alone.
+    let captured = capture_with(input, "app.clean", &[], warning_mode()).unwrap();
+    let hits = chosen(&captured, &["lib.clean"]);
+    let (program, stats, _) = compile_installing_with(
+        input,
+        "app.clean",
+        &hits,
+        &mut MacroHost::new(),
+        strict,
+        None,
+    )
+    .unwrap();
+    let install = stats.install.unwrap();
+    assert_eq!(install.installed, Vec::<String>::new());
+    assert_eq!(install.refused.len(), 1);
+    assert!(
+        install.refused[0].1.contains("warning_mode: true"),
+        "{:?}",
+        install.refused
+    );
+    assert_eq!(run(&program), "1\n");
+}
+
+/// Nested expansions of a macro whose helper is a compile-time unit.
+const EXPANDED: [(&str, &str); 3] = [
+    (
+        "lib/macros.cljs",
+        "(ns lib.macros) (defn wrap [x] (list 'inc x)) (defmacro twice [x] (list '* 2 (wrap x)))",
+    ),
+    (
+        "lib/a.cljs",
+        "(ns lib.a (:require [lib.macros :refer [twice]])) (def a (twice 1)) (def b (twice (twice 2))) (defn f [x] (when x (twice x)))",
+    ),
+    (
+        "app/main.cljs",
+        "(ns app.main (:require [lib.a :as a] [lib.macros :refer [twice]])) (js/console.log a/a a/b (a/f 3) (twice 5))",
+    ),
+];
+
+/// The outcome of compiling `entry` with `limits`, installing `chosen`:
+/// the output at `none` and the warnings, or the error.
+fn limited(
+    input: Input<'_>,
+    entry: &str,
+    chosen: &HashMap<&str, &NamespaceArtifact>,
+    limits: light_cljs::MacroLimits,
+) -> Result<String, String> {
+    let mut host = MacroHost::new();
+    host.limits = limits;
+    compile_installing_with(
+        input,
+        entry,
+        chosen,
+        &mut host,
+        AnalysisOptions::default(),
+        None,
+    )
+    .map(|(program, _, warnings)| format!("{}\n{warnings:?}", none_output(&program)))
+}
+
+/// A macro whose expansion is a sequence of a lazy shape: exporting it
+/// charges the node budget for each cell it walks, about twice the nodes
+/// the expansion has.
+const WIDE: [(&str, &str); 3] = [
+    (
+        "lib/macros.cljs",
+        "(ns lib.macros) (defmacro wide [n] (cons 'do (repeat n 1)))",
+    ),
+    (
+        "lib/a.cljs",
+        "(ns lib.a (:require [lib.macros :refer [wide]])) (def a (wide 50))",
+    ),
+    (
+        "app/main.cljs",
+        "(ns app.main (:require [lib.a :as a] [lib.macros :refer [wide]])) (js/console.log a/a (wide 3))",
+    ),
+];
+
+/// Lowering `--macro-expansions`, `--macro-nodes` or the expansion depth
+/// below what cached namespaces recorded fails exactly as the uncached
+/// build does: a hit the remaining budget cannot admit is bypassed and its
+/// analysis fails, and an admitted hit charges its work once, so a later
+/// miss fails where it fails uncached. Every mix of hits is tried at each
+/// threshold the artifacts' accounting implies, and either side of it,
+/// for nested expansions and for a wide one whose export costs more than
+/// the nodes it generates.
+#[test]
+fn lowered_macro_limits_fail_as_the_uncached_build_does() {
+    let sources = Sources::new(&EXPANDED);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    let captured = check_lowered_limits(input, "4 14 8 12\n");
+    let a = captured.artifacts["lib.a"].accounting.unwrap();
+    assert!(a.expansions >= 4, "{a:?}");
+    assert!(a.macro_depth >= 2, "{a:?}");
+    let sources = Sources::new(&WIDE);
+    let roots = sources.roots();
+    let captured = check_lowered_limits(Input::Roots(&roots), "1 1\n");
+    let a = captured.artifacts["lib.a"].accounting.unwrap();
+    assert!(a.node_peak >= a.generated_nodes + 40, "{a:?}");
+    let sources = Sources::new(&WIDE_LAZY);
+    let roots = sources.roots();
+    check_lowered_limits(Input::Roots(&roots), "1\n");
+}
+
+/// A lazy expansion whose realization, while it is exported, expands
+/// another macro, which encodes its own forms in the middle of the outer
+/// encoding.
+const WIDE_LAZY: [(&str, &str); 4] = [
+    (
+        "lib/inner.cljs",
+        "(ns lib.inner) (defmacro one [] (list 'do 1))",
+    ),
+    (
+        "lib/macros.cljs",
+        "(ns lib.macros (:require [lib.inner])) (defmacro wide [] (cons 'do (map (fn [_] (macroexpand '(lib.inner/one))) (range 200))))",
+    ),
+    (
+        "lib/a.cljs",
+        "(ns lib.a (:require [lib.macros :refer [wide]])) (def a (wide))",
+    ),
+    (
+        "app/main.cljs",
+        "(ns app.main (:require [lib.a :as a])) (js/console.log a/a)",
+    ),
+];
+
+/// A core macro that does not read its environment gets none when the
+/// environment would fit in half the remaining node budget, and the whole
+/// environment otherwise, whose list-heavy namespace metadata then costs
+/// its conversion more: a namespace needs the budget that elision did.
+#[test]
+fn elided_list_environments_preserve_node_limits() {
+    let zeros = vec!["0"; 1000].join(" ");
+    let a = format!("(ns lib.a {{:padding ({zeros})}}) (def a (when true 1))");
+    let files = [
+        ("lib/b.cljs", "(ns lib.b) (def b 2)"),
+        ("lib/a.cljs", a.as_str()),
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [lib.b :as b] [lib.a :as a])) (js/console.log a/a b/b)",
+        ),
+    ];
+    let sources = Sources::new(&files);
+    let roots = sources.roots();
+    let captured = check_lowered_limits(Input::Roots(&roots), "1 2\n");
+    let a = captured.artifacts["lib.a"].accounting.unwrap();
+    assert!(a.node_peak >= 2000, "{a:?}");
+}
+
+/// The analysis options with each static and runtime array-check mode.
+fn array_policies() -> Vec<AnalysisOptions> {
+    let mut policies = Vec::new();
+    for checked_arrays in [false, true] {
+        for array_checks in [
+            CheckedArrays::Off,
+            CheckedArrays::Warn,
+            CheckedArrays::Error,
+        ] {
+            policies.push(AnalysisOptions {
+                checked_arrays,
+                array_checks,
+                ..AnalysisOptions::default()
+            });
+        }
+    }
+    policies
+}
+
+/// The array-check modes change the IR and the warnings, so an artifact
+/// captured under one is refused, before anything changes, in a build
+/// under another, which then compiles as uncached; under its own it
+/// installs and compiles as uncached too.
+#[test]
+fn array_analysis_policies_are_not_interchangeable() {
+    let sources = Sources::new(&[
+        (
+            "lib/a.cljs",
+            "(ns lib.a) (defn f [] (aget #js {} \"a\")) (defn g [x] (aget x 0))",
+        ),
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [lib.a :as a])) (js/console.log (a/g #js [7]))",
+        ),
+    ]);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    let policies = array_policies();
+    let none = HashMap::new();
+    let outcome = |chosen: &HashMap<&str, &NamespaceArtifact>, options| {
+        compile_installing_with(
+            input,
+            "app.main",
+            chosen,
+            &mut MacroHost::new(),
+            options,
+            None,
+        )
+        .map(|(program, stats, warnings)| (outputs(&program), warnings, stats.install.unwrap()))
+    };
+    let uncached = policies
+        .iter()
+        .map(|&options| {
+            let (outputs, warnings, _) = outcome(&none, options).unwrap();
+            (outputs, warnings)
+        })
+        .collect::<Vec<_>>();
+    // The modes change the output or the warnings: each runtime mode, and
+    // the static diagnostics without one (a runtime mode enables them too).
+    let distinct = [0, 1, 2, 3].map(|i| &uncached[i]);
+    for (i, a) in distinct.iter().enumerate() {
+        for b in &distinct[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+    for &captured_under in &policies {
+        let captured = capture_with(input, "app.main", &[], captured_under).unwrap();
+        let hits = chosen(&captured, &["lib.a", "app.main"]);
+        assert_eq!(hits.len(), 2);
+        for (&options, expected) in policies.iter().zip(&uncached) {
+            let (outputs, warnings, install) = outcome(&hits, options).unwrap();
+            assert_eq!(
+                &(outputs, warnings),
+                expected,
+                "{captured_under:?} in {options:?}"
+            );
+            if options == captured_under {
+                assert_eq!(install.installed, ["lib.a", "app.main"]);
+                assert!(install.refused.is_empty());
+            } else {
+                assert!(
+                    install.installed.is_empty(),
+                    "{captured_under:?} in {options:?}"
+                );
+                assert_eq!(install.refused.len(), 2);
+                assert!(
+                    install
+                        .refused
+                        .iter()
+                        .all(|(_, reason)| reason.starts_with("it was compiled under")),
+                    "{:?}",
+                    install.refused
+                );
+            }
+        }
+    }
+}
+
+/// [`lowered_macro_limits_fail_as_the_uncached_build_does`] for the
+/// fixture of `input`, whose uncached build prints `printed`: the captured
+/// artifacts.
+fn check_lowered_limits(input: Input<'_>, printed: &str) -> Captured {
+    let none = HashMap::new();
+    let defaults = light_cljs::MacroLimits::default();
+    let fresh = limited(input, "app.main", &none, defaults).unwrap();
+    assert_eq!(execute(fresh.rsplit_once('\n').unwrap().0), printed);
+    let captured = capture(input, "app.main", &[]).unwrap();
+    assert_eq!(captured.eligible.len(), captured.namespaces.len());
+    assert_eq!(captured.artifacts.len(), captured.namespaces.len());
+    let accounting = |name: &str| captured.artifacts[name].accounting.unwrap();
+    let a = accounting("lib.a");
+    assert!(
+        a.node_peak >= a.generated_nodes && a.generated_nodes > 0,
+        "{a:?}"
+    );
+    // Each namespace's recorded need on top of what the namespaces before
+    // it used, and one either side.
+    let mut expansions = BTreeSet::from([0, 1]);
+    let mut nodes = BTreeSet::from([0, 1]);
+    let (mut expansions_before, mut nodes_before) = (0, 0);
+    for name in &captured.namespaces {
+        let work = accounting(name);
+        let need = expansions_before + work.expansions;
+        expansions.extend([need.saturating_sub(1), need, need + 1]);
+        for need in [
+            nodes_before + work.node_peak,
+            nodes_before + work.generated_nodes,
+        ] {
+            nodes.extend([need.saturating_sub(1), need, need + 1]);
+        }
+        expansions_before += work.expansions;
+        nodes_before += work.generated_nodes;
+    }
+    let depth = captured
+        .artifacts
+        .values()
+        .map(|artifact| artifact.accounting.unwrap().macro_depth)
+        .max()
+        .unwrap() as usize;
+    let mut limits = Vec::new();
+    limits.extend(expansions.iter().map(|&n| light_cljs::MacroLimits {
+        expansions: n as usize,
+        ..defaults
+    }));
+    limits.extend(nodes.iter().map(|&n| light_cljs::MacroLimits {
+        generated_nodes: n as usize,
+        ..defaults
+    }));
+    limits.extend((0..=depth + 1).map(|depth| light_cljs::MacroLimits {
+        expansion_depth: depth,
+        ..defaults
+    }));
+    let mut failed = 0;
+    for limits in limits {
+        let expected = limited(input, "app.main", &none, limits);
+        failed += usize::from(expected.is_err());
+        for hits in every_mix(&captured) {
+            let chosen = chosen(&captured, &hits);
+            assert_eq!(
+                limited(input, "app.main", &chosen, limits),
+                expected,
+                "{limits:?} with hits {hits:?}"
+            );
+        }
+    }
+    assert!(failed > 3, "{failed}");
+    // An artifact without accounting is refused before installation.
+    let mut unaccounted = captured.artifacts["lib.a"].clone();
+    unaccounted.accounting = None;
+    let chosen = HashMap::from([("lib.a", &unaccounted)]);
+    let (_, stats, _) = compile_installing_with(
+        input,
+        "app.main",
+        &chosen,
+        &mut MacroHost::new(),
+        AnalysisOptions::default(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        stats.install.unwrap().refused,
+        [(
+            "lib.a".to_owned(),
+            "it records no accounting of its work".to_owned()
+        )]
+    );
+    captured
+}
+
+/// A compiler data reader's input and result each take at most the node
+/// limit itself, not what is left of it, so a namespace whose reader took
+/// more nodes than a lowered `--macro-nodes` is bypassed and fails as the
+/// uncached build does, though the nodes it generated would fit.
+#[test]
+fn a_data_readers_conversions_need_the_node_limit_they_took() {
+    let items = (0..60).map(|i| i.to_string()).collect::<Vec<_>>();
+    let a = format!("(ns lib.a) (def a #test/count [{}])", items.join(" "));
+    let files = [
+        ("lib/a.cljs", a.as_str()),
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [lib.a :as a])) (js/console.log a/a)",
+        ),
+    ];
+    let sources = Sources::new(&files);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    let host = |limits| {
+        let mut host = MacroHost::new();
+        host.register_compiler_data_reader(
+            light_cljs::compiler_data::Name::new(Some("test"), "count"),
+            "(fn [v] (count v))",
+        )
+        .unwrap();
+        host.limits = limits;
+        host
+    };
+    let defaults = light_cljs::MacroLimits::default();
+    let captured = capture_in(
+        input,
+        "app.main",
+        &[],
+        AnalysisOptions::default(),
+        &mut host(defaults),
+    )
+    .unwrap();
+    assert!(captured.eligible.contains(&"lib.a".to_owned()));
+    let a = captured.artifacts["lib.a"].accounting.unwrap();
+    assert!(a.conversion_peak > 60 && a.node_peak < 60, "{a:?}");
+    let mut failed = 0;
+    for nodes in [a.conversion_peak - 1, a.conversion_peak] {
+        let limits = light_cljs::MacroLimits {
+            generated_nodes: nodes as usize,
+            ..defaults
+        };
+        let outcome = |chosen: &HashMap<&str, &NamespaceArtifact>| {
+            compile_installing_with(
+                input,
+                "app.main",
+                chosen,
+                &mut host(limits),
+                AnalysisOptions::default(),
+                None,
+            )
+            .map(|(program, stats, _)| (none_output(&program), stats.install.unwrap()))
+        };
+        let uncached = outcome(&HashMap::new());
+        let cached = outcome(&chosen(&captured, &["lib.a"]));
+        match uncached {
+            Err(error) => {
+                failed += 1;
+                assert_eq!(cached.unwrap_err(), error);
+            }
+            Ok((output, _)) => {
+                let (cached_output, install) = cached.unwrap();
+                assert_eq!(cached_output, output);
+                assert_eq!(install.installed, ["lib.a"]);
+                assert_eq!(execute(&output), "60\n");
+            }
+        }
+    }
+    assert_eq!(failed, 1);
+}
+
+/// Cancelling the compilation while a namespace installs stops it there:
+/// nothing after it is installed, or analyzed in its place, and the
+/// cancelled compilation captures no further artifact. The cancellation
+/// arrives after each of the checks installation makes in turn, those
+/// while it converts and declares the namespace included, until it arrives
+/// only once the namespace is installed.
+#[test]
+fn cancellation_during_installation_stops_it() {
+    let sources = Sources::new(&EXPANDED);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    let captured = capture(input, "app.main", &[]).unwrap();
+    let reservation = generated_names::Reservation::of(
+        captured.artifacts.values().map(|artifact| &artifact.names),
+    );
+    let mut stopped = 0;
+    for passed in 0.. {
+        let control = light_cljs::evaluator::Evaluator::new(Default::default())
+            .unwrap()
+            .control();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let lookup = |name: &str| {
+            asked.borrow_mut().push(name.to_owned());
+            if name == "lib.a" {
+                control.cancel_after_checks(passed);
+            }
+            (name != "lib.macros").then(|| &captured.artifacts[name])
+        };
+        let mut artifacts = Vec::new();
+        let mut sink = |capture: light_cljs::namespace_artifact::NamespaceCapture| {
+            artifacts.push((capture.namespace, capture.artifact.is_ok()));
+        };
+        let error = input
+            .analyze(
+                "app.main",
+                &mut MacroHost::new(),
+                EntryRecorders {
+                    install: Some(&lookup),
+                    reserve: Some(&reservation),
+                    capture: Some(&mut sink),
+                    control: Some(&control),
+                    ..EntryRecorders::default()
+                },
+            )
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(artifacts, [("lib.macros".to_owned(), true)], "{passed}");
+        assert_eq!(*asked.borrow(), ["lib.macros", "lib.a"], "{passed}");
+        if error.contains("installing lib.a: JavaScript session cancelled") {
+            stopped += 1;
+            continue;
+        }
+        // Past installation's checks, the compilation stops at the next
+        // namespace, with lib.a installed: neither failed nor analyzed.
+        assert!(
+            error.contains("compiling app.main: JavaScript session cancelled"),
+            "{passed}: {error}"
+        );
+        break;
+    }
+    // Before it begins, while it converts, and before and after it declares.
+    assert!(stopped >= 4, "{stopped}");
+    let control = light_cljs::evaluator::Evaluator::new(Default::default())
+        .unwrap()
+        .control();
+    control.cancel();
+    // A compilation cancelled before it begins stops at its first namespace.
+    let mut artifacts = Vec::new();
+    let mut sink = |capture: light_cljs::namespace_artifact::NamespaceCapture| {
+        artifacts.push(capture.namespace);
+    };
+    let error = input
+        .analyze(
+            "app.main",
+            &mut MacroHost::new(),
+            EntryRecorders {
+                capture: Some(&mut sink),
+                control: Some(&control),
+                ..EntryRecorders::default()
+            },
+        )
+        .map(|_| ())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("compiling lib.macros: JavaScript session cancelled"),
+        "{error}"
+    );
+    assert!(artifacts.is_empty());
 }

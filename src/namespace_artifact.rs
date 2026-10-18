@@ -96,8 +96,8 @@ pub struct NamespaceArtifact {
     /// The names the namespace's analysis generated, which installation
     /// keeps every other allocation of its compilation from producing.
     pub names: GeneratedNames,
-    /// Logical work the artifact charged (light-cljs-318); capture leaves
-    /// this empty.
+    /// The logical work the namespace charged. An artifact without it is
+    /// never installed.
     pub accounting: Option<Accounting>,
 }
 
@@ -117,6 +117,30 @@ pub struct Header {
     pub entry: bool,
     /// The namespace's body: the root `finish` runs for this source.
     pub root: ExprRef,
+    /// The analysis options it was compiled under, which decide its
+    /// warnings and errors and its array checks.
+    pub policy: AnalysisPolicy,
+}
+
+/// The analysis options that change what a namespace's analysis reports or
+/// produces: `--warnings` and the checked-array modes. An artifact installs
+/// only into a compilation with the same policy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AnalysisPolicy {
+    /// Undeclared Vars and conflicting arities are warnings, not errors.
+    pub warning_mode: bool,
+    /// The static array operand diagnostics.
+    pub checked_arrays: bool,
+    pub array_checks: ArrayChecks,
+}
+
+/// `:checked-arrays` runtime validation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ArrayChecks {
+    #[default]
+    Off,
+    Warn,
+    Error,
 }
 
 /// Earlier namespaces and their globals, by stable identity.
@@ -741,9 +765,37 @@ impl Counters {
     }
 }
 
-/// Reserved for light-cljs-318.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Accounting {}
+/// The logical work a namespace's analysis, its deferred units included,
+/// charged against its compilation's budgets (`MacroLimits` in
+/// src/macro_host.rs). Installation charges the counts once, and admits the
+/// artifact only where the remaining budget and the depth limits admit
+/// what it recorded; otherwise the namespace is analyzed, and ordinary
+/// compilation enforces the limits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Accounting {
+    /// Macro expansions, the count `--macro-expansions` limits.
+    pub expansions: u64,
+    /// Generated nodes, the count `--macro-nodes` limits.
+    pub generated_nodes: u64,
+    /// The most generated nodes, from the namespace's start, that its work
+    /// needed the budget to leave room for: what it generated and, at each
+    /// expansion, what had been generated before it plus the largest datum
+    /// it converted, since a conversion takes at most the remaining budget.
+    /// At least `generated_nodes`.
+    pub node_peak: u64,
+    /// The expansion nesting its macro calls needed: an expansion depth
+    /// limit of at least this admits them.
+    pub macro_depth: u32,
+    /// The analysis nesting that the code its macros generated needed.
+    pub analysis_depth: u32,
+    /// The nesting of deferred-unit analyses it needed, which the expansion
+    /// depth limit also bounds.
+    pub unit_depth: u32,
+    /// The largest conversion of a compiler data reader's input or result,
+    /// which the node limit bounds by itself: a limit of at least this
+    /// admits them.
+    pub conversion_peak: u64,
+}
 
 /// Reader data, owned.
 #[derive(Clone, Debug, PartialEq)]
@@ -1249,8 +1301,76 @@ impl NamespaceArtifact {
         for expansion in &self.diagnostics.expansions {
             source(expansion.source)?;
         }
+        if let Some(accounting) = &self.accounting
+            && accounting.node_peak < accounting.generated_nodes
+        {
+            return Err("its node peak is below the nodes it generated".into());
+        }
+        self.bounds()
+    }
+
+    /// The structural bounds an artifact is held to besides its references:
+    /// its tables fit 32-bit references, its data nest at most
+    /// [`Self::DATUM_DEPTH`] deep, and its warnings lie in its own source.
+    fn bounds(&self) -> Result<(), String> {
+        let ir = &self.ir;
+        for (what, len) in [
+            ("expressions", ir.exprs.len()),
+            ("locals", ir.locals.len()),
+            ("recur targets", ir.recur_targets.len()),
+            ("strings", ir.strings.len()),
+            ("names", ir.named_literals.len()),
+            ("host paths", ir.js_globals.len()),
+            ("globals", self.declarations.globals.len()),
+            ("lazy targets", self.declarations.lazy_targets.len()),
+            ("units", self.units.units.len()),
+            ("external globals", self.references.globals.len()),
+            ("namespaces", self.references.namespaces.len()),
+        ] {
+            if len > u32::MAX as usize {
+                return Err(format!("its {len} {what} exceed 32-bit references"));
+            }
+        }
+        let declarations = &self.declarations;
+        for datum in declarations
+            .namespace_symbol
+            .iter()
+            .chain(&declarations.namespace_doc)
+            .chain(declarations.macros.iter().map(|m| &m.metadata))
+        {
+            // Iteratively, so the check itself holds any depth.
+            let mut pending = vec![(datum, 1)];
+            while let Some((datum, depth)) = pending.pop() {
+                if depth > Self::DATUM_DEPTH {
+                    return Err(format!("its data nest deeper than {}", Self::DATUM_DEPTH));
+                }
+                pending.extend(datum.metadata.as_deref().map(|m| (m, depth + 1)));
+                match &datum.kind {
+                    DatumKind::Collection { children, .. } => {
+                        pending.extend(children.iter().map(|child| (child, depth + 1)));
+                    }
+                    DatumKind::CompilerLiteral { payload, .. } => {
+                        pending.push((payload, depth + 1));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for warning in &self.diagnostics.warnings {
+            let (start, end) = warning.span;
+            if warning.source != SourceRef::Own {
+                return Err("a warning is about another source".into());
+            }
+            if start > end || end > self.header.source_length {
+                return Err(format!("warning span {start}..{end} is outside its source"));
+            }
+        }
         Ok(())
     }
+
+    /// How deep an artifact's data may nest: well past what the reader
+    /// (128) and the form bridges (128) produce.
+    pub const DATUM_DEPTH: usize = 1024;
 
     /// An estimate of the bytes the artifact owns, for `--stats`.
     pub fn approximate_bytes(&self) -> usize {
@@ -1327,6 +1447,7 @@ impl NamespaceArtifact {
             h.path, h.source_length, h.cljc, h.entry, h.root.0
         )
         .unwrap();
+        writeln!(out, "policy {:?}", h.policy).unwrap();
         if let Some(name) = &h.source_name {
             writeln!(out, "source-name {name}").unwrap();
         }
@@ -1514,15 +1635,20 @@ impl NamespaceArtifact {
             .collect::<Vec<_>>();
         writeln!(out, "gensym ..{} {gensyms:?}", self.names.gensym_to).unwrap();
         writeln!(out, "[accounting]").unwrap();
-        writeln!(
-            out,
-            "{}",
-            if self.accounting.is_some() {
-                "recorded"
-            } else {
-                "not recorded"
-            }
-        )
+        match &self.accounting {
+            Some(a) => writeln!(
+                out,
+                "expansions {} nodes {} peak {} conversion {} depths macro {} analysis {} unit {}",
+                a.expansions,
+                a.generated_nodes,
+                a.node_peak,
+                a.conversion_peak,
+                a.macro_depth,
+                a.analysis_depth,
+                a.unit_depth
+            ),
+            None => writeln!(out, "not recorded"),
+        }
         .unwrap();
         out
     }

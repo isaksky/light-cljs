@@ -102,6 +102,46 @@ pub(crate) struct CaptureInput<'a> {
     /// prepared.
     pub names_from: crate::generated_names::Counters,
     pub requires: &'a [String],
+    /// The compilation's analysis options, which decide the namespace's
+    /// diagnostics.
+    pub options: ir::AnalysisOptions,
+    /// Where the namespace's logical work began, before it was prepared.
+    pub work: crate::macro_host::WorkStart,
+    /// The control that cancels the compilation, if any.
+    pub control: Option<&'a crate::evaluator::ExecutionControl>,
+}
+
+/// The analysis options an artifact records and installation matches.
+pub(crate) fn analysis_policy(options: ir::AnalysisOptions) -> AnalysisPolicy {
+    AnalysisPolicy {
+        warning_mode: options.warning_mode,
+        checked_arrays: options.checked_arrays,
+        array_checks: match options.array_checks {
+            ir::CheckedArrays::Off => ArrayChecks::Off,
+            ir::CheckedArrays::Warn => ArrayChecks::Warn,
+            ir::CheckedArrays::Error => ArrayChecks::Error,
+        },
+    }
+}
+
+/// The logical work of the namespace whose work began at `start`
+/// ([`crate::macro_host::WorkMarks`]), or None if part of it could not be
+/// measured.
+fn accounting(macro_host: &MacroHost, start: crate::macro_host::WorkStart) -> Option<Accounting> {
+    let work = &macro_host.work;
+    if work.unmeasured.get() {
+        return None;
+    }
+    let nodes = macro_host.generated_nodes.get();
+    Some(Accounting {
+        expansions: (macro_host.expansions.get() - start.expansions) as u64,
+        generated_nodes: (nodes - start.generated_nodes) as u64,
+        node_peak: (work.node_peak.get().max(nodes) - start.generated_nodes) as u64,
+        macro_depth: work.macro_depth.get() as u32,
+        analysis_depth: work.analysis_depth.get() as u32,
+        unit_depth: work.unit_depth.get() as u32,
+        conversion_peak: work.conversion_peak.get() as u64,
+    })
 }
 
 /// The analysis that just completed, as the namespace analysis holds it.
@@ -126,6 +166,11 @@ pub(crate) fn finish(
         .as_ref()
         .map(|s| s.take_captured())
         .unwrap_or_default();
+    // A cancelled or failed session leaves no artifact, even of an analysis
+    // that returned: what its macros saw may be what the failure left.
+    if let Some(reason) = macro_host.halted(input.control) {
+        return Err(format!("the compile-time session stopped: {reason}"));
+    }
     let program = completed.program;
     if program
         .namespaces
@@ -272,6 +317,7 @@ pub(crate) fn finish(
             source_name: input.resolution.source_name.clone(),
             entry: input.entry,
             root,
+            policy: analysis_policy(input.options),
         },
         declarations,
         ir,
@@ -295,7 +341,7 @@ pub(crate) fn finish(
                 gensyms,
             }
         },
-        accounting: None,
+        accounting: accounting(macro_host, input.work),
     };
     debug_assert_eq!(artifact.validate(), Ok(()));
     Ok(artifact)
@@ -1285,6 +1331,9 @@ mod tests {
                 aliases: &[],
                 requires: &[],
                 names_from: Default::default(),
+                options: Default::default(),
+                work: host.begin_namespace_work(),
+                control: None,
             },
             &host,
         );

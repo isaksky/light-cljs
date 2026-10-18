@@ -978,15 +978,10 @@ impl CompilationSession {
                 }
                 AnalysisState::Unstarted => (),
             }
-            if self.catalog.borrow().stack.len()
-                >= unit
-                    .host
-                    .as_ref()
-                    .expect("unstarted unit host")
-                    .limits
-                    .expansion_depth
-                    .min(64)
-            {
+            let depth = self.catalog.borrow().stack.len();
+            let host = unit.host.as_ref().expect("unstarted unit host");
+            crate::macro_host::WorkMarks::note(&host.work.unit_depth, depth + 1);
+            if depth >= host.limits.expansion_depth.min(64) {
                 let message =
                     "compiler macro expansion depth limit exceeded in deferred units".to_owned();
                 unit.state = AnalysisState::Failed(message.clone(), None);
