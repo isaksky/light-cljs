@@ -324,23 +324,7 @@ pub(crate) fn program_hooks<'a>(
 /// `false`: `^:dev/once` (load once, never reload) or `^:dev/always` (reload
 /// with every load).
 pub(crate) fn namespace_flag(symbol: &crate::compiler_data::Datum, name: &str) -> bool {
-    use crate::compiler_data::{DatumKind, Name};
-    use crate::parser::CollectionKind;
-    let Some(metadata) = symbol.metadata() else {
-        return false;
-    };
-    let DatumKind::Collection {
-        kind: CollectionKind::Map,
-        children,
-    } = metadata.kind()
-    else {
-        return false;
-    };
-    let flag = Name::new(Some("dev"), name);
-    children.as_chunks::<2>().0.iter().any(|[key, value]| {
-        matches!(key.kind(), DatumKind::Keyword(keyword) if *keyword == flag)
-            && !matches!(value.kind(), DatumKind::Nil | DatumKind::Boolean(false))
-    })
+    crate::cache_policy::metadata_flag(symbol, "dev", name)
 }
 
 /// The entry namespace: the last one the program loads statically, which

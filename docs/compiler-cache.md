@@ -273,6 +273,39 @@ must participate in watching as well as restart validation. Preserve the
 existing watch session's state semantics when recompiling; always compile does
 not promise a fresh macro heap on each edit.
 
+*As built (light-cljs-314):* the evaluator is
+`light_cljs::cache_policy::evaluate`. It takes the build's `CacheSettings`
+(whether the persistent cache is on, and the `--cache-blocker` names), the
+`NamespaceMetadata` of each namespace's `ns` form, the `light.build` inputs
+that cannot be keyed, and the build's `DependencyManifest`. No artifact is an
+input. `source_metadata` reads the flags from the `ns` symbols the macro host
+keeps for the current sources: `:light-cljs/no-cache` and `:dev/always` in
+the form's metadata or attribute map, set by any value but `nil` and `false`.
+No flag reaches it yet; the `--compile` integration (light-cljs-322) adds
+`--cache-dir` and `--cache-blocker` and reports its `describe` lines.
+
+The returned `CachePolicy` keeps every reason that applies to a namespace and
+reports the first in this order: cache off, `^:light-cljs/no-cache`,
+`^:dev/always`, blocked, non-cacheable input. These implementation choices
+settle what the table above leaves open:
+
+- **Propagation follows every compilation edge.** Always-compile, blockers
+  and non-cacheable inputs reach the manifest's `reverse_closure`: runtime,
+  macro-provider, helper, observed and coarse edges, never `LAZY` ones.
+  Because a coarse namespace depends on every earlier one, a blocker early in
+  load order bypasses every later namespace that ran a source macro.
+- **A non-cacheable input propagates like a blocker.** A consumer's key
+  covers its dependencies' declared inputs, and an input without a stable
+  identity has no fingerprint to cover.
+- **Each propagated reason keeps a shortest path** from the namespace that
+  set it, through one breadth-first walk of the reverse rows per reason, with
+  one predecessor per namespace.
+- **The always-compile set is computed even with the cache off**, because
+  watch recompiles it on every triggered step whether or not a disk cache
+  exists.
+- **A blocker the build does not load blocks nothing.** Warning about it
+  belongs to the flag's integration.
+
 ## Conservative keys and invalidation
 
 Each namespace manifest includes:
