@@ -4522,53 +4522,67 @@ grows from 71,891 to 74,835 bytes, and that test's bound by the same 2,944.
 light-cljs-247 builds the map entries a map's host iteration yields without
 the vector type where a program builds no vector, keeps sorted-map search
 only where sorted maps are built, and lets structural equality probe the
-seq kinds' stores, UUIDs and Vars only where a program builds them
+seq kinds' stores, UUIDs and Vars only where a program builds them. Its
+second commit makes the array map's public constructor a hook (as the hash
+set's), keeps the types' statics only where a program names one or reads
+an empty literal, and moves the set, transient and sorted-map branches of
+`lookup` and the symbol branch of structural equality into wrappers their
+builders install
 ([advanced-optimization.md](../docs/advanced-optimization.md#phase-2-builtin-types-map-entries)).
 Bytes at `advanced` (gzip -9 after the slash where given), "before" master
-`4716053`:
+`4716053`, "first commit" `66a18ea`:
 
-| Program | Before | After |
-| --- | ---: | ---: |
-| `(js/console.log (if (js/Math.random) {:k :a} nil))` | 10,264 / 3,586 | 7,606 / 2,769 |
-| `(js/console.log {})` | 8,979 | 6,342 |
-| `(js/console.log [1 2 3])` | 5,246 | 4,636 |
-| `(js/console.log (sorted-map :a 1))` | 38,381 | 38,199 |
-| `(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (m {:k :a}))` | 53,631 | 53,279 |
-| examples/features as chunks | 74,835 | 74,587 |
+| Program | Before | First commit | After |
+| --- | ---: | ---: | ---: |
+| `(js/console.log (if (js/Math.random) {:k :a} nil))` | 10,264 / 3,586 | 7,606 / 2,769 | 6,942 / 2,567 |
+| `(js/console.log {})` | 8,979 | 6,342 | 5,784 |
+| `(js/console.log [1 2 3])` | 5,246 | 4,636 | 4,526 |
+| `(js/console.log #{1 2})` | | 4,496 | 4,248 |
+| `(js/console.log (sorted-map :a 1))` | 38,381 | 38,199 | 37,088 |
+| `(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (m {:k :a}))` | 53,631 | 53,279 | 53,114 |
 
-The pellet's target for the first program was 7,000 bytes (7,350 with the
-user's 5% tolerance); it is 256 bytes over the tolerance. What it keeps
-beyond is generic (see the design doc's "Left for later").
+The pellet's target for the first program was 7,000 bytes; it is 6,942.
 
 Size ratchet, at `advanced`; every other fixture is unchanged. The runtime
-that `none` and `prepare` outputs embed grew 3,500 bytes (`console-log-sum`
-451,616 to 455,116): the lean definitions of map entries, their members and
-the new hooks, with comments. Those ceilings rose to the new sizes rounded
-up to the next 1,000, and the advanced ceilings of the fixtures that shrank
-by a step dropped to their new sizes rounded up:
+that `none` and `prepare` outputs embed grew 5,425 bytes over both commits
+(`console-log-sum` 451,616 to 457,041): the lean definitions of map
+entries, their members, the public constructors' hooks, the statics'
+condition and the new hooks and wrappers, with comments. Those ceilings rose
+to the new sizes rounded up to the next 1,000, and the advanced ceilings of
+the fixtures that shrank by a step dropped to their new sizes rounded up:
 
 | Fixture | Before | After | Ceiling before | Ceiling after |
 | --- | ---: | ---: | ---: | ---: |
-| map-only | 10,193 | 7,535 | 11,000 | 7,600 |
-| map-printed | 14,651 | 13,089 | 15,000 | 14,000 |
-| event-maps | 34,366 | 32,566 | 35,000 | 33,000 |
-| keyword-lookups | 34,132 | 33,690 | 35,000 | 34,000 |
-| constant-keys | 46,671 | 46,362 | 47,000 | 47,000 |
-| constant-lookups | 4,242 | 3,632 | 4,300 | 3,700 |
-| keyword-case | 3,862 | 3,252 | 3,900 | 3,300 |
-| keyword-only | 3,789 | 3,179 | 3,800 | 3,200 |
-| vector-only | 5,273 | 4,663 | 5,300 | 4,700 |
-| set-only | 5,506 | 4,533 | 5,600 | 4,600 |
-| atom-str | 2,745 | 2,594 | 2,800 | 2,600 |
-| closed-params | 14,003 | 13,378 | 15,000 | 14,000 |
-| features | 72,946 | 72,692 | 73,000 | 73,000 |
-| features-direct | 72,554 | 72,300 | 73,000 | 73,000 |
-| seq-pipeline | 29,040 | 28,964 | 30,000 | 30,000 |
-| callbacks | 41,242 | 41,184 | 42,000 | 42,000 |
+| map-only | 10,193 | 6,871 | 11,000 | 6,900 |
+| map-printed | 14,651 | 12,529 | 15,000 | 13,000 |
+| event-maps | 34,366 | 31,962 | 35,000 | 32,000 |
+| keyword-lookups | 34,132 | 33,063 | 35,000 | 34,000 |
+| constant-keys | 46,671 | 45,183 | 47,000 | 46,000 |
+| constant-lookups | 4,242 | 3,328 | 4,300 | 3,400 |
+| constant-literals | 25,089 | 24,993 | 26,000 | 25,000 |
+| keyword-case | 3,862 | 2,948 | 3,900 | 3,000 |
+| keyword-only | 3,789 | 2,875 | 3,800 | 2,900 |
+| vector-only | 5,273 | 4,553 | 5,300 | 4,600 |
+| vector-printed | 10,616 | 10,500 | 11,000 | 11,000 |
+| set-only | 5,506 | 4,285 | 5,600 | 4,300 |
+| atom-str | 2,745 | 2,518 | 2,800 | 2,600 |
+| rest-fn | 10,455 | 10,379 | 11,000 | 11,000 |
+| closed-params | 14,003 | 13,054 | 15,000 | 14,000 |
+| eight-records | 32,242 | 31,933 | 33,000 | 32,000 |
+| mapv-count | 35,129 | 34,999 | 36,000 | 35,000 |
+| protocol-params | 46,094 | 45,879 | 47,000 | 46,000 |
+| features | 72,946 | 72,633 | 73,000 | 73,000 |
+| features-direct | 72,554 | 72,241 | 73,000 | 73,000 |
+| seq-pipeline | 29,040 | 28,868 | 30,000 | 29,000 |
+| callbacks | 41,242 | 40,857 | 42,000 | 41,000 |
 
-Equality and lookup did not slow down: a Node loop over 20,000 `=` of
-keywords, vectors, lists and map entries, `get` on a hash map and an array
-map, and 2,000 `hash` of lists, compiled at `advanced` with both binaries
-and run twice each (load 6.4), gave the same times within 5% except
-keyword `=` (1.42–1.48 to 1.22–1.25 ms) and list `hash` (0.86–1.00 to
-0.76 ms), which got faster.
+Equality and lookup did not slow down. First commit: a Node loop over
+20,000 `=` of keywords, vectors, lists and map entries, `get` on a hash map
+and an array map, and 2,000 `hash` of lists, compiled at `advanced` with
+both binaries and run twice each (load 6.4), gave the same times within 5%
+except keyword `=` (1.42–1.48 to 1.22–1.25 ms) and list `hash` (0.86–1.00
+to 0.76 ms), which got faster. Second commit, against the first: 200,000
+`get` of an array map, a hash map, a set and a sorted map, 200,000 `=` of
+symbols and 100,000 of array maps, at `none` and `advanced`, run twice each
+(load 12–13), gave the same times within 5% (at `none`, `get` of a sorted
+map 86.1–86.9 to 85.4–86.0 ms, of an array map 71.6–73.9 to 74.0–74.4 ms).

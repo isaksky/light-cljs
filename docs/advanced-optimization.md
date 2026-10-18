@@ -1790,24 +1790,53 @@ search.
   `queues`, `lazyValues`, and so `privateStore`) through
   `kindHooks.comparedSeq`, which their builders install, and UUIDs and
   Vars compare through `kindHooks.equivNamed`, after the other kinds.
+- **Array map constructor.** As the hash set's in light-cljs-231, the array
+  map type's constructor binding, which builders instantiate through
+  `makeMap`, calls `typeHooks.arrayMap`, which `publicArrayMap.install`
+  fills in with `publicArrayMap`, the public constructor's body (its maps
+  keep the positional array and count they received as `arr` and `cnt`).
+  The emitter keeps `publicArrayMap` (a `NameUse::Keep` root) wherever the
+  program names `PersistentArrayMap` other than by an empty map literal,
+  which reads `PersistentArrayMapValue.EMPTY` directly; `constantMapFromArray`
+  (literal maps of keys that may lower to one value) calls it itself. The
+  contract below lists what this leaves unsupported.
+- **Statics.** The types' `.statics` effects (`EMPTY` of the collection
+  types, `HASHMAP_THRESHOLD`, `PersistentHashMap.fromArray` and
+  `fromArrays`) wait for `typeStatics`, which an `Advanced` slice roots
+  where reachable code names one of `runtime_slice::TYPE_STATICS` as it
+  names upstream members (`rta`, light-cljs-238) or reads an empty literal
+  (`Emitter::empty_collection`). The reader keeps the queue's `EMPTY`, which
+  it reads, through its own `when:`. Upstream these are compiler-owned
+  names, which Closure removes where nothing reads them.
+- **Other kinds' branches.** `lookup` is the map, vector and string
+  branches; the set, transient and sorted-map branches are wrappers
+  (`lookup.sets`, `lookup.transients`, `lookup.tree`) that their builders'
+  effects install in the order the branches had, before the hash kinds'
+  wrappers (`lookup.trie`, `lookup.members`). The last two call the kind
+  hooks `lookupTransient` and `lookupTree`, as before, so that in a chunked
+  build the startup chunk, which declares `lookup` and so holds its
+  wrappers, keeps only the dispatch. Structural equality's symbol branch is
+  the wrapper `structuralEqualPair.symbols` of the symbol builders; no other
+  branch takes a symbol, so it comes first.
 - **Tests.** `builtin_types` runs every host-facing member, generic
   operation and the printer on map entries in a program that builds no
-  vector at every level, and checks which form small programs keep;
-  `runtime_manifest` checks `unless:` parsing, validation, reachability and
-  signatures, and lists the new kind hooks.
-- **Measured.** At `Advanced`, against master `4716053`:
-  `(js/console.log (if (js/Math.random) {:k :a} nil))` drops from 10,264 to
-  7,606 bytes, short of the pellet's 7,000 (7,350 with the user's 5%
-  tolerance); `map-only` from 10,193 to 7,535, `keyword-only` from 3,789 to
-  3,179 and no ratchet fixture grows. The shared runtime grows by 3,500
-  bytes (0.8%). Per-fixture sizes are in `benchmarks/compiler.md`.
-- **Left for later.** What the map program keeps above 7,000 is generic: the
-  public `PersistentArrayMap` constructor and the public slots its maps
-  have (about 500 bytes; the hash set's constructor became a hook with a
-  contract entry in light-cljs-231), the types' `EMPTY` statics, which only
-  empty literals and code naming them read (about 120), the set and
-  transient branches of `lookup` and equality (about 150), and the map
-  entries' own members (about 1.1 KB), which stay with the type.
+  vector at every level, and checks which form small programs keep; it
+  runs the public array map constructor, literal maps of colliding keys,
+  the statics and the other kinds' branches at every level, and checks
+  that the map program keeps none of them; `runtime_manifest` checks
+  `unless:` parsing, validation, reachability and signatures, and lists the
+  new kind hooks, wrappers and statics conditions; `runtime_slicing` checks
+  that `[1 2 3]` keeps no statics and naming one or an empty literal does.
+- **Measured.** At `Advanced` (raw / gzip -9), against master `4716053`:
+  `(js/console.log (if (js/Math.random) {:k :a} nil))` drops from 10,264 /
+  3,586 to 6,942 / 2,567 bytes, under the pellet's 7,000; `map-only` from
+  10,193 to 6,871, `keyword-only` from 3,789 to 2,875 and no ratchet fixture
+  grows. The shared runtime grows by 5,425 bytes (1.2%). Per-fixture sizes
+  are in `benchmarks/compiler.md`.
+- **Left for later.** The map program still keeps the map entries' own
+  members (about 1.1 KB), which stay with the type, and the public slots'
+  reads in `ownMap` and `mapCount` (about 80 bytes), which tree maps and the
+  public constructors' maps need.
 
 #### Phase 2 builtin types, program types
 
@@ -3682,7 +3711,16 @@ upstream states that advanced mode is unsafe for certain patterns.
   the program names it (light-cljs-231). Calling it as a value reached
   otherwise, `(type s)` or `(.-constructor s)` of a set, where the program
   never names `PersistentHashSet` is unsupported and throws a `TypeError`
-  (`typeHooks.hashSet is not a function` with `pseudo_names`).
+  (`typeHooks.hashSet is not a function` with `pseudo_names`). Likewise the
+  constructor of array maps is the public `PersistentArrayMap` only where
+  the program names it or builds a literal map of keys that may lower to
+  one value (light-cljs-247); calling `(type m)` of an array map otherwise
+  throws `typeHooks.arrayMap is not a function`.
+- The runtime's types have their statics (`EMPTY`, `HASHMAP_THRESHOLD`,
+  `fromArray`, `fromArrays`: `TYPE_STATICS` in `src/runtime_slice.rs`) only
+  where reachable code names one of them as it names upstream members, or
+  reads an empty literal (light-cljs-247). Reading one through a name
+  computed at run time otherwise gets `undefined`, which is unsupported.
 - Everything else must produce results identical to `optimize: false`.
 
 ## Verification

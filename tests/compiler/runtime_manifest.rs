@@ -280,13 +280,22 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 /// `Loadable.type` since light-cljs-272.) `mapEntry.lean`, `entryPrototype`,
 /// `MapEntryType.lean` and `mapEntry.equiv` build map entries and give them
 /// their members and equality where no vector can be built (`unless:
-/// makeVector`, light-cljs-247), which the export list builds.
+/// makeVector`, light-cljs-247), which the export list builds. `typeStatics`
+/// is the condition of the types' `.statics` effects, which only an
+/// `Advanced` program that names one of `TYPE_STATICS` or reads an empty
+/// literal roots (light-cljs-247); the reader keeps the queue's.
 const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "entryPrototype",
     "MapEntryType.lean",
     "mapEntry.equiv",
     "mapEntry.lean",
     "upstreamMembers",
+    "typeStatics",
+    "ListValue.statics",
+    "PersistentHashSetValue.statics",
+    "PersistentVectorValue.statics",
+    "PersistentArrayMapValue.statics",
+    "PersistentHashMapValue.statics",
 ];
 
 /// The string-literal protocol method keys of `text` (`"IHash/-hash"`), each
@@ -455,6 +464,15 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
                     None => vec![user],
                 })
                 .collect()
+        } else if unit.name.ends_with(".statics") {
+            // A type's statics, which only code naming them or an empty
+            // literal reads (`typeStatics`, light-cljs-247), and the
+            // reader the queue's.
+            let mut readers = vec![manifest.unit_of("typeStatics").unwrap()];
+            if unit.name == "PersistentQueueValue.statics" {
+                readers.push(manifest.unit_of("reader").unwrap());
+            }
+            readers
         } else if let Some(wrapped) = wrapped_binding(body(id)) {
             // A unit wrapping an operation (`seq = behindProtocol(seq, ...)`)
             // is needed wherever the operation is.
@@ -553,9 +571,11 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // behind them, and giving two view types and their `first` a kind
     // (light-cljs-237), and map entries as vectors with the vectors'
     // members, their equality where no vector can be built, the sorted entry
-    // search and the sequential, UUID and Var tests of structural equality
-    // (light-cljs-247).
-    assert_eq!(checked, 200);
+    // search and the sequential, UUID and Var tests of structural equality,
+    // the install of the array map's public constructor, the wrappers of
+    // `lookup` for sets, transients and sorted maps, the symbols' wrapper of structural equality and the statics
+    // of six types (light-cljs-247).
+    assert_eq!(checked, 211);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1186,12 +1206,13 @@ fn kind_hooks_skip_records() {
     for effect in ["recordMethods.equiv", "protocolHooks.builtin"] {
         waits_for(effect, "equalPair");
     }
-    // Every unit keeping `structuralEqualPair` keeps `equalPair`.
-    for requirer in manifest
-        .units
-        .iter()
-        .filter(|other| other.requires.contains(&"structuralEqualPair"))
-    {
+    // Every unit keeping `structuralEqualPair` keeps `equalPair`, but for
+    // the effects waiting for it, which wrap it (`structuralEqualPair.symbols`).
+    let structural = unit("structuralEqualPair");
+    for requirer in manifest.units.iter().filter(|other| {
+        other.requires.contains(&"structuralEqualPair")
+            && !manifest.conditions(unit(other.name)).contains(&structural)
+    }) {
         assert!(
             requirer.name == "equalPair" || requirer.requires.contains(&"equalPair"),
             "`{}` keeps `structuralEqualPair` without `equalPair`",
@@ -1441,6 +1462,9 @@ fn units_assigning_a_binding_share_its_unit() {
             "globalHierarchy <- getGlobalHierarchy",
             "identityCounter <- hash",
             "lookup <- lookup.members",
+            "lookup <- lookup.sets",
+            "lookup <- lookup.transients",
+            "lookup <- lookup.tree",
             "lookup <- lookup.trie",
             "macroexpandServices <- expansionService",
             "macroexpandServices <- setMacroexpandServices",
@@ -1476,6 +1500,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "setDeclaration <- extendType",
             "setDeclaration <- protocol",
             "setDeclaration <- protocolMethod",
+            "structuralEqualPair <- structuralEqualPair.symbols",
             "tapDraining <- drainTaps",
             "tapDraining <- tapGreater",
             "tapLimit <- configureHostHooks",

@@ -65,7 +65,9 @@
 //! would remove once unread goes when only dropped methods read it. Emission
 //! gives a type its static `getBasis` only when reachable code names it, and
 //! the runtime's types their upstream fields and methods
-//! ([`crate::runtime_slice::UPSTREAM_MEMBERS`]) only when it names one.
+//! ([`crate::runtime_slice::UPSTREAM_MEMBERS`]) only when it names one, and
+//! their statics ([`crate::runtime_slice::TYPE_STATICS`]) only when it names
+//! one or reads an empty literal.
 //! The runtime installs each core protocol method of records where an
 //! operation dispatching it is kept; where reachable code names the slot of
 //! one ([`crate::runtime_slice::RECORD_METHODS`]) in the ways it can name a
@@ -133,6 +135,9 @@ pub(crate) struct TypeAnalysis {
     /// The first reachable expression that names an upstream member of the
     /// runtime's types.
     members: Option<ExprId>,
+    /// The first reachable expression that names a static of the runtime's
+    /// types.
+    statics: Option<ExprId>,
     /// The units to root for the record methods whose slots reachable code
     /// names, each with the first expression naming one.
     record_methods: Vec<(&'static str, ExprId)>,
@@ -365,6 +370,17 @@ pub(crate) fn analyze(
                 })
         })
         .map(ExprId);
+    let statics = program
+        .exprs
+        .iter()
+        .zip(&live)
+        .position(|(expr, live)| {
+            *live
+                && names_property(program, &expr.kind, |name| {
+                    crate::runtime_slice::TYPE_STATICS.contains(&name)
+                })
+        })
+        .map(ExprId);
     let record_methods = named_record_methods(program, &live);
     let declarations = named_protocol_declarations(program, &live);
     let loadable_members = named_loadable_members(program, &live);
@@ -379,6 +395,7 @@ pub(crate) fn analyze(
         discarded,
         basis,
         members,
+        statics,
         record_methods,
         declarations,
         loadable_members,
@@ -774,6 +791,13 @@ impl TypeAnalysis {
     /// which only then can read one.
     pub(crate) fn names_upstream_member(&self) -> Option<ExprId> {
         self.members
+    }
+
+    /// The first reachable expression that names a static of the runtime's
+    /// types ([`crate::runtime_slice::TYPE_STATICS`]), which only then can
+    /// read one.
+    pub(crate) fn names_type_static(&self) -> Option<ExprId> {
+        self.statics
     }
 
     /// The units an `Advanced` slice of a program with records roots so that

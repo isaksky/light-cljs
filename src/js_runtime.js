@@ -369,8 +369,16 @@
     const value = queueFromArray([]);
     return constructorSlots(value, {count: cnt, front, rear}, metadata, cachedHash);
   }
-  //@unit PersistentArrayMapValue requires: constructorSlots, entryHashing, makeMap
+  //@unit PersistentArrayMapValue requires: typeHooks
+  // The array map type, which builders instantiate with `makeMap`. Called, it
+  // is `publicArrayMap`, which a program naming `PersistentArrayMap` keeps.
   function PersistentArrayMapValue(metadata, cnt, array, cachedHash) {
+    return typeHooks.arrayMap(metadata, cnt, array, cachedHash);
+  }
+  //@unit publicArrayMap requires: constructorSlots, entryHashing, makeMap, PersistentArrayMapValue
+  // The public constructor, whose maps keep the positional array and count it
+  // received as their `arr` and `cnt`.
+  function publicArrayMap(metadata, cnt, array, cachedHash) {
     const entries = [];
     // Positional arrays retain duplicate keys and their first-match lookup.
     for (let i = 0; i < array.length; i += 2) entries.push(Object.freeze({get key() { return array[i]; }, get value() { return array[i + 1]; }, get hash() { return entryHashing.hash(array[i]); }}));
@@ -1807,6 +1815,28 @@
   //@unit PersistentHashMapValue.brand effect: PersistentHashMapValue requires: mapKinds, maps,
   //@ trieBrand
   trieBrand(maps, mapKinds);
+  //@unit lookup.sets effect: makeSet, treeSetConstructor when: lookup requires: kindHooks, lookup,
+  //@ sets
+  // The branches of `lookup` for sets, transients and sorted maps, kept only
+  // where a program builds them (light-cljs-247). They wrap it in the order
+  // its branches had, before the hash kinds' wrappers that follow; the last
+  // two call the hooks their kinds' builders install, so that a chunk
+  // building neither keeps no more than these.
+  lookup = (operation => (value, key, notFound) => {
+    const members = sets.get(value);
+    if (!members) return operation(value, key, notFound);
+    const index = kindHooks.entryIndex(value, members, key);
+    return index < 0 ? notFound : members[index].key;
+  })(lookup);
+  //@unit lookup.transients effect: makeTransient when: lookup requires: kindHooks, lookup,
+  //@ transients
+  lookup = (operation => (value, key, notFound) => transients.has(value) ? kindHooks.lookupTransient(value, key, notFound) : operation(value, key, notFound))(lookup);
+  //@unit lookup.tree effect: treeMapConstructor when: lookup requires: kindHooks, lookup, maps,
+  //@ publicCollectionSlots
+  lookup = (operation => (value, key, notFound) => {
+    const slots = publicCollectionSlots.get(value);
+    return maps.has(value) && slots && "tree" in slots ? kindHooks.lookupTree(value, slots.tree, key, notFound) : operation(value, key, notFound);
+  })(lookup);
   //@unit lookup.trie effect: PersistentHashMapValue when: lookup requires: lookup, maps, trieEntry
   // The branches of generic operations for a hash map's trie, kept only where
   // a program builds hash maps.
@@ -2219,12 +2249,12 @@
     return makeMap(PersistentHashMapValue, hashTrie(entries), "hash-map");
   }
 
-  //@unit constantMapFromArray requires: PersistentArrayMapValue
+  //@unit constantMapFromArray requires: publicArrayMap
   // The analyzer has checked distinct source constants. Character/string and
   // numeric reader categories can lower to equal JS values, so literal storage
   // retains positional entries and the array map's first-match lookup.
   function constantMapFromArray(pairs) {
-    return PersistentArrayMapValue(null, pairs.length / 2, pairs, null);
+    return publicArrayMap(null, pairs.length / 2, pairs, null);
   }
 
   //@unit constantSetFromArray requires: constantMapFromArray, publicHashSet
@@ -3229,17 +3259,9 @@
     return method ? method.call(value, ...arguments) : operation.apply(null, arguments);
   }, "name", {value: operation.name}))(nth);
 
-  //@unit lookup requires: kindHooks, mapEntries, maps, publicCollectionSlots, sets, transients,
-  //@ vectors
+  //@unit lookup requires: kindHooks, mapEntries, maps, vectors
+  // The map, vector and string branches; the other kinds' wrap it.
   function lookup(value, key, notFound) {
-    const slots = publicCollectionSlots.get(value);
-    if (maps.has(value) && slots && "tree" in slots) return kindHooks.lookupTree(value, slots.tree, key, notFound);
-    if (transients.has(value)) return kindHooks.lookupTransient(value, key, notFound);
-    const members = sets.get(value);
-    if (members) {
-      const index = kindHooks.entryIndex(value, members, key);
-      return index < 0 ? notFound : members[index].key;
-    }
     const entries = maps.get(value);
     if (entries) {
       const index = kindHooks.entryIndex(value, entries, key);
@@ -3256,7 +3278,8 @@
   }
   //@unit treeMapConstructor.lookup effect: treeMapConstructor when: lookup requires: kindHooks,
   //@ sortedComparators
-  // Maps with a tree slot (see `treeMapConstructor.seq`).
+  // Maps with a tree slot (see `treeMapConstructor.seq`), which `lookup.tree`
+  // calls.
   kindHooks.lookupTree = (value, tree, key, notFound) => {
     const comparator = sortedComparators.get(value);
     for (let node = tree; node != null;) {
@@ -3625,18 +3648,13 @@
     return structuralEqualPair(left, right);
   }
   //@unit structuralEqualPair requires: comparedSequential, keywords, kindHooks, maps, recordTypes,
-  //@ sets, symbols
+  //@ sets
   function structuralEqualPair(left, right) {
     if (left instanceof Date) return right instanceof Date && left.valueOf() === right.valueOf();
     const leftKeyword = keywords.get(left);
     if (leftKeyword) {
       const rightKeyword = keywords.get(right);
       return !!rightKeyword && leftKeyword.spelling === rightKeyword.spelling;
-    }
-    const leftSymbol = symbols.get(left);
-    if (leftSymbol) {
-      const rightSymbol = symbols.get(right);
-      return !!rightSymbol && leftSymbol.spelling === rightSymbol.spelling;
     }
     if (recordTypes.get(left) !== recordTypes.get(right)) return false;
     if (maps.has(left)) return kindHooks.equivMap(left, right);
@@ -3646,6 +3664,17 @@
     // NaN stays unequal, and foreign objects use identity only.
     return kindHooks.equivNamed?.(left, right) ?? false;
   }
+  //@unit structuralEqualPair.symbols effect: SymbolValue, symbol when: structuralEqualPair
+  //@ requires: structuralEqualPair, symbols
+  // Symbols compare their spelling, kept only where a program builds them
+  // (light-cljs-247). No other kind's branch takes a symbol, so it may come
+  // first.
+  structuralEqualPair = (operation => (left, right) => {
+    const leftSymbol = symbols.get(left);
+    if (!leftSymbol) return operation(left, right);
+    const rightSymbol = symbols.get(right);
+    return !!rightSymbol && leftSymbol.spelling === rightSymbol.spelling;
+  })(structuralEqualPair);
   //@unit uuidValue.equiv effect: uuidValue, makeVar when: structuralEqualPair requires: equalPair,
   //@ kindHooks, uuids, vars
   // A UUID or a Var, or undefined for another value.
@@ -6017,6 +6046,9 @@
   //@unit publicHashSet.install effect: publicHashSet when: PersistentHashSetValue requires: publicHashSet,
   //@ typeHooks
   typeHooks.hashSet = publicHashSet;
+  //@unit publicArrayMap.install effect: publicArrayMap when: PersistentArrayMapValue requires: publicArrayMap,
+  //@ typeHooks
+  typeHooks.arrayMap = publicArrayMap;
   //@unit ifnInvokeEntry requires: typeHooks
   // This is the callable object ABI used by IFn and metadata wrappers.
   // The last method receives twenty values followed by a sequence tail.
@@ -8506,22 +8538,31 @@
   });
   //@unit realized effect requires: cells, coreMethod, delays, lazyValues, pendingValue, truth
   const realized = coreMethod("IPending/-realized?", [1], value => cells.has(value) ? cells.get(value).realized === true : !truth((delays.get(value) || lazyValues.get(value)).thunk), pendingValue);
-  //@unit ListValue.statics effect: ListValue requires: emptyList, ListValue
+  //@unit typeStatics
+  // The statics of the runtime's types (`EMPTY`, `HASHMAP_THRESHOLD`,
+  // `fromArray`, `fromArrays`), compiler-owned names upstream, which Closure
+  // removes where nothing reads them: their `.statics` effects wait for this
+  // unit, which an `Advanced` program keeps only where it names one of them
+  // (`TYPE_STATICS` in src/runtime_slice.rs) or reads an empty literal's
+  // `EMPTY` (light-cljs-247). The reader reads the queue's, which waits for it
+  // too.
+  const typeStatics = null;
+  //@unit ListValue.statics effect: ListValue when: typeStatics requires: emptyList, ListValue
   ListValue.EMPTY = emptyList;
-  //@unit PersistentHashSetValue.statics effect: PersistentHashSetValue requires: makeSet,
+  //@unit PersistentHashSetValue.statics effect: PersistentHashSetValue when: typeStatics requires: makeSet,
   //@ PersistentHashSetValue
   PersistentHashSetValue.EMPTY = makeSet(PersistentHashSetValue, [], "array-map");
-  //@unit PersistentQueueValue.statics effect: PersistentQueueValue requires: PersistentQueueValue,
-  //@ queueFromArray
+  //@unit PersistentQueueValue.statics effect: PersistentQueueValue when: reader, typeStatics
+  //@ requires: PersistentQueueValue, queueFromArray
   PersistentQueueValue.EMPTY = queueFromArray([]);
-  //@unit PersistentVectorValue.statics effect: PersistentVectorValue requires: makeVector,
+  //@unit PersistentVectorValue.statics effect: PersistentVectorValue when: typeStatics requires: makeVector,
   //@ PersistentVectorValue
   PersistentVectorValue.EMPTY = makeVector([]);
-  //@unit PersistentArrayMapValue.statics effect: PersistentArrayMapValue requires: makeMap,
-  //@ PersistentArrayMapValue
+  //@unit PersistentArrayMapValue.statics effect: PersistentArrayMapValue when: typeStatics
+  //@ requires: makeMap, PersistentArrayMapValue
   PersistentArrayMapValue.EMPTY = makeMap(PersistentArrayMapValue, [], "array-map");
   PersistentArrayMapValue.HASHMAP_THRESHOLD = 8;
-  //@unit PersistentHashMapValue.statics effect: PersistentHashMapValue requires: aclone,
+  //@unit PersistentHashMapValue.statics effect: PersistentHashMapValue when: typeStatics requires: aclone,
   //@ displayStr, hashTrie, makeMap, PersistentHashMapValue, putEntry
   PersistentHashMapValue.EMPTY = makeMap(PersistentHashMapValue, hashTrie([]), "hash-map");
   PersistentHashMapValue.fromArray = (array, noClone) => {

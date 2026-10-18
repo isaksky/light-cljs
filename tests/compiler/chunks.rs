@@ -2414,14 +2414,25 @@ fn the_features_runtime_splits_by_signature() {
     let lower = prepare_application(&lower, ApplicationOptions::new(OptimizationLevel::Advanced))
         .retention();
     let manifest = light_cljs::runtime_manifest::RuntimeManifest::embedded();
-    let wrappers = ["lookup.trie", "lookup.members"].map(|name| manifest.unit_named(name).unwrap());
-    for wrapper in wrappers {
+    // The wrappers of `lookup` and of structural equality (light-cljs-247),
+    // which assign the binding startup declares.
+    let wrappers = [
+        ("lookup", "lookup.trie"),
+        ("lookup", "lookup.members"),
+        ("lookup", "lookup.sets"),
+        ("lookup", "lookup.transients"),
+        ("lookup", "lookup.tree"),
+        ("structuralEqualPair", "structuralEqualPair.symbols"),
+    ]
+    .map(|(binding, name)| {
+        let wrapper = manifest.unit_named(name).unwrap();
         assert!(
             manifest
-                .sharers(manifest.unit_of("lookup").unwrap())
+                .sharers(manifest.unit_of(binding).unwrap())
                 .contains(&wrapper)
         );
-    }
+        wrapper
+    });
     let mut expected = lower.units.iter().map(|unit| unit.name).collect::<Vec<_>>();
     expected.push("Loadable");
     for (unit, reached) in manifest.reachable(wrappers).into_iter().enumerate() {

@@ -91,6 +91,10 @@ pub(crate) struct Application<'a> {
     /// method of the runtime's types (`crate::rta`), where the slice roots
     /// the unit their `.fields` effects wait for.
     pub upstream_member: Option<ExprId>,
+    /// At `Advanced`: the first expression that names a static of the
+    /// runtime's types (`crate::rta`), where the slice roots the unit their
+    /// `.statics` effects wait for.
+    pub type_static: Option<ExprId>,
     /// At `Advanced`: the units that install the record methods whose slots
     /// the program names (`crate::rta`), each with the first expression
     /// naming one, which the slice of a program with records roots.
@@ -1751,6 +1755,15 @@ impl<'a> Emitter<'a> {
                 NameUse::Keep,
             );
         }
+        // Likewise the statics of the runtime's types, which an empty literal
+        // reads too (`empty_collection`).
+        if let Some(site) = application.type_static {
+            self.runtime_root(
+                RuntimeName::direct(crate::runtime_slice::TYPE_STATICS_UNIT, None),
+                Some(site),
+                NameUse::Keep,
+            );
+        }
     }
 
     /// Write a runtime read (`rt.keyword`, `rt.core.add`; `rt$keyword`,
@@ -1800,14 +1813,16 @@ impl<'a> Emitter<'a> {
             self.runtime_root(name, site, used);
             return name.to_string();
         }
-        if (name.binding, name.member) == (CORE_HUB, Some("PersistentHashSet")) {
-            // The set type's public constructor, which only a program naming
-            // the type calls (light-cljs-231).
-            self.runtime_root(
-                RuntimeName::direct("publicHashSet", None),
-                site,
-                NameUse::Keep,
-            );
+        let public = match (name.binding, name.member) {
+            (CORE_HUB, Some("PersistentHashSet")) => Some("publicHashSet"),
+            (CORE_HUB, Some("PersistentArrayMap")) => Some("publicArrayMap"),
+            _ => None,
+        };
+        if let Some(public) = public {
+            // The type's public constructor, which only a program naming the
+            // type calls (light-cljs-231 for sets, light-cljs-247 for array
+            // maps).
+            self.runtime_root(RuntimeName::direct(public, None), site, NameUse::Keep);
         }
         let resolved = match (name.binding, name.member) {
             (CORE_HUB, Some(member)) => match core_reference(member) {
@@ -2363,15 +2378,29 @@ impl<'a> Emitter<'a> {
     /// (`rt$PersistentVectorValue.EMPTY` at `Advanced`), which an empty
     /// literal reads at every level instead of allocating.
     fn empty_collection(&mut self, empty: EmptyCollection) {
-        if empty == EmptyCollection::Set
-            && self.replaced_core.is_some()
-            && !self.replaced(empty.core_type())
+        let binding = match empty {
+            EmptyCollection::Set => Some("PersistentHashSetValue"),
+            EmptyCollection::Map => Some("PersistentArrayMapValue"),
+            _ => None,
+        };
+        if let Some(binding) =
+            binding.filter(|_| self.replaced_core.is_some() && !self.replaced(empty.core_type()))
         {
-            // The type's binding: `#{}` does not name the public constructor
-            // (`publicHashSet`).
-            self.rt(RuntimeName::direct("PersistentHashSetValue", None));
+            // The type's binding: `#{}` and `{}` do not name the public
+            // constructor (`publicHashSet`, `publicArrayMap`).
+            self.rt(RuntimeName::direct(binding, None));
         } else {
             self.rt(RuntimeName::core(empty.core_type()));
+        }
+        if self.replaced_core.is_some() {
+            // `EMPTY` is a static, which its type has only where the slice
+            // keeps `typeStatics` (light-cljs-247).
+            let site = self.site;
+            self.runtime_root(
+                RuntimeName::direct(crate::runtime_slice::TYPE_STATICS_UNIT, None),
+                site,
+                NameUse::Keep,
+            );
         }
         self.output.push_str(".EMPTY");
     }

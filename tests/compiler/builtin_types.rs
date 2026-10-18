@@ -1320,6 +1320,88 @@ fn map_entries_keep_no_vector_type_where_no_vector_is_built() {
 }
 
 #[test]
+fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
+    // light-cljs-247: builders instantiate the array map type, whose call is
+    // `publicArrayMap` only where the program names `PersistentArrayMap`
+    // (`typeHooks.arrayMap`); the types' statics wait for `typeStatics`,
+    // which naming one or an empty literal keeps; and the branches of
+    // `lookup` for sets, transients and sorted maps and of structural
+    // equality for symbols are wrappers that their builders' effects install.
+    let target = "(js/console.log (if (js/Math.random) {:k :a} nil))";
+    assert_keeps_none(
+        target,
+        &[
+            "publicArrayMap",
+            "publicArrayMap.install",
+            "constructorSlots",
+            "typeStatics",
+            "PersistentArrayMapValue.statics",
+            "lookup.sets",
+            "lookup.transients",
+            "lookup.tree",
+            "structuralEqualPair.symbols",
+        ],
+    );
+    let output = advanced(target).emit_js();
+    assert!(output.len() < 7_000, "{} bytes", output.len());
+    // The public constructor, by name and through a quoted literal, which
+    // keeps its positional array.
+    let public = "(let [m (cljs.core/PersistentArrayMap. nil 2 #js [:a 1 :b 2] nil) q '{:x 1 \"y\" 2}]
+           (pr-str [(get m :b) (count m) (.-cnt m) (vec (.-arr m)) m (= m {:a 1 :b 2}) (get q \"y\")
+                    (instance? PersistentArrayMap {:a 1}) (identical? (type {:a 1}) PersistentArrayMap)
+                    (instance? PersistentArrayMap q)]))";
+    every_level(
+        public,
+        "[2 2 2 [:a 1 :b 2] {:a 1, :b 2} true 2 true true true]",
+    );
+    let kept = units(&format!("(js/console.log {public})"));
+    assert!(kept.contains(&"publicArrayMap.install"), "{kept:?}");
+    // Literal maps of keys that may lower to one value (a character and a string) keep their
+    // positional array.
+    let kept = units("(js/console.log (count (if (js/Math.random) {\\a 1 \"a\" 2} nil)))");
+    assert!(kept.contains(&"publicArrayMap"), "{kept:?}");
+    every_level(
+        "(let [m (if (js/Math.random) {\\a 1 \"a\" 2} nil)] (pr-str [(count m) (get m \"a\") m]))",
+        "[2 1 {\"a\" 1, \"a\" 2}]",
+    );
+    // Statics, named or read by empty literals.
+    let statics = "(pr-str [{} [] #{} () (.-EMPTY (type {:a 1})) (.-HASHMAP_THRESHOLD (type {:a 1}))
+                    (count (.-EMPTY (type [1]))) (cljs.core/PersistentHashMap.fromArray #js [:a 1] true)])";
+    every_level(statics, "[{} [] #{} () {} 8 0 {:a 1}]");
+    let kept = units("(js/console.log {} [])");
+    for unit in [
+        "typeStatics",
+        "PersistentArrayMapValue.statics",
+        "PersistentVectorValue.statics",
+    ] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+    let kept = units("(js/console.log (.-HASHMAP_THRESHOLD (type {:a 1})))");
+    assert!(
+        kept.contains(&"PersistentArrayMapValue.statics"),
+        "{kept:?}"
+    );
+    // The other kinds' branches where their builders are kept.
+    let branches = "(pr-str [(get #{:a} :a) (get (sorted-map :b 2 :a 1) :a) (get (transient {:a 1}) :a)
+                    (get (sorted-set 3 1) 3) (get (transient #{:x}) :x) (:a (hash-map :a 5))
+                    (get (hash-set 1 2) 2) (get (sorted-map :a 1) :z :nf) (contains? #{:a} :b)
+                    (= 'a 'a) (= (symbol \"a\") 'a) (= 'a/b 'a) (= 'a :a) (.equiv 'x 'x) (= ['a] ['a])])";
+    every_level(
+        branches,
+        "[:a 1 1 3 :x 5 2 :nf false true true false false true true]",
+    );
+    let kept = units(&format!("(js/console.log {branches})"));
+    for unit in [
+        "lookup.sets",
+        "lookup.transients",
+        "lookup.tree",
+        "structuralEqualPair.symbols",
+    ] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+}
+
+#[test]
 fn lean_map_entries_answer_host_methods_through_protocol_extensions() {
     // light-cljs-247, from the Sol review: with `extend-type`, the members of
     // map entries where no vector can be built (`entryPrototype`) answer

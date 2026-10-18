@@ -513,16 +513,16 @@ fn extended_core_protocols_keep_their_dispatchers() {
 fn builtin_type_members_travel_with_their_constructors() {
     let vector = prepared("[1 2 3]", OptimizationLevel::Advanced);
     let units = embedded(&vector);
-    for kept in [
-        "PersistentVectorValue",
-        "PersistentVectorValue.type",
-        "PersistentVectorValue.statics",
-    ] {
+    for kept in ["PersistentVectorValue", "PersistentVectorValue.type"] {
         assert!(units.contains(&kept), "{kept}");
     }
-    // The upstream fields only where the program names one (light-cljs-238).
+    // The upstream fields only where the program names one (light-cljs-238),
+    // and the statics only where it names one or reads an empty literal
+    // (light-cljs-247).
     for left_out in [
         "PersistentVectorValue.fields",
+        "typeStatics",
+        "PersistentVectorValue.statics",
         "Eduction.members",
         "UUIDType",
         "TransientVectorType",
@@ -542,4 +542,22 @@ fn builtin_type_members_travel_with_their_constructors() {
     );
     let named = embedded(&prepared(source, OptimizationLevel::Advanced));
     assert!(named.contains(&"upstreamMembers") && named.contains(&"PersistentVectorValue.fields"));
+    for statics in [
+        "typeStatics",
+        "PersistentVectorValue.statics",
+        "PersistentHashMapValue.statics",
+    ] {
+        assert!(named.contains(&statics), "{statics}");
+    }
+    let empty = embedded(&prepared(
+        "(js/console.log [] {})",
+        OptimizationLevel::Advanced,
+    ));
+    for statics in [
+        "typeStatics",
+        "PersistentVectorValue.statics",
+        "PersistentArrayMapValue.statics",
+    ] {
+        assert!(empty.contains(&statics), "{statics}");
+    }
 }

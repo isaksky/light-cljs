@@ -128,6 +128,22 @@ pub const UPSTREAM_MEMBERS: &[&str] = &[
 /// [`UPSTREAM_MEMBERS`].
 pub const UPSTREAM_MEMBERS_UNIT: &str = "upstreamMembers";
 
+/// The statics of the runtime's types (`EMPTY` of the collection types,
+/// `HASHMAP_THRESHOLD` of `PersistentArrayMap`, `fromArray` and `fromArrays`
+/// of `PersistentHashMap`), which the types' `.statics` effects add.
+/// Upstream they are compiler-owned names, which Closure removes where
+/// nothing reads them. An `Advanced` program keeps them likewise only where
+/// reachable code names one of them as [`UPSTREAM_MEMBERS`] are named
+/// ([`crate::rta`]) or reads an empty literal, which reads its type's
+/// `EMPTY`: its slice then roots [`TYPE_STATICS_UNIT`], whose `when:` the
+/// effects wait for (light-cljs-247).
+pub const TYPE_STATICS: &[&str] = &["EMPTY", "HASHMAP_THRESHOLD", "fromArray", "fromArrays"];
+
+/// The runtime unit that the `.statics` effects of the runtime's types wait
+/// for, which an `Advanced` slice keeps only where the program names one of
+/// [`TYPE_STATICS`] or reads an empty literal.
+pub const TYPE_STATICS_UNIT: &str = "typeStatics";
+
 /// Core protocols whose implementations reach branches of the runtime's own
 /// operations: a value of a type implementing one is handled like the values
 /// of the runtime's kinds that implement it natively, so the conditional
