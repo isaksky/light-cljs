@@ -783,6 +783,9 @@ struct Inert<'p> {
     /// Core operations the program may replace, by table row.
     replaced: Vec<bool>,
     constructors: Vec<Option<Constructor>>,
+    /// By global: the index in the flattened top level of its one definition,
+    /// when that is a `def` of a `fn` literal and nothing assigns it.
+    functions: Vec<Option<usize>>,
     /// The shape of each `let` binding examined so far; every local has one
     /// binding site.
     locals: Vec<Option<Shape>>,
@@ -797,6 +800,7 @@ impl<'p> Inert<'p> {
             core_calls: false,
             replaced: Vec::new(),
             constructors: Vec::new(),
+            functions: Vec::new(),
             locals: Vec::new(),
             position: 0,
         };
@@ -814,7 +818,16 @@ impl<'p> Inert<'p> {
             .collect();
         inert.locals = vec![None; program.locals.len()];
         inert.constructors = vec![None; program.globals.len()];
+        inert.functions = vec![None; program.globals.len()];
         for global in 0..program.globals.len() {
+            if let Definition::Def(definition) = facts.definition(GlobalId(global))
+                && let ExprKind::Def {
+                    init: Some(init), ..
+                } = program.exprs[definition.0].kind
+                && matches!(program.exprs[init.0].kind, ExprKind::Fn { .. })
+            {
+                inert.functions[global] = facts.top_position(definition);
+            }
             if let Definition::Type {
                 definition,
                 role: role @ (TypeRole::Constructor | TypeRole::Factory),
@@ -933,6 +946,11 @@ impl<'p> Inert<'p> {
                     Global(global) => Shape::opaque(self.construct(global, true)?),
                     _ => return None,
                 }
+            }
+            Construct { callee, args }
+                if matches!(program.exprs[callee.0].kind, CoreFn(CoreFnId::MultiFn)) =>
+            {
+                self.multimethod(args)?
             }
             Construct { callee, args } => {
                 let Global(global) = program.exprs[callee.0].kind else {
@@ -1079,6 +1097,62 @@ impl<'p> Inert<'p> {
             .flat_map(|(k, v)| [k, v])
             .collect();
         Some(Shape::opaque(self.core_call(CoreFnId::HashMap, &pairs)?))
+    }
+
+    /// A multimethod as `defmulti` builds it (light-cljs-300): `new MultiFn`
+    /// of its quoted name, a dispatch that is a keyword, a `fn` literal, a
+    /// core function or a function Var defined before it, a literal default,
+    /// the global hierarchy and fresh atoms of `{}` and `nil` as its tables.
+    /// The constructor only stores its arguments (and adds the instance to a
+    /// `WeakSet`, which nothing can enumerate). `get-global-hierarchy` builds
+    /// its atom the first time it runs, of the same empty hierarchy whenever
+    /// that is, and returns that atom from then on; `derive`, `underive` and
+    /// `isa?` reach the hierarchy only through it, and a multimethod reads its
+    /// hierarchy's state when it dispatches, not when it is built. So whether
+    /// and when a `defmulti` builds its multimethod is unobservable. A
+    /// `:hierarchy` option or a computed dispatch may run code or read a
+    /// value that changes, and is not inert.
+    fn multimethod(&self, args: &[ExprId]) -> Option<Shape> {
+        use ExprKind::*;
+        let program = self.program;
+        let kind = |id: &ExprId| &program.exprs[id.0].kind;
+        let core = |id: &ExprId, op: CoreFnId| {
+            matches!(kind(id), CoreFn(found) if *found == op) && !self.replaced[op.table_row()]
+        };
+        let [name, dispatch, default, hierarchy, tables @ ..] = args else {
+            return None;
+        };
+        let dispatch = match *kind(dispatch) {
+            Keyword(_) | Fn { .. } => true,
+            // A core function, not a dynamic or settable value such as
+            // `*print-fn*`, which `set-print-fn!` changes without replacing it.
+            CoreFn(op) => op.operation().value == Type::FN && !self.replaced[op.table_row()],
+            Global(global) => self.functions[global.0].is_some_and(|at| at < self.position),
+            _ => false,
+        };
+        let global_hierarchy = matches!(kind(hierarchy),
+            Call { callee, args } if args.is_empty() && core(callee, CoreFnId::GetGlobalHierarchy));
+        let fresh_atom = |id: &ExprId, empty_map: bool| match kind(id) {
+            Call { callee, args } if core(callee, CoreFnId::Atom) && args.len() == 1 => {
+                match kind(&args[0]) {
+                    Map(items) | LiteralMap(items) => empty_map && items.is_empty(),
+                    Nil => !empty_map,
+                    _ => false,
+                }
+            }
+            _ => false,
+        };
+        let fresh_tables = tables.len() == 4
+            && tables[..3].iter().all(|table| fresh_atom(table, true))
+            && fresh_atom(&tables[3], false);
+        (self.core_calls
+            && !self.replaced[CoreFnId::MultiFn.table_row()]
+            && matches!(kind(name), Symbol(_))
+            && dispatch
+            && scalar(program, *default)
+            && global_hierarchy
+            && fresh_tables)
+            .then_some(Shape::opaque(Type::ANY))
     }
 
     /// The instance type of `new global` (or of calling it, for a `factory`)

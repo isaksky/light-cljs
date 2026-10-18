@@ -1215,11 +1215,11 @@ fn a_package_only_a_feature_requires_is_imported_by_its_chunk() {
 /// fixture, which [`matrix`] runs at every level): `fmt`, which both
 /// features read, to their shared chunk, and the helper and the protocol
 /// only the editor reads to the editor's chunk, where the protocol's
-/// dispatcher is defined before the types that name it. Each `defmethod`
-/// stays in its namespace's chunk. Their `defmulti` stays pinned in
-/// app.shared's chunk, startup: removal never drops it, since its
-/// initializer builds a `MultiFn` on the global hierarchy, which `Inert`
-/// does not accept, and only what removal could drop moves.
+/// dispatcher is defined before the types that name it. Their `defmulti`,
+/// whose keyword dispatch and global hierarchy `Inert` accepts
+/// (light-cljs-300), moves with the `defmethod`s that read it to the
+/// features' shared chunk, which builds the `MultiFn`; each `defmethod`
+/// stays in its namespace's chunk.
 #[test]
 fn definitions_move_toward_their_readers_and_methods_stay() {
     let program = fixture_program("definitions");
@@ -1234,7 +1234,7 @@ fn definitions_move_toward_their_readers_and_methods_stay() {
         moved(&prepared, &plan),
         [
             "app.main.js: ",
-            "app.editor+app.reports.js: app.shared/fmt",
+            "app.editor+app.reports.js: app.shared/fmt app.shared/render",
             "app.editor.js: app.shared/outline app.shared/Shape",
             "app.reports.js: ",
         ]
@@ -1248,7 +1248,7 @@ fn definitions_move_toward_their_readers_and_methods_stay() {
                 ExprKind::Def { global, .. } if emitted.globals[global.0].name == "render")
         })
         .unwrap();
-    assert!(!render.movable && render.chunk == STARTUP);
+    assert!(render.movable && render.chunk != STARTUP);
     let output = prepared.emit_chunks();
     let source = |name: &str| {
         output
@@ -1264,7 +1264,14 @@ fn definitions_move_toward_their_readers_and_methods_stay() {
         source("app.editor.js"),
         source("app.reports.js"),
     );
-    assert!(startup.contains("new rt$MultiFn("), "{startup}");
+    // The runtime's `MultiFn` unit moves with it.
+    for text in ["new rt$MultiFn(", "class MultiFn {"] {
+        assert_eq!(
+            files_containing(&output, text),
+            ["app.editor+app.reports.js"],
+            "{text}"
+        );
+    }
     for (chunk, method) in [(editor, "\"<p>\""), (reports, "\" rows\"")] {
         assert!(
             chunk.contains("rt$addMethodDirect(") && chunk.contains(method),
@@ -1579,6 +1586,123 @@ fn definitions_move_with_their_constructors_and_setters() {
     // The shared chunk owns `counter` and exports its setter, which the
     // editor's `set!` calls.
     assert_eq!(plan.chunks[1].setters.len(), 1);
+}
+
+/// At `Advanced` a multimethod only a feature reads moves to the feature's
+/// chunk with its dispatch Var where its `defmulti` is inert
+/// (light-cljs-300): a keyword, `fn` literal or function Var dispatch and the
+/// global hierarchy, which startup gives ancestors before the feature builds
+/// the multimethod; `isa?` dispatch finds them as in the single file. One
+/// with a `:hierarchy` or a computed dispatch stays pinned in its namespace,
+/// startup, and an unread one without methods is removed. The chunks print
+/// what the single file prints at every level.
+#[test]
+fn multimethods_move_unless_their_hierarchy_or_dispatch_is_computed() {
+    static MULTI: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [app.shared] [light.lazy :as lazy]))\n\
+             (derive :app/square :app/shape)\n\
+             (def editor (lazy/loadable app.editor/start))\n\
+             (defn start [] (-> (lazy/load editor) (.then (fn [f] (js/console.log (f)) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/shared.cljs",
+            "(ns app.shared)\n\
+             (defn kind-of [x] (:kind x))\n\
+             (defmulti by-var kind-of)\n\
+             (defmulti by-fn (fn [x] (:kind x)) :default :none)\n\
+             (defmulti by-isa :kind)\n\
+             (def h (derive (make-hierarchy) :app/circle :app/shape))\n\
+             (defmulti with-hierarchy :kind :hierarchy #'h)\n\
+             (defmulti computed (comp :kind identity))\n\
+             (defmulti unread :kind)\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor (:require [app.shared :as shared]))\n\
+             (defmethod shared/by-var :a [_] \"VAR\")\n\
+             (defmethod shared/by-fn :none [_] \"FN\")\n\
+             (defmethod shared/by-isa :app/shape [_] \"ISA\")\n\
+             (defmethod shared/with-hierarchy :app/shape [_] \"HIERARCHY\")\n\
+             (defmethod shared/computed :a [_] \"COMPUTED\")\n\
+             (defn start []\n\
+               (str (shared/by-var {:kind :a}) \" \" (shared/by-fn {:kind :b}) \" \"\n\
+                    (shared/by-isa {:kind :app/square}) \" \" (shared/with-hierarchy {:kind :app/circle}) \" \"\n\
+                    (shared/computed {:kind :a})))\n",
+        ),
+    ];
+    let program = analyze(MULTI);
+    let (record, _) = chunk_files(&program);
+    assert_eq!(
+        record,
+        printed("app.main.js", r"VAR FN ISA HIERARCHY COMPUTED\n")
+    );
+    let prepared = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let plan = plan(&program, &prepared);
+    check(&program, &prepared, &plan, OptimizationLevel::Advanced);
+    assert_eq!(
+        moved(&prepared, &plan),
+        [
+            "app.main.js: ",
+            "app.editor.js: app.shared/kind-of app.shared/by-var app.shared/by-fn app.shared/by-isa",
+        ]
+    );
+    let output = prepared.emit_chunks();
+    let startup = output.files[0].source.as_str();
+    for name in ["with-hierarchy", "computed"] {
+        assert_eq!(files_containing(&output, name), ["app.main.js"], "{name}");
+    }
+    assert!(!startup.contains("by-"), "{startup}");
+    assert!(files_containing(&output, "unread").is_empty());
+}
+
+/// A multimethod dispatching on a dynamic core Var stays in its namespace
+/// (light-cljs-300): `set-print-fn!` changes `*print-fn*` without replacing
+/// it, so a multimethod built later in a feature would dispatch on startup's
+/// later value. The chunks print what the single file prints.
+#[test]
+fn a_multimethod_on_a_dynamic_core_var_stays_pinned() {
+    static PRINT_FN: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [app.shared] [light.lazy :as lazy]))\n\
+             (set-print-fn! (fn [_] :after))\n\
+             (def editor (lazy/loadable app.editor/start))\n\
+             (defn start [] (-> (lazy/load editor) (.then (fn [f] (js/console.log (f)) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/shared.cljs",
+            "(ns app.shared)\n\
+             (set-print-fn! (fn [_] :before))\n\
+             (defmulti m *print-fn*)\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor (:require [app.shared :as shared]))\n\
+             (defmethod shared/m :before [_] \"BEFORE\")\n\
+             (defmethod shared/m :after [_] \"AFTER\")\n\
+             (defn start [] (shared/m 1))\n",
+        ),
+    ];
+    let program = analyze(PRINT_FN);
+    let (record, _) = chunk_files(&program);
+    assert_eq!(record, printed("app.main.js", r"BEFORE\n"));
+    let prepared = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let plan = plan(&program, &prepared);
+    check(&program, &prepared, &plan, OptimizationLevel::Advanced);
+    assert_eq!(
+        moved(&prepared, &plan),
+        ["app.main.js: ", "app.editor.js: "]
+    );
 }
 
 /// A raw `deftype*` runs its body when it defines the type, so it stays in

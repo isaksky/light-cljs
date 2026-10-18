@@ -1820,8 +1820,10 @@ instead to the chunk of the roots whose code reads it, in function bodies
 too: a helper of a shared namespace that only one feature reads moves to
 that feature's chunk, and one that two features read but startup does not
 to a chunk of its own those two import (docs/code-splitting.md, "Items and
-signatures"). The other forms stay in their namespace's chunk: effects, a
-`defmulti`, a `defmethod`, a raw `deftype*`, the definition of a
+signatures"); so does a `defmulti` with a keyword, `fn` or function Var
+dispatch, a literal default and the global hierarchy. The other forms stay in
+their namespace's chunk: effects, a `defmulti` with a `:hierarchy` or a
+computed dispatch, a `defmethod`, a raw `deftype*`, the definition of a
 `loadable`'s target, a form holding a `loadable`, a Var defined twice.
 At `advanced` a chunk that would write no code is not written: one that
 holds no root and no Var another chunk reads, and whose namespaces' forms

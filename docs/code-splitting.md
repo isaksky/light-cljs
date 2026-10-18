@@ -404,10 +404,12 @@ Which top-level forms are movable: below `Advanced`, none (Phase 2). At
 `Advanced`, exactly the `Retained::candidates` of `retain`, the definitions
 whose initializer the `Inert` scan accepts (literals, functions, pure and
 allocating core calls on plain data, constructors of program types defined
-earlier), plus `DefProtocol` and `DefType` forms, whose load-time work touches
-only what they declare. `ExtendType` of a type another form declares,
-`defmethod` (an `AddMethod` call), `defmulti` (its initializer builds a
-`MultiFn`, which `Inert` does not accept), `set!`, `enable-console-print!`,
+earlier, and since light-cljs-300 a `defmulti` with a keyword, `fn` literal,
+core function or function Var dispatch, a literal default and the global
+hierarchy), plus `DefProtocol` and `DefType` forms, whose load-time work
+touches only what they declare. `ExtendType` of a type another form declares,
+`defmethod` (an `AddMethod` call), a `defmulti` with a `:hierarchy` or a
+computed dispatch (its initializer may run code), `set!`, `enable-console-print!`,
 printing, a `def` with a `test` or several definitions, and every other form
 with an effect stay pinned. So do three kinds of definition that removal
 could drop (light-cljs-277): one of a Var that another form defines too,
@@ -1067,10 +1069,10 @@ runtime units toward their first readers; per-chunk runtime factories.
     definitions a chunk holds of namespaces another chunk holds, by the
     first global each defines, so the manifest still describes the whole
     partition.
-  - A `defmulti` stays pinned ("Open questions"), and its `defmethod`s in
-    their namespaces' chunks: the pellet's "a `defmethod` stays in its
-    namespace's chunk although its `defmulti` moved" holds for the methods
-    only.
+  - A `defmulti` stays pinned ("Open questions"; it moves since
+    light-cljs-300), and its `defmethod`s in their namespaces' chunks: the
+    pellet's "a `defmethod` stays in its namespace's chunk although its
+    `defmulti` moved" holds for the methods only.
   - examples/features at `advanced`, terse, raw / `gzip -9` bytes, before
     (namespace level, light-cljs-274) and after:
 
@@ -1100,7 +1102,8 @@ runtime units toward their first readers; per-chunk runtime factories.
     a helper and a protocol only the editor reads land in the editor's
     chunk with the types implementing it (the dispatcher defined before
     them), and each feature's `defmethod` stays in its own chunk while the
-    `defmulti` stays in startup; and `reflection`, whose editor looks
+    `defmulti` stays in startup (it moves to the features' shared chunk
+    since light-cljs-300); and `reflection`, whose editor looks
     namespaces up, so its helper stays in startup although the plan alone
     would move it. The planner's `check` accepts a movable item in a chunk
     whose signature its namespace's contains, and only at `Advanced`. A
@@ -1764,16 +1767,37 @@ minification, against the 69,587 bytes `--out-dir` wrote.
   need, stay in startup. Hook installs instead of wrappers
   (light-cljs-302) would let them move, but grow `lookup` in every single
   file that keeps it, which the ground rules leave to the user.
-- **Multimethods and motion.** A `defmulti` stays pinned at `Advanced`
-  (light-cljs-277): its initializer builds a `MultiFn` from the dispatch
-  function, the options and the global hierarchy, which `Inert` does not
-  accept, so removal never drops it and only what removal could drop moves.
-  A multimethod of a shared namespace that only features call therefore
-  keeps its definition in startup, and once the runtime splits per chunk
-  (light-cljs-279) the `MultiFn` units with it. Accepting `defmulti` with a keyword or `fn` dispatch
-  and the default hierarchy as inert would let it move with its readers
-  (light-cljs-300); its `defmethod`s stay pinned in their namespaces either
-  way.
+- **Multimethods and motion.** Settled by light-cljs-300. A `defmulti`
+  stayed pinned at `Advanced` (light-cljs-277): its initializer builds a
+  `MultiFn` from the dispatch function, the options and the global
+  hierarchy, which `Inert` did not accept, so a multimethod of a shared
+  namespace that only features call kept its definition, and the `MultiFn`
+  units, in startup.
+
+  As built (light-cljs-300): `Inert` accepts `new MultiFn` as `defmulti`
+  builds it (`Inert::multimethod` in src/application.rs) when its dispatch
+  is a keyword, a `fn` literal, a core function the program does not
+  replace (not a dynamic value such as `*print-fn*`, which
+  `set-print-fn!` changes; `chunks::a_multimethod_on_a_dynamic_core_var_stays_pinned`),
+  or a function Var defined once, earlier, and never assigned; it
+  gives no `:hierarchy`; its default is a scalar literal; and its tables are
+  fresh atoms of `{}` and `nil`. The constructor only stores its arguments
+  and adds the instance to a `WeakSet`. `getGlobalHierarchy` builds the
+  global hierarchy's atom the first time it runs, of the same empty
+  hierarchy whenever that is, and returns that atom from then on; `derive`,
+  `underive` and `isa?` reach it only through that call, and a multimethod
+  reads its hierarchy's state when it dispatches. So building a multimethod
+  later, or not at all, is unobservable: a `derive` in startup before a
+  feature builds the multimethod is seen by its `isa?` dispatch
+  (`chunks::multimethods_move_unless_their_hierarchy_or_dispatch_is_computed`).
+  A `defmethod` reads its multimethod, so a multimethod with methods is
+  kept and moves toward its readers, its `defmethod`s among them, which
+  stay pinned in their namespaces; an unread one without methods is
+  removed. A `:hierarchy`, a computed dispatch, a collection default or a
+  dispatch Var defined later or assigned keeps it pinned. In the
+  `definitions` fixture `app.shared/render` moves to
+  `app.editor+app.reports.js` with the runtime's `MultiFn` unit, and
+  startup shrinks from 9,450 to 1,522 bytes (`benchmarks/compiler.md`).
 - **Granularity of the reference graph for motion.** Items are top-level
   forms; a `defn` with several methods is one item. Finer motion (per method
   entry `g3_1`) is possible with call shapes but has no measured case yet.

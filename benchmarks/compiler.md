@@ -4619,3 +4619,32 @@ which grew 5,458 bytes (457,041 to 462,834 for `(js/console.log (+ 1 2))`,
 112,803 to 114,499 gzipped): both representations of the tables, the hooks
 and their comments; those ceilings rose to the new sizes rounded up to the
 next 1,000.
+
+## Multimethods that move toward their readers — October 18, 2026
+
+light-cljs-300 lets `Inert` accept a `defmulti` with a keyword, `fn` literal,
+core function or function Var dispatch, a literal default and the global
+hierarchy, so at `advanced` an unread one without methods is removed and a
+chunked build moves one toward its readers
+([code-splitting design](../docs/code-splitting.md), "Open questions",
+"Multimethods and motion"). Measured with `light-cljs --compile --optimize
+advanced --entry app.main --source-root tests/fixtures/chunks/definitions
+--out-dir OUT`, raw / `gzip -9 -n` bytes of each file, against master
+`b04e99a`; sizes are deterministic (one-minute load average 8.8). The
+fixture's `app.shared/render`, whose methods are in the editor and the
+reports, moves from startup to their shared chunk with the runtime's
+`MultiFn` unit and what it requires:
+
+| File | Before | After |
+| --- | ---: | ---: |
+| `app.main.js`, startup | 9,450 / 3,678 | 1,522 / 667 |
+| `app.editor+app.reports.js` | 56,176 / 17,477 | 63,944 / 19,793 |
+| `app.editor.js` | 8,720 / 3,751 | 8,716 / 3,753 |
+| `app.reports.js` | 799 / 500 | 797 / 500 |
+| all four | 75,145 / 25,406 | 74,979 / 24,713 |
+
+`(defmulti m :k) (js/console.log 1)` at `advanced` is 151 / 140 bytes, as
+`(js/console.log 1)` is, against 4,988 / 2,018 before. The size ratchet
+moves nowhere: its one multimethod fixture, `defmulti`, has a method, and
+examples/features has no multimethod; `none` and `prepare` output is
+unchanged.

@@ -2895,8 +2895,13 @@ under `js*` below.
   result), the `hash-map` macro's expansion `PersistentHashMap.fromArrays`
   through the `hash-map` row, and `new T` or `->T` of a type defined once by a
   top-level `deftype` or `defrecord` that runs earlier and is never
-  reassigned. `throws` and `effect` rows, calls outside a row's domain,
-  global reads, `map->T` and everything else stay effectful. Since
+  reassigned. Since light-cljs-300 `new MultiFn` as `defmulti` builds it is
+  inert too (`Inert::multimethod`): a keyword, `fn` literal, unreplaced core
+  function (not a dynamic value such as `*print-fn*`) or earlier, never assigned function Var as its dispatch, a scalar
+  default, the global hierarchy, whose lazy creation is unobservable, and
+  fresh atoms; a `:hierarchy` or computed dispatch is not. `throws` and
+  `effect` rows, calls outside a row's domain, other global reads, `map->T`
+  and everything else stay effectful. Since
   light-cljs-210, element-wise `invoke` rows are inert when their function
   argument is (see "Phase 2 type inference extension points"). Each
   expression gets a `Shape` (lattice type, plain-data flag and, for literal

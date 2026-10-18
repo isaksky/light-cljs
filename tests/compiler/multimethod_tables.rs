@@ -484,3 +484,97 @@ fn upstream_multimethod_fixtures_pass_at_every_level() {
         );
     }
 }
+
+/// At `Advanced` a `defmulti` is inert when its dispatch is a keyword, a
+/// `fn` literal, a core function or a function Var defined before it and
+/// never assigned, it gives no `:hierarchy`, and its default is a literal
+/// (light-cljs-300): unread and without methods it is removed, and the
+/// runtime's `MultiFn` with it. A `defmethod` reads its multimethod, so one
+/// with methods stays, and so does one with a `:hierarchy`, a computed
+/// dispatch, a collection default, or a dispatch Var defined later or
+/// assigned. Every level prints what `None` prints.
+#[test]
+fn an_unread_defmulti_without_methods_is_removed() {
+    for (source, removed) in [
+        ("(defmulti m :k)", true),
+        ("(defmulti m (fn [x] (:k x)) :default :none)", true),
+        ("(defmulti m identity)", true),
+        ("(defn k [x] (:k x)) (defmulti m k)", true),
+        ("(defmulti m :k) (defmethod m :a [_] 1)", false),
+        ("(defmulti m :k) (js/console.log (fn? m))", false),
+        (
+            "(def h (make-hierarchy)) (defmulti m :k :hierarchy #'h)",
+            false,
+        ),
+        ("(defmulti m (comp :k identity))", false),
+        ("(defmulti m :k :default [:none])", false),
+        ("(declare k) (defmulti m k) (defn k [x] x)", false),
+        ("(defn k [x] x) (defmulti m k) (set! k (fn [x] 2))", false),
+    ] {
+        let source = format!("{source} (js/console.log 1)");
+        let program = program(&source);
+        let expected = execute(&format!(
+            "{};",
+            prepare_application(&program, ApplicationOptions::new(OptimizationLevel::None))
+                .emit_js()
+        ));
+        for level in OptimizationLevel::ALL {
+            let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+            assert_eq!(execute(&format!("{js};")), expected, "at {level}: {source}");
+        }
+        let js = prepare_application(
+            &program,
+            ApplicationOptions::new(OptimizationLevel::Advanced),
+        )
+        .emit_js();
+        assert_eq!(
+            !units(&program).contains(&"MultiFn") && !js.contains("cljs.user/m"),
+            removed,
+            "removed: {source}\n{js}"
+        );
+    }
+}
+
+/// An unread `defmulti` whose building the program can observe stays at
+/// every level (light-cljs-300): where it replaces `atom`,
+/// `get-global-hierarchy` or `MultiFn`, whose calls then run its code, or
+/// extends a core protocol, whose implementations creating the global
+/// hierarchy may run. Each program prints the effects of building it; the
+/// lookups the hierarchy's creation makes are as many at `Advanced` as on
+/// master (two, against ten below it), which this pellet does not change.
+#[test]
+fn unread_multimethods_preserve_initializer_effects() {
+    for (source, expected) in [
+        (
+            "(def calls (volatile! 0)) (let [a atom] (set! atom (fn [x] (vswap! calls inc) (a x)))) (defmulti m :k) (js/console.log @calls)",
+            "4",
+        ),
+        (
+            "(def calls (volatile! 0)) (let [g get-global-hierarchy] (set! get-global-hierarchy (fn [] (vswap! calls inc) (g)))) (defmulti m :k) (js/console.log @calls)",
+            "1",
+        ),
+        (
+            "(def calls (volatile! 0)) (set! MultiFn (fn [& _] (vswap! calls inc) nil)) (defmulti m :k) (js/console.log @calls)",
+            "1",
+        ),
+        (
+            "(extend-type PersistentArrayMap ILookup (-lookup ([m k] (js/console.log \"lookup\") nil) ([m k nf] (js/console.log \"lookup\") nf))) (defmulti m :k) (js/console.log \"done\")",
+            "lookup\n",
+        ),
+    ] {
+        let program = program(source);
+        for level in OptimizationLevel::ALL {
+            let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+            let printed = execute(&format!("{js};"));
+            if expected == "lookup\n" {
+                assert!(
+                    printed.starts_with(expected) && printed.ends_with("done\n"),
+                    "at {level}: {source}\n{printed}"
+                );
+            } else {
+                assert_eq!(printed, format!("{expected}\n"), "at {level}: {source}");
+            }
+        }
+        assert!(units(&program).contains(&"MultiFn"), "removed: {source}");
+    }
+}
