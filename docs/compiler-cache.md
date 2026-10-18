@@ -1234,9 +1234,8 @@ persistence remain out of scope.
 
    *As built (light-cljs-311):* the conservative dependency graph is the
    `DependencyManifest` described under "Conservative keys and invalidation".
-   Opt-out propagation (light-cljs-314) and watch invalidation (light-cljs-325)
-   read its `reverse_closure`. Until then, watch keeps its own partial answer:
-   the direct requirers of a macro-declaring namespace.
+   Opt-out propagation (light-cljs-314) reads its `reverse_closure`, and
+   watch invalidation (light-cljs-325) its reverse edges, as step 4 records.
 2. **Build relocatable namespace artifacts.** Capture declarations, IR, deferred
    units, diagnostics, names, and accounting at existing lifecycle boundaries.
    Verify in-memory installation and mixed hits/misses without source reanalysis.
@@ -1382,6 +1381,38 @@ persistence remain out of scope.
    preserve retained session semantics, apply always-compile policy before the
    memory fast path, and test subsequent edits. Address duplicate startup work
    independently of engine-state transfer.
+
+   *As built (light-cljs-325), watch invalidation:* `--watch`'s startup build
+   records the `DependencyManifest`, and each step revises it with
+   `DependencyManifest::revise`: the namespaces in the watch's load order, and
+   for each namespace the session compiled again its requires as the session
+   has them, which namespaces declare macros now, and what
+   `DevSession::observing` logged while the file compiled (named
+   namespaces, source macros run, `light.build` inputs). The session compiles
+   every form as one source, so what a file's compile observed goes to every
+   namespace it wrote; a namespace the step did not compile keeps its
+   startup record, whose resource reads by a namespace's compile-time units
+   also reach that namespace's compilation consumers. A revised namespace
+   keeps its record's observed edges and coarse flag, since the session
+   logs no qualified name of a loaded namespace, and a read made while a
+   deferred unit's initializer ran (`InputRecord::initializer`) is recorded
+   with the namespace's macro providers and helpers as its helper units,
+   bundled libraries apart, so `attribute_inputs` spreads it as the first
+   build does. The edges are derived
+   again by the rules of the first build. A step recompiles, in load order,
+   the changed namespaces; every namespace that depends on a recompiled one
+   through a `MACRO_PROVIDER` or `HELPER` edge, transitively; the recorded
+   consumers of each resource location (present or absent) whose stamp
+   changed; and, before any retained unit is kept, `CachePolicy::
+   always_compile` from `cache_policy::evaluate` with the build's
+   `CacheSettings`. `NoCache` and `Blocked` add nothing to a step. The
+   revision is applied once per step, and at once after a compile that
+   changes whether its namespace declares macros or adds namespaces, so
+   those edges count in the same step; one that adds namespaces or changes a
+   `^:dev/always` mark evaluates the always-compile set again. `--watch`
+   accepts `--cache-blocker NS` for the evaluator's settings. Runtime-only requirers are not
+   recompiled. Measured in [benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md),
+   "Watch invalidation".
 5. **Optimize measured costs.** Consider optional emitted-code sections, more
    precise invalidation, or compression only when end-to-end benchmarks justify
    the complexity. No stage depends on a general effect-tracking system.

@@ -568,12 +568,14 @@ A step's `load` holds the units of its reload set (light-cljs-287; "The
 reload set" in [dev-workflow.md](dev-workflow.md#the-reload-set)), in load
 order:
 
-- every namespace the step wrote: the changed ones, the requirers of a
-  changed macro namespace (recompiled, since their units hold the
-  expansions), and the namespaces a changed `ns` form loaded, with those of
-  failed steps since the last that succeeded;
-- every namespace whose `ns` form is marked `^:dev/always` (`(ns
-  ^:dev/always app.config)`), unchanged;
+- every namespace the step wrote: the changed ones, the users of a
+  changed macro namespace or of a macro whose namespace requires a changed
+  one, and the readers of a changed `light.build` resource (recompiled,
+  since their units hold the expansions), the namespaces a changed `ns` form
+  loaded, and every namespace whose `ns` form is marked `^:dev/always` (`(ns
+  ^:dev/always app.config)`) with its compilation consumers, which every
+  step recompiles (light-cljs-325; [dev-workflow.md](dev-workflow.md#the-reload-set)),
+  with those of failed steps since the last that succeeded;
 - with `--reload-dependents`, every namespace that requires one of those,
   directly or through others the load reloads, unchanged, so that top-level
   effects that read them run again, as shadow-cljs's `:full` reload strategy

@@ -175,9 +175,14 @@ node -e 'require("/tmp/light-dev/index.js"); __lightDevLoaded.then(start => star
 same dev build, then polls the sources (every 100 ms by default) and, for each
 saved namespace, compiles its forms again against the program it keeps and
 rewrites the namespace's unit, its source map and the manifest: a new require
-adds the units of the namespaces it loads, a change to a macro namespace
-recompiles the namespaces that require it, and a form that fails prints its
-error and leaves the previous unit. One line per step goes to stderr
+adds the units of the namespaces it loads, a change to a macro namespace or
+to a namespace its macros require recompiles the namespaces that use its
+macros, a change to a file a macro read through `light.build` recompiles the
+namespaces that read it, every step recompiles the namespaces marked
+`^:dev/always` and those that depend on them, and a form that fails prints its
+error and leaves the previous unit. `--cache-blocker NS` (repeatable) is
+given to the cache's policy evaluator; a blocker never makes a step
+recompile. One line per step goes to stderr
 ([Watch](docs/evaluation.md#watch)).
 
 ```sh
@@ -196,8 +201,9 @@ units between the `^:dev/before-load` and `^:dev/after-load` hooks, keeping
 `defonce` state, draws compile errors and warnings over the page with file,
 line and column, catches up when it connects late, and reconnects when the
 server restarts. A step loads the namespaces it recompiled (a changed macro
-namespace recompiles those that require it) and those marked `^:dev/always`,
-never again one marked `^:dev/once`; `--reload-dependents` also reloads every
+namespace recompiles those that use it, and every step those marked
+`^:dev/always` with those that depend on them), never again one marked
+`^:dev/once`; `--reload-dependents` also reloads every
 namespace downstream of them, as shadow-cljs's `:full` strategy does.
 JavaScript packages come from a page in the build directory
 that sets `globalThis.lightCljsPackages` before it loads `index.js`

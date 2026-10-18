@@ -164,6 +164,110 @@ fn edges_carry_runtime_macro_provider_and_helper_kinds() {
     assert!(coarse_edge(&manifest, "app", "h") && !coarse_edge(&manifest, "main", "h"));
 }
 
+/// `revise`, as a watch step applies it: without revisions the manifest
+/// keeps every record and edge; a revised namespace's requires, a namespace
+/// that begins to declare macros and a new namespace give the edges the
+/// first build's rules derive.
+#[test]
+fn a_revision_derives_the_edges_again() {
+    use light_cljs::dependency_manifest::{Observations, Revision};
+    use std::collections::{HashMap, HashSet};
+    let roots = macro_fixture();
+    let (_, manifest) = roots.manifest("main");
+    let order: Vec<&str> = manifest
+        .namespaces
+        .iter()
+        .map(|r| r.name.as_str())
+        .collect();
+    let macros: HashSet<&str> = ["m"].into();
+    let same = manifest.revise(&order, &HashMap::new(), |name| macros.contains(name));
+    assert_eq!(same, manifest);
+    // `m` drops its require of `h` and `r` begins to declare macros: `app`
+    // loses its helper edge to `h` and gains a macro-provider edge to `r`.
+    let revised: HashMap<String, Revision> = [(
+        "m".to_owned(),
+        Revision {
+            file: manifest.record(id(&manifest, "m")).source.file.clone(),
+            requires: Vec::new(),
+            observations: Observations::default(),
+        },
+    )]
+    .into();
+    let macros: HashSet<&str> = ["m", "r"].into();
+    let next = manifest.revise(&order, &revised, |name| macros.contains(name));
+    assert_eq!(edge(&next, "m", "h"), None);
+    assert_eq!(edge(&next, "app", "h"), None);
+    assert_eq!(
+        edge(&next, "app", "r"),
+        Some(EdgeKinds::RUNTIME | EdgeKinds::MACRO_PROVIDER)
+    );
+    // `app` ran a source macro, so it keeps its coarse edge to `h`.
+    assert!(coarse_edge(&next, "app", "h"));
+    // A namespace new to the build, required by a revised `app`, with what
+    // the session observed there: an input of its forms, one read while a
+    // compile-time unit ran, which also goes to the macro providers and
+    // helpers `app` depends on, and a source macro run.
+    let resource = light_cljs::dependency_manifest::ExternalInput::View(
+        light_cljs::dependency_manifest::BroadView::Namespaces,
+    );
+    let helper_input = light_cljs::dependency_manifest::ExternalInput::View(
+        light_cljs::dependency_manifest::BroadView::Declarations,
+    );
+    let order = ["h", "m", "r", "extra", "app", "main"];
+    let revised: HashMap<String, Revision> = [
+        (
+            "extra".to_owned(),
+            Revision {
+                file: "extra.cljs".into(),
+                requires: vec!["h".into()],
+                observations: Observations::default(),
+            },
+        ),
+        (
+            "app".to_owned(),
+            Revision {
+                file: manifest.record(id(&manifest, "app")).source.file.clone(),
+                requires: vec!["m".into(), "r".into(), "extra".into()],
+                observations: Observations {
+                    named: Vec::new(),
+                    coarse: true,
+                    inputs: vec![resource.clone()],
+                    helper_inputs: vec![helper_input.clone()],
+                },
+            },
+        ),
+    ]
+    .into();
+    let macros: HashSet<&str> = ["m", "extra"].into();
+    let next = manifest.revise(&order, &revised, |name| macros.contains(name));
+    assert_eq!(
+        edge(&next, "app", "extra"),
+        Some(EdgeKinds::RUNTIME | EdgeKinds::MACRO_PROVIDER)
+    );
+    assert_eq!(edge(&next, "app", "h"), Some(EdgeKinds::HELPER));
+    assert!(next.record(id(&next, "app")).coarse && coarse_edge(&next, "app", "extra"));
+    assert!(
+        next.external_inputs(id(&next, "app"))
+            .any(|input| *input == resource)
+    );
+    assert_eq!(
+        names(&next, &next.reverse_closure(id(&next, "extra"))),
+        ["app", "main"]
+    );
+    let with = |input: &light_cljs::dependency_manifest::ExternalInput| {
+        next.namespaces
+            .iter()
+            .filter(|record| {
+                next.external_inputs(id(&next, &record.name))
+                    .any(|i| i == input)
+            })
+            .map(|record| record.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(with(&resource), ["app"]);
+    assert_eq!(with(&helper_input), ["h", "m", "extra", "app", "main"]);
+}
+
 #[test]
 fn reverse_closure_of_a_macro_namespace_reaches_every_consumer() {
     let roots = macro_fixture();

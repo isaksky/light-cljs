@@ -158,6 +158,30 @@ program, of which 6.0 s was the session load.
 The startup path is unchanged. The cost the measurements point at is the
 quadratic session load, which light-cljs-348 addresses directly.
 
+## Watch invalidation (light-cljs-325, October 18, 2026)
+
+`--watch` now records the startup build's dependency manifest and revises it
+after each step (`DependencyManifest::revise`), and a step asks the policy
+evaluator for the always-compile set. Release binaries of master `f9016ff`
+(baseline) and this change (candidate), alternating, on the generated
+301-namespace program of [watch_startup.bb](watch_startup.bb), at 1-minute
+load 7.5 to 13.6 (other workers were testing); times in ms.
+
+| | Baseline | Candidate |
+| --- | ---: | ---: |
+| Startup, mean of 6 (`bb benchmarks/watch_startup.bb OUT 3 300`, twice) | 5,167 | 5,151 |
+| Session load, mean of 6 | 4,568 | 4,542 |
+| Step saving a newline into `bench.n155` (1 namespace), median of 10 | 25.5 | 26.1 |
+| Step saving `bench.macros150`, first (10 namespaces), 2 runs | 291.1, 292.3 | 294.2, 295.0 |
+| Step saving `bench.macros150`, third to fifth, median of 6 | 2.2 | 2.9 |
+
+The dev build is byte-identical (same digest). Recording the manifest in
+the startup build costs nothing measurable at this size; revising it costs
+about 0.6 ms a step on 301 namespaces, most of them coarse (each ran a
+source macro, so each has an edge to every earlier namespace). The steps
+recompile the same namespaces as before on this program, which has no
+helper edges, resources or `^:dev/always` namespaces.
+
 ## Namespace artifact capture (light-cljs-315, October 18, 2026)
 
 Capture runs only when a compilation asks for artifacts

@@ -320,7 +320,9 @@ Given the changed namespace N:
   (`MacroImport`), and the analyzer knows which namespaces declare macros;
   the over-approximation (every requirer of a macro-declaring namespace,
   whether or not it used a macro) matches shadow-cljs.
-- Every namespace marked `^:dev/always`, reloaded without recompiling.
+- Every namespace marked `^:dev/always`, with its compilation consumers,
+  recompiled and reloaded (light-cljs-325; it was reloaded without
+  recompiling before, see "Settled questions").
 - Never a namespace marked `^:dev/once`, and never `runtime.js`.
 - Downstream namespaces that only *read* N's definitions are not reloaded
   by default: their calls look the definition up at call time. With
@@ -366,6 +368,58 @@ policy in the client, so that a runtime that missed steps loads what they
 would have loaded: a `once` unit only where the runtime never ran it to its
 end, and when anything else loads, the `always` units and, with the
 `dependents` flag, the units downstream along each unit's `requires`.
+
+As built (light-cljs-325): what a step recompiles comes from the build's
+dependency manifest ([compiler-cache.md](compiler-cache.md), "Conservative
+keys and invalidation"), the record restart validation keys on, and the
+policy evaluator the cache uses (`light_cljs::cache_policy`). The startup
+build records the manifest; each step revises it
+(`DependencyManifest::revise`) with each namespace the session compiled
+again: its requires as the session has them, whether namespaces declare
+macros now, and what the session observed while it compiled the file (the
+namespaces its expansions named, whether it ran a source macro, and what
+`light.build` read or declared, all attributed to every namespace the file
+wrote, since the session compiles every form as one source). Two rules
+keep the revision conservative where the session sees less than a build:
+a revised namespace keeps the observed edges, lazy references and coarse
+flag of its record (the session analyzes a form as if it required every
+namespace it has loaded, so it logs no qualified name of one); what a
+deferred unit's initializer read, a value later compiles reuse, goes also
+to the macro providers and helpers the namespace depends on, bundled
+libraries apart, and from those to their compilation consumers, as the
+build's helper records do. A step recompiles, from source and in load
+order:
+
+- each changed namespace;
+- each namespace that depends on a recompiled one through a macro-provider
+  or helper edge, and so on from those: the users of a changed macro
+  namespace, and the users of a macro whose namespace requires a changed
+  one, which may declare no macros itself (a helper). A namespace that
+  begins or stops declaring macros revises the manifest at once, so the
+  requirers it gains or loses are recompiled in the same step. A helper
+  edge reaches the macro namespace's direct dependencies only, as the
+  manifest records helpers; a function those call is looked up when it
+  runs, but an expansion that called it is not recompiled;
+- the consumers the manifest records of a resource that changed, appeared
+  or went: the watch polls every location a `light.build` resource was
+  looked for at, present or absent, with the source files. A location read
+  differently from how the watch first finds it is reported by the next
+  poll;
+- on every step a change triggers, and before any retained unit is kept,
+  the always-compile set of the policy evaluator: the namespaces marked
+  `^:dev/always` and their compilation consumers through every compilation
+  edge, runtime requires included. Always compile acts only when a step is
+  triggered: a file of no namespace of the build and an unregistered input
+  start no step. The session's state is kept, as for every recompile: a
+  macro expands again in the same macro heap. A compile that marks a
+  namespace `^:dev/always`, or loads a new namespace, evaluates the set
+  again, so the consumers it gains compile in the same step.
+
+A disk bypass does not invalidate memory: `^:light-cljs/no-cache` and
+`--watch --cache-blocker NS` (repeatable, given to the policy evaluator; the
+persistent cache itself comes to `--watch` with light-cljs-327) only keep a
+namespace out of the persistent cache, so they add nothing to a step. Runtime-only requirers are reloaded, not recompiled, only with
+`--reload-dependents`, as before.
 
 ### The server and the client
 
@@ -850,11 +904,14 @@ The deliberate differences between a dev build (and the session) and a
   keep their methods and saved factories follow the new Var. Redefining a
   protocol keeps existing extensions usable. `defmulti` keeps its existing
   value. These are the session's semantics today.
-- Namespaces that use a changed macro namespace are recompiled and reloaded
-  whether or not they used a macro from it. Nothing else downstream is
-  reloaded by default; `--reload-dependents` reloads every downstream
-  namespace in topological order. A namespace marked `^:dev/always` is
-  reloaded with every load; one marked `^:dev/once` loads once and is never
+- Namespaces that use a changed macro namespace, or a macro whose namespace
+  requires a changed namespace, are recompiled and reloaded whether or not
+  they used a macro from it, as are the namespaces that read a changed
+  `light.build` resource. Nothing else downstream is reloaded by default;
+  `--reload-dependents` reloads every downstream namespace in topological
+  order. A namespace marked `^:dev/always` is recompiled and reloaded, with
+  its compilation consumers, by every step; one marked `^:dev/once` loads
+  once and is never
   reloaded, though its unit file follows its source for a page loaded
   later.
 - Analysis uses warning mode: undeclared Vars and arity conflicts are
@@ -921,6 +978,19 @@ these; a finding that contradicts one goes under "Open questions".
   network.
 - **Downstream reloads.** The documented reload set by default, and
   `--reload-dependents` in Phase 3 for shadow-cljs's `:full` behavior.
+- **`^:dev/always` means always compile** (superseded on 2026-10-17 by the
+  compiler-cache decisions, built in light-cljs-325). It was "always reload,
+  without recompiling". It now takes shadow-cljs's meaning: the namespace and
+  its compilation consumers are compiled again by every triggered step, then
+  reloaded, and never read from or written to the persistent cache. The
+  watch chooses what a step recompiles through the dependency manifest and
+  the cache's policy evaluator, so the watch and restart validation share
+  one record of what depends on what.
+- **Recompile, do not cache** (principle 16) is superseded for watch startup
+  and session loading only, by Phase 4 of the cache design
+  ([compiler-cache.md](compiler-cache.md)). A watch step still recompiles
+  against the retained program; the cache does not replace retained
+  in-memory state.
 
 ## Open questions
 

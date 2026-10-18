@@ -9,16 +9,27 @@
 //! that fails stops the step: the error goes to stderr and the namespace
 //! keeps its previous unit, to be compiled again at the next change. A
 //! changed `ns` form loads its new dependencies through the source provider,
-//! which adds their units to the manifest ahead of it, and a change to a
-//! namespace that declares macros recompiles every namespace that requires
-//! it from its source, since their units hold the expansions. A step that
-//! succeeds finds the hook functions again in the retained program for the
-//! manifest, and with `--serve` pushes the units of its reload set
-//! (`Watch::reload_set`: what it wrote, `^:dev/always` namespaces, never a
-//! `^:dev/once` one again, and with `--reload-dependents` those downstream).
+//! which adds their units to the manifest ahead of it.
+//!
+//! What else a step recompiles comes from the build's dependency manifest
+//! (`light_cljs::dependency_manifest`), recorded by the startup build and
+//! revised with what the session observes as it compiles: every namespace
+//! that depends on a recompiled one through a macro-provider or helper
+//! edge, since its unit holds expansions that may have changed, and so on
+//! from those; the consumers the manifest records of a `light.build`
+//! resource whose file changed, appeared or went; and on every step, before
+//! the retained units are kept, the always-compile set of the policy
+//! evaluator (`light_cljs::cache_policy`): the `^:dev/always` namespaces and
+//! their compilation consumers. A step that succeeds finds the hook
+//! functions again in the retained program for the manifest, and with
+//! `--serve` pushes the units of its reload set (`Watch::reload_set`: what
+//! it wrote, never a `^:dev/once` one again, and with `--reload-dependents`
+//! those downstream).
 use light_cljs::analyzer::AnalysisOptions;
+use light_cljs::cache_policy::{self, CacheSettings};
 use light_cljs::compile_stats::CompileStats;
 use light_cljs::compiler_data::Name;
+use light_cljs::dependency_manifest::{DependencyManifest, EdgeKinds, ExternalInput, Revision};
 use light_cljs::dev_build::{DevFile, DevManifest, DevNamespace, namespace_unit, unit_file};
 use light_cljs::dev_server::{Build, DevServer, Diagnostic, LoadUnit, Step};
 use light_cljs::dev_session::{Action, DevSession, Unit};
@@ -43,14 +54,20 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 pub const USAGE: &str = "Watch:
   light-cljs --watch --entry NAMESPACE --source-root DIR [--source-root DIR ...] --out-dir DIR
              [--poll-ms N] [--elide-asserts] [--stats] [--config KEY=EDN ...]
+             [--cache-blocker NS ...]
              [--serve PORT [--serve-host HOST] [--reload-dependents]]
 
 Write the dev build of --compile --reloadable into DIR, then poll the .cljs
-and .cljc files under the source roots every N milliseconds (100), comparing
+and .cljc files under the source roots, and every file a light.build
+resource was looked for at, every N milliseconds (100), comparing
 modification times and sizes. A changed namespace is compiled again against
 the program the watch keeps, and its unit, source map and manifest.json are
-rewritten; a namespace that declares macros also recompiles the namespaces
-that require it, and a new require adds the units of the namespaces it loads.
+rewritten; so is every namespace whose macro expansions may have changed:
+one that uses a macro of a recompiled namespace, or a macro whose namespace
+requires a recompiled one. A changed, new or deleted resource recompiles
+the namespaces that read it, a new require adds the units of the namespaces
+it loads, and every step also recompiles the namespaces marked ^:dev/always
+and those that depend on them.
 Each step prints one line to stderr with the namespaces recompiled and the
 time taken; a form that fails prints its error with file, line and column,
 and the namespace keeps its previous unit. Runs until interrupted.
@@ -61,6 +78,11 @@ program as time.session-load-ms.
 
 With --config KEY=EDN, repeatable, give light.build/config the value EDN for
 the keyword KEY in the build and in every step, as --compile does.
+
+With --cache-blocker NS, repeatable, keep NS and every namespace whose
+compilation depends on it out of the persistent compiler cache, as --compile
+does. A watch keeps no persistent cache yet, and a blocker never makes a step
+compile a namespace whose retained unit is still valid.
 
 With --serve PORT (0 for any free port), also serve the build over HTTP on
 127.0.0.1, or on HOST with --serve-host (0.0.0.0 opens it to the network;
@@ -73,9 +95,9 @@ the page. A page that connects late catches up with the build. The server
 also answers light-cljs --repl --connect 127.0.0.1:PORT, whose forms it
 compiles with the program the watch keeps and runs in a connected runtime.
 
-A step loads the namespaces it recompiled, which include those that require
-a changed macro namespace, then every namespace whose ns form is marked
-^:dev/always, in load order; never again a namespace marked ^:dev/once. With
+A step loads the namespaces it recompiled, which include those that use a
+changed macro and the namespaces marked ^:dev/always, in load order; never
+again a namespace marked ^:dev/once. With
 --reload-dependents, it also loads every namespace that depends on one it
 loads, directly or not, as shadow-cljs's :full reload strategy does.";
 
@@ -96,6 +118,8 @@ struct Options {
     stats: bool,
     /// `--config KEY=EDN`: what `light.build/config` answers.
     configuration: light_cljs::BuildConfiguration,
+    /// `--cache-blocker NS`, for the policy evaluator.
+    blockers: Vec<String>,
 }
 
 fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> {
@@ -105,6 +129,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
     let (mut serve, mut serve_host, mut reload_dependents) = (None, None, false);
     let mut stats = false;
     let mut configuration = light_cljs::BuildConfiguration::new();
+    let mut blockers = Vec::new();
     while let Some(arg) = args.next() {
         let flag = arg.to_str().unwrap_or("");
         let mut value = || {
@@ -164,6 +189,11 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
                     .insert_text(&text)
                     .map_err(|error| format!("--config {text}: {error}"))?;
             }
+            "--cache-blocker" => blockers.push(
+                value()?
+                    .into_string()
+                    .map_err(|_| "--cache-blocker must be valid UTF-8")?,
+            ),
             _ => return Err(format!("unexpected watch option: {flag}\n{USAGE}").into()),
         }
     }
@@ -189,6 +219,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
         reload_dependents,
         stats,
         configuration,
+        blockers,
     }))
 }
 
@@ -295,6 +326,22 @@ struct Watch {
     /// The namespaces the runtimes have been sent: those of the first build
     /// and of every step that loaded. A `^:dev/once` one is not sent again.
     published: HashSet<String>,
+    /// The build's dependency manifest: the startup build's, revised with
+    /// what the session observed in each namespace it compiled again.
+    graph: DependencyManifest,
+    /// The policy evaluator's settings. A watch has no persistent cache, and
+    /// a disk bypass invalidates nothing in memory.
+    settings: CacheSettings,
+    /// What the step under way compiled again, not yet in `graph`.
+    revisions: HashMap<String, Revision>,
+    /// Every file a `light.build` resource of `graph` was looked for at,
+    /// with its stamp, `None` where there is no file.
+    resources: BTreeMap<PathBuf, Option<Stamp>>,
+    /// The namespaces `graph` records as reading each file of `resources`.
+    resource_consumers: HashMap<PathBuf, Vec<String>>,
+    /// Files of `resources` that changed between their read and their first
+    /// stamp, which the next poll reports.
+    stale_resources: Vec<PathBuf>,
 }
 
 /// Why a namespace's compile ended a step.
@@ -334,6 +381,9 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     };
     let mut warnings = Vec::new();
     let mut stats = options.stats.then(CompileStats::new);
+    // The startup build's dependency manifest is the watch's, which each
+    // step revises with what the session observes.
+    let mut graph = DependencyManifest::default();
     let program = crate::analyze_entry(
         &options.entry,
         &options.roots,
@@ -341,6 +391,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
         analysis,
         &mut warnings,
         stats.as_mut(),
+        Some(&mut graph),
         &|_| {
             Some(crate::EmissionSettings {
                 application: light_cljs::ApplicationOptions::new(
@@ -425,7 +476,17 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
         warnings: Vec::new(),
         reload_dependents: options.reload_dependents,
         published: HashSet::new(),
+        graph,
+        settings: CacheSettings {
+            enabled: false,
+            blockers: options.blockers.clone(),
+        },
+        revisions: HashMap::new(),
+        resources: BTreeMap::new(),
+        resource_consumers: HashMap::new(),
+        stale_resources: Vec::new(),
     };
+    watch.watch_resources();
     watch.published = watch.namespaces().map(str::to_owned).collect();
     // The hooks as the session's program has them, which the manifest of
     // the build lists already; each step that succeeds finds them again.
@@ -482,7 +543,8 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
             }
         }
         let now = scan(&roots);
-        if now == stamps {
+        let resources = watch.poll_resources();
+        if now == stamps && resources.is_empty() {
             continue;
         }
         let noticed = Instant::now();
@@ -497,8 +559,16 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
             .cloned()
             .collect::<Vec<_>>();
         stamps = now;
-        watch.step(&changed, &deleted, noticed)?;
+        watch.step(&changed, &deleted, &resources, noticed)?;
     }
+}
+
+/// The stamp of the file at `path`, `None` when there is no file there.
+fn stamp(path: &Path) -> Option<Stamp> {
+    fs::metadata(path)
+        .ok()
+        .filter(fs::Metadata::is_file)
+        .map(|metadata| (metadata.modified().ok(), metadata.len()))
 }
 
 impl Watch {
@@ -529,9 +599,16 @@ impl Watch {
             .map(|entry| entry.name.clone())
     }
 
-    /// One step: the files `changed` (or added) and `deleted` since the last
-    /// poll, which noticed them at `noticed`.
-    fn step(&mut self, changed: &[PathBuf], deleted: &[PathBuf], noticed: Instant) -> Result<()> {
+    /// One step: the source files `changed` (or added) and `deleted` since
+    /// the last poll, and the files of `resources` that changed, appeared or
+    /// went, which the poll noticed at `noticed`.
+    fn step(
+        &mut self,
+        changed: &[PathBuf],
+        deleted: &[PathBuf],
+        resources: &[PathBuf],
+        noticed: Instant,
+    ) -> Result<()> {
         for path in deleted {
             if let Some(namespace) = self.namespace_of(path) {
                 eprintln!(
@@ -540,19 +617,36 @@ impl Watch {
                 );
             }
         }
-        if changed.is_empty() {
+        if changed.is_empty() && resources.is_empty() {
             return Ok(());
         }
         let mut queue = std::mem::take(&mut self.pending);
-        for path in changed {
-            if let Some(namespace) = self.namespace_of(path)
-                && !queue.contains(&namespace)
-            {
+        let enqueue = |queue: &mut Vec<String>, namespace: String| {
+            if !queue.contains(&namespace) {
                 queue.push(namespace);
+            }
+        };
+        for path in changed {
+            if let Some(namespace) = self.namespace_of(path) {
+                enqueue(&mut queue, namespace);
+            }
+        }
+        // A resource invalidates the namespaces the manifest records as
+        // reading it, which a namespace's next compile records again.
+        for path in resources {
+            for namespace in self.resource_consumers.get(path).into_iter().flatten() {
+                enqueue(&mut queue, namespace.clone());
             }
         }
         if queue.is_empty() {
             return Ok(());
+        }
+        // A triggered step recompiles the always-compile set before it keeps
+        // any retained unit (docs/compiler-cache.md, "Opt-outs and their
+        // propagation"): the `^:dev/always` namespaces and their compilation
+        // consumers, as the policy evaluator finds them for the cache too.
+        for namespace in self.always_compile() {
+            enqueue(&mut queue, namespace);
         }
         let mut recompiled = Vec::new();
         let mut failed = None;
@@ -575,7 +669,10 @@ impl Watch {
                 Err(Failure::Output(error)) => return Err(error),
             }
         }
-        self.manifest.sort();
+        // What the step compiled joins the manifest, and its resources the
+        // files the poll watches.
+        self.revise();
+        self.watch_resources();
         // A step that succeeds finds the hooks again in the retained
         // program; a failed one leaves them, as it leaves its namespace's
         // unit.
@@ -672,7 +769,10 @@ impl Watch {
             .manifest
             .position(namespace)
             .is_some_and(|index| self.manifest.namespaces[index].macros);
-        let actions = self.session.load_namespace_file(namespace, &source);
+        let always = self.always(namespace);
+        let (actions, observations) = self
+            .session
+            .observing(|session| session.load_namespace_file(namespace, &source));
         // The namespaces the file's forms ran in or loaded, in the order the
         // step entered them, with their units, and the positions of the
         // action of each one's last unit and of the last action entering it.
@@ -809,23 +909,181 @@ impl Watch {
             entry.macros = self.session.declares_macros(name);
             recompiled.push(name.to_owned());
         }
+        // What the file's forms observed, and the requires they left, revise
+        // the manifest: for each namespace written, and for the namespace
+        // itself when its compile failed, which compiles again at the next
+        // change, after a resource it looked for appears, say. The session
+        // compiles every form as one source, so each gets all of it.
+        let mut revised = write
+            .iter()
+            .map(|&name| name.to_owned())
+            .collect::<Vec<_>>();
+        if error.is_some() && self.manifest.position(namespace).is_some() {
+            revised.push(namespace.to_owned());
+        }
+        let files = self.provider.files.borrow();
+        for name in &revised {
+            self.revisions.insert(
+                name.clone(),
+                Revision {
+                    file: files
+                        .get(name)
+                        .map(|file| file.display().to_string())
+                        .unwrap_or_default(),
+                    requires: self.session.requires(name),
+                    observations: observations.clone(),
+                },
+            );
+        }
+        drop(files);
         if let Some((error, diagnostic)) = error {
             return Err(Failure::Source(error, diagnostic));
         }
-        // The units of the namespaces that require a macro namespace hold
-        // their expansions: compile them again from their sources.
-        if macros || self.session.declares_macros(namespace) {
-            for entry in &self.manifest.namespaces {
-                if entry.name != namespace
-                    && entry.requires.iter().any(|required| required == namespace)
-                    && !queue.contains(&entry.name)
-                    && !recompiled.contains(&entry.name)
-                {
-                    queue.push(entry.name.clone());
-                }
+        // The units of the namespaces that depend on a recompiled one through
+        // a macro-provider or helper edge hold expansions that may have
+        // changed: compile them again from their sources. A namespace that
+        // begins or stops declaring macros, or that loaded new ones, changes
+        // those edges at once; the consumers are those before and after.
+        let mut consumers = self.consumers(&write);
+        let added = write.iter().any(|&name| self.graph.id(name).is_none());
+        let marked = always != self.always(namespace);
+        if added || marked || macros != self.session.declares_macros(namespace) {
+            self.revise();
+            consumers.extend(self.consumers(&write));
+        }
+        // A namespace newly marked `^:dev/always`, or one new to the build,
+        // can add to the always-compile set, which this step recompiles too.
+        if added || marked {
+            consumers.extend(self.always_compile());
+        }
+        for consumer in consumers {
+            if !write.contains(&consumer.as_str())
+                && !queue.contains(&consumer)
+                && !recompiled.contains(&consumer)
+            {
+                queue.push(consumer);
             }
         }
         Ok(())
+    }
+
+    /// The namespaces that depend on one of `namespaces` through a
+    /// macro-provider or helper edge of the manifest, in no order.
+    fn consumers(&self, namespaces: &[&str]) -> Vec<String> {
+        let mut consumers = Vec::new();
+        for id in namespaces.iter().filter_map(|name| self.graph.id(name)) {
+            for (consumer, kinds) in self.graph.dependents(id) {
+                if kinds.intersects(EdgeKinds::MACRO_PROVIDER | EdgeKinds::HELPER) {
+                    consumers.push(self.graph.record(consumer).name.clone());
+                }
+            }
+        }
+        consumers
+    }
+
+    /// The manifest after the step's revisions: the build's namespaces in
+    /// load order, each one the step compiled again as the session knows it.
+    fn revise(&mut self) {
+        self.manifest.sort();
+        if self.revisions.is_empty() {
+            return;
+        }
+        let revisions = std::mem::take(&mut self.revisions);
+        let macros = self.session.macro_namespaces();
+        let order = self.namespaces().collect::<Vec<_>>();
+        let graph = self
+            .graph
+            .revise(&order, &revisions, |name| macros.contains(name));
+        self.graph = graph;
+    }
+
+    /// The always-compile set of the policy evaluator, by name: the
+    /// namespaces whose `ns` forms the session last compiled mark
+    /// `^:dev/always`, and their compilation consumers. A disk bypass
+    /// (`^:light-cljs/no-cache`, a cache blocker) adds nothing.
+    fn always_compile(&self) -> Vec<String> {
+        let policy = cache_policy::evaluate(
+            &self.graph,
+            &self.settings,
+            &self.session.source_metadata(&self.graph),
+            &cache_policy::non_cacheable_inputs(&self.graph),
+        );
+        policy
+            .always_compile()
+            .iter()
+            .map(|&id| self.graph.record(id).name.clone())
+            .collect()
+    }
+
+    /// Watch the files the manifest's resources were looked for at: keep
+    /// the stamps of those watched already, and stamp the others now. One
+    /// that the read found otherwise than it is now (it appeared, went, or
+    /// its text changed since) is stale, and the next poll reports it.
+    fn watch_resources(&mut self) {
+        let mut consumers: HashMap<PathBuf, Vec<String>> = HashMap::new();
+        let mut recorded: HashMap<PathBuf, (bool, Option<[u8; 32]>)> = HashMap::new();
+        for (id, record) in self.graph.namespaces.iter().enumerate() {
+            let id = light_cljs::dependency_manifest::NamespaceId(id as u32);
+            for input in self.graph.external_inputs(id) {
+                let ExternalInput::Resource(resource) = input else {
+                    continue;
+                };
+                for candidate in &resource.candidates {
+                    let readers = consumers.entry(candidate.path.clone()).or_default();
+                    if !readers.contains(&record.name) {
+                        readers.push(record.name.clone());
+                    }
+                    let found = resource
+                        .found
+                        .as_ref()
+                        .filter(|_| candidate.present)
+                        .map(|found| found.sha256);
+                    recorded
+                        .entry(candidate.path.clone())
+                        .or_insert((candidate.present, found));
+                }
+            }
+        }
+        let mut resources = BTreeMap::new();
+        for (path, (present, sha256)) in recorded {
+            let stamp = match self.resources.remove(&path) {
+                Some(stamp) => stamp,
+                None => {
+                    let stamp = stamp(&path);
+                    let stale = match (present, stamp.is_some()) {
+                        (true, true) => sha256.is_some_and(|sha256| {
+                            fs::read(&path)
+                                .map_or(true, |bytes| light_cljs::sha256::digest(&bytes) != sha256)
+                        }),
+                        (false, false) => false,
+                        _ => true,
+                    };
+                    if stale {
+                        self.stale_resources.push(path.clone());
+                    }
+                    stamp
+                }
+            };
+            resources.insert(path, stamp);
+        }
+        self.resources = resources;
+        self.resource_consumers = consumers;
+    }
+
+    /// Stamp the watched resource files again: those whose stamps changed,
+    /// with the stale ones.
+    fn poll_resources(&mut self) -> Vec<PathBuf> {
+        let mut changed = std::mem::take(&mut self.stale_resources);
+        for (path, before) in &mut self.resources {
+            let now = stamp(path);
+            if now != *before {
+                *before = now;
+                if !changed.contains(path) {
+                    changed.push(path.clone());
+                }
+            }
+        }
+        changed
     }
 
     /// A chain of requires from `namespace` back to itself, as the session

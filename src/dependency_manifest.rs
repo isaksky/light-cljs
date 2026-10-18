@@ -354,6 +354,289 @@ impl DependencyManifest {
         self.forward.targets.len()
     }
 
+    /// The manifest of the same program after a running session (`--watch`)
+    /// compiled some of its namespaces again: the namespaces in `order`, load
+    /// order, dependencies first; `revised` gives, by name, what the session
+    /// knows of each one it compiled again, and `declares_macros` whether a
+    /// namespace declares macros now. Every other namespace keeps its record:
+    /// its lookups, requires, observations, coarse flag and inputs. The
+    /// edges are derived again by the rules that built this manifest, so a
+    /// changed require, a namespace that begins to declare macros or one
+    /// new to the program changes the macro-provider and helper edges of
+    /// every namespace it reaches.
+    ///
+    /// A revision's requires and observations of a namespace that is not
+    /// earlier in `order` (a cycle the session refuses) make no edge.
+    pub fn revise(
+        &self,
+        order: &[&str],
+        revised: &HashMap<String, Revision>,
+        declares_macros: impl Fn(&str) -> bool,
+    ) -> Self {
+        let position: HashMap<&str, usize> = order
+            .iter()
+            .enumerate()
+            .map(|(at, &name)| (name, at))
+            .collect();
+        let earlier = |name: &str, at: usize| position.get(name).is_none_or(|&target| target < at);
+        let mut loader = LoaderRecord {
+            lookups: self.lookups.clone(),
+            ..LoaderRecord::default()
+        };
+        let mut log = ObservationLog::default();
+        let configuration = self.inputs.iter().find_map(|input| match input {
+            ExternalInput::Configuration { sha256 } => Some(*sha256),
+            _ => None,
+        });
+        for (at, &name) in order.iter().enumerate() {
+            let observer = at as u32;
+            let old = self.id(name).map(|id| (id, self.record(id)));
+            let (file, kind, origin, lookup) = match old {
+                Some((_, record)) => (
+                    record.source.file.clone(),
+                    record.source.kind,
+                    record.source.origin,
+                    record.source.lookup,
+                ),
+                None => {
+                    let file = revised
+                        .get(name)
+                        .map(|r| r.file.clone())
+                        .unwrap_or_default();
+                    loader.lookups.push(Lookup {
+                        namespace: name.to_owned(),
+                        requester: name.to_owned(),
+                        candidates: Vec::new(),
+                        found: Some(file.clone()),
+                    });
+                    let kind = if file.ends_with(".cljc") {
+                        SourceKind::Cljc
+                    } else {
+                        SourceKind::Cljs
+                    };
+                    let lookup = LookupId(loader.lookups.len() as u32 - 1);
+                    (file, kind, SourceOrigin::Provider, lookup)
+                }
+            };
+            let mut requires = Vec::new();
+            match (revised.get(name), old) {
+                (Some(revision), old) => {
+                    for required in &revision.requires {
+                        if earlier(required, at) {
+                            requires.push((
+                                required.clone(),
+                                required.clone(),
+                                RequireForm::Declared,
+                                Vec::new(),
+                            ));
+                        }
+                    }
+                    // The session analyzes a form as if it required every
+                    // namespace it has loaded, so it logs no qualified name
+                    // of a loaded namespace: what the record observed stays,
+                    // with its lazy references, an over-approximation.
+                    if let Some((id, _)) = old {
+                        self.keep_observations(id, observer, &|name| earlier(name, at), &mut log);
+                        for (target, kinds) in self.dependencies(id) {
+                            if kinds.contains(EdgeKinds::LAZY) {
+                                loader
+                                    .lazy
+                                    .push((observer, self.record(target).name.clone()));
+                            }
+                        }
+                    }
+                    let observations = &revision.observations;
+                    for (observed, kinds) in &observations.named {
+                        if earlier(observed, at) {
+                            log.named.push((observer, observed.clone(), *kinds));
+                        }
+                    }
+                    if observations.coarse {
+                        log.executes.push(observer);
+                    }
+                    for input in &observations.inputs {
+                        log.inputs.push(InputRecord {
+                            own: observer,
+                            helpers: Vec::new(),
+                            initializer: false,
+                            input: input.clone(),
+                        });
+                    }
+                    // A read while a compile-time unit ran belongs to that
+                    // unit's namespace as well, which a reused value of it
+                    // keeps depending on. The session cannot name it, so it
+                    // goes to the macro providers and helpers this namespace
+                    // depends on, as the first build's helper records do,
+                    // and from those to their compilation consumers.
+                    if !observations.helper_inputs.is_empty() {
+                        let helpers = self.compile_time_dependencies(
+                            name,
+                            revision,
+                            revised,
+                            &declares_macros,
+                            &position,
+                            at,
+                        );
+                        for input in &observations.helper_inputs {
+                            log.inputs.push(InputRecord {
+                                own: observer,
+                                helpers: helpers.clone(),
+                                initializer: true,
+                                input: input.clone(),
+                            });
+                        }
+                    }
+                }
+                (None, Some((id, record))) => {
+                    for require in &record.requires {
+                        let target = match require.target {
+                            RequireTarget::Namespace(target) => self.record(target).name.clone(),
+                            RequireTarget::Core => "cljs.core".to_owned(),
+                            RequireTarget::Host => require.written.clone(),
+                        };
+                        if earlier(&target, at) {
+                            requires.push((
+                                require.written.clone(),
+                                target,
+                                require.form,
+                                require.lookups.clone(),
+                            ));
+                        }
+                    }
+                    self.keep_observations(id, observer, &|name| earlier(name, at), &mut log);
+                    for (target, kinds) in self.dependencies(id) {
+                        if kinds.contains(EdgeKinds::LAZY) {
+                            loader
+                                .lazy
+                                .push((observer, self.record(target).name.clone()));
+                        }
+                    }
+                    for input in self.external_inputs(id) {
+                        log.inputs.push(InputRecord {
+                            own: observer,
+                            helpers: Vec::new(),
+                            initializer: false,
+                            input: input.clone(),
+                        });
+                    }
+                }
+                (None, None) => {}
+            }
+            loader.sources.push(LoadedSource {
+                name: name.to_owned(),
+                file,
+                kind,
+                origin,
+                lookup,
+                requires,
+            });
+        }
+        log.configuration = configuration;
+        build(
+            loader,
+            log,
+            &crate::arena::Arena::default(),
+            declares_macros,
+        )
+    }
+
+    /// Log what the record of `id` observed beyond its `ns` form for the
+    /// namespace at `observer` of a revision: its observed edges to the
+    /// namespaces still `earlier`, its absent names and its coarse flag. An
+    /// observed edge may also carry a require's macro-provider kind, which
+    /// then stays: an over-approximation.
+    fn keep_observations(
+        &self,
+        id: NamespaceId,
+        observer: u32,
+        earlier: &dyn Fn(&str) -> bool,
+        log: &mut ObservationLog,
+    ) {
+        for (target, kinds) in self.dependencies(id) {
+            let target = &self.record(target).name;
+            if kinds.contains(EdgeKinds::OBSERVED) && earlier(target) {
+                let kept = kinds.0 & (EdgeKinds::OBSERVED.0 | EdgeKinds::MACRO_PROVIDER.0);
+                log.named.push((observer, target.clone(), EdgeKinds(kept)));
+            }
+        }
+        let record = self.record(id);
+        for absent in &record.absent {
+            log.absent.push((observer, absent.clone()));
+        }
+        if record.coarse {
+            log.executes.push(observer);
+        }
+    }
+
+    /// The positions, before `at` in a revision's order, of the namespaces
+    /// whose code may run while the revised namespace `name` compiles: the
+    /// macro providers it requires, names or depended on, and their direct
+    /// dependencies (its helpers), as the record and the revisions have them.
+    fn compile_time_dependencies(
+        &self,
+        name: &str,
+        revision: &Revision,
+        revised: &HashMap<String, Revision>,
+        declares_macros: &dyn Fn(&str) -> bool,
+        position: &HashMap<&str, usize>,
+        at: usize,
+    ) -> Vec<u32> {
+        let mut providers: Vec<String> = revision
+            .requires
+            .iter()
+            .filter(|required| declares_macros(required))
+            .cloned()
+            .collect();
+        providers.extend(
+            revision
+                .observations
+                .named
+                .iter()
+                .filter(|(_, kinds)| kinds.contains(EdgeKinds::MACRO_PROVIDER))
+                .map(|(observed, _)| observed.clone()),
+        );
+        let mut reached = Vec::new();
+        if let Some(id) = self.id(name) {
+            for (target, kinds) in self.dependencies(id) {
+                let target = self.record(target).name.clone();
+                if kinds.contains(EdgeKinds::MACRO_PROVIDER) {
+                    providers.push(target);
+                } else if kinds.contains(EdgeKinds::HELPER) {
+                    reached.push(target);
+                }
+            }
+        }
+        for provider in &providers {
+            reached.push(provider.clone());
+            match (revised.get(provider), self.id(provider)) {
+                (Some(revision), _) => reached.extend(revision.requires.iter().cloned()),
+                (None, Some(id)) => reached.extend(
+                    self.dependencies(id)
+                        .filter(|(_, kinds)| {
+                            kinds.intersects(EdgeKinds::RUNTIME | EdgeKinds::OBSERVED)
+                        })
+                        .map(|(target, _)| self.record(target).name.clone()),
+                ),
+                (None, None) => {}
+            }
+        }
+        // A bundled library does not change while the build runs.
+        let bundled = |name: &str| {
+            self.id(name)
+                .is_some_and(|id| self.record(id).source.origin == SourceOrigin::Bundled)
+        };
+        let mut positions: Vec<u32> = reached
+            .iter()
+            .filter(|name| !bundled(name))
+            .filter_map(|name| position.get(name.as_str()))
+            .filter(|&&target| target < at)
+            .map(|&target| target as u32)
+            .collect();
+        positions.sort_unstable();
+        positions.dedup();
+        positions
+    }
+
     fn walk(&self, rows: &Rows, start: NamespaceId, kinds: EdgeKinds) -> Vec<NamespaceId> {
         let mut seen = vec![false; self.namespaces.len()];
         seen[start.0 as usize] = true;
@@ -371,6 +654,33 @@ impl DependencyManifest {
         reached.sort_unstable();
         reached
     }
+}
+
+/// What a running session knows of a namespace it compiled again, for
+/// [`DependencyManifest::revise`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Revision {
+    /// The file the namespace was loaded from.
+    pub file: String,
+    /// The namespaces it requires now, in the order its directives named them.
+    pub requires: Vec<String>,
+    pub observations: Observations,
+}
+
+/// What a session's compile of one namespace observed beyond its `ns` form
+/// ([`crate::dev_session::DevSession::observing`]): the namespaces it named
+/// (with [`EdgeKinds::OBSERVED`], and [`EdgeKinds::MACRO_PROVIDER`] for a
+/// fully qualified macro), whether it ran a source macro, and what
+/// `light.build` read or declared.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Observations {
+    pub named: Vec<(String, EdgeKinds)>,
+    pub coarse: bool,
+    /// What `light.build` read or declared for the forms themselves.
+    pub inputs: Vec<ExternalInput>,
+    /// What it read or declared while a deferred unit's initializer ran,
+    /// which computes a value later compiles reuse.
+    pub helper_inputs: Vec<ExternalInput>,
 }
 
 /// What analysis observed beyond the `ns` forms, logged through the macro
@@ -407,6 +717,10 @@ pub(crate) struct InputRecord {
     /// deferred unit being analyzed or initialized, and the source a data
     /// reader reads.
     pub helpers: Vec<u32>,
+    /// Whether a deferred unit's initializer was the innermost code running,
+    /// rather than a macro or the analysis of a deferred unit: a value the
+    /// initializer computes is kept and reused by later compiles.
+    pub initializer: bool,
     pub input: ExternalInput,
 }
 

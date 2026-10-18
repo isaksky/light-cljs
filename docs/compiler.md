@@ -2032,7 +2032,8 @@ the same `define` call around an interactive unit that registers the
 namespace once (the first in load order every namespace of the build), makes
 it current and runs each form's statements in turn, each in a scope of its
 own. `--watch --serve PORT` also serves the build and pushes the units of each
-step's reload set (its namespaces, `^:dev/always` ones, never `^:dev/once`
+step's reload set (its namespaces, which include the `^:dev/always` ones and
+their compilation consumers that every step recompiles, never `^:dev/once`
 ones, and with `--reload-dependents` those downstream) to the pages running
 it, which `client.js` (src/dev_client.js) loads between the hooks
 ([Serve](evaluation.md#serve)).

@@ -214,6 +214,7 @@ fn serve(
             log.inputs.push(InputRecord {
                 own,
                 helpers: helpers.clone(),
+                initializer: caller.initializing,
                 input,
             });
         }

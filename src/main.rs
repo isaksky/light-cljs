@@ -550,6 +550,7 @@ fn run_namespace(
             options,
             &mut warnings,
             stats.as_mut(),
+            None,
             &|program| flags.emission(program, layout.clone()),
         ),
     };
@@ -609,7 +610,8 @@ fn run_namespace(
     print_stats(stats, begun)
 }
 
-/// Analyze `entry` from `roots`, recording `stats` when given (`--stats`).
+/// Analyze `entry` from `roots`, recording `stats` when given (`--stats`),
+/// and the dependency manifest into `manifest` when given (`--watch`).
 ///
 /// Until the cache store exists (docs/compiler-cache.md, "Implementation
 /// sequence"), the environment variable `LIGHT_CLJS_CAPTURE_ARTIFACTS`
@@ -621,6 +623,7 @@ fn run_namespace(
 /// dependency manifest, computes every namespace's front-end key and
 /// re-validates its inputs, and `--stats` reports that (`cache.keys.*`);
 /// `encode` keeps the artifacts until then and encodes each with its keys.
+#[allow(clippy::too_many_arguments)]
 fn analyze_entry(
     entry: &str,
     roots: &[PathBuf],
@@ -628,6 +631,7 @@ fn analyze_entry(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
     stats: Option<&mut CompileStats>,
+    manifest: Option<&mut light_cljs::dependency_manifest::DependencyManifest>,
     emission: &dyn Fn(&light_cljs::Program) -> Option<EmissionSettings>,
 ) -> Result<(light_cljs::Program, Vec<(PathBuf, String)>), light_cljs::NamespaceCompileError> {
     if let Some(mode) = env::var_os("LIGHT_CLJS_CAPTURE_ARTIFACTS").filter(|mode| !mode.is_empty())
@@ -636,7 +640,8 @@ fn analyze_entry(
         let keep = mode == "keep" || encode;
         let mut stats = stats;
         let environment = KeyEnvironment::new(host, options);
-        let mut manifest = light_cljs::dependency_manifest::DependencyManifest::default();
+        let mut recorded = light_cljs::dependency_manifest::DependencyManifest::default();
+        let manifest = manifest.unwrap_or(&mut recorded);
         let mut kept = Vec::new();
         let mut sink = |capture: light_cljs::namespace_artifact::NamespaceCapture| {
             // What capture could not represent, or represented wrongly.
@@ -659,17 +664,17 @@ fn analyze_entry(
             warnings,
             light_cljs::compiler::EntryRecorders {
                 stats: stats.as_deref_mut(),
-                manifest: Some(&mut manifest),
+                manifest: Some(&mut *manifest),
                 capture: Some(&mut sink),
                 ..Default::default()
             },
         );
         if let Ok((program, files)) = &analyzed {
-            let (keys, counts) = measure_keys(&environment, &manifest, files, entry, roots);
+            let (keys, counts) = measure_keys(&environment, manifest, files, entry, roots);
             let settings = emission(program);
             let mut codec = encode.then(light_cljs::compile_stats::CodecCounts::default);
             if let Some(codec) = codec.as_mut() {
-                let metadata = light_cljs::cache_policy::source_metadata(&manifest, host);
+                let metadata = light_cljs::cache_policy::source_metadata(manifest, host);
                 for capture in &kept {
                     let (Ok(artifact), Some(id)) =
                         (&capture.artifact, manifest.id(&capture.namespace))
@@ -685,7 +690,7 @@ fn analyze_entry(
                         )
                     });
                     let fields = light_cljs::artifact_codec::ManifestFields::of(
-                        &manifest,
+                        manifest,
                         id,
                         metadata[id.0 as usize],
                         front_end,
@@ -702,6 +707,20 @@ fn analyze_entry(
         // The process ends with the compilation, which keeps them until then.
         std::mem::forget(kept);
         return analyzed;
+    }
+    if manifest.is_some() {
+        return light_cljs::compiler::analyze_namespace_entry_recorded(
+            entry,
+            roots,
+            host,
+            options,
+            warnings,
+            light_cljs::compiler::EntryRecorders {
+                stats,
+                manifest,
+                ..Default::default()
+            },
+        );
     }
     match stats {
         Some(stats) => light_cljs::compiler::analyze_namespace_entry_with_stats(

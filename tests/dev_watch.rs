@@ -877,6 +877,383 @@ fn a_macro_reading_the_build_configuration_compiles_at_startup_and_in_steps() {
     );
 }
 
+/// `app.macros` requiring the helper namespace `app.helper`, whose
+/// `separator` the macro calls as it expands: `app.view`, which uses the
+/// macro, depends on `app.helper` through a helper edge.
+fn helper_example(src: &Path) {
+    fs::write(
+        src.join("app/helper.cljs"),
+        "(ns app.helper)\n\n(defn separator [] \": \")\n",
+    )
+    .unwrap();
+    let macros = fs::read_to_string(src.join("app/macros.cljs")).unwrap();
+    let macros = macros
+        .replace(
+            "\"A macro and the helper function its expansion calls.\")",
+            "\"A macro and the helper function its expansion calls.\"\n  (:require [app.helper :as helper]))",
+        )
+        .replace("~label \": \"", "~label ~(helper/separator)");
+    fs::write(src.join("app/macros.cljs"), macros).unwrap();
+}
+
+/// An edit to a namespace that declares no macros, which a macro's
+/// namespace requires, recompiles the namespaces that use the macro, through
+/// the dependency manifest's helper edges, and not the macro's namespace,
+/// whose unit holds no expansion.
+#[test]
+fn a_helper_edit_recompiles_the_macro_consumers() {
+    let mut watch = Watch::start_with("dev-watch-helper", helper_example);
+    assert!(watch.startup.is_empty(), "{:#?}", watch.startup);
+    assert_eq!(watch.reload(&[]), record("start\nclicks: [1]\n"));
+    let (lines, step) = watch.save(
+        "app/helper.cljs",
+        "(ns app.helper)\n\n(defn separator [] \" = \")\n",
+    );
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.helper, app.view in "),
+        "{step}"
+    );
+    assert_eq!(
+        watch.reload(&["app.helper.js", "app.view.js"]),
+        record("start\nclicks: [1]\nreloading\nclicks = [2]\n")
+    );
+    // The helper's next edit, after the session compiled the namespaces
+    // again and revised the manifest with them, still reaches the consumers.
+    let (lines, step) = watch.save(
+        "app/helper.cljs",
+        "(ns app.helper)\n\n(defn separator [] \" - \")\n",
+    );
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.helper, app.view in "),
+        "{step}"
+    );
+    let [now, fresh] = watch.now_and_fresh();
+    assert_eq!(now, record("start\nclicks - [1]\n"));
+    assert_eq!(now, fresh);
+}
+
+/// A resource a macro reads through `light.build` is watched where it was
+/// looked for: it appearing, changing and going each recompile the
+/// namespace whose expansion read it, and nothing else.
+#[test]
+fn a_resource_appearing_changing_or_going_recompiles_its_reader() {
+    let mut watch = Watch::start_with("dev-watch-resource-steps", |src| {
+        let macros = fs::read_to_string(src.join("app/macros.cljs")).unwrap();
+        let macros = macros
+            .replace(
+                "\"A macro and the helper function its expansion calls.\")",
+                "\"A macro and the helper function its expansion calls.\"\n  (:require [light.build :as b]))",
+            )
+            .replace(
+                "~label \": \"",
+                "~label ~(or (b/resource? \"./separator.txt\") \": \")",
+            );
+        fs::write(src.join("app/macros.cljs"), macros).unwrap();
+    });
+    assert!(watch.startup.is_empty(), "{:#?}", watch.startup);
+    assert_eq!(watch.reload(&[]), record("start\nclicks: [1]\n"));
+    // The startup build records the read on `app.view`, whose compile-time
+    // units made it, and on its compilation consumer `app.main`, which could
+    // reuse what they computed (docs/compiler-cache.md, "Conservative keys
+    // and invalidation"); the session records it on the namespace whose
+    // compile read it.
+    for (separator, recompiled, stdout) in [
+        (" = ", "app.view, app.main", "clicks = [2]"),
+        (" - ", "app.view", "clicks - [2]"),
+    ] {
+        let (lines, step) = watch.save("app/separator.txt", separator);
+        assert!(lines.is_empty(), "{lines:#?}");
+        assert!(
+            step.starts_with(&format!("light-cljs: recompiled {recompiled} in ")),
+            "{step}"
+        );
+        assert_eq!(
+            watch.reload(&["app.view.js", "app.main.js"]),
+            record(&format!("start\nclicks: [1]\nreloading\n{stdout}\n"))
+        );
+    }
+    fs::remove_file(watch.dir.join("src/app/separator.txt")).unwrap();
+    let (lines, step) = watch.until("light-cljs: recompiled ");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.view in "),
+        "{step}"
+    );
+    let [now, fresh] = watch.now_and_fresh();
+    assert_eq!(now, record("start\nclicks: [1]\n"));
+    assert_eq!(now, fresh);
+    // A file no compile looked for starts no step.
+    fs::write(watch.dir.join("src/app/unread.txt"), "x").unwrap();
+    let state = watch.source("app/state.cljs");
+    let (lines, step) = watch.save("app/state.cljs", &format!("{state}\n"));
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.state in "),
+        "{step}"
+    );
+}
+
+/// `app.macros` with a macro that counts its expansions in the session's
+/// macro heap, and `app.config`, marked `^:dev/always`, printing the count
+/// its unit was compiled with; `app.main` requires `app.config`.
+fn always_example(src: &Path) {
+    let path = src.join("app/macros.cljs");
+    let macros = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        format!("{macros}\n(defonce expansions (atom 0))\n\n(defmacro counted [] (swap! expansions inc))\n"),
+    )
+    .unwrap();
+    fs::write(
+        src.join("app/config.cljs"),
+        "(ns ^:dev/always app.config\n  (:require [app.macros :refer [counted]]))\n\n(js/console.log \"config\" (counted))\n",
+    )
+    .unwrap();
+    let path = src.join("app/main.cljs");
+    let main = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        main.replace(
+            "[app.view :as view]))",
+            "[app.view :as view]\n            [app.config]))",
+        ),
+    )
+    .unwrap();
+}
+
+/// A namespace marked `^:dev/always` is compiled again, with its
+/// compilation consumer `app.main`, by every step, whatever changed: its
+/// macro expands again, in the session's macro heap, which keeps its state.
+#[test]
+fn an_always_namespace_recompiles_on_every_step() {
+    let mut watch = Watch::start_with("dev-watch-always", always_example);
+    assert!(watch.startup.is_empty(), "{:#?}", watch.startup);
+    assert_eq!(watch.reload(&[]), record("config 1\nstart\nclicks: [1]\n"));
+    for count in [2, 3] {
+        let state = watch.source("app/state.cljs");
+        let (lines, step) = watch.save("app/state.cljs", &format!("{state}\n"));
+        assert!(lines.is_empty(), "{lines:#?}");
+        assert!(
+            step.starts_with("light-cljs: recompiled app.state, app.config, app.main in "),
+            "{step}"
+        );
+        assert_eq!(
+            watch.reload(&["app.state.js", "app.config.js", "app.main.js"]),
+            record(&format!(
+                "config 1\nstart\nclicks: [1]\nreloading\nconfig {count}\nclicks: [2]\n"
+            ))
+        );
+    }
+    // A file of no namespace of the build starts no step, so it compiles
+    // nothing, `^:dev/always` included.
+    fs::write(watch.dir.join("src/app/notes.txt"), "x").unwrap();
+    fs::create_dir_all(watch.dir.join("src/other")).unwrap();
+    fs::write(
+        watch.dir.join("src/other/unused.cljs"),
+        "(ns other.unused)\n",
+    )
+    .unwrap();
+    let view = watch
+        .source("app/view.cljs")
+        .replace("(->Card \"clicks\"", "(->Card \"taps\"");
+    let (lines, step) = watch.save("app/view.cljs", &view);
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.view, app.config, app.main in "),
+        "{step}"
+    );
+    assert_eq!(
+        watch.reload(&["app.view.js", "app.config.js", "app.main.js"]),
+        record("config 1\nstart\nclicks: [1]\nreloading\nconfig 4\ntaps: [2]\n")
+    );
+}
+
+/// A macro namespace marked `^:dev/always` is an always-compile provider:
+/// every step compiles it again with the namespaces that use its macros and
+/// their consumers.
+#[test]
+fn an_always_provider_recompiles_its_consumers_on_every_step() {
+    let mut watch = Watch::start_with("dev-watch-always-provider", |src| {
+        let path = src.join("app/macros.cljs");
+        let macros = fs::read_to_string(&path).unwrap();
+        fs::write(
+            &path,
+            macros.replacen("(ns app.macros", "(ns ^:dev/always app.macros", 1),
+        )
+        .unwrap();
+    });
+    assert!(watch.startup.is_empty(), "{:#?}", watch.startup);
+    let state = watch.source("app/state.cljs");
+    let (lines, step) = watch.save("app/state.cljs", &format!("{state}\n"));
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.state, app.macros, app.view, app.main in "),
+        "{step}"
+    );
+    assert_eq!(
+        watch.reload(&[
+            "app.state.js",
+            "app.macros.js",
+            "app.view.js",
+            "app.main.js"
+        ]),
+        record("start\nclicks: [1]\nreloading\nclicks: [2]\n")
+    );
+    // The step that removes the mark still compiles the set it began with;
+    // the next compiles only what changed.
+    let macros = watch.source("app/macros.cljs").replacen(
+        "(ns ^:dev/always app.macros",
+        "(ns app.macros",
+        1,
+    );
+    let (lines, step) = watch.save("app/macros.cljs", &macros);
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.macros, app.view, app.main in "),
+        "{step}"
+    );
+    let (lines, step) = watch.save("app/state.cljs", &format!("{state}\n\n"));
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.state in "),
+        "{step}"
+    );
+}
+
+/// A disk bypass leaves in-memory units valid: a namespace marked
+/// `^:light-cljs/no-cache`, or a `--cache-blocker` and its compilation
+/// consumers, is not compiled again by a step that changed nothing it
+/// depends on, while an edit to it still reaches its macro's users.
+#[test]
+fn a_cache_bypass_forces_no_recompilation() {
+    for (label, args, mark) in [
+        ("dev-watch-no-cache", &[][..], true),
+        (
+            "dev-watch-blocker",
+            &["--cache-blocker", "app.macros"][..],
+            false,
+        ),
+    ] {
+        let mut watch = Watch::start_with_args(label, args, |src| {
+            if mark {
+                let path = src.join("app/macros.cljs");
+                let macros = fs::read_to_string(&path).unwrap();
+                fs::write(
+                    &path,
+                    macros.replacen("(ns app.macros", "(ns ^:light-cljs/no-cache app.macros", 1),
+                )
+                .unwrap();
+            }
+        });
+        assert!(watch.startup.is_empty(), "{:#?}", watch.startup);
+        let state = watch.source("app/state.cljs");
+        let (lines, step) = watch.save("app/state.cljs", &format!("{state}\n"));
+        assert!(lines.is_empty(), "{lines:#?}");
+        assert!(
+            step.starts_with("light-cljs: recompiled app.state in "),
+            "{label}: {step}"
+        );
+        let macros = watch.source("app/macros.cljs");
+        let (lines, step) = watch.save(
+            "app/macros.cljs",
+            &macros.replace("~label \": \"", "~label \" = \""),
+        );
+        assert!(lines.is_empty(), "{lines:#?}");
+        assert!(
+            step.starts_with("light-cljs: recompiled app.macros, app.view in "),
+            "{label}: {step}"
+        );
+    }
+}
+
+/// A namespace that a save marks `^:dev/always` is compiled again with its
+/// compilation consumers in that same step, as is one that a changed `ns`
+/// form loads.
+#[test]
+fn a_new_always_namespace_recompiles_its_consumers_in_the_same_step() {
+    let mut watch = Watch::start_with("dev-watch-new-always", |src| {
+        fs::write(src.join("app/config.cljs"), "(ns app.config)\n").unwrap();
+        let path = src.join("app/main.cljs");
+        let main = fs::read_to_string(&path).unwrap();
+        fs::write(
+            &path,
+            main.replace(
+                "[app.view :as view]))",
+                "[app.view :as view]\n            [app.config]))",
+            ),
+        )
+        .unwrap();
+    });
+    assert!(watch.startup.is_empty(), "{:#?}", watch.startup);
+    let (lines, step) = watch.save("app/config.cljs", "(ns ^:dev/always app.config)\n");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.config, app.main in "),
+        "{step}"
+    );
+    // A new require of a `^:dev/always` namespace from `app.view`: the
+    // namespace and its consumers `app.view` and `app.main` compile, with
+    // `app.config` and its consumer, as every step compiles them now.
+    fs::write(
+        watch.dir.join("src/app/extra.cljs"),
+        "(ns ^:dev/always app.extra)\n",
+    )
+    .unwrap();
+    let view = watch.source("app/view.cljs").replace(
+        "[app.state :as state]))",
+        "[app.state :as state]\n            [app.extra]))",
+    );
+    let (lines, step) = watch.save("app/view.cljs", &view);
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.extra, app.view, app.config, app.main in "),
+        "{step}"
+    );
+}
+
+/// A resource read by a helper's compile-time initializer, whose value a
+/// macro reuses: each change compiles the helper again, so its value is read
+/// again, and the namespaces that use the macro, also after the session has
+/// compiled them once.
+#[test]
+fn a_retained_helper_resource_is_read_again_after_each_change() {
+    let mut watch = Watch::start_with("dev-watch-helper-resource", |src| {
+        fs::write(src.join("app/separator.txt"), ": ").unwrap();
+        fs::write(
+            src.join("app/helper.cljs"),
+            "(ns app.helper (:require [light.build :as b]))\n\n;; The application loads this namespace too, where light.build is an error.\n(def separator (when (exists? js/lightCljsBuild) (b/resource \"app/separator.txt\")))\n",
+        )
+        .unwrap();
+        let macros = fs::read_to_string(src.join("app/macros.cljs")).unwrap();
+        let macros = macros
+            .replace(
+                "\"A macro and the helper function its expansion calls.\")",
+                "\"A macro and the helper function its expansion calls.\"\n  (:require [app.helper :as helper]))",
+            )
+            .replace("~label \": \"", "~label ~helper/separator");
+        fs::write(src.join("app/macros.cljs"), macros).unwrap();
+    });
+    assert!(watch.startup.is_empty(), "{:#?}", watch.startup);
+    assert_eq!(watch.reload(&[]), record("start\nclicks: [1]\n"));
+    for separator in [" = ", " - ", " + "] {
+        let (lines, step) = watch.save("app/separator.txt", separator);
+        assert!(lines.is_empty(), "{lines:#?}");
+        assert!(
+            step.contains("app.helper") && step.contains("app.view"),
+            "{step}"
+        );
+        let [now, fresh] = watch.now_and_fresh();
+        assert_eq!(
+            now,
+            record(&format!("start\nclicks{separator}[1]\n")),
+            "{step}"
+        );
+        assert_eq!(now, fresh);
+    }
+}
+
 /// A source root's own file for a namespace the compiler also bundles wins,
 /// in the session as in the first build, and is watched.
 #[test]

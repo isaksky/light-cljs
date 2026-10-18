@@ -1148,8 +1148,9 @@ fn a_once_namespace_is_never_reloaded() {
     );
 }
 
-/// A namespace marked `^:dev/always` is loaded, as it is, with every load,
-/// and with every replay that loads anything.
+/// A namespace marked `^:dev/always` is compiled again with its compilation
+/// consumer `app.main` by every step, and loaded with every load and with
+/// every replay that loads anything.
 #[test]
 fn an_always_namespace_loads_with_every_load() {
     let mut watch = Watch::start_with("dev-server-always", |src| {
@@ -1177,21 +1178,20 @@ fn an_always_namespace_loads_with_every_load() {
     );
     watch.save("app/view.cljs", &view);
     let (_, load) = runtime.until("message load ");
-    assert_eq!(load, "message load app.view app.config");
+    assert_eq!(load, "message load app.view app.config app.main");
     let reloaded = "reloading\nconfig loads\nrender: clicks: [2]\n";
     let (record_line, _) = runtime.finish();
     assert_eq!(
         record_line,
         record(&format!("config loads\nstart\nclicks: [1]\n{reloaded}"))
     );
-    // A runtime that missed the step loads the new `app.view` and, with it,
-    // `app.config`; one running the current files loads neither.
+    // A runtime that missed the step loads the new `app.view` and `app.main`
+    // and, with them, `app.config`; one running the current files loads none.
     let late = watch.runtime("before", 1);
     let (lines, _) = late.until("message load replay ");
     assert!(
-        lines
-            .iter()
-            .any(|line| line.starts_with("light-cljs: reloaded app.view, app.config in ")),
+        lines.iter().any(|line| line
+            .starts_with("light-cljs: reloaded app.view, app.config, app.main in ")),
         "{lines:#?}"
     );
     let (record_line, _) = late.finish();
@@ -1306,9 +1306,10 @@ fn reload_fixtures_print_their_output_through_the_server() {
     });
 }
 
-/// A step that rewrites only a `^:dev/once` namespace still loads the
-/// `^:dev/always` namespaces, and with `--reload-dependents` the namespaces
-/// downstream of them, as every step does.
+/// A step that rewrites a `^:dev/once` namespace still compiles and loads
+/// the `^:dev/always` namespaces with their compilation consumers, and with
+/// `--reload-dependents` the namespaces downstream of them, as every step
+/// does.
 #[test]
 fn a_once_edit_loads_the_always_namespaces_and_their_dependents() {
     let mut watch = Watch::start_on("dev-server-once-always", &["--reload-dependents"], |src| {
@@ -1344,7 +1345,7 @@ fn a_once_edit_loads_the_always_namespaces_and_their_dependents() {
     );
     let (_, step) = watch.save("app/state.cljs", &state);
     assert!(
-        step.starts_with("light-cljs: recompiled app.state in "),
+        step.starts_with("light-cljs: recompiled app.state, app.config, app.main in "),
         "{step}"
     );
     let (_, load) = runtime.until("message load ");

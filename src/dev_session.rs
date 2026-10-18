@@ -258,6 +258,78 @@ impl DevSession {
             .keys()
             .any(|name| name.starts_with(&prefix))
     }
+    /// The namespaces that declare macros, as [`Self::declares_macros`]
+    /// answers for each.
+    pub fn macro_namespaces(&self) -> HashSet<String> {
+        self.compiler
+            .borrow()
+            .host
+            .javascript_macros
+            .keys()
+            .filter_map(|name| name.split_once('/').map(|(owner, _)| owner.to_owned()))
+            .collect()
+    }
+    /// The `ns` form flags of each namespace of `manifest`, by its
+    /// [`crate::dependency_manifest::NamespaceId`], as the session's last
+    /// `ns` form of each one marks them, for the policy evaluator
+    /// ([`crate::cache_policy::evaluate`]).
+    pub fn source_metadata(
+        &self,
+        manifest: &crate::dependency_manifest::DependencyManifest,
+    ) -> Vec<crate::cache_policy::NamespaceMetadata> {
+        crate::cache_policy::source_metadata(manifest, &self.compiler.borrow().host)
+    }
+    /// Run `run` with the session's compiler logging what analysis observes
+    /// beyond the `ns` forms and what `light.build` reads or declares, as a
+    /// dependency manifest's recording does, and return that with its
+    /// result. The session compiles every form as one source, so what it
+    /// observes is not attributed to a namespace: the caller attributes it
+    /// to those `run` compiled.
+    pub fn observing<T>(
+        &self,
+        run: impl FnOnce(&Self) -> T,
+    ) -> (T, crate::dependency_manifest::Observations) {
+        let log = {
+            let compiler = self.compiler.borrow();
+            let log = compiler.host.dependency_log.clone();
+            *log.borrow_mut() = Some(crate::dependency_manifest::ObservationLog::default());
+            log
+        };
+        let result = run(self);
+        let log = log.borrow_mut().take().unwrap_or_default();
+        let mut observations = crate::dependency_manifest::Observations {
+            coarse: !log.executes.is_empty(),
+            ..Default::default()
+        };
+        let compiler = self.compiler.borrow();
+        let loaded = log.loaded.iter().filter_map(|&(_, position)| {
+            let program = compiler.program()?;
+            program.namespaces.get(position as usize).map(|name| {
+                (
+                    name.clone(),
+                    crate::dependency_manifest::EdgeKinds::OBSERVED,
+                )
+            })
+        });
+        let named = log.named.into_iter().map(|(_, name, kinds)| (name, kinds));
+        let mut seen = HashSet::new();
+        observations.named = loaded
+            .chain(named)
+            .filter(|entry| seen.insert(entry.clone()))
+            .collect();
+        let (mut seen, mut seen_helpers) = (HashSet::new(), HashSet::new());
+        for record in log.inputs {
+            let (list, seen) = if !record.initializer {
+                (&mut observations.inputs, &mut seen)
+            } else {
+                (&mut observations.helper_inputs, &mut seen_helpers)
+            };
+            if seen.insert(record.input.clone()) {
+                list.push(record.input);
+            }
+        }
+        (result, observations)
+    }
     /// The hook functions of the retained program, the functions whose
     /// definitions' metadata marks them `^:dev/before-load` and
     /// `^:dev/after-load` (or their `-async` variants), each list in
