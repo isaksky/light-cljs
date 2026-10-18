@@ -3,6 +3,10 @@
 ;; Build the release binary and finish tests before running this script.
 ;; Usage: bb benchmarks/penpot.bb OUTPUT-DIR [render main-none main-advanced shadow-release shadow-compile]
 ;; LIGHT_CLJS_BINARY optionally selects an immutable candidate binary.
+;; LIGHT_CLJS_EXTRA_ARGS optionally adds whitespace-separated compiler flags to
+;; every light-cljs job, for example "--stats". With --stats, the report is
+;; saved as JOB.stats.txt next to JOB.time.txt and its counters are recorded in
+;; results.edn under :stats.
 (require '[babashka.fs :as fs]
          '[babashka.process :as process]
          '[clojure.java.io :as io]
@@ -29,6 +33,27 @@
            "shadow-compile" "compile"})
 (def selected (or (seq (rest *command-line-args*))
                   ["render" "main-none" "main-advanced" "shadow-release" "shadow-compile"]))
+(def extra-args (some-> (System/getenv "LIGHT_CLJS_EXTRA_ARGS") str/trim not-empty (str/split #"\s+")))
+
+(defn stats-report
+  "The lines of the --stats report in a job's stderr: its version line, the
+  `key value` counters, then the per-namespace table."
+  [stderr]
+  (let [lines (drop-while #(not (str/starts-with? % "light-cljs-stats ")) (str/split-lines stderr))]
+    (when (seq lines)
+      (cons (first lines)
+            (take-while #(or (re-matches #"[a-z][a-z0-9.-]* \S+" %)
+                             (= % "[macro-calls-by-namespace]")
+                             (re-matches #"\S+ \d+" %))
+                        (rest lines))))))
+
+(defn stats-counters
+  "The counters of a --stats report, as keywords to numbers."
+  [report]
+  (into (sorted-map)
+        (for [line (rest (take-while #(not= % "[macro-calls-by-namespace]") report))
+              :let [[key value] (str/split line #" ")]]
+          [(keyword key) (parse-double value)])))
 
 (doseq [job selected]
   (let [spec (or (jobs job) (throw (ex-info "Unknown benchmark" {:job job})))
@@ -37,7 +62,7 @@
         stderr (fs/file output (str job ".time.txt"))
         command (if shadow?
                   ["clojure" "-M:dev:shadow-cljs" spec "main"]
-                  (concat common roots ["--entry" (first spec)] (rest spec)))]
+                  (concat common roots ["--entry" (first spec)] (rest spec) extra-args))]
     (when shadow?
       ;; These are generated compiler caches, never port sources.
       (fs/delete-tree (fs/path frontend ".shadow-cljs"))
@@ -52,7 +77,12 @@
           timing (slurp stderr)
           [_ real user system] (re-find #"([0-9.]+)\s+real\s+([0-9.]+)\s+user\s+([0-9.]+)\s+sys" timing)
           rss (second (re-find #"(\d+)\s+maximum resident set size" timing))
+          report (when-not shadow? (stats-report timing))
+          _ (when report
+              (spit (fs/file output (str job ".stats.txt")) (str (str/join "\n" report) "\n")))
           record {:job job :exit (:exit result) :command (vec command)
+                  :extra-args (when-not shadow? (vec extra-args))
+                  :stats (some-> report stats-counters)
                   :environment (into {} (for [name ["LIGHT_V8_MACROS" "LIGHT_V8_HEAP_BYTES" "LIGHT_V8_FLAGS" "LIGHT_V8_STATS" "LIGHT_V8_SNAPSHOT"]]
                                           [name (System/getenv name)]))
                   :wall-seconds (some-> real parse-double)

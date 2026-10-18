@@ -17,6 +17,7 @@
 //! (`Watch::reload_set`: what it wrote, `^:dev/always` namespaces, never a
 //! `^:dev/once` one again, and with `--reload-dependents` those downstream).
 use light_cljs::analyzer::AnalysisOptions;
+use light_cljs::compile_stats::CompileStats;
 use light_cljs::compiler_data::Name;
 use light_cljs::dev_build::{DevFile, DevManifest, DevNamespace, namespace_unit, unit_file};
 use light_cljs::dev_server::{Build, DevServer, Diagnostic, LoadUnit, Step};
@@ -41,7 +42,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 pub const USAGE: &str = "Watch:
   light-cljs --watch --entry NAMESPACE --source-root DIR [--source-root DIR ...] --out-dir DIR
-             [--poll-ms N] [--elide-asserts]
+             [--poll-ms N] [--elide-asserts] [--stats]
              [--serve PORT [--serve-host HOST] [--reload-dependents]]
 
 Write the dev build of --compile --reloadable into DIR, then poll the .cljs
@@ -53,6 +54,10 @@ that require it, and a new require adds the units of the namespaces it loads.
 Each step prints one line to stderr with the namespaces recompiled and the
 time taken; a form that fails prints its error with file, line and column,
 and the namespace keeps its previous unit. Runs until interrupted.
+
+With --stats, print the --compile --stats report of the startup build before
+that build's line, with the time the watch's session took to load the
+program as time.session-load-ms.
 
 With --serve PORT (0 for any free port), also serve the build over HTTP on
 127.0.0.1, or on HOST with --serve-host (0.0.0.0 opens it to the network;
@@ -84,6 +89,8 @@ struct Options {
     serve_host: Option<String>,
     /// `--reload-dependents`.
     reload_dependents: bool,
+    /// `--stats`: report the startup build (`light_cljs::compile_stats`).
+    stats: bool,
 }
 
 fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> {
@@ -91,6 +98,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
     let mut poll = Duration::from_millis(100);
     let mut assertions = true;
     let (mut serve, mut serve_host, mut reload_dependents) = (None, None, false);
+    let mut stats = false;
     while let Some(arg) = args.next() {
         let flag = arg.to_str().unwrap_or("");
         let mut value = || {
@@ -140,6 +148,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
                 );
             }
             "--reload-dependents" => reload_dependents = true,
+            "--stats" => stats = true,
             _ => return Err(format!("unexpected watch option: {flag}\n{USAGE}").into()),
         }
     }
@@ -163,6 +172,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
         serve,
         serve_host,
         reload_dependents,
+        stats,
     }))
 }
 
@@ -296,12 +306,14 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
         ..AnalysisOptions::default()
     };
     let mut warnings = Vec::new();
-    let program = light_cljs::compiler::analyze_namespace_entry_with_sources(
+    let mut stats = options.stats.then(CompileStats::new);
+    let program = crate::analyze_entry(
         &options.entry,
         &options.roots,
         &mut host,
         analysis,
         &mut warnings,
+        stats.as_mut(),
     );
     crate::print_warnings(&warnings);
     let (program, sources) = program?;
@@ -327,9 +339,15 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
             }
         })
         .collect::<Vec<_>>();
-    crate::write_dev_build(&program, &sources, &options.out_dir)?;
+    crate::write_dev_build(
+        &program,
+        &sources,
+        &options.out_dir,
+        stats.as_mut().map(|stats| &mut stats.phases),
+    )?;
     let manifest = DevManifest::new(&program);
     drop(program);
+    let session_started = stats.is_some().then(Instant::now);
     // The session loads the program again, as a `require` of the entry,
     // which is the program its steps compile against; the build printed the
     // warnings.
@@ -349,6 +367,10 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     if let Some(Action::Error(error)) = actions.last() {
         return Err(crate::eval_cli::diagnostic(error).into());
     }
+    if let (Some(stats), Some(started)) = (&mut stats, session_started) {
+        stats.session_load = Some(started.elapsed());
+    }
+    crate::print_stats(stats, begun)?;
     let base = fs::canonicalize(&options.out_dir)?;
     let mut watch = Watch {
         written: [manifest.to_json(), manifest.index()],

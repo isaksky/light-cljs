@@ -5,12 +5,14 @@ use std::{
     fmt, fs,
     ops::Range,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use crate::analyzer::{
     AnalysisOptions, AnalysisWarning, JsRefer, LAZY_NAMESPACE, NamespaceAnalysis, NamespaceInput,
     analyze_with_macros,
 };
+use crate::compile_stats::{self, CompileStats};
 use crate::macro_host::{MacroHost, MacroImport};
 use crate::source_provider::{FileSourceProvider, LoadError, LoadRequest, Reload, SourceProvider};
 use crate::{
@@ -1475,6 +1477,36 @@ pub fn analyze_namespace_entry_with_sources(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<(crate::Program, Vec<(PathBuf, String)>), NamespaceCompileError> {
+    analyze_from_roots(entry, source_roots, macros, options, warnings, None)
+}
+
+/// [`analyze_namespace_entry_with_sources`], also recording in `stats` the
+/// times of source resolution and parsing, analysis and deferred units, the
+/// namespaces compiled and the macro calls each executed
+/// ([`crate::compile_stats`]). A caller that prepares, emits and writes the
+/// program adds those phases to `stats.phases` and `stats.wall` itself, as
+/// the `--stats` CLI flag does.
+pub fn analyze_namespace_entry_with_stats(
+    entry: &str,
+    source_roots: &[PathBuf],
+    macros: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+    stats: &mut CompileStats,
+) -> Result<(crate::Program, Vec<(PathBuf, String)>), NamespaceCompileError> {
+    // The numbers describe this compilation alone, whatever `stats` held.
+    *stats = CompileStats::default();
+    analyze_from_roots(entry, source_roots, macros, options, warnings, Some(stats))
+}
+
+fn analyze_from_roots(
+    entry: &str,
+    source_roots: &[PathBuf],
+    macros: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+    stats: Option<&mut CompileStats>,
+) -> Result<(crate::Program, Vec<(PathBuf, String)>), NamespaceCompileError> {
     if !valid_namespace(entry) {
         return Err(NamespaceCompileError::new(
             "invalid entry namespace: use dot-separated ASCII names; js is reserved",
@@ -1509,6 +1541,7 @@ pub fn analyze_namespace_entry_with_sources(
         macros,
         options,
         warnings,
+        stats,
     )
 }
 
@@ -1525,7 +1558,7 @@ pub fn analyze_namespace_entry_with_provider(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<crate::Program, NamespaceCompileError> {
-    analyze_entry(entry, sources, macros, options, warnings).map(|(program, _)| program)
+    analyze_entry(entry, sources, macros, options, warnings, None).map(|(program, _)| program)
 }
 
 /// The program of an entry namespace and the path and text of each source,
@@ -1538,13 +1571,19 @@ pub fn analyze_namespace_entry_with_provider(
 /// then the namespace itself, to be analyzed in turn. A target already loaded
 /// is resident, and a target may require the namespace that loads it, which
 /// is loaded by then (docs/code-splitting.md, "Roots, edges and reach").
+///
+/// With `stats`, also time the phases and count each namespace's macro
+/// calls; without, no clock is read.
 fn analyze_entry(
     entry: &str,
     sources: &dyn SourceProvider,
     macros: &mut MacroHost,
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
+    mut stats: Option<&mut CompileStats>,
 ) -> Result<(crate::Program, Vec<(PathBuf, String)>), NamespaceCompileError> {
+    let timed = stats.is_some();
+    let begun = compile_stats::start(timed);
     if !valid_namespace(entry) {
         return Err(NamespaceCompileError::new(
             "invalid entry namespace: use dot-separated ASCII names; js is reserved",
@@ -1558,13 +1597,23 @@ fn analyze_entry(
         ordered: Vec::new(),
         warning_mode: options.warning_mode,
     };
+    let mut resolve_parse = Duration::ZERO;
+    let started = compile_stats::start(timed);
     loader.visit(entry)?;
+    compile_stats::add(&mut resolve_parse, started);
     let entry_index = loader.ordered.len() - 1;
     source_warnings(&loader.ordered, 0, options, warnings);
+    let analysis_started = compile_stats::start(timed);
+    // Lazily reached sources are resolved and parsed between analyses.
+    let mut lazy_parse = Duration::ZERO;
     let mut analysis = NamespaceAnalysis::new(macros);
+    if timed {
+        analysis.deferred_time = Some(Duration::ZERO);
+    }
     let mut index = 0;
     while index < loader.ordered.len() {
         let file = &loader.ordered[index];
+        let calls_before = macros.expansions.get();
         let at = |error: AnalysisError| {
             NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
         };
@@ -1587,6 +1636,12 @@ fn analyze_entry(
                 warnings,
             )
             .map_err(at)?;
+        if let Some(stats) = stats.as_deref_mut() {
+            stats.namespaces.push(compile_stats::NamespaceStats {
+                name: file.name.clone(),
+                macro_calls: macros.expansions.get() - calls_before,
+            });
+        }
         // Deferred definitions own their forms and resolution snapshots now.
         // Keep source text for diagnostics, but release each parsed tree as
         // soon as analysis finishes instead of retaining all trees until the
@@ -1595,6 +1650,7 @@ fn analyze_entry(
         syntax.nodes = Vec::new();
         syntax.roots = Vec::new();
         let loaded = loader.ordered.len();
+        let started = compile_stats::start(timed);
         for (namespace, span) in analysis.lazy_namespaces_since(first_lazy) {
             loader.visit_lazy(&namespace, index).map_err(|error| {
                 if error.path.is_none() {
@@ -1605,15 +1661,33 @@ fn analyze_entry(
                 }
             })?;
         }
+        compile_stats::add(&mut lazy_parse, started);
         source_warnings(&loader.ordered, loaded, options, warnings);
         index += 1;
     }
+    let deferred_time = analysis.deferred_time;
     let program = analysis
         .finish(entry_index, macros)
         .map_err(|(index, error)| {
             let file = &loader.ordered[index];
             NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
         })?;
+    if let (Some(stats), Some(analysis_started), Some(deferred)) =
+        (stats, analysis_started, deferred_time)
+    {
+        let phases = &mut stats.phases;
+        phases.resolve_parse += resolve_parse + lazy_parse;
+        phases.deferred_units += deferred;
+        phases.analysis += analysis_started
+            .elapsed()
+            .saturating_sub(deferred + lazy_parse);
+        stats.macro_calls = macros.expansions.get();
+        stats.peak_macro_nodes = macros.generated_nodes.get();
+        if let Some(session) = macros.session_handle() {
+            stats.deferred_units = session.unit_counts();
+        }
+        compile_stats::add(&mut stats.wall, begun);
+    }
     let files = loader
         .ordered
         .into_iter()

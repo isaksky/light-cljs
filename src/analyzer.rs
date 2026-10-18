@@ -3463,6 +3463,9 @@ pub(crate) struct NamespaceAnalysis {
     roots: Vec<ExprId>,
     /// The namespaces each source requires, by source index.
     requires: Vec<Vec<String>>,
+    /// With `--stats`, the time spent draining deferred units so far
+    /// ([`crate::compile_stats::PhaseTimes::deferred_units`]).
+    pub(crate) deferred_time: Option<std::time::Duration>,
 }
 
 impl NamespaceAnalysis {
@@ -3474,6 +3477,7 @@ impl NamespaceAnalysis {
             globals: Default::default(),
             roots: Vec::new(),
             requires: Vec::new(),
+            deferred_time: None,
         }
     }
 
@@ -3622,7 +3626,11 @@ impl NamespaceAnalysis {
             .program
             .namespace_entries
             .insert(root, input.name.into());
+        let drained = crate::compile_stats::start(self.deferred_time.is_some());
         analyzer.drain_deferred()?;
+        if let Some(time) = &mut self.deferred_time {
+            crate::compile_stats::add(time, drained);
+        }
         analyzer.collect_expression_warnings(Some(&mut self.arities));
         if !analyzer
             .program

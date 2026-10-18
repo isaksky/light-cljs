@@ -1051,3 +1051,150 @@ fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
         assert!(stderr.contains(message), "{args:?}: {stderr}");
     }
 }
+
+/// A `key value` line of a `--stats` report.
+type StatsCounter = (String, f64);
+
+/// The counters and the per-namespace table of a `--stats` report, checking
+/// its shape: a version line, `key value` counters, then
+/// `[macro-calls-by-namespace]` and `NAMESPACE COUNT` rows.
+fn parse_stats(report: &str) -> (Vec<StatsCounter>, Vec<(String, usize)>) {
+    let mut lines = report.lines();
+    assert_eq!(lines.next(), Some("light-cljs-stats 1"), "{report}");
+    let mut counters = Vec::new();
+    let mut table = Vec::new();
+    let mut in_table = false;
+    for line in lines {
+        if line == "[macro-calls-by-namespace]" {
+            in_table = true;
+            continue;
+        }
+        let (key, value) = line.split_once(' ').expect(line);
+        assert!(!value.contains(' '), "{line}");
+        if in_table {
+            table.push((key.to_owned(), value.parse().expect(line)));
+        } else {
+            counters.push((key.to_owned(), value.parse().expect(line)));
+        }
+    }
+    assert!(in_table, "{report}");
+    (counters, table)
+}
+
+#[test]
+fn stats_reports_phase_times_and_macro_calls_on_stderr_without_changing_output() {
+    let sources = TempDir::new("cli-stats");
+    std::fs::create_dir(sources.join("app")).unwrap();
+    let write =
+        |name: &str, text: &str| std::fs::write(sources.join("app").join(name), text).unwrap();
+    write(
+        "macros.cljs",
+        "(ns app.macros) (def counter (atom 0)) (defmacro next-value [] (swap! counter inc))",
+    );
+    write(
+        "dep.cljs",
+        "(ns app.dep (:require [app.macros :refer [next-value]])) (def value (next-value))",
+    );
+    write("plain.cljs", "(ns app.plain) (def answer 42)");
+    write(
+        "main.cljs",
+        "(ns app.main (:require [app.dep :as d] [app.plain :as p] [app.macros :refer [next-value]])) (js/console.log d/value (next-value) p/answer)",
+    );
+    let root = sources.path().to_str().unwrap();
+    let entry = "app.main";
+    let plain = light_cljs(&["--compile", "--entry", entry, "--source-root", root]);
+    assert!(plain.status.success());
+    assert!(plain.stderr.is_empty());
+    // Before or after the namespace options.
+    for args in [
+        &[
+            "--compile",
+            "--stats",
+            "--entry",
+            entry,
+            "--source-root",
+            root,
+        ][..],
+        &[
+            "--compile",
+            "--entry",
+            entry,
+            "--source-root",
+            root,
+            "--stats",
+        ][..],
+    ] {
+        let output = light_cljs(args);
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "{stderr}");
+        assert_eq!(output.stdout, plain.stdout);
+        let (counters, table) = parse_stats(&stderr);
+        let value = |key: &str| {
+            counters
+                .iter()
+                .find(|(name, _)| name == key)
+                .unwrap_or_else(|| panic!("{key} in {stderr}"))
+                .1
+        };
+        for phase in [
+            "resolve-parse",
+            "analysis",
+            "deferred-units",
+            "prepare-application",
+            "emission",
+            "write",
+        ] {
+            let time = value(&format!("time.{phase}-ms"));
+            assert!(time >= 0.0 && time <= value("time.wall-ms"), "{phase}");
+        }
+        assert_eq!(value("namespaces"), 4.0);
+        assert_eq!(value("macro-calls"), 3.0);
+        assert!(value("macro-nodes.peak") > 0.0);
+        assert!(value("deferred-units.registered") >= value("deferred-units.analyzed"));
+        assert_eq!(
+            value("deferred-units.analyzed"),
+            value("deferred-units.prepared")
+        );
+        // Most calls first, ties in the order of analysis.
+        assert_eq!(
+            table,
+            [
+                ("app.macros", 1),
+                ("app.dep", 1),
+                ("app.main", 1),
+                ("app.plain", 0)
+            ]
+            .map(|(name, count)| (name.to_owned(), count))
+        );
+    }
+    // The startup build of --reloadable, with the same counts.
+    let out_dir = sources.join("out");
+    let output = light_cljs(&[
+        "--compile",
+        "--entry",
+        entry,
+        "--source-root",
+        root,
+        "--reloadable",
+        "--out-dir",
+        out_dir.to_str().unwrap(),
+        "--stats",
+    ]);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{stderr}");
+    let (counters, _) = parse_stats(&stderr);
+    assert!(
+        counters.contains(&("macro-calls".to_owned(), 3.0)),
+        "{stderr}"
+    );
+    assert!(out_dir.join("manifest.json").exists());
+    // A single source is no namespace compilation.
+    let output = light_cljs(&["--compile", "--stats", "--text", "1"]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("--stats reports a namespace compilation"),
+        "{stderr}"
+    );
+}

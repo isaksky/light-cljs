@@ -3,7 +3,8 @@
 Status: proposed architecture, October 17, 2026. Persistent application caching
 is not implemented. This design builds on `b51af6a` and the existing
 [development workflow](dev-workflow.md). API and configuration names below describe
-proposed behavior; they are not available compiler options yet.
+proposed behavior; they are not available compiler options yet, except
+`--stats`, which reports cold-build phases and macro calls (light-cljs-310).
 
 Cache completed namespace compilation in a versioned binary format. Reuse it
 when conservative source, dependency, compiler, and configuration keys match.
@@ -15,6 +16,72 @@ A cache hit skips the namespace's analysis and macro calls. It restores immutabl
 compiler artifacts, not a JavaScript heap or the effects of those skipped calls.
 This is an explicit incremental-compilation contract. An uncached fresh build
 remains available when all compilation work must execute.
+
+## Settled decisions
+
+The user settled these on October 17, 2026. They fix the spellings this
+document leaves to implementation; pellets do not reopen them. A measurement or
+test that contradicts one is recorded under a new "Open questions" section.
+
+- **CLI.** These flags go with `--compile`, `--watch` and `--reloadable`, parsed
+  by hand in `src/main.rs` in the style of `CompileFlags::accept`:
+  - `--cache-dir DIR` opts in and stores artifacts in DIR. During rollout the
+    cache is off unless this flag is given.
+  - `--cache-blocker NS` is repeatable. NS and every compilation consumer of NS
+    never read or write the cache.
+  - `--stats` prints a report to stderr: phase times, executed macro calls, and
+    hits, misses and bypasses with reasons.
+  - Once the cache is on by default, its default location is
+    `.light-cljs/cache` under the current directory, and `--no-cache` turns it
+    off. A fresh uncached build means no `--cache-dir` (later, `--no-cache`).
+- **Namespace metadata.**
+  - `^:light-cljs/no-cache` covers that namespace only: no reads or writes;
+    ordinary invalidation still applies.
+  - `^:dev/always` takes Shadow's meaning: always compile. The namespace and its
+    compilation consumers get no cache reads or writes. In watch, every
+    triggered step recompiles them as well as reloading them (today it only
+    reloads them); the watch pellet updates
+    [docs/dev-workflow.md](dev-workflow.md) ("The reload set", "Settled
+    questions") to match.
+- **The compile-time API is the bundled namespace `light.build`**, available to
+  macros, to ordinary helpers running at compile time and to custom data
+  readers:
+  - `(b/resource "path")` returns the text and is an error if the resource is
+    absent.
+  - `(b/resource? "path")` returns the text or nil; absence is part of the key.
+  - `(b/config :key)` returns the value given by `--config`, or nil when unset.
+  - `(b/depend! {:resource "x"})` declares a dependency without reading. It also
+    accepts `{:namespace sym}` and `{:provider token :fingerprint string}`.
+  - `(b/depend-on! :namespaces)` depends on a broad view: `:namespaces`,
+    `:declarations` or `:config`.
+  - Paths resolve like namespaces, across every `--source-root`, and a path
+    found in two roots is an error. A path starting with `./` or `../` resolves
+    against the file of the namespace being compiled, the expansion site, as
+    `shadow.resource/inline` does.
+  - Configuration comes from the repeatable `--config KEY=EDN`, for example
+    `--config app/flavor=:dev --config app/n=3`. The first implementation hashes
+    the whole configuration map into every namespace key.
+- **No new crate dependencies.** The codec is hand-written: explicit tags,
+  little-endian byte order and an interned UTF-16 string table. Hashing is an
+  in-tree SHA-256 checked against the NIST test vectors, following the
+  hand-written JSON, bencode and HTTP already in this crate.
+- **Rollout gates**, measured on Penpot `app.main --optimize none` on a quiet
+  machine, alternating with cache-off runs at the same commit
+  ([benchmarks/penpot.bb](../benchmarks/penpot.bb)); numbers go in
+  [benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md):
+  - Every change: without `--cache-dir`, the cold build stays within +3% wall
+    time and +5% peak RSS of its parent commit (21.97 s and 0.948 GB when this
+    was decided).
+  - Turning the cache on by default requires all of: a populating run at most
+    +10% wall and +10% RSS over cache-off; a warm run with no edit at most 50%
+    of the cache-off wall time; a warm run after editing one leaf namespace at
+    most 60%; disk size reported, with no gate. If every gate is met the final
+    benchmark change turns the cache on by default; otherwise it records the
+    numbers and the cache stays opt-in.
+- [docs/dev-workflow.md](dev-workflow.md) settled "No cache of compiled
+  namespaces". Phase 4 below supersedes that for watch startup and session
+  loading only. A watch step still recompiles the changed namespace against the
+  retained program; the cache does not replace retained in-memory state.
 
 ## Goals and scope
 
@@ -384,6 +451,28 @@ persistence remain out of scope.
    conservative dependency graph, opt-out propagation, and shared invalidation
    rules. Add contract tests for skipped macro calls and the controls that force
    them to execute. Instrument cold build phases and macro counts.
+
+   *As built (light-cljs-310):* `--stats` (with `--compile --entry`,
+   `--reloadable` and `--watch`'s startup build) prints the report of
+   `light_cljs::compile_stats::CompileStats` to stderr, and
+   `compiler::analyze_namespace_entry_with_stats` returns the same struct to
+   Rust callers. The report is a `light-cljs-stats 1` line, one `key value`
+   line per counter, then `[macro-calls-by-namespace]` and up to 20
+   `NAMESPACE COUNT` rows, most calls first. The phases are
+   `time.resolve-parse-ms`, `time.analysis-ms` (top-level passes, including
+   deferred units a macro demands while they run), `time.deferred-units-ms`
+   (each namespace's drain before its analysis returns, the capture boundary),
+   `time.prepare-application-ms`, `time.emission-ms` and `time.write-ms`, with
+   `time.wall-ms` and, for `--watch`, `time.session-load-ms`. A macro call is
+   one expansion the `--macro-expansions` limit counts (native, bootstrap and
+   source macros alike), attributed to the namespace whose analysis ran it;
+   `defmacro` and `defn` forms are themselves calls. `macro-nodes.peak` is the
+   generated-node count `--macro-nodes` limits, and `deferred-units.*` count
+   the session's units registered, analyzed, prepared and executed. The cache
+   pellets add their `cache.*` counters as further `key value` lines before
+   the table. Without `--stats` no clock is read: the counts come from the
+   counters `MacroHost` already keeps. Penpot's baseline is in
+   [benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md).
 2. **Build relocatable namespace artifacts.** Capture declarations, IR, deferred
    units, diagnostics, names, and accounting at existing lifecycle boundaries.
    Verify in-memory installation and mixed hits/misses without source reanalysis.

@@ -16,6 +16,7 @@ pub mod call_shapes;
 mod char_classes;
 pub mod chunks;
 mod compilation_session;
+pub mod compile_stats;
 pub mod compiler;
 mod compiler_binding_macros;
 pub mod compiler_data;
@@ -73,6 +74,7 @@ pub use application::{
     prepare_application,
 };
 pub use chunks::{ChunkFile, ChunkedOutput, LoadableSite};
+pub use compile_stats::CompileStats;
 pub use compiler::{
     CompileError, NamespaceCompileError, compile, compile_namespace, compile_namespace_esm,
     compile_namespace_with_macros, compile_with_macros,

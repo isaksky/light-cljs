@@ -277,6 +277,18 @@ as without the assertion, instead of 309. Source macros read it as a false
 names only `goog-define` Vars, so `--define cljs.core/*assert*=false` is
 rejected. `--eval` and `--repl` take `--elide-asserts` too.
 
+`--stats` with `--compile --entry`, `--reloadable` or `--watch` prints to
+stderr what the build did, without changing its output: the wall time of each
+phase (source resolution and parsing, analysis with macro expansion, draining
+deferred units, application preparation, emission and writing; for `--watch`
+also loading its session), the namespaces compiled, the macro calls executed,
+the form nodes they generated, the deferred units registered, analyzed,
+prepared and executed, and the 20 namespaces with the most macro calls. Each
+counter is one `key value` line, after a `light-cljs-stats 1` line, and the
+table follows a `[macro-calls-by-namespace]` line, one `NAMESPACE COUNT` row
+each; `light_cljs::compiler::analyze_namespace_entry_with_stats` returns the
+same numbers as a `CompileStats`.
+
 `--source-map PATH` writes a Source Map v3 of the output to `PATH`, at every
 level and with `--esm` too, and ends the JavaScript with a
 `//# sourceMappingURL=` comment naming the map's file, so write the JavaScript

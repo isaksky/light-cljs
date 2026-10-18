@@ -176,6 +176,22 @@ impl CompilationSession {
             })
             .collect()
     }
+    /// How many units this compilation registered, analyzed, prepared and
+    /// executed (`--stats`).
+    pub fn unit_counts(&self) -> crate::compile_stats::DeferredUnitCounts {
+        let catalog = self.catalog.borrow();
+        let mut counts = crate::compile_stats::DeferredUnitCounts {
+            registered: catalog.units.len(),
+            ..Default::default()
+        };
+        for unit in &catalog.units {
+            let unit = unit.borrow();
+            counts.analyzed += usize::from(unit.analyses > 0);
+            counts.prepared += usize::from(matches!(unit.state, AnalysisState::Prepared(..)));
+            counts.executed += usize::from(unit.emitted);
+        }
+        counts
+    }
     pub fn extension_frontier(&self) -> usize {
         self.catalog.borrow().bundle_count
     }

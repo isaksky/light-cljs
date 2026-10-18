@@ -55,6 +55,8 @@ struct Watch {
     lines: Receiver<String>,
     /// The line that reports the first build.
     built: String,
+    /// The stderr lines before it.
+    startup: Vec<String>,
 }
 
 impl Watch {
@@ -68,6 +70,11 @@ impl Watch {
     /// [`Self::start`] after `setup` changed the copy, in the directory it
     /// is given.
     fn start_with(label: &str, setup: impl FnOnce(&Path)) -> Self {
+        Self::start_with_args(label, &[], setup)
+    }
+
+    /// [`Self::start_with`], also passing `args` to `--watch`.
+    fn start_with_args(label: &str, args: &[&str], setup: impl FnOnce(&Path)) -> Self {
         let dir = TempDir::new(label);
         fs::create_dir_all(dir.join("src/app")).unwrap();
         for name in ["state", "macros", "view", "main"] {
@@ -81,6 +88,7 @@ impl Watch {
             .arg("--out-dir")
             .arg(dir.join("dev"))
             .args(["--poll-ms", "20"])
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -101,8 +109,10 @@ impl Watch {
             child,
             lines,
             built: String::new(),
+            startup: Vec::new(),
         };
-        let (_, line) = watch.until("light-cljs: built ");
+        let (startup, line) = watch.until("light-cljs: built ");
+        watch.startup = startup;
         assert!(
             line.starts_with("light-cljs: built app.main (")
                 && line.ends_with("; watching every 20 ms"),
@@ -891,6 +901,41 @@ fn a_replaced_symbolic_link_is_still_its_namespace_source() {
 
 /// `--watch` needs an entry, a source root and an out dir, and exits with
 /// the error of a first build that fails.
+#[test]
+fn stats_report_the_startup_build_and_the_session_load() {
+    let mut watch = Watch::start_with_args("dev-watch-stats", &["--stats"], |_| {});
+    let start = watch
+        .startup
+        .iter()
+        .position(|line| line == "light-cljs-stats 1")
+        .unwrap_or_else(|| panic!("no report in {:#?}", watch.startup));
+    let report = &watch.startup[start..];
+    let value = |key: &str| {
+        report
+            .iter()
+            .find_map(|line| line.strip_prefix(key)?.strip_prefix(' '))
+            .unwrap_or_else(|| panic!("{key} in {report:#?}"))
+    };
+    assert!(value("time.session-load-ms").parse::<f64>().unwrap() > 0.0);
+    assert!(value("time.analysis-ms").parse::<f64>().unwrap() > 0.0);
+    assert_eq!(value("namespaces"), "4");
+    // examples/dev's macro is one of the calls.
+    assert!(value("macro-calls").parse::<usize>().unwrap() > 0);
+    let table = report
+        .iter()
+        .position(|line| line == "[macro-calls-by-namespace]")
+        .unwrap();
+    assert_eq!(report.len() - table - 1, 4, "{report:#?}");
+    // A step prints no report.
+    let view = watch.source("app/view.cljs");
+    let (lines, _) = watch.save("app/view.cljs", &format!("{view}\n"));
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.starts_with("light-cljs-stats"))
+    );
+}
+
 #[test]
 fn watch_refuses_missing_options_and_a_failing_first_build() {
     let dir = TempDir::new("dev-watch-options");

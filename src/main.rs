@@ -10,10 +10,11 @@ use std::{
     io::{self, Read, Write},
     path::{Path, PathBuf},
     process::ExitCode,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning, analyze_named_with_macro_warnings};
+use light_cljs::compile_stats::{CompileStats, PhaseTimes};
 use light_cljs::source_map::{SourceFile, data_url};
 use light_cljs::{
     ApplicationOptions, Define, LineIndex, MacroHost, OptimizationLevel, PreparedApplication,
@@ -24,7 +25,7 @@ mod dev_watch;
 mod eval_cli;
 mod repl_connect;
 
-const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --out-dir DIR\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --reloadable --out-dir DIR\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] [--pseudo-names] [--define NS/NAME=VALUE ...] [--elide-asserts] [--source-map PATH | --source-map-inline] [--source-map-include-sources] ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --define NS/NAME=VALUE after --compile, replace the default of the goog-define NS/NAME at every level: true or false for a boolean, a number for a number, and the text as written for a string; at advanced, code only a define's other value runs is removed.\nWith --elide-asserts after --compile, omit every assert and fn :pre/:post check at every level, as upstream's :elide-asserts does; it is the only switch, since --define names only goog-define Vars.\nWith --macro-expansions N, --macro-nodes N, --macro-timeout-ms N, --macro-memory-limit N and --macro-poll-budget N after --compile, raise the macro session limits for a large program: the expansions and generated form nodes allowed per compilation (1024 and 100000), its deadline in milliseconds (10000), its heap in bytes (67108864) and its poll budget (1000000).\nWith --source-map PATH after --compile, also write a Source Map v3 of the output to PATH, at every level, and end the output with a //# sourceMappingURL comment naming the map's file, for JavaScript written next to it; source paths in the map are relative to its directory. With --source-map-inline the comment embeds the map instead, with paths relative to the current directory. With --source-map-include-sources the map also holds the text of every source.\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --pseudo-names after --compile, keep advanced output readable for debugging: the compiler's own names, the runtime with its comments and the emitter's layout, instead of short names and no whitespace.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nWith --out-dir DIR, write a chunked build into DIR (created when missing) instead: ES modules as with --esm, the startup chunk NAMESPACE.js, whose default export is the entry value, and one chunk per group of namespaces only light.lazy/loadable targets reach, which light.lazy/load imports; and chunks.json, which describes them. Other files in DIR are left alone. It works at every --optimize level, --size-report prints the one report, and the source map flags are refused; a program without loadables is one file, its --esm output.\nWith --reloadable --out-dir DIR, write a dev build into DIR instead: runtime.js (the runtime, once), client.js, one NAMESPACE.js unit with its source map per namespace in dependency order, manifest.json and index.js, which loads them in order. Definitions live in a registry, so a unit evaluated again replaces its namespace for every caller; the build runs at none semantics, with warnings for undeclared Vars and arity conflicts.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
+const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --out-dir DIR\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --reloadable --out-dir DIR\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --stats\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] [--pseudo-names] [--define NS/NAME=VALUE ...] [--elide-asserts] [--source-map PATH | --source-map-inline] [--source-map-include-sources] ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --define NS/NAME=VALUE after --compile, replace the default of the goog-define NS/NAME at every level: true or false for a boolean, a number for a number, and the text as written for a string; at advanced, code only a define's other value runs is removed.\nWith --elide-asserts after --compile, omit every assert and fn :pre/:post check at every level, as upstream's :elide-asserts does; it is the only switch, since --define names only goog-define Vars.\nWith --macro-expansions N, --macro-nodes N, --macro-timeout-ms N, --macro-memory-limit N and --macro-poll-budget N after --compile, raise the macro session limits for a large program: the expansions and generated form nodes allowed per compilation (1024 and 100000), its deadline in milliseconds (10000), its heap in bytes (67108864) and its poll budget (1000000).\nWith --source-map PATH after --compile, also write a Source Map v3 of the output to PATH, at every level, and end the output with a //# sourceMappingURL comment naming the map's file, for JavaScript written next to it; source paths in the map are relative to its directory. With --source-map-inline the comment embeds the map instead, with paths relative to the current directory. With --source-map-include-sources the map also holds the text of every source.\nWith --stats after --compile --entry (with --reloadable too), also print to stderr what the build did: a light-cljs-stats 1 line, then one key value line per counter (the milliseconds of source resolution and parsing, analysis with macro expansion, deferred units, application preparation, emission and writing; the namespaces compiled, the macro calls executed, the peak of generated form nodes and the deferred units registered, analyzed, prepared and executed), then [macro-calls-by-namespace] and the 20 namespaces with the most macro calls, one NAMESPACE COUNT line each.\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --pseudo-names after --compile, keep advanced output readable for debugging: the compiler's own names, the runtime with its comments and the emitter's layout, instead of short names and no whitespace.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nWith --out-dir DIR, write a chunked build into DIR (created when missing) instead: ES modules as with --esm, the startup chunk NAMESPACE.js, whose default export is the entry value, and one chunk per group of namespaces only light.lazy/loadable targets reach, which light.lazy/load imports; and chunks.json, which describes them. Other files in DIR are left alone. It works at every --optimize level, --size-report prints the one report, and the source map flags are refused; a program without loadables is one file, its --esm output.\nWith --reloadable --out-dir DIR, write a dev build into DIR instead: runtime.js (the runtime, once), client.js, one NAMESPACE.js unit with its source map per namespace in dependency order, manifest.json and index.js, which loads them in order. Definitions live in a registry, so a unit evaluated again replaces its namespace for every caller; the build runs at none semantics, with warnings for undeclared Vars and arity conflicts.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
 
 fn print_warnings(warnings: &[AnalysisWarning]) {
     for warning in warnings {
@@ -94,6 +95,8 @@ struct CompileFlags {
     macro_memory_limit: Option<usize>,
     /// `--macro-poll-budget N`: the macro session poll budget.
     macro_poll_budget: Option<u64>,
+    /// `--stats`: print phase times and macro calls to stderr.
+    stats: bool,
 }
 
 impl CompileFlags {
@@ -109,6 +112,7 @@ impl CompileFlags {
                 self.optimize = true;
             }
             "--size-report" => self.size_report = true,
+            "--stats" => self.stats = true,
             "--pseudo-names" => self.pseudo_names = true,
             "--elide-asserts" => self.elide_asserts = true,
             "--macro-expansions" => self.macro_expansions = Some(count_flag(flag, args)? as usize),
@@ -172,7 +176,8 @@ impl CompileFlags {
 
 impl CompileFlags {
     /// The output of `prepared`, an ES module with `esm`, and with a source
-    /// map flag also its source map, written to its file or embedded.
+    /// map flag also its source map: embedded, or with `--source-map PATH`
+    /// returned as the text [`Self::write_map`] writes to PATH.
     /// `sources` are the program's source files by source index: each path
     /// as given (or a name such as `<text>.cljc`) and its text.
     fn output(
@@ -180,7 +185,7 @@ impl CompileFlags {
         prepared: &PreparedApplication,
         esm: bool,
         sources: &[(&Path, &str)],
-    ) -> Result<String, Box<dyn Error>> {
+    ) -> Result<(String, Option<String>), Box<dyn Error>> {
         if self.source_map.is_some() && self.source_map_inline {
             return Err("--source-map and --source-map-inline exclude each other".into());
         }
@@ -191,11 +196,12 @@ impl CompileFlags {
                         .into(),
                 );
             }
-            return Ok(if esm {
+            let code = if esm {
                 prepared.emit_esm()
             } else {
                 prepared.emit_js()
-            });
+            };
+            return Ok((code, None));
         }
         let (mut code, mapping) = if esm {
             prepared.emit_esm_mapped()
@@ -225,21 +231,26 @@ impl CompileFlags {
             .map(|name| name.to_string_lossy());
         let file = name.as_deref().and_then(|name| name.strip_suffix(".map"));
         let json = mapping.to_json(file, &files, self.include_sources);
-        let url = match (&self.source_map, &name) {
-            (Some(path), Some(name)) => {
-                fs::write(path, &json)
-                    .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
-                url_segment(name)
-            }
+        let (url, map) = match (&self.source_map, &name) {
+            (Some(_), Some(name)) => (url_segment(name), Some(json)),
             (Some(path), None) => {
                 return Err(format!("--source-map needs a file name: {}", path.display()).into());
             }
-            _ => data_url(&json),
+            _ => (data_url(&json), None),
         };
         code.push_str("//# sourceMappingURL=");
         code.push_str(&url);
         code.push('\n');
-        Ok(code)
+        Ok((code, map))
+    }
+
+    /// Write the source map [`Self::output`] returned to `--source-map PATH`.
+    fn write_map(&self, map: Option<String>) -> Result<(), Box<dyn Error>> {
+        if let (Some(path), Some(json)) = (&self.source_map, map) {
+            fs::write(path, json)
+                .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+        }
+        Ok(())
     }
 }
 
@@ -303,12 +314,15 @@ fn print_size_report(prepared: &light_cljs::PreparedApplication) -> io::Result<(
 }
 
 /// Write the dev build of `program` (`--reloadable`) into `out_dir`.
-/// `sources` are the program's source files by source index.
+/// `sources` are the program's source files by source index. With `phases`
+/// (`--stats`), add the emission and write times to them.
 fn write_dev_build(
     program: &light_cljs::Program,
     sources: &[(PathBuf, String)],
     out_dir: &Path,
+    mut phases: Option<&mut PhaseTimes>,
 ) -> Result<(), Box<dyn Error>> {
+    let started = phases.is_some().then(Instant::now);
     fs::create_dir_all(out_dir)
         .map_err(|error| format!("cannot create {}: {error}", out_dir.display()))?;
     // Source maps name the sources relative to the build directory.
@@ -322,10 +336,19 @@ fn write_dev_build(
         .zip(sources)
         .map(|(url, (_, text))| SourceFile { url, text })
         .collect::<Vec<_>>();
-    for file in light_cljs::dev_build::emit_dev_build(program, &files) {
+    let output = light_cljs::dev_build::emit_dev_build(program, &files);
+    let written = phases.is_some().then(Instant::now);
+    if let (Some(phases), Some(started), Some(written)) = (phases.as_deref_mut(), started, written)
+    {
+        phases.emission += written - started;
+    }
+    for file in output {
         let path = out_dir.join(&file.name);
         fs::write(&path, file.text)
             .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+    }
+    if let (Some(phases), Some(written)) = (phases, written) {
+        phases.write += written.elapsed();
     }
     Ok(())
 }
@@ -420,34 +443,90 @@ fn run_namespace(
         // warnings (docs/dev-workflow.md, "Dev-mode contract").
         options.warning_mode = true;
     }
+    let begun = Instant::now();
+    let mut stats = flags.stats.then(CompileStats::new);
     let mut warnings = Vec::new();
-    let program = light_cljs::compiler::analyze_namespace_entry_with_sources(
+    let program = analyze_entry(
         &entry,
         &roots,
         &mut flags.host(),
         options,
         &mut warnings,
+        stats.as_mut(),
     );
     if options.warning_mode {
         print_warnings(&warnings);
     }
     let (program, files) = program?;
     if let (true, Some(out_dir)) = (reloadable, &out_dir) {
-        return write_dev_build(&program, &files, out_dir);
+        write_dev_build(
+            &program,
+            &files,
+            out_dir,
+            stats.as_mut().map(|stats| &mut stats.phases),
+        )?;
+        return print_stats(stats, begun);
     }
+    let timer = |on: &Option<CompileStats>| on.is_some().then(Instant::now);
+    let elapsed = |started: Option<Instant>| started.map_or(Duration::ZERO, |t| t.elapsed());
+    let started = timer(&stats);
     let prepared = prepare_application(&program, flags.options(&program)?);
-    if let Some(out_dir) = out_dir {
-        write_chunks(&prepared.emit_chunks(), &out_dir)?;
+    let prepare_time = elapsed(started);
+    let (emission, write) = if let Some(out_dir) = out_dir {
+        let started = timer(&stats);
+        let chunks = prepared.emit_chunks();
+        let emission = elapsed(started);
+        let started = timer(&stats);
+        write_chunks(&chunks, &out_dir)?;
+        (emission, elapsed(started))
     } else {
         let sources = files
             .iter()
             .map(|(path, text)| (path.as_path(), text.as_str()))
             .collect::<Vec<_>>();
-        let output = flags.output(&prepared, esm, &sources)?;
+        let started = timer(&stats);
+        let (output, map) = flags.output(&prepared, esm, &sources)?;
+        let emission = elapsed(started);
+        let started = timer(&stats);
+        flags.write_map(map)?;
         io::stdout().lock().write_all(output.as_bytes())?;
+        (emission, elapsed(started))
+    };
+    if let Some(stats) = &mut stats {
+        stats.phases.prepare_application += prepare_time;
+        stats.phases.emission += emission;
+        stats.phases.write += write;
     }
     if flags.size_report {
         print_size_report(&prepared)?;
+    }
+    print_stats(stats, begun)
+}
+
+/// Analyze `entry` from `roots`, recording `stats` when given (`--stats`).
+fn analyze_entry(
+    entry: &str,
+    roots: &[PathBuf],
+    host: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+    stats: Option<&mut CompileStats>,
+) -> Result<(light_cljs::Program, Vec<(PathBuf, String)>), light_cljs::NamespaceCompileError> {
+    match stats {
+        Some(stats) => light_cljs::compiler::analyze_namespace_entry_with_stats(
+            entry, roots, host, options, warnings, stats,
+        ),
+        None => light_cljs::compiler::analyze_namespace_entry_with_sources(
+            entry, roots, host, options, warnings,
+        ),
+    }
+}
+
+/// Print the `--stats` report of a compilation begun at `begun` to stderr.
+fn print_stats(stats: Option<CompileStats>, begun: Instant) -> Result<(), Box<dyn Error>> {
+    if let Some(mut stats) = stats {
+        stats.wall = begun.elapsed();
+        io::stderr().lock().write_all(stats.report().as_bytes())?;
     }
     Ok(())
 }
@@ -492,6 +571,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     while let Some(
         flag @ ("--optimize"
         | "--size-report"
+        | "--stats"
         | "--pseudo-names"
         | "--define"
         | "--elide-asserts"
@@ -547,6 +627,11 @@ fn run() -> Result<(), Box<dyn Error>> {
             _ => return Err(USAGE.into()),
         }
     }
+    if flags.stats {
+        return Err(
+            "--stats reports a namespace compilation; it requires --entry NAMESPACE".into(),
+        );
+    }
 
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
@@ -590,7 +675,9 @@ fn run() -> Result<(), Box<dyn Error>> {
             if mode == "compile" {
                 let prepared = prepare_application(&program, flags.options(&program)?);
                 let sources = [(Path::new(&source_name), source.as_str())];
-                write!(out, "{}", flags.output(&prepared, false, &sources)?)?;
+                let (output, map) = flags.output(&prepared, false, &sources)?;
+                flags.write_map(map)?;
+                write!(out, "{output}")?;
                 if flags.size_report {
                     out.flush()?;
                     print_size_report(&prepared)?;

@@ -603,6 +603,66 @@ fn macro_namespace_effects_are_shared_once_per_compilation_with_fresh_reused_hos
 }
 
 #[test]
+fn stats_count_the_macro_calls_each_namespace_executes() {
+    let s = Sources::new();
+    s.write(
+        "macros.cljs",
+        "(ns macros) (def counter (atom 0)) (defmacro next-value [] (swap! counter inc))",
+    );
+    s.write(
+        "dep.cljs",
+        "(ns dep (:require [macros :refer [next-value]])) (def value (next-value))",
+    );
+    s.write("plain.cljs", "(ns plain) (def answer (+ 40 2))");
+    s.write("main.cljs", "(ns main (:require [dep :as d] [plain] [macros :refer [next-value]])) (js/console.log d/value (next-value) plain/answer)");
+    let mut stats = light_cljs::CompileStats::new();
+    let (program, _) = light_cljs::compiler::analyze_namespace_entry_with_stats(
+        "main",
+        std::slice::from_ref(s.0.path()),
+        &mut MacroHost::new(),
+        Default::default(),
+        &mut Vec::new(),
+        &mut stats,
+    )
+    .unwrap();
+    assert_eq!(execute(&emit_js(&program)), "1 2 42\n");
+    let names = stats
+        .namespaces
+        .iter()
+        .map(|namespace| namespace.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["macros", "dep", "plain", "main"]);
+    // Each use of next-value is one call, in the namespace that expands it.
+    assert_eq!(stats.macro_calls_in("dep"), Some(1));
+    assert_eq!(stats.macro_calls_in("main"), Some(1));
+    assert_eq!(stats.macro_calls_in("plain"), Some(0));
+    // `defmacro` is itself a core macro call.
+    assert_eq!(stats.macro_calls_in("macros"), Some(1));
+    assert_eq!(stats.macro_calls, 3);
+    assert!(stats.peak_macro_nodes > 0);
+    // Every analyzed deferred unit was drained into the program, and the
+    // macro's calls executed at least `counter`'s unit.
+    assert_eq!(stats.deferred_units.analyzed, stats.deferred_units.prepared);
+    assert!(stats.deferred_units.executed >= 1);
+    // A namespace with no macro calls, compiled alone into the same
+    // collector, which then describes that compilation only.
+    let mut alone = stats;
+    light_cljs::compiler::analyze_namespace_entry_with_stats(
+        "plain",
+        std::slice::from_ref(s.0.path()),
+        &mut MacroHost::new(),
+        Default::default(),
+        &mut Vec::new(),
+        &mut alone,
+    )
+    .unwrap();
+    assert_eq!(alone.macro_calls, 0);
+    assert_eq!(alone.namespaces.len(), 1);
+    assert_eq!(alone.macro_calls_in("plain"), Some(0));
+    assert_eq!(alone.deferred_units.executed, 0);
+}
+
+#[test]
 fn macro_import_effects_follow_runtime_dependency_analysis_order() {
     let s = Sources::new();
     s.write(
