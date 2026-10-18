@@ -138,7 +138,7 @@ pub const FIXTURES: &[Fixture] = &[
         source: "(defprotocol Area (area [shape]))
                  (defrecord Rect [w h] Area (area [_] (* w h)))
                  (area (->Rect 3 4))",
-        ceilings: [443_000, 443_000, 5_400],
+        ceilings: [443_000, 443_000, 5_300],
         removed: [0, 0, 0],
         printed: "12\n",
     },
@@ -154,7 +154,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (def lookup (let [k :a] (get {:a 1} k)))
                  (def literal [1 2 3])
                  (:x (->Point 1 2))"#,
-        ceilings: [443_000, 443_000, 5_300],
+        ceilings: [443_000, 443_000, 5_200],
         removed: [0, 1, 6],
         printed: "1\n",
     },
@@ -213,7 +213,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defrecord Circle [r] Shape (area [_] (* 3 r r)) (perimeter [_] (* 6 r)))
                  (defrecord Tri [a b c] Shape (area [_] (* a b)) (perimeter [_] (+ a b c)))
                  (area (->Square 3))",
-        ceilings: [445_000, 445_000, 5_400],
+        ceilings: [445_000, 445_000, 5_300],
         removed: [0, 0, 0],
         printed: "9\n",
     },

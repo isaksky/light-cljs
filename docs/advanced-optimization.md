@@ -1952,6 +1952,26 @@ host-facing methods of the vector and the keyword.
     `size_ratchet::each_type_of_eight_records_costs_at_most_its_budget`
     holds the `eight-records` fixture to 220 bytes per record and 200 per
     `deftype`.
+  - **Unread brands (light-cljs-262).** Only `typeFields.brands` and
+    `recordTypes.brands` read a brand (`runtime_slice::BRAND_READERS`; the
+    `runtime_manifest` suite checks that they are the units requiring
+    `TypeBrand` besides `makeType`, which writes one), and a second brand
+    throws, so a constructor called as a plain function on an existing
+    instance (`(.call T t 2)`) throws a `TypeError` as at lower levels.
+    When the slice of an emission whose constructors brand their instances
+    keeps neither reader, the output reads no type's global other than as
+    the callee of a `new` (`Emitter::type_escapes`; a type defined twice or
+    assigned counts as read) and registers no namespace, the body is
+    emitted again without `new rt$TypeBrand(...)`, as for namespace
+    registration, and the slice drops `TypeBrand`: `function
+    Type(a0, a1, a2, a3, a4) { this["w"] = a0; ...; this["__hash"] = a4;
+    }`. Dropping the brand only removes roots, so the second slice keeps
+    no reader either. The brand's private field costs V8's mid tier
+    (Maglev) about 20 ns a construction, which was most of what
+    record-protocol's timed calls spent above upstream's
+    (benchmarks/compiler.md, "Unread type brands"). A program that
+    updates or prints a record through the generic operations
+    keeps `recordTypes.brands` and the brands.
   - **One unit per core dispatcher (light-cljs-254).** The unit
     `seqProtocol` declared eight core dispatchers and
     `protocolHooks.dispatchers` installed six; each is a unit of its own now,

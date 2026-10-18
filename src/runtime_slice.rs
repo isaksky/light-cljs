@@ -40,6 +40,11 @@ use crate::runtime_manifest::{CORE_CELLS, RootUse, RuntimeManifest, UnitId};
 /// binds one reaches reflection.
 pub const REGISTRY_CELLS: &[&str] = &["currentNs"];
 
+/// The runtime units that read a type instance's brand (`TypeBrand.type`):
+/// every unit that requires `TypeBrand` except `makeType`, which writes one.
+/// The `runtime_manifest` suite checks the list against the manifest.
+pub const BRAND_READERS: &[&str] = &["typeFields.brands", "recordTypes.brands"];
+
 /// The upstream fields and methods of the runtime's types, munged: `first` of
 /// a `Cons`, `cnt` of a vector, `sval` of a `LazySeq`, ..., which the types'
 /// `.fields` effects add. Upstream they are compiler-owned names, which
@@ -347,6 +352,20 @@ impl RuntimeRoots {
             .iter()
             .zip(&manifest.units)
             .any(|(first, unit)| first.is_some() && unit.compile_time)
+    }
+
+    /// Whether an `Advanced` slice of these roots keeps a unit that reads the
+    /// brand `TypeBrand` gives a type's instance, one of [`BRAND_READERS`].
+    /// Otherwise nothing in the output can observe a brand, so a constructor
+    /// the emitter writes does not add one (light-cljs-262).
+    pub(crate) fn reads_type_brands(&self) -> bool {
+        let manifest = RuntimeManifest::embedded();
+        let first = manifest.reached_by_uses(&self.units(manifest));
+        BRAND_READERS.iter().any(|name| {
+            manifest
+                .unit_named(name)
+                .is_some_and(|unit| first[unit.0].is_some())
+        })
     }
 
     /// The unit declaring each root's binding with its use, in root order. A

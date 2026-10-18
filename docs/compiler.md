@@ -2507,7 +2507,9 @@ methods, and the masks are properties of the type's prototype instead of each
 instance (light-cljs-264): V8 then keeps every type's construction
 monomorphic, where the shared constructor's inline caches go megamorphic as a
 program adds types, and a type costs about its own text (benchmarks/compiler.md,
-"Per-type output"). An instance takes the brand
+"Per-type output"). Where the output keeps no runtime unit that reads a brand
+and reads no type other than in a `new`, that constructor writes none
+and the output has no `TypeBrand` (light-cljs-262). An instance takes the brand
 once, so calling a constructor as a plain function on an existing instance
 (`(.call T t 2)`), which upstream and earlier light-cljs allowed, throws a
 `TypeError`. A field named `__proto__` is an own field like any other. A

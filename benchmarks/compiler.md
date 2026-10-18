@@ -4259,3 +4259,69 @@ The policy's own work in a step is a set over the manifest's namespaces and
 a pass over the retained program's definitions for the hooks; the spread of
 the page times follows the debug CLI's step times under the peer's load, and
 every save stayed under the 100 ms target.
+
+## Unread type brands — October 18, 2026
+
+light-cljs-262 finishes with the brand rather than the call shape. After
+light-cljs-264 the record-protocol loop body was already
+`(operand0 = g3(l7, 2))["cljs$user$Area$area$arity$1"](operand0)`, with no
+applied arrow and no `.call(null, ...)`, and the workload was still 1.8-1.9×
+upstream. Timing each of the first 40 calls in fresh Node processes (median
+of 9 to 11) showed where the timed calls 11-30 went: in V8's mid tier
+(Maglev) a construction took about 30 ns against 10 without
+`new TypeBrand(this, Type)`, whose return-override constructor and private
+field Maglev does not inline, and the extra allocation brought a young
+generation collection (about 300-400 µs) into the window sooner. Hand-edited
+variants of the output, each call timed on its own, median over 9 to 11
+fresh processes, mean of calls 11-30 (load 3.5 to 4; upstream gives 8.8 µs
+this way, where its first costly collection falls on call 10, and 19 in the
+benchmark driver, where it falls in the window):
+
+| Program | Mean of calls 11-30 (µs) |
+| --- | ---: |
+| light-cljs `advanced`, master `fb3b6e4` | 35.9-44.2 |
+| factory call inlined (`new c(l, 2, null, null, null)`) | 43.7 |
+| type as a class with a private field (`#t = 1`) | 31.4 |
+| type as a class with a private method brand | 33.5 |
+| no brand | 22.8-24.5 |
+
+A `WeakSet.add(this)` brand took 345 µs a call in the driver.
+
+Nothing in record-protocol reads a brand: only `typeFields.brands` and
+`recordTypes.brands` do, and its slice keeps neither. So the emitter now
+writes a type's own constructor without the brand when the slice of the
+emission keeps no reader and the output reads no type's global other than
+with `new` (where a second brand would throw), emitting the body again as it
+does for namespace registration (docs/advanced-optimization.md, "Unread brands"), and the slice
+drops `TypeBrand`.
+
+The pellet's acceptance command, on the 24-CPU Mac (Node v24.18.0, macOS
+15.7.3), baseline and candidate bench binaries alternated, two runs each, with
+a peer worker building and testing (one-minute load 27 falling to 8 over the
+four runs):
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only record-protocol --output DIR
+```
+
+| Build | Node `advanced` (µs) | Upstream `:advanced` (µs) | light-cljs / upstream | QuickJS (µs) |
+| --- | ---: | ---: | ---: | ---: |
+| master `fb3b6e4` | 34.4-34.8 | 19 | 1.9× | 1,036-1,038 |
+| light-cljs-262 | 20.5-21.5 | 19 | 1.1× | 557-564 |
+
+Sizes at `advanced` (`cargo nextest run --test compiler size_ratchet::
+--no-capture`): the three fixtures that construct types without reading a
+brand shrink by 176 bytes, the constructors' brand calls and the `TypeBrand`
+unit, and their ceilings fall; every other fixture is unchanged, including
+`eight-records`, which reads brands.
+
+| Fixture | Advanced before | Advanced after | Advanced ceiling |
+| --- | ---: | ---: | --- |
+| record-protocol | 5,385 | 5,209 | 5,400 → 5,300 |
+| three-records | 5,380 | 5,204 | 5,400 → 5,300 |
+| pure-defs | 5,294 | 5,118 | 5,300 → 5,200 |
+
+A program that updates or prints records through the generic operations
+keeps `recordTypes.brands`, and with it the brand and its cost in Maglev;
+cheaper brands for those programs are left to a follow-up.

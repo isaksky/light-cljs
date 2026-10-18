@@ -329,6 +329,73 @@ fn advanced_types_define_their_own_constructors() {
     assert_eq!(run(source), "[6,4]\n");
 }
 
+/// light-cljs-262: at `Advanced` a type's own constructor brands its instance
+/// only where the output keeps a unit that reads brands. A program that only
+/// constructs types and calls their methods has no brand and no `TypeBrand`;
+/// one that updates and prints a record, whose runtime reads its brand, keeps
+/// both.
+#[test]
+fn advanced_constructors_brand_instances_only_where_a_brand_is_read() {
+    let advanced = |source: &str| {
+        let program = light_cljs::analyze(source, &light_cljs::parse(source).unwrap()).unwrap();
+        light_cljs::prepare_application(
+            &program,
+            super::optimization::readable(light_cljs::OptimizationLevel::Advanced),
+        )
+        .emit_js()
+    };
+    let unread = "(defprotocol Area (area [s]))
+                  (defrecord Rect [w h] Area (area [_] (* w h)))
+                  (deftype T [a] Area (area [_] a))
+                  (+ (area (->Rect 2 3)) (area (T. 4)))";
+    let js = advanced(unread);
+    assert!(
+        js.contains(
+            "function Type(a0, a1, a2, a3, a4) { this[\"w\"] = a0; this[\"h\"] = a1; \
+             this[\"__meta\"] = a2; this[\"__extmap\"] = a3; this[\"__hash\"] = a4; }, "
+        ),
+        "{js}"
+    );
+    assert!(
+        js.contains("function Type(a0) { this[\"a\"] = a0; }, "),
+        "{js}"
+    );
+    assert!(
+        !js.contains("rt$TypeBrand") && !js.contains("const TypeBrand"),
+        "{js}"
+    );
+    assert_eq!(run(unread), "10\n");
+    let read = "(defrecord R [a]) (deftype T [x])
+                (let [r (->R 1)]
+                  (array (record? (assoc r :a 2)) (pr-str (assoc r :b 2)) (= r (->R 1)) (.-x (T. 3))))";
+    let js = advanced(read);
+    assert!(
+        js.contains("this[\"__hash\"] = a3; new rt$TypeBrand(this, Type); }, "),
+        "{js}"
+    );
+    assert!(
+        js.contains("this[\"x\"] = a0; new rt$TypeBrand(this); }, "),
+        "{js}"
+    );
+    assert_eq!(run(read), "[true,\"#cljs.user.R{:a 1, :b 2}\",true,3]\n");
+}
+
+/// An instance takes its brand once, so calling a type's constructor as a
+/// plain function on an existing instance throws at every level, also at
+/// `Advanced` in a program whose runtime reads no brand (light-cljs-262),
+/// after assigning the fields again:
+/// a read of the type other than with `new` keeps the brands.
+#[test]
+fn constructors_reject_reinitializing_existing_instances() {
+    assert_eq!(
+        run("(deftype T [x]) (defrecord R [a])
+             (let [t (T. 1) r (->R 1)
+                   again (fn [f] (try (f) false (catch :default _ true)))]
+               (array (again #(.call T t 2)) (again #(.call R r 2 nil nil nil)) (.-x t) (.-a r)))"),
+        "[true,true,2,2]\n"
+    );
+}
+
 /// A `defrecord` in a function defines a new type at each call, so a copy of
 /// an instance of an earlier one (`assoc`, `clone`, `with-meta`) is of the
 /// current type at every level: light-cljs-264 omits the record's

@@ -317,7 +317,7 @@ fn emit_js_mode(
         Vec::new()
     };
     // The prelude, the `let g<n>;` declarations and the program body.
-    let body = |register_namespaces: bool| {
+    let body = |register_namespaces: bool, brand_types: bool| {
         let mut emitter = Emitter::new(
             program,
             Setup {
@@ -331,6 +331,7 @@ fn emit_js_mode(
             },
             register_namespaces,
         );
+        emitter.brand_types = brand_types;
         emitter.output.push_str(PRELUDE_OPEN);
         emitter.output.push_str(PRELUDE_TRUTH);
         let mut prelude_end = emitter.output.len();
@@ -387,9 +388,16 @@ fn emit_js_mode(
     // (`RuntimeRoots::reach_reflection`): the body is emitted without the
     // registration, and again with it when those roots reach reflection.
     let slice = direct.is_some();
-    let (mut emitter, mut prelude_end) = body(!slice);
+    let (mut emitter, mut prelude_end) = body(!slice, true);
     if slice && emitter.runtime.reach_reflection() {
-        (emitter, prelude_end) = body(true);
+        (emitter, prelude_end) = body(true, true);
+    }
+    // A type's own constructor brands its instance only where a brand may be
+    // observed (`Emitter::unobserved_brands`): the body is emitted again
+    // without the brands when nothing could observe them, which only removes
+    // roots.
+    if slice && emitter.unobserved_brands() {
+        (emitter, prelude_end) = body(emitter.register_namespaces, false);
     }
     #[cfg(debug_assertions)]
     check_runtime_reads(
@@ -1374,6 +1382,19 @@ struct Emitter<'a> {
     shapes: Option<&'a CallShapes>,
     /// Whether the output calls the prelude's `truth`.
     truth_used: bool,
+    /// Whether a type's own constructor ([`Emitter::defined_type`]) brands
+    /// its instance with `TypeBrand`: unless the output keeps no unit that
+    /// reads a brand (light-cljs-262), [`RuntimeRoots::reads_type_brands`].
+    brand_types: bool,
+    /// Whether a constructor this emission wrote branded its instance.
+    branded: bool,
+    /// Whether the output may call a type's own constructor other than with
+    /// `new`, where a second brand would throw: it reads the type's global
+    /// elsewhere than as the callee of a `Construct`, or the type's global
+    /// may hold another value ([`Emitter::sole_type_global`]).
+    type_escapes: bool,
+    /// The callee of the `Construct` being emitted.
+    construct_callee: Option<ExprId>,
     /// With a source map: where the text of each expression starts
     /// ([`Emitter::mark`]), and the functions' and names' positions.
     marks: Option<Marks>,
@@ -1515,6 +1536,10 @@ impl<'a> Emitter<'a> {
             inference,
             shapes,
             truth_used: false,
+            brand_types: true,
+            branded: false,
+            type_escapes: false,
+            construct_callee: None,
             marks: mapped.then(Marks::default),
             constant_marks: Vec::new(),
             function_names: setup.function_names,
@@ -4824,6 +4849,11 @@ impl<'a> Emitter<'a> {
             unreachable!("a program type with a constructor")
         };
         let (record, global) = (*record, *global);
+        if !self.sole_type_global(global) {
+            // Another definition or an assignment may give the type's global
+            // to code that calls it without `new`.
+            self.type_escapes = true;
+        }
         self.product(global);
         self.output.push_str(" = ");
         self.rt(RuntimeName::direct("defineType", None));
@@ -4837,13 +4867,14 @@ impl<'a> Emitter<'a> {
         self.positional_params(members.len());
         self.output.push_str(") {");
         self.field_assignments(&members);
-        self.output.push_str(" new ");
-        self.rt(RuntimeName::direct("TypeBrand", None));
-        self.output.push_str(if record {
-            "(this, Type); }, "
-        } else {
-            "(this); }, "
-        });
+        if self.brand_types {
+            self.branded = true;
+            self.output.push_str(" new ");
+            self.rt(RuntimeName::direct("TypeBrand", None));
+            self.output
+                .push_str(if record { "(this, Type);" } else { "(this);" });
+        }
+        self.output.push_str(" }, ");
         // "ns/T field ...", the type's name and field names.
         let binding = &program.globals[global.0];
         let name = format!("{}/{}", binding.namespace, binding.name);
@@ -4910,6 +4941,35 @@ impl<'a> Emitter<'a> {
                         if facts.top_position(definition).is_some()
                 )
             })
+    }
+
+    /// Whether this emission wrote a branded constructor whose brand nothing
+    /// could observe: the slice keeps no unit that reads brands
+    /// ([`RuntimeRoots::reads_type_brands`]), every constructor runs only
+    /// through `new`, so that none meets a second brand, which throws
+    /// ([`Emitter::type_escapes`]), and the output registers no namespace,
+    /// whose registry would hold the types.
+    fn unobserved_brands(&self) -> bool {
+        self.branded
+            && !self.type_escapes
+            && !self.register_namespaces
+            && !self.runtime.reads_type_brands()
+    }
+
+    /// Whether `global` is the type of one `deftype` or `defrecord` that
+    /// nothing else defines or assigns, so that a read of it reads that type
+    /// (`crate::inference::Definition::Type`).
+    fn sole_type_global(&self, global: GlobalId) -> bool {
+        use crate::inference::{Definition, TypeRole};
+        self.inference.is_some_and(|inference| {
+            matches!(
+                inference.facts().definition(global),
+                Definition::Type {
+                    role: TypeRole::Constructor,
+                    ..
+                }
+            )
+        })
     }
 
     /// Whether emission writes the type definition `id` with a constructor of
@@ -5093,7 +5153,9 @@ impl<'a> Emitter<'a> {
                 if host {
                     self.output.push('(');
                 }
+                let enclosing = self.construct_callee.replace(*callee);
                 self.value(*callee);
+                self.construct_callee = enclosing;
                 if host {
                     self.output.push(')');
                 }
@@ -5592,7 +5654,12 @@ impl<'a> Emitter<'a> {
                 self.rt(RuntimeName::core(core.runtime_name()));
             }
             ExprKind::Local(local) => self.local_value(*local),
-            ExprKind::Global(global) => self.global(*global),
+            ExprKind::Global(global) => {
+                if self.construct_callee != Some(id) && self.sole_type_global(*global) {
+                    self.type_escapes = true;
+                }
+                self.global(*global)
+            }
             ExprKind::JsGlobal(global) => {
                 let program = self.program;
                 if let Some((package, members)) = program.js_globals[global.0].package() {

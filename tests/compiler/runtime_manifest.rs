@@ -1261,3 +1261,18 @@ fn print_runtime_unit_sizes() {
         );
     }
 }
+
+/// `Advanced` output brands the instances of a type's own constructor only
+/// where its slice keeps a unit that reads a brand (light-cljs-262), so the
+/// list of those units is every unit that requires `TypeBrand` except
+/// `makeType`, which writes the brand of its own instances.
+#[test]
+fn brand_readers_are_the_units_that_require_type_brand() {
+    let readers = manifest()
+        .units
+        .iter()
+        .filter(|unit| unit.name != "makeType" && unit.requires.contains(&"TypeBrand"))
+        .map(|unit| unit.name)
+        .collect::<Vec<_>>();
+    assert_eq!(readers, light_cljs::runtime_slice::BRAND_READERS);
+}

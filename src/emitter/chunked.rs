@@ -429,8 +429,9 @@ pub(crate) fn emit_chunked(
     };
     // As in the single file, `Advanced` output registers its namespaces only
     // when the forms of all chunks reach reflection.
-    let write = |register_namespaces: bool| {
+    let write = |register_namespaces: bool, brand_types: bool| {
         let mut emitter = Emitter::new(program, setup, register_namespaces);
+        emitter.brand_types = brand_types;
         emitter.chunks = Some(Chunks {
             plan,
             current: STARTUP,
@@ -457,12 +458,17 @@ pub(crate) fn emit_chunked(
         emitter.record_application_roots(Some(application));
         (emitter, bodies)
     };
-    let (mut emitter, mut bodies) = write(!slice || reflective);
+    let (mut emitter, mut bodies) = write(!slice || reflective, true);
     if slice && !reflective && emitter.runtime.reach_reflection() {
         if plan.moves_definitions() || plan.drops_chunks() {
             return None;
         }
-        (emitter, bodies) = write(true);
+        (emitter, bodies) = write(true, true);
+    }
+    // As in the single file, constructors brand their instances only where
+    // the forms of all chunks may observe a brand.
+    if slice && emitter.unobserved_brands() {
+        (emitter, bodies) = write(emitter.register_namespaces, false);
     }
     let embed = if slice {
         !emitter.runtime.is_empty()
