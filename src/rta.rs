@@ -959,13 +959,60 @@ fn texts(program: &Program, kind: &ExprKind, mut text: impl FnMut(&str)) {
     }
 }
 
+/// Raw JavaScript with the escapes of its strings and identifiers decoded
+/// (`'\x45MPTY'` and `EMPTY` name `EMPTY`; light-cljs-247), so that a
+/// name written with them is seen. A control escape (`\n`) separates names;
+/// any other escaped character stands for itself. Decoding text outside a
+/// string can only find more names, which keeps more.
+fn unescaped(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains('\\') {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let hex = |chars: &mut std::iter::Peekable<std::str::Chars<'_>>, digits: usize| {
+            let mut value = 0u32;
+            for _ in 0..digits {
+                value = value * 16 + chars.peek()?.to_digit(16)?;
+                chars.next();
+            }
+            char::from_u32(value)
+        };
+        let decoded = match chars.next() {
+            Some('x') => hex(&mut chars, 2),
+            Some('u') if chars.peek() == Some(&'{') => {
+                chars.next();
+                let mut value = 0u32;
+                while let Some(digit) = chars.peek().and_then(|c| c.to_digit(16)) {
+                    value = value.saturating_mul(16).saturating_add(digit);
+                    chars.next();
+                }
+                if chars.peek() == Some(&'}') {
+                    chars.next();
+                }
+                char::from_u32(value)
+            }
+            Some('u') => hex(&mut chars, 4),
+            Some('n' | 'r' | 't' | 'b' | 'f' | 'v' | '0') | None => None,
+            Some(other) => Some(other),
+        };
+        out.push(decoded.unwrap_or(' '));
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// Whether an expression of this kind names a host property that `named`
 /// accepts, an identifier such as `getBasis`: one of its [`texts`] is the
 /// name, or raw JavaScript holds it as an identifier or a string.
 fn names_property(program: &Program, kind: &ExprKind, mut named: impl FnMut(&str) -> bool) -> bool {
     match kind {
         ExprKind::JsTemplate { segments, .. } => segments.iter().any(|segment| {
-            segment
+            unescaped(segment)
                 .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
                 .any(&mut named)
         }),

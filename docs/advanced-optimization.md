@@ -1807,7 +1807,10 @@ search.
   names upstream members (`rta`, light-cljs-238) or reads an empty literal
   (`Emitter::empty_collection`). The reader keeps the queue's `EMPTY`, which
   it reads, through its own `when:`. Upstream these are compiler-owned
-  names, which Closure removes where nothing reads them.
+  names, which Closure removes where nothing reads them. The scan of raw
+  JavaScript (`js*`) for these names and upstream members decodes string
+  and identifier escapes first (`rta::unescaped`; `'\x45MPTY'` names
+  `EMPTY`), from the Sol review.
 - **Other kinds' branches.** `lookup` is the map, vector and string
   branches; the set, transient and sorted-map branches are wrappers
   (`lookup.sets`, `lookup.transients`, `lookup.tree`) that their builders'

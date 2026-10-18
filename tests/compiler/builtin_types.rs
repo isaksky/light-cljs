@@ -1320,6 +1320,22 @@ fn map_entries_keep_no_vector_type_where_no_vector_is_built() {
 }
 
 #[test]
+fn type_statics_named_in_raw_javascript_are_kept() {
+    // light-cljs-247, from the Sol review: raw JavaScript that names a static
+    // through string or identifier escapes keeps it, without an empty literal
+    // that would keep the statics anyway.
+    let source = "(let [t (type (if (js/Math.random) [1] nil))]
+           (.join (array (js* \"~{}['\\\\x45MPTY'] === undefined\" t)
+                         (js* \"~{}['\\\\u{45}MPTY'] === undefined\" t)
+                         (js* \"~{}.\\\\u0045MPTY === undefined\" t)) \" \"))";
+    every_level(source, "false false false");
+    let kept = units(&format!("(js/console.log {source})"));
+    for unit in ["typeStatics", "PersistentVectorValue.statics"] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+}
+
+#[test]
 fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
     // light-cljs-247: builders instantiate the array map type, whose call is
     // `publicArrayMap` only where the program names `PersistentArrayMap`
