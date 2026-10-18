@@ -1,24 +1,24 @@
 //! A value shared between programs until one of them changes it.
 
 use std::ops::{Deref, DerefMut};
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// A program table shared by reference between a program and the snapshots
 /// taken of it. Reading goes through [`Deref`]; writing through [`DerefMut`]
 /// copies the table first if another program still shares it, so a snapshot
 /// keeps the table as it was.
-pub struct Shared<T>(Rc<T>);
+pub struct Shared<T>(Arc<T>);
 
 impl<T> Shared<T> {
     pub fn new(value: T) -> Self {
-        Self(Rc::new(value))
+        Self(Arc::new(value))
     }
 }
 
 impl<T: Clone> Shared<T> {
     /// The value itself, copied if another program shares it.
     pub fn into_inner(self) -> T {
-        Rc::try_unwrap(self.0).unwrap_or_else(|rc| (*rc).clone())
+        Arc::try_unwrap(self.0).unwrap_or_else(|rc| (*rc).clone())
     }
 
     /// An empty extension is a read, not a write. In particular, fragment
@@ -29,7 +29,7 @@ impl<T: Clone> Shared<T> {
     {
         let mut entries = entries.into_iter().peekable();
         if entries.peek().is_some() {
-            Rc::make_mut(&mut self.0).extend(entries);
+            Arc::make_mut(&mut self.0).extend(entries);
         }
     }
 }
@@ -43,7 +43,7 @@ impl<T> Deref for Shared<T> {
 
 impl<T: Clone> DerefMut for Shared<T> {
     fn deref_mut(&mut self) -> &mut T {
-        Rc::make_mut(&mut self.0)
+        Arc::make_mut(&mut self.0)
     }
 }
 
@@ -55,7 +55,7 @@ impl<T> Clone for Shared<T> {
 
 impl<T: Default> Default for Shared<T> {
     fn default() -> Self {
-        Self(Rc::new(T::default()))
+        Self(Arc::new(T::default()))
     }
 }
 
@@ -73,7 +73,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Shared<T> {
 
 impl<T: PartialEq> PartialEq for Shared<T> {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0) || **self == **other
+        Arc::ptr_eq(&self.0, &other.0) || **self == **other
     }
 }
 
@@ -129,14 +129,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::Shared;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     #[test]
     fn empty_fragment_extension_keeps_the_shared_table() {
         let mut table = Shared::new(vec![1, 2, 3]);
         let snapshot = table.clone();
         table.extend([4, 5].into_iter().filter(|_| false));
-        assert!(Rc::ptr_eq(&table.0, &snapshot.0));
+        assert!(Arc::ptr_eq(&table.0, &snapshot.0));
         table.extend([4]);
         assert_eq!(table, [1, 2, 3, 4]);
         assert_eq!(snapshot, [1, 2, 3]);

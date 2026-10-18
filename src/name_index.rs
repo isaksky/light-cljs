@@ -3,13 +3,13 @@
 use crate::analyzer::GlobalId;
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
-use std::rc::Rc;
+use std::sync::Arc;
 
 type Key = (String, String);
 
 #[derive(Clone, Default)]
 pub(crate) struct NameIndex {
-    root: Option<Rc<Node>>,
+    root: Option<Arc<Node>>,
     hash: RandomState,
 }
 
@@ -21,7 +21,7 @@ enum Node {
     },
     Branch {
         bitmap: u32,
-        children: Vec<Rc<Node>>,
+        children: Vec<Arc<Node>>,
     },
 }
 
@@ -61,7 +61,7 @@ impl NameIndex {
         match &mut self.root {
             Some(root) => insert(root, hash, key, value, 0),
             None => {
-                self.root = Some(Rc::new(Node::Leaf {
+                self.root = Some(Arc::new(Node::Leaf {
                     hash,
                     entries: vec![(key, value)],
                 }));
@@ -73,7 +73,7 @@ impl NameIndex {
 
 // Different hashes share branches until their next five bits differ. Equal
 // hashes stay in a collision leaf and are compared by the complete key.
-fn join(old: Rc<Node>, old_hash: u64, new: Rc<Node>, new_hash: u64, shift: u32) -> Rc<Node> {
+fn join(old: Arc<Node>, old_hash: u64, new: Arc<Node>, new_hash: u64, shift: u32) -> Arc<Node> {
     let a = bit(old_hash, shift);
     let b = bit(new_hash, shift);
     let children = if a == b {
@@ -83,14 +83,14 @@ fn join(old: Rc<Node>, old_hash: u64, new: Rc<Node>, new_hash: u64, shift: u32) 
     } else {
         vec![new, old]
     };
-    Rc::new(Node::Branch {
+    Arc::new(Node::Branch {
         bitmap: a | b,
         children,
     })
 }
 
 fn insert(
-    node: &mut Rc<Node>,
+    node: &mut Arc<Node>,
     hash: u64,
     key: Key,
     value: GlobalId,
@@ -105,7 +105,7 @@ fn insert(
             *node = join(
                 node.clone(),
                 *old_hash,
-                Rc::new(Node::Leaf {
+                Arc::new(Node::Leaf {
                     hash,
                     entries: vec![(key, value)],
                 }),
@@ -119,7 +119,7 @@ fn insert(
             return Some(value);
         }
     }
-    match Rc::make_mut(node) {
+    match Arc::make_mut(node) {
         Node::Leaf { entries, .. } => {
             if let Some((_, previous)) = entries.iter_mut().find(|(k, _)| *k == key) {
                 Some(std::mem::replace(previous, value))
@@ -134,7 +134,7 @@ fn insert(
             if *bitmap & bit == 0 {
                 children.insert(
                     index,
-                    Rc::new(Node::Leaf {
+                    Arc::new(Node::Leaf {
                         hash,
                         entries: vec![(key, value)],
                     }),
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn collision_leaves_and_last_hash_bits_preserve_every_key() {
         let key = |n| ("ns".into(), format!("k{n}"));
-        let mut root = Rc::new(Node::Leaf {
+        let mut root = Arc::new(Node::Leaf {
             hash: 0,
             entries: vec![(key(0), GlobalId(0))],
         });

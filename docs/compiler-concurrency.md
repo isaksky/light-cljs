@@ -345,6 +345,36 @@ A read-only audit of the types on the analysis path found:
 About 190 `Rc` uses, 74 `RefCell` and 23 `Cell` across 21 files.
 `analyzer.rs`, `compiler.rs` and `emitter.rs` contain none.
 
+As built (light-cljs-333): `Arena`, `Shared`, `Layered`, `NameIndex` and
+`Name`, `Source`, `Datum`, `Form`, `Origin` hold `Arc` instead of `Rc`;
+`Source`'s line index is a `OnceLock`, and the `Arena` lookup hint is a
+relaxed `AtomicUsize`: it measured +0.5% wall against the parent, a
+per-thread hint +1.2%. `Datum` identity is `Arc::as_ptr`. So `Program`,
+`PreparedApplication`, `NameIndex`,
+`DefinitionSnapshot` (every field), `SyntaxTree` and the compiler data types
+are now `Send + Sync`, and a `const` assertion at the end of
+`src/compiler_data.rs` fails every build, not only test builds, if one of
+them stops being so. Output is byte-identical; the Penpot numbers are in
+[benchmarks/compiler-concurrency.md](../benchmarks/compiler-concurrency.md).
+
+What still blocks `Send` on the analysis path, for the host-split and
+session pellets (light-cljs-334, 335). Function-local `RefCell`s (in
+`program_fragment.rs`, for example) and test-only counters are left out.
+
+| Where | Thread-affine state | Kind | Blocks |
+| --- | --- | --- | --- |
+| `macro_host.rs` `MacroHost` | `compiler_data_readers: Rc<RefCell<CompilerDataReaders>>`, which also holds an `Rc<Evaluator>` for data readers | `RefCell`, engine handle | the host |
+| `macro_host.rs` `MacroHost` | `macro_environment`, `namespace_environment`, `local_environment`, `reader_environment`: `Rc<RefCell<Option<…>>>` caches shared by frames | lazy state | the host |
+| `macro_host.rs` `MacroHost` | `expansions`, `generated_nodes`: `Rc<Cell<usize>>` budgets shared by frames | `Cell` | the host; the aggregate budget of "Semantics and determinism" replaces them |
+| `macro_host.rs` `MacroHost` | `reader_declared: Rc<RefCell<HashMap>>`, per-session registration positions | `RefCell` | the host |
+| `macro_host.rs` `MacroHost` | `session: Option<Rc<CompilationSession>>`, `session_ref: rc::Weak` | session handle | the host |
+| `macro_host.rs` `MacroHost` | `bootstrap: Option<Bootstrap>`, whose `evaluator` is `Rc<dyn CompilerEvaluator>` | engine handle | the host, `Catalog` |
+| `compilation_session.rs` | `catalog: RefCell<Catalog>`; `units: Vec<Rc<RefCell<Unit>>>`; `Unit::host: Option<Box<MacroHost>>`; `AnalysisState` holds `Rc<Program>`, `rc::Weak<Program>` and `Rc<DeferredUnit>` (each `Send + Sync` inside) | `RefCell`, `Rc` | `CompilationSession`, `FrontierGuard` |
+| `compilation_session.rs` `attach`, `compiler_evaluator.rs` `UnitService` | the `__lightCompileUnit` callback: `Rc<dyn Fn>` capturing an `rc::Weak<CompilationSession>` | callback capture | the bootstrap evaluator's services |
+| `compiler_bootstrap.rs` `UNITS` | `thread_local!` `RefCell<Option<Vec<BootstrapUnit>>>`, the bootstrap macro JS cache | per-thread lazy state | nothing (it is per thread), but each thread compiles it again with its own gensyms; it becomes a process-wide `OnceLock` |
+| `compiler_reader.rs` `NamespaceView` | `core_bindings: Rc<HashMap<Name, ResolvedBinding>>` from a `thread_local!` `CORE` | per-thread lazy state, `Rc` | `NamespaceView` and the analyzer's `ReaderView` (stage C); as an `Arc` in a `OnceLock` it would be shared |
+| `evaluator.rs`, `v8_evaluator.rs`, `v8_bridge.rs` | isolate and runtime handles, `Rc<State>`, `RefCell`/`Cell` engine state | engine | must not move; one per thread |
+
 The engines are ready for concurrent use.
 
 - The V8 platform is initialized once per process (`OnceLock` in `platform()`,
@@ -854,8 +884,8 @@ output changes once, when stage A lands.
 
 | Area | Change |
 | --- | --- |
-| `arena`, `shared`, `layered`, `name_index` | `Rc` → `Arc`; the `Arena` lookup hint `Cell` becomes per-thread or a relaxed atomic. Measured cost of the `Rc` swap (with `compiler_data`): none observed in a three-run sample. |
-| `compiler_data` | `Rc` → `Arc` for `Name`, `Source`, `Datum`, `Form`, `Origin`; `OnceCell` → `OnceLock` |
+| `arena`, `shared`, `layered`, `name_index` | `Rc` → `Arc`; the `Arena` lookup hint `Cell` becomes per-thread or a relaxed atomic. Measured cost of the `Rc` swap (with `compiler_data`): none observed in a three-run sample. Done in light-cljs-333 (relaxed atomic). |
+| `compiler_data` | `Rc` → `Arc` for `Name`, `Source`, `Datum`, `Form`, `Origin`; `OnceCell` → `OnceLock`. Done in light-cljs-333. |
 | `macro_host` | Split into sendable environment data (layered maps, limits, options) and a per-thread engine binding (bootstrap evaluator, data-reader evaluator, session). The `Rc<RefCell>` environment caches become per worker. |
 | `compilation_session` | Catalog behind a `Mutex`, unit state with an owner and a `Condvar`, analyzed IR as `Arc<Program>`, prepared JS as `Arc<str>`; per-isolate registration state moves to the worker; wait-for graph for cross-worker cycles; shared failure per unit |
 | Engines | One `V8Evaluator` per worker; platform init before spawning; process-wide bootstrap JS cache; `__lightCompileUnit` callbacks bound to the worker's catalog handle |

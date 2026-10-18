@@ -8,7 +8,8 @@
 //! leaf. A snapshot keeps its definition-time entries.
 
 use std::ops::{Index, IndexMut};
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 const LEAF_SIZE: usize = 64;
 
@@ -16,8 +17,8 @@ const LEAF_SIZE: usize = 64;
 enum Chunk<T> {
     Leaf(Vec<T>),
     Branch {
-        left: Rc<Chunk<T>>,
-        right: Rc<Chunk<T>>,
+        left: Arc<Chunk<T>>,
+        right: Arc<Chunk<T>>,
         len: usize,
     },
 }
@@ -30,7 +31,7 @@ impl<T> Chunk<T> {
         }
     }
 
-    fn join(left: Rc<Self>, right: Rc<Self>) -> Self {
+    fn join(left: Arc<Self>, right: Arc<Self>) -> Self {
         let len = left.len() + right.len();
         Self::Branch { left, right, len }
     }
@@ -43,8 +44,8 @@ impl<T> Chunk<T> {
             if len <= LEAF_SIZE {
                 return Chunk::Leaf(entries.take(len).collect());
             }
-            let left = Rc::new(build(entries, len / 2));
-            let right = Rc::new(build(entries, len - len / 2));
+            let left = Arc::new(build(entries, len / 2));
+            let right = Arc::new(build(entries, len - len / 2));
             Chunk::join(left, right)
         }
         let len = entries.len();
@@ -78,16 +79,16 @@ impl<T: Clone> Chunk<T> {
             Self::Leaf(entries) => entries.get_mut(index),
             Self::Branch { left, right, .. } => {
                 if index < left.len() {
-                    Rc::make_mut(left).get_mut(index)
+                    Arc::make_mut(left).get_mut(index)
                 } else {
-                    Rc::make_mut(right).get_mut(index - left.len())
+                    Arc::make_mut(right).get_mut(index - left.len())
                 }
             }
         }
     }
 
-    fn append_entries(chunk: Rc<Self>, entries: &mut Vec<T>) {
-        match Rc::try_unwrap(chunk) {
+    fn append_entries(chunk: Arc<Self>, entries: &mut Vec<T>) {
+        match Arc::try_unwrap(chunk) {
             Ok(Self::Leaf(mut leaf)) => entries.append(&mut leaf),
             Ok(Self::Branch { left, right, .. }) => {
                 Self::append_entries(left, entries);
@@ -110,7 +111,7 @@ impl<T: Clone> Chunk<T> {
 
 pub struct Arena<T> {
     /// Frozen entries, shared with every table snapshotted from this one.
-    chunks: Vec<Rc<Chunk<T>>>,
+    chunks: Vec<Arc<Chunk<T>>>,
     /// The ID of each chunk's first entry, parallel to `chunks`.
     starts: Vec<usize>,
     /// The number of frozen entries: the ID of the first tail entry.
@@ -118,7 +119,9 @@ pub struct Arena<T> {
     /// Entries after the frozen chunks, owned by this table alone.
     tail: Vec<T>,
     /// The chunk of the last frozen entry looked up: nearby lookups are O(1).
-    hint: std::cell::Cell<usize>,
+    /// Relaxed: a stale or racing value is only a missed hint, never a wrong
+    /// lookup, and on the targets we build it costs what a `Cell` does.
+    hint: AtomicUsize,
 }
 
 impl<T> Default for Arena<T> {
@@ -128,7 +131,7 @@ impl<T> Default for Arena<T> {
             starts: Vec::new(),
             frozen: 0,
             tail: Vec::new(),
-            hint: std::cell::Cell::new(0),
+            hint: AtomicUsize::new(0),
         }
     }
 }
@@ -143,7 +146,7 @@ where
             starts: self.starts.clone(),
             frozen: self.frozen,
             tail: self.tail.clone(),
-            hint: std::cell::Cell::new(self.hint.get()),
+            hint: AtomicUsize::new(self.hint.load(Relaxed)),
         }
     }
 }
@@ -244,11 +247,11 @@ impl<T> Arena<T> {
             && self.chunks[..chunks]
                 .iter()
                 .zip(&other.chunks[..chunks])
-                .all(|(a, b)| Rc::ptr_eq(a, b))
+                .all(|(a, b)| Arc::ptr_eq(a, b))
     }
 
     fn chunk(&self, id: usize) -> (usize, usize) {
-        let hint = self.hint.get();
+        let hint = self.hint.load(Relaxed);
         if let Some(&start) = self.starts.get(hint)
             && start <= id
             && id - start < self.chunks[hint].len()
@@ -256,7 +259,7 @@ impl<T> Arena<T> {
             return (hint, id - start);
         }
         let chunk = self.starts.partition_point(|&start| start <= id) - 1;
-        self.hint.set(chunk);
+        self.hint.store(chunk, Relaxed);
         (chunk, id - self.starts[chunk])
     }
 
@@ -341,7 +344,9 @@ impl<T: Clone> Arena<T> {
         self.starts.push(self.frozen);
         self.frozen += self.tail.len();
         self.chunks
-            .push(Rc::new(Chunk::from_entries(std::mem::take(&mut self.tail))));
+            .push(Arc::new(Chunk::from_entries(std::mem::take(
+                &mut self.tail,
+            ))));
         while self.chunks.len() >= 2 {
             let last = self.chunks.len() - 1;
             if self.chunks[last].len() * 2 < self.chunks[last - 1].len() {
@@ -352,9 +357,9 @@ impl<T: Clone> Arena<T> {
             let older = self.chunks.pop().expect("chunk");
             let start = self.starts.pop().expect("start");
             self.starts.push(start);
-            self.chunks.push(Rc::new(Chunk::join(older, newer)));
+            self.chunks.push(Arc::new(Chunk::join(older, newer)));
         }
-        self.hint.set(0);
+        *self.hint.get_mut() = 0;
     }
 
     pub fn extend_from_slice(&mut self, entries: &[T]) {
@@ -372,7 +377,7 @@ impl<T: Clone> Arena<T> {
             return self.tail.get_mut(id - self.frozen);
         }
         let (chunk, index) = self.chunk(id);
-        Rc::make_mut(&mut self.chunks[chunk]).get_mut(index)
+        Arc::make_mut(&mut self.chunks[chunk]).get_mut(index)
     }
 
     /// Copy every frozen chunk into the tail, so no entry is shared.
@@ -415,7 +420,7 @@ impl<T: Clone> IndexMut<usize> for Arena<T> {
             return &mut self.tail[id - self.frozen];
         }
         let (chunk, index) = self.chunk(id);
-        Rc::make_mut(&mut self.chunks[chunk])
+        Arc::make_mut(&mut self.chunks[chunk])
             .get_mut(index)
             .expect("arena index")
     }
@@ -629,5 +634,39 @@ mod tests {
         assert_eq!(snapshot.to_vec(), (0..10).collect::<Vec<_>>());
         assert!(snapshot.shares_prefix(&snapshot.clone(), 10));
         assert!(!again.shares_prefix(&snapshot, 4));
+    }
+
+    #[test]
+    fn concurrent_frozen_reads_preserve_values() {
+        let mut arena = Arena::new();
+        for count in [900, 170, 13, 64, 1] {
+            let start = arena.len();
+            arena.extend(start..start + count);
+            arena.freeze();
+        }
+        arena.extend(arena.len()..1200);
+        let snapshot = arena.clone();
+        let len = arena.len();
+        let barrier = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            for thread in 0..4 {
+                let (arena, snapshot, barrier) = (&arena, &snapshot, &barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    // Strided orders cross chunks on every read, so the
+                    // threads keep overwriting each other's lookup hint.
+                    for round in 0..20 {
+                        for i in 0..len {
+                            let id = (i * 7919 + thread * 131 + round) % len;
+                            assert_eq!(arena.get(id), Some(&id));
+                            assert_eq!(snapshot[id], id);
+                        }
+                    }
+                    assert!(arena.iter().copied().eq(0..len));
+                    assert!(snapshot.range(11..1192).copied().eq(11..1192));
+                    assert_eq!(arena.get(len), None);
+                });
+            }
+        });
     }
 }

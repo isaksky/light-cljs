@@ -3,7 +3,7 @@
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// A map whose frames share its entries by reference. Entries are written to
 /// a small layer over a shared base. Both are shared until a write, so a frame
@@ -11,9 +11,9 @@ use std::rc::Rc;
 /// layer grows past a bound, the two are merged into a new base.
 #[derive(Debug)]
 pub struct Layered<K, V> {
-    base: Rc<HashMap<K, V>>,
+    base: Arc<HashMap<K, V>>,
     /// This map's entries over `base`; `None` removes a base entry.
-    own: Rc<HashMap<K, Option<V>>>,
+    own: Arc<HashMap<K, Option<V>>>,
     len: usize,
 }
 
@@ -29,8 +29,8 @@ impl<K: Eq + Hash + Clone, V: Clone + PartialEq> PartialEq for Layered<K, V> {
 impl<K, V> Default for Layered<K, V> {
     fn default() -> Self {
         Self {
-            base: Rc::new(HashMap::new()),
-            own: Rc::new(HashMap::new()),
+            base: Arc::new(HashMap::new()),
+            own: Arc::new(HashMap::new()),
             len: 0,
         }
     }
@@ -95,13 +95,13 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
             // Compact first: the entry must stay in the own layer to be
             // returned from it.
             self.compact();
-            Rc::make_mut(&mut self.own).insert(key.to_owned(), Some(value));
+            Arc::make_mut(&mut self.own).insert(key.to_owned(), Some(value));
         }
-        Rc::make_mut(&mut self.own).get_mut(key)?.as_mut()
+        Arc::make_mut(&mut self.own).get_mut(key)?.as_mut()
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        let previous = match Rc::make_mut(&mut self.own).insert(key.clone(), Some(value)) {
+        let previous = match Arc::make_mut(&mut self.own).insert(key.clone(), Some(value)) {
             Some(previous) => previous,
             None => self.base.get(&key).cloned(),
         };
@@ -118,12 +118,12 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
         Q: ?Sized + Hash + Eq + ToOwned<Owned = K>,
     {
         let previous = if self.base.contains_key(key) {
-            match Rc::make_mut(&mut self.own).insert(key.to_owned(), None) {
+            match Arc::make_mut(&mut self.own).insert(key.to_owned(), None) {
                 Some(previous) => previous,
                 None => self.base.get(key).cloned(),
             }
         } else {
-            Rc::make_mut(&mut self.own).remove(key).flatten()
+            Arc::make_mut(&mut self.own).remove(key).flatten()
         };
         if previous.is_some() {
             self.len -= 1;
@@ -157,7 +157,7 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
             return;
         }
         let mut merged = (*self.base).clone();
-        for (key, value) in Rc::make_mut(&mut self.own).drain() {
+        for (key, value) in Arc::make_mut(&mut self.own).drain() {
             match value {
                 Some(value) => {
                     merged.insert(key, value);
@@ -167,7 +167,7 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
                 }
             }
         }
-        self.base = Rc::new(merged);
+        self.base = Arc::new(merged);
     }
 }
 
@@ -188,8 +188,8 @@ impl<K: Eq + Hash + Clone, V: Clone> FromIterator<(K, V)> for Layered<K, V> {
         let base: HashMap<K, V> = iter.into_iter().collect();
         Self {
             len: base.len(),
-            base: Rc::new(base),
-            own: Rc::new(HashMap::new()),
+            base: Arc::new(base),
+            own: Arc::new(HashMap::new()),
         }
     }
 }

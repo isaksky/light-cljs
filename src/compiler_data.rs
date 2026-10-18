@@ -2,24 +2,25 @@
 //! these values; cloning a form retains only its datum arena and source text.
 use crate::parser::{CollectionKind, LineIndex};
 use std::{
-    cell::OnceCell,
     fmt,
     ops::Range,
-    rc::Rc,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 /// A name's exact UTF-16 components, without reader resolution or validation.
 /// Names constructed by a host need not be valid source token spellings.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Name {
-    namespace: Option<Rc<[u16]>>,
-    name: Rc<[u16]>,
+    namespace: Option<Arc<[u16]>>,
+    name: Arc<[u16]>,
 }
 
-// ASCII's exact-size byte iterator lets Rc allocate the final slice directly.
+// ASCII's exact-size byte iterator lets Arc allocate the final slice directly.
 // EncodeUtf16's unknown exact length otherwise requires a temporary Vec.
-fn name_utf16(text: &str) -> Rc<[u16]> {
+fn name_utf16(text: &str) -> Arc<[u16]> {
     if text.is_ascii() {
         text.bytes().map(u16::from).collect()
     } else {
@@ -37,8 +38,8 @@ impl Name {
 
     pub fn from_utf16(namespace: Option<&[u16]>, name: &[u16]) -> Self {
         Self {
-            namespace: namespace.map(Rc::from),
-            name: Rc::from(name),
+            namespace: namespace.map(Arc::from),
+            name: Arc::from(name),
         }
     }
 
@@ -83,7 +84,7 @@ pub enum FormKind {
 pub enum Origin {
     Source,
     SuppliedData,
-    MacroExpansion(Rc<Name>),
+    MacroExpansion(Arc<Name>),
     Quote,
     SyntaxQuote,
     Unquote,
@@ -93,7 +94,7 @@ pub enum Origin {
     Metadata,
     AnonymousFunction,
     AnonymousArgument,
-    DataReader(Rc<Name>),
+    DataReader(Arc<Name>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,12 +113,12 @@ struct SourceFile {
     id: SourceId,
     name: String,
     text: String,
-    lines: OnceCell<LineIndex>,
+    lines: OnceLock<LineIndex>,
     line_offset: usize,
 }
 /// Source text retained directly by compiler forms and diagnostics.
 #[derive(Clone)]
-pub struct Source(Rc<SourceFile>);
+pub struct Source(Arc<SourceFile>);
 impl Source {
     pub fn new(name: impl Into<String>, text: impl Into<String>) -> Self {
         Self::with_line_offset(name, text, 0)
@@ -127,11 +128,11 @@ impl Source {
         text: impl Into<String>,
         line_offset: usize,
     ) -> Self {
-        Self(Rc::new(SourceFile {
+        Self(Arc::new(SourceFile {
             id: SourceId(NEXT_SOURCE.fetch_add(1, Ordering::Relaxed)),
             name: name.into(),
             text: text.into(),
-            lines: OnceCell::new(),
+            lines: OnceLock::new(),
             line_offset,
         }))
     }
@@ -198,7 +199,7 @@ pub enum DatumKind {
         denominator: i64,
     },
     Character(u16),
-    String(Rc<[u16]>),
+    String(Arc<[u16]>),
     Symbol(Name),
     Keyword(Name),
     Collection {
@@ -216,7 +217,7 @@ struct DatumNode {
 }
 /// Owned finite readable data. Shared subtrees have identity but no runtime roots.
 #[derive(Clone)]
-pub struct Datum(Rc<DatumNode>);
+pub struct Datum(Arc<DatumNode>);
 impl fmt::Debug for Datum {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.kind().fmt(f)
@@ -231,7 +232,7 @@ pub enum DatumView {
     Double(f64),
     Ratio { numerator: i64, denominator: i64 },
     Character(u16),
-    String(Rc<[u16]>),
+    String(Arc<[u16]>),
     Symbol(Name),
     Keyword(Name),
     List(usize),
@@ -242,13 +243,13 @@ pub enum DatumView {
 }
 impl Datum {
     pub fn new(kind: DatumKind) -> Self {
-        Self(Rc::new(DatumNode {
+        Self(Arc::new(DatumNode {
             kind,
             metadata: None,
         }))
     }
     pub fn with_metadata(&self, metadata: Datum) -> Self {
-        Self(Rc::new(DatumNode {
+        Self(Arc::new(DatumNode {
             kind: self.kind().clone(),
             metadata: Some(metadata),
         }))
@@ -260,7 +261,7 @@ impl Datum {
         self.0.metadata.clone()
     }
     pub(crate) fn identity(&self) -> usize {
-        Rc::as_ptr(&self.0) as usize
+        Arc::as_ptr(&self.0) as usize
     }
     pub fn compiler_literal_data(&self) -> Option<Datum> {
         match self.kind() {
@@ -318,7 +319,7 @@ struct Forms {
 /// storage order must never determine executable map evaluation order.
 #[derive(Clone)]
 pub struct Form {
-    forms: Rc<Forms>,
+    forms: Arc<Forms>,
     id: FormId,
 }
 impl Form {
@@ -338,7 +339,7 @@ impl Form {
             vec![self.span()],
             FormId(0),
         );
-        Rc::get_mut(&mut leaf.forms).unwrap().expansions = self.expansions().to_vec();
+        Arc::get_mut(&mut leaf.forms).unwrap().expansions = self.expansions().to_vec();
         leaf
     }
     pub(crate) fn from_parts(
@@ -350,7 +351,7 @@ impl Form {
         assert_eq!(nodes.len(), data.len());
         assert_eq!(nodes.len(), spans.len());
         Self {
-            forms: Rc::new(Forms {
+            forms: Arc::new(Forms {
                 nodes: nodes.into(),
                 data: data.into(),
                 spans: spans.into(),
@@ -514,7 +515,7 @@ impl DataBuilder {
         Datum::new(DatumKind::Character(v))
     }
     pub(crate) fn string(&self, v: impl AsRef<[u16]>) -> Datum {
-        Datum::new(DatumKind::String(Rc::from(v.as_ref())))
+        Datum::new(DatumKind::String(Arc::from(v.as_ref())))
     }
     pub(crate) fn symbol(&self, v: Name) -> Datum {
         Datum::new(DatumKind::Symbol(v))
@@ -798,7 +799,7 @@ impl Form {
             let span = reused.unwrap_or(original).span();
             let origin = reused
                 .map(|f| f.node().origin.clone())
-                .unwrap_or_else(|| Origin::MacroExpansion(Rc::new(name.clone())));
+                .unwrap_or_else(|| Origin::MacroExpansion(Arc::new(name.clone())));
             let kind = match data.kind() {
                 DatumKind::Collection { kind, children } => FormKind::Collection {
                     kind: *kind,
@@ -837,7 +838,7 @@ impl Form {
             &mut spans,
         );
         let mut result = Self::from_parts(nodes, values, spans, id);
-        let forms = Rc::get_mut(&mut result.forms).unwrap();
+        let forms = Arc::get_mut(&mut result.forms).unwrap();
         forms.expansions = original.expansions().to_vec();
         forms.expansions.push(expansion);
         result
@@ -955,4 +956,56 @@ pub(crate) fn diagnostic_text(data: &Datum) -> Vec<u16> {
     let mut out = vec![];
     write(&mut out, data);
     out
+}
+
+// Compiler data, and the programs, indexes and snapshots built from it, are
+// shared between compile threads by reference (docs/compiler-concurrency.md,
+// "Thread safety today"). An `Rc`, `Cell` or `RefCell` added to any of these
+// fails every build, not only test builds.
+const _: () = {
+    const fn send_sync<T: Send + Sync>() {}
+    send_sync::<Name>();
+    send_sync::<Source>();
+    send_sync::<Datum>();
+    send_sync::<Form>();
+    send_sync::<Origin>();
+    send_sync::<crate::parser::SyntaxTree>();
+    send_sync::<crate::analyzer::Program>();
+    send_sync::<crate::application::PreparedApplication>();
+    send_sync::<crate::name_index::NameIndex>();
+    send_sync::<crate::compilation_session::DefinitionSnapshot>();
+};
+
+#[cfg(test)]
+mod tests {
+    use super::Source;
+
+    #[test]
+    fn concurrent_source_line_index_preserves_locations() {
+        let text = "a\nbc\r\n\ndef\rλx\n";
+        let expected: Vec<_> = (0..text.len() + 3)
+            .map(|offset| Source::with_line_offset("oracle.cljs", text, 7).line_column(offset))
+            .collect();
+        assert_eq!(expected[0], Some((8, 1)));
+        assert_eq!(expected[3], Some((9, 2)));
+        assert_eq!(expected[7], Some((11, 1)));
+        assert_eq!(expected[text.len()], Some((13, 1)));
+        assert_eq!(expected[text.len() + 1], None);
+        for _ in 0..50 {
+            let source = Source::with_line_offset("shared.cljs", text, 7);
+            let barrier = std::sync::Barrier::new(4);
+            std::thread::scope(|scope| {
+                for _ in 0..4 {
+                    let (source, barrier, expected) = (&source, &barrier, &expected);
+                    scope.spawn(move || {
+                        barrier.wait();
+                        let found: Vec<_> = (0..expected.len())
+                            .map(|offset| source.line_column(offset))
+                            .collect();
+                        assert_eq!(&found, expected);
+                    });
+                }
+            });
+        }
+    }
 }

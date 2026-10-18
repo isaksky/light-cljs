@@ -200,7 +200,7 @@ use crate::parser::{Node, NumberKind, PrefixKind, SymbolicValue};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ops::Range,
-    rc::Rc,
+    sync::Arc,
 };
 #[derive(Debug)]
 pub enum LowerErrorKind {
@@ -796,7 +796,7 @@ impl Lowerer<'_> {
                     related: None,
                 })?
             {
-                let form = Form::from_data(value, location, Origin::DataReader(Rc::new(tag)));
+                let form = Form::from_data(value, location, Origin::DataReader(Arc::new(tag)));
                 let offset = self.nodes.len();
                 for node in form.nodes() {
                     let mut node = node.clone();
