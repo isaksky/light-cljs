@@ -29,7 +29,7 @@
       <label><input id="sizes" type="checkbox"> size report</label>
       <button id="run" class="primary" title="Cmd/Ctrl+Enter">Compile &amp; run</button>
       <button id="compile" title="Shift+Cmd/Ctrl+Enter">Compile</button>
-      <button id="stop" disabled>Stop</button>
+      <button id="stop" title="Stop the compile or the running program" disabled>Stop</button>
     </div>
     <div id="status" class="muted">loading wasm…</div>
   </header>
@@ -52,8 +52,9 @@
   </main>
 
   <footer class="muted">
-    Compiled in WebAssembly by light-cljs (macros expand in an embedded QuickJS);
-    the output runs in this browser inside a worker that is terminated after 10 s.
+    Compiled in WebAssembly by light-cljs in a worker that Stop cancels (macros
+    expand in an embedded QuickJS); the output runs in this browser inside
+    another worker, which is terminated after 10 s.
     Call <code>(enable-console-print!)</code> before <code>println</code>, as in ClojureScript.
     Files are kept in this browser's local storage.
   </footer>

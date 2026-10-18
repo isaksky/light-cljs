@@ -4,15 +4,18 @@
 // each of them as one file, its `--esm` module. Then it compiles a program
 // with two lazy features through `compile_chunks` at every level, checks the
 // manifest against the files, and runs the modules through the compiler
-// tests' Node driver against the single file. Last come a located error, a
+// tests' Node driver against the single file. Then come a located error, a
 // missing namespace and an unknown level, which leave every output empty.
+// Last, the page's compiler worker gives the direct results, drops a
+// superseded one, and compiles correctly after a stopped or failed worker.
 // `bb playground/build.bb check` runs it; CI runs it after the build.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { Worker } from "node:worker_threads";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = path.join(here, "dist");
@@ -296,6 +299,143 @@ for (const [name, build] of [
   check(level.error != null && level.error.includes("unknown optimization level"), `${name} unknown level: ${level.error}`);
   checkNoOutput(`${name} unknown level`, level);
 }
+
+// The page compiles in compiler-worker.js through compiler.js. Here both run
+// in a worker_threads worker behind an adapter that gives it the web worker
+// globals it uses: its results are the direct compile's, a superseded request
+// resolves stale, and stopping a compile that spins in a macro leaves a fresh
+// worker that compiles correctly, while this thread keeps running.
+const { createCompiler } = await import(path.join(dist, "compiler.js"));
+const ADAPTER = `
+const { parentPort, workerData } = require("node:worker_threads");
+globalThis.self = globalThis;
+globalThis.postMessage = (message) => parentPort.postMessage(message);
+import(workerData.script).then(() => parentPort.on("message", (data) => self.onmessage({ data })));
+`;
+const compilerScript = pathToFileURL(path.join(dist, "compiler-worker.js")).href;
+// Every thread started, terminated when the check ends.
+const threads = [];
+function spawnWorker() {
+  const thread = new Worker(ADAPTER, { eval: true, workerData: { script: compilerScript } });
+  threads.push(thread);
+  const handle = {
+    onmessage: null,
+    onerror: null,
+    postMessage: (message) => thread.postMessage(message),
+    terminate: () => void thread.terminate(),
+  };
+  thread.on("message", (data) => handle.onmessage?.({ data }));
+  thread.on("error", (error) => handle.onerror?.({ message: String(error) }));
+  return handle;
+}
+const wasmModule = await WebAssembly.compile(fs.readFileSync(path.join(pkg, "light_cljs_playground_bg.wasm")));
+const compiler = createCompiler({ spawn: spawnWorker, module: wasmModule });
+const workerVersion = await compiler.ready;
+check(workerVersion === version(), `worker version ${workerVersion}, page ${version()}`);
+
+function request(paths, sources, entry, optimize) {
+  return { paths, sources, entry, optimize, warnings: true, pseudo: false, sizes: optimize === "advanced" };
+}
+// What the page reads of a result, without the time.
+function fields(result) {
+  return ["js", "error", "error_file", "error_line", "error_column", "warnings", "size_report"].map((field) => result[field] ?? null);
+}
+function direct({ paths, sources, entry, optimize, warnings, pseudo, sizes }) {
+  const result = compile(paths, sources, entry, optimize, warnings, pseudo, sizes, false);
+  return fields(result);
+}
+async function checkWorkerCompile(label, compiled) {
+  const outcome = await compiler.compile(compiled);
+  check(outcome.status === "done", `worker ${label}: ${JSON.stringify(outcome)}`);
+  if (outcome.status === "done") {
+    check(isDeepStrictEqual(fields(outcome.result), direct(compiled)), `worker ${label}: ${JSON.stringify(outcome.result)} is not the direct compile`);
+    check(typeof outcome.result.millis === "number", `worker ${label}: millis ${outcome.result.millis}`);
+  }
+  return outcome;
+}
+const examplePaths = (example) => example.files.map((file) => file.path);
+const exampleSources = (example) => example.files.map((file) => file.source);
+for (const example of EXAMPLES) {
+  await checkWorkerCompile(`${example.id} @ advanced`, request(examplePaths(example), exampleSources(example), example.entry, "advanced"));
+}
+await checkWorkerCompile("located error", request(["demo/main.cljs"], ["(ns demo.main)\n(defn f [x] (g x)"], "demo.main", "prepare"));
+const warned = await checkWorkerCompile("warning", request(["demo/main.cljs"], ["(ns demo.main)\n(defn f [x] (g x))\n1"], "demo.main", "prepare"));
+check(warned.result?.warnings.includes("undeclared"), `worker warning: ${JSON.stringify(warned.result?.warnings)}`);
+check(!compiler.cancel(), "worker: cancel with nothing pending reports a cancelled compile");
+
+// Two requests back to back: the first one's result is dropped.
+const [first, second] = EXAMPLES;
+const superseded = compiler.compile(request(examplePaths(first), exampleSources(first), first.entry, "none"));
+const newest = checkWorkerCompile(`${second.id} after ${first.id}`, request(examplePaths(second), exampleSources(second), second.entry, "none"));
+check((await superseded).status === "stale", `worker: the superseded compile resolved ${JSON.stringify(await superseded)}`);
+await newest;
+
+// A macro that spins until the 10 s session deadline, stopped after 1 s.
+const spin = compiler.compile(
+  request(["demo/spin.cljs"], ["(ns demo.spin)\n(defmacro spin [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i)))\n(spin)\n"], "demo.spin", "none"),
+);
+let spinOutcome = null;
+spin.then((outcome) => (spinOutcome = outcome));
+let ticks = 0;
+const ticker = setInterval(() => (ticks += 1), 20);
+await new Promise((resolve) => setTimeout(resolve, 1000));
+clearInterval(ticker);
+check(spinOutcome == null && compiler.busy, `worker: the spinning compile settled early: ${JSON.stringify(spinOutcome)}`);
+check(ticks >= 10, `worker: this thread ticked ${ticks} times in 1 s while the compile ran`);
+const workersBefore = threads.length;
+check(compiler.cancel(), "worker: cancel found no pending compile");
+check((await spin).status === "cancelled", `worker: the stopped compile resolved ${JSON.stringify(await spin)}`);
+check(threads.length === workersBefore + 1 && !compiler.busy, `worker: ${threads.length - workersBefore} workers started by cancel`);
+const after = await checkWorkerCompile(`${first.id} after cancel`, request(examplePaths(first), exampleSources(first), first.entry, "prepare"));
+if (after.status === "done") {
+  const text = String(run(after.result.js).value);
+  check(text === first.expect, `worker ${first.id} after cancel: value ${text}, expected ${first.expect}`);
+}
+
+// A worker that fails is dropped: its pending compiles resolve failed (the
+// older one stale) and the next compile starts a fresh worker. The doubles
+// fail the way compiler-worker.js reports a panic, and the way a worker
+// that throws does; one failing before it is ready rejects `ready`.
+function failingWorker(how) {
+  const handle = {
+    onmessage: null,
+    onerror: null,
+    terminated: false,
+    postMessage(message) {
+      const reply = (data) => queueMicrotask(() => handle.onmessage?.({ data }));
+      if (message.type === "init" && how !== "before ready") reply({ type: "ready", version: version() });
+      else if (how === "error") queueMicrotask(() => handle.onerror?.({ message: "worker threw" }));
+      else if (message.type === "compile" || how === "before ready") reply({ type: "failed", id: message.id, error: "the compiler crashed" });
+    },
+    terminate() {
+      handle.terminated = true;
+    },
+  };
+  return handle;
+}
+for (const how of ["failed", "error", "before ready"]) {
+  const double = failingWorker(how);
+  const doubles = [double];
+  const recovering = createCompiler({ spawn: () => doubles.shift() ?? spawnWorker(), module: wasmModule });
+  const failure = await recovering.ready.then((ready) => `ready ${ready}`, (error) => `rejected ${error.message}`);
+  check(failure.startsWith(how === "before ready" ? "rejected" : "ready"), `worker ${how}: ${failure}`);
+  const older = recovering.compile(request(examplePaths(first), exampleSources(first), first.entry, "none"));
+  const newer = recovering.compile(request(examplePaths(first), exampleSources(first), first.entry, "none"));
+  // A worker that failed before it was ready is gone before these start.
+  const outcomes = [await older, await newer];
+  const expected = how === "before ready" ? "done" : "failed";
+  check(
+    outcomes[0].status === "stale" && outcomes[1].status === expected && double.terminated && !recovering.busy && doubles.length === 0,
+    `worker ${how}: ${JSON.stringify(outcomes).slice(0, 200)}, terminated ${double.terminated}, busy ${recovering.busy}`,
+  );
+  const recovered = how === "before ready" ? outcomes[1] : await recovering.compile(request(examplePaths(first), exampleSources(first), first.entry, "none"));
+  check(
+    recovered.status === "done" && isDeepStrictEqual(fields(recovered.result), direct(request(examplePaths(first), exampleSources(first), first.entry, "none"))),
+    `worker ${how}: after the failure ${JSON.stringify(recovered).slice(0, 200)}`,
+  );
+}
+console.log(`compiler worker: one compile stopped after ${ticks} ticks of this thread, three failures recovered`);
+await Promise.all(threads.map((thread) => thread.terminate()));
 
 if (failures) {
   console.error(`${failures} check(s) failed`);

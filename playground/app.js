@@ -1,4 +1,4 @@
-import init, { compile, version } from "./pkg/light_cljs_playground.js";
+import { createCompiler } from "./compiler.js";
 import { EXAMPLES } from "./examples.js";
 
 const STORAGE_KEY = "light-cljs-playground";
@@ -24,6 +24,7 @@ const ui = {
 
 let state = load() || fromExample(EXAMPLES[0]);
 let active = 0;
+let compiler = null;
 let worker = null;
 let runTimer = null;
 let lastJs = "";
@@ -209,6 +210,12 @@ function jumpToError(result) {
   }
 }
 
+// Stops a pending compile and a running program.
+function stop() {
+  if (compiler && compiler.cancel()) setStatus("compile stopped");
+  stopRun();
+}
+
 function stopRun() {
   if (worker) {
     worker.terminate();
@@ -254,7 +261,10 @@ function run(js) {
   worker.postMessage({ js });
 }
 
-function compileAndRun(andRun) {
+// The compile runs in compiler-worker.js, so the editor stays responsive
+// meanwhile; Stop cancels it, and only the newest request's result is shown.
+async function compileAndRun(andRun) {
+  if (!compiler) return;
   stopRun();
   ui.consoleText.innerHTML = "";
   ui.diagnosticsText.innerHTML = "";
@@ -265,42 +275,50 @@ function compileAndRun(andRun) {
   state.sizes = ui.sizes.checked;
   save();
   setStatus("compiling…");
-  // Let the status paint before the synchronous compile.
-  setTimeout(() => {
-    const result = compile(
-      state.files.map((file) => file.path),
-      state.files.map((file) => file.source),
-      state.entry,
-      state.optimize,
-      state.warnings,
-      state.pseudo,
-      state.sizes,
-      false,
-    );
-    if (result.warnings) {
-      for (const line of result.warnings.split("\n")) appendLine(ui.diagnosticsText, line, "warn");
-    }
-    if (result.error != null) {
-      appendLine(ui.diagnosticsText, result.error, "error");
-      appendLine(ui.consoleText, result.error, "error");
-      setStatus(`compile failed in ${result.millis.toFixed(0)} ms`, true);
-      showView("console");
-      jumpToError(result);
-      return;
-    }
-    lastJs = result.js;
-    jsEditor.setValue(lastJs);
-    if (result.size_report) appendLine(ui.diagnosticsText, result.size_report, "");
-    if (!ui.diagnosticsText.childElementCount) appendLine(ui.diagnosticsText, "no diagnostics", "meta");
-    const bytes = new TextEncoder().encode(lastJs).length;
-    setStatus(`compiled in ${result.millis.toFixed(0)} ms; ${bytes.toLocaleString()} bytes of JavaScript at --optimize ${state.optimize}`);
-    if (andRun) {
-      showView("console");
-      run(lastJs);
-    } else {
-      showView("js");
-    }
-  }, 0);
+  ui.stop.disabled = false;
+  const outcome = await compiler.compile({
+    paths: state.files.map((file) => file.path),
+    sources: state.files.map((file) => file.source),
+    entry: state.entry,
+    optimize: state.optimize,
+    warnings: state.warnings,
+    pseudo: state.pseudo,
+    sizes: state.sizes,
+  });
+  // A newer compile owns the views, and stop reported a cancelled one.
+  if (outcome.status === "stale" || outcome.status === "cancelled") return;
+  ui.stop.disabled = true;
+  if (outcome.status === "failed") {
+    appendLine(ui.diagnosticsText, outcome.error, "error");
+    appendLine(ui.consoleText, outcome.error, "error");
+    setStatus(outcome.error, true);
+    showView("console");
+    return;
+  }
+  const result = outcome.result;
+  if (result.warnings) {
+    for (const line of result.warnings.split("\n")) appendLine(ui.diagnosticsText, line, "warn");
+  }
+  if (result.error != null) {
+    appendLine(ui.diagnosticsText, result.error, "error");
+    appendLine(ui.consoleText, result.error, "error");
+    setStatus(`compile failed in ${result.millis.toFixed(0)} ms`, true);
+    showView("console");
+    jumpToError(result);
+    return;
+  }
+  lastJs = result.js;
+  jsEditor.setValue(lastJs);
+  if (result.size_report) appendLine(ui.diagnosticsText, result.size_report, "");
+  if (!ui.diagnosticsText.childElementCount) appendLine(ui.diagnosticsText, "no diagnostics", "meta");
+  const bytes = new TextEncoder().encode(lastJs).length;
+  setStatus(`compiled in ${result.millis.toFixed(0)} ms; ${bytes.toLocaleString()} bytes of JavaScript at --optimize ${state.optimize}`);
+  if (andRun) {
+    showView("console");
+    run(lastJs);
+  } else {
+    showView("js");
+  }
 }
 
 function applyState() {
@@ -315,7 +333,7 @@ function applyState() {
 
 ui.run.onclick = () => compileAndRun(true);
 ui.compile.onclick = () => compileAndRun(false);
-ui.stop.onclick = stopRun;
+ui.stop.onclick = stop;
 ui.examples.onchange = () => {
   const example = EXAMPLES.find((candidate) => candidate.id === ui.examples.value);
   if (example) loadExample(example);
@@ -332,13 +350,30 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+// Compiles the wasm module once, here, so a worker that replaces a stopped one
+// only instantiates it.
+async function loadCompiler() {
+  const url = new URL("./pkg/light_cljs_playground_bg.wasm", import.meta.url);
+  let module;
+  try {
+    module = await WebAssembly.compileStreaming(fetch(url));
+  } catch (error) {
+    // A server that does not send application/wasm.
+    module = await WebAssembly.compile(await (await fetch(url)).arrayBuffer());
+  }
+  const script = new URL("./compiler-worker.js", import.meta.url);
+  return createCompiler({ spawn: () => new Worker(script, { type: "module" }), module });
+}
+
 applyState();
 ui.run.disabled = ui.compile.disabled = true;
-init()
-  .then(() => {
+loadCompiler()
+  .then(async (loaded) => {
+    const version = await loaded.ready;
+    compiler = loaded;
     ui.run.disabled = ui.compile.disabled = false;
-    setStatus(`light-cljs playground ${version()} ready`);
+    setStatus(`light-cljs playground ${version} ready`);
   })
   .catch((error) => {
-    setStatus(`failed to load the compiler: ${error}`, true);
+    setStatus(`failed to load the compiler: ${error.message || error}`, true);
   });

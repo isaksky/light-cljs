@@ -10,12 +10,14 @@ playground/
   crate/        the wasm crate: light-cljs plus a thin wasm-bindgen wrapper
   index.html    the page (CodeMirror from a CDN, no npm)
   app.js        files, compile options, result views, local-storage persistence
+  compiler.js   the page's handle on the compiler worker: stale results, Stop
+  compiler-worker.js  runs the wasm compiler off the page's thread
   examples.js   the example programs in the dropdown, smallest first
   worker.js     runs one compiled program in a worker the page can terminate
   style.css
   build.bb      builds crate + page into playground/dist and serves it
   check.mjs     Node check of a built dist: every example, and a chunked build,
-                at every level (CI runs it)
+                at every level, and the compiler worker (CI runs it)
   dist/         the built site (ignored by git)
 ```
 
@@ -33,6 +35,18 @@ chunked build, the CLI's `--out-dir` ([docs/compiler.md, "Chunked
 builds"](../docs/compiler.md#chunked-builds)): its result holds the file
 names (`files`), their ES modules (`chunks`) and `chunks.json` (`manifest`)
 instead of `js`. The page does not call it yet.
+
+The page never runs the compiler on its own thread. It compiles the wasm
+module once (`WebAssembly.compileStreaming`) and hands it to
+`compiler-worker.js`, a module worker that instantiates it and answers each
+compile request, by id, with the result's fields as a plain object; the
+editor stays responsive while a compile runs. `compiler.js` gives each
+request an id and shows only the newest one's outcome, so a compile that a
+later one superseded resolves `stale` and touches no view. Stop terminates a
+busy compiler worker and starts another from the same module; the next
+compile then pays one instantiation and the macro bootstrap again. A worker
+that crashes (a Rust panic) is dropped the same way and replaced on the next
+compile.
 
 Two things differ from the native build:
 
@@ -57,7 +71,14 @@ log the same lines, and that `compile_chunks` writes each as one file, its
 `compile_chunks` at every level, checks `manifest` against `files` and
 `chunks`, and runs the modules through the compiler tests' Node driver
 (`tests/support/chunked_execution.mjs`), which must print what the single
-file prints; a failed compilation must leave every output empty. To add
+file prints; a failed compilation must leave every output empty. Last it
+loads `compiler.js` and runs `compiler-worker.js` in a `worker_threads`
+worker: the worker's results must be the direct compile's, a superseded
+request must resolve `stale`, and a compile that spins in a macro, stopped
+after a second during which Node's own thread keeps ticking, must leave a
+fresh worker whose next compile runs correctly; worker doubles that fail
+how a panic or a thrown error would must resolve the pending compile
+`failed` and be replaced on the next one. To add
 an example, append to `EXAMPLES` and run `bb playground/build.bb check`.
 
 Compile time in the browser is a few hundred milliseconds for the first
