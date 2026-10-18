@@ -1770,6 +1770,175 @@ fn metadata_through_the_generic_operations() {
     );
 }
 
+/// `seq`, `first`, `rest`, `next` and `count` read the branches of a lazy
+/// seq's or a cell's kind from the kind tables (light-cljs-237), and every
+/// seq kind, including the values the branches leave to the operations
+/// (empty lists, views, queues, public constructors' values), answers as
+/// before. A program building lazy seqs or cells keeps the wrappers and
+/// branches of the operations it keeps; one building neither, even where it
+/// builds views, keeps none.
+#[test]
+fn seq_operations_read_the_kind_tables() {
+    every_level(
+        "(pr-str
+          (mapv (fn [x] [(nil? (seq x)) (take 3 (seq x)) (first x) (take 3 (rest x)) (nil? (next x)) (count x)])
+                [(list 1 2) (cons 0 (list 1)) () (list 1) (map inc [1 2]) (lazy-seq nil) (concat [1] [2])
+                 (seq [1 2 3]) (seq (vec (range 40))) (nthrest (seq (vec (range 40))) 35) (rest [1 2])
+                 (rest (seq [1])) (seq [nil false]) (seq \"ab\") (seq (array 1 2)) (rseq [1 2 3])
+                 (range 3) (range 0 2 0.5) (repeat 2 :x) (take 2 (iterate inc 0)) (keys {:a 1 :b 2})
+                 (vals {:a 1}) (seq {:a 1}) (seq #{1}) (seq (sorted-map :a 1 :b 2)) (subseq (sorted-set 1 2 3) > 1)
+                 (into cljs.core/PersistentQueue.EMPTY [1 2]) (seq (into cljs.core/PersistentQueue.EMPTY [1 2]))
+                 (re-seq #\"a\" \"aba\") (with-meta (list 1 2) {:m 1}) (with-meta (seq [1 2]) {:m 1})
+                 (map inc (range 40)) (filter odd? (range 70)) (rest (map inc (range 40))) (lazy-seq (list nil))
+                 (cons nil (lazy-seq nil)) (range 5 0 -2) (drop 33 (range 40))]))",
+        "[[false (1 2) 1 (2) false 2] [false (0 1) 0 (1) false 2] [true () nil () true 0] \
+         [false (1) 1 () true 1] [false (2 3) 2 (3) false 2] [true () nil () true 0] \
+         [false (1 2) 1 (2) false 2] [false (1 2 3) 1 (2 3) false 3] [false (0 1 2) 0 (1 2 3) false 40] \
+         [false (35 36 37) 35 (36 37 38) false 5] [false (2) 2 () true 1] [true () nil () true 0] \
+         [false (nil false) nil (false) false 2] [false (\"a\" \"b\") \"a\" (\"b\") false 2] \
+         [false (1 2) 1 (2) false 2] [false (3 2 1) 3 (2 1) false 3] [false (0 1 2) 0 (1 2) false 3] \
+         [false (0 0.5 1) 0 (0.5 1 1.5) false 4] [false (:x :x) :x (:x) false 2] [false (0 1) 0 (1) false 2] \
+         [false (:a :b) :a (:b) false 2] [false (1) 1 () true 1] [false ([:a 1]) [:a 1] () true 1] \
+         [false (1) 1 () true 1] [false ([:a 1] [:b 2]) [:a 1] ([:b 2]) false 2] [false (2 3) 2 (3) false 2] \
+         [false (1 2) 1 (2) false 2] [false (1 2) 1 (2) false 2] [false (\"a\" \"a\") \"a\" (\"a\") false 2] \
+         [false (1 2) 1 (2) false 2] [false (1 2) 1 (2) false 2] \
+         [false (1 2 3) 1 (2 3 4) false 40] [false (1 3 5) 1 (3 5 7) false 35] [false (2 3 4) 2 (3 4 5) false 39] \
+         [false (nil) nil () true 1] [false (nil) nil () true 1] [false (5 3 1) 5 (3 1) false 3] \
+         [false (33 34 35) 33 (34 35 36) false 7]]",
+    );
+    let kept = units("(js/console.log (first (map inc (list 1 2))))");
+    for unit in [
+        "first.branches",
+        "first.cells",
+        "LazySeq.first",
+        "seq.branches",
+        "seq.cells",
+    ] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+    let kept = units("(js/console.log (count [1 2]) (get {:a 1} :a) (first [3]))");
+    assert!(
+        !kept.iter().any(|unit| unit.ends_with(".branches")
+            || unit.ends_with(".cells")
+            || unit.ends_with(".views")
+            || unit.ends_with(".viewKind")
+            || *unit == "kindTables"),
+        "{kept:?}"
+    );
+}
+
+/// Where the wrappers exist, `first` of a view (an IndexedSeq or a
+/// ChunkedSeq, kind 3) reads the view's branch (light-cljs-237), which gives
+/// at every level what the operation's path gives: of a public constructor's
+/// IndexedSeq over a caller's array, which sees later writes, of strings,
+/// subvectors, a vector's chunks and their ends, and of the views without a
+/// kind (map, set and reversed seqs). Expected values are master's at `none`.
+#[test]
+fn views_read_their_first_from_the_kind_table() {
+    every_level(
+        "(let [a (array 1 2 3) s (IndexedSeq. a 1 nil) v (vec (range 70)) big (seq v)]
+           (aset a 2 9)
+           (pr-str [(first s) (first (prim-seq (array 4 5) 1)) (first (seq (subvec [1 2 3 4] 1))) (first (seq \"xy\"))
+                    (first (rest (seq \"xy\"))) (first (nthrest big 69)) (first (nthrest big 32)) (first (rest (seq [nil 2])))
+                    (first (seq [nil 2])) (first (IndexedSeq. (array 1 2) 2 nil)) (first (rseq [1 2])) (first (seq {:a 1}))
+                    (first (seq #{7})) (first (with-meta (seq [3 4]) {:m 1})) (first (chunk-rest big)) (first (map inc [1]))
+                    (first (seq (into-array [nil]))) (count s) (count (nthrest big 40))
+                    (first (cljs.core/ChunkedSeq. v (.-tail v) 64 3 nil nil))]))",
+        "[2 5 2 \"x\" \"y\" 69 32 2 nil nil 2 [:a 1] 7 3 32 2 nil 2 30 67]",
+    );
+    let kept = units("(js/console.log (first (map inc (seq [1 2]))))");
+    for unit in [
+        "first.views",
+        "IndexedSeqValue.viewKind",
+        "ChunkedSeqValue.viewKind",
+    ] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+}
+
+/// `extend-type` of a runtime type with branches or of `Object`, and
+/// `specify!` of a runtime value with branches, empty the kind tables: the
+/// operations then take their own paths, which find those implementations
+/// where they did before light-cljs-237 (here where `rest` and `next` of a
+/// list call `seq`; `first` of a value that is already a seq does not take
+/// its seq, as upstream's does not). `extend-type default` and of a program
+/// type leave the tables in use. Expected values are master's at `none`.
+#[test]
+fn extensions_reaching_the_kind_tables_empty_them() {
+    for (source, expected) in [
+        (
+            "(extend-type List ISeqable (-seq [_] (list 7 8)))
+             (let [v (list 1 2) c (cons 0 v)]
+               (pr-str [(first v) (rest v) (next v) (count v) (first c) (count c) (count (map inc [1 2]))]))",
+            "[1 (7 8) (7 8) 2 0 3 2]",
+        ),
+        (
+            "(let [v (specify! (list 1 2) ISeqable (-seq [_] (list 9)))]
+               (pr-str [(first v) (rest v) (count v) (first (list 3))]))",
+            "[1 (2) 2 3]",
+        ),
+        (
+            "(extend-type js/Object ISeqable (-seq [_] (list 5)))
+             (str (first (list 1 2)) (first (rest (list 1 2 3))))",
+            "12",
+        ),
+        (
+            "(extend-type default ICounted (-count [_] 42))
+             (pr-str [(count (cons 1 (list 2))) (count (list 1 2)) (count (map inc [1])) (count (seq [1 2]))])",
+            "[2 2 1 2]",
+        ),
+        (
+            "(extend-type LazySeq ICounted (-count [_] 99))
+             (deftype T [] ISeqable (-seq [_] (list 4)))
+             (pr-str [(count (map inc [1 2])) (count (cons 1 (map inc [1]))) (first (T.)) (count (T.)) (count (list 1))])",
+            "[99 2 4 1 1]",
+        ),
+        (
+            "(extend-type LazySeq ISeq (-first [_] :f) (-rest [_] ()))
+             (let [s (map inc [1 2])] (pr-str [(first s) (rest s) (next (cons 0 s)) (first (list 1))]))",
+            "[:f () (2 3) 1]",
+        ),
+    ] {
+        every_level(source, expected);
+    }
+}
+
+/// A lazy seq's branches realize it without taking the seq of what it
+/// realized, which takes an item of a host iterator, so a lazy seq over one
+/// gives at every level what the operations' own paths give (the Sol review
+/// of light-cljs-237: `first` gave 3 at `Advanced`).
+#[test]
+fn lazy_branches_preserve_host_iterator_demand() {
+    every_level(
+        "(let [it (fn [] (.values #js [1 2 3 4 5 6]))]
+           (pr-str [(first (lazy-seq (it))) (into [] (rest (lazy-seq (it)))) (into [] (next (lazy-seq (it))))
+                    (count (lazy-seq (it))) (into [] (seq (lazy-seq (it)))) (first (lazy-seq (lazy-seq (it))))
+                    (into [] (next (cons 0 (lazy-seq (it)))))]))",
+        "[2 [3 4 5 6] [3 4 5 6] 6 [1 2 3 4 5 6] 2 [1 2 3 4 5 6]]",
+    );
+}
+
+/// An `ISeqable` marker and method that JavaScript writes on a runtime seq
+/// give what the operations' own paths give where protocol implementations
+/// exist, as the branches leave every value to those paths there: a value
+/// that is already a seq is not asked for its seq, as upstream's is not.
+/// Expected values are master's at `none`.
+#[test]
+fn direct_seq_slots_give_what_the_operations_paths_give() {
+    every_level(
+        "(deftype T [])
+         (let [s (list 1 2 3) v (seq [4 5]) l (map inc [1 2])]
+           (set! (.-cljs$core$ISeqable$ s) cljs.core/PROTOCOL_SENTINEL)
+           (set! (.-cljs$core$ISeqable$_seq$arity$1 s) (fn [_] (list 9 8)))
+           (set! (.-cljs$core$ISeqable$ v) cljs.core/PROTOCOL_SENTINEL)
+           (set! (.-cljs$core$ISeqable$_seq$arity$1 v) (fn [_] (list 7)))
+           (set! (.-cljs$core$ISeqable$ l) cljs.core/PROTOCOL_SENTINEL)
+           (set! (.-cljs$core$ISeqable$_seq$arity$1 l) (fn [_] (list 6)))
+           (pr-str [(first s) (rest s) (count s) (first v) (rest v) (count v) (first l) (rest l) (some? (T.))]))",
+        "[1 (2 3) 3 4 (5) 2 nil () true]",
+    );
+}
+
 /// Each row of a fixture corpus (`id<TAB>source<TAB>...`) prints, with
 /// `pr-str` or as an error message, what it prints at `None`.
 fn corpus(fixture: &str, range: std::ops::Range<usize>) {

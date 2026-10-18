@@ -4414,3 +4414,105 @@ The module grows from 6,385,991 to 6,444,001 bytes (2,018,361 to 2,040,034
 gzip -9) while QuickJS stays linked. Without QuickJS it would lose about
 1.05 MB raw and 0.39 MB gzipped (a QuickJS-only module built with the same
 profile is 1,093,751 / 403,086 bytes).
+
+## Kind tables for the seq operations — October 18, 2026
+
+light-cljs-237 gives `seq`, `first`, `rest`, `next` and `count` one dispatch
+point per call for lazy seqs and cells, and `first` one for the views of
+vectors and arrays: the type's prototype holds a kind number under a private
+symbol, and a wrapper of each operation calls the kind's branch from a
+private table before the operation probes payload stores in turn
+([compiler.md](../docs/compiler.md#lists-vectors-and-seqs),
+[advanced-optimization.md](../docs/advanced-optimization.md#phase-2-kind-tables)).
+It also makes a step of a seq cheaper: range and chunked cons cells are
+class instances, list and cons cells are not frozen, a private store's `set`
+assumes a new value, and where no protocol implementation exists a chunked
+cons and `map`, `filter` and the indexed sequence functions read a runtime
+chunk's store directly.
+
+Command, on the 24-CPU Mac (Node v24.18.0, macOS 15 ARM64), "after" on this
+change (one-minute load median 11.79, range 10.26–13.16) and "before" with
+master `85207c9`'s runtime in the same tree (median 9.66, range 8.25–10.26),
+while two other workers built and tested:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only seq-pipeline,record-protocol --output DIR
+```
+
+Median µs per call (upstream's in the same run after the slash):
+
+| Workload | Engine | Level | Before | After |
+| --- | --- | --- | ---: | ---: |
+| seq-pipeline (n = 200) | Node | `advanced` | 292 / 78 (3.7×) | 149 / 78 (1.9×) |
+| seq-pipeline | Node | `none` | 911 | 846 |
+| seq-pipeline | Node | `prepare` | 926 | 852 |
+| seq-pipeline | QuickJS | `advanced` | 2,744 | 1,742 |
+| seq-pipeline | QuickJS | `none` | 9,574 | 9,351 |
+| record-protocol (n = 2,000) | Node | `advanced` | 21.7 / 23 (0.96×) | 23.8 / 23 (1.1×) |
+| record-protocol | Node | `none` | 296 | 302 |
+| record-protocol | QuickJS | `advanced` | 581 | 665 |
+
+`record-protocol` was already at upstream's time (light-cljs-258, 264 and
+the record work since); its protocol call is a direct slot call that this
+change does not touch, and its rows move within the run-to-run spread at
+this load. When this change was first measured on master `97b538f`
+(October 15, load 3.6), `seq-pipeline` went from 329 to 135 µs against
+upstream's 80 / 71 (4.1× to 1.9×).
+
+The per-operation microbenchmark the pellet asks for: `first`, `rest` and
+`count` at each of the 1,000 positions of `(seq (vec (range 1000)))` (a
+ChunkedSeq, positions from `(iterate rest s)`, so the program keeps the
+wrappers), compiled at `advanced` and timed in Node, median of seven fresh
+processes, each the median of 15 rounds of 200 passes after 3,000 warm
+passes; two interleaved runs each at load 4–8:
+
+| ns per call | `first` | `rest` | `count` |
+| --- | ---: | ---: | ---: |
+| before (`85207c9`) | 46.4 / 46.4 | 265.0 / 290.7 | 50.2 / 51.1 |
+| after | 23.0 / 23.1 | 270.0 / 268.2 | 57.0 / 56.9 |
+
+`first` of a view reads its branch (kind 3). `rest` is bound by allocating
+the next ChunkedSeq and its public slots' `WeakMap` entry, not by dispatch.
+`count` pays the wrapper's kind read and table 3's default branch before
+the operation: a `count` branch for views (about 250 bytes) gave 56.4 ns,
+since a ChunkedSeq counts its vector, which has no kind. The wrapper skips
+the table for a value with no kind number (`value?.[kindOps]`), which gave `first` of
+a view 51 ns instead of 54 before views had a kind.
+
+What the steps were worth when first measured, on `seq-pipeline` with the
+levels driver (ten untimed and twenty timed calls in a fresh Node, the median
+of seven to eleven processes): the kind tables alone took it from 298 to
+242 µs; not freezing a cons cell's payload 6%; `set` without its test for a
+payload 8%; the branches of `count` 7%; a chunked cons reading its chunk's
+store 14%; a wrapper per operation rather than one shared one 6%, and reading
+the kind in each wrapper rather than in a shared function 10%. Range cells as
+classes halved `(reduce + 0 (mapcat identity (partition 2 (range n))))`
+(about 448 to 225 µs) but are not on `seq-pipeline`'s path.
+
+**Sizes** (bytes at `advanced`, size ratchet; "before" master `85207c9`).
+Programs that build a lazy seq or a cell keep the wrappers and branches of
+the operations they call, 2,872 to 2,930 bytes (the user accepted about
+2.8 KB for `seq-pipeline` going from 4.1× to 1.9×; the view kind adds 95);
+others move by at most 66 bytes (`eight-records`). The runtime that every
+`none` and `prepare` output embeds grew 10,452 bytes (`console-log-sum`
+441,164 to 451,616), and those ceilings rose to the new sizes rounded up to
+the next 1,000. The advanced ceilings that the growth passed rose to the new
+sizes rounded up, for the pellet's speed target:
+
+| Fixture | Before | After | Ceiling before | Ceiling after |
+| --- | ---: | ---: | ---: | ---: |
+| seq-pipeline | 26,110 | 29,040 | 27,000 | 30,000 |
+| keyword-lookups | 31,227 | 34,132 | 32,000 | 35,000 |
+| constant-literals | 22,290 | 25,162 | 23,000 | 26,000 |
+| constant-keys | 43,793 | 46,671 | 44,000 | 47,000 |
+| event-maps | 31,461 | 34,366 | 32,000 | 35,000 |
+| mapv-count | 32,280 | 35,187 | 33,000 | 36,000 |
+| closed-params | 14,000 | 14,003 | 14,000 | 15,000 |
+| callbacks | 38,324 | 41,242 | 39,000 | 42,000 |
+| protocol-params | 43,242 | 46,151 | 44,000 | 47,000 |
+| features | 70,016 | 72,946 | 71,000 | 73,000 |
+| features-direct | 69,624 | 72,554 | 70,000 | 73,000 |
+
+examples/features as chunks (`chunks::terse_chunks_write_their_runtime_units_at_module_level`)
+grows from 71,891 to 74,835 bytes, and that test's bound by the same 2,944.

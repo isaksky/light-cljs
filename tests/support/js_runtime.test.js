@@ -1558,9 +1558,10 @@ console.log('public constructor fields preserve canonical payload brands');
       assert.throws(() => c.count(candidate), /count not supported/);
     }
   }
-  // A chunked cons's cell defines its fields, as a literal does: a setter that
-  // the cell would inherit from Object.prototype never sees it.
-  const names = ['kind', 'chunk', 'more', 'chunkedState'];
+  // A chunked cons's and a range's cell define their fields, as a literal
+  // does: a setter that the cell would inherit from Object.prototype never
+  // sees one (light-cljs-237 made a range's cell a class instance).
+  const names = ['kind', 'chunk', 'more', 'chunkedState', 'hash', 'head', 'end', 'step', 'integer', 'count'];
   let intercepted = 0;
   for (const name of names) Object.defineProperty(Object.prototype, name, {configurable: true, set() { intercepted++; throw new Error('inherited setter'); }});
   try {
@@ -1568,6 +1569,8 @@ console.log('public constructor fields preserve canonical payload brands');
     assert.equal(c.first(doubled), 0);
     assert.equal(c.prStr(c.rest(doubled)), '(2 4)');
     assert.equal(c.hash(doubled), c.hash(c.list(0, 2, 4)));
+    assert.equal(c.prStr(c.range(3)), '(0 1 2)');
+    assert.equal(c.count(c.range(0, 2, 0.5)), 4);
   } finally { for (const name of names) delete Object.prototype[name]; }
   assert.equal(intercepted, 0);
 }
@@ -1606,3 +1609,36 @@ console.log('seq payloads are private fields that host objects cannot copy');
   assert.equal(c.valProtocol(c.findProtocol(receiver, value)), value);
 }
 console.log('public find preserves one search and direct receiver dispatch');
+
+// The kind tables (light-cljs-237) are private: a host object that inherits
+// a lazy seq's, a cell's or a view's prototype, or holds a kind number under the key a
+// prototype shows, is still not a seq; a runtime value that holds another
+// kind's number answers as its own kind; and no prototype holds a function
+// that an operation would call.
+{
+  const values = [c.list(1, 2), c.cons(0, c.list(1)), c.mapSeq(c.inc, c.vector(1, 2)), c.range(3), c.seq(c.mapSeq(c.inc, c.range(40))),
+    c.seq(c.vector(1, 2)), c.seq(c.vec(c.range(40)))];
+  // Besides the well-known `Symbol.iterator`, a prototype holds the key.
+  const own = prototype => Object.getOwnPropertySymbols(prototype).filter(symbol => symbol !== Symbol.iterator);
+  const [key] = own(Object.getPrototypeOf(values[0]));
+  for (const value of values) {
+    const prototype = Object.getPrototypeOf(value);
+    assert.deepEqual(own(prototype), [key]);
+    assert.equal(typeof prototype[key], 'number');
+  }
+  const answers = value => [c.prStr(c.seq(value)), c.prStr(c.first(value)), c.prStr(c.rest(value)), c.prStr(c.next(value)), c.count(value)];
+  const expected = values.map(answers);
+  for (const kind of [0, 1, 2, 3, 4, 1.5, -1, NaN, '1', null]) {
+    for (const forged of [{[key]: kind}, ...values.map(value => Object.create(Object.getPrototypeOf(value)))]) {
+      if (kind !== 0) forged[key] = kind;
+      for (const op of [c.seq, c.first, c.rest, c.next]) assert.throws(() => op(forged));
+      assert.throws(() => c.count(forged), /count not supported on this type/);
+    }
+    // Fresh values, each holding the number as its own property.
+    const fresh = [c.list(1, 2), c.cons(0, c.list(1)), c.mapSeq(c.inc, c.vector(1, 2)), c.range(3), c.seq(c.mapSeq(c.inc, c.range(40))),
+      c.seq(c.vector(1, 2)), c.seq(c.vec(c.range(40)))];
+    for (const value of fresh) Object.defineProperty(value, key, {value: kind});
+    assert.deepEqual(fresh.map(answers), expected);
+  }
+}
+console.log('kind tables stay private to the runtime');

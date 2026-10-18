@@ -2501,7 +2501,8 @@ fn readable_runtime_factories_match_the_single_file() {
 /// strict";...})()` or another's `((a,b)=>{...})(c,d)` with its
 /// destructuring, a feature imports the runtime bindings its units and code
 /// read under the names their chunk declares them by, and examples/features
-/// is at least 1,000 raw bytes smaller than the 73,207 its factories wrote.
+/// is at least 1,000 raw bytes smaller than the 73,207 its factories wrote,
+/// plus the 2,944 that the seq operations' kind tables add (light-cljs-237).
 #[test]
 fn terse_chunks_write_their_runtime_units_at_module_level() {
     let program = fixture_program("features");
@@ -2539,7 +2540,7 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
         "{from_shared:?}\n{listing}"
     );
     let total = files.iter().map(|(_, source)| source.len()).sum::<usize>();
-    assert!(total + 1_000 <= 73_207, "{total} bytes\n{listing}");
+    assert!(total + 1_000 <= 73_207 + 2_944, "{total} bytes\n{listing}");
 }
 
 /// A runtime binding that keeps its spelling, `Atom`, would capture at module

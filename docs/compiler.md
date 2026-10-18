@@ -1106,6 +1106,34 @@ than the step. A lazy seq or chunked cons built with nil metadata stores none;
 is O(1), so complete traversal is linear. String traversal produces UTF-16
 one-unit strings. `conj` of a generic seq produces a seq-cons, distinct from a list.
 
+`seq`, `first`, `rest`, `next` and `count` read a value's kind once, instead of
+probing each payload store in turn (light-cljs-237). The prototypes of the lazy
+seq type and of the cell types (`List`, `Cons`, `ChunkedCons` and the two range
+types) hold a kind number under a private symbol, which picks the kind's
+branches from a table that only the runtime can reach. Each operation is
+wrapped, inside its protocol wrapper, by a function that calls its kind's branch
+and else the operation; a value with no kind number calls no branch. A branch
+takes the value apart from its store and payload and gives a private `missing`
+for anything it leaves to the operation, so a host object that inherits a
+prototype or holds a kind number is still no language value. A lazy seq's
+branches realize it and answer with the cell branch of what it realized. Where
+protocol implementations exist, the branches of `first`, `rest` and `next`
+leave every value to the operation, whose path finds an `ISeqable` slot
+JavaScript gave a value where it did before; `extend-type` of a type with a kind
+or of `Object`, and `specify!` of a value with one, empty the tables. The views
+of vectors and arrays (`IndexedSeq`, `ChunkedSeq`) are a third kind with a
+branch of `first` only, and take their number only where a program keeps the
+wrappers. At `Advanced` the wrappers and branches are effects of the kinds'
+types that wait for their operations, so a program that builds no lazy seq or
+cell keeps none of them. The same pellet made a step of a seq cheaper: a
+range's cell is a class instance instead of a frozen literal with a getter
+closure, a chunked cons's cell is its own hash holder, list and cons cells are
+not frozen (their payloads are private and never written), a store's `set`
+assumes a new value (`reset` replaces a payload), and where no protocol
+implementation exists a chunked cons and `map`, `filter` and the indexed
+sequence functions read a runtime chunk's store instead of calling `nth` and
+`count`.
+
 List `nth` requires an exact reachable integer; fractions default or throw.
 Indexed seq views (strings and vectors of at most 32 elements) instead use
 absolute storage offsets, as upstream does: fractional properties can yield

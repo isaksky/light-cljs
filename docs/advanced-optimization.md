@@ -1691,6 +1691,63 @@ only where the program has some.
   `first`, `rest`, `count` and `nth` still probe the stores of kinds the
   program does not build (a few hundred bytes).
 
+#### Phase 2 kind tables
+
+light-cljs-237 gives `seq`, `first`, `rest`, `next` and `count` one dispatch
+point per call for lazy seqs and cells, and `first` one for views, which the
+slice keeps only where a program builds a lazy seq or a cell:
+
+- **Kinds.** The `.type` unit of `LazySeq` gives its prototype kind 1 under
+  the private symbol `kindOps`; those of `ChunkedCons`, `Cons`, `ListValue`,
+  `IntegerRangeValue` and `RangeValue` give kind 2 (cells). `kindTables` holds
+  a table of five branches per kind, by operation index, each a function that
+  gives `missing` until an effect installs the kind's branch
+  (`first.cells effect: ChunkedCons, Cons, ... when: first` fills in
+  `kindTables[2][1]`).
+- **Wrappers.** `<operation>.branches effect: <the kinds' types> when:
+  <operation>` wraps the operation, inside its protocol wrapper (the unit comes
+  before `<operation>.protocol`), in a function that reads the value's kind,
+  calls the branch and else the operation. Each operation has its own wrapper
+  literal, so that the engine's feedback for one operation's branches does not
+  see the others' (a shared helper was 6% slower on `seq-pipeline`, and one
+  reading the kind in a shared function 10%).
+- **Brands.** The key is reflectable, so a branch checks the value's store
+  and payload kind and gives `missing` otherwise; the tables are private and
+  have no holes. `extend-type` of a type with a kind or of `Object`, and
+  `specify!` of a value with one, fill the tables with table 0, whose
+  branches all give `missing`.
+- **Views.** `IndexedSeqValue.viewKind` and `ChunkedSeqValue.viewKind` give
+  the two view types kind 3, and `first.views` fills in `kindTables[3][1]`.
+  The kind numbers are effects of the view types that wait for
+  `first.branches`, so a program that builds views and no lazy seq or cell
+  keeps no wrapper and its views take the operations' own paths; where the
+  wrappers exist, `first` of a vector's or an array's seq reads its branch
+  and the other operations, finding table 3's default, take theirs.
+- **Tests.** `runtime_manifest` checks that each table entry is installed
+  once, by an effect of exactly the types with its kind, waiting for the
+  operation whose wrapper reads it, that each wrapper is an effect of every
+  type of kinds 1 and 2, and that a view type's kind waits for the wrappers
+  reading a kind 3 entry; 194 conditional effects. A lazy seq's branches
+  realize it without taking the seq of the value (`kindHooks.realizeLazy`),
+  which would take an item of a host iterator that the operation then takes
+  again. `builtin_types` runs every seq kind through the five operations at
+  every level, views through `first`, extensions that empty the tables, and
+  `ISeqable` slots JavaScript writes; `js_runtime.test.js` checks that forged
+  prototypes and kind numbers change no answer.
+- **Measured.** At `Advanced` a program that builds a lazy seq or a cell
+  grows by 2,872 to 2,930 bytes (`seq-pipeline` 26,110 to 29,040): the
+  wrappers (about 740 bytes), the branches, and the cheaper steps described
+  in [compiler.md](compiler.md#lists-vectors-and-seqs) (range and chunked
+  cons cells as classes, direct chunk reads). Programs that build neither
+  move by at most 66 bytes. Throughput is in `benchmarks/compiler.md` ("Kind
+  tables for the seq operations").
+- **Left for later.** Views have no branch of `seq`, `rest`, `next` or
+  `count` (a `count` branch did not move a ChunkedSeq's count, which counts
+  its vector), and map, set and reversed seqs no kind. `nth`, `get`, `conj`
+  and `assoc`, and protocol method keys as interned values instead of the
+  strings `publicMethod` looks up in `publicMethodInfos` per call, are not
+  converted.
+
 #### Phase 2 builtin types, program types
 
 light-cljs-246 separates the two things `installMethods` stood for. A
