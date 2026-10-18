@@ -15,6 +15,7 @@ pub mod arena;
 mod artifact_capture;
 pub mod artifact_codec;
 mod artifact_install;
+pub mod artifact_store;
 mod build_services;
 pub mod cache_key;
 pub mod cache_policy;

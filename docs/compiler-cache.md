@@ -1087,6 +1087,66 @@ finish. Report namespace hits/misses, policy bypasses, dependency mismatches,
 executed macro counts, and validation/decode/write costs. The cache-disabled fresh
 build is a supported debugging and comparison path.
 
+*As built (light-cljs-321), the store:* `src/artifact_store.rs`, which
+`--compile` uses from light-cljs-322.
+
+- **Layout.** A cache directory holds `v1/`, the store format version, so a
+  compiler with another layout ignores it rather than misreading it. In it
+  are `objects/<sha256>`, each encoded artifact named by the SHA-256 of its
+  bytes; `index/<sha256>`, each namespace's index named by the SHA-256 of
+  its name (namespace names may not be valid or distinct file names, as on
+  a case-insensitive file system); and `lock`. An index lists the
+  namespace's candidates newest first, each with the front-end key it was
+  published under, its artifact's hash and size, its publication time and
+  its generated names. It is a small binary file with its own magic,
+  version and trailing SHA-256.
+- **Lookup.** A compilation reads the indexes it may use once, before its
+  first namespace, into a `Snapshot`, reserves the generated names of every
+  candidate in it (light-cljs-317) without reading an artifact, and looks
+  up only in it. An artifact another process publishes meanwhile is not a
+  candidate until the next compilation, so a hit never retains a name an
+  earlier miss of this compilation could have taken.
+- **Publication.** `Store::publish` re-validates the namespace's inputs
+  (`cache_key::revalidate`) and refuses an artifact whose inputs changed
+  while it compiled. Otherwise it encodes the artifact, writes the bytes to
+  `.tmp-<pid>-<n>-<time>` in `objects/`, renames that over the artifact's
+  name and drops the bytes, so no artifact stays in memory after it is
+  written. The rename holds the advisory `lock` (`File::lock`), and so does
+  the index update that follows it: reread the namespace's index, replace
+  any entry with the same key or artifact, put the new one first and write
+  the index the same way. Under the lock, then, an artifact no index names
+  is an orphan. Two processes
+  publishing at once therefore keep each other's entries; for one key the
+  last complete write wins. Readers take no lock: a rename shows a reader
+  the old file or the new one whole, and every read checks the index's hash
+  and the artifact's size and content hash, so anything else is a miss.
+  Nothing is synced to disk: after a crash a file can at worst fail its
+  hash, a miss that the next publish replaces, and on macOS a sync is a
+  full flush per file, two per namespace.
+- **Failure.** The first failed write (a read-only directory, a full disk)
+  prints one `warning:` line and turns writing off for the store's
+  lifetime. A failed write leaves at most a temporary file, so what the
+  store held stays readable, and the compilation does not depend on it.
+- **Retention.** Publishing never evicts. `Store::trim`, after a successful
+  build, with the artifacts the build used or published as in use, keeps
+  three artifacts per namespace (those in use first), then evicts the
+  oldest by publication time, those not in use first, until the store's
+  artifacts total at most 1 GiB. Penpot's 922 artifacts encode to 94 MB, so
+  the cap is about ten builds. It removes every unindexed artifact (one a
+  newer artifact of the same key replaced, or a killed writer's), and
+  temporary files once they are ten minutes old; a younger one may be a
+  running writer's. Recency is publication, not use, since rewriting an
+  index on every hit would cost a write per namespace of a warm build.
+- **Disposable.** Cache files are derived data: never commit them. Deleting
+  the cache directory is always safe, and clears nothing a running
+  compiler holds in memory.
+- **Tests.** `tests/artifact_store.rs` runs its own binary as child
+  processes: concurrent writers of the same and of different namespaces, a
+  reader racing a writer, a killed writer with its temporary files, a
+  read-only directory, an edit between compiling and publishing, retention
+  to the cap, a snapshot against a later publish, and damaged, truncated,
+  over-budget and missing files.
+
 ## Development sessions and engine boundaries
 
 Start with persistent reuse for native entry compilation. Existing running
@@ -1226,6 +1286,9 @@ persistence remain out of scope.
    also encodes and decodes each captured artifact, and `--stats` reports
    `cache.codec.*` (artifacts, failures, bytes, the largest, source bytes
    and bytes by section), `cache.encode-ms` and `cache.decode-ms`.
+
+   *As built (light-cljs-321), the store:* `src/artifact_store.rs`, described
+   under "Loading, diagnostics, and storage".
 
    *As built (light-cljs-319), the keys:* `src/cache_key.rs` computes each
    namespace's front-end key, its emission key and the miss reason, and
