@@ -2377,7 +2377,10 @@ explicit inputs that a compiler cache can key on
   for `resource?` too. A path starting with `./` or `../` resolves against the
   directory of the file of the namespace whose macro expansion is running (the
   expansion site, as Shadow's `shadow.resource/inline` does): namespace
-  `my-app.core` resolves `./x.txt` to `my_app/x.txt`. A data reader resolves
+  `my-app.core` resolves `./x.txt` to `my_app/x.txt`. The directory comes from
+  the namespace's name, which for a namespace found under a source root is
+  where its file is; a source served from elsewhere still resolves by name.
+  In a REPL or watch session the site is the session's current namespace. A data reader resolves
   it against the namespace being read. Code that runs outside any expansion,
   such as a helper `def`'s initializer that a macro's first use triggers, has
   no site, and a relative path there is an error. Absolute paths, empty

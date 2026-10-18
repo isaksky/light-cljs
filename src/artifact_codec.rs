@@ -19,8 +19,8 @@
 //! its kind byte, offset and length as u32 and its SHA-256), followed by
 //! what a lookup needs without decoding IR: the namespace's identity, the
 //! front-end and emission keys, the compiler's core-operation table, the
-//! namespace's requires and referenced namespaces, its dependency edges and
-//! its policy flags. Manifest text is inline UTF-8.
+//! namespace's requires and referenced namespaces, its dependency edges, its
+//! `light.build` inputs and its policy flags. Manifest text is inline UTF-8.
 //!
 //! The sections are [`Section::ALL`]: the artifact's one interned UTF-16
 //! string table, then declarations (with the references and patches), the
@@ -64,7 +64,7 @@ use std::sync::OnceLock;
 
 pub const MAGIC: [u8; 8] = *b"LCLJSART";
 /// The encoding's version. Bump it with any change to the bytes written.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
@@ -126,12 +126,16 @@ pub struct Dependency {
 
 /// What the manifest declares beside the artifact's own identity: the keys
 /// (light-cljs-319 computes them; until then a caller passes zeros), the
-/// namespace's dependency edges and its policy flags.
+/// namespace's dependency edges, its external inputs and its policy flags.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ManifestFields {
     pub front_end_key: [u8; 32],
     pub emission_key: [u8; 32],
     pub dependencies: Vec<Dependency>,
+    /// The namespace's `light.build` inputs
+    /// ([`crate::dependency_manifest::NamespaceRecord::external_inputs`]),
+    /// which a lookup checks without decoding a section.
+    pub inputs: Vec<crate::dependency_manifest::ExternalInput>,
     /// The namespace depends on every earlier one
     /// ([`crate::dependency_manifest::EdgeKinds::COARSE`]).
     pub coarse: bool,
@@ -140,8 +144,8 @@ pub struct ManifestFields {
 }
 
 impl ManifestFields {
-    /// The dependency edges and policy flags of namespace `id` of a
-    /// compilation's dependency manifest, with the given keys.
+    /// The dependency edges, external inputs and policy flags of namespace
+    /// `id` of a compilation's dependency manifest, with the given keys.
     pub fn of(
         manifest: &crate::dependency_manifest::DependencyManifest,
         id: crate::dependency_manifest::NamespaceId,
@@ -159,6 +163,7 @@ impl ManifestFields {
                     kinds: kinds.0,
                 })
                 .collect(),
+            inputs: manifest.external_inputs(id).cloned().collect(),
             coarse: manifest.record(id).coarse,
             no_cache: metadata.no_cache,
             always: metadata.always,
@@ -423,6 +428,7 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
         put_str(&mut manifest, &dependency.namespace);
         manifest.push(dependency.kinds);
     }
+    external_inputs(&mut manifest, &fields.inputs)?;
     manifest.push(
         u8::from(fields.coarse) | u8::from(fields.no_cache) << 1 | u8::from(fields.always) << 2,
     );
@@ -449,6 +455,143 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
     u32::try_from(bytes.len()).map_err(|_| "the artifact exceeds 4 GiB".to_string())?;
     seal(&mut bytes).map_err(|error| format!("sealing the artifact: {error}"))?;
     Ok(bytes)
+}
+
+/// The manifest's external inputs: a count, then per input a tag (0 a
+/// resource, 1 a namespace, 2 a provider) and its fields. A resource is its
+/// path, its candidates (each a path and a presence byte), a found byte (0
+/// absent, 1 found without an identity, 2 found with one, then the
+/// identity), for a found one its content hash as 8 bytes and its length,
+/// and a stability byte. Candidate paths must be UTF-8.
+fn external_inputs(
+    manifest: &mut Vec<u8>,
+    inputs: &[crate::dependency_manifest::ExternalInput],
+) -> Result<(), String> {
+    use crate::dependency_manifest::{ExternalInput, ResolvedResource, ResourceDependency};
+    let put_str = |manifest: &mut Vec<u8>, text: &str| {
+        varint(manifest, text.len() as u64);
+        manifest.extend_from_slice(text.as_bytes());
+    };
+    varint(manifest, inputs.len() as u64);
+    for input in inputs {
+        match input {
+            ExternalInput::Resource(ResourceDependency {
+                path,
+                candidates,
+                found,
+                stable,
+            }) => {
+                manifest.push(0);
+                put_str(manifest, path);
+                varint(manifest, candidates.len() as u64);
+                for crate::dependency_manifest::Candidate { path, present } in candidates {
+                    let text = path.to_str().ok_or_else(|| {
+                        format!("resource candidate {} is not UTF-8", path.display())
+                    })?;
+                    put_str(manifest, text);
+                    manifest.push(u8::from(*present));
+                }
+                match found {
+                    None => manifest.push(0),
+                    Some(ResolvedResource {
+                        identity,
+                        hash,
+                        bytes,
+                    }) => {
+                        match identity {
+                            None => manifest.push(1),
+                            Some(identity) => {
+                                manifest.push(2);
+                                put_str(manifest, identity);
+                            }
+                        }
+                        manifest.extend_from_slice(&hash.to_le_bytes());
+                        varint(manifest, *bytes);
+                    }
+                }
+                manifest.push(u8::from(*stable));
+            }
+            ExternalInput::Namespace(name) => {
+                manifest.push(1);
+                put_str(manifest, name);
+            }
+            ExternalInput::Provider { token, fingerprint } => {
+                manifest.push(2);
+                put_str(manifest, token);
+                put_str(manifest, fingerprint);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_external_inputs(
+    input: &mut Input<'_>,
+) -> Result<Vec<crate::dependency_manifest::ExternalInput>, DecodeError> {
+    use crate::dependency_manifest::{
+        Candidate, ExternalInput, ResolvedResource, ResourceDependency,
+    };
+    let flag = |input: &mut Input<'_>, what: &'static str| match input.byte()? {
+        0 => Ok(false),
+        1 => Ok(true),
+        tag => Err(DecodeError::Tag {
+            what,
+            tag: tag.into(),
+        }),
+    };
+    let count = input.count()?;
+    let mut inputs = Vec::with_capacity(count);
+    for _ in 0..count {
+        inputs.push(match input.byte()? {
+            0 => {
+                let path = input.utf8()?;
+                let count = input.count()?;
+                let mut candidates = Vec::with_capacity(count);
+                for _ in 0..count {
+                    candidates.push(Candidate {
+                        path: input.utf8()?.into(),
+                        present: flag(input, "candidate presence")?,
+                    });
+                }
+                let found = match input.byte()? {
+                    0 => None,
+                    tag @ (1 | 2) => {
+                        let identity = if tag == 2 { Some(input.utf8()?) } else { None };
+                        let hash = u64::from_le_bytes(input.take(8)?.try_into().unwrap());
+                        Some(ResolvedResource {
+                            identity,
+                            hash,
+                            bytes: input.uint()?,
+                        })
+                    }
+                    tag => {
+                        return Err(DecodeError::Tag {
+                            what: "resource answer",
+                            tag: tag.into(),
+                        });
+                    }
+                };
+                ExternalInput::Resource(ResourceDependency {
+                    path,
+                    candidates,
+                    found,
+                    stable: flag(input, "resource stability")?,
+                })
+            }
+            1 => ExternalInput::Namespace(input.utf8()?),
+            2 => ExternalInput::Provider {
+                token: input.utf8()?,
+                fingerprint: input.utf8()?,
+            },
+            tag => {
+                return Err(DecodeError::Tag {
+                    what: "external input",
+                    tag: tag.into(),
+                });
+            }
+        });
+    }
+    Ok(inputs)
 }
 
 /// Recompute the section hashes and the manifest hash of encoded bytes
@@ -1655,6 +1798,7 @@ pub fn read_manifest(bytes: &[u8], limits: &DecodeLimits) -> Result<Manifest, De
             kinds: input.byte()?,
         });
     }
+    let inputs = read_external_inputs(&mut input)?;
     let policy = input.byte()?;
     if policy > 7 {
         return Err(DecodeError::Tag {
@@ -1676,6 +1820,7 @@ pub fn read_manifest(bytes: &[u8], limits: &DecodeLimits) -> Result<Manifest, De
             front_end_key,
             emission_key,
             dependencies,
+            inputs,
             coarse: policy & 1 != 0,
             no_cache: policy & 2 != 0,
             always: policy & 4 != 0,
@@ -2768,6 +2913,9 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dependency_manifest::{
+        Candidate, ExternalInput, ResolvedResource, ResourceDependency,
+    };
 
     fn units(text: &str) -> Vec<u16> {
         text.encode_utf16().collect()
@@ -3330,6 +3478,48 @@ mod tests {
                 namespace: "lib.a".into(),
                 kinds: 0b1011,
             }],
+            inputs: vec![
+                ExternalInput::Resource(ResourceDependency {
+                    path: "app/data.txt".into(),
+                    candidates: vec![
+                        Candidate {
+                            path: "/a/app/data.txt".into(),
+                            present: false,
+                        },
+                        Candidate {
+                            path: "/b/app/data.txt".into(),
+                            present: true,
+                        },
+                    ],
+                    found: Some(ResolvedResource {
+                        identity: Some("/b/app/data.txt".into()),
+                        hash: 0x0123_4567_89ab_cdef,
+                        bytes: 300,
+                    }),
+                    stable: true,
+                }),
+                ExternalInput::Resource(ResourceDependency {
+                    path: "app/missing.txt".into(),
+                    candidates: Vec::new(),
+                    found: None,
+                    stable: false,
+                }),
+                ExternalInput::Resource(ResourceDependency {
+                    path: "memory.txt".into(),
+                    candidates: Vec::new(),
+                    found: Some(ResolvedResource {
+                        identity: None,
+                        hash: u64::MAX,
+                        bytes: 0,
+                    }),
+                    stable: false,
+                }),
+                ExternalInput::Namespace("lib.b".into()),
+                ExternalInput::Provider {
+                    token: ":host/schema".into(),
+                    fingerprint: "v7".into(),
+                },
+            ],
             coarse: true,
             no_cache: false,
             always: true,

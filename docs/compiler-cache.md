@@ -266,10 +266,31 @@ what the section leaves open:
 - A relative path resolves against the expansion site: the innermost unit
   being analyzed, or the namespace being analyzed. When an initializer is the
   innermost code running there is no site, and `./` is an error.
+- The site's directory comes from the site namespace's name, not from the
+  file the provider returned: `my-app.ui.core` resolves `./x.txt` to the
+  logical path `my_app/ui/x.txt`, searched in every root. For a namespace
+  found under a source root the two agree, since the provider found the file
+  at that logical path. They differ only for a source the provider serves
+  from elsewhere (an embedding `SourceProvider` with its own layout, or an
+  entry file outside the roots), whose real directory has no root-relative
+  logical path for the cache to key on; resolving by name keeps the key a
+  function of the namespace and the roots alone.
+- Interactive compilation (`EvalSession`, `DevSession` and so a watch's
+  session and the dev REPL) serves `light.build` for the compiler's whole
+  life with its source provider's resources. Every form is source 0 there,
+  and its current namespace is the site, set before each form is read,
+  analyzed or macroexpanded. A session records no manifest, so nothing is
+  attributed. `BuildGuard` restores the context it replaced when it drops.
 - `ResourceDependency::stable` is false when the `ResourceProvider` is not
   `stable` or answered without an identity; `cache_policy::non_cacheable_inputs`
   turns those into the policy's `NonCacheableInput` list. Ambiguity and
-  provider errors are compile errors, never recorded inputs.
+  provider errors are compile errors, and they are recorded too, since a
+  macro can catch them: an ambiguous lookup as an absent stable resource with
+  its candidates, which change when a copy goes, and any other provider
+  failure as non-cacheable.
+- An artifact's manifest carries the namespace's inputs
+  (`ManifestFields::inputs`, artifact schema version 2), so a lookup can
+  check them without decoding a section.
 - `{:namespace sym}` records the name and, when that namespace loaded earlier,
   an observed edge to it; otherwise the name is among the absent ones, so its
   later appearance invalidates.
@@ -654,7 +675,8 @@ require, and SHA-256 is the in-tree `src/sha256.rs` (checked against the
 FIPS 180-4 vectors; light-cljs-319 builds the keys on it). The module's
 comment gives the layout. In short:
 
-- **Header.** The magic `LCLJSART`, `SCHEMA_VERSION` (1) as a little-endian
+- **Header.** The magic `LCLJSART`, `SCHEMA_VERSION` (2 since light-cljs-312
+  added the external inputs; 1 before) as a little-endian
   u32, a byte-order mark, the manifest's length and the SHA-256 of the header
   and manifest.
 - **Manifest.** Readable with `artifact_codec::read_manifest`, which checks
@@ -664,8 +686,12 @@ comment gives the layout. In short:
   front-end and emission keys (32 bytes each; callers pass zeros until
   light-cljs-319), a digest of the compiler's core-operation table, the
   namespace's requires and referenced namespaces, its dependency edges with
-  their `EdgeKinds` bits and its policy flags (`ManifestFields::of` takes
-  them from a `DependencyManifest`). Manifest text is inline UTF-8.
+  their `EdgeKinds` bits, its `light.build` external inputs (each resource
+  with its logical path, every candidate tried, its answer's identity,
+  content hash and length or its absence, and its stability; each declared
+  namespace and provider token with its fingerprint) and its policy flags
+  (`ManifestFields::of` takes them from a `DependencyManifest`). Manifest
+  text is inline UTF-8.
 - **Sections, in order.** The interned UTF-16 string table (each distinct
   text once, by first use), declarations (with references and patches),
   semantic IR, deferred units, diagnostics, and generated names with the

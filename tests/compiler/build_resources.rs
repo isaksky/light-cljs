@@ -343,6 +343,22 @@ fn a_helper_value_read_once_is_a_dependency_of_every_namespace_that_reuses_it() 
         assert_eq!(resource_paths(&manifest, name), ["lib/table.txt"], "{name}");
     }
     assert!(resource_paths(&manifest, "app.other").is_empty());
+    // An artifact's manifest carries the namespace's inputs.
+    let fields = light_cljs::artifact_codec::ManifestFields::of(
+        &manifest,
+        id(&manifest, "app.b"),
+        Default::default(),
+        [0; 32],
+        [0; 32],
+    );
+    assert_eq!(
+        fields.inputs,
+        manifest
+            .external_inputs(id(&manifest, "app.b"))
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(fields.inputs.len(), 1);
 
     // A helper's initializer runs outside any expansion: `./` is an error.
     roots.write(

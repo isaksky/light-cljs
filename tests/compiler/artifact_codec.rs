@@ -204,7 +204,7 @@ fn randomized_corruption_fails_cleanly() {
             if random.below(4) == 0 {
                 random.below(len)
             } else {
-                len - 1 - random.below(len / 2)
+                len - 1 - random.below((len / 2).max(1))
             }
         };
         for _ in 0..1 + random.below(3) {
