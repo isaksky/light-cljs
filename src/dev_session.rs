@@ -163,7 +163,8 @@ impl DevSession {
     /// A session compiler configured by the compiler fields of `options`:
     /// `namespace`, `aliases`, `compiler`, `engine` (for the macro heap),
     /// `data_readers`, `default_data_reader`, `source_provider`,
-    /// `max_source_bytes`, `assertions` and `policy`. The other fields
+    /// `max_source_bytes`, `assertions`, `policy`, `configuration` and
+    /// `opaque_packages`. The other fields
     /// configure a heap. Each call of [`Self::form`], [`Self::source`],
     /// [`Self::load_file`] or [`Self::read_forms`] runs under a new deadline
     /// and poll budget of `engine`; one that runs out, or a cancelled
@@ -357,6 +358,7 @@ impl DevSession {
         host.evaluator_options = options.engine.clone();
         host.interactive_control = Some(control.clone());
         host.set_build_configuration(options.configuration.clone());
+        host.opaque_packages = options.opaque_packages;
         for (tag, source) in &options.data_readers {
             host.register_compiler_data_reader(tag.clone(), source)
                 .map_err(EvalError)?;

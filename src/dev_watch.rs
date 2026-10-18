@@ -65,6 +65,8 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 pub const USAGE: &str = "Watch:
   light-cljs --watch --entry NAMESPACE --source-root DIR [--source-root DIR ...] --out-dir DIR
              [--poll-ms N] [--elide-asserts] [--stats] [--config KEY=EDN ...]
+             [--macro-expansions N] [--macro-nodes N] [--macro-timeout-ms N]
+             [--macro-memory-limit N] [--macro-poll-budget N]
              [--cache-dir DIR] [--cache-blocker NS ...]
              [--serve PORT [--serve-host HOST] [--reload-dependents]]
 
@@ -86,6 +88,14 @@ and the namespace keeps its previous unit. Runs until interrupted.
 With --stats, print the --compile --stats report of the startup build before
 that build's line, with the time the watch's session took to load the
 program as time.session-load-ms.
+
+With --macro-expansions N, --macro-nodes N, --macro-timeout-ms N,
+--macro-memory-limit N and --macro-poll-budget N, raise the macro limits as
+--compile does (defaults 1024, 100000, 10000, 67108864 and 1000000), for the
+startup build and for the watch's session: its load of the program at
+startup is one operation under the deadline and poll budget, and in a step
+so is each namespace compiled again. As with --compile, macros see stub JavaScript packages, which only the
+application has.
 
 With --config KEY=EDN, repeatable, give light.build/config the value EDN for
 the keyword KEY in the build and in every step, as --compile does.
@@ -143,6 +153,9 @@ struct Options {
     blockers: Vec<String>,
     /// `--cache-dir DIR`: start from the persistent compiler cache.
     cache_dir: Option<PathBuf>,
+    /// `--macro-expansions N` and the other macro limit flags, for the
+    /// startup build and the session.
+    macro_limits: crate::MacroLimitFlags,
 }
 
 fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> {
@@ -154,6 +167,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
     let mut configuration = light_cljs::BuildConfiguration::new();
     let mut blockers = Vec::new();
     let mut cache_dir = None;
+    let mut macro_limits = crate::MacroLimitFlags::default();
     while let Some(arg) = args.next() {
         let flag = arg.to_str().unwrap_or("");
         let mut value = || {
@@ -219,6 +233,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
                     .map_err(|_| "--cache-blocker must be valid UTF-8")?,
             ),
             "--cache-dir" => cache_dir = Some(PathBuf::from(value()?)),
+            _ if macro_limits.accept(flag, &mut args)? => {}
             _ => return Err(format!("unexpected watch option: {flag}\n{USAGE}").into()),
         }
     }
@@ -246,6 +261,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
         configuration,
         blockers,
         cache_dir,
+        macro_limits,
     }))
 }
 
@@ -399,6 +415,12 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     let mut host = MacroHost::new();
     host.set_assertions(options.assertions);
     host.set_build_configuration(options.configuration.clone());
+    // Macros see stub packages, as with --compile: only the application
+    // has the host's packages.
+    host.opaque_packages = true;
+    options
+        .macro_limits
+        .apply(&mut host.limits, &mut host.evaluator_options);
     // Dev compilation reports undeclared Vars and arity conflicts as
     // warnings (docs/dev-workflow.md, "Dev-mode contract").
     let analysis = AnalysisOptions {
@@ -415,12 +437,18 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
         roots: FileSourceProvider::new(roots.clone()),
         files: RefCell::default(),
     });
-    let session_options = EvalOptions {
+    let mut session_options = EvalOptions {
         source_provider: Some(provider.clone()),
         assertions: options.assertions,
         configuration: options.configuration.clone(),
+        opaque_packages: true,
         ..EvalOptions::default()
     };
+    // The limits bound the session's startup load, its `require` of the
+    // entry, as one operation, and each step's.
+    options
+        .macro_limits
+        .apply(&mut session_options.compiler, &mut session_options.engine);
     let cache = options
         .cache_dir
         .clone()

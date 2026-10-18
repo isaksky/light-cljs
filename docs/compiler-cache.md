@@ -1269,6 +1269,25 @@ fresh uncached start is a restart without `--cache-dir`. Numbers are in
 [benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md), "Watch
 startup from the cache".
 
+*As built (light-cljs-349):* `--watch` takes the `--macro-*` limit flags of
+`--compile`, which reach the V8 startup build's host and the session's
+(`EvalOptions::compiler` and `engine`), so the cache-seeded startup build,
+the session's own load (one operation) and each namespace a step compiles
+again (one operation each) run under them, and
+the logical limits enter the key as they do for `--compile`. The watch's
+hosts also take `--compile`'s `opaque_packages`: a macro whose expansion
+demands an initializer that reads a JavaScript package (an extension of a
+type a package builds, as `cognitect.transit` has) used to stop the watch,
+where `--compile` gives it a stub. Penpot `app.main` still does not start:
+in warning mode a macro cannot call a definition later in its own file
+(`cuerdas.core/repeat`, light-cljs-360), and the session reports an
+unprovided `goog.*` require as a missing namespace where `--compile` takes
+it as a host namespace (`goog.string.format`, light-cljs-361). With both
+worked around in an uncommitted overlay, `--watch --cache-dir` starts on
+Penpot: numbers in
+[benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md), "Macro
+limits under watch".
+
 Native clean compilation uses V8 and the interactive session currently uses
 QuickJS. Registering cached definitions in a new evaluator does not transfer
 mutated roots or live function handles. Initial session loading may skip cached

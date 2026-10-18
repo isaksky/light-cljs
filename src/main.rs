@@ -26,7 +26,7 @@ mod dev_watch;
 mod eval_cli;
 mod repl_connect;
 
-const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --out-dir DIR\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --reloadable --out-dir DIR\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --stats [--stats-file PATH]\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --cache-dir DIR [--cache-blocker NS ...]\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] [--pseudo-names] [--define NS/NAME=VALUE ...] [--elide-asserts] [--source-map PATH | --source-map-inline] [--source-map-include-sources] ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --define NS/NAME=VALUE after --compile, replace the default of the goog-define NS/NAME at every level: true or false for a boolean, a number for a number, and the text as written for a string; at advanced, code only a define's other value runs is removed.\nWith --elide-asserts after --compile, omit every assert and fn :pre/:post check at every level, as upstream's :elide-asserts does; it is the only switch, since --define names only goog-define Vars.\nWith --macro-expansions N, --macro-nodes N, --macro-timeout-ms N, --macro-memory-limit N and --macro-poll-budget N after --compile, raise the macro session limits for a large program: the expansions and generated form nodes allowed per compilation (1024 and 100000), its deadline in milliseconds (10000), its heap in bytes (67108864) and its poll budget (1000000).\nWith --source-map PATH after --compile, also write a Source Map v3 of the output to PATH, at every level, and end the output with a //# sourceMappingURL comment naming the map's file, for JavaScript written next to it; source paths in the map are relative to its directory. With --source-map-inline the comment embeds the map instead, with paths relative to the current directory. With --source-map-include-sources the map also holds the text of every source.\nWith --stats after --compile --entry (with --reloadable too), also print to stderr what the build did: a light-cljs-stats 1 line, then one key value line per counter (the milliseconds of source resolution and parsing, analysis with macro expansion, deferred units, application preparation, emission and writing; the namespaces compiled, the macro calls executed, the peak of generated form nodes and the deferred units registered, analyzed, prepared and executed), then the trace.* lines of the exclusive-stage trace, then [macro-calls-by-namespace] and the 20 namespaces with the most macro calls, one NAMESPACE COUNT line each. With --stats-file PATH (which implies --stats) also write that trace to PATH as tab-separated rows: a light-cljs-trace 1 line, then stage, namespace, unit and execute rows in microseconds, each kind described by a # header row, for benchmarks/concurrency/dag.bb.\nWith --config KEY=EDN after --compile --entry (with --reloadable too, and in --watch), give light.build/config the value EDN for the keyword KEY, written without its colon: --config app/flavor=:dev --config app/n=3. EDN is keywords, numbers, strings, booleans, nil and collections of them; a malformed value or a key given twice is an error, and an unset key reads as nil.\nWith --cache-dir DIR after --compile --entry (with --reloadable, --esm and --out-dir too, at every --optimize level, and in --watch, whose session starts from it), keep a persistent compiler cache in DIR, created when missing: a namespace whose source, resolution, dependencies' keys, light.build inputs, options, configuration and compiler are unchanged is installed from its artifact instead of analyzed, so its macro calls do not run again, and every other namespace is analyzed and stored. Output matches an uncached build for macros that follow the cache contract in docs/compiler-cache.md; without --cache-dir nothing reads or writes a cache. The directory is disposable and bounded (three artifacts per namespace, 1 GiB); --stats adds cache.* lines and a [cache-misses-and-bypasses] table. With --cache-blocker NS (repeatable), NS and every namespace whose compilation depends on it neither read nor write the cache, as do namespaces marked ^:light-cljs/no-cache (that namespace only) or ^:dev/always (with its compilation consumers).\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --pseudo-names after --compile, keep advanced output readable for debugging: the compiler's own names, the runtime with its comments and the emitter's layout, instead of short names and no whitespace.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nWith --out-dir DIR, write a chunked build into DIR (created when missing) instead: ES modules as with --esm, the startup chunk NAMESPACE.js, whose default export is the entry value, and one chunk per group of namespaces only light.lazy/loadable targets reach, which light.lazy/load imports; and chunks.json, which describes them. Other files in DIR are left alone. It works at every --optimize level; at advanced each chunk embeds the runtime units only its roots need, and --size-report lists them per chunk; the source map flags are refused; a program without loadables is one file, its --esm output.\nWith --reloadable --out-dir DIR, write a dev build into DIR instead: runtime.js (the runtime, once), client.js, one NAMESPACE.js unit with its source map per namespace in dependency order, manifest.json and index.js, which loads them in order. Definitions live in a registry, so a unit evaluated again replaces its namespace for every caller; the build runs at none semantics, with warnings for undeclared Vars and arity conflicts.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
+const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --out-dir DIR\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --reloadable --out-dir DIR\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --stats [--stats-file PATH]\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --cache-dir DIR [--cache-blocker NS ...]\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] [--pseudo-names] [--define NS/NAME=VALUE ...] [--elide-asserts] [--source-map PATH | --source-map-inline] [--source-map-include-sources] ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --define NS/NAME=VALUE after --compile, replace the default of the goog-define NS/NAME at every level: true or false for a boolean, a number for a number, and the text as written for a string; at advanced, code only a define's other value runs is removed.\nWith --elide-asserts after --compile, omit every assert and fn :pre/:post check at every level, as upstream's :elide-asserts does; it is the only switch, since --define names only goog-define Vars.\nWith --macro-expansions N, --macro-nodes N, --macro-timeout-ms N, --macro-memory-limit N and --macro-poll-budget N after --compile (and in --watch, for its startup build and its session), raise the macro session limits for a large program: the expansions and generated form nodes allowed per compilation (1024 and 100000), its deadline in milliseconds (10000), its heap in bytes (67108864) and its poll budget (1000000).\nWith --source-map PATH after --compile, also write a Source Map v3 of the output to PATH, at every level, and end the output with a //# sourceMappingURL comment naming the map's file, for JavaScript written next to it; source paths in the map are relative to its directory. With --source-map-inline the comment embeds the map instead, with paths relative to the current directory. With --source-map-include-sources the map also holds the text of every source.\nWith --stats after --compile --entry (with --reloadable too), also print to stderr what the build did: a light-cljs-stats 1 line, then one key value line per counter (the milliseconds of source resolution and parsing, analysis with macro expansion, deferred units, application preparation, emission and writing; the namespaces compiled, the macro calls executed, the peak of generated form nodes and the deferred units registered, analyzed, prepared and executed), then the trace.* lines of the exclusive-stage trace, then [macro-calls-by-namespace] and the 20 namespaces with the most macro calls, one NAMESPACE COUNT line each. With --stats-file PATH (which implies --stats) also write that trace to PATH as tab-separated rows: a light-cljs-trace 1 line, then stage, namespace, unit and execute rows in microseconds, each kind described by a # header row, for benchmarks/concurrency/dag.bb.\nWith --config KEY=EDN after --compile --entry (with --reloadable too, and in --watch), give light.build/config the value EDN for the keyword KEY, written without its colon: --config app/flavor=:dev --config app/n=3. EDN is keywords, numbers, strings, booleans, nil and collections of them; a malformed value or a key given twice is an error, and an unset key reads as nil.\nWith --cache-dir DIR after --compile --entry (with --reloadable, --esm and --out-dir too, at every --optimize level, and in --watch, whose session starts from it), keep a persistent compiler cache in DIR, created when missing: a namespace whose source, resolution, dependencies' keys, light.build inputs, options, configuration and compiler are unchanged is installed from its artifact instead of analyzed, so its macro calls do not run again, and every other namespace is analyzed and stored. Output matches an uncached build for macros that follow the cache contract in docs/compiler-cache.md; without --cache-dir nothing reads or writes a cache. The directory is disposable and bounded (three artifacts per namespace, 1 GiB); --stats adds cache.* lines and a [cache-misses-and-bypasses] table. With --cache-blocker NS (repeatable), NS and every namespace whose compilation depends on it neither read nor write the cache, as do namespaces marked ^:light-cljs/no-cache (that namespace only) or ^:dev/always (with its compilation consumers).\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --pseudo-names after --compile, keep advanced output readable for debugging: the compiler's own names, the runtime with its comments and the emitter's layout, instead of short names and no whitespace.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nWith --out-dir DIR, write a chunked build into DIR (created when missing) instead: ES modules as with --esm, the startup chunk NAMESPACE.js, whose default export is the entry value, and one chunk per group of namespaces only light.lazy/loadable targets reach, which light.lazy/load imports; and chunks.json, which describes them. Other files in DIR are left alone. It works at every --optimize level; at advanced each chunk embeds the runtime units only its roots need, and --size-report lists them per chunk; the source map flags are refused; a program without loadables is one file, its --esm output.\nWith --reloadable --out-dir DIR, write a dev build into DIR instead: runtime.js (the runtime, once), client.js, one NAMESPACE.js unit with its source map per namespace in dependency order, manifest.json and index.js, which loads them in order. Definitions live in a registry, so a unit evaluated again replaces its namespace for every caller; the build runs at none semantics, with warnings for undeclared Vars and arity conflicts.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
 
 fn print_warnings(warnings: &[AnalysisWarning]) {
     for warning in warnings {
@@ -66,6 +66,67 @@ fn optimization_level(
     Ok(level.to_string_lossy().parse()?)
 }
 
+/// The macro limit flags `--compile` and `--watch` accept:
+/// `--macro-expansions`, `--macro-nodes`, `--macro-timeout-ms`,
+/// `--macro-memory-limit` and `--macro-poll-budget`. Each one not given
+/// keeps its default.
+#[derive(Default)]
+pub(crate) struct MacroLimitFlags {
+    /// `--macro-expansions N`: macro expansions allowed per compilation.
+    expansions: Option<usize>,
+    /// `--macro-nodes N`: form nodes macro expansions may generate per compilation.
+    nodes: Option<usize>,
+    /// `--macro-timeout-ms N`: the macro session deadline.
+    timeout_ms: Option<u64>,
+    /// `--macro-memory-limit N`: the macro session heap in bytes.
+    memory_limit: Option<usize>,
+    /// `--macro-poll-budget N`: the macro session poll budget.
+    poll_budget: Option<u64>,
+}
+
+impl MacroLimitFlags {
+    /// Consume `flag` and its value when it is one of these flags.
+    pub(crate) fn accept(
+        &mut self,
+        flag: &str,
+        args: &mut impl Iterator<Item = std::ffi::OsString>,
+    ) -> Result<bool, Box<dyn Error>> {
+        match flag {
+            "--macro-expansions" => self.expansions = Some(count_flag(flag, args)? as usize),
+            "--macro-nodes" => self.nodes = Some(count_flag(flag, args)? as usize),
+            "--macro-timeout-ms" => self.timeout_ms = Some(count_flag(flag, args)?),
+            "--macro-memory-limit" => self.memory_limit = Some(count_flag(flag, args)? as usize),
+            "--macro-poll-budget" => self.poll_budget = Some(count_flag(flag, args)?),
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// Raise `limits` and `engine`, a macro host's or a session's, to the
+    /// values given.
+    pub(crate) fn apply(
+        &self,
+        limits: &mut light_cljs::MacroLimits,
+        engine: &mut light_cljs::evaluator::EvaluatorOptions,
+    ) {
+        if let Some(count) = self.expansions {
+            limits.expansions = count;
+        }
+        if let Some(count) = self.nodes {
+            limits.generated_nodes = count;
+        }
+        if let Some(ms) = self.timeout_ms {
+            engine.timeout = Duration::from_millis(ms);
+        }
+        if let Some(bytes) = self.memory_limit {
+            engine.memory_limit = bytes;
+        }
+        if let Some(budget) = self.poll_budget {
+            engine.poll_budget = budget;
+        }
+    }
+}
+
 /// The application options `--compile` collects: `--optimize`,
 /// `--size-report`, `--pseudo-names`, `--define`, `--elide-asserts` and the
 /// source map flags.
@@ -86,16 +147,8 @@ struct CompileFlags {
     defines: Vec<String>,
     /// Omit assertions, a setting of analysis rather than of the application.
     elide_asserts: bool,
-    /// `--macro-expansions N`: macro expansions allowed per compilation.
-    macro_expansions: Option<usize>,
-    /// `--macro-nodes N`: form nodes macro expansions may generate per compilation.
-    macro_nodes: Option<usize>,
-    /// `--macro-timeout-ms N`: the macro session deadline.
-    macro_timeout_ms: Option<u64>,
-    /// `--macro-memory-limit N`: the macro session heap in bytes.
-    macro_memory_limit: Option<usize>,
-    /// `--macro-poll-budget N`: the macro session poll budget.
-    macro_poll_budget: Option<u64>,
+    /// The macro limit flags.
+    macro_limits: MacroLimitFlags,
     /// `--stats`: print phase times and macro calls to stderr.
     stats: bool,
     /// `--stats-file PATH`: also write the trace there (`--stats` implied).
@@ -151,13 +204,6 @@ impl CompileFlags {
             }
             "--pseudo-names" => self.pseudo_names = true,
             "--elide-asserts" => self.elide_asserts = true,
-            "--macro-expansions" => self.macro_expansions = Some(count_flag(flag, args)? as usize),
-            "--macro-nodes" => self.macro_nodes = Some(count_flag(flag, args)? as usize),
-            "--macro-timeout-ms" => self.macro_timeout_ms = Some(count_flag(flag, args)?),
-            "--macro-memory-limit" => {
-                self.macro_memory_limit = Some(count_flag(flag, args)? as usize)
-            }
-            "--macro-poll-budget" => self.macro_poll_budget = Some(count_flag(flag, args)?),
             "--source-map" => {
                 self.source_map = Some(PathBuf::from(
                     args.next().ok_or("--source-map requires a path")?,
@@ -192,7 +238,7 @@ impl CompileFlags {
                     .into_string()
                     .map_err(|_| "--cache-blocker must be valid UTF-8")?,
             ),
-            _ => return Ok(false),
+            _ => return self.macro_limits.accept(flag, args),
         }
         Ok(true)
     }
@@ -211,21 +257,8 @@ impl CompileFlags {
         host.set_assertions(!self.elide_asserts);
         host.opaque_packages = true;
         host.set_build_configuration(self.configuration.clone());
-        if let Some(count) = self.macro_expansions {
-            host.limits.expansions = count;
-        }
-        if let Some(count) = self.macro_nodes {
-            host.limits.generated_nodes = count;
-        }
-        if let Some(ms) = self.macro_timeout_ms {
-            host.evaluator_options.timeout = Duration::from_millis(ms);
-        }
-        if let Some(bytes) = self.macro_memory_limit {
-            host.evaluator_options.memory_limit = bytes;
-        }
-        if let Some(budget) = self.macro_poll_budget {
-            host.evaluator_options.poll_budget = budget;
-        }
+        self.macro_limits
+            .apply(&mut host.limits, &mut host.evaluator_options);
         host
     }
 

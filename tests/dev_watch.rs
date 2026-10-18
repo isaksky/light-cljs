@@ -1414,6 +1414,185 @@ fn stats_report_the_startup_build_and_the_session_load() {
     );
 }
 
+/// `app.view` expanding 1,201 macro calls, over the default limit of 1,024
+/// expansions per compilation.
+fn many_expansions(src: &Path) {
+    let macros = fs::read_to_string(src.join("app/macros.cljs")).unwrap();
+    fs::write(
+        src.join("app/macros.cljs"),
+        format!(
+            "{macros}\n(defmacro one [] 1)\n\n(defmacro many [n] `(+ ~@(repeat n (list 'app.macros/one))))\n"
+        ),
+    )
+    .unwrap();
+    let view = fs::read_to_string(src.join("app/view.cljs"))
+        .unwrap()
+        .replace(":refer [labeled]", ":refer [labeled many]");
+    fs::write(
+        src.join("app/view.cljs"),
+        format!("{view}\n(def total (many 1200))\n"),
+    )
+    .unwrap();
+}
+
+/// The macro limit flags reach the startup build and the session: a
+/// program over the default expansion limit stops the watch without them,
+/// starts with `--macro-expansions`, cold and from the persistent cache,
+/// and its steps compile under the same limit.
+#[test]
+fn the_macro_limit_flags_raise_the_startup_build_and_the_steps_limits() {
+    let dir = TempDir::new("dev-watch-limits");
+    fs::create_dir_all(dir.join("src/app")).unwrap();
+    for name in ["state", "macros", "view", "main"] {
+        let file = format!("app/{name}.cljs");
+        fs::copy(Path::new(EXAMPLE).join(&file), dir.join("src").join(&file)).unwrap();
+    }
+    many_expansions(&dir.join("src"));
+    let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .args(["--watch", "--entry", "app.main", "--source-root"])
+        .arg(dir.join("src"))
+        .arg("--out-dir")
+        .arg(dir.join("dev"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success() && stderr.contains("compiler macro expansion limit exceeded"),
+        "{stderr}"
+    );
+    let limit = ["--macro-expansions", "5000"];
+    let mut watch = Watch::start_with_args("dev-watch-limits", &limit, many_expansions);
+    assert!(watch.startup.is_empty(), "{:#?}", watch.startup);
+    assert_eq!(watch.reload(&[]), record("start\nclicks: [1]\n"));
+    let view = watch
+        .source("app/view.cljs")
+        .replace("(->Card \"clicks\"", "(->Card \"taps\"");
+    let (lines, step) = watch.save("app/view.cljs", &view);
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.view in "),
+        "{step}"
+    );
+    assert_eq!(
+        watch.reload(&["app.view.js"]),
+        record("start\nclicks: [1]\nreloading\ntaps: [2]\n")
+    );
+    // From the persistent cache: the first start fills it, the second
+    // installs app.view, and a step compiles it again.
+    let cache = watch.dir.join("cache");
+    let cache = cache.to_str().unwrap().to_owned();
+    let cached = [limit[0], limit[1], "--cache-dir", &cache];
+    watch.restart(&cached);
+    watch.restart(&cached);
+    assert!(watch.startup.is_empty(), "{:#?}", watch.startup);
+    let (lines, step) = watch.save("app/view.cljs", &format!("{view}\n"));
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.view in "),
+        "{step}"
+    );
+}
+
+/// A macro whose expansion demands a helper of a namespace that extends a
+/// protocol to a type a JavaScript package exports, as cognitect.transit
+/// does in Penpot: the watch's macros see stub packages, as with
+/// `--compile`, in the startup build and in the steps, cold and from the
+/// persistent cache.
+#[test]
+fn macros_see_stub_packages_at_startup_and_in_steps() {
+    let setup = |src: &Path| {
+        fs::write(
+            src.join("app/pkg.cljs"),
+            "(ns app.pkg (:require [\"left-pad\" :as lp]))\n\n\
+             (def Pad (.-constructor (lp/pad 1)))\n\n\
+             (extend-type Pad IEquiv (-equiv [_ _] false))\n\n\
+             (defn shout [text] (if (= text \"\") \"!\" text))\n",
+        )
+        .unwrap();
+        let macros = fs::read_to_string(src.join("app/macros.cljs"))
+            .unwrap()
+            .replace(
+                "\"A macro and the helper function its expansion calls.\")",
+                "\"A macro and the helper function its expansion calls.\"\n  (:require [app.pkg :as pkg]))",
+            )
+            .replace("~label \": \"", "~(pkg/shout \"\") ~label \": \"");
+        fs::write(src.join("app/macros.cljs"), macros).unwrap();
+    };
+    let mut watch = Watch::start_with("dev-watch-packages", setup);
+    assert!(watch.startup.is_empty(), "{:#?}", watch.startup);
+    let view = watch
+        .source("app/view.cljs")
+        .replace("(->Card \"clicks\"", "(->Card \"taps\"");
+    let (lines, step) = watch.save("app/view.cljs", &view);
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.view in "),
+        "{step}"
+    );
+    let cache = watch.dir.join("cache");
+    let cache = cache.to_str().unwrap().to_owned();
+    watch.restart(&["--cache-dir", &cache]);
+    watch.restart(&["--cache-dir", &cache]);
+    assert!(watch.startup.is_empty(), "{:#?}", watch.startup);
+    let (lines, step) = watch.save("app/view.cljs", &format!("{view}\n"));
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.view in "),
+        "{step}"
+    );
+}
+
+/// Each of the other macro limit flags reaches the watch's startup build,
+/// in V8 and, with `--cache-dir`, in the session's host: a value too small
+/// for examples/dev stops the watch with that limit's error.
+#[test]
+fn each_macro_limit_flag_bounds_the_startup_build() {
+    let dir = TempDir::new("dev-watch-each-limit");
+    let out = dir.join("dev");
+    let cache = dir.join("cache");
+    for (flag, value, message) in [
+        (
+            "--macro-nodes",
+            "10",
+            "compiler macro generated-node limit exceeded",
+        ),
+        (
+            "--macro-timeout-ms",
+            "1",
+            "JavaScript session deadline exceeded",
+        ),
+        (
+            "--macro-memory-limit",
+            "100000",
+            "JavaScript memory limit must be at least",
+        ),
+        (
+            "--macro-poll-budget",
+            "10",
+            "JavaScript session poll budget exhausted",
+        ),
+    ] {
+        for cached in [false, true] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
+            command
+                .args(["--watch", "--entry", "app.main", "--source-root", EXAMPLE])
+                .arg("--out-dir")
+                .arg(&out)
+                .args([flag, value]);
+            if cached {
+                command.arg("--cache-dir").arg(&cache);
+            }
+            let output = command.stdin(Stdio::null()).output().unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                !output.status.success() && stderr.contains(message),
+                "{flag} {value} (cache {cached}): {stderr}"
+            );
+        }
+    }
+}
+
 #[test]
 fn watch_refuses_missing_options_and_a_failing_first_build() {
     let dir = TempDir::new("dev-watch-options");

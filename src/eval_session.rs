@@ -99,6 +99,10 @@ pub struct EvalOptions {
     /// The build configuration `light.build/config` answers while forms
     /// compile ([`crate::BuildConfiguration`]), as `--config` gives a build.
     pub configuration: crate::BuildConfiguration,
+    /// Give the compile-time heaps the opaque package registry of
+    /// [`crate::MacroHost::opaque_packages`], as `--compile` and `--watch`
+    /// do. Off by default.
+    pub opaque_packages: bool,
 }
 /// The receiver of analysis warnings ([`EvalOptions::warnings`]); an error
 /// it returns is the error of the form.
@@ -142,6 +146,7 @@ impl Default for EvalOptions {
             warning_mode: false,
             warnings: None,
             configuration: crate::BuildConfiguration::default(),
+            opaque_packages: false,
         }
     }
 }

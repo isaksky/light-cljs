@@ -189,8 +189,17 @@ read nor write the cache, so a restart analyzes what changed since the
 cache was last filled; a fresh uncached start is a restart without
 `--cache-dir`, and deleting the directory never touches a running watch.
 `--cache-blocker NS` (repeatable) keeps NS and its compilation consumers
-out of the cache; a blocker never makes a step recompile. One line per step
-goes to stderr ([Watch](docs/evaluation.md#watch)).
+out of the cache; a blocker never makes a step recompile. A large program
+raises the macro limits with the flags `--compile` takes,
+`--macro-expansions N`, `--macro-nodes N`, `--macro-timeout-ms N`,
+`--macro-memory-limit N` and `--macro-poll-budget N` (by default 1,024
+expansions and 100,000 generated form nodes per compilation, a 10 s deadline,
+a 64 MiB heap and a poll budget of 1,000,000): they bound the startup build
+and the watch's session, whose load of the program at startup is one
+operation under the deadline and poll budget, as is each namespace a step
+compiles again. As with `--compile`, macros see stub JavaScript
+packages, which only the application has. One line per step goes to stderr
+([Watch](docs/evaluation.md#watch)).
 
 ```sh
 cargo run --quiet -- --watch --entry app.main --source-root examples/dev --out-dir /tmp/light-dev

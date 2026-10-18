@@ -95,7 +95,8 @@ Penpot `app.main` does not start under `--watch`: the watch takes none of the
 compilation, against Penpot's 93,997 macro calls) its startup build stops with
 `unavailable definition: cuerdas.core/repeat` while expanding
 `cuerdas.core/unsafe-concat`, as `--compile --reloadable` does without the
-flags (light-cljs-349). The large fixture is therefore the script's generated
+flags (light-cljs-349, which found that warning mode causes the error, with
+or without the flags: "Macro limits under watch"). The large fixture is therefore the script's generated
 program: NAMESPACES namespaces, every tenth a macro namespace with three
 `defmacro`s, the others each a 20-map data table, `fn*` functions and a `defn`
 calling a macro, each requiring up to two earlier namespaces. At 300 (301 with
@@ -191,6 +192,52 @@ light-cljs-326 measured; `--compile` is unchanged, so no Penpot rerun.
 Replaying every top-level directive rather than the `ns` form alone (found
 by syntax, after review) leaves the session column at 51 to 54 ms: at load
 8 to 9, filling took 1,097 ms and warm starts 334 to 372 ms.
+
+## Macro limits under watch (light-cljs-349, October 18, 2026)
+
+`--watch` now takes the `--macro-*` flags, and its macro hosts take
+`--compile`'s stub packages. Penpot `app.main` with the limits
+[penpot.bb](penpot.bb) passes still does not start, unmodified, under
+`--watch` or `--compile --reloadable`. The first failure is warning mode,
+not a limit: `--warnings --compile --esm` fails the same way in 0.13 s, while
+`--compile --esm --optimize none` builds in 24.2 s (0.92 GB):
+
+    vendor/cuerdas/core.cljc:293:15: macro cuerdas.core/unsafe-concat: ...
+    unavailable definition: cuerdas.core/repeat
+
+Warning mode drains deferred units after every top-level form, so the macro
+runs before `repeat`, declared at line 53 and defined at line 375, has a unit
+(light-cljs-360). With `repeat` moved above the macros in an uncommitted
+overlay of `vendor/` (symbolic links and one edited file), warning mode
+builds the whole program (`--warnings --compile --esm`, 28.3 s, 0.96 GB).
+Next, `abnf.cljc` in instaparse requires `[goog.string.format]`, which no
+root provides: `--compile` takes it as a host namespace, but the session
+reports `missing namespace goog.string.format`, both when it loads the
+program itself and when it replays the `ns` forms of a cache-seeded start
+(light-cljs-361). Stubs for packages were the third failure: a macro of
+`app.util.object` demands the transit extensions, whose type comes from the
+`transit-js` package, and the watch's hosts had no stubs; this change fixes
+that. With an empty `(ns goog.string.format)` added to the overlay, `--watch`
+starts. These are one run each of the release binary of this change, with
+`--stats`, stopped at the watching line; the peak RSS was sampled every
+0.5 s. Load was 5.6 to 8.9, with two other workers active. Times in s.
+
+| Start | Analysis | Emission + write | Session | Startup | Peak RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| without `--cache-dir` (V8 build, then the session's own load) | 22.5 | 18.3 | 707.4 | 748.4 | 15.5 GB |
+| `--cache-dir`, filling an empty cache (923 misses) | 103.1 | 19.7 | 2.2 | 128.1 | 0.86 GB |
+| `--cache-dir`, warm (923 hits, 0 macro calls) | 0.02 | 6.9 | 2.2 | 10.6 | 0.75 GB |
+
+- **Without the cache**, the session's form-by-form load of 923 namespaces
+  takes 94% of startup, and its peak memory is 16 times the build's. This
+  is the quadratic per-form copy of the retained program (light-cljs-348).
+- **Filling** runs the 93,997 macro calls in QuickJS, the session's engine:
+  analysis takes 103 s, against 22.5 s in V8. Capture adds 1.4 s and the
+  store writes 105 MB.
+- **Warm** decoding takes 0.49 s and installing 0.22 s. The rest is the dev
+  build's emission of 923 units with source maps, and the session's replay
+  of the directives. Emission takes 6.6 s here and 18 to 20 s in the two
+  cold runs, at load 8.9 against 5.6.
 
 ## Watch invalidation (light-cljs-325, October 18, 2026)
 
