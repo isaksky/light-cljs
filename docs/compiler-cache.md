@@ -631,6 +631,31 @@ key takes none of them. Nothing is reused by the emission key until
 artifacts hold emitted sections, and the measurement path passes no module
 plan.
 
+*As built (light-cljs-324), where the emission key goes:* nowhere a
+front-end artifact is found by. An artifact holds its namespace after
+analysis and before application preparation, so one artifact serves every
+emission mode, and its manifest records the emission key as zeros, as
+light-cljs-322 wrote it. Recording a real one would tie an artifact to the
+mode that happened to publish it while every other mode installs it just
+the same. Each build runs lazy-target validation (`finish`), application
+preparation, chunk planning and emission on the assembled program, hits
+included, so nothing those stages compute is stored and nothing needs the
+key. When artifacts gain emitted sections (light-cljs-329, deferred until
+light-cljs-328's numbers exist), those sections go beside the front-end
+artifact under `emission_key`, computed after the chunk plan with
+`EmissionOptions::modules` set to the digest of the chunk holding the
+namespace and its imports; the manifest field stays the front-end
+artifact's zeros. The placement of every `--compile` option is checked by
+`tests/compiler/cache_modes.rs` (see "Validation and performance gates"),
+and none had to move:
+
+- **Emission only, all hits:** `--optimize`, `--esm`, `--out-dir`,
+  `--define`, `--pseudo-names`, `--source-map`, `--source-map-inline` and
+  `--source-map-include-sources`. A define replaces a `goog-define` during
+  application preparation, after analysis, and macros never see it.
+- **Front-end key, a miss:** `--elide-asserts` (assertions) and
+  `--reloadable`, which turns on the warning mode (`AnalysisOptions`).
+
 `cache_key::revalidate` re-reads a namespace's inputs after it compiles: it
 repeats every lookup of its resolution through the source provider and
 compares the candidates and file found, asking as the loader asked (the same
@@ -1355,8 +1380,8 @@ persistence remain out of scope.
      non-cacheable input here, with its consumers, because the inventory of
      the build is not known until it ends.
    - **Emission key.** Recorded as zeros: artifacts hold pre-emission IR
-     and nothing reuses by it; light-cljs-324 decides it with emitted
-     sections and the chunk plan.
+     and nothing reuses by it. Light-cljs-324 settled that it stays so (see
+     "Conservative keys and invalidation").
    - **After a successful analysis** the store is trimmed with what the
      build used and published in use.
 
@@ -1507,6 +1532,49 @@ What the matrix pins rather than changes:
   makes every namespace miss and analysis enforces the limit; an
   artifact's recorded accounting is checked at installation as well, which
   the in-process tests cover.
+
+*As built (light-cljs-324), the row "Dev, ordinary output, advanced
+output, and lazy modules":* `tests/compiler/cache_modes.rs` runs the binary
+on one fixture with macros running a compile-time helper and generating
+names, a protocol and a record, `goog-define`s, a `light.lazy/loadable`
+target that uses a JavaScript package, and an assertion. A cache-off build
+at the same commit is each mode's oracle, and the warm build is compared
+with it byte for byte, source maps and `chunks.json` included, then run in
+Node: scripts and dev builds through `tests/support/dev_execution.mjs`,
+`--esm` files and chunks through `tests/support/chunked_execution.mjs`,
+with the chunks run against the single-file `--esm` build as in
+`tests/compiler/chunks.rs`. After one script build at `none` fills the
+cache:
+
+- Scripts and ES modules at `none`, `prepare` and `advanced`, with each
+  source map flag, `--define` and `--pseudo-names`, and `--out-dir` chunks
+  at every level, are all hits with no macro calls, publish nothing and
+  leave the artifact files as they were.
+- `--elide-asserts` and the dev build (`--reloadable --out-dir`) miss every
+  namespace for its options, then hit what they published. A build that
+  analyzes while the cache holds artifacts reserves every candidate's
+  generated names first ("Generated names"), so its fresh suffixes differ
+  from the uncached build's, and so do those of every later hit on what it
+  published: the dev build's source maps name `v__21__auto__` and
+  `object7` where the uncached ones name `v__7__auto__` and `object3`.
+  These builds are compared after writing the counter of each generated
+  name in a source map's `names` (`x__N__auto__`, `pK__N#`, `G__N`,
+  `objectN`) as `#`; everything else, the output and the mappings
+  included, must be equal. Each mode filling its own empty cache is byte
+  for byte the uncached build, the dev build's maps included.
+- Hits do not skip the checks of the assembled program. Editing only a
+  lazy target's namespace leaves the namespace holding the `loadable` a hit
+  (a `LAZY` edge is not a compilation dependency), so removing the target's
+  function must be, and is, reported as the uncached build reports it: in
+  script and chunked builds over a script build's artifacts, and in a dev
+  build over a dev build's. A `--define` naming no `goog-define` fails an
+  all-hit build as it fails an uncached one.
+- The modes name `--optimize none` where they mean it: the default level
+  is `prepare`.
+
+The suite passes on the default and the QuickJS-only build. The
+single-file driver now reads values without the runtime's `inspect` when a
+`prepare` or `advanced` build keeps none.
 
 Run the full compiler/evaluator suites for default V8 and QuickJS-only builds,
 the Node execution workflows, and relevant playground checks as implementation

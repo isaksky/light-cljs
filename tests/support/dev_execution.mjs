@@ -36,8 +36,9 @@
 // prints one record with id "program": the stdout of the whole run, the
 // `observe` trace and the outcome. Language values are read through the
 // runtime the build loaded (`inspect`), which the driver exposes from a
-// single-file build too; a function outcome value is recorded as the string
-// "#function". A program that never settles fails the run instead.
+// single-file build too; a `prepare` or `advanced` build keeps no `inspect`,
+// so its values are read as host values. A function outcome value is recorded
+// as the string "#function". A program that never settles fails the run instead.
 import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { runInThisContext } from "node:vm";
@@ -146,7 +147,7 @@ process.stdout.write = write;
 
 // Replay the settled run as one synchronous case, so execution.js encodes the
 // record: the trace, the captured output, then the value or the thrown error.
-globalThis.lightInspectValue = value => globalThis.__lightRuntime?.inspect(value) ?? null;
+globalThis.lightInspectValue = value => globalThis.__lightRuntime?.inspect?.(value) ?? null;
 globalThis.lightCases = [replay => {
   for (const value of trace) replay(value);
   process.stdout.write(Buffer.concat(stdout));

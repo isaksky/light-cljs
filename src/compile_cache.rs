@@ -364,6 +364,9 @@ impl CompileCache {
         let record = self.prefix.record(id);
         let fields = ManifestFields {
             front_end_key: key,
+            // One front-end artifact serves every emission mode, so it
+            // records no emission key (docs/compiler-cache.md, "Conservative
+            // keys and invalidation", light-cljs-324).
             emission_key: [0; 32],
             dependencies: self
                 .prefix
