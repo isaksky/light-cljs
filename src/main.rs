@@ -14,6 +14,7 @@ use std::{
 };
 
 use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning, analyze_named_with_macro_warnings};
+use light_cljs::cache_key::{KeyEnvironment, NamespaceKeys, OutputLayout, SourceMapOutput};
 use light_cljs::compile_stats::{CompileStats, PhaseTimes};
 use light_cljs::source_map::{SourceFile, data_url};
 use light_cljs::{
@@ -99,6 +100,25 @@ struct CompileFlags {
     stats: bool,
 }
 
+/// The emission options of a `--compile --entry` build, owned.
+struct EmissionSettings {
+    application: ApplicationOptions,
+    layout: OutputLayout,
+    source_map: SourceMapOutput,
+    include_sources: bool,
+}
+
+impl EmissionSettings {
+    fn options(&self) -> light_cljs::cache_key::EmissionOptions<'_> {
+        light_cljs::cache_key::EmissionOptions {
+            application: &self.application,
+            layout: self.layout.clone(),
+            source_map: self.source_map.clone(),
+            include_sources: self.include_sources,
+        }
+    }
+}
+
 impl CompileFlags {
     /// Consume `flag` and its value when it is one of these flags.
     fn accept(
@@ -161,6 +181,25 @@ impl CompileFlags {
             host.evaluator_options.poll_budget = budget;
         }
         host
+    }
+
+    /// What the emission key of output written as `layout` covers, or
+    /// `None` when a define does not parse (the build reports it).
+    fn emission(
+        &self,
+        program: &light_cljs::Program,
+        layout: OutputLayout,
+    ) -> Option<EmissionSettings> {
+        Some(EmissionSettings {
+            application: self.options(program).ok()?,
+            layout,
+            source_map: match (&self.source_map, self.source_map_inline) {
+                (Some(path), _) => SourceMapOutput::File(path.to_string_lossy().into_owned()),
+                (None, true) => SourceMapOutput::Inline,
+                (None, false) => SourceMapOutput::None,
+            },
+            include_sources: self.include_sources,
+        })
     }
 
     /// The application options for `program`.
@@ -446,6 +485,15 @@ fn run_namespace(
     let begun = Instant::now();
     let mut stats = flags.stats.then(CompileStats::new);
     let mut warnings = Vec::new();
+    let layout = if reloadable {
+        OutputLayout::Reloadable
+    } else if out_dir.is_some() {
+        OutputLayout::Chunks
+    } else if esm {
+        OutputLayout::Module
+    } else {
+        OutputLayout::Script
+    };
     let program = analyze_entry(
         &entry,
         &roots,
@@ -453,6 +501,7 @@ fn run_namespace(
         options,
         &mut warnings,
         stats.as_mut(),
+        &|program| flags.emission(program, layout.clone()),
     );
     if options.warning_mode {
         print_warnings(&warnings);
@@ -518,7 +567,10 @@ fn run_namespace(
 /// drops its artifact, as a store that writes it would; `keep` keeps every
 /// artifact until the compilation ends, as an in-memory one would; `encode`
 /// also encodes each artifact and decodes it again, and `--stats` reports
-/// the sizes and times (`cache.codec.*`).
+/// the sizes and times (`cache.codec.*`). Each mode also records the
+/// dependency manifest, computes every namespace's front-end key and
+/// re-validates its inputs, and `--stats` reports that (`cache.keys.*`);
+/// `encode` keeps the artifacts until then and encodes each with its keys.
 fn analyze_entry(
     entry: &str,
     roots: &[PathBuf],
@@ -526,42 +578,79 @@ fn analyze_entry(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
     stats: Option<&mut CompileStats>,
+    emission: &dyn Fn(&light_cljs::Program) -> Option<EmissionSettings>,
 ) -> Result<(light_cljs::Program, Vec<(PathBuf, String)>), light_cljs::NamespaceCompileError> {
     if let Some(mode) = env::var_os("LIGHT_CLJS_CAPTURE_ARTIFACTS").filter(|mode| !mode.is_empty())
     {
-        let keep = mode == "keep";
-        let mut codec = (mode == "encode").then(light_cljs::compile_stats::CodecCounts::default);
+        let encode = mode == "encode";
+        let keep = mode == "keep" || encode;
         let mut stats = stats;
+        let environment = KeyEnvironment::new(host, options);
+        let mut manifest = light_cljs::dependency_manifest::DependencyManifest::default();
         let mut kept = Vec::new();
-        let analyzed = light_cljs::compiler::analyze_namespace_entry_with_artifacts(
+        let mut sink = |capture: light_cljs::namespace_artifact::NamespaceCapture| {
+            // What capture could not represent, or represented wrongly.
+            if let Err(reason) = capture
+                .artifact
+                .as_ref()
+                .map_err(String::clone)
+                .and_then(|a| a.validate())
+            {
+                eprintln!("capture skipped {}: {reason}", capture.namespace);
+            } else if keep {
+                kept.push(capture);
+            }
+        };
+        let analyzed = light_cljs::compiler::analyze_namespace_entry_recorded(
             entry,
             roots,
             host,
             options,
             warnings,
-            stats.as_deref_mut(),
-            &mut |capture| {
-                // What capture could not represent, or represented wrongly.
-                if let Err(reason) = capture
-                    .artifact
-                    .as_ref()
-                    .map_err(String::clone)
-                    .and_then(|a| a.validate())
-                {
-                    eprintln!("capture skipped {}: {reason}", capture.namespace);
-                } else if let (Some(counts), Ok(artifact)) = (codec.as_mut(), &capture.artifact) {
-                    measure_codec(counts, artifact);
-                }
-                if keep {
-                    kept.push(capture);
-                }
+            light_cljs::compiler::EntryRecorders {
+                stats: stats.as_deref_mut(),
+                manifest: Some(&mut manifest),
+                capture: Some(&mut sink),
+                ..Default::default()
             },
         );
+        if let Ok((program, files)) = &analyzed {
+            let (keys, counts) = measure_keys(&environment, &manifest, files, entry, roots);
+            let settings = emission(program);
+            let mut codec = encode.then(light_cljs::compile_stats::CodecCounts::default);
+            if let Some(codec) = codec.as_mut() {
+                let metadata = light_cljs::cache_policy::source_metadata(&manifest, host);
+                for capture in &kept {
+                    let (Ok(artifact), Some(id)) =
+                        (&capture.artifact, manifest.id(&capture.namespace))
+                    else {
+                        continue;
+                    };
+                    let front_end = keys.key(id).clone();
+                    let emission_key = settings.as_ref().map_or([0; 32], |settings| {
+                        light_cljs::cache_key::emission_key(
+                            &environment,
+                            &front_end,
+                            &settings.options(),
+                        )
+                    });
+                    let fields = light_cljs::artifact_codec::ManifestFields::of(
+                        &manifest,
+                        id,
+                        metadata[id.0 as usize],
+                        front_end,
+                        emission_key,
+                    );
+                    measure_codec(codec, artifact, &fields);
+                }
+            }
+            if let Some(stats) = stats {
+                stats.codec = codec;
+                stats.keys = Some(counts);
+            }
+        }
         // The process ends with the compilation, which keeps them until then.
         std::mem::forget(kept);
-        if let Some(stats) = stats {
-            stats.codec = codec;
-        }
         return analyzed;
     }
     match stats {
@@ -574,15 +663,55 @@ fn analyze_entry(
     }
 }
 
-/// Encode `artifact`, decode it again and add the sizes and times to
-/// `counts`.
+/// Compute the front-end key of every namespace of `manifest`, then
+/// re-validate the inputs of each against `roots`, timing both.
+fn measure_keys(
+    environment: &KeyEnvironment,
+    manifest: &light_cljs::dependency_manifest::DependencyManifest,
+    files: &[(PathBuf, String)],
+    entry: &str,
+    roots: &[PathBuf],
+) -> (NamespaceKeys, light_cljs::compile_stats::KeyCounts) {
+    use light_cljs::dependency_manifest::NamespaceId;
+    let started = Instant::now();
+    let keys = NamespaceKeys::compute(environment, manifest, files, entry);
+    let time = started.elapsed();
+    let mut canonical: Vec<PathBuf> = Vec::new();
+    for root in roots.iter().filter_map(|root| fs::canonicalize(root).ok()) {
+        if !canonical.contains(&root) {
+            canonical.push(root);
+        }
+    }
+    let provider = light_cljs::source_provider::FileSourceProvider::new(canonical);
+    let started = Instant::now();
+    let changed = files
+        .iter()
+        .enumerate()
+        .filter(|(index, (_, text))| {
+            light_cljs::cache_key::revalidate(manifest, NamespaceId(*index as u32), text, &provider)
+                .is_err()
+        })
+        .count();
+    let counts = light_cljs::compile_stats::KeyCounts {
+        namespaces: keys.len(),
+        source_bytes: files.iter().map(|(_, text)| text.len() as u64).sum(),
+        time,
+        changed,
+        revalidate_time: started.elapsed(),
+    };
+    (keys, counts)
+}
+
+/// Encode `artifact` with `fields`, decode it again and add the sizes and
+/// times to `counts`.
 fn measure_codec(
     counts: &mut light_cljs::compile_stats::CodecCounts,
     artifact: &light_cljs::namespace_artifact::NamespaceArtifact,
+    fields: &light_cljs::artifact_codec::ManifestFields,
 ) {
     use light_cljs::artifact_codec;
     let started = std::time::Instant::now();
-    let encoded = artifact_codec::encode(artifact, &artifact_codec::ManifestFields::default());
+    let encoded = artifact_codec::encode(artifact, fields);
     counts.encode_time += started.elapsed();
     let decoded = encoded.as_ref().map_err(String::clone).and_then(|bytes| {
         let started = std::time::Instant::now();

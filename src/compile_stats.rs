@@ -108,6 +108,22 @@ pub struct CompileStats {
     /// When captured artifacts were also encoded and decoded
     /// ([`crate::artifact_codec`]), to measure the binary format.
     pub codec: Option<CodecCounts>,
+    /// When every namespace's cache key was computed and its inputs
+    /// re-validated ([`crate::cache_key`]), to measure them.
+    pub keys: Option<KeyCounts>,
+}
+
+/// What computing a compilation's namespace keys cost.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeyCounts {
+    pub namespaces: usize,
+    /// The source text hashed, in bytes.
+    pub source_bytes: u64,
+    pub time: Duration,
+    /// Namespaces whose inputs [`crate::cache_key::revalidate`] found
+    /// changed after the compilation read them.
+    pub changed: usize,
+    pub revalidate_time: Duration,
 }
 
 /// What encoding and decoding a compilation's captured artifacts cost.
@@ -228,6 +244,13 @@ impl CompileStats {
             }
             line("cache.encode-ms", &ms(codec.encode_time));
             line("cache.decode-ms", &ms(codec.decode_time));
+        }
+        if let Some(keys) = &self.keys {
+            line("cache.keys.namespaces", &keys.namespaces);
+            line("cache.keys.source-bytes", &keys.source_bytes);
+            line("cache.keys.changed", &keys.changed);
+            line("cache.keys-ms", &ms(keys.time));
+            line("cache.revalidate-ms", &ms(keys.revalidate_time));
         }
         out.push_str("[macro-calls-by-namespace]\n");
         let mut order = (0..self.namespaces.len()).collect::<Vec<_>>();

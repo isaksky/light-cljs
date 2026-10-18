@@ -211,17 +211,9 @@ pub struct ResolvedResource {
     /// The provider's identity of the resource: the canonical file for
     /// source roots, `None` when the provider has none.
     pub identity: Option<String>,
-    /// A hash of the exact text returned: for now the 64-bit FNV-1a of its
-    /// UTF-8 bytes, which the cache's SHA-256 (light-cljs-319) replaces.
-    pub hash: u64,
+    /// The SHA-256 of the exact text returned, as UTF-8.
+    pub sha256: [u8; 32],
     pub bytes: u64,
-}
-
-/// The 64-bit FNV-1a hash of `bytes`, a temporary content hash.
-pub(crate) fn content_hash(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

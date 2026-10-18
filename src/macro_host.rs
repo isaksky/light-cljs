@@ -306,6 +306,14 @@ pub(crate) struct NamespaceDeclarations<'a> {
     pub doc: Option<&'a crate::compiler_data::Datum>,
 }
 
+/// A name's namespace and name as text, for a cache key.
+fn name_parts(name: &Name) -> (Option<String>, String) {
+    (
+        name.namespace().map(String::from_utf16_lossy),
+        String::from_utf16_lossy(name.name()),
+    )
+}
+
 /// Every compilation in the process gets its own reader generation, so a
 /// fresh host never reuses the declarations an earlier one registered.
 /// Namespace artifacts never retain it ([`crate::generated_names`]).
@@ -632,6 +640,51 @@ impl MacroHost {
             let _ = evaluator.release(id);
         }
         Ok(())
+    }
+    /// Add the compiler data readers to a cache key: each tag with its
+    /// reader's emitted unit, in tag order, then the default reader's.
+    pub(crate) fn fingerprint_data_readers(&self, fingerprint: &mut crate::sha256::Fingerprint) {
+        let readers = self.compiler_data_readers.borrow();
+        let mut units: Vec<_> = readers
+            .units
+            .iter()
+            .map(|(tag, unit)| (name_parts(tag), unit))
+            .collect();
+        units.sort_unstable();
+        fingerprint.count(units.len());
+        for ((namespace, name), unit) in units {
+            fingerprint
+                .optional_text(namespace.as_deref())
+                .text(&name)
+                .text(unit);
+        }
+        fingerprint.optional_text(readers.default_unit.as_deref());
+    }
+    /// Add an interactive host's name policy to a cache key.
+    pub(crate) fn fingerprint_name_policy(&self, fingerprint: &mut crate::sha256::Fingerprint) {
+        let Some(policy) = &self.name_policy else {
+            fingerprint.absent();
+            return;
+        };
+        let sorted = |names: &mut dyn Iterator<Item = &Name>| {
+            let mut names: Vec<_> = names.map(name_parts).collect();
+            names.sort_unstable();
+            names
+        };
+        fingerprint.present().flag(policy.unrestricted);
+        for names in [
+            policy.allow.as_ref().map(|allow| sorted(&mut allow.iter())),
+            Some(sorted(&mut policy.deny.iter())),
+        ] {
+            let Some(names) = names else {
+                fingerprint.absent();
+                continue;
+            };
+            fingerprint.present().count(names.len());
+            for (namespace, name) in &names {
+                fingerprint.optional_text(namespace.as_deref()).text(name);
+            }
+        }
     }
     fn call_compiler_data_reader(
         &self,

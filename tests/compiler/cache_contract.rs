@@ -167,8 +167,11 @@ fn capture_in(
             let id = manifest
                 .id(name)
                 .expect("a captured namespace is in the manifest");
-            let fields =
-                ManifestFields::of(&manifest, id, metadata[id.0 as usize], [1; 32], [2; 32]);
+            let key = light_cljs::cache_key::FrontEndKey {
+                digest: [1; 32],
+                ..Default::default()
+            };
+            let fields = ManifestFields::of(&manifest, id, metadata[id.0 as usize], key, [2; 32]);
             (name.clone(), round_trip(artifact, &fields))
         })
         .collect();

@@ -329,3 +329,26 @@ each of the 93,997 expansions moves `cache.capture-ms` from 1,203 and 1,257
 to 1,216 and 1,388 and the wall from 23.75 and 25.12 s to 24.20 and
 26.76 s; the accounting and policy add 44,256 bytes to `cache.capture.bytes`
 (185,323,942 to 185,368,198). All 922 namespaces are still captured.
+
+## Namespace keys (light-cljs-319, October 18, 2026)
+
+Three alternating pairs of the same release binary: cache off, then
+`LIGHT_CLJS_CAPTURE_ARTIFACTS=1 --stats`, which also records the dependency
+manifest, computes all 922 front-end keys from the 11,343,454 bytes of source
+and the resolution records, and re-validates every namespace's inputs by
+repeating its lookups and re-reading its source and resources, as a store
+does before publishing. Load was 9.7 to 13.2. Output is 33,588,607 bytes in
+every run, and no run found an input changed (`cache.keys.changed` 0).
+
+| Run | Cache off: wall (s), RSS (GB) | `cache.keys-ms` | `cache.revalidate-ms` | Keys run: wall (s), RSS (GB) |
+| --- | --- | ---: | ---: | --- |
+| 1 | 25.18, 1.053 | 57.2 | 106.2 | 26.20, 1.039 |
+| 2 | 25.03, 0.989 | 56.7 | 105.9 | 26.25, 1.017 |
+| 3 | 24.93, 1.068 | 53.4 | 102.4 | 25.73, 1.015 |
+
+Keying takes 56 ms on average, 0.22% of the 25.05 s cache-off wall time, and
+re-validation 105 ms, 0.42%; together 0.64%, under the 2% budget. The rest of
+the keys run's extra second is capture (`cache.capture-ms` about 1.34 s),
+measured under light-cljs-315. Without the variable nothing computes a key:
+the cold path is unchanged apart from `light.build` resource reads hashing
+their text with SHA-256 instead of FNV-1a.

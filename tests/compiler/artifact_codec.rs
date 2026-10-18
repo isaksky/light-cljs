@@ -208,6 +208,10 @@ fn randomized_corruption_fails_cleanly() {
             }
         };
         for _ in 0..1 + random.below(3) {
+            // Earlier damage can leave nothing to damage.
+            if bytes.is_empty() {
+                break;
+            }
             match random.below(5) {
                 0 => {
                     let at = at(&mut random, bytes.len());

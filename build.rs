@@ -23,11 +23,18 @@ use std::{
 // The module allows the parts the crate uses and the build does not.
 #[path = "src/js_syntax.rs"]
 mod js_syntax;
+#[allow(dead_code)]
+#[path = "src/sha256.rs"]
+mod sha256;
 
 use js_syntax::{Join, Kind, Shape, TerseWriter};
 
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(light_v8)");
+    println!(
+        "cargo::rustc-env=LIGHT_CLJS_COMPILER_IDENTITY={}",
+        sha256::hex(&compiler_identity())
+    );
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap();
     if env::var_os("CARGO_FEATURE_V8_MACROS").is_some()
@@ -73,6 +80,80 @@ fn main() {
         fs::read_to_string("src/core_operations.tsv").expect("read src/core_operations.tsv");
     fs::write(out.join("core_operations.rs"), core_operation_index(&table))
         .expect("write the core operation index");
+}
+
+/// The trees and files whose every byte the compiler identity covers: the
+/// crate's sources (the embedded runtime, bootstrap, core macros and
+/// bundled first-party libraries are under `src/`), this script, the
+/// manifest and lock file, and the vendored engines with their patches.
+const IDENTITY_INPUTS: [&str; 7] = [
+    "src",
+    "build.rs",
+    "Cargo.toml",
+    "Cargo.lock",
+    "vendor/rquickjs-sys",
+    "vendor/v8",
+    "vendor/v8-headers",
+];
+
+/// The SHA-256 identity of the compiler being built, which every cache key
+/// includes (docs/compiler-cache.md, "Conservative keys and invalidation"):
+/// each file of [`IDENTITY_INPUTS`] by path and content, in path order,
+/// then the enabled features, the profile and optimization level, the
+/// target and the `rustc` version. Any change to a source file, even a
+/// comment, gives another compiler.
+fn compiler_identity() -> [u8; 32] {
+    let mut files = Vec::new();
+    for input in IDENTITY_INPUTS {
+        println!("cargo::rerun-if-changed={input}");
+        collect_files(Path::new(input), &mut files);
+    }
+    files.sort();
+    let mut fingerprint = sha256::Fingerprint::new("light-cljs compiler identity");
+    fingerprint.count(files.len());
+    for file in &files {
+        let content = fs::read(file).unwrap_or_else(|error| panic!("read {file}: {error}"));
+        fingerprint.text(file).bytes(&content);
+    }
+    let mut features: Vec<_> = env::vars()
+        .filter(|(name, _)| name.starts_with("CARGO_FEATURE_"))
+        .map(|(name, _)| name)
+        .collect();
+    features.sort();
+    fingerprint.count(features.len());
+    for feature in &features {
+        fingerprint.text(feature);
+    }
+    for name in [
+        "PROFILE",
+        "OPT_LEVEL",
+        "DEBUG",
+        "TARGET",
+        "CARGO_ENCODED_RUSTFLAGS",
+    ] {
+        fingerprint.optional_text(env::var(name).ok().as_deref());
+    }
+    let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_owned());
+    let version = std::process::Command::new(&rustc)
+        .arg("-vV")
+        .output()
+        .unwrap_or_else(|error| panic!("run {rustc} -vV: {error}"));
+    fingerprint.bytes(&version.stdout);
+    fingerprint.finish()
+}
+
+/// Every file under `path`, `/`-separated, or `path` itself when a file.
+fn collect_files(path: &Path, files: &mut Vec<String>) {
+    let metadata = fs::metadata(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    if !metadata.is_dir() {
+        let text = path.to_str().expect("UTF-8 source paths");
+        files.push(text.replace('\\', "/"));
+        return;
+    }
+    let entries = fs::read_dir(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    for entry in entries {
+        collect_files(&entry.expect("a directory entry").path(), files);
+    }
 }
 
 /// The runtime the compile-time evaluators run: the embedded runtime with

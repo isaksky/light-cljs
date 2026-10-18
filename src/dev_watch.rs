@@ -324,6 +324,16 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
         analysis,
         &mut warnings,
         stats.as_mut(),
+        &|_| {
+            Some(crate::EmissionSettings {
+                application: light_cljs::ApplicationOptions::new(
+                    light_cljs::OptimizationLevel::None,
+                ),
+                layout: light_cljs::cache_key::OutputLayout::Reloadable,
+                source_map: light_cljs::cache_key::SourceMapOutput::None,
+                include_sources: false,
+            })
+        },
     );
     crate::print_warnings(&warnings);
     let (program, sources) = program?;

@@ -508,6 +508,86 @@ Walking every namespace's reverse closure takes 63 ms. Analysis took 27.0 and
 26.0 s without the manifest and 26.1 and 26.0 s with it, alternating at load
 about 10: building it costs nothing measurable.
 
+*As built (light-cljs-319):* the keys are `light_cljs::cache_key`, on the
+in-tree `light_cljs::sha256`, which the tests check against NIST's CAVP
+SHA-256 short message (65), long message (64) and Monte Carlo (100
+checkpoints) vectors, kept verbatim in `tests/fixtures/sha256`. Every key is
+a `sha256::Fingerprint`: each field is a kind byte, a u64 length and its
+bytes, lists carry their count, and each fingerprint starts with a domain
+name, so no two different field sequences hash the same bytes.
+
+`NamespaceKeys::compute` takes a `KeyEnvironment`, the dependency manifest
+and the sources, and keys every namespace in source order. A `FrontEndKey`
+is the digest of eight component digests, which it keeps, and
+`FrontEndKey::mismatch` names the first component that differs from a
+stored key. That is the `--stats` miss reason: "compiler changed",
+"analysis options changed", "config changed", "source changed",
+"resolution changed", "dependency app.util changed", "external input
+changed" or "earlier namespaces changed". The components:
+
+- **Compiler.** `build.rs` hashes every file under `src/` (the embedded
+  runtime, bootstrap units, core macros and bundled first-party libraries
+  are there), `build.rs`, `Cargo.toml`, `Cargo.lock` and the vendored
+  `rquickjs-sys`, `v8` (with its patch) and `v8-headers`, by path and
+  content, with the enabled features, profile, optimization level, target,
+  `RUSTFLAGS` and `rustc -vV`. Any edit, even to a comment, is another
+  compiler. The key adds the artifact `SCHEMA_VERSION`, the core operation
+  table and the macro engine: V8 with its version for clean compilations,
+  QuickJS for interactive ones, so a key never matches across engines.
+  Hashing about 16 MB adds 0.4 s to a debug build-script run (1.1 s to
+  1.5 s), which reruns on any edit under `src/`.
+- **Options.** Every `AnalysisOptions` field (the warning mode among them),
+  assertions (`--elide-asserts`), `opaque_packages`, the reader features
+  (`:cljs`), each compiler data reader's emitted source by tag and the
+  default reader's, an interactive host's name policy, and the logical macro
+  limits (`--macro-expansions`, `--macro-nodes`, the expansion depth), which
+  a macro can observe by catching their error. The time, memory, stack and
+  poll limits only decide whether work fails and are left out. A registered
+  data reader is always source, so it has a stable identity; there is no
+  reader without one today.
+- **Config.** The `--config` fingerprint, `KeyEnvironment::with_config`.
+  Until light-cljs-313 adds the flag, the empty map's.
+- **Source.** The name, whether it is the entry, the resolved file, `.cljs`
+  or `.cljc`, provider or bundled, and the SHA-256 of the text.
+- **Resolution.** The lookup of the name with every candidate, present or
+  absent, and the file found; each require as written, its target, its form
+  and the lookups that decided it.
+- **Dependencies.** Every compilation edge but the coarse fallback's, with
+  its kinds and the target's own key: a Merkle hash, so an edit to a helper
+  that keeps its signature changes every consumer's key. A `LAZY` edge is
+  not a compilation dependency and is left out.
+- **Inputs.** Each `light.build` input: a resource's path, candidates,
+  identity, SHA-256 and length or absence, and stability; a declared
+  namespace; a provider's token and fingerprint. `ResolvedResource` holds
+  the SHA-256 since this pellet, replacing light-cljs-312's temporary
+  FNV-1a. Configuration and broad views join here with light-cljs-313.
+- **View.** Whether the namespace is coarse and, if so, a chain digest of
+  every earlier namespace's name and key in source order (one hash per
+  namespace, so the coarse edges cost nothing extra), and for each name it
+  looked for and did not find, whether an earlier namespace has it now.
+
+`cache_key::emission_key` is separate: the front-end key, the compiler, and
+every `ApplicationOptions` field (`--optimize`, defines, exports,
+`--pseudo-names`, the inlining and folding switches), the output layout
+(script, `--esm`, `--out-dir` chunks, `--reloadable`) and the source map
+output. The front-end key takes none of them. The chunk a namespace lands in
+follows from lazy edges, which are front-end inputs. Nothing is reused by
+the emission key until artifacts hold emitted sections.
+
+`cache_key::revalidate` re-reads a namespace's inputs after it compiles: it
+repeats every lookup of its resolution through the source provider and
+compares the candidates and file found, compares the source text's SHA-256
+with the text compiled, and re-reads each resource. It reports the first
+input that changed, and the store (light-cljs-321) refuses to publish then.
+Keys use content hashes only; nothing reads a timestamp.
+
+Each `LIGHT_CLJS_CAPTURE_ARTIFACTS` mode now also records the manifest,
+keys every namespace and re-validates it. `--stats` reports
+`cache.keys.namespaces`, `cache.keys.source-bytes`, `cache.keys.changed`,
+`cache.keys-ms` and `cache.revalidate-ms`, and `encode` encodes each
+artifact with its real keys. Penpot's numbers are in
+[benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md).
+
 ### Open questions
 
 - **The coarse fallback is broad.** Every namespace that runs a source macro
@@ -682,7 +762,8 @@ require, and SHA-256 is the in-tree `src/sha256.rs` (checked against the
 FIPS 180-4 vectors; light-cljs-319 builds the keys on it). The module's
 comment gives the layout. In short:
 
-- **Header.** The magic `LCLJSART`, `SCHEMA_VERSION` (3 since light-cljs-318
+- **Header.** The magic `LCLJSART`, `SCHEMA_VERSION` (4 since light-cljs-319
+  added the key components and SHA-256 resource hashes, 3 since light-cljs-318
   added the analysis policy and the accounting, 2 since light-cljs-312 added
   the external inputs, 1 before) as a little-endian
   u32, a byte-order mark, the manifest's length and the SHA-256 of the header
@@ -691,12 +772,13 @@ comment gives the layout. In short:
   its hash and the section table and decodes nothing else. It starts with
   the section table: kind, offset, length and SHA-256 of each section. Then
   the namespace, path, source length, `.cljc` and entry flags, the
-  front-end and emission keys (32 bytes each; callers pass zeros until
-  light-cljs-319), a digest of the compiler's core-operation table, the
-  namespace's requires and referenced namespaces, its dependency edges with
-  their `EdgeKinds` bits, its `light.build` external inputs (each resource
-  with its logical path, every candidate tried, its answer's identity,
-  content hash and length or its absence, and its stability; each declared
+  front-end key with the digest of each of its components (see "Conservative
+  keys and invalidation"), the emission key, a digest of the compiler's
+  core-operation table, the namespace's requires and referenced namespaces,
+  its dependency edges with their `EdgeKinds` bits, the dependencies its
+  front-end key covers with their kinds and keys, its `light.build` external
+  inputs (each resource with its logical path, every candidate tried, its
+  answer's identity, SHA-256 and length or its absence, and its stability; each declared
   namespace and provider token with its fingerprint) and its policy flags
   (`ManifestFields::of` takes them from a `DependencyManifest`). Manifest
   text is inline UTF-8.
@@ -811,7 +893,7 @@ after it.
 `EntryRecorders::reserve` takes `generated_names::Reservation::of` every
 artifact the compilation may install and reserves it before the first
 namespace is read, which keeps namespaces compiled fresh before a later hit
-apart from it too; the store (light-cljs-319 onward) passes the
+apart from it too; the store (light-cljs-321 onward) passes the
 reservation of the artifacts its lookup can return. Installation also
 refuses, before anything changes, an artifact whose window overlaps numbers
 the compilation already holds (its own allocations, or another installed
@@ -1095,6 +1177,12 @@ persistence remain out of scope.
    also encodes and decodes each captured artifact, and `--stats` reports
    `cache.codec.*` (artifacts, failures, bytes, the largest, source bytes
    and bytes by section), `cache.encode-ms` and `cache.decode-ms`.
+
+   *As built (light-cljs-319), the keys:* `src/cache_key.rs` computes each
+   namespace's front-end key, its emission key and the miss reason, and
+   re-validates inputs after compiling, as described under "Conservative
+   keys and invalidation". The capture modes report `cache.keys.*`,
+   `cache.keys-ms` and `cache.revalidate-ms`.
 4. **Integrate development startup and invalidation.** Reuse dependency manifests,
    preserve retained session semantics, apply always-compile policy before the
    memory fast path, and test subsequent edits. Address duplicate startup work

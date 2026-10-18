@@ -55,6 +55,7 @@ mod boundary_completion;
 mod build_resources;
 mod builtin_types;
 mod cache_contract;
+mod cache_keys;
 mod cache_policy;
 mod call_shapes;
 mod case_char_string_accepted;

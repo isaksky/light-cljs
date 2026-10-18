@@ -13,7 +13,6 @@
 
 use crate::dependency_manifest::{
     EdgeKinds, ExternalInput, InputRecord, ObservationLog, ResolvedResource, ResourceDependency,
-    content_hash,
 };
 use crate::source_provider::{LoadError, ResourceProvider};
 use std::{cell::RefCell, rc::Rc};
@@ -268,7 +267,7 @@ fn serve(
                 candidates: tried,
                 found: answer.as_ref().map(|found| ResolvedResource {
                     identity: found.identity.clone(),
-                    hash: content_hash(found.text.as_bytes()),
+                    sha256: crate::sha256::digest(found.text.as_bytes()),
                     bytes: found.text.len() as u64,
                 }),
                 stable,

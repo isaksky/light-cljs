@@ -2427,8 +2427,7 @@ Reading and recording are one operation. With a dependency manifest
 (`analyze_namespace_entry_with_dependencies`), each read or declaration is an
 `ExternalInput` in `DependencyManifest::inputs`: a resource's logical path,
 every candidate location tried, present or absent, and, when found, its
-identity, byte length and a hash of the exact text returned (a temporary
-64-bit FNV-1a until the cache's SHA-256 replaces it); a namespace, which also
+identity, byte length and the SHA-256 of the exact text returned; a namespace, which also
 gets an observed edge when that namespace loaded earlier; or a provider token
 with its fingerprint. An input is recorded on the namespace being analyzed.
 When a deferred helper unit is being analyzed or initialized, or a data reader

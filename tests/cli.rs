@@ -1269,4 +1269,9 @@ fn codec_measurement_reports_sizes_without_changing_output() {
     assert_eq!(value("cache.codec.source-bytes"), source as f64);
     assert!(value("cache.codec.ir-depth") > 1.0);
     assert!(value("cache.encode-ms") >= 0.0 && value("cache.decode-ms") >= 0.0);
+    // Every namespace is keyed, and nothing changed after it was read.
+    assert_eq!(value("cache.keys.namespaces"), 2.0);
+    assert_eq!(value("cache.keys.changed"), 0.0);
+    assert_eq!(value("cache.keys.source-bytes"), source as f64);
+    assert!(value("cache.keys-ms") >= 0.0 && value("cache.revalidate-ms") >= 0.0);
 }

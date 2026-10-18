@@ -18,9 +18,11 @@
 //! with its section table at a fixed place (a count byte, then per section
 //! its kind byte, offset and length as u32 and its SHA-256), followed by
 //! what a lookup needs without decoding IR: the namespace's identity, the
-//! front-end and emission keys, the compiler's core-operation table, the
-//! namespace's requires and referenced namespaces, its dependency edges, its
-//! `light.build` inputs and its policy flags. Manifest text is inline UTF-8.
+//! front-end key with its component digests, the emission key, the
+//! compiler's core-operation table, the namespace's requires and referenced
+//! namespaces, its dependency edges, the dependencies its front-end key
+//! covers with their keys, its `light.build` inputs and its policy flags.
+//! Manifest text is inline UTF-8.
 //!
 //! The sections are [`Section::ALL`]: the artifact's one interned UTF-16
 //! string table, then declarations (with the references and patches), the
@@ -64,7 +66,7 @@ use std::sync::OnceLock;
 
 pub const MAGIC: [u8; 8] = *b"LCLJSART";
 /// The encoding's version. Bump it with any change to the bytes written.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
@@ -125,11 +127,12 @@ pub struct Dependency {
 }
 
 /// What the manifest declares beside the artifact's own identity: the keys
-/// (light-cljs-319 computes them; until then a caller passes zeros), the
-/// namespace's dependency edges, its external inputs and its policy flags.
+/// ([`crate::cache_key`]), the namespace's dependency edges, its external
+/// inputs and its policy flags.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ManifestFields {
-    pub front_end_key: [u8; 32],
+    /// With its components, so that a lookup names the first that differs.
+    pub front_end_key: crate::cache_key::FrontEndKey,
     pub emission_key: [u8; 32],
     pub dependencies: Vec<Dependency>,
     /// The namespace's `light.build` inputs
@@ -150,7 +153,7 @@ impl ManifestFields {
         manifest: &crate::dependency_manifest::DependencyManifest,
         id: crate::dependency_manifest::NamespaceId,
         metadata: crate::cache_policy::NamespaceMetadata,
-        front_end_key: [u8; 32],
+        front_end_key: crate::cache_key::FrontEndKey,
         emission_key: [u8; 32],
     ) -> Self {
         Self {
@@ -431,7 +434,10 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
     put_str(&mut manifest, path);
     varint(&mut manifest, u64::from(*source_length));
     manifest.push(u8::from(*cljc) | u8::from(*entry) << 1);
-    manifest.extend_from_slice(&fields.front_end_key);
+    manifest.extend_from_slice(&fields.front_end_key.digest);
+    for component in &fields.front_end_key.components {
+        manifest.extend_from_slice(component);
+    }
     manifest.extend_from_slice(&fields.emission_key);
     manifest.extend_from_slice(&core_table());
     varint(&mut manifest, declarations.requires.len() as u64);
@@ -446,6 +452,15 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
     for dependency in &fields.dependencies {
         put_str(&mut manifest, &dependency.namespace);
         manifest.push(dependency.kinds);
+    }
+    varint(
+        &mut manifest,
+        fields.front_end_key.dependencies.len() as u64,
+    );
+    for dependency in &fields.front_end_key.dependencies {
+        put_str(&mut manifest, &dependency.namespace);
+        manifest.push(dependency.kinds);
+        manifest.extend_from_slice(&dependency.key);
     }
     external_inputs(&mut manifest, &fields.inputs)?;
     manifest.push(
@@ -480,7 +495,7 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
 /// resource, 1 a namespace, 2 a provider) and its fields. A resource is its
 /// path, its candidates (each a path and a presence byte), a found byte (0
 /// absent, 1 found without an identity, 2 found with one, then the
-/// identity), for a found one its content hash as 8 bytes and its length,
+/// identity), for a found one its SHA-256 as 32 bytes and its length,
 /// and a stability byte. Candidate paths must be UTF-8.
 fn external_inputs(
     manifest: &mut Vec<u8>,
@@ -514,7 +529,7 @@ fn external_inputs(
                     None => manifest.push(0),
                     Some(ResolvedResource {
                         identity,
-                        hash,
+                        sha256,
                         bytes,
                     }) => {
                         match identity {
@@ -524,7 +539,7 @@ fn external_inputs(
                                 put_str(manifest, identity);
                             }
                         }
-                        manifest.extend_from_slice(&hash.to_le_bytes());
+                        manifest.extend_from_slice(sha256);
                         varint(manifest, *bytes);
                     }
                 }
@@ -581,10 +596,10 @@ fn read_external_inputs(
                         } else {
                             None
                         };
-                        let hash = u64::from_le_bytes(input.take(8)?.try_into().unwrap());
+                        let sha256 = input.hash()?;
                         Some(ResolvedResource {
                             identity,
-                            hash,
+                            sha256,
                             bytes: input.uint()?,
                         })
                     }
@@ -1834,7 +1849,11 @@ fn read_manifest_charged(
             tag: identity.into(),
         });
     }
-    let front_end_key = input.hash()?;
+    let front_end_digest = input.hash()?;
+    let mut components = [[0; 32]; crate::cache_key::Component::ALL.len()];
+    for component in &mut components {
+        *component = input.hash()?;
+    }
     let emission_key = input.hash()?;
     let core_table = input.hash()?;
     let names = |input: &mut Input<'_>| {
@@ -1849,6 +1868,15 @@ fn read_manifest_charged(
         dependencies.push(Dependency {
             namespace: input.utf8()?,
             kinds: input.byte()?,
+        });
+    }
+    let count = input.count()?;
+    let mut key_dependencies = budget.vec(count)?;
+    for _ in 0..count {
+        key_dependencies.push(crate::cache_key::DependencyKey {
+            namespace: input.utf8_charged(budget)?,
+            kinds: input.byte()?,
+            key: input.hash()?,
         });
     }
     let inputs = read_external_inputs(&mut input, budget)?;
@@ -1870,7 +1898,11 @@ fn read_manifest_charged(
         requires,
         references,
         fields: ManifestFields {
-            front_end_key,
+            front_end_key: crate::cache_key::FrontEndKey {
+                digest: front_end_digest,
+                components,
+                dependencies: key_dependencies,
+            },
             emission_key,
             dependencies,
             inputs,
@@ -3570,7 +3602,15 @@ mod tests {
 
     fn fields() -> ManifestFields {
         ManifestFields {
-            front_end_key: [7; 32],
+            front_end_key: crate::cache_key::FrontEndKey {
+                digest: [7; 32],
+                components: std::array::from_fn(|at| [at as u8 + 10; 32]),
+                dependencies: vec![crate::cache_key::DependencyKey {
+                    namespace: "lib.a".into(),
+                    kinds: 0b1011,
+                    key: [8; 32],
+                }],
+            },
             emission_key: [9; 32],
             dependencies: vec![Dependency {
                 namespace: "lib.a".into(),
@@ -3591,7 +3631,7 @@ mod tests {
                     ],
                     found: Some(ResolvedResource {
                         identity: Some("/b/app/data.txt".into()),
-                        hash: 0x0123_4567_89ab_cdef,
+                        sha256: [0x5a; 32],
                         bytes: 300,
                     }),
                     stable: true,
@@ -3607,7 +3647,7 @@ mod tests {
                     candidates: Vec::new(),
                     found: Some(ResolvedResource {
                         identity: None,
-                        hash: u64::MAX,
+                        sha256: [0xff; 32],
                         bytes: 0,
                     }),
                     stable: false,

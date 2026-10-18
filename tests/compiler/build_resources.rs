@@ -159,7 +159,7 @@ fn a_macro_inlines_a_resource_and_records_its_text_and_candidates() {
     roots.write(1, "app/data.txt", "changed");
     let (js, changed) = roots.build("app.core").unwrap();
     assert_eq!(execute(&js), "changed");
-    let hash = |m: &DependencyManifest| resources(m, "app.core")[0].found.as_ref().unwrap().hash;
+    let hash = |m: &DependencyManifest| resources(m, "app.core")[0].found.as_ref().unwrap().sha256;
     assert_ne!(hash(&manifest), hash(&changed));
 
     // An absent resource is an error that names every root tried.
@@ -348,7 +348,7 @@ fn a_helper_value_read_once_is_a_dependency_of_every_namespace_that_reuses_it() 
         &manifest,
         id(&manifest, "app.b"),
         Default::default(),
-        [0; 32],
+        Default::default(),
         [0; 32],
     );
     assert_eq!(

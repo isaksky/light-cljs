@@ -1,7 +1,10 @@
 //! SHA-256 (FIPS 180-4), in tree because the crate takes no hashing
 //! dependency (docs/compiler-cache.md, "Settled decisions"). Namespace
-//! artifacts use it for their integrity hashes; the cache keys will build on
-//! it too.
+//! artifacts use it for their integrity hashes, and the cache keys
+//! ([`crate::cache_key`]) for their [`Fingerprint`]s. `build.rs` includes
+//! this file too, for the compiler's identity. The tests check it against
+//! NIST's CAVP short message, long message and Monte Carlo vectors
+//! (`tests/fixtures/sha256`).
 
 /// A streaming SHA-256 computation.
 #[derive(Clone)]
@@ -92,6 +95,94 @@ pub fn hex(digest: &[u8; 32]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Framed SHA-256: the fingerprint of a sequence of typed fields. Each
+/// field is written as a kind byte, its length as a u64 little-endian, then
+/// its bytes, so two different sequences never hash the same bytes:
+/// `("ab", "c")` differs from `("a", "bc")`, text from the same bytes as a
+/// digest, and a list is framed by its count. A fingerprint begins with its
+/// domain, a name that keeps fingerprints of different things apart.
+#[derive(Clone)]
+pub struct Fingerprint {
+    hash: Sha256,
+}
+
+/// The kind byte of a framed field.
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum Field {
+    Domain = 1,
+    Bytes,
+    Text,
+    Number,
+    Digest,
+    Count,
+    Absent,
+    Present,
+}
+
+impl Fingerprint {
+    pub fn new(domain: &str) -> Self {
+        let mut fingerprint = Self {
+            hash: Sha256::new(),
+        };
+        fingerprint.field(Field::Domain, domain.as_bytes());
+        fingerprint
+    }
+
+    fn field(&mut self, kind: Field, bytes: &[u8]) -> &mut Self {
+        self.hash.update(&[kind as u8]);
+        self.hash.update(&(bytes.len() as u64).to_le_bytes());
+        self.hash.update(bytes);
+        self
+    }
+
+    pub fn bytes(&mut self, bytes: &[u8]) -> &mut Self {
+        self.field(Field::Bytes, bytes)
+    }
+
+    pub fn text(&mut self, text: &str) -> &mut Self {
+        self.field(Field::Text, text.as_bytes())
+    }
+
+    pub fn number(&mut self, number: u64) -> &mut Self {
+        self.field(Field::Number, &number.to_le_bytes())
+    }
+
+    pub fn flag(&mut self, flag: bool) -> &mut Self {
+        self.number(u64::from(flag))
+    }
+
+    pub fn digest(&mut self, digest: &[u8; 32]) -> &mut Self {
+        self.field(Field::Digest, digest)
+    }
+
+    /// The length of a list whose items follow.
+    pub fn count(&mut self, count: usize) -> &mut Self {
+        self.field(Field::Count, &(count as u64).to_le_bytes())
+    }
+
+    /// No value where an optional one goes.
+    pub fn absent(&mut self) -> &mut Self {
+        self.field(Field::Absent, &[])
+    }
+
+    /// The mark before an optional value that is there.
+    pub fn present(&mut self) -> &mut Self {
+        self.field(Field::Present, &[])
+    }
+
+    pub fn optional_text(&mut self, text: Option<&str>) -> &mut Self {
+        match text {
+            Some(text) => self.present().text(text),
+            None => self.absent(),
+        }
+    }
+
+    pub fn finish(self) -> [u8; 32] {
+        self.hash.finish()
+    }
+}
+
 fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
     for (word, bytes) in w.iter_mut().zip(block.as_chunks::<4>().0) {
@@ -164,6 +255,150 @@ mod tests {
             hex(&digest(&million)),
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
         );
+    }
+
+    fn unhex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// The `(Len, Msg, MD)` records of a CAVP `.rsp` file, with each
+    /// message cut to its length in bits (the empty message is `Msg = 00`).
+    fn records(file: &str) -> Vec<(Vec<u8>, String)> {
+        let mut records = Vec::new();
+        let mut length = None;
+        let mut message = None;
+        for line in file.lines() {
+            let Some((key, value)) = line.split_once(" = ") else {
+                continue;
+            };
+            match key {
+                "Len" => length = Some(value.parse::<usize>().unwrap()),
+                "Msg" => message = Some(unhex(value)),
+                "MD" => {
+                    let bits = length.take().unwrap();
+                    assert_eq!(bits % 8, 0, "byte-oriented vectors only");
+                    let mut bytes = message.take().unwrap();
+                    bytes.truncate(bits / 8);
+                    records.push((bytes, value.to_owned()));
+                }
+                _ => {}
+            }
+        }
+        records
+    }
+
+    #[test]
+    fn cavp_short_and_long_message_vectors() {
+        let short = records(include_str!("../tests/fixtures/sha256/SHA256ShortMsg.rsp"));
+        let long = records(include_str!("../tests/fixtures/sha256/SHA256LongMsg.rsp"));
+        assert_eq!((short.len(), long.len()), (65, 64));
+        for (message, expected) in short.iter().chain(&long) {
+            assert_eq!(&hex(&digest(message)), expected, "{} bytes", message.len());
+            // The same message streamed in uneven pieces.
+            let mut hash = Sha256::new();
+            for piece in message.chunks(37) {
+                hash.update(piece);
+            }
+            assert_eq!(&hex(&hash.finish()), expected);
+        }
+    }
+
+    // The CAVP Monte Carlo test for SHA-2: from the seed, each checkpoint is
+    // the last of 1000 digests of the three digests before it.
+    #[test]
+    fn cavp_monte_carlo_vectors() {
+        let file = include_str!("../tests/fixtures/sha256/SHA256Monte.rsp");
+        let mut seed = None;
+        let mut checkpoints = Vec::new();
+        for line in file.lines() {
+            match line.split_once(" = ") {
+                Some(("Seed", value)) => seed = Some(unhex(value)),
+                Some(("MD", value)) => checkpoints.push(value.to_owned()),
+                _ => {}
+            }
+        }
+        assert_eq!(checkpoints.len(), 100);
+        let mut seed: [u8; 32] = seed.unwrap().try_into().unwrap();
+        for expected in checkpoints {
+            let mut window = [seed, seed, seed];
+            for _ in 0..1000 {
+                let mut hash = Sha256::new();
+                for md in &window {
+                    hash.update(md);
+                }
+                window = [window[1], window[2], hash.finish()];
+            }
+            seed = window[2];
+            assert_eq!(hex(&seed), expected);
+        }
+    }
+
+    #[test]
+    fn framed_fields_do_not_alias() {
+        let fingerprint = |build: &dyn Fn(&mut Fingerprint)| {
+            let mut fingerprint = Fingerprint::new("test");
+            build(&mut fingerprint);
+            fingerprint.finish()
+        };
+        let split = fingerprint(&|f| {
+            f.text("ab").text("c");
+        });
+        assert_ne!(
+            split,
+            fingerprint(&|f| {
+                f.text("a").text("bc");
+            })
+        );
+        assert_ne!(
+            split,
+            fingerprint(&|f| {
+                f.text("abc");
+            })
+        );
+        // The kind of a field is part of it.
+        assert_ne!(
+            fingerprint(&|f| {
+                f.text("ab");
+            }),
+            fingerprint(&|f| {
+                f.bytes(b"ab");
+            })
+        );
+        assert_ne!(
+            fingerprint(&|f| {
+                f.optional_text(None).text("x");
+            }),
+            fingerprint(&|f| {
+                f.optional_text(Some("x"));
+            })
+        );
+        // Counts frame lists: [[a] []] is not [[] [a]].
+        assert_ne!(
+            fingerprint(&|f| {
+                f.count(1).text("a").count(0);
+            }),
+            fingerprint(&|f| {
+                f.count(0).count(1).text("a");
+            })
+        );
+        // The domain separates otherwise equal fingerprints.
+        let mut other = Fingerprint::new("other");
+        other.text("ab").text("c");
+        assert_ne!(split, other.finish());
+        // And the framing is fixed: this is the digest of its bytes.
+        let mut bytes = vec![1];
+        bytes.extend_from_slice(&4u64.to_le_bytes());
+        bytes.extend_from_slice(b"test");
+        bytes.push(3);
+        bytes.extend_from_slice(&2u64.to_le_bytes());
+        bytes.extend_from_slice(b"ab");
+        bytes.push(3);
+        bytes.extend_from_slice(&1u64.to_le_bytes());
+        bytes.extend_from_slice(b"c");
+        assert_eq!(split, digest(&bytes));
     }
 
     #[test]
