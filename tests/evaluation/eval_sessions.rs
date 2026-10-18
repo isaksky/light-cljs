@@ -902,3 +902,44 @@ fn macroexpand_seed_preserves_pending_reader_declarations() {
     assert_eq!(printed(&mut s, "(macroexpand '(+ 1 2))"), "(+ 1 2)");
     assert_eq!(printed(&mut s, "(probe)"), "cljs.user/map");
 }
+/// `light.build` serves a session's macros for its whole life with its
+/// source provider's resources: a `./` path resolves against the current
+/// namespace's directory, in an evaluation and in `macroexpand`.
+#[test]
+fn session_macros_read_resources_relative_to_the_current_namespace() {
+    let root = crate::temp_dir::TempDir::new("eval-build-resource");
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(root.join("app/greeting.txt"), "hello from app").unwrap();
+    std::fs::write(root.join("greeting.txt"), "hello from the root").unwrap();
+    std::fs::write(
+        root.join("app/macros.cljs"),
+        "(ns app.macros (:require [light.build :as b]))\n\
+         (defmacro greeting [] (b/resource \"./greeting.txt\"))",
+    )
+    .unwrap();
+    let mut s = EvalSession::new(EvalOptions {
+        source_provider: Some(std::rc::Rc::new(
+            light_cljs::source_provider::FileSourceProvider::new(vec![root.path().clone()]),
+        )),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(
+        printed(
+            &mut s,
+            "(ns app.core (:require [app.macros :refer [greeting]])) (greeting)"
+        ),
+        "\"hello from app\""
+    );
+    assert_eq!(
+        printed(&mut s, "(macroexpand '(greeting))"),
+        "\"hello from app\""
+    );
+    assert_eq!(
+        printed(
+            &mut s,
+            "(ns greeter (:require [app.macros :refer [greeting]])) (greeting)"
+        ),
+        "\"hello from the root\""
+    );
+}

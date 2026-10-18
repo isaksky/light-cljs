@@ -18,12 +18,13 @@ use crate::dependency_manifest::{
 use crate::source_provider::{LoadError, ResourceProvider};
 use std::{cell::RefCell, rc::Rc};
 
-/// The compilation `light.build` serves: set while
-/// [`crate::compiler`] analyzes namespaces, `None` otherwise.
+/// The compilation `light.build` serves: set while [`crate::compiler`]
+/// analyzes namespaces and for the life of an interactive compiler
+/// ([`crate::eval_compiler`]), `None` otherwise.
 pub(crate) struct BuildContext {
     resources: Option<Rc<dyn ResourceProvider>>,
     /// Each source's namespace by source index, as analysis reaches it.
-    namespaces: Vec<String>,
+    namespaces: Vec<Option<String>>,
     /// The source being analyzed.
     window: usize,
 }
@@ -31,24 +32,45 @@ pub(crate) struct BuildContext {
 pub(crate) type SharedBuild = Rc<RefCell<Option<BuildContext>>>;
 pub(crate) type SharedLog = Rc<RefCell<Option<ObservationLog>>>;
 
-/// Serves one compilation while it lives.
-pub(crate) struct BuildGuard(SharedBuild);
+/// Serves one compilation while it lives, then restores the context it
+/// replaced: a compilation nested in another serves only while it runs.
+/// Guards on one [`SharedBuild`] drop in the reverse order they entered.
+pub(crate) struct BuildGuard {
+    build: SharedBuild,
+    previous: Option<BuildContext>,
+}
 
 impl BuildGuard {
     pub(crate) fn enter(build: &SharedBuild, resources: Option<Rc<dyn ResourceProvider>>) -> Self {
-        *build.borrow_mut() = Some(BuildContext {
+        let previous = build.borrow_mut().replace(BuildContext {
             resources,
             namespaces: Vec::new(),
             window: 0,
         });
-        Self(build.clone())
+        Self {
+            build: build.clone(),
+            previous,
+        }
     }
-    /// Source `index`, namespace `name`, is analyzed next.
+    /// Serve `resources` from now on.
+    pub(crate) fn provide(&self, resources: Option<Rc<dyn ResourceProvider>>) {
+        if let Some(context) = self.build.borrow_mut().as_mut() {
+            context.resources = resources;
+        }
+    }
+    /// Source `index`, namespace `name`, is analyzed next: the expansion
+    /// site of what runs until the next call, and the namespace on which
+    /// the units of that source record what they read. An interactive
+    /// compiler analyzes every form as source 0, in its current namespace.
     pub(crate) fn analyze(&self, index: usize, name: &str) {
-        if let Some(context) = self.0.borrow_mut().as_mut() {
+        if let Some(context) = self.build.borrow_mut().as_mut() {
             context.window = index;
-            if context.namespaces.len() == index {
-                context.namespaces.push(name.to_owned());
+            if context.namespaces.len() <= index {
+                context.namespaces.resize(index + 1, None);
+            }
+            let slot = &mut context.namespaces[index];
+            if slot.as_deref() != Some(name) {
+                *slot = Some(name.to_owned());
             }
         }
     }
@@ -56,7 +78,7 @@ impl BuildGuard {
 
 impl Drop for BuildGuard {
     fn drop(&mut self) {
-        self.0.borrow_mut().take();
+        *self.build.borrow_mut() = self.previous.take();
     }
 }
 
@@ -149,7 +171,7 @@ fn serve(
             None
         } else {
             let source = caller.analyzing.map_or(context.window, |s| s as usize);
-            context.namespaces.get(source).cloned()
+            context.namespaces.get(source).cloned().flatten()
         };
         (context.resources.clone(), context.window as u32, site)
     };
@@ -349,6 +371,28 @@ mod tests {
             ask("e\0\0resource\0x.txt\0")
                 .starts_with("elight.build/resource is only available at compile time")
         );
+    }
+
+    #[test]
+    fn a_nested_guard_restores_the_context_it_replaced() {
+        let build: SharedBuild = Default::default();
+        let log: SharedLog = Default::default();
+        let ask = |request: &str| serve_request(&build, &log, request, |_| None, Vec::new());
+        let outer = BuildGuard::enter(&build, Some(Rc::new(Anonymous)));
+        // Indices are names, whatever order analysis reaches them in.
+        outer.analyze(2, "app.later");
+        outer.analyze(0, "app.core");
+        assert_eq!(ask("e\0\0resource?\0./x.txt\0"), "n");
+        {
+            let inner = BuildGuard::enter(&build, None);
+            inner.analyze(0, "other.ns");
+            assert!(ask("e\0\0resource\0x.txt\0").contains("supplies no resources"));
+        }
+        assert_eq!(ask("e\0\0resource\0x.txt\0"), "vtext");
+        outer.analyze(2, "app.later");
+        assert_eq!(ask("e\0\0resource?\0./x.txt\0"), "n");
+        drop(outer);
+        assert!(ask("e\0\0resource\0x.txt\0").contains("only available at compile time"));
     }
 
     #[test]

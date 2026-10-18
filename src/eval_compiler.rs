@@ -23,6 +23,10 @@ pub(crate) struct InteractiveCompiler {
     pub(crate) policy: NamePolicy,
     exposed: std::collections::HashSet<Name>,
     contexts: std::collections::HashMap<String, NamespaceContext>,
+    /// `light.build` serves the compiler for its whole life: every form it
+    /// reads, analyzes or expands is compile time, with its current
+    /// namespace as the expansion site ([`Self::build_site`]).
+    build: crate::build_services::BuildGuard,
 }
 impl InteractiveCompiler {
     #[cfg(test)]
@@ -32,7 +36,9 @@ impl InteractiveCompiler {
     pub(crate) fn with_host(mut host: MacroHost) -> Self {
         host.begin_compilation();
         host.interactive = true;
+        let build = crate::build_services::BuildGuard::enter(&host.build, None);
         Self {
+            build,
             host,
             program: None,
             namespace: "cljs.user".into(),
@@ -48,6 +54,19 @@ impl InteractiveCompiler {
     }
     pub(crate) fn namespace(&self) -> &str {
         &self.namespace
+    }
+    /// The resources `light.build` reads: the session's source provider's.
+    pub(crate) fn serve_resources(
+        &self,
+        resources: Option<std::rc::Rc<dyn crate::source_provider::ResourceProvider>>,
+    ) {
+        self.build.provide(resources);
+    }
+    /// The current namespace is the expansion site of the macros, helpers
+    /// and data readers that run next, and records what they read. Every
+    /// form is source 0 of the interactive compiler.
+    fn build_site(&self) {
+        self.build.analyze(0, &self.namespace);
     }
     pub(crate) fn set_namespace(&mut self, namespace: &str) {
         if self.namespace == namespace {
@@ -251,6 +270,8 @@ impl InteractiveCompiler {
             let Some(root) = syntax.roots.first().copied() else {
                 continue;
             };
+            // Data readers run as the form is lowered.
+            self.build_site();
             let mut view = crate::compiler_reader::NamespaceView::new(&self.namespace, &source);
             for (alias, target) in &self.aliases {
                 view.aliases
@@ -290,6 +311,7 @@ impl InteractiveCompiler {
         }
     }
     pub(crate) fn analyze_form(&mut self, form: &Form) -> Result<Program, AnalysisError> {
+        self.build_site();
         self.host.name_policy = Some(self.policy.clone());
         let mut resolution = self.resolution.clone();
         resolution.source_name = Some(form.span().source().name().into());
@@ -361,6 +383,7 @@ impl InteractiveCompiler {
         result
     }
     pub(crate) fn macroexpand(&mut self, form: &Form, once: bool) -> Result<Form, String> {
+        self.build_site();
         let mut form = form.clone();
         for _ in 0..self.host.limits.expansion_depth {
             if !matches!(

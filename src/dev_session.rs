@@ -204,6 +204,13 @@ impl DevSession {
         compiler.policy = options.policy.clone();
         compiler.options.warning_mode = options.warning_mode;
         compiler.set_namespace(&options.namespace);
+        // `light.build` reads the resources of the namespaces' provider.
+        compiler.serve_resources(
+            options
+                .source_provider
+                .as_ref()
+                .and_then(|provider| provider.resources()),
+        );
         for (alias, target) in &options.aliases {
             compiler.set_alias(alias, target);
         }

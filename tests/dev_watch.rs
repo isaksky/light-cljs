@@ -801,6 +801,47 @@ fn a_file_is_read_in_its_own_namespace() {
     assert_eq!(now, fresh);
 }
 
+/// A macro that inlines a `light.build` resource by a `./` path compiles
+/// in the startup build, in the session the watch loads and in its steps,
+/// each resolving the path against the expansion site's namespace, also
+/// after a step in another namespace.
+#[test]
+fn a_macro_inlining_a_resource_compiles_at_startup_and_in_steps() {
+    let mut watch = Watch::start_with("dev-watch-resource", |src| {
+        fs::write(src.join("app/separator.txt"), ": ").unwrap();
+        let macros = fs::read_to_string(src.join("app/macros.cljs")).unwrap();
+        let macros = macros
+            .replace(
+                "\"A macro and the helper function its expansion calls.\")",
+                "\"A macro and the helper function its expansion calls.\"\n  (:require [light.build :as b]))",
+            )
+            .replace("~label \": \"", "~label ~(b/resource \"./separator.txt\")");
+        fs::write(src.join("app/macros.cljs"), macros).unwrap();
+    });
+    assert!(watch.startup.is_empty(), "{:#?}", watch.startup);
+    assert_eq!(watch.reload(&[]), record("start\nclicks: [1]\n"));
+    let state = watch.source("app/state.cljs");
+    let (lines, step) = watch.save("app/state.cljs", &format!("{state}\n"));
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.state in "),
+        "{step}"
+    );
+    let view = watch
+        .source("app/view.cljs")
+        .replace("(->Card \"clicks\"", "(->Card \"taps\"");
+    let (lines, step) = watch.save("app/view.cljs", &view);
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.view in "),
+        "{step}"
+    );
+    assert_eq!(
+        watch.reload(&["app.view.js"]),
+        record("start\nclicks: [1]\nreloading\ntaps: [2]\n")
+    );
+}
+
 /// A source root's own file for a namespace the compiler also bundles wins,
 /// in the session as in the first build, and is watched.
 #[test]
