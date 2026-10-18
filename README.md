@@ -322,6 +322,12 @@ rows (and `execute` rows for the compile-time roots evaluated), with each
 unit's position, demander and costs, for
 `benchmarks/concurrency/dag.bb` ([docs/compiler-concurrency.md](docs/compiler-concurrency.md)).
 
+`--jobs N` with `--compile` is experimental. It allows the compilation N CPU
+work slots, the calling thread's included, so at most N-1 worker threads.
+The default is 1. Output does not depend on N. For now every phase still runs
+on the calling thread; the work pool it sizes is described in
+[docs/compiler-concurrency.md](docs/compiler-concurrency.md#the-scheduler).
+
 `--cache-dir DIR` with `--compile --entry` (also with `--reloadable`, `--esm`
 and `--out-dir`, at every `--optimize` level) and with `--watch` keeps a persistent compiler
 cache in DIR, created when missing. A namespace whose source, resolution,

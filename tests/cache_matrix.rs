@@ -580,6 +580,7 @@ fn child() {
                     blockers: Vec::new(),
                 },
                 Some(&mut stats),
+                light_cljs::scheduler::Slots::ONE,
             )
             .unwrap()
             .0

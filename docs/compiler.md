@@ -94,6 +94,23 @@ runtime operations as application emission; it may add deferred-root access and
 bypass optional application optimization. See
 [deferred compiler units](evaluator.md#deferred-compiler-units).
 
+### Work scheduler
+
+`scheduler` is the compiler's work pool. It is built on the standard library
+alone: scoped worker threads, one mutex over per-phase ready queues and
+per-worker deques, one condition variable for workers waiting for work and one
+for the coordinator waiting for outcomes. It claims batches, steals the far
+half of a peer's deque, ages phases so that none starves, bounds admission by
+job count and estimated bytes, and stops the build on a worker panic. It is
+generic over a job's phase, cost, bytes and priority, and knows nothing about
+the compiler. The calling thread coordinates: it submits ready jobs, consumes
+outcomes and alone declares the build done. With one slot it runs every job
+inline without spawning. `--jobs N` (experimental, default 1) counts these
+slots, the coordinator's included, and reaches the compile entry as
+`EntryRecorders::slots`; no compiler phase runs on the pool yet. The design,
+the as-built details and what the tests cover are in
+[compiler-concurrency.md](compiler-concurrency.md#the-scheduler).
+
 ### Namespace reflection and reading
 
 `ns-publics`, `ns-interns`, `ns-imports` and `ns-refers` take quoted namespace

@@ -52,6 +52,7 @@ mod layered;
 mod name_index;
 mod program_fragment;
 mod rta;
+pub mod scheduler;
 pub mod sha256;
 pub mod shared;
 #[cfg(light_v8)]

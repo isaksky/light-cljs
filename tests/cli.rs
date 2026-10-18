@@ -1560,3 +1560,50 @@ fn codec_measurement_reports_sizes_without_changing_output() {
     assert_eq!(value("cache.keys.source-bytes"), source as f64);
     assert!(value("cache.keys-ms") >= 0.0 && value("cache.revalidate-ms") >= 0.0);
 }
+
+#[test]
+fn jobs_counts_work_slots_without_changing_output() {
+    let root = "examples/namespaces";
+    let entry = ["--compile", "--entry", "demo.main", "--source-root", root];
+    let serial = compiled(&entry);
+    for jobs in ["1", "4"] {
+        // Before or after the namespace options, and with a cache.
+        assert_eq!(
+            compiled(&[&["--compile", "--jobs", jobs], &entry[1..]].concat()),
+            serial
+        );
+        assert_eq!(compiled(&[&entry[..], &["--jobs", jobs]].concat()), serial);
+        let cache = TempDir::new("cli-jobs-cache");
+        let dir = cache.path().to_str().unwrap();
+        let cached = [&entry[..], &["--jobs", jobs, "--cache-dir", dir]].concat();
+        assert_eq!(compiled(&cached), serial);
+    }
+    // A single source has one namespace; the flag is accepted there too.
+    assert_eq!(
+        compiled(&["--compile", "--jobs", "8", "--text", "(+ 1 2)"]),
+        compiled(&["--compile", "--text", "(+ 1 2)"])
+    );
+    for (args, message) in [
+        (
+            &["--compile", "--jobs", "0", "--text", "1"][..],
+            "--jobs requires a positive integer, got 0",
+        ),
+        (
+            &["--compile", "--text", "1", "--jobs", "many"][..],
+            "--jobs requires a positive integer, got many",
+        ),
+        (
+            &["--compile", "--text", "1", "--jobs"][..],
+            "--jobs requires a number",
+        ),
+        (
+            &["--parse", "--jobs", "2", "--text", "1"][..],
+            "--jobs requires --compile",
+        ),
+    ] {
+        let output = light_cljs(args);
+        assert!(!output.status.success(), "{args:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+    }
+}

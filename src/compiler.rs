@@ -1633,7 +1633,8 @@ pub fn analyze_namespace_entry_with_stats(
 /// the policy bypasses it, published. After a successful analysis the
 /// directory is trimmed to its retention bounds. With `stats`, it is filled
 /// as [`analyze_namespace_entry_with_stats`] fills it, with
-/// [`CompileStats::cache`] too.
+/// [`CompileStats::cache`] too. `slots` is [`EntryRecorders::slots`].
+#[allow(clippy::too_many_arguments)]
 pub fn analyze_namespace_entry_cached(
     entry: &str,
     source_roots: &[PathBuf],
@@ -1642,6 +1643,7 @@ pub fn analyze_namespace_entry_cached(
     warnings: &mut Vec<AnalysisWarning>,
     cache: &crate::compile_cache::CacheOptions,
     stats: Option<&mut CompileStats>,
+    slots: crate::scheduler::Slots,
 ) -> Result<(crate::Program, SourceFiles), NamespaceCompileError> {
     let mut store = crate::compile_cache::CompileCache::open(cache, macros, options, entry);
     let mut stats = stats;
@@ -1657,6 +1659,7 @@ pub fn analyze_namespace_entry_cached(
         EntryRecorders {
             stats: stats.as_deref_mut(),
             cache: Some(&mut store),
+            slots,
             ..EntryRecorders::default()
         },
     );
@@ -1775,6 +1778,10 @@ pub struct EntryRecorders<'a> {
     /// It reserves its candidates' generated names unless `reserve` is
     /// given. Without it nothing reads or writes a cache.
     pub cache: Option<&'a mut crate::compile_cache::CompileCache>,
+    /// The CPU work slots the compilation may use (`--jobs N`,
+    /// [`crate::scheduler`]), the calling thread's included. Every phase
+    /// still runs on the calling thread; the default is one slot.
+    pub slots: crate::scheduler::Slots,
 }
 
 /// The artifact to install for a namespace, if any ([`EntryRecorders::install`]).
@@ -1915,6 +1922,9 @@ fn analyze_entry(
         reserve,
         control,
         mut cache,
+        // No phase runs on the pool yet; the parse queue is the first
+        // (docs/compiler-concurrency.md, "Gates and first steps").
+        slots: _,
     } = recorders;
     let cache_reservation = cache
         .as_deref()

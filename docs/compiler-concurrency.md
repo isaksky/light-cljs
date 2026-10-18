@@ -622,13 +622,125 @@ worker can always publish without blocking, and prefer work that unblocks
 the next merge over speculative breadth. Byte estimates guide admission;
 they are not a hard memory bound.
 
-**Worker count.** `--jobs N` (proposed spelling) means CPU work slots, and the
+**Worker count.** `--jobs N` means CPU work slots, and the
 coordinator's own isolate counts as one, so there are up to `N-1` background
 workers. It does not promise a thread count: V8's platform threads, I/O and
 other builds are outside it. `--jobs 1` runs the ready jobs and ordered
 operations inline without spawning. An empty eligible workload starts no
 pool and no worker isolate. A persistent watch-build pool is a later step
 and uses owned scheduler state with explicit shutdown.
+
+*As built (light-cljs-336):* the pool is `src/scheduler.rs`, about 1,100
+lines with no `unsafe` (`#![forbid(unsafe_code)]`), and its tests on
+synthetic jobs are `src/scheduler/tests.rs`. It is generic and knows nothing
+about the compiler:
+
+- *Interface.* A `Job` reports its phase, an estimated cost, estimated bytes
+  and a priority. `scheduler::run(config, make, execute, coordinate)`
+  takes a function that creates a slot's state on the thread that owns it,
+  on that slot's first job (so a worker that never runs a job never starts
+  an isolate), one that runs a job against that state, and the
+  coordinator's closure, which drives the build on the calling thread
+  through a `Coordinator`. The coordinator submits jobs singly or as a
+  batch (`submit`, `submit_batch`), submits urgent work (`submit_urgent`)
+  and consumes outcomes with `next_outcome()`. A running job sees a `Worker`
+  handle: its slot, whether the build is cancelled, and `push_local` for
+  a successor whose readiness it already knows. Anything ordered goes back
+  in its outcome.
+- *Slots.* Slot 0 is the coordinator's. With `Slots::ONE`, nothing is
+  spawned: `next_outcome()` claims and runs each job inline, through the same
+  queues, claim order and accounting, and creates the slot state on the
+  calling thread. With N slots, N-1 named, scoped worker threads are
+  spawned at `run` (`Config::stack_size` sets their stacks). The
+  coordinator does not run pool jobs; its slot is for its ordered work
+  and its own isolate. A caller with no eligible work does not call `run`.
+- *Claims.* Claims follow the order above. Urgent jobs come first, in any
+  phase, and are admitted whatever the bounds, since what waits for them
+  may be holding the room. Then come the local deque of the current phase,
+  a batch from the phase's shared queue, and a steal of about half a
+  victim's deque from its far end. A batch is at most `batch_jobs` jobs
+  and `batch_cost` total estimated cost, but its first job is always
+  taken. Shared queues and the backlog are ordered by priority, highest
+  first, with ties in submission order. A worker stays in its phase for
+  `phase_quantum` consecutive jobs while that phase has runnable work.
+  Then, or when the phase runs dry, it moves to the runnable phase whose
+  last start is oldest (the aging).
+- *Admission.* The backlog is kept per phase. It admits the
+  highest-priority front, ties in submission order, but a phase whose
+  backlog has waited `phase_quantum` admissions goes next. Without that
+  rule, a high-priority stream could keep another phase out of the
+  runnable set when admission is tight.
+- *What the bounds cover.* The bounds apply to admitted work, which is
+  queued, running, or completed and not yet consumed. A job's byte
+  estimate is what it holds until its outcome is consumed. The backlog
+  holds job handles the caller has already built, and it does not refuse
+  them. A caller that produces work faster than it runs can read
+  `backlogged()` and hold back; `PoolCounts::peak_backlog` records the
+  most that waited.
+- *Defaults.* `batch_jobs` is 4, `batch_cost` is unbounded until costs
+  are measured, admission allows 4096 jobs and 1 GiB of estimates, and
+  the quantum is 32.
+- *Wakeups.* A submission that makes one job runnable notifies one worker,
+  and a batch notifies all. A claim that leaves unstarted jobs in the
+  claimer's deque notifies up to that many parked workers, so they can
+  steal. Workers notify the coordinator when they publish an outcome or a
+  panic.
+- *Completion.* `next_outcome()` returns `Outcome`, in completion order. With
+  nothing admitted or in the backlog it returns `Quiescent`, or `Stalled`
+  when demands or publications are held: the coordinator registers those
+  with `hold` and `release`, and "stalled" is the "dependency with no
+  producer" case for it to diagnose. An outcome's admission is freed when
+  the coordinator consumes it. Admitted jobs that are neither runnable,
+  running nor completed are a scheduler bug, and `next_outcome()` panics on them
+  rather than waiting forever.
+- *Cancellation.* `cancel()` drops every unstarted job with the mutex
+  released and refuses later submissions. Running jobs finish, and long
+  ones can poll `Worker::cancelled`. It is also set when the build stops,
+  after a panic or when the coordinator's closure ends, so the scope can
+  join a running job that polls it.
+- *Panics.* A panic in a job or a slot constructor is caught at the job
+  boundary. The slot's state is dropped and its unstarted jobs go back to
+  the shared queues. Shutdown is set, and `next_outcome()` returns the
+  `WorkerPanic` from then on. `run` returns `PoolError::Panic` whatever
+  the coordinator returned. A guard sets shutdown and wakes both condition
+  variables however the coordinator's closure ends, so a panicking
+  coordinator still joins every worker before its panic resumes.
+- *Counters.* `PoolCounts` records the jobs started by each path, claims,
+  steals, phase switches, parks, the peak numbers admitted and
+  backlogged and the jobs cancelled, for `--stats` once a phase runs on the pool.
+- *CLI.* `--jobs N` is parsed in `CompileFlags::accept` and is threaded to
+  the compile entry as `EntryRecorders::slots` (and to
+  `analyze_namespace_entry_cached`). It is accepted with every
+  `--compile`, it defaults to 1, and nothing uses more than one slot yet.
+
+The tests cover the scheduler, liveness and completion rows of the
+validation table that do not need the compiler:
+
+- the claim order, batch limits and steals, checked on the state directly;
+- no job lost or duplicated in a 3,000-job graph with injected delays, at
+  2, 3, 4, 8 and 16 slots, four rounds each, with local pushes and
+  coordinator successors;
+- members of one claimed batch stolen by idle workers;
+- 2,000 submissions racing the last worker as it parks, half of them made
+  only once every worker is parked;
+- a starved phase served against endless local streams, also with one or
+  two jobs admitted at a time, where only admission aging lets it in;
+- a panicking job, and a panicking slot constructor, which stop the build
+  and drop every slot's state;
+- shutdown with every worker parked, and with a panicking coordinator;
+- a running job that polls for cancellation, joined after a peer's panic,
+  after the coordinator returns, and after it panics;
+- admission bounds of one job and one byte with saturated workers;
+- the one-slot path, which runs the same graph on the calling thread;
+- a chain whose queues are empty while its only job runs;
+- held demands without a producer;
+- cancellation.
+
+Each liveness test runs under a deadline, so a deadlock fails instead of
+hanging the suite. Disabling the single-job wakeup, the quantum or
+admission aging makes them fail. Duplicate unit demands, cross-worker
+cycles and cancellation during discovery need the compiler's jobs and
+remain for the stage A pellets.
 
 ## Source discovery and readiness
 
