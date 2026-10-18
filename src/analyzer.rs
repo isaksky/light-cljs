@@ -2879,7 +2879,18 @@ pub(crate) struct NamespaceResolution {
     pub source_name: Option<String>,
 }
 
-type DiagnosticArities = HashMap<GlobalId, Vec<(usize, bool)>>;
+pub(crate) type DiagnosticArities = HashMap<GlobalId, Vec<(usize, bool)>>;
+
+/// The arities the definitions among `program`'s expressions from `from` on
+/// declare, added to `arities`: what an analysis of a form against `program`
+/// would find there.
+pub(crate) fn extend_declared_arities(
+    program: &Program,
+    from: usize,
+    arities: &mut DiagnosticArities,
+) {
+    extend_arities(program, from, arities);
+}
 
 /// Add the arities the definitions among `program.exprs[from..]` declare:
 /// each `fn` a `def` binds, and each type constructor's field count.
@@ -2989,6 +3000,9 @@ struct Analyzer<'a> {
     /// How many of the shared globals seen so far are this namespace's own:
     /// the count up to a position, for macro environments.
     namespace_globals: (usize, crate::arena::Arena<GlobalId>),
+    /// In an interactive session, the namespaces its forms address as if
+    /// this namespace required them.
+    session_namespaces: SessionNamespaces,
     /// What the last macro environment built names for the session, recorded
     /// once an expansion has used it.
     pending_reader_registration: Option<crate::macro_host::ReaderRegistration>,
@@ -3213,6 +3227,7 @@ pub(crate) fn analyze_deferred_form(
             snapshot: Some(snapshot),
             engine,
             previous: None,
+            indexes: None,
         },
     )?;
     Ok((program, warnings))
@@ -3225,6 +3240,49 @@ pub(crate) struct NamespaceAnalysisView<'a> {
     pub resolution: NamespaceResolution,
 }
 
+/// The namespaces an interactive session has entered or defined in, which its
+/// forms address as if their namespace required them: the first `len` of an
+/// index that only grows, so that a copy taken for a deferred unit keeps its
+/// definition-time view without copying the names.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SessionNamespaces {
+    index: std::sync::Arc<std::sync::RwLock<HashMap<String, usize>>>,
+    len: usize,
+}
+
+impl SessionNamespaces {
+    pub(crate) fn contains(&self, namespace: &str) -> bool {
+        self.index
+            .read()
+            .expect("session namespaces")
+            .get(namespace)
+            .is_some_and(|&position| position < self.len)
+    }
+    /// Add `namespace`, which copies taken before do not see.
+    pub(crate) fn insert(&mut self, namespace: &str) {
+        let mut index = self.index.write().expect("session namespaces");
+        if !index.contains_key(namespace) {
+            let position = index.len();
+            index.insert(namespace.to_owned(), position);
+        }
+        self.len = index.len();
+    }
+}
+
+/// What an interactive session keeps beside its retained program and hands
+/// each form's analysis, so that no analysis rebuilds them from the whole
+/// program: its global names, the globals of the form's namespace in ID
+/// order, and its namespaces.
+pub(crate) struct InteractiveIndexes<'a> {
+    pub names: &'a crate::name_index::NameIndex,
+    pub namespace_globals: &'a crate::arena::Arena<GlobalId>,
+    pub namespaces: &'a SessionNamespaces,
+    /// The arities the retained program's definitions declare.
+    pub arities: &'a DiagnosticArities,
+    /// The retained program's namespaces, by name, with their positions.
+    pub namespace_positions: &'a HashMap<String, usize>,
+}
+
 #[derive(Default)]
 struct AnalysisInputState<'a> {
     owned_form: Option<&'a Form>,
@@ -3232,6 +3290,7 @@ struct AnalysisInputState<'a> {
     snapshot: Option<&'a crate::compilation_session::DefinitionSnapshot>,
     engine: Option<&'a dyn crate::evaluator::MacroEvaluator>,
     previous: Option<&'a Program>,
+    indexes: Option<InteractiveIndexes<'a>>,
 }
 
 fn analyze_input(
@@ -3248,6 +3307,7 @@ fn analyze_input(
         snapshot,
         engine,
         previous,
+        indexes,
     } = state;
     if definition_view.is_none() && previous.is_none() {
         macro_host.begin_compilation();
@@ -3272,6 +3332,12 @@ fn analyze_input(
         requires: &[],
         resolution: NamespaceResolution::default(),
     });
+    // Whether the program analyzed from has the namespace, from the
+    // session's index when there is one.
+    let known_namespace = indexes
+        .as_ref()
+        .filter(|_| previous.is_some())
+        .map(|indexes| indexes.namespace_positions.contains_key(namespace));
     let mut analyzer = Analyzer {
         source,
         syntax,
@@ -3312,26 +3378,41 @@ fn analyze_input(
         record_fields: HashMap::new(),
         reader_view: None,
         namespace_globals: snapshot.map_or_else(Default::default, |s| s.namespace_globals.clone()),
+        session_namespaces: Default::default(),
         pending_reader_registration: None,
     };
+    let mut interactive_arities = None;
+    if let Some(indexes) = &indexes {
+        analyzer.session_namespaces = indexes.namespaces.clone();
+    }
     if let Some(previous) = previous {
         analyzer.program = previous.clone();
-        analyzer.globals = previous
-            .globals
-            .iter()
-            .enumerate()
-            .map(|(i, g)| ((g.namespace.clone(), g.name.clone()), GlobalId(i)))
-            .collect();
+        if let Some(indexes) = indexes {
+            interactive_arities = Some(indexes.arities.clone());
+            analyzer.globals = indexes.names.clone();
+            analyzer.namespace_globals =
+                (previous.globals.len(), indexes.namespace_globals.clone());
+        } else {
+            analyzer.globals = previous
+                .globals
+                .iter()
+                .enumerate()
+                .map(|(i, g)| ((g.namespace.clone(), g.name.clone()), GlobalId(i)))
+                .collect();
+        }
     }
     if let Some(snapshot) = snapshot {
         analyzer.program = snapshot.resolution_program.clone();
         analyzer.globals = snapshot.global_names.clone();
         analyzer.source_index = snapshot.source_index;
         analyzer.definition_name = snapshot.definition_name.clone();
+        analyzer.session_namespaces = snapshot.session_namespaces.clone();
     }
     analyzer.first_expr = analyzer.program.exprs.len();
     analyzer.deferred_unit = snapshot.is_some();
-    if !analyzer.program.namespaces.iter().any(|ns| ns == namespace) {
+    if !known_namespace
+        .unwrap_or_else(|| analyzer.program.namespaces.iter().any(|ns| ns == namespace))
+    {
         analyzer.program.namespaces.push(namespace.into());
     }
     let reader_context = RuntimeReaderNamespace {
@@ -3427,8 +3508,13 @@ fn analyze_input(
     analyzer.drained_before_failure(read)?;
     analyzer.drain_deferred()?;
     analyzer.refresh_reader_macros_after_drain();
-    analyzer.collect_expression_warnings(None);
+    // An interactive form's analysis starts from the retained program's
+    // arities instead of finding them in its expressions again.
+    analyzer.collect_expression_warnings(interactive_arities.as_mut());
+    // A session's form leaves its compilation's uses unreported: they are
+    // the whole session's, which no form's program needs.
     if snapshot.is_none()
+        && previous.is_none()
         && let Some(session) = analyzer.macro_host.session_handle()
     {
         analyzer.program.compilation_uses = session.compilation_uses();
@@ -3628,6 +3714,7 @@ impl NamespaceAnalysis {
             record_fields: HashMap::new(),
             reader_view: None,
             namespace_globals: Default::default(),
+            session_namespaces: Default::default(),
             pending_reader_registration: None,
         };
         analyzer.first_expr = analyzer.program.exprs.len();
@@ -5388,7 +5475,7 @@ impl Analyzer<'_> {
                 .aliases
                 .iter()
                 .any(|(alias, target)| alias == class || target == class)
-            && !self.requires.iter().any(|ns| ns == class)
+            && !self.required(class)
         {
             let class = self.resolve(id, class)?;
             let class = self.push(
@@ -5445,7 +5532,7 @@ impl Analyzer<'_> {
                 .aliases
                 .iter()
                 .any(|(alias, target)| alias == class || target == class)
-            && !self.requires.iter().any(|ns| ns == class)
+            && !self.required(class)
             && (self.lookup(class).is_some()
                 || self
                     .resolution
@@ -5483,7 +5570,7 @@ impl Analyzer<'_> {
                     });
             }
             if namespace != self.namespace
-                && !self.requires.iter().any(|required| required == namespace)
+                && !self.required(namespace)
                 // A namespace the program has already loaded resolves too, as
                 // upstream resolves it: macro expansions name the macro
                 // namespace's own dependencies, which load before their callers.
@@ -5656,6 +5743,7 @@ impl Analyzer<'_> {
                             .rev()
                             .find(|(candidate, _)| candidate == alias)
                             .map(|(_, target)| target)
+                            .or_else(|| self.session_alias(alias))
                             .ok_or_else(|| {
                                 self.error(
                                     id,
@@ -6364,6 +6452,7 @@ impl Analyzer<'_> {
             resolution_program,
             global_names: self.globals.clone(),
             namespace_globals: self.namespace_globals.clone(),
+            session_namespaces: self.session_namespaces.clone(),
             options: self.options,
             unchecked_arrays: self.unchecked_arrays,
             source_index: self.source_index,
@@ -6973,7 +7062,7 @@ impl Analyzer<'_> {
                     // both a truth test and a property read. Both unresolved
                     // host-namespace references deliver analyzer warnings.
                     for _ in 0..2 {
-                        if namespace != self.namespace && !self.requires.contains(&namespace) {
+                        if namespace != self.namespace && !self.required(&namespace) {
                             let path = namespace.replace('.', "/").replace('-', "_");
                             self.warn(args[0], "undeclared-ns", format!("No such namespace: {namespace}, could not locate {path}.cljs, {path}.cljc, or JavaScript source providing \"{namespace}\""));
                         }
@@ -9772,6 +9861,21 @@ impl Analyzer<'_> {
         Ok(environment)
     }
 
+    /// Whether `namespace` is one this namespace requires, or, in an
+    /// interactive session, another one the session has entered or defined
+    /// in, which its forms address as if required.
+    fn required(&self, namespace: &str) -> bool {
+        self.requires.iter().any(|required| required == namespace)
+            || (namespace != self.namespace && self.session_namespaces.contains(namespace))
+    }
+
+    /// The namespace `alias` names as a session namespace's own name, where
+    /// no alias or require names it: see [`Self::required`].
+    fn session_alias(&self, alias: &str) -> Option<String> {
+        (alias != self.namespace && self.session_namespaces.contains(alias))
+            .then(|| alias.to_owned())
+    }
+
     /// Snapshots preserve these namespace member IDs, so a new deferred analyzer only
     /// examines declarations added after its definition-time view.
     fn count_namespace_globals(&mut self, shared: usize) -> usize {
@@ -9886,10 +9990,12 @@ impl Analyzer<'_> {
                 )
                 .map(|g| (g.name.clone(), g.namespace.clone(), g.name.clone())),
         );
-        bindings.extend(self.macro_host.javascript_macros.keys().filter_map(|key| {
-            let (namespace, name) = key.split_once('/')?;
-            (namespace == self.namespace).then(|| (name.into(), namespace.into(), name.into()))
-        }));
+        bindings.extend(
+            self.macro_host
+                .source_macro_names(self.namespace)
+                .into_iter()
+                .map(|name| (name.clone(), self.namespace.into(), name)),
+        );
         bindings
     }
 
@@ -9967,6 +10073,7 @@ impl Analyzer<'_> {
                 .iter()
                 .map(|(a, n)| (Name::new(None, a), Name::new(None, n)))
                 .collect();
+            view.session_namespaces = Some(self.session_namespaces.clone());
             view.refers = globals
                 .iter()
                 .map(|(a, n, v)| (Name::new(None, a), Name::new(Some(n), v)))
@@ -11317,6 +11424,7 @@ pub(crate) fn analyze_interactive_form(
     form: &Form,
     host: &mut MacroHost,
     previous: Option<&Program>,
+    indexes: InteractiveIndexes<'_>,
     definition_view: NamespaceAnalysisView<'_>,
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
@@ -11334,6 +11442,7 @@ pub(crate) fn analyze_interactive_form(
             owned_form: Some(form),
             definition_view: Some(definition_view),
             previous,
+            indexes: Some(indexes),
             ..Default::default()
         },
     )

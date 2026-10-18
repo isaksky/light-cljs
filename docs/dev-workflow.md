@@ -636,6 +636,27 @@ of examples/dev, then the script of a heap-less `require` of an edited
 `app.view` (units with their `sourceURL`) between the hooks, printed
 `start`, `clicks: [1]`, `reloading`, `render: clicks: [2]`.
 
+As built (light-cljs-348): a form's analysis, unit and registration cost
+what the form adds, not what the session retains, so loading a program
+form by form grows linearly with it
+([benchmarks](../benchmarks/compiler-cache.md#session-load-light-cljs-348-october-18-2026)).
+The form is analyzed against the retained program without copying it (its
+tables are frozen and shared), and the retained program grows by what the
+form's new or changed metadata reaches
+(`program_fragment::extend_interactive_snapshot`), compacting once what no
+metadata reaches is half of it. `InteractiveCompiler` keeps, beside it, the
+global-name index, each namespace's globals in ID order, the session's
+namespaces, the declared arities and the namespaces touched since the last
+recorded registration, each extended by the form's new globals; syntax
+quotes qualify through those indexes, the unit names functions and lists a
+registered namespace's definitions from them, and the session registers only
+touched namespaces. The session's namespaces stay addressable by name from
+every form, for resolution, `undeclared-ns` and `::ns/kw`, through that set
+rather than as requires. So `&env`'s `:ns` `:requires`, and the aliases a
+macro's own reads resolve, are the namespace's own, as under `--compile`,
+where they were every namespace the session had entered: the one change a
+macro can see.
+
 ### Phase 2: watch
 
 Scope: `--watch` of "The watch loop", writing files, no server.

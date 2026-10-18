@@ -230,11 +230,11 @@ impl DeferredUnit {
                 mapped: false,
                 application: None,
                 direct: None,
-                function_names: &[],
+                function_names: None,
             },
             true,
         );
-        let source = emitter.registration(None, false, |_| true);
+        let source = emitter.registration(None, false, |_| true, None);
         (
             NamespaceRegistration {
                 source,
@@ -332,7 +332,19 @@ struct Interactive<'a> {
     /// The text before and after the unit function, such as the `define`
     /// call of a dev build unit.
     around: [&'a str; 2],
+    /// For a session's form, the first of its own expressions: the ones
+    /// before are those the session retains ([`FunctionNames`]).
+    first_expr: usize,
+    /// For a session's form, the program's globals of each namespace in ID
+    /// order, which the registration lists without visiting every global.
+    namespace_globals: Option<&'a NamespaceGlobals>,
+    /// For a session's form, the program's namespaces by name, with their
+    /// positions, through which the registration finds the registered ones.
+    namespace_positions: Option<&'a HashMap<String, usize>>,
 }
+
+/// The globals of each namespace of a program, in ID order.
+pub(crate) type NamespaceGlobals = HashMap<String, crate::arena::Arena<GlobalId>>;
 
 /// `application` carries the decisions of application preparation, including
 /// whether to read a runtime slice directly (`Advanced`). The returned runtime
@@ -355,6 +367,8 @@ fn emit_js_mode(
     let entry = interactive.and_then(|interactive| interactive.entry);
     let root = entry.unwrap_or(program.root);
     let registered = interactive.and_then(|interactive| interactive.registered);
+    let namespace_globals = interactive.and_then(|interactive| interactive.namespace_globals);
+    let namespace_positions = interactive.and_then(|interactive| interactive.namespace_positions);
     let direct = application
         .and_then(|application| application.direct)
         .filter(|_| shared.is_none());
@@ -362,11 +376,12 @@ fn emit_js_mode(
         .and_then(|application| application.shapes)
         .filter(|_| direct.is_some());
     let terse = direct.is_some() && application.is_some_and(|application| application.terse);
-    let function_names = if mapped {
-        function_names(program)
-    } else {
-        Vec::new()
-    };
+    let function_names = mapped.then(|| {
+        FunctionNames::new(
+            program,
+            interactive.map_or(0, |interactive| interactive.first_expr),
+        )
+    });
     // The prelude, the `let g<n>;` declarations and the program body.
     let body = |register_namespaces: bool, brand_types: bool| {
         let mut emitter = Emitter::new(
@@ -378,7 +393,7 @@ fn emit_js_mode(
                 mapped,
                 application,
                 direct,
-                function_names: &function_names,
+                function_names: function_names.as_ref(),
             },
             register_namespaces,
         );
@@ -498,7 +513,12 @@ fn emit_js_mode(
         let registration = if detached_registration.as_ref().is_some_and(|r| r.deferred) {
             String::new()
         } else {
-            emitter.registration(registered, shared.is_none(), retained)
+            emitter.registration(
+                registered,
+                shared.is_none(),
+                retained,
+                namespace_globals.zip(namespace_positions),
+            )
         };
         // Marks of the runtime text, by offset in `runtime`.
         let mut runtime_marks = Marks::default();
@@ -725,46 +745,107 @@ fn helpers(host: bool, package: bool) -> String {
 
 /// The names that source maps give the functions of `program`, by `fn`
 /// expression (`ExprId`): its own name, else the definition or local it
-/// initializes (through `do` and metadata).
-fn function_names(program: &Program) -> Vec<Option<&str>> {
-    let mut names = vec![None; program.exprs.len()];
-    let function = |mut id: ExprId| loop {
-        match &program.exprs[id.0].kind {
-            ExprKind::Do(items) if !items.is_empty() => id = *items.last().unwrap(),
-            ExprKind::WithMeta { value, .. } => id = *value,
-            ExprKind::Fn { name: None, .. } => break Some(id),
-            _ => break None,
-        }
-    };
-    for (index, expr) in program.exprs.iter().enumerate() {
-        match &expr.kind {
-            ExprKind::Fn {
-                name: Some(local), ..
-            } => {
-                names[index] = Some(program.locals[local.0].name.as_str());
+/// initializes (through `do` and metadata). Those of the expressions from
+/// `from` on are found when the names are made; those of the ones before,
+/// which an interactive form's program retains from earlier forms and its
+/// unit seldom emits, only when one is asked for, so that a unit's cost does
+/// not grow with what the session retains.
+struct FunctionNames<'a> {
+    program: &'a Program,
+    from: usize,
+    /// By ID from `from`.
+    names: Vec<Option<&'a str>>,
+    /// What the expressions from `from` on name before it, in order, and
+    /// whether each replaces a name found earlier.
+    earlier: Vec<(usize, &'a str, bool)>,
+    before: std::cell::OnceCell<Vec<Option<&'a str>>>,
+}
+
+impl<'a> FunctionNames<'a> {
+    fn new(program: &'a Program, from: usize) -> Self {
+        let mut names = Self {
+            program,
+            from,
+            names: vec![None; program.exprs.len().saturating_sub(from)],
+            earlier: Vec::new(),
+            before: Default::default(),
+        };
+        let mut found = std::mem::take(&mut names.names);
+        let mut earlier = Vec::new();
+        names.scan(from..program.exprs.len(), |id, name, replace| {
+            if id < from {
+                earlier.push((id, name, replace));
+            } else if replace {
+                found[id - from] = Some(name);
+            } else {
+                found[id - from].get_or_insert(name);
             }
-            ExprKind::Def {
-                global,
-                init: Some(init),
-                ..
-            } => {
-                if let Some(id) = function(*init) {
-                    names[id.0] = Some(program.globals[global.0].name.as_str());
-                }
+        });
+        names.names = found;
+        names.earlier = earlier;
+        names
+    }
+    /// Each name the expressions in `range` give, in their order: the
+    /// function's ID and whether it replaces a name found earlier.
+    fn scan(&self, range: std::ops::Range<usize>, mut name: impl FnMut(usize, &'a str, bool)) {
+        let program = self.program;
+        let function = |mut id: ExprId| loop {
+            match &program.exprs[id.0].kind {
+                ExprKind::Do(items) if !items.is_empty() => id = *items.last().unwrap(),
+                ExprKind::WithMeta { value, .. } => id = *value,
+                ExprKind::Fn { name: None, .. } => break Some(id),
+                _ => break None,
             }
-            ExprKind::Let { bindings, .. }
-            | ExprKind::LetFn { bindings, .. }
-            | ExprKind::Loop { bindings, .. } => {
-                for (local, init) in bindings {
+        };
+        for (index, expr) in range.clone().zip(program.exprs.range(range)) {
+            match &expr.kind {
+                ExprKind::Fn {
+                    name: Some(local), ..
+                } => name(index, program.locals[local.0].name.as_str(), true),
+                ExprKind::Def {
+                    global,
+                    init: Some(init),
+                    ..
+                } => {
                     if let Some(id) = function(*init) {
-                        names[id.0].get_or_insert(program.locals[local.0].name.as_str());
+                        name(id.0, program.globals[global.0].name.as_str(), true);
                     }
                 }
+                ExprKind::Let { bindings, .. }
+                | ExprKind::LetFn { bindings, .. }
+                | ExprKind::Loop { bindings, .. } => {
+                    for (local, init) in bindings {
+                        if let Some(id) = function(*init) {
+                            name(id.0, program.locals[local.0].name.as_str(), false);
+                        }
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
-    names
+    fn get(&self, id: usize) -> Option<&'a str> {
+        if id >= self.from {
+            return self.names.get(id - self.from).copied().flatten();
+        }
+        self.before.get_or_init(|| {
+            let mut names = vec![None; self.from];
+            let mut write = |id: usize, name, replace| {
+                if let Some(slot) = names.get_mut(id) {
+                    if replace {
+                        *slot = Some(name);
+                    } else {
+                        slot.get_or_insert(name);
+                    }
+                }
+            };
+            self.scan(0..self.from, &mut write);
+            for &(id, name, replace) in &self.earlier {
+                write(id, name, replace);
+            }
+            names
+        })[id]
+    }
 }
 
 /// The source name of a compiler name the emitter writes for a local
@@ -1459,8 +1540,8 @@ struct Emitter<'a> {
     /// With a source map: the marks of the constant table, by offset in
     /// its declarations.
     constant_marks: Vec<Mark>,
-    /// With a source map: the names of functions ([`function_names`]).
-    function_names: &'a [Option<&'a str>],
+    /// With a source map: the names of functions ([`FunctionNames`]).
+    function_names: Option<&'a FunctionNames<'a>>,
     /// In a chunked build, the chunk being written and what the chunks
     /// share ([`chunked`]).
     chunks: Option<chunked::Chunks<'a>>,
@@ -1475,7 +1556,7 @@ struct Setup<'a> {
     mapped: bool,
     application: Option<Application<'a>>,
     direct: Option<&'a [&'static str]>,
-    function_names: &'a [Option<&'a str>],
+    function_names: Option<&'a FunctionNames<'a>>,
 }
 
 impl<'a> Emitter<'a> {
@@ -1617,7 +1698,9 @@ impl<'a> Emitter<'a> {
         registered: Option<&[&str]>,
         current: bool,
         retained: impl Fn(usize) -> bool,
+        indexes: Option<(&NamespaceGlobals, &HashMap<String, usize>)>,
     ) -> String {
+        let namespace_globals = indexes.map(|(globals, _)| globals);
         let program = self.program;
         let mut registration = String::new();
         let register_namespaces = self.register_namespaces;
@@ -1632,7 +1715,25 @@ impl<'a> Emitter<'a> {
         // Group once in global ID order. Looking through every global for
         // every namespace repeats the complete catalog scan in each unit.
         let mut bindings: HashMap<&str, Vec<&str>> = HashMap::new();
-        if register_namespaces {
+        if let (true, Some(registered), Some(index)) =
+            (register_namespaces, registered, namespace_globals)
+        {
+            // Only the registered namespaces' globals, from the index.
+            for namespace in registered {
+                if bindings.contains_key(*namespace) {
+                    continue;
+                }
+                for id in index.get(*namespace).into_iter().flatten() {
+                    if retained(id.0) {
+                        let global = &program.globals[id.0];
+                        bindings
+                            .entry(&global.namespace)
+                            .or_default()
+                            .push(&global.name);
+                    }
+                }
+            }
+        } else if register_namespaces {
             for (id, global) in program.globals.iter().enumerate() {
                 if retained(id) {
                     bindings
@@ -1642,10 +1743,33 @@ impl<'a> Emitter<'a> {
                 }
             }
         }
-        for namespace in program.namespaces.iter().filter(|namespace| {
-            register_namespaces
-                && registered.is_none_or(|registered| registered.contains(&namespace.as_str()))
-        }) {
+        // The registered namespaces in the program's order: from the
+        // positions when a session's unit has them, so that a unit visits
+        // only those.
+        let selected: Vec<&String> = match (indexes, registered) {
+            (Some((_, positions)), Some(registered)) if register_namespaces => {
+                let mut found = registered
+                    .iter()
+                    .filter_map(|namespace| positions.get(*namespace).map(|p| (*p, *namespace)))
+                    .collect::<Vec<_>>();
+                found.sort_unstable();
+                found.dedup();
+                found
+                    .into_iter()
+                    .map(|(position, _)| &program.namespaces[position])
+                    .collect()
+            }
+            _ => program
+                .namespaces
+                .iter()
+                .filter(|namespace| {
+                    register_namespaces
+                        && registered
+                            .is_none_or(|registered| registered.contains(&namespace.as_str()))
+                })
+                .collect(),
+        };
+        for namespace in selected {
             let registration_start = registration.len();
             let previous = std::mem::take(&mut self.output);
             self.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
@@ -3434,13 +3558,13 @@ impl<'a> Emitter<'a> {
 
     /// With a source map, the `function` keyword about to be written starts
     /// the function of the current `fn` expression, which source maps name
-    /// ([`function_names`]): a stack trace names a frame by its function's
+    /// ([`FunctionNames`]): a stack trace names a frame by its function's
     /// first token.
     fn function_mark(&mut self) {
         let (Some(marks), Some(site)) = (&mut self.marks, self.site) else {
             return;
         };
-        if let Some(name) = self.function_names[site.0] {
+        if let Some(name) = self.function_names.and_then(|names| names.get(site.0)) {
             let expr = &self.program.exprs[site.0];
             let origin = (!expr.span.is_empty()).then_some((expr.source_index, expr.span.start));
             marks.named(self.output.len(), origin, name);
@@ -6252,17 +6376,29 @@ fn hygienic_js(
 /// macro heap. The unit registers every namespace of the program.
 #[cfg(test)]
 pub(crate) fn emit_interactive_unit(program: &Program) -> String {
-    emit_interactive(program, None, false).0
+    emit_interactive(program, None, false, 0, None).0
 }
 
 /// The interactive unit of a session's form, which registers the namespaces
 /// `registered` of the program, with the source map of its text, whose
 /// source index 0 is the source the program's form was read from.
+///
+/// The program's expressions before `first_expr` are those the session
+/// retains, and `namespace_globals` indexes its globals.
 pub(crate) fn emit_mapped_interactive_unit(
     program: &Program,
     registered: &[&str],
+    first_expr: usize,
+    namespace_globals: &NamespaceGlobals,
+    namespace_positions: &HashMap<String, usize>,
 ) -> (String, SourceMapping) {
-    let (unit, mapping) = emit_interactive(program, Some(registered), true);
+    let (unit, mapping) = emit_interactive(
+        program,
+        Some(registered),
+        true,
+        first_expr,
+        Some((namespace_globals, namespace_positions)),
+    );
     (unit, mapping.expect("a mapped emission has a source map"))
 }
 
@@ -6270,11 +6406,16 @@ fn emit_interactive(
     program: &Program,
     registered: Option<&[&str]>,
     mapped: bool,
+    first_expr: usize,
+    indexes: Option<(&NamespaceGlobals, &HashMap<String, usize>)>,
 ) -> (String, Option<SourceMapping>) {
     let interactive = Interactive {
         entry: None,
         registered,
         around: ["", ""],
+        first_expr,
+        namespace_globals: indexes.map(|(globals, _)| globals),
+        namespace_positions: indexes.map(|(_, positions)| positions),
     };
     let (unit, _, mapping) = emit_js_mode(
         program,
@@ -6304,6 +6445,9 @@ pub(crate) fn emit_namespace_unit(
         entry: Some(entry),
         registered: (!every_namespace).then_some(&own[..]),
         around: [before, after],
+        first_expr: 0,
+        namespace_globals: None,
+        namespace_positions: None,
     };
     let (unit, _, mapping) = emit_js_mode(
         program,
@@ -6335,11 +6479,11 @@ pub(crate) fn emit_namespace_registration(
             mapped: false,
             application: None,
             direct: None,
-            function_names: &[],
+            function_names: None,
         },
         true,
     );
-    emitter.registration(registered, false, |_| true)
+    emitter.registration(registered, false, |_| true, None)
 }
 
 /// A readable JavaScript string literal; non-ASCII and controls are escaped.

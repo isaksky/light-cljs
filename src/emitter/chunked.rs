@@ -521,7 +521,7 @@ pub(crate) fn emit_chunked(
         mapped: false,
         application: Some(application),
         direct,
-        function_names: &[],
+        function_names: None,
     };
     // As in the single file, `Advanced` output registers its namespaces only
     // when the forms of all chunks reach reflection.
@@ -583,7 +583,7 @@ pub(crate) fn emit_chunked(
             chunks.write_startup();
         }
         let retained = |global: usize| !slice || application.globals[global];
-        emitter.registration(None, true, retained)
+        emitter.registration(None, true, retained, None)
     } else {
         String::new()
     };

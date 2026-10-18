@@ -330,7 +330,13 @@ impl Lowerer<'_> {
     fn reader_namespace(&self, alias: Option<&Name>) -> Option<Name> {
         match alias {
             None => Some(self.view.namespace.clone()),
-            Some(a) => self.view.aliases.get(a).cloned(),
+            Some(a) => self.view.aliases.get(a).cloned().or_else(|| {
+                // An interactive session's namespaces are addressable by
+                // their own names, as if required.
+                let session = self.view.session_namespaces.as_ref()?;
+                (a != &self.view.namespace && session.contains(&String::from_utf16_lossy(a.name())))
+                    .then(|| a.clone())
+            }),
         }
     }
     fn syntax_quote_name(&self, name: &Name) -> Name {
@@ -1447,6 +1453,9 @@ pub struct ResolvedBinding {
 pub struct NamespaceView {
     pub namespace: Name,
     pub aliases: HashMap<Name, Name>,
+    /// In an interactive session, its namespaces, which resolve as aliases
+    /// of themselves after `aliases`.
+    pub(crate) session_namespaces: Option<crate::analyzer::SessionNamespaces>,
     pub refers: HashMap<Name, Name>,
     pub excludes: HashSet<Name>,
     pub bindings: HashMap<Name, ResolvedBinding>,
@@ -1468,6 +1477,7 @@ impl NamespaceView {
         Self {
             namespace: Name::new(None, namespace),
             aliases: HashMap::new(),
+            session_namespaces: None,
             refers: HashMap::new(),
             excludes: HashSet::new(),
             bindings: HashMap::new(),

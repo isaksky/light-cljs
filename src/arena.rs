@@ -250,10 +250,39 @@ impl<T> Arena<T> {
                 .all(|(a, b)| Arc::ptr_eq(a, b))
     }
 
+    /// The largest frozen subtree that starts at `id`, holds at most `max`
+    /// entries and ends by `end`, or else the leaf holding `id`, with where
+    /// it starts; `None` for an ID in the tail.
+    fn subtree(&self, id: usize, max: usize, end: usize) -> Option<(usize, &Chunk<T>)> {
+        if id >= self.frozen {
+            return None;
+        }
+        let (chunk, _) = self.chunk(id);
+        let mut start = self.starts[chunk];
+        let mut node: &Chunk<T> = &self.chunks[chunk];
+        loop {
+            if start == id && node.len() <= max && start + node.len() <= end {
+                return Some((start, node));
+            }
+            match node {
+                Chunk::Leaf(_) => return Some((start, node)),
+                Chunk::Branch { left, right, .. } => {
+                    if id < start + left.len() {
+                        node = left;
+                    } else {
+                        start += left.len();
+                        node = right;
+                    }
+                }
+            }
+        }
+    }
+
     /// The IDs below `len` whose entries differ from `before`'s, a table
-    /// this one was cloned from. Leaves the two still share are skipped
-    /// without comparing their entries: only leaves a write copied, and the
-    /// tail, are compared.
+    /// this one was cloned from. Subtrees the two still share are skipped
+    /// without comparing their entries, at the largest size they share: only
+    /// the paths a write copied, and the tail, are compared, so the cost
+    /// follows the changes, not the table's size.
     pub fn changed_entries(&self, before: &Self, len: usize) -> Vec<usize>
     where
         T: PartialEq,
@@ -261,7 +290,23 @@ impl<T> Arena<T> {
         let len = len.min(self.len()).min(before.len());
         let mut changed = Vec::new();
         let mut id = 0;
+        let mut max = usize::MAX;
         while id < len {
+            if let (Some((start, old)), Some((current_start, current))) =
+                (before.subtree(id, max, len), self.subtree(id, max, len))
+            {
+                if start == current_start && std::ptr::eq(old, current) {
+                    id = (start + old.len()).min(len);
+                    max = usize::MAX;
+                    continue;
+                }
+                // Look for shared subtrees below the larger of the two.
+                if matches!(old, Chunk::Branch { .. }) || matches!(current, Chunk::Branch { .. }) {
+                    max = old.len().min(current.len()).saturating_sub(1);
+                    continue;
+                }
+            }
+            max = usize::MAX;
             let (start, leaf) = before.leaf(id);
             let (current_start, current) = self.leaf(id);
             if start == current_start
@@ -610,6 +655,31 @@ mod tests {
         copied.unfreeze();
         copied[10] = 1;
         assert_eq!(copied.changed_entries(&before, 1000), [3, 10, 999]);
+    }
+
+    #[test]
+    fn changed_entries_skip_shared_subtrees_across_merges() {
+        // Versions frozen in many steps, merged into trees of several
+        // depths, then written: the answer is the entry-by-entry one.
+        let mut arena: Arena<usize> = Arena::new();
+        for step in 0..40 {
+            arena.extend((0..(step * 37 % 300 + 1)).map(|i| step * 1000 + i));
+            arena.freeze();
+        }
+        let before = arena.clone();
+        let len = before.len();
+        arena.extend(0..500);
+        arena.freeze();
+        for id in [0, 1, 63, 64, 65, len / 3, len / 2, len - 2] {
+            arena[id] = usize::MAX;
+        }
+        arena[len / 2] = before[len / 2];
+        let naive = (0..len)
+            .filter(|&id| arena[id] != before[id])
+            .collect::<Vec<_>>();
+        assert_eq!(arena.changed_entries(&before, len), naive);
+        assert_eq!(arena.changed_entries(&before, len / 3), naive[..5]);
+        assert!(before.changed_entries(&before.clone(), len).is_empty());
     }
 
     #[test]

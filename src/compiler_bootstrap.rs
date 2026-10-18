@@ -625,7 +625,7 @@ impl MacroHost {
                 unit
             ))
             .map_err(|e| e.to_string())?;
-        self.javascript_macros.insert(
+        self.insert_javascript_macro(
             format!("{namespace}/{name}"),
             CompiledMacro {
                 function: MacroFunction::Ready(function),

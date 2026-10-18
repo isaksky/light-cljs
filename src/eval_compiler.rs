@@ -23,6 +23,26 @@ pub(crate) struct InteractiveCompiler {
     pub(crate) policy: NamePolicy,
     exposed: std::collections::HashSet<Name>,
     contexts: std::collections::HashMap<String, NamespaceContext>,
+    /// Indexes of the retained program's first `indexed` globals, which
+    /// grow with each form's new globals: their names, each namespace's
+    /// globals in ID order, and, with the namespaces entered before, the
+    /// session's namespaces, which its forms address as if required.
+    names: crate::name_index::NameIndex,
+    namespace_globals: crate::emitter::NamespaceGlobals,
+    /// The retained program's namespaces, by name.
+    program_namespaces: std::collections::HashMap<String, usize>,
+    indexed_namespaces: usize,
+    /// The namespaces whose registration may have changed since the last
+    /// [`Self::clear_touched`]: those a form was analyzed in or defined in
+    /// ([`crate::dev_session`]).
+    touched: std::collections::HashSet<String>,
+    namespaces: crate::analyzer::SessionNamespaces,
+    indexed: usize,
+    /// The arities the retained program's definitions declare.
+    arities: crate::analyzer::DiagnosticArities,
+    /// How many retained expressions no metadata may reach any more, which
+    /// a full compaction drops once they are half of them.
+    released: usize,
     /// `light.build` serves the compiler for its whole life: every form it
     /// reads, analyzes or expands is compile time, with its current
     /// namespace as the expansion site ([`Self::build_site`]).
@@ -51,6 +71,15 @@ impl InteractiveCompiler {
             policy: NamePolicy::default(),
             exposed: Default::default(),
             contexts: Default::default(),
+            names: Default::default(),
+            namespace_globals: Default::default(),
+            program_namespaces: Default::default(),
+            indexed_namespaces: 0,
+            touched: Default::default(),
+            namespaces: Default::default(),
+            indexed: 0,
+            arities: Default::default(),
+            released: 0,
         }
     }
     pub(crate) fn namespace(&self) -> &str {
@@ -74,6 +103,7 @@ impl InteractiveCompiler {
         if self.namespace == namespace {
             return;
         }
+        self.namespaces.insert(&self.namespace);
         self.contexts.insert(
             self.namespace.clone(),
             (
@@ -164,8 +194,59 @@ impl InteractiveCompiler {
             && last.name == crate::analyzer::ENTRY_VALUE
         {
             retained.globals.truncate(retained.globals.len() - 1);
+            retained.globals.freeze();
         }
         self.program = Some(retained);
+        self.released = 0;
+        self.names = Default::default();
+        self.namespace_globals.clear();
+        self.program_namespaces.clear();
+        self.indexed_namespaces = 0;
+        self.indexed = 0;
+        self.index_globals();
+        self.arities.clear();
+        if let Some(program) = &self.program {
+            crate::analyzer::extend_declared_arities(program, 0, &mut self.arities);
+        }
+    }
+    /// Index the retained program's globals added since the last call.
+    fn index_globals(&mut self) {
+        let Some(program) = &self.program else {
+            return;
+        };
+        let added = self.indexed_namespaces..program.namespaces.len();
+        for (position, namespace) in added.clone().zip(program.namespaces.range(added)) {
+            self.program_namespaces
+                .entry(namespace.clone())
+                .or_insert(position);
+        }
+        self.indexed_namespaces = program.namespaces.len();
+        let added = self.indexed..program.globals.len();
+        let mut touched = std::collections::HashSet::new();
+        for (index, global) in added.clone().zip(program.globals.range(added)) {
+            let id = crate::analyzer::GlobalId(index);
+            self.names
+                .insert((global.namespace.clone(), global.name.clone()), id);
+            if !self.namespace_globals.contains_key(&global.namespace) {
+                self.namespace_globals
+                    .insert(global.namespace.clone(), Default::default());
+                self.namespaces.insert(&global.namespace);
+            }
+            self.namespace_globals
+                .get_mut(&global.namespace)
+                .expect("namespace")
+                .push(id);
+            touched.insert(&global.namespace);
+        }
+        self.touched
+            .extend(touched.iter().map(|namespace| (*namespace).clone()));
+        // Frozen, a namespace's table is shared by the analyses that copy it.
+        for namespace in touched {
+            if let Some(ids) = self.namespace_globals.get_mut(namespace) {
+                ids.freeze();
+            }
+        }
+        self.indexed = program.globals.len();
     }
     /// Whether the session has defined or declared `namespace/name`.
     pub(crate) fn defines(&self, namespace: &str, name: &str) -> bool {
@@ -300,65 +381,143 @@ impl InteractiveCompiler {
             for name in &self.resolution.excludes {
                 view.excludes.insert(Name::new(None, name));
             }
-            for (index, global) in self.globals().enumerate().filter(|(_, g)| g.declared) {
-                let qualified = Name::new(Some(&global.namespace), &global.name);
-                let binding = crate::compiler_reader::ResolvedBinding {
-                    id: crate::compiler_reader::BindingId(index),
-                    kind: crate::compiler_reader::BindingKind::Value,
-                    name: qualified.clone(),
-                };
-                view.bindings.insert(qualified.clone(), binding.clone());
-                if global.namespace == self.namespace {
-                    view.bindings
-                        .insert(Name::new(None, &global.name), binding.clone());
-                }
-                for (local, target) in &view.refers {
-                    if target == &qualified {
-                        view.bindings.insert(local.clone(), binding.clone());
-                    }
-                }
-                view.declaration_frontier = index + 1;
-            }
-            self.host.register_macro_view(&mut view);
+            let resolve = |name: &Name| self.resolve_binding(name, &view.refers);
             return self
                 .host
-                .lower_form_in_view(&source, &syntax, root, &view, &discards, None)
+                .lower_form_in_view(&source, &syntax, root, &view, &discards, Some(&resolve))
                 .map(Some);
         }
+    }
+    /// What a syntax quote in a form read in the current namespace qualifies
+    /// `name` as through the session's definitions and source macros, looked
+    /// up in the indexes rather than gathered from every global for each
+    /// form: a declared global or a macro of that qualified name stands for
+    /// itself, and an unqualified name is the current namespace's definition
+    /// or macro of that name, or what `refers` refers it to when that is a
+    /// definition or macro. As a view holding them all would, a macro takes
+    /// precedence over a definition, the last macro in name order over
+    /// another, and the later definition over an earlier one; `None` leaves
+    /// the name to the view's refers and aliases.
+    fn resolve_binding(
+        &self,
+        name: &Name,
+        refers: &std::collections::HashMap<Name, Name>,
+    ) -> Option<Name> {
+        let text = |units: &[u16]| String::from_utf16_lossy(units);
+        let macro_key = |name: &Name| {
+            let key = format!("{}/{}", text(name.namespace()?), text(name.name()));
+            self.host
+                .javascript_macros
+                .contains_key(&key)
+                .then_some(key)
+        };
+        let declared = |name: &Name| {
+            let key = (text(name.namespace()?), text(name.name()));
+            let id = *self.names.get(&key)?;
+            self.globals_at(id).filter(|g| g.declared).map(|_| id.0)
+        };
+        if name.namespace().is_some() {
+            return (macro_key(name).is_some() || declared(name).is_some()).then(|| name.clone());
+        }
+        let own = Name::new(Some(&self.namespace), &text(name.name()));
+        let referred = refers.get(name);
+        let candidates = || std::iter::once(&own).chain(referred);
+        if let Some((_, target)) = candidates()
+            .filter_map(|target| macro_key(target).map(|key| (key, target)))
+            .max_by(|a, b| a.0.cmp(&b.0))
+        {
+            return Some(target.clone());
+        }
+        candidates()
+            .filter_map(|target| declared(target).map(|id| (id, target)))
+            .max_by_key(|(id, _)| *id)
+            .map(|(_, target)| target.clone())
+    }
+    /// The retained program's globals of each namespace, in ID order.
+    pub(crate) fn namespace_globals(&self) -> &crate::emitter::NamespaceGlobals {
+        &self.namespace_globals
+    }
+    /// Whether the retained program has `namespace`.
+    pub(crate) fn has_namespace(&self, namespace: &str) -> bool {
+        self.program_namespaces.contains_key(namespace)
+    }
+    /// The retained program's namespaces, by name, with their positions.
+    pub(crate) fn namespace_positions(&self) -> &std::collections::HashMap<String, usize> {
+        &self.program_namespaces
+    }
+    /// The namespaces a form was analyzed in or defined in since the last
+    /// [`Self::clear_touched`], whose reader context or definitions may
+    /// have changed: those of the others have not.
+    pub(crate) fn touched(&self) -> &std::collections::HashSet<String> {
+        &self.touched
+    }
+    pub(crate) fn clear_touched(&mut self) {
+        self.touched.clear();
+    }
+    fn globals_at(&self, id: crate::analyzer::GlobalId) -> Option<&crate::GlobalBinding> {
+        self.program.as_ref()?.globals.get(id.0)
     }
     pub(crate) fn analyze_form(&mut self, form: &Form) -> Result<Program, AnalysisError> {
         self.build_site(form.span().source().name());
         self.host.name_policy = Some(self.policy.clone());
         let mut resolution = self.resolution.clone();
         resolution.source_name = Some(form.span().source().name().into());
-        // Previously entered namespaces remain addressable in an explicit session.
-        let mut requires = self.requires.clone();
-        for ns in self
-            .contexts
-            .keys()
-            .chain(self.globals().map(|g| &g.namespace))
-        {
-            if ns != &self.namespace && !requires.contains(ns) {
-                requires.push(ns.clone());
-            }
-        }
+        // Previously entered namespaces remain addressable in an explicit
+        // session, through the indexes rather than as requires.
+        let empty = crate::arena::Arena::new();
         let program = crate::analyzer::analyze_interactive_form(
             form,
             &mut self.host,
             self.program.as_ref(),
+            crate::analyzer::InteractiveIndexes {
+                names: &self.names,
+                namespace_globals: self
+                    .namespace_globals
+                    .get(&self.namespace)
+                    .unwrap_or(&empty),
+                namespaces: &self.namespaces,
+                arities: &self.arities,
+                namespace_positions: &self.program_namespaces,
+            },
             crate::analyzer::NamespaceAnalysisView {
                 namespace: &self.namespace,
                 aliases: &self.aliases,
-                requires: &requires,
+                requires: &self.requires,
                 resolution,
             },
             self.options,
             &mut self.warnings,
         )?;
         self.check_policy(&program, self.program.as_ref().map_or(0, |p| p.exprs.len()))?;
-        self.program = Some(crate::program_fragment::interactive_resolution_snapshot(
-            &program,
-        ));
+        // The arities of the retained expressions from `rescan` on are new.
+        let (retained, mut rescan) = match &self.program {
+            Some(previous) => {
+                let (retained, released, changed) =
+                    crate::program_fragment::extend_interactive_snapshot(previous, &program);
+                self.released += released;
+                (retained, (!changed).then_some(previous.exprs.len()))
+            }
+            None => (
+                crate::program_fragment::interactive_resolution_snapshot(&program),
+                None,
+            ),
+        };
+        // Compacting once what no metadata reaches is half of the retained
+        // expressions keeps the cost of extending linear overall.
+        let retained = if self.released * 2 > retained.exprs.len() {
+            self.released = 0;
+            rescan = None;
+            crate::program_fragment::interactive_resolution_snapshot(&retained)
+        } else {
+            retained
+        };
+        if rescan.is_none() {
+            self.arities.clear();
+        }
+        crate::analyzer::extend_declared_arities(&retained, rescan.unwrap_or(0), &mut self.arities);
+        self.program = Some(retained);
+        self.index_globals();
+        self.touched.insert(self.namespace.clone());
         Ok(program)
     }
     pub(crate) fn declare_binding(
@@ -583,20 +742,15 @@ impl InteractiveCompiler {
     > {
         let empty = crate::arena::Arena::new();
         let globals = self.program.as_ref().map_or(&empty, |p| &p.globals);
-        let namespace_globals = globals
-            .iter()
-            .enumerate()
-            .filter_map(|(index, global)| {
-                (global.namespace == self.namespace).then_some(crate::analyzer::GlobalId(index))
-            })
-            .collect();
+        let none = crate::arena::Arena::new();
+        let namespace_globals = self.namespace_globals.get(&self.namespace).unwrap_or(&none);
         self.host.reader_environment(
             environment,
             &self.namespace,
             &self.resolution,
             globals,
             globals.len(),
-            &namespace_globals,
+            namespace_globals,
         )
     }
     fn check_policy(&self, program: &Program, start: usize) -> Result<(), AnalysisError> {
@@ -1120,6 +1274,64 @@ mod tests {
         assert!(program.strings.len() < 2000, "{}", program.strings.len());
         assert!(program.locals.is_empty());
         assert_eq!(run(&mut compiler, &engine, "(f15 1)"), "16");
+    }
+    #[test]
+    fn retained_program_extends_and_compacts_replaced_metadata() {
+        let mut compiler = InteractiveCompiler::new();
+        let engine = crate::evaluator::Evaluator::new(Default::default()).unwrap();
+        run(&mut compiler, &engine, "(def ^{:doc \"first\"} x 0)");
+        let mut compacted = false;
+        for i in 0..64 {
+            // Each redefinition replaces `x`'s metadata, which the retained
+            // program keeps until a compaction drops it, once it is half of
+            // the retained expressions.
+            let source = format!(
+                "(def ^{{:doc \"doc {i}\" :tags [:a :b {i} {i} {i}]}} x {i}) (defn f{i} [] {i})"
+            );
+            let before = compiler.program.as_ref().unwrap().exprs.len();
+            run(&mut compiler, &engine, &source);
+            assert_eq!(
+                run(&mut compiler, &engine, "[(:doc (meta #'x)) x]"),
+                format!("[\"doc {i}\" {i}]")
+            );
+            let program = compiler.program.as_ref().unwrap();
+            compacted |= program.exprs.len() < before;
+            let live = crate::program_fragment::interactive_resolution_snapshot(program);
+            assert!(program.exprs.len() <= 2 * live.exprs.len() + 2);
+        }
+        assert!(compacted);
+        let program = compiler.program.as_ref().unwrap();
+        assert!(program.locals.is_empty());
+        assert_eq!(run(&mut compiler, &engine, "(f63)"), "63");
+    }
+    #[test]
+    fn namespaces_entered_before_the_first_form_are_addressable() {
+        let mut compiler = InteractiveCompiler::new();
+        let engine = crate::evaluator::Evaluator::new(Default::default()).unwrap();
+        run(&mut compiler, &engine, "(ns other) (ns app)");
+        let form = compiler
+            .read_forms(&SourceInput::new("first.cljs", "other/x"))
+            .unwrap()
+            .remove(0);
+        // `other` is the session's, so `other/x` is a missing Var of it, not
+        // an unknown namespace.
+        let error = compiler.analyze_form(&form).unwrap_err().to_string();
+        assert!(!error.contains("unknown namespace"), "{error}");
+    }
+    #[test]
+    fn syntax_quotes_qualify_through_the_session_indexes() {
+        let mut compiler = InteractiveCompiler::new();
+        let engine = crate::evaluator::Evaluator::new(Default::default()).unwrap();
+        assert_eq!(
+            run(
+                &mut compiler,
+                &engine,
+                "(ns lib) (def x 10) (defmacro mx [] 20) (ns other) (def z 1) \
+                 (ns app (:require [lib :refer [x mx]])) (def own 3) \
+                 [`x `mx `own `lib/x `y other/z]"
+            ),
+            "[lib/x lib/mx app/own lib/x app/y 1]"
+        );
     }
     #[test]
     fn namespace_reader_and_policy_are_incremental() {

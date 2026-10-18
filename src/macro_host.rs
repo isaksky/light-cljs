@@ -260,6 +260,10 @@ pub struct MacroHost {
     pub(crate) bootstrap_seed: bool,
     pub(crate) javascript_macros:
         crate::layered::Layered<String, crate::compiler_bootstrap::CompiledMacro>,
+    /// The names of `javascript_macros` by namespace, sorted
+    /// ([`Self::source_macro_names`]); change both through
+    /// [`Self::insert_javascript_macro`].
+    macro_names: crate::layered::Layered<String, Vec<String>>,
     /// Shared by frames with the same macro inventory; replaced on declaration.
     pub(crate) macro_environment:
         std::rc::Rc<std::cell::RefCell<Option<crate::compiler_data::Datum>>>,
@@ -1043,7 +1047,7 @@ impl MacroHost {
         key: String,
         declaration: crate::compiler_bootstrap::CompiledMacro,
     ) {
-        self.javascript_macros.insert(key, declaration);
+        self.insert_javascript_macro(key, declaration);
         self.macro_environment = Default::default();
     }
     /// Whether `namespace/name` is a Var of the compile-time session, and
@@ -1072,6 +1076,7 @@ impl MacroHost {
             bootstrap: self.bootstrap.clone(),
             bootstrap_seed: true,
             javascript_macros: self.javascript_macros.clone(),
+            macro_names: self.macro_names.clone(),
             macro_environment: self.macro_environment.clone(),
             namespace_environment: self.namespace_environment.clone(),
             local_environment: self.local_environment.clone(),
@@ -1173,6 +1178,7 @@ impl MacroHost {
             drop(readers);
             self.bootstrap = None;
             self.javascript_macros.clear();
+            self.macro_names.clear();
             self.macro_environment = Default::default();
             self.namespace_environment = Default::default();
             self.local_environment = Default::default();
@@ -1636,15 +1642,26 @@ impl MacroHost {
         }
         aliases
     }
+    /// The names of `namespace`'s source macros, sorted, from the index
+    /// rather than every macro.
     pub(crate) fn source_macro_names(&self, namespace: &str) -> Vec<String> {
-        let prefix = format!("{namespace}/");
-        let mut names = self
-            .javascript_macros
-            .keys()
-            .filter_map(|key| key.strip_prefix(&prefix).map(str::to_owned))
-            .collect::<Vec<_>>();
-        names.sort();
-        names
+        self.macro_names.get(namespace).cloned().unwrap_or_default()
+    }
+    /// Declare the source macro `key` (`namespace/name`).
+    pub(crate) fn insert_javascript_macro(
+        &mut self,
+        key: String,
+        declaration: crate::compiler_bootstrap::CompiledMacro,
+    ) {
+        if !self.javascript_macros.contains_key(&key)
+            && let Some((namespace, name)) = key.split_once('/')
+        {
+            let names = self.macro_names.entry_or_default(namespace.to_owned());
+            if let Err(position) = names.binary_search_by(|old| old.as_str().cmp(name)) {
+                names.insert(position, name.to_owned());
+            }
+        }
+        self.javascript_macros.insert(key, declaration);
     }
 
     /// Add the reader context of `namespace` to a macro's environment. The

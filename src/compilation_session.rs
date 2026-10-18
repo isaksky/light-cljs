@@ -22,6 +22,8 @@ pub(crate) struct DefinitionSnapshot {
     pub resolution_program: Program,
     pub global_names: crate::name_index::NameIndex,
     pub namespace_globals: (usize, crate::arena::Arena<crate::analyzer::GlobalId>),
+    /// In an interactive session, its namespaces at definition time.
+    pub session_namespaces: crate::analyzer::SessionNamespaces,
     pub options: AnalysisOptions,
     pub unchecked_arrays: bool,
     pub source_index: usize,
@@ -1085,6 +1087,7 @@ impl Clone for DefinitionSnapshot {
             resolution_program: self.resolution_program.clone(),
             global_names: self.global_names.clone(),
             namespace_globals: self.namespace_globals.clone(),
+            session_namespaces: self.session_namespaces.clone(),
             options: self.options,
             unchecked_arrays: self.unchecked_arrays,
             source_index: self.source_index,

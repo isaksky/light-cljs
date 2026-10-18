@@ -748,6 +748,10 @@ impl DevSession {
         // before them, as one the runtime cannot parse does, so after it the
         // next unit registers every namespace again.
         self.registered.borrow_mut().extend(registration);
+        if self.registering.get() {
+            // The registrations are recorded for every namespace touched.
+            self.compiler.borrow_mut().clear_touched();
+        }
         let applied = to.apply(match mode {
             Mode::Repl => Action::Invoke(unit),
             Mode::Load => Action::Load(vec![unit]),
@@ -780,6 +784,13 @@ impl DevSession {
         &self,
         form: &Form,
     ) -> Result<(Unit, crate::Program, Registrations), EvalDiagnostic> {
+        // The session's retained expressions, which the form's program
+        // starts with.
+        let retained = self
+            .compiler
+            .borrow()
+            .program()
+            .map_or(0, |program| program.exprs.len());
         let program = self
             .compiler
             .borrow_mut()
@@ -803,7 +814,13 @@ impl DevSession {
             .iter()
             .map(|(namespace, _)| namespace.as_str())
             .collect::<Vec<_>>();
-        let (mut js, mapping) = crate::emitter::emit_mapped_interactive_unit(&program, &registered);
+        let (mut js, mapping) = crate::emitter::emit_mapped_interactive_unit(
+            &program,
+            &registered,
+            retained,
+            self.compiler.borrow().namespace_globals(),
+            self.compiler.borrow().namespace_positions(),
+        );
         // The unit is named as the dev build's file of its namespace, which
         // a reload of the namespace replaces.
         let url = crate::dev_build::unit_file(&namespace);
@@ -835,21 +852,34 @@ impl DevSession {
     /// namespace's reader context changes when a form in it is analyzed
     /// after a directive, and its definitions grow with a definition or a
     /// host binding.
+    ///
+    /// Only the namespaces the compiler touched since the registrations
+    /// were last recorded can have changed, unless none are recorded.
     fn changed_registrations(&self, program: &crate::Program) -> Registrations {
-        let mut definitions = HashMap::<&str, usize>::new();
-        for global in &program.globals {
-            *definitions.entry(global.namespace.as_str()).or_default() += 1;
-        }
+        let compiler = self.compiler.borrow();
         let registered = self.registered.borrow();
-        program
-            .namespaces
-            .iter()
+        let candidates: Vec<&String> = if registered.is_empty() {
+            program.namespaces.iter().collect()
+        } else {
+            let mut touched = compiler
+                .touched()
+                .iter()
+                .filter(|namespace| compiler.has_namespace(namespace))
+                .collect::<Vec<_>>();
+            touched.sort();
+            touched
+        };
+        candidates
+            .into_iter()
             .filter_map(|namespace| {
                 let context = program
                     .reader_contexts
                     .get(namespace)
                     .map(|context| &**context);
-                let count = definitions.get(namespace.as_str()).copied().unwrap_or(0);
+                let count = compiler
+                    .namespace_globals()
+                    .get(namespace.as_str())
+                    .map_or(0, |globals| globals.len());
                 let known = registered
                     .get(namespace)
                     .is_some_and(|(known, known_count)| {

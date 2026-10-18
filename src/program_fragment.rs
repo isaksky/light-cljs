@@ -331,7 +331,241 @@ pub(crate) fn expression_snapshot(program: &mut Program, root: ExprId) -> Progra
 /// Compact a persisted interactive catalog between executed forms. Only global
 /// binding IDs survive into the next form; emitted closures already own code.
 pub(crate) fn interactive_resolution_snapshot(program: &Program) -> Program {
-    compact_resolution_snapshot(program)
+    let mut snapshot = compact_resolution_snapshot(program);
+    snapshot.freeze();
+    snapshot
+}
+
+/// The interactive snapshot of `program`, a form analyzed from `previous`
+/// (an interactive snapshot, which it shares as a prefix), at a cost that
+/// depends on what the form added and changed, not on `previous`'s size:
+/// `previous`'s entries keep their IDs, and the expressions, strings, named
+/// literals and lazy targets the form's new or changed metadata reaches are
+/// appended. Unlike [`interactive_resolution_snapshot`], it keeps the
+/// expressions that metadata the form replaced reached; the second value
+/// counts them, with the previous root, so that the caller can compact
+/// once they make up a large share; the third is whether the analysis
+/// changed any of `previous`'s expressions in place.
+pub(crate) fn extend_interactive_snapshot(
+    previous: &Program,
+    program: &Program,
+) -> (Program, usize, bool) {
+    use std::collections::HashSet;
+    let old_exprs = previous.exprs.len();
+    let old_globals = previous.globals.len();
+    // Old entries a write changed: the arenas compare only the leaves they no
+    // longer share with `previous`.
+    let changed_exprs = program.exprs.changed_entries(&previous.exprs, old_exprs);
+    let changed_globals = program
+        .globals
+        .changed_entries(&previous.globals, old_globals)
+        .into_iter()
+        .filter(|&i| program.globals[i].metadata != previous.globals[i].metadata)
+        .collect::<Vec<_>>();
+    // What replaced metadata reached, counted generously (shared trees count
+    // once per root), and the previous root.
+    let mut released = 1;
+    for &i in &changed_globals {
+        if let Some(root) = previous.globals[i].metadata {
+            let seen = std::cell::RefCell::new(HashSet::new());
+            let pending = std::cell::RefCell::new(vec![root]);
+            let visitor = identity_remap(previous, |id| {
+                pending.borrow_mut().push(id);
+                id
+            });
+            loop {
+                let Some(id) = pending.borrow_mut().pop() else {
+                    break;
+                };
+                if seen.borrow_mut().insert(id.0) {
+                    visitor.kind(&mut previous.exprs[id.0].kind.clone());
+                }
+            }
+            released += seen.into_inner().len();
+        }
+    }
+    // The new expressions reachable from new or changed metadata and from
+    // changed old expressions, in their original order.
+    let pending = std::cell::RefCell::new(
+        changed_globals
+            .iter()
+            .copied()
+            .chain(old_globals..program.globals.len())
+            .filter_map(|i| program.globals[i].metadata)
+            .filter(|id| id.0 >= old_exprs)
+            .collect::<Vec<_>>(),
+    );
+    let discover = identity_remap(program, |id| {
+        if id.0 >= old_exprs {
+            pending.borrow_mut().push(id);
+        }
+        id
+    });
+    for &id in &changed_exprs {
+        discover.kind(&mut program.exprs[id].kind.clone());
+    }
+    let mut fresh = HashSet::new();
+    loop {
+        let Some(id) = pending.borrow_mut().pop() else {
+            break;
+        };
+        if fresh.insert(id.0) {
+            discover.kind(&mut program.exprs[id.0].kind.clone());
+        }
+    }
+    let mut origins = fresh.into_iter().collect::<Vec<_>>();
+    origins.sort_unstable();
+    let ids = origins
+        .iter()
+        .enumerate()
+        .map(|(index, origin)| (*origin, ExprId(old_exprs + index)))
+        .collect::<HashMap<_, _>>();
+    // Lazy targets past `previous`'s that retained loadables name, appended
+    // in order.
+    let old_lazy = previous.lazy_targets.len();
+    let mut lazy_targets = previous.lazy_targets.clone();
+    let mut lazy = Vec::new();
+    if program.lazy_targets.len() > old_lazy {
+        lazy = (0..program.lazy_targets.len())
+            .map(|i| LazyTargetId(if i < old_lazy { i } else { usize::MAX }))
+            .collect::<Vec<_>>();
+        for origin in changed_exprs.iter().chain(&origins) {
+            if let ExprKind::Loadable { target, .. } = program.exprs[*origin].kind
+                && lazy[target.0].0 == usize::MAX
+            {
+                let mut kept = program.lazy_targets[target.0];
+                if kept.site.0 >= old_exprs {
+                    let own = if *origin < old_exprs {
+                        ExprId(*origin)
+                    } else {
+                        ids[origin]
+                    };
+                    kept.site = ids.get(&kept.site.0).copied().unwrap_or(own);
+                }
+                lazy[target.0] = LazyTargetId(lazy_targets.len());
+                lazy_targets.push(kept);
+            }
+        }
+    }
+    let map = |id: ExprId| {
+        if id.0 < old_exprs { id } else { ids[&id.0] }
+    };
+    let mut remap = identity_remap(program, map);
+    remap.lazy = lazy;
+    // Strings and named literals past `previous`'s that kept expressions use,
+    // appended in first-use order.
+    let (old_strings, old_named) = (previous.strings.len(), previous.named_literals.len());
+    let mut strings = previous.strings.clone();
+    let mut named_literals = previous.named_literals.clone();
+    let mut string_ids = HashMap::new();
+    let mut named_ids = HashMap::new();
+    let mut string = |id: &mut usize, strings: &mut crate::arena::Arena<Vec<u16>>| {
+        if *id >= old_strings {
+            *id = *string_ids.entry(*id).or_insert_with(|| {
+                strings.push(program.strings[*id].clone());
+                strings.len() - 1
+            });
+        }
+    };
+    let mut literals =
+        |kind: &mut ExprKind,
+         strings: &mut crate::arena::Arena<Vec<u16>>,
+         named_literals: &mut crate::arena::Arena<NamedLiteral>| {
+            match kind {
+                ExprKind::String(id) | ExprKind::Assert { form: id, .. } => {
+                    string(&mut id.0, strings)
+                }
+                ExprKind::Keyword(id) | ExprKind::Symbol(id) | ExprKind::Var { symbol: id, .. }
+                    if id.0 >= old_named =>
+                {
+                    id.0 = *named_ids.entry(id.0).or_insert_with(|| {
+                        let mut literal = program.named_literals[id.0].clone();
+                        for id in literal.namespace.iter_mut().chain([&mut literal.name]) {
+                            string(&mut id.0, strings);
+                        }
+                        named_literals.push(literal);
+                        named_literals.len() - 1
+                    });
+                }
+                _ => {}
+            }
+        };
+    // `previous`'s expressions, shared, with the ones the analysis changed.
+    let mut exprs = previous.exprs.clone();
+    let mut data = true;
+    for &id in &changed_exprs {
+        let expr = exprs.get_mut(id).expect("old expression");
+        *expr = program.exprs[id].clone();
+        remap.kind(&mut expr.kind);
+        literals(&mut expr.kind, &mut strings, &mut named_literals);
+        data &= is_data(&expr.kind);
+    }
+    for origin in &origins {
+        let mut expr = program.exprs[*origin].clone();
+        remap.kind(&mut expr.kind);
+        literals(&mut expr.kind, &mut strings, &mut named_literals);
+        data &= is_data(&expr.kind);
+        exprs.push(expr);
+    }
+    let mut globals = program.globals.clone();
+    for i in changed_globals
+        .into_iter()
+        .chain(old_globals..program.globals.len())
+    {
+        remap.optional(&mut globals.get_mut(i).expect("global").metadata);
+    }
+    let mut macro_functions = previous.macro_functions.clone();
+    let added = origins
+        .iter()
+        .filter(|origin| program.macro_functions.contains(&ExprId(**origin)))
+        .map(|origin| ids[origin])
+        .collect::<Vec<_>>();
+    if !added.is_empty() {
+        macro_functions.extend(added);
+    }
+    let executable = !data
+        || !previous.locals.is_empty()
+        || !previous.recur_targets.is_empty()
+        || !previous.field_bindings.is_empty()
+        || !previous.type_methods.is_empty();
+    let root = ExprId(exprs.len());
+    exprs.push(Expr {
+        kind: ExprKind::Nil,
+        span: 0..0,
+        context: ExprContext::Value,
+        source_index: 0,
+    });
+    let mut snapshot = Program {
+        namespaces: program.namespaces.clone(),
+        reader_contexts: program.reader_contexts.clone(),
+        namespace_entries: Default::default(),
+        compilation_uses: Vec::new(),
+        exprs,
+        locals: Default::default(),
+        recur_targets: Default::default(),
+        protocols: program.protocols.clone(),
+        record_constructors: program.record_constructors.clone(),
+        field_bindings: Default::default(),
+        type_methods: Default::default(),
+        macro_functions,
+        globals,
+        js_globals: program.js_globals.clone(),
+        strings,
+        named_literals,
+        lazy_targets,
+        lazy_namespaces: program.lazy_namespaces.clone(),
+        namespace_requires: program.namespace_requires.clone(),
+        namespace_lazy_only: program.namespace_lazy_only.clone(),
+        root,
+    };
+    if executable {
+        snapshot.locals = program.locals.clone();
+        snapshot.recur_targets = program.recur_targets.clone();
+        snapshot.field_bindings = program.field_bindings.clone();
+        snapshot.type_methods = program.type_methods.clone();
+    }
+    snapshot.freeze();
+    (snapshot, released, !changed_exprs.is_empty())
 }
 
 /// A snapshot of `program`'s resolution tables and of the expressions reachable

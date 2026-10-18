@@ -285,6 +285,68 @@ means are 25.35 s against 25.03 s, +1.3%). With light-cljs-361 rebased in,
 overlay: 922 namespaces built and watching after 130.6 s, 0.81 GB peak RSS
 (one run, load about 10).
 
+## Session load (light-cljs-348, October 18, 2026)
+
+The session's form-by-form load of the program (`time.session-load-ms`,
+without `--cache-dir`) was quadratic. Instrumenting it on the generated
+301-namespace program (4.6 s) found five terms that grew with the retained
+program at every form, where light-cljs-326's profile named the first two:
+
+- every form compacted the whole retained program again
+  (`interactive_resolution_snapshot`, 1.4 s), and copied it, with its global
+  names, into the analysis (0.2 s);
+- every macro call's `&env` listed every namespace the session had entered
+  as a require, so every macro call encoded, decoded and
+  walked a map as large as the session (1.0 s importing `&env`, 0.8 s in the
+  macro calls, 0.3 s building the list);
+- reading each form gathered every global into the reader's bindings (0.15
+  s);
+- each form scanned every retained expression for arities and source-map
+  names, and every global and namespace for the unit's registration (0.3 s).
+
+Each now costs what the form adds (docs/dev-workflow.md, "As built
+(light-cljs-348)"). Release binaries of master `b04e99a` (before) and this
+change (after), alternating, three runs each with
+`bb benchmarks/watch_startup.bb OUT 1 N`, at 1-minute load 8.8 to 9.3 (two
+other workers active); means in ms:
+
+| Program | Session load before | after | Startup before | after |
+| --- | ---: | ---: | ---: | ---: |
+| generated 75 (76 namespaces) | 360 | 136 | 492 | 269 |
+| generated 150 (151) | 1,173 | 234 | 1,408 | 473 |
+| generated 300 (301) | 4,618 | 464 | 5,192 | 1,039 |
+
+Per doubling the session load grew 3.3x and 3.9x before and 1.7x and 2.0x
+after. The dev build's digest is the same before and after at each size,
+and so are the session's units: the 1,472 units of the 301-namespace load,
+written out during the change, are byte-identical. What grows faster than
+the program now is the V8 dev build's emission and write (30, 85 and 304
+ms), which light-cljs-326 noted.
+
+Penpot `app.main` still stops in the uncached session load at
+`cuerdas.core/unsafe-concat` (`unavailable definition: cuerdas.core/repeat`),
+before and after this change, so these runs use light-cljs-361's one-file
+overlay of `vendor/` that defines `repeat` above the macros, with the
+penpot.bb limits and `--stats`: one run of this change at load 8 to 9,
+against light-cljs-361's run of the same overlay at `663aa49` (load 3.9 to
+7.4).
+
+| Penpot `app.main`, 922 namespaces | Session load | Startup | Peak RSS |
+| --- | ---: | ---: | ---: |
+| before (light-cljs-361) | 742.2 s | 788.1 s | 14.0 GB |
+| after | 115.4 s | 163.6 s | 1.69 GB |
+
+The session load is still 71% of startup (the V8 build and the dev build's
+write take 48 s), 1.2 ms per macro call on average; it was not profiled on
+Penpot.
+
+The cold build is unchanged: Penpot `main-none` through
+[penpot.bb](penpot.bb), three alternating runs each of the parent `b04e99a`
+and this change at load 5.8 to 10, gave the same output (same SHA-256) in
+26.25, 31.04, 27.05 s against 26.81, 27.54, 26.83 s (medians 27.05 and
+26.83 s, -0.8%) and 0.906, 0.919, 0.923 GB against 0.922, 0.954, 0.924 GB
+peak RSS (medians 0.919 and 0.924 GB, +0.5%).
+
 ## Watch invalidation (light-cljs-325, October 18, 2026)
 
 `--watch` now records the startup build's dependency manifest and revises it
