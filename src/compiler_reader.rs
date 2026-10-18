@@ -997,15 +997,7 @@ impl Lowerer<'_> {
                     value.clone()
                 } else {
                     // Process-wide freshness also covers independent owners/readers.
-                    static NEXT: std::sync::atomic::AtomicU64 =
-                        std::sync::atomic::AtomicU64::new(1);
-                    let number = NEXT
-                        .try_update(
-                            std::sync::atomic::Ordering::Relaxed,
-                            std::sync::atomic::Ordering::Relaxed,
-                            |n| n.checked_add(1),
-                        )
-                        .expect("syntax quote gensym identities exhausted");
+                    let number = crate::generated_names::next_syntax_quote();
                     let mut text = name.name()[..name.name().len() - 1].to_vec();
                     text.extend(format!("__{number}__auto__").encode_utf16());
                     let value = self.builder.symbol(Name::from_utf16(None, &text));
@@ -1281,9 +1273,8 @@ impl Lowerer<'_> {
         if self.anonymous.is_some() {
             return Err(self.error(LowerErrorKind::InvalidSyntax, span));
         }
-        static NEXT_ANONYMOUS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         self.anonymous = Some(Anonymous {
-            unique: Some(NEXT_ANONYMOUS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
+            unique: Some(crate::generated_names::next_anonymous()),
             names: HashMap::new(),
             rest: None,
             max: 0,

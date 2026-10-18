@@ -16,12 +16,13 @@ use light_cljs::compiler::{
     analyze_namespace_entry_recorded_with_provider, analyze_namespace_entry_with_sources,
 };
 use light_cljs::dependency_manifest::DependencyManifest;
+use light_cljs::generated_names;
 use light_cljs::namespace_artifact::NamespaceArtifact;
 use light_cljs::source_provider::SourceProvider;
 use light_cljs::{
     ApplicationOptions, CompileStats, MacroHost, OptimizationLevel, prepare_application,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -66,6 +67,9 @@ pub(crate) struct Captured {
     pub namespaces: Vec<String>,
     pub artifacts: HashMap<String, NamespaceArtifact>,
     pub eligible: Vec<String>,
+    /// The capturing compilation's program, whose generated names its
+    /// artifacts retain.
+    pub program: light_cljs::Program,
 }
 
 /// Capture every namespace of `entry`'s compilation, with the build's cache
@@ -81,7 +85,7 @@ pub(crate) fn capture(input: Input<'_>, entry: &str, blockers: &[&str]) -> Optio
             artifacts.insert(capture.namespace, artifact);
         }
     };
-    input
+    let program = input
         .analyze(
             entry,
             &mut host,
@@ -91,6 +95,7 @@ pub(crate) fn capture(input: Input<'_>, entry: &str, blockers: &[&str]) -> Optio
                 ..EntryRecorders::default()
             },
         )
+        .map_err(|error| eprintln!("the capturing compilation failed: {error}"))
         .ok()?;
     let policy = cache_policy::evaluate(
         &manifest,
@@ -110,11 +115,13 @@ pub(crate) fn capture(input: Input<'_>, entry: &str, blockers: &[&str]) -> Optio
         namespaces,
         artifacts,
         eligible,
+        program,
     })
 }
 
 /// Compile `entry` in a fresh host, installing the eligible artifacts of the
-/// namespaces `hits` names. Every installation must succeed.
+/// namespaces `hits` names, with their generated names reserved from the
+/// start. Every installation must succeed.
 pub(crate) fn compile_mixed(
     input: Input<'_>,
     entry: &str,
@@ -127,18 +134,7 @@ pub(crate) fn compile_mixed(
         .filter(|(name, _)| hits.contains(&name.as_str()) && captured.eligible.contains(name))
         .map(|(name, artifact)| (name.as_str(), artifact))
         .collect();
-    let lookup = |name: &str| chosen.get(name).copied();
-    let mut stats = CompileStats::new();
-    let program = input
-        .analyze(
-            entry,
-            &mut MacroHost::new(),
-            EntryRecorders {
-                stats: Some(&mut stats),
-                install: Some(&lookup),
-                ..EntryRecorders::default()
-            },
-        )
+    let (program, stats) = compile_installing(input, entry, &chosen, true)
         .unwrap_or_else(|error| panic!("mixed compilation with hits {hits:?} failed: {error}"));
     let install = stats.install.clone().expect("install counts");
     assert_eq!(install.refused, Vec::new(), "refused artifacts");
@@ -158,6 +154,32 @@ pub(crate) fn compile_mixed(
         );
     }
     (program, stats)
+}
+
+/// Compile `entry` in a fresh host, offering the artifacts of `chosen` for
+/// installation, with their generated names reserved before the first
+/// namespace when `reserve` is set, as a store would.
+fn compile_installing(
+    input: Input<'_>,
+    entry: &str,
+    chosen: &HashMap<&str, &NamespaceArtifact>,
+    reserve: bool,
+) -> Result<(light_cljs::Program, CompileStats), light_cljs::NamespaceCompileError> {
+    let lookup = |name: &str| chosen.get(name).copied();
+    let reservation = reserve
+        .then(|| generated_names::Reservation::of(chosen.values().map(|artifact| &artifact.names)));
+    let mut stats = CompileStats::new();
+    let program = input.analyze(
+        entry,
+        &mut MacroHost::new(),
+        EntryRecorders {
+            stats: Some(&mut stats),
+            install: Some(&lookup),
+            reserve: reservation.as_ref(),
+            ..EntryRecorders::default()
+        },
+    )?;
+    Ok((program, stats))
 }
 
 /// What a program emits at each of [`LEVELS`]: one script, and the chunk
@@ -633,4 +655,497 @@ fn installed_helpers_keep_their_definition_reader_context() {
     let (program, _) = compile_mixed(Input::Roots(&roots), "main", &captured, &["lib.helpers"]);
     assert_eq!(run(&program), printed);
     assert_eq!(outputs(&program), outputs(&expected));
+}
+
+// Generated names (docs/compiler-cache.md, "Generated names").
+
+/// Whether a local's name is one the compiler or a macro generated.
+fn generated(name: &str) -> bool {
+    name.ends_with("__auto__") || name.ends_with('#') || name.starts_with("G__")
+}
+
+/// The distinct generated names each source binds, by the program's binding
+/// table, keyed by source index.
+fn generated_locals(program: &light_cljs::Program) -> BTreeMap<usize, BTreeSet<String>> {
+    let mut names = BTreeMap::<usize, BTreeSet<String>>::new();
+    for local in program.locals.iter().filter(|local| generated(&local.name)) {
+        names
+            .entry(local.source_index)
+            .or_default()
+            .insert(local.name.clone());
+    }
+    names
+}
+
+/// A generated name stands for one identity, such as one `x#` of one syntax
+/// quote. Two identities that come out with one name merge in the binding
+/// table and can capture each other's references in a scope. So the
+/// program binds as many distinct generated names, source by source and in
+/// all, as the uncached build does; and since locals are emitted by binding
+/// ID, its output at `none` is the uncached output when no generated name
+/// escapes as data.
+fn assert_hygienic(program: &light_cljs::Program, uncached: &light_cljs::Program, context: &str) {
+    let counts = |program| {
+        generated_locals(program)
+            .into_iter()
+            .map(|(source, names)| (source, names.len()))
+            .collect::<Vec<_>>()
+    };
+    let all = |program| {
+        generated_locals(program)
+            .into_values()
+            .flatten()
+            .collect::<BTreeSet<_>>()
+            .len()
+    };
+    assert!(all(uncached) > 0, "the fixture binds no generated name");
+    assert_eq!(
+        counts(program),
+        counts(uncached),
+        "{context}: names by source"
+    );
+    assert_eq!(all(program), all(uncached), "{context}: names in all");
+}
+
+/// Every subset of the eligible namespaces, in source order.
+fn every_mix(captured: &Captured) -> Vec<Vec<&str>> {
+    let eligible = captured
+        .namespaces
+        .iter()
+        .filter(|name| captured.eligible.contains(name) && captured.artifacts.contains_key(*name))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    (0..1usize << eligible.len())
+        .map(|mask| {
+            eligible
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| mask & (1 << index) != 0)
+                .map(|(_, name)| *name)
+                .collect()
+        })
+        .collect()
+}
+
+fn none_output(program: &light_cljs::Program) -> String {
+    prepare_application(program, ApplicationOptions::new(OptimizationLevel::None)).emit_js()
+}
+
+/// Two namespaces whose macros, functions and `binding` all generate names:
+/// syntax-quote `x#`, `#()` parameters inside and outside syntax quotes,
+/// destructuring locals and `binding` locals. `main` nests one's macro
+/// expansion inside the other's, so equal names would capture a reference.
+const AUTO_NAMES: [(&str, &str); 3] = [
+    (
+        "p.cljs",
+        "(ns p) (defmacro wrap [f v] `(let [x# ~v] (~f x#))) (defmacro call3 [f] `(#(~f %) 3)) (defn pd [{:keys [a b]} [c & d]] (#(+ %1 %2 a b c (count d)) 1 2)) (def ^:dynamic *depth* 0) (defn depth [] *depth*) (def bound (binding [*depth* 5] (depth)))",
+    ),
+    (
+        "q.cljs",
+        "(ns q) (defmacro outer [& body] `(let [x# 10] ~@body)) (defmacro add100 [v] `(#(+ % ~v) 100)) (defmacro sum-pair [pair] `(let [[a# b#] ~pair] (+ a# b#))) (defn qd [[x y] {:keys [z]}] (#(* % x y z) 2))",
+    ),
+    (
+        "main.cljs",
+        "(ns main (:require [p :refer [wrap call3]] [q :refer [outer add100 sum-pair]])) (js/console.log (wrap outer 3) (call3 add100) (sum-pair [1 2]) (p/pd {:a 1 :b 2} [3 4]) (q/qd [1 2] {:z 3}) p/bound)",
+    ),
+];
+
+/// Every mix of hits and misses keeps generated names apart, also when the
+/// compilation stands for a new process: its allocators start where the
+/// capture's did, or where one namespace's analysis left them, so a miss
+/// allocates the very numbers a hit retains unless they are reserved.
+#[test]
+fn generated_names_stay_apart_in_every_mix_of_hits_and_misses() {
+    let sources = Sources::new(&AUTO_NAMES);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    let expected = uncached(&roots, "main");
+    let printed = run(&expected);
+    assert_eq!(printed, "3 103 3 10 12 5\n");
+    let start = generated_names::current();
+    let captured = capture(input, "main", &[]).unwrap();
+    assert_eq!(captured.eligible, ["p", "q", "main"]);
+    let restarts = std::iter::once(start)
+        .chain(
+            captured
+                .namespaces
+                .iter()
+                .map(|name| captured.artifacts[name].names.to),
+        )
+        .collect::<Vec<_>>();
+    for hits in every_mix(&captured) {
+        for restart in &restarts {
+            generated_names::rewind(restart);
+            let context = format!("hits {hits:?} from {restart:?}");
+            let (program, _) = compile_mixed(input, "main", &captured, &hits);
+            assert_hygienic(&program, &expected, &context);
+            assert_eq!(none_output(&program), none_output(&expected), "{context}");
+            assert_eq!(run(&program), printed, "{context}");
+        }
+    }
+    check_mixed(sources.0.path(), "main");
+}
+
+/// Two namespaces whose constants are gensyms the compile-time runtime made:
+/// a symbol and a string. Each compilation's runtime counts from zero.
+const GENSYM_DATA: [(&str, &str); 4] = [
+    (
+        "macros.cljs",
+        "(ns macros) (defmacro uniq [] (list 'quote (gensym \"k\"))) (defmacro uniq-name [] (str (gensym)))",
+    ),
+    (
+        "a.cljs",
+        "(ns a (:require [macros :refer [uniq uniq-name]])) (def s (uniq)) (def n (uniq-name))",
+    ),
+    (
+        "b.cljs",
+        "(ns b (:require [macros :refer [uniq uniq-name]])) (def s (uniq)) (def n (uniq-name))",
+    ),
+    (
+        "main.cljs",
+        "(ns main (:require [a] [b])) (js/console.log (pr-str [a/s a/n b/s b/n]) (= a/s b/s) (= a/n b/n))",
+    ),
+];
+
+/// The gensyms `main` prints, `a`'s then `b`'s, and whether each pair is
+/// equal.
+fn printed_gensyms(printed: &str) -> (Vec<String>, String) {
+    let (names, equal) = printed[1..].split_once("] ").expect(printed);
+    (
+        names
+            .split(' ')
+            .map(|name| name.trim_matches('"').to_owned())
+            .collect(),
+        equal.trim_end().to_owned(),
+    )
+}
+
+/// A gensym escaping as data keeps, in a hit, the name it was captured with,
+/// unnormalized, and a miss's gensym never takes it.
+#[test]
+fn a_gensym_escaping_as_data_keeps_its_name_and_no_miss_takes_it() {
+    let sources = Sources::new(&GENSYM_DATA);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    let (_, equal) = printed_gensyms(&run(&uncached(&roots, "main")));
+    assert_eq!(equal, "false false");
+    let captured = capture(input, "main", &[]).unwrap();
+    assert_eq!(captured.eligible, ["macros", "a", "b", "main"]);
+    // What the hits retain: the capture's names, which need not be the
+    // uncached build's.
+    let (names, equal) = printed_gensyms(&run(&captured.program));
+    assert_eq!(equal, "false false");
+    for hits in every_mix(&captured) {
+        let (program, _) = compile_mixed(input, "main", &captured, &hits);
+        let (mixed, equal) = printed_gensyms(&run(&program));
+        assert_eq!(equal, "false false", "hits {hits:?}: {mixed:?}");
+        assert_eq!(
+            mixed.iter().collect::<BTreeSet<_>>().len(),
+            4,
+            "hits {hits:?}: {mixed:?}"
+        );
+        for (index, namespace) in ["a", "b"].iter().enumerate() {
+            if hits.contains(namespace) {
+                assert_eq!(
+                    mixed[2 * index..2 * index + 2],
+                    names[2 * index..2 * index + 2],
+                    "hits {hits:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Offer the artifacts of `hits` without reserving their names before the
+/// first namespace.
+fn compile_unreserved(
+    input: Input<'_>,
+    entry: &str,
+    captured: &Captured,
+    hits: &[&str],
+) -> (light_cljs::Program, CompileStats) {
+    let chosen = hits
+        .iter()
+        .map(|name| (*name, &captured.artifacts[*name]))
+        .collect();
+    compile_installing(input, entry, &chosen, false).unwrap()
+}
+
+/// A namespace compiled fresh before a later hit, which allocates more names
+/// than when the hit was captured, reaches the hit's numbers in a new
+/// process. The hit's names are reserved before the first namespace, so the
+/// fresh ones stay apart. Without that reservation, a hit whose window the
+/// fresh namespace allocated from is refused and compiled fresh, and gensyms
+/// compare equal.
+#[test]
+fn a_hit_installed_after_a_fresh_namespace_keeps_its_names_apart() {
+    let sources = Sources::new(&AUTO_NAMES);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    uncached(&roots, "main");
+    let start = generated_names::current();
+    let captured = capture(input, "main", &[]).unwrap();
+    // Two more syntax-quote names and two more `#()` before `wrap`.
+    fs::write(
+        sources.0.join("p.cljs"),
+        AUTO_NAMES[0].1.replacen(
+            "(ns p)",
+            "(ns p) (defmacro pad [] `[a# b#]) (def pads [#(inc %) #(dec %)])",
+            1,
+        ),
+    )
+    .unwrap();
+    let expected = uncached(&roots, "main");
+    let printed = run(&expected);
+    assert_eq!(printed, "3 103 3 10 12 5\n");
+    generated_names::rewind(&start);
+    let (program, stats) = compile_unreserved(input, "main", &captured, &["q"]);
+    let install = stats.install.unwrap();
+    assert_eq!(install.installed, Vec::<String>::new());
+    assert_eq!(
+        install.refused,
+        [(
+            "q".to_owned(),
+            "its syntax-quote names overlap ones the compilation already holds".to_owned()
+        )]
+    );
+    assert_eq!(run(&program), printed);
+    generated_names::rewind(&start);
+    let (program, _) = compile_mixed(input, "main", &captured, &["q"]);
+    assert_hygienic(&program, &expected, "q after a fresh p");
+    assert_eq!(none_output(&program), none_output(&expected));
+    assert_eq!(run(&program), printed);
+
+    let sources = Sources::new(&GENSYM_DATA);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    let captured = capture(input, "main", &[]).unwrap();
+    let (names, _) = printed_gensyms(&run(&captured.program));
+    fs::write(
+        sources.0.join("a.cljs"),
+        GENSYM_DATA[1]
+            .1
+            .replacen("(def s", "(def e1 (uniq)) (def e2 (uniq)) (def s", 1),
+    )
+    .unwrap();
+    let hits = ["macros", "b"];
+    let (program, _) = compile_unreserved(input, "main", &captured, &hits);
+    let (_, equal) = printed_gensyms(&run(&program));
+    assert_ne!(equal, "false false", "the fixture does not collide");
+    let (program, _) = compile_mixed(input, "main", &captured, &hits);
+    let (mixed, equal) = printed_gensyms(&run(&program));
+    assert_eq!(equal, "false false", "{mixed:?}");
+    assert_eq!(mixed[2..], names[2..]);
+}
+
+/// Artifacts captured in separate compilations can retain the same
+/// generated names for different identities. The second of two such
+/// artifacts is refused, by its overlapping window or its gensym spelling,
+/// and its namespace is compiled fresh.
+#[test]
+fn independently_captured_artifacts_that_share_names_are_not_both_installed() {
+    let mut files = AUTO_NAMES.to_vec();
+    files.push(("pmain.cljs", "(ns pmain (:require [p]))"));
+    files.push(("qmain.cljs", "(ns qmain (:require [q]))"));
+    let sources = Sources::new(&files);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    let expected = run(&uncached(&roots, "main"));
+    let start = generated_names::current();
+    let p = capture(input, "pmain", &[]).unwrap();
+    generated_names::rewind(&start);
+    let q = capture(input, "qmain", &[]).unwrap();
+    let chosen = HashMap::from([("p", &p.artifacts["p"]), ("q", &q.artifacts["q"])]);
+    let (program, stats) = compile_installing(input, "main", &chosen, true).unwrap();
+    let install = stats.install.unwrap();
+    assert_eq!(install.installed, ["p"]);
+    assert_eq!(
+        install.refused,
+        [(
+            "q".to_owned(),
+            "its syntax-quote names overlap ones the compilation already holds".to_owned()
+        )]
+    );
+    assert_eq!(run(&program), expected);
+
+    let mut files = GENSYM_DATA.to_vec();
+    files.push(("amain.cljs", "(ns amain (:require [a]))"));
+    files.push(("bmain.cljs", "(ns bmain (:require [b]))"));
+    let sources = Sources::new(&files);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    let a = capture(input, "amain", &[]).unwrap();
+    let b = capture(input, "bmain", &[]).unwrap();
+    assert_eq!(
+        a.artifacts["a"].names.gensyms,
+        b.artifacts["b"].names.gensyms
+    );
+    let chosen = HashMap::from([("a", &a.artifacts["a"]), ("b", &b.artifacts["b"])]);
+    let (program, stats) = compile_installing(input, "main", &chosen, true).unwrap();
+    let install = stats.install.unwrap();
+    assert_eq!(install.installed, ["a"]);
+    assert_eq!(install.refused.len(), 1, "{:?}", install.refused);
+    assert!(
+        install.refused[0].1.starts_with("its gensym "),
+        "{:?}",
+        install.refused
+    );
+    let (names, equal) = printed_gensyms(&run(&program));
+    assert_eq!(equal, "false false", "{names:?}");
+}
+
+/// A hit installed after the compile-time runtime has started reserves its
+/// gensyms in the running runtime, so a later miss does not return them.
+#[test]
+fn installing_a_hit_reserves_its_gensyms_in_a_running_runtime() {
+    let sources = Sources::new(&[
+        GENSYM_DATA[0],
+        GENSYM_DATA[1],
+        GENSYM_DATA[2],
+        (
+            "c.cljs",
+            "(ns c (:require [macros :refer [uniq uniq-name]])) (def s (uniq)) (def n (uniq-name))",
+        ),
+        (
+            "main.cljs",
+            "(ns main (:require [a] [b] [c])) (js/console.log (pr-str [a/s a/n b/s b/n c/s c/n]) (= b/s c/s) (= b/n c/n))",
+        ),
+    ]);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    let captured = capture(input, "main", &[]).unwrap();
+    let (names, equal) = printed_gensyms(&run(&captured.program));
+    assert_eq!(equal, "false false");
+    // A fresh runtime counts from zero, and `a`, which starts it, now
+    // generates two names more, so that `c` reaches `b`'s numbers.
+    fs::write(
+        sources.0.join("a.cljs"),
+        GENSYM_DATA[1]
+            .1
+            .replacen("(def s", "(def e1 (uniq)) (def e2 (uniq-name)) (def s", 1),
+    )
+    .unwrap();
+    let (program, stats) = compile_unreserved(input, "main", &captured, &["b"]);
+    assert_eq!(stats.install.unwrap().installed, ["b"]);
+    let (mixed, equal) = printed_gensyms(&run(&program));
+    assert_eq!(equal, "false false", "{mixed:?}");
+    assert_eq!(mixed[2..4], names[2..4]);
+    assert_eq!(mixed.iter().collect::<BTreeSet<_>>().len(), 6, "{mixed:?}");
+}
+
+/// `gensym` appends its counter to any prefix, so a prefix ending in a digit
+/// spells what another prefix spells at another count: `x1` at 1 and `x` at
+/// 11 are both `x11`. A hit's spellings are reserved as spelled, so a miss
+/// skips them as the uncached build does.
+#[test]
+fn gensym_prefixes_ending_in_digits_do_not_take_a_hits_spelling() {
+    let sources = Sources::new(&[
+        (
+            "macros.cljs",
+            "(ns macros) (defmacro one [] (list 'quote (gensym \"x1\"))) (defmacro many [] (list 'quote (vec (repeatedly 200 #(gensym \"x\")))))",
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [macros :refer [one]])) (def s (one))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [macros :refer [many]])) (def xs (many))",
+        ),
+        (
+            "main.cljs",
+            "(ns main (:require [a] [b])) (js/console.log (pr-str a/s) (boolean (some #{a/s} b/xs)))",
+        ),
+    ]);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    assert!(run(&uncached(&roots, "main")).ends_with(" false\n"));
+    let captured = capture(input, "main", &[]).unwrap();
+    let printed = run(&captured.program);
+    assert!(printed.ends_with(" false\n"), "{printed}");
+    for hits in [&["a"][..], &["macros", "a"]] {
+        let (program, _) = compile_mixed(input, "main", &captured, hits);
+        assert_eq!(run(&program), printed, "hits {hits:?}");
+    }
+}
+
+/// Names a macro derives from a gensym, such as munged JavaScript names,
+/// stay apart: a fresh `gensym` numbers above every hit's, so `x-` and `x_`
+/// never munge to one name, as in the uncached build. Spellings are kept as
+/// UTF-16 code units, lone surrogates included.
+#[test]
+fn names_derived_from_gensyms_stay_apart_and_spellings_keep_their_code_units() {
+    let sources = Sources::new(&[
+        (
+            "macros.cljs",
+            "(ns macros) (defmacro mx [prefix] (str (munge (gensym prefix)))) (defmacro odd [] (list 'quote (gensym \"\\uD800\")))",
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [macros :refer [mx odd]])) (def s (mx \"x-\")) (def o (odd))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [macros :refer [mx]])) (def s (mx \"x_\"))",
+        ),
+        (
+            "main.cljs",
+            "(ns main (:require [a] [b])) (js/console.log a/s b/s (= a/s b/s) (.charCodeAt (name a/o) 0))",
+        ),
+    ]);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    assert!(run(&uncached(&roots, "main")).ends_with(" false 55296\n"));
+    let captured = capture(input, "main", &[]).unwrap();
+    let printed = run(&captured.program);
+    assert!(
+        captured.artifacts["a"]
+            .names
+            .gensyms
+            .iter()
+            .any(|name| name.first() == Some(&0xD800)),
+        "{:?}",
+        captured.artifacts["a"].names
+    );
+    let (program, _) = compile_mixed(input, "main", &captured, &["a"]);
+    let mixed = run(&program);
+    assert!(mixed.ends_with(" false 55296\n"), "{mixed}");
+    assert_eq!(mixed.split(' ').next(), printed.split(' ').next());
+}
+
+/// Generated-name marks that run backward or out of range are refused with
+/// the artifact, before they move an allocator, and left out of the early
+/// reservation, so later allocations still work.
+#[test]
+fn invalid_generated_name_marks_are_refused() {
+    let sources = Sources::new(&AUTO_NAMES);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    let expected = run(&uncached(&roots, "main"));
+    let captured = capture(input, "main", &[]).unwrap();
+    for (corrupt, reason) in [
+        (
+            (|names: &mut light_cljs::namespace_artifact::GeneratedNames| {
+                names.to.binding = u64::MAX
+            }) as fn(&mut _),
+            "its binding mark is out of range",
+        ),
+        (
+            |names| names.from.syntax_quote = names.to.syntax_quote + 1,
+            "its syntax-quote window runs backward",
+        ),
+        (
+            |names| names.gensym_to = u64::MAX,
+            "its gensym mark is out of range",
+        ),
+    ] {
+        let mut artifact = captured.artifacts["p"].clone();
+        corrupt(&mut artifact.names);
+        let chosen = HashMap::from([("p", &artifact)]);
+        let (program, stats) = compile_installing(input, "main", &chosen, true).unwrap();
+        let install = stats.install.unwrap();
+        assert_eq!(install.refused, [("p".to_owned(), reason.to_owned())]);
+        assert!(generated_names::current().binding < 1 << 48);
+        assert_eq!(run(&program), expected);
+    }
 }

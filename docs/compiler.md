@@ -2354,6 +2354,22 @@ host cancellation or terminal limit still aborts the compilation. Later clean
 compilations allocate fresh roots, heaps and dispatch tables while retaining host
 configuration.
 
+### Generated names and the compiler cache
+
+Syntax-quote `x#`, `#()` parameters, `binding` and destructuring locals and
+`gensym` give fresh names, which a macro may rely on being distinct, never on
+their numbers. With the compiler cache ([compiler-cache.md](compiler-cache.md),
+"Generated names"), a namespace installed from its artifact keeps the names its
+capturing compilation allocated, including gensyms that escape into constants,
+and every fresh allocation of the compilation is reserved above them. Numeric
+suffixes therefore differ between a cached and an uncached build, and between
+builds that hit different namespaces. A macro whose expansion needs the
+allocation sequence itself to repeat, for example one that derives a persisted
+identifier from a `gensym` suffix, must opt out of the cache: mark each
+namespace that expands it `^:light-cljs/no-cache`, or make the macro's
+namespace a cache blocker, so that it and every compilation consumer of it
+recompile.
+
 ## JavaScript interop
 
 | Form | Behavior |

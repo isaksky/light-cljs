@@ -5,10 +5,14 @@ use crate::{
     MacroHost, Program,
     analyzer::{AnalysisOptions, AnalysisWarning, NamespaceResolution},
     compiler_bootstrap::Bootstrap,
-    compiler_data::Form,
+    compiler_data::{Datum, DatumKind, Form, Name},
     evaluator::MacroEvaluator,
 };
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    rc::Rc,
+};
 
 pub(crate) struct DefinitionSnapshot {
     pub namespace: String,
@@ -147,6 +151,13 @@ pub(crate) struct CompilationSession {
     /// While namespace artifacts are captured ([`crate::artifact_capture`]),
     /// what the catalog does not otherwise keep about its units and macros.
     capture: RefCell<Option<SessionCapture>>,
+    /// `gensym` names reserved for installed namespaces before the session
+    /// started ([`crate::generated_names`]), which it reserves when it starts.
+    gensyms_pending: RefCell<Vec<Vec<u16>>>,
+    /// The `gensym` counter reserved before the session started.
+    gensym_floor: Cell<u64>,
+    /// Whether capture reads what `gensym` returns.
+    gensyms_logged: Cell<bool>,
 }
 /// What capture needs beyond the catalog, recorded only while it is on.
 #[derive(Default)]
@@ -469,6 +480,121 @@ impl CompilationSession {
     pub fn bootstrap(&self) -> Option<Bootstrap> {
         self.catalog.borrow().bootstrap.clone()
     }
+    /// Keep the compile-time runtime's `gensym` from returning any of
+    /// `names` in this compilation: now if the session has started, else
+    /// once it starts ([`crate::generated_names`]).
+    pub fn reserve_gensyms(&self, names: &[Vec<u16>], counter: u64) -> Result<(), String> {
+        match self.bootstrap() {
+            Some(bootstrap) => {
+                let engine = bootstrap.evaluator.as_ref();
+                Self::raise_gensyms(engine, counter)?;
+                Self::import_gensyms(engine, names)
+            }
+            None => {
+                self.gensym_floor.set(self.gensym_floor.get().max(counter));
+                self.gensyms_pending
+                    .borrow_mut()
+                    .extend(names.iter().cloned());
+                Ok(())
+            }
+        }
+    }
+    /// Keep `gensym` from appending a number at or below `counter`.
+    fn raise_gensyms(engine: &dyn MacroEvaluator, counter: u64) -> Result<(), String> {
+        if counter == 0 {
+            return Ok(());
+        }
+        let value = engine
+            .evaluate_unit(&format!(
+                "rt => {{ rt.compilerForms.raiseGensyms({counter}); return null; }}"
+            ))
+            .map_err(|e| e.to_string())?;
+        engine.release(value).map_err(|e| e.to_string())
+    }
+    /// Start logging what the compile-time runtime's `gensym` returns, for
+    /// [`Self::take_gensyms`].
+    pub fn log_gensyms(&self) -> Result<(), String> {
+        self.gensyms_logged.set(true);
+        match self.bootstrap() {
+            Some(bootstrap) => Self::take_gensyms_from(bootstrap.evaluator.as_ref()).map(drop),
+            None => Ok(()),
+        }
+    }
+    /// Where `gensym`'s counter stands, and what it returned since the last
+    /// call or since [`Self::log_gensyms`]; before the session starts, the
+    /// counter it will start from and nothing.
+    pub fn take_gensyms(&self) -> Result<(u64, Vec<Vec<u16>>), String> {
+        match self.bootstrap() {
+            Some(bootstrap) => Self::take_gensyms_from(bootstrap.evaluator.as_ref()),
+            None => Ok((self.gensym_floor.get(), Vec::new())),
+        }
+    }
+    /// The runtime's `gensym` skips every unqualified symbol name the form
+    /// bridge decodes, so importing the names as symbols reserves them.
+    fn import_gensyms(engine: &dyn MacroEvaluator, names: &[Vec<u16>]) -> Result<(), String> {
+        const CHUNK: usize = 10_000;
+        for chunk in names.chunks(CHUNK) {
+            let symbols = chunk
+                .iter()
+                .map(|name| Datum::new(DatumKind::Symbol(Name::from_utf16(None, name))))
+                .collect();
+            let vector = Datum::new(DatumKind::Collection {
+                kind: crate::parser::CollectionKind::Vector,
+                children: symbols,
+            });
+            let limits = crate::form_bridge::ConversionLimits {
+                nodes: CHUNK + 1,
+                depth: 2,
+            };
+            let value = engine
+                .import_data(&vector, limits)
+                .map_err(|e| e.to_string())?;
+            engine.release(value).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+    fn take_gensyms_from(engine: &dyn MacroEvaluator) -> Result<(u64, Vec<Vec<u16>>), String> {
+        let value = engine
+            .evaluate_unit("rt => rt.compilerForms.takeGensyms()")
+            .map_err(|e| e.to_string())?;
+        let source = crate::compiler_data::Source::new("<gensyms>", "");
+        let span = source.span(0..0).expect("an empty span");
+        let call = crate::compiler_data::Form::from_data(
+            Datum::new(DatumKind::Nil),
+            span.clone(),
+            crate::compiler_data::Origin::SuppliedData,
+        );
+        let origin = crate::compiler_data::ExpansionOrigin {
+            macro_name: Name::new(None, "gensym"),
+            call: span,
+            definition: None,
+            helpers: Vec::new(),
+        };
+        // A bound engines pass as a 32-bit integer.
+        let limits = crate::form_bridge::ConversionLimits {
+            nodes: i32::MAX as usize,
+            depth: 2,
+        };
+        let exported = engine.export_form(value, &call, origin, limits);
+        engine.release(value).map_err(|e| e.to_string())?;
+        let data = exported.map_err(|e| e.to_string())?.data();
+        let DatumKind::Collection { children, .. } = data.kind() else {
+            return Err("gensym names are not a vector".into());
+        };
+        let counter = match children.first().map(Datum::kind) {
+            Some(DatumKind::Integer(counter)) if *counter >= 0 => *counter as u64,
+            Some(DatumKind::Double(counter)) if *counter >= 0.0 => *counter as u64,
+            _ => return Err("the gensym counter is not a count".into()),
+        };
+        let names = children[1..]
+            .iter()
+            .map(|name| match name.kind() {
+                DatumKind::String(text) => Ok(text.to_vec()),
+                _ => Err("a gensym name is not a string".to_owned()),
+            })
+            .collect::<Result<_, String>>()?;
+        Ok((counter, names))
+    }
     pub fn new() -> Rc<Self> {
         Rc::new(Self::default())
     }
@@ -513,6 +639,14 @@ impl CompilationSession {
             .evaluate_unit("rt => { globalThis.__lightRuntimeForCompiler = rt; return null; }")
             .map_err(|e| e.to_string())?;
         evaluator.release(value).map_err(|e| e.to_string())?;
+        // What installed namespaces reserved before the session started, and
+        // the log capture reads.
+        let pending = std::mem::take(&mut *self.gensyms_pending.borrow_mut());
+        Self::raise_gensyms(evaluator.as_ref(), self.gensym_floor.get())?;
+        Self::import_gensyms(evaluator.as_ref(), &pending)?;
+        if self.gensyms_logged.get() {
+            Self::take_gensyms_from(evaluator.as_ref())?;
+        }
         let registrations = {
             let mut catalog = self.catalog.borrow_mut();
             catalog.bootstrap = Some(bootstrap.clone());

@@ -142,6 +142,7 @@ pub(crate) struct NamespaceDeclarations<'a> {
 
 /// Every compilation in the process gets its own reader generation, so a
 /// fresh host never reuses the declarations an earlier one registered.
+/// Namespace artifacts never retain it ([`crate::generated_names`]).
 static READER_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// The declarations a macro environment names for its session, recorded with

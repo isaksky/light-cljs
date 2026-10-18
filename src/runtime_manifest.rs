@@ -142,6 +142,12 @@ pub const ANNOTATED_RUNTIME: &str = include_str!("js_runtime.js");
 /// without its header lines (written by `build.rs`).
 pub const RUNTIME: &str = include_str!(concat!(env!("OUT_DIR"), "/js_runtime.js"));
 
+/// [`RUNTIME`] as the compile-time evaluators run it: with hooks only the
+/// compiler uses, which output never embeds (written by `build.rs`; see
+/// `compiler_runtime` there).
+pub const COMPILER_RUNTIME: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/js_compiler_runtime.js"));
+
 /// Dense index of a unit in [`RuntimeManifest::units`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnitId(pub usize);

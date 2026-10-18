@@ -93,9 +93,9 @@ pub struct NamespaceArtifact {
     pub units: DeferredUnits,
     pub diagnostics: Diagnostics,
     pub references: References,
-    /// Generated names the artifact retains (light-cljs-317); capture leaves
-    /// this empty.
-    pub names: Option<GeneratedNames>,
+    /// The names the namespace's analysis generated, which installation
+    /// keeps every other allocation of its compilation from producing.
+    pub names: GeneratedNames,
     /// Logical work the artifact charged (light-cljs-318); capture leaves
     /// this empty.
     pub accounting: Option<Accounting>,
@@ -665,9 +665,81 @@ pub struct Warning {
     pub source: SourceRef,
 }
 
-/// Reserved for light-cljs-317.
+/// The names an artifact's analysis generated ([`crate::generated_names`]).
+/// The process-wide allocators only count up, so their numbers are recorded
+/// as the window the analysis drew from, which is smaller than the names and
+/// sufficient. `gensym` appends its counter to any prefix, so its number
+/// does not tell spellings apart, and its names are also recorded as
+/// spelled.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct GeneratedNames {}
+pub struct GeneratedNames {
+    /// Where the process-wide allocators stood when the analysis began.
+    pub from: Counters,
+    /// Where they stood when it ended, deferred units included.
+    pub to: Counters,
+    /// The compile-time runtime's `gensym` counter when the analysis ended:
+    /// the last number it appended.
+    pub gensym_to: u64,
+    /// What `gensym` returned during the analysis, as UTF-16 code units.
+    pub gensyms: Vec<Vec<u16>>,
+}
+
+impl GeneratedNames {
+    /// The largest number a mark may hold. Larger ones, which no
+    /// compilation reaches, would exhaust an allocator once reserved.
+    pub const LIMIT: u64 = 1 << 48;
+
+    /// Windows run forward and marks stay within [`Self::LIMIT`].
+    pub fn validate(&self) -> Result<(), String> {
+        for ((name, from), (_, to)) in self.from.each().into_iter().zip(self.to.each()) {
+            if from > to {
+                return Err(format!("its {name} window runs backward"));
+            }
+            if to > Self::LIMIT {
+                return Err(format!("its {name} mark is out of range"));
+            }
+        }
+        if self.gensym_to > Self::LIMIT {
+            return Err("its gensym mark is out of range".into());
+        }
+        Ok(())
+    }
+}
+
+/// The next number of each process-wide generated-name allocator.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counters {
+    /// Syntax-quote gensyms, `x__N__auto__`.
+    pub syntax_quote: u64,
+    /// `#()` identities, `pK__N#`.
+    pub anonymous: u64,
+    /// `binding__N__auto__`.
+    pub binding: u64,
+    /// `compiler_destructure__N__auto__`.
+    pub destructure: u64,
+}
+
+impl Counters {
+    /// The allocators' numbers, by name.
+    pub fn each(&self) -> [(&str, u64); 4] {
+        [
+            ("syntax-quote", self.syntax_quote),
+            ("anonymous", self.anonymous),
+            ("binding", self.binding),
+            ("destructure", self.destructure),
+        ]
+    }
+
+    /// The larger number of each allocator.
+    pub fn max(self, other: Self) -> Self {
+        Self {
+            syntax_quote: self.syntax_quote.max(other.syntax_quote),
+            anonymous: self.anonymous.max(other.anonymous),
+            binding: self.binding.max(other.binding),
+            destructure: self.destructure.max(other.destructure),
+        }
+    }
+}
 
 /// Reserved for light-cljs-318.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -958,6 +1030,7 @@ impl NamespaceArtifact {
     /// own tables, so installing it needs nothing but the artifact and the
     /// identities it names.
     pub fn validate(&self) -> Result<(), String> {
+        self.names.validate()?;
         let ir = &self.ir;
         let fits = |what: &str, index: u32, len: usize| {
             if (index as usize) < len {
@@ -1116,6 +1189,12 @@ impl NamespaceArtifact {
             |c: &RelocatableCode| c.text.len() + c.units.len() * size_of::<(Bytes, UnitRef)>();
         let ir = &self.ir;
         let mut bytes = size_of::<Self>()
+            + self
+                .names
+                .gensyms
+                .iter()
+                .map(|name| 2 * name.len())
+                .sum::<usize>()
             + ir.exprs.len() * size_of::<Expr>()
             + ir.locals
                 .iter()
@@ -1352,16 +1431,17 @@ impl NamespaceArtifact {
             .unwrap();
         }
         writeln!(out, "[names]").unwrap();
-        writeln!(
-            out,
-            "{}",
-            if self.names.is_some() {
-                "recorded"
-            } else {
-                "not recorded"
-            }
-        )
-        .unwrap();
+        for ((name, from), (_, to)) in self.names.from.each().into_iter().zip(self.names.to.each())
+        {
+            writeln!(out, "{name} {from}..{to}").unwrap();
+        }
+        let gensyms = self
+            .names
+            .gensyms
+            .iter()
+            .map(|name| String::from_utf16_lossy(name))
+            .collect::<Vec<_>>();
+        writeln!(out, "gensym ..{} {gensyms:?}", self.names.gensym_to).unwrap();
         writeln!(out, "[accounting]").unwrap();
         writeln!(
             out,

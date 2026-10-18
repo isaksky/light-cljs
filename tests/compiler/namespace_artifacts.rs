@@ -251,7 +251,7 @@ fn macros_carry_their_generation_metadata_code_and_definition_site() {
         "[deferred-units]",
         "[diagnostics]",
         "[references]",
-        "[names]\nnot recorded",
+        "[names]\nsyntax-quote ",
         "[accounting]\nnot recorded",
     ] {
         assert!(described.contains(section), "{section} in\n{described}");

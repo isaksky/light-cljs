@@ -1708,6 +1708,15 @@ pub struct EntryRecorders<'a> {
     /// namespace analyzed instead. Installed namespaces execute no macro
     /// calls, are not captured, and add no observations to the manifest.
     pub install: Option<ArtifactLookup<'a>>,
+    /// The generated names of every artifact `install` may hand over
+    /// ([`crate::generated_names::Reservation::of`]), reserved before the
+    /// first namespace is read, so that no namespace analyzed before a later
+    /// hit allocates a name the hit retains. Without it, such a hit is
+    /// refused where its window overlaps numbers the compilation allocated,
+    /// and nothing keeps its `gensym` spellings from earlier misses. Each
+    /// installed artifact reserves its names in any case, which keeps the
+    /// namespaces after it apart from it.
+    pub reserve: Option<&'a crate::generated_names::Reservation>,
 }
 
 /// The artifact to install for a namespace, if any ([`EntryRecorders::install`]).
@@ -1845,7 +1854,13 @@ fn analyze_entry(
         manifest,
         mut capture,
         install,
+        reserve,
     } = recorders;
+    if let Some(reservation) = reserve {
+        crate::generated_names::reserve(&reservation.to);
+    }
+    // Every number the allocators give from here on is this compilation's.
+    let names_start = crate::generated_names::current();
     let mut install_counts = crate::compile_stats::InstallCounts::default();
     let timed = stats.is_some();
     let begun = compile_stats::start(timed);
@@ -1873,6 +1888,15 @@ fn analyze_entry(
     // Lazily reached sources are resolved and parsed between analyses.
     let mut lazy_parse = Duration::ZERO;
     let mut analysis = NamespaceAnalysis::new(macros);
+    analysis.begin_generated_names(names_start);
+    // The compilation's session exists from here on.
+    if let Some(reservation) = reserve
+        && let Some(session) = macros.session_handle()
+    {
+        session
+            .reserve_gensyms(&reservation.gensyms, reservation.gensym_to)
+            .map_err(NamespaceCompileError::new)?;
+    }
     if timed {
         analysis.deferred_time = Some(Duration::ZERO);
     }
@@ -1881,6 +1905,7 @@ fn analyze_entry(
         && let Some(session) = macros.session_handle()
     {
         session.begin_capture();
+        session.log_gensyms().map_err(NamespaceCompileError::new)?;
     }
     // Analysis logs what it observes beyond the `ns` forms only while a
     // manifest is recorded, and stops when this compilation ends, however.
@@ -1934,6 +1959,7 @@ fn analyze_entry(
             None => false,
         };
         if !installed {
+            let names_from = crate::generated_names::current();
             let resolution = prepare_source(macros, file).map_err(at)?;
             let captured = capture.is_some().then(|| {
                 let started = compile_stats::start(timed);
@@ -1971,6 +1997,7 @@ fn analyze_entry(
                         resolution,
                         aliases: &file.aliases,
                         requires: &file.requires,
+                        names_from,
                     },
                     macros,
                     warnings,

@@ -3700,6 +3700,13 @@ impl NamespaceAnalysis {
         )
     }
 
+    /// Note where the generated-name allocators stood when the compilation
+    /// began, which installation checks artifacts against
+    /// ([`crate::generated_names`]).
+    pub(crate) fn begin_generated_names(&mut self, from: crate::generated_names::Counters) {
+        self.install_index.begin_generated_names(from);
+    }
+
     /// The artifact of the namespace [`Self::analyze`] just completed.
     pub(crate) fn finish_capture(
         &self,

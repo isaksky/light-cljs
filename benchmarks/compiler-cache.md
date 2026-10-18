@@ -203,3 +203,23 @@ byte-identical in every run.
 The change is -0.5% wall and -0.6% RSS against its parent, within the +3%
 and +5% gate. There is no installing build of Penpot yet: the store and its
 lookup are light-cljs-319 to 322.
+
+## Generated names, cache off (light-cljs-317, October 18, 2026)
+
+Penpot `app.main --optimize none`, without installing anything. Three
+alternating rounds of the parent `eda504b` and the change, release builds,
+at 1-minute load 1.4 to 3.7. Output is 33,588,607 bytes and byte-identical
+in every run: the `gensym` hooks are only in the compile-time evaluators'
+runtime.
+
+| Build | Wall (s), run 1-3 | Median wall | Peak RSS (GB), run 1-3 | Median RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `eda504b` | 21.42, 21.28, 21.27 | 21.28 | 0.948, 0.945, 0.957 | 0.948 |
+| Change | 21.31, 21.39, 21.28 | 21.31 | 0.949, 0.981, 0.966 | 0.966 |
+
+The change is +0.1% wall and +1.9% RSS against its parent, within the +3%
+and +5% gate. With capture on (`LIGHT_CLJS_CAPTURE_ARTIFACTS=1 --stats`, one
+run each), the generated names add 581,458 bytes to `cache.capture.bytes`
+(184,742,484 to 185,323,942 for the 922 namespaces), and reading the gensym
+counter and log once per namespace moves `cache.capture-ms` from 1,058 to
+1,103 (wall 22.18 and 22.29 s).

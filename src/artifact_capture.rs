@@ -98,6 +98,9 @@ pub(crate) struct CaptureInput<'a> {
     pub entry: bool,
     pub resolution: &'a NamespaceResolution,
     pub aliases: &'a [(String, String)],
+    /// Where the generated-name allocators stood before the namespace was
+    /// prepared.
+    pub names_from: crate::generated_names::Counters,
     pub requires: &'a [String],
 }
 
@@ -279,7 +282,19 @@ pub(crate) fn finish(
             expansions,
         },
         references: c.references,
-        names: None,
+        // What the namespace's analysis, deferred units included, generated.
+        names: {
+            let (gensym_to, gensyms) = match &session {
+                Some(session) => session.take_gensyms()?,
+                None => (0, Vec::new()),
+            };
+            GeneratedNames {
+                from: input.names_from,
+                to: crate::generated_names::current(),
+                gensym_to,
+                gensyms,
+            }
+        },
         accounting: None,
     };
     debug_assert_eq!(artifact.validate(), Ok(()));
@@ -1269,6 +1284,7 @@ mod tests {
                 resolution: &resolution,
                 aliases: &[],
                 requires: &[],
+                names_from: Default::default(),
             },
             &host,
         );

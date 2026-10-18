@@ -106,6 +106,8 @@ pub struct FormNode {
 }
 
 /// Compact source identity independent of evaluator owner generations.
+/// A process identity, which namespace artifacts never retain
+/// ([`crate::generated_names`]).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct SourceId(u64);
 static NEXT_SOURCE: AtomicU64 = AtomicU64::new(1);

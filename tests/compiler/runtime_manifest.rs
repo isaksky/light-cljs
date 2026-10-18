@@ -173,7 +173,16 @@ fn units_concatenate_back_to_the_annotated_file_and_the_embedded_runtime() {
         .collect::<String>();
     assert_eq!(manifest.runtime_text(), RUNTIME);
     assert_eq!(stripped, RUNTIME);
-    assert_eq!(RUNTIME_SOURCE, RUNTIME);
+    // The compile-time evaluators run it with the compiler's own hooks,
+    // whole lines that output never embeds (build.rs `compiler_runtime`).
+    assert!(RUNTIME_SOURCE.contains("gensymLog") && !RUNTIME.contains("gensymLog"));
+    assert_eq!(
+        RUNTIME_SOURCE
+            .split_inclusive('\n')
+            .filter(|line| !line.contains("gensymLog"))
+            .collect::<String>(),
+        RUNTIME
+    );
     assert!(!RUNTIME.contains("//@"));
     // The seam that anchor-patching tests and the emitter rely on.
     assert!(RUNTIME.starts_with("// Original bounded runtime"));

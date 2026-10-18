@@ -530,7 +530,8 @@ boundary. Its sections:
 - **References:** earlier namespaces and globals by name, with the global's
   declaration state and visibility. A program has one global per namespace and
   name, which capture checks against the name index.
-- **Names and accounting:** empty typed slots for light-cljs-317 and -318.
+- **Names and accounting:** the generated-name marks (light-cljs-317, see
+  "Generated names") and an empty typed slot for light-cljs-318.
 
 Local references are dense indices into the artifact's own tables. A
 `(var x)` of an earlier Var shares that global's metadata expression; the
@@ -627,6 +628,71 @@ order. Fresh numerical suffixes need not match an uncached run. Preserve cached
 symbols that escape as literal data; do not normalize them away in validation.
 Macros that require the allocation sequence itself to repeat must opt out for
 the relevant compilation dependency set.
+
+*As built (light-cljs-317):* `src/generated_names.rs` owns the four
+process-wide allocators (syntax-quote `x__N__auto__`, `#()` identities
+`pK__N#`, `binding__N__auto__` and `compiler_destructure__N__auto__`) and
+documents every allocator's treatment. An artifact records the names its
+namespace's analysis generated, deferred units included
+(`NamespaceArtifact::names`). The process-wide allocators only count up, so
+for them the smaller and sufficient form is the window: where the four
+counters stood before the namespace was prepared and after its analysis.
+For the compile-time runtime's `gensym` it records the counter at the
+namespace's end and, since `gensym` appends its counter to any prefix
+(`(gensym "x1")` at 1 and `(gensym "x")` at 11 both spell `x11`), the
+spellings it returned, as UTF-16 code units: the runtime logs what `gensym`
+returns while capture runs, and the form bridge's `takeGensyms` hands the
+counter and the log over at each namespace's end. Those hooks exist only in
+the runtime the compile-time evaluators run, which `build.rs` writes as the
+embedded runtime with three lines inserted at anchors
+(`runtime_manifest::COMPILER_RUNTIME`), so output is byte for byte what it
+was. Every generated name an artifact retains, including one an earlier
+namespace's code made, was numbered below its marks, since installation
+moves the allocators of the capturing compilation past what it installed.
+Installation reserves the names: the process-wide counters move to at least
+the window's end, the session runtime's `gensym` counter to at least its
+mark (`raiseGensyms`), and the spellings are imported as symbols, which adds
+them to the `generatedNames` set `gensym` skips; both at once or when the
+runtime starts. Fresh numbers stay above every retained one, so names a
+macro derives from a gensym, such as munged JavaScript names, stay apart as
+in an uncached build. Marks that run backward or exceed 2^48 make the
+artifact invalid; installation refuses it and the early reservation leaves
+it out. An installed namespace is therefore apart from every namespace
+after it.
+`EntryRecorders::reserve` takes `generated_names::Reservation::of` every
+artifact the compilation may install and reserves it before the first
+namespace is read, which keeps namespaces compiled fresh before a later hit
+apart from it too; the store (light-cljs-319 onward) passes the
+reservation of the artifacts its lookup can return. Installation also
+refuses, before anything changes, an artifact whose window overlaps numbers
+the compilation already holds (its own allocations, or another installed
+window, as an artifact captured in another compilation can) or that spells
+a gensym an installed namespace spells; its namespace is then analyzed.
+Without the early reservation nothing keeps a hit's gensym spellings from
+misses before it. Nothing is renumbered: a gensym that escapes as data
+prints in a hit what it printed when captured, and fresh suffixes differ
+from an uncached run's. The other allocators are explicitly not reserved.
+`READER_GENERATION` identifies the compilation whose declarations a macro
+environment's reader sees; artifacts record reader contexts without it.
+`NEXT_SOURCE` identifies source text within a process; artifacts name
+sources by index. `declaration#N` and `:test#N` are unit IDs, which
+installation renumbers. Known gaps: a custom data reader runs in its own
+evaluator, whose `gensym` counter is neither reserved nor shared with the
+session's (light-cljs-350); an artifact's spellings are the ones its own
+analysis generated, so a gensym spelling it took over from an earlier
+namespace's code is reserved by number only, which a prefix ending in a
+digit can still spell again; and a process that read the compiled bootstrap
+(whose sequence macros use syntax-quote) before its first reservation, as a
+long-lived watch process can, holds bootstrap names below the reserved
+windows. Tests stand for a
+new process by rewinding the counters (`generated_names::rewind`) to where
+the capture began or where one namespace's analysis ended, so that misses
+allocate the numbers hits retain. `tests/compiler/cache_contract.rs` checks
+every mix of hits and misses that way, a hit after a fresh namespace that
+allocates more than when the hit was captured, artifacts captured in
+separate compilations, a hit installed into a running runtime, gensym
+prefixes ending in digits and gensyms escaping as data, against the
+uncached build's binding table, output and execution.
 
 ## Loading, diagnostics, and storage
 
@@ -791,10 +857,9 @@ persistence remain out of scope.
    installs reports `cache.install.namespaces`, `cache.install.refused` and
    `cache.install-ms`; an installed namespace counts no macro calls in
    `[macro-calls-by-namespace]`. Installing does not restore the
-   namespace's warnings (light-cljs-318) or reserve its generated names
-   (light-cljs-317); none of the multi-namespace fixtures of the macros,
-   deferred, compile-time unit and chunk suites depends on the latter. Those
-   suites run `cache_contract::check_mixed` on their fixtures: every mix it
+   namespace's warnings (light-cljs-318); since light-cljs-317 it reserves
+   the generated names the artifact retains (see "Generated names"). The
+   macros, deferred, compile-time unit and chunk suites run `cache_contract::check_mixed` on their fixtures: every mix it
    tries (all eligible namespaces, and alternate halves in source order)
    emits byte for byte the uncached program at `none`, `prepare` and
    `advanced`, chunk files included. The counter fixture of

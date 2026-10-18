@@ -52,8 +52,9 @@ mod host_clock {
 }
 
 /// The shared runtime factory: `src/js_runtime.js` without its unit manifest
-/// headers (see [`crate::runtime_manifest`]).
-pub const RUNTIME_SOURCE: &str = crate::runtime_manifest::RUNTIME;
+/// headers (see [`crate::runtime_manifest`]), with the hooks only the
+/// compiler uses ([`crate::runtime_manifest::COMPILER_RUNTIME`]).
+pub const RUNTIME_SOURCE: &str = crate::runtime_manifest::COMPILER_RUNTIME;
 pub(crate) static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]

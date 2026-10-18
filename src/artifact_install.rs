@@ -44,9 +44,30 @@ pub(crate) struct InstallIndex {
     indexed_js_globals: usize,
     lazy_namespaces: HashMap<String, usize>,
     indexed_lazy_namespaces: usize,
+    /// The generated-name numbers the compilation holds: what it allocated
+    /// and the windows it installed ([`crate::generated_names`]).
+    taken: crate::generated_names::Taken,
+    /// Where the allocators stood when the compilation last began
+    /// allocating for itself: at its start, or after the last installation.
+    fresh_from: Option<crate::generated_names::Counters>,
+    /// The `gensym` spellings of the installed namespaces.
+    gensyms: std::collections::HashSet<Vec<u16>>,
 }
 
 impl InstallIndex {
+    /// Note where the compilation's own allocations begin.
+    pub(crate) fn begin_generated_names(&mut self, from: crate::generated_names::Counters) {
+        self.fresh_from = Some(from);
+    }
+
+    /// Hold what the compilation allocated since it last began allocating.
+    fn take_fresh(&mut self) {
+        let now = crate::generated_names::current();
+        if let Some(from) = self.fresh_from.replace(now) {
+            self.taken.take(&from, &now);
+        }
+    }
+
     fn extend(&mut self, program: &Program) {
         for (index, namespace) in program
             .namespaces
@@ -123,6 +144,7 @@ pub(crate) fn install(
         source_index,
     } = target;
     index.extend(program);
+    index.take_fresh();
     let resolved = resolve(
         program,
         names,
@@ -144,6 +166,24 @@ pub(crate) fn install(
     }
     .run(macro_host)
     .map_err(InstallError::Failed)
+}
+
+/// Hold the names an installed artifact generated, and keep every later
+/// allocation of this compilation from producing one
+/// ([`crate::generated_names`]).
+fn reserve_generated_names(
+    names: &GeneratedNames,
+    index: &mut InstallIndex,
+    macro_host: &MacroHost,
+) -> Result<(), String> {
+    index.taken.take(&names.from, &names.to);
+    index.gensyms.extend(names.gensyms.iter().cloned());
+    crate::generated_names::reserve(&names.to);
+    index.fresh_from = Some(crate::generated_names::current());
+    match macro_host.session_handle() {
+        Some(session) => session.reserve_gensyms(&names.gensyms, names.gensym_to),
+        None => Ok(()),
+    }
 }
 
 /// What the artifact names outside itself, resolved before anything changes.
@@ -170,6 +210,26 @@ fn resolve(
     macro_host: &MacroHost,
 ) -> Result<Resolved, String> {
     artifact.validate()?;
+    // Generated names stay one per identity: an artifact whose window
+    // overlaps numbers this compilation allocated or installed, as one
+    // captured elsewhere can, or that spells a gensym an installed namespace
+    // spells, would share a name with another identity.
+    let generated = &artifact.names;
+    if let Some(allocator) = index.taken.overlap(&generated.from, &generated.to) {
+        return Err(format!(
+            "its {allocator} names overlap ones the compilation already holds"
+        ));
+    }
+    if let Some(name) = generated
+        .gensyms
+        .iter()
+        .find(|name| index.gensyms.contains(*name))
+    {
+        return Err(format!(
+            "its gensym {} is an installed namespace's",
+            String::from_utf16_lossy(name)
+        ));
+    }
     let header = &artifact.header;
     if header.namespace != source.namespace {
         return Err(format!(
@@ -419,6 +479,7 @@ impl Installer<'_> {
     fn run(mut self, macro_host: &mut MacroHost) -> Result<ir::ExprId, String> {
         let artifact = self.artifact;
         let namespace = artifact.header.namespace.as_str();
+        reserve_generated_names(&artifact.names, self.index, macro_host)?;
         if self.resolved.new_namespace {
             self.program.namespaces.push(namespace.to_owned());
         }

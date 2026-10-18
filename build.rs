@@ -59,6 +59,11 @@ fn main() {
         .split_inclusive('\n')
         .filter(|line| !line.trim_start().starts_with("//@"))
         .collect::<String>();
+    fs::write(
+        out.join("js_compiler_runtime.js"),
+        compiler_runtime(&runtime),
+    )
+    .expect("write the compile-time runtime");
     fs::write(out.join("js_runtime.js"), runtime).expect("write the embedded runtime");
     fs::write(out.join("terse_runtime.rs"), terse_runtime(&source))
         .expect("write the terse runtime");
@@ -68,6 +73,49 @@ fn main() {
         fs::read_to_string("src/core_operations.tsv").expect("read src/core_operations.tsv");
     fs::write(out.join("core_operations.rs"), core_operation_index(&table))
         .expect("write the core operation index");
+}
+
+/// The runtime the compile-time evaluators run: the embedded runtime with
+/// hooks only the compiler uses, so that output, which embeds the runtime,
+/// carries none of their bytes. Each hook goes after an anchor that occurs
+/// once in the runtime.
+///
+/// - `gensym` logs what it returns once the form bridge's `takeGensyms` has
+///   been called, and `takeGensyms` hands over the counter and the log and
+///   clears the log, so that a namespace artifact records the spellings its
+///   analysis generated and where the counter stood; `raiseGensyms` moves
+///   the counter past an installed artifact's (`src/generated_names.rs`).
+fn compiler_runtime(runtime: &str) -> String {
+    const HOOKS: [(&str, &str); 3] = [
+        (
+            "  const generatedNames = new Set();\n",
+            "  let gensymLog = null;\n",
+        ),
+        (
+            "    generatedNames.add(name);\n    return symbolCore(name);\n",
+            "    if (gensymLog !== null) gensymLog.push(name);\n",
+        ),
+        (
+            "      check: () => { if (terminal != null) throw new Error(terminal); },\n",
+            "      takeGensyms: () => { const names = gensymLog ?? []; gensymLog = []; return vectorFromArray([gensymCounter, ...names]); }, raiseGensyms: floor => { if (floor > gensymCounter) gensymCounter = floor; },\n",
+        ),
+    ];
+    let mut runtime = runtime.to_owned();
+    for (anchor, hook) in HOOKS {
+        assert_eq!(
+            runtime.matches(anchor).count(),
+            1,
+            "compile-time runtime hook anchor {anchor:?}"
+        );
+        // The gensym hook goes before the return, the others after their anchors.
+        let at = if hook.contains("gensymLog.push") {
+            runtime.find(anchor).unwrap() + anchor.find("    return").unwrap()
+        } else {
+            runtime.find(anchor).unwrap() + anchor.len()
+        };
+        runtime.insert_str(at, hook);
+    }
+    runtime
 }
 
 /// The marker that opens a top-level binding's placeholder in a terse unit:

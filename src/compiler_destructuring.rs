@@ -1,6 +1,5 @@
 //! Pure compiler destructuring of source-ordered compiler forms.
 use crate::compiler_data::{DataBuilder, Datum, DatumView, Form, Name};
-use std::sync::atomic::{AtomicU64, Ordering};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Entries = Vec<(Datum, Datum)>;
 fn named(v: &Datum, name: &str) -> bool {
@@ -224,10 +223,9 @@ impl Expander<'_> {
         self.c.keyword(Name::new(None, name))
     }
     fn fresh(&self) -> Datum {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
         self.sym(&format!(
             "compiler_destructure__{}__auto__",
-            NEXT.fetch_add(1, Ordering::Relaxed)
+            crate::generated_names::next_destructure()
         ))
     }
     fn call(&self, name: &str, args: &[Datum]) -> Result<Datum> {

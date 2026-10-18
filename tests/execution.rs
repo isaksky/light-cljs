@@ -1594,7 +1594,7 @@ fn collection_namespace_macros_execute_typed_results_once_with_fresh_runtime_sta
         "data\nops\nmain\ndata\nops\nmain\nisolated\n"
     );
     // The embedded runtime, which excludes the source file's manifest headers.
-    let runtime_bytes = light_cljs::evaluator::RUNTIME_SOURCE.len();
+    let runtime_bytes = light_cljs::runtime_manifest::RUNTIME.len();
     assert!(
         outputs
             .iter()

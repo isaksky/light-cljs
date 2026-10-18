@@ -38,6 +38,7 @@ pub mod emitter;
 pub mod eval_session;
 pub mod evaluator;
 pub mod folding;
+pub mod generated_names;
 pub mod inference;
 pub mod inlining;
 mod js_syntax;

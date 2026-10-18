@@ -1,6 +1,5 @@
 //! Pure seed binding transforms extracted from the native bootstrap.
 use crate::compiler_data::{DataBuilder, Datum, DatumView, Name};
-use std::sync::atomic::{AtomicU64, Ordering};
 fn truthy(v: &Datum) -> bool {
     !matches!(v.inspect(), DatumView::Nil | DatumView::Boolean(false))
 }
@@ -72,10 +71,7 @@ pub(crate) fn call(c: &DataBuilder, name: &str, args: &[Datum]) -> Result<Datum,
     c.list(&forms)
 }
 pub(crate) fn fresh(c: &DataBuilder) -> Datum {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let id = NEXT
-        .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-        .expect("binding gensym identities exhausted");
+    let id = crate::generated_names::next_binding();
     symbol(c, &format!("binding__{id}__auto__"))
 }
 fn local(c: &DataBuilder, value: &Datum) -> Result<Datum, String> {
