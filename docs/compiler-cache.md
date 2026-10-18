@@ -1303,7 +1303,8 @@ persistence remain out of scope.
    generated-node count `--macro-nodes` limits, and `deferred-units.*` count
    the session's units registered, analyzed, prepared and executed. The cache
    pellets add their `cache.*` counters as further `key value` lines before
-   the table. Without `--stats` no clock is read: the counts come from the
+   the table, and so does the exclusive-stage trace of light-cljs-331
+   (`trace.*`, [compiler-concurrency.md](compiler-concurrency.md)). Without `--stats` no clock is read: the counts come from the
    counters `MacroHost` already keeps. Penpot's baseline is in
    [benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md).
 

@@ -47,3 +47,115 @@ whole set at any point that day.
 
 Here the change is -0.04% wall and +1.3% peak RSS, again within the gate,
 with the same output in all six runs.
+
+## One-worker trace (light-cljs-331, October 18, 2026)
+
+The baseline every later scaling claim is measured against: the
+exclusive-stage trace that `--stats` now records, written with
+`--stats-file` and read by
+[concurrency/dag.bb](concurrency/README.md#reading-a-trace-instead-of-probes).
+
+### Serial gate and the trace's overhead
+
+Parent `ae5045c` against the trace change without `--stats`, and the change
+with `--stats-file`, three alternating rounds (parent, candidate, candidate
+traced) at 1-minute load 9.2 to 13.1. Output is 33,588,607 bytes with the same
+SHA-256 in all nine runs.
+
+| Build | Wall (s), round 1-3 | Median wall | Peak RSS (GB), round 1-3 | Median RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `ae5045c` | 26.34, 25.47, 26.02 | 26.02 | 0.996, 1.009, 1.006 | 1.006 |
+| Trace change, `--stats` off | 27.25, 25.64, 25.94 | 25.94 | 0.997, 0.984, 1.001 | 0.997 |
+| Trace change, `--stats-file` | 25.70, 26.25, 26.17 | 26.17 | 1.014, 1.036, 0.997 | 1.014 |
+
+With `--stats` off the change is -0.3% wall and -0.9% peak RSS on the
+medians, inside the +2% / +3% gate and the run-to-run spread (1.6 s): every
+hook loads one relaxed atomic and returns, with no clock read and no
+allocation. Tracing costs +0.9% wall and +1.7% RSS over the same binary
+untraced: two clock reads per V8 service call (1.29 M calls) and 13,361 unit
+rows.
+
+The same three rounds again with the final binary (after review: the
+recorder is checked per thread before any unit information is built, and
+root evaluations are recorded), once the machine had quietened (load 2.7 to
+6.9). Output is identical in all nine runs again.
+
+| Build | Wall (s), round 1-3 | Median wall | Peak RSS (GB), round 1-3 | Median RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `ae5045c` | 26.87, 22.74, 24.05 | 24.05 | 0.969, 0.976, 0.967 | 0.969 |
+| Trace change, `--stats` off | 23.77, 23.53, 25.27 | 23.77 | 0.959, 0.959, 0.948 | 0.959 |
+| Trace change, `--stats-file` | 22.30, 24.05, 24.58 | 24.05 | 0.959, 0.951, 0.955 | 0.955 |
+
+Here the change is -1.2% wall and -1.0% RSS untraced, and tracing adds
++1.2% wall and -0.4% RSS, all within a spread of 1.7 to 4.1 s. A lone traced
+build on the quiet machine took 22.31 s and 0.954 GB.
+
+### Totals against the design document's probe run
+
+The design document's probe run was at `b51af6a` on October 17 (23.76 s wall
+under the probes). To compare at one commit, the probes'
+`NSPREP`/`NSPROBE` timers (without their V8 counters) were re-applied
+temporarily on top of this change, and one build (26.31 s wall, load 11)
+printed both the probe lines and the trace. `dag.bb` reads either; from the
+trace it rebuilds the probes' inclusive columns.
+
+| Quantity | Design (`b51af6a`) | Probes, same run | Trace, same run |
+| --- | ---: | ---: | ---: |
+| Top-level passes, with demanded units | 6.00 s | 6.56 s | 6.61 s |
+| Drains, with their units | 16.53 s | 18.39 s | 18.39 s |
+| Units | 13,361 | 13,361 | 13,361 |
+| Drained units' own analysis | 15.86 s | 17.65 s | 17.53 s |
+| V8 at depth 0 | 13.62 s | | 14.67 s |
+| V8 service entries | 1,288,464 | | 1,288,469 |
+
+At the same commit the trace and the probes agree: drains to the
+millisecond, top-level passes +0.8% (the trace's frame starts before the
+`#_` re-parse and the refer checks, the probe's timer after them), units
+-0.7% (the trace times a unit from after its state check and macro-frame
+copy; that setup, 9 µs a unit, is drain bookkeeping in the trace). Against
+the design document everything is about 10% slower, uniformly: the parent
+binary itself takes 26.0 s here against 23.2 s then, so the difference is
+the busier machine and a day of commits, not the measurement.
+
+### What the trace says
+
+From the first traced gate run (25.70 s wall; the `trace.*` lines of its
+report):
+
+- **Exclusive stages** (they add up to the 24.74 s traced): deferred units
+  17.13 s (10.70 s of it V8), top-level passes 6.52 s (3.78 s V8), drain
+  bookkeeping 0.82 s (append 0.41, release 0.28, drain loop 0.12, index
+  0.01), loading 0.11 s, other 0.12 s, warnings 0.03 s, preparing sources
+  0.01 s. After analysis: preparation 0.10 s, emission 0.72 s.
+- **Analysis demand edges are nearly absent.** 13,359 of the 13,361 units
+  are started by their namespace's drain. Only `instaparse.gll/PROFILE`
+  (0.1 ms) is demanded by a top-level pass and `cuerdas.core/repeat` (0.1 ms)
+  by another unit; the top-level passes waited 0.1 ms in all. The helpers
+  Penpot's macros call are drained in earlier namespaces before they are
+  needed.
+- **Execution edges.** 277 units' compile-time roots are evaluated (each
+  once, in the one isolate), 240 first by a unit's analysis and 37 by a
+  top-level pass; 258 of them belong to another namespace than their
+  demander, and 2 had to be analyzed on the spot. These are the helpers a
+  worker isolate must initialize again (light-cljs-359 adds the later reads
+  of ready roots, which stay in JavaScript today).
+- **Macro host share.** 7,335 units (54.9%) entered the macro host, and they
+  are 97.7% of unit time (16.74 of 17.13 s). The 6,026 macro-free units take
+  0.39 s, so light-cljs-338's narrower first cut can move about 2% of the
+  unit time. Only 2,797 units (0.12 s, from the final binary's trace) make no
+  macro call at all; the others expand native macros such as `fn` and `let`,
+  in Rust.
+- **Longest unit**: `instaparse.abnf/abnf-parser` (line 129), 2.09 s, in the
+  macro host; then `app.plugins.shape/shape-proxy` 0.50 s and
+  `app.plugins.api/create-context` 0.12 s. Three units exceed 100 ms, 234
+  exceed 10 ms.
+- **Ready width per drain.** 914 drains start units; the median drain has 6
+  ready units (p90 34, max 304 in `app.main.ui.ds.foundations.assets.icon`),
+  and the median count of macro-free ones is 2 (p90 16). The widest drains
+  are mostly cheap: `app.main.ui.icons` has 272 host units worth 0.28 s.
+- **Lower bounds.** With a barrier at each drain, the serial rest (7.38 s)
+  plus per drain `max(W/P, longest unit)` gives 17.04 s at P=4 and 16.53 s at
+  P=12: one long unit per drain dominates. Without the barrier, the existing
+  models on the trace give 6.58 s for stage A (`Option U`, units on 4 or more
+  workers behind serial top-level passes) and 2.96 s for stage C at 8 workers
+  (`Model C`), against 6.06 s and 2.74 s from the probe data.

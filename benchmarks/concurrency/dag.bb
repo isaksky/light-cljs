@@ -1,19 +1,77 @@
 #!/usr/bin/env bb
-;; Model parallel namespace compilation from NSPROBE lines.
+;; Model parallel namespace compilation from NSPROBE lines, or from the trace
+;; `light-cljs --compile --stats-file PATH` writes (light-cljs-331).
+;;
+;; Usage: bb benchmarks/concurrency/dag.bb FILE [--workers P,P...]
+;;
+;; FILE is a probe run (`NSPREP`/`NSPROBE` lines, as in main-probe.tsv) or a
+;; `light-cljs-trace 1` file. From a trace the namespace columns the models
+;; read are rebuilt as the probes measured them: a top-level pass includes
+;; the units it demanded, a drain includes the units it analyzed, and each
+;; drained unit includes the units it demanded. A trace also prints its
+;; exclusive stage totals, demand edges, macro-host share and the ready width
+;; of each namespace's drain (the last section; --workers sets its P values).
 (require '[clojure.string :as str])
-(def lines (->> (str/split-lines (slurp (first *command-line-args*)))))
-(def prep (into {} (for [l lines :when (str/starts-with? l "NSPREP\t")]
-                     (let [[_ i us] (str/split l #"\t")] [(parse-long i) (parse-long us)]))))
-(def nss (vec (for [l lines :when (str/starts-with? l "NSPROBE\t")]
-                (let [[_ idx name bytes body jsb drain jsd warn units calls reqs unit-us] (str/split l #"\t" -1)
-                      idx (parse-long idx)]
-                  {:idx idx :name name :bytes (parse-long bytes)
-                   :body (parse-long body) :js-body (parse-long jsb)
-                   :drain (parse-long drain) :js-drain (parse-long jsd)
-                   :warn (parse-long warn) :units (parse-long units) :calls (parse-long calls)
-                   :prep (get prep idx 0)
-                   :reqs (if (str/blank? reqs) [] (str/split reqs #","))
-                   :unit-us (if (str/blank? unit-us) [] (mapv parse-long (str/split unit-us #",")))}))))
+(def args *command-line-args*)
+(def workers (or (some->> (drop-while #(not= "--workers" %) args) second (#(str/split % #",")) (mapv parse-long))
+                 [4 8 12]))
+(def lines (->> (str/split-lines (slurp (first args)))))
+(def trace? (str/starts-with? (first lines) "light-cljs-trace\t"))
+(defn rows [kind]
+  (for [l lines :when (str/starts-with? l (str kind "\t"))]
+    (vec (rest (str/split l #"\t" -1)))))
+(def trace-units
+  (when trace?
+    (vec (for [[id ns name line column us engine calls wait exp nodes host kind demander depth thread] (rows "unit")]
+           {:id (parse-long id) :ns (parse-long ns) :name name :line (parse-long line) :column (parse-long column)
+            :us (parse-long us) :engine (parse-long engine) :calls (parse-long calls) :wait (parse-long wait)
+            :expansions (parse-long exp) :nodes (parse-long nodes) :host (= host "1")
+            :kind kind :demander (parse-long demander) :depth (parse-long depth) :thread (parse-long thread)}))))
+(def unit-by-id (into {} (map (juxt :id identity) trace-units)))
+(defn inclusive [u] (+ (:us u) (:wait u)))
+;; The namespace pass (top-level or drain) whose demand chain led to a unit.
+(defn root-of [u]
+  (loop [u u]
+    (if (= (:kind u) "unit")
+      (if-let [parent (unit-by-id (:demander u))] (recur parent) [(:kind u) (:demander u)])
+      [(:kind u) (:demander u)])))
+(def subtree-engine
+  (when trace?
+    (reduce (fn [m u] (update m (root-of u) (fnil + 0) (:engine u))) {} trace-units)))
+(def subtree-calls
+  (when trace?
+    (reduce (fn [m u] (update m (root-of u) (fnil + 0) (:calls u))) {} trace-units)))
+(def prep (if trace?
+            (into {} (for [[i _ _ _ p] (rows "namespace")] [(parse-long i) (parse-long p)]))
+            (into {} (for [l lines :when (str/starts-with? l "NSPREP\t")]
+                       (let [[_ i us] (str/split l #"\t")] [(parse-long i) (parse-long us)])))))
+(def nss
+  (if trace?
+    (let [by-ns (group-by :ns trace-units)
+          drained (group-by :demander (filter #(= "drain" (:kind %)) trace-units))]
+      (vec (for [[i name bytes _load _prep top top-engine top-wait drain drain-engine warn _exp _installed reqs]
+                 (rows "namespace")
+                 :let [idx (parse-long i)]]
+             {:idx idx :name name :bytes (parse-long bytes)
+              :body (+ (parse-long top) (parse-long top-wait))
+              :js-body (+ (parse-long top-engine) (get subtree-engine ["top-level" idx] 0))
+              :drain (+ (parse-long drain) (reduce + (map inclusive (drained idx))))
+              :js-drain (+ (parse-long drain-engine) (get subtree-engine ["drain" idx] 0))
+              :warn (parse-long warn) :units (count (by-ns idx))
+              :calls (+ (get subtree-calls ["top-level" idx] 0) (get subtree-calls ["drain" idx] 0))
+              :prep (get prep idx 0)
+              :reqs (if (str/blank? reqs) [] (str/split reqs #","))
+              :unit-us (mapv inclusive (drained idx))})))
+    (vec (for [l lines :when (str/starts-with? l "NSPROBE\t")]
+           (let [[_ idx name bytes body jsb drain jsd warn units calls reqs unit-us] (str/split l #"\t" -1)
+                 idx (parse-long idx)]
+             {:idx idx :name name :bytes (parse-long bytes)
+              :body (parse-long body) :js-body (parse-long jsb)
+              :drain (parse-long drain) :js-drain (parse-long jsd)
+              :warn (parse-long warn) :units (parse-long units) :calls (parse-long calls)
+              :prep (get prep idx 0)
+              :reqs (if (str/blank? reqs) [] (str/split reqs #","))
+              :unit-us (if (str/blank? unit-us) [] (mapv parse-long (str/split unit-us #",")))})))))
 (def by-name (into {} (map (juxt :name :idx) nss)))
 (def nss (mapv (fn [n] (assoc n :deps (vec (distinct (keep by-name (:reqs n))))
                               :cost (+ (:body n) (:drain n) (:warn n) (:prep n)))) nss))
@@ -93,7 +151,7 @@
 (println "namespaces per level:" (frequencies (vals level)))
 (println "avg deps" (format "%.1f" (/ (double (reduce + (map (comp count :deps) nss))) N)))
 (def units (mapcat :unit-us nss))
-(println "\nunits" (count units) " total" (s (reduce + units)) " max" (s (reduce max units))
+(println "\nunits" (count units) " total" (s (reduce + units)) " max" (s (reduce max 0 units))
          " >100ms:" (count (filter #(> % 100000) units)) " >10ms:" (count (filter #(> % 10000) units))
          " >1ms:" (count (filter #(> % 1000) units)))
 (println "top units (s):" (map #(format "%.3f" (/ % 1e6)) (take 15 (sort > units))))
@@ -162,7 +220,7 @@
       cov (reduce + (map (fn [[x y]] (* (- x mx) (- y my))) xs))
       vx (reduce + (map (fn [[x _]] (* (- x mx) (- x mx))) xs))
       vy (reduce + (map (fn [[_ y]] (* (- y my) (- y my))) xs))]
-  (println "correlation(bytes, cost)" (format "%.2f" (/ cov (Math/sqrt (* vx vy))))))
+  (println "correlation(bytes, cost)" (if (pos? (* vx vy)) (format "%.2f" (/ cov (Math/sqrt (* vx vy)))) "-")))
 (println "sum body (top-level passes)" (s (tot :body)) " critical path of top-level passes only:"
          (s (reduce max (map :body (vals body-fin)))))
 ;; Option U: top-level passes serial in source order on a coordinator; units fan out to W workers.
@@ -228,3 +286,77 @@
       tasks (:tasks layout)]
   (println "\nModel D (in-order commit) with P workers:")
   (doseq [P [4 8 12 16]] (println (format "  P=%2d  %s" P (s (schedule tasks P))))))
+;; The trace's own figures (light-cljs-331).
+(when trace?
+  (let [ms (fn [us] (format "%.1f ms" (/ us 1e3)))
+        pct (fn [a b] (if (pos? b) (format "%.1f%%" (* 100.0 (/ (double a) b))) "-"))
+        stages (rows "stage")
+        units trace-units
+        unit-time (reduce + (map :us units))
+        ns-name (into {} (map (juxt :idx :name) nss))]
+    (println "\ntrace: exclusive stage totals (each moment counts once)")
+    (doseq [[name us engine calls] stages]
+      (println (format "  %-20s %12s  engine %12s  host entries %s" name (ms (parse-long us)) (ms (parse-long engine)) calls)))
+    (println "\ntrace: demand edges")
+    (doseq [[kind group] (sort-by key (group-by :kind units))]
+      (println (format "  demanded by %-10s %6d units, %s inclusive" kind (count group) (s (reduce + (map inclusive group))))))
+    (println "  deepest demand chain" (reduce max 0 (map :depth units)) "  threads" (sort (distinct (map :thread units))))
+    ;; First evaluations of compile-time roots; reads of ready roots stay in JavaScript.
+    (let [executions (rows "execute")
+          unit-ns (into {} (map (juxt :id :ns) units))
+          own-ns (fn [kind demander] (case kind ("top-level" "drain") (parse-long demander) "unit" (unit-ns (parse-long demander)) nil))]
+      (println (format "  root evaluations %d (%d analyzed on demand); by %s; %d evaluate a unit of another namespace"
+                       (count executions) (count (filter #(= "0" (nth % 3)) executions))
+                       (into (sorted-map) (frequencies (map second executions)))
+                       (count (filter (fn [[unit kind demander]]
+                                        (not= (own-ns kind demander) (unit-ns (parse-long unit))))
+                                      executions)))))
+    (let [host (filter :host units)
+          plain (remove #(or (:host %) (pos? (:expansions %))) units)]
+      (println "\ntrace: macro host")
+      (println (format "  units that entered the host %d of %d (%s); their exclusive time %s of %s (%s)"
+                       (count host) (count units) (pct (count host) (count units))
+                       (s (reduce + (map :us host))) (s unit-time) (pct (reduce + (map :us host)) unit-time)))
+      (println (format "  units with no macro call at all, native ones included: %d (%s)"
+                       (count plain) (s (reduce + (map :us plain))))))
+    (when-let [longest (when (seq units) (apply max-key inclusive units))]
+      (println (format "\ntrace: longest unit %s (%s), %s inclusive, %s exclusive, host %s, demanded by %s"
+                       (:name longest) (ns-name (:ns longest)) (s (inclusive longest)) (s (:us longest))
+                       (:host longest) (:kind longest)))
+      (println "  top units by inclusive time:")
+      (doseq [u (take 10 (sort-by (comp - inclusive) units))]
+        (println (format "   %8.3f s  excl %8.3f s  host %-5s %-9s %s:%d" (/ (inclusive u) 1e6) (/ (:us u) 1e6)
+                         (:host u) (:kind u) (:name u) (:line u)))))
+    ;; Ready width: the units each drain started, all ready at once.
+    (let [drains (->> units (filter #(= "drain" (:kind %))) (group-by :demander)
+                      (map (fn [[ns us]]
+                             (let [free (remove :host us) host (filter :host us)]
+                               {:ns ns :width (count us) :free (count free) :host (count host)
+                                :work (reduce + (map inclusive us)) :free-work (reduce + (map inclusive free))
+                                :longest (reduce max 0 (map inclusive us))
+                                :free-longest (reduce max 0 (map inclusive free))
+                                :host-work (reduce + (map inclusive host))})))
+                      (sort-by :ns) vec)
+          q (fn [xs p] (let [v (vec (sort xs))] (if (seq v) (v (min (dec (count v)) (int (* p (count v))))) 0)))]
+      (println "\ntrace: ready width per namespace drain (units the drain started; macro-free = did not enter the host)")
+      (println (format "  drains %d; width median %d, p90 %d, max %d; macro-free median %d, p90 %d, max %d"
+                       (count drains) (q (map :width drains) 0.5) (q (map :width drains) 0.9) (reduce max 0 (map :width drains))
+                       (q (map :free drains) 0.5) (q (map :free drains) 0.9) (reduce max 0 (map :free drains))))
+      (println (format "  drained units %d (%s): macro-free %d (%s), host %d (%s)"
+                       (reduce + (map :width drains)) (s (reduce + (map :work drains)))
+                       (reduce + (map :free drains)) (s (reduce + (map :free-work drains)))
+                       (reduce + (map :host drains)) (s (reduce + (map :host-work drains)))))
+      (println "  widest drains:")
+      (doseq [d (take 10 (sort-by (comp - :width) drains))]
+        (println (format "   %4d units (%4d macro-free, %4d host) %8.3f s  longest %7.3f s  %s"
+                         (:width d) (:free d) (:host d) (/ (:work d) 1e6) (/ (:longest d) 1e6) (ns-name (:ns d)))))
+      ;; Lower bounds with a barrier at each drain: the serial rest, plus per
+      ;; drain max(W/P, longest unit) (docs/compiler-concurrency.md, "Ready width").
+      (let [total (tot :cost)
+            drained (reduce + (map :work drains))
+            free (reduce + (map :free-work drains))]
+        (println "\n  drain-barrier lower bound, all drained units parallel / only macro-free ones:")
+        (doseq [P workers]
+          (let [all (+ (- total drained) (reduce + (map #(max (/ (:work %) (double P)) (:longest %)) drains)))
+                some (+ (- total free) (reduce + (map #(max (/ (:free-work %) (double P)) (:free-longest %)) drains)))]
+            (println (format "  P=%2d  %s   %s   (serial %s)" P (s all) (s some) (s total)))))))))

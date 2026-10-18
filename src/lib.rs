@@ -25,6 +25,7 @@ pub mod chunks;
 mod compilation_session;
 pub mod compile_cache;
 pub mod compile_stats;
+pub mod compile_trace;
 pub mod compiler;
 mod compiler_binding_macros;
 pub mod compiler_data;

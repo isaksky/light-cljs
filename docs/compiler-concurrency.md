@@ -931,6 +931,16 @@ in detail.
   serial work outside the parallel runs plus, per run, `max(W_run/P,
   longest_task)`, plus the ordered merge.
 
+  *Measured with one worker (light-cljs-331):* the median Penpot drain has 6
+  ready units (p90 34, max 304), 2 of them macro-free (p90 16). Macro-free
+  units are 45% of the units but 2% of unit time (0.39 of 17.1 s); units
+  that enter the macro host are the rest. Demand edges are nearly absent:
+  13,359 of 13,361 units start in their own namespace's drain, so top-level
+  passes wait 0.1 ms in all. The bound above with a barrier at each drain is
+  17.0 s at P=4 and 16.5 s at P=12, because one long unit per drain
+  dominates: stage A must not wait for a drain before the next top-level
+  pass, which its design already avoids (`Option U` on the trace: 6.6 s).
+
 ## Gates and first steps
 
 1. The worker pool and queues, with the parse queue as the first one running
@@ -944,6 +954,34 @@ in detail.
    exclusive work per stage, waits, artifact sizes and demand edges with one
    worker, as the trace baseline. Exclusive times, so nested work is not
    counted twice.
+
+   *As built (light-cljs-331):* `--stats` records the trace
+   (`src/compile_trace.rs`) as a stack of frames on the compiling thread:
+   load per file, preparing each source, each namespace's top-level pass,
+   its drain and the drain's append, index and release steps, warnings, each
+   deferred unit's analysis, and finishing the program. A frame's time
+   excludes the frames opened inside it, and V8 time, taken at the
+   outermost `v8_evaluator::invoke`, is charged to the innermost frame; a
+   unit demanded from inside JavaScript pauses its demander's V8 time. Each
+   unit records its namespace, Var, line and column, exclusive and V8 time,
+   the time it waited for units it demanded, its macro calls and form
+   nodes, whether it entered the macro host (a V8 service call other than
+   the frontier transition and bridge check every unit makes), its demander
+   (drain, top-level pass or unit) with the demand depth, and its thread (0,
+   the coordinator, until stage A). Each first evaluation of a unit's
+   compile-time root records an execution edge from the innermost frame;
+   reads of roots already ready stay in JavaScript and are not recorded yet
+   (light-cljs-359). Native macros are counted as macro calls, not as host
+   entries. Each namespace records its source index,
+   requires and stage times. The report gains `trace.*` counters ahead of
+   its table; `--stats-file PATH` writes the whole trace as TSV, which
+   `benchmarks/concurrency/dag.bb` reads in place of probe output. With
+   `--stats` off each hook is one relaxed atomic load. Generated names and
+   artifact sizes are light-cljs-332's and the cache's. On Penpot main the
+   trace reproduces the probe totals at the same commit (drains exactly,
+   top-level passes within 0.8%, 13,361 units), and the serial build is
+   within the gate; see
+   [benchmarks/compiler-concurrency.md](../benchmarks/compiler-concurrency.md).
 3. `Arc` and the `MacroHost` engine split. Gate: serial build within +2%
    wall and +3% RSS of today, suite green for both backends.
 4. Stage A, the unit queue, behind `--jobs N`. Gates: output identical across
@@ -1007,6 +1045,9 @@ checkout; its hash is recorded there.
     references; and globals added by unit bodies.
   - V8 time is measured at `v8_evaluator::invoke`, at depth 0, so it includes
     Rust callbacks made from JS.
+- **Trace** (light-cljs-331). `--stats-file PATH` writes the same costs
+  without a patch, with exclusive stage times and demand edges besides;
+  `dag.bb` reads it as it reads probe output.
 - **Models** (`dag.bb`). They take the measured costs and the require edges,
   and compute critical paths and list schedules (critical-path-first) for
   the designs above. The models assume each task costs what it cost serially

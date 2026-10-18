@@ -218,6 +218,7 @@ fn invoke<'s>(
     name: &str,
     args: &[Local<'s, v8::Value>],
 ) -> Result<Local<'s, v8::Value>, EvalError> {
+    let service = name;
     let services = Local::new(scope, state.services.borrow().as_ref().unwrap());
     let name = bridge::string(scope, name)?;
     let function = services
@@ -227,9 +228,10 @@ fn invoke<'s>(
         .try_into()
         .map_err(|_| bridge::error("V8 service is not callable"))?;
     let receiver = v8::undefined(scope).into();
-    function
-        .call(scope, receiver, args)
-        .ok_or_else(|| bridge::error("V8 service failed"))
+    let traced = crate::compile_trace::engine_enter();
+    let result = function.call(scope, receiver, args);
+    crate::compile_trace::engine_exit(traced, service);
+    result.ok_or_else(|| bridge::error("V8 service failed"))
 }
 impl V8Evaluator {
     pub(crate) fn new(options: EvaluatorOptions) -> Result<Self, EvalError> {

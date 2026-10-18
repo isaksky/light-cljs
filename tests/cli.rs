@@ -1305,6 +1305,185 @@ fn stats_reports_phase_times_and_macro_calls_on_stderr_without_changing_output()
     );
 }
 
+/// `--stats-file PATH` writes the exclusive-stage trace: stage totals that
+/// add up to the traced wall time, each namespace with its requires, and each
+/// unit with its demander. A macro the top level calls demands its helper
+/// from the top-level pass; a macro a unit's body expands demands its helper
+/// from that unit; the rest are drained. Output is unchanged.
+#[test]
+fn stats_file_traces_exclusive_stages_and_demand_edges() {
+    let sources = TempDir::new("cli-stats-file");
+    std::fs::create_dir(sources.join("app")).unwrap();
+    let write =
+        |name: &str, text: &str| std::fs::write(sources.join("app").join(name), text).unwrap();
+    write(
+        "macros.cljs",
+        "(ns app.macros)
+         (defn inner [x] (list 'inc x))
+         (defmacro twice [x] (inner (inner x)))
+         (defn outer [x] (twice x))
+         (defmacro bump [x] (outer x))
+         (js/console.log (bump 41))
+         (def bumped (bump 41))
+         (def native (let [a 1] a))
+         (def plain (+ 1 2))",
+    );
+    write(
+        "main.cljs",
+        "(ns app.main (:require [app.macros :as m :refer [bump]])) (js/console.log (bump 1) m/bumped m/plain)",
+    );
+    let root = sources.path().to_str().unwrap();
+    let args = ["--compile", "--entry", "app.main", "--source-root", root];
+    let plain = light_cljs(&args);
+    assert!(plain.status.success());
+    let file = sources.join("trace.tsv");
+    let mut traced = args.to_vec();
+    traced.extend(["--stats-file", file.to_str().unwrap()]);
+    let output = light_cljs(&traced);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(output.stdout, plain.stdout);
+    // The report keeps its shape, with the trace's counters.
+    let (counters, _) = parse_stats(&stderr);
+    let value = |key: &str| {
+        counters
+            .iter()
+            .find(|(name, _)| name == key)
+            .unwrap_or_else(|| panic!("{key} in {stderr}"))
+            .1
+    };
+    let trace = std::fs::read_to_string(&file).unwrap();
+    let mut lines = trace.lines();
+    assert_eq!(lines.next(), Some("light-cljs-trace\t1"));
+    let rows = |kind: &str| {
+        trace
+            .lines()
+            .filter_map(|line| {
+                let (row, rest) = line.split_once('\t')?;
+                (row == kind).then(|| rest.split('\t').collect::<Vec<_>>())
+            })
+            .collect::<Vec<_>>()
+    };
+    // Exclusive stage times add up to the traced wall time.
+    let stages = rows("stage");
+    let stage = |name: &str| -> u128 {
+        stages
+            .iter()
+            .find(|row| row[0] == name)
+            .unwrap_or_else(|| panic!("stage {name} in {trace}"))[1]
+            .parse()
+            .unwrap()
+    };
+    let exclusive: u128 = [
+        "other",
+        "load",
+        "prepare-source",
+        "top-level",
+        "drain",
+        "append",
+        "index",
+        "release",
+        "warnings",
+        "unit",
+        "finish",
+    ]
+    .into_iter()
+    .map(stage)
+    .sum();
+    let wall = stage("trace-wall");
+    assert!(exclusive <= wall && wall - exclusive <= 11, "{trace}");
+    assert!(stage("wall") >= wall);
+    assert_eq!(value("trace.units"), 5.0);
+    // Namespaces by source index, with their requires.
+    let namespaces = rows("namespace");
+    let summary: Vec<_> = namespaces
+        .iter()
+        .map(|row| (row[0], row[1], row[13]))
+        .collect();
+    assert_eq!(
+        summary,
+        [("0", "app.macros", ""), ("1", "app.main", "app.macros")]
+    );
+    // Each unit's name, demander and depth.
+    let units = rows("unit");
+    let edges: Vec<_> = units
+        .iter()
+        .map(|row| (row[2], row[12], row[13], row[14]))
+        .collect();
+    assert_eq!(
+        edges,
+        [
+            ("app.macros/inner", "unit", "1", "1"),
+            ("app.macros/outer", "top-level", "0", "0"),
+            ("app.macros/bumped", "drain", "0", "0"),
+            ("app.macros/native", "drain", "0", "0"),
+            ("app.macros/plain", "drain", "0", "0"),
+        ],
+        "{trace}"
+    );
+    let unit = |name: &str| units.iter().find(|row| row[2] == name).unwrap();
+    // A native macro is a macro call, though not a host entry.
+    assert_eq!(unit("app.macros/native")[9], "1");
+    assert_eq!(unit("app.macros/plain")[9], "0");
+    // The first evaluation of each root, with its demander: `bump` at the
+    // top level evaluates `outer`, whose analysis expands `twice`, which
+    // evaluates `inner`. Later reads of the ready roots stay in JavaScript.
+    let ids = |name: &str| unit(name)[0].to_owned();
+    let executions: Vec<_> = rows("execute")
+        .iter()
+        .map(|row| row.iter().map(|cell| cell.to_string()).collect::<Vec<_>>())
+        .collect();
+    assert_eq!(
+        executions,
+        [
+            [
+                ids("app.macros/outer"),
+                "top-level".into(),
+                "0".into(),
+                "0".into()
+            ],
+            [
+                ids("app.macros/inner"),
+                "unit".into(),
+                ids("app.macros/outer"),
+                "0".into()
+            ],
+        ]
+    );
+    assert_eq!(value("trace.executions"), 2.0);
+    // `outer` waited for `inner`, which it demanded.
+    assert_eq!(unit("app.macros/outer")[8], unit("app.macros/inner")[5]);
+    // Positions are the forms' lines.
+    assert_eq!(unit("app.macros/plain")[3], "9");
+    // Only the units that run a JavaScript macro enter the host.
+    if cfg!(feature = "v8-macros") {
+        let host: Vec<_> = units.iter().map(|row| (row[2], row[11])).collect();
+        assert_eq!(
+            host,
+            [
+                ("app.macros/inner", "0"),
+                ("app.macros/outer", "1"),
+                ("app.macros/bumped", "1"),
+                ("app.macros/native", "0"),
+                ("app.macros/plain", "0"),
+            ]
+        );
+        assert_eq!(value("trace.units.host"), 2.0);
+        assert_eq!(value("trace.units.without-macro-calls"), 1.0);
+        assert!(value("trace.engine-ms") > 0.0);
+    }
+    // `--stats-file` needs a path, and a namespace compilation.
+    let output = light_cljs(&["--compile", "--text", "1", "--stats-file"]);
+    assert!(!output.status.success());
+    let output = light_cljs(&["--compile", "--stats-file", "x.tsv", "--text", "1"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("--stats reports a namespace compilation")
+    );
+}
+
 /// `LIGHT_CLJS_CAPTURE_ARTIFACTS=encode` encodes and decodes every captured
 /// artifact and reports the sizes with `--stats`; the output is unchanged.
 #[test]

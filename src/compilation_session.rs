@@ -648,6 +648,7 @@ impl CompilationSession {
                         AnalysisState::Prepared(_, _, prepared) => Some(prepared.clone()),
                         _ => None,
                     };
+                    crate::compile_trace::executed(id as usize, prepared.is_some());
                     let (registration, code) = if let Some(prepared) = prepared {
                         prepared.emit()
                     } else {
@@ -1013,7 +1014,23 @@ impl CompilationSession {
                 host,
             )
         };
-        self.catalog.borrow_mut().stack.push(id);
+        let depth = {
+            let mut catalog = self.catalog.borrow_mut();
+            catalog.stack.push(id);
+            catalog.stack.len() - 1
+        };
+        // Declared before the frontier guard, so the frontier's transitions
+        // count in the unit's frame (`--stats`, [`crate::compile_trace`]).
+        let _traced = crate::compile_trace::enter_unit(
+            || crate::compile_trace::UnitInfo {
+                id,
+                source: unit.borrow().source,
+                name: unit.borrow().name.clone(),
+                span: form.span(),
+                depth,
+            },
+            &host,
+        );
         let guard = AnalysisGuard {
             session: self,
             unit: unit.clone(),

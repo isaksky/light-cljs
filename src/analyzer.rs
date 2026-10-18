@@ -3558,6 +3558,11 @@ impl NamespaceAnalysis {
         warnings: &mut Vec<AnalysisWarning>,
     ) -> Result<(), AnalysisError> {
         let source_index = self.roots.len();
+        let top_level = crate::compile_trace::enter(
+            crate::compile_trace::Stage::TopLevel,
+            source_index,
+            Some(&*macro_host),
+        );
         let (mut syntax, mut discards) = compiler_syntax(input.source, input.syntax);
         if resolution.cljc {
             crate::compiler_reader::select_cljs(input.source, syntax.to_mut(), &mut discards)?;
@@ -3670,12 +3675,19 @@ impl NamespaceAnalysis {
             .program
             .namespace_entries
             .insert(root, input.name.into());
+        drop(top_level);
         let drained = crate::compile_stats::start(self.deferred_time.is_some());
+        let drain =
+            crate::compile_trace::enter(crate::compile_trace::Stage::Drain, source_index, None);
         analyzer.drain_deferred()?;
+        drop(drain);
         if let Some(time) = &mut self.deferred_time {
             crate::compile_stats::add(time, drained);
         }
+        let traced =
+            crate::compile_trace::enter(crate::compile_trace::Stage::Warnings, source_index, None);
         analyzer.collect_expression_warnings(Some(&mut self.arities));
+        drop(traced);
         if !analyzer
             .program
             .namespaces
@@ -6359,13 +6371,19 @@ impl Analyzer<'_> {
                     kind: AnalysisErrorKind::MacroExpansion(message),
                 })
             })?;
+            use crate::compile_trace::{Stage, enter};
             let defined = self.program.globals.len();
             // The unit was analyzed from a snapshot of this program, so only
             // what it added is appended. Its snapshot-time view of the shared
             // globals must not roll back a later source declaration's live
             // metadata/flags, so those stay as they are.
+            let traced = enter(Stage::Append, self.source_index, None);
             let root = crate::program_fragment::append(&mut self.program, &program, &shared, false);
+            drop(traced);
+            let traced = enter(Stage::Release, self.source_index, None);
             session.release_application_ir(unit);
+            drop(traced);
+            let _traced = enter(Stage::Index, self.source_index, None);
             for (index, global) in self.program.globals.iter().enumerate().skip(defined) {
                 self.globals.insert(
                     (global.namespace.clone(), global.name.clone()),

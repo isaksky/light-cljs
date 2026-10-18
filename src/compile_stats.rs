@@ -114,6 +114,8 @@ pub struct CompileStats {
     /// What the persistent cache did (`--cache-dir`,
     /// [`crate::compile_cache`]).
     pub cache: Option<CacheCounts>,
+    /// The exclusive-stage trace of the analysis ([`crate::compile_trace`]).
+    pub trace: Option<crate::compile_trace::Trace>,
 }
 
 /// What a build's persistent cache did: each namespace is a hit, a miss
@@ -263,6 +265,20 @@ impl CompileStats {
             .map(|namespace| namespace.macro_calls)
     }
 
+    /// The `--stats-file` trace, with the phases after analysis, when the
+    /// compilation was traced.
+    pub fn trace_file(&self) -> Option<String> {
+        let phases = &self.phases;
+        self.trace.as_ref().map(|trace| {
+            trace.tsv(&[
+                ("prepare-application", phases.prepare_application),
+                ("emission", phases.emission),
+                ("write", phases.write),
+                ("wall", self.wall),
+            ])
+        })
+    }
+
     /// The `--stats` report.
     pub fn report(&self) -> String {
         let mut out = String::new();
@@ -327,6 +343,9 @@ impl CompileStats {
         }
         if let Some(cache) = &self.cache {
             cache.lines(&mut line);
+        }
+        if let Some(trace) = &self.trace {
+            trace.lines(&mut line);
         }
         out.push_str("[macro-calls-by-namespace]\n");
         let mut order = (0..self.namespaces.len()).collect::<Vec<_>>();

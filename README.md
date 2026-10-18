@@ -302,7 +302,16 @@ prepared and executed, and the 20 namespaces with the most macro calls. Each
 counter is one `key value` line, after a `light-cljs-stats 1` line, and the
 table follows a `[macro-calls-by-namespace]` line, one `NAMESPACE COUNT` row
 each; `light_cljs::compiler::analyze_namespace_entry_with_stats` returns the
-same numbers as a `CompileStats`.
+same numbers as a `CompileStats`. The `trace.*` counters ahead of the table
+come from a trace of *exclusive* stage times, in which nested work counts
+once: loading, the top-level passes without the units they demand, each
+deferred unit without the units it demands, the drains' bookkeeping, the
+V8 time of each, the units that entered the macro host and the ready width of
+each namespace's drain. `--stats-file PATH` (which implies `--stats`) also
+writes that trace to `PATH` as tab-separated `stage`, `namespace` and `unit`
+rows (and `execute` rows for the compile-time roots evaluated), with each
+unit's position, demander and costs, for
+`benchmarks/concurrency/dag.bb` ([docs/compiler-concurrency.md](docs/compiler-concurrency.md)).
 
 `--cache-dir DIR` with `--compile --entry` (also with `--reloadable`, `--esm`
 and `--out-dir`, at every `--optimize` level) and with `--watch` keeps a persistent compiler

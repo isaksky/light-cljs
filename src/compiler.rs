@@ -1240,6 +1240,8 @@ impl Loader<'_> {
             }
             LoadState::Unseen => {}
         }
+        // `--stats`: this source's own load, its requires' in their frames.
+        let _traced = crate::compile_trace::enter(crate::compile_trace::Stage::Load, 0, None);
         use crate::dependency_manifest::{RequireForm, SourceOrigin};
         let found = self.find(name)?;
         let source_lookup = self.last_lookup();
@@ -1929,6 +1931,8 @@ fn analyze_entry(
     let mut install_counts = crate::compile_stats::InstallCounts::default();
     let timed = stats.is_some();
     let begun = compile_stats::start(timed);
+    // The exclusive-stage trace of `--stats` ([`crate::compile_trace`]).
+    let recording = timed.then(crate::compile_trace::record);
     if !valid_namespace(entry) {
         return Err(NamespaceCompileError::new(
             "invalid entry namespace: use dot-separated ASCII names; js is reserved",
@@ -1995,6 +1999,7 @@ fn analyze_entry(
             NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
         };
         let first_lazy = analysis.lazy_target_count();
+        crate::compile_trace::namespace(index, &file.name, file.source.len(), &file.requires);
         macros.observe(|log| log.window = index as u32);
         build.analyze(index, &file.name, file.path.to_str());
         // A cancelled compilation stops at the next namespace.
@@ -2045,6 +2050,7 @@ fn analyze_entry(
                             cache.installed(macros);
                         }
                         install_counts.installed.push(file.name.clone());
+                        crate::compile_trace::installed(index);
                         true
                     }
                     Err(crate::artifact_install::InstallError::Refused(reason)) => {
@@ -2070,7 +2076,13 @@ fn analyze_entry(
         if !installed {
             let names_from = crate::generated_names::current();
             let work = capturing.then(|| macros.begin_namespace_work());
+            let traced = crate::compile_trace::enter(
+                crate::compile_trace::Stage::PrepareSource,
+                index,
+                None,
+            );
             let resolution = prepare_source(macros, file).map_err(at)?;
+            drop(traced);
             let captured = capturing.then(|| {
                 let started = compile_stats::start(timed);
                 let start = analysis.begin_capture(warnings, macros);
@@ -2181,12 +2193,14 @@ fn analyze_entry(
         index += 1;
     }
     let deferred_time = analysis.deferred_time;
+    let traced = crate::compile_trace::enter(crate::compile_trace::Stage::Finish, 0, None);
     let program = analysis
         .finish(entry_index, macros)
         .map_err(|(index, error)| {
             let file = &loader.ordered[index];
             NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
         })?;
+    drop(traced);
     drop(build);
     if let (Some(stats), Some(analysis_started), Some(deferred)) =
         (stats, analysis_started, deferred_time)
@@ -2205,6 +2219,7 @@ fn analyze_entry(
         }
         stats.macro_calls = macros.executed_expansions();
         stats.peak_macro_nodes = macros.generated_nodes.get();
+        stats.trace = recording.and_then(crate::compile_trace::Recording::finish);
         if let Some(session) = macros.session_handle() {
             stats.deferred_units = session.unit_counts();
         }

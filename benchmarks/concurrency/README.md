@@ -27,7 +27,7 @@ byte-identical to the uninstrumented build.
 | `conc_probe.rs` | The probe module the patch declares as `mod conc_probe;`; copy it to `src/conc_probe.rs`. V8 time is counted at `v8_evaluator::invoke` depth 0, so it includes Rust callbacks made from JS. |
 | `arc-experiment.patch` | The `Rc` → `Arc` swap in `arena`, `compiler_data`, `compiler_reader`, `layered`, `name_index` and `shared`, used for the A/B in the design document (medians 23.07 s `Rc`, 23.13 s `Arc`). |
 | `parse_probe.rs` | The parse harness. It links the `light_cljs` library and mimalloc, preloads every `.cljs`/`.cljc` under the roots given as arguments, and times parsing on 1, 2, 4 and 8 threads claiming one or four files at a time; one warm-up, seven samples, rotated order. Timing covers thread creation, parsing and joining. |
-| `dag.bb` | The schedule models. It reads `NSPREP` and `NSPROBE` lines, builds the require DAG and prints critical paths and list schedules (critical-path-first) for the designs in the document. |
+| `dag.bb` | The schedule models. It reads `NSPREP` and `NSPROBE` lines, or a `--stats-file` trace (light-cljs-331), builds the require DAG and prints critical paths and list schedules (critical-path-first) for the designs in the document. From a trace it also prints the exclusive stage totals, the demand edges, the macro host's share and the ready width of each drain. |
 | `phases.bb` | Attributes self samples of one thread's `sample` call tree to the outermost phase marker and the innermost light-cljs module or V8 frame. |
 | `jscallers2.bb` | Attributes V8 self samples to the light-cljs operation that entered JS (the frames above `v8_evaluator::invoke`). |
 | `main-probe.tsv` | The probe run itself: the build's whole stderr, `NS*` lines followed by `/usr/bin/time -l` (23.76 s wall, 962 MB peak RSS under the probes). |
@@ -63,6 +63,51 @@ The same run gives the other figures the document quotes: 922 namespaces,
 13,361 units (15.86 s, largest 2.03 s), top-level passes 6.00 s (3.59 s in
 V8), drains 16.53 s (10.03 s in V8), DAG depth 63 and a namespace-granularity
 critical path of 2.82 s.
+
+## Reading a trace instead of probes
+
+Since light-cljs-331 the compiler records the same costs itself: `--stats`
+keeps a trace of exclusive stage times, and `--stats-file PATH` writes it as
+a tab-separated file, with no patch and no rebuild:
+
+```sh
+bb benchmarks/concurrency/run.bb OUTPUT-DIR -- --stats-file OUTPUT-DIR/app.main.trace.tsv
+bb benchmarks/concurrency/dag.bb OUTPUT-DIR/app.main.trace.tsv [--workers 4,8,12]
+```
+
+The file starts with `light-cljs-trace 1`; each row kind has a `#` header row
+naming its columns. Times are microseconds.
+
+- `stage` rows: each stage's exclusive time, its V8 time and its macro host
+  entries. Every moment of the analysis is in exactly one of `other`, `load`,
+  `prepare-source`, `top-level`, `drain`, `append`, `index`, `release`,
+  `warnings`, `unit` and `finish`, so they add up to `trace-wall`.
+  `engine-outer` is V8 time at depth 0 as the probes took it (Rust called
+  back from JavaScript included), then come the phases after analysis.
+- `namespace` rows, by source index: name, bytes, requires and the exclusive
+  times of its load, preparation, top-level pass (with its V8 share and the
+  time it waited for the units it demanded), drain bookkeeping and warnings.
+- `unit` rows, in the order analyses finished: ID, namespace, Var, line and
+  column, exclusive time and V8 share, macro host entries, the time it waited
+  for the units it demanded, macro calls and form nodes, whether it entered
+  the macro host (itself or through a unit it demanded), its demander
+  (`drain`, `top-level` or `unit`, and which), its demand depth and thread.
+- `execute` rows: each first evaluation of a unit's compile-time root in
+  the engine (`__lightCompileUnit`), with the innermost frame that demanded
+  it and whether its JavaScript was already prepared. Later reads of a ready
+  root stay inside JavaScript and are not recorded (light-cljs-359).
+
+`dag.bb` rebuilds the probes' inclusive columns from it: a namespace's
+top-level pass plus the units it demanded, its drain plus the units the drain
+analyzed, and each drained unit with the units it demanded. On
+`main-probe.tsv` its output is unchanged.
+
+A unit *entered the macro host* when its analysis made a V8 service call
+other than the compiler frontier's transitions and the bridge check after
+each entry, which every unit makes; QuickJS-only builds record no engine time
+and no host entries. Native macros run in Rust and are not host entries; they
+are counted in the unit's macro calls, so a unit with neither is free of macro
+calls altogether.
 
 ## Producing new probe data: `run.bb`
 
@@ -117,7 +162,10 @@ roots, then delete the copy.
 
 The first four match the table at the end of the design document; all eight
 retained files were verified against the originals in
-`research/concurrency-opus/` before copying.
+`research/concurrency-opus/` before copying. `dag.bb` has since been extended
+to read traces (light-cljs-331); the hash is that of the retained version,
+`git show f68c767:benchmarks/concurrency/dag.bb`, whose output on
+`main-probe.tsv` the current version reproduces byte for byte.
 
 | File | SHA-256 |
 | --- | --- |
