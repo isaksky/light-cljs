@@ -680,10 +680,27 @@ impl InteractiveCompiler {
     /// namespace source's header and its top-level `ns*` forms do under
     /// `--compile`, and are staged until their loads finish. `ns` enters its
     /// namespace and replaces the namespace's requires; `ns*` adds to them.
+    ///
+    /// A require of a `goog.*` namespace for which `hosted` says that no
+    /// source provides it, given the request the directive would make,
+    /// binds a JavaScript host namespace and requests nothing, as
+    /// `--compile` binds it.
     pub(crate) fn directive(
         &mut self,
         form: &Form,
+        hosted: &mut dyn FnMut(&crate::source_provider::LoadRequest) -> bool,
     ) -> Result<Option<NamespaceDirective>, crate::EvalDiagnostic> {
+        // The requests of `ns` and `ns*`, which name the form's source and
+        // do not reload.
+        let file: String = form.span().source().name().into();
+        let mut probe = |namespace: &str, requesting: &str| {
+            hosted(&crate::source_provider::LoadRequest {
+                namespace: Name::new(None, namespace),
+                requesting_namespace: Name::new(None, requesting),
+                requesting_file: Some(file.clone()),
+                reload: crate::source_provider::Reload::None,
+            })
+        };
         let children = form.children();
         let head = match children.first().map(|f| f.data().kind().clone()) {
             Some(DatumKind::Symbol(name))
@@ -708,9 +725,13 @@ impl InteractiveCompiler {
             data: None,
         };
         let mut staged = if head == Some(Name::new(None, "ns")) {
-            let (namespace, mut staged) =
-                crate::compiler::session_ns(form, &self.namespace, self.options.warning_mode)
-                    .map_err(located)?;
+            let (namespace, mut staged) = crate::compiler::session_ns(
+                form,
+                &self.namespace,
+                self.options.warning_mode,
+                &mut probe,
+            )
+            .map_err(located)?;
             staged.symbol = namespace_symbol(form).map_err(|message| crate::EvalDiagnostic {
                 message,
                 location: Some(form.span()),
@@ -730,11 +751,12 @@ impl InteractiveCompiler {
                 &self.requires,
                 &self.resolution,
                 self.options.warning_mode,
+                &mut probe,
             )
             .map_err(located)?
         } else {
             return self
-                .directive_inner(form)
+                .directive_inner(form, hosted)
                 .map_err(|message| crate::EvalDiagnostic {
                     message,
                     location: Some(form.span()),
@@ -755,7 +777,11 @@ impl InteractiveCompiler {
         Ok(Some((requests, Some(staged))))
     }
     /// The other directives: `in-ns` and `require`.
-    fn directive_inner(&mut self, form: &Form) -> Result<Option<NamespaceDirective>, String> {
+    fn directive_inner(
+        &mut self,
+        form: &Form,
+        hosted: &mut dyn FnMut(&crate::source_provider::LoadRequest) -> bool,
+    ) -> Result<Option<NamespaceDirective>, String> {
         use crate::source_provider::{LoadRequest, Reload};
         fn text(form: &Form) -> Option<String> {
             match form.data().kind() {
@@ -882,8 +908,47 @@ impl InteractiveCompiler {
         for request in &mut requests {
             request.reload = request.reload.max(reload);
         }
+        // A `goog.*` library no source provides, asked with the request a
+        // load would make, binds a host namespace instead.
+        let mut index = 0;
+        while index < requests.len() {
+            let name = String::from_utf16_lossy(requests[index].namespace.name());
+            if name.starts_with("goog.") && hosted(&requests[index]) {
+                requests.remove(index);
+                self.bind_host_namespace(imports.remove(index));
+            } else {
+                index += 1;
+            }
+        }
         self.set_imports(imports)?;
         Ok(Some((requests, None)))
+    }
+    /// Bind `import`, a `require` of a `goog.*` namespace that no source
+    /// provides, as a JavaScript host namespace, as an `ns` form binds one
+    /// (`NamespaceSource::bind_host_namespace` in `--compile`): `goog`, the
+    /// namespace, its alias and its refers name host paths. As with the
+    /// other interactive bindings, a later binding of the same name wins.
+    fn bind_host_namespace(&mut self, import: crate::MacroImport) {
+        use crate::analyzer::JsRefer;
+        let namespace = import.namespace;
+        let mut bindings = vec![
+            ("goog".to_owned(), "goog".to_owned()),
+            (namespace.clone(), namespace.clone()),
+        ];
+        bindings.extend(import.alias.map(|alias| (alias, namespace.clone())));
+        bindings.extend(
+            import
+                .refers
+                .into_iter()
+                .map(|name| (name.clone(), format!("{namespace}.{name}"))),
+        );
+        for (local, path) in bindings {
+            self.aliases.retain(|(alias, _)| *alias != local);
+            self.resolution.js_refers.retain(|(name, _)| *name != local);
+            self.resolution
+                .js_refers
+                .push((local, JsRefer::Global(path)));
+        }
     }
     /// Bind `["package" :as a :refer [x] :rename {x y} :default d]` to registry
     /// lookups. The host supplies packages, so nothing is loaded. As with
@@ -990,7 +1055,7 @@ mod tests {
         let mut cursor = 0;
         let mut result = "nil".to_owned();
         while let Some(form) = compiler.next_form(&input, &mut cursor).unwrap() {
-            if let Some((_, staged)) = compiler.directive(&form).unwrap() {
+            if let Some((_, staged)) = compiler.directive(&form, &mut |_| false).unwrap() {
                 compiler.finish_directive(staged).unwrap();
                 continue;
             }

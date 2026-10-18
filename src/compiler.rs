@@ -439,6 +439,76 @@ impl NamespaceSource {
         self.syntax.nodes[node.0].kind = NodeKind::Nil;
         Ok(())
     }
+    /// Bind `spec`, a require of a `goog.*` namespace that no source
+    /// provides, as a JavaScript host namespace, as upstream treats the
+    /// Closure Library: `goog`, the namespace, its alias and its refers
+    /// (renamed) name host paths, and nothing is loaded. The caller drops the
+    /// namespace from the requires ([`Self::drop_host_namespaces`]).
+    fn bind_host_namespace(&mut self, spec: &RequireSpec) -> Result<(), NamespaceCompileError> {
+        let namespace = &spec.import.namespace;
+        let node = spec.alias_node.unwrap_or(self.syntax.roots[0]);
+        self.add_js_refer(node, "goog".into(), "goog".into())?;
+        self.add_js_refer(node, namespace.clone(), namespace.clone())?;
+        if let Some(alias) = &spec.import.alias {
+            self.add_js_refer(node, alias.clone(), namespace.clone())?;
+        }
+        for original in &spec.import.refers {
+            let local = spec
+                .renames
+                .iter()
+                .find(|(from, _)| from == original)
+                .map_or_else(|| original.clone(), |(_, to)| to.clone());
+            self.add_js_refer(node, local, format!("{namespace}.{original}"))?;
+        }
+        Ok(())
+    }
+    /// Drop the host namespaces `hosts` binds ([`Self::bind_host_namespace`])
+    /// from the requires, aliases and libspecs: they load nothing.
+    fn drop_host_namespaces(&mut self, hosts: &[String]) {
+        if hosts.is_empty() {
+            return;
+        }
+        // The spans are those of the last requires: an `ns*` adds its own
+        // to the requires of its namespace's context, which have none.
+        let unspanned = self.requires.len() - self.require_spans.len();
+        let mut spans = std::mem::take(&mut self.require_spans).into_iter();
+        let mut index = 0;
+        self.requires.retain(|name| {
+            let span = (index >= unspanned).then(|| spans.next()).flatten();
+            index += 1;
+            let kept = !hosts.contains(name);
+            if let Some(span) = span.filter(|_| kept) {
+                self.require_spans.push(span);
+            }
+            kept
+        });
+        self.aliases.retain(|(_, target)| !hosts.contains(target));
+        self.runtime_specs
+            .retain(|spec| !hosts.contains(&spec.import.namespace));
+    }
+    /// In a session's directive, bind each `goog.*` libspec for which
+    /// `hosted` says no source provides it as a host namespace, as
+    /// [`Loader`] does for a source's header.
+    fn bind_session_hosts(
+        &mut self,
+        hosted: &mut dyn FnMut(&str, &str) -> bool,
+    ) -> Result<(), NamespaceCompileError> {
+        let mut hosts = Vec::new();
+        for spec in std::mem::take(&mut self.runtime_specs) {
+            let namespace = &spec.import.namespace;
+            if namespace.starts_with("goog.")
+                && (hosts.contains(namespace) || hosted(namespace, &self.name))
+            {
+                self.bind_host_namespace(&spec)?;
+                if !hosts.contains(namespace) {
+                    hosts.push(namespace.clone());
+                }
+            }
+            self.runtime_specs.push(spec);
+        }
+        self.drop_host_namespaces(&hosts);
+        Ok(())
+    }
     fn add_js_refer(
         &mut self,
         node: NodeId,
@@ -961,10 +1031,13 @@ fn session_located<T>(
 /// is ASCII. Returns the declared namespace and the staged directive. With
 /// `warning_mode`, `[lib :as js]` is a warning, and so is a single-segment
 /// name, as in `--compile --warnings`. `namespace` is the current one.
+/// A `goog.*` libspec for which `hosted` says that no source provides it
+/// binds a host namespace and imports nothing, as `--compile` binds it.
 pub(crate) fn session_ns(
     form: &crate::compiler_data::Form,
     namespace: &str,
     warning_mode: bool,
+    hosted: &mut dyn FnMut(&str, &str) -> bool,
 ) -> Result<(String, SessionNamespaceDirective), NamespaceCompileError> {
     let (mut file, root, from_source) = session_syntax(form, namespace)?;
     file.warning_mode = warning_mode;
@@ -987,6 +1060,7 @@ pub(crate) fn session_ns(
         file.name_span = file.syntax.nodes[declared.0].span.clone();
         let clauses = file.header_clauses(&forms)?;
         file.read_clauses(root, clauses)?;
+        file.bind_session_hosts(hosted)?;
         Ok(file.name.clone())
     };
     let result = read().and_then(|name| Ok((name, session_directive(file, root, true)?)));
@@ -995,6 +1069,7 @@ pub(crate) fn session_ns(
 
 /// A session's `ns*` form, in `namespace` with its current context, which the
 /// directive adds to. With `warning_mode`, `[lib :as js]` is a warning.
+/// `hosted` is [`session_ns`]'s.
 pub(crate) fn session_nsstar(
     form: &crate::compiler_data::Form,
     namespace: &str,
@@ -1002,6 +1077,7 @@ pub(crate) fn session_nsstar(
     requires: &[String],
     resolution: &crate::analyzer::NamespaceResolution,
     warning_mode: bool,
+    hosted: &mut dyn FnMut(&str, &str) -> bool,
 ) -> Result<SessionNamespaceDirective, NamespaceCompileError> {
     let (mut file, root, from_source) = session_syntax(form, namespace)?;
     file.name = namespace.into();
@@ -1013,6 +1089,7 @@ pub(crate) fn session_nsstar(
     let result = file
         .top_level_clauses(root, &mut clauses)
         .and_then(|()| file.read_clauses(root, clauses))
+        .and_then(|()| file.bind_session_hosts(hosted))
         .and_then(|()| Ok(((), session_directive(file, root, false)?)));
     Ok(session_located(form, from_source, result)?.1)
 }
@@ -1314,20 +1391,7 @@ impl Loader<'_> {
             let provided = self.find(namespace)?.is_some();
             goog_checks.push((namespace.clone(), self.last_lookup()));
             if !provided {
-                let node = spec.alias_node.unwrap_or(file.syntax.roots[0]);
-                file.add_js_refer(node, "goog".into(), "goog".into())?;
-                file.add_js_refer(node, namespace.clone(), namespace.clone())?;
-                if let Some(alias) = &spec.import.alias {
-                    file.add_js_refer(node, alias.clone(), namespace.clone())?;
-                }
-                for original in &spec.import.refers {
-                    let local = spec
-                        .renames
-                        .iter()
-                        .find(|(from, _)| from == original)
-                        .map_or_else(|| original.clone(), |(_, to)| to.clone());
-                    file.add_js_refer(node, local, format!("{namespace}.{original}"))?;
-                }
+                file.bind_host_namespace(&spec)?;
                 recorded_requires.push((
                     namespace.clone(),
                     namespace.clone(),
@@ -1337,18 +1401,7 @@ impl Loader<'_> {
                 host_namespaces.push(namespace.clone());
             }
         }
-        let (requires, spans) = file
-            .requires
-            .into_iter()
-            .zip(file.require_spans)
-            .filter(|(name, _)| !host_namespaces.contains(name))
-            .unzip();
-        file.requires = requires;
-        file.require_spans = spans;
-        file.aliases
-            .retain(|(_, target)| !host_namespaces.contains(target));
-        file.runtime_specs
-            .retain(|spec| !host_namespaces.contains(&spec.import.namespace));
+        file.drop_host_namespaces(&host_namespaces);
         let mut forms: Vec<(String, RequireForm, Vec<_>)> = file
             .requires
             .iter()

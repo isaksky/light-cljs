@@ -543,6 +543,118 @@ fn an_ns_form_with_every_clause_behaves_as_in_compile() {
     assert_eq!(session.string(value).unwrap(), EVERY_CLAUSE_VALUE);
 }
 
+const GOOG: &str = r#"(ns app.text
+  (:require [goog.string :as gstr :refer [trim] :rename {trim strim}]
+            [goog.string.format]))
+(ns* (:require '[goog.array :as garray]))
+(require '[goog.object :as gobj :refer [containsKey]])
+(pr-str [(gstr/format "%s!" 1) (strim " a ") (goog.string/trim " b ")
+         (garray/last #js [1 2]) (containsKey #js {:k 1} "k") (gobj/get #js {:k 4} "k")])
+"#;
+const GOOG_VALUE: &str = r#"["1!" "a" "b" 2 true 4]"#;
+/// A stand-in for the Closure Library functions [`GOOG`] calls.
+const GOOG_HOST: &str = "globalThis.goog = {string: {format: (f, x) => f.replace('%s', x), \
+                         trim: s => s.trim()}, array: {last: a => a[a.length - 1]}, \
+                         object: {containsKey: (o, k) => k in o, get: (o, k) => o[k]}}";
+
+/// A `goog.*` library that the source provider does not provide is a
+/// JavaScript host namespace in an `ns`, an `ns*` and a `require`, as in
+/// `--compile`: the session asks the provider for it once and loads
+/// nothing, and the units read the host's functions through the alias, the
+/// renamed refer, a refer and the namespace's own name, as the compiled
+/// namespace does.
+#[test]
+fn an_unprovided_goog_library_is_a_host_namespace() {
+    let dir = TempDir::new("dev-goog");
+    fs::create_dir_all(dir.join("app")).unwrap();
+    fs::write(dir.join("app/text.cljs"), GOOG).unwrap();
+    let compiled = light_cljs::compile_namespace("app.text", &[dir.to_path_buf()]).unwrap();
+    let engine = Evaluator::new(Default::default()).unwrap();
+    engine.evaluate_js(GOOG_HOST).unwrap();
+    let value = engine.evaluate_js(&compiled).unwrap();
+    assert_eq!(engine.string(value).unwrap(), GOOG_VALUE);
+
+    let files = FileSourceProvider::new(vec![dir.to_path_buf()]);
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let provider = {
+        let asked = asked.clone();
+        Rc::new(move |request: &LoadRequest| {
+            asked
+                .borrow_mut()
+                .push(String::from_utf16_lossy(request.namespace.name()));
+            light_cljs::source_provider::SourceProvider::load(&files, request)
+        })
+    };
+    let dev = DevSession::new(&EvalOptions {
+        source_provider: Some(provider.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+    let actions = dev.load_file(&SourceInput::new("app/text.cljs", GOOG));
+    assert_eq!(
+        shape(&actions),
+        ["ns app.text", "ns app.text", "ns app.text", "load app.text"]
+    );
+    assert_eq!(
+        *asked.borrow(),
+        [
+            "goog.string",
+            "goog.string.format",
+            "goog.array",
+            "goog.object"
+        ]
+    );
+    assert!(dev.requires("app.text").is_empty());
+    let engine = Evaluator::new(Default::default()).unwrap();
+    engine.evaluate_js(GOOG_HOST).unwrap();
+    assert_eq!(apply(&engine, &actions), format!("{GOOG_VALUE:?}"));
+
+    let mut session = EvalSession::new(EvalOptions {
+        source_provider: Some(provider),
+        ..Default::default()
+    })
+    .unwrap();
+    session
+        .eval_string(&format!("(js* {GOOG_HOST:?})"))
+        .unwrap();
+    let value = session
+        .eval_source(&SourceInput::new("app/text.cljs", GOOG))
+        .unwrap()
+        .value;
+    assert_eq!(session.string(value).unwrap(), GOOG_VALUE);
+}
+
+/// The session asks the provider whether it provides a `goog.*` library
+/// with the request a load makes, which names the requesting file and the
+/// reload: a provider that serves the source only to `app/client.cljs`, or
+/// only to a reload, has it loaded in an `ns` and in a `require`, and its
+/// Vars are used, not host paths.
+#[test]
+fn goog_source_resolution_preserves_request_metadata() {
+    let dev = DevSession::new(&EvalOptions {
+        source_provider: Some(Rc::new(|request: &LoadRequest| {
+            let name = String::from_utf16_lossy(request.namespace.name());
+            let served = match name.as_str() {
+                "goog.custom" => request.requesting_file.as_deref() == Some("app/client.cljs"),
+                "goog.again" => request.reload != light_cljs::source_provider::Reload::None,
+                _ => false,
+            };
+            Ok(served.then(|| {
+                SourceInput::new(format!("{name}.cljs"), format!("(ns {name}) (def value 7)"))
+            }))
+        })),
+        ..Default::default()
+    })
+    .unwrap();
+    let client = "(ns app.client (:require [goog.custom :as g]))\n\
+                  (require '[goog.again :as a] :reload)\n\
+                  (+ g/value a/value)";
+    let actions = dev.load_file(&SourceInput::new("app/client.cljs", client));
+    let engine = Evaluator::new(Default::default()).unwrap();
+    assert_eq!(apply(&engine, &actions), "14");
+    assert_eq!(dev.requires("app.client"), ["goog.custom", "goog.again"]);
+}
+
 /// An `ns` form declares all of its namespace's requires, as upstream's
 /// does, so evaluating it again (a reloaded file whose `ns` changed) may
 /// point an alias at another namespace; its clauses are checked as

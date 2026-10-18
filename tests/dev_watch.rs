@@ -2070,3 +2070,67 @@ fn a_warm_started_session_watches_a_linked_source() {
     );
     assert_eq!(pair.save("app/view.cljs", &saved), "app.view");
 }
+
+/// `app.text`, which `app.view` requires, requiring Closure Library
+/// namespaces that no source root provides, as upstream code does:
+/// `goog.string` with an alias and a renamed refer, `goog.string.format`
+/// bare (as `instaparse.abnf` requires it), and `goog.object` in a
+/// top-level `require`.
+fn goog_example(src: &Path) {
+    fs::write(
+        src.join("app/text.cljs"),
+        "(ns app.text\n  (:require [goog.string :as gstr :refer [trim] :rename {trim strim}]\n            [goog.string.format]))\n\n(require '[goog.object :as gobj :refer [get]])\n\n(defn pad [n] (gstr/format \"%05d\" n))\n\n(defn clean [s] (strim (goog.string/trim s)))\n\n(defn field [o k] (if (get o k) (gobj/get o k) k))\n",
+    )
+    .unwrap();
+    let view = fs::read_to_string(src.join("app/view.cljs")).unwrap();
+    let view = view.replace(
+        "[app.state :as state]",
+        "[app.state :as state]\n            [app.text :as text]",
+    );
+    fs::write(src.join("app/view.cljs"), view).unwrap();
+}
+
+/// A `goog.*` namespace that no source root provides is a JavaScript host
+/// namespace in the session as in the startup build: neither loads it, and
+/// its alias and refers name host paths. A session that loaded the program
+/// itself and one that installed it from the cache, replaying the `ns`
+/// forms, both start, and a step that compiles the namespace again writes
+/// the startup build's unit and map, byte for byte.
+#[test]
+fn an_unprovided_goog_require_is_a_host_namespace_in_the_session() {
+    let mut pair = Pair::start("dev-watch-goog", &[], goog_example);
+    let report = &pair.warm.startup;
+    assert_eq!(stat(report, "cache.hits"), "5", "{report:#?}");
+    // The host paths a unit reads, in order.
+    let hosts = |unit: &str| {
+        unit.split("host(\"goog\")")
+            .skip(1)
+            .map(|rest| {
+                let end = rest
+                    .find(|c: char| !(c.is_alphanumeric() || "[]\"".contains(c)))
+                    .unwrap_or(rest.len());
+                format!("goog{}", &rest[..end])
+            })
+            .collect::<Vec<_>>()
+    };
+    let built = hosts(&pair.cold.read("app.text.js"));
+    assert_eq!(
+        built,
+        [
+            "goog[\"string\"][\"format\"]",
+            "goog[\"string\"][\"trim\"]",
+            "goog[\"string\"][\"trim\"]",
+            "goog[\"object\"][\"get\"]",
+            "goog[\"object\"][\"get\"]",
+        ]
+    );
+    // Both sessions compile the namespace again into the same unit, which
+    // reads the host paths the startup build's reads.
+    let text = pair.cold.source("app/text.cljs");
+    assert_eq!(pair.save("app/text.cljs", &text), "app.text");
+    assert_eq!(hosts(&pair.cold.read("app.text.js")), built);
+    assert_eq!(
+        pair.reload(&["app.text.js"]),
+        record("start\nclicks: [1]\nreloading\nclicks: [2]\n")
+    );
+}

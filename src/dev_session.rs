@@ -712,7 +712,10 @@ impl DevSession {
         mode: Mode,
         to: &mut dyn Interpreter,
     ) -> Result<(), EvalDiagnostic> {
-        let directive = self.compiler.borrow_mut().directive(form)?;
+        let directive = self
+            .compiler
+            .borrow_mut()
+            .directive(form, &mut |request| self.hosted(request))?;
         self.flush_warnings(form, to)?;
         if let Some((requests, staged)) = directive {
             to.apply(Action::Namespace(self.namespace()))?;
@@ -873,6 +876,23 @@ impl DevSession {
                 })
                 .collect(),
         ))
+    }
+    /// Whether the namespace of `request`, a `goog.*` namespace a directive
+    /// requires, is a JavaScript host namespace: one the session has not
+    /// loaded and the source provider does not provide for this request,
+    /// which `--compile` binds instead of loading
+    /// (`NamespaceSource::bind_host_namespace`). As there, the bundled
+    /// libraries are not asked. A provider that fails answers no, so that
+    /// the load reports its error.
+    fn hosted(&self, request: &LoadRequest) -> bool {
+        let name = String::from_utf16_lossy(request.namespace.name());
+        if self.loaded.borrow().contains(&name) {
+            return false;
+        }
+        match &self.source_provider {
+            Some(provider) => matches!(provider.load(request), Ok(None)),
+            None => true,
+        }
     }
     /// Load each requested namespace the session has not loaded, compiling
     /// its forms as a `Load` after a `Namespace` of the namespace it enters,

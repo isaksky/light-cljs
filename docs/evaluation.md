@@ -193,10 +193,13 @@ requires, as upstream's does: evaluating it again, as a reloaded file does,
 replaces the namespace's aliases, refers and exclusions with its own (the
 `EvalOptions::aliases` of the initial namespace included), so an alias may
 now name another namespace and one it drops is gone. `ns*` and `require` add
-to them. The loader's own rules stay `--compile`'s alone: there a `goog.*`
-library with no source is a JavaScript host namespace and a missing
-`clojure.x` falls back to `cljs.x`, while the session asks its source
-provider for both. A `require` reloads with the flag `:reload` or
+to them. A `goog.*` library that the source provider does not provide (or
+any, without a provider) is a JavaScript host namespace, in an `ns`, `ns*`
+or `require` as in `--compile`: nothing loads, and `goog`, the namespace,
+its alias and its refers name host paths, so `(gstr/format ...)` after
+`[goog.string :as gstr]` reads `goog.string.format` from the global object
+(light-cljs-361). A missing `clojure.x` falls back to `cljs.x` in
+`--compile` alone; the session asks its source provider for it. A `require` reloads with the flag `:reload` or
 `:reload-all` anywhere among its arguments (`(require :reload 'lib)` too),
 for every library it names, or with the libspec option `[lib :reload true]`
 or `[lib :reload-all true]` for that library. A reload compiles the text the

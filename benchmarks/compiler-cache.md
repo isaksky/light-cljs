@@ -239,6 +239,27 @@ starts. These are one run each of the release binary of this change, with
   of the directives. Emission takes 6.6 s here and 18 to 20 s in the two
   cold runs, at load 8.9 against 5.6.
 
+## Host `goog.*` namespaces under watch (light-cljs-361, October 18, 2026)
+
+The session now binds a `goog.*` require that no source root provides as a
+host namespace, as `--compile` does, so Penpot `app.main` needs no
+`goog.string.format` stand-in: 922 namespaces where the stand-in made 923.
+light-cljs-360 is not done yet, so these runs keep the one-file overlay of
+`vendor/` that moves `cuerdas.core/repeat` above its macros. Nothing else
+is changed. One run each of the release binary at `663aa49`, with the
+penpot.bb limits and `--stats`, stopped at the watching line. Peak RSS was
+sampled every 0.5 s. Load was 3.9 to 7.4, with two other workers active.
+Times in s.
+
+| Start | Analysis | Emission + write | Session | Startup | Peak RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| without `--cache-dir` (V8 build, then the session's own load) | 24.5 | 21.3 | 742.2 | 788.1 | 14.0 GB |
+| `--cache-dir`, filling an empty cache (922 misses) | 104.2 | 21.3 | 2.2 | 131.0 | 0.78 GB |
+| `--cache-dir`, warm (922 hits, 0 macro calls) | 0.02 | 7.2 | 2.1 | 10.8 | 0.65 GB |
+
+These match light-cljs-349's runs with the stand-in, within load noise. The
+session's own load is still the quadratic per-form copy of light-cljs-348.
+
 ## Watch invalidation (light-cljs-325, October 18, 2026)
 
 `--watch` now records the startup build's dependency manifest and revises it
