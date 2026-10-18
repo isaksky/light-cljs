@@ -120,6 +120,7 @@ mod map_value_equiv;
 mod mapv_apply;
 mod multimethod_evidence;
 mod multimethods;
+mod namespace_artifacts;
 mod namespace_completion;
 mod namespace_shadowing;
 mod npm_packages;

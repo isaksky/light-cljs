@@ -250,6 +250,40 @@ impl<T> Arena<T> {
                 .all(|(a, b)| Arc::ptr_eq(a, b))
     }
 
+    /// The IDs below `len` whose entries differ from `before`'s, a table
+    /// this one was cloned from. Leaves the two still share are skipped
+    /// without comparing their entries: only leaves a write copied, and the
+    /// tail, are compared.
+    pub fn changed_entries(&self, before: &Self, len: usize) -> Vec<usize>
+    where
+        T: PartialEq,
+    {
+        let len = len.min(self.len()).min(before.len());
+        let mut changed = Vec::new();
+        let mut id = 0;
+        while id < len {
+            let (start, leaf) = before.leaf(id);
+            let (current_start, current) = self.leaf(id);
+            if start == current_start
+                && leaf.len() == current.len()
+                && std::ptr::eq(leaf.as_ptr(), current.as_ptr())
+            {
+                id = (start + leaf.len()).min(len);
+                continue;
+            }
+            let stop = (start + leaf.len())
+                .min(current_start + current.len())
+                .min(len);
+            for index in id..stop {
+                if leaf[index - start] != current[index - current_start] {
+                    changed.push(index);
+                }
+            }
+            id = stop;
+        }
+        changed
+    }
+
     fn chunk(&self, id: usize) -> (usize, usize) {
         let hint = self.hint.load(Relaxed);
         if let Some(&start) = self.starts.get(hint)
@@ -553,6 +587,29 @@ mod tests {
         arena[2000] = Counted(copies.clone());
         assert!(copies.get() <= super::LEAF_SIZE);
         assert_eq!(versions.last().unwrap().len(), 21000);
+    }
+
+    #[test]
+    fn changed_entries_compares_only_leaves_a_write_copied() {
+        let mut arena: Arena<usize> = (0..1000).collect();
+        arena.freeze();
+        let before = arena.clone();
+        arena.extend(1000..1100);
+        arena.freeze();
+        arena[3] = 33;
+        arena[700] = 700;
+        arena[999] = 0;
+        assert_eq!(arena.changed_entries(&before, 1000), [3, 999]);
+        assert_eq!(arena.changed_entries(&before, 900), [3]);
+        assert_eq!(
+            before.changed_entries(&before.clone(), 1000),
+            Vec::<usize>::new()
+        );
+        // A table whose entries were all copied out is compared entry by entry.
+        let mut copied = arena.clone();
+        copied.unfreeze();
+        copied[10] = 1;
+        assert_eq!(copied.changed_entries(&before, 1000), [3, 10, 999]);
     }
 
     #[test]

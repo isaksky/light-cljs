@@ -163,6 +163,11 @@ impl DeferredUnit {
         }
     }
 
+    /// The prepared compile-time JavaScript, as [`Self::emit`] returns it.
+    pub(crate) fn code(&self) -> &str {
+        &self.source
+    }
+
     pub(crate) fn emit(&self) -> (NamespaceRegistration, String) {
         // Registration reads names and reader context only. Global metadata
         // expression IDs are deliberately never followed by this operation.

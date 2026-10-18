@@ -74,7 +74,60 @@ enum AnalysisState {
 #[derive(Clone)]
 enum Registration {
     Root(String, Option<usize>, Option<usize>, bool, String),
-    Bundle(String),
+    Bundle(Rc<BundleRecord>),
+}
+/// A declaration bundle's registration, kept as data: its JavaScript names
+/// the bundle's unit ID, which an artifact records as a relocatable reference.
+pub(crate) struct BundleRecord {
+    /// The products, by `ns/name`.
+    pub products: Vec<String>,
+    pub unit: usize,
+    pub extensions: Vec<(String, Option<String>, String)>,
+    pub location: String,
+    pub once: bool,
+    pub group: bool,
+}
+impl BundleRecord {
+    /// The unit that registers the bundle in the compile-time session.
+    pub fn source(&self) -> String {
+        fn quoted(s: &str) -> String {
+            let mut out = String::from("\"");
+            for c in s.encode_utf16() {
+                out.push_str(&format!("\\u{c:04x}"));
+            }
+            out.push('"');
+            out
+        }
+        let names = self
+            .products
+            .iter()
+            .map(|name| quoted(name))
+            .collect::<Vec<_>>()
+            .join(",");
+        let indices = self
+            .extensions
+            .iter()
+            .map(|(p, t, identity)| {
+                format!(
+                    "[{},{},{}]",
+                    quoted(p),
+                    t.as_deref().map_or("null".into(), quoted),
+                    quoted(identity)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let unit = self.unit;
+        let code = format!(
+            "(() => {{ let code; return rt => {{ code ??= (0,eval)(globalThis.__lightCompileUnit({unit})); return code(rt); }}; }})()"
+        );
+        format!(
+            "rt => globalThis.__lightRegisterBundle([{names}], {code}, [{indices}], {}, {}, {})",
+            quoted(&self.location),
+            self.once,
+            self.group
+        )
+    }
 }
 #[derive(Default)]
 struct Catalog {
@@ -91,8 +144,172 @@ struct Catalog {
 #[derive(Default)]
 pub(crate) struct CompilationSession {
     catalog: RefCell<Catalog>,
+    /// While namespace artifacts are captured ([`crate::artifact_capture`]),
+    /// what the catalog does not otherwise keep about its units and macros.
+    capture: RefCell<Option<SessionCapture>>,
+}
+/// What capture needs beyond the catalog, recorded only while it is on.
+#[derive(Default)]
+struct SessionCapture {
+    /// By unit ID from `first_unit` on.
+    units: Vec<UnitCapture>,
+    first_unit: usize,
+    macros: Vec<CapturedMacro>,
+    expansions: Vec<CapturedExpansion>,
+}
+/// A source macro call analysis expanded, for an artifact's provenance.
+pub(crate) struct CapturedExpansion {
+    /// The macro, `ns/name`, and its generation when it ran.
+    pub key: String,
+    pub generation: usize,
+    pub definition_source: String,
+    pub definition: std::ops::Range<usize>,
+    pub call: std::ops::Range<usize>,
+    pub source_index: usize,
+}
+#[derive(Default)]
+struct UnitCapture {
+    /// The globals of the unit's definition snapshot.
+    view_globals: usize,
+    extension_frontier: usize,
+    /// The program's globals the unit's own analysis added.
+    added: Vec<usize>,
+}
+/// A `defmacro`'s compile-time function, as the macro host evaluated it.
+pub(crate) struct CapturedMacro {
+    pub key: String,
+    pub code: String,
+    pub view_globals: usize,
+}
+/// A unit as capture reads it from the catalog.
+pub(crate) struct UnitRecord {
+    pub name: String,
+    pub generation: usize,
+    pub analyses: usize,
+    pub emitted: bool,
+    /// The prepared compile-time JavaScript, or why there is none.
+    pub code: Result<String, &'static str>,
+    pub view_globals: usize,
+    pub extension_frontier: usize,
+    pub added: Vec<usize>,
+}
+/// A registration as capture reads it from the catalog.
+pub(crate) enum RegistrationRecord {
+    Root {
+        name: String,
+        unit: Option<usize>,
+        test: Option<usize>,
+        once: bool,
+        location: String,
+    },
+    Bundle(Rc<BundleRecord>),
 }
 impl CompilationSession {
+    /// Record what namespace artifacts need from now on.
+    pub fn begin_capture(&self) {
+        let first_unit = self.catalog.borrow().units.len();
+        *self.capture.borrow_mut() = Some(SessionCapture {
+            first_unit,
+            ..Default::default()
+        });
+    }
+    pub fn capturing(&self) -> bool {
+        self.capture.borrow().is_some()
+    }
+    /// How many units, registrations and bundles the catalog holds.
+    pub fn capture_marks(&self) -> (usize, usize, usize) {
+        let c = self.catalog.borrow();
+        (c.units.len(), c.registrations.len(), c.bundle_count)
+    }
+    pub fn capture_macro(&self, key: String, code: String, view_globals: usize) {
+        if let Some(capture) = self.capture.borrow_mut().as_mut() {
+            capture.macros.push(CapturedMacro {
+                key,
+                code,
+                view_globals,
+            });
+        }
+    }
+    pub fn capture_expansion(&self, expansion: CapturedExpansion) {
+        if let Some(capture) = self.capture.borrow_mut().as_mut() {
+            capture.expansions.push(expansion);
+        }
+    }
+    /// The macros declared and the source macro calls expanded since the
+    /// last call.
+    pub fn take_captured(&self) -> (Vec<CapturedMacro>, Vec<CapturedExpansion>) {
+        self.capture
+            .borrow_mut()
+            .as_mut()
+            .map(|capture| {
+                (
+                    std::mem::take(&mut capture.macros),
+                    std::mem::take(&mut capture.expansions),
+                )
+            })
+            .unwrap_or_default()
+    }
+    /// Note the program globals the analysis of `unit` appended.
+    pub fn capture_added_globals(&self, unit: usize, added: Vec<usize>) {
+        if let Some(capture) = self.capture.borrow_mut().as_mut()
+            && let Some(entry) = unit
+                .checked_sub(capture.first_unit)
+                .and_then(|index| capture.units.get_mut(index))
+        {
+            entry.added = added;
+        }
+    }
+    /// The units from ID `from` on.
+    pub fn captured_units(&self, from: usize) -> Result<Vec<UnitRecord>, String> {
+        let catalog = self.catalog.borrow();
+        let mut capture = self.capture.borrow_mut();
+        let capture = capture.as_mut().ok_or("capture is off")?;
+        let mut records = Vec::new();
+        for (id, unit) in catalog.units.iter().enumerate().skip(from) {
+            let entry = id
+                .checked_sub(capture.first_unit)
+                .and_then(|index| capture.units.get_mut(index))
+                .ok_or("a unit registered before capture began")?;
+            let unit = unit.borrow();
+            let code = match &unit.state {
+                AnalysisState::Prepared(_, _, prepared) => Ok(prepared.code().to_owned()),
+                AnalysisState::Unstarted => Err("a deferred unit was never analyzed"),
+                AnalysisState::Analyzing => Err("a deferred unit is still being analyzed"),
+                AnalysisState::Analyzed(..) => Err("a deferred unit was analyzed but not prepared"),
+                AnalysisState::Failed(..) => Err("a deferred unit failed"),
+            };
+            records.push(UnitRecord {
+                name: unit.name.clone(),
+                generation: unit.request.generation,
+                analyses: unit.analyses,
+                emitted: unit.emitted,
+                code,
+                view_globals: entry.view_globals,
+                extension_frontier: entry.extension_frontier,
+                added: std::mem::take(&mut entry.added),
+            });
+        }
+        Ok(records)
+    }
+    /// The registrations from position `from` on.
+    pub fn captured_registrations(&self, from: usize) -> Vec<RegistrationRecord> {
+        self.catalog
+            .borrow()
+            .registrations
+            .iter()
+            .skip(from)
+            .map(|registration| match registration {
+                Registration::Root(name, unit, test, once, location) => RegistrationRecord::Root {
+                    name: name.clone(),
+                    unit: *unit,
+                    test: *test,
+                    once: *once,
+                    location: location.clone(),
+                },
+                Registration::Bundle(bundle) => RegistrationRecord::Bundle(bundle.clone()),
+            })
+            .collect()
+    }
     pub fn bootstrap(&self) -> Option<Bootstrap> {
         self.catalog.borrow().bootstrap.clone()
     }
@@ -150,9 +367,9 @@ impl CompilationSession {
                 Registration::Root(name, unit, test, once, location) => {
                     Self::install(evaluator.as_ref(), &name, unit, test, once, &location)?
                 }
-                Registration::Bundle(source) => {
+                Registration::Bundle(bundle) => {
                     let value = evaluator
-                        .evaluate_unit(&source)
+                        .evaluate_unit(&bundle.source())
                         .map_err(|e| e.to_string())?;
                     evaluator.release(value).map_err(|e| e.to_string())?;
                 }
@@ -213,34 +430,13 @@ impl CompilationSession {
             location,
             analyzed,
         } = registration;
-        fn quoted(s: &str) -> String {
-            let mut out = String::from("\"");
-            for c in s.encode_utf16() {
-                out.push_str(&format!("\\u{c:04x}"));
-            }
-            out.push('"');
-            out
-        }
         let names = products
             .iter()
             .map(|g| {
                 let b = &program.globals[g.0];
-                quoted(&format!("{}/{}", b.namespace, b.name))
+                format!("{}/{}", b.namespace, b.name)
             })
-            .collect::<Vec<_>>()
-            .join(",");
-        let indices = extensions
-            .iter()
-            .map(|(p, t, identity)| {
-                format!(
-                    "[{},{},{}]",
-                    quoted(p),
-                    t.as_deref().map_or("null".into(), quoted),
-                    quoted(identity)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+            .collect::<Vec<_>>();
         let name = format!("declaration#{}", self.catalog.borrow().units.len());
         let unit = self
             .register(name, Some(form), snapshot, host, false, location.clone())?
@@ -256,16 +452,18 @@ impl CompilationSession {
             unit.snapshot = None;
             unit.host = None;
         }
-        let code = format!(
-            "(() => {{ let code; return rt => {{ code ??= (0,eval)(globalThis.__lightCompileUnit({unit})); return code(rt); }}; }})()"
-        );
-        let source = format!(
-            "rt => globalThis.__lightRegisterBundle([{names}], {code}, [{indices}], {}, {once}, {group})",
-            quoted(&location)
-        );
+        let bundle = Rc::new(BundleRecord {
+            products: names,
+            unit,
+            extensions: extensions.to_vec(),
+            location,
+            once,
+            group,
+        });
+        let source = bundle.source();
         let bootstrap = {
             let mut c = self.catalog.borrow_mut();
-            c.registrations.push(Registration::Bundle(source.clone()));
+            c.registrations.push(Registration::Bundle(bundle));
             c.bundle_count += 1;
             for g in products {
                 let b = &program.globals[g.0];
@@ -340,6 +538,13 @@ impl CompilationSession {
             };
             let id = form.map(|form| {
                 let id = c.units.len();
+                if let Some(capture) = self.capture.borrow_mut().as_mut() {
+                    capture.units.push(UnitCapture {
+                        view_globals: snapshot.resolution_program.globals.len(),
+                        extension_frontier: snapshot.extension_frontier,
+                        added: Vec::new(),
+                    });
+                }
                 c.units.push(Rc::new(RefCell::new(Unit {
                     request,
                     name: name.clone(),

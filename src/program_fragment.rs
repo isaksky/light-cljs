@@ -20,6 +20,11 @@ pub(crate) struct SharedPrefix {
 }
 
 impl SharedPrefix {
+    /// How many globals the fragment shares.
+    pub(crate) fn globals(&self) -> usize {
+        self.globals
+    }
+
     /// All of `snapshot` at the same IDs, for a fragment appended to another
     /// program analyzed from the same snapshot.
     pub(crate) fn same(snapshot: &Program) -> Self {

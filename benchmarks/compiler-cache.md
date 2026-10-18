@@ -157,3 +157,32 @@ program, of which 6.0 s was the session load.
 
 The startup path is unchanged. The cost the measurements point at is the
 quadratic session load, which light-cljs-348 addresses directly.
+
+## Namespace artifact capture (light-cljs-315, October 18, 2026)
+
+Capture runs only when a compilation asks for artifacts
+(`analyze_namespace_entry_with_artifacts`); until the store exists,
+`LIGHT_CLJS_CAPTURE_ARTIFACTS` turns it on for `--compile --entry`. `1`
+captures each namespace and drops the artifact once it is handed over, as a
+store that writes it and lets it go would; `keep` holds every artifact until
+the process exits, as an in-memory map would. Three alternating rounds of the
+parent `603c1a8`, the change with capture off, `1` and `keep`, all release
+builds, at 1-minute load 1.4 to 2.3. Output is 33,588,607 bytes in every run.
+
+| Build | Wall (s), run 1-3 | Mean wall | Peak RSS (GB), run 1-3 | Mean RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `603c1a8` | 21.14, 21.13, 21.16 | 21.14 | 0.955, 0.963, 0.973 | 0.964 |
+| Change, capture off | 21.14, 21.18, 21.11 | 21.14 | 0.958, 0.970, 0.952 | 0.960 |
+| Capture, `1` | 22.14, 22.11, 22.12 | 22.12 | 0.966, 0.965, 0.983 | 0.972 |
+| Capture, `keep` | 22.18, 22.46, 22.19 | 22.28 | 1.185, 1.236, 1.221 | 1.214 |
+
+With capture off the change is 0.0% wall and -0.4% RSS against its parent,
+within the +3% and +5% gate. With capture on, peak RSS is +1.2% against
+capture off, within the +10% the pellet allows, and wall is +4.6%. Keeping
+every artifact costs +26.4% RSS: the 922 artifacts are about 183 MB by
+`cache.capture.bytes`, so the store must write and release each one rather
+than hold them for the build. All 922 namespaces capture, none refused. Three
+`--stats` runs with capture (22.11, 22.11, 22.06 s) report
+`cache.capture-ms` 1,029, 1,037 and 1,026, 4.7% of the wall time;
+`time.analysis-ms` (about 5,390) and `time.deferred-units-ms` (about 14,780)
+exclude it.

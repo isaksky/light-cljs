@@ -132,6 +132,14 @@ pub struct MacroHost {
         std::rc::Rc<std::cell::RefCell<Option<crate::dependency_manifest::ObservationLog>>>,
 }
 
+/// A namespace's entries in the macro host's tables, borrowed.
+pub(crate) struct NamespaceDeclarations<'a> {
+    pub imports: &'a [MacroImport],
+    pub renames: &'a [(String, String, String)],
+    pub namespace_imports: &'a [(String, String)],
+    pub doc: Option<&'a crate::compiler_data::Datum>,
+}
+
 /// Every compilation in the process gets its own reader generation, so a
 /// fresh host never reuses the declarations an earlier one registered.
 static READER_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -674,6 +682,25 @@ impl MacroHost {
         if let Some((symbol, doc)) = symbol {
             self.set_namespace_symbol(namespace, symbol, doc);
         }
+    }
+    /// What `prepare_source` and analysis declared for `namespace`: its
+    /// imports, renamed macros and `:import`ed host names, and its `ns`
+    /// form's docstring ([`crate::artifact_capture`]).
+    pub(crate) fn namespace_declarations(&self, namespace: &str) -> NamespaceDeclarations<'_> {
+        NamespaceDeclarations {
+            imports: self.imports.get(namespace).map_or(&[], Vec::as_slice),
+            renames: self.renames.get(namespace).map_or(&[], Vec::as_slice),
+            namespace_imports: self
+                .namespace_imports
+                .get(namespace)
+                .map_or(&[], Vec::as_slice),
+            doc: self.namespace_docs.get(namespace),
+        }
+    }
+    /// Whether `namespace/name` is a Var of the compile-time session, and
+    /// whether it is private.
+    pub(crate) fn runtime_var(&self, key: &str) -> Option<bool> {
+        self.runtime_vars.get(key).copied()
     }
     pub(crate) fn set_renames(&mut self, caller: &str, renames: Vec<(String, String, String)>) {
         self.renames.insert(caller.to_owned(), renames);

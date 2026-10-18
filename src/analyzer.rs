@@ -3647,6 +3647,44 @@ impl NamespaceAnalysis {
         Ok(())
     }
 
+    /// Begin capturing the next namespace's artifact
+    /// ([`crate::artifact_capture`]), before its analysis.
+    pub(crate) fn begin_capture(
+        &mut self,
+        warnings: &[AnalysisWarning],
+        macro_host: &MacroHost,
+    ) -> crate::artifact_capture::CaptureStart {
+        crate::artifact_capture::begin(
+            &mut self.program,
+            self.roots.len(),
+            warnings,
+            macro_host.session_handle().as_deref(),
+        )
+    }
+
+    /// The artifact of the namespace [`Self::analyze`] just completed.
+    pub(crate) fn finish_capture(
+        &self,
+        start: &crate::artifact_capture::CaptureStart,
+        input: crate::artifact_capture::CaptureInput<'_>,
+        macro_host: &MacroHost,
+        warnings: &[AnalysisWarning],
+    ) -> Result<crate::namespace_artifact::NamespaceArtifact, String> {
+        let root = *self.roots.last().ok_or("no namespace was analyzed")?;
+        crate::artifact_capture::finish(
+            start,
+            crate::artifact_capture::Completed {
+                program: &self.program,
+                names: &self.globals,
+                root,
+                source_index: self.roots.len() - 1,
+                warnings,
+            },
+            input,
+            macro_host,
+        )
+    }
+
     /// Check the lazy targets and close the program. Its root runs every
     /// source in order. Its value is the value of source `entry`: when
     /// sources reached only through lazy references follow the entry, the
@@ -6255,6 +6293,18 @@ impl Analyzer<'_> {
                     (global.namespace.clone(), global.name.clone()),
                     GlobalId(index),
                 );
+            }
+            if session.capturing() {
+                let added = program
+                    .globals
+                    .range(shared.globals()..program.globals.len())
+                    .filter_map(|global| {
+                        self.globals
+                            .get(&(global.namespace.clone(), global.name.clone()))
+                            .map(|id| id.0)
+                    })
+                    .collect();
+                session.capture_added_globals(unit, added);
             }
             self.program.exprs[placeholder.0].kind = ExprKind::Do(vec![root]);
             self.warnings.extend(warnings);
@@ -9241,6 +9291,21 @@ impl Analyzer<'_> {
                 .map_err(error)?;
             self.macro_host
                 .register_reader_declarations(self.pending_reader_registration.take());
+            if let Some(session) = self.macro_host.session_handle()
+                && session.capturing()
+                && let Some(key) = self.macro_host.source_macro_key(self.namespace, target)
+                && let Some(declaration) = self.macro_host.javascript_macros.get(&key)
+            {
+                let definition = declaration.definition();
+                session.capture_expansion(crate::compilation_session::CapturedExpansion {
+                    generation: declaration.generation(),
+                    definition_source: definition.source().name().to_owned(),
+                    definition: definition.bytes(),
+                    key,
+                    call: call_span.clone(),
+                    source_index: self.source_index,
+                });
+            }
             return self.import_form(&result).map(Some);
         }
         // Canonical quoted source calls expand during analysis in either phase.

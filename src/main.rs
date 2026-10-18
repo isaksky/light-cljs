@@ -504,6 +504,12 @@ fn run_namespace(
 }
 
 /// Analyze `entry` from `roots`, recording `stats` when given (`--stats`).
+///
+/// Until the cache store exists (docs/compiler-cache.md, "Implementation
+/// sequence"), the environment variable `LIGHT_CLJS_CAPTURE_ARTIFACTS`
+/// measures namespace artifact capture: `1` captures each namespace and
+/// drops its artifact, as a store that writes it would; `keep` keeps every
+/// artifact until the compilation ends, as an in-memory one would.
 fn analyze_entry(
     entry: &str,
     roots: &[PathBuf],
@@ -512,6 +518,36 @@ fn analyze_entry(
     warnings: &mut Vec<AnalysisWarning>,
     stats: Option<&mut CompileStats>,
 ) -> Result<(light_cljs::Program, Vec<(PathBuf, String)>), light_cljs::NamespaceCompileError> {
+    if let Some(mode) = env::var_os("LIGHT_CLJS_CAPTURE_ARTIFACTS").filter(|mode| !mode.is_empty())
+    {
+        let keep = mode == "keep";
+        let mut kept = Vec::new();
+        let analyzed = light_cljs::compiler::analyze_namespace_entry_with_artifacts(
+            entry,
+            roots,
+            host,
+            options,
+            warnings,
+            stats,
+            &mut |capture| {
+                // What capture could not represent, or represented wrongly.
+                if let Err(reason) = capture
+                    .artifact
+                    .as_ref()
+                    .map_err(String::clone)
+                    .and_then(|a| a.validate())
+                {
+                    eprintln!("capture skipped {}: {reason}", capture.namespace);
+                }
+                if keep {
+                    kept.push(capture);
+                }
+            },
+        );
+        // The process ends with the compilation, which keeps them until then.
+        std::mem::forget(kept);
+        return analyzed;
+    }
     match stats {
         Some(stats) => light_cljs::compiler::analyze_namespace_entry_with_stats(
             entry, roots, host, options, warnings, stats,

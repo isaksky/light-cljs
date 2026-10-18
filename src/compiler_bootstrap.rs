@@ -383,6 +383,16 @@ pub(crate) struct CompiledMacro {
     generation: usize,
     reads_environment: bool,
 }
+impl CompiledMacro {
+    /// The `defmacro` form's place.
+    pub(crate) fn definition(&self) -> &crate::compiler_data::SourceSpan {
+        &self.definition
+    }
+    /// One more than the definition it replaced; also `:light-cljs/generation`.
+    pub(crate) fn generation(&self) -> usize {
+        self.generation
+    }
+}
 
 /// Declaration seed: add the hidden ABI parameters without evaluating a macro.
 /// The returned defn belongs to a compile-time unit, never an application unit.
@@ -522,6 +532,15 @@ impl MacroHost {
                 .map_err(|e| e.to_string())?;
         let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
         let (registration, unit) = crate::emitter::emit_deferred_unit(&program);
+        if let Some(session) = self.session_handle()
+            && session.capturing()
+        {
+            session.capture_macro(
+                format!("{namespace}/{name}"),
+                unit.clone(),
+                snapshot.resolution_program.globals.len(),
+            );
+        }
         engine
             .evaluate_registration(&registration.source, &registration.chunks)
             .map_err(|e| e.to_string())?;

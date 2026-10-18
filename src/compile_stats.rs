@@ -96,6 +96,23 @@ pub struct CompileStats {
     /// `--watch`: loading the program into the watch's development session
     /// after the startup build.
     pub session_load: Option<Duration>,
+    /// When namespace artifacts were captured
+    /// ([`crate::compiler::analyze_namespace_entry_with_artifacts`]).
+    pub capture: Option<CaptureCounts>,
+}
+
+/// The namespace artifacts a compilation captured.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CaptureCounts {
+    /// Namespaces captured as artifacts.
+    pub captured: usize,
+    /// Namespaces whose artifact capture refused, with a reason.
+    pub skipped: usize,
+    /// The artifacts' estimated size
+    /// ([`crate::namespace_artifact::NamespaceArtifact::approximate_bytes`]).
+    pub bytes: usize,
+    /// Time spent capturing, outside `analysis`.
+    pub time: Duration,
 }
 
 impl CompileStats {
@@ -139,6 +156,12 @@ impl CompileStats {
         line("deferred-units.analyzed", &self.deferred_units.analyzed);
         line("deferred-units.prepared", &self.deferred_units.prepared);
         line("deferred-units.executed", &self.deferred_units.executed);
+        if let Some(capture) = &self.capture {
+            line("cache.capture.namespaces", &capture.captured);
+            line("cache.capture.skipped", &capture.skipped);
+            line("cache.capture.bytes", &capture.bytes);
+            line("cache.capture-ms", &ms(capture.time));
+        }
         out.push_str("[macro-calls-by-namespace]\n");
         let mut order = (0..self.namespaces.len()).collect::<Vec<_>>();
         // Most calls first; ties in source order.

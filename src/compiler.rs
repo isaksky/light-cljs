@@ -1584,7 +1584,14 @@ pub fn analyze_namespace_entry_with_sources(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<(crate::Program, Vec<(PathBuf, String)>), NamespaceCompileError> {
-    analyze_from_roots(entry, source_roots, macros, options, warnings, None, None)
+    analyze_from_roots(
+        entry,
+        source_roots,
+        macros,
+        options,
+        warnings,
+        Recorders::default(),
+    )
 }
 
 /// [`analyze_namespace_entry_with_sources`], also recording in `stats` the
@@ -1609,8 +1616,45 @@ pub fn analyze_namespace_entry_with_stats(
         macros,
         options,
         warnings,
-        Some(stats),
-        None,
+        Recorders {
+            stats: Some(stats),
+            ..Recorders::default()
+        },
+    )
+}
+
+/// [`analyze_namespace_entry_with_sources`], also capturing each namespace
+/// as a [`crate::namespace_artifact::NamespaceArtifact`] where its analysis
+/// returns, and handing it to `capture` in source order before the next
+/// namespace begins (docs/compiler-cache.md, "Binary artifacts"). A
+/// namespace that cannot be captured is handed over with the reason. With
+/// `stats`, also record what [`analyze_namespace_entry_with_stats`] does and
+/// the capture's counts. Without this call nothing is captured, and analysis
+/// keeps nothing for it.
+pub fn analyze_namespace_entry_with_artifacts(
+    entry: &str,
+    source_roots: &[PathBuf],
+    macros: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+    stats: Option<&mut CompileStats>,
+    capture: &mut dyn FnMut(crate::namespace_artifact::NamespaceCapture),
+) -> Result<(crate::Program, SourceFiles), NamespaceCompileError> {
+    let stats = stats.map(|stats| {
+        *stats = CompileStats::default();
+        stats
+    });
+    analyze_from_roots(
+        entry,
+        source_roots,
+        macros,
+        options,
+        warnings,
+        Recorders {
+            stats,
+            capture: Some(capture),
+            ..Recorders::default()
+        },
     )
 }
 
@@ -1637,10 +1681,21 @@ pub fn analyze_namespace_entry_with_dependencies(
         macros,
         options,
         warnings,
-        None,
-        Some(&mut manifest),
+        Recorders {
+            manifest: Some(&mut manifest),
+            ..Recorders::default()
+        },
     )?;
     Ok((program, files, manifest))
+}
+
+/// What an entry compilation records besides its program, when asked:
+/// `--stats` numbers, the dependency manifest and namespace artifacts.
+#[derive(Default)]
+struct Recorders<'a> {
+    stats: Option<&'a mut CompileStats>,
+    manifest: Option<&'a mut DependencyManifest>,
+    capture: Option<&'a mut dyn FnMut(crate::namespace_artifact::NamespaceCapture)>,
 }
 
 fn analyze_from_roots(
@@ -1649,8 +1704,7 @@ fn analyze_from_roots(
     macros: &mut MacroHost,
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
-    stats: Option<&mut CompileStats>,
-    manifest: Option<&mut DependencyManifest>,
+    recorders: Recorders<'_>,
 ) -> Result<(crate::Program, Vec<(PathBuf, String)>), NamespaceCompileError> {
     if !valid_namespace(entry) {
         return Err(NamespaceCompileError::new(
@@ -1686,8 +1740,7 @@ fn analyze_from_roots(
         macros,
         options,
         warnings,
-        stats,
-        manifest,
+        recorders,
     )
 }
 
@@ -1704,7 +1757,15 @@ pub fn analyze_namespace_entry_with_provider(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<crate::Program, NamespaceCompileError> {
-    analyze_entry(entry, sources, macros, options, warnings, None, None).map(|(program, _)| program)
+    analyze_entry(
+        entry,
+        sources,
+        macros,
+        options,
+        warnings,
+        Recorders::default(),
+    )
+    .map(|(program, _)| program)
 }
 
 /// The program of an entry namespace and the path and text of each source,
@@ -1726,9 +1787,13 @@ fn analyze_entry(
     macros: &mut MacroHost,
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
-    mut stats: Option<&mut CompileStats>,
-    manifest: Option<&mut DependencyManifest>,
+    recorders: Recorders<'_>,
 ) -> Result<(crate::Program, Vec<(PathBuf, String)>), NamespaceCompileError> {
+    let Recorders {
+        mut stats,
+        manifest,
+        mut capture,
+    } = recorders;
     let timed = stats.is_some();
     let begun = compile_stats::start(timed);
     if !valid_namespace(entry) {
@@ -1758,6 +1823,12 @@ fn analyze_entry(
     if timed {
         analysis.deferred_time = Some(Duration::ZERO);
     }
+    let mut capture_counts = crate::compile_stats::CaptureCounts::default();
+    if capture.is_some()
+        && let Some(session) = macros.session_handle()
+    {
+        session.begin_capture();
+    }
     // Analysis logs what it observes beyond the `ns` forms only while a
     // manifest is recorded, and stops when this compilation ends, however.
     let observations = manifest.is_some().then(|| {
@@ -1774,6 +1845,12 @@ fn analyze_entry(
         let first_lazy = analysis.lazy_target_count();
         macros.observe(|log| log.window = index as u32);
         let resolution = prepare_source(macros, file).map_err(at)?;
+        let captured = capture.is_some().then(|| {
+            let started = compile_stats::start(timed);
+            let start = analysis.begin_capture(warnings, macros);
+            compile_stats::add(&mut capture_counts.time, started);
+            (start, resolution.clone())
+        });
         let input = NamespaceInput {
             name: &file.name,
             source: &file.source,
@@ -1791,6 +1868,39 @@ fn analyze_entry(
                 warnings,
             )
             .map_err(at)?;
+        if let (Some(sink), Some((start, resolution))) = (capture.as_deref_mut(), &captured) {
+            let started = compile_stats::start(timed);
+            let path = file.path.to_string_lossy();
+            let artifact = analysis.finish_capture(
+                start,
+                crate::artifact_capture::CaptureInput {
+                    namespace: &file.name,
+                    path: &path,
+                    source_length: file.source.len(),
+                    entry: index == entry_index,
+                    resolution,
+                    aliases: &file.aliases,
+                    requires: &file.requires,
+                },
+                macros,
+                warnings,
+            );
+            match &artifact {
+                Ok(artifact) => {
+                    capture_counts.captured += 1;
+                    if timed {
+                        capture_counts.bytes += artifact.approximate_bytes();
+                    }
+                }
+                Err(_) => capture_counts.skipped += 1,
+            }
+            drop(captured);
+            sink(crate::namespace_artifact::NamespaceCapture {
+                namespace: file.name.clone(),
+                artifact,
+            });
+            compile_stats::add(&mut capture_counts.time, started);
+        }
         if let Some(stats) = stats.as_deref_mut() {
             stats.namespaces.push(compile_stats::NamespaceStats {
                 name: file.name.clone(),
@@ -1838,7 +1948,10 @@ fn analyze_entry(
         phases.deferred_units += deferred;
         phases.analysis += analysis_started
             .elapsed()
-            .saturating_sub(deferred + lazy_parse);
+            .saturating_sub(deferred + lazy_parse + capture_counts.time);
+        if capture.is_some() {
+            stats.capture = Some(capture_counts);
+        }
         stats.macro_calls = macros.expansions.get();
         stats.peak_macro_nodes = macros.generated_nodes.get();
         if let Some(session) = macros.session_handle() {

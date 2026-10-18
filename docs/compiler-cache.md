@@ -488,6 +488,76 @@ lifecycle boundary. Do not keep duplicate whole-program snapshots merely to
 write the cache later. Persist either sufficient unit IR/descriptors or its
 prepared equivalent; avoid storing both by default.
 
+*As built (light-cljs-315):* `src/namespace_artifact.rs` defines the
+in-memory artifact, and `src/artifact_capture.rs` fills it at the drain
+boundary. Its sections:
+
+- **Header:** the namespace, the file the loader read, its length, `.cljc`
+  reading and whether it was the entry, whose body returns the program's
+  value (so the IR differs), and the body's root.
+- **Declarations:** the globals the analysis created, with their flags,
+  metadata, visibility and session binding kind; protocols, record
+  constructors, type fields and methods, and macro functions; each `defmacro`
+  with its generation, its metadata (including `:light-cljs/generation`), its
+  definition site and its compile-time JavaScript; the `ns` form's aliases,
+  requires, refers, excludes and host refers; the reader context; the macro
+  host's imports, renames, `:import`s, namespace symbol and docstring; and the
+  lazy targets.
+- **Semantic IR:** the expressions from `first_expr` on, which include the
+  drained units' bodies, with their bindings, recur targets, strings, names
+  and host paths, before application optimization.
+- **Patches:** earlier globals whose flags or metadata the namespace changed,
+  found by comparing the globals table with a frozen clone taken before the
+  analysis (`Arena::changed_entries` compares only the leaves a write
+  copied). Defining a Var that an earlier namespace's lazy target or
+  existence probe reserved is the common case.
+- **Deferred units:** each unit's prepared compile-time JavaScript, the
+  declarations it saw (its view: this namespace's globals up to its
+  definition, and the globals its own analysis added), its definition-site
+  extension frontier relative to the namespace, and its compilation use as of
+  the capture; and the session's root and bundle registrations, as data. The
+  catalog now keeps a bundle registration as a `BundleRecord` and renders its
+  JavaScript when it evaluates it. Unit IR and `DefinitionSnapshot` programs
+  are not kept: the prepared code and the view are the prepared equivalent.
+- **Diagnostics and provenance:** the warnings analysis reported about the
+  namespace's own source, in their (sorted) order, with spans; the `ns`
+  form's warnings stay the loader's. Every source macro call the analysis
+  expanded, nested ones included, in expansion order: the macro by name and
+  generation, the call's span and the macro's definition site. The IR keeps
+  no per-expression expansion chain once forms are released, so this list is
+  the macro-origin record; compiler-owned `cljs.core` macros are part of the
+  compiler and are not listed.
+- **References:** earlier namespaces and globals by name, with the global's
+  declaration state and visibility. A program has one global per namespace and
+  name, which capture checks against the name index.
+- **Names and accounting:** empty typed slots for light-cljs-317 and -318.
+
+Local references are dense indices into the artifact's own tables. A
+`(var x)` of an earlier Var shares that global's metadata expression; the
+artifact records it as `VarMetadata::Global`, the metadata the global had
+when the namespace began. A protocol or record defined on a global that an
+earlier namespace reserved is a declaration of this namespace on an external
+global, with a patch for its flags. Source indices are `SourceRef`s, deferred
+unit IDs `UnitRef`s, and the `globalThis.__lightCompilerTest(N)` calls in
+compile-time JavaScript are recorded by byte range (`RelocatableCode`); the
+code is lexed to find them, so the same text in a string or comment is not a
+reference. Declaration and `:test` unit names
+are kept without their numbers, and a `defmethod`'s extension identity as its
+offset in its own source. The types name no program ID, `Rc`, `Arc` or engine
+handle, which a test checks against the module's text.
+
+Capture refuses, with a reason, what it cannot represent yet rather than
+producing a partial artifact: a unit that was never analyzed, is still being
+analyzed, or failed; IR that
+refers to an earlier namespace's expressions, bindings, recur targets or
+lazy sites; a change to an earlier protocol, type, macro function or reader
+context; and warnings about another source. A failed analysis produces no
+artifact, and a refused capture still takes its namespace's macro and
+expansion records, so they never reach the next namespace's artifact. On
+Penpot no namespace is refused. A unit's analysis count and whether it ran are those at the
+capture: a later namespace's macro may still run it, and installation reads
+the current compilation's counts.
+
 ### Representation and relocation
 
 Use an explicit versioned binary schema with compact tables and interned UTF-16
@@ -648,6 +718,23 @@ persistence remain out of scope.
 2. **Build relocatable namespace artifacts.** Capture declarations, IR, deferred
    units, diagnostics, names, and accounting at existing lifecycle boundaries.
    Verify in-memory installation and mixed hits/misses without source reanalysis.
+
+   *As built (light-cljs-315), the capture half:*
+   `light_cljs::compiler::analyze_namespace_entry_with_artifacts` hands each
+   namespace to its caller as a `NamespaceCapture` right after
+   `NamespaceAnalysis::analyze` returns, in source order: a
+   `light_cljs::namespace_artifact::NamespaceArtifact`, or the reason there
+   is none. Nothing else captures, and without that call analysis keeps
+   nothing for it. `NamespaceArtifact::describe` prints the sections and
+   `validate` checks that every reference stays inside them. The sections
+   and how they relocate are under "Binary artifacts" below. Until the
+   store exists, `LIGHT_CLJS_CAPTURE_ARTIFACTS=1` makes `--compile --entry`
+   capture each namespace and drop its artifact, as a writing store would,
+   and `=keep` keeps every artifact until the process exits. With `--stats`
+   the report adds `cache.capture.namespaces`, `cache.capture.skipped`,
+   `cache.capture.bytes` (an estimate) and `cache.capture-ms`, which is not
+   counted in `time.analysis-ms`. Penpot's numbers are in
+   [benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md).
 3. **Add the binary store and native compile integration.** Implement manifests,
    validation, bounded decoding, atomic writes, explicit cache controls, and miss
    diagnostics. Keep caching opt-in during rollout; produce measured unchanged
