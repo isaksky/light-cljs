@@ -401,12 +401,22 @@ the startup chunk (startup loads first, so there is nothing to defer).
   require them.
 
 Which top-level forms are movable: below `Advanced`, none (Phase 2). At
-`Advanced`, exactly the `Retained::candidates` of `retain`, the definitions
+`Advanced`, the `Retained::candidates` of `retain`, the definitions
 whose initializer the `Inert` scan accepts (literals, functions, pure and
 allocating core calls on plain data, constructors of program types defined
 earlier, and since light-cljs-300 a `defmulti` with a keyword, `fn` literal,
-core function or function Var dispatch, a literal default and the global
-hierarchy), plus `DefProtocol` and `DefType` forms, whose load-time work
+core value or function Var dispatch, a literal default and the global
+hierarchy), except those whose initializer reads a core value that may
+change while the program runs (`Retained::pinned`, light-cljs-363): a
+dynamic var or settable value such as `*print-fn*`, whose row value is
+`any` and which `set-print-fn!` changes without replacing an operation, or
+a core value the program replaces with `set!` or `with-redefs`. Removing
+such an unread definition is unobservable, but evaluating it later, in a
+feature chunk, would read a later value: `(def p *print-fn*)` after a
+`set-print-fn!` in a shared namespace, called from a feature after
+startup sets another print function, must still call the first
+(`chunks::definitions_reading_a_changeable_core_value_stay_pinned`).
+Plus `DefProtocol` and `DefType` forms, whose load-time work
 touches only what they declare. `ExtendType` of a type another form declares,
 `defmethod` (an `AddMethod` call), a `defmulti` with a `:hierarchy` or a
 computed dispatch (its initializer may run code), `set!`, `enable-console-print!`,
@@ -1776,10 +1786,12 @@ minification, against the 69,587 bytes `--out-dir` wrote.
 
   As built (light-cljs-300): `Inert` accepts `new MultiFn` as `defmulti`
   builds it (`Inert::multimethod` in src/application.rs) when its dispatch
-  is a keyword, a `fn` literal, a core function the program does not
-  replace (not a dynamic value such as `*print-fn*`, which
-  `set-print-fn!` changes; `chunks::a_multimethod_on_a_dynamic_core_var_stays_pinned`),
-  or a function Var defined once, earlier, and never assigned; it
+  is a keyword, a `fn` literal, a core value, or a function Var defined
+  once, earlier, and never assigned (a dynamic value such as
+  `*print-fn*`, which `set-print-fn!` changes, or a core function the
+  program replaces, keeps it pinned, though an unread one is removed:
+  `Retained::pinned`, light-cljs-363;
+  `chunks::a_multimethod_on_a_dynamic_core_var_stays_pinned`); it
   gives no `:hierarchy`; its default is a scalar literal; and its tables are
   fresh atoms of `{}` and `nil`. The constructor only stores its arguments
   and adds the instance to a `WeakSet`. `getGlobalHierarchy` builds the

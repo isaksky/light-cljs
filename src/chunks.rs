@@ -511,8 +511,8 @@ impl ChunkPlan {
 }
 
 /// Plan the chunks of `prepared`, the application of `program`. At
-/// `Advanced` the definitions that removal could drop when unread
-/// ([`PreparedApplication::removable`]), and `defprotocol` and `deftype`
+/// `Advanced` the definitions that removal could drop when unread and that
+/// read no core value that may change ([`PreparedApplication::movable`]), and `defprotocol` and `deftype`
 /// forms, move toward their readers (docs/code-splitting.md, "Phase 3");
 /// below it every top-level form stays in its namespace's chunk, as in
 /// [`namespace_plan`]. At `Advanced` it also drops the chunks that would
@@ -718,8 +718,9 @@ fn plan_with(
     let graph = ItemGraph::new(emitted, &forms);
 
     // Which items move: at `Advanced`, the definitions removal could drop
-    // when unread, and protocol and type definitions, each the only
-    // definition of the globals it defines. A raw `deftype*` or `defrecord*`
+    // when unread that read no changing core value (light-cljs-363), and
+    // protocol and type definitions, each the only definition of the globals
+    // it defines. A raw `deftype*` or `defrecord*`
     // runs its body when it defines the type, so it stays. A lazy target's
     // definition stays in its namespace, which is what its loadable loads,
     // and so does a form holding a loadable site, which the manifest gives to
@@ -735,7 +736,7 @@ fn plan_with(
         .enumerate()
         .map(|(position, &(id, _))| {
             move_definitions
-                && (prepared.removable(id)
+                && (prepared.movable(id)
                     || matches!(emitted.exprs[id.0].kind, ExprKind::DefProtocol { .. })
                     || matches!(
                         &emitted.exprs[id.0].kind,

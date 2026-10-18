@@ -1705,6 +1705,110 @@ fn a_multimethod_on_a_dynamic_core_var_stays_pinned() {
     );
 }
 
+/// A multimethod dispatching on a core function the program replaces stays
+/// in its namespace (light-cljs-363): built later in a feature, it would
+/// dispatch through startup's replacement. The chunks print what the single
+/// file prints.
+#[test]
+fn a_multimethod_on_a_replaced_core_function_stays_pinned() {
+    static REPLACED: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [app.shared] [light.lazy :as lazy]))\n\
+             (set! cljs.core/identity (fn [_] :after))\n\
+             (def editor (lazy/loadable app.editor/start))\n\
+             (defn start [] (-> (lazy/load editor) (.then (fn [f] (js/console.log (f)) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/shared.cljs",
+            "(ns app.shared)\n(defmulti m identity)\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor (:require [app.shared :as shared]))\n\
+             (defmethod shared/m 1 [_] \"ONE\")\n\
+             (defmethod shared/m :after [_] \"AFTER\")\n\
+             (defn start [] (shared/m 1))\n",
+        ),
+    ];
+    let program = analyze(REPLACED);
+    let (record, _) = chunk_files(&program);
+    assert_eq!(record, printed("app.main.js", r"ONE\n"));
+    let prepared = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let plan = plan(&program, &prepared);
+    check(&program, &prepared, &plan, OptimizationLevel::Advanced);
+    assert_eq!(
+        moved(&prepared, &plan),
+        ["app.main.js: ", "app.editor.js: "]
+    );
+}
+
+/// A definition that reads a core value the program may change stays in its
+/// namespace (light-cljs-363): `set-print-fn!` changes `*print-fn*` without
+/// replacing it, and `set!` replaces `inc`, so a definition evaluated later in
+/// a feature would capture startup's later values, directly or through a
+/// `let`. Reading a core function nothing replaces still lets one move, and
+/// unread definitions of changeable values are still removed. The chunks
+/// print what the single file prints.
+#[test]
+fn definitions_reading_a_changeable_core_value_stay_pinned() {
+    static CHANGEABLE: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [app.shared] [light.lazy :as lazy]))\n\
+             (set-print-fn! (fn [_] :after))\n\
+             (set! cljs.core/inc (fn [_] :after))\n\
+             (def editor (lazy/loadable app.editor/start))\n\
+             (defn start [] (-> (lazy/load editor) (.then (fn [f] (js/console.log (f)) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/shared.cljs",
+            "(ns app.shared)\n\
+             (set-print-fn! (fn [_] :before))\n\
+             (def p *print-fn*)\n\
+             (def q (let [f *print-fn*] (fn [x] (f x))))\n\
+             (def i inc)\n\
+             (def d dec)\n\
+             (def unread-p *print-fn*)\n\
+             (def unread-i inc)\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor (:require [app.shared :as shared]))\n\
+             (defn start [] (str (shared/p 1) (shared/q 1) (shared/i 1) (shared/d 1)))\n",
+        ),
+    ];
+    let program = analyze(CHANGEABLE);
+    let (record, _) = chunk_files(&program);
+    assert_eq!(record, printed("app.main.js", r":before:before20\n"));
+    let prepared = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let plan = plan(&program, &prepared);
+    check(&program, &prepared, &plan, OptimizationLevel::Advanced);
+    assert_eq!(
+        moved(&prepared, &plan),
+        ["app.main.js: ", "app.editor.js: app.shared/d"]
+    );
+    let emitted = prepared.program();
+    let unread = emitted
+        .exprs
+        .iter()
+        .filter_map(|expr| match &expr.kind {
+            ExprKind::Def { global, .. } => Some(emitted.globals[global.0].name.as_str()),
+            _ => None,
+        })
+        .filter(|name| name.starts_with("unread"))
+        .collect::<Vec<_>>();
+    assert!(unread.is_empty(), "{unread:?}");
+}
+
 /// A raw `deftype*` runs its body when it defines the type, so it stays in
 /// its namespace's chunk although only a feature constructs the type: the
 /// body's line prints before startup's, as in the single file.

@@ -486,7 +486,7 @@ fn upstream_multimethod_fixtures_pass_at_every_level() {
 }
 
 /// At `Advanced` a `defmulti` is inert when its dispatch is a keyword, a
-/// `fn` literal, a core function or a function Var defined before it and
+/// `fn` literal, a core value or a function Var defined before it and
 /// never assigned, it gives no `:hierarchy`, and its default is a literal
 /// (light-cljs-300): unread and without methods it is removed, and the
 /// runtime's `MultiFn` with it. A `defmethod` reads its multimethod, so one
@@ -499,6 +499,11 @@ fn an_unread_defmulti_without_methods_is_removed() {
         ("(defmulti m :k)", true),
         ("(defmulti m (fn [x] (:k x)) :default :none)", true),
         ("(defmulti m identity)", true),
+        ("(defmulti m *print-fn*)", true),
+        (
+            "(defmulti m identity) (set! cljs.core/identity (fn [x] x))",
+            true,
+        ),
         ("(defn k [x] (:k x)) (defmulti m k)", true),
         ("(defmulti m :k) (defmethod m :a [_] 1)", false),
         ("(defmulti m :k) (js/console.log (fn? m))", false),

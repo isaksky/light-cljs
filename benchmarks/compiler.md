@@ -4648,3 +4648,26 @@ reports, moves from startup to their shared chunk with the runtime's
 moves nowhere: its one multimethod fixture, `defmulti`, has a method, and
 examples/features has no multimethod; `none` and `prepare` output is
 unchanged.
+
+## Definitions that read a changeable core value stay pinned — October 18, 2026
+
+light-cljs-363 keeps a chunked build from moving a definition whose
+initializer reads a dynamic var or settable value (`*print-fn*`, row value
+`any`) or a core value the program replaces, since a feature chunk would
+evaluate it after startup changed the value
+([code-splitting design](../docs/code-splitting.md), "Items and
+signatures"). Such definitions stay removable when unread, so single-file
+output does not grow. Measured with `light-cljs --compile --optimize
+advanced`, raw / `gzip -9 -n` bytes, against master `a622a19` (sizes are
+deterministic; one-minute load average 10.9):
+
+| Program | Before | After |
+| --- | ---: | ---: |
+| `(def p *print-fn*) (js/console.log 1)` | 151 / 140 | 151 / 140 |
+| `(def p inc) (set! cljs.core/inc dec) (js/console.log 1)` | 235 / 185 | 235 / 185 |
+| `(defmulti m *print-fn*) (js/console.log 1)` | 5,507 / 2,235 | 151 / 140 |
+
+The unread `defmulti` on `*print-fn*`, which light-cljs-300 kept as not
+inert, is now removed with the runtime's `MultiFn`. Every size ratchet
+entry and the four files of the `definitions` chunk fixture are byte for
+byte unchanged; `none` and `prepare` output is unchanged.

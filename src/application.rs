@@ -227,9 +227,10 @@ pub struct PreparedApplication {
     /// `Advanced`: by expression, the discarded top-level definitions with
     /// inert initializers (`Retained::candidates`), which removal could drop
     /// when unread and a chunked build may therefore move toward their
-    /// readers (docs/code-splitting.md, "Items and signatures"). Empty
-    /// below `Advanced`, where every form stays in its namespace.
-    removable: Vec<bool>,
+    /// readers (docs/code-splitting.md, "Items and signatures"), except
+    /// those that read a core value that may change (`Retained::pinned`).
+    /// Empty below `Advanced`, where every form stays in its namespace.
+    movable: Vec<bool>,
     /// Defines of the options that did not apply.
     rejected_defines: Vec<crate::defines::DefineError>,
     stats: ApplicationStats,
@@ -410,11 +411,13 @@ impl PreparedApplication {
     }
     /// At `Advanced`, whether `id` is a discarded top-level definition with
     /// an inert initializer, one that removal drops when nothing reads it
-    /// (`Retained::candidates`). Removability is movability: a chunked build
-    /// moves such a definition toward its readers ([`crate::chunks::plan`]).
-    /// False below `Advanced`.
-    pub fn removable(&self, id: ExprId) -> bool {
-        self.removable.get(id.0).copied().unwrap_or(false)
+    /// (`Retained::candidates`), and that evaluates to the same value
+    /// whenever it runs: it reads no dynamic var, settable value or replaced
+    /// core value (`Retained::pinned`, light-cljs-363). A chunked build moves
+    /// such a definition toward its readers ([`crate::chunks::plan`]). False
+    /// below `Advanced`.
+    pub fn movable(&self, id: ExprId) -> bool {
+        self.movable.get(id.0).copied().unwrap_or(false)
     }
     /// The level this application was prepared at. Level-specific emission
     /// (for example runtime slicing under `Advanced`) reads it here.
@@ -458,7 +461,7 @@ pub fn prepare_application(
         multi_tables: None,
         lean_multi: false,
         shapes: None,
-        removable: Vec::new(),
+        movable: Vec::new(),
         rejected_defines: Vec::new(),
         stats: ApplicationStats::default(),
     };
@@ -515,6 +518,7 @@ pub fn prepare_application(
     let Retained {
         top,
         candidates,
+        pinned,
         raw,
     } = retained;
     if level.prepares() && !raw {
@@ -590,7 +594,11 @@ pub fn prepare_application(
         prepared.entry_lookups =
             crate::folding::entry_lookups(&prepared.program, inference.facts());
         prepared.inference = Some(inference);
-        prepared.removable = candidates;
+        prepared.movable = candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| *candidate && !pinned.get(index).copied().unwrap_or(false))
+            .collect();
     }
     prepared.stats.retained_globals = prepared.globals.iter().filter(|b| **b).count();
     prepared.stats.specialized_calls += prepared.calls.len();
@@ -609,6 +617,10 @@ struct Retained {
     /// By expression: the discarded top-level definitions with inert
     /// initializers, which may be removed when nothing reads their globals.
     candidates: Vec<bool>,
+    /// By expression: the candidates whose initializer reads a core value
+    /// that may change while the program runs (`Inert`), which a chunked
+    /// build must not evaluate later and so does not move.
+    pinned: Vec<bool>,
     /// Below `Advanced`: a retained `js*` made every top-level form a root.
     raw: bool,
 }
@@ -625,6 +637,7 @@ fn retain(prepared: &mut PreparedApplication, exports: &[GlobalId]) -> Retained 
     let mut candidates = vec![false; program.exprs.len()];
     let mut definitions = vec![Vec::new(); program.globals.len()];
     let mut pending = Vec::new();
+    let mut pinned = vec![false; program.exprs.len()];
     let mut inert = Inert::new(program, &top, level.advanced());
     for (position, &(id, result)) in top.iter().enumerate() {
         if let ExprKind::Def {
@@ -632,12 +645,14 @@ fn retain(prepared: &mut PreparedApplication, exports: &[GlobalId]) -> Retained 
         } = program.exprs[id.0].kind
         {
             definitions[global.0].push(id);
-            if level.prepares()
-                && !result
-                && test.is_none()
-                && init.is_none_or(|i| inert.initializer(i, position))
-            {
+            let inert = match init {
+                _ if !level.prepares() || result || test.is_some() => None,
+                None => Some(false),
+                Some(init) => inert.initializer(init, position),
+            };
+            if let Some(changeable) = inert {
                 candidates[id.0] = true;
+                pinned[id.0] = changeable;
                 continue;
             }
         }
@@ -686,6 +701,7 @@ fn retain(prepared: &mut PreparedApplication, exports: &[GlobalId]) -> Retained 
     Retained {
         top,
         candidates,
+        pinned,
         raw,
     }
 }
@@ -776,6 +792,14 @@ struct Constructor {
 /// text could assign) is not trusted, and when the program extends a core
 /// protocol to anything but its own types (`extend-type number`, `default`, a
 /// runtime collection, `specify!`), no core call is inert.
+///
+/// Reading any core value is inert, but at `Advanced` the scan also notes
+/// whether an initializer reads one whose value may change while the program
+/// runs (light-cljs-363): a dynamic var or settable value (row value `any`,
+/// such as `*print-fn*`, which `set-print-fn!` changes without replacing it)
+/// or a core value the program replaces. Removing such an unread definition is
+/// unobservable, but evaluating it later, in a feature chunk, would read a
+/// later value, so it is not movable ([`Retained::pinned`]).
 struct Inert<'p> {
     program: &'p Program,
     advanced: bool,
@@ -791,6 +815,9 @@ struct Inert<'p> {
     locals: Vec<Option<Shape>>,
     /// Index in the flattened top level of the definition being examined.
     position: usize,
+    /// Whether the initializer examined so far read a core value that may
+    /// change while the program runs.
+    changeable: bool,
 }
 impl<'p> Inert<'p> {
     fn new(program: &'p Program, top: &[(ExprId, bool)], advanced: bool) -> Self {
@@ -803,6 +830,7 @@ impl<'p> Inert<'p> {
             functions: Vec::new(),
             locals: Vec::new(),
             position: 0,
+            changeable: false,
         };
         if !advanced {
             return inert;
@@ -847,11 +875,14 @@ impl<'p> Inert<'p> {
         inert
     }
 
-    /// Whether the initializer of the definition at `position` in the
-    /// flattened top level is inert.
-    fn initializer(&mut self, init: ExprId, position: usize) -> bool {
+    /// When the initializer of the definition at `position` in the flattened
+    /// top level is inert, whether it reads a core value that may change while
+    /// the program runs (always false below `Advanced`).
+    fn initializer(&mut self, init: ExprId, position: usize) -> Option<bool> {
         self.position = position;
-        self.shape(init).is_some()
+        self.changeable = false;
+        self.shape(init)?;
+        Some(self.changeable)
     }
 
     /// The shape of `id` when it is inert.
@@ -865,7 +896,10 @@ impl<'p> Inert<'p> {
             String(_) => Shape::of(Type::STRING),
             Keyword(_) => Shape::of(Type::KEYWORD),
             Symbol(_) => Shape::of(Type::SYMBOL),
-            CoreFn(core) => Shape::opaque(core.operation().value),
+            CoreFn(core) => {
+                self.changeable |= self.changes(*core);
+                Shape::opaque(core.operation().value)
+            }
             LoadableType => Shape::opaque(Type::FN),
             Fn { .. } => Shape::opaque(Type::FN),
             Do(items) => {
@@ -964,6 +998,13 @@ impl<'p> Inert<'p> {
             }
             _ => return None,
         })
+    }
+
+    /// Whether the value of the core value `core` may change while the
+    /// program runs, as far as `Advanced` needs to know: it is a dynamic var or
+    /// settable value (row value `any`) or one the program replaces.
+    fn changes(&self, core: CoreFnId) -> bool {
+        self.advanced && (core.operation().value == Type::ANY || self.replaced[core.table_row()])
     }
 
     /// The result type of an inert call of `core` on arguments of these shapes.
@@ -1112,7 +1153,7 @@ impl<'p> Inert<'p> {
     /// and when a `defmulti` builds its multimethod is unobservable. A
     /// `:hierarchy` option or a computed dispatch may run code or read a
     /// value that changes, and is not inert.
-    fn multimethod(&self, args: &[ExprId]) -> Option<Shape> {
+    fn multimethod(&mut self, args: &[ExprId]) -> Option<Shape> {
         use ExprKind::*;
         let program = self.program;
         let kind = |id: &ExprId| &program.exprs[id.0].kind;
@@ -1124,9 +1165,13 @@ impl<'p> Inert<'p> {
         };
         let dispatch = match *kind(dispatch) {
             Keyword(_) | Fn { .. } => true,
-            // A core function, not a dynamic or settable value such as
-            // `*print-fn*`, which `set-print-fn!` changes without replacing it.
-            CoreFn(op) => op.operation().value == Type::FN && !self.replaced[op.table_row()],
+            // A core value. One that may change while the program runs, such
+            // as `*print-fn*`, which `set-print-fn!` changes without replacing
+            // it, pins the definition (light-cljs-363).
+            CoreFn(op) => {
+                self.changeable |= self.changes(op);
+                true
+            }
             Global(global) => self.functions[global.0].is_some_and(|at| at < self.position),
             _ => false,
         };
