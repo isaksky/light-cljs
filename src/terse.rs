@@ -139,16 +139,46 @@ pub(crate) fn terse_slice_marks(kept: &[bool], returned: &[&str]) -> (String, Ve
 fn terse_slice_marked(
     kept: &[bool],
     returned: &[&str],
-    mut marks: Option<&mut Vec<SliceMark>>,
+    marks: Option<&mut Vec<SliceMark>>,
 ) -> (String, Vec<usize>) {
+    let names = slice_names(kept, returned);
+    write_factory(&names, kept, None, returned, marks)
+}
+
+/// The short names of the runtime's top-level bindings in terse slices
+/// ([`slice_names`]).
+pub(crate) struct SliceNames {
+    /// By index into [`TERSE_BINDINGS`]: the binding's index in `generated`,
+    /// or `None` for one that keeps its name or that no slice holds.
+    names: Vec<Option<usize>>,
+    generated: Vec<String>,
+}
+
+impl SliceNames {
+    fn name(&self, index: usize) -> &str {
+        match self.names[index] {
+            Some(name) => self.generated[name].as_str(),
+            None => TERSE_BINDINGS[index],
+        }
+    }
+}
+
+/// One naming of the top-level bindings of the `kept` units (by unit
+/// index), counting their occurrences in the units and in `mentioned`, the
+/// bindings the slices return or take as parameters, once per mention.
+/// Each binding gets a short name: the most frequent first, each the first
+/// name of the [`NameGenerator`] sequence that no other binding has and no
+/// local visible at one of its occurrences has. A chunked build names the
+/// units of all its chunks at once (docs/code-splitting.md, "Phase 3"), so
+/// a binding a chunk takes as a parameter has the name it has in the chunk
+/// declaring it, and no other binding a chunk names has that name.
+pub(crate) fn slice_names(kept: &[bool], mentioned: &[&str]) -> SliceNames {
     debug_assert_eq!(kept.len(), TERSE_UNITS.len());
     let units = TERSE_UNITS
         .iter()
-        .enumerate()
         .zip(kept)
         .filter_map(|(unit, kept)| kept.then_some(unit))
         .collect::<Vec<_>>();
-    let mut unit_bytes = vec![0; TERSE_UNITS.len()];
     // Per binding: occurrences and the order of its first occurrence.
     let mut count = vec![0usize; TERSE_BINDINGS.len()];
     let mut first = vec![usize::MAX; TERSE_BINDINGS.len()];
@@ -160,20 +190,16 @@ fn terse_slice_marked(
             seen += 1;
         }
     };
-    for (_, unit) in &units {
+    for unit in &units {
         for (_, index) in placeholders(unit.text) {
             occur(index);
         }
     }
-    let returned = returned
-        .iter()
-        .map(|name| binding_index(name))
-        .collect::<Vec<_>>();
-    for &index in &returned {
-        occur(index);
+    for name in mentioned {
+        occur(binding_index(name));
     }
     let mut avoid: HashMap<usize, HashSet<&str>> = HashMap::new();
-    for (_, unit) in &units {
+    for unit in &units {
         for &(binding, names) in unit.avoid {
             avoid.entry(binding).or_default().extend(names.split(' '));
         }
@@ -203,11 +229,66 @@ fn terse_slice_marked(
         taken.insert(chosen);
         names[binding] = Some(chosen);
     }
-    let name = |index: usize| match names[index] {
-        Some(name) => generated[name].as_str(),
-        None => TERSE_BINDINGS[index],
+    SliceNames { names, generated }
+}
+
+/// The terse runtime of one chunk of a chunked build: the `kept` units as a
+/// function of `parameters`, the bindings they require that other chunks
+/// declare, which returns `returned` as an array, `((a,b)=>{...return[c]})`
+/// (no `"use strict"`: a chunk is a module), with the bindings named by
+/// `names`; and the bytes of each unit in it, by unit index.
+pub(crate) fn terse_chunk_factory(
+    names: &SliceNames,
+    kept: &[bool],
+    parameters: &[&str],
+    returned: &[&str],
+) -> (String, Vec<usize>) {
+    write_factory(names, kept, Some(parameters), returned, None)
+}
+
+/// The startup chunk's terse runtime, as [`terse_slice`] writes a single
+/// file's but with the bindings named by `names`: `(()=>{"use
+/// strict";...return[a,b]})()`, and the bytes of each unit in it.
+pub(crate) fn terse_startup_factory(
+    names: &SliceNames,
+    kept: &[bool],
+    returned: &[&str],
+) -> (String, Vec<usize>) {
+    write_factory(names, kept, None, returned, None)
+}
+
+/// A terse runtime factory of the `kept` units named by `names`: called, as
+/// a single file embeds it, or, with `parameters`, a function of them.
+fn write_factory(
+    names: &SliceNames,
+    kept: &[bool],
+    parameters: Option<&[&str]>,
+    returned: &[&str],
+    mut marks: Option<&mut Vec<SliceMark>>,
+) -> (String, Vec<usize>) {
+    debug_assert_eq!(kept.len(), TERSE_UNITS.len());
+    let units = TERSE_UNITS
+        .iter()
+        .enumerate()
+        .zip(kept)
+        .filter_map(|(unit, kept)| kept.then_some(unit))
+        .collect::<Vec<_>>();
+    let mut unit_bytes = vec![0; TERSE_UNITS.len()];
+    let name = |index: usize| names.name(index);
+    let returned = returned
+        .iter()
+        .map(|name| binding_index(name))
+        .collect::<Vec<_>>();
+    let mut text = match parameters {
+        Some(parameters) => {
+            let parameters = parameters
+                .iter()
+                .map(|parameter| name(binding_index(parameter)))
+                .collect::<Vec<_>>();
+            format!("(({})=>{{", parameters.join(","))
+        }
+        None => String::from(TERSE_PROLOGUE),
     };
-    let mut text = String::from(TERSE_PROLOGUE);
     let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
     if let Some(marks) = marks.as_deref_mut() {
         let prologue = &crate::runtime_manifest::ANNOTATED_RUNTIME[manifest.prologue.clone()];
@@ -252,14 +333,17 @@ fn terse_slice_marked(
         unit_bytes[id] = text.len() - start;
         closes = unit.closes;
     }
-    text.push_str("return[");
-    for (position, &index) in returned.iter().enumerate() {
-        if position > 0 {
-            text.push(',');
+    if parameters.is_none() || !returned.is_empty() {
+        text.push_str("return[");
+        for (position, &index) in returned.iter().enumerate() {
+            if position > 0 {
+                text.push(',');
+            }
+            text.push_str(name(index));
         }
-        text.push_str(name(index));
+        text.push(']');
     }
-    text.push_str("]})()");
+    text.push_str(if parameters.is_some() { "})" } else { "})()" });
     (text, unit_bytes)
 }
 

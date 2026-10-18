@@ -1,4 +1,4 @@
 # file	namespaces	roots	imports	imports at advanced	definitions at advanced
 app.main.js	light.lazy app.main	app.main	-	-	-
 app.editor+app.spell.js	app.text app.editor	app.editor	app.main.js	app.main.js	-
-app.spell.js	app.spell	app.spell	app.main.js app.editor+app.spell.js	app.main.js app.editor+app.spell.js	-
+app.spell.js	app.spell	app.spell	app.main.js app.editor+app.spell.js	app.editor+app.spell.js	-

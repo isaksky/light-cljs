@@ -1720,9 +1720,14 @@ describes them (docs/code-splitting.md, "Phase 2"). `--out-dir` implies
 export is the entry namespace's value. It creates `DIR` when missing and
 writes only the files the manifest names, so other files there, those of an
 earlier build included, stay as they are. It works at `none`, `prepare` and
-`advanced`, with `--pseudo-names`, `--define` and `--elide-asserts`;
-`--size-report` prints the one report the single file prints (one table per
-chunk is Phase 3's); the source map flags are refused, since chunks have no
+`advanced`, with `--pseudo-names`, `--define` and `--elide-asserts`. At
+`advanced` each chunk embeds the runtime units only the roots that load it
+need, as a function of the bindings it takes from the chunks before it
+(docs/code-splitting.md, "Phase 3", light-cljs-279), and `--size-report`
+prints each chunk's units, every unit of the build once, with the root and
+expression that first demanded it, which may be another chunk's; below
+`advanced` startup embeds the whole runtime and `--size-report` prints the
+single file's report. The source map flags are refused, since chunks have no
 source maps yet. Without `--out-dir` the output stays one file in which every
 loadable is resident. With `--reloadable`, `--out-dir` names the directory of
 a dev build instead (Dev builds, below).
@@ -1774,9 +1779,19 @@ only the editor reads is the editor's, one both features read their shared
 chunk's, and one startup reads startup's. When no chunk has those roots,
 the constants get a chunk of their own, named as a shared chunk is, which
 holds no namespace and no definition, only constant declarations that its
-readers import; a hoisted method stays in its function's chunk. The
-runtime (the whole runtime below `advanced`, the whole-program slice at
-`advanced`) stays in startup.
+readers import; a hoisted method stays in its function's chunk. Below
+`advanced` startup holds the whole runtime. At `advanced` each runtime unit
+goes to the chunk of the roots whose code needs it (light-cljs-279): a unit
+only the editor's code reaches is the editor's, and an `install:` or
+`effect:` unit follows the roots whose code holds the value it extends or
+builds the values it handles, so `apply str` in one feature installs `str`'s
+variadic arity when that feature loads. A chunk's runtime is a function of
+the bindings its units take from the chunks before it, which it imports,
+`const [rt$a] = ((b, c) => { ... return [a]; })(rt$b, rt$c);`, and returns
+the bindings its code and later chunks read. A unit that assigns another
+unit's binding (`lookup.trie` wraps `lookup`), or reads one a function
+assigns after loading, stays in that unit's chunk, since a chunk receives
+other chunks' bindings as values.
 Analysis and optimization run once over the whole program, so each chunk's
 code is what the single file would hold. A chunk imports statically the
 chunks holding what its namespaces require and the bindings its code reads,
@@ -1789,8 +1804,10 @@ loaded. examples/features is three files at `none` and `prepare`,
 four: `app.shared/documents`, which both features read and the menu does
 not, moves to `app.editor+app.reports.js` with the keywords, strings and
 collections of its value, and `app.shared/index-by` to `app.editor.js`, so
-the files are 69,000, 632, 361 and 874 bytes, against 69,500 for the
-single file. A program without a loadable whose
+the files are 9,046, 54,195, 5,453 and 4,513 bytes, against 70,032 for the
+single file: startup's runtime is what the menu needs, the shared chunk's
+the collections and printer both features use, the editor's the sorted
+collections and the reports' the set operations. A program without a loadable whose
 target another chunk holds, every program without a loadable among them, is
 one file, byte for byte its `--esm` output.
 
@@ -1802,10 +1819,10 @@ examples/features at `advanced`:
 {
   "startup": "app.main.js",
   "chunks": [
-    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["app.shared", "light.lazy", "app.main"], "definitions": [], "roots": ["app.main"], "loadables": [], "bytes": 69000},
-    {"name": "app.editor+app.reports", "file": "app.editor+app.reports.js", "imports": ["app.main.js"], "namespaces": [], "definitions": ["app.shared/documents"], "roots": [], "loadables": [], "bytes": 632},
-    {"name": "app.editor", "file": "app.editor.js", "imports": ["app.main.js", "app.editor+app.reports.js"], "namespaces": ["app.editor"], "definitions": ["app.shared/index-by"], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}], "bytes": 361},
-    {"name": "app.reports", "file": "app.reports.js", "imports": ["app.main.js", "app.editor+app.reports.js"], "namespaces": ["clojure.string", "app.reports"], "definitions": [], "roots": ["app.reports"], "loadables": [{"namespace": "app.main", "target": "app.reports/start"}], "bytes": 874}
+    {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["app.shared", "light.lazy", "app.main"], "definitions": [], "roots": ["app.main"], "loadables": [], "bytes": 9046},
+    {"name": "app.editor+app.reports", "file": "app.editor+app.reports.js", "imports": ["app.main.js"], "namespaces": [], "definitions": ["app.shared/documents"], "roots": [], "loadables": [], "bytes": 53667},
+    {"name": "app.editor", "file": "app.editor.js", "imports": ["app.main.js", "app.editor+app.reports.js"], "namespaces": ["app.editor"], "definitions": ["app.shared/index-by"], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}], "bytes": 5453},
+    {"name": "app.reports", "file": "app.reports.js", "imports": ["app.main.js", "app.editor+app.reports.js"], "namespaces": ["clojure.string", "app.reports"], "definitions": [], "roots": ["app.reports"], "loadables": [{"namespace": "app.main", "target": "app.reports/start"}], "bytes": 4509}
   ]
 }
 ```

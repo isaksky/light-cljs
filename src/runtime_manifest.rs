@@ -197,6 +197,14 @@ pub struct Unit<'a> {
     /// The [`Unit::references`] called directly (`name(...)`) by code run at load
     /// time, outside every function body, sorted and without duplicates.
     pub load_time_calls: Vec<&'a str>,
+    /// The [`Unit::references`] the body assigns, `seq = behindProtocol(seq, ...)`:
+    /// another unit's binding that this unit replaces (a wrapper effect),
+    /// sorted and without duplicates.
+    pub assigns: Vec<&'a str>,
+    /// The top-level bindings, its own or other units', that a function of the
+    /// body assigns, so that their values change after the runtime loads,
+    /// sorted and without duplicates.
+    pub call_time_assigns: Vec<&'a str>,
     /// Whether some top-level statement is not a declaration.
     pub has_effect_statements: bool,
 }
@@ -270,6 +278,12 @@ pub struct RuntimeManifest<'a> {
     /// Per unit: the `effect: ... when:` units naming one of its bindings
     /// under `when:`.
     conditional: Vec<Vec<UnitId>>,
+    /// Per unit: the other units that share state through one of its
+    /// bindings ([`RuntimeManifest::sharers`]), sorted.
+    sharers: Vec<Vec<UnitId>>,
+    /// Per unit: the units whose bindings it shares, the inverse of
+    /// `sharers`, sorted.
+    shared: Vec<Vec<UnitId>>,
 }
 
 /// How a program uses a root of a runtime slice
@@ -394,6 +408,8 @@ impl<'a> RuntimeManifest<'a> {
                             declares: facts.declares,
                             references: facts.references,
                             load_time_calls: facts.load_time_calls,
+                            assigns: facts.assigns,
+                            call_time_assigns: facts.call_time_assigns,
                             has_effect_statements: facts.has_effect_statements,
                         }),
                         Err((offset, message)) => errors.push(ManifestError {
@@ -501,6 +517,39 @@ impl<'a> RuntimeManifest<'a> {
                 conditions[index].dedup();
             }
         }
+        // A binding another unit assigns is shared with that unit, and one a
+        // function assigns after loading with every unit that reads it.
+        let mut sharers = vec![Vec::new(); units.len()];
+        let mut shared = vec![Vec::new(); units.len()];
+        let mut share = |owner: UnitId, unit: usize| {
+            if owner.0 != unit {
+                sharers[owner.0].push(UnitId(unit));
+                shared[unit].push(owner);
+            }
+        };
+        for (index, unit) in units.iter().enumerate() {
+            for binding in &unit.assigns {
+                if let Some(&owner) = bindings.get(binding) {
+                    share(owner, index);
+                }
+            }
+        }
+        let volatile = units
+            .iter()
+            .flat_map(|unit| unit.call_time_assigns.iter().copied())
+            .filter(|binding| bindings.contains_key(binding))
+            .collect::<std::collections::HashSet<_>>();
+        for (index, unit) in units.iter().enumerate() {
+            for binding in &unit.references {
+                if volatile.contains(binding) {
+                    share(bindings[binding], index);
+                }
+            }
+        }
+        for list in sharers.iter_mut().chain(shared.iter_mut()) {
+            list.sort_unstable();
+            list.dedup();
+        }
         let names = names
             .into_iter()
             .map(|(name, index)| (name, UnitId(index)))
@@ -519,6 +568,8 @@ impl<'a> RuntimeManifest<'a> {
             installs,
             conditions,
             conditional,
+            sharers,
+            shared,
         })
     }
 
@@ -572,6 +623,18 @@ impl<'a> RuntimeManifest<'a> {
     /// unit, sorted; empty for any other unit.
     pub fn conditions(&self, unit: UnitId) -> &[UnitId] {
         &self.conditions[unit.0]
+    }
+
+    /// The units that share mutable state through one of `unit`'s bindings,
+    /// sorted: each unit that assigns one (a wrapper effect, `seq =
+    /// behindProtocol(seq, ...)`, or a function that bumps a counter), and,
+    /// for a binding some function assigns after the runtime loads, each unit
+    /// that reads it. One closure holds them all in a single runtime; a
+    /// chunked build keeps them in `unit`'s chunk
+    /// ([`RuntimeManifest::signatures`]), since a chunk's runtime receives
+    /// other chunks' bindings as values, which an assignment cannot reach.
+    pub fn sharers(&self, unit: UnitId) -> &[UnitId] {
+        &self.sharers[unit.0]
     }
 
     /// The binding of the core protocol dispatcher registered for a protocol
@@ -688,6 +751,132 @@ impl<'a> RuntimeManifest<'a> {
         first
     }
 
+    /// The roots that need each unit when a program's demands are split among
+    /// roots (docs/code-splitting.md, "Phase 3", runtime units), indexed by
+    /// [`UnitId`]. Each demand is a unit, its use, and the roots whose code
+    /// makes it, a bitset of `words` words; a unit's roots are its
+    /// *signature*, empty for a unit no demand keeps. The roots of a unit are
+    /// those whose demands alone [`RuntimeManifest::reached_by_uses`] keeps it
+    /// for, so a single root's demands keep exactly the units with its bit,
+    /// and all demands together the units with any: requires, `effect:`
+    /// units and installs follow as there, an install with the roots whose
+    /// code holds its target's value. One more rule makes the slices of
+    /// several roots add up to the slice of all of them: an `effect: ...
+    /// when:` unit is needed by every root that needs a target once a root
+    /// that needs none of its targets needs a condition, since the values a
+    /// root builds can reach code that another root loads (`makeVector.seq`
+    /// for a feature that seqs a vector another feature built). And a kept
+    /// unit that shares state through another unit's binding
+    /// ([`RuntimeManifest::sharers`]) has that unit's roots, so that both are
+    /// in one chunk. Neither rule keeps a unit no single root keeps alone or
+    /// with the others.
+    pub fn signatures(&self, demands: &[(UnitId, RootUse, &[u64])], words: usize) -> Vec<Vec<u64>> {
+        /// The roots that need each unit and that hold its value, and the
+        /// units whose roots grew since they were last followed.
+        struct Walk {
+            needed: Vec<Vec<u64>>,
+            escaped: Vec<Vec<u64>>,
+            queued: Vec<bool>,
+            queue: std::collections::VecDeque<UnitId>,
+        }
+        fn add(into: &mut [u64], from: &[u64]) -> bool {
+            let mut changed = false;
+            for (word, more) in into.iter_mut().zip(from) {
+                changed |= *more & !*word != 0;
+                *word |= *more;
+            }
+            changed
+        }
+        impl Walk {
+            /// Add `roots` to those that need `unit`, and to those that hold
+            /// its value when `value`.
+            fn grow(&mut self, unit: UnitId, roots: &[u64], value: bool) {
+                let mut changed = add(&mut self.needed[unit.0], roots);
+                if value {
+                    changed |= add(&mut self.escaped[unit.0], roots);
+                }
+                if changed && !std::mem::replace(&mut self.queued[unit.0], true) {
+                    self.queue.push_back(unit);
+                }
+            }
+        }
+        let count = self.units.len();
+        let mut walk = Walk {
+            needed: vec![vec![0u64; words]; count],
+            escaped: vec![vec![0u64; words]; count],
+            queued: vec![false; count],
+            queue: std::collections::VecDeque::new(),
+        };
+        for &(unit, root_use, roots) in demands {
+            debug_assert_eq!(roots.len(), words);
+            walk.grow(unit, roots, root_use == RootUse::Value);
+        }
+        // An `effect: ... when:` unit's roots given its targets' and
+        // conditions' (see above).
+        let conditional = |needed: &[Vec<u64>], effect: UnitId| {
+            let mut targets = vec![0u64; words];
+            for target in &self.units[effect.0].effect.as_ref().unwrap().targets {
+                if let Some(owner) = self.unit_of(target) {
+                    add(&mut targets, &needed[owner.0]);
+                }
+            }
+            let mut conditions = vec![0u64; words];
+            for condition in &self.conditions[effect.0] {
+                add(&mut conditions, &needed[condition.0]);
+            }
+            let elsewhere = conditions
+                .iter()
+                .zip(&targets)
+                .any(|(condition, target)| condition & !target != 0);
+            targets
+                .iter()
+                .zip(&conditions)
+                .map(|(target, condition)| {
+                    if elsewhere {
+                        *target
+                    } else {
+                        target & condition
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        while let Some(unit) = walk.queue.pop_front() {
+            walk.queued[unit.0] = false;
+            let roots = walk.needed[unit.0].clone();
+            let values = walk.escaped[unit.0].clone();
+            for &dependency in &self.dependencies[unit.0] {
+                walk.grow(dependency, &roots, true);
+            }
+            for &install in &self.installs[unit.0] {
+                walk.grow(install, &values, true);
+            }
+            for &effect in &self.attached[unit.0] {
+                let roots = if self.conditions[effect.0].is_empty() {
+                    roots.clone()
+                } else {
+                    conditional(&walk.needed, effect)
+                };
+                walk.grow(effect, &roots, true);
+            }
+            for &effect in &self.conditional[unit.0] {
+                let roots = conditional(&walk.needed, effect);
+                walk.grow(effect, &roots, true);
+            }
+            // A kept unit sharing state through another's binding has its
+            // roots ([`RuntimeManifest::sharers`]).
+            for &sharer in &self.sharers[unit.0] {
+                if walk.needed[sharer.0].iter().any(|&word| word != 0) {
+                    walk.grow(sharer, &roots, true);
+                }
+            }
+            for &owner in &self.shared[unit.0] {
+                let roots = walk.needed[owner.0].clone();
+                walk.grow(unit, &roots, true);
+            }
+        }
+        walk.needed
+    }
+
     /// A runtime factory with only the `kept` units (indexed by [`UnitId`]):
     /// the prologue, the kept bodies in `UnitId` order, so initialization order
     /// is the full runtime's, and an export section that freezes `exports` in
@@ -705,6 +894,33 @@ impl<'a> RuntimeManifest<'a> {
     /// destructure.
     pub fn sliced_bindings_text(&self, kept: &[bool], bindings: &[&str]) -> String {
         self.slice_with_return(kept, bindings, "[", "]")
+    }
+
+    /// The runtime of one chunk of a chunked build (docs/code-splitting.md,
+    /// "What a chunk file contains"): a function of the bindings its `kept`
+    /// units require that other chunks declare, `parameters`, which returns
+    /// `returned` as an array, `((keywords, hash) => { ... return [compare];
+    /// })`, for the chunk to call with its imports of them. The bodies are as
+    /// written, in `UnitId` order; a chunk is a module, so the function needs
+    /// no `"use strict"`. Without `returned` it returns nothing.
+    pub fn chunk_factory_text(
+        &self,
+        kept: &[bool],
+        parameters: &[&str],
+        returned: &[&str],
+    ) -> String {
+        debug_assert_eq!(kept.len(), self.units.len());
+        let mut text = format!("(({}) => {{\n", parameters.join(", "));
+        for (unit, _) in self.units.iter().zip(kept).filter(|(_, kept)| **kept) {
+            text.push_str(&self.source[unit.body_range.clone()]);
+        }
+        if !returned.is_empty() {
+            text.push_str("  return [");
+            text.push_str(&returned.join(", "));
+            text.push_str("];\n");
+        }
+        text.push_str("})");
+        text
     }
 
     fn slice_with_return(&self, kept: &[bool], names: &[&str], open: &str, close: &str) -> String {
@@ -1680,6 +1896,88 @@ mod tests {
             error(&CONDITIONAL.replace("when: op", "when: op, op")),
             "unit `table.entry`: names `when:` binding `op` twice"
         );
+    }
+
+    /// Signatures over roots: each root's units are those its own demands
+    /// keep, installs follow the roots that hold the target's value, and a
+    /// conditional effect whose condition another root needs goes with its
+    /// target.
+    #[test]
+    fn signatures_split_the_slice_among_roots() {
+        let manifest = RuntimeManifest::parse(INSTALLS).unwrap();
+        let unit = |name| manifest.unit_named(name).unwrap();
+        let [first, second, both] = [[1u64], [2], [3]];
+        // `f` is called by root 0 and held by `g`, which root 1 calls, so its
+        // install is root 1's.
+        let demands = [
+            (unit("f"), RootUse::Call, &first[..]),
+            (unit("g"), RootUse::Call, &second[..]),
+        ];
+        let signatures = manifest.signatures(&demands, 1);
+        let roots = |name| signatures[unit(name).0][0];
+        assert_eq!(
+            ["f", "install", "f.extra", "g", "h"].map(roots),
+            [3, 2, 2, 2, 0]
+        );
+        for (bit, demand) in demands.iter().enumerate() {
+            let kept = manifest.reached_by_uses(&[(demand.0, demand.1)]);
+            for (unit, kept) in kept.iter().enumerate() {
+                assert_eq!(kept.is_some(), signatures[unit][0] & (1 << bit) != 0);
+            }
+        }
+
+        let manifest = RuntimeManifest::parse(CONDITIONAL).unwrap();
+        let unit = |name| manifest.unit_named(name).unwrap();
+        let roots = |demands: &[(UnitId, RootUse, &[u64])]| {
+            let signatures = manifest.signatures(demands, 1);
+            ["table", "user", "op", "table.entry"].map(|name| signatures[unit(name).0][0])
+        };
+        // A root that needs the target and the condition keeps the entry.
+        assert_eq!(
+            roots(&[
+                (unit("user"), RootUse::Value, &both[..]),
+                (unit("op"), RootUse::Value, &second[..]),
+            ]),
+            [3, 3, 2, 2]
+        );
+        // Root 1 needs `op` but no `user`, whose values root 0 may pass it:
+        // the entry goes with `user`, and takes `op` along.
+        assert_eq!(
+            roots(&[
+                (unit("user"), RootUse::Value, &first[..]),
+                (unit("op"), RootUse::Value, &second[..]),
+            ]),
+            [1, 1, 3, 1]
+        );
+        assert_eq!(
+            roots(&[(unit("op"), RootUse::Value, &second[..])]),
+            [0, 0, 2, 0]
+        );
+
+        // A wrapper assigns `user`, so it shares `user`'s roots once kept:
+        // chunks receive other chunks' bindings as values, which it cannot
+        // assign.
+        let shared = CONDITIONAL.replace(
+            "  //@exports",
+            "  //@unit user.wrap effect: table when: op requires: user\n  user = (wrapped => () => wrapped())(user);\n  //@exports",
+        );
+        let manifest = RuntimeManifest::parse(&shared).unwrap();
+        manifest.validate().unwrap();
+        let unit = |name| manifest.unit_named(name).unwrap();
+        let wrap = unit("user.wrap");
+        assert_eq!(manifest.sharers(unit("user")), [wrap]);
+        let wrapped =
+            |demands: &[(UnitId, RootUse, &[u64])]| manifest.signatures(demands, 1)[wrap.0][0];
+        // Root 1 alone needs the wrapper; it goes with `user`, which both need.
+        assert_eq!(
+            wrapped(&[
+                (unit("user"), RootUse::Value, &both[..]),
+                (unit("op"), RootUse::Value, &second[..]),
+            ]),
+            3
+        );
+        // Without `op` nothing keeps it.
+        assert_eq!(wrapped(&[(unit("user"), RootUse::Value, &both[..])]), 0);
     }
 
     #[test]

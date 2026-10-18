@@ -4325,3 +4325,43 @@ unit, and their ceilings fall; every other fixture is unchanged, including
 A program that updates or prints records through the generic operations
 keeps `recordTypes.brands`, and with it the brand and its cost in Maglev;
 cheaper brands for those programs are left to a follow-up.
+
+## Runtime slices per chunk — October 18, 2026
+
+light-cljs-279 slices the runtime per chunk at `advanced`: each runtime unit
+goes to the chunk of the roots whose code needs it, and each chunk's runtime
+is a function of the bindings it takes from the chunks before it
+([code-splitting design](../docs/code-splitting.md), Phase 3, "As built
+(light-cljs-279)"). Measured with `light-cljs --compile --optimize advanced
+--size-report --entry app.main --source-root examples/features --out-dir
+OUT`, and raw / `gzip -9 -n` bytes of each file, against master `ebeb14e`,
+which the pellet was rebased onto (first measured against `3abc7ad`, where
+startup was 9,046 bytes too). Every single file, and the chunks at `none`
+and `prepare`, are byte for byte as master's. Apple M3 Ultra virtual machine
+of the [environment](results/environment.txt), macOS 15.7.3, one-minute load
+average 5.8 (sizes do not depend on it). examples/features at `advanced`,
+terse:
+
+| File | Before | After |
+| --- | ---: | ---: |
+| `app.main.js`, startup | 69,528 / 21,361 | 9,046 / 3,373 |
+| `app.editor+app.reports.js` | 632 / 397 | 54,195 / 17,412 |
+| `app.editor.js` | 361 / 258 | 5,453 / 2,459 |
+| `app.reports.js` | 878 / 534 | 4,513 / 2,096 |
+| all four | 71,399 / 22,550 | 73,207 / 25,340 |
+| startup lower bound, the application without its features | 4,680 / 1,753 | 4,680 / 1,753 |
+
+Startup's runtime is 64 units: the 38 the application without its features
+keeps, the `Loadable` type, and 25 units (2,879 bytes) only the features
+need, the hash-trie wrappers `lookup.trie` and `lookup.members` with the
+lookup and hashing they require, which assign `lookup` and so stay in its
+chunk (light-cljs-302 would make them hooks); the pellet closes with them
+there by the user's decision. Loading the editor first costs 59,648 / 19,871
+bytes and the reports first 58,708 / 19,508, against their upper bounds of
+64,975 / 20,151 and 64,458 / 19,943 as their own entries (`bb
+benchmarks/features.bb` on the same master); the second feature costs its
+own file. The build grows by 1,808 bytes (2,790 gzipped, the runtime now
+compressed in four files): the factories' parameter, argument, return and
+destructuring lists were 1,573 / 983 bytes at `3abc7ad`, which module-level
+units would save (light-cljs-303), and the variadic arity
+of `str`, whose output-level cell no chunk reads but to call, is left out.

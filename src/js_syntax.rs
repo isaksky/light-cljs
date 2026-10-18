@@ -338,6 +338,13 @@ pub struct Facts<'a> {
     pub references: Vec<&'a str>,
     /// The references called directly by code run at load time.
     pub load_time_calls: Vec<&'a str>,
+    /// The references the body assigns (`seq = wrap(seq)`, `n += 1`, `n++`),
+    /// sorted and without duplicates.
+    pub assigns: Vec<&'a str>,
+    /// The top-level bindings, its own or free references, that a function of
+    /// the body assigns, sorted and without duplicates: their value changes
+    /// after the body has run.
+    pub call_time_assigns: Vec<&'a str>,
     /// Whether some top-level statement is not a declaration.
     pub has_effect_statements: bool,
 }
@@ -659,8 +666,19 @@ pub fn analyze<'a>(source: &'a str, tokens: &[Token]) -> Result<Facts<'a>, (usiz
     let declares = parser.scopes[0].names.clone();
     let mut references = Vec::new();
     let mut load_time_calls = Vec::new();
+    let mut assigns = Vec::new();
+    let mut call_time_assigns = Vec::new();
+    let punct = |at: Option<usize>| {
+        at.and_then(|at| tokens.get(at))
+            .filter(|token| token.kind == Kind::Punct)
+            .map(|token| token.text(source))
+    };
     for &Reference {
-        name, scope, call, ..
+        name,
+        scope,
+        call,
+        token,
+        shorthand,
     } in &parser.references
     {
         let mut current = scope;
@@ -675,21 +693,58 @@ pub fn analyze<'a>(source: &'a str, tokens: &[Token]) -> Result<Facts<'a>, (usiz
             load_time &= !parser.scopes[current].function;
             current = parser.scopes[current].parent;
         };
+        let assigned = !shorthand
+            && (matches!(
+                punct(Some(token + 1)),
+                Some(
+                    "=" | "+="
+                        | "-="
+                        | "*="
+                        | "/="
+                        | "%="
+                        | "**="
+                        | "<<="
+                        | ">>="
+                        | ">>>="
+                        | "&="
+                        | "|="
+                        | "^="
+                        | "&&="
+                        | "||="
+                        | "??="
+                        | "++"
+                        | "--"
+                )
+            ) || matches!(punct(token.checked_sub(1)), Some("++" | "--")));
         if !local {
             references.push(name);
             if load_time && call {
                 load_time_calls.push(name);
             }
+            if assigned {
+                assigns.push(name);
+            }
+        }
+        // A top-level binding, this unit's or another's, that a function
+        // assigns changes after the unit loads.
+        if assigned && !load_time && (!local || current == 0) {
+            call_time_assigns.push(name);
         }
     }
     references.sort_unstable();
     references.dedup();
     load_time_calls.sort_unstable();
     load_time_calls.dedup();
+    assigns.sort_unstable();
+    assigns.dedup();
+    call_time_assigns.sort_unstable();
+    call_time_assigns.dedup();
     Ok(Facts {
         declares,
         references,
         load_time_calls,
+        assigns,
+        call_time_assigns,
         has_effect_statements,
     })
 }

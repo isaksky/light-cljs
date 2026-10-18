@@ -1409,6 +1409,10 @@ struct Emitter<'a> {
     raw_segments: Vec<std::ops::Range<usize>>,
     /// Every runtime name written so far, the roots of an `Advanced` slice.
     runtime: RuntimeRoots,
+    /// The callee being written of a plain `.call(null, ...)` of a core
+    /// operation the program may replace, whose output-level cell the call
+    /// reads without passing its value on ([`Emitter::runtime_read`]).
+    cell_callee: Option<ExprId>,
     /// The innermost expression being emitted, to which runtime reads are attributed.
     site: Option<ExprId>,
     /// The protocol operand of the last `satisfies?` or `implements?` of a
@@ -1570,6 +1574,7 @@ impl<'a> Emitter<'a> {
             dispatchers: None,
             raw_segments: Vec::new(),
             runtime: RuntimeRoots::default(),
+            cell_callee: None,
             site: None,
             protocol_operand: None,
             inference,
@@ -1724,20 +1729,23 @@ impl<'a> Emitter<'a> {
         };
         // A host value the program builds may declare core protocols by
         // their masks or markers, which it names (`crate::rta`).
+        // A chunked build keeps these units in startup: which chunk names
+        // them is not recorded.
+        if let Some(chunks) = &mut self.chunks {
+            chunks.write_startup();
+        }
         for &(unit, site) in application.protocol_declarations {
-            self.runtime
-                .record(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);
+            self.runtime_root(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);
         }
         // ... and read by name what the runtime's `Loadable` has as a
         // deftype would, which its effects add once these units are kept.
         for &(unit, site) in application.loadable_members {
-            self.runtime
-                .record(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);
+            self.runtime_root(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);
         }
         // Only code naming them reads the upstream fields and methods of the
         // runtime's types, so an `Advanced` slice keeps them only then.
         if let Some(site) = application.upstream_member {
-            self.runtime.record(
+            self.runtime_root(
                 RuntimeName::direct(crate::runtime_slice::UPSTREAM_MEMBERS_UNIT, None),
                 Some(site),
                 NameUse::Keep,
@@ -1758,8 +1766,27 @@ impl<'a> Emitter<'a> {
     /// its install effect fills in (`typeHooks`).
     fn keep_runtime(&mut self, binding: &'static str) {
         if self.replaced_core.is_some() {
-            self.runtime
-                .record(RuntimeName::direct(binding, None), self.site, NameUse::Keep);
+            self.runtime_root(RuntimeName::direct(binding, None), self.site, NameUse::Keep);
+        }
+    }
+
+    /// Record `name` as a root of the runtime slice
+    /// ([`RuntimeRoots::record`]); in a chunked build also as a read of the
+    /// chunk or constant being written ([`chunked::Chunks::runtime_root`]).
+    fn runtime_root(&mut self, name: RuntimeName, site: Option<ExprId>, used: NameUse) {
+        self.runtime.record(name, site, used);
+        if let Some(chunks) = &mut self.chunks {
+            chunks.runtime_root(name, site, used, false);
+        }
+    }
+
+    /// [`Emitter::runtime_root`] of a name that startup reads for every
+    /// chunk: the initial value of an output-level core cell, which startup
+    /// declares.
+    fn startup_root(&mut self, name: RuntimeName, site: Option<ExprId>, used: NameUse) {
+        self.runtime.record(name, site, used);
+        if let Some(chunks) = &mut self.chunks {
+            chunks.runtime_root(name, site, used, true);
         }
     }
 
@@ -1770,13 +1797,13 @@ impl<'a> Emitter<'a> {
     /// member of one) holding it.
     fn runtime_read(&mut self, name: RuntimeName, site: Option<ExprId>, used: NameUse) -> String {
         if self.replaced_core.is_none() {
-            self.runtime.record(name, site, used);
+            self.runtime_root(name, site, used);
             return name.to_string();
         }
         if (name.binding, name.member) == (CORE_HUB, Some("PersistentHashSet")) {
             // The set type's public constructor, which only a program naming
             // the type calls (light-cljs-231).
-            self.runtime.record(
+            self.runtime_root(
                 RuntimeName::direct("publicHashSet", None),
                 site,
                 NameUse::Keep,
@@ -1794,8 +1821,21 @@ impl<'a> Emitter<'a> {
                         CoreReference::Cell(_) => unreachable!(),
                     };
                     if self.replaced(member) {
-                        self.runtime.demand(target, site);
-                        self.escaped_dispatcher(target, site);
+                        // The cell `let core$inc = rt$inc;` holds the value.
+                        self.runtime.record(target, site, NameUse::Value);
+                        // A chunked build declares the cell in startup, and
+                        // the value escapes from the chunks that read the
+                        // cell other than to call it.
+                        if let Some(chunks) = &mut self.chunks {
+                            chunks.runtime_root(target, site, NameUse::Call, true);
+                            let used = if self.cell_callee.is_some() && self.cell_callee == site {
+                                NameUse::Call
+                            } else {
+                                used
+                            };
+                            chunks.runtime_root(target, site, used, false);
+                        }
+                        self.escaped_dispatcher(target, site, true);
                         if !self.core_cells.iter().any(|(name, _)| *name == member) {
                             self.core_cells.push((member, target));
                         }
@@ -1806,9 +1846,9 @@ impl<'a> Emitter<'a> {
             },
             (binding, member) => RuntimeName::direct(binding, member),
         };
-        self.runtime.record(resolved, site, used);
+        self.runtime_root(resolved, site, used);
         if used == NameUse::Value {
-            self.escaped_dispatcher(resolved, site);
+            self.escaped_dispatcher(resolved, site, false);
         }
         resolved.to_string()
     }
@@ -1820,15 +1860,20 @@ impl<'a> Emitter<'a> {
     /// (`(aset ICounted "number" true)`) may gain types, which only the hooks
     /// `extendType` installs read (`protocolHooks.satisfies`, light-cljs-251),
     /// except as the operand of `satisfies?` or `implements?` where the program
-    /// does not replace them.
-    fn escaped_dispatcher(&mut self, name: RuntimeName, site: Option<ExprId>) {
+    /// does not replace them. `startup`: the value is a core cell's, which
+    /// startup declares.
+    fn escaped_dispatcher(&mut self, name: RuntimeName, site: Option<ExprId>, startup: bool) {
         let manifest = RuntimeManifest::embedded();
         if name.member.is_none()
             && (manifest.is_core_dispatcher(name.binding)
                 || manifest.is_core_protocol(name.binding) && site != self.protocol_operand)
         {
-            self.runtime
-                .record(RuntimeName::direct("extendType", None), site, NameUse::Keep);
+            let extend = RuntimeName::direct("extendType", None);
+            if startup {
+                self.startup_root(extend, site, NameUse::Keep);
+            } else {
+                self.runtime_root(extend, site, NameUse::Keep);
+            }
         }
     }
 
@@ -1944,9 +1989,9 @@ impl<'a> Emitter<'a> {
             .map(|chunks| chunks.begin_initializer());
         // A table entry is declared at the top of the output.
         self.without_operands(initializer);
-        let parts = match (&mut self.chunks, enclosing) {
+        let initializer = match (&mut self.chunks, enclosing) {
             (Some(chunks), Some(enclosing)) => chunks.end_initializer(enclosing),
-            _ => Vec::new(),
+            _ => chunked::Initializer::default(),
         };
         debug_assert_eq!(
             self.raw_segments.len(),
@@ -1970,7 +2015,7 @@ impl<'a> Emitter<'a> {
         constants.lazy.push(lazy);
         constants.numbers.insert(key, number);
         if let Some(chunks) = &mut self.chunks {
-            chunks.constant(number, parts);
+            chunks.constant(number, initializer);
             chunks.declared(number, declared);
         }
         number
@@ -4726,8 +4771,7 @@ impl<'a> Emitter<'a> {
     fn record_runtime(&mut self) {
         self.keep_runtime("recordMethods");
         for &(unit, site) in self.record_methods {
-            self.runtime
-                .record(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);
+            self.runtime_root(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);
         }
     }
 
@@ -5532,7 +5576,7 @@ impl<'a> Emitter<'a> {
                         if let MethodDispatch::Builtin(key) = dispatch
                             && let Some(binding) = RuntimeManifest::embedded().core_dispatcher(key)
                         {
-                            self.runtime.record(
+                            self.runtime_root(
                                 RuntimeName::direct(binding, None),
                                 self.site,
                                 NameUse::Keep,
@@ -6069,8 +6113,20 @@ impl<'a> Emitter<'a> {
                     return;
                 }
                 self.output.push('(');
+                let specialized = self.specialized_calls.and_then(|calls| calls.get(&id));
+                let cell = match self.program.exprs[callee.0].kind {
+                    ExprKind::CoreFn(core) if specialized.is_none() => {
+                        self.chunks.is_some() && self.replaced(core.runtime_name())
+                    }
+                    _ => false,
+                };
+                let enclosing = std::mem::replace(
+                    &mut self.cell_callee,
+                    if cell { Some(*callee) } else { None },
+                );
                 self.value(*callee);
-                if let Some(arity) = self.specialized_calls.and_then(|calls| calls.get(&id)) {
+                self.cell_callee = enclosing;
+                if let Some(arity) = specialized {
                     write!(self.output, ".cljs$core$IFn$_invoke$arity${arity}").unwrap();
                 }
                 if matches!(self.program.exprs[callee.0].kind, ExprKind::JsGlobal(_)) {

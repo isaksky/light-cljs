@@ -46,8 +46,8 @@ Targets, measured in Phase 0 on the example application
 
 | Measurement | Today | Measured bound | Target |
 |---|---|---|---|
-| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646; chunked at namespace granularity (light-cljs-274), `app.main.js` 69,587 / 21,575, with the whole-program runtime slice and every constant still in startup; with definitions moved toward their readers (light-cljs-277), 69,539 / 21,551; with constants placed by their readers (light-cljs-278), 69,000 / 21,242, the whole-program runtime slice and the menu's two keywords | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
-| Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds; with definitions moved (light-cljs-277), 361 / 255 and 874 / 531, each also importing the shared `app.editor+app.reports.js`, 63 / 81; with constants (light-cljs-278) the shared chunk holds `documents` with its table, 632 / 397, and the features 361 / 258 and 874 / 531; a shared chunk that would hold no code is not written (light-cljs-299), so a feature imports one only for code or constants it shares | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
+| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646; chunked at namespace granularity (light-cljs-274), `app.main.js` 69,587 / 21,575, with the whole-program runtime slice and every constant still in startup; with definitions moved toward their readers (light-cljs-277), 69,539 / 21,551; with constants placed by their readers (light-cljs-278), 69,000 / 21,242, the whole-program runtime slice and the menu's two keywords; with the runtime sliced per chunk (light-cljs-279), 9,046 / 3,373: the units the menu needs (those of the lower bound, 4,184 bytes here), the `Loadable` type (255) and the `lazy$` helper, and 2,879 bytes of hash-trie units that share state with `lookup` ("Open questions") | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
+| Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds; with definitions moved (light-cljs-277), 361 / 255 and 874 / 531, each also importing the shared `app.editor+app.reports.js`, 63 / 81; with constants (light-cljs-278) the shared chunk holds `documents` with its table, 632 / 397, and the features 361 / 258 and 874 / 531; a shared chunk that would hold no code is not written (light-cljs-299), so a feature imports one only for code or constants it shares; with the runtime sliced per chunk (light-cljs-279) the shared chunk holds the runtime both features need, 54,195 / 17,412, and `app.editor.js` 5,453 / 2,459 and `app.reports.js` 4,513 / 2,096: the first feature loads 59,648 / 19,871 (editor) or 58,708 / 19,508 (reports), the second only its own file | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
 | Observable behavior | n/a; chunked (light-cljs-274), the example and the Phase 2 fixtures print what the single file prints at every level; the fixture matrix (light-cljs-276) through `--out-dir` and `chunks.json` in Node, and the example in Chrome without a bundler and through Vite 8.0.8, at every level | n/a | identical to the single-file program at every level, given the same `load` calls |
 | Compile time of a chunked build | n/a | n/a | within 10% of the single-file build of the same program |
 
@@ -470,8 +470,7 @@ most and thousands of items.
 import { rt$keywords, rt$hash, rt$assoc, k0, k3, g2, g7$ } from "./app.main.js";
 import { g12, k9 } from "./app.editor+app.reports.js";
 const [rt$sortedMapFromArray, rt$compare] = ((keywords, hash) => {
-  "use strict";
-  // the runtime units this chunk is the first to need, as written in js_runtime.js
+  // the runtime units of this chunk's signature, as written in js_runtime.js
   return [sortedMapFromArray, compare];
 })(rt$keywords, rt$hash);
 const k14 = rt$keyword(null, "editor");          // constants first read here
@@ -484,7 +483,9 @@ g7$(k14);                                        // a set! of app.main's g7 goes
 
 The sections, in order: imports; the chunk's runtime slice as a factory whose
 parameters are the runtime bindings of other chunks it references (so unit
-text is embedded as written, with no renaming inside unit bodies); constants;
+text is embedded as written, with no renaming inside unit bodies; a chunk is
+a module, so the factory needs no `"use strict"`, and startup's is the single
+file's, `(() => { "use strict"; ... })()`; light-cljs-279); constants;
 `let` declarations of the globals whose definitions are in this chunk,
 exported when another chunk reads them; the items in program order; nothing
 after. The startup chunk also carries the prelude helpers it needs and the
@@ -1295,6 +1296,127 @@ runtime units toward their first readers; per-chunk runtime factories.
     only, one the plan dropped into startup with silent items; no fixed
     seed, nor 480 seeds, drops a chunk.
 
+- **As built (light-cljs-279): runtime units follow their roots.**
+  - While the chunks are written, `Emitter::runtime_root` records each
+    runtime name the output reads twice: in the program's `RuntimeRoots`, as
+    before, which decide reflection and stay the single file's, and in
+    `Chunks::runtime_root`, under the chunk being written or the constant
+    whose initializer is being written (`Initializer`), which is placed with
+    the constant. Startup records the namespace registration and the units
+    kept for what the program names rather than reads
+    (`record_application_roots`: protocol masks, `Loadable` members,
+    upstream fields); the latter is conservative, since rapid type analysis
+    keeps only the first site naming each, so a unit a feature alone names
+    stays in startup until it records every site. An output-level core cell, `let core$str =
+    rt$str;`, is declared in startup for every chunk, so startup records its
+    binding as a call; each chunk reading the cell records it with its own
+    use, a call when the cell is the callee of a plain `.call(null, ...)`, so
+    the variadic arity of `str`, which `clojure.string` makes a cell, is
+    installed only where some chunk passes the value on. The single file
+    still counts the cell's value as escaping.
+  - `RuntimeManifest::signatures` gives each unit the roots that need it, a
+    bitset per unit, from each chunk's demands with the chunk's signature
+    and each constant's with the constant's (a signature holding startup's
+    root is every root). It is a fixpoint over the manifest graph: requires
+    and `effect:` units take their unit's roots, and an `install:` unit the
+    roots whose code holds its target's value (a `Value` demand, or a unit
+    that requires the target); one root's demands alone keep exactly the
+    units with its bit, as `reached_by_uses` keeps them, and all demands the
+    single file's slice. Two rules add roots without keeping more units. An
+    `effect: ... when:` unit whose condition some root needs that needs none
+    of its targets takes every root of its targets: a value one feature
+    builds can reach code another loads, so `makeVector.seq` goes with the
+    feature that builds vectors when another only walks them (per-root reach
+    alone would drop it when both are loaded). And a unit that shares state
+    through another unit's binding (`RuntimeManifest::sharers`: it assigns
+    the binding, as the wrappers `lookup.trie` and `seq.protocol` do, or
+    reads a binding a function assigns after loading, as `hash` does
+    `identityCounter`) takes that unit's roots, so both are in one chunk: a
+    chunk receives other chunks' bindings as values, which an assignment
+    cannot reach. `js_syntax::analyze` reports the assignments (`Unit::assigns`,
+    `Unit::call_time_assigns`); the `runtime_manifest` suite lists the 44
+    pairs of the runtime.
+  - `ChunkPlan::place` places the constants and the units together; a unit
+    of a signature no chunk has gets a chunk of its own, named as a shared
+    chunk is, holding no namespace. Each chunk's slice
+    (`runtime_slice::ChunkSlice`) is its units, the bindings they require
+    that other chunks declare (`factory_parameters`, by declaring unit) and
+    the bindings it returns: those its own code and constants read and those
+    later chunks read or take as parameters, by declaring unit.
+    `chunk_factories` writes startup's slice as the single file's factory and
+    every other as `((keywords, hash) => { ... return [compare]; })`, called
+    with `rt$keywords, rt$hash`, which the chunk imports from their owners;
+    terse slices are named by one table over every chunk's units
+    (`terse::slice_names`), so a parameter has its binding's name in the
+    chunk declaring it, and no other binding of the chunk has that name. A
+    slice without returned bindings is an expression statement. Each
+    parameter's owner has a signature strictly containing the chunk's
+    (debug-asserted), as does every chunk a runtime read imports.
+  - A chunk holding an `effect:` or `install:` unit, which no chunk reads, is
+    imported, for its effect when no binding of it is read, by every chunk
+    of a strictly smaller signature that does not reach it through its
+    imports: all its roots need it, and code loaded with it may build the
+    values it handles. Startup no longer needs to be every chunk's import: a
+    feature that reads nothing of startup's imports only the chunks it reads
+    (the `diamond`, `package` and `sub-feature` fixtures' features at
+    `Advanced`).
+  - `--size-report` with `--out-dir` at `Advanced` prints each chunk's units
+    (`ChunkedRetention`, from `PreparedApplication::emit_chunks_reported`):
+    a summary line for the build and per chunk, the roots that add units to
+    the chunk, its own and other chunks' (with their file), and every unit
+    with the root and expression that first demanded it, taking the chunks'
+    roots in plan order. Every unit of the build is listed once.
+  - examples/features at `advanced`, terse, raw / `gzip -9` bytes, before
+    (master `ebeb14e`, which the pellet was rebased onto) and after; `none`
+    and `prepare`, and every single file, are byte for byte as before:
+
+    | File | Before | After |
+    | --- | ---: | ---: |
+    | `app.main.js` | 69,528 / 21,361 | 9,046 / 3,373 |
+    | `app.editor+app.reports.js` | 632 / 397 | 54,195 / 17,412 |
+    | `app.editor.js` | 361 / 258 | 5,453 / 2,459 |
+    | `app.reports.js` | 878 / 534 | 4,513 / 2,096 |
+    | all four | 71,399 / 22,550 | 73,207 / 25,340 |
+
+    Startup's 64 units are the 38 the application without its features
+    keeps (the lower bound's, 4,184 bytes here), `Loadable` (255) and 25
+    units only the features need (2,879 bytes): `lookup.trie` and
+    `lookup.members`, which assign `lookup`, the hash-trie lookup and
+    hashing they require ("Open questions"). The shared chunk holds the
+    collections of `app.shared/documents` and what both features do with
+    them (seqs, `into`, `reduce`, the printer), the editor the sorted
+    collections, `juxt`, `zipmap` and `println`, the reports `set`, `sort`,
+    `filter`, `mapv`, `comp` and `+` with its variadic arity. Loading one
+    feature costs its file and the shared chunk, 59,648 / 19,871 for the
+    editor and 58,708 / 19,508 for the reports, against the upper bounds of
+    64,975 / 20,151 and 64,458 / 19,943 on the same master. The build is
+    1,808 bytes larger than before (2,790 gzip): the factories' parameter,
+    argument, return and destructuring lists cost 1,573 / 983 ("Open
+    questions", measured before the rebase, at `3abc7ad`), and the
+    `str` cell's variadic arity, which no chunk reads but to call, is left
+    out (`str.variadic`, the one unit of the single file's slice no chunk
+    holds).
+  - Tests (`tests/compiler/chunks.rs`): in examples/features each unit is
+    in one chunk, the sorted collections only in the editor's, the set
+    operations only in the reports', the documents' collections in the
+    shared chunk, and startup holds exactly the lower bound's units,
+    `Loadable` and what the `lookup` wrappers reach; an install that one
+    feature needs (`apply str`) runs when that feature loads while startup
+    keeps `str`, and one both need is in their shared chunk; the printer of
+    collections goes with the collections though startup calls `str`; a
+    vector one feature builds and another walks keeps `makeVector.seq` in
+    the builder's chunk; and `--size-report` lists every unit once. Four
+    expectations changed on purpose: the `diamond` fixture's features import
+    a chunk of the runtime both need, named as the dropped shared chunk
+    (a file can have two rows in `membership.tsv`, one per side), and its,
+    `package`'s and `sub-feature`'s chunks no longer import startup where
+    they read nothing of it; so do the features of three plan tests.
+    `chunks::check_manifest` accepts a chunk of runtime units that another
+    chunk imports, by name or for its effect. The `runtime_manifest` suite
+    checks the signatures on small manifests and lists the runtime's
+    sharers; the fixture matrix and the generated lazy programs run as
+    before.
+
 - **Item signatures.** Extend `chunks::plan` with the item reference graph
   over `flatten(program.root)`: per item, the globals it reads (one walk
   with `program_fragment::children`), the globals it defines
@@ -1517,12 +1639,41 @@ minification, against the 69,587 bytes `--out-dir` wrote.
   `cljs.loader`-compatible shim (`load` by module keyword plus `set-loaded!`)
   on top of it for porting code. The compiler-owned part is one special form
   either way.
-- **Readable per-chunk runtime factories versus module-level units.** The
-  factory with parameters keeps `sliced_runtime` and the terse unit text as
-  they are. Writing units directly at module top level would remove one
-  closure per chunk and the destructuring, at the cost of renaming inside unit
-  bodies. The existing open question about the sliced runtime's shape in
-  advanced-optimization.md should be settled together with this.
+- **Readable per-chunk runtime factories versus module-level units.**
+  Settled by light-cljs-279 for module-level units, which light-cljs-303
+  writes; until then chunks keep the factory with parameters. The factory
+  keeps `sliced_runtime` and the terse unit text as they are; units at
+  module level remove one closure per chunk and its lists, at the cost of
+  naming the runtime's bindings in the program's table. Measured on
+  examples/features at `advanced` at `3abc7ad` (terse, the four files
+  72,675 / 25,228 bytes raw / `gzip -9`; 73,207 / 25,340 on `ebeb14e`): the factories' parameter, argument, return and
+  destructuring lists and their wrappers are 1,573 / 983 bytes (startup 273
+  / 170, the shared chunk 636 / 410, the editor 352 / 216, the reports 312
+  / 187); one name table over the program's compiler names and the
+  runtime's bindings (a read `rt$x` and the binding `x` one name) gives the
+  names outside the lists 3,751 bytes against 3,597 with two tables, so
+  module level writes about 1.4 KB fewer raw bytes (2.0% of the build) and,
+  since 154 bytes of longer names cannot cost much more than that
+  compressed, about 830 fewer gzip bytes (3.3%). Measured with throwaway
+  scripts over the terse output: the lists cut out, and the names counted
+  as the terse renaming counts them. Units that assign another unit's binding stay with it either
+  way: an imported binding is read-only, and a parameter is a copy. The
+  same lists cost the single file (advanced-optimization.md, "Open
+  questions") once, its return and destructuring lists, a few hundred
+  bytes for an application of this size.
+- **Units that assign another unit's binding.** Eleven `effect:` units wrap
+  an operation by assigning its binding, `lookup = (operation => ...)(lookup)`
+  (`lookup.trie`, `lookup.members`, `copyEntries.trie`, and the protocol
+  wrappers of `seq`, `first`, `rest`, `next`, `count`, `nth`, `reduce` and
+  `derefProtocol`), and a few functions assign state another unit declares
+  after loading (`hash` its `identityCounter`). A chunk receives other
+  chunks' bindings as values, so since light-cljs-279 such a unit shares the
+  binding's chunk (`RuntimeManifest::sharers`): in examples/features the
+  menu's keywords reach `lookup`, and the two hash-trie wrappers with the
+  lookup and hashing they need, 25 units and 2,879 bytes only the features
+  need, stay in startup. Hook installs instead of wrappers
+  (light-cljs-302) would let them move, but grow `lookup` in every single
+  file that keeps it, which the ground rules leave to the user.
 - **Multimethods and motion.** A `defmulti` stays pinned at `Advanced`
   (light-cljs-277): its initializer builds a `MultiFn` from the dispatch
   function, the options and the global hierarchy, which `Inert` does not

@@ -1130,6 +1130,73 @@ fn conditional_effects_wait_for_a_condition() {
     assert!(!manifest.reachable([unit("count")])[unit("recordMethodTable").0]);
 }
 
+/// The units that share state through another unit's binding
+/// (`RuntimeManifest::sharers`), which a chunked build keeps in that unit's
+/// chunk (light-cljs-279): the effects that wrap an operation by assigning
+/// its binding, and the readers of a binding a function assigns after the
+/// runtime loads. A new one moves no unit out of its binding's chunk.
+#[test]
+fn units_assigning_a_binding_share_its_unit() {
+    let manifest = manifest();
+    let mut shared = Vec::new();
+    for (index, unit) in manifest.units.iter().enumerate() {
+        for &sharer in manifest.sharers(UnitId(index)) {
+            shared.push(format!("{} <- {}", unit.name, manifest.unit(sharer).name));
+        }
+    }
+    shared.sort();
+    assert_eq!(
+        shared,
+        [
+            "copyEntries <- copyEntries.trie",
+            "count <- count.protocol",
+            "declarationJournal <- addMethod",
+            "declarationJournal <- declarationTransaction",
+            "declarationJournal <- installMethods",
+            "declarationJournal <- multiState",
+            "demandProtocol <- addMethod",
+            "demandProtocol <- declarationReceiver",
+            "demandProtocol <- directMethod",
+            "demandProtocol <- getMethod",
+            "demandProtocol <- methods",
+            "demandProtocol <- preferMethod",
+            "demandProtocol <- prefers",
+            "demandProtocol <- protocolPredicate",
+            "demandProtocol <- publicMethod",
+            "demandProtocol <- removeMethod",
+            "demandProtocol <- resetMulti",
+            "demandProtocol <- satisfies",
+            "demandProtocol <- setDeclarationDemand",
+            "derefProtocol <- Loadable.deref",
+            "first <- first.protocol",
+            "gensymCounter <- gensym",
+            "globalHierarchy <- getGlobalHierarchy",
+            "identityCounter <- hash",
+            "lookup <- lookup.members",
+            "lookup <- lookup.trie",
+            "macroexpandServices <- expansionService",
+            "macroexpandServices <- setMacroexpandServices",
+            "next <- next.protocol",
+            "nth <- nth.protocol",
+            "patchDeclaration <- declarationTransaction",
+            "patchDeclaration <- extendType",
+            "patchDeclaration <- installMethods",
+            "reduce <- reduce.protocol",
+            "rest <- rest.protocol",
+            "seq <- seq.protocol",
+            "setDeclaration <- declarationTransaction",
+            "setDeclaration <- extendType",
+            "setDeclaration <- protocol",
+            "setDeclaration <- protocolMethod",
+            "tapDraining <- drainTaps",
+            "tapDraining <- tapGreater",
+            "tapLimit <- configureHostHooks",
+            "tapLimit <- drainTaps",
+            "tapLimit <- tapGreater",
+        ]
+    );
+}
+
 #[test]
 fn every_unit_is_reachable_from_the_export_list() {
     let manifest = manifest();

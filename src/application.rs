@@ -287,7 +287,21 @@ impl PreparedApplication {
     /// program's forms reach reflection: then every form stays in its
     /// namespace's chunk ([`crate::chunks::namespace_plan`]), so a namespace
     /// the program can look up is never split across chunks.
+    /// At `Advanced` each chunk embeds the runtime units of its signature
+    /// (docs/code-splitting.md, "Phase 3", runtime units).
     pub fn emit_chunks(&self) -> crate::chunks::ChunkedOutput {
+        self.emit_chunks_reported().0
+    }
+    /// [`PreparedApplication::emit_chunks`] and, for an `Advanced` build of
+    /// more than one chunk, which runtime units each chunk embeds and why
+    /// (`--size-report` with `--out-dir`). Every other build embeds the
+    /// runtime [`PreparedApplication::retention`] reports, in startup.
+    pub fn emit_chunks_reported(
+        &self,
+    ) -> (
+        crate::chunks::ChunkedOutput,
+        Option<crate::ChunkedRetention>,
+    ) {
         let plan = crate::chunks::plan(&self.program, self);
         if let Some(output) = self.write_chunks(&plan, false) {
             return output;
@@ -296,33 +310,41 @@ impl PreparedApplication {
         self.write_chunks(&plan, true)
             .expect("a plan that moves no definition is written")
     }
-    /// The files of `plan`, or `None` when its forms reach reflection and it
-    /// moves a definition out of its namespace's chunk or drops a chunk.
-    /// `reflective`: the forms are known to reach reflection.
+    /// The files of `plan` and their runtimes' report, or `None` when its
+    /// forms reach reflection and it moves a definition out of its
+    /// namespace's chunk or drops a chunk. `reflective`: the forms are known
+    /// to reach reflection.
     fn write_chunks(
         &self,
         plan: &crate::chunks::ChunkPlan,
         reflective: bool,
-    ) -> Option<crate::chunks::ChunkedOutput> {
+    ) -> Option<(
+        crate::chunks::ChunkedOutput,
+        Option<crate::ChunkedRetention>,
+    )> {
         if plan.chunks.len() == 1 {
             let emitted = vec![crate::emitter::EmittedChunk {
                 source: self.emit_esm(),
                 imports: Vec::new(),
+                runtime: Default::default(),
             }];
-            return Some(crate::chunks::ChunkedOutput::new(
-                &self.program,
-                plan,
-                emitted,
-            ));
+            let output = crate::chunks::ChunkedOutput::new(&self.program, plan, emitted);
+            return Some((output, None));
         }
-        // The constant table may add chunks to the plan.
+        // The constant table and the runtime may add chunks to the plan.
         let (plan, emitted) =
             crate::emitter::emit_chunked(&self.program, self.application(), plan, reflective)?;
-        Some(crate::chunks::ChunkedOutput::new(
-            &self.program,
-            &plan,
-            emitted,
-        ))
+        let report = self.level.advanced().then(|| {
+            let chunks = plan
+                .chunks
+                .iter()
+                .zip(&emitted)
+                .map(|(chunk, emitted)| (chunk.name.clone(), &emitted.runtime))
+                .collect::<Vec<_>>();
+            crate::ChunkedRetention::new(&self.program, self.level, &chunks)
+        });
+        let output = crate::chunks::ChunkedOutput::new(&self.program, &plan, emitted);
+        Some((output, report))
     }
     /// [`PreparedApplication::emit_js`] (the same text) and its source map,
     /// which [`crate::source_map::SourceMapping::to_json`] writes against

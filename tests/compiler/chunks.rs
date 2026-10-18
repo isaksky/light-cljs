@@ -883,20 +883,27 @@ fn chunk_files(program: &Program) -> (String, Vec<String>) {
 /// A feature loads a sub-feature, which requires it back (the
 /// `sub-feature` fixture, which [`matrix`] runs): the loadable in the
 /// feature's chunk imports the sub-feature's chunk, and the manifest gives
-/// the site to the editor.
+/// the site to the editor. At `Advanced` the sub-feature reads only runtime
+/// bindings that the editor's chunk declares (light-cljs-279), so it does
+/// not import startup.
 #[test]
 fn a_feature_loads_its_sub_feature_chunk() {
     let program = fixture_program("sub-feature");
     for level in OptimizationLevel::ALL {
         let output = prepare_application(&program, ApplicationOptions::new(level)).emit_chunks();
+        let spell_imports = if level.advanced() {
+            r#""imports": ["app.editor+app.spell.js"]"#
+        } else {
+            r#""imports": ["app.main.js", "app.editor+app.spell.js"]"#
+        };
         assert_eq!(
-            unsized_manifest(&output),
+            unsized_manifest(&output).replace(spell_imports, "SPELL_IMPORTS"),
             r#"{
   "startup": "app.main.js",
   "chunks": [
     {"name": "app.main", "file": "app.main.js", "imports": [], "namespaces": ["light.lazy", "app.main"], "definitions": [], "roots": ["app.main"], "loadables": []},
     {"name": "app.editor+app.spell", "file": "app.editor+app.spell.js", "imports": ["app.main.js"], "namespaces": ["app.text", "app.editor"], "definitions": [], "roots": ["app.editor"], "loadables": [{"namespace": "app.main", "target": "app.editor/start"}]},
-    {"name": "app.spell", "file": "app.spell.js", "imports": ["app.main.js", "app.editor+app.spell.js"], "namespaces": ["app.spell"], "definitions": [], "roots": ["app.spell"], "loadables": [{"namespace": "app.editor", "target": "app.spell/check"}]}
+    {"name": "app.spell", "file": "app.spell.js", SPELL_IMPORTS, "namespaces": ["app.spell"], "definitions": [], "roots": ["app.spell"], "loadables": [{"namespace": "app.editor", "target": "app.spell/check"}]}
   ]
 }
 "#,
@@ -1717,8 +1724,11 @@ fn definitions(output: &ChunkedOutput) -> Vec<String> {
 /// A namespace two features share whose definitions each move to the one
 /// feature that reads them leaves its chunk nothing to write at `Advanced`:
 /// the plan drops the chunk, startup lists the namespace, and each feature
-/// holds its definition and imports startup alone (light-cljs-299). Below
-/// `Advanced` the shared chunk holds the namespace, as before.
+/// holds its definition (light-cljs-299). Since light-cljs-279 the runtime
+/// units both features need and startup does not (`str`, `apply`, `map`)
+/// are a chunk of that name again, holding no namespace, which each feature
+/// imports instead of startup. Below `Advanced` the shared chunk holds the
+/// namespace, as before.
 #[test]
 fn a_shared_namespace_whose_definitions_all_move_is_no_file() {
     let program = analyze(&[
@@ -1748,14 +1758,16 @@ fn a_shared_namespace_whose_definitions_all_move_is_no_file() {
                 files(output),
                 [
                     "app.main.js: light.lazy app.main app.text | roots app.main | imports ",
-                    "app.editor.js: app.editor | roots app.editor | imports app.main.js",
-                    "app.reports.js: app.reports | roots app.reports | imports app.main.js",
+                    "app.editor+app.reports.js:  | roots  | imports app.main.js",
+                    "app.editor.js: app.editor | roots app.editor | imports app.editor+app.reports.js",
+                    "app.reports.js: app.reports | roots app.reports | imports app.editor+app.reports.js",
                 ]
             );
             assert_eq!(
                 definitions(output),
                 [
                     "app.main.js: ",
+                    "app.editor+app.reports.js: ",
                     "app.editor.js: app.text/words",
                     "app.reports.js: app.text/shout",
                 ]
@@ -1812,8 +1824,8 @@ fn a_dropped_chunk_s_roots_still_get_their_constants() {
         [
             "app.main.js: light.lazy app.main app.text | roots app.main | imports ",
             "app.editor+app.reports.js:  | roots  | imports app.main.js",
-            "app.editor.js: app.editor | roots app.editor | imports app.main.js app.editor+app.reports.js",
-            "app.reports.js: app.reports | roots app.reports | imports app.main.js app.editor+app.reports.js",
+            "app.editor.js: app.editor | roots app.editor | imports app.editor+app.reports.js",
+            "app.reports.js: app.reports | roots app.reports | imports app.editor+app.reports.js",
         ]
     );
     assert_eq!(
@@ -1930,19 +1942,21 @@ fn a_silent_chunk_owning_a_global_other_chunks_read_is_kept() {
         printed("app.main.js", r#"\"editor edited\"\n\"reports edited\"\n"#)
     );
     for (level, output) in &outputs {
-        // At `Advanced` the shared chunk reads nothing of startup.
-        let shared = if level.advanced() {
-            "app.editor+app.reports.js: app.state | roots  | imports "
+        // At `Advanced` the shared chunk also holds the runtime both
+        // features call and startup does not (`str`, light-cljs-279), which
+        // reads startup's, and the features read nothing else of startup.
+        let features = if level.advanced() {
+            "imports app.editor+app.reports.js"
         } else {
-            "app.editor+app.reports.js: app.state | roots  | imports app.main.js"
+            "imports app.main.js app.editor+app.reports.js"
         };
         assert_eq!(
             files(output),
             [
-                "app.main.js: light.lazy app.main | roots app.main | imports ",
-                shared,
-                "app.editor.js: app.editor | roots app.editor | imports app.main.js app.editor+app.reports.js",
-                "app.reports.js: app.reports | roots app.reports | imports app.main.js app.editor+app.reports.js",
+                "app.main.js: light.lazy app.main | roots app.main | imports ".to_owned(),
+                "app.editor+app.reports.js: app.state | roots  | imports app.main.js".to_owned(),
+                format!("app.editor.js: app.editor | roots app.editor | {features}"),
+                format!("app.reports.js: app.reports | roots app.reports | {features}"),
             ],
             "{level}"
         );
@@ -1957,10 +1971,21 @@ fn a_silent_chunk_owning_a_global_other_chunks_read_is_kept() {
                 .unwrap_or_default()
         };
         // The shared chunk exports the binding and its setter; the editor
-        // imports both, the reports the binding.
-        assert_eq!(shared.len(), 2, "{level}: {}", output.files[1].source);
-        assert_eq!(from_shared(&editor).len(), 2, "{level}");
-        assert_eq!(from_shared(&reports).len(), 1, "{level}");
+        // imports both, the reports the binding; at `Advanced` both also
+        // import the runtime they call.
+        let runtime = if level.advanced() {
+            from_shared(&reports).len() - 1
+        } else {
+            0
+        };
+        assert_eq!(
+            shared.len(),
+            2 + runtime,
+            "{level}: {}",
+            output.files[1].source
+        );
+        assert_eq!(from_shared(&editor).len(), 2 + runtime, "{level}");
+        assert_eq!(from_shared(&reports).len(), 1 + runtime, "{level}");
         let prepared = prepare_application(&program, ApplicationOptions::new(*level));
         let plan = plan_of(&program, &prepared);
         assert!(!plan.drops_chunks(), "{level}");
@@ -2228,6 +2253,370 @@ fn out_dir_refuses_the_source_map_flags() {
 }
 
 // ---------------------------------------------------------------------------
+// Runtime slices per chunk (light-cljs-279): at `Advanced` each chunk embeds
+// the runtime units of its signature, a function of the bindings it takes
+// from the chunks before it.
+
+/// The `Advanced` build of `program`, with each chunk's file and the names
+/// of the runtime units it embeds.
+fn chunk_units(program: &Program) -> (PreparedApplication, Vec<(String, Vec<&'static str>)>) {
+    let prepared = prepare_application(
+        program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let (output, report) = prepared.emit_chunks_reported();
+    let report = report.expect("an `Advanced` build of several chunks reports its runtime");
+    let chunks = report
+        .chunks
+        .iter()
+        .map(|chunk| {
+            let units = chunk.units.iter().map(|unit| unit.name).collect();
+            (chunk.file.clone(), units)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        chunks.iter().map(|(file, _)| file).collect::<Vec<_>>(),
+        output
+            .files
+            .iter()
+            .map(|file| &file.name)
+            .collect::<Vec<_>>()
+    );
+    (prepared, chunks)
+}
+
+/// The chunks embedding unit `name`.
+fn holding<'a>(chunks: &'a [(String, Vec<&'static str>)], name: &str) -> Vec<&'a str> {
+    chunks
+        .iter()
+        .filter(|(_, units)| units.contains(&name))
+        .map(|(file, _)| file.as_str())
+        .collect()
+}
+
+/// examples/features at `Advanced`: every unit of the single file's slice is
+/// in exactly one chunk; the sorted collections are the editor's, the set
+/// operations the reports' (the sets `app.shared/documents` holds are built
+/// in the shared chunk with it), and startup holds what the application
+/// without its features keeps, the loadables' `Loadable`, and the hooks of
+/// `lookup` for hash tries with what they need: `lookup.trie` and
+/// `lookup.members` assign `lookup`, which the menu's keywords reach, so they
+/// share its chunk (`RuntimeManifest::sharers`).
+#[test]
+fn the_features_runtime_splits_by_signature() {
+    let program = fixture_program("features");
+    let (prepared, chunks) = chunk_units(&program);
+    let mut placed = chunks
+        .iter()
+        .flat_map(|(_, units)| units.iter().copied())
+        .collect::<Vec<_>>();
+    placed.sort_unstable();
+    let single = prepared
+        .retention()
+        .units
+        .iter()
+        .map(|unit| unit.name)
+        .collect::<Vec<_>>();
+    // Each unit once; the single file's slice also holds the variadic arity
+    // of `str`, since its output-level cell (`clojure.string` hands `str`
+    // to raw text) holds the value, which no chunk reads but to call it.
+    let missing = single
+        .iter()
+        .filter(|unit| !placed.contains(unit))
+        .copied()
+        .collect::<Vec<_>>();
+    let mut once = placed.clone();
+    once.dedup();
+    assert_eq!(once, placed, "a unit in several chunks");
+    assert_eq!(placed.len(), single.len() - missing.len());
+    assert!(placed.iter().all(|unit| single.contains(unit)));
+    assert_eq!(missing, ["str.variadic"]);
+    for name in [
+        "treeMapConstructor",
+        "treeSetConstructor",
+        "buildSortedMap",
+        "sortedMap",
+        "buildSortedSet",
+        "sortedSet",
+        "juxt",
+        "enableConsolePrint",
+        "println",
+        "zipmap",
+    ] {
+        assert_eq!(holding(&chunks, name), ["app.editor.js"], "{name}");
+    }
+    for name in [
+        "set",
+        "isSet",
+        "sort",
+        "filter",
+        "mapv",
+        "comp",
+        "add",
+        "add.variadic",
+    ] {
+        assert_eq!(holding(&chunks, name), ["app.reports.js"], "{name}");
+    }
+    for name in [
+        "arraySetFromArray",
+        "PersistentHashSetValue",
+        "arrayMapFromArray",
+        "vectorFromArray",
+        "seq",
+        "into",
+        "reduce",
+    ] {
+        assert_eq!(
+            holding(&chunks, name),
+            ["app.editor+app.reports.js"],
+            "{name}"
+        );
+    }
+
+    // The application without its features: its loadables are `nil`.
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/features/app");
+    let main = fs::read_to_string(example.join("main.cljs"))
+        .unwrap()
+        .replace("(lazy/loadable app.editor/start)", "nil")
+        .replace("(lazy/loadable app.reports/start)", "nil");
+    let shared = fs::read_to_string(example.join("shared.cljs")).unwrap();
+    let lower = analyze(&[("app/main.cljs", &main), ("app/shared.cljs", &shared)]);
+    let lower = prepare_application(&lower, ApplicationOptions::new(OptimizationLevel::Advanced))
+        .retention();
+    let manifest = light_cljs::runtime_manifest::RuntimeManifest::embedded();
+    let wrappers = ["lookup.trie", "lookup.members"].map(|name| manifest.unit_named(name).unwrap());
+    for wrapper in wrappers {
+        assert!(
+            manifest
+                .sharers(manifest.unit_of("lookup").unwrap())
+                .contains(&wrapper)
+        );
+    }
+    let mut expected = lower.units.iter().map(|unit| unit.name).collect::<Vec<_>>();
+    expected.push("Loadable");
+    for (unit, reached) in manifest.reachable(wrappers).into_iter().enumerate() {
+        let name = manifest.units[unit].name;
+        if reached && single.contains(&name) && !expected.contains(&name) {
+            expected.push(name);
+        }
+    }
+    expected.sort_unstable();
+    let mut startup = chunks[0].1.clone();
+    startup.sort_unstable();
+    assert_eq!(startup, expected);
+}
+
+/// The entry of [`LOADS_BOTH`] that also logs a `str` call when it loads.
+fn loads_both_calling_str() -> String {
+    LOADS_BOTH.replace(
+        "start\n",
+        "(js/console.log (str \"n\" (js/parseInt \"1\")))\nstart\n",
+    )
+}
+
+/// A core operation one feature uses as a value (`apply str`) and startup only
+/// calls: `str` is startup's, and its variadic arity (`str.variadic`, an
+/// `install:` unit) is the feature's, installed when the feature loads. The
+/// other feature applies `vector`, which startup does not use at all.
+#[test]
+fn an_install_one_feature_needs_runs_when_it_loads() {
+    let main = loads_both_calling_str();
+    let program = analyze(&[
+        ("app/main.cljs", &main),
+        (
+            "app/editor.cljs",
+            "(ns app.editor)\n(defn start [] (apply str [\"a\" (js/parseInt \"2\")]))\n",
+        ),
+        (
+            "app/reports.cljs",
+            "(ns app.reports)\n(defn start [] (apply vector [1 (js/parseInt \"2\")]))\n",
+        ),
+    ]);
+    let (record, _) = runs_as_chunks(&program);
+    assert_eq!(record, printed("app.main.js", r#"n1\n\"a2\"\n[1 2]\n"#));
+    let (_, chunks) = chunk_units(&program);
+    assert_eq!(holding(&chunks, "str"), ["app.main.js"]);
+    assert_eq!(holding(&chunks, "str.variadic"), ["app.editor.js"]);
+    assert_eq!(holding(&chunks, "vector.variadic"), ["app.reports.js"]);
+}
+
+/// Both features apply `str`, which startup only calls: its install is in
+/// their shared chunk, which each feature imports, so it has run before the
+/// feature's code, whichever feature loads first.
+#[test]
+fn an_install_both_features_need_is_in_the_chunk_they_share() {
+    let main = loads_both_calling_str();
+    let program = analyze(&[
+        ("app/main.cljs", &main),
+        (
+            "app/editor.cljs",
+            "(ns app.editor)\n(defn start [] (apply str [\"a\" (js/parseInt \"2\")]))\n",
+        ),
+        (
+            "app/reports.cljs",
+            "(ns app.reports)\n(defn start [] (apply str [\"b\" (js/parseInt \"3\")]))\n",
+        ),
+    ]);
+    let (record, _) = runs_as_chunks(&program);
+    assert_eq!(record, printed("app.main.js", r#"n1\n\"a2\"\n\"b3\"\n"#));
+    let (_, chunks) = chunk_units(&program);
+    let shared = "app.editor+app.reports.js";
+    assert_eq!(holding(&chunks, "str"), ["app.main.js"]);
+    assert_eq!(holding(&chunks, "str.variadic"), [shared]);
+    let prepared = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    for feature in &prepared.emit_chunks().files[2..] {
+        assert!(
+            feature.imports.contains(&shared.to_owned()),
+            "{}",
+            feature.name
+        );
+    }
+}
+
+/// `str` of a collection prints it through a hook (`str.collections`, an
+/// `effect:` unit of every collection constructor, `when: str`). Startup
+/// calls `str` on strings only and logs the features' strings as they are;
+/// one feature prints a vector and the other a map. The hook and the printer
+/// it needs are both features', in their shared chunk, and run before either
+/// feature's code: startup holds neither.
+#[test]
+fn the_printer_of_collections_goes_with_the_collections() {
+    let main = "(ns app.main (:require [light.lazy :as lazy]))\n\
+                (def editor (lazy/loadable app.editor/start))\n\
+                (def reports (lazy/loadable app.reports/start))\n\
+                (defn start []\n\
+                  (-> (lazy/load editor)\n\
+                      (.then (fn [f] (js/console.log (f)) (lazy/load reports)))\n\
+                      (.then (fn [f] (js/console.log (f)) nil))))\n\
+                (js/console.log (str \"n\" (js/parseInt \"1\")))\n\
+                start\n";
+    let program = analyze(&[
+        ("app/main.cljs", main),
+        (
+            "app/editor.cljs",
+            "(ns app.editor)\n(defn start [] (str [1 (js/parseInt \"2\")]))\n",
+        ),
+        (
+            "app/reports.cljs",
+            "(ns app.reports)\n(defn start [] (str {:a (js/parseInt \"3\")}))\n",
+        ),
+    ]);
+    let (record, _) = runs_as_chunks(&program);
+    assert_eq!(record, printed("app.main.js", r"n1\n[1 2]\n{:a 3}\n"));
+    let (_, chunks) = chunk_units(&program);
+    let shared = "app.editor+app.reports.js";
+    assert_eq!(holding(&chunks, "str"), ["app.main.js"]);
+    for unit in ["str.collections", "printWriterImpl", "printSequential"] {
+        assert_eq!(holding(&chunks, unit), [shared], "{unit}");
+    }
+}
+
+/// One feature builds vectors and keeps them where the other reads them; the
+/// other never builds one but walks them. The hook that walks a vector
+/// (`makeVector.seq`, an `effect: makeVector when: seq` unit) is then the
+/// first feature's, since a value it builds can reach code the other loads,
+/// and the walk prints what the single file prints in either order.
+#[test]
+fn a_hook_for_a_value_another_feature_builds_goes_with_the_builder() {
+    let program = analyze(&[
+        ("app/main.cljs", LOADS_BOTH),
+        ("app/state.cljs", "(ns app.state)\n(def held (atom nil))\n"),
+        (
+            "app/editor.cljs",
+            "(ns app.editor (:require [app.state :as state]))\n\
+             (defn start [] (reset! state/held [1 2 (js/Date.now)]) :built)\n",
+        ),
+        (
+            "app/reports.cljs",
+            "(ns app.reports (:require [app.state :as state]))\n\
+             (defn start [] (first @state/held))\n",
+        ),
+    ]);
+    let (record, _) = runs_as_chunks(&program);
+    assert_eq!(record, printed("app.main.js", r":built\n1\n"));
+    let (_, chunks) = chunk_units(&program);
+    assert_eq!(holding(&chunks, "makeVector"), ["app.editor.js"]);
+    assert_eq!(holding(&chunks, "makeVector.seq"), ["app.editor.js"]);
+}
+
+/// `--size-report` with `--out-dir` at `Advanced` prints each chunk's units,
+/// every unit of the build once, with the root that first demanded it, which
+/// may be another chunk's.
+#[test]
+fn the_size_report_lists_each_chunk_s_units() {
+    let dir = TempDir::new("chunks-size-report");
+    let out = dir.join("out");
+    let root = fixture_root("features");
+    let (success, stdout, report) = cli(&[
+        "--compile",
+        "--optimize",
+        "advanced",
+        "--size-report",
+        "--entry",
+        "app.main",
+        "--source-root",
+        root.to_str().unwrap(),
+        "--out-dir",
+        out.to_str().unwrap(),
+    ]);
+    assert!(success && stdout.is_empty(), "{report}");
+    let program = fixture_program("features");
+    let (_, chunks) = chunk_units(&program);
+    let total = chunks.iter().map(|(_, units)| units.len()).sum::<usize>();
+    assert!(
+        report.starts_with(&format!(
+            "advanced: runtime slices of 4 chunks, {total} of "
+        )),
+        "{report}"
+    );
+    // Each chunk's section lists its units; a unit is listed once.
+    let mut section = None;
+    let mut listed = Vec::new();
+    let mut in_units = false;
+    for line in report.lines() {
+        if let Some((file, _)) = line
+            .split_once(": ")
+            .filter(|(file, _)| file.ends_with(".js"))
+        {
+            section = Some(file.to_owned());
+            in_units = false;
+        } else if line.starts_with("unit ") {
+            in_units = true;
+        } else if line.is_empty() {
+            in_units = false;
+        } else if in_units {
+            let name = line.split_whitespace().next().unwrap();
+            listed.push((section.clone().unwrap(), name.to_owned()));
+        }
+    }
+    let expected = chunks
+        .iter()
+        .flat_map(|(file, units)| {
+            units
+                .iter()
+                .map(move |unit| (file.clone(), unit.to_string()))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(listed, expected);
+    let mut names = listed.iter().map(|(_, name)| name).collect::<Vec<_>>();
+    names.sort_unstable();
+    let count = names.len();
+    names.dedup();
+    assert_eq!(names.len(), count, "a unit listed twice");
+    // `zipmap`, startup's only through the hash tries' hooks, names the
+    // editor's root.
+    assert!(
+        report
+            .lines()
+            .any(|line| line.starts_with("hash ") && line.contains("app.editor.js, source")),
+        "{report}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The fixture matrix (light-cljs-276): each program of tests/fixtures/chunks
 // written by `--out-dir` at every level and checked through its chunks.json.
 
@@ -2488,17 +2877,23 @@ pub(super) fn check_manifest(
             chunk.file
         );
         if chunk.namespaces.is_empty() && chunk.definitions.is_empty() {
+            // Constants or runtime units (light-cljs-279) another chunk
+            // imports; a chunk of `effect:` units alone exports nothing and
+            // is imported for its effect.
             let exported = exported_names(source);
             assert!(
                 level.advanced()
                     && chunk.roots.is_empty()
                     && chunk.loadables.is_empty()
-                    && sources.iter().any(|other| {
+                    && (sources.iter().any(|other| {
                         imported_names(other).iter().any(|(from, names)| {
                             *from == chunk.file && names.iter().any(|name| exported.contains(name))
                         })
-                    }),
-                "{level}: {} holds neither a namespace, a definition nor a constant another chunk imports",
+                    }) || exported.is_empty()
+                        && chunks
+                            .iter()
+                            .any(|other| other.imports.contains(&chunk.file))),
+                "{level}: {} holds neither a namespace, a definition nor a constant or runtime unit another chunk imports",
                 chunk.file
             );
         }
@@ -2605,6 +3000,10 @@ fn membership_rows(chunks: &[ManifestChunk]) -> Vec<String> {
 /// constant table is written. A chunk whose imports at `Advanced` are `n/a`
 /// writes no code there and is dropped (light-cljs-299): startup lists its
 /// namespaces after its own, so the table lists such chunks in source order.
+/// A file can have two rows, one for each side: the `diamond` fixture's
+/// shared chunk holds its namespaces below `Advanced`, and at `Advanced`,
+/// dropped, is again the chunk of the runtime units both features need
+/// (light-cljs-279), holding no namespace.
 fn expected_membership(name: &str, level: OptimizationLevel) -> Vec<String> {
     let table = fs::read_to_string(fixture_dir(name).join("membership.tsv")).unwrap();
     let rows = table

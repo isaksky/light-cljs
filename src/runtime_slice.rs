@@ -26,6 +26,12 @@
 //! with the runtime only when the program reaches reflection
 //! ([`RuntimeRoots::reach_reflection`]), so a slice keeps the `compile-time`
 //! units of the manifest only for programs that use them.
+//!
+//! A chunked build at `Advanced` slices per chunk (docs/code-splitting.md,
+//! "Phase 3", runtime units): each unit goes to the chunk of the roots that
+//! need it ([`unit_signatures`]), and each chunk's slice is a function of the
+//! bindings its units take from earlier chunks ([`chunk_factories`]);
+//! `--size-report` lists every chunk's units ([`ChunkedRetention`]).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -288,6 +294,7 @@ pub(crate) struct RuntimeRoots {
 
 impl RuntimeRoots {
     /// Records a read of `name` as a value.
+    #[cfg(test)]
     pub(crate) fn demand(&mut self, name: RuntimeName, site: Option<ExprId>) {
         self.record(name, site, NameUse::Value);
     }
@@ -304,6 +311,13 @@ impl RuntimeRoots {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.names.is_empty()
+    }
+
+    /// Record every name of `other`, as it recorded them, after these.
+    pub(crate) fn extend(&mut self, other: &Self) {
+        for &(name, site, used) in &other.names {
+            self.record(name, site, used);
+        }
     }
 
     /// Whether `rt.<binding>[.<member>]` was demanded.
@@ -468,6 +482,115 @@ pub(crate) fn sliced_runtime(
     }
 }
 
+/// The roots of a chunked build that need each runtime unit
+/// (docs/code-splitting.md, "Phase 3", runtime units), by [`UnitId`]:
+/// `demands` are the runtime names each part of the program reads, a
+/// chunk's code or a constant, with the roots whose code that part is, a
+/// bitset of `words` words. See [`RuntimeManifest::signatures`].
+pub(crate) fn unit_signatures(demands: &[(&RuntimeRoots, &[u64])], words: usize) -> Vec<Vec<u64>> {
+    let manifest = RuntimeManifest::embedded();
+    let units = demands
+        .iter()
+        .map(|(roots, signature)| (roots.units(manifest), *signature))
+        .collect::<Vec<_>>();
+    let demands = units
+        .iter()
+        .flat_map(|(units, signature)| {
+            units
+                .iter()
+                .map(move |&(unit, root_use)| (unit, root_use, *signature))
+        })
+        .collect::<Vec<_>>();
+    manifest.signatures(&demands, words)
+}
+
+/// The bindings that the `kept` units (by [`UnitId`]) require and other
+/// units declare, ordered by declaring unit and then by name: the
+/// parameters of a chunk's runtime factory.
+pub(crate) fn factory_parameters(kept: &[bool]) -> Vec<&'static str> {
+    let manifest = RuntimeManifest::embedded();
+    let mut parameters = manifest
+        .units
+        .iter()
+        .zip(kept)
+        .filter(|(_, kept)| **kept)
+        .flat_map(|(unit, _)| unit.requires.iter().copied())
+        .filter_map(|binding| {
+            let owner = manifest.unit_of(binding)?;
+            (!kept[owner.0]).then_some((owner, binding))
+        })
+        .collect::<Vec<_>>();
+    parameters.sort_unstable();
+    parameters.dedup();
+    parameters.into_iter().map(|(_, binding)| binding).collect()
+}
+
+/// One chunk's runtime in a chunked build at `Advanced`: its units, the
+/// bindings other chunks declare that they require, and the bindings it
+/// returns for its own code and for other chunks.
+pub(crate) struct ChunkSlice {
+    /// By [`UnitId`].
+    pub(crate) kept: Vec<bool>,
+    pub(crate) parameters: Vec<&'static str>,
+    pub(crate) returned: Vec<&'static str>,
+}
+
+/// The runtime factories of a chunked build's slices, startup's first
+/// (docs/code-splitting.md, "What a chunk file contains"), each with its
+/// units' bytes when `terse`. Startup's is written as a single file's
+/// ([`sliced_runtime`]), `(() => { ... return [add]; })()`; another chunk's
+/// is a function of its parameters, `((keywords, hash) => { ... return
+/// [compare]; })`, which the chunk calls with its imports of them. Terse
+/// slices are named by one table ([`crate::terse::slice_names`]), so a
+/// parameter has the name of the binding in the chunk declaring it.
+pub(crate) fn chunk_factories(
+    slices: &[ChunkSlice],
+    terse: bool,
+) -> Vec<(String, Option<Vec<usize>>)> {
+    let manifest = RuntimeManifest::embedded();
+    if !terse {
+        return slices
+            .iter()
+            .enumerate()
+            .map(|(chunk, slice)| {
+                let text = if chunk == 0 {
+                    manifest.sliced_bindings_text(&slice.kept, &slice.returned)
+                } else {
+                    manifest.chunk_factory_text(&slice.kept, &slice.parameters, &slice.returned)
+                };
+                (text, None)
+            })
+            .collect();
+    }
+    let mut kept = vec![false; manifest.units.len()];
+    let mut mentioned = Vec::new();
+    for slice in slices {
+        for (all, kept) in kept.iter_mut().zip(&slice.kept) {
+            *all |= kept;
+        }
+        mentioned.extend(&slice.returned);
+        mentioned.extend(&slice.parameters);
+    }
+    let names = crate::terse::slice_names(&kept, &mentioned);
+    slices
+        .iter()
+        .enumerate()
+        .map(|(chunk, slice)| {
+            let (text, bytes) = if chunk == 0 {
+                crate::terse::terse_startup_factory(&names, &slice.kept, &slice.returned)
+            } else {
+                crate::terse::terse_chunk_factory(
+                    &names,
+                    &slice.kept,
+                    &slice.parameters,
+                    &slice.returned,
+                )
+            };
+            (text, Some(bytes))
+        })
+        .collect()
+}
+
 /// What first demanded a runtime name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Demand {
@@ -587,25 +710,7 @@ impl RetentionReport {
             Vec::new()
         };
         let first = manifest.reached_by_uses(&root_units);
-        let roots = emitted
-            .roots
-            .names
-            .iter()
-            .zip(root_units)
-            .map(|(&(name, site, used), (unit, _))| RuntimeRoot {
-                name,
-                unit,
-                used,
-                demand: site.map_or(Demand::NamespaceRegistration, |expr| {
-                    let expr_data = &program.exprs[expr.0];
-                    Demand::Expression {
-                        expr,
-                        source_index: expr_data.source_index,
-                        span: expr_data.span.clone(),
-                    }
-                }),
-            })
-            .collect();
+        let roots = report_roots(program, &emitted.roots, &root_units);
         let units = manifest
             .units
             .iter()
@@ -639,6 +744,253 @@ impl RetentionReport {
     /// Bytes of the embedded unit bodies.
     pub fn unit_bytes(&self) -> usize {
         self.units.iter().map(|unit| unit.bytes).sum()
+    }
+}
+
+/// The roots of a report: each name of `roots` with its unit (`units`, as
+/// [`RuntimeRoots::units`] gives them) and where it was first demanded.
+fn report_roots(
+    program: &Program,
+    roots: &RuntimeRoots,
+    units: &[(UnitId, RootUse)],
+) -> Vec<RuntimeRoot> {
+    roots
+        .names
+        .iter()
+        .zip(units)
+        .map(|(&(name, site, used), &(unit, _))| RuntimeRoot {
+            name,
+            unit,
+            used,
+            demand: site.map_or(Demand::NamespaceRegistration, |expr| {
+                let expr_data = &program.exprs[expr.0];
+                Demand::Expression {
+                    expr,
+                    source_index: expr_data.source_index,
+                    span: expr_data.span.clone(),
+                }
+            }),
+        })
+        .collect()
+}
+
+/// One chunk's runtime as a chunked build writes it at `Advanced`: the names
+/// its code and constants read, startup's also those it declares for every
+/// chunk, its units by [`UnitId`], and the bytes of its factory expression
+/// and of each unit in it (terse output).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ChunkRuntime {
+    pub(crate) roots: RuntimeRoots,
+    pub(crate) kept: Vec<bool>,
+    pub(crate) bytes: usize,
+    pub(crate) unit_bytes: Option<Vec<usize>>,
+}
+
+/// Which runtime units each chunk of an `Advanced` chunked build holds and
+/// why (`--size-report` with `--out-dir`; docs/code-splitting.md, "Phase
+/// 3"). Every unit of the build's runtime is in exactly one chunk, the one
+/// whose signature is the roots that need it.
+#[derive(Clone, Debug)]
+pub struct ChunkedRetention {
+    pub level: OptimizationLevel,
+    /// In plan order, startup first.
+    pub chunks: Vec<ChunkRetention>,
+    /// Units in the whole runtime.
+    pub total_units: usize,
+}
+
+/// One chunk of a [`ChunkedRetention`].
+#[derive(Clone, Debug)]
+pub struct ChunkRetention {
+    /// The chunk's file name.
+    pub file: String,
+    /// The runtime names its code and constants read, in first-demand order.
+    pub roots: Vec<RuntimeRoot>,
+    /// The units its runtime holds, in runtime order.
+    pub units: Vec<ChunkUnit>,
+    /// Bytes of its runtime factory expression; zero without units.
+    pub runtime_bytes: usize,
+}
+
+/// A unit of a [`ChunkRetention`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChunkUnit {
+    pub unit: UnitId,
+    pub name: &'static str,
+    /// Bytes as the chunk embeds it, as [`RetainedUnit::bytes`] counts them.
+    pub bytes: usize,
+    /// The chunk, by index in [`ChunkedRetention::chunks`], and the index
+    /// among its roots of the first root whose closure reaches the unit,
+    /// taking the chunks' roots in plan order: a unit startup holds for a
+    /// feature is the feature's, and one a feature's chunk holds may be
+    /// another chunk's, when both need it.
+    pub root: Option<(usize, usize)>,
+}
+
+impl ChunkedRetention {
+    pub(crate) fn new(
+        program: &Program,
+        level: OptimizationLevel,
+        chunks: &[(String, &ChunkRuntime)],
+    ) -> Self {
+        let manifest = RuntimeManifest::embedded();
+        let units = chunks
+            .iter()
+            .map(|(_, runtime)| runtime.roots.units(manifest))
+            .collect::<Vec<_>>();
+        // The roots of every chunk in plan order, each with its chunk and
+        // its index there.
+        let positions = units
+            .iter()
+            .enumerate()
+            .flat_map(|(chunk, units)| (0..units.len()).map(move |index| (chunk, index)))
+            .collect::<Vec<_>>();
+        let first = manifest.reached_by_uses(&units.concat());
+        let reports = chunks
+            .iter()
+            .zip(&units)
+            .map(|((file, runtime), units)| ChunkRetention {
+                file: file.clone(),
+                roots: report_roots(program, &runtime.roots, units),
+                units: manifest
+                    .units
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| runtime.kept.get(*index).copied().unwrap_or(false))
+                    .map(|(index, unit)| ChunkUnit {
+                        unit: UnitId(index),
+                        name: unit.name,
+                        bytes: runtime
+                            .unit_bytes
+                            .as_ref()
+                            .map_or(unit.body_range.len(), |bytes| bytes[index]),
+                        root: first[index].map(|root| positions[root]),
+                    })
+                    .collect(),
+                runtime_bytes: runtime.bytes,
+            })
+            .collect();
+        Self {
+            level,
+            chunks: reports,
+            total_units: manifest.units.len(),
+        }
+    }
+}
+
+/// A summary line, then per chunk a summary line, a table of the roots that
+/// add units to it (its own and, marked with their chunk, other chunks')
+/// and a table of its units with the root and source span that first
+/// reached each.
+impl fmt::Display for ChunkedRetention {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let units = self
+            .chunks
+            .iter()
+            .map(|chunk| chunk.units.len())
+            .sum::<usize>();
+        let bytes = |chunk: &ChunkRetention| chunk.units.iter().map(|unit| unit.bytes).sum();
+        writeln!(
+            f,
+            "{}: runtime slices of {} chunks, {} of {} units, {} unit bytes, {} runtime bytes",
+            self.level,
+            self.chunks.len(),
+            units,
+            self.total_units,
+            thousands(self.chunks.iter().map(bytes).sum()),
+            thousands(self.chunks.iter().map(|chunk| chunk.runtime_bytes).sum())
+        )?;
+        let label = |chunk: usize, root: usize| self.chunks[chunk].roots[root].label();
+        for (index, chunk) in self.chunks.iter().enumerate() {
+            writeln!(f)?;
+            writeln!(
+                f,
+                "{}: {} units, {} unit bytes, {} runtime bytes",
+                chunk.file,
+                chunk.units.len(),
+                thousands(bytes(chunk)),
+                thousands(chunk.runtime_bytes)
+            )?;
+            // Its own roots, then other chunks' that add units here.
+            let mut listed = (0..chunk.roots.len())
+                .map(|root| (index, root))
+                .collect::<Vec<_>>();
+            for unit in &chunk.units {
+                if let Some(root) = unit.root.filter(|root| !listed.contains(root)) {
+                    listed.push(root);
+                }
+            }
+            let mut added = vec![(0, 0); listed.len()];
+            for unit in &chunk.units {
+                if let Some(at) = unit
+                    .root
+                    .and_then(|root| listed.iter().position(|r| *r == root))
+                {
+                    added[at].0 += 1;
+                    added[at].1 += unit.bytes;
+                }
+            }
+            let names = listed
+                .iter()
+                .map(|&(chunk, root)| label(chunk, root))
+                .collect::<Vec<_>>();
+            let demand = |(owner, root): (usize, usize)| {
+                let demand = self.chunks[owner].roots[root].demand.to_string();
+                if owner == index {
+                    demand
+                } else {
+                    format!("{}, {demand}", self.chunks[owner].file)
+                }
+            };
+            let name_width = names.iter().map(String::len).max().unwrap_or(0).max(4);
+            if !listed.is_empty() {
+                writeln!(f)?;
+                writeln!(
+                    f,
+                    "{:<name_width$}  {:>5}  {:>9}  first demanded by",
+                    "root", "units", "bytes"
+                )?;
+                for ((name, &root), (units, bytes)) in names.iter().zip(&listed).zip(&added) {
+                    writeln!(
+                        f,
+                        "{name:<name_width$}  {units:>5}  {:>9}  {}",
+                        thousands(*bytes),
+                        demand(root)
+                    )?;
+                }
+            }
+            if !chunk.units.is_empty() {
+                let unit_width = chunk
+                    .units
+                    .iter()
+                    .map(|unit| unit.name.len())
+                    .max()
+                    .unwrap_or(0)
+                    .max(4);
+                writeln!(f)?;
+                writeln!(
+                    f,
+                    "{:<unit_width$}  {:>7}  {:<name_width$}  first demanded by",
+                    "unit", "bytes", "root"
+                )?;
+                for unit in &chunk.units {
+                    let (root, demand) = match unit.root {
+                        Some(root) => {
+                            let at = listed.iter().position(|r| *r == root).unwrap();
+                            (names[at].as_str(), demand(root))
+                        }
+                        None => ("-", "-".to_owned()),
+                    };
+                    writeln!(
+                        f,
+                        "{:<unit_width$}  {:>7}  {root:<name_width$}  {demand}",
+                        unit.name,
+                        thousands(unit.bytes)
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 

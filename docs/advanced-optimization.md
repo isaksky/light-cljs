@@ -3588,7 +3588,14 @@ upstream states that advanced mode is unsafe for certain patterns.
   keyword lookup can go through a field table.
 - Whether the sliced runtime should be emitted as top-level `const`s in the
   output closure or as a nested factory, considering QuickJS and V8 parse
-  costs for large closures.
+  costs for large closures. A chunked build answers it for its chunks
+  (docs/code-splitting.md, "Open questions", light-cljs-279): there each
+  chunk's factory also lists the bindings it takes from earlier chunks
+  twice, and on examples/features the lists cost 1,573 / 983 bytes raw /
+  `gzip -9` against 154 raw bytes of longer names for one table, so
+  chunks move to module-level units (light-cljs-303). The single file pays
+  only its return and destructuring lists, and stays a factory until a
+  measurement there says otherwise.
 - How deep type inference should go before diminishing returns. Step 3
   infers booleans, numbers, strings, collections and program types within a
   function, and since light-cljs-229 the parameters of functions only the

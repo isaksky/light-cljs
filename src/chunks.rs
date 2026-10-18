@@ -33,11 +33,11 @@
 //! nothing for, is dropped: its importers import its imports, and startup
 //! lists its namespaces ([`ChunkPlan::drops_chunks`]).
 //!
-//! The constant table's entries are items only emission finds, so the
-//! emitter places them once it has written the chunks
-//! ([`ChunkPlan::place`]): each in the chunk of the roots whose code reads
-//! it, which the plan gains, holding no item, when it has no chunk of that
-//! signature.
+//! The constant table's entries and, at `Advanced`, the runtime's units are
+//! items only emission finds, so the emitter places them once it has written
+//! the chunks ([`ChunkPlan::place`]): each in the chunk of the roots whose
+//! code reads or needs it, which the plan gains, holding no item, when it
+//! has no chunk of that signature.
 
 use crate::analyzer::{ExprId, ExprKind, GlobalId, LazyTargetId, Program};
 use crate::application::PreparedApplication;
@@ -407,9 +407,10 @@ impl ChunkPlan {
             .filter(move |item| self.namespace_chunks[item.namespace] != chunk)
     }
 
-    /// Place what only the emitter finds, the constant table's entries
-    /// (docs/code-splitting.md, "Phase 3"), by their signatures, each the
-    /// roots whose code reads one: a signature holding startup's root, or
+    /// Place what only the emitter finds, the constant table's entries and
+    /// the runtime's units (docs/code-splitting.md, "Phase 3"), by their
+    /// signatures, each the roots whose code reads or needs one: a signature
+    /// holding startup's root, or
     /// none, is startup's; any other is its chunk's, which is added, holding
     /// no item, when the plan has no chunk of that signature. Added chunks
     /// are named as the plan names chunks, and ordered as it orders them,

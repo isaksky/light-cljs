@@ -6,13 +6,18 @@
 //! table, the runtime roots and the `used` set are the program's, as in the
 //! single file. Each chunk's forms run in a function of their own, as the
 //! single file's do, and what other chunks may read is declared at module
-//! level: startup's runtime (the whole runtime below `Advanced`, the
-//! whole-program slice at `Advanced`) and output-level core cells, each
-//! chunk's entries of the constant table, and each chunk's `let`
-//! declarations of the globals it owns. The table's entries are placed once
-//! the chunks are written ([`place_constants`]): each in the chunk of the
-//! roots whose code reads it, which may be a chunk of constants alone that
-//! the plan lacks, and a hoisted method in its function's chunk.
+//! level: the runtime (startup's whole runtime below `Advanced`; at
+//! `Advanced` each chunk's slice, "Phase 3", runtime units), startup's
+//! output-level core cells, each chunk's entries of the constant table, and
+//! each chunk's `let` declarations of the globals it owns. The table's
+//! entries and the runtime's units are placed once the chunks are written:
+//! each entry in the chunk of the roots whose code reads it
+//! ([`constant_signatures`]), and each unit in the chunk of the roots whose
+//! code and constants need it ([`unit_signatures`]), either of which may be
+//! a chunk the plan lacks; a hoisted method stays in its function's chunk.
+//! A chunk's slice is a function of the bindings its units take from earlier
+//! chunks, which it imports, and returns the bindings its code and later
+//! chunks read.
 //!
 //! Which names a chunk imports is read off its text: every compiler name
 //! (`crate::terse::compiler_name`) that it reads and another chunk declares.
@@ -24,7 +29,9 @@
 //! exports is the name another imports.
 use super::*;
 use crate::analyzer::LazyTargetId;
-use crate::chunks::{ChunkId, ChunkPlan, STARTUP, Signature};
+use crate::chunks::{ChunkId, ChunkPlan, STARTUP, STARTUP_ROOT, Signature};
+use crate::runtime_manifest::UnitId;
+use crate::runtime_slice::{ChunkRuntime, ChunkSlice};
 use crate::terse::{Text, scanned_names};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -38,8 +45,14 @@ pub(super) struct Chunks<'a> {
     loaded: Vec<Vec<bool>>,
     /// By constant table entry: what placing it needs.
     constants: Vec<Constant>,
-    /// While an entry's initializer is written: the entries it reads.
-    initializer: Option<Vec<usize>>,
+    /// While an entry's initializer is written: what it reads.
+    initializer: Option<Initializer>,
+    /// By chunk: the runtime names its code reads (docs/code-splitting.md,
+    /// "Phase 3", runtime units), startup's also those of the namespace
+    /// registration, the output-level core cells and what the program names
+    /// rather than reads (`Emitter::record_application_roots`). A constant's
+    /// initializer reads are its own ([`Constant::runtime`]).
+    runtime: Vec<RuntimeRoots>,
     /// The globals the getter of a loadable reads from its target chunk's
     /// module namespace object, each with that chunk, which exports it.
     targets: Vec<(ChunkId, String)>,
@@ -63,12 +76,24 @@ struct Constant {
     /// The roots whose chunks' code reads it: the union of their
     /// signatures, startup's holding every root.
     readers: Signature,
+    /// The runtime names its initializer reads, which the chunk declaring
+    /// it needs.
+    runtime: RuntimeRoots,
+}
+
+/// What a constant table entry's initializer reads while it is written.
+#[derive(Default)]
+pub(super) struct Initializer {
+    /// The entries it reads, the parts of a composite or a shape.
+    pub(super) parts: Vec<usize>,
+    /// The runtime names it reads.
+    pub(super) runtime: RuntimeRoots,
 }
 
 impl Chunks<'_> {
-    /// Record constant table entry `number`, whose initializer reads the
-    /// entries `parts`. Its readers place it.
-    pub(super) fn constant(&mut self, number: usize, parts: Vec<usize>) {
+    /// Record constant table entry `number`, whose initializer read
+    /// `initializer`. Its readers place it.
+    pub(super) fn constant(&mut self, number: usize, initializer: Initializer) {
         debug_assert_eq!(
             number,
             self.constants.len(),
@@ -78,15 +103,17 @@ impl Chunks<'_> {
         self.constants.push(Constant {
             declaration: 0..0,
             method: None,
-            parts,
+            parts: initializer.parts,
             readers: Signature::empty(roots),
+            runtime: initializer.runtime,
         });
     }
 
     /// Record constant table entry `number`, a hoisted method of a function
-    /// of the chunk being written, which declares it.
+    /// of the chunk being written, which declares it: its body's runtime
+    /// reads are that chunk's.
     pub(super) fn method(&mut self, number: usize) {
-        self.constant(number, Vec::new());
+        self.constant(number, Initializer::default());
         self.constants[number].method = Some(self.current);
     }
 
@@ -96,15 +123,15 @@ impl Chunks<'_> {
         self.constants[number].declaration = declaration;
     }
 
-    /// Start recording the entries an initializer reads, returning what an
+    /// Start recording what an initializer reads, returning what an
     /// enclosing initializer recorded so far.
-    pub(super) fn begin_initializer(&mut self) -> Option<Vec<usize>> {
-        self.initializer.replace(Vec::new())
+    pub(super) fn begin_initializer(&mut self) -> Option<Initializer> {
+        self.initializer.replace(Initializer::default())
     }
 
-    /// The entries the initializer just written reads, restoring the
-    /// recording of `enclosing`.
-    pub(super) fn end_initializer(&mut self, enclosing: Option<Vec<usize>>) -> Vec<usize> {
+    /// What the initializer just written reads, restoring the recording of
+    /// `enclosing`.
+    pub(super) fn end_initializer(&mut self, enclosing: Option<Initializer>) -> Initializer {
         std::mem::replace(&mut self.initializer, enclosing).unwrap_or_default()
     }
 
@@ -112,12 +139,39 @@ impl Chunks<'_> {
     /// by the code of the chunk being written.
     pub(super) fn read_constant(&mut self, number: usize) {
         match &mut self.initializer {
-            Some(parts) => parts.push(number),
+            Some(initializer) => initializer.parts.push(number),
             None => {
                 let signature = &self.plan.chunks[self.current.0].signature;
                 self.constants[number].readers.union(signature);
             }
         }
+    }
+
+    /// A runtime read, as [`RuntimeRoots::record`] records it: by the
+    /// initializer being written, or else by the code of the chunk being
+    /// written; by startup's code when `startup`, for what startup declares
+    /// for every chunk (an output-level core cell's initial value).
+    pub(super) fn runtime_root(
+        &mut self,
+        name: RuntimeName,
+        site: Option<ExprId>,
+        used: NameUse,
+        startup: bool,
+    ) {
+        match &mut self.initializer {
+            Some(initializer) if !startup => initializer.runtime.record(name, site, used),
+            _ => {
+                let chunk = if startup { STARTUP } else { self.current };
+                self.runtime[chunk.0].record(name, site, used);
+            }
+        }
+    }
+
+    /// Attribute what is written from now on to startup's code: the
+    /// namespace registration and the units kept for what the program names.
+    pub(super) fn write_startup(&mut self) {
+        debug_assert!(self.initializer.is_none());
+        self.current = STARTUP;
     }
 
     /// The chunk a loadable of `target` written in the chunk being written
@@ -317,6 +371,8 @@ const LAZY: &str = "  const lazy$ = (() => {
 pub(crate) struct EmittedChunk {
     pub(crate) source: String,
     pub(crate) imports: Vec<ChunkId>,
+    /// Its runtime at `Advanced`, for the size report.
+    pub(crate) runtime: ChunkRuntime,
 }
 
 /// One chunk's text as the emitter wrote it, before renaming.
@@ -355,18 +411,12 @@ fn loaded_chunks(plan: &ChunkPlan) -> Vec<Vec<bool>> {
     loaded
 }
 
-/// Place the constant table's entries (docs/code-splitting.md, "Phase 3",
-/// constants): an entry's signature is the union of the signatures of the
-/// chunks whose code reads it and of the entries whose initializers read it,
-/// which are later entries; a hoisted method's is its function's chunk's.
-/// Returns `plan` with a chunk for each signature no chunk has
-/// ([`ChunkPlan::place`]), the chunk of each entry in it, and the id in it
-/// of each chunk of `plan`.
-fn place_constants(
-    program: &Program,
-    plan: &ChunkPlan,
-    constants: &[Constant],
-) -> (ChunkPlan, Vec<ChunkId>, Vec<ChunkId>) {
+/// The signatures of the constant table's entries (docs/code-splitting.md,
+/// "Phase 3", constants): an entry's signature is the union of the
+/// signatures of the chunks whose code reads it and of the entries whose
+/// initializers read it, which are later entries; a hoisted method's is its
+/// function's chunk's.
+fn constant_signatures(plan: &ChunkPlan, constants: &[Constant]) -> Vec<Signature> {
     let mut signatures = constants
         .iter()
         .map(|constant| match constant.method {
@@ -381,14 +431,53 @@ fn place_constants(
             earlier[part].union(&rest[0]);
         }
     }
-    let mut placed = plan.clone();
-    let (owners, renumbered) = placed.place(program, &signatures);
-    (placed, owners, renumbered)
+    signatures
+}
+
+/// The runtime units of an `Advanced` chunked build and their signatures
+/// (docs/code-splitting.md, "Phase 3", runtime units), in [`UnitId`] order:
+/// the units the runtime names each chunk's code reads keep, with the chunk's
+/// signature, and those each constant's initializer reads keep, with the
+/// constant's ([`crate::runtime_slice::unit_signatures`]). A signature
+/// holding startup's root is every root, as startup's chunk's is.
+fn unit_signatures(
+    plan: &ChunkPlan,
+    runtime: &[RuntimeRoots],
+    constants: &[Constant],
+    constant_signatures: &[Signature],
+) -> Vec<(UnitId, Signature)> {
+    let roots = plan.roots.len();
+    let words = Signature::empty(roots).0.len();
+    let demands = runtime
+        .iter()
+        .zip(&plan.chunks)
+        .map(|(names, chunk)| (names, chunk.signature.0.as_slice()))
+        .chain(
+            constants
+                .iter()
+                .zip(constant_signatures)
+                .map(|(constant, signature)| (&constant.runtime, signature.0.as_slice())),
+        )
+        .collect::<Vec<_>>();
+    crate::runtime_slice::unit_signatures(&demands, words)
+        .into_iter()
+        .enumerate()
+        .filter(|(_, words)| words.iter().any(|&word| word != 0))
+        .map(|(unit, words)| {
+            let signature = Signature(words);
+            let signature = if signature.contains(STARTUP_ROOT) {
+                Signature::full(roots)
+            } else {
+                signature
+            };
+            (UnitId(unit), signature)
+        })
+        .collect()
 }
 
 /// The chunks of `plan` for `program` with the decisions of `application`,
 /// in plan order, with the plan they follow: `plan` and the chunks its
-/// constants add, which hold no form ([`place_constants`]); see the module
+/// constants and runtime units add, which hold no form; see the module
 /// documentation. `None` when the forms reach reflection at `Advanced` and
 /// `plan` moves a definition out of its namespace's chunk or dropped a chunk
 /// that writes no code without reflection: such a program is planned at
@@ -438,6 +527,7 @@ pub(crate) fn emit_chunked(
             loaded: loaded.clone(),
             constants: Vec::new(),
             initializer: None,
+            runtime: vec![RuntimeRoots::default(); count],
             targets: Vec::new(),
             lazy: false,
         });
@@ -480,48 +570,66 @@ pub(crate) fn emit_chunked(
         "emitted code reads the runtime without embedding it"
     );
     // Startup registers the namespaces before any form runs, and declares
-    // what every chunk reads of the runtime.
+    // what every chunk reads of the runtime below `Advanced`.
     let registration = if embed {
+        if let Some(chunks) = &mut emitter.chunks {
+            chunks.write_startup();
+        }
         let retained = |global: usize| !slice || application.globals[global];
         emitter.registration(None, true, retained)
     } else {
         String::new()
     };
     let mut startup_head = String::new();
-    let mut runtime = None;
-    if embed {
-        let statement = if slice {
-            let (factory, bindings, _) =
-                crate::runtime_slice::sliced_runtime(&emitter.runtime, terse);
-            let pattern = bindings
-                .iter()
-                .map(|binding| format!("rt${binding}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("  const [{pattern}] = {};\n", factory.trim())
-        } else {
-            format!(
-                "  const rt = {};\n",
-                crate::runtime_manifest::RUNTIME.trim()
-            )
-        };
-        let factory = statement
-            .find("(() =>")
-            .or_else(|| statement.find("(()=>"))
-            .unwrap_or_default();
-        runtime = Some(factory..statement.len() - 2);
-        startup_head.push_str(&statement);
-        for (name, initial) in &emitter.core_cells {
-            writeln!(startup_head, "  let core${name} = {initial};").unwrap();
-        }
+    for (name, initial) in &emitter.core_cells {
+        writeln!(startup_head, "  let core${name} = {initial};").unwrap();
     }
     let mut chunks = emitter.chunks.take().expect("a chunked build");
-    // Each constant table entry goes to the chunk of its signature, which
-    // may be a chunk the plan does not have; each chunk declares its entries
-    // in the order the table declares them, the parts of a composite first.
-    let (placed_plan, owners, renumbered) = place_constants(program, plan, &chunks.constants);
+    // Each constant table entry goes to the chunk of its signature, and at
+    // `Advanced` each runtime unit too; either may be a chunk the plan does
+    // not have. Each chunk declares its entries in the order the table
+    // declares them, the parts of a composite first.
+    let signatures = constant_signatures(plan, &chunks.constants);
+    let units = if slice && embed {
+        unit_signatures(plan, &chunks.runtime, &chunks.constants, &signatures)
+    } else {
+        Vec::new()
+    };
+    let constant_count = signatures.len();
+    let mut placed_plan = plan.clone();
+    let (placed_owners, renumbered) = placed_plan.place(
+        program,
+        &signatures
+            .into_iter()
+            .chain(units.iter().map(|(_, signature)| signature.clone()))
+            .collect::<Vec<_>>(),
+    );
+    let (owners, unit_owners) = placed_owners.split_at(constant_count);
     let plan = &placed_plan;
     let count = plan.chunks.len();
+    let manifest = RuntimeManifest::embedded();
+    // By unit: the chunk whose slice holds it.
+    let mut unit_chunks = vec![None; manifest.units.len()];
+    let mut slices = (0..count)
+        .map(|_| ChunkSlice {
+            kept: vec![false; manifest.units.len()],
+            parameters: Vec::new(),
+            returned: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    for (&(unit, _), &chunk) in units.iter().zip(unit_owners) {
+        unit_chunks[unit.0] = Some(chunk);
+        slices[chunk.0].kept[unit.0] = true;
+    }
+    for slice in &mut slices {
+        slice.parameters = crate::runtime_slice::factory_parameters(&slice.kept);
+    }
+    // What each chunk's code and constants read of the runtime, for the size
+    // report.
+    let mut chunk_roots = vec![RuntimeRoots::default(); count];
+    for (chunk, names) in chunks.runtime.iter().enumerate() {
+        chunk_roots[renumbered[chunk].0].extend(names);
+    }
     let mut tables = vec![String::new(); count];
     if let Some(constants) = &emitter.constants {
         let mut order = (0..chunks.constants.len()).collect::<Vec<_>>();
@@ -529,6 +637,7 @@ pub(crate) fn emit_chunked(
         for entry in order {
             let declaration = chunks.constants[entry].declaration.clone();
             tables[owners[entry].0].push_str(&constants.declarations[declaration]);
+            chunk_roots[owners[entry].0].extend(&chunks.constants[entry].runtime);
         }
     }
     #[cfg(debug_assertions)]
@@ -547,16 +656,16 @@ pub(crate) fn emit_chunked(
         .into_iter()
         .enumerate()
         .map(|(chunk, body)| {
-            let (head, runtime) = if chunk == STARTUP.0 {
-                (std::mem::take(&mut startup_head), runtime.clone())
+            let head = if chunk == STARTUP.0 {
+                std::mem::take(&mut startup_head)
             } else {
-                (std::mem::take(&mut tables[chunk]), None)
+                std::mem::take(&mut tables[chunk])
             };
-            // A chunk the constants add holds no form.
+            // A chunk the constants or the runtime add holds no form.
             let Some((forms, raw, packages)) = body else {
                 return Written {
                     head,
-                    runtime,
+                    runtime: None,
                     run: String::new(),
                     raw: Vec::new(),
                     packages: Vec::new(),
@@ -573,18 +682,26 @@ pub(crate) fn emit_chunked(
                 .collect();
             Written {
                 head,
-                runtime,
+                runtime: None,
                 run: format!("{open}{forms}}})()"),
                 raw,
                 packages,
             }
         })
         .collect::<Vec<_>>();
-    let loaded = loaded_chunks(plan);
 
-    // The names each chunk reads, and their owners.
+    // The names each chunk reads, and their owners: a runtime binding's is
+    // the chunk whose slice declares it at `Advanced`, startup's below.
+    let runtime_owner = |binding: &str| -> ChunkId {
+        manifest
+            .unit_of(binding)
+            .and_then(|unit| unit_chunks[unit.0])
+            .unwrap_or(STARTUP)
+    };
     let owner = |name: &str| -> Option<ChunkId> {
-        if name == "rt" || name == "lazy$" || name.starts_with("rt$") || name.starts_with("core$") {
+        if let Some(binding) = name.strip_prefix("rt$") {
+            Some(runtime_owner(binding))
+        } else if name == "rt" || name == "lazy$" || name.starts_with("core$") {
             Some(STARTUP)
         } else if let Some(global) = owned_global(name) {
             Some(plan.global_chunks[global])
@@ -593,12 +710,11 @@ pub(crate) fn emit_chunked(
         }
     };
     let mut read = vec![BTreeSet::new(); count];
-    for (chunk, text) in written.iter_mut().enumerate() {
+    for (chunk, text) in written.iter().enumerate() {
         #[cfg(debug_assertions)]
         check_runtime_reads(&text.run, &text.raw, &emitter.runtime, &emitter.core_cells);
         let mut names = BTreeSet::new();
-        let skipped = text.runtime.iter().cloned().collect::<Vec<_>>();
-        for (source, skipped) in [(&text.head, &skipped), (&text.run, &text.raw)] {
+        for (source, skipped) in [(&text.head, &Vec::new()), (&text.run, &text.raw)] {
             for (range, word) in scanned_names(source, skipped) {
                 // A member is no binding: `m.g20` reads a module namespace.
                 if !source[..range.start].ends_with('.') {
@@ -606,7 +722,107 @@ pub(crate) fn emit_chunked(
                 }
             }
         }
-        // The prelude helpers this chunk calls, declared first.
+        read[chunk] = names;
+    }
+    // Each chunk's runtime: a slice of the units of its signature that
+    // returns the bindings its own code and other chunks read
+    // (docs/code-splitting.md, "What a chunk file contains"),
+    // `const [rt$a, rt$b] = ((c, d) => { ... })(rt$c, rt$d);`, where the
+    // parameters are the bindings its units require of other chunks.
+    let mut returned = vec![BTreeSet::new(); count];
+    for (chunk, names) in read.iter_mut().enumerate() {
+        for name in names.iter() {
+            if let Some(binding) = name.strip_prefix("rt$") {
+                let unit = manifest
+                    .unit_of(binding)
+                    .unwrap_or_else(|| panic!("{name} is not a runtime binding"));
+                let binding = *manifest.units[unit.0]
+                    .declares
+                    .iter()
+                    .find(|declared| **declared == binding)
+                    .expect("a declared binding");
+                returned[runtime_owner(binding).0].insert((unit, binding));
+            }
+        }
+        for &parameter in &slices[chunk].parameters {
+            let unit = manifest.unit_of(parameter).expect("a declared binding");
+            returned[runtime_owner(parameter).0].insert((unit, parameter));
+            names.insert(format!("rt${parameter}"));
+        }
+    }
+    for (slice, returned) in slices.iter_mut().zip(&returned) {
+        slice.returned = returned.iter().map(|&(_, binding)| binding).collect();
+    }
+    let mut chunk_runtimes = chunk_roots
+        .into_iter()
+        .map(|roots| ChunkRuntime {
+            roots,
+            ..ChunkRuntime::default()
+        })
+        .collect::<Vec<_>>();
+    if embed && slice {
+        let factories = crate::runtime_slice::chunk_factories(&slices, terse);
+        for (chunk, (text, (factory, unit_bytes))) in written.iter_mut().zip(factories).enumerate()
+        {
+            let slice = &slices[chunk];
+            if !slice.kept.contains(&true) {
+                continue;
+            }
+            #[cfg(debug_assertions)]
+            for &parameter in &slice.parameters {
+                let owner = runtime_owner(parameter);
+                let (outer, inner) = (
+                    &plan.chunks[owner.0].signature,
+                    &plan.chunks[chunk].signature,
+                );
+                debug_assert!(
+                    outer != inner && outer.is_superset(inner),
+                    "{} takes {parameter} of {}",
+                    plan.chunks[chunk].name,
+                    plan.chunks[owner.0].name
+                );
+            }
+            let factory = factory.trim();
+            let arguments = if chunk == STARTUP.0 {
+                String::new()
+            } else {
+                let arguments = slice
+                    .parameters
+                    .iter()
+                    .map(|parameter| format!("rt${parameter}"))
+                    .collect::<Vec<_>>();
+                format!("({})", arguments.join(", "))
+            };
+            let open = if slice.returned.is_empty() {
+                "  ".to_owned()
+            } else {
+                let pattern = slice
+                    .returned
+                    .iter()
+                    .map(|binding| format!("rt${binding}"))
+                    .collect::<Vec<_>>();
+                format!("  const [{}] = ", pattern.join(", "))
+            };
+            text.head
+                .insert_str(0, &format!("{open}{factory}{arguments};\n"));
+            text.runtime = Some(open.len()..open.len() + factory.len());
+            let runtime = &mut chunk_runtimes[chunk];
+            runtime.kept = slice.kept.clone();
+            runtime.bytes = factory.len();
+            runtime.unit_bytes = unit_bytes;
+        }
+    } else if embed {
+        let statement = format!(
+            "  const rt = {};\n",
+            crate::runtime_manifest::RUNTIME.trim()
+        );
+        let factory = statement.find("(() =>").unwrap_or_default();
+        written[STARTUP.0].runtime = Some(factory..statement.len() - 2);
+        written[STARTUP.0].head.insert_str(0, &statement);
+    }
+    // The prelude helpers each chunk calls, declared first.
+    for (chunk, text) in written.iter_mut().enumerate() {
+        let names = &read[chunk];
         let mut helpers_text = String::new();
         if names.contains("truth") {
             helpers_text.push_str(PRELUDE_TRUTH);
@@ -619,8 +835,8 @@ pub(crate) fn emit_chunked(
         if let Some(runtime) = &mut text.runtime {
             *runtime = runtime.start + helpers_text.len()..runtime.end + helpers_text.len();
         }
-        read[chunk] = names;
     }
+    let loaded = loaded_chunks(plan);
     // What each chunk imports from each other chunk, which that chunk
     // exports; and the globals each chunk declares.
     let mut imports: Vec<BTreeMap<ChunkId, BTreeSet<String>>> = vec![BTreeMap::new(); count];
@@ -638,11 +854,11 @@ pub(crate) fn emit_chunked(
                 globals[owner.0].insert(name.clone());
             }
             if owner.0 != chunk {
-                // A constant's chunk is one more import, of a chunk whose
-                // signature holds its readers'.
+                // A constant's or a runtime binding's chunk is one more
+                // import, of a chunk whose signature holds its readers'.
                 debug_assert!(
                     owner == STARTUP
-                        || if constant_entry(name).is_some() {
+                        || if constant_entry(name).is_some() || name.starts_with("rt$") {
                             let (outer, inner) = (
                                 &plan.chunks[owner.0].signature,
                                 &plan.chunks[chunk].signature,
@@ -660,6 +876,45 @@ pub(crate) fn emit_chunked(
                     .or_default()
                     .insert(name.clone());
                 exports[owner.0].insert(name.clone());
+            }
+        }
+    }
+    // A slice holding an `effect:` or `install:` unit, which no chunk reads,
+    // has evaluated before any chunk of a smaller signature runs: every root
+    // of that chunk needs it, and code loaded with it may build the values it
+    // extends or call the operations it extends them for.
+    let effects = slices
+        .iter()
+        .map(|slice| {
+            manifest.units.iter().zip(&slice.kept).any(|(unit, kept)| {
+                *kept
+                    && unit
+                        .effect
+                        .as_ref()
+                        .is_some_and(|effect| !effect.targets.is_empty())
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut evaluated = vec![vec![false; count]; count];
+    for chunk in 0..count {
+        evaluated[chunk][chunk] = true;
+        let mut before = imports[chunk].keys().copied().collect::<Vec<_>>();
+        let signature = &plan.chunks[chunk].signature;
+        for (other, members) in plan.chunks.iter().enumerate().skip(1) {
+            if effects[other]
+                && &members.signature != signature
+                && members.signature.is_superset(signature)
+                && !before.iter().any(|import| evaluated[import.0][other])
+            {
+                debug_assert!(other < chunk, "an import precedes its importer");
+                imports[chunk].entry(ChunkId(other)).or_default();
+                before.push(ChunkId(other));
+            }
+        }
+        for import in before {
+            let (earlier, rest) = evaluated.split_at_mut(chunk);
+            for (own, imported) in rest[0].iter_mut().zip(&earlier[import.0]) {
+                *own |= *imported;
             }
         }
     }
@@ -751,8 +1006,9 @@ pub(crate) fn emit_chunked(
     let mut renamed = renamed.into_iter();
     let files = written
         .into_iter()
+        .zip(chunk_runtimes)
         .enumerate()
-        .map(|(chunk, text)| {
+        .map(|(chunk, (text, runtime))| {
             let (head, run) = (renamed.next().unwrap(), renamed.next().unwrap());
             let mut source = package_imports(&text.packages);
             // The chunks it imports, in the order their namespaces load in
@@ -831,6 +1087,7 @@ pub(crate) fn emit_chunked(
             EmittedChunk {
                 source,
                 imports: imported.iter().map(|(import, _)| **import).collect(),
+                runtime,
             }
         })
         .collect();

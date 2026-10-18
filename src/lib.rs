@@ -91,7 +91,9 @@ pub use compiler::{
 pub use defines::{Define, DefineError, DefineValue};
 pub use emitter::{emit_esm, emit_js};
 pub use macro_host::{MacroHost, MacroImport, MacroLimits};
-pub use runtime_slice::{ConstantPool, RetentionReport};
+pub use runtime_slice::{
+    ChunkRetention, ChunkUnit, ChunkedRetention, ConstantPool, RetentionReport,
+};
 
 pub use parser::{
     CollectionKind, ErrorKind, LineIndex, Node, NodeId, NodeKind, NumberKind, ParseError, Parser,
