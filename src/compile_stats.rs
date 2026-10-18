@@ -99,6 +99,22 @@ pub struct CompileStats {
     /// When namespace artifacts were captured
     /// ([`crate::compiler::analyze_namespace_entry_with_artifacts`]).
     pub capture: Option<CaptureCounts>,
+    /// When namespaces were installed from artifacts
+    /// ([`crate::compiler::analyze_namespace_entry_recorded`]).
+    pub install: Option<InstallCounts>,
+}
+
+/// The namespace artifacts a compilation installed in place of analysis.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InstallCounts {
+    /// The namespaces installed, in source order. Their macro calls are not
+    /// executed, so [`CompileStats::macro_calls_in`] counts none for them.
+    pub installed: Vec<String>,
+    /// The namespaces whose artifact was refused, with the reason; each was
+    /// analyzed instead.
+    pub refused: Vec<(String, String)>,
+    /// Time spent installing, outside `analysis`.
+    pub time: Duration,
 }
 
 /// The namespace artifacts a compilation captured.
@@ -161,6 +177,11 @@ impl CompileStats {
             line("cache.capture.skipped", &capture.skipped);
             line("cache.capture.bytes", &capture.bytes);
             line("cache.capture-ms", &ms(capture.time));
+        }
+        if let Some(install) = &self.install {
+            line("cache.install.namespaces", &install.installed.len());
+            line("cache.install.refused", &install.refused.len());
+            line("cache.install-ms", &ms(install.time));
         }
         out.push_str("[macro-calls-by-namespace]\n");
         let mut order = (0..self.namespaces.len()).collect::<Vec<_>>();

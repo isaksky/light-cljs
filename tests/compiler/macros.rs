@@ -64,7 +64,18 @@ impl Sources {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, source).unwrap();
     }
+    /// Compile `entry`, and check that installing its namespaces from
+    /// artifacts in any mix with fresh ones emits the same program
+    /// (`crate::cache_contract`).
     fn compile(&self, entry: &str) -> Result<String, light_cljs::NamespaceCompileError> {
+        let compiled = compile_namespace(entry, std::slice::from_ref(self.0.path()));
+        if compiled.is_ok() {
+            crate::cache_contract::check_mixed(self.0.path(), entry);
+        }
+        compiled
+    }
+    /// Compile `entry` alone: its macros have effects that a hit skips.
+    fn compile_effectful(&self, entry: &str) -> Result<String, light_cljs::NamespaceCompileError> {
         compile_namespace(entry, std::slice::from_ref(self.0.path()))
     }
     fn compile_host(
@@ -595,8 +606,10 @@ fn macro_namespace_effects_are_shared_once_per_compilation_with_fresh_reused_hos
         "(ns dep (:require [macros :refer [next-value]])) (def value (next-value))",
     );
     s.write("main.cljs", "(ns main (:require [dep :as d] [macros :refer [next-value]])) (js/console.log d/value (next-value))");
-    assert_eq!(execute(&s.compile("main").unwrap()), "1 2\n");
-    assert_eq!(execute(&s.compile("main").unwrap()), "1 2\n");
+    // A hit skips `dep`'s call, so mixed compilations print `1 1`:
+    // tests/compiler/cache_contract.rs covers that documented skip.
+    assert_eq!(execute(&s.compile_effectful("main").unwrap()), "1 2\n");
+    assert_eq!(execute(&s.compile_effectful("main").unwrap()), "1 2\n");
     let mut h = MacroHost::new();
     assert_eq!(execute(&s.compile_host("main", &mut h).unwrap()), "1 2\n");
     assert_eq!(execute(&s.compile_host("main", &mut h).unwrap()), "1 2\n");

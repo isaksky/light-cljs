@@ -66,6 +66,7 @@ fn namespace_aliases_compiled_macro_output_and_captured_bindings_are_deferred() 
     fs::write(root.join("macros.cljs"), "(ns macros) (defmacro later [x] (list 'cljs.core/delay x)) (defmacro lazy-later [x] (list 'cljs.core/lazy-seq x))").unwrap();
     fs::write(root.join("main.cljs"), "(ns main (:require [cljs.core :as c] [macros :as m])) (def ^:dynamic *x* 1) (let [v 7 d (m/later (+ v *x*)) xs (m/lazy-later [v]) ys (c/lazy-seq [9]) pending c/realized?] (js/console.log (pending d) (binding [*x* 2] (c/force d)) (first xs) (first ys)))").unwrap();
     let javascript = compile_namespace("main", std::slice::from_ref(root.path())).unwrap();
+    crate::cache_contract::check_mixed(root.path(), "main");
     let output = Command::new("node")
         .args(["-e", &javascript])
         .output()

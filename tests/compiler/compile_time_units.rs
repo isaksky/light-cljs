@@ -339,6 +339,7 @@ fn namespace_entries_switch_ns_only_when_the_program_reaches_reflection() {
             "app/main.cljs",
             "(ns app.main (:require [app.util :as u]))\n(u/f 1)\n",
         );
+        crate::cache_contract::check_mixed(sources.0.path(), "app.main");
         analyze_namespace_entry(
             "app.main",
             std::slice::from_ref(sources.0.path()),

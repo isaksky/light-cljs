@@ -180,6 +180,8 @@ pub(crate) struct CapturedMacro {
     pub key: String,
     pub code: String,
     pub view_globals: usize,
+    /// Its namespace's reader context as its registration names it.
+    pub reader_context: Option<crate::analyzer::RuntimeReaderNamespace>,
 }
 /// A unit as capture reads it from the catalog.
 pub(crate) struct UnitRecord {
@@ -192,6 +194,27 @@ pub(crate) struct UnitRecord {
     pub view_globals: usize,
     pub extension_frontier: usize,
     pub added: Vec<usize>,
+    /// The reader contexts its prepared registration names.
+    pub reader_contexts: Option<
+        crate::shared::Shared<
+            crate::layered::Layered<
+                String,
+                crate::shared::Shared<crate::analyzer::RuntimeReaderNamespace>,
+            >,
+        >,
+    >,
+}
+/// A registration of an installed namespace, with this compilation's unit IDs
+/// ([`CompilationSession::install`]).
+pub(crate) enum InstalledRegistration {
+    Root {
+        name: String,
+        unit: Option<usize>,
+        test: Option<usize>,
+        once: bool,
+        location: String,
+    },
+    Bundle(Rc<BundleRecord>),
 }
 /// A registration as capture reads it from the catalog.
 pub(crate) enum RegistrationRecord {
@@ -221,12 +244,19 @@ impl CompilationSession {
         let c = self.catalog.borrow();
         (c.units.len(), c.registrations.len(), c.bundle_count)
     }
-    pub fn capture_macro(&self, key: String, code: String, view_globals: usize) {
+    pub fn capture_macro(
+        &self,
+        key: String,
+        code: String,
+        view_globals: usize,
+        reader_context: Option<crate::analyzer::RuntimeReaderNamespace>,
+    ) {
         if let Some(capture) = self.capture.borrow_mut().as_mut() {
             capture.macros.push(CapturedMacro {
                 key,
                 code,
                 view_globals,
+                reader_context,
             });
         }
     }
@@ -271,6 +301,10 @@ impl CompilationSession {
                 .and_then(|index| capture.units.get_mut(index))
                 .ok_or("a unit registered before capture began")?;
             let unit = unit.borrow();
+            let reader_contexts = match &unit.state {
+                AnalysisState::Prepared(_, _, prepared) => Some(prepared.reader_contexts().clone()),
+                _ => None,
+            };
             let code = match &unit.state {
                 AnalysisState::Prepared(_, _, prepared) => Ok(prepared.code().to_owned()),
                 AnalysisState::Unstarted => Err("a deferred unit was never analyzed"),
@@ -287,6 +321,7 @@ impl CompilationSession {
                 view_globals: entry.view_globals,
                 extension_frontier: entry.extension_frontier,
                 added: std::mem::take(&mut entry.added),
+                reader_contexts,
             });
         }
         Ok(records)
@@ -309,6 +344,127 @@ impl CompilationSession {
                 Registration::Bundle(bundle) => RegistrationRecord::Bundle(bundle.clone()),
             })
             .collect()
+    }
+    /// The ID the next registered unit gets.
+    pub fn next_unit(&self) -> usize {
+        self.catalog.borrow().units.len()
+    }
+    /// Register again, in order, the units and registrations of a namespace
+    /// installed from its artifact (`crate::artifact_install`), as
+    /// [`Self::register`] and [`Self::register_bundle`] would have: each
+    /// root with a unit adds that unit, prepared, at the next ID, which
+    /// `registrations` already name. Nothing is analyzed or executed; a
+    /// later demand evaluates a unit's prepared JavaScript as it would a
+    /// unit this compilation prepared, and the counts are this
+    /// compilation's: no analysis and no execution yet.
+    pub fn install(
+        &self,
+        units: Vec<crate::emitter::DeferredUnit>,
+        registrations: Vec<InstalledRegistration>,
+    ) -> Result<(), String> {
+        let mut units = units.into_iter();
+        for registration in registrations {
+            let bootstrap = {
+                let mut c = self.catalog.borrow_mut();
+                let c = &mut *c;
+                match &registration {
+                    InstalledRegistration::Root {
+                        name,
+                        unit,
+                        test,
+                        once,
+                        location,
+                    } => {
+                        let next_var = VarId(c.bindings.len());
+                        let binding = c.bindings.entry(name.clone()).or_insert((next_var, 0));
+                        if let Some(id) = *unit {
+                            if id != c.units.len() {
+                                return Err(format!(
+                                    "installed unit {id} is not the next unit {}",
+                                    c.units.len()
+                                ));
+                            }
+                            binding.1 += 1;
+                            let request = UnitRequest {
+                                var: binding.0,
+                                generation: binding.1,
+                            };
+                            let prepared = units
+                                .next()
+                                .ok_or("an installed root names a unit the artifact lacks")?;
+                            if let Some(capture) = self.capture.borrow_mut().as_mut() {
+                                capture.units.push(UnitCapture::default());
+                            }
+                            c.units.push(Rc::new(RefCell::new(Unit {
+                                request,
+                                name: name.clone(),
+                                form: None,
+                                snapshot: None,
+                                host: None,
+                                state: AnalysisState::Prepared(
+                                    std::rc::Weak::new(),
+                                    Vec::new(),
+                                    Rc::new(prepared),
+                                ),
+                                analyses: 0,
+                                emitted: false,
+                            })));
+                        }
+                        if !(unit.is_none() && c.active.contains_key(name)
+                            || *once && c.active.get(name).is_some_and(|defined| *defined))
+                        {
+                            c.multifn_targets.remove(name);
+                            c.active.insert(name.clone(), unit.is_some());
+                        }
+                        c.registrations.push(Registration::Root(
+                            name.clone(),
+                            *unit,
+                            *test,
+                            *once,
+                            location.clone(),
+                        ));
+                    }
+                    InstalledRegistration::Bundle(bundle) => {
+                        c.registrations.push(Registration::Bundle(bundle.clone()));
+                        c.bundle_count += 1;
+                        for name in &bundle.products {
+                            if bundle.once && c.active.get(name) == Some(&true) {
+                                continue;
+                            }
+                            if bundle.once {
+                                c.multifn_targets.insert(name.clone(), name.clone());
+                            } else {
+                                c.multifn_targets.remove(name);
+                            }
+                            c.active.insert(name.clone(), true);
+                        }
+                    }
+                }
+                c.bootstrap.clone()
+            };
+            if let Some(bootstrap) = bootstrap {
+                let engine = bootstrap.evaluator.as_ref();
+                match registration {
+                    InstalledRegistration::Root {
+                        name,
+                        unit,
+                        test,
+                        once,
+                        location,
+                    } => Self::install_root(engine, &name, unit, test, once, &location)?,
+                    InstalledRegistration::Bundle(bundle) => {
+                        let value = engine
+                            .evaluate_unit(&bundle.source())
+                            .map_err(|e| e.to_string())?;
+                        engine.release(value).map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+        }
+        if units.next().is_some() {
+            return Err("an installed unit has no root".into());
+        }
+        Ok(())
     }
     pub fn bootstrap(&self) -> Option<Bootstrap> {
         self.catalog.borrow().bootstrap.clone()
@@ -365,7 +521,7 @@ impl CompilationSession {
         for registration in registrations {
             match registration {
                 Registration::Root(name, unit, test, once, location) => {
-                    Self::install(evaluator.as_ref(), &name, unit, test, once, &location)?
+                    Self::install_root(evaluator.as_ref(), &name, unit, test, once, &location)?
                 }
                 Registration::Bundle(bundle) => {
                     let value = evaluator
@@ -490,7 +646,7 @@ impl CompilationSession {
         }
         Ok(unit)
     }
-    fn install(
+    fn install_root(
         engine: &dyn MacroEvaluator,
         name: &str,
         unit: Option<usize>,
@@ -573,7 +729,7 @@ impl CompilationSession {
             (id, c.bootstrap.clone())
         };
         if let Some(bootstrap) = bootstrap {
-            Self::install(
+            Self::install_root(
                 bootstrap.evaluator.as_ref(),
                 &name,
                 id,

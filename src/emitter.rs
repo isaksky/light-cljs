@@ -163,6 +163,40 @@ impl DeferredUnit {
         }
     }
 
+    /// A unit prepared in an earlier compilation and installed from its
+    /// namespace's artifact (`crate::artifact_install`): its JavaScript, and
+    /// the declarations its registration names.
+    pub(crate) fn from_parts(
+        source: String,
+        namespaces: crate::arena::Arena<String>,
+        globals: crate::arena::Arena<crate::analyzer::GlobalBinding>,
+        reader_contexts: crate::shared::Shared<
+            crate::layered::Layered<
+                String,
+                crate::shared::Shared<crate::analyzer::RuntimeReaderNamespace>,
+            >,
+        >,
+    ) -> Self {
+        Self {
+            source,
+            namespaces,
+            globals,
+            reader_contexts,
+        }
+    }
+
+    /// The reader contexts its registration names.
+    pub(crate) fn reader_contexts(
+        &self,
+    ) -> &crate::shared::Shared<
+        crate::layered::Layered<
+            String,
+            crate::shared::Shared<crate::analyzer::RuntimeReaderNamespace>,
+        >,
+    > {
+        &self.reader_contexts
+    }
+
     /// The prepared compile-time JavaScript, as [`Self::emit`] returns it.
     pub(crate) fn code(&self) -> &str {
         &self.source

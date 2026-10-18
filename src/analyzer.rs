@@ -2881,6 +2881,40 @@ pub(crate) struct NamespaceResolution {
 
 type DiagnosticArities = HashMap<GlobalId, Vec<(usize, bool)>>;
 
+/// Add the arities the definitions among `program.exprs[from..]` declare:
+/// each `fn` a `def` binds, and each type constructor's field count.
+fn extend_arities(program: &Program, from: usize, arities: &mut DiagnosticArities) {
+    for definition in program.exprs.tail_from(from) {
+        match &definition.kind {
+            ExprKind::DefType { layout, .. } => {
+                if let Some(global) = layout.constructor {
+                    arities
+                        .entry(global)
+                        .or_default()
+                        .push((layout.fields.len(), false));
+                }
+            }
+            ExprKind::Def {
+                global,
+                init: Some(init),
+                ..
+            } => {
+                let mut init = *init;
+                while let ExprKind::WithMeta { value, .. } = program.exprs[init.0].kind {
+                    init = value;
+                }
+                if let ExprKind::Fn { methods, .. } = &program.exprs[init.0].kind {
+                    arities
+                        .entry(*global)
+                        .or_default()
+                        .extend(methods.iter().map(|m| (m.params.len(), m.rest.is_some())));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 struct Analyzer<'a> {
     source: &'a str,
     syntax: Cow<'a, SyntaxTree>,
@@ -3466,6 +3500,9 @@ pub(crate) struct NamespaceAnalysis {
     /// With `--stats`, the time spent draining deferred units so far
     /// ([`crate::compile_stats::PhaseTimes::deferred_units`]).
     pub(crate) deferred_time: Option<std::time::Duration>,
+    /// Indexes over the program that installing artifacts resolves against
+    /// ([`crate::artifact_install`]), extended as the program grows.
+    install_index: crate::artifact_install::InstallIndex,
 }
 
 impl NamespaceAnalysis {
@@ -3478,6 +3515,7 @@ impl NamespaceAnalysis {
             roots: Vec::new(),
             requires: Vec::new(),
             deferred_time: None,
+            install_index: Default::default(),
         }
     }
 
@@ -3683,6 +3721,37 @@ impl NamespaceAnalysis {
             input,
             macro_host,
         )
+    }
+
+    /// Install the next source from its artifact in place of analyzing it
+    /// ([`crate::artifact_install`]): what [`Self::analyze`] would have
+    /// added to the program, the macro host and the compilation session,
+    /// at the same source index, without reading the source or executing a
+    /// macro. An artifact that does not fit the program is refused before
+    /// anything changes, and the caller analyzes the source instead; one
+    /// whose declarations fail to register fails the namespace.
+    pub(crate) fn install(
+        &mut self,
+        artifact: &crate::namespace_artifact::NamespaceArtifact,
+        source: &crate::artifact_install::InstallSource<'_>,
+        macro_host: &mut MacroHost,
+    ) -> Result<(), crate::artifact_install::InstallError> {
+        let first_expr = self.program.exprs.len();
+        let root = crate::artifact_install::install(
+            crate::artifact_install::Target {
+                program: &mut self.program,
+                names: &mut self.globals,
+                index: &mut self.install_index,
+                source_index: self.roots.len(),
+            },
+            artifact,
+            source,
+            macro_host,
+        )?;
+        extend_arities(&self.program, first_expr, &mut self.arities);
+        self.roots.push(root);
+        self.requires.push(artifact.declarations.requires.clone());
+        Ok(())
     }
 
     /// Check the lazy targets and close the program. Its root runs every
@@ -4069,35 +4138,7 @@ impl Analyzer<'_> {
         // overloads and redefinitions without rescanning the entire program.
         let mut local_arities = DiagnosticArities::new();
         let arities = prior_arities.unwrap_or(&mut local_arities);
-        for definition in self.program.exprs.tail_from(declarations) {
-            match &definition.kind {
-                ExprKind::DefType { layout, .. } => {
-                    if let Some(global) = layout.constructor {
-                        arities
-                            .entry(global)
-                            .or_default()
-                            .push((layout.fields.len(), false));
-                    }
-                }
-                ExprKind::Def {
-                    global,
-                    init: Some(init),
-                    ..
-                } => {
-                    let mut init = *init;
-                    while let ExprKind::WithMeta { value, .. } = self.program.exprs[init.0].kind {
-                        init = value;
-                    }
-                    if let ExprKind::Fn { methods, .. } = &self.program.exprs[init.0].kind {
-                        arities
-                            .entry(*global)
-                            .or_default()
-                            .extend(methods.iter().map(|m| (m.params.len(), m.rest.is_some())));
-                    }
-                }
-                _ => {}
-            }
-        }
+        extend_arities(&self.program, declarations, arities);
         // Assignment targets are children, not separate array reads. Build
         // their index once: checking each access by scanning all expressions
         // makes checked-array diagnostics quadratic in large programs.

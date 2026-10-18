@@ -248,7 +248,7 @@ fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> R
         bootstrap.functions.insert(
             (*name).into(),
             CompiledMacro {
-                function,
+                function: MacroFunction::Ready(function),
                 definition,
                 metadata: None,
                 generation: 0,
@@ -336,7 +336,7 @@ impl MacroHost {
         let origin = ExpansionOrigin {
             macro_name: Name::new(Some("cljs.core"), name),
             call: call.span(),
-            definition: Some(declaration.definition),
+            definition: Some(declaration.definition.clone()),
             helpers: vec![],
         };
         let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
@@ -367,7 +367,8 @@ impl MacroHost {
         } else {
             env
         };
-        let result = self.expand_javascript(engine, declaration.function, call, env, origin);
+        let result =
+            self.expand_javascript(engine, declaration.function(engine)?, call, env, origin);
         if result.is_err() {
             self.bootstrap = None;
         }
@@ -377,13 +378,72 @@ impl MacroHost {
 
 #[derive(Clone)]
 pub(crate) struct CompiledMacro {
-    function: ValueId,
+    function: MacroFunction,
     definition: crate::compiler_data::SourceSpan,
     pub(crate) metadata: Option<Datum>,
     generation: usize,
     reads_environment: bool,
 }
+/// A macro's compile-time function: evaluated where it was declared, or, for
+/// a macro installed from its namespace's artifact, on its first expansion.
+#[derive(Clone)]
+enum MacroFunction {
+    Ready(ValueId),
+    /// Shared by every frame's copy of the declaration, so the function is
+    /// evaluated once.
+    Installed(Rc<std::cell::RefCell<InstalledFunction>>),
+}
+struct InstalledFunction {
+    unit: crate::emitter::DeferredUnit,
+    function: Option<ValueId>,
+}
 impl CompiledMacro {
+    /// A macro of a namespace installed from its artifact
+    /// (`crate::artifact_install`): its prepared compile-time function and
+    /// the declarations it saw, evaluated when a later expansion first needs
+    /// it.
+    pub(crate) fn installed(
+        unit: crate::emitter::DeferredUnit,
+        definition: crate::compiler_data::SourceSpan,
+        metadata: Datum,
+        generation: usize,
+    ) -> Self {
+        Self {
+            function: MacroFunction::Installed(Rc::new(std::cell::RefCell::new(
+                InstalledFunction {
+                    unit,
+                    function: None,
+                },
+            ))),
+            definition,
+            metadata: Some(metadata),
+            generation,
+            reads_environment: true,
+        }
+    }
+    /// The function to call, evaluating an installed macro's on `engine` the
+    /// first time, as declaring it would have.
+    fn function(&self, engine: &dyn crate::evaluator::MacroEvaluator) -> Result<ValueId, String> {
+        let installed = match &self.function {
+            MacroFunction::Ready(function) => return Ok(*function),
+            MacroFunction::Installed(installed) => installed,
+        };
+        if let Some(function) = installed.borrow().function {
+            return Ok(function);
+        }
+        let (registration, unit) = installed.borrow().unit.emit();
+        engine
+            .evaluate_registration(&registration.source, &registration.chunks)
+            .map_err(|e| e.to_string())?;
+        let function = engine
+            .evaluate_unit(&format!(
+                "rt => rt.core.macroReaderFunction(({})(rt))",
+                unit
+            ))
+            .map_err(|e| e.to_string())?;
+        installed.borrow_mut().function = Some(function);
+        Ok(function)
+    }
     /// The `defmacro` form's place.
     pub(crate) fn definition(&self) -> &crate::compiler_data::SourceSpan {
         &self.definition
@@ -539,6 +599,10 @@ impl MacroHost {
                 format!("{namespace}/{name}"),
                 unit.clone(),
                 snapshot.resolution_program.globals.len(),
+                program
+                    .reader_contexts
+                    .get(namespace)
+                    .map(|c| (**c).clone()),
             );
         }
         engine
@@ -553,7 +617,7 @@ impl MacroHost {
         self.javascript_macros.insert(
             format!("{namespace}/{name}"),
             CompiledMacro {
-                function,
+                function: MacroFunction::Ready(function),
                 definition: form.span(),
                 metadata: Some(metadata),
                 generation,
@@ -618,15 +682,30 @@ impl MacroHost {
                 "{key} is private; macros can only be imported from public bindings"
             ));
         }
+        // A macro installed from an artifact may be the compilation's first:
+        // its session starts as declaring one would have started it.
+        if self.bootstrap.is_none() && matches!(declaration.function, MacroFunction::Installed(_)) {
+            self.bootstrap = self
+                .session_handle()
+                .and_then(|session| session.bootstrap());
+            if self.bootstrap.is_none() {
+                self.bootstrap = Some(build(self, true)?);
+            }
+            if let (Some(session), Some(bootstrap)) = (self.session_handle(), &self.bootstrap) {
+                session.attach(bootstrap)?;
+            }
+        }
         let bootstrap = self
             .bootstrap
             .as_ref()
             .ok_or("macro session failed")?
             .clone();
         let (ns, name) = key.split_once('/').unwrap();
+        let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
+        let function = declaration.function(engine)?;
         self.expand_javascript(
-            engine.unwrap_or(bootstrap.evaluator.as_ref()),
-            declaration.function,
+            engine,
+            function,
             call,
             env,
             ExpansionOrigin {
@@ -740,7 +819,9 @@ mod tests {
                     }),
                 )
                 .unwrap();
-            let function = host.javascript_macros["cljs.user/m"].function;
+            let function = host.javascript_macros["cljs.user/m"]
+                .function(evaluator.as_ref())
+                .unwrap();
             let error = evaluator.call(function, &[]).unwrap_err();
             assert!(error.0.contains("cancelled"), "{error}");
             assert!(evaluator.evaluate_js("1").is_err());
@@ -859,7 +940,9 @@ mod tests {
                 }),
             )
             .unwrap();
-        let function = host.javascript_macros["cljs.user/m"].function;
+        let function = host.javascript_macros["cljs.user/m"]
+            .function(evaluator.as_ref())
+            .unwrap();
         let error = evaluator.call(function, &[]).unwrap_err();
         assert!(error.0.contains("cancelled"), "{error}");
         assert!(evaluator.evaluate_js("1").is_err());

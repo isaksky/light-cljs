@@ -33,14 +33,21 @@ fn analyze_entry(entry: &str, files: &[(&str, &str)]) -> Program {
             .find(|(file, _)| *file == path)
             .map(|(file, source)| SourceInput::new(*file, *source)))
     };
-    analyze_namespace_entry_with_provider(
+    let program = analyze_namespace_entry_with_provider(
         entry,
         &provider,
         &mut MacroHost::new(),
         AnalysisOptions::default(),
         &mut Vec::new(),
     )
-    .unwrap_or_else(|error| panic!("{error}"))
+    .unwrap_or_else(|error| panic!("{error}"));
+    // Mixing namespaces installed from artifacts with fresh ones emits the
+    // same files.
+    crate::cache_contract::check_mixed_input(
+        crate::cache_contract::Input::Provider(&provider),
+        entry,
+    );
+    program
 }
 
 /// The plan of `program` at each level, checked.
@@ -2655,6 +2662,7 @@ fn matrix(name: &str) {
     let root = fixture_root(name);
     let root = root.to_str().unwrap();
     plans(&fixture_program(name));
+    crate::cache_contract::check_mixed(&fixture_root(name), "app.main");
     let dir = TempDir::new("chunks-matrix");
     for level in OptimizationLevel::ALL {
         let base = [

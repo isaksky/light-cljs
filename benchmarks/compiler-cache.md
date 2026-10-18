@@ -186,3 +186,20 @@ than hold them for the build. All 922 namespaces capture, none refused. Three
 `cache.capture-ms` 1,029, 1,037 and 1,026, 4.7% of the wall time;
 `time.analysis-ms` (about 5,390) and `time.deferred-units-ms` (about 14,780)
 exclude it.
+
+## Installing artifacts, cache off (light-cljs-316, October 18, 2026)
+
+Penpot `app.main --optimize none`, without installing anything: the entry
+loop asks no lookup and a macro's function is still evaluated where it is
+declared. Three alternating rounds of the parent `44f0ee4` and the change,
+release builds, at 1-minute load 2.0 to 3.4. Output is 33,588,607 bytes and
+byte-identical in every run.
+
+| Build | Wall (s), run 1-3 | Median wall | Peak RSS (GB), run 1-3 | Median RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `44f0ee4` | 21.99, 21.74, 21.61 | 21.74 | 0.978, 0.962, 0.960 | 0.962 |
+| Change | 21.62, 21.64, 21.74 | 21.64 | 0.955, 0.956, 0.961 | 0.956 |
+
+The change is -0.5% wall and -0.6% RSS against its parent, within the +3%
+and +5% gate. There is no installing build of Penpot yet: the store and its
+lookup are light-cljs-319 to 322.

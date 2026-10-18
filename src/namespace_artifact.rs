@@ -280,11 +280,14 @@ pub struct RelocatableCode {
 
 /// The declarations a compile-time unit saw when it was defined: every
 /// earlier namespace as it was when this one began, the first `own_globals`
-/// of [`Declarations::globals`], and the globals its own analysis added.
+/// of [`Declarations::globals`], and the globals its own analysis added;
+/// and the namespace's reader context as the unit's registration names it,
+/// which can lack macros the namespace declares later.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RegistrationView {
     pub own_globals: u32,
     pub added: Vec<GlobalRef>,
+    pub reader_context: Option<ReaderContext>,
 }
 
 /// The semantic IR of the namespace's body and of its drained deferred units,
@@ -1051,9 +1054,18 @@ impl NamespaceArtifact {
             global(patch.global)?;
             patch.metadata.iter().try_for_each(|&id| expr(id))?;
         }
+        // The references are in text order and do not overlap, so
+        // installation can rewrite them in one pass.
         let code = |code: &RelocatableCode| {
+            let mut after = 0;
             code.units.iter().try_for_each(|&((start, end), id)| {
                 unit(id)?;
+                if start < after {
+                    return Err(format!(
+                        "unit reference {start}..{end} overlaps or precedes the one before it"
+                    ));
+                }
+                after = end;
                 if start <= end && code.text.get(start as usize..end as usize).is_some() {
                     Ok(())
                 } else {

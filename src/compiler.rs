@@ -1590,7 +1590,7 @@ pub fn analyze_namespace_entry_with_sources(
         macros,
         options,
         warnings,
-        Recorders::default(),
+        EntryRecorders::default(),
     )
 }
 
@@ -1616,9 +1616,9 @@ pub fn analyze_namespace_entry_with_stats(
         macros,
         options,
         warnings,
-        Recorders {
+        EntryRecorders {
             stats: Some(stats),
-            ..Recorders::default()
+            ..EntryRecorders::default()
         },
     )
 }
@@ -1650,10 +1650,10 @@ pub fn analyze_namespace_entry_with_artifacts(
         macros,
         options,
         warnings,
-        Recorders {
+        EntryRecorders {
             stats,
             capture: Some(capture),
-            ..Recorders::default()
+            ..EntryRecorders::default()
         },
     )
 }
@@ -1681,21 +1681,72 @@ pub fn analyze_namespace_entry_with_dependencies(
         macros,
         options,
         warnings,
-        Recorders {
+        EntryRecorders {
             manifest: Some(&mut manifest),
-            ..Recorders::default()
+            ..EntryRecorders::default()
         },
     )?;
     Ok((program, files, manifest))
 }
 
 /// What an entry compilation records besides its program, when asked:
-/// `--stats` numbers, the dependency manifest and namespace artifacts.
+/// `--stats` numbers, the dependency manifest and namespace artifacts; and
+/// the artifacts it installs in place of analysis.
 #[derive(Default)]
-struct Recorders<'a> {
-    stats: Option<&'a mut CompileStats>,
-    manifest: Option<&'a mut DependencyManifest>,
-    capture: Option<&'a mut dyn FnMut(crate::namespace_artifact::NamespaceCapture)>,
+pub struct EntryRecorders<'a> {
+    /// Reset, then filled as [`analyze_namespace_entry_with_stats`] fills it.
+    pub stats: Option<&'a mut CompileStats>,
+    /// Filled as [`analyze_namespace_entry_with_dependencies`] fills it.
+    pub manifest: Option<&'a mut DependencyManifest>,
+    /// Handed each analyzed namespace's artifact, as
+    /// [`analyze_namespace_entry_with_artifacts`] does.
+    pub capture: Option<&'a mut dyn FnMut(crate::namespace_artifact::NamespaceCapture)>,
+    /// Asked for each namespace, in source order, whether to install an
+    /// artifact in its place (docs/compiler-cache.md, "Cache contract"). The
+    /// caller decides eligibility; an artifact that does not fit the
+    /// compilation is refused, with its reason in the stats, and its
+    /// namespace analyzed instead. Installed namespaces execute no macro
+    /// calls, are not captured, and add no observations to the manifest.
+    pub install: Option<ArtifactLookup<'a>>,
+}
+
+/// The artifact to install for a namespace, if any ([`EntryRecorders::install`]).
+pub type ArtifactLookup<'a> =
+    &'a dyn Fn(&str) -> Option<&'a crate::namespace_artifact::NamespaceArtifact>;
+
+/// [`analyze_namespace_entry_with_sources`] with any of the recorders
+/// [`EntryRecorders`] holds, including installing namespace artifacts in place of
+/// analysis. Installing reads no artifact the caller does not hand over:
+/// there is no store yet.
+pub fn analyze_namespace_entry_recorded(
+    entry: &str,
+    source_roots: &[PathBuf],
+    macros: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+    mut recorders: EntryRecorders<'_>,
+) -> Result<(crate::Program, SourceFiles), NamespaceCompileError> {
+    if let Some(stats) = recorders.stats.as_deref_mut() {
+        *stats = CompileStats::default();
+    }
+    analyze_from_roots(entry, source_roots, macros, options, warnings, recorders)
+}
+
+/// [`analyze_namespace_entry_recorded`] with sources from a
+/// [`SourceProvider`], as [`analyze_namespace_entry_with_provider`] takes
+/// them.
+pub fn analyze_namespace_entry_recorded_with_provider(
+    entry: &str,
+    sources: &dyn SourceProvider,
+    macros: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+    mut recorders: EntryRecorders<'_>,
+) -> Result<(crate::Program, SourceFiles), NamespaceCompileError> {
+    if let Some(stats) = recorders.stats.as_deref_mut() {
+        *stats = CompileStats::default();
+    }
+    analyze_entry(entry, sources, macros, options, warnings, recorders)
 }
 
 fn analyze_from_roots(
@@ -1704,7 +1755,7 @@ fn analyze_from_roots(
     macros: &mut MacroHost,
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
-    recorders: Recorders<'_>,
+    recorders: EntryRecorders<'_>,
 ) -> Result<(crate::Program, Vec<(PathBuf, String)>), NamespaceCompileError> {
     if !valid_namespace(entry) {
         return Err(NamespaceCompileError::new(
@@ -1763,7 +1814,7 @@ pub fn analyze_namespace_entry_with_provider(
         macros,
         options,
         warnings,
-        Recorders::default(),
+        EntryRecorders::default(),
     )
     .map(|(program, _)| program)
 }
@@ -1787,13 +1838,15 @@ fn analyze_entry(
     macros: &mut MacroHost,
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
-    recorders: Recorders<'_>,
+    recorders: EntryRecorders<'_>,
 ) -> Result<(crate::Program, Vec<(PathBuf, String)>), NamespaceCompileError> {
-    let Recorders {
+    let EntryRecorders {
         mut stats,
         manifest,
         mut capture,
+        install,
     } = recorders;
+    let mut install_counts = crate::compile_stats::InstallCounts::default();
     let timed = stats.is_some();
     let begun = compile_stats::start(timed);
     if !valid_namespace(entry) {
@@ -1844,62 +1897,100 @@ fn analyze_entry(
         };
         let first_lazy = analysis.lazy_target_count();
         macros.observe(|log| log.window = index as u32);
-        let resolution = prepare_source(macros, file).map_err(at)?;
-        let captured = capture.is_some().then(|| {
-            let started = compile_stats::start(timed);
-            let start = analysis.begin_capture(warnings, macros);
-            compile_stats::add(&mut capture_counts.time, started);
-            (start, resolution.clone())
-        });
-        let input = NamespaceInput {
-            name: &file.name,
-            source: &file.source,
-            syntax: &file.syntax,
-            aliases: &file.aliases,
-            requires: &file.requires,
-        };
-        analysis
-            .analyze(
-                &input,
-                resolution,
-                index == entry_index,
-                macros,
-                options,
-                warnings,
-            )
-            .map_err(at)?;
-        if let (Some(sink), Some((start, resolution))) = (capture.as_deref_mut(), &captured) {
-            let started = compile_stats::start(timed);
-            let path = file.path.to_string_lossy();
-            let artifact = analysis.finish_capture(
-                start,
-                crate::artifact_capture::CaptureInput {
-                    namespace: &file.name,
-                    path: &path,
-                    source_length: file.source.len(),
-                    entry: index == entry_index,
-                    resolution,
-                    aliases: &file.aliases,
-                    requires: &file.requires,
-                },
-                macros,
-                warnings,
-            );
-            match &artifact {
-                Ok(artifact) => {
-                    capture_counts.captured += 1;
-                    if timed {
-                        capture_counts.bytes += artifact.approximate_bytes();
+        // An artifact installs at the frontier its analysis would have run.
+        let installed = match install.and_then(|lookup| lookup(&file.name)) {
+            Some(artifact) => {
+                let started = compile_stats::start(timed);
+                let path = file.path.to_string_lossy();
+                let outcome = analysis.install(
+                    artifact,
+                    &crate::artifact_install::InstallSource {
+                        namespace: &file.name,
+                        path: &path,
+                        text: &file.source,
+                        entry: index == entry_index,
+                    },
+                    macros,
+                );
+                compile_stats::add(&mut install_counts.time, started);
+                match outcome {
+                    Ok(()) => {
+                        install_counts.installed.push(file.name.clone());
+                        true
+                    }
+                    Err(crate::artifact_install::InstallError::Refused(reason)) => {
+                        install_counts.refused.push((file.name.clone(), reason));
+                        false
+                    }
+                    Err(crate::artifact_install::InstallError::Failed(message)) => {
+                        return Err(NamespaceCompileError::new(format!(
+                            "installing {}: {message}",
+                            file.name
+                        ))
+                        .at(&file.path, &file.source, 0..0));
                     }
                 }
-                Err(_) => capture_counts.skipped += 1,
             }
-            drop(captured);
-            sink(crate::namespace_artifact::NamespaceCapture {
-                namespace: file.name.clone(),
-                artifact,
+            None => false,
+        };
+        if !installed {
+            let resolution = prepare_source(macros, file).map_err(at)?;
+            let captured = capture.is_some().then(|| {
+                let started = compile_stats::start(timed);
+                let start = analysis.begin_capture(warnings, macros);
+                compile_stats::add(&mut capture_counts.time, started);
+                (start, resolution.clone())
             });
-            compile_stats::add(&mut capture_counts.time, started);
+            let input = NamespaceInput {
+                name: &file.name,
+                source: &file.source,
+                syntax: &file.syntax,
+                aliases: &file.aliases,
+                requires: &file.requires,
+            };
+            analysis
+                .analyze(
+                    &input,
+                    resolution,
+                    index == entry_index,
+                    macros,
+                    options,
+                    warnings,
+                )
+                .map_err(at)?;
+            if let (Some(sink), Some((start, resolution))) = (capture.as_deref_mut(), &captured) {
+                let started = compile_stats::start(timed);
+                let path = file.path.to_string_lossy();
+                let artifact = analysis.finish_capture(
+                    start,
+                    crate::artifact_capture::CaptureInput {
+                        namespace: &file.name,
+                        path: &path,
+                        source_length: file.source.len(),
+                        entry: index == entry_index,
+                        resolution,
+                        aliases: &file.aliases,
+                        requires: &file.requires,
+                    },
+                    macros,
+                    warnings,
+                );
+                match &artifact {
+                    Ok(artifact) => {
+                        capture_counts.captured += 1;
+                        if timed {
+                            capture_counts.bytes += artifact.approximate_bytes();
+                        }
+                    }
+                    Err(_) => capture_counts.skipped += 1,
+                }
+                drop(captured);
+                sink(crate::namespace_artifact::NamespaceCapture {
+                    namespace: file.name.clone(),
+                    artifact,
+                });
+                compile_stats::add(&mut capture_counts.time, started);
+            }
         }
         if let Some(stats) = stats.as_deref_mut() {
             stats.namespaces.push(compile_stats::NamespaceStats {
@@ -1948,9 +2039,12 @@ fn analyze_entry(
         phases.deferred_units += deferred;
         phases.analysis += analysis_started
             .elapsed()
-            .saturating_sub(deferred + lazy_parse + capture_counts.time);
+            .saturating_sub(deferred + lazy_parse + capture_counts.time + install_counts.time);
         if capture.is_some() {
             stats.capture = Some(capture_counts);
+        }
+        if install.is_some() {
+            stats.install = Some(install_counts);
         }
         stats.macro_calls = macros.expansions.get();
         stats.peak_macro_nodes = macros.generated_nodes.get();

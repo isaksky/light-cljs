@@ -579,6 +579,40 @@ and load costs; compression, mapping, and zero-copy access are optional later wo
 A whole-program snapshot may be useful as a format experiment, but localized-edit
 reuse is the reason to retain namespace granularity as the target architecture.
 
+*As built (light-cljs-316):* installation is the inverse of capture and
+shares no code with `program_fragment::append`, whose shared prefix does not
+exist here. An artifact's own tables land after the program's, so each local
+reference is an offset; an earlier namespace's global resolves through the
+analysis's (namespace, name) index and an earlier namespace, host path or
+lazy namespace through indexes `artifact_install::InstallIndex` extends as
+the program grows, so no table is scanned. Source indices become the
+current program's; the patches to earlier globals are applied; a
+`VarMetadata::Global` takes the metadata the global has when installation
+begins, which is the state the namespace began with. Installed in the same
+source order as captured, the program's tables have the same entries at the
+same IDs as an uncached analysis, except that an IR reference to an earlier
+namespace's string or symbol, which capture copies into the artifact, is
+appended as a copy, which shifts the IDs of later strings without changing
+what they hold. The deferred units are registered again in the
+`CompilationSession` catalog at the next unit IDs, in the `Prepared` state,
+with their `__lightCompilerTest(N)` references rewritten and their
+registrations replayed in order: a root names its unit's new ID, a
+`declaration#N` or `:test#N` name takes it, and a bundle's JavaScript is
+rendered from its relocated `BundleRecord`. Their counts are this
+compilation's: not analyzed and not executed until a later miss demands
+them. A unit's registration view is the program's globals up to its
+frontier (a shared frozen clone) plus the globals its analysis added, with
+the program's namespaces and the namespace's reader context as the unit's
+own registration named it (`RegistrationView::reader_context`, which can lack
+a macro the namespace declares later). The relocations a unit's code records
+must be in text order without overlap, or the artifact is refused. The macro
+host gets the `ns` declarations, each Var's compile-time binding and
+visibility, and the macros, whose functions are evaluated, with their
+registration, on their first expansion rather than on installation; a
+compilation whose first macro is an installed one starts its macro session
+then. Installed namespaces also add their definitions' arities, which later
+namespaces' arity diagnostics read.
+
 ### Generated names
 
 Cached and freshly compiled code must remain hygienic when combined. Existing
@@ -735,6 +769,37 @@ persistence remain out of scope.
    `cache.capture.bytes` (an estimate) and `cache.capture-ms`, which is not
    counted in `time.analysis-ms`. Penpot's numbers are in
    [benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md).
+
+   *As built (light-cljs-316), the install half:*
+   `light_cljs::compiler::analyze_namespace_entry_recorded` (and
+   `..._with_provider`) takes an `EntryRecorders` whose `install` lookup is
+   asked for each namespace, in source order, whether to install an artifact
+   in its place. The caller decides eligibility; there is no store or key
+   yet, so `tests/compiler/cache_contract.rs` captures every namespace in one
+   compilation, asks the policy evaluator (light-cljs-314) which may use the
+   cache, and installs a chosen subset in a fresh `MacroHost`. The entry
+   loop skips `prepare_source` and `NamespaceAnalysis::analyze` for an
+   installed namespace and calls `NamespaceAnalysis::install`
+   (`src/artifact_install.rs`) at the same source frontier; `finish`,
+   application preparation and emission then run unchanged. The relocation
+   is described under "Representation and relocation". An artifact that
+   does not describe the source the loader resolved (namespace, path,
+   length, entry), names an earlier global or namespace the program lacks,
+   declares a global the program already has, or disagrees with the
+   program's declared state is refused before anything changes, and its
+   namespace is analyzed instead. With `--stats`, a compilation that
+   installs reports `cache.install.namespaces`, `cache.install.refused` and
+   `cache.install-ms`; an installed namespace counts no macro calls in
+   `[macro-calls-by-namespace]`. Installing does not restore the
+   namespace's warnings (light-cljs-318) or reserve its generated names
+   (light-cljs-317); none of the multi-namespace fixtures of the macros,
+   deferred, compile-time unit and chunk suites depends on the latter. Those
+   suites run `cache_contract::check_mixed` on their fixtures: every mix it
+   tries (all eligible namespaces, and alternate halves in source order)
+   emits byte for byte the uncached program at `none`, `prepare` and
+   `advanced`, chunk files included. The counter fixture of
+   `tests/compiler/macros.rs` is the documented exception: a hit on `dep`
+   prints `1 1`.
 3. **Add the binary store and native compile integration.** Implement manifests,
    validation, bounded decoding, atomic writes, explicit cache controls, and miss
    diagnostics. Keep caching opt-in during rollout; produce measured unchanged

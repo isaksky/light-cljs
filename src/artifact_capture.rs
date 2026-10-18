@@ -1033,17 +1033,29 @@ impl Converter<'_> {
 
     /// A unit's or macro's view: this namespace's globals before `view`, and
     /// the program globals `added`.
-    fn view(&mut self, view: usize, added: &[usize]) -> Result<RegistrationView, String> {
+    fn view(
+        &mut self,
+        view: usize,
+        added: &[usize],
+        context: Option<&ir::RuntimeReaderNamespace>,
+    ) -> Result<RegistrationView, String> {
         Ok(RegistrationView {
             own_globals: view.saturating_sub(self.start.globals) as u32,
             added: added
                 .iter()
                 .map(|&id| self.global(GlobalId(id)))
                 .collect::<Result<_, _>>()?,
+            reader_context: context.map(|context| ReaderContext {
+                aliases: context.aliases.clone(),
+                refers: context.refers.clone(),
+                excludes: context.excludes.clone(),
+                macros: context.macros.clone(),
+            }),
         })
     }
 
     fn units(&mut self, session: &CompilationSession) -> Result<DeferredUnits, String> {
+        let namespace = self.program.namespaces[self.source_index].clone();
         let mut units = Vec::new();
         for (offset, record) in session
             .captured_units(self.start.units)?
@@ -1065,7 +1077,15 @@ impl Converter<'_> {
                 analyses: record.analyses as u32,
                 emitted: record.emitted,
                 code,
-                view: self.view(record.view_globals, &record.added)?,
+                view: self.view(
+                    record.view_globals,
+                    &record.added,
+                    record
+                        .reader_contexts
+                        .as_ref()
+                        .and_then(|contexts| contexts.get(&namespace))
+                        .map(|context| &**context),
+                )?,
                 extension_frontier: record.extension_frontier.saturating_sub(self.start.bundles)
                     as u32,
             });
@@ -1147,7 +1167,7 @@ impl Converter<'_> {
                     bytes: bytes(&definition.bytes()),
                 },
                 code: self.code(captured.code)?,
-                view: self.view(captured.view_globals, &[])?,
+                view: self.view(captured.view_globals, &[], captured.reader_context.as_ref())?,
             });
         }
         // A later definition of the same name replaced the macro; the
@@ -1220,7 +1240,7 @@ mod tests {
         host.session = Some(session.clone());
         let mut program = crate::analyzer::empty_program();
         let start = begin(&mut program, 0, &[], Some(&session));
-        session.capture_macro("lib.refused/m".into(), "rt => null".into(), 0);
+        session.capture_macro("lib.refused/m".into(), "rt => null".into(), 0, None);
         session.capture_expansion(crate::compilation_session::CapturedExpansion {
             key: "lib.refused/m".into(),
             generation: 1,

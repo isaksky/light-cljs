@@ -697,6 +697,42 @@ impl MacroHost {
             doc: self.namespace_docs.get(namespace),
         }
     }
+    /// Restore what `prepare_source` and analysis declared for a namespace
+    /// installed from its artifact (`crate::artifact_install`), as
+    /// [`Self::namespace_declarations`] and [`Self::namespace_symbol`] read
+    /// them back. Its imports were checked when it was compiled.
+    pub(crate) fn restore_namespace_declarations(
+        &mut self,
+        namespace: &str,
+        imports: Vec<MacroImport>,
+        renames: Vec<(String, String, String)>,
+        namespace_imports: Vec<(String, String)>,
+        symbol: Option<crate::compiler_data::Datum>,
+        doc: Option<crate::compiler_data::Datum>,
+    ) {
+        self.imports.insert(namespace.to_owned(), imports);
+        self.renames.insert(namespace.to_owned(), renames);
+        self.namespace_imports
+            .insert(namespace.to_owned(), namespace_imports);
+        self.namespace_symbols.remove(namespace);
+        self.namespace_docs.remove(namespace);
+        if let Some(symbol) = symbol {
+            self.namespace_symbols.insert(namespace.to_owned(), symbol);
+        }
+        if let Some(doc) = doc {
+            self.namespace_docs.insert(namespace.to_owned(), doc);
+        }
+    }
+    /// Declare a macro of an installed namespace (`crate::artifact_install`)
+    /// for later expansions, without evaluating its function yet.
+    pub(crate) fn install_javascript_macro(
+        &mut self,
+        key: String,
+        declaration: crate::compiler_bootstrap::CompiledMacro,
+    ) {
+        self.javascript_macros.insert(key, declaration);
+        self.macro_environment = Default::default();
+    }
     /// Whether `namespace/name` is a Var of the compile-time session, and
     /// whether it is private.
     pub(crate) fn runtime_var(&self, key: &str) -> Option<bool> {

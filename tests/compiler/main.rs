@@ -52,6 +52,7 @@ mod atom_object_equiv;
 mod bootstrap;
 mod boundary_completion;
 mod builtin_types;
+mod cache_contract;
 mod cache_policy;
 mod call_shapes;
 mod case_char_string_accepted;

@@ -13,6 +13,7 @@ pub mod analyzer;
 pub mod application;
 pub mod arena;
 mod artifact_capture;
+mod artifact_install;
 pub mod cache_policy;
 pub mod call_shapes;
 mod char_classes;
