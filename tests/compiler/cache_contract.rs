@@ -10,6 +10,7 @@
 //! the uncached compilation emits at `none`, `prepare` and `advanced`.
 use crate::temp_dir::TempDir;
 use light_cljs::analyzer::AnalysisOptions;
+use light_cljs::artifact_codec::{self, DecodeLimits, ManifestFields};
 use light_cljs::cache_policy::{self, CacheSettings};
 use light_cljs::compiler::{
     EntryRecorders, analyze_namespace_entry_recorded,
@@ -65,7 +66,11 @@ impl Input<'_> {
 /// them the policy evaluator lets use the cache.
 pub(crate) struct Captured {
     pub namespaces: Vec<String>,
+    /// Each artifact after its round trip through the binary encoding
+    /// ([`round_trip`]), which is what a store would install.
     pub artifacts: HashMap<String, NamespaceArtifact>,
+    /// The artifacts as captured, in memory.
+    pub originals: HashMap<String, NamespaceArtifact>,
     pub eligible: Vec<String>,
     /// The capturing compilation's program, whose generated names its
     /// artifacts retain.
@@ -111,12 +116,56 @@ pub(crate) fn capture(input: Input<'_>, entry: &str, blockers: &[&str]) -> Optio
         .filter(|name| manifest.id(name).is_some_and(|id| policy.may_use_cache(id)))
         .cloned()
         .collect();
+    let metadata = cache_policy::source_metadata(&manifest, &host);
+    let decoded = artifacts
+        .iter()
+        .map(|(name, artifact)| {
+            let id = manifest
+                .id(name)
+                .expect("a captured namespace is in the manifest");
+            let fields =
+                ManifestFields::of(&manifest, id, metadata[id.0 as usize], [1; 32], [2; 32]);
+            (name.clone(), round_trip(artifact, &fields))
+        })
+        .collect();
     Some(Captured {
         namespaces,
-        artifacts,
+        artifacts: decoded,
+        originals: artifacts,
         eligible,
         program,
     })
+}
+
+/// `artifact` encoded and decoded again, after checking that nothing
+/// changed: the decoded artifact prints as the original does and encodes
+/// to the same bytes, and its manifest reads back as written.
+pub(crate) fn round_trip(
+    artifact: &NamespaceArtifact,
+    fields: &ManifestFields,
+) -> NamespaceArtifact {
+    let name = &artifact.header.namespace;
+    let bytes = artifact_codec::encode(artifact, fields)
+        .unwrap_or_else(|error| panic!("{name} does not encode: {error}"));
+    let limits = DecodeLimits::default();
+    let manifest = artifact_codec::read_manifest(&bytes, &limits)
+        .unwrap_or_else(|error| panic!("{name}'s manifest does not read: {error}"));
+    assert_eq!(&manifest.fields, fields, "{name}'s manifest fields");
+    assert_eq!(&manifest.namespace, name);
+    assert_eq!(manifest.requires, artifact.declarations.requires);
+    assert_eq!(manifest.references, artifact.references.namespaces);
+    let (_, decoded) = artifact_codec::decode(&bytes, &limits, &|| false)
+        .unwrap_or_else(|error| panic!("{name} does not decode: {error}"));
+    assert_eq!(
+        format!("{decoded:?}"),
+        format!("{artifact:?}"),
+        "{name} changed in its round trip"
+    );
+    assert!(
+        artifact_codec::encode(&decoded, fields).unwrap() == bytes,
+        "{name} encodes differently after its round trip"
+    );
+    decoded
 }
 
 /// Compile `entry` in a fresh host, installing the eligible artifacts of the
@@ -128,8 +177,18 @@ pub(crate) fn compile_mixed(
     captured: &Captured,
     hits: &[&str],
 ) -> (light_cljs::Program, CompileStats) {
-    let chosen: HashMap<&str, &NamespaceArtifact> = captured
-        .artifacts
+    compile_mixed_from(input, entry, captured, &captured.artifacts, hits)
+}
+
+/// [`compile_mixed`] installing `artifacts`, decoded ones or the originals.
+fn compile_mixed_from(
+    input: Input<'_>,
+    entry: &str,
+    captured: &Captured,
+    artifacts: &HashMap<String, NamespaceArtifact>,
+    hits: &[&str],
+) -> (light_cljs::Program, CompileStats) {
+    let chosen: HashMap<&str, &NamespaceArtifact> = artifacts
         .iter()
         .filter(|(name, _)| hits.contains(&name.as_str()) && captured.eligible.contains(name))
         .map(|(name, artifact)| (name.as_str(), artifact))
@@ -229,15 +288,28 @@ fn mixes(captured: &Captured) -> Vec<Vec<&str>> {
 /// uncached compilation emits, at `none`, `prepare` and `advanced`.
 /// Byte-identical JavaScript runs as the uncached build does. A fixture
 /// whose uncached compilation fails has nothing to compare.
+///
+/// The artifacts installed are the decoded ones ([`round_trip`]); with every
+/// eligible namespace a hit, the in-memory artifacts are installed as well,
+/// and both emit the same.
 pub(crate) fn check_mixed_input(input: Input<'_>, entry: &str) {
     let Ok(program) = input.analyze(entry, &mut MacroHost::new(), EntryRecorders::default()) else {
         return;
     };
     let expected = outputs(&program);
     let captured = capture(input, entry, &[]).expect("the capturing compilation fails");
-    for hits in mixes(&captured) {
+    for (index, hits) in mixes(&captured).into_iter().enumerate() {
         let (program, _) = compile_mixed(input, entry, &captured, &hits);
-        for ((level, expected), actual) in LEVELS.iter().zip(&expected).zip(outputs(&program)) {
+        let actual = outputs(&program);
+        if index == 0 {
+            let (in_memory, _) =
+                compile_mixed_from(input, entry, &captured, &captured.originals, &hits);
+            assert!(
+                outputs(&in_memory) == actual,
+                "{entry}: installing decoded artifacts differs from installing them in memory"
+            );
+        }
+        for ((level, expected), actual) in LEVELS.iter().zip(&expected).zip(actual) {
             if *expected != actual {
                 let line = expected
                     .lines()

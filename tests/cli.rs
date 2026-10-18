@@ -1198,3 +1198,75 @@ fn stats_reports_phase_times_and_macro_calls_on_stderr_without_changing_output()
         "{stderr}"
     );
 }
+
+/// `LIGHT_CLJS_CAPTURE_ARTIFACTS=encode` encodes and decodes every captured
+/// artifact and reports the sizes with `--stats`; the output is unchanged.
+#[test]
+fn codec_measurement_reports_sizes_without_changing_output() {
+    let sources = TempDir::new("cli-codec");
+    std::fs::create_dir(sources.join("app")).unwrap();
+    let write =
+        |name: &str, text: &str| std::fs::write(sources.join("app").join(name), text).unwrap();
+    write(
+        "macros.cljs",
+        "(ns app.macros) (defn helper [x] (list 'inc x)) (defmacro bump [x] (helper x))",
+    );
+    write(
+        "main.cljs",
+        "(ns app.main (:require [app.macros :refer [bump]])) (js/console.log (bump 41))",
+    );
+    let root = sources.path().to_str().unwrap();
+    let args = ["--compile", "--entry", "app.main", "--source-root", root];
+    let plain = light_cljs(&args);
+    assert!(plain.status.success());
+    let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("LIGHT_CLJS_CAPTURE_ARTIFACTS", "encode")
+        .args(args)
+        .arg("--stats")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(output.stdout, plain.stdout);
+    let (counters, _) = parse_stats(&stderr);
+    let value = |key: &str| {
+        counters
+            .iter()
+            .find(|(name, _)| name == key)
+            .unwrap_or_else(|| panic!("{key} in {stderr}"))
+            .1
+    };
+    assert_eq!(value("cache.capture.namespaces"), 2.0);
+    assert_eq!(value("cache.codec.artifacts"), 2.0);
+    assert_eq!(value("cache.codec.failed"), 0.0);
+    let sections: f64 = [
+        "strings",
+        "declarations",
+        "ir",
+        "units",
+        "diagnostics",
+        "names",
+    ]
+    .iter()
+    .map(|section| {
+        let bytes = value(&format!("cache.codec.section.{section}"));
+        assert!(bytes > 0.0, "{section}");
+        bytes
+    })
+    .sum();
+    let total = value("cache.codec.bytes");
+    // The rest is the two headers and manifests.
+    assert!(sections < total && total - sections < 2000.0, "{stderr}");
+    assert!(value("cache.codec.largest") <= total);
+    assert!(value("cache.codec.largest") * 2.0 >= total);
+    let source = std::fs::metadata(sources.join("app/macros.cljs"))
+        .unwrap()
+        .len()
+        + std::fs::metadata(sources.join("app/main.cljs"))
+            .unwrap()
+            .len();
+    assert_eq!(value("cache.codec.source-bytes"), source as f64);
+    assert!(value("cache.codec.ir-depth") > 1.0);
+    assert!(value("cache.encode-ms") >= 0.0 && value("cache.decode-ms") >= 0.0);
+}

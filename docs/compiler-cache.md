@@ -614,6 +614,86 @@ compilation whose first macro is an installed one starts its macro session
 then. Installed namespaces also add their definitions' arities, which later
 namespaces' arity diagnostics read.
 
+*As built (light-cljs-320), the byte format:* `src/artifact_codec.rs` is a
+hand-written encoder and decoder for `NamespaceArtifact`, which settles the
+"encoding library" question above: there is none, as the settled decisions
+require, and SHA-256 is the in-tree `src/sha256.rs` (checked against the
+FIPS 180-4 vectors; light-cljs-319 builds the keys on it). The module's
+comment gives the layout. In short:
+
+- **Header.** The magic `LCLJSART`, `SCHEMA_VERSION` (1) as a little-endian
+  u32, a byte-order mark, the manifest's length and the SHA-256 of the header
+  and manifest.
+- **Manifest.** Readable with `artifact_codec::read_manifest`, which checks
+  its hash and the section table and decodes nothing else. It starts with
+  the section table: kind, offset, length and SHA-256 of each section. Then
+  the namespace, path, source length, `.cljc` and entry flags, the
+  front-end and emission keys (32 bytes each; callers pass zeros until
+  light-cljs-319), a digest of the compiler's core-operation table, the
+  namespace's requires and referenced namespaces, its dependency edges with
+  their `EdgeKinds` bits and its policy flags (`ManifestFields::of` takes
+  them from a `DependencyManifest`). Manifest text is inline UTF-8.
+- **Sections, in order.** The interned UTF-16 string table (each distinct
+  text once, by first use), declarations (with references and patches),
+  semantic IR, deferred units, diagnostics, and generated names with the
+  accounting slot. All text outside the manifest is a string-table index.
+  Counts and indices are LEB128 varints, signed integers zigzag varints,
+  and doubles their IEEE-754 bits, so `-0.0`, the infinities and every NaN
+  payload come back bit for bit. Every enum is an explicit tag; a `CoreFnId`
+  is its row in `src/core_operations.tsv`, which is why the manifest records
+  the table's digest. References stay the artifact's dense indices, so
+  shared identities stay shared.
+
+`artifact_codec::decode` takes `DecodeLimits` and a cancellation callback.
+The limits are the total bytes, the entries per table, the code units per
+string, the reader-data depth (1,024 by default), the bytes the decoded
+artifact may allocate (4 GiB) and the longest expression chain (4,096;
+Penpot's longest is 88). The callback is polled on entry, between 1 MiB
+pieces of hashing, and every 1,024 table entries or 1 MiB of input,
+whichever comes first. Decoding checks before it allocates: a count larger
+than the bytes left in its section is refused, and every table, list, text
+copy and box is charged to the allocation budget first, so many references
+to one long string cannot expand past it. It verifies each section's hash
+before decoding it and runs `NamespaceArtifact::validate` on the result,
+which since this pellet also refuses expressions that form a cycle
+(`NamespaceArtifact::ir_depth`, an iterative walk that leaves shared
+subexpressions alone); installation refuses them too. Every failure is a typed
+`DecodeError` with a `Display` reason, which the store (light-cljs-321)
+reports as a miss. The encoder refuses reader data deeper than the default
+depth limit, so it never writes an artifact the decoder would refuse.
+
+The decoder reads only its own `SCHEMA_VERSION`; there is no migration,
+since artifacts are disposable. Any change to the bytes written bumps it.
+That includes a field added to an artifact type, which does not compile
+until it is encoded, because the encoder destructures every struct
+exhaustively. When light-cljs-318 fills `Accounting`, or light-cljs-312 adds
+`ExternalInput` variants to the manifest's dependency fields, the version
+becomes 2. The cache-contract suites (`cache_contract::round_trip`) and
+`tests/compiler/namespace_artifacts.rs` encode and decode every artifact
+they capture, check that it prints and re-encodes the same, and install
+the decoded ones. With every eligible namespace a hit, the in-memory
+artifacts are installed as well, and both emit the same.
+`tests/compiler/artifact_codec.rs` truncates at every section boundary,
+flips bits in every section and in the header, writes other versions and
+applies 4,000 rounds of seeded random damage. Damage that is resealed (hashes
+recomputed with `artifact_codec::seal`) must decode to a valid artifact or
+fail with an error, never a panic. The unit tests cover every expression
+and datum kind, a string index outside the table, invalid UTF-16 in Rust
+text, every limit and cancellation. Penpot's sizes and times are in
+[benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md): the
+artifacts are 8.3 times the source, mostly because the prepared
+compile-time JavaScript of the deferred units is stored as UTF-16.
+
+### Open questions (light-cljs-320)
+
+- **The size of compile-time JavaScript.** 31.3 MB of Penpot's prepared unit
+  code, all ASCII, becomes 62.5 MB of the 75.3 MB string table, which is 67%
+  of the 93.8 MB of artifacts. The settled decision is a UTF-16 table, so
+  this pellet keeps it. A one-byte form for strings whose code units are all
+  below 256 would halve that text without compression. Storing unit IR
+  instead of prepared code, which the design allows, would also change it.
+  Light-cljs-328's disk-size report, or light-cljs-329, should decide.
+
 ### Generated names
 
 Cached and freshly compiled code must remain hygienic when combined. Existing
@@ -869,6 +949,13 @@ persistence remain out of scope.
    validation, bounded decoding, atomic writes, explicit cache controls, and miss
    diagnostics. Keep caching opt-in during rollout; produce measured unchanged
    restart and localized-edit wins before enabling it by default.
+
+   *As built (light-cljs-320), the byte format:* manifests, bounded decoding
+   and integrity hashes are `src/artifact_codec.rs`, described under
+   "Representation and relocation". `LIGHT_CLJS_CAPTURE_ARTIFACTS=encode`
+   also encodes and decodes each captured artifact, and `--stats` reports
+   `cache.codec.*` (artifacts, failures, bytes, the largest, source bytes
+   and bytes by section), `cache.encode-ms` and `cache.decode-ms`.
 4. **Integrate development startup and invalidation.** Reuse dependency manifests,
    preserve retained session semantics, apply always-compile policy before the
    memory fast path, and test subsequent edits. Address duplicate startup work

@@ -47,6 +47,7 @@ mod temp_dir;
 mod json;
 
 mod array_settings;
+mod artifact_codec;
 mod async_await;
 mod atom_object_equiv;
 mod bootstrap;

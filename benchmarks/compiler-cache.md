@@ -223,3 +223,68 @@ run each), the generated names add 581,458 bytes to `cache.capture.bytes`
 (184,742,484 to 185,323,942 for the 922 namespaces), and reading the gensym
 counter and log once per namespace moves `cache.capture-ms` from 1,058 to
 1,103 (wall 22.18 and 22.29 s).
+
+## Binary artifacts (light-cljs-320, October 18, 2026)
+
+`LIGHT_CLJS_CAPTURE_ARTIFACTS=encode` captures each namespace as `1` does,
+then encodes it with `artifact_codec::encode` (zero keys, no dependency
+fields) and decodes it again with the default limits; `--stats` adds the
+`cache.codec.*` counters, `cache.encode-ms` and `cache.decode-ms`. Decoding
+includes checking every section's SHA-256, charging the decoded-allocation
+budget and `NamespaceArtifact::validate`, which includes the IR cycle and
+depth check. Release build of the change, three runs at 1-minute load 3.0
+to 3.9 (an earlier round at load 12.6 to 15.0 gave encode 493 to 525 ms and
+decode 434 to 466 ms before the budget and cycle check were added). All 922
+artifacts encode and decode again (none failed), with the same sizes in
+every run. The longest expression chain of any artifact
+(`cache.codec.ir-depth`) is 88, against the default limit of 4,096.
+
+| Measure | Value |
+| --- | ---: |
+| Artifacts | 922 |
+| Encoded bytes, total | 93,801,445 |
+| Source bytes of those namespaces | 11,343,454 |
+| Encoded / source | 8.3x |
+| Largest artifact (`app.common.fonts-data`, source 1,558,113 bytes) | 8,991,968 |
+| Mean artifact | 101,737 |
+| `cache.capture.bytes` (in-memory estimate, for comparison) | 185,323,942 |
+
+Bytes by section, summed over the 922 artifacts:
+
+| Section | Bytes | Share |
+| --- | ---: | ---: |
+| Header and manifest | 706,033 | 0.8% |
+| Strings | 75,296,204 | 80.3% |
+| Declarations | 397,664 | 0.4% |
+| Semantic IR | 16,157,912 | 17.2% |
+| Deferred units | 886,673 | 0.9% |
+| Diagnostics | 308,066 | 0.3% |
+| Names and accounting | 48,893 | 0.1% |
+
+The artifacts exceed five times the source. The string table is the cause.
+The 13,367 deferred units' prepared compile-time JavaScript is 31.3 MB of
+ASCII text, which is 62.5 MB in UTF-16, and the IR's own strings are 5.8 M
+code units. A temporary count, not committed, found only 74,548 bytes of
+that code duplicated between units of the same namespace, so interning does
+not reduce it. `app.common.fonts-data` is one data `def` whose prepared
+code alone is 2.7 MB. Compression is out of scope here. The open question
+is recorded in docs/compiler-cache.md.
+
+| Run | `cache.encode-ms` | `cache.decode-ms` | Wall (s) | Peak RSS (GB) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 464.9 | 443.0 | 26.17 | 0.938 |
+| 2 | 468.1 | 448.7 | 26.15 | 0.956 |
+| 3 | 524.0 | 453.9 | 26.15 | 0.975 |
+
+Encoding takes about 0.47 s and decoding 0.45 s for the 93.8 MB, about
+200 MB/s each way. A cache-off run of the same binary right after, at load
+3.1, took 22.66 s (`time.wall-ms` 22,616, peak RSS 0.982 GB). Of that,
+analysis (5,878 ms) and draining deferred units (15,853 ms) are what a warm
+build with every namespace a hit skips, which leaves about 0.89 s:
+resolving and parsing, preparing, emitting, writing and process start. A
+warm build is therefore expected to cost about 0.89 s plus decoding
+(0.45 s) plus installing, which is not measured on Penpot yet. Decoding is
+34% of that expected cost without installation. If installing costs what
+capture does (about 1.1 s), decoding is about 18%. Either way the expected
+warm build is under 11% of the cold build. The cold build without the
+variable runs no codec code.

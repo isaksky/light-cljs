@@ -13,6 +13,7 @@ pub mod analyzer;
 pub mod application;
 pub mod arena;
 mod artifact_capture;
+pub mod artifact_codec;
 mod artifact_install;
 pub mod cache_policy;
 pub mod call_shapes;
@@ -46,6 +47,7 @@ mod layered;
 mod name_index;
 mod program_fragment;
 mod rta;
+pub mod sha256;
 pub mod shared;
 #[cfg(light_v8)]
 mod v8_bridge;

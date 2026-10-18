@@ -102,6 +102,33 @@ pub struct CompileStats {
     /// When namespaces were installed from artifacts
     /// ([`crate::compiler::analyze_namespace_entry_recorded`]).
     pub install: Option<InstallCounts>,
+    /// When captured artifacts were also encoded and decoded
+    /// ([`crate::artifact_codec`]), to measure the binary format.
+    pub codec: Option<CodecCounts>,
+}
+
+/// What encoding and decoding a compilation's captured artifacts cost.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CodecCounts {
+    /// Artifacts encoded.
+    pub artifacts: usize,
+    /// Artifacts that failed to encode or to decode again, which a store
+    /// would neither write nor read.
+    pub failed: usize,
+    /// Their encoded size in all.
+    pub bytes: u64,
+    /// The largest encoded artifact, and its namespace.
+    pub largest: (u64, String),
+    /// The source text of the encoded namespaces, in bytes.
+    pub source_bytes: u64,
+    /// Encoded bytes by section, in [`crate::artifact_codec::Section::ALL`]
+    /// order; the header and manifest are the rest of [`Self::bytes`].
+    pub sections: [u64; 6],
+    /// The longest expression chain of any artifact
+    /// ([`crate::namespace_artifact::NamespaceArtifact::ir_depth`]).
+    pub ir_depth: u32,
+    pub encode_time: Duration,
+    pub decode_time: Duration,
 }
 
 /// The namespace artifacts a compilation installed in place of analysis.
@@ -183,6 +210,22 @@ impl CompileStats {
             line("cache.install.refused", &install.refused.len());
             line("cache.install-ms", &ms(install.time));
         }
+        if let Some(codec) = &self.codec {
+            line("cache.codec.artifacts", &codec.artifacts);
+            line("cache.codec.failed", &codec.failed);
+            line("cache.codec.bytes", &codec.bytes);
+            line("cache.codec.largest", &codec.largest.0);
+            line("cache.codec.source-bytes", &codec.source_bytes);
+            line("cache.codec.ir-depth", &codec.ir_depth);
+            for (section, bytes) in crate::artifact_codec::Section::ALL
+                .iter()
+                .zip(codec.sections)
+            {
+                line(&format!("cache.codec.section.{}", section.name()), &bytes);
+            }
+            line("cache.encode-ms", &ms(codec.encode_time));
+            line("cache.decode-ms", &ms(codec.decode_time));
+        }
         out.push_str("[macro-calls-by-namespace]\n");
         let mut order = (0..self.namespaces.len()).collect::<Vec<_>>();
         // Most calls first; ties in source order.
@@ -235,6 +278,41 @@ mod tests {
         assert!(report.contains("\nmacro-calls 7\n"));
         assert!(!report.contains("session-load"));
         assert!(report.ends_with("[macro-calls-by-namespace]\nb 5\na 1\nc 1\n"));
+        assert!(!report.contains("cache.codec"));
+    }
+
+    #[test]
+    fn report_lists_codec_counters() {
+        let stats = CompileStats {
+            codec: Some(CodecCounts {
+                artifacts: 3,
+                failed: 1,
+                bytes: 2100,
+                largest: (1000, "app.big".into()),
+                source_bytes: 700,
+                sections: [600, 50, 400, 30, 20, 10],
+                ir_depth: 42,
+                encode_time: Duration::from_micros(2500),
+                decode_time: Duration::from_millis(2),
+            }),
+            ..CompileStats::default()
+        };
+        let report = stats.report();
+        let expected = "cache.codec.artifacts 3\n\
+                        cache.codec.failed 1\n\
+                        cache.codec.bytes 2100\n\
+                        cache.codec.largest 1000\n\
+                        cache.codec.source-bytes 700\n\
+                        cache.codec.ir-depth 42\n\
+                        cache.codec.section.strings 600\n\
+                        cache.codec.section.declarations 50\n\
+                        cache.codec.section.ir 400\n\
+                        cache.codec.section.units 30\n\
+                        cache.codec.section.diagnostics 20\n\
+                        cache.codec.section.names 10\n\
+                        cache.encode-ms 2.5\n\
+                        cache.decode-ms 2.0\n";
+        assert!(report.contains(expected), "{report}");
     }
 
     #[test]

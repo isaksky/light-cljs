@@ -509,7 +509,9 @@ fn run_namespace(
 /// sequence"), the environment variable `LIGHT_CLJS_CAPTURE_ARTIFACTS`
 /// measures namespace artifact capture: `1` captures each namespace and
 /// drops its artifact, as a store that writes it would; `keep` keeps every
-/// artifact until the compilation ends, as an in-memory one would.
+/// artifact until the compilation ends, as an in-memory one would; `encode`
+/// also encodes each artifact and decodes it again, and `--stats` reports
+/// the sizes and times (`cache.codec.*`).
 fn analyze_entry(
     entry: &str,
     roots: &[PathBuf],
@@ -521,6 +523,8 @@ fn analyze_entry(
     if let Some(mode) = env::var_os("LIGHT_CLJS_CAPTURE_ARTIFACTS").filter(|mode| !mode.is_empty())
     {
         let keep = mode == "keep";
+        let mut codec = (mode == "encode").then(light_cljs::compile_stats::CodecCounts::default);
+        let mut stats = stats;
         let mut kept = Vec::new();
         let analyzed = light_cljs::compiler::analyze_namespace_entry_with_artifacts(
             entry,
@@ -528,7 +532,7 @@ fn analyze_entry(
             host,
             options,
             warnings,
-            stats,
+            stats.as_deref_mut(),
             &mut |capture| {
                 // What capture could not represent, or represented wrongly.
                 if let Err(reason) = capture
@@ -538,6 +542,8 @@ fn analyze_entry(
                     .and_then(|a| a.validate())
                 {
                     eprintln!("capture skipped {}: {reason}", capture.namespace);
+                } else if let (Some(counts), Ok(artifact)) = (codec.as_mut(), &capture.artifact) {
+                    measure_codec(counts, artifact);
                 }
                 if keep {
                     kept.push(capture);
@@ -546,6 +552,9 @@ fn analyze_entry(
         );
         // The process ends with the compilation, which keeps them until then.
         std::mem::forget(kept);
+        if let Some(stats) = stats {
+            stats.codec = codec;
+        }
         return analyzed;
     }
     match stats {
@@ -555,6 +564,43 @@ fn analyze_entry(
         None => light_cljs::compiler::analyze_namespace_entry_with_sources(
             entry, roots, host, options, warnings,
         ),
+    }
+}
+
+/// Encode `artifact`, decode it again and add the sizes and times to
+/// `counts`.
+fn measure_codec(
+    counts: &mut light_cljs::compile_stats::CodecCounts,
+    artifact: &light_cljs::namespace_artifact::NamespaceArtifact,
+) {
+    use light_cljs::artifact_codec;
+    let started = std::time::Instant::now();
+    let encoded = artifact_codec::encode(artifact, &artifact_codec::ManifestFields::default());
+    counts.encode_time += started.elapsed();
+    let decoded = encoded.as_ref().map_err(String::clone).and_then(|bytes| {
+        let started = std::time::Instant::now();
+        let decoded = artifact_codec::decode(bytes, &Default::default(), &|| false);
+        counts.decode_time += started.elapsed();
+        decoded.map_err(|error| error.to_string())
+    });
+    let namespace = &artifact.header.namespace;
+    match (encoded, decoded) {
+        (Ok(bytes), Ok((manifest, artifact))) => {
+            counts.ir_depth = counts.ir_depth.max(artifact.ir_depth().unwrap_or(0));
+            counts.artifacts += 1;
+            counts.bytes += bytes.len() as u64;
+            counts.source_bytes += u64::from(artifact.header.source_length);
+            if bytes.len() as u64 > counts.largest.0 {
+                counts.largest = (bytes.len() as u64, namespace.clone());
+            }
+            for (total, section) in counts.sections.iter_mut().zip(&manifest.sections) {
+                *total += u64::from(section.length);
+            }
+        }
+        (_, Err(reason)) | (Err(reason), _) => {
+            counts.failed += 1;
+            eprintln!("artifact codec failed {namespace}: {reason}");
+        }
     }
 }
 

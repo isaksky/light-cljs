@@ -72,6 +72,11 @@ impl Sources {
                     .unwrap_or_else(|reason| panic!("{}: {reason}", capture.namespace));
                 assert_eq!(artifact.header.namespace, capture.namespace);
                 artifact.validate().unwrap();
+                // Every artifact also survives its binary encoding.
+                crate::cache_contract::round_trip(
+                    &artifact,
+                    &light_cljs::artifact_codec::ManifestFields::default(),
+                );
                 artifact
             })
             .collect()

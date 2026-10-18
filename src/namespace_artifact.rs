@@ -1026,9 +1026,79 @@ fn kind_references(kind: &ExprKind, visit: &mut impl FnMut(Reference)) {
 }
 
 impl NamespaceArtifact {
+    /// The longest chain of semantic IR expressions, each a child of the one
+    /// before. An error when an expression reference is outside the table or
+    /// the expressions form a cycle, which no analysis produces and which
+    /// the compiler's recursive passes could not finish. Shared children are
+    /// fine.
+    pub fn ir_depth(&self) -> Result<u32, String> {
+        let exprs = &self.ir.exprs;
+        let count = exprs.len();
+        // The children of expression `i` are `targets[offsets[i]..offsets[i + 1]]`.
+        let mut offsets = Vec::with_capacity(count + 1);
+        let mut targets = Vec::new();
+        offsets.push(0u32);
+        for (index, entry) in exprs.iter().enumerate() {
+            let mut outside = None;
+            kind_references(&entry.kind, &mut |reference| {
+                if let Reference::Expr(child) = reference {
+                    if (child.0 as usize) < count {
+                        targets.push(child.0);
+                    } else {
+                        outside.get_or_insert(child.0);
+                    }
+                }
+            });
+            if let Some(child) = outside {
+                return Err(format!(
+                    "expression {index}: expression {child} is outside its table of {count}"
+                ));
+            }
+            offsets.push(targets.len() as u32);
+        }
+        // 0 unvisited, OPEN on the walk's path, otherwise the depth.
+        const OPEN: u32 = u32::MAX;
+        let mut depth = vec![0u32; count];
+        let mut path: Vec<(u32, u32)> = Vec::new();
+        let mut deepest = 0;
+        for start in 0..count {
+            if depth[start] != 0 {
+                continue;
+            }
+            depth[start] = OPEN;
+            path.push((start as u32, offsets[start]));
+            while let Some((node, edge)) = path.last_mut() {
+                let node = *node as usize;
+                if *edge < offsets[node + 1] {
+                    let child = targets[*edge as usize] as usize;
+                    *edge += 1;
+                    match depth[child] {
+                        0 => {
+                            depth[child] = OPEN;
+                            path.push((child as u32, offsets[child]));
+                        }
+                        OPEN => return Err(format!("expression {child} contains itself")),
+                        _ => {}
+                    }
+                } else {
+                    let children = &targets[offsets[node] as usize..offsets[node + 1] as usize];
+                    let own = 1 + children
+                        .iter()
+                        .map(|&child| depth[child as usize])
+                        .max()
+                        .unwrap_or(0);
+                    depth[node] = own;
+                    deepest = deepest.max(own);
+                    path.pop();
+                }
+            }
+        }
+        Ok(deepest)
+    }
+
     /// Check that every reference the artifact holds names an entry of its
-    /// own tables, so installing it needs nothing but the artifact and the
-    /// identities it names.
+    /// own tables, and that its expressions form no cycle, so installing it
+    /// needs nothing but the artifact and the identities it names.
     pub fn validate(&self) -> Result<(), String> {
         self.names.validate()?;
         let ir = &self.ir;
@@ -1092,6 +1162,7 @@ impl NamespaceArtifact {
             string(literal.name)?;
         }
         expr(self.header.root)?;
+        self.ir_depth()?;
         let declarations = &self.declarations;
         for entry in &declarations.globals {
             source(entry.source)?;
