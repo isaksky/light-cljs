@@ -107,6 +107,14 @@ pub(crate) struct Application<'a> {
     /// program names need (`crate::rta`), each with the first expression
     /// naming one, which the slice roots.
     pub loadable_members: &'a [(&'static str, ExprId)],
+    /// At `Advanced`: the first expression after which multimethods keep their
+    /// tables in their atoms (`crate::rta`), where the slice roots the unit
+    /// that the runtime's `MultiFn.tables` waits for.
+    pub multi_tables: Option<ExprId>,
+    /// At `Advanced`: whether multimethods keep their tables as arrays, where
+    /// only they implement `IMultiFn` (`crate::rta`), so that `-add-method`
+    /// calls `addMethodDirect` rather than the protocol's dispatcher.
+    pub lean_multi: bool,
     /// At `Advanced`: calls that name the method they run, and definitions
     /// that bind each method to an entry of its own (`crate::call_shapes`).
     pub shapes: Option<&'a CallShapes>,
@@ -1370,6 +1378,9 @@ struct Emitter<'a> {
     /// `Some` at `Advanced`: runtime reads are direct (`rt$add`), and these
     /// replaced core operations read through output-level cells.
     replaced_core: Option<&'a [&'static str]>,
+    /// At `Advanced`: whether only multimethods implement `IMultiFn`
+    /// ([`Application::lean_multi`]).
+    lean_multi: bool,
     /// The output-level cells used so far: the core runtime name and the
     /// direct read that initializes `core$<name>`.
     core_cells: Vec<(&'static str, RuntimeName)>,
@@ -1547,6 +1558,8 @@ impl<'a> Emitter<'a> {
                 .filter(|_| direct.is_some())
                 .map_or(&[], |application| application.record_methods),
             replaced_core: direct,
+            lean_multi: direct.is_some()
+                && application.is_some_and(|application| application.lean_multi),
             core_cells: Vec::new(),
             constants: direct.map(|_| ConstantTable {
                 declarations: String::new(),
@@ -1760,6 +1773,15 @@ impl<'a> Emitter<'a> {
         if let Some(site) = application.type_static {
             self.runtime_root(
                 RuntimeName::direct(crate::runtime_slice::TYPE_STATICS_UNIT, None),
+                Some(site),
+                NameUse::Keep,
+            );
+        }
+        // Multimethods keep their tables in their atoms where the program
+        // could see them or fill one past eight methods.
+        if let Some(site) = application.multi_tables {
+            self.runtime_root(
+                RuntimeName::direct(crate::runtime_slice::MULTI_TABLES_UNIT, None),
                 Some(site),
                 NameUse::Keep,
             );
@@ -3023,6 +3045,19 @@ impl<'a> Emitter<'a> {
                 self.output.push_str(", null, null, null)");
             }
             (C::Count, [value]) => return self.count(inference, *value),
+            // Only multimethods have `-add-method` where their tables are
+            // arrays (`crate::rta`).
+            (C::AddMethod, _) if self.lean_multi => {
+                self.rt(RuntimeName::direct("addMethodDirect", None));
+                self.output.push('(');
+                for (index, arg) in args.iter().enumerate() {
+                    if index > 0 {
+                        self.output.push_str(", ");
+                    }
+                    self.value(*arg);
+                }
+                self.output.push(')');
+            }
             (C::Nth, [vector, index] | [vector, index, _]) => {
                 return self.nth(inference, *vector, *index, args.get(2).copied());
             }

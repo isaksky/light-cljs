@@ -284,10 +284,17 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 /// is the condition of the types' `.statics` effects, which only an
 /// `Advanced` program that names one of `TYPE_STATICS` or reads an empty
 /// literal roots (light-cljs-247); the reader keeps the queue's.
+/// `multiTables` is a condition of `MultiFn.tables`, which only an
+/// `Advanced` program that could see the tables of its multimethods
+/// otherwise roots, and `addMethodDirect` is `-add-method` where only
+/// multimethods implement `IMultiFn`, which only `Advanced` output calls
+/// (light-cljs-239).
 const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "entryPrototype",
     "MapEntryType.lean",
     "mapEntry.equiv",
+    "multiTables",
+    "addMethodDirect",
     "mapEntry.lean",
     "upstreamMembers",
     "typeStatics",
@@ -323,14 +330,16 @@ fn method_keys(text: &str) -> Vec<(&str, bool)> {
 
 /// The hook tables a conditional effect may fill in (`typeHooks.rest =
 /// fnRest`), each read as `<table>.<key>`, and the core cells, whose initial
-/// value such an effect may set (`coreCells.rand = hostRand`).
-const HOOK_TABLES: [&str; 6] = [
+/// value such an effect may set (`coreCells.rand = hostRand`). `multiHooks`
+/// holds the persistent path of multimethods' tables (`MultiFn.tables`).
+const HOOK_TABLES: [&str; 7] = [
     "typeHooks",
     "kindHooks",
     "protocolHooks",
     "printHooks",
     "hostHooks",
     "coreCells",
+    "multiHooks",
 ];
 
 /// The `<table>.<key>` hooks a unit body fills in.
@@ -508,6 +517,45 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
             // of their own (`mapEntry.lean`, `MapEntryType.lean`,
             // light-cljs-247).
             vec![manifest.unit_of("makeVector").unwrap()]
+        } else if unit.name == "MultiFn.tables" {
+            // Multimethods keep their tables in their atoms where a unit other
+            // than `addMethod` and `getMethod`, which this one fills in, reads
+            // or writes them; a helper that only such units call stands for
+            // them. So they do where the program builds a `MultiFn` with
+            // atoms of its own (`->MultiFn`), or roots `multiTables`
+            // (light-cljs-239).
+            let fields = [
+                ".method_table",
+                ".prefer_table",
+                ".method_cache",
+                ".cached_hierarchy",
+            ];
+            let readers: Vec<UnitId> = (0..manifest.units.len())
+                .map(UnitId)
+                .filter(|&other| {
+                    other != id
+                        && manifest.units[other.0].name != "MultiFn"
+                        && fields.iter().any(|field| body(other).contains(field))
+                })
+                .collect();
+            let helper = |reader: UnitId| {
+                let binding = manifest.units[reader.0].name;
+                manifest
+                    .units
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, other)| other.requires.contains(&binding))
+                    .all(|(other, _)| other == id.0 || readers.contains(&UnitId(other)))
+            };
+            readers
+                .iter()
+                .copied()
+                .filter(|&reader| !helper(reader))
+                .chain(
+                    ["MultiFnFactory", "multiTables"]
+                        .map(|binding| manifest.unit_of(binding).unwrap()),
+                )
+                .collect()
         } else {
             let hooks = installed_hooks(body(id));
             // A kind table entry is read where its operation's wrapper is.
@@ -574,8 +622,11 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // search and the sequential, UUID and Var tests of structural equality,
     // the install of the array map's public constructor, the wrappers of
     // `lookup` for sets, transients and sorted maps, the symbols' wrapper of structural equality and the statics
-    // of six types (light-cljs-247).
-    assert_eq!(checked, 211);
+    // of six types (light-cljs-247), and the tables of multimethods, the items
+    // of vectors that `isa?` compares, and the global hierarchy's `atom` and
+    // `isa?`'s `supers` where protocol implementations can see them
+    // (light-cljs-239).
+    assert_eq!(checked, 215);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -800,6 +851,9 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("lookupTransient", Kind::Stores(&["transients"])),
     // Vectors other than map entries, whose lookup reads their tail.
     ("nthVector", Kind::Units(&["makeVector"])),
+    // Vectors other than map entries, whose tail holds the items `isa?`
+    // compares.
+    ("isaItems", Kind::Units(&["makeVector"])),
     ("lookupTree", Kind::Units(&["treeMapConstructor"])),
     ("entryIndex", Kind::Maps(&["maps", "sets"])),
     // Sorted maps and sets, which only their constructors build.
@@ -1438,14 +1492,13 @@ fn units_assigning_a_binding_share_its_unit() {
             "copyEntries <- copyEntries.trie",
             "count <- count.branches",
             "count <- count.protocol",
-            "declarationJournal <- addMethod",
+            "declarationJournal <- MultiFn.tables",
             "declarationJournal <- declarationTransaction",
             "declarationJournal <- installMethods",
             "declarationJournal <- multiState",
-            "demandProtocol <- addMethod",
+            "demandProtocol <- MultiFn.tables",
             "demandProtocol <- declarationReceiver",
             "demandProtocol <- directMethod",
-            "demandProtocol <- getMethod",
             "demandProtocol <- methods",
             "demandProtocol <- preferMethod",
             "demandProtocol <- prefers",
@@ -1506,6 +1559,47 @@ fn units_assigning_a_binding_share_its_unit() {
             "tapLimit <- configureHostHooks",
             "tapLimit <- drainTaps",
             "tapLimit <- tapGreater",
+        ]
+    );
+}
+
+/// The units that call `name` or `namespace`. Where only messages can read a
+/// multimethod's name, `Advanced` names it by the text of its symbol
+/// (`multi_names` in src/rta.rs), whose `name` differs, so a unit that calls
+/// them must never pass them a multimethod or be reached only through `name`,
+/// `namespace`, `-name` or `-namespace`, which keep the symbol: the ident
+/// predicates, `derive`, `definitionVar`, `makeKeyword.namespaceOf` and
+/// `cljToJs` call them on keywords and symbols only, `nameProtocol` and
+/// `namespaceProtocol` are `-name` and `-namespace`, and the others are
+/// compile-time or the core table that reflection reads. A new caller fails
+/// here until it is checked (light-cljs-239).
+#[test]
+fn units_calling_name_or_namespace_are_known() {
+    let manifest = manifest();
+    let callers: Vec<&str> = manifest
+        .units
+        .iter()
+        .filter(|unit| unit.requires.contains(&"name") || unit.requires.contains(&"namespace"))
+        .map(|unit| unit.name)
+        .collect();
+    assert_eq!(
+        callers,
+        [
+            "isSimpleIdent",
+            "isQualifiedIdent",
+            "isSimpleKeyword",
+            "isQualifiedKeyword",
+            "isSimpleSymbol",
+            "isQualifiedSymbol",
+            "compilerFormBridge",
+            "derive",
+            "definitionVar",
+            "compilerMacroVar",
+            "makeKeyword.namespaceOf",
+            "cljToJs",
+            "nameProtocol",
+            "namespaceProtocol",
+            "core"
         ]
     );
 }

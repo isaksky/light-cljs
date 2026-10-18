@@ -211,6 +211,12 @@ pub struct PreparedApplication {
     /// program names need, each with the first expression naming one
     /// (`crate::rta`).
     loadable_members: Vec<(&'static str, ExprId)>,
+    /// `Advanced`: the first expression that needs multimethods to keep their
+    /// tables in their atoms (`crate::rta`).
+    multi_tables: Option<ExprId>,
+    /// `Advanced`: whether multimethods keep their tables as arrays, where
+    /// only they implement `IMultiFn` (`crate::rta`).
+    lean_multi: bool,
     /// `Advanced`: lookups of constant keys in map literals with constant keys
     /// (or locals bound to them), with the index of the entry each reads
     /// (`crate::folding::entry_lookups`).
@@ -264,6 +270,8 @@ impl PreparedApplication {
             } else {
                 &[]
             },
+            multi_tables: self.multi_tables.filter(|_| advanced),
+            lean_multi: advanced && self.lean_multi,
             shapes: self.shapes.as_ref().filter(|_| advanced),
             terse: self.terse,
         }
@@ -447,6 +455,8 @@ pub fn prepare_application(
         record_methods: Vec::new(),
         protocol_declarations: Vec::new(),
         loadable_members: Vec::new(),
+        multi_tables: None,
+        lean_multi: false,
         shapes: None,
         removable: Vec::new(),
         rejected_defines: Vec::new(),
@@ -548,6 +558,8 @@ pub fn prepare_application(
         prepared.record_methods = analysis.named_record_methods().to_vec();
         prepared.protocol_declarations = analysis.named_protocol_declarations().to_vec();
         prepared.loadable_members = analysis.named_loadable_members().to_vec();
+        prepared.multi_tables = analysis.needs_multi_tables();
+        prepared.lean_multi = analysis.lean_multimethods();
         prepared.stats.removed_definitions += rewrite.removed_definitions;
         prepared.stats.uninstantiated_types = rewrite.uninstantiated_types;
         prepared.stats.dropped_methods = rewrite.dropped_methods;

@@ -125,6 +125,7 @@ mod map_reader_order;
 mod map_value_equiv;
 mod mapv_apply;
 mod multimethod_evidence;
+mod multimethod_tables;
 mod multimethods;
 mod namespace_artifacts;
 mod namespace_completion;

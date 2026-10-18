@@ -4586,3 +4586,36 @@ to 0.76 ms), which got faster. Second commit, against the first: 200,000
 symbols and 100,000 of array maps, at `none` and `advanced`, run twice each
 (load 12–13), gave the same times within 5% (at `none`, `get` of a sorted
 map 86.1–86.9 to 85.4–86.0 ms, of an array map 71.6–73.9 to 74.0–74.4 ms).
+
+## Multimethods at Advanced — October 18, 2026
+
+light-cljs-239: a multimethod keeps its tables as arrays, walks no hierarchy
+and calls no `IMultiFn` dispatcher where the program could not tell. Bytes of
+`light-cljs --compile --optimize advanced <file>` (raw / `gzip -9`), on master
+`5695da8` and with this change; sizes are deterministic, and each program
+prints the same at `none` and at `advanced` on both.
+
+| Program | Before | After |
+| --- | ---: | ---: |
+| `(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (m {:k :a}))` | 53,114 / 16,103 | 9,192 / 3,388 |
+| the same with a `:default` method and three calls | 53,302 / 16,183 | 9,380 / 3,470 |
+| `(js/console.log (if (js/Math.random) {:k :a} nil))` | 6,942 / 2,591 | 6,942 / 2,591 |
+| `(derive ::b ::a) (defmulti m identity) (defmethod m ::a [_] 1) (js/console.log (m ::b))` | 54,094 / 16,386 | 45,410 / 13,992 |
+| `(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (count (methods m)))` | 52,974 / 16,069 | 37,781 / 12,096 |
+
+The pellet's program is under the 10,000 bytes the user accepted in place of
+the 8,000 target; the multimethod adds 2,250 bytes to its map argument
+(`MultiFn` 493, `structuralEqualPair` 361, `bestMethod` 320, `getMethod` 283,
+`isaPlain` 198, the arrays, `addMethodDirect` and the printing of numbers in
+messages). A million calls of a four-method multimethod with keyword dispatch
+values at `advanced` take 267–269 ms against 418–445 ms before (Node, two
+runs each, alternating, load 5.4–8.0): the arrays' scan of four methods is
+cheaper than the persistent cache's lookup.
+
+Size ratchet (`cargo nextest run --test compiler size_ratchet --no-capture`):
+no `advanced` size moves except the new fixture `defmulti` (ceiling 9,200).
+Every `none` and `prepare` output embeds the whole runtime, comments included,
+which grew 5,458 bytes (457,041 to 462,834 for `(js/console.log (+ 1 2))`,
+112,803 to 114,499 gzipped): both representations of the tables, the hooks
+and their comments; those ceilings rose to the new sizes rounded up to the
+next 1,000.

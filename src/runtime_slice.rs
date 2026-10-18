@@ -204,6 +204,28 @@ pub const LOADABLE_MEMBERS: &[(&[&str], &str)] = &[
     (&["cljs$lang$ctorStr", "cljs$lang$type"], "typeNames"),
 ];
 
+/// The fields of a `MultiFn` holding its tables, munged, and its `hierarchy`,
+/// which a program could give ancestors that the arrays' steps would not
+/// walk, and which they leave nil (`crate::rta`), and its default dispatch
+/// value, whose cached answers the persistent cache keeps when it changes.
+/// An `Advanced` program that names one as a property, method or string or in `js*` text, or that
+/// otherwise could see the tables or tell how they are kept ([`crate::rta`]),
+/// roots [`MULTI_TABLES_UNIT`]: then multimethods keep their tables in their
+/// atoms, as at every other level.
+pub const MULTI_TABLES: &[&str] = &[
+    "cached_hierarchy",
+    "default_dispatch_val",
+    "hierarchy",
+    "method_cache",
+    "method_table",
+    "prefer_table",
+];
+
+/// The runtime unit that `MultiFn.tables` waits for, which an `Advanced`
+/// slice keeps only where the program needs multimethods to keep their
+/// tables (see [`MULTI_TABLES`]).
+pub const MULTI_TABLES_UNIT: &str = "multiTables";
+
 /// A runtime name emitted code reads: a top-level runtime binding, optionally
 /// a property (`member`) read from it, such as the runtime name of a
 /// [`CoreFnId`](crate::CoreFnId). Below `Advanced` the binding is an export

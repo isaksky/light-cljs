@@ -80,6 +80,13 @@
 //! that type or its instances as a deftype's
 //! ([`crate::runtime_slice::LOADABLE_MEMBERS`]), emission keeps a unit that
 //! the effect adding it waits for ([`TypeAnalysis::named_loadable_members`]).
+//! Multimethods keep their tables in the atoms they were built with only
+//! where the program could see them otherwise than through an operation that
+//! keeps them itself, fill one past eight methods or give a hierarchy
+//! ancestors ([`multi_tables`]); elsewhere `defmulti` gives them nil tables
+//! and hierarchy, `-add-method` calls `addMethodDirect`, and they are named
+//! by the text of their symbols where nothing but messages can read the
+//! names ([`multi_names`]).
 //!
 //! # Devirtualization
 //!
@@ -105,9 +112,9 @@
 //! from a prototype it was not given.
 use std::collections::HashMap;
 
-use crate::analyzer::{ExprId, ExprKind, GlobalId, MethodDispatch, Program};
+use crate::analyzer::{CoreFnId, ExprId, ExprKind, GlobalId, MethodDispatch, Program, StringId};
 use crate::core_operations::Type;
-use crate::inference::{Definition, Inference, Known};
+use crate::inference::{Definition, Inference, Known, ProgramFacts};
 
 /// The result of [`analyze`]: what [`TypeAnalysis::apply`] rewrites and
 /// emission reads.
@@ -147,6 +154,15 @@ pub(crate) struct TypeAnalysis {
     /// The units to root for the members of `Loadable` reachable code names,
     /// each with the first expression naming one.
     loadable_members: Vec<(&'static str, ExprId)>,
+    /// The first reachable expression that needs the tables of multimethods
+    /// (see [`multi_tables`]).
+    tables: Option<ExprId>,
+    /// Whether reachable code builds multimethods whose tables are arrays,
+    /// where only they implement `IMultiFn` (see [`multi_tables`]).
+    lean_multi: bool,
+    /// Whether multimethods are named by the text of their symbols (see
+    /// [`multi_names`]).
+    names: bool,
 }
 
 /// What a rewrite removed, for [`crate::ApplicationStats`].
@@ -384,6 +400,13 @@ pub(crate) fn analyze(
     let record_methods = named_record_methods(program, &live);
     let declarations = named_protocol_declarations(program, &live);
     let loadable_members = named_loadable_members(program, &live);
+    let tables = multi_tables(program, &live, inference.facts());
+    let lean_multi =
+        tables.is_none()
+            && program.exprs.iter().zip(&live).any(|(expr, live)| {
+                *live && matches!(expr.kind, ExprKind::CoreFn(CoreFnId::MultiFn))
+            });
+    let names = tables.is_none() && multi_names(program, &live);
     TypeAnalysis {
         live,
         instantiated,
@@ -399,6 +422,9 @@ pub(crate) fn analyze(
         record_methods,
         declarations,
         loadable_members,
+        tables,
+        lean_multi,
+        names,
     }
 }
 
@@ -833,6 +859,19 @@ impl TypeAnalysis {
         &self.loadable_members
     }
 
+    /// The first reachable expression that needs multimethods to keep their
+    /// tables in their atoms (see [`multi_tables`]).
+    pub(crate) fn needs_multi_tables(&self) -> Option<ExprId> {
+        self.tables
+    }
+
+    /// Whether reachable code builds multimethods whose tables are arrays
+    /// (see [`multi_tables`]): then only multimethods implement `IMultiFn`,
+    /// so that `-add-method` calls `addMethodDirect`.
+    pub(crate) fn lean_multimethods(&self) -> bool {
+        self.lean_multi
+    }
+
     /// Rewrite `program` as the analysis decided (see the module docs) and
     /// update `retained`, the globals emission declares.
     pub(crate) fn apply(
@@ -933,6 +972,12 @@ impl TypeAnalysis {
         }
         for (global, keep) in keep.iter().enumerate() {
             retained[global] = *keep;
+        }
+        if self.names {
+            name_multimethods(program, &self.live);
+        }
+        if self.tables.is_none() {
+            unbind_multimethod_tables(program, &self.live);
         }
         rewrite
     }
@@ -1146,6 +1191,286 @@ fn named_loadable_members(program: &Program, live: &[bool]) -> Vec<(&'static str
         .zip(first)
         .filter_map(|((_, unit), site)| Some((*unit, site?)))
         .collect()
+}
+
+/// The first expression among those `live` marks after which a multimethod
+/// must keep its tables in the atoms it was built with, where `methods` and
+/// `prefers` read them, rather than as the runtime's `leanTables` (see
+/// `multiHooks` in `src/js_runtime.js`): arrays of the entries their array
+/// maps would hold. The runtime keeps the tables itself where it keeps an
+/// operation that reads or writes them other than `-add-method` and
+/// `-get-method`; a program that reads `MultiFn` needs them where it could
+/// see them otherwise, or tell arrays from maps: where a method table would
+/// fill past eight methods and become a hash map, which orders its entries by
+/// hash, or where its own code would run in the maps' operations.
+///
+/// - where it names one of the fields holding them or the hierarchy
+///   ([`crate::runtime_slice::MULTI_TABLES`]);
+/// - where it reads `MultiFn` other than to test `instance?` or to build one
+///   as `defmulti` does: with fresh atoms of `{}` and `nil` as its tables,
+///   and `(get-global-hierarchy)` as its hierarchy;
+/// - where it can give a hierarchy ancestors, which the arrays' steps do not
+///   walk (`isaPlain`): where it reads `derive` or `underive`, or reads
+///   `get-global-hierarchy` other than in such a `MultiFn` form;
+/// - where it reads an operation whose unit `MultiFn.tables` waits for, or
+///   that requires one (`methods`, `remove-all-methods`, `->MultiFn`), which
+///   keeps the tables in atoms for itself;
+/// - where it adds methods other than in top-level calls of `-add-method`
+///   (`defmethod`), which run once, or in more than eight of them;
+/// - where it extends a core protocol to a value other than its own types
+///   ([`ProgramFacts::core_protocols_intact`]), whose implementations the
+///   operations on the tables and their entries would run, or implements
+///   `IEquiv` or `IHash`, which the cache's lookups run on dispatch values
+///   otherwise than an array's lookups, or `IMultiFn`, which `-add-method`
+///   and a multimethod's calls then dispatch ([`TypeAnalysis::lean_multimethods`]),
+///   or names a slot of `IMultiFn`, `IEquiv` or `IHash` or a protocol mask anywhere in its
+///   [`texts`], with which host code can give a value an implementation;
+/// - where it can build a value whose hash it chose, so that equal dispatch
+///   values could hash apart in a cache past eight entries, which a hash
+///   map holds: where it reads a runtime type's public constructor, which
+///   takes a cached hash (its unit requires `constructorSlots` or
+///   `constructorHashes`), other than to test `instance?`, or names the
+///   field `__hash` or `_hash`;
+/// - where it replaces `atom`, `get-global-hierarchy`, `MultiFn` or
+///   `-add-method`, whose calls the conditions above read.
+fn multi_tables(program: &Program, live: &[bool], facts: &ProgramFacts) -> Option<ExprId> {
+    let exprs = &program.exprs;
+    // Without a `MultiFn` there are no tables.
+    if !exprs
+        .iter()
+        .zip(live)
+        .any(|(expr, live)| *live && matches!(expr.kind, ExprKind::CoreFn(CoreFnId::MultiFn)))
+    {
+        return None;
+    }
+    let core = |id: ExprId, op: CoreFnId| {
+        matches!(exprs[id.0].kind, ExprKind::CoreFn(found) if found == op) && !facts.replaced(op)
+    };
+    let fresh_atom = |id: ExprId, empty_map: bool| match &exprs[id.0].kind {
+        ExprKind::Call { callee, args } if core(*callee, CoreFnId::Atom) && args.len() == 1 => {
+            match &exprs[args[0].0].kind {
+                ExprKind::Map(items) | ExprKind::LiteralMap(items) => empty_map && items.is_empty(),
+                ExprKind::Nil => !empty_map,
+                _ => false,
+            }
+        }
+        _ => false,
+    };
+    // The global hierarchy, the callee of whose call is allowed.
+    let hierarchy = |id: ExprId| match &exprs[id.0].kind {
+        ExprKind::Call { callee, args }
+            if args.is_empty() && core(*callee, CoreFnId::GetGlobalHierarchy) =>
+        {
+            Some(*callee)
+        }
+        _ => None,
+    };
+    // Implementations of `IEquiv`, `IHash` or `IMultiFn` (`Builtin` keys
+    // are `IEquiv/-equiv`).
+    let own_methods = |methods: &[(MethodDispatch, crate::analyzer::FnMethod)]| {
+        methods.iter().any(|(dispatch, _)| {
+            matches!(dispatch, MethodDispatch::Builtin(key)
+                if ["IEquiv/", "IHash/", "IMultiFn/"].iter().any(|protocol| key.starts_with(protocol)))
+        })
+    };
+    // A runtime type's public constructor, which takes a cached hash.
+    let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
+    let chosen_hash = |op: CoreFnId| {
+        op.operation().runtime_units(manifest).iter().any(|&unit| {
+            let requires = &manifest.unit(unit).requires;
+            requires.contains(&"constructorSlots") || requires.contains(&"constructorHashes")
+        })
+    };
+    // An operation the runtime keeps the tables in atoms for itself: one of
+    // whose units `MultiFn.tables` waits for, or requires one (`methods`,
+    // `remove-all-methods`, `->MultiFn`, ...). Its program then needs them
+    // there too, where `defmulti` builds its tables and the arrays' steps
+    // would otherwise run.
+    let conditions = manifest
+        .unit_named("MultiFn.tables")
+        .map_or(&[][..], |unit| manifest.conditions(unit));
+    let keeps_tables = |op: CoreFnId| {
+        op.operation().runtime_units(manifest).iter().any(|&unit| {
+            conditions.contains(&unit)
+                || manifest.unit(unit).requires.iter().any(|binding| {
+                    manifest
+                        .unit_of(binding)
+                        .is_some_and(|required| conditions.contains(&required))
+                })
+        })
+    };
+    // The reads of `MultiFn` and `-add-method` allowed above, and the core
+    // classes of `instance?`.
+    let mut allowed = vec![false; exprs.len()];
+    let mut added = 0;
+    let mut top_level = vec![program.root];
+    while let Some(id) = top_level.pop() {
+        match &exprs[id.0].kind {
+            ExprKind::Do(items) => top_level.extend(items),
+            ExprKind::Call { callee, .. } if live[id.0] && core(*callee, CoreFnId::AddMethod) => {
+                allowed[callee.0] = true;
+                added += 1;
+            }
+            _ => {}
+        }
+    }
+    for (index, expr) in exprs.iter().enumerate() {
+        match &expr.kind {
+            ExprKind::Construct { callee, args }
+                if live[index]
+                    && core(*callee, CoreFnId::MultiFn)
+                    && args.len() == 8
+                    && hierarchy(args[3]).is_some()
+                    && args[4..7].iter().all(|arg| fresh_atom(*arg, true))
+                    && fresh_atom(args[7], false) =>
+            {
+                allowed[callee.0] = true;
+                allowed[hierarchy(args[3]).unwrap().0] = true;
+            }
+            ExprKind::InstanceOf { class, .. }
+                if matches!(exprs[class.0].kind, ExprKind::CoreFn(_)) =>
+            {
+                allowed[class.0] = true;
+            }
+            _ => {}
+        }
+    }
+    let site = exprs
+        .iter()
+        .enumerate()
+        .position(|(index, expr)| {
+            live[index]
+                && match expr.kind {
+                    ExprKind::CoreFn(CoreFnId::MultiFn) => !allowed[index],
+                    ExprKind::CoreFn(CoreFnId::AddMethod) => !allowed[index] || added > 8,
+                    ExprKind::CoreFn(CoreFnId::Derive | CoreFnId::Underive) => true,
+                    ExprKind::CoreFn(CoreFnId::GetGlobalHierarchy) => !allowed[index],
+                    ExprKind::CoreFn(op) => {
+                        !allowed[index] && (chosen_hash(op) || keeps_tables(op))
+                    }
+                    ExprKind::ExtendType {
+                        target,
+                        ref methods,
+                        ..
+                    } => {
+                        matches!(exprs[target.0].kind, ExprKind::CoreFn(_)) || own_methods(methods)
+                    }
+                    ExprKind::DefType { ref methods, .. } | ExprKind::Reify { ref methods, .. } => {
+                        own_methods(methods)
+                    }
+                    _ => {
+                        names_property(program, &expr.kind, |name| {
+                            crate::runtime_slice::MULTI_TABLES.contains(&name)
+                                || name == "__hash"
+                                || name == "_hash"
+                        }) || {
+                            // A slot of `IMultiFn`, `IEquiv` or `IHash` or a protocol mask, with which
+                            // host code can give a value an implementation.
+                            let mut found = false;
+                            texts(program, &expr.kind, |text| {
+                                found = found
+                                    || text.contains("cljs$core$IMultiFn$")
+                                    || text.contains("cljs$core$IEquiv$")
+                                    || text.contains("cljs$core$IHash$")
+                                    || text.contains("cljs$lang$protocol_mask$partition");
+                            });
+                            found
+                        }
+                    }
+                }
+        })
+        .map(ExprId);
+    site.or_else(|| (!facts.core_protocols_intact()).then_some(program.root))
+}
+
+/// Whether multimethods can be named by the text of their symbols rather than
+/// the symbols, which keep the symbol type. Where they keep their tables as
+/// arrays (see [`multi_tables`]) only `defmulti` builds them, with the quoted
+/// symbol of its name. Then only the messages read a name, which print the
+/// text of a symbol as they print the symbol (`printHooks.text`), unless
+/// reachable code can call `name`, `namespace`, `-name` or `-namespace`, or
+/// names the field `name` as a property, method or string or in `js*` text.
+/// No other runtime unit calls `name` or `namespace` on a value that may be
+/// a multimethod (`runtime_manifest` lists those that call them).
+fn multi_names(program: &Program, live: &[bool]) -> bool {
+    !program.exprs.iter().zip(live).any(|(expr, live)| {
+        *live
+            && (matches!(
+                expr.kind,
+                ExprKind::CoreFn(
+                    CoreFnId::Name
+                        | CoreFnId::Namespace
+                        | CoreFnId::NameProtocol
+                        | CoreFnId::NamespaceProtocol
+                )
+            ) || names_property(program, &expr.kind, |name| name == "name"))
+    })
+}
+
+/// Give each multimethod that `live` code builds the text of its symbol as
+/// its name (see [`multi_names`]).
+fn name_multimethods(program: &mut Program, live: &[bool]) {
+    let names: Vec<ExprId> = program
+        .exprs
+        .iter()
+        .zip(live)
+        .filter_map(|(expr, live)| match &expr.kind {
+            ExprKind::Construct { callee, args }
+                if *live
+                    && matches!(
+                        program.exprs[callee.0].kind,
+                        ExprKind::CoreFn(CoreFnId::MultiFn)
+                    ) =>
+            {
+                args.first().copied()
+            }
+            _ => None,
+        })
+        .collect();
+    for name in names {
+        let ExprKind::Symbol(symbol) = program.exprs[name.0].kind else {
+            continue;
+        };
+        let symbol = program.named_literals[symbol.0].clone();
+        let mut text = Vec::new();
+        if let Some(namespace) = symbol.namespace {
+            text.extend_from_slice(&program.strings[namespace.0]);
+            text.push(u16::from(b'/'));
+        }
+        text.extend_from_slice(&program.strings[symbol.name.0]);
+        program.exprs[name.0].kind = ExprKind::String(StringId(program.strings.len()));
+        program.strings.push(text);
+    }
+}
+
+/// Give each multimethod that `live` code builds `nil` as its hierarchy and
+/// its tables where they are arrays (see [`multi_tables`]), which no code
+/// then reads: `defmulti` builds it with fresh atoms and the global
+/// hierarchy, which no code can give ancestors, so that the runtime's steps
+/// on the arrays (`isaPlain`) read none.
+fn unbind_multimethod_tables(program: &mut Program, live: &[bool]) {
+    let unread: Vec<ExprId> = program
+        .exprs
+        .iter()
+        .zip(live)
+        .filter_map(|(expr, live)| match &expr.kind {
+            ExprKind::Construct { callee, args }
+                if *live
+                    && args.len() == 8
+                    && matches!(
+                        program.exprs[callee.0].kind,
+                        ExprKind::CoreFn(CoreFnId::MultiFn)
+                    ) =>
+            {
+                Some(args[3..].to_vec())
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    for arg in unread {
+        program.exprs[arg.0].kind = ExprKind::Nil;
+    }
 }
 
 /// Keep the method entries `kept` marks; how many were dropped.

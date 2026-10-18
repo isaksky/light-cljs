@@ -2177,6 +2177,146 @@ host-facing methods of the vector and the keyword.
     installs, the seven `const` declarations of the split dispatchers and
     the comments.
 
+#### Phase 2 multimethod extension points
+
+As built (light-cljs-239). A multimethod keeps its tables in its atoms, and
+walks its hierarchy, only where the program could see the difference.
+
+- **Two representations.** Upstream's `MultiFn` keeps its method table,
+  preferences, cache and cached hierarchy in atoms of persistent maps, and
+  `defmethod` is `(swap! method-table assoc ...)`. Adding one method kept
+  `assoc` with hash maps, the walk of the table kept `seq` and the vectors of
+  its map entries, the global hierarchy kept `atom`'s option parsing, and the
+  `-add-method` and `-get-method` dispatchers kept `coreMethod`: 53,114 bytes
+  for a one-method program. Unless `MultiFn.tables` is kept, a multimethod's
+  method table and cache are arrays of the entries their array maps would
+  hold, `{key, value}` in map order (`leanTables`), on which `leanAdd` and
+  `getMethod` take the persistent path's steps: `leanGet` and `leanPut` are
+  `get` and `assoc` of an array map, a new method resets the cache to the
+  table, and the walk of the methods (`bestMethod`, which reads a key
+  through `keyOf`, the persistent path's `nth` of a map entry) is shared.
+  The cache stays where it can tell: a cached answer survives a change of
+  a constructor's prototypes, as upstream's does, and the cache starts as
+  the method table, whose entry for a function wins over a later key it
+  also isa. Only answers for a function, or a vector holding one
+  (`leanCached`), are cached; any other value isa only the keys equal to it,
+  so its answer is the walk's, and the cache, a scan of entries, does not
+  grow with distinct numbers or keywords. A function, equal only to itself,
+  has its answer in a `Map` by identity (`fns`), so distinct closures do not
+  scan a growing cache either (from the Sol review).
+- **Where the tables stay in atoms.** `MultiFn.tables effect: multiHooks
+  when: ...` installs the persistent path (`multiHooks.addMethod`,
+  `.getMethod` and `.getMethodProtocol`, through which a call dispatches
+  `-get-method`). The shared runtime always has it. An `Advanced` slice
+  keeps it where it keeps an operation that reads or writes the tables
+  (`methods`, `prefers`, `prefer-method`, `remove-method`,
+  `remove-all-methods`, `->MultiFn`), or where rapid type analysis
+  (`rta::multi_tables`) roots the marker unit `multiTables`: in a program
+  that reads `MultiFn`, where reachable code
+  - names one of the fields holding the tables, the hierarchy or the default
+    dispatch value, whose cached answers the persistent cache keeps when it
+    changes
+    (`MULTI_TABLES` in `src/runtime_slice.rs`) as a property, method or
+    string, or in `js*` text;
+  - reads `MultiFn` other than to test `instance?` or to build one as
+    `defmulti` does: with fresh `(atom {})` and `(atom nil)` tables and
+    `(get-global-hierarchy)`, not a hierarchy of its own;
+  - can give the global hierarchy ancestors: reads `derive`, `underive` or
+    `get-global-hierarchy` other than in such a `MultiFn` form, so that a
+    hierarchy the arrays' steps would walk has none;
+  - reads an operation whose unit `MultiFn.tables` waits for or which
+    requires one, which then reads the atoms (`keeps_tables`);
+  - calls `-add-method` other than in a top-level form (`defmethod`), which
+    runs once, or in more than eight of them. An array map holds eight
+    entries; a ninth makes the persistent table a hash map, which orders its
+    entries by hash, and the order of the walk decides between methods that
+    do not dominate each other;
+  - extends a core protocol to a value other than its own types
+    (`ProgramFacts::core_protocols_intact`), whose implementations the
+    operations on the tables and their entries would run, or implements
+    `IEquiv` or `IHash`, which a hash map's lookups run otherwise than an
+    array's, or `IMultiFn`, whose dispatchers then have more than one
+    implementation, or names a slot of `IMultiFn`, `IEquiv` or `IHash` or a protocol mask, with
+    which host code can give a multimethod one;
+  - can build a value whose hash it chose, so that equal dispatch values
+    could hash apart in a cache past eight entries: reads a runtime type's
+    public constructor, which takes a cached hash (`(Keyword. nil "a" "x"
+    1)`; its unit requires `constructorSlots` or `constructorHashes`),
+    other than to test `instance?`, or names the field `__hash` or `_hash`;
+  - replaces `atom`, `get-global-hierarchy`, `MultiFn` or `-add-method`.
+- **No hierarchy, no dispatcher.** Where the tables are arrays, no code can
+  give a hierarchy ancestors, so `getMethod` compares dispatch values with
+  `isaPlain`, `isa?` of a hierarchy without them: equality, a constructor
+  and its prototypes, and vectors item by item. The items of a vector come
+  from `kindHooks.isaItems` (`makeVector.isa`), or where no vector can be
+  built from the tail of a map entry's store (`isaItems`). Nothing then reads
+  a multimethod's hierarchy or atoms, so rapid type analysis
+  (`unbind_multimethod_tables`) gives each `defmulti` nil for them, which
+  keeps neither `Atom` nor the global hierarchy. Only multimethods implement
+  `IMultiFn` there, so a call dispatches through `getMethod` directly and
+  `Advanced` output calls `addMethodDirect` for `-add-method` (`lean_multi`
+  in `TypeAnalysis`, which the emitter reads): `leanAdd` for a multimethod,
+  else the dispatcher's error. Neither keeps `coreMethod`. The compiler
+  session's demand of a multimethod moved into the persistent hooks, which
+  are the only ones a session runs.
+- **Smaller changes.** The global hierarchy is `new Atom` of an array map,
+  without `atom`'s option parsing and `mapFromArray`'s hash maps, and `isa?`
+  walks the prototypes of a constructor rather than building `(supers
+  child)` as a set. Protocol implementations could see either, so
+  `installMethods` installs `protocolHooks.atom` and `protocolHooks.supers`,
+  which keep upstream's steps wherever a program has them, as the shared
+  runtime always does. `isa?` calls `isaIn`, its three-argument form.
+  `printHooks.messages` and `printWriterImpl.install` wait for `bestMethod`,
+  which prints the ambiguity message, rather than `getMethod`.
+- **Names.** Where the tables are arrays, rapid type analysis
+  (`rta::multi_names`) gives each multimethod the text of its symbol as its
+  name (`"cljs.user/m"`) unless reachable code can call `name`, `namespace`,
+  `-name` or `-namespace`, or names the field `name`. Only messages read the
+  name otherwise, and they print the text as they print the symbol
+  (`printHooks.text`), so the program keeps no symbol type for it. The
+  `runtime_manifest` suite lists the units that call `name` or `namespace`,
+  each of which either never receives a multimethod or is reached only
+  through those operations.
+- **Tests.**
+  - `multimethod_tables` runs programs at every level and checks which way
+    the `Advanced` slice keeps the tables: dispatch from the arrays
+    (defaults, falsy methods, a replaced key, keys equal by value, vectors
+    and map entries, host constructors, eight methods, a `MultiFn.` built as
+    `defmulti` builds one), hierarchies (chains, diamonds, vectors, changes
+    after a call, Var hierarchies, prototypes, the global hierarchy changed
+    through `swap!`), a cached answer that survives a change of prototypes,
+    every way above to keep the tables in atoms (among them a hierarchy
+    replaced through the field, a `reify` of `IMultiFn`, slots of
+    `IMultiFn` set by name, and equal keywords whose public constructor gave
+    them different hashes), 60,000 distinct dispatch values, which leave the
+    cache as it was, and the upstream fixtures under
+    `tests/fixtures/compiler-multimethods`. It checks that
+    messages print a name given as text as at `None`, with and without the
+    printer, and that each way to read a name keeps the symbol.
+  - `runtime_manifest` derives the `when:` list of `MultiFn.tables` from
+    the units naming the fields, lists `multiTables` and
+    `addMethodDirect` as unreachable from the exports, and checks the units
+    calling `name` or `namespace`.
+  - The ratchet fixture `defmulti` is the pellet's program.
+- **Measured.** At `Advanced`, raw / gzip -9 bytes, against master
+  `5695da8`:
+  - `(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (m {:k :a}))`
+    drops from 53,114 / 16,103 to 9,192 / 3,388, under the 10,000 bytes
+    the user set for this pellet in place of 8,000. Its map argument alone,
+    `(js/console.log (if (js/Math.random) {:k :a} nil))`, is 6,942 / 2,591
+    on both; the multimethod adds 2,250: `MultiFn` (493),
+    `structuralEqualPair` (361), `bestMethod` (320, most of it the
+    ambiguity message), `getMethod` (283), `isaPlain` (198), the arrays,
+    `addMethodDirect` and the printing of numbers in messages.
+  - A program with `derive`, which keeps the tables in atoms, drops from
+    54,094 to 45,410, one that calls `methods` from 52,974 to 37,781.
+    Programs without multimethods are unchanged.
+  - The shared runtime grows by 5,793 bytes (1.3%), 457,041 to 462,834 for
+    `(js/console.log (+ 1 2))` at `None` (112,803 to 114,499 gzipped): both
+    representations of the tables, the hooks and their comments.
+- **Left for later.** The 6.9 KB a map literal keeps is most of what
+  remains; going under 8,000 bytes needs a map literal under 6 KB.
+
 #### Phase 2 call shape extension points
 
 Step 5 is implemented in `src/call_shapes.rs` (light-cljs-212, and
@@ -3724,6 +3864,25 @@ upstream states that advanced mode is unsafe for certain patterns.
   where reachable code names one of them as it names upstream members, or
   reads an empty literal (light-cljs-247). Reading one through a name
   computed at run time otherwise gets `undefined`, which is unsupported.
+- A multimethod's tables (`method-table`, `method-cache`, `prefer-table` and
+  `cached-hierarchy`, compiler-owned fields upstream) and its `hierarchy` hold
+  what they hold at every other level only where the program could see them
+  or give a hierarchy ancestors: where it names one, builds a `MultiFn` other
+  than as `defmulti` does with the global hierarchy, keeps an operation that
+  reads or writes them, calls `derive` or `underive` or reads
+  `get-global-hierarchy` otherwise, adds methods other than in at most eight
+  top-level `defmethod` forms, extends a core protocol to a value other than
+  its own types, implements `IEquiv`, `IHash` or `IMultiFn`, builds values
+  with hashes of its choosing (a runtime type's public constructor, an
+  assigned `__hash` or `_hash`), or replaces the operations `defmulti` and
+  `defmethod` call (light-cljs-239). Elsewhere these fields are nil, which
+  host code reading them without naming them (`Object.values`) sees;
+  dispatch, `get-method` and every message are the same at every level.
+  There, unless the program can call `name`, `namespace`, `-name` or
+  `-namespace`, or names the field `name`, a multimethod's `name` is the text
+  of its symbol (`"cljs.user/m"`) rather than the symbol, which host code
+  reading it without naming it sees likewise; messages print it as they
+  print the symbol.
 - Everything else must produce results identical to `optimize: false`.
 
 ## Verification

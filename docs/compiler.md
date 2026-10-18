@@ -2240,7 +2240,23 @@ equal-value, hierarchy and recursive vector dispatch support default methods and
 explicit ambiguity/preference-conflict errors. Method and preference changes reset
 cached dispatch; changes to the dereferenced hierarchy invalidate prior answers.
 Compilation and application runtimes own their hierarchies, method tables and
-caches independently.
+caches independently. At `--optimize advanced` a program that cannot see the
+tables or give a hierarchy ancestors (it reads no field holding them or the
+hierarchy, calls neither `methods`, `prefers`, `prefer-method`,
+`remove-method` nor `remove-all-methods`, calls neither `derive` nor
+`underive`, reads `get-global-hierarchy` only as `defmulti` does and gives no
+multimethod a hierarchy of its own, extends no core protocol to a runtime or
+host type, implements neither `IEquiv`, `IHash` nor `IMultiFn` (nor names an
+`IMultiFn` slot or a protocol mask), builds no
+value with a hash of its choosing (a runtime type's public constructor, an
+assigned `__hash` or `_hash`), and adds methods only in at most eight
+top-level `defmethod` forms) keeps its method table and cache as arrays of
+the entries their array maps would hold, which keeps no persistent map
+operations, dispatches with `isa?` of a hierarchy without ancestors, calls no
+`IMultiFn` dispatcher, and, unless the program can call `name` or `namespace`
+on it or names the field `name`, names it by the text of its symbol, which
+messages print as they print the symbol; see "Phase 2 multimethod extension
+points" in [advanced-optimization.md](advanced-optimization.md).
 
 `make-hierarchy`, `derive`, `underive`, `isa?`, `parents`, `ancestors`, and
 `descendants` support global and explicit immutable hierarchies. `bases` and

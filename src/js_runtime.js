@@ -5077,15 +5077,17 @@
   let globalHierarchy = null;
   //@unit multiFns
   const multiFns = new WeakSet();
-  //@unit makeHierarchy requires: invalidArity, keyword, mapFromArray
+  //@unit makeHierarchy requires: arrayMapFromArray, invalidArity, keyword
   function makeHierarchy() {
     if (arguments.length) return invalidArity(arguments.length);
-    return mapFromArray([keyword(null, "parents"), mapFromArray([]), keyword(null, "ancestors"), mapFromArray([]), keyword(null, "descendants"), mapFromArray([])]);
+    return arrayMapFromArray([keyword(null, "parents"), arrayMapFromArray([]), keyword(null, "ancestors"), arrayMapFromArray([]), keyword(null, "descendants"), arrayMapFromArray([])]);
   }
-  //@unit getGlobalHierarchy requires: atom, globalHierarchy, invalidArity, makeHierarchy
+  //@unit getGlobalHierarchy requires: Atom, globalHierarchy, invalidArity, makeHierarchy,
+  //@ protocolHooks
   function getGlobalHierarchy() {
     if (arguments.length) return invalidArity(arguments.length);
-    return globalHierarchy ??= atom(makeHierarchy());
+    // `(atom h)`, whose option lookups only protocol implementations can see.
+    return globalHierarchy ??= protocolHooks.atom ? protocolHooks.atom(makeHierarchy()) : new Atom(makeHierarchy(), null, null, null);
   }
   //@unit hierarchyPart requires: get, keyword
   function hierarchyPart(h, part) { return get(h, keyword(null, part)); }
@@ -5103,19 +5105,51 @@
     for (let pending = bases(value); pending != null; pending = bases(first(pending))) result.push(first(pending));
     return result.length ? setFromArray(result) : null;
   }
-  //@unit isa requires: contains, deref, equalPair, get, getGlobalHierarchy, hierarchyPart,
-  //@ invalidArity, supers, toArray, vectorItems, vectors
+  //@unit isa requires: deref, getGlobalHierarchy, invalidArity, isaIn
   function isa(h, child, parent) {
-    if (arguments.length === 2) return isa(deref(getGlobalHierarchy()), h, child);
+    if (arguments.length === 2) return isaIn(deref(getGlobalHierarchy()), h, child);
     if (arguments.length !== 3) return invalidArity(arguments.length);
+    return isaIn(h, child, parent);
+  }
+  //@unit isaIn requires: contains, equalPair, get, hierarchyPart, isaItems, protocolHooks
+  // `(isa? h child parent)`, which multimethods call without `deref`.
+  function isaIn(h, child, parent) {
     if (equalPair(child, parent)) return true;
     if (typeof parent === "function" && typeof child === "function" && child instanceof parent) return true;
     const ancestors = hierarchyPart(h, "ancestors");
     if (contains(get(ancestors, child), parent)) return true;
-    if (typeof child === "function") for (const base of toArray(supers(child))) if (contains(get(ancestors, base), parent)) return true;
-    const cv = vectors.has(child) && vectorItems(child), pv = vectors.has(parent) && vectorItems(parent);
-    return !!(cv && pv && cv.length === pv.length && cv.every((v, i) => isa(h, v, pv[i])));
+    // Any of `(supers child)`, whose set only protocol implementations can
+    // see being built.
+    if (typeof child === "function") {
+      let bases = protocolHooks.supers?.(child);
+      if (!bases) { bases = []; for (let base = Object.getPrototypeOf(child); base != null; base = Object.getPrototypeOf(base)) bases.push(base); }
+      for (const base of bases) if (contains(get(ancestors, base), parent)) return true;
+    }
+    const cv = isaItems(child), pv = isaItems(parent);
+    return !!(cv && pv && cv.length === pv.length && cv.every((v, i) => isaIn(h, v, pv[i])));
   }
+  //@unit isaPlain requires: equalPair, isaItems
+  // `isaIn` of a hierarchy without ancestors, which multimethods have where
+  // their tables are arrays (`multi_tables` in src/rta.rs): nothing derives.
+  function isaPlain(child, parent) {
+    if (equalPair(child, parent)) return true;
+    if (typeof parent === "function" && typeof child === "function" && child instanceof parent) return true;
+    const cv = isaItems(child), pv = isaItems(parent);
+    return !!(cv && pv && cv.length === pv.length && cv.every((v, i) => isaPlain(v, pv[i])));
+  }
+  //@unit leanCached requires: isaItems
+  // Whether `isaPlain`'s answers for `dispatch` can change while the methods
+  // do not, or differ from the cache's first entries, the methods: a
+  // function's prototypes can change and make it isa more or fewer keys, also
+  // as an item of a vector. Any other value isa only the keys equal to it.
+  const leanCached = value => typeof value === "function" || !!isaItems(value)?.some(leanCached);
+  //@unit isaItems requires: kindHooks, vectors
+  // The items of a vector that `isa?` compares, or null. Where no vector can
+  // be built map entries, which hold their two in the tail of their store,
+  // are the only values with items (`makeVector.isa`).
+  const isaItems = value => !vectors.has(value) ? null : kindHooks.isaItems ? kindHooks.isaItems(value) : vectors.get(value).tail;
+  //@unit makeVector.isa effect: makeVector when: isaItems requires: kindHooks, vectorItems
+  kindHooks.isaItems = vectorItems;
   //@unit hierarchyRel requires: bases, count, deref, get, getGlobalHierarchy, hierarchyPart,
   //@ invalidArity, setFromArray, supers, toArray
   function hierarchyRel(part, h, tag, arity) {
@@ -5171,7 +5205,7 @@
     for (const entry of toArray(updated)) for (const ancestor of toArray(nth(entry, 1))) result = derive(result, nth(entry, 0), ancestor);
     return result;
   }
-  //@unit MultiFn requires: getMethodProtocol, multiFns, printHooks, truth
+  //@unit MultiFn requires: getMethod, multiFns, multiHooks, printHooks, truth
   class MultiFn {
     constructor(name, dispatchFn, defaultDispatchVal, hierarchy, methodTable, preferTable, methodCache, cachedHierarchy) {
       this.name = name; this.dispatch_fn = dispatchFn; this.default_dispatch_val = defaultDispatchVal;
@@ -5180,7 +5214,9 @@
       multiFns.add(this);
     }
     call(_self, ...args) {
-      const dispatch = this.dispatch_fn.call(null, ...args), target = getMethodProtocol(this, dispatch);
+      // `-get-method`, which only multimethods implement where their tables
+      // are arrays (`multi_tables` in src/rta.rs).
+      const dispatch = this.dispatch_fn.call(null, ...args), target = (multiHooks.getMethodProtocol ?? getMethod)(this, dispatch);
       if (!truth(target)) throw new Error("No method in multimethod '" + printHooks.text(this.name) + "' for dispatch value: " + printHooks.text(dispatch));
       return target.call(null, ...args);
     }
@@ -5208,12 +5244,42 @@
     multiState(mf.method_table, mapFromArray([])); multiState(mf.method_cache, mapFromArray([]));
     multiState(mf.prefer_table, mapFromArray([])); multiState(mf.cached_hierarchy, null); return mf;
   }
-  //@unit addMethod requires: assoc, declarationJournal, demandMulti, deref, multiState,
-  //@ resetMultiCache
-  function addMethod(mf, dispatch, method) {
-    // Bundle installation must not demand itself or later method declarations.
-    if (!declarationJournal) demandMulti(mf);
-    multiState(mf.method_table, assoc(deref(mf.method_table), dispatch, method)); resetMultiCache(mf); return mf;
+  //@unit multiHooks
+  // Multimethods keep their tables in their atoms where `MultiFn.tables` is
+  // kept; elsewhere (only at `Advanced`) a multimethod's method table and
+  // cache are arrays of the entries their array maps would hold
+  // (`leanTables`), which the same steps read and write.
+  const multiHooks = {};
+  //@unit leanTables requires: entryIndex
+  const leanTables = new WeakMap();
+  // The value of `key` in `entries`, as `get` of an array map gives it.
+  const leanGet = (entries, key) => entries[entryIndex(entries, key)]?.value;
+  // As `assoc` of an array map: a replaced entry keeps its first key.
+  function leanPut(entries, key, value) {
+    const index = entryIndex(entries, key);
+    if (index < 0) entries.push({key, value}); else entries[index] = {key: entries[index].key, value};
+  }
+  //@unit multiTables
+  // Kept where an `Advanced` program could see the tables otherwise, fill
+  // one past eight methods or give a hierarchy ancestors (`multi_tables` in
+  // src/rta.rs).
+  const multiTables = null;
+  //@unit leanAdd requires: leanPut, leanTables
+  // `-add-method` of a multimethod whose tables are arrays.
+  function leanAdd(mf, dispatch, method) {
+    const methods = leanTables.get(mf)?.methods ?? [];
+    // `resetMultiCache`: the cache starts as the method table; answers for
+    // functions, equal only to themselves, are cached by identity (`fns`).
+    leanPut(methods, dispatch, method); leanTables.set(mf, {methods, cache: methods.slice(), fns: new Map()}); return mf;
+  }
+  //@unit addMethod requires: leanAdd, multiHooks
+  function addMethod(mf, dispatch, method) { return (multiHooks.addMethod ?? leanAdd)(mf, dispatch, method); }
+  //@unit addMethodDirect requires: leanAdd, multiFns
+  // `-add-method` where only multimethods implement `IMultiFn`, which
+  // `Advanced` output calls there (`lean_multi` in src/rta.rs).
+  function addMethodDirect(mf, dispatch, method) {
+    if (multiFns.has(mf)) return leanAdd(mf, dispatch, method);
+    throw new Error("No protocol method IMultiFn/-add-method defined for this value");
   }
   //@unit removeMethod requires: demandMulti, deref, dissoc, multiState, resetMultiCache
   function removeMethod(mf, dispatch) {
@@ -5234,30 +5300,66 @@
     multiState(mf.prefer_table, assoc(table, x, conj(get(table, x, setFromArray([])), y)));
     return resetMultiCache(mf);
   }
-  //@unit getMethod requires: assoc, demandMulti, deref, equalPair, get, isa, multiPrefers,
-  //@ multiState, nth, printHooks, resetMultiCache, toArray, truth
+  //@unit bestMethod requires: printHooks
+  // The entry of a method table, in table order, whose key (`keyOf`)
+  // `dispatch` isa and that dominates every other one.
+  function bestMethod(mf, dispatch, entries, keyOf, isa, dominates) {
+    let best = null;
+    for (const entry of entries) {
+      const key = keyOf(entry);
+      if (!isa(dispatch, key)) continue;
+      const candidate = best === null || dominates(key, keyOf(best)) ? entry : best;
+      if (!dominates(keyOf(candidate), key)) throw new Error("Multiple methods in multimethod '" + printHooks.text(mf.name) + "' match dispatch value: " + printHooks.text(dispatch) + " -> " + printHooks.text(key) + " and " + printHooks.text(keyOf(candidate)) + ", and neither is preferred");
+      best = candidate;
+    }
+    return best;
+  }
+  //@unit getMethod requires: bestMethod, isaPlain, leanCached, leanGet, leanPut, leanTables,
+  //@ multiHooks, truth
   function getMethod(mf, dispatch) {
+    if (multiHooks.getMethod) return multiHooks.getMethod(mf, dispatch);
+    // As `MultiFn.tables` where the hierarchy, which then never changes, has
+    // no ancestors, and without preferences, which only it can have.
+    // Only an answer that can change while the methods do not tells the
+    // cache from a new walk (`leanCached`), so only such answers are cached:
+    // the cache, a scan of entries, stays as small as their dispatch values,
+    // and a function's, which only it equals, is a lookup by identity.
+    const tables = leanTables.get(mf) ?? {methods: [], cache: [], fns: new Map()}, cache = leanCached(dispatch);
+    const fn = typeof dispatch === "function";
+    const cached = cache && ((fn ? tables.fns.get(dispatch) : undefined) ?? leanGet(tables.cache, dispatch));
+    if (truth(cached)) return cached;
+    const best = bestMethod(mf, dispatch, tables.methods, entry => entry.key, isaPlain, isaPlain);
+    const target = best === null ? leanGet(tables.methods, mf.default_dispatch_val) : best.value;
+    if (!truth(target)) return null;
+    if (fn) tables.fns.set(dispatch, target); else if (cache) leanPut(tables.cache, dispatch, target);
+    return target;
+  }
+  //@unit MultiFn.tables effect: multiHooks when: methods, MultiFnFactory, multiTables, prefers,
+  //@ preferMethod, removeMethod, resetMulti requires: assoc, bestMethod, declarationJournal,
+  //@ demandMulti, deref, equalPair, get, getMethodProtocol, isaIn, multiHooks, multiPrefers,
+  //@ multiState, nth, resetMultiCache, toArray, truth
+  multiHooks.getMethodProtocol = (mf, dispatch) => getMethodProtocol(mf, dispatch);
+  // Only the tables in atoms run in a compiler session, which demands the
+  // multimethod first (`setDeclarationDemand`).
+  multiHooks.addMethod = (mf, dispatch, method) => {
+    // Bundle installation must not demand itself or later method declarations.
+    if (!declarationJournal) demandMulti(mf);
+    multiState(mf.method_table, assoc(deref(mf.method_table), dispatch, method)); resetMultiCache(mf); return mf;
+  };
+  multiHooks.getMethod = (mf, dispatch) => {
     demandMulti(mf);
     for (;;) {
       const h = deref(mf.hierarchy);
       if (!equalPair(deref(mf.cached_hierarchy), h)) resetMultiCache(mf);
       const cached = get(deref(mf.method_cache), dispatch);
       if (truth(cached)) return cached;
-      let best = null;
-      const dominates = (x, y) => multiPrefers(mf, x, y) || isa(h, x, y);
-      for (const entry of toArray(deref(mf.method_table))) {
-        const key = nth(entry, 0);
-        if (!isa(h, dispatch, key)) continue;
-        const candidate = best === null || dominates(key, nth(best, 0)) ? entry : best;
-        if (!dominates(nth(candidate, 0), key)) throw new Error("Multiple methods in multimethod '" + printHooks.text(mf.name) + "' match dispatch value: " + printHooks.text(dispatch) + " -> " + printHooks.text(key) + " and " + printHooks.text(nth(candidate, 0)) + ", and neither is preferred");
-        best = candidate;
-      }
+      const best = bestMethod(mf, dispatch, toArray(deref(mf.method_table)), entry => nth(entry, 0), (x, y) => isaIn(h, x, y), (x, y) => multiPrefers(mf, x, y) || isaIn(h, x, y));
       const target = best === null ? get(deref(mf.method_table), mf.default_dispatch_val) : nth(best, 1);
       if (!truth(target)) return null;
       if (!equalPair(deref(mf.cached_hierarchy), deref(mf.hierarchy))) { resetMultiCache(mf); continue; }
       multiState(mf.method_cache, assoc(deref(mf.method_cache), dispatch, target)); return target;
     }
-  }
+  };
 
   //@unit stateProtocol requires: protocolHooks
   function stateProtocol(value, key, args) {
@@ -7633,7 +7735,7 @@
   // The printer for code that must not keep it; `printWriterImpl.install`
   // replaces it where the program can print. A collection's `toString`...
   printHooks.collection = value => Object.prototype.toString.call(value);
-  //@unit printHooks.messages effect: printHooks when: derive, getMethod, MultiFn, preferMethod
+  //@unit printHooks.messages effect: printHooks when: bestMethod, derive, MultiFn, preferMethod
   //@ requires: printHooks, printNumber
   // ... and the values in messages.
   printHooks.text = value => value == null ? "nil" : typeof value === "number" ? printNumber(value) : String(value);
@@ -7792,8 +7894,8 @@
     try { const {buffer, writer} = stringWriter(); printWriterImpl(value, writer, null, true); flushWriter(writer); return buffer.text; }
     finally { coreCells.printReadably = saved; }
   }
-  //@unit printWriterImpl.install effect: printWriterImpl when: derive, entryPrototype, Eduction,
-  //@ getMethod, mapPrototype, MultiFn, preferMethod, sequencePrototype, setPrototype,
+  //@unit printWriterImpl.install effect: printWriterImpl when: bestMethod, derive, entryPrototype,
+  //@ Eduction, mapPrototype, MultiFn, preferMethod, sequencePrototype, setPrototype,
   //@ transientPrototype, vectorPrototype requires: print, printHooks, printSequential, printWriter
   // Only a program that can print has collection `toString`, where it keeps a
   // collection type, and prints values into messages.
@@ -8769,6 +8871,14 @@
   //@unit protocolHooks.valProtocol effect: installMethods when: mapProjection requires: protocolHooks,
   //@ valProtocol
   protocolHooks.valProtocol = valProtocol;
+  //@unit protocolHooks.atom effect: installMethods when: getGlobalHierarchy requires: atom,
+  //@ protocolHooks
+  // Protocol implementations can see the global hierarchy's `atom` look up
+  // its options, and `isa?` build `(supers child)`.
+  protocolHooks.atom = atom;
+  //@unit protocolHooks.supers effect: installMethods when: isaIn requires: protocolHooks, supers,
+  //@ toArray
+  protocolHooks.supers = child => toArray(supers(child));
   //@unit protocolHooks.deref effect: installMethods when: reducedValue requires: deref,
   //@ protocolHooks
   // A protocol implementation can give the value of a `reduced`.

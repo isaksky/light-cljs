@@ -1267,7 +1267,7 @@ fn definitions_move_toward_their_readers_and_methods_stay() {
     assert!(startup.contains("new rt$MultiFn("), "{startup}");
     for (chunk, method) in [(editor, "\"<p>\""), (reports, "\" rows\"")] {
         assert!(
-            chunk.contains("rt$addMethodProtocol(") && chunk.contains(method),
+            chunk.contains("rt$addMethodDirect(") && chunk.contains(method),
             "{chunk}"
         );
         assert!(!startup.contains(method));
