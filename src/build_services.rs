@@ -177,10 +177,21 @@ fn serve(
                 ));
             };
             let mut tried = Vec::new();
-            let answer =
-                resources
-                    .load_resource(&path, &mut tried)
-                    .map_err(|error| match error {
+            let answer = match resources.load_resource(&path, &mut tried) {
+                Ok(answer) => answer,
+                Err(error) => {
+                    // A macro can catch the error, so the lookup is still a
+                    // dependency: an ambiguity is keyed by its candidates,
+                    // which change when a copy goes, and any other provider
+                    // failure cannot be keyed at all.
+                    let ambiguous = matches!(error, LoadError::AmbiguousSources(_));
+                    record(ExternalInput::Resource(ResourceDependency {
+                        path: path.clone(),
+                        candidates: tried,
+                        found: None,
+                        stable: ambiguous && resources.stable(),
+                    }));
+                    return Err(match error {
                         LoadError::AmbiguousSources(files) => format!(
                             "{name}: ambiguous resource {path}: {}",
                             files
@@ -191,7 +202,9 @@ fn serve(
                         ),
                         LoadError::Provider(message) => format!("{name}: {path}: {message}"),
                         other => format!("{name}: {path}: {other}"),
-                    })?;
+                    });
+                }
+            };
             let stable =
                 resources.stable() && answer.as_ref().is_none_or(|found| found.identity.is_some());
             let tried_text = (operation == "resource" && answer.is_none()).then(|| {

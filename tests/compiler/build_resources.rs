@@ -238,6 +238,37 @@ fn a_path_in_two_roots_is_ambiguous_even_for_an_optional_read() {
 }
 
 #[test]
+fn a_caught_ambiguous_read_remains_a_dependency() {
+    let roots = Roots::new(2);
+    roots.write(
+        0,
+        "lib/macros.cljs",
+        r#"(ns lib.macros (:require [light.build :as b]))
+(defmacro guarded [path] (try (b/resource path) (catch :default _ "fallback")))"#,
+    );
+    roots.write(
+        0,
+        "app/core.cljs",
+        r#"(ns app.core (:require [lib.macros :refer [guarded]])) (guarded "app/data.txt")"#,
+    );
+    roots.write(0, "app/data.txt", "one");
+    roots.write(1, "app/data.txt", "two");
+    let (js, manifest) = roots.build("app.core").unwrap();
+    assert_eq!(execute(&js), "fallback");
+    let [read] = resources(&manifest, "app.core")[..] else {
+        panic!("one read expected");
+    };
+    assert!(read.stable && read.found.is_none());
+    let present: Vec<_> = read.candidates.iter().map(|c| c.present).collect();
+    assert_eq!(present, [true, true]);
+    // Removing a copy changes the recorded candidates.
+    fs::remove_file(roots.path(1, "app/data.txt")).unwrap();
+    let (js, removed) = roots.build("app.core").unwrap();
+    assert_eq!(execute(&js), "one");
+    assert_ne!(manifest.inputs, removed.inputs);
+}
+
+#[test]
 fn a_relative_path_resolves_against_the_expansion_sites_file() {
     let roots = Roots::new(1);
     roots.write(0, "lib/macros.cljs", INLINE);
