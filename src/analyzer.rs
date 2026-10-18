@@ -5341,7 +5341,24 @@ impl Analyzer<'_> {
                 // A namespace the program has already loaded resolves too, as
                 // upstream resolves it: macro expansions name the macro
                 // namespace's own dependencies, which load before their callers.
-                && !self.program.namespaces.iter().any(|loaded| loaded == namespace)
+                // Either answer is a dependency outside the `ns` form.
+                && !match self
+                    .program
+                    .namespaces
+                    .iter()
+                    .position(|loaded| loaded == namespace)
+                {
+                    Some(position) => {
+                        let observer = self.source_index;
+                        self.macro_host.observe(|log| log.loaded(observer, position));
+                        true
+                    }
+                    None => {
+                        let observer = self.source_index;
+                        self.macro_host.observe(|log| log.absent(observer, namespace));
+                        false
+                    }
+                }
             {
                 if self.options.warning_mode {
                     let namespace = namespace.to_owned();
@@ -5424,6 +5441,14 @@ impl Analyzer<'_> {
                         .any(|loaded| loaded == prefix))
             {
                 return self.resolve(id, &format!("{prefix}/{member}"));
+            }
+            // Were `prefix` loaded, this would name its Var instead.
+            if let Some((prefix, member)) = name.rsplit_once('.')
+                && !member.is_empty()
+                && crate::compiler::valid_namespace(prefix)
+            {
+                let observer = self.source_index;
+                self.macro_host.observe(|log| log.absent(observer, prefix));
             }
             return self.resolve(id, &format!("js/{name}"));
         }
@@ -9207,6 +9232,9 @@ impl Analyzer<'_> {
                 )
                 .map_err(error)?;
             let env = self.array_environment(env).map_err(error)?;
+            // A source macro sees the compilation's whole declaration view.
+            let source = self.source_index;
+            self.macro_host.observe(|log| log.executes(source));
             let result = self
                 .macro_host
                 .expand_source_javascript(self.namespace, target, &form, &env, self.engine)

@@ -315,6 +315,118 @@ across backends only after compatibility tests cover the relevant options.
 Finer interface fingerprints, unchanged-result propagation, and definition-level
 queries are later optimizations. They are not prerequisites for the first cache.
 
+*As built (light-cljs-311):* the dependency and resolution items are
+`light_cljs::dependency_manifest::DependencyManifest`, which
+`compiler::analyze_namespace_entry_with_dependencies` returns beside the
+program. No other entry point records one, so builds without it do no extra
+work. A namespace is a dense `NamespaceId`, its source index. Its edges are
+stored twice as compressed rows, forward and reverse, and every compilation
+edge points to an earlier namespace. `closure` and `reverse_closure` walk
+those rows, and no per-namespace copy of the graph is kept. Edges carry
+`EdgeKinds` bits:
+
+- `RUNTIME`: a direct require, after `clojure.X` rewrites, including the
+  implicit `light.lazy` require.
+- `MACRO_PROVIDER`: a direct require of a namespace that declares macros.
+- `HELPER`: a direct dependency of a macro provider, whose code the provider's
+  macros may run while the consumer expands them.
+- `OBSERVED`, `COARSE`: the observations below.
+- `LAZY`: a `light.lazy/loadable` target. It is checked when the program
+  closes, may come later in load order, and is not a compilation edge.
+
+Each namespace records its `SourceIdentity`: the resolved file, `.cljs` or
+`.cljc`, provider or bundled, and the provider `Lookup` it came from. A lookup
+lists every candidate tried, in order: each root at `.cljs`, then each root at
+`.cljc` when no `.cljs` was present, each marked present or absent. A file that
+would shadow the result or make it ambiguous is therefore an absent candidate
+of the current record. A bundled library keeps the provider lookup it fell
+back from.
+
+Each require records what it became: a namespace, the virtual core, or a
+`goog.*` host namespace. It also records its form (as written, a
+`ClojureRewrite`, or the `ImplicitLazy` require) and the extra lookups that
+decided it: the `goog.*` source check, and the `clojure.X` check before
+`cljs.X`. A custom `SourceProvider` reports candidates through
+`load_traced`. The default reports none, only the provider's answer.
+`external_inputs` is empty until light-cljs-312 and light-cljs-313 add the
+`light.build` inputs.
+
+The audit of what analysis can observe outside the require closure found the
+following:
+
+- **Qualified names of loaded, unrequired namespaces.** The analyzer resolves
+  `ns/name` and dotted `ns.name` against any namespace already loaded, which
+  is how a macro expansion names its own namespace's dependencies. Each
+  resolution is an `OBSERVED` edge from the namespace being analyzed. The
+  macro host's fully qualified macros of a loaded namespace are
+  `OBSERVED | MACRO_PROVIDER`. `ns-publics`, `ns-interns`, `ns-imports` and
+  `ns-refers` of a named namespace are `OBSERVED` too.
+- **Lookups that found nothing.** Some lookups miss: a dotted symbol's prefix
+  that is not loaded (`Math.PI`), a warning-mode unknown qualifier, or a
+  reflected namespace not loaded yet. These go in the namespace's `absent`
+  names, because loading such a namespace earlier changes the result.
+- **The declaration view of a source macro: the coarse fallback.** A source
+  macro (or a quoted `macroexpand` of one) runs with the whole compilation's
+  declaration view, and no edge can attribute that view:
+  - Every declaration bundle registered so far, whichever namespace
+    registered it: protocols, types, extensions and multimethods. This
+    includes an earlier namespace's first one. A namespace that declares
+    nothing today can change the expansion by adding an extension.
+  - Every loaded macro, with its metadata and generation, in `&env`'s
+    `:light-cljs/macros`.
+  - The namespace inventory of `all-ns`, `find-ns` and `the-ns`, however
+    they are reached (by symbol, `#'` or `resolve`).
+
+  A namespace that ran a source macro is therefore `coarse`. It gets
+  `COARSE` edges to every earlier namespace, and only that namespace does.
+  Namespaces that only expand core macros and resolve names keep their exact
+  edges. This is the one case that needed the fallback.
+- **Analysis-time tables.** Analysis reaches protocol and record tables only
+  through resolved globals, so the edges above already cover them. Compiler
+  data readers run in their own heap, with no namespace declarations.
+- **Macro generations and reader contexts.** Inside analysis, these are not
+  cross-namespace observations:
+  - `CompiledMacro.generation` counts redefinitions of one macro key inside
+    its defining namespace.
+  - `CompilationUse.generation` counts a unit's Var generations within one
+    compilation.
+  - A macro's reader environment holds the expanding namespace's own context
+    and the per-compilation `READER_GENERATION`.
+
+  Through `&env` a source macro can read other namespaces' macro metadata and
+  generations; that is part of the coarse view above. Otherwise they are
+  private identities of the defining namespace, which artifacts normalize
+  (see "Generated names").
+
+On Penpot `app.main` the manifest holds 922 namespaces and 356,265 edges. There
+are 1,163 lookups with 7,485 candidates, and 676 of the namespaces are coarse.
+An edge may carry several kinds:
+
+| Kind | Edges |
+| --- | ---: |
+| `RUNTIME` | 9,660 |
+| `MACRO_PROVIDER` | 2,162 |
+| `HELPER` | 8,774 |
+| `OBSERVED` | 338, none outside the require closure |
+| `COARSE` | 354,851 |
+| `LAZY` | 7 |
+
+Walking every namespace's reverse closure takes 63 ms. Analysis took 27.0 and
+26.0 s without the manifest and 26.1 and 26.0 s with it, alternating at load
+about 10: building it costs nothing measurable.
+
+### Open questions
+
+- **The coarse fallback is broad.** Every namespace that runs a source macro
+  depends on every earlier namespace. That is correct but costs cache hits:
+  editing an early namespace invalidates every later macro user. A finer key
+  could replace the coarse edges with a fingerprint of the declaration view
+  (bundles, macro metadata and the namespace inventory), as the
+  `:declarations` and `:namespaces` broad views of `light.build` will
+  fingerprint them. It could also record the bundles a macro actually
+  demanded. That is light-cljs-347, deferred until light-cljs-328 measures
+  hit rates.
+
 ## Binary artifacts
 
 Use one immutable artifact per completed namespace, with references to any shared
@@ -473,6 +585,12 @@ persistence remain out of scope.
    the table. Without `--stats` no clock is read: the counts come from the
    counters `MacroHost` already keeps. Penpot's baseline is in
    [benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md).
+
+   *As built (light-cljs-311):* the conservative dependency graph is the
+   `DependencyManifest` described under "Conservative keys and invalidation".
+   Opt-out propagation (light-cljs-314) and watch invalidation (light-cljs-325)
+   read its `reverse_closure`. Until then, watch keeps its own partial answer:
+   the direct requirers of a macro-declaring namespace.
 2. **Build relocatable namespace artifacts.** Capture declarations, IR, deferred
    units, diagnostics, names, and accounting at existing lifecycle boundaries.
    Verify in-memory installation and mixed hits/misses without source reanalysis.

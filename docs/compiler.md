@@ -1505,6 +1505,11 @@ explicit roots, matching upstream extension precedence. Canonical duplicate
 roots/files are deduplicated. **Dialect difference:** two distinct files at the
 winning extension are an ambiguity error; root order never silently selects one
 (upstream uses classpath first-match).
+`compiler::analyze_namespace_entry_with_dependencies` also returns the
+compilation's dependency manifest. It records each namespace's dependencies by
+kind and every candidate file each lookup tried, present or absent
+([compiler cache design](compiler-cache.md), "Conservative keys and
+invalidation").
 
 Each file must begin with `(ns NAME ...)` and declare exactly its requested
 namespace. Names and aliases contain dot-separated ASCII components matching

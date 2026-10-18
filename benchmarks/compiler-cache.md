@@ -58,3 +58,23 @@ them. The namespaces with the most macro calls are `malli.core` (1,905),
 `app.plugins.library` (1,206) and `app.common.logic.libraries` (880). The
 macro-call count is the same in every run, so a cache hit will show as a
 lower count.
+
+## Dependency manifest, cache off (light-cljs-311, October 18, 2026)
+
+Without `--cache-dir` nothing records a manifest. On the cold path what remains
+is a `RefCell` check per source macro call and per name resolved outside the
+`ns` form, plus a few small vectors per namespace in the loader. The runs were
+three alternating pairs of the parent `d6439d4` against the change, both
+release builds, at 1-minute load 7.6 to 11.2, with other workers active. Output
+is 33,588,607 bytes in every run.
+
+| Build | Wall (s), run 1-3 | Mean wall | Peak RSS (GB), run 1-3 | Mean RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `d6439d4` | 25.40, 24.48, 25.03 | 24.97 | 1.042, 1.031, 1.034 | 1.036 |
+| Manifest change | 24.96, 22.02, 24.22 | 23.73 | 1.051, 0.960, 1.027 | 1.013 |
+
+On the means, wall is -5.0% and RSS -2.3%, within the +3% and +5% gate.
+Both differences are inside the run-to-run spread. The manifest's own size and
+cost on Penpot are in [docs/compiler-cache.md](../docs/compiler-cache.md),
+"Conservative keys and invalidation".
+

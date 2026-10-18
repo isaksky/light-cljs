@@ -26,6 +26,7 @@ pub mod compiler_names;
 pub mod compiler_reader;
 pub mod core_operations;
 pub mod defines;
+pub mod dependency_manifest;
 pub mod dev_build;
 pub mod dev_repl;
 pub mod dev_server;

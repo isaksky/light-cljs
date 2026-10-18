@@ -13,6 +13,7 @@ use crate::analyzer::{
     analyze_with_macros,
 };
 use crate::compile_stats::{self, CompileStats};
+use crate::dependency_manifest::DependencyManifest;
 use crate::macro_host::{MacroHost, MacroImport};
 use crate::source_provider::{FileSourceProvider, LoadError, LoadRequest, Reload, SourceProvider};
 use crate::{
@@ -1081,17 +1082,29 @@ pub(crate) fn valid_namespace(name: &str) -> bool {
         })
 }
 
-pub(crate) fn locate_source(
+/// The file of namespace `name` in `roots`: each root at the first
+/// extension, then each at the next, until one has a file. With `tried`,
+/// also append each path considered, in that order, and whether it was
+/// present, for a dependency manifest.
+pub(crate) fn locate_source_traced(
     roots: &[PathBuf],
     name: &str,
     extensions: &[&str],
+    mut tried: Option<&mut Vec<crate::dependency_manifest::Candidate>>,
 ) -> Result<Option<PathBuf>, NamespaceCompileError> {
     let relative = name.replace('.', "/").replace('-', "_");
     for extension in extensions {
         let mut candidates = Vec::new();
         for root in roots {
             let path = root.join(format!("{relative}.{extension}"));
-            match fs::metadata(&path) {
+            let metadata = fs::metadata(&path);
+            if let Some(tried) = tried.as_deref_mut() {
+                tried.push(crate::dependency_manifest::Candidate {
+                    path: path.clone(),
+                    present: metadata.as_ref().is_ok_and(|m| m.is_file()),
+                });
+            }
+            match metadata {
                 Ok(metadata) if metadata.is_file() => {
                     let canonical = fs::canonicalize(&path).map_err(|e| {
                         NamespaceCompileError::new(format!(
@@ -1150,12 +1163,16 @@ struct Loader<'a> {
     stack: Vec<String>,
     ordered: Vec<NamespaceSource>,
     warning_mode: bool,
+    /// Lookups and requires for a dependency manifest, when one is asked for.
+    record: Option<crate::dependency_manifest::LoaderRecord>,
 }
 
 impl Loader<'_> {
     /// Ask the provider for `name`: its file name and text, or `None` when the
     /// provider has no such namespace.
-    fn find(&self, name: &str) -> Result<Option<(PathBuf, String)>, NamespaceCompileError> {
+    /// With a manifest record, the lookup also becomes one, whose id
+    /// [`Self::last_lookup`] answers next.
+    fn find(&mut self, name: &str) -> Result<Option<(PathBuf, String)>, NamespaceCompileError> {
         let requesting = self
             .stack
             .last()
@@ -1166,12 +1183,37 @@ impl Loader<'_> {
             requesting_file: None,
             reload: Reload::None,
         };
-        match self.sources.load(&request) {
+        let loaded = match &mut self.record {
+            Some(record) => {
+                let mut candidates = Vec::new();
+                let loaded = self.sources.load_traced(&request, &mut candidates);
+                record.lookups.push(crate::dependency_manifest::Lookup {
+                    namespace: name.to_owned(),
+                    candidates,
+                    found: loaded
+                        .as_ref()
+                        .ok()
+                        .and_then(|input| input.as_ref().map(|input| input.file.clone())),
+                });
+                loaded
+            }
+            None => self.sources.load(&request),
+        };
+        match loaded {
             Ok(Some(input)) => Ok(Some((PathBuf::from(input.file), input.source))),
             Ok(None) => Ok(None),
             Err(LoadError::Provider(message)) => Err(NamespaceCompileError::new(message)),
             Err(error) => Err(NamespaceCompileError::new(error.to_string())),
         }
+    }
+
+    /// The id of the last lookup [`Self::find`] recorded.
+    fn last_lookup(&self) -> crate::dependency_manifest::LookupId {
+        let count = self
+            .record
+            .as_ref()
+            .map_or(0, |record| record.lookups.len());
+        crate::dependency_manifest::LookupId(count.saturating_sub(1) as u32)
     }
 
     fn visit(&mut self, name: &str) -> Result<(), NamespaceCompileError> {
@@ -1197,9 +1239,14 @@ impl Loader<'_> {
             }
             LoadState::Unseen => {}
         }
-        let (path, source) = if let Some(found) = self.find(name)? {
+        use crate::dependency_manifest::{RequireForm, SourceOrigin};
+        let found = self.find(name)?;
+        let source_lookup = self.last_lookup();
+        let mut origin = SourceOrigin::Provider;
+        let (path, source) = if let Some(found) = found {
             found
         } else if let Some(source) = crate::compiler_libraries::source(name) {
+            origin = SourceOrigin::Bundled;
             (
                 PathBuf::from(format!("<first-party>/{}.cljs", name.replace('.', "/"))),
                 source.to_owned(),
@@ -1253,9 +1300,17 @@ impl Loader<'_> {
         // Closure libraries are JavaScript host namespaces. A source namespace
         // provided explicitly by the caller still takes precedence.
         let mut host_namespaces = Vec::new();
+        // For a manifest: each `goog.*` source check, and the host requires.
+        let mut goog_checks = Vec::new();
+        let mut recorded_requires = Vec::new();
         for spec in file.runtime_specs.clone() {
             let namespace = &spec.import.namespace;
-            if namespace.starts_with("goog.") && self.find(namespace)?.is_none() {
+            if !namespace.starts_with("goog.") {
+                continue;
+            }
+            let provided = self.find(namespace)?.is_some();
+            goog_checks.push((namespace.clone(), self.last_lookup()));
+            if !provided {
                 let node = spec.alias_node.unwrap_or(file.syntax.roots[0]);
                 file.add_js_refer(node, "goog".into(), "goog".into())?;
                 file.add_js_refer(node, namespace.clone(), namespace.clone())?;
@@ -1270,6 +1325,12 @@ impl Loader<'_> {
                         .map_or_else(|| original.clone(), |(_, to)| to.clone());
                     file.add_js_refer(node, local, format!("{namespace}.{original}"))?;
                 }
+                recorded_requires.push((
+                    namespace.clone(),
+                    namespace.clone(),
+                    RequireForm::Declared,
+                    vec![self.last_lookup()],
+                ));
                 host_namespaces.push(namespace.clone());
             }
         }
@@ -1285,13 +1346,32 @@ impl Loader<'_> {
             .retain(|(_, target)| !host_namespaces.contains(target));
         file.runtime_specs
             .retain(|spec| !host_namespaces.contains(&spec.import.namespace));
-        for dependency in &mut file.requires {
+        let mut forms: Vec<(String, RequireForm, Vec<_>)> = file
+            .requires
+            .iter()
+            .map(|dependency| {
+                let checks = goog_checks
+                    .iter()
+                    .filter(|(namespace, _)| namespace == dependency)
+                    .map(|(_, lookup)| *lookup)
+                    .collect();
+                (dependency.clone(), RequireForm::Declared, checks)
+            })
+            .collect();
+        for (index, dependency) in file.requires.iter_mut().enumerate() {
             if let Some(suffix) = dependency.strip_prefix("clojure.")
                 && dependency != "clojure.core"
-                && self.find(dependency)?.is_none()
+                && {
+                    let absent = self.find(dependency)?.is_none();
+                    forms[index].2.push(self.last_lookup());
+                    absent
+                }
             {
                 let rewritten = format!("cljs.{suffix}");
-                if self.find(&rewritten)?.is_some() {
+                let provided = self.find(&rewritten)?.is_some();
+                forms[index].2.push(self.last_lookup());
+                if provided {
+                    forms[index].1 = RequireForm::ClojureRewrite;
                     for (_, target) in &mut file.aliases {
                         if target == dependency {
                             *target = rewritten.clone();
@@ -1319,6 +1399,11 @@ impl Loader<'_> {
         {
             file.requires.push(LAZY_NAMESPACE.to_owned());
             file.require_spans.push(span);
+            forms.push((
+                LAZY_NAMESPACE.to_owned(),
+                RequireForm::ImplicitLazy,
+                Vec::new(),
+            ));
         }
         self.states.insert(name.to_owned(), LoadState::Loading);
         self.stack.push(name.to_owned());
@@ -1333,6 +1418,28 @@ impl Loader<'_> {
         }
         self.stack.pop();
         self.states.insert(name.to_owned(), LoadState::Loaded);
+        if let Some(record) = &mut self.record {
+            let mut requires: Vec<_> = forms
+                .into_iter()
+                .zip(&file.requires)
+                .map(|((written, form, lookups), target)| (written, target.clone(), form, lookups))
+                .collect();
+            requires.append(&mut recorded_requires);
+            record
+                .sources
+                .push(crate::dependency_manifest::LoadedSource {
+                    name: name.to_owned(),
+                    file: path.to_string_lossy().into_owned(),
+                    kind: if cljc {
+                        crate::dependency_manifest::SourceKind::Cljc
+                    } else {
+                        crate::dependency_manifest::SourceKind::Cljs
+                    },
+                    origin,
+                    lookup: source_lookup,
+                    requires,
+                });
+        }
         self.ordered.push(file);
         Ok(())
     }
@@ -1477,7 +1584,7 @@ pub fn analyze_namespace_entry_with_sources(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<(crate::Program, Vec<(PathBuf, String)>), NamespaceCompileError> {
-    analyze_from_roots(entry, source_roots, macros, options, warnings, None)
+    analyze_from_roots(entry, source_roots, macros, options, warnings, None, None)
 }
 
 /// [`analyze_namespace_entry_with_sources`], also recording in `stats` the
@@ -1496,7 +1603,44 @@ pub fn analyze_namespace_entry_with_stats(
 ) -> Result<(crate::Program, Vec<(PathBuf, String)>), NamespaceCompileError> {
     // The numbers describe this compilation alone, whatever `stats` held.
     *stats = CompileStats::default();
-    analyze_from_roots(entry, source_roots, macros, options, warnings, Some(stats))
+    analyze_from_roots(
+        entry,
+        source_roots,
+        macros,
+        options,
+        warnings,
+        Some(stats),
+        None,
+    )
+}
+
+/// The path and text of each source a program was analyzed from, by source
+/// index.
+pub type SourceFiles = Vec<(PathBuf, String)>;
+
+/// [`analyze_namespace_entry_with_sources`], also returning the
+/// [`DependencyManifest`] of the compilation: each namespace's dependencies
+/// by kind, with their reverse edges, and how each of its requires resolved,
+/// every candidate file tried included ([`crate::dependency_manifest`]).
+/// Without this call no manifest is recorded.
+pub fn analyze_namespace_entry_with_dependencies(
+    entry: &str,
+    source_roots: &[PathBuf],
+    macros: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+) -> Result<(crate::Program, SourceFiles, DependencyManifest), NamespaceCompileError> {
+    let mut manifest = DependencyManifest::default();
+    let (program, files) = analyze_from_roots(
+        entry,
+        source_roots,
+        macros,
+        options,
+        warnings,
+        None,
+        Some(&mut manifest),
+    )?;
+    Ok((program, files, manifest))
 }
 
 fn analyze_from_roots(
@@ -1506,6 +1650,7 @@ fn analyze_from_roots(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
     stats: Option<&mut CompileStats>,
+    manifest: Option<&mut DependencyManifest>,
 ) -> Result<(crate::Program, Vec<(PathBuf, String)>), NamespaceCompileError> {
     if !valid_namespace(entry) {
         return Err(NamespaceCompileError::new(
@@ -1542,6 +1687,7 @@ fn analyze_from_roots(
         options,
         warnings,
         stats,
+        manifest,
     )
 }
 
@@ -1558,7 +1704,7 @@ pub fn analyze_namespace_entry_with_provider(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<crate::Program, NamespaceCompileError> {
-    analyze_entry(entry, sources, macros, options, warnings, None).map(|(program, _)| program)
+    analyze_entry(entry, sources, macros, options, warnings, None, None).map(|(program, _)| program)
 }
 
 /// The program of an entry namespace and the path and text of each source,
@@ -1581,6 +1727,7 @@ fn analyze_entry(
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
     mut stats: Option<&mut CompileStats>,
+    manifest: Option<&mut DependencyManifest>,
 ) -> Result<(crate::Program, Vec<(PathBuf, String)>), NamespaceCompileError> {
     let timed = stats.is_some();
     let begun = compile_stats::start(timed);
@@ -1596,6 +1743,7 @@ fn analyze_entry(
         stack: Vec::new(),
         ordered: Vec::new(),
         warning_mode: options.warning_mode,
+        record: manifest.is_some().then(Default::default),
     };
     let mut resolve_parse = Duration::ZERO;
     let started = compile_stats::start(timed);
@@ -1610,6 +1758,12 @@ fn analyze_entry(
     if timed {
         analysis.deferred_time = Some(Duration::ZERO);
     }
+    // Analysis logs what it observes beyond the `ns` forms only while a
+    // manifest is recorded, and stops when this compilation ends, however.
+    let observations = manifest.is_some().then(|| {
+        *macros.dependency_log.borrow_mut() = Some(Default::default());
+        ObservationGuard(macros.dependency_log.clone())
+    });
     let mut index = 0;
     while index < loader.ordered.len() {
         let file = &loader.ordered[index];
@@ -1618,6 +1772,7 @@ fn analyze_entry(
             NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
         };
         let first_lazy = analysis.lazy_target_count();
+        macros.observe(|log| log.window = index as u32);
         let resolution = prepare_source(macros, file).map_err(at)?;
         let input = NamespaceInput {
             name: &file.name,
@@ -1652,6 +1807,9 @@ fn analyze_entry(
         let loaded = loader.ordered.len();
         let started = compile_stats::start(timed);
         for (namespace, span) in analysis.lazy_namespaces_since(first_lazy) {
+            if let Some(record) = &mut loader.record {
+                record.lazy.push((index as u32, namespace.clone()));
+            }
             loader.visit_lazy(&namespace, index).map_err(|error| {
                 if error.path.is_none() {
                     let file = &loader.ordered[index];
@@ -1688,12 +1846,39 @@ fn analyze_entry(
         }
         compile_stats::add(&mut stats.wall, begun);
     }
+    if let (Some(manifest), Some(record), Some(observations)) =
+        (manifest, loader.record.take(), observations)
+    {
+        let log = observations.0.borrow_mut().take().unwrap_or_default();
+        // The macro host's inventory, not the program's reader contexts, which
+        // a drained deferred unit can restore to a snapshot from before a
+        // later `defmacro`.
+        let owners: std::collections::HashSet<&str> = macros
+            .javascript_macros
+            .keys()
+            .filter_map(|key| key.split_once('/').map(|(owner, _)| owner))
+            .collect();
+        *manifest = crate::dependency_manifest::build(record, log, &program.namespaces, |name| {
+            owners.contains(name)
+        });
+    }
     let files = loader
         .ordered
         .into_iter()
         .map(|file| (file.path, file.source))
         .collect();
     Ok((program, files))
+}
+
+/// Stops a compilation's observation log when the compilation ends.
+struct ObservationGuard(
+    std::rc::Rc<std::cell::RefCell<Option<crate::dependency_manifest::ObservationLog>>>,
+);
+
+impl Drop for ObservationGuard {
+    fn drop(&mut self) {
+        self.0.borrow_mut().take();
+    }
 }
 
 /// The warnings about the headers of `files[from..]`, which analysis reports

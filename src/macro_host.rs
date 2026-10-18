@@ -125,6 +125,11 @@ pub struct MacroHost {
     pub(crate) reader_declared: std::rc::Rc<std::cell::RefCell<HashMap<String, (usize, usize)>>>,
     /// The compilation whose declared bindings the session holds.
     pub(crate) reader_generation: u64,
+    /// While a dependency manifest is recorded, what analysis observes
+    /// beyond the `ns` forms; shared by the analysis frames of the
+    /// compilation ([`crate::dependency_manifest`]).
+    pub(crate) dependency_log:
+        std::rc::Rc<std::cell::RefCell<Option<crate::dependency_manifest::ObservationLog>>>,
 }
 
 /// Every compilation in the process gets its own reader generation, so a
@@ -704,7 +709,17 @@ impl MacroHost {
             opaque_packages: self.opaque_packages,
             reader_declared: self.reader_declared.clone(),
             reader_generation: self.reader_generation,
+            dependency_log: self.dependency_log.clone(),
             ..Self::default()
+        }
+    }
+    /// Log an observation for the dependency manifest, if one is recorded.
+    pub(crate) fn observe(
+        &self,
+        record: impl FnOnce(&mut crate::dependency_manifest::ObservationLog),
+    ) {
+        if let Some(log) = self.dependency_log.borrow_mut().as_mut() {
+            record(log);
         }
     }
     pub(crate) fn defers_source_units(&self) -> bool {
@@ -1063,6 +1078,11 @@ impl MacroHost {
                 unreachable!()
             };
             let namespace = String::from_utf16(namespace.name())?;
+            if !matches!(namespace.as_str(), "cljs.core" | "clojure.core") {
+                self.observe(|log| {
+                    log.named(&namespace, crate::dependency_manifest::EdgeKinds::OBSERVED)
+                });
+            }
             let mut declarations = if operation == "ns-refers" {
                 self.reader_refers(&namespace)
                     .into_iter()

@@ -552,7 +552,16 @@ impl MacroHost {
             // A fully qualified macro of a namespace the program loaded: a macro
             // expansion names its own namespace's dependencies, as upstream.
             let key = format!("{qualifier}/{member}");
-            return self.javascript_macros.contains_key(&key).then_some(key);
+            let found = self.javascript_macros.contains_key(&key);
+            if found {
+                self.observe(|log| {
+                    log.named(
+                        qualifier,
+                        crate::dependency_manifest::EdgeKinds::MACRO_PROVIDER,
+                    )
+                });
+            }
+            return found.then_some(key);
         }
         if self.has_source_value(namespace, name)
             || self

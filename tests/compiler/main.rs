@@ -76,6 +76,7 @@ mod data_libraries;
 mod declare_values;
 mod deferred;
 mod definitions;
+mod dependency_manifest;
 mod destructuring_completion;
 mod dev_build;
 mod edn;

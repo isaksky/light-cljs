@@ -226,7 +226,14 @@ struct Recording {
 
 impl SourceProvider for Recording {
     fn load(&self, request: &LoadRequest) -> std::result::Result<Option<SourceInput>, LoadError> {
-        let source = self.roots.load(request)?;
+        self.load_traced(request, &mut Vec::new())
+    }
+    fn load_traced(
+        &self,
+        request: &LoadRequest,
+        tried: &mut Vec<light_cljs::dependency_manifest::Candidate>,
+    ) -> std::result::Result<Option<SourceInput>, LoadError> {
+        let source = self.roots.load_traced(request, tried)?;
         if let Some(source) = &source {
             self.files.borrow_mut().insert(
                 String::from_utf16_lossy(request.namespace.name()),

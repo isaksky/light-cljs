@@ -49,6 +49,18 @@ impl SourceInput {
 }
 pub trait SourceProvider {
     fn load(&self, request: &LoadRequest) -> Result<Option<SourceInput>, LoadError>;
+    /// [`Self::load`], also appending to `tried` each file considered, in
+    /// order, present or absent, for a dependency manifest
+    /// ([`crate::dependency_manifest`]). A provider without files to report
+    /// keeps this default, which reports none.
+    fn load_traced(
+        &self,
+        request: &LoadRequest,
+        tried: &mut Vec<crate::dependency_manifest::Candidate>,
+    ) -> Result<Option<SourceInput>, LoadError> {
+        let _ = tried;
+        self.load(request)
+    }
 }
 impl<F> SourceProvider for F
 where
@@ -71,12 +83,29 @@ impl FileSourceProvider {
 }
 impl SourceProvider for FileSourceProvider {
     fn load(&self, request: &LoadRequest) -> Result<Option<SourceInput>, LoadError> {
+        self.locate(request, None)
+    }
+    fn load_traced(
+        &self,
+        request: &LoadRequest,
+        tried: &mut Vec<crate::dependency_manifest::Candidate>,
+    ) -> Result<Option<SourceInput>, LoadError> {
+        self.locate(request, Some(tried))
+    }
+}
+impl FileSourceProvider {
+    fn locate(
+        &self,
+        request: &LoadRequest,
+        tried: Option<&mut Vec<crate::dependency_manifest::Candidate>>,
+    ) -> Result<Option<SourceInput>, LoadError> {
         let name = String::from_utf16_lossy(request.namespace.name());
         if !crate::compiler::valid_namespace(&name) {
             return Err(LoadError::Provider(format!("invalid namespace {name}")));
         }
-        let Some(path) = crate::compiler::locate_source(&self.roots, &name, &["cljs", "cljc"])
-            .map_err(|e| LoadError::Provider(e.to_string()))?
+        let Some(path) =
+            crate::compiler::locate_source_traced(&self.roots, &name, &["cljs", "cljc"], tried)
+                .map_err(|e| LoadError::Provider(e.to_string()))?
         else {
             return Ok(None);
         };
