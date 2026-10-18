@@ -224,6 +224,23 @@ run each), the generated names add 581,458 bytes to `cache.capture.bytes`
 counter and log once per namespace moves `cache.capture-ms` from 1,058 to
 1,103 (wall 22.18 and 22.29 s).
 
+## light.build services, cache off (light-cljs-312, October 18, 2026)
+
+Penpot `app.main --optimize none`, which calls no `light.build` service. On
+the cold path the change adds one site update per namespace (its name and
+file) and a JavaScript wrapper around each `__lightCompileUnit` call and unit
+initializer. Three alternating rounds of the parent `ebeb14e` and the change,
+release builds, at 1-minute load 6.1 to 10.5 with other workers active.
+Output is 33,588,607 bytes and byte-identical in every run.
+
+| Build | Wall (s), run 1-3 | Mean wall | Peak RSS (GB), run 1-3 | Mean RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `ebeb14e` | 26.54, 25.39, 26.20 | 26.04 | 1.002, 0.993, 1.039 | 1.011 |
+| Change | 26.51, 25.48, 26.28 | 26.09 | 1.004, 0.969, 1.038 | 1.004 |
+
+On the means, wall is +0.2% and RSS -0.8%, within the +3% and +5% gate and
+inside the run-to-run spread of either binary.
+
 ## Binary artifacts (light-cljs-320, October 18, 2026)
 
 `LIGHT_CLJS_CAPTURE_ARTIFACTS=encode` captures each namespace as `1` does,
