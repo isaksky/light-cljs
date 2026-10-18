@@ -539,18 +539,19 @@ changed" or "earlier namespaces changed". The components:
 - **Options.** Every `AnalysisOptions` field (the warning mode among them),
   assertions (`--elide-asserts`), `opaque_packages`, the reader features
   (`:cljs`), each compiler data reader's emitted source by tag and the
-  default reader's, an interactive host's name policy, and the logical macro
-  limits (`--macro-expansions`, `--macro-nodes`, the expansion depth), which
-  a macro can observe by catching their error. The time, memory, stack and
-  poll limits only decide whether work fails and are left out. A registered
+  default reader's, an interactive host's name policy, the logical macro
+  limits (`--macro-expansions`, `--macro-nodes`, the expansion depth) and the
+  evaluator stack and memory limits, which a macro can observe by catching
+  their error. The deadline and poll budget terminate work, which is never
+  stored, at machine-dependent points, and are left out. A registered
   data reader is always source, so it has a stable identity; there is no
   reader without one today.
 - **Config.** The `--config` fingerprint, `KeyEnvironment::with_config`.
   Until light-cljs-313 adds the flag, the empty map's.
 - **Source.** The name, whether it is the entry, the resolved file, `.cljs`
   or `.cljc`, provider or bundled, and the SHA-256 of the text.
-- **Resolution.** The lookup of the name with every candidate, present or
-  absent, and the file found; each require as written, its target, its form
+- **Resolution.** The lookup of the name, with the namespace that asked,
+  every candidate, present or absent, and the file found; each require as written, its target, its form
   and the lookups that decided it.
 - **Dependencies.** Every compilation edge but the coarse fallback's, with
   its kinds and the target's own key: a Merkle hash, so an edit to a helper
@@ -569,14 +570,18 @@ changed" or "earlier namespaces changed". The components:
 `cache_key::emission_key` is separate: the front-end key, the compiler, and
 every `ApplicationOptions` field (`--optimize`, defines, exports,
 `--pseudo-names`, the inlining and folding switches), the output layout
-(script, `--esm`, `--out-dir` chunks, `--reloadable`) and the source map
-output. The front-end key takes none of them. The chunk a namespace lands in
-follows from lazy edges, which are front-end inputs. Nothing is reused by
-the emission key until artifacts hold emitted sections.
+(script, `--esm`, `--out-dir` chunks, `--reloadable`), the source map
+output and, once the caller has it, a fingerprint of the module plan: which
+chunk holds the namespace and what it imports, which depends on the whole
+program's lazy roots rather than on the namespace's inputs. The front-end
+key takes none of them. Nothing is reused by the emission key until
+artifacts hold emitted sections, and the measurement path passes no module
+plan.
 
 `cache_key::revalidate` re-reads a namespace's inputs after it compiles: it
 repeats every lookup of its resolution through the source provider and
-compares the candidates and file found, compares the source text's SHA-256
+compares the candidates and file found, asking as the loader asked (the same
+requesting namespace), compares the source text's SHA-256
 with the text compiled, and re-reads each resource. It reports the first
 input that changed, and the store (light-cljs-321) refuses to publish then.
 Keys use content hashes only; nothing reads a timestamp.

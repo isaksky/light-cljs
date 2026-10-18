@@ -1189,6 +1189,7 @@ impl Loader<'_> {
                 let loaded = self.sources.load_traced(&request, &mut candidates);
                 record.lookups.push(crate::dependency_manifest::Lookup {
                     namespace: name.to_owned(),
+                    requester: requesting.to_owned(),
                     candidates,
                     found: loaded
                         .as_ref()

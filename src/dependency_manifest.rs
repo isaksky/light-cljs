@@ -104,6 +104,9 @@ pub struct Candidate {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Lookup {
     pub namespace: String,
+    /// The namespace whose require asked (the entry for the entry itself),
+    /// as the provider saw it in `LoadRequest::requesting_namespace`.
+    pub requester: String,
     pub candidates: Vec<Candidate>,
     pub found: Option<String>,
 }

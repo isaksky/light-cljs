@@ -351,10 +351,59 @@ fn each_analysis_option_changes_every_key() {
         &project.build_with(&mut host, AnalysisOptions::default()),
         "analysis options changed",
     );
-    // The resource limits decide only whether work fails.
+    for options in [
+        AnalysisOptions {
+            checked_arrays: true,
+            ..AnalysisOptions::default()
+        },
+        AnalysisOptions {
+            array_checks: light_cljs::analyzer::CheckedArrays::Warn,
+            ..AnalysisOptions::default()
+        },
+    ] {
+        every(
+            &project.build_with(&mut MacroHost::new(), options),
+            "analysis options changed",
+        );
+    }
+    let hosts: [fn(&mut MacroHost); 4] = [
+        |host| host.limits.generated_nodes += 1,
+        |host| host.limits.expansion_depth += 1,
+        // A macro can catch a stack overflow and return normally.
+        |host| host.evaluator_options.stack_limit *= 2,
+        |host| host.evaluator_options.memory_limit *= 2,
+    ];
+    for change in hosts {
+        let mut host = MacroHost::new();
+        change(&mut host);
+        every(
+            &project.build_with(&mut host, AnalysisOptions::default()),
+            "analysis options changed",
+        );
+    }
+    // Another implementation of a registered reader.
+    let mut replaced = MacroHost::new();
+    replaced
+        .register_compiler_data_reader(Name::new(Some("app"), "upper"), "(fn [s] s)")
+        .unwrap();
+    let mut first = MacroHost::new();
+    first
+        .register_compiler_data_reader(Name::new(Some("app"), "upper"), "(fn [s] s)")
+        .unwrap();
+    let first = project.build_with(&mut first, AnalysisOptions::default());
+    replaced
+        .register_compiler_data_reader(Name::new(Some("app"), "upper"), "(fn [s] [s])")
+        .unwrap();
+    assert!(
+        first
+            .mismatches(&project.build_with(&mut replaced, AnalysisOptions::default()))
+            .iter()
+            .all(|(_, mismatch)| mismatch == &Some(Mismatch::Options))
+    );
+    // The deadline and poll budget terminate work, which is never stored.
     let mut host = MacroHost::new();
     host.evaluator_options.timeout *= 2;
-    host.evaluator_options.memory_limit *= 2;
+    host.evaluator_options.poll_budget *= 2;
     assert!(
         only(&base.mismatches(&project.build_with(&mut host, AnalysisOptions::default())))
             .is_empty()
@@ -428,6 +477,7 @@ fn emission_options_change_only_the_emission_key() {
         layout: OutputLayout::Script,
         source_map: SourceMapOutput::None,
         include_sources: false,
+        modules: None,
     };
     let emission =
         |options: &EmissionOptions<'_>| cache_key::emission_key(&environment, key, options);
@@ -435,7 +485,28 @@ fn emission_options_change_only_the_emission_key() {
     let advanced = ApplicationOptions::new(OptimizationLevel::Advanced);
     let mut pseudo = ApplicationOptions::new(OptimizationLevel::None);
     pseudo.pseudo_names = true;
-    for application in [&advanced, &pseudo] {
+    let mut defined = ApplicationOptions::new(OptimizationLevel::None);
+    defined.defines.push(light_cljs::defines::Define {
+        name: "app.main/DEBUG".into(),
+        value: light_cljs::defines::DefineValue::Boolean(true),
+    });
+    let mut other_value = defined.clone();
+    other_value.defines[0].value = light_cljs::defines::DefineValue::Boolean(false);
+    let mut exported = ApplicationOptions::new(OptimizationLevel::None);
+    exported.exports.push(light_cljs::analyzer::GlobalId(0));
+    let mut no_inlining = ApplicationOptions::new(OptimizationLevel::None);
+    no_inlining.no_inlining = true;
+    let mut no_folding = ApplicationOptions::new(OptimizationLevel::None);
+    no_folding.no_folding = true;
+    for application in [
+        &advanced,
+        &pseudo,
+        &defined,
+        &other_value,
+        &exported,
+        &no_inlining,
+        &no_folding,
+    ] {
         keys.push(emission(&EmissionOptions {
             application,
             ..plain.clone()
@@ -464,6 +535,13 @@ fn emission_options_change_only_the_emission_key() {
         include_sources: true,
         ..plain.clone()
     }));
+    for modules in [[1; 32], [2; 32]] {
+        keys.push(emission(&EmissionOptions {
+            layout: OutputLayout::Chunks,
+            modules: Some(modules),
+            ..plain.clone()
+        }));
+    }
     keys.push(cache_key::emission_key(
         &environment,
         base.key("app.util"),
@@ -508,4 +586,75 @@ fn revalidation_notices_inputs_that_changed_after_reading() {
     // A file that would shadow app.a: its lookup would now go elsewhere.
     project.write(1, "app/a.cljs", "(ns app.a) (def a 1)");
     assert_eq!(check("app.a"), Err(Mismatch::Resolution));
+}
+
+/// Answers by the namespace that asks: `app.dep` has one text when
+/// `app.main` requires it and another for anyone else.
+struct Routed {
+    from_main: std::cell::RefCell<String>,
+}
+
+impl light_cljs::source_provider::SourceProvider for Routed {
+    fn load(
+        &self,
+        request: &light_cljs::source_provider::LoadRequest,
+    ) -> Result<
+        Option<light_cljs::source_provider::SourceInput>,
+        light_cljs::source_provider::LoadError,
+    > {
+        let text = |name: &[u16]| String::from_utf16_lossy(name);
+        let source = match (
+            text(request.namespace.name()).as_str(),
+            text(request.requesting_namespace.name()).as_str(),
+        ) {
+            ("app.main", _) => "(ns app.main (:require [app.dep :as d])) d/value".to_owned(),
+            ("app.dep", "app.main") => self.from_main.borrow().clone(),
+            ("app.dep", _) => "(ns app.dep) (def value :elsewhere)".to_owned(),
+            _ => return Ok(None),
+        };
+        let file = format!("{}.cljs", text(request.namespace.name()));
+        Ok(Some(light_cljs::source_provider::SourceInput::new(
+            file, source,
+        )))
+    }
+}
+
+#[test]
+fn revalidation_asks_as_the_loader_asked() {
+    let provider = Routed {
+        from_main: std::cell::RefCell::new("(ns app.dep) (def value :main)".into()),
+    };
+    let mut manifest = DependencyManifest::default();
+    let (_, files) = light_cljs::compiler::analyze_namespace_entry_recorded_with_provider(
+        ENTRY,
+        &provider,
+        &mut MacroHost::new(),
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+        light_cljs::compiler::EntryRecorders {
+            manifest: Some(&mut manifest),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let dep = manifest.id("app.dep").unwrap();
+    let lookup = manifest.lookup(manifest.record(dep).source.lookup);
+    assert_eq!(lookup.requester, "app.main");
+    let check = || cache_key::revalidate(&manifest, dep, &files[dep.0 as usize].1, &provider);
+    assert_eq!(check(), Ok(()));
+    // Only the route the loader took changed.
+    *provider.from_main.borrow_mut() = "(ns app.dep) (def value :changed)".into();
+    assert_eq!(check(), Err(Mismatch::Source));
+
+    // Who asked is part of the resolution key.
+    let environment = KeyEnvironment::new(&MacroHost::new(), AnalysisOptions::default());
+    let before = NamespaceKeys::compute(&environment, &manifest, &files, ENTRY);
+    let mut moved = manifest.clone();
+    let id = moved.record(dep).source.lookup;
+    moved.lookups[id.0 as usize].requester = "app.other".into();
+    let after = NamespaceKeys::compute(&environment, &moved, &files, ENTRY);
+    assert_eq!(
+        before.key(dep).mismatch(after.key(dep)),
+        Some(Mismatch::Resolution)
+    );
 }

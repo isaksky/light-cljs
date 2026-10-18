@@ -115,6 +115,8 @@ impl EmissionSettings {
             layout: self.layout.clone(),
             source_map: self.source_map.clone(),
             include_sources: self.include_sources,
+            // The chunk plan exists only once the program is emitted.
+            modules: None,
         }
     }
 }

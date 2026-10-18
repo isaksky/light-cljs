@@ -271,9 +271,11 @@ impl KeyEnvironment {
     ///   identity;
     /// - an interactive host's name policy;
     /// - the logical macro limits (`--macro-expansions`, `--macro-nodes` and
-    ///   the expansion depth), which a macro can observe by catching the
-    ///   error. The time, memory, stack and poll limits are not: they decide
-    ///   only whether work fails, and nothing that fails is stored.
+    ///   the expansion depth) and the evaluator stack and memory limits,
+    ///   which a macro can observe by catching the error (a caught
+    ///   `RangeError` returns normally). The deadline and poll budget are
+    ///   not: they terminate the work, which is never stored, and when they
+    ///   do depends on the machine.
     pub fn new(host: &MacroHost, options: AnalysisOptions) -> Self {
         let AnalysisOptions {
             warning_mode,
@@ -299,7 +301,9 @@ impl KeyEnvironment {
         fingerprint
             .number(expansions as u64)
             .number(generated_nodes as u64)
-            .number(expansion_depth as u64);
+            .number(expansion_depth as u64)
+            .number(host.evaluator_options.stack_limit as u64)
+            .number(host.evaluator_options.memory_limit as u64);
         Self {
             compiler: compiler_identity(host),
             options: fingerprint.finish(),
@@ -485,7 +489,7 @@ impl NamespaceKeys {
 
 fn lookup(fingerprint: &mut Fingerprint, manifest: &DependencyManifest, id: LookupId) {
     let lookup = manifest.lookup(id);
-    fingerprint.text(&lookup.namespace);
+    fingerprint.text(&lookup.namespace).text(&lookup.requester);
     candidates(fingerprint, &lookup.candidates);
     fingerprint.optional_text(lookup.found.as_deref());
 }
@@ -566,15 +570,20 @@ pub struct EmissionOptions<'a> {
     pub source_map: SourceMapOutput,
     /// `--source-map-include-sources`.
     pub include_sources: bool,
+    /// The fingerprint of the module plan the namespace is emitted into:
+    /// for chunked output, which chunk holds it and what that chunk imports,
+    /// which depend on the whole program's lazy roots and not on this
+    /// namespace's inputs alone. `None` for one-file output, or before the
+    /// plan exists.
+    pub modules: Option<Digest>,
 }
 
 /// The emission key of output built from the namespace whose front-end
 /// key is `front_end`: that key, the compiler, and every emission option
 /// (`--optimize`, defines, exports, `--pseudo-names` and the inlining and
-/// folding switches, the output layout and the source map). The chunk a
-/// namespace lands in follows from the program's lazy edges, which are
-/// front-end inputs. The artifacts hold pre-optimization IR, so until they
-/// hold emitted sections nothing is reused by this key.
+/// folding switches, the output layout, the module plan and the source
+/// map). The artifacts hold pre-optimization IR, so until they hold emitted
+/// sections nothing is reused by this key.
 pub fn emission_key(
     environment: &KeyEnvironment,
     front_end: &FrontEndKey,
@@ -628,13 +637,18 @@ pub fn emission_key(
         SourceMapOutput::Inline => fingerprint.number(2),
     };
     fingerprint.flag(options.include_sources);
+    match &options.modules {
+        Some(modules) => fingerprint.present().digest(modules),
+        None => fingerprint.absent(),
+    };
     fingerprint.finish()
 }
 
 /// Re-read the inputs of namespace `id` from `sources` after it compiled,
 /// and report the first that no longer matches what the compilation read:
 /// its source file and text (`text`, by source index), each lookup of its
-/// resolution, and each resource it read, by content. A store refuses to
+/// resolution, asked again as the loader asked it (the same requesting
+/// namespace), and each resource it read, by content. A store refuses to
 /// publish an artifact whose inputs changed during its compilation, since
 /// the key it would publish under describes inputs the artifact did not
 /// see. A bundled source is the compiler's own, and declared namespaces and
@@ -649,7 +663,7 @@ pub fn revalidate(
     let reload = |lookup: &crate::dependency_manifest::Lookup| {
         let request = LoadRequest {
             namespace: crate::compiler_data::Name::new(None, &lookup.namespace),
-            requesting_namespace: crate::compiler_data::Name::new(None, &record.name),
+            requesting_namespace: crate::compiler_data::Name::new(None, &lookup.requester),
             requesting_file: None,
             reload: Reload::None,
         };
