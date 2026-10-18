@@ -36,6 +36,9 @@ fn main() {
     for var in ["LIGHT_CLJS_V8_CACHE", "LIGHT_CLJS_V8_CACHE_DIR", "LIGHT_CLJS_V8_CACHE_SEED"] {
         println!("cargo:rerun-if-env-changed={var}");
     }
+    for var in key_env() {
+        println!("cargo:rerun-if-env-changed={var}");
+    }
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     if env::var_os("DOCS_RS").is_some() || env::var_os("DENO_TRYBUILD").is_some() {
         return upstream::main();
@@ -50,7 +53,15 @@ fn main() {
     let mode = env::var("LIGHT_CLJS_V8_CACHE").unwrap_or_default();
     assert!(matches!(mode.as_str(), "" | "on" | "off" | "require"),
         "LIGHT_CLJS_V8_CACHE must be on, off or require, not {mode:?}");
-    let Some(cache) = (mode != "off").then(cache_dir).flatten() else {
+    if is_asan() && env::var_os("OPT_LEVEL").unwrap_or_default() == "0" {
+        // Upstream checks this only on its source path; cached engines too.
+        panic!("v8 crate cannot be compiled with OPT_LEVEL=0 and ASAN.\nTry `[profile.dev.package.v8] opt-level = 1`.");
+    }
+    if mode == "off" {
+        return build_from_source(&manifest);
+    }
+    let Some(cache) = cache_dir() else {
+        assert!(mode != "require", "LIGHT_CLJS_V8_CACHE=require and no V8 cache directory; set LIGHT_CLJS_V8_CACHE_DIR");
         return build_from_source(&manifest);
     };
     let material = key_material(&manifest);
@@ -158,11 +169,13 @@ fn key_material(manifest: &Path) -> String {
         .filter(|name| name.starts_with("CARGO_FEATURE_")).collect();
     features.sort();
     text.push_str(&format!("features={}\n", features.join(",")));
-    let rustflags = var("CARGO_ENCODED_RUSTFLAGS");
-    let asan = rustflags.contains("-Z sanitizer=address") || rustflags.contains("-Zsanitizer=address");
-    text.push_str(&format!("asan={asan}\n"));
-    for name in KEY_ENV {
-        text.push_str(&format!("{name}={}\n", var(name)));
+    text.push_str(&format!("asan={}\n", is_asan()));
+    // Presence matters on its own (upstream tests DISABLE_CLANG by presence).
+    for name in key_env() {
+        match env::var_os(&name) {
+            Some(value) => text.push_str(&format!("{name}={}\n", value.to_string_lossy())),
+            None => text.push_str(&format!("{name} unset\n")),
+        }
     }
     for file in KEY_FILES {
         let content = fs::read_to_string(manifest.join(file))
@@ -170,6 +183,21 @@ fn key_material(manifest: &Path) -> String {
         text.push_str(&format!("file {file} {}\n{content}\n", content.len()));
     }
     text
+}
+
+/// `KEY_ENV` plus the extra clang arguments bindgen reads for this target.
+fn key_env() -> Vec<String> {
+    let target = env::var("TARGET").unwrap();
+    let mut names: Vec<String> = KEY_ENV.iter().map(|name| name.to_string()).collect();
+    names.push("BINDGEN_EXTRA_CLANG_ARGS".into());
+    names.push(format!("BINDGEN_EXTRA_CLANG_ARGS_{target}"));
+    names.push(format!("BINDGEN_EXTRA_CLANG_ARGS_{}", target.replace("-", "_")));
+    names
+}
+
+fn is_asan() -> bool {
+    let rustflags = env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+    rustflags.contains("-Z sanitizer=address") || rustflags.contains("-Zsanitizer=address")
 }
 
 fn fnv1a(bytes: &[u8]) -> u64 {
@@ -214,7 +242,8 @@ fn publish(cache: &Path, entry: &Path, material: &str, archive: &Path, binding: 
         fs::write(temporary.join("key.txt"), material)?;
         fs::write(temporary.join("sizes.txt"), sizes(&temporary)?)?;
         for file in [static_lib(), BINDING, "key.txt", "sizes.txt"] {
-            fs::File::open(temporary.join(file))?.sync_all()?;
+            // Windows flushes only through a handle with write access.
+            fs::OpenOptions::new().write(true).open(temporary.join(file))?.sync_all()?;
         }
         sync_dir(&temporary)?;
         if entry.exists() {

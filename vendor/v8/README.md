@@ -57,7 +57,8 @@ and host triples, the Cargo profile, the enabled crate features, address
 sanitizer use and the environment upstream turns into GN or bindgen arguments
 (`V8_FORCE_DEBUG`, `GN_ARGS`, `EXTRA_GN_ARGS`, `DISABLE_CLANG`,
 `CLANG_BASE_PATH`, `RUSTY_V8_MUSL_SYSROOT`, `RUSTY_V8_GLIBC_PREFIX`,
-`RUSTY_V8_BINDGEN_RESOURCE_DIR`). Both profiles build a release engine, but
+`RUSTY_V8_BINDGEN_RESOURCE_DIR`, and bindgen's `BINDGEN_EXTRA_CLANG_ARGS` with its
+target-specific forms), where an unset variable differs from an empty one. Both profiles build a release engine, but
 their archives differ in the build-directory names embedded in source paths,
 so the debug and release profiles keep separate entries. The directory name
 carries a hash of this material and the entry records it in full; an entry is
@@ -78,7 +79,8 @@ day. An entry whose recorded file sizes do not match is ignored and replaced.
 Settings, read by the build script:
 
 - `LIGHT_CLJS_V8_CACHE=require` fails the build on a miss instead of building
-  from source, for automated runs that must never spend hours on V8.
+  from source, also when no cache directory can be found, for automated runs
+  that must never spend hours on V8.
   `off` always builds from source and publishes nothing. `on` is the default.
 - `LIGHT_CLJS_V8_CACHE_DIR=<absolute path>` moves the cache.
 - `LIGHT_CLJS_V8_CACHE_SEED=<dir>` publishes, on a miss, the
