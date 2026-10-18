@@ -18,7 +18,7 @@
 //! - **options**: the analysis and macro options of [`KeyEnvironment::new`].
 //! - **config**: the fingerprint of the `--config` map
 //!   ([`crate::BuildConfiguration::fingerprint`]), the host's
-//!   ([`KeyEnvironment::new`], or [`KeyEnvironment::with_config`]).
+//!   ([`KeyEnvironment::new`]), which is also the `:config` broad view.
 //! - **source**: the namespace's name, whether it is the entry, its resolved
 //!   file (which diagnostics name), `.cljs` or `.cljc`, provider or bundled,
 //!   and the SHA-256 of its text.
@@ -32,12 +32,19 @@
 //!   helper's implementation that keeps its signature changes every
 //!   consumer's key.
 //! - **inputs**: the `light.build` resources (each candidate, the identity,
-//!   the SHA-256 and length of the text, or absence), declared namespaces and
-//!   provider fingerprints it depends on.
+//!   the SHA-256 and length of the text, or absence), declared namespaces,
+//!   provider fingerprints, the configuration's fingerprint and the broad
+//!   views it depends on.
 //! - **view**: the incoming view the dependency manifest observed: for a
-//!   coarse namespace, the chain of every earlier namespace's name and key in
-//!   source order ([`NamespaceKeys`]), and for each name it looked for and
-//!   did not find loaded, whether an earlier namespace has that name now.
+//!   coarse namespace or one with the `:declarations` broad view, the chain
+//!   of every earlier namespace's name and key in source order
+//!   ([`NamespaceKeys`]); for one with the `:namespaces` view, the build's
+//!   inventory, every namespace's name and source identity (file, `.cljs` or
+//!   `.cljc`, provider or bundled), later ones too, which an edit to a
+//!   namespace's text leaves alone;
+//!   and for each name it looked for and did not find loaded, whether an
+//!   earlier namespace has that name now. The `:config` view is the config
+//!   component.
 //!
 //! [`revalidate`] re-reads a namespace's inputs after it compiles, so that a
 //! store does not publish an artifact whose inputs changed meanwhile.
@@ -45,7 +52,7 @@
 use crate::analyzer::AnalysisOptions;
 use crate::application::{ApplicationOptions, OptimizationLevel};
 use crate::dependency_manifest::{
-    DependencyManifest, EdgeKinds, ExternalInput, LookupId, NamespaceId, RequireForm,
+    BroadView, DependencyManifest, EdgeKinds, ExternalInput, LookupId, NamespaceId, RequireForm,
     RequireTarget, ResolvedResource, ResourceDependency, SourceKind, SourceOrigin,
 };
 use crate::macro_host::MacroHost;
@@ -309,11 +316,6 @@ impl KeyEnvironment {
             config: host.build_configuration().fingerprint(),
         }
     }
-
-    /// The environment with the fingerprint of the `--config` map.
-    pub fn with_config(self, config: Digest) -> Self {
-        Self { config, ..self }
-    }
 }
 
 /// The keys of a compilation's namespaces, by [`NamespaceId`], computed in
@@ -324,6 +326,9 @@ pub struct NamespaceKeys {
     keys: Vec<FrontEndKey>,
     /// `chain[i]` covers namespaces `0..i`.
     chain: Vec<Digest>,
+    /// The `:namespaces` broad view, every namespace's name and source
+    /// identity, once a namespace with that view needs it.
+    inventory: Option<Digest>,
 }
 
 impl NamespaceKeys {
@@ -454,15 +459,30 @@ impl NamespaceKeys {
 
         let mut inputs = Fingerprint::new("light-cljs inputs");
         inputs.count(record.external_inputs.len());
+        let (mut namespaces, mut declarations) = (false, false);
         for input in manifest.external_inputs(id) {
             external_input(&mut inputs, input);
+            match input {
+                ExternalInput::View(BroadView::Namespaces) => namespaces = true,
+                ExternalInput::View(BroadView::Declarations) => declarations = true,
+                _ => {}
+            }
         }
         components[Component::Inputs as usize] = inputs.finish();
 
+        // The broad views carry no fingerprint of their own. `:declarations`
+        // is the coarse fallback's view, every earlier namespace's key;
+        // `:namespaces` is the build's inventory, every name and source
+        // identity, later namespaces' too, which a content edit leaves alone;
+        // `:config` is the config component.
         let mut view = Fingerprint::new("light-cljs view");
-        view.flag(record.coarse);
-        if record.coarse {
+        view.flag(record.coarse).flag(declarations).flag(namespaces);
+        if record.coarse || declarations {
             view.digest(&self.earlier(id));
+        }
+        if namespaces {
+            let inventory = *self.inventory.get_or_insert_with(|| inventory(manifest));
+            view.digest(&inventory);
         }
         view.count(record.absent.len());
         for name in &record.absent {
@@ -484,6 +504,22 @@ impl NamespaceKeys {
         self.keys.push(key);
         &self.keys[id.0 as usize]
     }
+}
+
+/// The `:namespaces` broad view of `manifest`: every namespace's name and
+/// source identity (file, `.cljs` or `.cljc`, provider or bundled), in source
+/// order.
+fn inventory(manifest: &DependencyManifest) -> Digest {
+    let mut inventory = Fingerprint::new("light-cljs namespace inventory");
+    inventory.count(manifest.namespaces.len());
+    for record in &manifest.namespaces {
+        inventory
+            .text(&record.name)
+            .text(&record.source.file)
+            .flag(record.source.kind == SourceKind::Cljc)
+            .flag(record.source.origin == SourceOrigin::Bundled);
+    }
+    inventory.finish()
 }
 
 fn lookup(fingerprint: &mut Fingerprint, manifest: &DependencyManifest, id: LookupId) {
@@ -540,9 +576,9 @@ fn external_input(fingerprint: &mut Fingerprint, input: &ExternalInput) {
         }
         ExternalInput::View(view) => {
             fingerprint.number(4).number(match view {
-                crate::dependency_manifest::BroadView::Namespaces => 0,
-                crate::dependency_manifest::BroadView::Declarations => 1,
-                crate::dependency_manifest::BroadView::Config => 2,
+                BroadView::Namespaces => 0,
+                BroadView::Declarations => 1,
+                BroadView::Config => 2,
             });
         }
     }

@@ -1,10 +1,11 @@
 //! Namespace cache keys (docs/compiler-cache.md, "Conservative keys and
 //! invalidation"): each input of a namespace's front-end key changes it and
 //! names itself as the first mismatch, an edit outside the closure or an
-//! emission option changes no front-end key, and re-validation after a
-//! compilation notices inputs that changed meanwhile.
+//! emission option changes no front-end key, each `--config` value and
+//! `light.build` broad view reaches the keys of the namespaces that depend
+//! on it, and re-validation after a compilation notices inputs that changed
+//! meanwhile.
 use crate::temp_dir::TempDir;
-use light_cljs::MacroHost;
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::application::{ApplicationOptions, OptimizationLevel};
 use light_cljs::cache_key::{
@@ -13,8 +14,9 @@ use light_cljs::cache_key::{
 };
 use light_cljs::compiler::{SourceFiles, analyze_namespace_entry_with_dependencies};
 use light_cljs::compiler_data::Name;
-use light_cljs::dependency_manifest::{DependencyManifest, NamespaceId};
+use light_cljs::dependency_manifest::{BroadView, DependencyManifest, ExternalInput, NamespaceId};
 use light_cljs::source_provider::FileSourceProvider;
+use light_cljs::{BuildConfiguration, MacroHost};
 use std::{fs, path::PathBuf};
 
 struct Project(Vec<TempDir>);
@@ -63,12 +65,15 @@ impl Build {
 const ENTRY: &str = "app.main";
 
 impl Project {
+    fn empty() -> Self {
+        Self(vec![TempDir::new("cache-keys"), TempDir::new("cache-keys")])
+    }
     /// `app.main` requires `app.a`, which nothing else needs, then `app.b`,
     /// which expands `lib.macros/loud`, whose expansion runs the helper
     /// `lib.helpers/shout` and reads `lib/suffix.txt`, then `app.util`.
     /// `app.other` is in the roots but outside the closure.
     fn new() -> Self {
-        let project = Self(vec![TempDir::new("cache-keys"), TempDir::new("cache-keys")]);
+        let project = Self::empty();
         project.write(0, "app/a.cljs", "(ns app.a) (def a 1)");
         project.write(
             0,
@@ -135,6 +140,76 @@ impl Project {
     }
     fn build(&self) -> Build {
         self.build_with(&mut MacroHost::new(), AnalysisOptions::default())
+    }
+    /// The build with the `--config` values `entries`, in that order.
+    fn configured(&self, entries: &[(&str, &str)]) -> Build {
+        let mut configuration = BuildConfiguration::new();
+        for (key, value) in entries {
+            configuration.insert(key, value).unwrap();
+        }
+        let mut host = MacroHost::new();
+        host.set_build_configuration(configuration);
+        self.build_with(&mut host, AnalysisOptions::default())
+    }
+}
+
+/// Test discovery through helper values: `app.main` requires `app.a`, which
+/// loads first and nothing else needs, `app.tail`, which loads last, and
+/// `app.b`, which expands
+/// `lib.reflect/reflect`. The expansion reads the compile-time values of
+/// `lib.listed`, `lib.declared` and `lib.configured`, which declare the
+/// `:namespaces`, `:declarations` and `:config` broad views. None of the
+/// three runs a source macro, so none is coarse.
+fn views() -> Project {
+    let project = Project::empty();
+    project.write(0, "app/a.cljs", "(ns app.a) (def a 1)");
+    for (name, view) in [
+        ("listed", "namespaces"),
+        ("declared", "declarations"),
+        ("configured", "config"),
+    ] {
+        // The application loads the namespace too, where light.build is an
+        // error.
+        project.write(
+            0,
+            &format!("lib/{name}.cljs"),
+            &format!(
+                "(ns lib.{name} (:require [light.build :as b]))
+(def value (when (exists? js/lightCljsBuild) (b/depend-on! :{view}) :{name}))"
+            ),
+        );
+    }
+    project.write(
+        0,
+        "lib/reflect.cljs",
+        "(ns lib.reflect (:require [lib.listed :as l] [lib.declared :as d] [lib.configured :as c]))
+(defmacro reflect [] (str l/value d/value c/value))",
+    );
+    project.write(
+        0,
+        "app/b.cljs",
+        "(ns app.b (:require [lib.reflect :refer [reflect]])) (def b (reflect))",
+    );
+    project.write(
+        0,
+        "app/main.cljs",
+        "(ns app.main (:require [app.a :as a] [app.b :as b] [app.tail :as t])) (str a/a b/b t/t)",
+    );
+    project.write(0, "app/tail.cljs", "(ns app.tail) (def t 1)");
+    project
+}
+
+/// Assert that every namespace's key in `build` differs from `base`'s
+/// first by `reason`.
+fn every(base: &Build, build: &Build, reason: &str) {
+    let mismatches = base.mismatches(build);
+    assert_eq!(mismatches.len(), base.names().len());
+    for (name, mismatch) in mismatches {
+        assert_eq!(
+            mismatch.map(|m| m.to_string()).as_deref(),
+            Some(reason),
+            "{name}"
+        );
     }
 }
 
@@ -300,17 +375,7 @@ fn an_edit_outside_the_closure_changes_no_key() {
 fn each_analysis_option_changes_every_key() {
     let project = Project::new();
     let base = project.build();
-    let every = |build: &Build, reason: &str| {
-        let mismatches = base.mismatches(build);
-        assert_eq!(mismatches.len(), base.names().len());
-        for (name, mismatch) in mismatches {
-            assert_eq!(
-                mismatch.map(|m| m.to_string()).as_deref(),
-                Some(reason),
-                "{name}"
-            );
-        }
-    };
+    let every = |build: &Build, reason: &str| every(&base, build, reason);
     let warnings = AnalysisOptions {
         warning_mode: true,
         ..AnalysisOptions::default()
@@ -409,11 +474,8 @@ fn each_analysis_option_changes_every_key() {
             .is_empty()
     );
 
-    // The configuration and the compiler.
+    // The compiler.
     let environment = KeyEnvironment::new(&MacroHost::new(), AnalysisOptions::default());
-    let mut configured = project.build();
-    configured.rekey(&environment.with_config([3; 32]));
-    every(&configured, "config changed");
     let mut other = project.build();
     other.rekey(&KeyEnvironment {
         compiler: [4; 32],
@@ -421,6 +483,166 @@ fn each_analysis_option_changes_every_key() {
     });
     every(&other, "compiler changed");
     assert_eq!(environment.config, cache_key::empty_config());
+}
+
+#[test]
+fn configuration_values_change_every_key() {
+    let project = Project::new();
+    let base = project.build();
+    let dev = project.configured(&[("app/flavor", ":dev")]);
+    every(&base, &dev, "config changed");
+    // The key's config component is the fingerprint of the values the host
+    // was given, which the manifest also records on every namespace.
+    let fingerprint = {
+        let mut configuration = BuildConfiguration::new();
+        configuration.insert("app/flavor", ":dev").unwrap();
+        configuration.fingerprint()
+    };
+    let configuration = ExternalInput::Configuration {
+        sha256: fingerprint,
+    };
+    for name in dev.names() {
+        let id = dev.id(&name);
+        assert_eq!(
+            dev.keys.key(id).components[cache_key::Component::Config as usize],
+            fingerprint,
+            "{name}"
+        );
+        assert!(
+            dev.manifest
+                .external_inputs(id)
+                .any(|input| input == &configuration),
+            "{name}"
+        );
+    }
+    // The same value again, and the same map given in another order, keep
+    // every key; another value or another key changes every one.
+    assert!(only(&dev.mismatches(&project.configured(&[("app/flavor", ":dev")]))).is_empty());
+    let both = project.configured(&[("app/flavor", ":dev"), ("app/n", "3")]);
+    assert!(
+        only(&both.mismatches(&project.configured(&[("app/n", "3"), ("app/flavor", ":dev")])))
+            .is_empty()
+    );
+    every(&dev, &both, "config changed");
+    every(
+        &dev,
+        &project.configured(&[("app/flavor", ":prod")]),
+        "config changed",
+    );
+    every(
+        &dev,
+        &project.configured(&[("app/kind", ":dev")]),
+        "config changed",
+    );
+}
+
+#[test]
+fn each_broad_view_reaches_the_key_of_the_namespaces_that_declare_it() {
+    let project = views();
+    let base = project.build();
+    assert_eq!(
+        base.names(),
+        [
+            "app.a",
+            "light.build",
+            "lib.listed",
+            "lib.declared",
+            "lib.configured",
+            "lib.reflect",
+            "app.b",
+            "app.tail",
+            "app.main"
+        ]
+    );
+    let views_of = |name: &str| -> Vec<BroadView> {
+        base.manifest
+            .external_inputs(base.id(name))
+            .filter_map(|input| match input {
+                ExternalInput::View(view) => Some(*view),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(views_of("lib.listed"), [BroadView::Namespaces]);
+    assert_eq!(views_of("lib.declared"), [BroadView::Declarations]);
+    assert_eq!(views_of("lib.configured"), [BroadView::Config]);
+    for name in [
+        "lib.listed",
+        "lib.declared",
+        "lib.configured",
+        "lib.reflect",
+    ] {
+        assert!(!base.manifest.record(base.id(name)).coarse, "{name}");
+    }
+
+    // An edit to the text of a namespace that loads earlier changes the
+    // `:declarations` view, but not the `:namespaces` inventory.
+    project.write(0, "app/a.cljs", "(ns app.a) (def a 2)");
+    let edited = project.build();
+    assert_eq!(
+        only(&base.mismatches(&edited)),
+        [
+            ("app.a", "source changed".into()),
+            ("lib.declared", "earlier namespaces changed".into()),
+            ("lib.reflect", "dependency lib.declared changed".into()),
+            ("app.b", "dependency lib.declared changed".into()),
+            ("app.main", "dependency app.a changed".into()),
+        ]
+    );
+
+    // The same namespace found in another root changes the inventory too.
+    fs::remove_file(project.path(0, "app/a.cljs")).unwrap();
+    project.write(1, "app/a.cljs", "(ns app.a) (def a 2)");
+    let moved = project.build();
+    assert_eq!(
+        only(&edited.mismatches(&moved)),
+        [
+            ("app.a", "source changed".into()),
+            ("lib.listed", "earlier namespaces changed".into()),
+            ("lib.declared", "earlier namespaces changed".into()),
+            ("lib.reflect", "dependency lib.listed changed".into()),
+            ("app.b", "dependency lib.listed changed".into()),
+            ("app.main", "dependency app.a changed".into()),
+        ]
+    );
+
+    // The inventory is the whole build's: a namespace that loads later can
+    // be seen by a watch step, which recompiles against the retained
+    // program. Its text is no part of it, and it is no earlier namespace of
+    // the `:declarations` view.
+    project.write(0, "app/tail.cljs", "(ns app.tail) (def t 2)");
+    let edited = project.build();
+    assert_eq!(
+        only(&moved.mismatches(&edited)),
+        [
+            ("app.tail", "source changed".into()),
+            ("app.main", "dependency app.tail changed".into()),
+        ]
+    );
+    // Moving it changes `lib.listed`'s key, which `lib.declared`, loading
+    // after it, sees among the earlier keys.
+    fs::remove_file(project.path(0, "app/tail.cljs")).unwrap();
+    project.write(1, "app/tail.cljs", "(ns app.tail) (def t 2)");
+    assert_eq!(
+        only(&edited.mismatches(&project.build())),
+        [
+            ("lib.listed", "earlier namespaces changed".into()),
+            ("lib.declared", "earlier namespaces changed".into()),
+            ("lib.reflect", "dependency lib.listed changed".into()),
+            ("app.b", "dependency lib.listed changed".into()),
+            ("app.tail", "source changed".into()),
+            ("app.main", "dependency app.b changed".into()),
+        ]
+    );
+
+    // `:config` is the configuration's fingerprint, which every namespace's
+    // key has whether or not it declares the view.
+    let moved = project.build();
+    every(
+        &moved,
+        &project.configured(&[("app/flavor", ":dev")]),
+        "config changed",
+    );
 }
 
 #[test]

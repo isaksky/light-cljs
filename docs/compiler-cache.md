@@ -332,9 +332,9 @@ service. These choices settle what the section leaves open:
 - A view is `ExternalInput::View(BroadView)`, recorded and attributed like a
   resource read: on the namespace being analyzed, and as a helper read on the
   namespaces of the deferred units running and so on their reverse closures.
-  The views carry no fingerprint of their own; the keys (light-cljs-319)
-  compute them: for `:namespaces` the inventory of the build's names and
-  source identities, for `:declarations` the declarations of every earlier
+  The views carry no fingerprint of their own; the keys (light-cljs-319,
+  completed by light-cljs-354) compute them: for `:namespaces` the
+  inventory of the build's names and source identities, for `:declarations` the declarations of every earlier
   namespace, which a namespace that runs a source macro
   already depends on through `EdgeKinds::COARSE`, and for `:config` the
   configuration fingerprint every namespace already has. Finer views are a
@@ -587,8 +587,9 @@ changed" or "earlier namespaces changed". The components:
   stored, at machine-dependent points, and are left out. A registered
   data reader is always source, so it has a stable identity; there is no
   reader without one today.
-- **Config.** The `--config` fingerprint, `KeyEnvironment::with_config`.
-  Until light-cljs-313 adds the flag, the empty map's.
+- **Config.** The fingerprint of the host's `--config` map
+  (`MacroHost::build_configuration`), which `KeyEnvironment::new` takes.
+  It is also the `:config` broad view.
 - **Source.** The name, whether it is the entry, the resolved file, `.cljs`
   or `.cljc`, provider or bundled, and the SHA-256 of the text.
 - **Resolution.** The lookup of the name, with the namespace that asked,
@@ -602,11 +603,23 @@ changed" or "earlier namespaces changed". The components:
   identity, SHA-256 and length or absence, and stability; a declared
   namespace; a provider's token and fingerprint. `ResolvedResource` holds
   the SHA-256 since this pellet, replacing light-cljs-312's temporary
-  FNV-1a. Configuration and broad views join here with light-cljs-313.
+  FNV-1a. Since light-cljs-313, the configuration's fingerprint and each
+  broad view's tag.
 - **View.** Whether the namespace is coarse and, if so, a chain digest of
   every earlier namespace's name and key in source order (one hash per
   namespace, so the coarse edges cost nothing extra), and for each name it
   looked for and did not find, whether an earlier namespace has it now.
+  *As built (light-cljs-354):* a namespace with the `:declarations` broad
+  view gets the same chain whether or not it is coarse, since a helper's
+  view is attributed to namespaces that ran no source macro. One with the
+  `:namespaces` view gets the build's inventory, every namespace's name and
+  source identity (file, `.cljs` or `.cljc`, provider or bundled) in source
+  order, later ones included, since a watch step recompiles against a
+  retained program that holds them. A namespace that appears anywhere in the
+  build, goes or moves changes its key, and an edit to a namespace's text
+  does not. The keys still come in source order: the inventory takes no
+  key, only the manifest's records, so it needs the compilation's complete
+  manifest.
 
 `cache_key::emission_key` is separate: the front-end key, the compiler, and
 every `ApplicationOptions` field (`--optimize`, defines, exports,
