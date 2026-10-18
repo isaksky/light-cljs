@@ -2210,8 +2210,17 @@ fn analyze_entry(
         }
         compile_stats::add(&mut stats.wall, begun);
     }
+    // With the cache, installed namespaces observed nothing: the records it
+    // keyed every namespace with, stored ones for those, are the manifest.
+    let mut manifest = manifest;
+    if let (Some(manifest), Some(cache), Some(record)) =
+        (manifest.as_deref_mut(), cache.as_deref(), &loader.record)
+    {
+        *manifest = cache.manifest(&record.lazy);
+    }
     if let (Some(manifest), Some(record), Some(observations)) =
         (manifest, loader.record.take(), observations)
+        && cache.is_none()
     {
         let log = observations.0.borrow_mut().take().unwrap_or_default();
         // The macro host's inventory, not the program's reader contexts, which

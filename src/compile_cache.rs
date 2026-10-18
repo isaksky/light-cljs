@@ -127,6 +127,16 @@ impl CompileCache {
         std::mem::take(&mut self.counts)
     }
 
+    /// The dependency manifest of the compilation, once it has ended, from
+    /// the records the cache keyed its namespaces with
+    /// ([`ManifestPrefix::to_manifest`]).
+    pub fn manifest(
+        &self,
+        lazy: &[(u32, String)],
+    ) -> crate::dependency_manifest::DependencyManifest {
+        self.prefix.to_manifest(lazy)
+    }
+
     /// Bound the cache directory after the build succeeded, keeping what it
     /// used and published.
     pub fn finish(&self) {

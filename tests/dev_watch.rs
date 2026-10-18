@@ -82,6 +82,32 @@ impl Watch {
             fs::copy(Path::new(EXAMPLE).join(&file), dir.join("src").join(&file)).unwrap();
         }
         setup(&dir.join("src"));
+        let (child, lines) = Self::spawn(&dir, args);
+        let mut watch = Self {
+            dir,
+            child,
+            lines,
+            built: String::new(),
+            startup: Vec::new(),
+        };
+        watch.started();
+        watch
+    }
+
+    /// Stop the watch and start `--watch` again with `args` on the same
+    /// sources and output directory, as a developer restarts it: with
+    /// `--cache-dir`, it finds the artifacts the last run published.
+    fn restart(&mut self, args: &[&str]) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        fs::remove_dir_all(self.dir.join("before")).unwrap();
+        (self.child, self.lines) = Self::spawn(&self.dir, args);
+        self.started();
+    }
+
+    /// A `--watch` process with `args` on the sources of `dir`, and its
+    /// stderr lines.
+    fn spawn(dir: &Path, args: &[&str]) -> (Child, Receiver<String>) {
         let mut child = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
             .args(["--watch", "--entry", "app.main", "--source-root"])
             .arg(dir.join("src"))
@@ -104,13 +130,13 @@ impl Watch {
                 }
             }
         });
-        let mut watch = Self {
-            dir,
-            child,
-            lines,
-            built: String::new(),
-            startup: Vec::new(),
-        };
+        (child, lines)
+    }
+
+    /// Wait for the line that reports the first build, and copy that build
+    /// to `before`.
+    fn started(&mut self) {
+        let watch = self;
         let (startup, line) = watch.until("light-cljs: built ");
         watch.startup = startup;
         assert!(
@@ -129,7 +155,6 @@ impl Watch {
             )
             .unwrap();
         }
-        watch
     }
 
     /// The stderr lines up to the first one that starts with `prefix`, and
@@ -1471,4 +1496,398 @@ fn watch_refuses_missing_options_and_a_failing_first_build() {
         );
     }
     assert!(!dir.join("dev/manifest.json").exists());
+}
+
+/// The value of `key` in the `--stats` report among `lines`.
+fn stat<'a>(lines: &'a [String], key: &str) -> &'a str {
+    lines
+        .iter()
+        .find_map(|line| line.strip_prefix(key)?.strip_prefix(' '))
+        .unwrap_or_else(|| panic!("{key} in {lines:#?}"))
+}
+
+/// The `[macro-calls-by-namespace]` rows of the `--stats` report among
+/// `lines`, as `NAMESPACE COUNT`.
+fn macro_calls(lines: &[String]) -> Vec<&str> {
+    lines
+        .iter()
+        .skip_while(|line| *line != "[macro-calls-by-namespace]")
+        .skip(1)
+        .take_while(|line| !line.starts_with('['))
+        .map(String::as_str)
+        .collect()
+}
+
+/// The names a step line `light-cljs: recompiled NAMES in X ms` lists.
+fn recompiled(line: &str) -> &str {
+    line.strip_prefix("light-cljs: recompiled ")
+        .and_then(|rest| rest.rsplit_once(" in "))
+        .map(|(names, _)| names)
+        .unwrap_or_else(|| panic!("no step in {line:?}"))
+}
+
+/// The same sources watched twice with `args`: `cold` without a cache, as
+/// every watch started before the persistent cache, and `warm` restarted
+/// with `--cache-dir` over the artifacts its first run published, so that
+/// its session starts from installed namespaces
+/// (`DevSession::compile_entry`).
+struct Pair {
+    cold: Watch,
+    warm: Watch,
+}
+
+impl Pair {
+    fn start(label: &str, args: &[&str], setup: impl Fn(&Path)) -> Self {
+        // Labels of one length, so that both builds quote paths alike.
+        let cold = Watch::start_with_args(&format!("{label}-c"), args, &setup);
+        let mut warm = Watch::start_with_args(&format!("{label}-w"), args, &setup);
+        let cache = warm.dir.join("cache");
+        let cache = cache.to_str().unwrap().to_owned();
+        let mut cached = args.to_vec();
+        cached.extend(["--cache-dir", &cache]);
+        warm.restart(&cached);
+        cached.push("--stats");
+        warm.restart(&cached);
+        // Both start from byte-identical dev builds.
+        assert_eq!(cold.files(), warm.files());
+        Self { cold, warm }
+    }
+
+    /// Restart both with `args`, `warm` with the cache, and check that their
+    /// builds are byte-identical again.
+    fn restart(&mut self, args: &[&str]) {
+        self.cold.restart(args);
+        let cache = self.warm.dir.join("cache");
+        let cache = cache.to_str().unwrap().to_owned();
+        let mut cached = args.to_vec();
+        cached.extend(["--cache-dir", &cache, "--stats"]);
+        self.warm.restart(&cached);
+        assert_eq!(self.cold.files(), self.warm.files());
+    }
+
+    /// Save `text` as `file` in both, and return what the step recompiled,
+    /// after checking that both recompiled the same namespaces into the
+    /// same files, byte for byte, and printed the same lines.
+    fn save(&mut self, file: &str, text: &str) -> String {
+        let [cold, warm] = self.save_each(file, text);
+        assert_eq!(cold, warm);
+        cold
+    }
+
+    /// Save `text` as `file` in both, check that both printed the same
+    /// lines and, when they recompiled the same namespaces, wrote the same
+    /// files, and return what each recompiled.
+    fn save_each(&mut self, file: &str, text: &str) -> [String; 2] {
+        let (cold_lines, cold) = self.cold.save(file, text);
+        let (warm_lines, warm) = self.warm.save(file, text);
+        assert_eq!(cold_lines, warm_lines);
+        if recompiled(&cold) == recompiled(&warm) {
+            assert_eq!(self.cold.files(), self.warm.files());
+        }
+        [recompiled(&cold).to_owned(), recompiled(&warm).to_owned()]
+    }
+
+    /// The driver's record of each first build given the units `files` of
+    /// its build now, the same for both.
+    fn reload(&self, files: &[&str]) -> String {
+        let record = self.cold.reload(files);
+        assert_eq!(record, self.warm.reload(files));
+        record
+    }
+}
+
+impl Watch {
+    /// The files of the dev build now, by name.
+    fn files(&self) -> std::collections::BTreeMap<String, String> {
+        fs::read_dir(self.dir.join("dev"))
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (
+                    entry.file_name().to_string_lossy().into_owned(),
+                    fs::read_to_string(entry.path()).unwrap(),
+                )
+            })
+            .collect()
+    }
+}
+
+/// A watch restarted with `--cache-dir` installs every namespace its last
+/// run published, running none of their macros, and its session compiles
+/// the first edits as a session that loaded the program itself: an edit
+/// that expands a cached namespace's macro, whose expansion demands a
+/// helper of another cached namespace; a redefinition in a cached
+/// namespace; and edits to the cached macro and helper namespaces, whose
+/// consumers the manifest of installed namespaces still reaches. Every unit
+/// is byte-identical to a cold-started watch's, and the driver runs both
+/// builds alike.
+#[test]
+fn a_warm_started_session_compiles_first_edits_as_a_cold_one() {
+    let mut pair = Pair::start("dev-watch-warm", &[], helper_example);
+    let report = &pair.warm.startup;
+    assert_eq!(stat(report, "cache.hits"), "5", "{report:#?}");
+    assert_eq!(stat(report, "cache.misses"), "0");
+    assert_eq!(stat(report, "macro-calls"), "0");
+    assert_eq!(
+        macro_calls(report),
+        [
+            "app.state 0",
+            "app.helper 0",
+            "app.macros 0",
+            "app.view 0",
+            "app.main 0"
+        ]
+    );
+    assert_eq!(pair.reload(&[]), record("start\nclicks: [1]\n"));
+    // `labeled` of the installed `app.macros` expands, calling
+    // `app.helper/separator` at compile time in the session's engine.
+    let view = pair.warm.source("app/view.cljs").replace(
+        "(js/console.log (describe card))",
+        "(js/console.log (labeled \"render\" (describe card)))",
+    );
+    assert_eq!(pair.save("app/view.cljs", &view), "app.view");
+    assert_eq!(
+        pair.reload(&["app.view.js"]),
+        record("start\nclicks: [1]\nreloading\nrender: [clicks: [2]]\n")
+    );
+    // Steps publish nothing: a restart analyzes the edited namespace and
+    // the one whose key covers its key, and installs the others.
+    pair.restart(&[]);
+    let report = &pair.warm.startup;
+    assert_eq!(stat(report, "cache.hits"), "3", "{report:#?}");
+    assert_eq!(stat(report, "cache.miss.source"), "1");
+    assert_eq!(stat(report, "cache.miss.dependencies"), "1");
+    let calls = macro_calls(report);
+    assert!(
+        ["app.state 0", "app.helper 0", "app.macros 0"]
+            .iter()
+            .all(|row| calls.contains(row)),
+        "{calls:#?}"
+    );
+    assert_eq!(pair.reload(&[]), record("start\nrender: [clicks: [1]]\n"));
+    // A redefinition of an installed Var replaces it for its callers.
+    let state = pair
+        .warm
+        .source("app/state.cljs")
+        .replace("update :clicks inc", "update :clicks + 10");
+    assert_eq!(pair.save("app/state.cljs", &state), "app.state");
+    assert_eq!(
+        pair.reload(&["app.state.js", "app.view.js"]),
+        record("start\nrender: [clicks: [1]]\nreloading\nrender: [clicks: [11]]\n")
+    );
+    // The installed macro namespace itself: its consumer compiles again.
+    let macros = pair
+        .warm
+        .source("app/macros.cljs")
+        .replace("(str \"[\" text \"]\")", "(str \"<\" text \">\")");
+    assert_eq!(
+        pair.save("app/macros.cljs", &macros),
+        "app.macros, app.view"
+    );
+    // And the installed helper the macro calls.
+    assert_eq!(
+        pair.save(
+            "app/helper.cljs",
+            "(ns app.helper)\n\n(defn separator [] \" = \")\n"
+        ),
+        "app.helper, app.view"
+    );
+    assert_eq!(
+        pair.reload(&[
+            "app.state.js",
+            "app.helper.js",
+            "app.macros.js",
+            "app.view.js"
+        ]),
+        record("start\nrender: [clicks: [1]]\nreloading\nrender = <clicks = <11>>\n")
+    );
+    let [now, fresh] = pair.warm.now_and_fresh();
+    assert_eq!(now, fresh);
+    assert_eq!(now, pair.cold.now_and_fresh()[0]);
+}
+
+/// A warm-started watch keeps the always-compile and blocker rules: a
+/// `^:dev/always` namespace and its consumers bypass the cache at startup
+/// and every step compiles them again, with the macro state of an installed
+/// macro namespace, which its compile-time units build in the session's
+/// engine on demand, counting from the startup build as a cold session's
+/// does; a `--cache-blocker` and its consumers bypass the cache at startup,
+/// and a step recompiles them only when what they depend on changed.
+#[test]
+fn a_warm_started_session_keeps_the_always_and_blocker_rules() {
+    let mut pair = Pair::start("dev-watch-warm-always", &[], always_example);
+    let report = &pair.warm.startup;
+    assert_eq!(stat(report, "cache.hits"), "3", "{report:#?}");
+    assert_eq!(stat(report, "cache.bypass.always"), "2");
+    assert_eq!(
+        macro_calls(report),
+        [
+            "app.main 6",
+            "app.config 1",
+            "app.state 0",
+            "app.macros 0",
+            "app.view 0"
+        ]
+    );
+    assert_eq!(pair.reload(&[]), record("config 1\nstart\nclicks: [1]\n"));
+    for count in [2, 3] {
+        let state = pair.warm.source("app/state.cljs");
+        assert_eq!(
+            pair.save("app/state.cljs", &format!("{state}\n")),
+            "app.state, app.config, app.main"
+        );
+        assert_eq!(
+            pair.reload(&["app.state.js", "app.config.js", "app.main.js"]),
+            record(&format!(
+                "config 1\nstart\nclicks: [1]\nreloading\nconfig {count}\nclicks: [2]\n"
+            ))
+        );
+    }
+
+    let mut pair = Pair::start(
+        "dev-watch-warm-block",
+        &["--cache-blocker", "app.macros"],
+        |_| {},
+    );
+    let report = &pair.warm.startup;
+    assert_eq!(stat(report, "cache.hits"), "1", "{report:#?}");
+    assert_eq!(stat(report, "cache.bypass.blocked"), "3");
+    let state = pair.warm.source("app/state.cljs");
+    assert_eq!(
+        pair.save("app/state.cljs", &format!("{state}\n")),
+        "app.state"
+    );
+    let macros = pair
+        .warm
+        .source("app/macros.cljs")
+        .replace("~label \": \"", "~label \" = \"");
+    assert_eq!(
+        pair.save("app/macros.cljs", &macros),
+        "app.macros, app.view"
+    );
+    assert_eq!(
+        pair.reload(&["app.state.js", "app.macros.js", "app.view.js"]),
+        record("start\nclicks: [1]\nreloading\nclicks = [2]\n")
+    );
+}
+
+/// A program whose entry reaches a namespace only through a lazy reference,
+/// which the build loads after the entry: a warm-started session retains
+/// none of the build's bookkeeping for it, so an edit of the entry writes
+/// the unit a cold session writes.
+#[test]
+fn a_warm_started_session_with_a_lazy_target_writes_cold_units() {
+    let mut pair = Pair::start("dev-watch-warm-lazy", &[], |src| {
+        fs::write(
+            src.join("app/extra.cljs"),
+            "(ns app.extra)\n\n(defn start [] :extra)\n",
+        )
+        .unwrap();
+        let path = src.join("app/main.cljs");
+        let main = fs::read_to_string(&path).unwrap().replace(
+            "[app.view :as view]))",
+            "[app.view :as view]\n            [light.lazy :as lazy]))\n\n(def extra (lazy/loadable app.extra/start))",
+        );
+        fs::write(&path, main).unwrap();
+    });
+    // `light.lazy` is one of them.
+    assert_eq!(stat(&pair.warm.startup, "cache.hits"), "6");
+    let main = pair.warm.source("app/main.cljs");
+    assert_eq!(
+        pair.save(
+            "app/main.cljs",
+            &main.replacen(
+                "(state/click!)",
+                "(js/console.log \"again\")\n  (state/click!)",
+                1
+            )
+        ),
+        "app.main"
+    );
+    assert_eq!(
+        pair.reload(&["app.main.js"]),
+        record("start\nclicks: [1]\nreloading\nagain\nclicks: [2]\n")
+    );
+}
+
+/// The helper-resource fixture of
+/// `a_retained_helper_resource_is_read_again_after_each_change`, started
+/// warm, and warm with `app.view` blocked, so that the helper whose
+/// initializer read the resource is installed while its consumer is
+/// analyzed. A helper value the session computed holds the resource, so a
+/// change compiles the helper again with its consumers, as in a cold
+/// session; after a warm start with every namespace installed the session
+/// has computed none, and the first change compiles the namespaces whose
+/// keys cover the resource, whose expansion computes the value afresh.
+#[test]
+fn a_warm_started_session_reads_a_helper_resource_again() {
+    let setup = |src: &Path| {
+        fs::write(src.join("app/separator.txt"), ": ").unwrap();
+        fs::write(
+            src.join("app/helper.cljs"),
+            "(ns app.helper (:require [light.build :as b]))\n\n(def separator (when (exists? js/lightCljsBuild) (b/resource \"app/separator.txt\")))\n",
+        )
+        .unwrap();
+        let macros = fs::read_to_string(src.join("app/macros.cljs")).unwrap();
+        let macros = macros
+            .replace(
+                "\"A macro and the helper function its expansion calls.\")",
+                "\"A macro and the helper function its expansion calls.\"\n  (:require [app.helper :as helper]))",
+            )
+            .replace("~label \": \"", "~label ~helper/separator");
+        fs::write(src.join("app/macros.cljs"), macros).unwrap();
+    };
+    for (label, args) in [
+        ("dev-watch-warm-resource", &[][..]),
+        (
+            "dev-watch-warm-resblock",
+            &["--cache-blocker", "app.view"][..],
+        ),
+    ] {
+        let mut pair = Pair::start(label, args, setup);
+        for (index, separator) in [" = ", " - ", " + "].into_iter().enumerate() {
+            let [cold, warm] = pair.save_each("app/separator.txt", separator);
+            assert_eq!(cold, "app.helper, app.macros, app.view, app.main");
+            if index == 0 && args.is_empty() {
+                assert_eq!(warm, "app.view, app.main");
+            } else {
+                assert_eq!(warm, cold, "{label}");
+            }
+            let [now, fresh] = pair.warm.now_and_fresh();
+            assert_eq!(now, record(&format!("start\nclicks{separator}[1]\n")));
+            assert_eq!(now, fresh);
+        }
+    }
+}
+
+/// A namespace whose source is a symbolic link to a file outside the
+/// source roots is watched after a warm start too: editing the target, and
+/// saving a file over the link, each recompile it as in a cold session.
+#[test]
+fn a_warm_started_session_watches_a_linked_source() {
+    let mut pair = Pair::start("dev-watch-warm-link", &[], |src| {
+        let target = src.parent().unwrap().join("elsewhere.cljs");
+        fs::rename(src.join("app/view.cljs"), &target).unwrap();
+        std::os::unix::fs::symlink(&target, src.join("app/view.cljs")).unwrap();
+    });
+    let view = fs::read_to_string(pair.warm.dir.join("elsewhere.cljs")).unwrap();
+    let linked = view.replace(
+        "(js/console.log (describe card))",
+        "(js/console.log \"linked:\" (describe card))",
+    );
+    for watch in [&mut pair.cold, &mut pair.warm] {
+        fs::write(watch.dir.join("elsewhere.cljs"), &linked).unwrap();
+        let (_, step) = watch.until("light-cljs: recompiled ");
+        assert_eq!(recompiled(&step), "app.view");
+    }
+    assert_eq!(pair.cold.files(), pair.warm.files());
+    assert_eq!(
+        pair.reload(&["app.view.js"]),
+        record("start\nclicks: [1]\nreloading\nlinked: clicks: [2]\n")
+    );
+    let saved = view.replace(
+        "(js/console.log (describe card))",
+        "(js/console.log \"saved:\" (describe card))",
+    );
+    assert_eq!(pair.save("app/view.cljs", &saved), "app.view");
 }

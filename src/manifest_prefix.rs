@@ -257,6 +257,29 @@ impl ManifestPrefix {
         self.append(record, rows, macros)
     }
 
+    /// The whole compilation's [`DependencyManifest`] from these records,
+    /// once every namespace is in, with the `lazy` references its loader
+    /// followed as `(source, target)`: the manifest `--watch` revises when
+    /// its startup build used the persistent cache, where installed
+    /// namespaces observe nothing and their stored records stand in.
+    pub fn to_manifest(&self, lazy: &[(u32, String)]) -> DependencyManifest {
+        crate::dependency_manifest::from_rows(
+            self.namespaces.clone(),
+            self.lookups.clone(),
+            self.inputs.clone(),
+            self.rows
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|&(target, kinds)| (target.0, kinds))
+                        .collect()
+                })
+                .collect(),
+            lazy,
+            &self.helper_inputs,
+        )
+    }
+
     /// Record whether namespace `id` declares macros, once it is installed.
     pub fn set_macros(&mut self, id: NamespaceId, macros: bool) {
         self.macros[id.0 as usize] = macros;

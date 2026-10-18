@@ -79,6 +79,8 @@ struct Watch {
     lines: Receiver<String>,
     /// `127.0.0.1:PORT`.
     address: String,
+    /// The further `--watch` options it runs with.
+    args: Vec<String>,
 }
 
 impl Watch {
@@ -90,24 +92,37 @@ impl Watch {
             let file = format!("app/{name}.cljs");
             fs::copy(Path::new(EXAMPLE).join(&file), src.join(&file)).unwrap();
         }
-        let (process, lines, address) = Self::spawn(&dir, "0");
+        let (process, lines, address) = Self::spawn(&dir, "0", &[]);
         Self {
             dir,
             process,
             lines,
             address,
+            args: Vec::new(),
         }
+    }
+
+    /// [`Self::start`] with `--cache-dir`, restarted once, so that its
+    /// session starts from the namespaces the cache installs.
+    fn start_warm(label: &str) -> Self {
+        let mut watch = Self::start(label);
+        let cache = watch.dir.join("cache").to_str().unwrap().to_owned();
+        watch.args = vec!["--cache-dir".into(), cache];
+        watch.restart();
+        watch.restart();
+        watch
     }
 
     /// Watch `dir`'s `src` into its `dev` and serve it on `port`: the
     /// process, its stderr lines after the build, and its address.
-    fn spawn(dir: &Path, port: &str) -> (Process, Receiver<String>, String) {
+    fn spawn(dir: &Path, port: &str, args: &[String]) -> (Process, Receiver<String>, String) {
         let mut child = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
             .args(["--watch", "--entry", "app.main", "--source-root"])
             .arg(dir.join("src"))
             .arg("--out-dir")
             .arg(dir.join("dev"))
             .args(["--poll-ms", "20", "--serve", port])
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -131,7 +146,7 @@ impl Watch {
         let _ = self.process.0.kill();
         let _ = self.process.0.wait();
         let port = self.address.rsplit_once(':').unwrap().1.to_owned();
-        let (process, lines, address) = Self::spawn(&self.dir, &port);
+        let (process, lines, address) = Self::spawn(&self.dir, &port, &self.args);
         assert_eq!(address, self.address);
         (self.process, self.lines) = (process, lines);
     }
@@ -340,6 +355,96 @@ fn a_form_round_trips_through_a_node_runtime() {
     assert_eq!(short.eval("(range 10)"), ["(0 1 2 ...)", ";; ref 3"]);
     // Each session keeps its own history.
     assert_eq!(short.value("*2"), "nil");
+}
+
+/// A watch started warm from `--cache-dir` compiles REPL forms in an
+/// installed namespace as a cold one does: with the aliases, refers and
+/// records the namespace's `ns` form and definitions gave it, the macro it
+/// refers expanding in the session's engine, and a redefinition seen by the
+/// installed namespace's callers.
+#[test]
+fn repl_forms_compile_in_installed_namespaces() {
+    let inputs = [
+        "(in-ns 'app.view)",
+        "(:clicks @state/state)",
+        "(labeled \"x\" 2)",
+        "(describe (->Card \"c\" 3))",
+        "(defn render [] (labeled \"r\" (:clicks @state/state)))",
+        "(in-ns 'app.main)",
+        "(view/render)",
+        "(str *ns*)",
+    ];
+    let mut printed = Vec::new();
+    for watch in [
+        Watch::start("dev-repl-cold"),
+        Watch::start_warm("dev-repl-warm"),
+    ] {
+        let _runtime = watch.runtime();
+        let mut repl = watch.repl(&[]);
+        printed.push(
+            inputs
+                .iter()
+                .map(|input| repl.eval(input))
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert_eq!(
+        printed[0]
+            .iter()
+            .map(|lines| lines.join("\n"))
+            .collect::<Vec<_>>(),
+        [
+            "nil",
+            "1",
+            "\"x: [2]\"",
+            "\"c: [3]\"",
+            "#object[Function]\n;; ref 1",
+            "nil",
+            "\"r: [1]\"",
+            "\"app.main\""
+        ]
+    );
+    assert_eq!(printed[0], printed[1]);
+}
+
+/// A cached namespace whose file adds requires after its `ns` form, with
+/// `ns*` and a top-level `require`, keeps their aliases in a warm-started
+/// watch's session, as a cold one has them.
+#[test]
+fn repl_forms_keep_the_later_directives_of_installed_namespaces() {
+    let mut printed = Vec::new();
+    for warm in [false, true] {
+        let mut watch = if warm {
+            Watch::start_warm("dev-repl-later-w")
+        } else {
+            Watch::start("dev-repl-later-c")
+        };
+        let main = fs::read_to_string(watch.dir.join("src/app/main.cljs")).unwrap();
+        let main = main.replacen(
+            "\n(defn ^:dev/before-load",
+            "\n(ns* (:require '[clojure.string :as text]))\n\n(require '[clojure.set :as sets])\n\n(defn ^:dev/before-load",
+            1,
+        );
+        watch.save("app/main.cljs", &main);
+        // The edited `app.main` is published by a start, and installed by
+        // the next.
+        watch.restart();
+        if warm {
+            watch.restart();
+        }
+        let _runtime = watch.runtime();
+        let mut repl = watch.repl(&[]);
+        printed.push(
+            [
+                "(str *ns*)",
+                "(text/upper-case \"a\")",
+                "(sets/union #{1} #{2})",
+            ]
+            .map(|input| repl.eval(input).join("\n")),
+        );
+    }
+    assert_eq!(printed[0], ["\"app.main\"", "\"A\"", "#{1 2}"]);
+    assert_eq!(printed[0], printed[1]);
 }
 
 /// A definition made at the REPL is seen by a namespace a save reloads, and

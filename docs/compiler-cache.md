@@ -1,8 +1,8 @@
 # Persistent compiler cache design
 
 Status: implemented behind `--cache-dir` for `--compile --entry`
-(light-cljs-322), opt-in during rollout; development sessions (Phase 4) are
-not cached yet. This design builds on `b51af6a` and the existing
+(light-cljs-322) and for `--watch` startup (light-cljs-327), opt-in during
+rollout. This design builds on `b51af6a` and the existing
 [development workflow](dev-workflow.md).
 
 Cache completed namespace compilation in a versioned binary format. Reuse it
@@ -1219,6 +1219,56 @@ work, which validates first edits after the install, and a seeded session
 should reuse that installation. The quadratic session load itself, per-form
 copies of the whole retained program, is light-cljs-348.
 
+*As built (light-cljs-327):* with `--cache-dir`, `--watch` takes the seeded
+path, and only with it: without the flag the startup is unchanged, a V8
+build and then the session's own load. `DevSession::compile_entry` runs the
+startup build once in the session's macro host, whose engine is QuickJS, with
+the same `CompileCache` lookup, keys and policy as `--compile` (the key's
+compiler component names the engine, so these artifacts are not a V8
+`--compile`'s). An installed namespace's declarations, Var bindings and
+macros (with their generations) go to that host, and its compile-time units
+to that host's compilation session, prepared, to run in the session's
+engine when an expansion demands them: no catalog crosses engines. The
+session then takes the build's program as its retained program (without the
+build's entry-value global, which a session never has), marks every source
+loaded, records what the runtime registered as the build registers it, and
+applies each namespace's top-level directives (`ns`, `ns*`, `require`,
+`in-ns`) in load order through their ordinary directive path, which loads
+nothing (their requires are loaded) and sets what the session's own load
+sets: aliases, requires, refers and excludes in the compiler, the macro
+host's interactive imports, renames, namespace imports and namespace
+metadata. The directives are found by syntax, so only they are read; a
+directive inside a top-level `do` or a reader conditional is not replayed
+until a step compiles its file again. The watch's manifest is
+`ManifestPrefix::to_manifest`, the records the cache keyed each namespace
+with (stored ones for installed namespaces, which observe nothing), with
+the loader's lazy edges, and each input a helper unit read during the build
+given to that helper's namespace and its reverse closure, as the whole
+manifest gives it, since the session retains the helper's value. An
+installed helper has computed nothing in the session, so after a warm start
+the first change to a resource it read compiles only the namespaces whose
+keys cover it, whose expansion computes the value afresh; later changes
+reach the helper as in a cold session. The session's provider records each
+provider-loaded namespace at the file the loader resolved, a symbolic
+link's target included. `tests/dev_watch.rs` (`a_warm_started_session_*`)
+and `tests/dev_repl.rs` (`repl_forms_compile_in_installed_namespaces`)
+start a cold watch and a warm one on the same sources and require
+byte-identical units after each step and the same driver records: an edit
+expanding an installed macro whose expansion calls an installed helper, a
+redefinition in an installed namespace, edits to the installed macro and
+helper namespaces, a restart with mixed hits and misses, a lazy target, a
+helper-read resource, a linked source, later `ns*` and `require` directives,
+`^:dev/always` (the installed macro namespace's compile-time state counts
+from the startup build, as a cold session's does) and a blocker.
+
+Watch steps do not read or publish artifacts: a step compiles one file's
+forms in the session's scope, not a namespace analysis whose capture an
+artifact describes, so a restart analyzes what changed since the cache was
+last filled. Deleting the cache directory never affects a live session; a
+fresh uncached start is a restart without `--cache-dir`. Numbers are in
+[benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md), "Watch
+startup from the cache".
+
 Native clean compilation uses V8 and the interactive session currently uses
 QuickJS. Registering cached definitions in a new evaluator does not transfer
 mutated roots or live function handles. Initial session loading may skip cached
@@ -1438,6 +1488,12 @@ persistence remain out of scope.
    accepts `--cache-blocker NS` for the evaluator's settings. Runtime-only requirers are not
    recompiled. Measured in [benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md),
    "Watch invalidation".
+
+   *As built (light-cljs-327), the session half:* `--watch --cache-dir DIR`
+   (with `--cache-blocker NS`) starts its session from one cached startup
+   build in the session's engine, as "Development sessions and engine
+   boundaries" describes; `--reloadable` takes both flags since
+   light-cljs-322.
 5. **Optimize measured costs.** Consider optional emitted-code sections, more
    precise invalidation, or compression only when end-to-end benchmarks justify
    the complexity. No stage depends on a general effect-tracking system.

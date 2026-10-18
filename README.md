@@ -180,10 +180,17 @@ to a namespace its macros require recompiles the namespaces that use its
 macros, a change to a file a macro read through `light.build` recompiles the
 namespaces that read it, every step recompiles the namespaces marked
 `^:dev/always` and those that depend on them, and a form that fails prints its
-error and leaves the previous unit. `--cache-blocker NS` (repeatable) is
-given to the cache's policy evaluator; a blocker never makes a step
-recompile. One line per step goes to stderr
-([Watch](docs/evaluation.md#watch)).
+error and leaves the previous unit. With `--cache-dir DIR` the watch starts
+from the persistent compiler cache (below): its startup build runs once, in
+the session's own engine, installing every namespace whose artifact is
+current instead of analyzing it, and the session compiles later edits
+against that build as if it had loaded the namespaces itself. Steps neither
+read nor write the cache, so a restart analyzes what changed since the
+cache was last filled; a fresh uncached start is a restart without
+`--cache-dir`, and deleting the directory never touches a running watch.
+`--cache-blocker NS` (repeatable) keeps NS and its compilation consumers
+out of the cache; a blocker never makes a step recompile. One line per step
+goes to stderr ([Watch](docs/evaluation.md#watch)).
 
 ```sh
 cargo run --quiet -- --watch --entry app.main --source-root examples/dev --out-dir /tmp/light-dev
@@ -298,7 +305,7 @@ each; `light_cljs::compiler::analyze_namespace_entry_with_stats` returns the
 same numbers as a `CompileStats`.
 
 `--cache-dir DIR` with `--compile --entry` (also with `--reloadable`, `--esm`
-and `--out-dir`, at every `--optimize` level) keeps a persistent compiler
+and `--out-dir`, at every `--optimize` level) and with `--watch` keeps a persistent compiler
 cache in DIR, created when missing. A namespace whose source, resolution,
 dependencies, `light.build` inputs, options, `--config` map and compiler are
 unchanged is installed from its stored artifact instead of being analyzed,
@@ -319,7 +326,10 @@ commit it. With `--stats` the report adds `cache.hits`, `cache.misses` with
 validation, decode and write times, then a `[cache-misses-and-bypasses]`
 table of up to 20 rows each, such as `app.main miss source: source changed`
 or `app.view bypass blocked app.macros > app.view`. Embedders call
-`light_cljs::compiler::analyze_namespace_entry_cached`.
+`light_cljs::compiler::analyze_namespace_entry_cached`, or
+`light_cljs::dev_session::DevSession::compile_entry` for a session. The
+cache key names the macro engine, so `--watch`, whose session compiles with
+QuickJS, and a V8 `--compile` keep separate artifacts in one directory.
 
 `--config KEY=EDN` (repeatable) with `--compile --entry`, `--reloadable` or
 `--watch` gives macros a build configuration value, which they read with

@@ -153,6 +153,20 @@ impl InteractiveCompiler {
     pub(crate) fn program(&self) -> Option<&Program> {
         self.program.as_ref()
     }
+    /// Retain `program`, a whole-program build this compiler's host made,
+    /// as the program later forms compile against.
+    pub(crate) fn adopt_program(&mut self, program: &Program) {
+        let mut retained = crate::program_fragment::interactive_resolution_snapshot(program);
+        // The global the build's root reads the entry's value from, when
+        // lazily reached sources follow the entry, is the last one and no
+        // definition: a session that loaded the program has none.
+        if let Some(last) = retained.globals.last()
+            && last.name == crate::analyzer::ENTRY_VALUE
+        {
+            retained.globals.truncate(retained.globals.len() - 1);
+        }
+        self.program = Some(retained);
+    }
     /// Whether the session has defined or declared `namespace/name`.
     pub(crate) fn defines(&self, namespace: &str, name: &str) -> bool {
         self.globals()

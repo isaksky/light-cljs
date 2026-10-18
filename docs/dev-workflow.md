@@ -416,9 +416,9 @@ order:
   again, so the consumers it gains compile in the same step.
 
 A disk bypass does not invalidate memory: `^:light-cljs/no-cache` and
-`--watch --cache-blocker NS` (repeatable, given to the policy evaluator; the
-persistent cache itself comes to `--watch` with light-cljs-327) only keep a
-namespace out of the persistent cache, so they add nothing to a step. Runtime-only requirers are reloaded, not recompiled, only with
+`--watch --cache-blocker NS` (repeatable, given to the policy evaluator and
+to the startup build's cache) only keep a namespace out of the persistent
+cache, so they add nothing to a step. Runtime-only requirers are reloaded, not recompiled, only with
 `--reload-dependents`, as before.
 
 ### The server and the client
@@ -990,7 +990,10 @@ these; a finding that contradicts one goes under "Open questions".
   and session loading only, by Phase 4 of the cache design
   ([compiler-cache.md](compiler-cache.md)). A watch step still recompiles
   against the retained program; the cache does not replace retained
-  in-memory state.
+  in-memory state. As built (light-cljs-327): `--watch --cache-dir DIR`
+  compiles its startup build once, in the session's engine, with the cache,
+  and the session starts from that build (`DevSession::compile_entry`);
+  steps neither read nor write the cache.
 
 ## Open questions
 

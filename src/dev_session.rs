@@ -137,6 +137,20 @@ pub struct DevSession {
     registering: Cell<bool>,
 }
 
+/// The build [`DevSession::compile_entry`] starts a session from.
+pub struct EntryStart<'a> {
+    /// The entry namespace.
+    pub entry: &'a str,
+    /// The source roots, as `--source-root` names them.
+    pub roots: &'a [std::path::PathBuf],
+    /// The persistent cache (`--cache-dir`), if any.
+    pub cache: Option<&'a crate::compile_cache::CacheOptions>,
+    /// `--stats`.
+    pub stats: Option<&'a mut crate::compile_stats::CompileStats>,
+    /// Receives the build's dependency manifest.
+    pub manifest: Option<&'a mut crate::dependency_manifest::DependencyManifest>,
+}
+
 /// What a unit registers of a namespace with the runtime: its reader
 /// context (aliases, refers, excludes and macros) and its definitions, which
 /// a session only adds to, by their number.
@@ -163,6 +177,157 @@ impl DevSession {
         let session = Self::with_control(options, None)?;
         session.set_warning_mode(true);
         Ok(session)
+    }
+    /// A session [`Self::new`] makes that has loaded `start.entry` and its
+    /// dependencies from `start.roots`, compiled once as `--compile --entry`
+    /// compiles them, in the session's own macro host and engine, with the
+    /// persistent cache when `start.cache` is given (docs/compiler-cache.md,
+    /// "Development sessions and engine boundaries"), and the program and
+    /// sources of that build, from which a dev build is written.
+    ///
+    /// A namespace the cache installs runs no macro: its declarations, Var
+    /// bindings and macros reach the session's host, and its compile-time
+    /// units its compilation session, prepared, to run in the session's
+    /// engine when a later expansion demands them, as they do for a
+    /// `--compile` that installs it. The session then takes the build's
+    /// program as its retained program, marks every namespace of it loaded,
+    /// and applies each namespace's top-level directives (`ns`, `ns*`,
+    /// `require`, `in-ns`) in order, which set
+    /// what its own load would have set: the namespace's aliases, requires,
+    /// refers and metadata in the compiler and the macro host. Later forms
+    /// and edits compile against that state as against a session that
+    /// loaded the namespaces itself. What a runtime registered is what the
+    /// build registers, every namespace's reader context and definitions.
+    ///
+    /// The build's warnings go to `warnings`; `start.stats`, when given, is
+    /// filled as `--compile --stats` fills it, with
+    /// [`crate::compile_stats::CompileStats::session_load`] the time taken
+    /// to install the session's state; `start.manifest` receives the
+    /// build's dependency manifest.
+    pub fn compile_entry(
+        options: &EvalOptions,
+        start: EntryStart<'_>,
+        warnings: &mut Vec<crate::analyzer::AnalysisWarning>,
+    ) -> Result<(Self, crate::Program, crate::compiler::SourceFiles), crate::NamespaceCompileError>
+    {
+        let failed = |error: EvalDiagnostic| crate::NamespaceCompileError {
+            message: error.to_string(),
+            path: None,
+            span: None,
+            line_column: None,
+        };
+        let session = Self::new(options).map_err(failed)?;
+        session.begin().map_err(failed)?;
+        let EntryStart {
+            entry,
+            roots,
+            cache,
+            mut stats,
+            manifest,
+        } = start;
+        let analysis = session.compiler.borrow().options;
+        let built = {
+            let mut compiler = session.compiler.borrow_mut();
+            let host = &mut compiler.host;
+            let mut store = cache.map(|cache| {
+                crate::compile_cache::CompileCache::open(cache, host, analysis, entry)
+            });
+            let built = crate::compiler::analyze_namespace_entry_recorded(
+                entry,
+                roots,
+                host,
+                analysis,
+                warnings,
+                crate::compiler::EntryRecorders {
+                    stats: stats.as_deref_mut(),
+                    manifest,
+                    control: Some(&session.control),
+                    cache: store.as_mut(),
+                    ..Default::default()
+                },
+            );
+            if let Some(store) = &mut store {
+                if built.is_ok() {
+                    store.finish();
+                }
+                if let Some(stats) = stats.as_deref_mut() {
+                    stats.cache = Some(store.take_counts());
+                }
+            }
+            built
+        };
+        let (program, files) = built?;
+        let installing = stats.is_some().then(std::time::Instant::now);
+        session.install(&program, &files).map_err(failed)?;
+        if let (Some(stats), Some(started)) = (stats, installing) {
+            stats.session_load = Some(started.elapsed());
+        }
+        Ok((session, program, files))
+    }
+    /// Take `program`, a whole-program build of the sources `files` in this
+    /// session's host, as loaded ([`Self::compile_entry`]).
+    fn install(
+        &self,
+        program: &crate::Program,
+        files: &crate::compiler::SourceFiles,
+    ) -> Result<(), EvalDiagnostic> {
+        let current = self.namespace();
+        self.compiler.borrow_mut().adopt_program(program);
+        let names = program
+            .namespaces
+            .iter()
+            .take(files.len())
+            .cloned()
+            .collect::<Vec<_>>();
+        self.loaded.borrow_mut().extend(names.iter().cloned());
+        // The runtime that ran the build has registered each namespace as
+        // the build's registration does.
+        let mut definitions = HashMap::<&str, usize>::new();
+        for global in &program.globals {
+            *definitions.entry(global.namespace.as_str()).or_default() += 1;
+        }
+        self.registered
+            .borrow_mut()
+            .extend(program.namespaces.iter().map(|namespace| {
+                (
+                    namespace.clone(),
+                    (
+                        program
+                            .reader_contexts
+                            .get(namespace)
+                            .map(|context| (**context).clone()),
+                        definitions.get(namespace.as_str()).copied().unwrap_or(0),
+                    ),
+                )
+            }));
+        // Each namespace's top-level directives (`ns`, `ns*`, `require`,
+        // `in-ns`), in load order, as its load applied them; the namespaces
+        // they require are loaded, so they load nothing. Only those forms
+        // are read: the others are found by syntax alone, so no data reader
+        // runs for them.
+        let mut ignored = Collect::default();
+        for (namespace, (path, text)) in names.iter().zip(files) {
+            let source = SourceInput::new(path.to_string_lossy(), text.clone());
+            self.compiler.borrow_mut().set_namespace(namespace);
+            let mut cursor = 0;
+            loop {
+                let mut parser = crate::Parser::at_offset(text, cursor).retaining_discards();
+                let Ok(Some(root)) = parser.read_form() else {
+                    break;
+                };
+                if !is_directive(text, parser.nodes(), root) {
+                    cursor = parser.position();
+                    continue;
+                }
+                let Some(form) = self.next_form(&source, &mut cursor)? else {
+                    break;
+                };
+                self.compile_form(&form, Mode::Load, &mut ignored)?;
+                self.compiler.borrow_mut().warnings.clear();
+            }
+        }
+        self.compiler.borrow_mut().set_namespace(&current);
+        Ok(())
     }
     /// Whether analysis is in warning mode: undeclared Vars and conflicting
     /// arities are warnings (a `Warnings` action) and the code runs as
@@ -898,6 +1063,33 @@ fn has_nsstar_operation(form: &Form) -> bool {
         }
         _ => false,
     }
+}
+/// Whether the top-level syntax node `root` of `text` is a list headed by a
+/// directive the session applies itself (`ns`, `ns*`, `in-ns`, `require`),
+/// judged from the syntax alone, without reading the form.
+fn is_directive(text: &str, nodes: &[crate::parser::Node], root: crate::parser::NodeId) -> bool {
+    use crate::parser::{CollectionKind, NodeKind};
+    let NodeKind::Collection {
+        kind: CollectionKind::List,
+        children,
+    } = &nodes[root.0].kind
+    else {
+        return false;
+    };
+    let Some(head) = children.first().map(|head| &nodes[head.0]) else {
+        return false;
+    };
+    matches!(head.kind, NodeKind::Symbol)
+        && matches!(
+            &text[head.span.clone()],
+            "ns" | "ns*"
+                | "cljs.core/ns*"
+                | "clojure.core/ns*"
+                | "in-ns"
+                | "require"
+                | "cljs.core/require"
+                | "clojure.core/require"
+        )
 }
 fn is_list(form: &Form) -> bool {
     matches!(

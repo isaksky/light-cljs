@@ -158,6 +158,40 @@ program, of which 6.0 s was the session load.
 The startup path is unchanged. The cost the measurements point at is the
 quadratic session load, which light-cljs-348 addresses directly.
 
+## Watch startup from the cache (light-cljs-327, October 18, 2026)
+
+`--watch --cache-dir DIR` compiles its startup build once, in the session's
+QuickJS host, with the persistent cache, and starts the session from it
+(docs/compiler-cache.md, "Development sessions and engine boundaries").
+`bb benchmarks/watch_startup.bb [--cache] OUT RUNS 300` on the generated
+301-namespace program, release binary of this change, at 1-minute load 4.6
+to 5.0 (two other workers active); with `--cache` the first run fills an
+empty cache and the others start warm. Times in ms.
+
+| Start | Runs | Cache hits | Macro calls | Analysis | Emission + write | Session | Startup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| without `--cache-dir` (V8 build, then the session's own load) | 3 | | 962 | 232 | 242 | 4,113 | 4,602 |
+| `--cache-dir`, filling an empty cache | 1 | 0 | 962 | 461 | 234 | 52 | 954 |
+| `--cache-dir`, warm | 3 | 301 | 0 | 1.6 | 180 | 48 | 320 |
+
+The dev build's digest is the same in all seven runs. The populating start
+is 21% of the uncached one: the session no longer loads the program form
+by form (the quadratic part, light-cljs-348), and analysis in QuickJS costs
+twice V8's. A warm start is 7% of an uncached one; what is left is writing
+the dev build, installing the session's state (taking the program and
+replaying 301 `ns` forms, the session column) and reading, validating and
+installing the 301 artifacts. Steps are unchanged: saving a newline into
+`bench.n155` ten times takes 24.0 to 35.2 ms (median 28.5) after an
+uncached start and 23.9 to 34.1 ms (median 30.0) after a warm one, whose
+first step is 133 ms because the session's macro engine starts with it;
+`bench.macros150` recompiles in 271 against 347 ms the first time (a
+second save fails in `bench.n159` after either start alike). Without
+`--cache-dir` the startup path is the one
+light-cljs-326 measured; `--compile` is unchanged, so no Penpot rerun.
+Replaying every top-level directive rather than the `ns` form alone (found
+by syntax, after review) leaves the session column at 51 to 54 ms: at load
+8 to 9, filling took 1,097 ms and warm starts 334 to 372 ms.
+
 ## Watch invalidation (light-cljs-325, October 18, 2026)
 
 `--watch` now records the startup build's dependency manifest and revises it

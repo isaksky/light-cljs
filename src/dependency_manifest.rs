@@ -950,6 +950,80 @@ pub(crate) fn build(
     manifest
 }
 
+/// The manifest of `namespaces` with each one's edges in `rows` (by
+/// [`NamespaceId`], each to an earlier namespace) and the `lazy` references
+/// the loader followed, as `(source, target)`: what
+/// [`crate::manifest_prefix::ManifestPrefix`] assembles one namespace at a
+/// time, made whole once its compilation ends (`--watch` with
+/// `--cache-dir`). The records keep their inputs, and each input read while
+/// helper units of the namespaces `helper_inputs` names ran goes, as
+/// [`build`] gives it, to those namespaces and their reverse closures,
+/// whose retained values may hold it.
+pub(crate) fn from_rows(
+    namespaces: Vec<NamespaceRecord>,
+    lookups: Vec<Lookup>,
+    inputs: Vec<ExternalInput>,
+    mut rows: Vec<Vec<(u32, EdgeKinds)>>,
+    lazy: &[(u32, String)],
+    helper_inputs: &[(Vec<u32>, InputId)],
+) -> DependencyManifest {
+    let count = namespaces.len();
+    let ids: HashMap<String, u32> = namespaces
+        .iter()
+        .enumerate()
+        .map(|(id, record)| (record.name.clone(), id as u32))
+        .collect();
+    for (source, target) in lazy {
+        if let (Some(&target), Some(row)) = (ids.get(target), rows.get_mut(*source as usize))
+            && target != *source
+        {
+            row.push((target, EdgeKinds::LAZY));
+        }
+    }
+    for row in &mut rows {
+        merge(row);
+    }
+    let forward = compress(
+        count,
+        rows.iter()
+            .enumerate()
+            .flat_map(|(from, row)| row.iter().map(move |&(to, kinds)| (from as u32, to, kinds))),
+    );
+    let reverse = compress(
+        count,
+        rows.iter()
+            .enumerate()
+            .flat_map(|(from, row)| row.iter().map(move |&(to, kinds)| (to, from as u32, kinds))),
+    );
+    let mut manifest = DependencyManifest {
+        namespaces,
+        lookups,
+        inputs,
+        ids,
+        forward,
+        reverse,
+    };
+    let mut added: Vec<Vec<InputId>> = vec![Vec::new(); count];
+    for (helpers, input) in helper_inputs {
+        for &helper in helpers {
+            if (helper as usize) < count {
+                let helper = NamespaceId(helper);
+                for consumer in std::iter::once(helper).chain(manifest.reverse_closure(helper)) {
+                    added[consumer.0 as usize].push(*input);
+                }
+            }
+        }
+    }
+    for (record, inputs) in manifest.namespaces.iter_mut().zip(added) {
+        if !inputs.is_empty() {
+            record.external_inputs.extend(inputs);
+            record.external_inputs.sort_unstable();
+            record.external_inputs.dedup();
+        }
+    }
+    manifest
+}
+
 /// Give each namespace the configuration's fingerprint, its own inputs,
 /// and the inputs of the helper units and readers of each namespace it
 /// depends on: those recorded on a namespace's helpers go to it and to its

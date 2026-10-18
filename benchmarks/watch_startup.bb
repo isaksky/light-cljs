@@ -2,7 +2,9 @@
 ;; Watch startup with --stats: the startup build (V8), writing the dev build
 ;; and the session load (QuickJS), each run in a fresh process stopped once it
 ;; reports that it is watching.
-;; Usage: bb benchmarks/watch_startup.bb OUTPUT-DIR [RUNS] [NAMESPACES]
+;; Usage: bb benchmarks/watch_startup.bb [--cache] OUTPUT-DIR [RUNS] [NAMESPACES]
+;; With --cache, the watch runs with --cache-dir OUTPUT-DIR/cache, emptied
+;; first: the first run fills it and the others start warm.
 ;; With NAMESPACES, the sources are a generated program of that many
 ;; namespaces, a tenth of them macro namespaces, written under OUTPUT-DIR/src;
 ;; without it, they are examples/dev. LIGHT_CLJS_BINARY selects the binary
@@ -13,7 +15,9 @@
          '[clojure.string :as str])
 
 (def repo (fs/parent (fs/parent (fs/absolutize *file*))))
-(def output (some-> (first *command-line-args*) fs/absolutize))
+(def cache? (= "--cache" (first *command-line-args*)))
+(def arguments (if cache? (rest *command-line-args*) *command-line-args*))
+(def output (some-> (first arguments) fs/absolutize))
 (when-not output (throw (ex-info "An output directory is required" {})))
 ;; The script deletes and rewrites OUTPUT-DIR/src and OUTPUT-DIR/dev, so it
 ;; writes only into a directory that is new, empty, or marked as its own.
@@ -22,8 +26,10 @@
   (throw (ex-info (str output " is not empty and was not made by this script") {})))
 (fs/create-dirs output)
 (spit (str marker) "")
-(def runs (parse-long (or (second *command-line-args*) "3")))
-(def namespaces (some-> (nth *command-line-args* 2 nil) parse-long))
+(def runs (parse-long (or (second arguments) "3")))
+(def namespaces (some-> (nth arguments 2 nil) parse-long))
+(def cache (str (fs/path output "cache")))
+(fs/delete-tree cache)
 (def binary (or (System/getenv "LIGHT_CLJS_BINARY")
                 (str (fs/path repo "target/release/light-cljs"))))
 
@@ -89,8 +95,9 @@
   []
   (let [out (str (fs/path output "dev"))
         _ (fs/delete-tree out)
-        proc (process/process [binary "--watch" "--entry" entry "--source-root" root
-                               "--out-dir" out "--stats" "--poll-ms" "60000"]
+        proc (process/process (concat [binary "--watch" "--entry" entry "--source-root" root
+                                       "--out-dir" out "--stats" "--poll-ms" "60000"]
+                                      (when cache? ["--cache-dir" cache]))
                               {:err :pipe :out :inherit})
         lines (with-open [reader (io/reader (:err proc))]
                 (loop [lines []]
@@ -109,7 +116,7 @@
                                         "cat $(ls | sort) | shasum -a 256")
                          :out (str/split #" ") first))
             (for [line lines
-                  :let [[_ k v] (re-matches #"(time\.[a-z-]+|namespaces|macro-calls) (\S+)" line)]
+                  :let [[_ k v] (re-matches #"(time\.[a-z-]+|namespaces|macro-calls|cache\.hits|cache\.misses) (\S+)" line)]
                   :when k]
               [(keyword k) (parse-double v)])))))
 

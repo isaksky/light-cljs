@@ -3,6 +3,15 @@
 //! then poll the source roots and rewrite the unit of each namespace whose
 //! file changed, compiled against the session's retained program.
 //!
+//! Without `--cache-dir` the startup build runs with the native engine and
+//! the session then loads the program again, as a `require` of the entry.
+//! With it, the startup build runs once, in the session's host and engine,
+//! with the persistent cache, and the session starts from that build
+//! (`DevSession::compile_entry`, docs/compiler-cache.md, "Development
+//! sessions and engine boundaries"): its manifest, from the records the
+//! cache keyed each namespace with, is the watch's. Steps neither read nor
+//! write the cache.
+//!
 //! A step compiles the changed file's forms as fragments in its namespace
 //! (`DevSession::load_namespace_file`, in warning mode), writes its unit
 //! and source map (`dev_build::namespace_unit`) and the manifest. A form
@@ -29,10 +38,12 @@ use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::cache_policy::{self, CacheSettings};
 use light_cljs::compile_stats::CompileStats;
 use light_cljs::compiler_data::Name;
-use light_cljs::dependency_manifest::{DependencyManifest, EdgeKinds, ExternalInput, Revision};
+use light_cljs::dependency_manifest::{
+    DependencyManifest, EdgeKinds, ExternalInput, Revision, SourceOrigin,
+};
 use light_cljs::dev_build::{DevFile, DevManifest, DevNamespace, namespace_unit, unit_file};
 use light_cljs::dev_server::{Build, DevServer, Diagnostic, LoadUnit, Step};
-use light_cljs::dev_session::{Action, DevSession, Unit};
+use light_cljs::dev_session::{Action, DevSession, EntryStart, Unit};
 use light_cljs::source_provider::{
     FileSourceProvider, LoadError, LoadRequest, Reload, SourceInput, SourceProvider,
 };
@@ -54,7 +65,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 pub const USAGE: &str = "Watch:
   light-cljs --watch --entry NAMESPACE --source-root DIR [--source-root DIR ...] --out-dir DIR
              [--poll-ms N] [--elide-asserts] [--stats] [--config KEY=EDN ...]
-             [--cache-blocker NS ...]
+             [--cache-dir DIR] [--cache-blocker NS ...]
              [--serve PORT [--serve-host HOST] [--reload-dependents]]
 
 Write the dev build of --compile --reloadable into DIR, then poll the .cljs
@@ -79,10 +90,20 @@ program as time.session-load-ms.
 With --config KEY=EDN, repeatable, give light.build/config the value EDN for
 the keyword KEY in the build and in every step, as --compile does.
 
+With --cache-dir DIR, start from the persistent compiler cache in DIR, as
+--compile --cache-dir keeps it: the startup build runs once, in the engine
+of the watch's session, installing each namespace whose artifact is current
+instead of analyzing it (its macros do not run) and storing the others, and
+the session starts from that build, compiling later steps as if it had
+loaded every namespace itself. Steps neither read nor write the cache, so a
+restart analyzes what changed since the cache was last filled. Deleting DIR
+does not change a running watch; a fresh uncached start is a restart
+without --cache-dir. With --stats, the report adds the cache.* lines.
+
 With --cache-blocker NS, repeatable, keep NS and every namespace whose
 compilation depends on it out of the persistent compiler cache, as --compile
-does. A watch keeps no persistent cache yet, and a blocker never makes a step
-compile a namespace whose retained unit is still valid.
+does. A blocker never makes a step compile a namespace whose retained unit
+is still valid.
 
 With --serve PORT (0 for any free port), also serve the build over HTTP on
 127.0.0.1, or on HOST with --serve-host (0.0.0.0 opens it to the network;
@@ -118,8 +139,10 @@ struct Options {
     stats: bool,
     /// `--config KEY=EDN`: what `light.build/config` answers.
     configuration: light_cljs::BuildConfiguration,
-    /// `--cache-blocker NS`, for the policy evaluator.
+    /// `--cache-blocker NS`, for the policy evaluator and the cache.
     blockers: Vec<String>,
+    /// `--cache-dir DIR`: start from the persistent compiler cache.
+    cache_dir: Option<PathBuf>,
 }
 
 fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> {
@@ -130,6 +153,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
     let mut stats = false;
     let mut configuration = light_cljs::BuildConfiguration::new();
     let mut blockers = Vec::new();
+    let mut cache_dir = None;
     while let Some(arg) = args.next() {
         let flag = arg.to_str().unwrap_or("");
         let mut value = || {
@@ -194,6 +218,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
                     .into_string()
                     .map_err(|_| "--cache-blocker must be valid UTF-8")?,
             ),
+            "--cache-dir" => cache_dir = Some(PathBuf::from(value()?)),
             _ => return Err(format!("unexpected watch option: {flag}\n{USAGE}").into()),
         }
     }
@@ -220,6 +245,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
         stats,
         configuration,
         blockers,
+        cache_dir,
     }))
 }
 
@@ -329,8 +355,8 @@ struct Watch {
     /// The build's dependency manifest: the startup build's, revised with
     /// what the session observed in each namespace it compiled again.
     graph: DependencyManifest,
-    /// The policy evaluator's settings. A watch has no persistent cache, and
-    /// a disk bypass invalidates nothing in memory.
+    /// The policy evaluator's settings. Only the startup build reads the
+    /// persistent cache, and a disk bypass invalidates nothing in memory.
     settings: CacheSettings,
     /// What the step under way compiled again, not yet in `graph`.
     revisions: HashMap<String, Revision>,
@@ -384,25 +410,66 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     // The startup build's dependency manifest is the watch's, which each
     // step revises with what the session observes.
     let mut graph = DependencyManifest::default();
-    let program = crate::analyze_entry(
-        &options.entry,
-        &options.roots,
-        &mut host,
-        analysis,
-        &mut warnings,
-        stats.as_mut(),
-        Some(&mut graph),
-        &|_| {
-            Some(crate::EmissionSettings {
-                application: light_cljs::ApplicationOptions::new(
-                    light_cljs::OptimizationLevel::None,
-                ),
-                layout: light_cljs::cache_key::OutputLayout::Reloadable,
-                source_map: light_cljs::cache_key::SourceMapOutput::None,
-                include_sources: false,
-            })
+    // The session's source provider, recording the file of each namespace.
+    let provider = Rc::new(Recording {
+        roots: FileSourceProvider::new(roots.clone()),
+        files: RefCell::default(),
+    });
+    let session_options = EvalOptions {
+        source_provider: Some(provider.clone()),
+        assertions: options.assertions,
+        configuration: options.configuration.clone(),
+        ..EvalOptions::default()
+    };
+    let cache = options
+        .cache_dir
+        .clone()
+        .map(|dir| light_cljs::compile_cache::CacheOptions {
+            dir,
+            blockers: options.blockers.clone(),
+        });
+    // With --cache-dir, the startup build runs once, in the session's own
+    // host and engine, with the persistent cache, and the session starts
+    // from it (`DevSession::compile_entry`). Without it, the build runs
+    // with V8 and the session loads the program again below.
+    let (program, seeded) = match &cache {
+        Some(cache) => match DevSession::compile_entry(
+            &session_options,
+            EntryStart {
+                entry: &options.entry,
+                roots: &options.roots,
+                cache: Some(cache),
+                stats: stats.as_mut(),
+                manifest: Some(&mut graph),
+            },
+            &mut warnings,
+        ) {
+            Ok((session, program, sources)) => (Ok((program, sources)), Some(session)),
+            Err(error) => (Err(error), None),
         },
-    );
+        None => (
+            crate::analyze_entry(
+                &options.entry,
+                &options.roots,
+                &mut host,
+                analysis,
+                &mut warnings,
+                stats.as_mut(),
+                Some(&mut graph),
+                &|_| {
+                    Some(crate::EmissionSettings {
+                        application: light_cljs::ApplicationOptions::new(
+                            light_cljs::OptimizationLevel::None,
+                        ),
+                        layout: light_cljs::cache_key::OutputLayout::Reloadable,
+                        source_map: light_cljs::cache_key::SourceMapOutput::None,
+                        include_sources: false,
+                    })
+                },
+            ),
+            None,
+        ),
+    };
     crate::print_warnings(&warnings);
     let (program, sources) = program?;
     // The build's warnings, located for the server, which shows them to the
@@ -436,19 +503,28 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     let manifest = DevManifest::new(&program);
     drop(program);
     let session_started = stats.is_some().then(Instant::now);
-    // The session loads the program again, as a `require` of the entry,
-    // which is the program its steps compile against; the build printed the
-    // warnings.
-    let provider = Rc::new(Recording {
-        roots: FileSourceProvider::new(roots.clone()),
-        files: RefCell::default(),
-    });
-    let session = DevSession::new(&EvalOptions {
-        source_provider: Some(provider.clone()),
-        assertions: options.assertions,
-        configuration: options.configuration.clone(),
-        ..EvalOptions::default()
-    })?;
+    let session = match seeded {
+        // The session has the build's program; the provider records the
+        // file each namespace of the source roots was loaded from, as a
+        // load through it would.
+        Some(session) => {
+            // Every namespace a source root provided, at the file the
+            // loader resolved: a symbolic link's target may lie outside
+            // the roots.
+            let mut files = provider.files.borrow_mut();
+            for record in &graph.namespaces {
+                if record.source.origin == SourceOrigin::Provider {
+                    files.insert(record.name.clone(), PathBuf::from(&record.source.file));
+                }
+            }
+            drop(files);
+            session
+        }
+        // The session loads the program again, which is the program its
+        // steps compile against; the build printed the warnings.
+        None => DevSession::new(&session_options)?,
+    };
+    // A `require` of the entry, which a seeded session has loaded already.
     let actions = session.source(&SourceInput::new(
         "<watch>",
         format!("(require '{})", options.entry),
@@ -456,7 +532,9 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     if let Some(Action::Error(error)) = actions.last() {
         return Err(crate::eval_cli::diagnostic(error).into());
     }
-    if let (Some(stats), Some(started)) = (&mut stats, session_started) {
+    if let (Some(stats), Some(started)) = (&mut stats, session_started)
+        && stats.session_load.is_none()
+    {
         stats.session_load = Some(started.elapsed());
     }
     crate::print_stats(stats, begun)?;
@@ -478,7 +556,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
         published: HashSet::new(),
         graph,
         settings: CacheSettings {
-            enabled: false,
+            enabled: options.cache_dir.is_some(),
             blockers: options.blockers.clone(),
         },
         revisions: HashMap::new(),
