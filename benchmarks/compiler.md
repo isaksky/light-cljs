@@ -4803,7 +4803,37 @@ collection when the heap holds more than half its limit; the 6,000 forms
 end at 17.0 MB used before the final collection and 3.3 MB after
 (`LIGHT_V8_STATS`). The long session is quadratic on both engines: each
 `def`'s unit registers the namespace with every binding so far (13.8 MB of
-unit source at 2,000 forms against 3.5 MB at 1,000).
+unit source at 2,000 forms against 3.5 MB at 1,000); light-cljs-366 made it
+linear (next section).
+
+## Long REPL sessions — October 18, 2026
+
+light-cljs-366 registers with the runtime only the definitions a session's
+unit adds to a namespace whose reader context the runtime already has
+(`registerReaderNamespace(name, {bindings: [...]}, true)`), instead of the
+namespace with every definition so far, so the unit of a `def` no longer
+grows with the session. The workload of the section above: `--repl` with N
+forms, N/2 `(def vI (vec (range 50)))` each followed by
+`(reduce + (map inc vI))`, release binaries of master `421ab68` (before) and
+of this change (after), `--timeout-ms 120000 --poll-budget 1000000000000`,
+wall time and maximum RSS from `/usr/bin/time -l`. The 6,000-form rows are
+the median of 3 runs alternating before and after (load average 5.6 to 6.9
+on a 24-vCPU Mac shared with two other workers); the other rows are one
+run each (load 11 to 17). Unit source is the `v8-source` total of
+`LIGHT_V8_STATS`; both binaries print the same 6,000 results.
+
+| Forms | QuickJS before | QuickJS after | V8 before | V8 after | Unit source before | after |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1,500 | 1.71 s, 17.7 MB | 1.58 s, 17.6 MB | 0.39 s, 72.3 MB | 0.28 s, 66.3 MB | 7.8 MB | 0.67 MB |
+| 3,000 | 3.77 s, 24.2 MB | 3.07 s, 23.2 MB | 1.04 s, 95.7 MB | 0.64 s, 76.3 MB | 31.6 MB | 1.35 MB |
+| 6,000 | 8.72 s, 38.5 MB | 5.82 s, 35.3 MB | 3.05 s, 106.8 MB | 0.85 s, 74.0 MB | 134.3 MB | 2.70 MB |
+
+Unit source is now linear in the forms (450 bytes a form) where it was
+quadratic, and so are both engines' wall times: about 1 ms a form on
+QuickJS and 0.14 ms on V8 at every size, where doubling the session had
+cost 2.2 to 3.3 times the time before. The session's analysis was already
+linear (light-cljs-348): `EvalSession` compiles through a `DevSession`, so
+it shares the incremental snapshot and touched-only registrations.
 
 ## WeakMap stores in QuickJS — October 18, 2026
 

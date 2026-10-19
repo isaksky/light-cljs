@@ -179,8 +179,12 @@ pub struct EntryStart<'a> {
 /// a session only adds to, by their number.
 type Registration = (Option<RuntimeReaderNamespace>, usize);
 
-/// The namespaces a unit registers, each with what it registers of it.
-type Registrations = Vec<(String, Registration)>;
+/// The namespaces a unit registers, each with what it registers of it and,
+/// when the runtime has its reader context as it is and only some of its
+/// definitions, the number the runtime has: the unit registers only the
+/// definitions after those, so that a `def`'s unit does not grow with the
+/// session (light-cljs-366).
+type Registrations = Vec<(String, Registration, Option<usize>)>;
 
 impl DevSession {
     /// A session compiler configured by the compiler fields of `options`:
@@ -305,11 +309,11 @@ impl DevSession {
             .collect::<Vec<_>>();
         self.loaded.borrow_mut().extend(names.iter().cloned());
         // The runtime that ran the build has registered each namespace as
-        // the build's registration does.
-        let mut definitions = HashMap::<&str, usize>::new();
-        for global in &program.globals {
-            *definitions.entry(global.namespace.as_str()).or_default() += 1;
-        }
+        // the build's registration does: at least the definitions the
+        // session indexes, which is the number a later unit compares and adds
+        // after (the build's entry value is no definition the session keeps).
+        let compiler = self.compiler.borrow();
+        let definitions = compiler.namespace_globals();
         self.registered
             .borrow_mut()
             .extend(program.namespaces.iter().map(|namespace| {
@@ -320,10 +324,13 @@ impl DevSession {
                             .reader_contexts
                             .get(namespace)
                             .map(|context| (**context).clone()),
-                        definitions.get(namespace.as_str()).copied().unwrap_or(0),
+                        definitions
+                            .get(namespace.as_str())
+                            .map_or(0, |ids| ids.len()),
                     ),
                 )
             }));
+        drop(compiler);
         // Each namespace's top-level directives (`ns`, `ns*`, `require`,
         // `in-ns`), in load order, as its load applied them; the namespaces
         // they require are loaded, so they load nothing. Only those forms
@@ -823,7 +830,11 @@ impl DevSession {
         // only when they change again. A unit that fails may have failed
         // before them, as one the runtime cannot parse does, so after it the
         // next unit registers every namespace again.
-        self.registered.borrow_mut().extend(registration);
+        self.registered.borrow_mut().extend(
+            registration
+                .into_iter()
+                .map(|(namespace, registration, _)| (namespace, registration)),
+        );
         if self.registering.get() {
             // The registrations are recorded for every namespace touched.
             self.compiler.borrow_mut().clear_touched();
@@ -840,9 +851,12 @@ impl DevSession {
     /// Analyze one form as an expression, with no directive or load, into
     /// its unit: `EvalSession::analyze` and the runtime's `eval`. Its
     /// warnings are dropped. The unit may run later, or never, so the
-    /// namespaces it registers stay to be registered by the next unit too.
+    /// namespaces it registers stay to be registered by the next unit too,
+    /// and it registers each of them in full: run after later units, or
+    /// while a read holds the namespace's reader context, it restores the
+    /// context it was compiled in rather than adding to another.
     pub(crate) fn analyze_unit(&self, form: &Form) -> Result<Unit, EvalDiagnostic> {
-        let result = self.analyze(form);
+        let result = self.analyze(form, false);
         self.compiler.borrow_mut().warnings.clear();
         Ok(result?.0)
     }
@@ -876,7 +890,7 @@ impl DevSession {
             }
         }
         let warnings = self.compiler.borrow().warnings.len();
-        let error = match self.analyze(form) {
+        let error = match self.analyze(form, true) {
             Err(error) if self.reads_ahead(&error) => error,
             result => return result,
         };
@@ -886,7 +900,7 @@ impl DevSession {
         }
         // The failed analysis's warnings come again.
         self.compiler.borrow_mut().warnings.truncate(warnings);
-        self.analyze(form)
+        self.analyze(form, true)
     }
     /// Whether `form`, of the file loading, is the first to name a macro of
     /// its namespace while the file has declared names it has not defined
@@ -972,10 +986,12 @@ impl DevSession {
     }
     /// Analyze one form that is not a directive into its unit, with the
     /// fragment it was emitted from and what the unit registers
-    /// ([`Self::changed_registrations`]).
+    /// ([`Self::changed_registrations`]): with `adding`, of a namespace
+    /// the runtime has the reader context of, only the definitions it adds.
     fn analyze(
         &self,
         form: &Form,
+        adding: bool,
     ) -> Result<(Unit, crate::Program, Registrations), EvalDiagnostic> {
         // The session's retained expressions, which the form's program
         // starts with.
@@ -1005,11 +1021,17 @@ impl DevSession {
         };
         let registered = registration
             .iter()
-            .map(|(namespace, _)| namespace.as_str())
+            .map(|(namespace, _, _)| namespace.as_str())
+            .collect::<Vec<_>>();
+        let added = registration
+            .iter()
+            .filter(|_| adding)
+            .filter_map(|(namespace, _, known)| known.map(|known| (namespace.as_str(), known)))
             .collect::<Vec<_>>();
         let (mut js, mapping) = crate::emitter::emit_mapped_interactive_unit(
             &program,
             &registered,
+            &added,
             retained,
             self.compiler.borrow().namespace_globals(),
             self.compiler.borrow().namespace_positions(),
@@ -1073,12 +1095,21 @@ impl DevSession {
                     .namespace_globals()
                     .get(namespace.as_str())
                     .map_or(0, |globals| globals.len());
+                // Definitions are only added to a namespace's index, so with
+                // the same context the runtime lacks those after the ones it
+                // has.
                 let known = registered
                     .get(namespace)
-                    .is_some_and(|(known, known_count)| {
-                        known.as_ref() == context && *known_count == count
-                    });
-                (!known).then(|| (namespace.clone(), (context.cloned(), count)))
+                    .filter(|(known, _)| known.as_ref() == context)
+                    .map(|(_, known_count)| *known_count);
+                match known {
+                    Some(known) if known == count => None,
+                    known => Some((
+                        namespace.clone(),
+                        (context.cloned(), count),
+                        known.filter(|known| *known < count),
+                    )),
+                }
             })
             .collect()
     }

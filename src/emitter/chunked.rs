@@ -583,7 +583,7 @@ pub(crate) fn emit_chunked(
             chunks.write_startup();
         }
         let retained = |global: usize| !slice || application.globals[global];
-        emitter.registration(None, true, retained, None)
+        emitter.registration(None, &[], true, retained, None)
     } else {
         String::new()
     };

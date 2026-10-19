@@ -234,7 +234,7 @@ impl DeferredUnit {
             },
             true,
         );
-        let source = emitter.registration(None, false, |_| true, None);
+        let source = emitter.registration(None, &[], false, |_| true, None);
         (
             NamespaceRegistration {
                 source,
@@ -329,6 +329,12 @@ struct Interactive<'a> {
     /// whose registration changed since its last unit
     /// (`crate::dev_session`).
     registered: Option<&'a [&'a str]>,
+    /// Of the namespaces `registered` names, those whose reader context the
+    /// runtime has as registered before, each with the position in
+    /// `namespace_globals` of its first definition the runtime does not
+    /// have: the unit registers only those after it, so that the unit of a
+    /// session's `def` does not grow with the definitions before it.
+    added: &'a [(&'a str, usize)],
     /// The text before and after the unit function, such as the `define`
     /// call of a dev build unit.
     around: [&'a str; 2],
@@ -345,6 +351,15 @@ struct Interactive<'a> {
 
 /// The globals of each namespace of a program, in ID order.
 pub(crate) type NamespaceGlobals = HashMap<String, crate::arena::Arena<GlobalId>>;
+
+/// The position of `namespace`'s first added definition in `added`
+/// ([`Interactive::added`]): a unit registers a few namespaces.
+fn added_from(added: &[(&str, usize)], namespace: &str) -> Option<usize> {
+    added
+        .iter()
+        .find(|(name, _)| *name == namespace)
+        .map(|(_, from)| *from)
+}
 
 /// `application` carries the decisions of application preparation, including
 /// whether to read a runtime slice directly (`Advanced`). The returned runtime
@@ -367,6 +382,7 @@ fn emit_js_mode(
     let entry = interactive.and_then(|interactive| interactive.entry);
     let root = entry.unwrap_or(program.root);
     let registered = interactive.and_then(|interactive| interactive.registered);
+    let added = interactive.map_or(&[][..], |interactive| interactive.added);
     let namespace_globals = interactive.and_then(|interactive| interactive.namespace_globals);
     let namespace_positions = interactive.and_then(|interactive| interactive.namespace_positions);
     let direct = application
@@ -515,6 +531,7 @@ fn emit_js_mode(
         } else {
             emitter.registration(
                 registered,
+                added,
                 shared.is_none(),
                 retained,
                 namespace_globals.zip(namespace_positions),
@@ -1693,14 +1710,25 @@ impl<'a> Emitter<'a> {
     /// runs before its first form (only of those that `registered` names,
     /// when it names them), listing the definitions `retained` keeps; with
     /// `current`, `*ns*` is then the last namespace.
+    ///
+    /// Of a namespace in `added` the registration lists only the definitions
+    /// from its position in the `indexes` on ([`Interactive::added`]), which
+    /// the runtime adds to the reader context it has.
     fn registration(
         &mut self,
         registered: Option<&[&str]>,
+        added: &[(&str, usize)],
         current: bool,
         retained: impl Fn(usize) -> bool,
         indexes: Option<(&NamespaceGlobals, &HashMap<String, usize>)>,
     ) -> String {
         let namespace_globals = indexes.map(|(globals, _)| globals);
+        // Positions are positions in the indexes.
+        let added = if namespace_globals.is_some() {
+            added
+        } else {
+            &[]
+        };
         let program = self.program;
         let mut registration = String::new();
         let register_namespaces = self.register_namespaces;
@@ -1718,12 +1746,18 @@ impl<'a> Emitter<'a> {
         if let (true, Some(registered), Some(index)) =
             (register_namespaces, registered, namespace_globals)
         {
-            // Only the registered namespaces' globals, from the index.
+            // Only the registered namespaces' globals, from the index, and of
+            // a namespace the unit adds to only those it adds.
             for namespace in registered {
                 if bindings.contains_key(*namespace) {
                     continue;
                 }
-                for id in index.get(*namespace).into_iter().flatten() {
+                let from = added_from(added, namespace).unwrap_or(0);
+                for id in index
+                    .get(*namespace)
+                    .into_iter()
+                    .flat_map(|ids| ids.tail_from(from))
+                {
                     if retained(id.0) {
                         let global = &program.globals[id.0];
                         bindings
@@ -1779,6 +1813,25 @@ impl<'a> Emitter<'a> {
                 None,
                 NameUse::Value,
             );
+            if added_from(added, namespace).is_some() {
+                writeln!(
+                    registration,
+                    "  {register}({literal}, {{bindings: [{}]}}, true);",
+                    bindings
+                        .get(namespace.as_str())
+                        .into_iter()
+                        .flatten()
+                        .map(|name| js_string(name))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+                .unwrap();
+                if demand_roots {
+                    self.registration_chunks
+                        .push((namespace.clone(), registration_start..registration.len()));
+                }
+                continue;
+            }
             writeln!(registration, "  {register}({literal}, {{aliases: [").unwrap();
             if let Some(context) = program.reader_contexts.get(namespace) {
                 for (alias, target) in &context.aliases {
@@ -6442,7 +6495,7 @@ fn hygienic_js(
 /// macro heap. The unit registers every namespace of the program.
 #[cfg(test)]
 pub(crate) fn emit_interactive_unit(program: &Program) -> String {
-    emit_interactive(program, None, false, 0, None).0
+    emit_interactive(program, None, &[], false, 0, None).0
 }
 
 /// The interactive unit of a session's form, which registers the namespaces
@@ -6450,10 +6503,13 @@ pub(crate) fn emit_interactive_unit(program: &Program) -> String {
 /// source index 0 is the source the program's form was read from.
 ///
 /// The program's expressions before `first_expr` are those the session
-/// retains, and `namespace_globals` indexes its globals.
+/// retains, and `namespace_globals` indexes its globals. Of the namespaces
+/// in `added`, the unit registers only the definitions from their positions
+/// in `namespace_globals` on ([`Interactive::added`]).
 pub(crate) fn emit_mapped_interactive_unit(
     program: &Program,
     registered: &[&str],
+    added: &[(&str, usize)],
     first_expr: usize,
     namespace_globals: &NamespaceGlobals,
     namespace_positions: &HashMap<String, usize>,
@@ -6461,6 +6517,7 @@ pub(crate) fn emit_mapped_interactive_unit(
     let (unit, mapping) = emit_interactive(
         program,
         Some(registered),
+        added,
         true,
         first_expr,
         Some((namespace_globals, namespace_positions)),
@@ -6471,6 +6528,7 @@ pub(crate) fn emit_mapped_interactive_unit(
 fn emit_interactive(
     program: &Program,
     registered: Option<&[&str]>,
+    added: &[(&str, usize)],
     mapped: bool,
     first_expr: usize,
     indexes: Option<(&NamespaceGlobals, &HashMap<String, usize>)>,
@@ -6478,6 +6536,7 @@ fn emit_interactive(
     let interactive = Interactive {
         entry: None,
         registered,
+        added,
         around: ["", ""],
         first_expr,
         namespace_globals: indexes.map(|(globals, _)| globals),
@@ -6510,6 +6569,7 @@ pub(crate) fn emit_namespace_unit(
     let interactive = Interactive {
         entry: Some(entry),
         registered: (!every_namespace).then_some(&own[..]),
+        added: &[],
         around: [before, after],
         first_expr: 0,
         namespace_globals: None,
@@ -6549,7 +6609,7 @@ pub(crate) fn emit_namespace_registration(
         },
         true,
     );
-    emitter.registration(registered, false, |_| true, None)
+    emitter.registration(registered, &[], false, |_| true, None)
 }
 
 /// A readable JavaScript string literal; non-ASCII and controls are escaped.

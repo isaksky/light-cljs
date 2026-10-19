@@ -105,7 +105,15 @@ registers with the runtime each namespace whose reader context or
 definitions changed since the session's last unit, every namespace the
 session knows in its first (light-cljs-301), so a runtime that runs the
 units in order sees every namespace for reflection (`find-ns`, `read-string`
-with another namespace's aliases) as the session does. The unit of
+with another namespace's aliases) as the session does. A namespace whose
+reader context the runtime has as it is, but not all of whose definitions,
+is registered with only the definitions the runtime lacks:
+`registerReaderNamespace(name, {bindings: [...]}, true)` adds them to the
+context it has, so the unit of a session's `def` lists that definition and
+does not grow with the definitions before it (light-cljs-366); the unit
+of `EvalSession::analyze` and of the runtime's `eval` still registers in
+full, so that it restores the context it was compiled in whenever it runs.
+The unit of
 `EvalSession::analyze` may run late or never: it leaves its registrations to
 the next unit too, and once `evaluate` ran it, or after a unit that failed,
 the next unit registers every namespace again. The units of

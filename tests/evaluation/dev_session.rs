@@ -1216,6 +1216,39 @@ fn a_unit_registers_the_namespaces_that_changed() {
     );
 }
 
+/// The unit of a session's `def` registers only the definition it adds, not
+/// every definition before it (light-cljs-366): the unit of the 2,000th
+/// `def` is as large as that of the 100th, and a runtime that ran every unit
+/// has all of the namespace's definitions, as when each unit registered the
+/// whole namespace.
+#[test]
+fn a_def_unit_does_not_grow_with_the_definitions_before_it() {
+    let dev = DevSession::new(&EvalOptions::default()).unwrap();
+    let engine = Evaluator::new(Default::default()).unwrap();
+    let mut sizes = Vec::new();
+    for n in 1..=2000 {
+        let actions = dev.source(&input(&format!("(def v{n:04} (vec (range 50)))")));
+        let [Action::Invoke(unit)] = &actions[..] else {
+            panic!("{:?}", shape(&actions));
+        };
+        assert_eq!(registered(unit), ["cljs.user"]);
+        sizes.push(unit.js.len());
+        apply(&engine, &actions);
+    }
+    assert_eq!(sizes[99], sizes[1999]);
+    // The first unit registers the whole namespace, as before.
+    assert!(sizes[0] > sizes[1], "{} {}", sizes[0], sizes[1]);
+    let actions = dev.source(&input(
+        "[(read-string \"`v0001\") (read-string \"`v1000\") (read-string \"`v2000\") \
+          (read-string \"`inc\")]",
+    ));
+    assert_eq!(
+        apply(&engine, &actions),
+        "[(quote cljs.user/v0001) (quote cljs.user/v1000) (quote cljs.user/v2000) \
+         (quote cljs.core/inc)]"
+    );
+}
+
 /// Reflection in a session sees every namespace as it did when each unit
 /// registered every namespace: `find-ns`, `ns-publics`, `resolve`, and
 /// `read-string` with the aliases and definitions of a namespace other than

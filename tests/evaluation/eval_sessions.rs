@@ -1074,3 +1074,89 @@ fn session_macros_read_resources_relative_to_the_current_namespace() {
         "\"hello from the root\""
     );
 }
+/// A runtime that ran a session's units has the reader context and every
+/// definition of each namespace as when each `def`'s unit registered the
+/// whole namespace, while the units register only the definitions they add
+/// (light-cljs-366): syntax-quote of `read-string` qualifies each definition
+/// to its namespace, and a core name once the namespace defines it, through
+/// an `ns` form that changes the namespace's aliases, a unit that fails and
+/// a definition of another namespace.
+#[test]
+fn runtime_reader_sees_every_definition_a_unit_adds() {
+    let mut s = EvalSession::new(EvalOptions::default()).unwrap();
+    for n in 0..40 {
+        printed(&mut s, &format!("(def v{n} {n})"));
+    }
+    assert_eq!(
+        printed(
+            &mut s,
+            "[(read-string \"`v0\") (read-string \"`v39\") (read-string \"`inc\")]"
+        ),
+        "[(quote cljs.user/v0) (quote cljs.user/v39) (quote cljs.core/inc)]"
+    );
+    printed(&mut s, "(def inc 5)");
+    assert!(s.eval_string("(js* \"(\")").is_err());
+    printed(&mut s, "(def after-failure 1)");
+    printed(&mut s, "(ns app.other) (def o 1)");
+    printed(
+        &mut s,
+        "(ns cljs.user (:require [app.other :as-alias other]))",
+    );
+    printed(&mut s, "(def after-ns 2)");
+    printed(
+        &mut s,
+        "(in-ns 'app.other) (def later 3) (in-ns 'cljs.user)",
+    );
+    assert_eq!(
+        printed(
+            &mut s,
+            "[(read-string \"`inc\") (read-string \"`after-failure\") (read-string \"`after-ns\") \
+             (read-string \"`v39\") (read-string \"::other/k\") (read-string \"`dec\") \
+             (binding [*ns* (find-ns 'app.other)] [(read-string \"`o\") (read-string \"`later\")])]"
+        ),
+        "[(quote cljs.user/inc) (quote cljs.user/after-failure) (quote cljs.user/after-ns) \
+         (quote cljs.user/v39) :app.other/k (quote cljs.core/dec) \
+         [(quote app.other/o) (quote app.other/later)]]"
+    );
+}
+/// An analyzed form's unit registers its namespaces in full, so evaluated
+/// after later units replaced the namespace's aliases it reads with the
+/// aliases it was compiled with, as before light-cljs-366; and a runtime
+/// `eval` that defines a name while a read is in progress, whose unit is
+/// such a unit too, leaves the bindings that read qualifies with as they
+/// were when it began.
+#[test]
+fn late_and_nested_units_keep_their_reader_contexts() {
+    use light_cljs::compiler_data::Name;
+    use light_cljs::source_provider::SourceInput;
+    let mut s = EvalSession::new(EvalOptions {
+        data_readers: vec![(
+            Name::new(None, "late"),
+            "(fn [x] (eval '(def inc 7)) x)".into(),
+        )],
+        ..Default::default()
+    })
+    .unwrap();
+    printed(&mut s, "(ns cljs.user (:require [app.old :as-alias old]))");
+    printed(&mut s, "(def a 1)");
+    let form = s
+        .read_forms(&SourceInput::new(
+            "late.cljs",
+            "(do (def delayed 1) (read-string \"::old/k\"))",
+        ))
+        .unwrap()
+        .remove(0);
+    let analyzed = s.analyze(&form).unwrap();
+    printed(&mut s, "(ns cljs.user (:require [app.new :as-alias new]))");
+    printed(&mut s, "(def b 2)");
+    let value = s.evaluate(&analyzed).unwrap().value;
+    assert_eq!(s.print(value).unwrap(), ":app.old/k");
+    s.release(value).unwrap();
+    assert_eq!(
+        printed(
+            &mut s,
+            "[(read-string \"[`inc #late 1 `inc]\") (read-string \"`inc\")]"
+        ),
+        "[[(quote cljs.core/inc) 1 (quote cljs.core/inc)] (quote cljs.user/inc)]"
+    );
+}

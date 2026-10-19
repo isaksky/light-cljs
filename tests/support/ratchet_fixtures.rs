@@ -114,7 +114,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "console-log-sum",
         source: "(js/console.log (+ 1 2))",
-        ceilings: [466_000, 466_000, 200],
+        ceilings: [467_000, 467_000, 200],
         removed: [0, 0, 0],
         printed: "3\nundefined\n",
     },
@@ -326,7 +326,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "keyword-only",
         source: "(js/console.log (.toString :a))",
-        ceilings: [466_000, 466_000, 3_400],
+        ceilings: [467_000, 467_000, 3_400],
         removed: [0, 0, 0],
         printed: ":a\nundefined\n",
     },
