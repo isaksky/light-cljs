@@ -1399,7 +1399,7 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
     };
     let trace = std::fs::read_to_string(&file).unwrap();
     let mut lines = trace.lines();
-    assert_eq!(lines.next(), Some("light-cljs-trace\t1"));
+    assert_eq!(lines.next(), Some("light-cljs-trace\t2"));
     let rows = |kind: &str| {
         trace
             .lines()
@@ -1472,7 +1472,7 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
     assert_eq!(unit("app.macros/plain")[9], "0");
     // The first evaluation of each root, with its demander: `bump` at the
     // top level evaluates `outer`, whose analysis expands `twice`, which
-    // evaluates `inner`. Later reads of the ready roots stay in JavaScript.
+    // evaluates `inner`.
     let ids = |name: &str| unit(name)[0].to_owned();
     let executions: Vec<_> = rows("execute")
         .iter()
@@ -1496,6 +1496,28 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
         ]
     );
     assert_eq!(value("trace.executions"), 2.0);
+    // Every root a force touches, with the frame it was read in, once per
+    // pair: the first evaluations again, and the reads of `outer` once it is
+    // ready, by `bumped`'s expansion of `bump` and by `app.main`'s top level.
+    // `inner`'s read is recorded first: its frame's entry ended first.
+    let reads: Vec<_> = rows("read")
+        .iter()
+        .map(|row| row.iter().map(|cell| cell.to_string()).collect::<Vec<_>>())
+        .collect();
+    let read =
+        |unit: &str, kind: &str, demander: String| vec![ids(unit), kind.to_owned(), demander];
+    assert_eq!(
+        reads,
+        [
+            read("app.macros/inner", "unit", ids("app.macros/outer")),
+            read("app.macros/outer", "top-level", "0".into()),
+            read("app.macros/outer", "unit", ids("app.macros/bumped")),
+            read("app.macros/outer", "top-level", "1".into()),
+        ],
+        "{trace}"
+    );
+    assert_eq!(value("trace.reads"), 4.0);
+    assert_eq!(value("trace.reads.cross-namespace"), 1.0);
     // `outer` waited for `inner`, which it demanded.
     assert_eq!(unit("app.macros/outer")[8], unit("app.macros/inner")[5]);
     // Positions are the forms' lines.

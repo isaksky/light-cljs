@@ -9,11 +9,37 @@
   // code; otherwise a unit compiled since is, which Rust's catalog knows.
   const initializing = [];
   let compiling = 0;
+  // While a --stats trace records (light-cljs-359), each force notes the
+  // unit of the root or bundle it touches, ready ones included, once per
+  // engine entry. The bridge check that ends the entry names the trace frame
+  // it ran in, and only (frame, unit) pairs new since that unit's last read
+  // go to Rust, in one call. An entry Rust makes inside __lightCompileUnit
+  // may run in a unit's frame, so the caller's notes wait for its own check.
+  let reads = null, readEpoch = 0, readService = null;
+  const readMarks = [], readFrames = [];
+  function noteRead(unit) {
+    if (unit >= 0 && readMarks[unit] !== readEpoch) { readMarks[unit] = readEpoch; reads.push(unit); }
+  }
+  globalThis.__lightTraceRootReads = () => { readService = globalThis.__lightRootReadService; reads = []; return null; };
+  globalThis.__lightRootReadsChecked = frame => {
+    if (reads === null || reads.length === 0) return;
+    let units = '';
+    for (const unit of reads) {
+      if (readFrames[unit] !== frame) { readFrames[unit] = frame; units += (units ? ',' : '') + unit; }
+    }
+    reads.length = 0; readEpoch++;
+    if (units) readService(frame + ':' + units);
+  };
   const compileService = globalThis.__lightCompileUnit;
   if (typeof compileService === 'function') {
     globalThis.__lightCompileUnit = unit => {
       compiling++;
-      try { return compileService(unit); } finally { compiling--; }
+      const outer = reads;
+      if (outer !== null) { reads = []; readEpoch++; }
+      try { return compileService(unit); } finally {
+        compiling--;
+        if (outer !== null) { for (const read of reads) outer.push(read); reads = outer; readEpoch++; }
+      }
     };
   }
   function initialize(unit, run) {
@@ -77,6 +103,7 @@
   }
   function forceSlot(name, slot) {
     if (!slot || slot.unit === null) throw new Error((slot?.location ? slot.location + ': ' : '') + 'unavailable definition: ' + name);
+    if (reads !== null) noteRead(slot.unit);
     if (slot.bundle) {
       const bundle = slot.bundle;
       // Earlier products in the same executing group are already installed.
@@ -130,6 +157,7 @@
     return bundle.products.has(name) || definitionAvailable(name, bundle.previous.get(name));
   }
   function forceBundle(bundle) {
+    if (reads !== null) noteRead(bundle.unit);
     if (bundle.state === 'ready') return;
     if (bundle.state === 'failed') throw bundle.error;
     if (bundle.state === 'initializing') throw new Error('bundle initialization cycle: ' + [...path, bundle.name].join(' -> '));

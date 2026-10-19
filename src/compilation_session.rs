@@ -1338,6 +1338,23 @@ fn prepare_engine(
         .evaluate_js(include_str!("compiler_roots.js"))
         .map_err(|e| e.to_string())?;
     evaluator.release(value).map_err(|e| e.to_string())?;
+    // A recording trace also takes the reads of ready roots, which the
+    // registry notes and batches per engine entry (light-cljs-359).
+    if crate::compile_trace::recording() {
+        evaluator
+            .install_string_service(
+                "__lightRootReadService",
+                Rc::new(|note| {
+                    crate::compile_trace::root_reads(note);
+                    String::new()
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+        let value = evaluator
+            .evaluate_js("__lightTraceRootReads()")
+            .map_err(|e| e.to_string())?;
+        evaluator.release(value).map_err(|e| e.to_string())?;
+    }
     let value = evaluator
         .evaluate_js(&format!(
             "(globalThis.lightCljsBuild = ({})(globalThis.__lightBuildService, globalThis.__lightBuildCaller), null)",

@@ -495,7 +495,15 @@ impl Active<'_, '_, '_> {
             v8::tc_scope!(let scope, scope);
             self.state.bridge.borrow_mut().sync_external(scope);
             let result = f(scope).and_then(|value| {
-                invoke(scope, self.state, "checkBridge", &[])?;
+                // While a trace records, the check names the frame the
+                // entry ran in for its root reads (`compile_trace::frame`).
+                match crate::compile_trace::frame() {
+                    Some(frame) => {
+                        let frame = v8::Number::new(scope, f64::from(frame)).into();
+                        invoke(scope, self.state, "checkBridge", &[frame])?
+                    }
+                    None => invoke(scope, self.state, "checkBridge", &[])?,
+                };
                 Ok(value)
             });
             self.state.check_memory(scope, true);

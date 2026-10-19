@@ -1338,9 +1338,9 @@ in detail.
    the frontier transition and bridge check every unit makes), its demander
    (drain, top-level pass or unit) with the demand depth, and its thread (0,
    the coordinator, until stage A). Each first evaluation of a unit's
-   compile-time root records an execution edge from the innermost frame;
-   reads of roots already ready stay in JavaScript and are not recorded yet
-   (light-cljs-359). Native macros are counted as macro calls, not as host
+   compile-time root records an execution edge from the innermost frame,
+   and every distinct read of a root or bundle a read edge (below). Native
+   macros are counted as macro calls, not as host
    entries. Each namespace records its source index,
    requires and stage times. The report gains `trace.*` counters ahead of
    its table; `--stats-file PATH` writes the whole trace as TSV, which
@@ -1351,6 +1351,27 @@ in detail.
    top-level passes within 0.8%, 13,361 units), and the serial build is
    within the gate; see
    [benchmarks/compiler-concurrency.md](../benchmarks/compiler-concurrency.md).
+
+   *As built (light-cljs-359):* reads of roots that are already ready, which
+   never leave JavaScript, are read edges in the trace too, so a stage A
+   schedule sees that a unit expanding a macro needs the helper root the
+   macro calls even after its first evaluation. While a trace records, the
+   registry (`src/compiler_roots.js`) notes the unit of every root and bundle
+   `forceSlot` and `forceBundle` touch, once per engine entry, with no call
+   into Rust; without a recording the cost is one null check per force. The
+   bridge check that ends every engine entry, V8 and QuickJS alike, then
+   receives the innermost trace frame's serial (`compile_trace::frame`) and
+   hands Rust, in one string call, only the pairs new since each unit's last
+   read; Rust keeps one row per distinct (demander, unit). The frame is
+   right for the whole entry because frames opened inside it close before it
+   returns, and the caller's notes are set aside across
+   `__lightCompileUnit`, whose entries may run in a demanded unit's frame.
+   The rows are `read UNIT KIND DEMANDER` (trace version 2); the first
+   evaluation of a root is a read as well as an execution. Notes left by an
+   entry that fails before its check are charged to the next entry's frame,
+   and an engine prepared before the recording started notes nothing.
+   `dag.bb` counts the reads and runs Option U again with the execution and
+   read edges as dependencies between its tasks.
 3. `Arc` and the `MacroHost` engine split. Gate: serial build within +2%
    wall and +3% RSS of today, suite green for both backends.
 4. Stage A, the unit queue, behind `--jobs N`. Gates: output identical across

@@ -11,6 +11,49 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Root read edges (light-cljs-359, October 19, 2026)
+
+The trace now records every distinct (frame, unit) pair in which the engine
+forced a unit's compile-time root or bundle, ready roots included (`read`
+rows, trace version 2). On Penpot `app.main --optimize none`:
+
+- **73,773 distinct read edges**, 33,224 from top-level passes and 40,549
+  from units' analyses; **73,712 of them cross a namespace** (the demander's
+  namespace is not the root's). They come from 3,772 demanders and reach
+  only 277 distinct units, the same 277 whose roots are evaluated: the
+  helpers Penpot's macros call are few, and nearly every macro-expanding
+  unit and pass reads some of them after their first evaluation.
+- **Stage A model.** As dependencies between `dag.bb`'s Option U tasks the
+  execution and read edges give 73,770 edges (33,223 from a top-level
+  pass). They change the schedule by at most 0.03 s: 16.48 s becomes
+  16.50 s at W=1 and 8.24 s becomes 8.27 s at W=2, and from W=4 on both are
+  6.05 s, the serial top-level passes. The helpers are drained long before
+  their readers start, so no read waits on a running unit; what the edges
+  do say is that each of the 277 helpers must be initialized in every
+  worker isolate whose units expand a macro that calls it.
+
+### Serial gate and the trace's overhead
+
+Parent `1ae838b` against this change, alternating, at 1-minute load 3.0 to
+12.0. Output is 33,628,234 bytes with the same SHA-256 in all 20 runs,
+traced or not.
+
+| Build | Wall (s) | Median wall | Peak RSS (GB) | Median RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent, 7 rounds | 26.52, 24.22, 25.55, 24.31, 24.46, 25.97, 34.47 | 25.55 | 0.955, 0.917, 0.917, 0.928, 0.924, 0.914, 0.956 | 0.924 |
+| Read edges, `--stats` off, 7 rounds | 26.74, 25.00, 26.52, 24.91, 25.63, 25.18, 27.04 | 25.63 | 0.978, 0.939, 0.936, 0.944, 0.912, 0.927, 0.976 | 0.939 |
+| Parent, `--stats-file`, 3 rounds | 26.73, 24.99, 28.69 | 26.73 | 0.939, 0.909, 0.979 | 0.939 |
+| Read edges, `--stats-file`, 3 rounds | 25.71, 24.42, 24.36 | 24.42 | 0.954, 0.900, 0.926 | 0.926 |
+
+Untraced, the change is +0.3% wall and +1.6% peak RSS on the medians,
+inside the +2% / +3% gate (the parent's 34.47 s run came at a load spike;
+without it the medians are 25.01 s and 25.40 s, +1.6%). Untraced, a force
+checks one variable and the bridge check one argument. Traced, recording
+the reads costs nothing measurable against the parent's trace: notes stay
+in JavaScript within an engine entry, and only pairs new since a unit's last
+read cross into Rust, once per entry. The traced runs' spread (2.4 s for the
+parent) is larger than any difference between them.
+
 ## Shared session catalog (light-cljs-335, October 18, 2026)
 
 Parent `00d9b70` against the catalog behind a `Mutex`, Penpot `app.main
@@ -226,8 +269,8 @@ report):
   once, in the one isolate), 240 first by a unit's analysis and 37 by a
   top-level pass; 258 of them belong to another namespace than their
   demander, and 2 had to be analyzed on the spot. These are the helpers a
-  worker isolate must initialize again (light-cljs-359 adds the later reads
-  of ready roots, which stay in JavaScript today).
+  worker isolate must initialize again (the later reads of ready roots are
+  recorded since light-cljs-359; see "Root read edges").
 - **Macro host share.** 7,335 units (54.9%) entered the macro host, and they
   are 97.7% of unit time (16.74 of 17.13 s). The 6,026 macro-free units take
   0.39 s, so light-cljs-338's narrower first cut can move about 2% of the

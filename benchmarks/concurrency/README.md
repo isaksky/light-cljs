@@ -75,8 +75,8 @@ bb benchmarks/concurrency/run.bb OUTPUT-DIR -- --stats-file OUTPUT-DIR/app.main.
 bb benchmarks/concurrency/dag.bb OUTPUT-DIR/app.main.trace.tsv [--workers 4,8,12]
 ```
 
-The file starts with `light-cljs-trace 1`; each row kind has a `#` header row
-naming its columns. Times are microseconds.
+The file starts with `light-cljs-trace 2` (1 before the `read` rows); each
+row kind has a `#` header row naming its columns. Times are microseconds.
 
 - `stage` rows: each stage's exclusive time, its V8 time and its macro host
   entries. Every moment of the analysis is in exactly one of `other`, `load`,
@@ -94,13 +94,22 @@ naming its columns. Times are microseconds.
   (`drain`, `top-level` or `unit`, and which), its demand depth and thread.
 - `execute` rows: each first evaluation of a unit's compile-time root in
   the engine (`__lightCompileUnit`), with the innermost frame that demanded
-  it and whether its JavaScript was already prepared. Later reads of a ready
-  root stay inside JavaScript and are not recorded (light-cljs-359).
+  it and whether its JavaScript was already prepared.
+- `read` rows (version 2, light-cljs-359): each distinct pair of a unit
+  whose compile-time root or bundle the engine forced and the innermost
+  frame it was forced in, ready roots included, in the order first noted.
+  A root's first evaluation is a read too.
 
 `dag.bb` rebuilds the probes' inclusive columns from it: a namespace's
 top-level pass plus the units it demanded, its drain plus the units the drain
 analyzed, and each drained unit with the units it demanded. On
 `main-probe.tsv` its output is unchanged.
+
+From a trace it also runs Option U (stage A) a second time with the root
+edges as dependencies: an `execute` or `read` edge makes the drained unit
+or top-level pass whose frame made it wait for the drained unit whose cost
+includes the root's unit. Edges inside one task, and edges from frames
+outside the model's tasks (drain bookkeeping, other stages), are dropped.
 
 A unit *entered the macro host* when its analysis made a V8 service call
 other than the compiler frontier's transitions and the bridge check after

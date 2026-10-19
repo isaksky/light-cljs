@@ -412,7 +412,7 @@ impl Evaluator {
                 exportForm: (id, nodes, depth) => bridge.encode(get(id), nodes, depth),
                 formServices: (one, all, nodes, depth) => rt.setMacroexpandServices({{macroexpand1: form => bridge.decode(one(bridge.encode(form, nodes, depth))), macroexpand: form => bridge.decode(all(bridge.encode(form, nodes, depth)))}}),
                 bridgeVersion: bridge.version,
-                checkBridge: bridge.check,
+                checkBridge: frame => {{ bridge.check(); if (frame !== undefined) globalThis.__lightRootReadsChecked?.(frame); }},
                 errorData: () => {{ const error = lastError; return save(rt.core.exData(error)); }},
                 errorValue: () => lastError,
                 rethrowError: (error, message) => {{
@@ -512,7 +512,15 @@ impl Evaluator {
 
             let operation = f(ctx.clone());
             let operation = operation.and_then(|value| {
-                ctx.eval::<(), _>("__lightEvaluator.checkBridge()")?;
+                // While a trace records, the check names the frame the
+                // entry ran in for its root reads (`compile_trace::frame`).
+                match crate::compile_trace::frame() {
+                    Some(frame) => ctx
+                        .eval::<Object, _>("__lightEvaluator")?
+                        .get::<_, Function>("checkBridge")?
+                        .call::<_, ()>((frame,))?,
+                    None => ctx.eval::<(), _>("__lightEvaluator.checkBridge()")?,
+                }
                 Ok(value)
             });
             operation
@@ -1433,9 +1441,11 @@ impl<'js> ActiveEvaluator<'_, 'js> {
         self.control.poll()?;
         let result = f(self.ctx.clone())
             .and_then(|value| {
-                self.services
-                    .get::<_, Function>("checkBridge")?
-                    .call::<_, ()>(())?;
+                let check = self.services.get::<_, Function>("checkBridge")?;
+                match crate::compile_trace::frame() {
+                    Some(frame) => check.call::<_, ()>((frame,))?,
+                    None => check.call::<_, ()>(())?,
+                }
                 Ok(value)
             })
             .catch(&self.ctx)

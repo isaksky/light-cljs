@@ -5,18 +5,22 @@
 ;; Usage: bb benchmarks/concurrency/dag.bb FILE [--workers P,P...]
 ;;
 ;; FILE is a probe run (`NSPREP`/`NSPROBE` lines, as in main-probe.tsv) or a
-;; `light-cljs-trace 1` file. From a trace the namespace columns the models
-;; read are rebuilt as the probes measured them: a top-level pass includes
-;; the units it demanded, a drain includes the units it analyzed, and each
-;; drained unit includes the units it demanded. A trace also prints its
-;; exclusive stage totals, demand edges, macro-host share and the ready width
-;; of each namespace's drain (the last section; --workers sets its P values).
+;; `light-cljs-trace` file (version 1, or 2 with `read` rows). From a trace
+;; the namespace columns the models read are rebuilt as the probes measured
+;; them: a top-level pass includes the units it demanded, a drain includes
+;; the units it analyzed, and each drained unit includes the units it
+;; demanded. A trace also prints its exclusive stage totals, demand edges
+;; (root evaluations and, from version 2, root reads), macro-host share and
+;; the ready width of each namespace's drain (the last section; --workers
+;; sets its P values), and runs Option U (stage A) again with the root
+;; evaluations and reads as dependencies.
 (require '[clojure.string :as str])
 (def args *command-line-args*)
 (def workers (or (some->> (drop-while #(not= "--workers" %) args) second (#(str/split % #",")) (mapv parse-long))
                  [4 8 12]))
 (def lines (->> (str/split-lines (slurp (first args)))))
 (def trace? (str/starts-with? (first lines) "light-cljs-trace\t"))
+(def trace-version (when trace? (parse-long (second (str/split (first lines) #"\t")))))
 (defn rows [kind]
   (for [l lines :when (str/starts-with? l (str kind "\t"))]
     (vec (rest (str/split l #"\t" -1)))))
@@ -29,6 +33,33 @@
             :kind kind :demander (parse-long demander) :depth (parse-long depth) :thread (parse-long thread)}))))
 (def unit-by-id (into {} (map (juxt :id identity) trace-units)))
 (defn inclusive [u] (+ (:us u) (:wait u)))
+;; Root demand edges: each first evaluation of a unit's compile-time root
+;; (`execute`) and each distinct read of a root or bundle (`read`, light-cljs-359),
+;; with the innermost frame they were made in.
+(def trace-reads
+  (when trace?
+    (vec (for [[unit kind demander] (rows "read")]
+           {:unit (parse-long unit) :kind kind :demander (parse-long demander)}))))
+(def trace-executions
+  (when trace?
+    (vec (for [[unit kind demander] (rows "execute")]
+           {:unit (parse-long unit) :kind kind :demander (parse-long demander)}))))
+;; The task of the stage A model whose cost includes a unit: the drained unit
+;; whose analysis demanded it, or the top-level pass that did.
+(defn task-of [u]
+  (loop [u u]
+    (case (:kind u)
+      "unit" (some-> (unit-by-id (:demander u)) recur)
+      "drain" [:u (:id u)]
+      "top-level" [:b (:demander u)]
+      nil)))
+;; A root edge as [demanding task, task it waits for], or nil when either end
+;; is outside the model (another stage's frame, a unit installed from an
+;; artifact) or both are one task.
+(defn root-edge [{:keys [unit kind demander]}]
+  (let [from (case kind "unit" (some-> (unit-by-id demander) task-of) "top-level" [:b demander] nil)
+        to (some-> (unit-by-id unit) task-of)]
+    (when (and from to (not= from to)) [from to])))
 ;; The namespace pass (top-level or drain) whose demand chain led to a unit.
 (defn root-of [u]
   (loop [u u]
@@ -234,6 +265,34 @@
     (max (last body-done) (peek workers))))
 (println "\nOption U (serial top-level passes; units on W workers):")
 (doseq [W [1 2 4 8 12 16]] (println (format "  W=%2d  %s" W (s (simulate-u W)))))
+;; Option U with the trace's root edges: a drained unit also waits for the
+;; drained units whose roots it evaluated or read, and a top-level pass for
+;; those its own code did. The trace lists units in the order they finished,
+;; which every such edge respects, so one pass in that order schedules them.
+(when (seq trace-units)
+  (let [edges (distinct (keep root-edge (concat trace-executions trace-reads)))
+        waits (reduce (fn [m [from to]] (update m from (fnil conj []) to)) {} edges)
+        drained (group-by :demander (filter #(= "drain" (:kind %)) trace-units))
+        simulate (fn [W]
+                   (loop [nss nss t 0 workers (vec (repeat W 0)) fin {}]
+                     (if-let [n (first nss)]
+                       (let [i (:idx n)
+                             done (fn [fin task] (case (first task) :u (get fin task 0) :b 0))
+                             start (reduce max t (map #(done fin %) (waits [:b i])))
+                             body (+ start (:prep n) (:body n) (:warn n))
+                             [workers fin]
+                             (reduce (fn [[workers fin] u]
+                                       (let [task [:u (:id u)]
+                                             ready (reduce max body (map #(done fin %) (waits task)))
+                                             [free & more] workers
+                                             end (+ (max free ready) (inclusive u))]
+                                         [(vec (sort (conj (vec more) end))) (assoc fin task end)]))
+                                     [workers fin] (drained i))]
+                         (recur (rest nss) body workers fin))
+                       (max t (peek workers)))))]
+    (println (format "Option U with root edges (%d edges between tasks, %d of them from a top-level pass):"
+                     (count edges) (count (filter #(= :b (ffirst %)) edges))))
+    (doseq [W [1 2 4 8 12 16]] (println (format "  W=%2d  %s" W (s (simulate W)))))))
 ;; Model D: in-order commit without overlays. B's top-level pass starts once every namespace
 ;; up to its latest dependency (in source order) has finished its top-level pass; units fan out.
 (let [maxdep (mapv (fn [n] (reduce max -1 (:deps n))) nss)
@@ -301,16 +360,23 @@
     (doseq [[kind group] (sort-by key (group-by :kind units))]
       (println (format "  demanded by %-10s %6d units, %s inclusive" kind (count group) (s (reduce + (map inclusive group))))))
     (println "  deepest demand chain" (reduce max 0 (map :depth units)) "  threads" (sort (distinct (map :thread units))))
-    ;; First evaluations of compile-time roots; reads of ready roots stay in JavaScript.
+    ;; First evaluations of compile-time roots, then every distinct read of
+    ;; a root or bundle (version 2), the first evaluations included.
     (let [executions (rows "execute")
           unit-ns (into {} (map (juxt :id :ns) units))
-          own-ns (fn [kind demander] (case kind ("top-level" "drain") (parse-long demander) "unit" (unit-ns (parse-long demander)) nil))]
+          own-ns (fn [kind demander] (case kind ("top-level" "drain") (parse-long demander) "unit" (unit-ns (parse-long demander)) nil))
+          ;; A demander outside any pass crosses, as in the --stats count.
+          crosses? (fn [[unit kind demander]] (let [own (own-ns kind demander)] (or (nil? own) (not= own (unit-ns (parse-long unit))))))]
       (println (format "  root evaluations %d (%d analyzed on demand); by %s; %d evaluate a unit of another namespace"
                        (count executions) (count (filter #(= "0" (nth % 3)) executions))
                        (into (sorted-map) (frequencies (map second executions)))
-                       (count (filter (fn [[unit kind demander]]
-                                        (not= (own-ns kind demander) (unit-ns (parse-long unit))))
-                                      executions)))))
+                       (count (filter crosses? executions))))
+      (when (>= trace-version 2)
+        (let [reads (rows "read")]
+          (println (format "  root reads %d distinct (demander, unit) pairs; by %s; %d read a unit of another namespace; %d demanders read %d distinct units"
+                           (count reads) (into (sorted-map) (frequencies (map second reads)))
+                           (count (filter crosses? reads))
+                           (count (distinct (map rest reads))) (count (distinct (map first reads))))))))
     (let [host (filter :host units)
           plain (remove #(or (:host %) (pos? (:expansions %))) units)]
       (println "\ntrace: macro host")

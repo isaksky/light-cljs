@@ -339,8 +339,8 @@ deferred unit without the units it demands, the drains' bookkeeping, the
 V8 time of each, the units that entered the macro host and the ready width of
 each namespace's drain. `--stats-file PATH` (which implies `--stats`) also
 writes that trace to `PATH` as tab-separated `stage`, `namespace` and `unit`
-rows (and `execute` rows for the compile-time roots evaluated), with each
-unit's position, demander and costs, for
+rows (and `execute` and `read` rows for the compile-time roots evaluated
+and read), with each unit's position, demander and costs, for
 `benchmarks/concurrency/dag.bb` ([docs/compiler-concurrency.md](docs/compiler-concurrency.md)).
 
 `--jobs N` with `--compile` is experimental. It allows the compilation N CPU

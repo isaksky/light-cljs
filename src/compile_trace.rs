@@ -15,6 +15,11 @@
 //! exclusive too. The time at depth 0, which counts Rust called back from
 //! JavaScript, is kept separately ([`Trace::engine_outer`]).
 //!
+//! Each frame has a serial ([`frame`]). The engine notes the compile-time
+//! roots it forces in JavaScript, ready ones included, and the bridge check
+//! that ends each engine entry hands it the serial, so that it can report
+//! them in one call as read edges from that frame ([`root_reads`]).
+//!
 //! Without a recording ([`record`]) nothing here reads a clock or allocates:
 //! each hook loads one relaxed atomic and returns.
 
@@ -33,7 +38,7 @@ thread_local! {
 
 /// A kind of work. Every moment of a recorded compilation is in exactly one
 /// stage, the innermost open frame's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stage {
     /// Whatever no other frame covers: cache lookups and publication,
     /// artifact capture and install, the analysis loop's own work.
@@ -138,7 +143,7 @@ pub struct NamespaceTrace {
 }
 
 /// Who demanded a unit's analysis.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Demander {
     /// The drain of the namespace with this source index: ready work, not a
     /// demand.
@@ -227,13 +232,16 @@ pub struct Trace {
     /// Each time a unit's compile-time root was first evaluated in the
     /// engine, in order: an execution demand edge.
     pub executions: Vec<Execution>,
+    /// Each distinct pair of a frame and a unit whose compile-time root or
+    /// bundle the engine forced in it, ready ones included, in the order
+    /// first noted: a read demand edge ([`root_reads`]).
+    pub reads: Vec<Read>,
     /// From [`record`] to [`Recording::finish`].
     pub wall: Duration,
 }
 
 /// A unit whose compile-time root the engine evaluated for the first time
-/// (`__lightCompileUnit`): later reads of the ready root stay in JavaScript
-/// and are not recorded.
+/// (`__lightCompileUnit`). Later reads of the ready root are [`Read`]s.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Execution {
     pub unit: u32,
@@ -242,6 +250,15 @@ pub struct Execution {
     /// Whether its JavaScript was already prepared; if not, the demand
     /// analyzed it first (a [`UnitTrace`] row with the same demander).
     pub prepared: bool,
+}
+
+/// A unit whose compile-time root or bundle the engine forced while
+/// `demander` was the innermost frame: its first evaluation, which an
+/// [`Execution`] records too, or any later read of the ready root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Read {
+    pub unit: u32,
+    pub demander: Demander,
 }
 
 impl Trace {
@@ -271,6 +288,33 @@ impl Trace {
             }
         }
         widths
+    }
+
+    /// How many read edges cross a namespace: their demander belongs to
+    /// another namespace than the unit read, by the source indexes of the
+    /// traced units. A demander outside any namespace's pass, or a unit this
+    /// compilation did not analyze, counts as crossing.
+    pub fn cross_namespace_reads(&self) -> usize {
+        let mut sources = Vec::new();
+        for unit in &self.units {
+            let id = unit.id as usize;
+            if sources.len() <= id {
+                sources.resize(id + 1, None);
+            }
+            sources[id] = Some(unit.source);
+        }
+        let source = |id: u32| sources.get(id as usize).copied().flatten();
+        self.reads
+            .iter()
+            .filter(|read| {
+                let demander = match read.demander {
+                    Demander::Drain(index) | Demander::TopLevel(index) => Some(index),
+                    Demander::Unit(id) => source(id),
+                    Demander::Other(_) => None,
+                };
+                demander.is_none() || demander != source(read.unit)
+            })
+            .count()
     }
 
     /// The `key value` lines of the `--stats` report.
@@ -324,6 +368,8 @@ impl Trace {
             "trace.executions.unprepared",
             &self.executions.iter().filter(|e| !e.prepared).count(),
         );
+        line("trace.reads", &self.reads.len());
+        line("trace.reads.cross-namespace", &self.cross_namespace_reads());
         let host_time: Duration = self.units.iter().filter(|u| u.host).map(|u| u.time).sum();
         line("trace.units.host-ms", &ms(host_time));
         let longest = self.units.iter().map(UnitTrace::inclusive).max();
@@ -347,8 +393,8 @@ impl Trace {
 
     /// The trace as the tab-separated file `--stats-file` writes, which
     /// `benchmarks/concurrency/dag.bb` reads: a version line, then `stage`,
-    /// `namespace`, `unit` and `execute` rows, each kind described by a `#`
-    /// header row.
+    /// `namespace`, `unit`, `execute` and `read` rows, each kind described
+    /// by a `#` header row.
     /// Times are microseconds. `stages` adds the phases measured outside
     /// the analysis, such as emission.
     pub fn tsv(&self, stages: &[(&str, Duration)]) -> String {
@@ -435,12 +481,18 @@ impl Trace {
                 u8::from(execution.prepared)
             );
         }
+        out.push_str("#read\tunit\tdemander-kind\tdemander\n");
+        for read in &self.reads {
+            let (kind, demander) = read.demander.columns();
+            let _ = writeln!(out, "read\t{}\t{kind}\t{demander}", read.unit);
+        }
         out
     }
 }
 
-/// The version of the `--stats-file` format, its first line.
-pub const TRACE_VERSION: u32 = 1;
+/// The version of the `--stats-file` format, its first line: 2 added the
+/// `read` rows.
+pub const TRACE_VERSION: u32 = 2;
 
 /// The macro host's shared counters a frame reads at its ends.
 pub(crate) struct Counters {
@@ -497,6 +549,9 @@ struct Frame {
     /// Time of units demanded directly by this frame (the top-level pass's
     /// wait).
     demanded: Duration,
+    /// Its index in [`Recorder::demanders`], by which the engine names the
+    /// frame its root reads were made in.
+    serial: u32,
 }
 
 impl Frame {
@@ -514,6 +569,7 @@ impl Frame {
             host: false,
             unit: None,
             demanded: Duration::ZERO,
+            serial: 0,
         }
     }
 }
@@ -532,6 +588,11 @@ struct Recorder {
     trace: Trace,
     /// Exclusive load times, in the order sources were appended.
     loads: Vec<Duration>,
+    /// What each frame opened stands for, by [`Frame::serial`]; the root
+    /// frame's is 0.
+    demanders: Vec<Demander>,
+    /// The edges in [`Trace::reads`].
+    read_edges: std::collections::HashSet<Read>,
 }
 
 impl Recorder {
@@ -554,6 +615,8 @@ impl Recorder {
         }
         frame.saved_depth = self.depth;
         frame.counted = counts;
+        frame.serial = self.demanders.len() as u32;
+        self.demanders.push(Demander::of(frame.stage, frame.owner));
         self.depth = 0;
         self.frames.push(frame);
     }
@@ -697,6 +760,8 @@ pub(crate) fn record() -> Recording {
             outer_started: None,
             trace: Trace::default(),
             loads: Vec::new(),
+            demanders: vec![Demander::Other(Stage::Other)],
+            read_edges: Default::default(),
         });
         true
     });
@@ -848,6 +913,40 @@ pub(crate) fn executed(unit: usize, prepared: bool) {
             demander,
             prepared,
         });
+    });
+}
+
+/// The innermost frame's serial while this thread records. The bridge check
+/// that ends each engine entry hands it to the engine, which names the
+/// entry's root reads by it ([`root_reads`]): frames opened inside an entry
+/// close before it returns, so the entry's own code ran in this frame.
+#[inline]
+pub(crate) fn frame() -> Option<u32> {
+    with_recorder(|recorder| recorder.frames.last().expect("root frame").serial)
+}
+
+/// Record the root reads the engine noted, `FRAME:UNIT,UNIT...`: units whose
+/// compile-time roots or bundles it forced, ready ones included, in entries
+/// made while the frame with serial FRAME ([`frame`]) was innermost. Pairs
+/// already recorded, and a malformed note, record nothing.
+pub(crate) fn root_reads(note: &str) {
+    with_recorder(|recorder| {
+        let Some((frame, units)) = note.split_once(':') else {
+            return;
+        };
+        let Some(&demander) = frame
+            .parse::<usize>()
+            .ok()
+            .and_then(|frame| recorder.demanders.get(frame))
+        else {
+            return;
+        };
+        for unit in units.split(',').filter_map(|unit| unit.parse().ok()) {
+            let read = Read { unit, demander };
+            if recorder.read_edges.insert(read) {
+                recorder.trace.reads.push(read);
+            }
+        }
     });
 }
 
@@ -1095,7 +1194,50 @@ mod tests {
         let tsv = trace.tsv(&[]);
         assert!(tsv.contains("\nunit\t0\t0\ta/u0\t1\t1\t"), "{tsv}");
         assert!(tsv.contains("\t4\t40\t0\tunit\t1\t1\t0\n"), "{tsv}");
-        assert!(tsv.ends_with("execute\t0\tunit\t0\t1\nexecute\t1\ttop-level\t0\t0\n"));
+        assert!(tsv.ends_with(
+            "execute\t0\tunit\t0\t1\nexecute\t1\ttop-level\t0\t0\n#read\tunit\tdemander-kind\tdemander\n"
+        ));
+    }
+
+    #[test]
+    fn root_reads_name_the_frame_they_were_made_in_once_per_pair() {
+        let recording = record();
+        let outer = frame().unwrap();
+        let (top, unit) = {
+            let _top = enter(Stage::TopLevel, 2, None);
+            let top = frame().unwrap();
+            let unit = {
+                let _unit = enter_unit(|| unit_info(5, 0), &crate::MacroHost::new());
+                frame().unwrap()
+            };
+            assert_eq!(frame(), Some(top));
+            (top, unit)
+        };
+        assert_eq!(frame(), Some(outer));
+        root_reads(&format!("{top}:7,8"));
+        root_reads(&format!("{unit}:7,5"));
+        // Pairs already recorded, unknown frames and malformed notes add none.
+        root_reads(&format!("{top}:8,7"));
+        root_reads("99:1");
+        root_reads("x");
+        let trace = recording.finish().unwrap();
+        let read = |unit, demander| Read { unit, demander };
+        assert_eq!(
+            trace.reads,
+            [
+                read(7, Demander::TopLevel(2)),
+                read(8, Demander::TopLevel(2)),
+                read(7, Demander::Unit(5)),
+                read(5, Demander::Unit(5)),
+            ]
+        );
+        // Units 7 and 8 are not traced, so their reads cross; unit 5 reads
+        // its own namespace.
+        assert_eq!(trace.cross_namespace_reads(), 3);
+        assert!(trace.tsv(&[]).ends_with(
+            "read\t7\ttop-level\t2\nread\t8\ttop-level\t2\nread\t7\tunit\t5\nread\t5\tunit\t5\n"
+        ));
+        assert_eq!(frame(), None);
     }
 
     #[test]

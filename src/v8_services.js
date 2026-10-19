@@ -40,7 +40,7 @@
                 exportForm: (id, nodes, depth) => bridge.encode(get(id), nodes, depth),
                 formServices: (one, all, nodes, depth) => rt.setMacroexpandServices({macroexpand1: form => bridge.decode(one(bridge.encode(form, nodes, depth))), macroexpand: form => bridge.decode(all(bridge.encode(form, nodes, depth)))}),
                 bridgeVersion: bridge.version,
-                checkBridge: bridge.check,
+                checkBridge: frame => { bridge.check(); if (frame !== undefined) globalThis.__lightRootReadsChecked?.(frame); },
                 errorData: () => { const error = lastError; return save(rt.core.exData(error)); },
                 errorValue: () => lastError,
                 rethrowError: (error, message) => {
