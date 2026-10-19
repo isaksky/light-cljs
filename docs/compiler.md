@@ -2742,7 +2742,11 @@ analysis as upstream does; receiver expressions returning nil fail at runtime.
 constructor per source site and a new instance for every evaluation. Visible
 locals become receiver fields, including shadowed names resolved to the visible
 binding. Methods read their own receiver's fields; nested closures retain that
-receiver, and nested reify objects capture a fresh environment.
+receiver, and nested reify objects capture a fresh environment. The emitter
+writes each such read as a member of the receiver under the field's munged
+name, `this["a_b"]`, the member the runtime's `reify` defines for it
+(light-cljs-266), rather than through a runtime call that munged the name on
+every read.
 
 Methods support destructured parameters, separate fixed overloads, Object
 methods (including large and variadic signatures), nested functions and loops,
@@ -2831,6 +2835,30 @@ distinguishes plain maps and other constructors, and equal records work as
 structural map/set keys. Sequence and find return map entries; empty returns nil.
 Records are callable only when they implement IFn. External extensions affect
 existing instances.
+
+A record's generated methods find a field through tables its type builds once
+(light-cljs-266): its munged member names, `members`, which every type gets when
+it is defined (`decorateType` in `src/js_runtime.js`), and its field keywords,
+interned the first time an operation such as `dissoc` or `map->R` needs them
+all (`recordKeys`). `(:a r)`,
+`get`, `contains?` and `assoc` compare a keyword's spelling with the field
+names, as upstream's `case` on the keyword does (`recordKeywordFieldIndex`), so
+a keyword made by `keyword` or the reader still names its field and an `IEquiv`
+extension cannot; since a keyword's spelling never changes, the type remembers
+the answer for the first 32 keywords it is asked about in a `Map` keyed by the
+keyword (`fieldIndex`), so a keyword literal, interned, is answered by identity
+from then on whether or not it names a field, interning no keyword, reading no
+spelling and munging no name per call. A non-keyword names no field and is not
+remembered. `dissoc` compares with `=` against the field keywords, as upstream's
+set of them does (`recordFieldIndex`), and a key that names no field goes to the
+extmap. `contains?` of a key that names no field on a record without an extmap
+answers false itself unless `extend-type` or `specify!` is in the program
+(`protocolHooks.extend`), since only they could give nil `-contains-key?`; `get`
+of a missing extmap always gives the default. The two-argument `-lookup` calls
+the record's current three-argument method directly rather than through `get`,
+so an extension that replaces only that method still answers both, as upstream's
+`(-lookup this k nil)` does. A `reify` reads its captured locals under the same
+`members`.
 
 Saved factories and generated copy/update methods follow the current constructor
 Var after redefinition, while old instances retain their original methods and type.

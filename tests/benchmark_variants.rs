@@ -33,7 +33,7 @@ fn level_benchmark_harness_checks_and_records_every_level() {
     // `--only` takes fixture and workload names.
     assert!(levels::is_workload("event-maps") && !levels::is_workload("rest-fn"));
     assert!(levels::is_workload("map-assoc") && levels::is_workload("vector-into"));
-    assert!(levels::is_workload("map-into"));
+    assert!(levels::is_workload("map-into") && levels::is_workload("record-lookup"));
     let mut config = levels::Config::new(output.to_path_buf());
     config.samples = 1;
     config.warmups = 0;
@@ -43,9 +43,9 @@ fn level_benchmark_harness_checks_and_records_every_level() {
     levels::run(&config, &fixtures).unwrap();
     let samples = std::fs::read_to_string(output.join("samples.csv")).unwrap();
     // Startup: 2 fixtures x 3 levels x (4 Node + 1 QuickJS measures). Steady state:
-    // 15 ratchet workloads x 3 levels x 2 engines, and 9 collection workloads in Node
-    // at advanced only.
-    assert_eq!(samples.lines().count(), 1 + 30 + 90 + 9, "{samples}");
+    // 15 ratchet workloads and record-lookup x 3 levels x 2 engines, and 9 collection
+    // workloads in Node at advanced only.
+    assert_eq!(samples.lines().count(), 1 + 30 + 96 + 9, "{samples}");
     for row in [
         "node,parse+execute,seq-pipeline,,advanced,0,",
         "quickjs,parse+execute,rest-fn,,none,0,",
@@ -66,6 +66,8 @@ fn level_benchmark_harness_checks_and_records_every_level() {
         "node,call,transient-batches,10,prepare,0,",
         "quickjs,call,queue-ops,10,advanced,0,",
         "node,call,iterator-seq,10,advanced,0,",
+        "quickjs,call,record-lookup,10,none,0,",
+        "node,call,record-lookup,10,advanced,0,",
         "node,call,vector-conj,10,advanced,0,",
         "node,call,map-assoc,10,advanced,0,",
         "node,call,set-conj,10,advanced,0,",

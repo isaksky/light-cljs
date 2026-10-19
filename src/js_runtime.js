@@ -391,8 +391,8 @@
   //@unit installMethods.ISeqableKey effect: installMethods when: count, isSeqable requires: methodKey,
   //@ methodKeys
   methodKeys[51] = methodKey("ISeqable");
-  //@unit installMethods.ISeqableSeqKey effect: installMethods when: lazyBranch, reduce, rseq,
-  //@ seq requires: methodKey, methodKeys
+  //@unit installMethods.ISeqableSeqKey effect: installMethods when: lazyBranch, reduce, rseq, seq
+  //@ requires: methodKey, methodKeys
   methodKeys[52] = methodKey("ISeqable/-seq");
   //@unit installMethods.ISequentialKey effect: installMethods when: isSequential, nth,
   //@ structuralEqualPair requires: methodKey, methodKeys
@@ -6139,18 +6139,18 @@
     return cycleNode(c.all, c.previous, state.current, state.following);
   };
   //@unit makeType.meta effect: recordMethods when: collectionWithMeta, updatedMap requires: equalPair,
-  //@ field, keyword, kindHooks, mapKinds, maps, recordTypes
+  //@ kindHooks, mapKinds, maps, recordKeys, recordTypes
   // A record copy owns fresh mutable host fields. Copying accessor
   // descriptors would leave their closures pointing at the old instance.
   kindHooks.withMetaRecord = value => {
-    const Type = recordTypes.get(value), result = new Type(...Type.fieldNames.map(name => field(value, name)));
+    const Type = recordTypes.get(value), result = new Type(...Type.members.map(member => value[member]));
     maps.set(result, maps.get(value)); mapKinds.set(result, mapKinds.get(value));
     return result;
   };
   // A record of `entries`, for `updatedMap`.
   kindHooks.updatedRecord = (Type, entries, kind) => {
-    const result = new Type(...Type.fieldNames.map(name => {
-      const entry = entries.find(e => equalPair(e.key, keyword(null, name)));
+    const result = new Type(...recordKeys(Type).map(key => {
+      const entry = entries.find(e => equalPair(e.key, key));
       return entry?.value;
     }));
     maps.set(result, Object.freeze(entries)); mapKinds.set(result, kind);
@@ -7002,22 +7002,23 @@
   function makeReify(methods) { const value = installMethods({}, methods); reifyValues.add(value); return value; }
   //@unit reifySites
   const reifySites = new Map();
-  //@unit reify requires: field, makeType, metadataValues, mungeMember, reifySites, reifyValues
+  //@unit reify requires: makeType, metadataValues, reifySites, reifyValues
+  // The methods read the captured locals under `members` (`decorateType`),
+  // which the emitter munges the same way.
   function reify(site, fields, values, methods, metadata = null) {
     let Type = reifySites.get(site);
     if (!Type) {
-      const members = fields.map(mungeMember);
       Type = makeType(fields, [
         ["IMeta", 0, null], ["IWithMeta", 0, null],
         ["IMeta/-meta", 1, function () { return metadataValues.has(this) ? metadataValues.get(this) : null; }],
         ["IWithMeta/-with-meta", 2, function (_self, metadata) {
-          const result = new Type(...fields.map(name => field(this, name)));
+          const result = new Type(...Type.members.map(member => this[member]));
           reifyValues.add(result);
           metadataValues.set(result, metadata);
           return result;
         }], ...methods()], false, null, null, null, function (...values) {
         // Own fields like a type's, whatever their names (`__proto__`).
-        members.forEach((member, i) => Object.defineProperty(this, member, {value: values[i], writable: true, enumerable: true, configurable: true}));
+        Type.members.forEach((member, i) => Object.defineProperty(this, member, {value: values[i], writable: true, enumerable: true, configurable: true}));
       });
       reifySites.set(site, Type);
     }
@@ -7026,8 +7027,6 @@
     reifyValues.add(value);
     return value;
   }
-  //@unit field requires: mungeMember
-  function field(value, name) { return value[mungeMember(name)]; }
   //@unit mungeCharacters effect requires: memberMunging
   const mungeCharacters = {...memberMunging, "/": "_SLASH_"};
   // These two upstream CHAR_MAP entries are two-character strings, while the
@@ -7062,16 +7061,44 @@
   //@unit mapEntry.vector effect: mapEntry when: makeVector requires: makeVector, mapEntries,
   //@ mapEntry, MapEntryType
   mapEntry = (key, value) => { const pair = Object.setPrototypeOf(makeVector([key, value]), MapEntryType.prototype); mapEntries.add(pair); return pair; };
-  //@unit recordEntries requires: field, keyword, mapEntry, toArray
+  //@unit recordKeys requires: keyword
+  // A record type's field keywords, interned once per type (the members its
+  // constructor assigns the fields to are `members`, see `decorateType`).
+  function recordKeys(Type) {
+    return Type.fieldKeys ??= Type.fieldNames.map(name => keyword(null, name));
+  }
+  //@unit recordFieldIndex requires: equalPair, recordKeys
+  // The index of the field `key` names, or -1, for `dissoc`, which upstream
+  // tests with a set of the field keywords. Keyword literals are interned, so
+  // a field's own keyword is found by identity; other keys compare with `=`.
+  function recordFieldIndex(Type, key) {
+    const keys = recordKeys(Type), index = keys.indexOf(key);
+    return index < 0 ? keys.findIndex(field => equalPair(key, field)) : index;
+  }
+  //@unit recordKeywordFieldIndex requires: keywordFqn
+  // Defrecord's lookup/contains use keyword case; assoc uses keyword identity.
+  // General IEquiv dispatch can incorrectly match a different field (or even
+  // a non-keyword key), and repeats protocol work for each preceding field.
+  // A key's index is that of the field its keyword spelling names, -1 for a
+  // non-keyword (whose spelling is null). A keyword's spelling never changes,
+  // so the type remembers the answer for the first 32 keywords it is asked
+  // about (`fieldIndex`, by identity) and reads no spelling for them again.
+  function recordKeywordFieldIndex(Type, key) {
+    const known = Type.fieldIndex ??= new Map();
+    let index = known.get(key), spelling;
+    if (index == null && (index = Type.fieldNames.indexOf(spelling = keywordFqn(key)), spelling !== null && known.size < 32)) known.set(key, index);
+    return index;
+  }
+  //@unit recordEntries requires: keyword, mapEntry, toArray
   // Surface records supply protocol methods just as the upstream macro does.
   // Raw defrecord* only emits a constructor; its explicit body installs methods.
   function recordEntries(value, Type) {
-    return [...Type.fieldNames.map(name => mapEntry(keyword(null, name), field(value, name))), ...toArray(value.__extmap)];
+    return [...Type.fieldNames.map((name, i) => mapEntry(keyword(null, name), value[Type.members[i]])), ...toArray(value.__extmap)];
   }
-  //@unit recordCopy requires: field
+  //@unit recordCopy
   function recordCopy(value, Type, metadata, extmap, cachedHash) {
     const Constructor = Type.currentConstructor?.() ?? Type;
-    return new Constructor(...Type.fieldNames.map(name => field(value, name)), metadata, extmap, cachedHash);
+    return new Constructor(...Type.members.map(member => value[member]), metadata, extmap, cachedHash);
   }
   //@unit recordMethodTable
   // Builders of record methods, each added by a unit kept where it can run.
@@ -7085,16 +7112,6 @@
   //@unit recordMethods.install effect: recordMethods when: decorateType requires: recordMethods,
   //@ typeHooks
   typeHooks.recordMethods = recordMethods;
-  //@unit recordFieldIndex requires: equalPair, keyword
-  function recordFieldIndex(Type, key) { return Type.fieldNames.findIndex(name => equalPair(key, keyword(null, name))); }
-  //@unit recordKeywordFieldIndex requires: keywordFqn
-  // Defrecord's lookup/contains use keyword case; assoc uses keyword identity.
-  // General IEquiv dispatch can incorrectly match a different field (or even
-  // a non-keyword key), and repeats protocol work for each preceding field.
-  function recordKeywordFieldIndex(Type, key) {
-    const spelling = keywordFqn(key);
-    return spelling === null ? -1 : Type.fieldNames.indexOf(spelling);
-  }
   //@unit recordMethods.clone effect: recordMethods when: clone requires: recordCopy,
   //@ recordMethodTable
   recordMethodTable.push(Type => [
@@ -7113,11 +7130,11 @@
       return this.__hash = recordEntriesHash(recordEntries(this, Type), 0) ^ stringHash(typeNames.get(Type) ?? "");
     }]]);
   //@unit recordMethods.equiv effect: recordMethods when: equalPair, equivProtocol, objectEquiv
-  //@ requires: equalPair, field, recordMethodTable
+  //@ requires: equalPair, recordMethodTable
   recordMethodTable.push(Type => [
     ["IEquiv/-equiv", 2, function (_self, other) {
       return other != null && this.constructor === other.constructor &&
-        Type.fieldNames.every(name => equalPair(field(this, name), field(other, name))) && equalPair(this.__extmap, other.__extmap);
+        Type.members.every(member => equalPair(this[member], other[member])) && equalPair(this.__extmap, other.__extmap);
     }]]);
   //@unit recordMethods.meta effect: recordMethods when: meta, metaSupported requires: recordMethodTable
   recordMethodTable.push(() => [
@@ -7126,12 +7143,13 @@
   //@ requires: recordCopy, recordMethodTable
   recordMethodTable.push(Type => [
     ["IWithMeta/-with-meta", 2, function (_self, metadata) { return recordCopy(this, Type, metadata, this.__extmap, this.__hash); }]]);
-  //@unit recordMethods.lookup effect: recordMethods when: get, lookupProtocol requires: field, get,
-  //@ recordKeywordFieldIndex, recordMethodTable
-  recordMethodTable.push(Type => [
-    ["ILookup/-lookup", 2, function (_self, key) { return get(this, key, null); }],
+  //@unit recordMethods.lookup effect: recordMethods when: get, lookupProtocol requires: get,
+  //@ protocolSlot, recordKeywordFieldIndex, recordMethodTable
+  // `(-lookup r k)` calls the three-argument method `r` has, as `get` would.
+  recordMethodTable.push((Type, slot = protocolSlot("ILookup/-lookup", 3)) => [
+    ["ILookup/-lookup", 2, function (_self, key) { return this[slot](this, key, null); }],
     ["ILookup/-lookup", 3, function (_self, key, fallback) {
-      const index = recordKeywordFieldIndex(Type, key); return index < 0 ? get(this.__extmap, key, fallback) : field(this, Type.fieldNames[index]);
+      const index = recordKeywordFieldIndex(Type, key); return index < 0 ? get(this.__extmap, key, fallback) : this[Type.members[index]];
     }]]);
   //@unit recordMethods.count effect: recordMethods when: count, countProtocol requires: count,
   //@ recordMethodTable
@@ -7145,17 +7163,23 @@
       return reduce((result, pair) => conj(result, pair), this, entry);
     }]]);
   //@unit recordMethods.contains effect: recordMethods when: contains, containsProtocol requires: contains,
-  //@ recordKeywordFieldIndex, recordMethodTable
+  //@ protocolHooks, recordKeywordFieldIndex, recordMethodTable
+  // `contains?` of a missing extmap is false unless `extend-type` could have
+  // given nil `-contains-key?` (`protocolHooks.extend`).
   recordMethodTable.push(Type => [
-    ["IAssociative/-contains-key?", 2, function (_self, key) { return recordKeywordFieldIndex(Type, key) >= 0 || contains(this.__extmap, key); }]]);
+    ["IAssociative/-contains-key?", 2, function (_self, key) {
+      if (recordKeywordFieldIndex(Type, key) >= 0) return true;
+      const extmap = this.__extmap;
+      return !(extmap == null && !protocolHooks.extend) && contains(extmap, key);
+    }]]);
   //@unit recordMethods.assoc effect: recordMethods when: assoc, assocProtocol requires: assoc,
-  //@ field, recordCopy, recordKeywordFieldIndex, recordMethodTable
+  //@ recordCopy, recordKeywordFieldIndex, recordMethodTable
   recordMethodTable.push(Type => [
     ["IAssociative/-assoc", 3, function (_self, key, value) {
       const index = recordKeywordFieldIndex(Type, key);
       if (index < 0) return recordCopy(this, Type, this.__meta, assoc(this.__extmap, key, value), null);
       const Constructor = Type.currentConstructor?.() ?? Type;
-      return new Constructor(...Type.fieldNames.map((name, i) => i === index ? value : field(this, name)), this.__meta, this.__extmap, null);
+      return new Constructor(...Type.members.map((member, i) => i === index ? value : this[member]), this.__meta, this.__extmap, null);
     }]]);
   //@unit recordMethods.dissoc effect: recordMethods when: dissoc, dissocProtocol requires: collectionWithMeta,
   //@ dissoc, into, mapFromArray, recordCopy, recordFieldIndex, recordMethodTable, seq
@@ -7166,8 +7190,7 @@
       return recordCopy(this, Type, this.__meta, seq(extmap) === null ? null : extmap, null);
     }]]);
   //@unit recordMethods.seq effect: recordMethods when: lazyBranch, reduce, rseq, seq, seqProtocol
-  //@ requires: recordEntries,
-  //@ recordMethodTable, seq, vectorFromArray
+  //@ requires: recordEntries, recordMethodTable, seq, vectorFromArray
   recordMethodTable.push(Type => [
     ["ISeqable/-seq", 1, function () { return seq(vectorFromArray(recordEntries(this, Type))); }]]);
   //@unit recordMethods.iterator effect: recordMethods when: iterator, iteratorProtocol requires: iteratorInit,
@@ -7217,11 +7240,15 @@
   //@unit mapKinds.records effect: recordMethods when: mapKinds requires: mapKinds, recordTypes
   mapKinds.has = (has => value => has.call(mapKinds, value) || recordTypes.has(value))(mapKinds.has);
   mapKinds.get = (get => value => get.call(mapKinds, value) ?? (recordTypes.has(value) ? "record" : undefined))(mapKinds.get);
-  //@unit decorateType requires: installMethods, protocolMaskNames, typeHooks, typeNames
-  // Gives a type its methods; returns the masks its markers declare.
+  //@unit decorateType requires: installMethods, mungeMember, protocolMaskNames, typeHooks,
+  //@ typeNames
+  // Gives a type its methods; returns the masks its markers declare. The
+  // methods read fields under `members`, the names the constructor
+  // assigns them to, munged once per type.
   function decorateType(Type, fields, methods, record, name, currentConstructor) {
     const masks = [0, 0];
     Type.fieldNames = fields;
+    Type.members = fields.map(mungeMember);
     if (currentConstructor) Type.currentConstructor = currentConstructor;
     if (name) typeNames.set(Type, name);
     const implementations = record ? [...methods, ...typeHooks.recordMethods(Type)] : methods;
@@ -7272,11 +7299,12 @@
     const entries = Array.from(maps.get(masks) ?? [], entry => ["cljs$lang$protocol_mask$partition" + entry.key + "$", entry.value]);
     return value => { for (const [key, mask] of entries) value[key] = mask; };
   }
-  //@unit recordFromMap requires: dissoc, get, into, isRecord, keyword, mapFromArray, seq
+  //@unit recordFromMap requires: dissoc, get, into, isRecord, mapFromArray, recordKeys, seq
   function recordFromMap(Type, map) {
-    let extmap = dissoc(map, ...Type.fieldNames.map(name => keyword(null, name)));
+    const keys = recordKeys(Type);
+    let extmap = dissoc(map, ...keys);
     if (isRecord(map)) extmap = into(mapFromArray([]), extmap);
-    return new Type(...Type.fieldNames.map(name => get(map, keyword(null, name))), null, seq(extmap) === null ? null : extmap, null);
+    return new Type(...keys.map(key => get(map, key)), null, seq(extmap) === null ? null : extmap, null);
   }
   //@unit ifnMethods requires: ifnValues
   function ifnMethods(value) {
@@ -9365,8 +9393,8 @@
     return nth(entry, 1);
   }
   //@unit protocolHooks.builtin effect: installMethods when: addWatchProtocol, assoc,
-  //@ collectionWithMeta, compareKeys, conj, conjBangOwn, conjMeta, conjTransient, coreMethod, count,
-  //@ derefProtocol, disj, dissoc, equalPair, first, hash, iterator, Loadable.dispatch,
+  //@ collectionWithMeta, compareKeys, conj, conjBangOwn, conjMeta, conjTransient, coreMethod,
+  //@ count, derefProtocol, disj, dissoc, equalPair, first, hash, iterator, Loadable.dispatch,
   //@ metaSupported, name, namespace, notifyWatches, objectEquiv, peek, pop, removeWatchProtocol,
   //@ rest, rseq, stateProtocol, vresetProtocol, withMetaSupported requires: builtin, protocolHooks
   protocolHooks.builtin = builtin;
@@ -9374,8 +9402,9 @@
   //@ protocolHooks
   // Only `extend-type` gives implementations that are not the value's own.
   protocolHooks.externalMethod = externalMethod;
-  //@unit protocolHooks.extend effect: extendType, extendInstance when: entryPrototype, ownMap,
-  //@ ownSet, resetMeta, upstreamMembers, vectorIndexOf, vectorPrototype requires: protocolHooks
+  //@unit protocolHooks.extend effect: extendType, extendInstance when: contains, containsProtocol,
+  //@ entryPrototype, ownMap, ownSet, resetMeta, upstreamMembers, vectorIndexOf, vectorPrototype
+  //@ requires: protocolHooks
   // Only `extend-type` and `specify!` can give the runtime's own values
   // protocol implementations, which their host-facing methods and fields then
   // answer through the generic operations (`hostHooks`).
@@ -10399,5 +10428,5 @@
   //@unit core.seal effect: core requires: core
   Object.seal(core);
   //@exports
-  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, arrayMapFromArray, mapFromArrays, mapShape, mapFromShape, hashMapShape, hashMapFromShape, setFromArray, arraySetFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, setShape, setFromShape, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, typeMasks, recordMethods, recordFromMap, Loadable, field, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash, hashed});
+  return Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, symbol, vector, vectorFromArray, listFromArray, mapFromArray, arrayMapFromArray, mapFromArrays, mapShape, mapFromShape, hashMapShape, hashMapFromShape, setFromArray, arraySetFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, setShape, setFromShape, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, typeMasks, recordMethods, recordFromMap, Loadable, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash, hashed});
 })()

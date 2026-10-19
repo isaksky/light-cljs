@@ -5194,3 +5194,104 @@ operation that compares or hashes values). The runtime that `none` and
 `prepare` embed grows 283 bytes for `recordEntriesHash`, which the shared
 record hash and the per-type one share. A record type of two fields that
 gets both methods writes about 330 more bytes of terse output.
+
+## Record field lookup — October 18, 2026
+
+light-cljs-266 adds the `record-lookup` steady-state workload to `--levels`:
+`(:a r)`, `(get r :b)` and `(contains? r :c)` on a two-field and a three-field
+record through a function that sees both types, so the optimizer cannot read the
+field directly, plus a `reify` method that adds two captured locals:
+
+```clojure
+(defprotocol Total (total [x]))
+(defrecord Pair [a b])
+(defrecord Triple [a b c])
+(defn look [r] (+ (:a r) (get r :b) (if (contains? r :c) 1 0)))
+(defn adder [x y] (reify Total (total [_] (+ x y))))
+(fn [n] (let [p (->Pair 1 2) t (->Triple 3 4 5) s (adder 6 7)]
+          (loop [i 0 acc 0]
+            (if (< i n) (recur (inc i) (+ acc (look p) (look t) (total s))) acc))))
+```
+
+Before, a record read a field through the runtime's `field`, which munged its
+name on every call (an `Array.from` and a `join`); `dissoc` and `recordFromMap`
+interned a keyword for every field they passed; the two-argument `-lookup`
+called `get` again, so `(:a r)` dispatched twice; every read of a `reify`'s
+captured local went through `field` as well; and a key that named no field
+read its keyword's spelling (a `WeakMap` lookup) and then asked the extmap,
+`nil` for most records, through the whole `contains?` or `get`. Now a type
+records its munged member names once (`members`, in `decorateType`); a record
+its field keywords the first time `dissoc`, `map->R` or an update lists them
+(`recordKeys`); `recordKeywordFieldIndex` remembers, per type, the field index
+of the first 32 keywords it is asked about in a `Map` keyed by the keyword, so
+an interned keyword is answered by identity, field or not, with the spelling
+comparison only the first time; the two-argument `-lookup` calls the record's
+three-argument method directly; `-contains-key?` of a key that names no field
+answers false itself when there is no extmap and nothing in the program could
+extend nil (`protocolHooks.extend`, kept only with `extend-type` or
+`specify!`); and the emitter writes a captured local as `this["x"]`.
+
+The pellet's acceptance command, with `keyword-lookups` added, on the 24-CPU
+Mac (Node v24.18.0), alternated, two rounds of each build, at one-minute loads
+of 8.5 to 13.5 while other workers built and tested: before is master
+`7b8e68a` with only this workload list, handed off is the first attempt at this
+pellet (identity test first, no miss table, no nil-extmap answer) with
+light-cljs-370 applied, after is this change with light-cljs-370. Milliseconds
+per call `(f 2000)`, median / minimum; upstream is timed in the same rounds:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only record-lookup,record-protocol,keyword-lookups --output DIR
+```
+
+| Workload | Build, round | light-cljs `advanced` | Upstream `:advanced` | light-cljs / upstream |
+| --- | --- | ---: | ---: | ---: |
+| record-lookup | before, 1 | 2.994 / 2.938 | 0.087 / 0.083 | 34× |
+| record-lookup | handed off, 1 | 0.202 / 0.188 | 0.087 / 0.084 | 2.3× |
+| record-lookup | after, 1 | 0.134 / 0.128 | 0.089 / 0.083 | 1.5× |
+| record-lookup | before, 2 | 3.003 / 2.929 | 0.087 / 0.084 | 34× |
+| record-lookup | handed off, 2 | 0.196 / 0.190 | 0.086 / 0.084 | 2.3× |
+| record-lookup | after, 2 | 0.134 / 0.129 | 0.087 / 0.084 | 1.5× |
+| record-protocol | before, 1 / 2 | 0.023 / 0.023 | 0.022 / 0.023 | 1.0× / 1.0× |
+| record-protocol | after, 1 / 2 | 0.023 / 0.021 | 0.023 / 0.022 | 0.99× / 0.95× |
+| keyword-lookups | before, 1 / 2 | 1.700 / 1.694 | 0.177 / 0.170 | 9.6× / 10.0× |
+| keyword-lookups | after, 1 / 2 | 1.709 / 1.664 | 0.173 / 0.167 | 9.9× / 9.9× |
+
+record-lookup at the other levels, before → after, medians of the two rounds:
+Node `none` 3.99 → 1.05 ms and `prepare` 3.97 → 1.04 ms; QuickJS `advanced`
+16.6 → 6.06 ms and `none` 29.1 → 20.5 ms.
+
+Where the time went, in Node CPU profiles of `--pseudo-names` output and runs
+of that output edited by hand (local driver, `(f 2000)` medians): the handed-off
+build took 0.175 ms; answering `contains?` of a missing extmap without the
+generic `contains?` took it to 0.152 ms, and not reading a missing keyword's
+spelling again to 0.123 ms (the `Map` that does it here is faster than the
+`WeakMap` the spelling lives in, 0.123 against 0.146 ms). What is left is
+mostly the field read `this[Type.members[index]]`: the record methods are one
+function per runtime unit for every record type, so V8 sees several types and
+names at that keyed load and leaves it megamorphic; reading `this.a` and
+`this.b` by name in the same output took 0.099 ms (1.15×). That needs a
+per-type method the emitter writes, as light-cljs-267 does for `-equiv` and
+`-hash`, which costs bytes per record type.
+
+**Sizes**, bytes of `--compile --optimize LEVEL` (`cargo nextest run --test
+compiler size_ratchet:: --no-capture`), before on master `7b8e68a`, after with
+light-cljs-370. Every type holds `members` (20 bytes at `advanced`); a program
+whose records are looked up keeps the index table in place of `field`; so the
+record fixtures grow by 19 to 96 bytes, and no other `advanced` size grows. To
+stay within 100 bytes, `recordEntries` (a record's `seq` and what walks it) interns its
+keywords per call as on master instead of reading `recordKeys`, and `get` of a
+missing extmap still goes through `get`, which measured no faster without it.
+`none` and `prepare` embed the whole runtime, which grew by about 1,600 bytes,
+mostly comments, so every fixture's ceiling there rises to the next 1,000 above
+its size where it was crossed.
+
+| Fixture | Advanced before | Advanced after | Advanced ceiling |
+| --- | ---: | ---: | --- |
+| record-protocol | 5,215 | 5,234 | 5,300 |
+| pure-defs | 5,124 | 5,143 | 5,200 |
+| three-records | 5,210 | 5,229 | 5,300 |
+| eight-records | 34,788 | 34,883 | 35,000 |
+| closed-params | 14,884 | 14,968 | 15,000 |
+| callbacks | 43,314 | 43,410 | 44,000 |
+| protocol-params | 48,384 | 48,480 | 49,000 |

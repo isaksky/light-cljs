@@ -227,7 +227,7 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
         unit("jsObject"),
         unit("protocol"),
         unit("core"),
-        unit("field"),
+        unit("mungeMember"),
     ];
     let first = manifest.reached_by(&roots);
     assert_eq!(
@@ -247,7 +247,7 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
     }
     // A root whose closure earlier roots already cover adds nothing.
     let core = manifest.reachable([unit("core")]);
-    assert!(core[unit("field").0]);
+    assert!(core[unit("mungeMember").0]);
     assert!(!first.contains(&Some(3)));
     for (index, reached) in first.iter().enumerate() {
         assert_eq!(

@@ -84,12 +84,15 @@ macro_rules! built_map {
 /// local-arities fixtures, as workloads over `n`. `local-arities` runs the
 /// functions of `multi-arity` as local and named functions,
 /// `protocol-dispatch` calls protocol methods as values (light-cljs-265), and
-/// `record-keys` compares and hashes records (light-cljs-267). Then the collection
-/// workloads of light-cljs-233, each at [`GROWTH`]: building a vector, map and set
-/// one element at a time, `nth` and `get` over a built one, `assoc` onto a built
-/// map, `subvec` then `reduce`, and `into` a vector and a map, which goes through
-/// a transient (`map-into`, light-cljs-249).
-const STEADY: [Steady; 24] = [
+/// `record-keys` compares and hashes records (light-cljs-267), and
+/// `record-lookup` looks up the fields of records whose type the call site does
+/// not know, by keyword, `get` and `contains?`, and calls a `reify` method that
+/// reads two captured locals (light-cljs-266). Then the collection workloads of
+/// light-cljs-233, each at [`GROWTH`]: building a vector, map and set one element
+/// at a time, `nth` and `get` over a built one, `assoc` onto a built map, `subvec`
+/// then `reduce`, and `into` a vector and a map, which goes through a transient
+/// (`map-into`, light-cljs-249).
+const STEADY: [Steady; 25] = [
     Steady {
         name: "seq-pipeline",
         source: "(fn [n] (reduce + 0 (->> (map inc (range n)) (filter even?) (partition 2) \
@@ -300,6 +303,20 @@ const STEADY: [Steady; 24] = [
         expected: below,
     },
     Steady {
+        name: "record-lookup",
+        source: "(defprotocol Total (total [x]))
+                 (defrecord Pair [a b])
+                 (defrecord Triple [a b c])
+                 (defn look [r] (+ (:a r) (get r :b) (if (contains? r :c) 1 0)))
+                 (defn adder [x y] (reify Total (total [_] (+ x y))))
+                 (fn [n] (let [p (->Pair 1 2) t (->Triple 3 4 5) s (adder 6 7)]
+                           (loop [i 0 acc 0]
+                             (if (< i n) (recur (inc i) (+ acc (look p) (look t) (total s))) acc))))",
+        inputs: &[2_000],
+        every_level: true,
+        expected: record_lookup,
+    },
+    Steady {
         name: "vector-conj",
         source: "(fn [n] (let [v (reduce conj [] (range n))] (+ (count v) (nth v (dec n)))))",
         inputs: GROWTH,
@@ -442,6 +459,11 @@ fn keyword_lookups(n: u64) -> u64 {
 fn pipeline(n: u64) -> u64 {
     let evens: Vec<u64> = (1..=n).filter(|x| x % 2 == 0).collect();
     evens.as_chunks::<2>().0.iter().skip(1).flatten().sum()
+}
+
+/// `(look p)` is 3, `(look t)` 8 and `(total s)` 13.
+fn record_lookup(n: u64) -> u64 {
+    24 * n
 }
 
 fn areas(n: u64) -> u64 {

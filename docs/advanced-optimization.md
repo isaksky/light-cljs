@@ -2636,7 +2636,7 @@ shapes below.
   its type has no `nil` (since light-cljs-229: calling nil keeps
   `.call(null, ...)` and so the `TypeError` message of lower levels); a
   captured local that the emitter writes as a member read is called as
-  `(0, captures3.l5)(a)`. The call reads its target when it runs, as before,
+  `(0, captures3.l5)(a)`, and a `reify`'s as `(0, this["f"])(a)`. The call reads its target when it runs, as before,
   so a call before the definition still throws a `TypeError` (see
   "Advanced-mode contract").
 - **`do` in value position** is a comma expression of its forms that have an
@@ -3956,7 +3956,7 @@ upstream states that advanced mode is unsafe for certain patterns.
   `__meta`, `__extmap` and `__hash`); reading a mask gives what lower
   levels give.
 - A program type's constructor is the function the emitter writes for it
-  (light-cljs-264). Its static properties (`fieldNames`, `cljs$lang$type`,
+  (light-cljs-264). Its static properties (`fieldNames`, `members`, `cljs$lang$type`,
   ...) may be in another order than at lower levels, and a record that one
   top-level `defrecord` defines has no `currentConstructor`, the runtime's property
   for copies of a record that the program redefines. A method that does not

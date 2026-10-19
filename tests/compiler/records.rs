@@ -26,6 +26,93 @@ fn records_have_nominal_equality_and_structural_key_lookup() {
     );
 }
 
+/// light-cljs-266: a record finds a field by its keyword from a table built
+/// once per type, by identity, so a keyword equal to a field's but made by
+/// `keyword` still names the field, a string or symbol does not, and other
+/// keys fall back to the extmap. The atom hides the type from the optimizer.
+#[test]
+fn record_fields_are_found_by_equal_keywords_and_other_keys_by_the_extmap() {
+    assert_eq!(
+        run(
+            "(defrecord R [a b-c d?])
+             (let [r @(atom (assoc (->R 1 2 3) :e 4 \"a\" 5)) fresh (keyword \"a\") bc (keyword \"b-c\")]
+               (array (:a r) (get r :b-c) (:d? r) (fresh r) (get r bc) (contains? r (keyword \"d?\"))
+                      (get r \"a\") (get r :e) (:zz r 6) (contains? r :zz) (contains? r 'a) (get r nil 7)
+                      (:a (assoc r fresh 8)) (count (dissoc r (keyword \"e\"))) (record? (dissoc r bc))
+                      (pr-str r) (= r (map->R {fresh 1 bc 2 :d? 3 :e 4 \"a\" 5}))
+                      (pr-str (map->R {bc 9 (keyword \"z\") 10})) (= (hash r) (hash (assoc r fresh 1)))))"
+        ),
+        "[1,2,3,1,2,true,5,4,6,false,false,7,8,4,false,\
+         \"#cljs.user.R{:a 1, :b-c 2, :d? 3, :e 4, \\\"a\\\" 5}\",true,\
+         \"#cljs.user.R{:a nil, :b-c 9, :d? nil, :z 10}\",true]\n"
+    );
+}
+
+/// A record's `(-lookup r k)` is `(-lookup r k nil)` through whatever
+/// three-argument method the record has, as upstream's is.
+#[test]
+fn record_two_argument_lookup_goes_through_a_replaced_three_argument_one() {
+    assert_eq!(
+        run("(defrecord R [a]) (defrecord S [a])
+             (extend-type S ILookup (-lookup ([_ k nf] (str \"s\" (name k) nf))))
+             (let [r @(atom (->R 1)) s @(atom (->S 1))]
+               (array (:a r) (get r :a) (get r :b 2) (:a s) (get s :a) (get s :b 2)))"),
+        "[1,1,2,\"sa\",\"sa\",\"sb2\"]\n"
+    );
+}
+
+/// A record remembers the answer for the first 32 keywords it is asked about
+/// by identity: a remembered miss is still found in the extmap once assoc
+/// puts it there, and once 32 are remembered a field's own keyword, a keyword
+/// equal to it made by `keyword` and a key that only the extmap holds, none
+/// of them remembered, are still found, by `get`, `contains?` and `assoc`.
+#[test]
+fn record_field_misses_are_remembered_without_hiding_the_extmap() {
+    assert_eq!(
+        run("(defrecord R [a b])
+             (let [r @(atom (->R 1 2)) ks (mapv #(keyword (str \"k\" %)) (range 40))
+                   misses (count (remove #(contains? r %) (concat ks ks)))
+                   r2 (assoc r (nth ks 3) 30 :k39 31 :zz 32)]
+               (array misses (get r (nth ks 3) 9) (get r2 (nth ks 3)) (:k39 r2) (contains? r2 :k39)
+                      (contains? r2 (nth ks 4)) (:zz r2) (contains? r2 :zz) (get r2 :b) (contains? r2 :a)
+                      ((keyword \"a\") r2) (get r2 (keyword \"b\")) (contains? r2 (keyword \"b\"))
+                      (:a (assoc r2 (keyword \"a\") 5)) (:b (assoc r2 :b 6)) (count (assoc r2 :a 7))
+                      (:yy r2 8) (count r2)))"),
+        "[80,9,30,31,true,false,32,true,2,true,1,2,true,5,6,5,8,5]\n"
+    );
+}
+
+/// `contains?` of a field's keyword answers from the field without reading
+/// the extmap, as it did before the nil-extmap answer.
+#[test]
+fn record_contains_of_a_field_does_not_read_the_extmap() {
+    assert_eq!(
+        run("(defrecord R [a])
+             (let [r @(atom (->R 1))]
+               (js/Object.defineProperty r \"__extmap\" #js {:get (fn [] (throw (js/Error. \"read\")))})
+               (array (contains? r :a) (contains? r (keyword \"a\"))))"),
+        "[true,true]\n"
+    );
+}
+
+/// A record without an extmap answers `get` and `contains?` of a key that
+/// names no field itself, unless `extend-type` gave nil `-contains-key?`,
+/// which `contains?` of the missing extmap then calls, at every level.
+#[test]
+fn record_without_extmap_consults_a_nil_extension_of_contains() {
+    assert_eq!(
+        run("(defrecord R [a])
+             (let [r @(atom (->R 1))] (array (get r :x 5) (:x r 6) (nil? (:x r)) (contains? r :x) (contains? r :a)))"),
+        "[5,6,true,false,true]\n"
+    );
+    assert_eq!(
+        run("(extend-type nil IAssociative (-contains-key? [_ k] (= k :x)) (-assoc [_ k v] nil))
+             (defrecord R [a])
+             (let [r @(atom (->R 1))] (array (contains? r :x) (contains? r :y) (contains? nil :x) (get r :x 5)))"),
+        "[true,false,true,5]\n"
+    );
+}
+
 #[test]
 fn records_expose_generated_protocols_without_gaining_map_callability() {
     assert_eq!(

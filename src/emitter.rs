@@ -2780,25 +2780,23 @@ impl<'a> Emitter<'a> {
                 *named |= *receiver == id;
             }
             write!(self.output, "captures{}.l{}", target.0, id.0).unwrap();
-        } else if let Some(&(_, target)) = self
+        } else if let Some(target) = self
             .reify_captures
             .iter()
             .rev()
             .find(|(local, _)| *local == id)
+            .map(|&(_, target)| target)
+            .or_else(|| {
+                self.program
+                    .field_bindings
+                    .get(&id)
+                    .map(|&(target, _)| target)
+            })
         {
-            self.rt(RuntimeName::export("field"));
-            self.output.push('(');
+            // A `reify` defines each captured local as a member munged the
+            // same way (`mungeMember` in the runtime's `reify`), as a type
+            // its fields.
             self.receiver(target);
-            self.output.push_str(", ");
-            self.string_units(
-                &self.program.locals[id.0]
-                    .name
-                    .encode_utf16()
-                    .collect::<Vec<_>>(),
-            );
-            self.output.push(')');
-        } else if let Some((target, _)) = self.program.field_bindings.get(&id) {
-            self.receiver(*target);
             self.member(&crate::analyzer::munge_js_member(
                 &self.program.locals[id.0].name,
             ));
@@ -5019,12 +5017,12 @@ impl<'a> Emitter<'a> {
         self.shapes.and_then(|shapes| shapes.local_function(local))
     }
 
-    /// Whether [`Emitter::local_value`] writes `id` as an identifier or a
-    /// call, rather than a member read.
+    /// Whether [`Emitter::local_value`] writes `id` as an identifier, rather
+    /// than a member read.
     fn plain_local(&self, id: LocalId) -> bool {
         !self.captures.iter().any(|(local, _)| *local == id)
-            && (self.reify_captures.iter().any(|(local, _)| *local == id)
-                || !self.program.field_bindings.contains_key(&id))
+            && !self.reify_captures.iter().any(|(local, _)| *local == id)
+            && !self.program.field_bindings.contains_key(&id)
     }
 
     /// Whether the `do` form `id` may be a comma expression in value

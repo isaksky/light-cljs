@@ -50,6 +50,26 @@ fn nested_reify_captures_each_receiver_independently() {
     );
 }
 
+/// light-cljs-266: a method reads a captured local as the member the
+/// runtime defined for it, munged at compile time, so `set!` of that member
+/// and a metadata copy are what later reads see.
+#[test]
+fn methods_read_captured_locals_with_munged_names_as_members() {
+    assert_eq!(
+        run(
+            "(defprotocol P (f [this])) (let [make (fn [a-b c? d*e] (reify P (f [_] (array a-b c? d*e)))) v (make 1 2 3) m (with-meta v {:k 4})] (set! (.-c_QMARK_ m) 5) (array (f v) (f m) (:k (meta m)) (.-a_b v) (.-d_STAR_e m)))"
+        ),
+        "[[1,2,3],[1,5,3],4,1,3]\n"
+    );
+    // A captured function is called without the receiver as `this`.
+    assert_eq!(
+        run(
+            "(defprotocol P (f [this])) (let [g (fn [x] (array (inc x) (this-as t (satisfies? P t)))) h (fn [] (reify P (f [_] (g 1))))] (f (h)))"
+        ),
+        "[2,false]\n"
+    );
+}
+
 #[test]
 fn malformed_methods_and_non_tail_recurrence_are_rejected() {
     for source in [

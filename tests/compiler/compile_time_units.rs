@@ -135,7 +135,6 @@ fn application_roots_reach_compile_time_units_only_through_reflection() {
         "reify",
         "makeType",
         "recordFromMap",
-        "field",
         "fnRest",
         "fnApplyTo",
         "makeVar",
