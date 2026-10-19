@@ -1,0 +1,115 @@
+namespaces 922
+sum cost 22.56 s  body 6.00 s  (js 3.59 s ) drain 16.53 s  (js 10.03 s ) warn 0.03 s  prep 0.01 s
+units 13361  js calls 1288464
+
+top 25 namespaces by cost:
+   2.051 s  body  0.010 (js  0.002) drain  2.040 (js  2.031) units   16 maxunit  2.028  instaparse.abnf
+   0.502 s  body  0.006 (js  0.000) drain  0.496 (js  0.258) units   18 maxunit  0.463  app.plugins.shape
+   0.267 s  body  0.010 (js  0.001) drain  0.257 (js  0.210) units  272 maxunit  0.012  app.main.ui.icons
+   0.265 s  body  0.099 (js  0.079) drain  0.166 (js  0.107) units   43 maxunit  0.022  app.main.ui.dashboard.team
+   0.241 s  body  0.004 (js  0.000) drain  0.237 (js  0.138) units   13 maxunit  0.071  app.plugins.library
+   0.198 s  body  0.076 (js  0.025) drain  0.121 (js  0.038) units   88 maxunit  0.024  instaparse.gll
+   0.195 s  body  0.015 (js  0.002) drain  0.179 (js  0.104) units  251 maxunit  0.009  app.render-wasm.api
+   0.187 s  body  0.050 (js  0.031) drain  0.137 (js  0.074) units  193 maxunit  0.021  app.main.data.workspace
+   0.186 s  body  0.062 (js  0.050) drain  0.124 (js  0.081) units   15 maxunit  0.031  app.main.ui.workspace.libraries
+   0.174 s  body  0.074 (js  0.062) drain  0.100 (js  0.059) units   22 maxunit  0.016  app.main.ui.workspace.sidebar.options.menus.component
+   0.171 s  body  0.059 (js  0.048) drain  0.112 (js  0.078) units    9 maxunit  0.029  app.main.ui.workspace.main-menu
+   0.159 s  body  0.025 (js  0.008) drain  0.134 (js  0.069) units   80 maxunit  0.011  app.common.logic.libraries
+   0.158 s  body  0.055 (js  0.043) drain  0.102 (js  0.059) units   50 maxunit  0.031  app.main.ui.comments
+   0.150 s  body  0.068 (js  0.054) drain  0.082 (js  0.047) units   30 maxunit  0.019  app.main.ui.workspace.sidebar.options.menus.layout-container
+   0.148 s  body  0.073 (js  0.064) drain  0.075 (js  0.046) units   10 maxunit  0.020  app.main.ui.settings.subscription
+   0.142 s  body  0.063 (js  0.053) drain  0.079 (js  0.041) units    6 maxunit  0.073  app.main.ui.workspace.viewport-wasm
+   0.142 s  body  0.003 (js  0.000) drain  0.139 (js  0.083) units    2 maxunit  0.136  app.plugins.api
+   0.140 s  body  0.020 (js  0.009) drain  0.120 (js  0.064) units   51 maxunit  0.006  app.common.files.repair
+   0.138 s  body  0.048 (js  0.034) drain  0.089 (js  0.046) units   21 maxunit  0.026  app.main.ui.workspace.viewport.grid-layout-editor
+   0.135 s  body  0.003 (js  0.000) drain  0.133 (js  0.074) units    6 maxunit  0.102  app.plugins.grid
+   0.135 s  body  0.050 (js  0.040) drain  0.085 (js  0.050) units   25 maxunit  0.016  app.main.ui.dashboard.import
+   0.128 s  body  0.007 (js  0.001) drain  0.121 (js  0.067) units   69 maxunit  0.009  app.main.data.workspace.libraries
+   0.128 s  body  0.067 (js  0.054) drain  0.061 (js  0.037) units   27 maxunit  0.016  app.main.ui.workspace.context-menu
+   0.120 s  body  0.064 (js  0.052) drain  0.056 (js  0.035) units   18 maxunit  0.010  app.main.ui.static
+   0.115 s  body  0.039 (js  0.030) drain  0.076 (js  0.048) units   12 maxunit  0.026  app.main.ui.dashboard.grid
+
+critical path (ns granularity, deps complete): 2.82 s
+critical path (deps wait for top-level pass only; units fully parallel): 2.12 s
+critical path (deps wait for top-level pass only; units serial per ns): 2.14 s
+
+simulated namespace-granularity schedule (critical-path-first):
+  P= 1  22.56 s  speedup 1.00x
+  P= 2  11.28 s  speedup 2.00x
+  P= 4  5.64 s  speedup 4.00x
+  P= 6  3.77 s  speedup 5.99x
+  P= 8  2.84 s  speedup 7.93x
+  P=12  2.82 s  speedup 8.00x
+  P=16  2.82 s  speedup 8.00x
+  P=24  2.82 s  speedup 8.00x
+simulated (source order priority):
+  P= 2  11.41 s  speedup 1.98x
+  P= 4  6.45 s  speedup 3.50x
+  P= 8  4.02 s  speedup 5.61x
+  P=16  2.83 s  speedup 7.98x
+
+DAG depth (longest require chain): 63
+namespaces per level: {0 65, 62 1, 7 8, 59 5, 20 1, 58 3, 60 2, 27 8, 1 27, 24 12, 55 9, 39 19, 46 6, 4 15, 54 24, 15 5, 48 6, 50 8, 21 8, 31 16, 32 22, 40 19, 56 9, 33 24, 13 45, 22 4, 36 2, 41 25, 43 10, 61 1, 29 26, 44 13, 6 11, 28 20, 51 5, 25 3, 34 22, 17 4, 3 17, 12 30, 2 17, 23 12, 47 7, 35 6, 19 3, 57 4, 11 15, 9 43, 5 9, 14 15, 45 9, 53 26, 26 4, 16 4, 38 25, 30 17, 10 36, 18 6, 52 29, 42 15, 37 9, 8 32, 49 19}
+avg deps 10.5
+
+units 13361  total 15.86 s  max 2.03 s  >100ms: 4  >10ms: 227  >1ms: 2535
+top units (s): (2.028 0.463 0.136 0.102 0.073 0.071 0.069 0.062 0.061 0.055 0.053 0.053 0.052 0.052 0.049)
+
+critical chain (ns granularity), length 54 :
+     0.010 s finish   2.821 s  app.main
+     0.002 s finish   2.811 s  features
+     0.002 s finish   2.809 s  app.plugins
+     0.142 s finish   2.806 s  app.plugins.api
+     0.241 s finish   2.665 s  app.plugins.library
+     0.502 s finish   2.424 s  app.plugins.shape
+     0.187 s finish   1.922 s  app.main.data.workspace
+     0.045 s finish   1.734 s  app.main.data.workspace.variants
+     0.026 s finish   1.689 s  app.main.data.workspace.pages
+     0.128 s finish   1.663 s  app.main.data.workspace.libraries
+     0.014 s finish   1.534 s  app.main.data.workspace.tokens.propagation
+     0.052 s finish   1.521 s  app.main.data.workspace.tokens.application
+critical path without the instaparse.abnf unit: 2.82 s
+critical chain without it:
+     0.010 s finish   2.821 s  app.main
+     0.002 s finish   2.811 s  features
+     0.002 s finish   2.809 s  app.plugins
+     0.142 s finish   2.806 s  app.plugins.api
+     0.241 s finish   2.665 s  app.plugins.library
+     0.502 s finish   2.424 s  app.plugins.shape
+     0.187 s finish   1.922 s  app.main.data.workspace
+     0.045 s finish   1.734 s  app.main.data.workspace.variants
+
+Model C (ns top-level pass serial per ns; units parallel; deps wait for top-level pass):
+  P= 1  21.90 s (1.03x)   without instaparse outlier 19.86 s (1.04x)
+  P= 2  10.95 s (2.06x)   without instaparse outlier 9.93 s (2.07x)
+  P= 4  5.47 s (4.12x)   without instaparse outlier 4.96 s (4.14x)
+  P= 8  2.74 s (8.24x)   without instaparse outlier 2.48 s (8.28x)
+  P=12  2.12 s (10.62x)   without instaparse outlier 1.65 s (12.43x)
+  P=16  2.12 s (10.62x)   without instaparse outlier 1.24 s (16.57x)
+  P=24  2.12 s (10.62x)   without instaparse outlier 0.83 s (24.85x)
+
+Model A without outlier:
+
+namespace-granularity schedule with static priorities:
+  P= 4  bytes-path 5.64 s   depth-path 5.65 s   exact-cost 5.64 s
+  P= 8  bytes-path 2.89 s   depth-path 2.93 s   exact-cost 2.84 s
+  P=12  bytes-path 2.83 s   depth-path 2.83 s   exact-cost 2.82 s
+  P=16  bytes-path 2.82 s   depth-path 2.82 s   exact-cost 2.82 s
+correlation(bytes, cost) 0.11
+sum body (top-level passes) 6.00 s  critical path of top-level passes only: 0.48 s
+
+Option U (serial top-level passes; units on W workers):
+  W= 1  15.86 s
+  W= 2  7.94 s
+  W= 4  6.06 s
+  W= 8  6.06 s
+  W=12  6.06 s
+  W=16  6.06 s
+
+Model D (in-order commit, no overlays), unlimited workers: 4.22 s  commit frontier reaches the end at 3.31 s
+
+Model D (in-order commit) with P workers:
+  P= 4  5.47 s
+  P= 8  4.24 s
+  P=12  4.23 s
+  P=16  4.22 s

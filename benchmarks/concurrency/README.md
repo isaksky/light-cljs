@@ -4,9 +4,10 @@ The evidence behind [docs/compiler-concurrency.md](../../docs/compiler-concurren
 the timing probes, the `Arc` experiment, the parse harness, the schedule
 models and the probe data they were run on. It was retained from the
 gitignored `research/concurrency-opus/` of the main checkout by light-cljs-330
-so that later pellets can compare against it. None of it is built or run by
-`cargo`; the patches and the probe module are applied by hand to a scratch
-checkout and reverted afterwards.
+so that later pellets can compare against it. None of it is built by `cargo`;
+the patches and the probe module are applied by hand to a scratch checkout
+and reverted afterwards. Only `dag_test.bb` runs under `cargo test`
+(`tests/cli.rs`, when `bb` is on PATH).
 
 ## What was measured
 
@@ -32,6 +33,8 @@ byte-identical to the uninstrumented build.
 | `jscallers2.bb` | Attributes V8 self samples to the light-cljs operation that entered JS (the frames above `v8_evaluator::invoke`). |
 | `main-probe.tsv` | The probe run itself: the build's whole stderr, `NS*` lines followed by `/usr/bin/time -l` (23.76 s wall, 962 MB peak RSS under the probes). |
 | `run.bb` | The portable driver that replaces the study's `run.sh`; see below. |
+| `dag_test.bb` | Regression tests for `dag.bb` (light-cljs-372): Option U with root edges on `fixtures/root-edges.trace.tsv`, and `dag.bb`'s output on `main-probe.tsv` against `fixtures/main-probe.dag.txt`. Run `bb benchmarks/concurrency/dag_test.bb`. |
+| `fixtures/` | A synthetic three-namespace trace whose root edges chain a top-level wait and a unit wait (its header comment in `dag_test.bb` gives the expected times), and the retained `dag.bb`'s output on `main-probe.tsv`. |
 
 ## The models assume serial task costs
 
@@ -110,6 +113,8 @@ edges as dependencies: an `execute` or `read` edge makes the drained unit
 or top-level pass whose frame made it wait for the drained unit whose cost
 includes the root's unit. Edges inside one task, and edges from frames
 outside the model's tasks (drain bookkeeping, other stages), are dropped.
+`dag_test.bb` checks these waits on a synthetic trace: 1.30 s at every W with
+the edges, 0.80 s from W=2 without them.
 
 A unit *entered the macro host* when its analysis made a V8 service call
 other than the compiler frontier's transitions and the bridge check after

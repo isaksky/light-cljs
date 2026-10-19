@@ -1647,6 +1647,32 @@ fn stats_file_traces_prepared_and_bundle_root_reads() {
     );
 }
 
+/// The schedule models that read these traces pass their own Babashka tests
+/// (benchmarks/concurrency/dag_test.bb): Option U's root edges on a
+/// synthetic trace, and unchanged output on the retained probe run. Skipped
+/// when `bb` is not on PATH.
+#[test]
+fn dag_model_tests_pass() {
+    let Ok(probe) = Command::new("bb").arg("--version").output() else {
+        eprintln!("bb unavailable; skipping benchmarks/concurrency/dag_test.bb");
+        return;
+    };
+    if !probe.status.success() {
+        eprintln!("bb unavailable; skipping benchmarks/concurrency/dag_test.bb");
+        return;
+    }
+    let output = Command::new("bb")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/concurrency/dag_test.bb"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// `LIGHT_CLJS_CAPTURE_ARTIFACTS=encode` encodes and decodes every captured
 /// artifact and reports the sizes with `--stats`; the output is unchanged.
 #[test]

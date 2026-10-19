@@ -1,0 +1,25 @@
+light-cljs-trace	2
+#stage	name	us	engine-us	engine-calls
+stage	trace-wall	1300000	0	0
+#namespace	index	name	bytes	load-us	prepare-us	top-level-us	top-level-engine-us	top-level-wait-us	drain-us	drain-engine-us	warnings-us	expansions	installed	requires
+namespace	0	a	100	0	0	100000	0	0	0	0	0	0	0	
+namespace	1	b	100	0	0	100000	0	100000	0	0	0	0	0	a
+namespace	2	c	100	0	0	100000	0	0	0	0	0	0	0	b
+#unit	id	namespace	name	line	column	us	engine-us	engine-calls	wait-us	expansions	nodes	host	demander-kind	demander	depth	thread
+unit	0	0	a/nested	1	1	200000	0	0	0	0	1	0	unit	1	2	0
+unit	1	0	a/x	2	1	100000	0	0	200000	0	1	0	drain	0	1	0
+unit	2	1	b/top	1	1	100000	0	0	0	0	1	0	top-level	1	1	0
+unit	3	1	b/nested	2	1	100000	0	0	0	0	1	0	unit	4	2	0
+unit	4	1	b/z	3	1	400000	0	0	100000	0	1	0	drain	1	1	0
+unit	5	2	c/nested	1	1	100000	0	0	0	0	1	0	unit	6	2	0
+unit	6	2	c/y	2	1	100000	0	0	100000	0	1	0	drain	2	1	0
+#execute	unit	demander-kind	demander	prepared
+execute	0	top-level	1	0
+execute	4	unit	6	0
+#read	unit	demander-kind	demander
+read	0	top-level	1
+read	0	unit	2
+read	4	unit	6
+read	3	unit	5
+read	4	unit	3
+read	1	drain	0
