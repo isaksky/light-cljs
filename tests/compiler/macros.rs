@@ -2048,6 +2048,25 @@ mod javascript_form_bridge {
         let get = function(&e, "(fn* [x] [(:kept (meta x)) (aget x 0)])");
         assert_eq!(e.print(e.call(get, &[value]).unwrap()).unwrap(), "[true 1]");
     }
+    /// A repeat stores no nil metadata (light-cljs-291), but exports nil
+    /// metadata as when it stored it, and its own metadata when it has some;
+    /// a list, which never stored nil metadata, exports none.
+    #[test]
+    fn repeat_export_keeps_nil_metadata() {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let exported = |source: &str| {
+            let value = e.call(function(&e, source), &[]).unwrap();
+            e.export_data(value, ConversionLimits::default()).unwrap()
+        };
+        for source in ["(fn* [] (repeat 2 1))", "(fn* [] (rest (repeat 3 1)))"] {
+            let data = exported(source);
+            let metadata = data.metadata().expect(source);
+            assert!(matches!(metadata.kind(), DatumKind::Nil), "{source}");
+        }
+        let data = exported("(fn* [] (with-meta (repeat 2 1) {:kept true}))");
+        assert!(!matches!(data.metadata().unwrap().kind(), DatumKind::Nil));
+        assert!(exported("(fn* [] (list 1 1))").metadata().is_none());
+    }
     /// A vector and its seq export their items one at a time within the node
     /// limit (light-cljs-234): a Subvec whose `nth` source throws past index
     /// 50 reaches the limit before reading that far.

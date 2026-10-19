@@ -511,7 +511,10 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   equality and `clojure.set` operations make one lookup per member, and its
   transient edits the trie in place
   ([benchmarks/compiler.md](benchmarks/compiler.md#hash-sets-as-tries--october-14-2026)).
-  A lazy seq pipeline writes no `WeakMap` entry per step, and `seq`, `first`,
+  A lazy seq pipeline writes no `WeakMap` entry per step, nor does building an
+  array map or set, a transient, a queue or a `reduced` marker
+  ([benchmarks/compiler.md](benchmarks/compiler.md#private-payloads-for-the-remaining-kinds--october-18-2026)),
+  and `seq`, `first`,
   `rest`, `next` and `count` of a lazy seq or a cell read its kind once instead
   of probing each kind's store, so a `map`/`filter`/`partition` pipeline takes
   about 1.8× upstream's time in Node; of the seqs of vectors, arrays and maps,

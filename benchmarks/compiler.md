@@ -4671,3 +4671,108 @@ The unread `defmulti` on `*print-fn*`, which light-cljs-300 kept as not
 inert, is now removed with the runtime's `MultiFn`. Every size ratchet
 entry and the four files of the `definitions` chunk fixture are byte for
 byte unchanged; `none` and `prepare` output is unchanged.
+
+## Private payloads for the remaining kinds — October 18, 2026
+
+light-cljs-291 moves the payloads of the other values that an operation
+builds one per call off `WeakMap` entries, as light-cljs-259 did for the seq
+kinds: `reduced` markers (`reducedValues`), transients (`transients`), queues
+(`queues`) and iterator seqs (`iteratorSeqs`) use `privateStore()`, and the
+array maps and sets (`maps`, `mapKinds`, `sets`, `setKinds`, outside the hash
+tries) a new `kindedStore()`, whose class adds the payload and the kind as two
+private fields of one construction. A step of `repeat` stores no nil metadata
+or hash, and `Cons`, `SymbolValue` and `constructorSlots` no null hash; the
+compiler form bridge reads a repeat as having nil metadata, as it does a lazy
+seq. Building any of these writes no `WeakMap` entry now (24 writes for the
+values tests/support/js_runtime.test.js builds before, 0 after).
+
+Four steady-state workloads join `--levels` for the kinds no workload built
+per call: `reduced-early` (a `reduce` that a `reduced` ends, per iteration),
+`transient-batches` (a transient vector and a transient array map per
+iteration), `queue-ops` (`conj`, `peek` and `pop` on a queue) and
+`iterator-seq` (`reduce` over `es6-iterator-seq` of an array's values).
+
+Command:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript --samples 15 \
+  --only seq-pipeline,keyword-lookups,event-maps,constant-literals,constant-keys,record-protocol,reduced-early,transient-batches,queue-ops,iterator-seq,map-assoc,set-conj,map-into,vector-into,vector-conj \
+  --output DIR
+```
+
+Node v24.18.0, macOS 15 (Darwin 24.6) ARM64 VM, 24 CPUs, 15 timed rounds,
+two other workers running: "after" on this change (one-minute load 13.0 at
+the start, 6.5 at the end), then "before" on master `8982972` with the new
+workloads (6.5, then 4.5); upstream from the after run. Median µs per call:
+
+| Workload | n | Engine | Level | Before | After | Upstream `:advanced` |
+| --- | ---: | --- | --- | ---: | ---: | ---: |
+| event-maps | 5000 | Node | `advanced` | 4,492 (34×) | 724 (5.5×) | 132 |
+| event-maps | 5000 | Node | `none` | 20,516 | 16,787 | |
+| event-maps | 5000 | QuickJS | `advanced` | 9,081 | 10,754 | |
+| event-maps | 5000 | QuickJS | `none` | 129,549 | 139,892 | |
+| keyword-lookups | 2000 | Node | `advanced` | 3,524 (20×) | 1,583 (9.1×) | 173 |
+| keyword-lookups | 2000 | Node | `none` | 13,619 | 10,222 | |
+| keyword-lookups | 2000 | QuickJS | `advanced` | 18,756 | 20,904 | |
+| keyword-lookups | 2000 | QuickJS | `none` | 85,184 | 96,407 | |
+| transient-batches | 2000 | Node | `advanced` | 5,313 (27×) | 2,200 (11×) | 199 |
+| transient-batches | 2000 | Node | `none` | 6,475 | 3,152 | |
+| transient-batches | 2000 | QuickJS | `advanced` | 21,166 | 24,286 | |
+| transient-batches | 2000 | QuickJS | `none` | 39,877 | 43,865 | |
+| queue-ops | 2000 | Node | `advanced` | 4,010 (24×) | 2,699 (16×) | 166 |
+| queue-ops | 2000 | Node | `none` | 8,586 | 6,819 | |
+| queue-ops | 2000 | QuickJS | `advanced` | 18,668 | 21,593 | |
+| queue-ops | 2000 | QuickJS | `none` | 60,609 | 66,162 | |
+| iterator-seq | 2000 | Node | `advanced` | 2,163 (34×) | 504 (7.9×) | 64 |
+| iterator-seq | 2000 | Node | `none` | 3,598 | 1,859 | |
+| iterator-seq | 2000 | QuickJS | `advanced` | 5,838 | 6,600 | |
+| iterator-seq | 2000 | QuickJS | `none` | 19,571 | 21,348 | |
+| reduced-early | 5000 | Node | `advanced` | 1,587 (25×) | 1,152 (18×) | 64 |
+| reduced-early | 5000 | Node | `none` | 3,224 | 2,730 | |
+| reduced-early | 5000 | QuickJS | `advanced` | 21,395 | 22,768 | |
+| reduced-early | 5000 | QuickJS | `none` | 56,869 | 58,548 | |
+| constant-literals | 2000 | Node | `none` | 21,050 | 15,229 | |
+| constant-literals | 2000 | QuickJS | `none` | 129,706 | 136,144 | |
+| constant-keys | 200 | Node | `advanced` | 622 | 683 | 299 |
+| constant-keys | 200 | QuickJS | `advanced` | 6,177 | 6,808 | |
+
+`prepare` moved as `none` did, within 2%. Every moved kind is faster in
+Node, at every level, so each one moved. In QuickJS each is 3% to 18%
+slower, as light-cljs-259 found for the seq kinds: adding a private field
+constructs a class, which costs QuickJS more than a `WeakMap` entry that its
+reference counting frees at once (light-cljs-292 takes up QuickJS's seq
+throughput). Within the same pair of runs, `seq-pipeline`, `record-protocol`,
+`constant-literals` at `advanced`, and the collection workloads `vector-conj`,
+`vector-into`, `map-assoc`, `map-into` and `set-conj` moved by -6% to +7%,
+the after run starting under twice the load; the earlier pair (before at load
+6–9, an intermediate build at 9–18) put each of them within 5% too, except
+`map-into` at n = 20,000, 7% faster. `constant-keys` at `advanced`, whose
+calls look up constant map and set keys in a map, is 6% to 10% slower in
+both engines over the two pairs: a `get` of a map's or set's store is a
+JavaScript function where it was a native `WeakMap` method.
+
+Two layouts were measured for the maps and sets. Four `privateStore()`s, a
+store for each of `maps`, `mapKinds`, `sets` and `setKinds`, add two private
+fields, so two constructions, per map; one `kindedStore()` per kind was faster
+in Node at `advanced` in three interleaved runs: `event-maps` by 13% to 15%
+and `keyword-lookups` by 21% to 24%, and within 3% in QuickJS, for about 220
+more bytes at `advanced`.
+
+Sizes (bytes, size ratchet): the runtime that every `none` and `prepare`
+output embeds grew 2,016 bytes (`console-log-sum` 462,834 to 464,850), and
+those ceilings rose to the new sizes rounded up to the next 1,000. At
+`advanced`, every output that tests a value against the map, set, transient,
+queue or reduced stores, which most outputs that keep a collection
+operation do, keeps `privateStore` and `kindedStore` and grows 484 to 535
+bytes (`keyword-only` 2,875 to 3,396, `event-maps` 31,962 to 32,476,
+`seq-pipeline` 28,868 to 29,388); outputs without one (`console-log-sum`,
+`add`, `multi-arity`, `record-protocol`) are unchanged. Eighteen advanced
+ceilings rose to the new sizes rounded up to the next 100 below 10,000 bytes
+and the next 1,000 above: for `event-maps` 6.2×, `transient-batches` 2.4× and
+`iterator-seq` 4.3× as fast in Node at `advanced`, the growth light-cljs-259 accepted for
+its seq kinds (up to 1 KB per ceiling).
+For the same reason the bounds in tests/compiler/builtin_types.rs rose by 500
+bytes (a map literal 6,942 to 7,453 bytes; `(count (.split "a,b" ","))` 1,876 to
+2,361; protocol tests of a type or record 6,127 and 5,847 to 6,622 and 6,372; a
+type's `count` 7,558 to 8,043), and that of the chunked build in
+tests/compiler/chunks.rs by 600.

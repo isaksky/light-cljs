@@ -1576,6 +1576,60 @@ console.log('public constructor fields preserve canonical payload brands');
 }
 console.log('seq payloads are private fields that host objects cannot copy');
 
+// Reduced markers, transients, queues, iterator seqs and the maps and sets
+// outside the hash tries keep their payloads in private fields too
+// (light-cljs-291), and `repeat` stores no nil metadata or hash: building
+// one writes no WeakMap entry, and a host object that inherits one's
+// prototype, or copies its own properties onto that prototype, is none of
+// them.
+{
+  const set = WeakMap.prototype.set;
+  let writes = 0;
+  WeakMap.prototype.set = function (...args) { writes++; return set.apply(this, args); };
+  try {
+    // A runtime evaluated now, as the hash tries' stores keep the `set` they
+    // find (`trieBrand`).
+    const fresh = (0, eval)(fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8')), f = fresh.core;
+    const key = f.keyword('a'), map = f.arrayMap(key, 1), members = f.hashSet(1);
+    writes = 0;
+    const built = {
+      reduced: f.reduced(1), transientVector: f.transient(f.vector(1)), transientMap: f.transient(map),
+      transientSet: f.transient(members), queue: f.conj(fresh.queueFromArray([1]), 2), iteratorSeq: f.seq(new Set([1, 2])),
+      arrayMap: f.arrayMap(key, 2), assoc: f.assoc(map, 2, 3), set: f.hashSet(1, 2), conj: f.conj(members, 2),
+      persisted: f.persistentBang(f.assocBang(f.transient(map), 5, 1)), repeat: f.repeat(2, 1), repeated: f.rest(f.repeat(3, 1))
+    };
+    assert.equal(writes, 0);
+    WeakMap.prototype.set = set;
+    assert.equal(f.isReduced(built.reduced), true);
+    assert.equal(f.deref(built.reduced), 1);
+    assert.equal(f.prStr(f.persistentBang(built.transientVector)), '[1]');
+    assert.equal(f.prStr(f.persistentBang(built.transientMap)), '{:a 1}');
+    assert.equal(f.prStr(f.persistentBang(built.transientSet)), '#{1}');
+    assert.equal(f.prStr(built.queue), '#queue [1 2]');
+    assert.equal(f.count(built.iteratorSeq), 2);
+    assert.equal(f.prStr(f.vector(built.arrayMap, built.assoc, built.persisted, built.set, built.conj, built.repeat, built.repeated)),
+      '[{:a 2} {:a 1, 2 3} {:a 1, 5 1} #{1 2} #{1 2} (1 1) (1 1)]');
+    assert.equal(f.meta(built.repeat), null);
+    assert.equal(built.repeat.meta, null);
+    assert.equal(built.repeat.__hash, null);
+    assert.equal(f.hash(built.repeat), f.hash(f.list(1, 1)));
+    // Only a null slot goes unstored: an undefined one reads back as given.
+    const undefinedSlots = f.Repeat(undefined, 2, 1, null, undefined);
+    assert.equal(undefinedSlots.__hash, undefined);
+    assert.equal(f.meta(undefinedSlots), undefined);
+    assert.equal(f.Repeat(null, 2, 1, null, null).__hash, null);
+    for (const value of Object.values(built)) {
+      for (const candidate of [Object.create(Object.getPrototypeOf(value)), Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))]) {
+        for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
+        assert.equal(fresh.inspect(candidate), null);
+        assert.throws(() => f.count(candidate), /count not supported/);
+        assert.throws(() => f.persistentBang(candidate));
+      }
+    }
+  } finally { WeakMap.prototype.set = set; }
+}
+console.log('reduced markers, transients, queues and array maps and sets are private fields too');
+
 // Public find and the IFind fallback consume one retained map search.
 {
   const events = [];

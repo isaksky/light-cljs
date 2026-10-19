@@ -2809,7 +2809,11 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
         "{from_shared:?}\n{listing}"
     );
     let total = files.iter().map(|(_, source)| source.len()).sum::<usize>();
-    assert!(total + 1_000 <= 73_207 + 2_944, "{total} bytes\n{listing}");
+    // light-cljs-291 adds `kindedStore` (about 500 bytes) to the startup chunk.
+    assert!(
+        total + 1_000 <= 73_207 + 2_944 + 600,
+        "{total} bytes\n{listing}"
+    );
 }
 
 /// A runtime binding that keeps its spelling, `Atom`, would capture at module

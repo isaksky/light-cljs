@@ -24,29 +24,13 @@
   };
   //@unit symbols
   const symbols = new WeakMap();
-  //@unit maps
-  const maps = new WeakMap();
-  //@unit mapKinds
-  const mapKinds = new WeakMap();
-  //@unit sortedComparators
-  const sortedComparators = new WeakMap();
-  //@unit mapEntries
-  const mapEntries = new WeakSet();
-  //@unit sets
-  const sets = new WeakMap();
-  //@unit setKinds
-  const setKinds = new WeakMap();
-  //@unit mapTypes
-  // The type of each map kind that a kept map type builds, for building a map
-  // of an existing map's kind; `setTypes` likewise for sorted sets.
-  const mapTypes = {}, setTypes = {};
-  //@unit transients
-  const transients = new WeakMap();
   //@unit privateStore
   // A store like a vector's, with a private field of its own: the seq kinds'
-  // stores (`cells`, `views`, `lazyValues`, `chunks`). Each step of a seq
-  // builds a value, and a WeakMap entry per value, which the collector traces
-  // as an ephemeron, cost more than the step (light-cljs-259). As
+  // stores (`cells`, `views`, `lazyValues`, `chunks`), and those of the other
+  // values that operations build one per call (`reducedValues`, `transients`,
+  // `queues`, `iteratorSeqs`; and `kindedStore`). Each step of a seq builds a
+  // value, and a WeakMap entry per value, which the collector traces as an
+  // ephemeron, cost more than the step (light-cljs-259, light-cljs-291). As
   // `vectors.set`, `set` requires a new value; `reset` replaces the payload
   // of a value that has one (light-cljs-237).
   // The stores share these methods' code, and so V8's feedback for them,
@@ -63,14 +47,54 @@
     };
     return Store;
   }
+  //@unit kindedStore
+  // The store of the maps and sets outside the hash tries (`maps`, `sets`):
+  // a `privateStore` that also keeps a value's kind (`mapKinds`, `setKinds`)
+  // in a second private field, so that a map or set, which each `assoc` or
+  // `conj` builds, gets both with one construction (light-cljs-291). A
+  // value's kind is set after its payload.
+  function kindedStore() {
+    const Store = class extends (function (value) { return value; }) {
+      #s; #k;
+      static has(value) { return (typeof value === "object" ? value !== null : typeof value === "function") && #s in value; }
+      static get(value) { if ((typeof value === "object" ? value !== null : typeof value === "function") && #s in value) return value.#s; }
+      static set(value, payload) { new Store(value).#s = payload; }
+      static reset(value, payload) { value.#s = payload; }
+      static kinds = {
+        // Not `Store.has`, which the hash tries and records replace.
+        has: value => (typeof value === "object" ? value !== null : typeof value === "function") && #s in value && value.#k !== undefined,
+        get(value) { if ((typeof value === "object" ? value !== null : typeof value === "function") && #s in value) return value.#k; },
+        set(value, kind) { value.#k = kind; return this; }
+      };
+    };
+    return Store;
+  }
+  //@unit maps requires: kindedStore
+  const maps = kindedStore();
+  //@unit mapKinds requires: maps
+  const mapKinds = maps.kinds;
+  //@unit sortedComparators
+  const sortedComparators = new WeakMap();
+  //@unit mapEntries
+  const mapEntries = new WeakSet();
+  //@unit sets requires: kindedStore
+  const sets = kindedStore();
+  //@unit setKinds requires: sets
+  const setKinds = sets.kinds;
+  //@unit mapTypes
+  // The type of each map kind that a kept map type builds, for building a map
+  // of an existing map's kind; `setTypes` likewise for sorted sets.
+  const mapTypes = {}, setTypes = {};
+  //@unit transients requires: privateStore
+  const transients = privateStore();
   //@unit cells requires: privateStore
   const cells = privateStore();
   //@unit views requires: privateStore
   const views = privateStore();
-  //@unit iteratorSeqs
-  const iteratorSeqs = new WeakMap();
-  //@unit reducedValues
-  const reducedValues = new WeakMap();
+  //@unit iteratorSeqs requires: privateStore
+  const iteratorSeqs = privateStore();
+  //@unit reducedValues requires: privateStore
+  const reducedValues = privateStore();
   //@unit stringBufferWriters
   const stringBufferWriters = new WeakSet();
   //@unit constructorHashes
@@ -95,8 +119,8 @@
   const vars = new WeakMap();
   //@unit atoms
   const atoms = new WeakMap(), volatiles = new WeakMap();
-  //@unit queues
-  const queues = new WeakMap();
+  //@unit queues requires: privateStore
+  const queues = privateStore();
   //@unit lazyValues requires: privateStore
   const lazyValues = privateStore(), delays = new WeakMap();
   //@unit eductions
@@ -261,7 +285,9 @@
     if (arguments.length !== 5) return invalidArity(arguments.length);
     const value = Object.create(SymbolValue.prototype);
     symbols.set(value, Object.freeze({namespace, name, spelling}));
-    constructorHashes.set(value, cachedHash);
+    // A null hash reads as none: `hash` computes it, the `_hash` field gives
+    // null (an undefined one is stored, as the field gives it back).
+    if (cachedHash !== null) constructorHashes.set(value, cachedHash);
     metadataValues.set(value, metadata);
     return value;
   }
@@ -271,7 +297,7 @@
     if (arguments.length !== 4) return invalidArity(arguments.length);
     const value = Object.create(Cons.prototype);
     cells.set(value, Object.freeze({kind: "cons", head, tail}));
-    constructorHashes.set(value, cachedHash);
+    if (cachedHash !== null) constructorHashes.set(value, cachedHash);
     metadataValues.set(value, metadata);
     return value;
   }
@@ -280,7 +306,7 @@
   function constructorSlots(value, slots, metadata, cachedHash) {
     publicCollectionSlots.set(value, slots);
     metadataValues.set(value, metadata);
-    constructorHashes.set(value, cachedHash);
+    if (cachedHash !== null) constructorHashes.set(value, cachedHash);
     return value;
   }
   //@unit ListValue requires: cells, constructorSlots
@@ -314,7 +340,11 @@
     cells.set(value, Object.freeze({kind: "repeat", remaining, head, state,
       get tail() { return state.following ?? (remaining === -1 ? value : remaining > 1
         ? (state.following = RepeatValue(null, remaining - 1, head, null, null)) : emptyList); }}));
-    metadataValues.set(value, metadata); constructorHashes.set(value, cachedHash);
+    // Each step of `repeat` builds one: nil metadata and a nil hash are not
+    // stored, and the compiler form bridge reads a repeat as having nil
+    // metadata, as it reads a lazy seq (light-cljs-291).
+    if (metadata !== null) metadataValues.set(value, metadata);
+    if (cachedHash !== null) constructorHashes.set(value, cachedHash);
     return value;
   }
   //@unit IterateValue requires: iterateNode, iterateUnrealizedSeed, metadataValues
@@ -4183,8 +4213,8 @@
             }
             if (!tag) fail("arbitrary object (including promise)", path);
           }
-          // A lazy seq or chunked cons has metadata, nil where none is stored.
-          const metadata = object && (metadataValues.has(v) || lazyValues.has(v) || cells.get(v)?.kind === "chunked-cons")
+          // A lazy seq, chunked cons or repeat has metadata, nil where none is stored.
+          const metadata = object && (metadataValues.has(v) || lazyValues.has(v) || cells.get(v)?.kind === "chunked-cons" || cells.get(v)?.kind === "repeat")
             ? visit(metadataValues.has(v) ? metadataValues.get(v) : null, path + ".meta", depth + 1) : null;
           if (object) unseen?.delete(v);
           return [tag, object ? borrowed.get(v) ?? null : primitives.get(primitiveKey(v)) ?? null, metadata, a, b];
@@ -4599,7 +4629,7 @@
   function treeMapConstructor(comparator, tree, suppliedCount, metadata, cachedHash) {
     const value = makeMap(treeMapConstructor, [], "sorted-map", comparator);
     sortedComparators.set(value, comparator);
-    maps.set(value, deferredEntries(() => {
+    maps.reset(value, deferredEntries(() => {
       const entries = [];
       function visit(node) {
         if (node == null) return;
@@ -4616,7 +4646,7 @@
   function treeSetConstructor(metadata, treeMap, cachedHash) {
     const comparator = sortedComparators.get(treeMap);
     const value = makeSet(treeSetConstructor, [], "sorted-set", comparator === undefined ? compareKeys : comparator);
-    sets.set(value, deferredEntries(() => treeMap == null ? [] : maps.get(treeMap).map(entry => Object.freeze({key: entry.key, get hash() { return entry.hash; }}))));
+    sets.reset(value, deferredEntries(() => treeMap == null ? [] : maps.get(treeMap).map(entry => Object.freeze({key: entry.key, get hash() { return entry.hash; }}))));
     return constructorSlots(value, {"tree-map": treeMap}, metadata, cachedHash);
   }
   //@unit treeMapPush requires: conj, truth
@@ -5541,7 +5571,7 @@
     else if (kind === "cycle") result = kindHooks.withMetaCycle(value);
     else if (recordTypes.has(value)) result = kindHooks.withMetaRecord(value);
     else {
-      const stores = [treeRoots, treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbols, vectors, maps, mapKinds, setKinds, sortedComparators, sets, cells, views, queues, lazyValues, vars, subvecSources];
+      const stores = [treeRoots, treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbols, vectors, maps, mapKinds, sets, setKinds, sortedComparators, cells, views, queues, lazyValues, vars, subvecSources];
       if (!stores.some(store => store.has(value)) && !reifyValues.has(value)) throw new Error("value does not support metadata");
       result = Object.create(Object.getPrototypeOf(value));
       // A copy of a reify value has no brand of its type: `reifyValues` holds it.
@@ -8386,7 +8416,7 @@
   Object.defineProperty(Reduced.prototype, "val", {
     get() { return reducedValues.get(this); }, set(value) {
       if (!reducedValues.has(this)) throw new Error("Expected Reduced");
-      reducedValues.set(this, value);
+      reducedValues.reset(this, value);
     }
   });
   //@unit ListValue.fields effect: ListValue when: resetMeta, upstreamMembers requires: cells,

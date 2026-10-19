@@ -1123,7 +1123,12 @@ chunks keep their payloads in class-private fields, as vectors do, rather than
 in `WeakMap` entries (light-cljs-259): each step of a lazy pipeline builds new
 values, and their entries, which the collector traces as ephemerons, cost more
 than the step. A lazy seq or chunked cons built with nil metadata stores none;
-`meta` and its `meta` field read nil either way.
+`meta` and its `meta` field read nil either way. The other values that an
+operation builds one per call keep theirs in private fields too
+(light-cljs-291): `reduced` markers, transients, queues, iterator seqs, and the
+array maps and sets ([Hash maps](#hash-maps)). A step of `repeat` stores no nil
+metadata or hash, and no positional constructor stores a null hash; the compiler
+form bridge reads a repeat as having nil metadata, as it does a lazy seq.
 `rest` at the end (including nil) is the empty list, while `next` is nil. Each tail
 is O(1), so complete traversal is linear. String traversal produces UTF-16
 one-unit strings. `conj` of a generic seq produces a seq-cons, distinct from a list.
@@ -1165,7 +1170,9 @@ supplied default (nil when omitted), and `contains?` returns false.
 
 ### Hash maps
 
-An array map (at most 8 keys) stores a frozen entry array. A hash map, which an
+An array map (at most 8 keys) stores a frozen entry array, and its kind, in two
+class-private fields that one construction adds (`kindedStore`,
+light-cljs-291), as an array set does its members. A hash map, which an
 array map becomes at its ninth distinct key and which `hash-map`, larger literals
 and transients build, stores upstream's structure (light-cljs-235): a hash array
 mapped trie of its entries (bitmap nodes, array nodes past 16 children, collision

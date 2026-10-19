@@ -43,9 +43,9 @@ fn level_benchmark_harness_checks_and_records_every_level() {
     levels::run(&config, &fixtures).unwrap();
     let samples = std::fs::read_to_string(output.join("samples.csv")).unwrap();
     // Startup: 2 fixtures x 3 levels x (4 Node + 1 QuickJS measures). Steady state:
-    // 9 ratchet workloads x 3 levels x 2 engines, and 9 collection workloads in Node
+    // 13 ratchet workloads x 3 levels x 2 engines, and 9 collection workloads in Node
     // at advanced only.
-    assert_eq!(samples.lines().count(), 1 + 30 + 54 + 9, "{samples}");
+    assert_eq!(samples.lines().count(), 1 + 30 + 78 + 9, "{samples}");
     for row in [
         "node,parse+execute,seq-pipeline,,advanced,0,",
         "quickjs,parse+execute,rest-fn,,none,0,",
@@ -58,6 +58,10 @@ fn level_benchmark_harness_checks_and_records_every_level() {
         "node,call,event-maps,10,advanced,0,",
         "quickjs,call,closed-params,10,advanced,0,",
         "node,call,local-arities,10,advanced,0,",
+        "quickjs,call,reduced-early,10,none,0,",
+        "node,call,transient-batches,10,prepare,0,",
+        "quickjs,call,queue-ops,10,advanced,0,",
+        "node,call,iterator-seq,10,advanced,0,",
         "node,call,vector-conj,10,advanced,0,",
         "node,call,map-assoc,10,advanced,0,",
         "node,call,set-conj,10,advanced,0,",

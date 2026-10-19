@@ -342,7 +342,8 @@ fn a_program_type_opens_the_protocol_hooks() {
     for unit in EXTENSION_MACHINERY {
         assert!(!units.contains(&unit), "{unit}: {units:?}");
     }
-    assert!(advanced(source).emit_js().len() < 8_000);
+    // 7,558 bytes before light-cljs-291 and 8,043 after (`kindedStore`).
+    assert!(advanced(source).emit_js().len() < 8_500);
     every_level(source, "7");
     let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
     let units = self::units(extended);
@@ -647,13 +648,14 @@ fn protocol_tests_of_program_types_need_no_protocol_tables() {
 [:specified "1011101001111100110110" 42 1 false]"#,
     );
     // Protocol tests alone of a program type or a record keep no seqs:
-    // 12,375 and 12,576 bytes before.
+    // 12,375 and 12,576 bytes before; 6,127 and 5,847 before light-cljs-291,
+    // 6,622 and 6,372 after (`privateStore` and `kindedStore`).
     for source in [
         "(deftype T [] ICounted (-count [_] 7)) (counted? (T.))",
         "(defrecord R [x]) (map? (->R 1))",
     ] {
         assert_keeps_none(source, &EXTENSION_MACHINERY);
-        assert!(advanced(source).emit_js().len() < 6_500, "{source}");
+        assert!(advanced(source).emit_js().len() < 7_000, "{source}");
     }
 }
 
@@ -722,8 +724,10 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     }
     // 8,948 bytes before; the brand test for a vector, a class since
     // light-cljs-234, is about 170 bytes more than a WeakMap, and the seq
-    // stores' `privateStore`, since light-cljs-259, about 320 more than theirs.
-    assert!(advanced("(count (.split \"a,b\" \",\"))").emit_js().len() < 1_900);
+    // stores' `privateStore`, since light-cljs-259, about 320 more than theirs,
+    // and `kindedStore` for the maps and sets, since light-cljs-291, about 490
+    // more (1,876 to 2,361 bytes).
+    assert!(advanced("(count (.split \"a,b\" \",\"))").emit_js().len() < 2_400);
     for (source, expected) in [
         ("(count (.split \"a,b\" \",\"))", "2"),
         ("(defrecord R [x]) (count (assoc (->R 1) :y 2))", "2"),
@@ -1358,8 +1362,10 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
             "structuralEqualPair.symbols",
         ],
     );
+    // 6,942 bytes before light-cljs-291 and 7,453 after: `privateStore` and
+    // `kindedStore` for the maps' and transients' stores.
     let output = advanced(target).emit_js();
-    assert!(output.len() < 7_000, "{} bytes", output.len());
+    assert!(output.len() < 7_500, "{} bytes", output.len());
     // The public constructor, by name and through a quoted literal, which
     // keeps its positional array.
     let public = "(let [m (cljs.core/PersistentArrayMap. nil 2 #js [:a 1 :b 2] nil) q '{:x 1 \"y\" 2}]

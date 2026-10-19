@@ -87,7 +87,7 @@ macro_rules! built_map {
 /// one element at a time, `nth` and `get` over a built one, `assoc` onto a built
 /// map, `subvec` then `reduce`, and `into` a vector and a map, which goes through
 /// a transient (`map-into`, light-cljs-249).
-const STEADY: [Steady; 18] = [
+const STEADY: [Steady; 22] = [
     Steady {
         name: "seq-pipeline",
         source: "(fn [n] (reduce + 0 (->> (map inc (range n)) (filter even?) (partition 2) \
@@ -202,6 +202,48 @@ const STEADY: [Steady; 18] = [
         every_level: true,
         expected: multi_arity,
     },
+    // The kinds a call builds per operation besides seqs (light-cljs-291): a
+    // `reduced` marker per early-ended reduce, two transients per batch, a
+    // queue per `conj` and `pop`, and a value per step of an iterator's seq.
+    Steady {
+        name: "reduced-early",
+        source: "(defn upto [v] (reduce (fn [a x] (if (< x 4) (+ a x) (reduced a))) 0 v))
+                 (fn [n] (loop [i 0 total 0]
+                           (if (< i n) (recur (inc i) (+ total i (upto [1 2 3 4 5]))) total)))",
+        inputs: &[5_000],
+        every_level: true,
+        expected: reduced_early,
+    },
+    Steady {
+        name: "transient-batches",
+        source: "(fn [n] (loop [i 0 total 0]
+                           (if (< i n)
+                             (recur (inc i) (+ total (count (persistent! (conj! (conj! (transient []) i) 1)))
+                                               (count (persistent! (assoc! (transient {}) i 1)))))
+                             total)))",
+        inputs: &[2_000],
+        every_level: true,
+        expected: transient_batches,
+    },
+    Steady {
+        name: "queue-ops",
+        source: "(fn [n] (loop [i 0 total 0]
+                           (if (< i n)
+                             (let [q (conj #queue [] i 1)]
+                               (recur (inc i) (+ total (peek q) (count (pop q)))))
+                             total)))",
+        inputs: &[2_000],
+        every_level: true,
+        expected: queue_ops,
+    },
+    Steady {
+        name: "iterator-seq",
+        source: "(def items (into-array (range 2000)))
+                 (fn [n] (reduce + 0 (es6-iterator-seq (.values (.slice items 0 n)))))",
+        inputs: &[2_000],
+        every_level: true,
+        expected: below,
+    },
     Steady {
         name: "vector-conj",
         source: "(fn [n] (let [v (reduce conj [] (range n))] (+ (count v) (nth v (dec n)))))",
@@ -297,6 +339,18 @@ fn below(n: u64) -> u64 {
 
 fn assoc_existing(n: u64) -> u64 {
     1_000 * (n + 1)
+}
+
+fn reduced_early(n: u64) -> u64 {
+    below(n) + 6 * n
+}
+
+fn transient_batches(n: u64) -> u64 {
+    3 * n
+}
+
+fn queue_ops(n: u64) -> u64 {
+    below(n) + n
 }
 
 fn event_maps(n: u64) -> u64 {
