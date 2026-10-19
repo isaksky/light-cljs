@@ -5,10 +5,11 @@
 //! drops what it built. One line per build gives its time, the cache's hits
 //! and misses, the program's table sizes, the process's resident set, the
 //! resident set once the allocator has returned the pages it freed (macOS
-//! `malloc_zone_pressure_relief`), and its physical footprint (`vmmap
-//! --summary`, the memory it still holds dirty). The last two stay flat when
-//! nothing outlives a build; the first also counts freed pages the allocator
-//! keeps resident for reuse.
+//! `malloc_zone_pressure_relief`), its physical footprint (`vmmap
+//! --summary`, the memory it still holds dirty) and what the compiler counts
+//! still alive (`compile_stats::live_counts`, light-cljs-380). The last
+//! three stay flat when nothing outlives a build, and the counts are zero;
+//! the first also counts freed pages the allocator keeps resident for reuse.
 //!
 //! `cargo run --release --example cache_repeat -- CACHE-DIR BUILDS ENTRY ROOT...`
 use light_cljs::compile_cache::CacheOptions;
@@ -69,7 +70,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         dir,
         blockers: Vec::new(),
     };
-    println!("build ms hits misses exprs globals strings rss-bytes relieved-rss-bytes footprint");
+    println!(
+        "build ms hits misses exprs globals strings rss-bytes relieved-rss-bytes footprint live"
+    );
     for build in 1..=builds {
         let mut host = MacroHost::new();
         host.opaque_packages = true;
@@ -99,17 +102,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             program.strings.len(),
         );
         drop((program, files, host, warnings));
+        let live = light_cljs::compile_stats::live_counts();
         let resident = resident_bytes();
         release_free_pages();
         println!(
-            "{build} {millis:.0} {} {} {} {} {} {resident} {} {}",
+            "{build} {millis:.0} {} {} {} {} {} {resident} {} {} {}",
             counts.hits,
             counts.misses.len(),
             tables.0,
             tables.1,
             tables.2,
             resident_bytes(),
-            footprint()
+            footprint(),
+            live.summary()
         );
     }
     Ok(())

@@ -88,7 +88,11 @@ and the namespace keeps its previous unit. Runs until interrupted.
 
 With --stats, print the --compile --stats report of the startup build before
 that build's line, with the time the watch's session took to load the
-program as time.session-load-ms.
+program as time.session-load-ms, and after each step's line a line
+light-cljs: live artifacts=N engines=N engine-handles=N bridge-payloads=N
+value-roots=N with what the process still holds once the session's engines
+have collected their garbage, and the values the session's macro engine
+roots for the compiler.
 
 With --macro-expansions N, --macro-nodes N, --macro-timeout-ms N,
 --macro-memory-limit N and --macro-poll-budget N, raise the macro limits as
@@ -402,6 +406,9 @@ struct Watch {
     /// `--reload-dependents`: a load adds the namespaces downstream of
     /// those it reloads.
     reload_dependents: bool,
+    /// `--stats`: each step also prints what the process still holds
+    /// (`light_cljs::compile_stats::live_counts`).
+    stats: bool,
     /// The namespaces the runtimes have been sent: those of the first build
     /// and of every step that loaded. A `^:dev/once` one is not sent again.
     published: HashSet<String>,
@@ -618,6 +625,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
         unpushed: Vec::new(),
         warnings: Vec::new(),
         reload_dependents: options.reload_dependents,
+        stats: options.stats,
         published: HashSet::new(),
         graph,
         settings: CacheSettings {
@@ -882,6 +890,17 @@ impl Watch {
             Some((namespace, _)) => eprintln!(
                 "light-cljs: recompiled {names} in {millis:.1} ms; {namespace} failed and keeps its previous unit"
             ),
+        }
+        if self.stats {
+            // What the session's engines can still reach, not what they
+            // have yet to collect.
+            self.session.collect_garbage();
+            let live = light_cljs::compile_stats::live_counts();
+            let roots = match self.session.value_roots() {
+                Ok(roots) => roots.to_string(),
+                Err(error) => crate::eval_cli::diagnostic(&error),
+            };
+            eprintln!("light-cljs: live {} value-roots={roots}", live.summary());
         }
         Ok(())
     }

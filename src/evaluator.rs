@@ -444,6 +444,8 @@ pub struct Evaluator {
     /// Whether a promise was rejected with no handler since the last
     /// `unhandled_rejections`, which then has a record to take.
     rejected: Rc<Cell<bool>>,
+    /// Counts the runtime in `LiveCounts::engines` until it is dropped.
+    _live: crate::compile_stats::Live,
 }
 #[cfg(light_quickjs)]
 impl Evaluator {
@@ -492,6 +494,7 @@ impl Evaluator {
             bridge: Rc::new(RefCell::new(BridgeState::default())),
             preserve_language_errors,
             rejected: Rc::new(Cell::new(false)),
+            _live: crate::compile_stats::Live::new(&crate::compile_stats::LIVE_ENGINES),
         };
         // QuickJS frees short-lived values by reference counting, so a WeakMap
         // entry costs it less than adding a private field: every runtime this
@@ -603,6 +606,7 @@ impl Evaluator {
                 inputCompact: () => rt.core.compilerInputCompact(),
                 print: id => {{ try {{ return rt.core.printForHost(get(id)); }} catch (error) {{ lastError = error; const message = rt.compilerExceptionMessage(error); if (message !== undefined) throw new Error(message); throw error; }} }},
                 validate: id => {{ get(id); }},
+                valueCount: () => values.size,
                 release: id => {{ bridge.releaseMacroInput(get(id)); values.delete(id); }},
                 clear: clearValues
               }});
@@ -976,6 +980,13 @@ impl Evaluator {
     /// never this runtime-locking method.
     pub fn collect_garbage(&self) {
         self.runtime.run_gc();
+    }
+
+    /// The values the private registry roots for their `ValueId`s, each
+    /// until it is released or the engine is dropped.
+    pub fn value_roots(&self) -> Result<usize, EvalError> {
+        self.enter(|ctx| ctx.eval::<f64, _>("__lightEvaluator.valueCount()"))
+            .map(|count| count as usize)
     }
 
     /// Explicit embedding hook for collection while JavaScript is active. It
@@ -2301,6 +2312,21 @@ mod active_tests {
             .unwrap();
         assert!(matches!(result.data().kind(), DatumKind::Boolean(true)));
         evaluator.release(function).unwrap();
+    }
+
+    #[test]
+    fn value_registry_roots_are_counted_and_released() {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let baseline = evaluator.value_roots().unwrap();
+        let ids = (0..3)
+            .map(|_| evaluator.evaluate_js("new Array(10000)").unwrap())
+            .collect::<Vec<_>>();
+        evaluator.collect_garbage();
+        assert_eq!(evaluator.value_roots().unwrap(), baseline + 3);
+        for id in ids {
+            evaluator.release(id).unwrap();
+        }
+        assert_eq!(evaluator.value_roots().unwrap(), baseline);
     }
 
     #[test]

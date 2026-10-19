@@ -337,7 +337,7 @@ fn entry(scope: &mut PinScope<'_, '_>, data: Local<'_, v8::Value>) -> Option<(Rc
 /// A host callback's view of the active isolate.
 struct V8Host<'a, 'b, 's, 'i> {
     active: &'a Active<'b, 's, 'i>,
-    unit_exception: RefCell<Option<v8::Global<v8::Value>>>,
+    unit_exception: RefCell<Option<bridge::Root<v8::Value>>>,
 }
 impl HostScope for V8Host<'_, '_, '_, '_> {
     fn control(&self) -> ExecutionControl {
@@ -373,7 +373,7 @@ impl HostScope for V8Host<'_, '_, '_, '_> {
         if result.is_err()
             && let Ok(exception) = self.active.enter(|scope| {
                 let value = invoke(scope, self.active.state, "errorValue", &[])?;
-                Ok(v8::Global::new(scope, value))
+                Ok(bridge::Root::new(scope, value))
             })
         {
             *self.unit_exception.borrow_mut() = Some(exception);
@@ -473,7 +473,7 @@ fn host_function<'s>(
             scope.terminate_execution();
         }
         Err((error, Some(exception))) => {
-            let exception = Local::new(scope, exception);
+            let exception = Local::new(scope, &*exception);
             match bridge::string(scope, &format!("{name}: {error}")) {
                 // Throws the unit's own exception, which propagates.
                 Ok(message) => {

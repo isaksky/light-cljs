@@ -37,7 +37,7 @@ struct State {
     control: ExecutionControl,
     generation: u64,
     bridge: RefCell<BridgeState>,
-    services: RefCell<Option<v8::Global<v8::Object>>>,
+    services: RefCell<Option<bridge::Root<v8::Object>>>,
     callbacks: RefCell<Vec<UnitService>>,
     string_services: RefCell<Vec<crate::compiler_evaluator::StringService>>,
     interrupt: Arc<watchdog::Task>,
@@ -55,7 +55,7 @@ struct State {
 }
 #[derive(Default)]
 struct NamespaceCache {
-    entries: HashMap<String, (String, v8::Global<v8::Function>)>,
+    entries: HashMap<String, (String, bridge::Root<v8::Function>)>,
     order: VecDeque<String>,
     bytes: usize,
     hits: usize,
@@ -63,7 +63,7 @@ struct NamespaceCache {
     compiled_bytes: usize,
 }
 impl NamespaceCache {
-    fn insert(&mut self, name: &str, source: &str, function: v8::Global<v8::Function>) {
+    fn insert(&mut self, name: &str, source: &str, function: bridge::Root<v8::Function>) {
         const BYTES: usize = 4 * 1024 * 1024;
         if source.len() > BYTES {
             return;
@@ -123,11 +123,13 @@ impl State {
     }
 }
 pub(crate) struct V8Evaluator {
-    context: Option<v8::Global<v8::Context>>,
+    context: Option<bridge::Root<v8::Context>>,
     isolate: RefCell<v8::OwnedIsolate>,
     state: Rc<State>,
     stack: stack::StackLimit,
     memory: Box<MemoryGuard>,
+    /// Counts the isolate in `LiveCounts::engines` until it is dropped.
+    _live: crate::compile_stats::Live,
 }
 struct MemoryGuard {
     handle: v8::IsolateHandle,
@@ -258,7 +260,7 @@ fn invoke<'s>(
     args: &[Local<'s, v8::Value>],
 ) -> Result<Local<'s, v8::Value>, EvalError> {
     let service = name;
-    let services = Local::new(scope, state.services.borrow().as_ref().unwrap());
+    let services = Local::new(scope, &**state.services.borrow().as_ref().unwrap());
     let name = bridge::string(scope, name)?;
     let function = services
         .get(scope, name.into())
@@ -401,6 +403,7 @@ impl V8Evaluator {
             state,
             stack,
             memory,
+            _live: crate::compile_stats::Live::new(&crate::compile_stats::LIVE_ENGINES),
         };
         evaluator.initialize(source)?;
         Ok(evaluator)
@@ -415,7 +418,7 @@ impl V8Evaluator {
             let local = v8::Context::new(scope, Default::default());
             // Publish the root immediately so normal Drop handles partial
             // initialization, including a terminated script or failed service.
-            self.context = Some(v8::Global::new(scope, local));
+            self.context = Some(bridge::Root::new(scope, local));
             self.state
                 .buffers
                 .observe_heap(scope.get_heap_statistics().used_heap_size());
@@ -429,7 +432,7 @@ impl V8Evaluator {
                 let services: Local<v8::Object> = script(scope, "__lightEvaluator")?
                     .try_into()
                     .map_err(|_| bridge::error("Invalid evaluator services"))?;
-                *self.state.services.borrow_mut() = Some(v8::Global::new(scope, services));
+                *self.state.services.borrow_mut() = Some(bridge::Root::new(scope, services));
                 Ok(())
             });
             result.map_err(|error| {
@@ -454,7 +457,7 @@ impl V8Evaluator {
         let entered = Entered::new(&mut isolate);
         self.stack.refresh(entered.0)?;
         v8::scope!(let scope, &mut **entered.0);
-        let context = Local::new(scope, self.context.as_ref().unwrap());
+        let context = Local::new(scope, &**self.context.as_ref().unwrap());
         let scope = &mut v8::ContextScope::new(scope, context);
         f(&Active {
             scope: RefCell::new(scope),
@@ -704,7 +707,7 @@ impl MacroEvaluator for Active<'_, '_, '_> {
                         .entries
                         .get(name)
                         .filter(|(old, _)| old == source)
-                        .map(|(_, function)| Local::new(scope, function))
+                        .map(|(_, function)| Local::new(scope, &**function))
                 };
                 let function = if let Some(function) = function {
                     self.state.namespaces.borrow_mut().hits += 1;
@@ -719,7 +722,7 @@ impl MacroEvaluator for Active<'_, '_, '_> {
                     let mut cache = self.state.namespaces.borrow_mut();
                     cache.misses += 1;
                     cache.compiled_bytes += source.len();
-                    cache.insert(name, source, v8::Global::new(scope, function));
+                    cache.insert(name, source, bridge::Root::new(scope, function));
                     function
                 };
                 bridge::put(scope, functions, index as u32, function.into())?;
@@ -1135,6 +1138,19 @@ impl CompilerEvaluator for V8Evaluator {
     fn holds_headroom(&self) -> bool {
         self.state.buffers.holds_headroom()
     }
+    fn collect_garbage(&self) {
+        let mut isolate = self.isolate.borrow_mut();
+        Entered::new(&mut isolate).0.low_memory_notification();
+    }
+    fn value_roots(&self) -> Result<usize, EvalError> {
+        self.with_active(|e| {
+            e.enter(|scope| {
+                let count = invoke(scope, e.state, "valueCount", &[])?;
+                bridge::number(scope, count)
+            })
+        })
+        .map(|count| count as usize)
+    }
     fn install_string_service(
         &self,
         name: &str,
@@ -1227,6 +1243,41 @@ mod tests {
         let result = next.evaluate_js("43").unwrap();
         assert_eq!(next.number(result).unwrap(), 43.0);
         next.release(result).unwrap();
+    }
+
+    #[test]
+    fn collect_garbage_sweeps_the_provenance_of_released_imports() {
+        use crate::compiler_data::Source;
+        let evaluator = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let form = crate::MacroHost::new()
+            .read_compiler_form(&Source::new("imports.cljs", "(f [a b] {:c \"d\"})"))
+            .unwrap()
+            .unwrap();
+        for _ in 0..10 {
+            let input = evaluator
+                .import_macro_form(&form, ConversionLimits::default())
+                .unwrap();
+            evaluator.release(input).unwrap();
+        }
+        let external = || evaluator.state.bridge.borrow().external_estimate();
+        assert!(external() > 0, "the heap has not swept the imports yet");
+        CompilerEvaluator::collect_garbage(&evaluator);
+        assert_eq!(external(), 0);
+    }
+
+    #[test]
+    fn value_registry_roots_are_counted_and_released() {
+        let evaluator = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let baseline = evaluator.value_roots().unwrap();
+        let ids = (0..3)
+            .map(|_| evaluator.evaluate_js("new Array(10000)").unwrap())
+            .collect::<Vec<_>>();
+        CompilerEvaluator::collect_garbage(&evaluator);
+        assert_eq!(evaluator.value_roots().unwrap(), baseline + 3);
+        for id in ids {
+            evaluator.release(id).unwrap();
+        }
+        assert_eq!(evaluator.value_roots().unwrap(), baseline);
     }
 
     #[test]

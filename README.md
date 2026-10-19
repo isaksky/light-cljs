@@ -349,7 +349,20 @@ the most analyzed deferred-unit IR waiting to merge into the program at
 once, from when a unit's analysis ends, on whichever thread, until its
 namespace's units merge after the next namespace's top-level pass. Both
 peaks are estimates, table lengths times element sizes, without an
-expression's own vectors. `--stats-file PATH` (which implies `--stats`) also
+expression's own vectors. The last four, `memory.live.artifacts`,
+`memory.live.engines`, `memory.live.engine-handles` and
+`memory.live.bridge-payloads`, count what the process still holds when the
+report is printed: namespace artifacts (captured or decoded for the cache),
+JavaScript engines, persistent handles Rust holds into an engine's heap (V8
+`Global`s), and the Rust provenance data an engine's objects own through the
+form bridge. A `--compile` build has dropped its macro host by then, so all
+four are 0; `light_cljs::compile_stats::live_counts` reads them from the
+library. With `--watch --stats`, each step's line is followed by
+`light-cljs: live artifacts=N engines=N engine-handles=N bridge-payloads=N value-roots=N`,
+counted after a full garbage collection of the session's engines;
+`value-roots` is how many values the session's macro engine roots for
+the compiler in its private registry.
+`--stats-file PATH` (which implies `--stats`) also
 writes that trace to `PATH` as tab-separated `stage`, `namespace` and `unit`
 rows (and `execute` and `read` rows for the compile-time roots evaluated
 and read), with each unit's position, demander and costs, for

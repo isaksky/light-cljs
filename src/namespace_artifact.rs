@@ -24,6 +24,7 @@
 //! checks that this file names nothing else.
 
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub use crate::analyzer::{CoreFnId, ExprContext, MethodDispatch};
 pub use crate::compiler_data::CompilerLiteralKind;
@@ -104,6 +105,48 @@ pub struct NamespaceArtifact {
     /// (docs/compiler-concurrency.md, "Stage A"); `None` when it has no
     /// units.
     pub bodies: Option<Box<Bodies>>,
+    /// Counts the artifact among the live ones ([`live_artifacts`]).
+    pub live: Live,
+}
+
+/// The artifacts made, decoded or cloned and not yet dropped, in the whole
+/// process (`crate::compile_stats::LiveCounts::artifacts`).
+static LIVE_ARTIFACTS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many [`NamespaceArtifact`]s the process holds now.
+pub fn live_artifacts() -> usize {
+    LIVE_ARTIFACTS.load(Ordering::Relaxed)
+}
+
+/// Counts its artifact in [`live_artifacts`] from when it is made, with
+/// `Live::default()`, or cloned, until it is dropped. It holds no data, and
+/// any two are equal.
+#[derive(Debug)]
+pub struct Live(());
+
+impl Default for Live {
+    fn default() -> Self {
+        LIVE_ARTIFACTS.fetch_add(1, Ordering::Relaxed);
+        Self(())
+    }
+}
+
+impl Clone for Live {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        LIVE_ARTIFACTS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl PartialEq for Live {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 /// The second part of a namespace's program: what the merge of its drained
@@ -1230,6 +1273,7 @@ impl NamespaceArtifact {
             names: Default::default(),
             accounting: None,
             bodies: self.bodies.clone(),
+            live: Live::default(),
         }
     }
 

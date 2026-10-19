@@ -338,6 +338,7 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
         names,
         accounting,
         bodies,
+        live: _,
     } = artifact;
     let Header {
         namespace,
@@ -2126,6 +2127,7 @@ pub fn decode(
         names,
         accounting,
         bodies,
+        live: Default::default(),
     };
     if cancelled() {
         return Err(DecodeError::Cancelled);
@@ -3760,6 +3762,7 @@ mod tests {
                 },
                 placeholders: vec![(ExprRef(0), ExprRef(1))],
             })),
+            live: Default::default(),
         }
     }
 

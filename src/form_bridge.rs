@@ -113,6 +113,8 @@ struct BorrowedDatum {
     original: Datum,
     canonical: Option<Datum>,
     form: Option<Form>,
+    /// Counts it in `LiveCounts::bridge_payloads` until the engine frees it.
+    _live: crate::compile_stats::Live,
     #[cfg(test)]
     live: std::rc::Rc<std::cell::Cell<usize>>,
 }
@@ -350,6 +352,9 @@ impl BridgeState {
                         original: data.clone(),
                         canonical: None,
                         form: self.forms.get(&data.identity()).map(Form::compact_leaf),
+                        _live: crate::compile_stats::Live::new(
+                            &crate::compile_stats::LIVE_BRIDGE_PAYLOADS,
+                        ),
                         #[cfg(test)]
                         live: self.live_provenance.clone(),
                     },

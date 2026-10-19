@@ -1,6 +1,7 @@
 //! Structured compiler-form transport for V8 macro sessions (ABI 5).
 use crate::{
     CollectionKind as C,
+    compile_stats::{LIVE_BRIDGE_PAYLOADS, LIVE_ENGINE_HANDLES, Live},
     compiler_data::{CompilerLiteralKind as L, Datum, DatumKind as D, Form},
     evaluator::{EvalError, ExecutionControl},
     form_bridge::ConversionLimits,
@@ -83,6 +84,29 @@ struct Provenance {
     payload: RefCell<BorrowedDatum>,
     external: Rc<Cell<i64>>,
     charge: i64,
+    /// Counts it in `LiveCounts::bridge_payloads` until the heap sweeps it.
+    _live: Live,
+}
+
+/// A persistent handle Rust holds into the isolate's heap, counted in
+/// `LiveCounts::engine_handles` until it is dropped.
+pub(crate) struct Root<T> {
+    global: v8::Global<T>,
+    _live: Live,
+}
+impl<T> Root<T> {
+    pub(crate) fn new(isolate: &v8::Isolate, handle: impl v8::Handle<Data = T>) -> Self {
+        Self {
+            global: v8::Global::new(isolate, handle),
+            _live: Live::new(&LIVE_ENGINE_HANDLES),
+        }
+    }
+}
+impl<T> std::ops::Deref for Root<T> {
+    type Target = v8::Global<T>;
+    fn deref(&self) -> &v8::Global<T> {
+        &self.global
+    }
 }
 impl Drop for Provenance {
     fn drop(&mut self) {
@@ -120,7 +144,7 @@ pub(crate) struct BridgeState {
     environments: Vec<EnvironmentEntry>,
     environment_children: HashMap<usize, EnvironmentEntry>,
     environment_child_order: VecDeque<usize>,
-    constructor: Option<v8::Global<v8::ObjectTemplate>>,
+    constructor: Option<Root<v8::ObjectTemplate>>,
     external: Rc<Cell<i64>>,
     external_reported: i64,
 }
@@ -154,10 +178,10 @@ impl BridgeState {
         scope: &mut PinScope<'s, '_>,
     ) -> Result<Local<'s, v8::ObjectTemplate>, EvalError> {
         if let Some(constructor) = &self.constructor {
-            return Ok(Local::new(scope, constructor));
+            return Ok(Local::new(scope, &**constructor));
         }
         let constructor = v8::FunctionTemplate::new(scope, empty).instance_template(scope);
-        self.constructor = Some(v8::Global::new(scope, constructor));
+        self.constructor = Some(Root::new(scope, constructor));
         Ok(constructor)
     }
     pub(crate) fn retain(&mut self, form: &Form) {
@@ -339,6 +363,7 @@ impl BridgeState {
             let payload = Provenance {
                 external: self.external.clone(),
                 charge,
+                _live: Live::new(&LIVE_BRIDGE_PAYLOADS),
                 payload: RefCell::new(BorrowedDatum {
                     original: data.clone(),
                     canonical: None,

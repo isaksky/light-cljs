@@ -763,11 +763,57 @@ where: the malloc zones' freed regions (`MALLOC_NANO`, `MALLOC_MEDIUM
 25 and 7 MB were dirty, and the footprint fell from 171 to 69 MB. The
 growth is freed pages macOS keeps resident for reuse, not state a build
 holds; the RSS-flat condition holds for the footprint and not for `ps`
-RSS, and a counter of live artifacts and bridge roots, which the compiler
-does not keep, would make the check direct (Open questions in
-docs/compiler-cache.md). Disk stayed within the retention bound throughout: three artifacts
+RSS; light-cljs-380 added the counts of live artifacts and bridge roots
+that make the check direct (next section). Disk stayed within the retention bound throughout: three artifacts
 per namespace, 254 MB at most (the resource clone, whose fixture root keys
 every namespace a second time) against the 1 GiB cap.
+
+### Live counts and the RSS growth (light-cljs-380, October 19, 2026)
+
+`examples/cache_repeat.rs` now also prints `compile_stats::live_counts`
+after each build: live artifacts, engines, engine handles and bridge
+payloads. Three runs on Penpot `app.main`, at load 8 to 12 (other workers
+were building V8), so the times are only indicative:
+
+| Run | Builds | Build time (s) | `ps` RSS after each (GB) | Physical footprint | Live counts |
+| --- | --- | --- | --- | --- | --- |
+| A: default allocator, empty cache | 1 fill + 20 warm | 32.9 fill, 1.52 to 1.60 warm | 0.91 after the fill, 1.03 after the first warm build, 1.65 to 1.67 after builds 17 to 21 | 137 MB after the fill, 80 to 89 MB after each warm build | all 0 after every build |
+| B: default allocator, full cache | 41 warm | 1.43 to 1.71 (one 3.07) | 0.44 after the first, 1.50 by build 29, then 1.52 to 1.73 with no trend through 41 (1.49 to 1.58 after pressure relief) | 37 MB after the first, 11 to 17 MB from the third | all 0 |
+| C: `MallocNanoZone=0`, full cache | 21 warm | 1.75 to 1.81 | 0.41 after the first, 0.97 by build 13, then 0.98 to 1.07 through 21 (0.84 to 0.93 after relief) | 40 to 53 MB | all 0 |
+
+Nothing a build registers outlives it: every count is zero after every
+build, and the footprint stays flat. The `ps` RSS growth is the macOS
+allocator's: it plateaus, after about 30 warm builds by default at about
+1.5 GB, and with the nano allocator off after about 13 at about 1.0 GB,
+30 to 50 MB a build until then, while the program and its tables are
+the same every build. Run A's footprint, whose first build ran Penpot's
+macros, stays 70 MB above run B's, in which no build ran one; the counts
+show no engine left from that build. Run C's warm builds took about 15%
+longer than run B's on the loaded machine.
+
+On the fixtures, the regressions measure the same thing:
+`tests/cache_matrix.rs` `repeated_builds_and_teardown` (ten builds in one
+process, every count zero after each) and `tests/dev_watch.rs`
+`repeated_steps_hold_bounded_engine_state_and_no_artifact` (45 watch steps
+that rerun a macro; payloads grow by 26 a step and flatten at 866 after
+33 steps, when the bridge's environment cache is full; the session engine's
+registry roots one more value a step, 47 to 91, the redefined macro's
+function, light-cljs-381). A Penpot cold
+build makes 2.1 million bridge payloads, each counted with two relaxed
+atomic adds.
+
+The cache-off cold gate, Penpot `app.main --optimize none --no-cache`,
+three alternating rounds of the parent `e0e6dd8` and this change at load 5.8
+to 9.9 (15-minute load 15 to 16):
+
+| Build | Wall (s), runs | Mean | Peak RSS (GB), runs | Mean |
+| --- | --- | ---: | --- | ---: |
+| parent `e0e6dd8` | 26.01, 25.61, 24.52 | 25.38 | 0.920, 0.905, 0.907 | 0.911 |
+| this change | 26.10, 25.69, 26.12 | 25.97 | 0.913, 0.921, 0.913 | 0.916 |
+
++2.3% wall and +0.5% peak RSS, within the +3% and +5% gates on a machine
+this loaded, where the parent's own runs spread by 1.5 s; the output is
+byte-identical (`0ff262e7`).
 
 ### Cache-off cold build and the gates
 

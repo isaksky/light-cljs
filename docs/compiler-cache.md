@@ -1796,6 +1796,39 @@ artifacts per namespace, at most 254 MB here, against 1 GiB). `ps` RSS of
 the repeated builds still rises, by about 25 MB a build, in malloc regions
 macOS keeps resident after they are freed, which the footprint excludes.
 
+*As built (light-cljs-380), the row checked directly:* the compiler counts
+what a build registers and must release
+(`compile_stats::live_counts`): live `NamespaceArtifact`s (a field of the
+artifact counts it from capture, decode or clone until it is dropped),
+JavaScript engines, V8 `Global` handles Rust holds into an isolate (a
+context, its services, cached namespace functions, the bridge's provenance
+template, a failed unit's exception; QuickJS keeps none), and bridge
+payloads, the provenance data an engine's imported objects own. Each is one
+relaxed atomic add when made and when dropped; a Penpot cold build makes
+2.1 million payloads, and the cache-off cold build stays within its gates
+(+2.3% wall, +0.5% peak RSS against the parent, loaded machine).
+`--stats` prints them last among the `memory.*` lines, and `--watch --stats`
+after each step, once the session's engines have collected their garbage.
+`tests/cache_matrix.rs` `repeated_builds_and_teardown` builds a fixture ten
+times in one process through `analyze_namespace_entry_cached` (the first
+filling the cache, the others installing all five namespaces) and asserts
+every count is zero after each build, with V8 and with QuickJS;
+`examples/cache_repeat.rs` prints them after each Penpot build, all zero.
+`tests/dev_watch.rs` `repeated_steps_hold_bounded_engine_state_and_no_artifact`
+runs 45 macro-recompiling steps after a start from the cache: no artifact
+after any, the same engine and handles after each, and bridge payloads that
+grow by about 26 a step until the bridge's bounded environment cache (64
+environment and 128 child slots, `form_bridge.rs`) is full after about 33
+steps, then stay flat (shrinking the slots to 8 and 16 flattens them after
+3 steps). Values an engine roots in its private `ValueId` registry live in
+the engine and go with it, so the process-wide counts cover them for builds
+through `engines`; for a session, `--watch --stats` also prints the session
+engine's `value-roots`. They grow by one a step in that test, without a
+plateau: the redefined macro's function, which nothing releases when a
+redefinition replaces it (light-cljs-381). The `ps` RSS growth is allocator policy, not retention: it
+plateaus, and is lower with the nano allocator off (benchmarks/compiler-cache.md,
+"Live counts and the RSS growth").
+
 ### Open questions (light-cljs-328)
 
 - **The coarse fallback dominates edit costs.** A namespace that ran a
@@ -1813,4 +1846,8 @@ macOS keeps resident after they are freed, which the footprint excludes.
   on the physical footprint and the program's table sizes; the compiler
   keeps no count of live artifacts or engine bridge roots, and `ps` RSS
   grows with freed malloc regions, so the literal "RSS flat" condition holds
-  only for the footprint.
+  only for the footprint. *Settled by light-cljs-380:* the counts exist and
+  return to zero after every build, and the RSS growth plateaus (above,
+  "As built (light-cljs-380)"). "RSS flat" in the row means the physical
+  footprint and the live counts; `ps` RSS on macOS settles after about 30
+  warm Penpot builds, at a level the allocator chooses.

@@ -1024,3 +1024,92 @@ fn lowered_limits() {
     assert_eq!(refit.stat("cache.miss.options"), 3, "{}", refit.stats);
     project.cached("main", &limit).assert_all_hits(3);
 }
+
+// -- Repeated builds and teardown ---------------------------------------------
+
+/// Ten builds in this process through `analyze_namespace_entry_cached`, the
+/// first filling the cache and the others installing every namespace from
+/// it, each leave nothing alive once their program, host and warnings are
+/// dropped: no artifact, engine, engine handle or bridge payload
+/// (`compile_stats::live_counts`), and every warm build makes the same
+/// program. The counts are the process's, so this test compiles here while
+/// every other test in this binary compiles in child processes. A captured
+/// artifact counts while it is held, and `--compile --stats` reports the
+/// counts at its end, all zero.
+#[test]
+fn repeated_builds_and_teardown() {
+    use light_cljs::MacroHost;
+    use light_cljs::analyzer::AnalysisOptions;
+    use light_cljs::compile_stats::{CompileStats, LiveCounts, live_counts};
+    let project = Project::new(PLAIN_FIXTURE);
+    let roots = project.roots();
+    let cache = light_cljs::compile_cache::CacheOptions {
+        dir: project.cache(),
+        blockers: Vec::new(),
+    };
+    assert_eq!(live_counts(), LiveCounts::default());
+    let mut tables = None;
+    for build in 1..=10 {
+        let mut host = MacroHost::new();
+        let mut warnings = Vec::new();
+        let mut stats = CompileStats::default();
+        let (program, files) = light_cljs::compiler::analyze_namespace_entry_cached(
+            "main",
+            &roots,
+            &mut host,
+            AnalysisOptions::default(),
+            &mut warnings,
+            &cache,
+            Some(&mut stats),
+            light_cljs::scheduler::Slots::ONE,
+        )
+        .unwrap();
+        let counts = stats.cache.take().unwrap();
+        if build == 1 {
+            assert_eq!((counts.hits, counts.published), (0, 5), "{counts:?}");
+            // The macros ran in an engine the host still holds, whose
+            // objects still own the provenance of forms they imported.
+            let live = live_counts();
+            assert!(live.engines > 0 && live.bridge_payloads > 0, "{live:?}");
+        } else {
+            assert_eq!((counts.hits, counts.misses.len()), (5, 0), "{counts:?}");
+            assert_eq!(stats.macro_calls, 0);
+            let sizes = (
+                program.exprs.len(),
+                program.globals.len(),
+                program.strings.len(),
+            );
+            assert_eq!(*tables.get_or_insert(sizes), sizes, "build {build}");
+        }
+        drop((program, files, host, warnings, stats));
+        assert_eq!(live_counts(), LiveCounts::default(), "after build {build}");
+    }
+    let mut artifacts = Vec::new();
+    let mut host = MacroHost::new();
+    light_cljs::compiler::analyze_namespace_entry_with_artifacts(
+        "main",
+        &roots,
+        &mut host,
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+        None,
+        &mut |capture| artifacts.push(capture.artifact.unwrap()),
+    )
+    .unwrap();
+    drop(host);
+    assert_eq!(live_counts().artifacts, 5);
+    let copy = artifacts[0].clone();
+    assert_eq!(live_counts().artifacts, 6);
+    drop((copy, artifacts));
+    assert_eq!(live_counts(), LiveCounts::default());
+    let report = project.cached("main", &[]).stats;
+    assert!(
+        report.contains(
+            "\nmemory.live.artifacts 0\n\
+             memory.live.engines 0\n\
+             memory.live.engine-handles 0\n\
+             memory.live.bridge-payloads 0\n"
+        ),
+        "{report}"
+    );
+}

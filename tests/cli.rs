@@ -1423,7 +1423,15 @@ fn stats_reports_peak_rss_parsed_trees_and_queued_unit_ir_at_any_job_count() {
             "memory.parsed-trees.peak-files",
             "memory.queued-ir.peak-bytes",
             "memory.queued-ir.peak-units",
+            "memory.live.artifacts",
+            "memory.live.engines",
+            "memory.live.engine-handles",
+            "memory.live.bridge-payloads",
         ];
+        // The build, its workers' isolates included, has released them all.
+        for key in &expected[4..] {
+            assert_eq!(value(key), 0.0, "{key} --jobs {jobs}: {stderr}");
+        }
         if cfg!(any(target_os = "macos", target_os = "linux")) {
             expected.insert(0, "memory.peak-rss-bytes");
             // In bytes, not kilobytes: the compiler alone holds over 1 MB.

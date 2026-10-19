@@ -23,6 +23,16 @@ pub(crate) trait CompilerEvaluator: MacroEvaluator {
     fn holds_headroom(&self) -> bool {
         false
     }
+    /// Collect the engine's garbage in full, between operations, so that
+    /// what it still holds is what is reachable (`--watch --stats`).
+    fn collect_garbage(&self) {}
+    /// The values the engine's private registry roots for their `ValueId`s
+    /// until they are released: bridge roots the process-wide
+    /// [`crate::compile_stats::LiveCounts`] does not see, since they live in
+    /// the engine and go with it.
+    fn value_roots(&self) -> Result<usize, EvalError> {
+        Ok(0)
+    }
 }
 #[cfg(not(light_quickjs))]
 impl CompilerEvaluator for Evaluator {
@@ -44,6 +54,12 @@ impl CompilerEvaluator for Evaluator {
 impl CompilerEvaluator for Evaluator {
     fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError> {
         Evaluator::evaluate_js(self, expression)
+    }
+    fn collect_garbage(&self) {
+        Evaluator::collect_garbage(self);
+    }
+    fn value_roots(&self) -> Result<usize, EvalError> {
+        Evaluator::value_roots(self)
     }
     #[cfg(all(test, light_v8))]
     fn number(&self, id: ValueId) -> Result<f64, EvalError> {

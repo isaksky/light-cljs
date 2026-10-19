@@ -165,6 +165,9 @@ impl Watch {
         loop {
             match self.lines.recv_timeout(TIMEOUT) {
                 Ok(line) if line.starts_with(prefix) => return (before, line),
+                // What `--stats` adds after each step's line, unless asked
+                // for: a watch with it prints the lines one without does.
+                Ok(line) if line.starts_with("light-cljs: live ") => {}
                 Ok(line) => before.push(line),
                 Err(RecvTimeoutError::Timeout) => {
                     panic!("no line {prefix:?} in {TIMEOUT:?}; got {before:#?}")
@@ -2262,4 +2265,80 @@ fn a_watch_starts_from_the_default_cache_directory() {
     let warm = start(&[]);
     assert_eq!(stat(&warm, "cache.hits"), "4", "{warm:#?}");
     assert_eq!(stat(&warm, "macro-calls"), "0");
+}
+
+/// Steps that each run a changed macro again in the watch's session, after a
+/// start from the persistent cache that installed every namespace, hold no
+/// artifact and the same engines and engine handles after each step, and
+/// bridge payloads that stop growing (`compile_stats::live_counts`, the line
+/// `--stats` adds to each step after a full collection, which also gives
+/// `DevSession::value_roots`). The payloads grow
+/// by those of the macro environments each step imports until the bridge's
+/// bounded cache of environments (64 slots and 128 child slots) is full,
+/// after about 33 steps here, so the last ten of 45 steps are flat. The
+/// startup report, made once the start has dropped the artifacts it
+/// installed, counts nothing live.
+#[test]
+fn repeated_steps_hold_bounded_engine_state_and_no_artifact() {
+    let mut watch = Watch::start("dev-watch-live");
+    let cache = watch.dir.join("cache");
+    let cache = cache.to_str().unwrap().to_owned();
+    let args = ["--stats", "--cache-dir", &cache];
+    watch.restart(&args);
+    watch.restart(&args);
+    let report = watch.startup.join("\n");
+    assert!(report.contains("\ncache.hits 4\n"), "{report}");
+    // No macro ran, so the session has not started its macro engine.
+    assert!(
+        report.contains(
+            "\nmemory.live.artifacts 0\n\
+             memory.live.engines 0\n\
+             memory.live.engine-handles 0\n\
+             memory.live.bridge-payloads 0\n"
+        ),
+        "{report}"
+    );
+    let macros = watch.source("app/macros.cljs");
+    // Per step: artifacts, engines, engine handles, bridge payloads and the
+    // values the session engine's registry roots.
+    let mut counts = Vec::new();
+    for step in 1..=45 {
+        let edited = macros.replace("~label \": \"", &format!("~label \" {step}: \""));
+        assert_ne!(edited, macros);
+        let (lines, summary) = watch.save("app/macros.cljs", &edited);
+        assert!(lines.is_empty(), "{lines:#?}");
+        assert!(
+            summary.starts_with("light-cljs: recompiled app.macros, app.view in "),
+            "{summary}"
+        );
+        let (lines, live) = watch.until("light-cljs: live ");
+        assert!(lines.is_empty(), "{lines:#?}");
+        let values = [
+            "artifacts",
+            "engines",
+            "engine-handles",
+            "bridge-payloads",
+            "value-roots",
+        ]
+        .map(|key| {
+            live.split(' ')
+                .find_map(|field| field.strip_prefix(key)?.strip_prefix('='))
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or_else(|| panic!("no {key} in {live}"))
+        });
+        counts.push(values);
+    }
+    let [_, engines, handles, _, _] = counts[0];
+    assert!(engines > 0, "{counts:?}");
+    for (step, &[artifacts, ..]) in counts.iter().enumerate() {
+        assert_eq!(artifacts, 0, "step {}: {counts:?}", step + 1);
+    }
+    assert!(
+        counts.iter().all(|c| c[1] == engines && c[2] == handles),
+        "{counts:?}"
+    );
+    // The value roots still grow by one a step, the redefined macro's
+    // function; light-cljs-381 releases it and asserts them flat here.
+    let last = &counts[counts.len() - 10..];
+    assert!(last.iter().all(|c| c[3] == last[0][3]), "{counts:?}");
 }

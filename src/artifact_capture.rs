@@ -350,6 +350,7 @@ pub(crate) fn finish(
         },
         accounting: accounting(macro_host, input.work),
         bodies: None,
+        live: Default::default(),
     };
     debug_assert_eq!(artifact.validate(), Ok(()));
     Ok(artifact)

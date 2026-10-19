@@ -107,6 +107,7 @@
                 inputCompact: () => rt.core.compilerInputCompact(),
                 print: id => { try { return rt.core.printForHost(get(id)); } catch (error) { lastError = error; const message = rt.compilerExceptionMessage(error); if (message !== undefined) throw new Error(message); throw error; } },
                 validate: id => { get(id); },
+                valueCount: () => values.size,
                 release: id => { bridge.releaseMacroInput(get(id)); values.delete(id); },
                 clear: clearValues
               });

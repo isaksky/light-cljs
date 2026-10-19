@@ -11,6 +11,7 @@
 //! `key value` lines ahead of the table; the `memory.*` lines come last.
 
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// The version of the report's format, its first line.
@@ -162,6 +163,10 @@ pub struct MemoryCounts {
     /// tree is released after its namespace's analysis.
     pub parsed_trees: ParsedTreePeak,
     pub queued_ir: QueuedIrPeak,
+    /// What the process still held when the report was made
+    /// ([`live_counts`]): set by the caller that reports the compilation, as
+    /// the CLI does once the build's macro host is dropped.
+    pub live: Option<LiveCounts>,
 }
 
 /// The most parsed syntax trees the loader held at once: their files, and
@@ -225,6 +230,75 @@ pub fn peak_rss() -> Option<u64> {
         target_pointer_width = "64"
     )))]
     None
+}
+
+/// What the process holds now that a finished compilation must have
+/// released, counted as each is made and as it is dropped
+/// (docs/compiler-cache.md, "Validation and performance gates", the row
+/// "Repeated builds and teardown"). Once a build's program, host and
+/// warnings are dropped, every count is zero again; a development session
+/// keeps its engine, and what that engine still holds, until it is dropped.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LiveCounts {
+    /// [`crate::namespace_artifact::NamespaceArtifact`]s captured, decoded
+    /// or cloned and not yet dropped.
+    pub artifacts: usize,
+    /// JavaScript engines, V8 isolates and QuickJS runtimes, made for macros,
+    /// deferred units or a session and not yet dropped.
+    pub engines: usize,
+    /// Persistent handles Rust holds into an engine's heap: V8 `Global`s (a
+    /// context, its services, cached namespace functions, the bridge's
+    /// provenance template, a failed unit's exception). QuickJS keeps none.
+    pub engine_handles: usize,
+    /// Rust data an engine's objects own through the form bridge: the
+    /// provenance of each object a macro call imported, freed when the
+    /// engine collects the object or is torn down.
+    pub bridge_payloads: usize,
+}
+
+/// The counters of [`LiveCounts`] besides the artifacts', which
+/// `crate::namespace_artifact` keeps.
+pub(crate) static LIVE_ENGINES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static LIVE_ENGINE_HANDLES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static LIVE_BRIDGE_PAYLOADS: AtomicUsize = AtomicUsize::new(0);
+
+/// What the process holds now ([`LiveCounts`]). Reading is one relaxed load
+/// a counter; making and dropping what one counts is one relaxed add.
+pub fn live_counts() -> LiveCounts {
+    LiveCounts {
+        artifacts: crate::namespace_artifact::live_artifacts(),
+        engines: LIVE_ENGINES.load(Ordering::Relaxed),
+        engine_handles: LIVE_ENGINE_HANDLES.load(Ordering::Relaxed),
+        bridge_payloads: LIVE_BRIDGE_PAYLOADS.load(Ordering::Relaxed),
+    }
+}
+
+impl LiveCounts {
+    /// `artifacts=N engines=N engine-handles=N bridge-payloads=N`, as a
+    /// `--watch --stats` step prints them.
+    pub fn summary(&self) -> String {
+        format!(
+            "artifacts={} engines={} engine-handles={} bridge-payloads={}",
+            self.artifacts, self.engines, self.engine_handles, self.bridge_payloads
+        )
+    }
+}
+
+/// Counts its owner in one of the [`LiveCounts`] counters from when it is
+/// made until it is dropped.
+pub(crate) struct Live(&'static AtomicUsize);
+
+impl Live {
+    pub(crate) fn new(counter: &'static AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self(counter)
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// What a build's persistent cache did: each namespace is a hit, a miss
@@ -515,6 +589,12 @@ impl CompileStats {
         line("memory.parsed-trees.peak-files", &memory.parsed_trees.files);
         line("memory.queued-ir.peak-bytes", &memory.queued_ir.bytes);
         line("memory.queued-ir.peak-units", &memory.queued_ir.units);
+        if let Some(live) = memory.live {
+            line("memory.live.artifacts", &live.artifacts);
+            line("memory.live.engines", &live.engines);
+            line("memory.live.engine-handles", &live.engine_handles);
+            line("memory.live.bridge-payloads", &live.bridge_payloads);
+        }
         out.push_str("[macro-calls-by-namespace]\n");
         let mut order = (0..self.namespaces.len()).collect::<Vec<_>>();
         // Most calls first; ties in source order.
@@ -587,6 +667,7 @@ mod tests {
                     bytes: 2048,
                     units: 7,
                 },
+                live: None,
             },
             ..CompileStats::default()
         };
@@ -603,6 +684,24 @@ mod tests {
         stats.memory.peak_rss = None;
         let report = stats.report();
         assert!(report.ends_with(&format!("\ntime.macro-free-units-ms 0.0\n{lines}")));
+        stats.memory.live = Some(LiveCounts {
+            artifacts: 1,
+            engines: 2,
+            engine_handles: 3,
+            bridge_payloads: 4,
+        });
+        let report = stats.report();
+        assert!(
+            report.ends_with(
+                "\nmemory.queued-ir.peak-units 7\n\
+                 memory.live.artifacts 1\n\
+                 memory.live.engines 2\n\
+                 memory.live.engine-handles 3\n\
+                 memory.live.bridge-payloads 4\n\
+                 [macro-calls-by-namespace]\n"
+            ),
+            "{report}"
+        );
     }
 
     #[test]

@@ -654,6 +654,19 @@ impl DevSession {
     pub fn control(&self) -> ExecutionControl {
         self.control.clone()
     }
+    /// Collect the garbage of the session's compile-time engines in full, so
+    /// that what they still hold ([`crate::compile_stats::live_counts`]) is
+    /// what they can reach, as `--watch --stats` does after each step.
+    pub fn collect_garbage(&self) {
+        self.compiler.borrow().host.collect_garbage();
+    }
+    /// The values the session's macro engine roots for their `ValueId`s
+    /// until they are released, which the process-wide live counts do not
+    /// see; `--watch --stats` prints them after each step.
+    pub fn value_roots(&self) -> Result<usize, EvalDiagnostic> {
+        self.begin()?;
+        Ok(self.compiler.borrow().host.value_roots()?)
+    }
     /// Begin an operation of a session that owns its control.
     fn begin(&self) -> Result<(), EvalDiagnostic> {
         if let Some(options) = &self.operation {
