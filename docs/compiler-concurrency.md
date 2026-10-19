@@ -1171,9 +1171,10 @@ The one deterministic ID-order change of this stage is made, at every
 - *Which units.* Every unit is the pool's (`CompilationSession::pools`)
   except a definition's with `:test` metadata, analyzed with its
   definition through the session (a worker that demands one analyzes its
-  test unit through its own catalog view), and those of the namespaces the
-  temporary `LIGHT_CLJS_INLINE_UNITS=ns,ns` names, which stay on the main
-  isolate until the cache blocker's affinity (light-cljs-340). While
+  test unit through its own catalog view), and those of a cache blocker
+  and its consumers, which stay on the main isolate (light-cljs-340, which
+  replaced the temporary `LIGHT_CLJS_INLINE_UNITS` hook; "Semantics and
+  determinism"). While
   artifacts are captured or a dependency manifest is recorded
   (`--cache-dir`), which only the coordinator's session does, the workers
   have no engine and take only macro-free units, as light-cljs-338's did.
@@ -1341,6 +1342,43 @@ output changes once, when stage A lands.
     `^:light-cljs/no-cache` is a different thing and does not imply affinity.
   - Effects are never discovered after the fact and replayed serially. A
     provider is either declared or it is treated as pure.
+  - *As built (light-cljs-340), affinity:* `--cache-blocker NS` reaches
+    analysis with the cache on or off (`EntryRecorders::blockers`; the
+    cache's own bypass still comes from `CacheOptions::blockers`). Before
+    each namespace's analysis, or its install from an artifact, the loop
+    asks `cache_policy::BlockerReach::admit` whether it is a blocker,
+    requires through its `ns` form a namespace already reached, or names
+    one in its source: a symbol qualified with a reached namespace or with
+    an alias of one (a fully qualified macro of a provider it does not
+    require), or the reached namespace's own name (a reflected
+    `'provider`). That symbol scan stands, before any unit is dispatched
+    and conservatively, for the observed edges the cache finds by
+    analysis; a name built at compile time escapes it. A
+    reached namespace's analysis has one unit slot whatever `--jobs` is:
+    no unit is found macro-free or marked for the pool, and its drain
+    analyzes every unit on the coordinator's isolate at today's point,
+    before the next namespace's top-level pass, so compile-time demand
+    from those units, helpers included, resolves on the main isolate. Its
+    `--stats` macro counts, warnings and output are the one-slot build's.
+    Every other namespace's units still go to the pool, so a sibling of a
+    consumer keeps its workers. Over runtime, macro-provider and helper
+    edges the require closure is the reverse closure
+    `cache_policy::evaluate` computes, since a helper is a direct
+    dependency of a provider
+    (`the_reach_before_analysis_is_the_blocked_set_without_observed_or_coarse_edges`);
+    the coarse edges it also follows give no affinity (see "Open
+    questions"). `^:light-cljs/no-cache` gives none, and an
+    undeclared provider still prints `1 1`. Tests:
+    `tests/compiler/blocker_affinity.rs` (the counter fixture with and
+    without a blocker at 1/2/4/8 slots, a consumer through a fully
+    qualified macro, a consumer's sibling on the pool,
+    `^:light-cljs/no-cache` on a provider), `tests/cli.rs`
+    `worker_isolates_match_a_fresh_isolate_per_unit` (`--cache-blocker
+    macros` emits the `--jobs 1` program at 2/4/8), and, for the cache
+    with the other policy off or on, `tests/compiler_cache.rs`
+    `counter_example_across_processes` and `tests/cache_matrix.rs` at
+    `--jobs 1`, and `a_warm_hit_and_a_parallel_miss_match_one_job` at
+    `--jobs 4`.
 - **Definition-time rules stay.** A unit resolves against its frozen
   snapshot: declaration identities, aliases, macro generations and the
   frozen resolution tables. Forward macro references still fail; an earlier
@@ -1633,6 +1671,25 @@ sessions. A Penpot output comparison is not a browser run; the browser run
 is part of the stage A gate.
 
 ## Open questions
+
+- *Affinity over coarse edges and computed names (light-cljs-340).* The
+  group context gives affinity to a blocker's transitive compilation
+  consumers. As built, affinity follows the require edges (runtime, macro
+  provider and, through providers, helper edges) and, for the observed
+  edges, every symbol of the source that names a reached namespace; the
+  cache's observed edges themselves are logged while the namespace and
+  its units are analyzed, so following them would decide affinity after
+  the units were dispatched, which is discovery after the fact. Two edges
+  stay out. A coarse edge (a source macro that sees the whole declaration
+  view) reaches every earlier namespace, so a blocker early in load order
+  would put every later source-macro user on the main isolate; the
+  compile-time state a blocker owns (its atoms, its helper values) is
+  reached through its Vars, which a consumer names, while the declaration
+  view is the compilation's declarations, which a unit reads from its
+  frozen snapshot rather than from a heap. And a namespace whose macro
+  builds a reached namespace's name at compile time (`(symbol "m" "f")`)
+  names it in no symbol. Such a namespace is treated as pure, like an
+  undeclared provider; the cache's bypass keeps the full closure.
 
 - *The coordinator going on past a drain (light-cljs-339).* Stage A has the
   coordinator enqueue a namespace's units and go on to the next

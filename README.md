@@ -354,7 +354,15 @@ does not depend on N, except where a macro's compile-time effect in one
 namespace's definition bodies is observed from another: each isolate has its
 own compile-time state, so such an effect is invisible in the others (the
 `counter` example of the design prints `1 1` with several jobs and `1 2`
-with one). While `--cache-dir` is on, only units that expand no macro but
+with one). Declare such a provider with `--cache-blocker NS` (repeatable,
+with or without `--cache-dir`): NS and every namespace that requires it,
+directly or transitively, or names it in a symbol (such as a fully
+qualified macro), analyze their definition bodies on the calling
+thread's isolate in source order, as one job does, so the example prints
+`1 2` at every N, while the other namespaces' units still go to the pool.
+`^:light-cljs/no-cache` keeps a namespace out of the cache only and gives no
+such affinity; an undeclared provider is treated as pure and nothing
+detects its effects. While `--cache-dir` is on, only units that expand no macro but
 the native `let`, `fn`, `loop` and `letfn` go to the pool. The macro memory
 limit is split evenly between the isolates for now, each getting at least
 32 MiB, so a limit of less than 64 MiB leaves the workers without engines. The pool is described in

@@ -1801,9 +1801,9 @@ fn jobs_counts_work_slots_without_changing_output() {
 /// the program is the one a fresh isolate per unit gives, the correctness
 /// reference (docs/compiler-concurrency.md, "As built (light-cljs-339)").
 /// The counter fixture prints `1 1` with several jobs, the documented
-/// undeclared behavior ("Semantics and determinism"), and `1 2` when the
-/// temporary `LIGHT_CLJS_INLINE_UNITS` hook keeps `dep`'s units on the main
-/// isolate, as the cache blocker's affinity will (light-cljs-340).
+/// undeclared behavior ("Semantics and determinism"), and `1 2`, the one-job
+/// program, with `--cache-blocker macros`, whose consumers keep their units
+/// on the main isolate (light-cljs-340).
 #[test]
 fn worker_isolates_match_a_fresh_isolate_per_unit() {
     let root = TempDir::new("cljs-cli-worker-isolates");
@@ -1827,16 +1827,16 @@ fn worker_isolates_match_a_fresh_isolate_per_unit() {
     .unwrap();
     let root_arg = root.to_str().unwrap();
     let entry = ["--compile", "--entry", "main", "--source-root", root_arg];
-    let run = |jobs: &str, env: &[(&str, &str)]| {
+    let run = |jobs: &[&str], env: &[(&str, &str)]| {
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
             .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .args([&entry[..], &["--jobs", jobs]].concat())
+            .args([&entry[..], &["--jobs"], jobs].concat())
             .envs(env.iter().copied())
             .output()
             .unwrap();
         assert!(
             output.status.success(),
-            "{jobs} {env:?}: {}",
+            "{jobs:?} {env:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8(output.stdout).unwrap()
@@ -1848,7 +1848,7 @@ fn worker_isolates_match_a_fresh_isolate_per_unit() {
             .unwrap();
         String::from_utf8(output.stdout).unwrap()
     };
-    let serial = run("1", &[]);
+    let serial = run(&["1"], &[]);
     assert_eq!(node(&serial), "1 2 3 [2 3 4]\n");
     let several = if cfg!(feature = "v8-macros") {
         "1 1 3 [2 3 4]\n"
@@ -1856,11 +1856,11 @@ fn worker_isolates_match_a_fresh_isolate_per_unit() {
         "1 2 3 [2 3 4]\n"
     };
     for jobs in ["2", "4", "8"] {
-        let persistent = run(jobs, &[]);
+        let persistent = run(&[jobs], &[]);
         assert_eq!(node(&persistent), several, "{jobs} jobs");
-        let fresh = run(jobs, &[("LIGHT_CLJS_FRESH_UNIT_ISOLATES", "1")]);
+        let fresh = run(&[jobs], &[("LIGHT_CLJS_FRESH_UNIT_ISOLATES", "1")]);
         assert_eq!(fresh, persistent, "{jobs} jobs");
-        let inline = run(jobs, &[("LIGHT_CLJS_INLINE_UNITS", "dep")]);
-        assert_eq!(inline, serial, "{jobs} jobs");
+        let blocked = run(&[jobs, "--cache-blocker", "macros"], &[]);
+        assert_eq!(blocked, serial, "{jobs} jobs");
     }
 }

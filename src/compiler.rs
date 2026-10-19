@@ -2104,6 +2104,7 @@ pub fn analyze_namespace_entry_cached(
             stats: stats.as_deref_mut(),
             cache: Some(&mut store),
             slots,
+            blockers: &cache.blockers,
             ..EntryRecorders::default()
         },
     );
@@ -2228,6 +2229,14 @@ pub struct EntryRecorders<'a> {
     /// ([`SourceProvider::concurrent`]), and every later phase runs on the
     /// calling thread. The default is one slot.
     pub slots: crate::scheduler::Slots,
+    /// The `--cache-blocker` namespaces, with the cache on or off. With
+    /// several `slots`, a blocker and every namespace that requires or names one,
+    /// transitively, analyze their deferred units on the calling thread's
+    /// isolate at their drains, as with one slot, so their compile-time
+    /// effects are seen where a serial build sees them
+    /// ([`crate::cache_policy::BlockerReach`]). The cache's own bypass
+    /// comes from [`crate::compile_cache::CacheOptions::blockers`].
+    pub blockers: &'a [String],
 }
 
 /// The artifact to install for a namespace, if any ([`EntryRecorders::install`]).
@@ -2473,6 +2482,7 @@ fn analyze_entry(
         control,
         mut cache,
         slots,
+        blockers,
     } = recorders;
     // V8 is initialized before this compilation starts a thread: the load
     // pool's now, the analysis workers' later.
@@ -2610,9 +2620,20 @@ fn analyze_entry(
             return Err(NamespaceCompileError::new(error));
         }
     }
+    // A cache blocker and its consumers keep their units on this thread's
+    // isolate (docs/compiler-concurrency.md, "As built (light-cljs-340)").
+    let mut blocked = crate::cache_policy::BlockerReach::new(blockers);
     let looped = (|| -> Result<(), NamespaceCompileError> {
         while index < loader.ordered.len() {
             let file = &loader.ordered[index];
+            let symbols = file
+                .syntax
+                .nodes
+                .iter()
+                .filter(|node| matches!(node.kind, crate::parser::NodeKind::Symbol))
+                .map(|node| &file.source[node.span.clone()]);
+            analysis.main_isolate =
+                blocked.admit(&file.name, &file.requires, &file.aliases, symbols);
             let calls_before = macros.executed_expansions();
             let at = |error: AnalysisError| {
                 NamespaceCompileError::new(error.to_string()).at(

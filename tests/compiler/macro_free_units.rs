@@ -45,7 +45,19 @@ pub(crate) fn build_with(
     entry: &str,
     slots: usize,
     warning_mode: bool,
+    host: MacroHost,
+) -> Built {
+    build_blocked(sources, entry, slots, warning_mode, host, &[])
+}
+
+/// [`build_with`] with `blockers` as the `--cache-blocker` set.
+pub(crate) fn build_blocked(
+    sources: &Sources,
+    entry: &str,
+    slots: usize,
+    warning_mode: bool,
     mut host: MacroHost,
+    blockers: &[String],
 ) -> Built {
     let mut warnings: Vec<AnalysisWarning> = Vec::new();
     let mut stats = CompileStats::new();
@@ -61,6 +73,7 @@ pub(crate) fn build_with(
         EntryRecorders {
             stats: Some(&mut stats),
             slots: Slots::new(slots).unwrap(),
+            blockers,
             ..Default::default()
         },
     );
@@ -237,41 +250,6 @@ fn several_slots_emit_the_one_slot_program_warnings_and_errors() {
     let serial = same_at_every_slot_count(&sources, "app.main", true);
     let error = serial.output.unwrap_err();
     assert!(error.contains("app/n3.cljs"), "{error}");
-}
-
-#[test]
-fn the_counter_fixture_prints_one_one_at_several_slots_without_a_blocker() {
-    // The documented undeclared behavior of docs/compiler-concurrency.md,
-    // "Semantics and determinism": with several slots `dep`'s unit expands
-    // `next-value` in a worker's isolate, so `main`'s top-level call, in the
-    // main isolate, sees a counter that isolate never incremented. A cache
-    // blocker's affinity restores `1 2` (light-cljs-340); until then this
-    // pins it, so that any change is noticed. QuickJS-only builds are serial.
-    let sources = Sources::new();
-    sources
-        .write(
-            "macros.cljs",
-            "(ns macros) (def counter (atom 0)) (defmacro next-value [] (swap! counter inc))",
-        )
-        .write(
-            "dep.cljs",
-            "(ns dep (:require [macros :refer [next-value]])) (def value (next-value))",
-        )
-        .write(
-            "main.cljs",
-            "(ns main (:require [dep :as d] [macros :refer [next-value]])) (js/console.log d/value (next-value))",
-        );
-    let serial = build(&sources, "main", 1, false);
-    assert_eq!(execute(&serial.output.unwrap()), "1 2\n");
-    let expected = if cfg!(feature = "v8-macros") {
-        "1 1\n"
-    } else {
-        "1 2\n"
-    };
-    for slots in [2, 4, 8] {
-        let built = build(&sources, "main", slots, false);
-        assert_eq!(execute(&built.output.unwrap()), expected, "{slots} slots");
-    }
 }
 
 #[test]

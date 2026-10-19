@@ -113,6 +113,71 @@ pub(crate) fn metadata_flag(
     })
 }
 
+/// The `--cache-blocker` namespaces and their consumers that a build knows
+/// before it analyzes each namespace, for the main-isolate affinity of
+/// `--jobs N` (docs/compiler-concurrency.md, "As built (light-cljs-340)").
+/// A namespace is reached when it is a blocker, when one of its requires
+/// was reached (the runtime and macro-provider edges of the `ns` form,
+/// whose transitive closure also covers every helper edge, since a helper
+/// is a direct dependency of a provider), or when its source names a
+/// reached namespace: a symbol qualified with it or with an alias of it,
+/// such as a fully qualified macro of a loaded provider the namespace does
+/// not require, or the namespace's own name, such as a reflected
+/// `'provider`. That scan stands, conservatively and before any unit is
+/// dispatched, for the observed edges [`evaluate`] follows after analysis;
+/// a name built at compile time escapes it. The coarse edges of source
+/// macros give no affinity (see "Open questions" in the design), and
+/// neither does `^:light-cljs/no-cache`.
+#[derive(Clone, Debug, Default)]
+pub struct BlockerReach {
+    blockers: Vec<String>,
+    /// The namespaces admitted so far that were reached.
+    reached: std::collections::HashSet<String>,
+}
+
+impl BlockerReach {
+    pub fn new(blockers: &[String]) -> Self {
+        Self {
+            blockers: blockers.to_vec(),
+            reached: Default::default(),
+        }
+    }
+
+    /// Whether namespace `name` is a blocker or a consumer of one, recorded
+    /// for the namespaces after it: with `requires` (each admitted before
+    /// it), `aliases` (alias, target) and the text of each symbol its
+    /// source has, `symbols`, read only while nothing else decides.
+    /// Without blockers nothing is read or recorded.
+    pub fn admit<'s>(
+        &mut self,
+        name: &str,
+        requires: &[String],
+        aliases: &[(String, String)],
+        symbols: impl IntoIterator<Item = &'s str>,
+    ) -> bool {
+        if self.blockers.is_empty() {
+            return false;
+        }
+        let reached = self.blockers.iter().any(|blocker| blocker == name)
+            || requires.iter().any(|target| self.reached.contains(target))
+            || (!self.reached.is_empty()
+                && symbols.into_iter().any(|symbol| {
+                    let named = match symbol.split_once('/') {
+                        Some((namespace, _)) if !namespace.is_empty() => namespace,
+                        _ => symbol,
+                    };
+                    self.reached.contains(named)
+                        || aliases
+                            .iter()
+                            .any(|(alias, target)| alias == named && self.reached.contains(target))
+                }));
+        if reached {
+            self.reached.insert(name.to_owned());
+        }
+        reached
+    }
+}
+
 /// A `light.build` input of a namespace that cannot be keyed, such as a
 /// resource from a provider without a stable identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -596,6 +661,64 @@ mod tests {
             ["m", "app"]
         );
         assert!(policy.always_compile().is_empty());
+    }
+
+    #[test]
+    fn the_reach_before_analysis_is_the_blocked_set_without_observed_or_coarse_edges() {
+        // Without observed or coarse edges, the require closure the
+        // affinity of `--jobs N` follows before each namespace is analyzed
+        // is the set `evaluate` blocks after the build, helper edges
+        // included; `^:light-cljs/no-cache` on the blocker changes neither.
+        let helper: &[(&str, &[&str])] = &[
+            ("h", &[]),
+            ("m", &["h"]),
+            ("r", &[]),
+            ("leaf", &[]),
+            ("app", &["m", "r"]),
+        ];
+        let chain: &[(&str, &[&str])] = &[("a", &[]), ("b", &["a"]), ("c", &["b"]), ("d", &[])];
+        for (sources, macros) in [(helper, &["m"][..]), (chain, &[][..])] {
+            let manifest = manifest(sources, macros);
+            for (blocker, _) in sources {
+                let settings = on(&[blocker]);
+                let flags = metadata(&manifest, &[(blocker, NO_CACHE)]);
+                let policy = evaluate(&manifest, &settings, &flags, &[]);
+                let mut reach = BlockerReach::new(&settings.blockers);
+                for (name, requires) in sources {
+                    let requires: Vec<String> = requires.iter().map(|r| (*r).to_owned()).collect();
+                    let blocked = policy
+                        .reasons(id(&manifest, name))
+                        .any(|reason| reason == Bypass::Blocked);
+                    assert_eq!(
+                        reach.admit(name, &requires, &[], []),
+                        blocked,
+                        "{blocker}: {name}"
+                    );
+                }
+            }
+            let mut reach = BlockerReach::new(&[]);
+            assert!(
+                sources
+                    .iter()
+                    .all(|(name, _)| !reach.admit(name, &[], &[], [*name]))
+            );
+        }
+    }
+
+    #[test]
+    fn the_reach_follows_names_of_reached_namespaces_outside_the_requires() {
+        let mut reach = BlockerReach::new(&["m".to_owned()]);
+        assert!(reach.admit("m", &[], &[], []));
+        // Names that only resemble the blocker reach nothing.
+        assert!(!reach.admit("w", &[], &[], ["mm/f", "other/m", "/", "clojure.core//"]));
+        // A fully qualified macro, an alias-only alias and a reflected name.
+        assert!(reach.admit("q", &[], &[], ["inc", "m/next-value"]));
+        let alias = [("a".to_owned(), "m".to_owned())];
+        assert!(reach.admit("aliased", &[], &alias, ["a/f"]));
+        assert!(reach.admit("reflects", &[], &[], ["ns-publics", "m"]));
+        // Consumers of a namespace reached that way are reached too.
+        assert!(reach.admit("later", &["q".to_owned()], &[], []));
+        assert!(!reach.admit("w2", &["w".to_owned()], &[], []));
     }
 
     #[test]

@@ -3971,6 +3971,11 @@ pub(crate) struct NamespaceAnalysis {
     /// The CPU work slots each namespace's macro-free units may be
     /// analyzed on (`--jobs N`): one, inline, outside native V8 builds.
     pub(crate) unit_slots: crate::scheduler::Slots,
+    /// Whether the namespace analyzed next keeps its units on the calling
+    /// thread's isolate whatever `unit_slots` is, analyzed at its drain as
+    /// with one slot: a cache blocker or a consumer of one
+    /// ([`crate::cache_policy::BlockerReach`]).
+    pub(crate) main_isolate: bool,
     /// Indexes over the program that installing artifacts resolves against
     /// ([`crate::artifact_install`]), extended as the program grows.
     install_index: crate::artifact_install::InstallIndex,
@@ -4033,6 +4038,7 @@ impl NamespaceAnalysis {
             requires: Vec::new(),
             deferred_time: None,
             unit_slots: crate::scheduler::Slots::ONE,
+            main_isolate: false,
             install_index: Default::default(),
             pending: Default::default(),
             last_lazy: Vec::new(),
@@ -4259,7 +4265,13 @@ impl NamespaceAnalysis {
             namespace_globals: Default::default(),
             session_namespaces: Default::default(),
             pending_reader_registration: None,
-            unit_slots: self.unit_slots,
+            // A blocker's consumer registers and drains its units as one
+            // slot does: none is found macro-free or given to the pool.
+            unit_slots: if self.main_isolate {
+                crate::scheduler::Slots::ONE
+            } else {
+                self.unit_slots
+            },
         };
         analyzer.first_expr = analyzer.program.exprs.len();
         let outcome = namespace_forms(
@@ -7590,10 +7602,10 @@ impl Analyzer<'_> {
                 )
                 .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
             // The build pool takes macro-free units, and with engines of its
-            // own every unit but a `:test` one and those of the namespaces
-            // kept on the main isolate.
-            let pooled = self.unit_slots.get() > 1
-                && session.pools(self.namespace, macro_free, test_form.is_some());
+            // own every unit but a `:test` one; a namespace kept on the main
+            // isolate has one slot here.
+            let pooled =
+                self.unit_slots.get() > 1 && session.pools(macro_free, test_form.is_some());
             Ok(unit.map(|unit| {
                 if macro_free {
                     session.set_macro_free(unit);

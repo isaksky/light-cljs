@@ -11,6 +11,26 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Cache-blocker affinity (light-cljs-340, October 19, 2026)
+
+A `--cache-blocker` namespace and the namespaces that require or name it
+keep their units on the main isolate with `--jobs N`
+(docs/compiler-concurrency.md, "As built (light-cljs-340)"). Penpot passes
+no blocker, so the serial gate is all there is to measure: parent `3545cfb`
+against this change at the default `--jobs 1`, three alternating rounds at
+1-minute load 3.7 to 5.9 with one other worker active. All six outputs are
+33,626,443 bytes with SHA-256 `360915b77d74c77c...`.
+
+| Build | Wall (s) | Median wall | Peak RSS (GB) | Median RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent | 27.05, 24.84, 23.96 | 24.84 | 0.906, 0.914, 0.912 | 0.912 |
+| `--jobs 1` | 26.18, 24.63, 23.45 | 24.63 | 0.893, 0.921, 0.894 | 0.894 |
+
+- **Serial gate.** -0.8% wall and -1.9% peak RSS on the medians, inside the
+  +2% / +3% gate: without a blocker the loop does one empty check per
+  namespace. A first set against `19b789e`, before the rebase, gave -2.5%
+  and +1.0%.
+
 ## Per-worker isolates (light-cljs-339, October 19, 2026)
 
 Every deferred unit but a `:test` definition's is analyzed by a pool worker

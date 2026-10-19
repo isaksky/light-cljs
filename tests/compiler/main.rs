@@ -50,6 +50,7 @@ mod array_settings;
 mod artifact_codec;
 mod async_await;
 mod atom_object_equiv;
+mod blocker_affinity;
 mod bootstrap;
 mod boundary_completion;
 mod build_config;

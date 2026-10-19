@@ -217,6 +217,52 @@ fn counter_example_across_processes() {
     assert_eq!(blocked.js, project.uncached("main").js);
 }
 
+/// The cache with several jobs (docs/compiler-concurrency.md, "As built
+/// (light-cljs-340)"): from two caches populated alike, one build with
+/// `--jobs 1` and one with `--jobs 4` of the same edit, which hit every
+/// namespace but the edited one and its consumer, emit the same program,
+/// and the parallel build's misses give their macro-free units to the pool.
+#[test]
+fn a_warm_hit_and_a_parallel_miss_match_one_job() {
+    let project = Project::new(FIXTURE);
+    let caches = [project.dir.join("cache-1"), project.dir.join("cache-4")];
+    let build = |cache: &Path, jobs: &str| {
+        let mut command = project.command("main", &["--jobs", jobs], false);
+        command.arg("--cache-dir").arg(cache);
+        Project::finish(command.output().unwrap())
+    };
+    for cache in &caches {
+        assert_eq!(build(cache, "1").stat("cache.published"), 5);
+    }
+    project.write(
+        "plain.cljs",
+        "(ns plain) (def answer (+ 40 2)) (defn count-down [n] (loop [i n] (if (pos? i) (recur (dec i)) i))) (def table [1 2 3])",
+    );
+    let oracle = project.uncached("main");
+    let serial = build(&caches[0], "1");
+    let parallel = build(&caches[1], "4");
+    for warm in [&serial, &parallel] {
+        assert_eq!(warm.stat("cache.hits"), 3, "{}", warm.stats);
+        assert_eq!(
+            warm.rows(),
+            [
+                "plain miss source: source changed",
+                "main miss dependencies: dependency plain changed"
+            ]
+        );
+    }
+    assert_eq!(parallel.js, serial.js);
+    assert_eq!(serial.js, oracle.js);
+    assert_eq!(parallel.run(), "h1 9 84 h2\n");
+    // QuickJS-only builds have one slot, so no pool.
+    let pooled = parallel.stat("deferred-units.pooled");
+    if cfg!(feature = "v8-macros") {
+        assert!(pooled > 0, "{}", parallel.stats);
+    } else {
+        assert_eq!(pooled, 0);
+    }
+}
+
 #[test]
 fn policy_changes_with_an_existing_artifact() {
     let project = Project::new(FIXTURE);

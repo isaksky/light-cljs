@@ -1454,15 +1454,16 @@ impl CompilationSession {
         *self.pool.borrow_mut() = Some(pool);
         Ok(())
     }
-    /// Whether the build's unit pool takes a unit of `namespace`: with
-    /// `macro_free`, one found macro-free; with `test`, one of a definition
-    /// with `:test` metadata, analyzed with its definition through this
-    /// session. Its workers without engines take only macro-free units.
-    pub(crate) fn pools(&self, namespace: &str, macro_free: bool, test: bool) -> bool {
+    /// Whether the build's unit pool takes a unit: with `macro_free`, one
+    /// found macro-free; with `test`, one of a definition with `:test`
+    /// metadata, analyzed with its definition through this session. Its
+    /// workers without engines take only macro-free units. A cache
+    /// blocker's consumer never asks (`NamespaceAnalysis::main_isolate`).
+    pub(crate) fn pools(&self, macro_free: bool, test: bool) -> bool {
         match &*self.pool.borrow() {
             None => false,
             Some(pool) if pool.engines == PoolEngines::None => macro_free,
-            Some(pool) => macro_free || (!test && !pool.inline.iter().any(|n| n == namespace)),
+            Some(_) => macro_free || !test,
         }
     }
     /// Give `units` to the build's pool: whether it has one.
@@ -2055,8 +2056,6 @@ pub(crate) struct UnitPool {
     shared: Arc<SharedCatalog>,
     thread: Option<std::thread::JoinHandle<Result<(), String>>>,
     pub(crate) engines: PoolEngines,
-    /// The namespaces whose units it does not take ([`inline_namespaces`]).
-    inline: Vec<String>,
     /// The coordinator's settings, from which it starts its own engine
     /// where a serial build would have ([`CompilationSession::start_main_engine`]).
     main: MacroEnvironment,
@@ -2121,21 +2120,6 @@ pub(crate) fn release_definition_test(host: &MacroHost, unit: usize) {
         (None, None) => {}
     }
 }
-/// The namespaces whose units stay on the main isolate, analyzed at their
-/// drains in source order, as `LIGHT_CLJS_INLINE_UNITS=ns,ns` names them
-/// when the pool starts: a temporary hook until the cache blocker's
-/// affinity (light-cljs-340).
-fn inline_namespaces() -> Vec<String> {
-    std::env::var("LIGHT_CLJS_INLINE_UNITS")
-        .map(|names| {
-            names
-                .split(',')
-                .filter(|n| !n.is_empty())
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
-}
 /// How many compile-time isolates, the main one included, `slots` work
 /// slots may run when they share the macro memory limit `limit` evenly,
 /// with each isolate's share at least 32 MiB, and that share: the isolates
@@ -2194,7 +2178,6 @@ impl UnitPool {
             shared,
             thread: Some(thread),
             engines,
-            inline: inline_namespaces(),
             main: environment,
         })
     }
