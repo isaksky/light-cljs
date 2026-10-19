@@ -2304,15 +2304,19 @@ host-facing methods of the vector and the keyword.
     `Advanced` a record type defined with `defineType` gets its own
     `-equiv` and `-hash` right after it (`Emitter::record_kit`):
     `rt$installMethods(g2.prototype, [["IEquiv/-equiv", 2, function(a0, a1)
-    { return a1 != null && this.constructor === a1.constructor &&
+    { return a1 != null && Object.is(this.constructor, a1.constructor) &&
     rt$equalPair(this["w"], a1["w"]) && ... &&
     rt$equalPair(this["__extmap"], a1["__extmap"]); }], ["IHash/-hash", 1,
-    function() { ... }]]);`. The hash adds each field's keyword hash and
-    xors the type name's string hash as constants (`crate::value_hash`),
-    then the extension map's entries as the shared one does, and keeps
-    the `__hash` cache, so every value, cache and answer is the shared
-    method's; `installMethods` puts them over the shared ones as those go
-    over a program's own, and a later `extend-type` replaces them.
+    function() { ... }]]);`. The hash reads every field and the extension
+    map's entries first, as the shared one's `recordEntries` does, then
+    adds each field's keyword hash and xors the type name's string hash as
+    constants (`crate::value_hash`), and adds the entries' hashes with
+    `recordEntriesHash`, which the shared method calls too. It keeps the
+    `__hash` cache and is written only where core protocols are intact, so
+    that no extension replaces a keyword's hash: every value, cache and
+    answer is the shared method's. `installMethods` puts them over the
+    shared ones as those go over a program's own, and a later
+    `extend-type` replaces them.
     Whether to write them is decided on the program, not per type: rapid
     type analysis does not follow values into `=`, so the body is emitted
     again with them, as for brands, where the first slice installs the

@@ -5335,25 +5335,33 @@ impl<'a> Emitter<'a> {
     /// megamorphic whatever the type, and the shared hash builds a map entry
     /// per field. These read each field as the constructor writes it, and the
     /// hash adds the fields' keyword hashes and the type name's string hash
-    /// as constants ([`crate::value_hash`]), so that they compute what the
-    /// shared ones do, with the same `__hash` cache:
+    /// as constants ([`crate::value_hash`]; the hash is written only where
+    /// core protocols are intact, so that no extension replaces a keyword's
+    /// hash), so that they compute what the shared ones do, reading in the
+    /// same order, with the same `__hash` cache:
     ///
     /// ```text
     /// rt$installMethods(g2.prototype, [["IEquiv/-equiv", 2, function(a0, a1)
-    ///   { return a1 != null && this.constructor === a1.constructor &&
-    ///   rt$equalPair(this["w"], a1["w"]) && ... && rt$equalPair(
+    ///   { return a1 != null && Object.is(this.constructor, a1.constructor)
+    ///   && rt$equalPair(this["w"], a1["w"]) && ... && rt$equalPair(
     ///   this["__extmap"], a1["__extmap"]); }], ["IHash/-hash", 1,
     ///   function() { const h = this["__hash"]; if (h != null) return h;
-    ///   let r = (k0 ^ rt$hash(this["w"])) + ... | 0; const e =
-    ///   this["__extmap"]; if (e != null) for (const x of rt$toArray(e)) r =
-    ///   r + (rt$hash(rt$nth(x, 0)) ^ rt$hash(rt$nth(x, 1))) | 0; return
-    ///   this["__hash"] = r ^ k; }]]);
+    ///   const v0 = this["w"], ..., e = this["__extmap"], x = e == null ?
+    ///   null : rt$toArray(e); let r = (k0 ^ rt$hash(v0)) + ... | 0; if (x
+    ///   != null) r = rt$recordEntriesHash(x, r); return this["__hash"] =
+    ///   r ^ k; }]]);
     /// ```
     ///
     /// `installMethods` runs after `defineType` gave the type the shared
     /// methods, which these replace, as those replace a program's own.
     fn record_kit(&mut self, global: GlobalId, name: &str, fields: &[String]) {
         let [equiv, hash] = self.record_kits;
+        // The keyword hashes are constants only where no program extension
+        // can replace `IHash` of a keyword, as for the constant pool's.
+        let hash = hash
+            && self
+                .inference
+                .is_some_and(|inference| inference.facts().core_protocols_intact());
         if !equiv && !hash {
             return;
         }
@@ -5367,7 +5375,7 @@ impl<'a> Emitter<'a> {
         self.output.push_str(".prototype, [");
         if equiv {
             self.output.push_str(
-                "[\"IEquiv/-equiv\", 2, function(a0, a1) { return a1 != null && this.constructor === a1.constructor",
+                "[\"IEquiv/-equiv\", 2, function(a0, a1) { return a1 != null && Object.is(this.constructor, a1.constructor)",
             );
             for member in members.iter().map(String::as_str).chain(["__extmap"]) {
                 self.output.push_str(" && ");
@@ -5387,11 +5395,23 @@ impl<'a> Emitter<'a> {
             self.output
                 .push_str("[\"IHash/-hash\", 1, function() { const h = this");
             self.member("__hash");
-            self.output.push_str("; if (h != null) return h; let r = ");
+            // The shared method reads every field and the extension map's
+            // entries (`recordEntries`) before it hashes any of them.
+            self.output.push_str("; if (h != null) return h; const ");
+            for (index, member) in members.iter().enumerate() {
+                write!(self.output, "v{index} = this").unwrap();
+                self.member(member);
+                self.output.push_str(", ");
+            }
+            self.output.push_str("e = this");
+            self.member("__extmap");
+            self.output.push_str(", x = e == null ? null : ");
+            self.rt(RuntimeName::direct("toArray", None));
+            self.output.push_str("(e); let r = ");
             if fields.is_empty() {
                 self.output.push('0');
             }
-            for (index, (field, member)) in fields.iter().zip(&members).enumerate() {
+            for (index, field) in fields.iter().enumerate() {
                 if index > 0 {
                     self.output.push_str(" + ");
                 }
@@ -5399,9 +5419,7 @@ impl<'a> Emitter<'a> {
                 let key = crate::value_hash::keyword(None, &units);
                 write!(self.output, "({key} ^ ").unwrap();
                 self.rt(RuntimeName::direct("hash", None));
-                self.output.push_str("(this");
-                self.member(member);
-                self.output.push_str("))");
+                write!(self.output, "(v{index}))").unwrap();
             }
             // Each term is an `int32`, so their sum wraps as the shared
             // method's running `| 0` does.
@@ -5409,21 +5427,9 @@ impl<'a> Emitter<'a> {
                 self.output.push_str(" | 0");
             }
             // Then the extension map's entries, as the shared method adds them.
-            self.output.push_str("; const e = this");
-            self.member("__extmap");
-            self.output.push_str("; if (e != null) for (const x of ");
-            self.rt(RuntimeName::direct("toArray", None));
-            self.output.push_str("(e)) r = r + (");
-            for index in 0..2 {
-                if index > 0 {
-                    self.output.push_str(" ^ ");
-                }
-                self.rt(RuntimeName::direct("hash", None));
-                self.output.push('(');
-                self.rt(RuntimeName::direct("nth", None));
-                write!(self.output, "(x, {index}))").unwrap();
-            }
-            self.output.push_str(") | 0; return this");
+            self.output.push_str("; if (x != null) r = ");
+            self.rt(RuntimeName::direct("recordEntriesHash", None));
+            self.output.push_str("(x, r); return this");
             self.member("__hash");
             let units: Vec<u16> = name.encode_utf16().collect();
             let type_hash = crate::value_hash::string_hash(&units);

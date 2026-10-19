@@ -5188,8 +5188,9 @@ The other columns of the same runs, ms per call:
 | --- | ---: | ---: | ---: |
 | record-keys | 9.12 / 9.24 | 8.79 / 8.86 | 38.9 / 17.4 |
 
-Below `advanced` the shared methods run, unchanged. **Bytes.** No size
-ratchet fixture moves at any level (no fixture with a record keeps an
-operation that compares or hashes values), and the runtime that `none` and `prepare`
-embed is as it was. A record type of two fields that gets both methods
-writes 340 more bytes of terse output.
+Below `advanced` the shared methods run, as before. **Bytes.** No size
+ratchet fixture moves at `advanced` (no fixture with a record keeps an
+operation that compares or hashes values). The runtime that `none` and
+`prepare` embed grows 283 bytes for `recordEntriesHash`, which the shared
+record hash and the per-type one share. A record type of two fields that
+gets both methods writes about 330 more bytes of terse output.

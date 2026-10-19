@@ -468,14 +468,16 @@ fn advanced_records_compare_and_hash_with_their_own_methods() {
     for expected in [
         "rt$installMethods(g",
         ".prototype, [[\"IEquiv/-equiv\", 2, function(a0, a1) { return a1 != null && \
-         this.constructor === a1.constructor && rt$equalPair(this[\"x\"], a1[\"x\"]) && \
+         Object.is(this.constructor, a1.constructor) && rt$equalPair(this[\"x\"], a1[\"x\"]) && \
          rt$equalPair(this[\"y\"], a1[\"y\"]) && rt$equalPair(this[\"__extmap\"], a1[\"__extmap\"]); }], \
          [\"IHash/-hash\", 1, function() { const h = this[\"__hash\"]; if (h != null) return h; \
-         let r = (2099068185 ^ rt$hash(this[\"x\"])) + (-1757859776 ^ rt$hash(this[\"y\"])) | 0; \
-         const e = this[\"__extmap\"]; if (e != null) for (const x of rt$toArray(e)) \
-         r = r + (rt$hash(rt$nth(x, 0)) ^ rt$hash(rt$nth(x, 1))) | 0; return this[\"__hash\"] = r ^ 24365320; }]]); ",
+         const v0 = this[\"x\"], v1 = this[\"y\"], e = this[\"__extmap\"], x = e == null ? null : rt$toArray(e); \
+         let r = (2099068185 ^ rt$hash(v0)) + (-1757859776 ^ rt$hash(v1)) | 0; \
+         if (x != null) r = rt$recordEntriesHash(x, r); \
+         return this[\"__hash\"] = r ^ 24365320; }]]); ",
         "this[\"foo_bar\"]",
-        "{ const h = this[\"__hash\"]; if (h != null) return h; let r = 0; const e",
+        "{ const h = this[\"__hash\"]; if (h != null) return h; const e = this[\"__extmap\"], \
+         x = e == null ? null : rt$toArray(e); let r = 0; if (x",
     ] {
         assert!(js.contains(expected), "{expected}\n{js}");
     }
@@ -492,5 +494,33 @@ fn advanced_records_compare_and_hash_with_their_own_methods() {
     assert!(
         !js.contains("rt$installMethods(") && !js.contains("function(a0, a1) { return a1 != null"),
         "{js}"
+    );
+}
+
+/// light-cljs-267: a record's hash adds its fields' keyword hashes, which an
+/// extension of `IHash` to keywords replaces at every level: `Advanced` then
+/// writes no constant keyword hash.
+#[test]
+fn record_hash_respects_keyword_hash_extensions() {
+    assert_eq!(
+        run("(extend-type Keyword IHash (-hash [_] 0)) (defrecord R [x])
+             (let [r (->R 1)] (array (hash r) (hash (->R 1)) (= r (->R 1)) (get {r 1} (->R 1))))"),
+        "[24365323,24365323,true,1]\n"
+    );
+}
+
+/// light-cljs-267: a record's hash reads every field and its extension map's
+/// entries before it hashes any of them, at every level, so a field's hash
+/// that sets another field leaves the record's hash as it was.
+#[test]
+fn record_hash_preserves_field_snapshot_order() {
+    assert_eq!(
+        run("(declare target)
+             (deftype Touch [] IHash (-hash [_] (set! (.-y target) 2) (set! (.-__extmap target) {:z 5}) 0))
+             (defrecord R [x y])
+             (def target (assoc (->R (Touch.) 1) :w 3))
+             (let [first-hash (hash target) again (hash (assoc (->R (Touch.) 1) :w 3))]
+               (array (= first-hash again) (.-y target)))"),
+        "[true,2]\n"
     );
 }

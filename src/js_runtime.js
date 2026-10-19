@@ -7099,14 +7099,18 @@
   //@ recordMethodTable
   recordMethodTable.push(Type => [
     ["ICloneable/-clone", 1, function () { return recordCopy(this, Type, this.__meta, this.__extmap, this.__hash); }]]);
-  //@unit recordMethods.hash effect: recordMethods when: hash, hashProtocol requires: hash, nth,
-  //@ recordEntries, recordMethodTable, stringHash, typeNames
+  //@unit recordEntriesHash requires: hash, nth
+  // `result` plus each entry's key hash xor value hash (light-cljs-267).
+  function recordEntriesHash(entries, result) {
+    for (const entry of entries) result = (result + (hash(nth(entry, 0)) ^ hash(nth(entry, 1)))) | 0;
+    return result;
+  }
+  //@unit recordMethods.hash effect: recordMethods when: hash, hashProtocol requires: recordEntries,
+  //@ recordEntriesHash, recordMethodTable, stringHash, typeNames
   recordMethodTable.push(Type => [
     ["IHash/-hash", 1, function () {
       if (this.__hash != null) return this.__hash;
-      let result = 0;
-      for (const entry of recordEntries(this, Type)) result = (result + (hash(nth(entry, 0)) ^ hash(nth(entry, 1)))) | 0;
-      return this.__hash = result ^ stringHash(typeNames.get(Type) ?? "");
+      return this.__hash = recordEntriesHash(recordEntries(this, Type), 0) ^ stringHash(typeNames.get(Type) ?? "");
     }]]);
   //@unit recordMethods.equiv effect: recordMethods when: equalPair, equivProtocol, objectEquiv
   //@ requires: equalPair, field, recordMethodTable

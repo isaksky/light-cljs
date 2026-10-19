@@ -109,6 +109,14 @@
 //! 1,000), and every none/prepare ceiling, for the 10.1 KB of readable
 //! runtime (branches, wrappers and their comments), to the next 1,000.
 
+//! Per-type record equality and hash (light-cljs-267, 2026-10-19): at
+//! advanced a record type of a program that compares or hashes values gets
+//! its own `-equiv` and `-hash` (`record-keys` 7.7x to 2.06x upstream); no
+//! fixture's advanced size moves. The readable runtime grows 283 bytes for
+//! `recordEntriesHash`, which the shared record hash and the per-type one
+//! share; the five none/prepare ceiling pairs it passed move to the next
+//! 1,000.
+
 pub struct Fixture {
     pub name: &'static str,
     pub source: &'static str,
@@ -178,7 +186,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [486_000, 486_000, 3_500],
+        ceilings: [487_000, 487_000, 3_500],
         removed: [0, 0, 0],
         printed: "321\n",
     },
@@ -203,7 +211,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (def lookup (let [k :a] (get {:a 1} k)))
                  (def literal [1 2 3])
                  (:x (->Point 1 2))"#,
-        ceilings: [487_000, 487_000, 5_200],
+        ceilings: [488_000, 488_000, 5_200],
         removed: [0, 1, 6],
         printed: "1\n",
     },
@@ -321,7 +329,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "event-maps",
         source: "(defn event [i] {:type :click :x i :y (- 100 i) :button 0 :target \"submit\"})
                  (reduce + (map (fn [i] (let [e (event i)] (+ (:x e) (:y e) (count e)))) (range 10)))",
-        ceilings: [486_000, 486_000, 34_000],
+        ceilings: [487_000, 487_000, 34_000],
         removed: [0, 0, 1],
         printed: "1050\n",
     },
@@ -425,7 +433,7 @@ pub const FIXTURES: &[Fixture] = &[
                    (if (< i 10)
                      (recur (inc i) (score acc [1 2 3] i (if (even? i) \"\" \"word\") (if (odd? i) :heavy :light)))
                      acc))",
-        ceilings: [488_000, 488_000, 15_000],
+        ceilings: [489_000, 489_000, 15_000],
         removed: [0, 0, 3],
         printed: "419\n",
     },
@@ -618,7 +626,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             ),
             GREET,
         ],
-        ceilings: [488_000, 487_000, 600],
+        ceilings: [488_000, 488_000, 600],
         removed: [0, 1, 2],
         printed: "null\nhello lazy\n",
     },
