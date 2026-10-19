@@ -2064,6 +2064,69 @@ mod worker_tests {
     }
 
     #[test]
+    fn roots_initialize_once_per_isolate() {
+        // `counted`'s initializer counts its runs in its engine's globals.
+        let mut host = MacroHost::new();
+        crate::compile_with_macros(
+            "(def counted (set! (.-countedRuns js/globalThis) (+ 1 (or (.-countedRuns js/globalThis) 0))))
+             (defmacro m [] counted)
+             (m)",
+            &mut host,
+        )
+        .unwrap();
+        let session = host.session_handle().unwrap();
+        let shared = session.shared().clone();
+        let id = (0..session.next_unit())
+            .find(|&id| shared.unit_name(id) == "cljs.user/counted")
+            .unwrap();
+        assert!(shared.prepared(id).unwrap().is_some());
+        assert_eq!(shared.lock().units[id].analyses, 1);
+        // Read the registry root twice: both reads see the one run of its
+        // initializer in this engine.
+        let force_twice = |evaluator: &dyn crate::compiler_evaluator::CompilerEvaluator| {
+            let value = evaluator
+                .evaluate_js(
+                    r#"(() => { const roots = globalThis.__lightCompilerRoots; const seen = [roots["cljs.user/counted"], roots["cljs.user/counted"], globalThis.countedRuns]; if (seen.some(n => n !== 1)) throw new Error("reads and runs: " + seen); return null; })()"#,
+                )
+                .unwrap();
+            evaluator.release(value).unwrap();
+        };
+        // The coordinator's isolate ran it once, for the macro.
+        let main = host.engine.bootstrap.as_ref().unwrap().evaluator.clone();
+        force_twice(main.as_ref());
+        let environment = host.environment();
+        // Two workers, each with an isolate of its own, read it at once.
+        let both = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let workers = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let evaluator = engine(&environment);
+                        let host =
+                            MacroHost::bind(environment.clone(), Some(evaluator.clone())).unwrap();
+                        let view = WorkerView::new(shared.clone(), host).unwrap();
+                        // What a worker installs before its engine runs code.
+                        view.install(None).unwrap();
+                        both.wait();
+                        force_twice(evaluator.as_ref());
+                        // After the other isolate initialized it too, a read
+                        // here still runs nothing again.
+                        both.wait();
+                        force_twice(evaluator.as_ref());
+                    })
+                })
+                .collect::<Vec<_>>();
+            for worker in workers {
+                worker.join().unwrap();
+            }
+        });
+        // Each isolate initialized it from the one shared analysis, and the
+        // coordinator's run stays its only one.
+        assert_eq!(shared.lock().units[id].analyses, 1);
+        force_twice(main.as_ref());
+    }
+
+    #[test]
     fn a_waiter_gets_the_analysis_after_the_application_took_the_program() {
         let source = (0..3)
             .map(|i| format!("(defn u{i} [x] (+ x {i}))"))
