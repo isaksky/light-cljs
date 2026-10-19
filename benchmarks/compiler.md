@@ -5141,3 +5141,55 @@ the collections it builds and the tables: `vector-only` 5,053 to 5,085,
 fixtures do not move. The runtime that `none` and `prepare` embed grows by
 10,120 bytes, and the QuickJS evaluator's smallest heap that loads it from
 4,128 to 4,200 KiB.
+
+## Record equality and hash — October 19, 2026
+
+light-cljs-267 measured record `=` and `hash` against upstream before
+changing anything. The new `record-keys` workload compares records with
+`=` and uses them as keys of a hash map (`assoc`, `get`) and members of a
+set (`conj`, `contains?`), over one record type and over four; every
+lookup is by a record built afresh, so that it is hashed and compared, and
+16 keys keep upstream's map and set out of their array-map form. On the
+24-CPU Mac (Node v24.18.0, macOS 15.7.3), with two other workers building
+and testing:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only record-keys,record-protocol --output DIR
+```
+
+"Before" is the workload on master `ef9df79`'s compiler. Milliseconds per
+call `(f 20)`, median / minimum; upstream is timed in the same rounds:
+
+| Build | One-minute load (median of rounds) | Workload | light-cljs `advanced` | Upstream `:advanced` | light-cljs / upstream |
+| --- | ---: | --- | ---: | ---: | ---: |
+| before | 5.3 | record-keys | 6.416 / 6.123 | 0.834 / 0.786 | 7.7× |
+| before | 5.3 | record-protocol | 0.023 / 0.020 | 0.023 / 0.018 | 0.99× |
+| after | 3.6 | record-keys | 1.662 / 1.618 | 0.806 / 0.788 | 2.06× |
+| after | 3.6 | record-protocol | 0.021 / 0.019 | 0.020 / 0.018 | 1.0× |
+
+Before was over the 2× the pellet allowed, so at `advanced` a record type
+now gets its own `-equiv` and `-hash`, which read its fields directly and
+add the fields' keyword hashes and the type's name hash as constants
+(docs/advanced-optimization.md, "Per-type record equality and hash"). The
+after ratio, 2.06×, is within the 5% tolerance of 2×. Before, half the
+time went to `mungeMember`, which the shared methods' `field` runs on
+every field read, and the shared hash built a map entry per field. What
+remains is mostly the map and set operations themselves (`assoc` and
+`conj` into array maps of up to eight entries, then the trie) and the
+protocol lookups `equalPair` and `hash` make on the field values. A
+number and string fast path in `equalPair` took the workload about 8%
+lower in hand-edited output, but it added about 80 bytes to every
+`advanced` program that keeps `equalPair`, so it was left out.
+
+The other columns of the same runs, ms per call:
+
+| Workload | Node none / prepare, before | Node none / prepare, after | QuickJS advanced, before / after |
+| --- | ---: | ---: | ---: |
+| record-keys | 9.12 / 9.24 | 8.79 / 8.86 | 38.9 / 17.4 |
+
+Below `advanced` the shared methods run, unchanged. **Bytes.** No size
+ratchet fixture moves at any level (no fixture with a record keeps an
+operation that compares or hashes values), and the runtime that `none` and `prepare`
+embed is as it was. A record type of two fields that gets both methods
+writes 340 more bytes of terse output.

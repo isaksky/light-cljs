@@ -433,3 +433,64 @@ fn get_and_contains_call_declared_slots_and_their_replacements() {
         "[1,3,1,true,false,\"tx\",\"tx4\",\"tx\",false,true,\"u\",\"u5\",\"u\",6,7,true,true,8,false]\n"
     );
 }
+
+/// light-cljs-267: at `Advanced` a record type whose program compares or
+/// hashes values has its own `-equiv` and `-hash`, which read its fields
+/// directly and add constant keyword and type-name hashes. They give what
+/// the shared methods give at `None`: the same hash values (also of fields
+/// with munged names, of no fields and of an extension map), the hash cache
+/// a copy keeps, nominal equality, and keys and members found in maps and
+/// sets. An `extend-type` given later replaces them. A program that never
+/// compares or hashes keeps the shared methods and writes none, though it
+/// builds a vector, which keeps `equalPair`.
+#[test]
+fn advanced_records_compare_and_hash_with_their_own_methods() {
+    let advanced = |source: &str| {
+        let program = light_cljs::analyze(source, &light_cljs::parse(source).unwrap()).unwrap();
+        light_cljs::prepare_application(
+            &program,
+            super::optimization::readable(light_cljs::OptimizationLevel::Advanced),
+        )
+        .emit_js()
+    };
+    let source = "(defrecord P [x y]) (defrecord Q [x y]) (defrecord E []) (defrecord M [foo-bar a? __proto__])
+                  (defrecord V [v]) (extend-type V IEquiv (-equiv [_ _] true))
+                  (let [p (->P 1 [2 :k]) m (->M \"s\" nil (->P 1 2)) x (assoc p :z {:w 1})
+                        keys (into {} (map (fn [r] [r (pr-str r)])) [p (->Q 1 [2 :k]) (->E) m x])]
+                    (array (hash p) (hash (->Q 1 [2 :k])) (hash (->E)) (hash m) (hash x) (hash (with-meta x {:m 1}))
+                           (= p (->P 1 [2 :k])) (= p (->Q 1 [2 :k])) (= p (->P 1 [2 :j])) (= p nil) (= p 5)
+                           (= p {:x 1 :y [2 :k]}) (= x (assoc (->P 1 [2 :k]) :z {:w 1})) (= x p) (= (->E) (->E))
+                           (= m (->M \"s\" nil (->P 1 2))) (= (->P js/NaN 1) (->P js/NaN 1))
+                           (get keys (->M \"s\" nil (->P 1 2))) (get keys (assoc (->P 1 [2 :k]) :z {:w 1}))
+                           (get keys (->P 1 [2 :j]) -1) (count (into #{} [p (->P 1 [2 :k]) (->E) (->E)]))
+                           (contains? #{(->E) m} (->M \"s\" nil (->P 1 2))) (= (->V 1) (->V 2))))";
+    let js = advanced(source);
+    for expected in [
+        "rt$installMethods(g",
+        ".prototype, [[\"IEquiv/-equiv\", 2, function(a0, a1) { return a1 != null && \
+         this.constructor === a1.constructor && rt$equalPair(this[\"x\"], a1[\"x\"]) && \
+         rt$equalPair(this[\"y\"], a1[\"y\"]) && rt$equalPair(this[\"__extmap\"], a1[\"__extmap\"]); }], \
+         [\"IHash/-hash\", 1, function() { const h = this[\"__hash\"]; if (h != null) return h; \
+         let r = (2099068185 ^ rt$hash(this[\"x\"])) + (-1757859776 ^ rt$hash(this[\"y\"])) | 0; \
+         const e = this[\"__extmap\"]; if (e != null) for (const x of rt$toArray(e)) \
+         r = r + (rt$hash(rt$nth(x, 0)) ^ rt$hash(rt$nth(x, 1))) | 0; return this[\"__hash\"] = r ^ 24365320; }]]); ",
+        "this[\"foo_bar\"]",
+        "{ const h = this[\"__hash\"]; if (h != null) return h; let r = 0; const e",
+    ] {
+        assert!(js.contains(expected), "{expected}\n{js}");
+    }
+    assert_eq!(
+        run(source),
+        "[-1309891250,-1309891249,24365309,-1541209217,1961785658,1961785658,true,false,false,false,false,\
+         false,true,false,true,true,false,\"#cljs.user.M{:foo-bar \\\"s\\\", :a? nil, :__proto__ #cljs.user.P{:x 1, :y 2}}\",\
+         \"#cljs.user.P{:x 1, :y [2 :k], :z {:w 1}}\",-1,2,true,true]\n"
+    );
+    let unread = "(defprotocol Area (area [s]))
+                  (defrecord Rect [w h] Area (area [_] (* w h)))
+                  (into-array (map area [(->Rect 2 3) (->Rect 1 4)]))";
+    let js = advanced(unread);
+    assert!(
+        !js.contains("rt$installMethods(") && !js.contains("function(a0, a1) { return a1 != null"),
+        "{js}"
+    );
+}

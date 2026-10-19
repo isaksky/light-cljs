@@ -55,6 +55,18 @@ pub const REGISTRY_CELLS: &[&str] = &["currentNs"];
 /// The `runtime_manifest` suite checks the list against the manifest.
 pub const BRAND_READERS: &[&str] = &["typeFields.brands", "recordTypes.brands"];
 
+/// The effects installing a record's shared `-equiv` and `-hash`, which a
+/// record type defined at `Advanced` replaces with its own
+/// ([`RuntimeRoots::record_kits`], light-cljs-267).
+pub const RECORD_KIT_UNITS: [&str; 2] = ["recordMethods.equiv", "recordMethods.hash"];
+
+/// The operations through which a program compares values it did not
+/// build as constants: `=` and `not=`, a key's lookup in an array map or set
+/// and in a hash trie, and `-equiv` called as a protocol method. Every
+/// vector keeps `equalPair` for its host `equiv` and `indexOf`, so its
+/// presence alone says nothing.
+pub const RECORD_EQUIV_USES: &[&str] = &["equal", "entryIndex", "hashNodeFind", "equivProtocol"];
+
 /// The upstream fields and methods of the runtime's types, munged: `first` of
 /// a `Cons`, `cnt` of a vector, `sval` of a `LazySeq`, ..., which the types'
 /// `.fields` effects add. Upstream they are compiler-owned names, which
@@ -408,6 +420,28 @@ impl RuntimeRoots {
             .iter()
             .zip(&manifest.units)
             .any(|(first, unit)| first.is_some() && unit.compile_time)
+    }
+
+    /// Whether a record type defined at `Advanced` writes its own `-equiv`
+    /// and its own `-hash` (`Emitter::record_kit` in `src/emitter.rs`,
+    /// light-cljs-267): where an `Advanced` slice of these roots installs the
+    /// shared one ([`RECORD_KIT_UNITS`]), and for `-equiv` also keeps one of
+    /// [`RECORD_EQUIV_USES`], so that a program that never compares values
+    /// keeps its size. Both are only faster: the shared methods give the same
+    /// answers wherever these are not written.
+    pub(crate) fn record_kits(&self) -> [bool; 2] {
+        let manifest = RuntimeManifest::embedded();
+        let first = manifest.reached_by_uses(&self.units(manifest));
+        let kept = |name: &str| {
+            manifest
+                .unit_named(name)
+                .is_some_and(|unit| first[unit.0].is_some())
+        };
+        let [equiv, hash] = RECORD_KIT_UNITS.map(kept);
+        [
+            equiv && RECORD_EQUIV_USES.iter().any(|name| kept(name)),
+            hash,
+        ]
     }
 
     /// Whether an `Advanced` slice of these roots keeps a unit that reads the

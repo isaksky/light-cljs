@@ -82,13 +82,14 @@ macro_rules! built_map {
 /// The ratchet's seq-pipeline, record-protocol, keyword-lookups,
 /// constant-literals, constant-keys, multi-arity, event-maps, closed-params and
 /// local-arities fixtures, as workloads over `n`. `local-arities` runs the
-/// functions of `multi-arity` as local and named functions, and
-/// `protocol-dispatch` calls protocol methods as values (light-cljs-265). Then the collection
+/// functions of `multi-arity` as local and named functions,
+/// `protocol-dispatch` calls protocol methods as values (light-cljs-265), and
+/// `record-keys` compares and hashes records (light-cljs-267). Then the collection
 /// workloads of light-cljs-233, each at [`GROWTH`]: building a vector, map and set
 /// one element at a time, `nth` and `get` over a built one, `assoc` onto a built
 /// map, `subvec` then `reduce`, and `into` a vector and a map, which goes through
 /// a transient (`map-into`, light-cljs-249).
-const STEADY: [Steady; 23] = [
+const STEADY: [Steady; 24] = [
     Steady {
         name: "seq-pipeline",
         source: "(fn [n] (reduce + 0 (->> (map inc (range n)) (filter even?) (partition 2) \
@@ -112,6 +113,34 @@ const STEADY: [Steady; 23] = [
     // shapes are in arrays, which both compilers read as JavaScript does, so
     // that the calls are what the workload times (`reduce` over a small vector
     // of records costs light-cljs about 0.7 µs, through `reduce.protocol`).
+    // Records as values (light-cljs-267): `=` between records, and records as
+    // keys of a hash map (`assoc`, `get`) and members of a set (`conj`,
+    // `contains?`), over one record type and over four. Every lookup is by a
+    // record built afresh, so that it is hashed and compared, and 16 keys keep
+    // upstream's map and set out of their linear array-map form.
+    Steady {
+        name: "record-keys",
+        source: "(defrecord P [x y])
+                 (defrecord Q [x y])
+                 (defrecord R [a b])
+                 (defrecord S [a b c])
+                 (defn one [i] (->P i 1))
+                 (defn four [i] (case (rem i 4) 0 (->P i 1) 1 (->Q i 2) 2 (->R i 3) (->S i 4 5)))
+                 (defn keyed [make]
+                   (loop [i 0 m {} s #{} t 0]
+                     (if (< i 16)
+                       (let [r (make i)]
+                         (recur (inc i) (assoc m r i) (conj s r)
+                                (+ t (if (= r (make i)) 1 0) (if (= r (make (inc i))) 1 0))))
+                       (loop [i 0 t t]
+                         (if (< i 16)
+                           (let [r (make i)] (recur (inc i) (+ t (get m r) (if (contains? s r) 1 0))))
+                           t)))))
+                 (fn [n] (loop [i 0 t 0] (if (< i n) (recur (inc i) (+ t (keyed one) (keyed four))) t)))",
+        inputs: &[20],
+        every_level: true,
+        expected: record_keys,
+    },
     Steady {
         name: "protocol-dispatch",
         source: "(defprotocol Shape (area [s]) (perimeter [s]))
@@ -417,6 +446,12 @@ fn pipeline(n: u64) -> u64 {
 
 fn areas(n: u64) -> u64 {
     (0..n).map(|i| 2 * i).sum()
+}
+
+/// Per record mix and iteration: 16 equal pairs, no unequal one, the values
+/// 0 to 15 found by `get` and 16 members found.
+fn record_keys(n: u64) -> u64 {
+    2 * (16 + 120 + 16) * n
 }
 
 /// Areas 204 and perimeters 144 of the squares of sides 1 to 8, and 14 and 38

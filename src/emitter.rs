@@ -399,7 +399,7 @@ fn emit_js_mode(
         )
     });
     // The prelude, the `let g<n>;` declarations and the program body.
-    let body = |register_namespaces: bool, brand_types: bool| {
+    let body = |register_namespaces: bool, brand_types: bool, record_kits: [bool; 2]| {
         let mut emitter = Emitter::new(
             program,
             Setup {
@@ -414,6 +414,7 @@ fn emit_js_mode(
             register_namespaces,
         );
         emitter.brand_types = brand_types;
+        emitter.record_kits = record_kits;
         emitter.output.push_str(PRELUDE_OPEN);
         emitter.output.push_str(PRELUDE_TRUTH);
         let mut prelude_end = emitter.output.len();
@@ -470,16 +471,28 @@ fn emit_js_mode(
     // (`RuntimeRoots::reach_reflection`): the body is emitted without the
     // registration, and again with it when those roots reach reflection.
     let slice = direct.is_some();
-    let (mut emitter, mut prelude_end) = body(!slice, true);
+    let (mut emitter, mut prelude_end) = body(!slice, true, [false; 2]);
     if slice && emitter.runtime.reach_reflection() {
-        (emitter, prelude_end) = body(true, true);
+        (emitter, prelude_end) = body(true, true, [false; 2]);
+    }
+    // A record type has its own `-equiv` and `-hash`, which read its fields
+    // directly, where the slice installs the shared ones
+    // (`Emitter::record_kit`): the body is emitted again with them, which
+    // only adds roots of units those require.
+    let record_kits = if slice && emitter.defined_records {
+        emitter.runtime.record_kits()
+    } else {
+        [false; 2]
+    };
+    if record_kits.contains(&true) {
+        (emitter, prelude_end) = body(emitter.register_namespaces, true, record_kits);
     }
     // A type's own constructor brands its instance only where a brand may be
     // observed (`Emitter::unobserved_brands`): the body is emitted again
     // without the brands when nothing could observe them, which only removes
     // roots.
     if slice && emitter.unobserved_brands() {
-        (emitter, prelude_end) = body(emitter.register_namespaces, false);
+        (emitter, prelude_end) = body(emitter.register_namespaces, false, record_kits);
     }
     #[cfg(debug_assertions)]
     check_runtime_reads(
@@ -1544,6 +1557,12 @@ struct Emitter<'a> {
     brand_types: bool,
     /// Whether a constructor this emission wrote branded its instance.
     branded: bool,
+    /// Which of a record's `-equiv` and `-hash` [`Emitter::record_kit`] writes
+    /// for each record type it defines (light-cljs-267), as
+    /// [`RuntimeRoots::record_kits`] decides.
+    record_kits: [bool; 2],
+    /// Whether this emission defined a record type ([`Emitter::defined_type`]).
+    defined_records: bool,
     /// Whether the output may call a type's own constructor other than with
     /// `new`, where a second brand would throw: it reads the type's global
     /// elsewhere than as the callee of a `Construct`, or the type's global
@@ -1697,6 +1716,8 @@ impl<'a> Emitter<'a> {
             truth_used: false,
             brand_types: true,
             branded: false,
+            record_kits: [false; 2],
+            defined_records: false,
             type_escapes: false,
             construct_callee: None,
             marks: mapped.then(Marks::default),
@@ -5293,6 +5314,10 @@ impl<'a> Emitter<'a> {
             }
         }
         self.output.push_str("); ");
+        if record {
+            self.defined_records = true;
+            self.record_kit(global, &name, fields);
+        }
         // `crate::rta` keeps the factory only where the program reads it.
         if self.retained.is_none_or(|retained| retained[constructor.0]) {
             self.type_factory(record, global, *constructor, fields);
@@ -5301,6 +5326,110 @@ impl<'a> Emitter<'a> {
         if let Some(map_constructor) = map_constructor {
             self.map_factory(global, *map_constructor);
         }
+    }
+
+    /// At `Advanced`, a record type's own `-equiv` and `-hash`, where
+    /// [`RuntimeRoots::record_kits`] says so (light-cljs-267). The runtime's
+    /// `recordMethods.equiv` and `recordMethods.hash` walk `Type.fieldNames`
+    /// and read each field by its name, a keyed load that V8 leaves
+    /// megamorphic whatever the type, and the shared hash builds a map entry
+    /// per field. These read each field as the constructor writes it, and the
+    /// hash adds the fields' keyword hashes and the type name's string hash
+    /// as constants ([`crate::value_hash`]), so that they compute what the
+    /// shared ones do, with the same `__hash` cache:
+    ///
+    /// ```text
+    /// rt$installMethods(g2.prototype, [["IEquiv/-equiv", 2, function(a0, a1)
+    ///   { return a1 != null && this.constructor === a1.constructor &&
+    ///   rt$equalPair(this["w"], a1["w"]) && ... && rt$equalPair(
+    ///   this["__extmap"], a1["__extmap"]); }], ["IHash/-hash", 1,
+    ///   function() { const h = this["__hash"]; if (h != null) return h;
+    ///   let r = (k0 ^ rt$hash(this["w"])) + ... | 0; const e =
+    ///   this["__extmap"]; if (e != null) for (const x of rt$toArray(e)) r =
+    ///   r + (rt$hash(rt$nth(x, 0)) ^ rt$hash(rt$nth(x, 1))) | 0; return
+    ///   this["__hash"] = r ^ k; }]]);
+    /// ```
+    ///
+    /// `installMethods` runs after `defineType` gave the type the shared
+    /// methods, which these replace, as those replace a program's own.
+    fn record_kit(&mut self, global: GlobalId, name: &str, fields: &[String]) {
+        let [equiv, hash] = self.record_kits;
+        if !equiv && !hash {
+            return;
+        }
+        let members: Vec<String> = fields
+            .iter()
+            .map(|field| crate::analyzer::munge_js_member(field))
+            .collect();
+        self.rt(RuntimeName::direct("installMethods", None));
+        self.output.push('(');
+        self.product(global);
+        self.output.push_str(".prototype, [");
+        if equiv {
+            self.output.push_str(
+                "[\"IEquiv/-equiv\", 2, function(a0, a1) { return a1 != null && this.constructor === a1.constructor",
+            );
+            for member in members.iter().map(String::as_str).chain(["__extmap"]) {
+                self.output.push_str(" && ");
+                self.rt(RuntimeName::direct("equalPair", None));
+                self.output.push_str("(this");
+                self.member(member);
+                self.output.push_str(", a1");
+                self.member(member);
+                self.output.push(')');
+            }
+            self.output.push_str("; }]");
+        }
+        if hash {
+            if equiv {
+                self.output.push_str(", ");
+            }
+            self.output
+                .push_str("[\"IHash/-hash\", 1, function() { const h = this");
+            self.member("__hash");
+            self.output.push_str("; if (h != null) return h; let r = ");
+            if fields.is_empty() {
+                self.output.push('0');
+            }
+            for (index, (field, member)) in fields.iter().zip(&members).enumerate() {
+                if index > 0 {
+                    self.output.push_str(" + ");
+                }
+                let units: Vec<u16> = field.encode_utf16().collect();
+                let key = crate::value_hash::keyword(None, &units);
+                write!(self.output, "({key} ^ ").unwrap();
+                self.rt(RuntimeName::direct("hash", None));
+                self.output.push_str("(this");
+                self.member(member);
+                self.output.push_str("))");
+            }
+            // Each term is an `int32`, so their sum wraps as the shared
+            // method's running `| 0` does.
+            if fields.len() > 1 {
+                self.output.push_str(" | 0");
+            }
+            // Then the extension map's entries, as the shared method adds them.
+            self.output.push_str("; const e = this");
+            self.member("__extmap");
+            self.output.push_str("; if (e != null) for (const x of ");
+            self.rt(RuntimeName::direct("toArray", None));
+            self.output.push_str("(e)) r = r + (");
+            for index in 0..2 {
+                if index > 0 {
+                    self.output.push_str(" ^ ");
+                }
+                self.rt(RuntimeName::direct("hash", None));
+                self.output.push('(');
+                self.rt(RuntimeName::direct("nth", None));
+                write!(self.output, "(x, {index}))").unwrap();
+            }
+            self.output.push_str(") | 0; return this");
+            self.member("__hash");
+            let units: Vec<u16> = name.encode_utf16().collect();
+            let type_hash = crate::value_hash::string_hash(&units);
+            write!(self.output, " = r ^ {type_hash}; }}]").unwrap();
+        }
+        self.output.push_str("]); ");
     }
 
     /// The value of the type definition `id` that [`Emitter::defined_type`]

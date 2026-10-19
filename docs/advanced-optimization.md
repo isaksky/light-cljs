@@ -2296,6 +2296,38 @@ host-facing methods of the vector and the keyword.
     (benchmarks/compiler.md, "Unread type brands"). A program that
     updates or prints a record through the generic operations
     keeps `recordTypes.brands` and the brands.
+  - **Per-type record equality and hash (light-cljs-267).** The shared
+    `recordMethods.equiv` and `recordMethods.hash` walk `Type.fieldNames`
+    and read each field with `field`, which munges its name on every read,
+    and the hash builds a map entry per field: a keyed load over several
+    names that V8 leaves megamorphic whatever the number of types. At
+    `Advanced` a record type defined with `defineType` gets its own
+    `-equiv` and `-hash` right after it (`Emitter::record_kit`):
+    `rt$installMethods(g2.prototype, [["IEquiv/-equiv", 2, function(a0, a1)
+    { return a1 != null && this.constructor === a1.constructor &&
+    rt$equalPair(this["w"], a1["w"]) && ... &&
+    rt$equalPair(this["__extmap"], a1["__extmap"]); }], ["IHash/-hash", 1,
+    function() { ... }]]);`. The hash adds each field's keyword hash and
+    xors the type name's string hash as constants (`crate::value_hash`),
+    then the extension map's entries as the shared one does, and keeps
+    the `__hash` cache, so every value, cache and answer is the shared
+    method's; `installMethods` puts them over the shared ones as those go
+    over a program's own, and a later `extend-type` replaces them.
+    Whether to write them is decided on the program, not per type: rapid
+    type analysis does not follow values into `=`, so the body is emitted
+    again with them, as for brands, where the first slice installs the
+    shared method (`runtime_slice::RECORD_KIT_UNITS`) and, for `-equiv`,
+    also keeps one of the operations that compare values a program builds
+    (`RECORD_EQUIV_USES`: `=`, a key lookup in an array map or set or in a
+    hash trie, `-equiv` itself). `equalPair` alone does not count, since
+    every vector keeps it for its host `equiv` and `indexOf`. A program
+    that only constructs records, calls their methods, reads their fields
+    and prints them writes neither; one that `assoc`s a record keeps the
+    map operations its extension map needs and writes both, which costs
+    its text and nothing else. Where they are not written the shared
+    methods answer the same, more slowly. The `record-keys` workload
+    (benchmarks/compiler.md, "Record equality and hash") went from 7.7×
+    to 2.06× upstream's time.
   - **One unit per core dispatcher (light-cljs-254).** The unit
     `seqProtocol` declared eight core dispatchers and
     `protocolHooks.dispatchers` installed six; each is a unit of its own now,
