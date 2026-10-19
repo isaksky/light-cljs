@@ -8,7 +8,9 @@ The compiler reads `.cljs`/`.cljc` source, analyzes it in Rust and emits one
 self-contained JavaScript expression. Macros (both first-party core macros and
 user `defmacro`s) are compiled by the same pipeline and executed in an embedded
 JavaScript heap. Native clean compilations use V8 by default; interactive
-sessions, WebAssembly and builds without the `v8-macros` feature use QuickJS.
+sessions and builds without the `v8-macros` feature use QuickJS. WebAssembly
+builds embed no engine: the embedder runs macros through a
+`host_evaluator::ScriptHost` (docs/browser-macros.md).
 Both engines execute the same emitted functions and runtime. Evaluation
 sessions and the `--eval`/`--repl` commands use QuickJS; see
 [evaluation](evaluation.md) and the [synchronous evaluator](evaluator.md).

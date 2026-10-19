@@ -12,7 +12,7 @@ playground/
   app.js        files, compile options, result views, local-storage persistence
   compiler.js   the page's handle on the compiler worker: stale results, Stop
   compiler-worker.js  runs the wasm compiler off the page's thread
-  macro-host.js the browser engine's side of "browser macros"
+  macro-host.js runs the compiler's macros in the browser's own engine
   examples.js   the example programs in the dropdown, smallest first
   worker.js     runs one compiled program in a worker the page can terminate
   style.css
@@ -29,9 +29,8 @@ warnings, pseudo_names, size_report, esm)`. It feeds the files to
 `light_cljs::compiler::analyze_namespace_entry_with_provider` through an
 in-memory `SourceProvider` (namespace dots become directories, hyphens
 underscores, `.cljs` before `.cljc`), prepares the application at the chosen
-level and emits the JavaScript. Macros expand in the embedded QuickJS, which is
-compiled into the same wasm module, unless the page selects browser macros
-(below, the default). `compile_chunks(paths, sources, entry,
+level and emits the JavaScript. Macros expand in the browser's own engine
+(below): the module embeds no JavaScript engine. `compile_chunks(paths, sources, entry,
 optimize, warnings, pseudo_names, size_report)` compiles the same way into a
 chunked build, the CLI's `--out-dir` ([docs/compiler.md, "Chunked
 builds"](../docs/compiler.md#chunked-builds)): its result holds the file
@@ -53,33 +52,34 @@ compile.
 Two things differ from the native build:
 
 - `std::time::Instant` does not exist on `wasm32-unknown-unknown`, so the
-  evaluator's session clock (`src/evaluator.rs`, `host_clock`) reads the clock
-  that the engine's wasm shim already imports, `__rquickjs_host_now_us`. The
-  crate defines that symbol from `Date.now`, which resolves the import at link
-  time, so the module needs no `env` import object.
-- The emitted program runs in a web worker, not inside QuickJS: a fresh worker
+  evaluator's session clock (`src/evaluator.rs`, `host_clock`) reads a clock
+  the module imports, `__rquickjs_host_now_us` (named for the QuickJS wasm
+  shim, which shared it while the module embedded QuickJS). The crate defines
+  that symbol from `Date.now`, which resolves the import at link time, so the
+  module needs no `env` import object.
+- The emitted program runs in a web worker of its own: a fresh worker
   per run, `console.*` relayed to the page, terminated on completion or after
   10 seconds. Call `(enable-console-print!)` before printing, as in
   ClojureScript.
 
-With the "browser macros" checkbox, on by default since light-cljs-356, a
-compile request carries `macros: "browser"` and its macros run in the
-compiler worker's own JavaScript engine instead of QuickJS:
-`set_browser_macros(true)` makes the crate hand `MacroHost::set_script_host` a
-host that calls `globalThis.lightCljsMacroHost`, which `macro-host.js`
-provides, and `serve_macro_host` is the way back in for the compiler services
-macros call. The output is the same, and macro-heavy compiles are about three
-times faster. The 10 s deadline is not checked inside the browser's
-JavaScript, so `compiler.js` keeps a watchdog: a compile with a macro still
-running after 10 s has its worker terminated and is replayed in a fresh one up
-to that macro call, which then fails with the diagnostic the embedded engine
-gives, in about 11 s and without Stop.
+Macros run in the compiler worker's own JavaScript engine: the crate hands
+`MacroHost::set_script_host` a host that calls
+`globalThis.lightCljsMacroHost`, which `macro-host.js` provides, and
+`serve_macro_host` is the way back in for the compiler services macros call.
+Until light-cljs-357 the module also embedded QuickJS, behind a "browser
+macros" checkbox; the output is the same, macro-heavy compiles are about three
+times faster, and the module is 1.2 MB (18%) smaller without it. The 10 s deadline
+is not checked inside the browser's JavaScript, so `compiler.js` keeps a
+watchdog: a compile with a macro still running after 10 s has its worker
+terminated and is replayed in a fresh one up to that macro call, which then
+fails with the located diagnostic QuickJS gives (the native compiler's), in
+about 11 s and without Stop. Interactive sessions and compiler data readers,
+which the page does not use, need QuickJS and report that this build has none.
 [docs/browser-macros.md](../docs/browser-macros.md) has the details, the
-isolation differences and the measurements. `check.mjs` compiles every
-example at every level, and programs that stress macro semantics, with both
-engines and requires identical results, stops a spinning compile in each, and
-checks that spinning browser macros end on their own with the embedded
-engine's diagnostic.
+isolation differences and the measurements. `check.mjs` compiles programs
+that stress macro semantics at every level and checks what each gives, which
+is what the embedded QuickJS gave, stops a spinning compile, and checks that
+spinning macros end on their own with QuickJS's located diagnostic.
 
 The example dropdown replaces all files with one of the programs in
 `examples.js`, from a single namespace up to a calculator spread over several.
@@ -104,7 +104,7 @@ an example, append to `EXAMPLES` and run `bb playground/build.bb check`.
 
 Compile time in the browser is a few hundred milliseconds for the first
 compile (the macro bootstrap) and tens of milliseconds after that. The wasm
-module is about 6.4 MB (around 2.0 MB gzipped).
+module is about 5.5 MB (around 1.7 MB gzipped).
 
 ## Building
 
@@ -124,8 +124,6 @@ Requirements:
 
   With a regular rustup install, `rustup target add wasm32-unknown-unknown`
   is enough.
-- A clang that emits wasm32 objects, for QuickJS: `brew install llvm` on macOS
-  (Apple's clang cannot); the distribution's clang on Linux.
 - The wasm-bindgen CLI at the version `crate/Cargo.toml` pins:
   `brew install wasm-bindgen`, or `cargo install wasm-bindgen-cli --version <pinned>`.
 - [babashka](https://babashka.org) for the build script, and Node for `check`.
@@ -141,7 +139,7 @@ bb playground/build.bb             # build, then serve
 
 The script locates the toolchain as described in its header comment; each
 piece can be overridden with an environment variable (`LIGHT_CLJS_CARGO`,
-`CC_wasm32_unknown_unknown`, `AR_wasm32_unknown_unknown`, `WASM_BINDGEN`).
+`WASM_BINDGEN`).
 `wasm-opt` is used when it is on `PATH` and skipped otherwise.
 
 The page must be served over HTTP (modules and workers do not load from
@@ -149,8 +147,11 @@ The page must be served over HTTP (modules and workers do not load from
 
 ## Notes
 
-- `vendor/rquickjs-sys` carries the crate's wasm support files
-  (`wasm-shim/shim.c`, `vendor/wasi-libc`), see its `PATCHES.md`.
+- The module links no C. The root crate depends on `rquickjs` only off
+  wasm32 (`light_quickjs` in `build.rs`), and the playground crate depends on
+  light-cljs without V8 (`default-features = false`). `vendor/rquickjs-sys` still
+  carries the wasm support files (`wasm-shim/shim.c`, `vendor/wasi-libc`)
+  the module's QuickJS used before light-cljs-357, see its `PATCHES.md`.
 - On macOS, rustup's `rust-lld` loads `libLLVM.dylib` through an rpath that
   rustup's layout does not satisfy (seen with Rust 1.99); the script sets
   `DYLD_LIBRARY_PATH` to the toolchain's `lib` for the build.

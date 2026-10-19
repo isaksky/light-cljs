@@ -3,30 +3,36 @@
 //! A session owns one heap and canonical runtime. Reusable hosts create fresh
 //! sessions; interactive consumers may deliberately retain a session instead.
 use crate::compiler_data::{Datum, Form};
-use crate::form_bridge::{BridgeState, ConversionLimits, FORM_BRIDGE_VERSION};
+use crate::form_bridge::ConversionLimits;
+#[cfg(light_quickjs)]
+use crate::form_bridge::{BridgeState, FORM_BRIDGE_VERSION};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use host_clock::Instant;
+#[cfg(light_quickjs)]
 use rquickjs::allocator::{Allocator, RustAllocator};
+#[cfg(light_quickjs)]
 use rquickjs::{Array, CatchResultExt, Context, Ctx, Function, Object, Runtime};
+use std::cell::RefCell;
+#[cfg(light_quickjs)]
+use std::sync::Weak;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-};
+#[cfg(light_quickjs)]
+use std::{cell::Cell, rc::Rc};
 use std::{
     fmt,
     sync::{
-        Arc, Weak,
+        Arc,
         atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     time::Duration,
 };
 
 /// The session clock on wasm32-unknown-unknown, where `std::time::Instant`
-/// is unavailable: the host-supplied clock that the engine's wasm shim already
-/// imports (`vendor/rquickjs-sys/wasm-shim/shim.c`), microseconds since the
-/// Unix epoch. The embedder defines `__rquickjs_host_now_us` once for both.
+/// is unavailable: a host-supplied clock, microseconds since the Unix epoch,
+/// which the embedder defines as `__rquickjs_host_now_us` (named for the
+/// QuickJS wasm shim, `vendor/rquickjs-sys/wasm-shim/shim.c`, which imported
+/// it too while wasm builds embedded QuickJS).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod host_clock {
     use std::time::Duration;
@@ -227,6 +233,82 @@ pub struct ValueId {
     pub(crate) index: u64,
 }
 
+/// A build without QuickJS (WebAssembly, light-cljs-357) embeds no engine:
+/// its embedder runs compiler macros through a
+/// [`crate::host_evaluator::ScriptHost`]. Every constructor fails, so no
+/// value of this type exists and the paths that would use one, such as
+/// interactive sessions and compiler data readers, report [`no_quickjs`].
+#[cfg(not(light_quickjs))]
+pub enum Evaluator {}
+/// Why a build without QuickJS cannot make an [`Evaluator`].
+#[cfg(not(light_quickjs))]
+pub(crate) fn no_quickjs() -> EvalError {
+    EvalError(
+        "this light-cljs build embeds no QuickJS: run compiler macros through a ScriptHost (MacroHost::set_script_host)"
+            .into(),
+    )
+}
+#[cfg(not(light_quickjs))]
+impl Evaluator {
+    pub fn new(_: EvaluatorOptions) -> Result<Self, EvalError> {
+        Err(no_quickjs())
+    }
+    pub fn interactive(_: EvaluatorOptions) -> Result<Self, EvalError> {
+        Err(no_quickjs())
+    }
+    pub(crate) fn interactive_with_control(
+        _: EvaluatorOptions,
+        _: ExecutionControl,
+    ) -> Result<Self, EvalError> {
+        Err(no_quickjs())
+    }
+    pub fn export_data(&self, _: ValueId, _: ConversionLimits) -> Result<Datum, EvalError> {
+        match *self {}
+    }
+    pub fn evaluate_unit(&self, _: &str) -> Result<ValueId, EvalError> {
+        match *self {}
+    }
+    pub fn release(&self, _: ValueId) -> Result<(), EvalError> {
+        match *self {}
+    }
+    pub fn import_data(&self, _: &Datum, _: ConversionLimits) -> Result<ValueId, EvalError> {
+        match *self {}
+    }
+    pub fn call(&self, _: ValueId, _: &[ValueId]) -> Result<ValueId, EvalError> {
+        match *self {}
+    }
+}
+#[cfg(not(light_quickjs))]
+impl MacroEvaluator for Evaluator {
+    fn control(&self) -> ExecutionControl {
+        match *self {}
+    }
+    fn evaluate_unit(&self, _: &str) -> Result<ValueId, EvalError> {
+        match *self {}
+    }
+    fn call(&self, _: ValueId, _: &[ValueId]) -> Result<ValueId, EvalError> {
+        match *self {}
+    }
+    fn import_form(&self, _: &Form, _: ConversionLimits) -> Result<ValueId, EvalError> {
+        match *self {}
+    }
+    fn import_data(&self, _: &Datum, _: ConversionLimits) -> Result<ValueId, EvalError> {
+        match *self {}
+    }
+    fn export_form(
+        &self,
+        _: ValueId,
+        _: &Form,
+        _: crate::compiler_data::ExpansionOrigin,
+        _: ConversionLimits,
+    ) -> Result<Form, EvalError> {
+        match *self {}
+    }
+    fn release(&self, _: ValueId) -> Result<(), EvalError> {
+        match *self {}
+    }
+}
+#[cfg(light_quickjs)]
 pub struct Evaluator {
     // Drop context roots before runtime. No Persistent or Rust-owned JS edges.
     context: Option<Context>,
@@ -239,6 +321,7 @@ pub struct Evaluator {
     /// `unhandled_rejections`, which then has a record to take.
     rejected: Rc<Cell<bool>>,
 }
+#[cfg(light_quickjs)]
 impl Evaluator {
     pub fn new(options: EvaluatorOptions) -> Result<Self, EvalError> {
         Self::create(options, false, None)
@@ -1089,6 +1172,7 @@ pub trait MacroEvaluator {
     ) -> Result<Form, EvalError>;
     fn release(&self, id: ValueId) -> Result<(), EvalError>;
 }
+#[cfg(light_quickjs)]
 impl MacroEvaluator for Evaluator {
     fn control(&self) -> ExecutionControl {
         Evaluator::control(self)
@@ -1189,6 +1273,7 @@ impl MacroEvaluator for Evaluator {
         Evaluator::release(self, id)
     }
 }
+#[cfg(light_quickjs)]
 impl MacroEvaluator for ActiveEvaluator<'_, '_> {
     fn control(&self) -> ExecutionControl {
         ActiveEvaluator::control(self)
@@ -1297,6 +1382,7 @@ impl MacroEvaluator for ActiveEvaluator<'_, '_> {
 }
 /// A scoped view of an evaluator while its JavaScript context is already active.
 /// Nested compiler services must use this handle instead of entering Context::with.
+#[cfg(light_quickjs)]
 pub struct ActiveEvaluator<'a, 'js> {
     ctx: Ctx<'js>,
     // Borrow the immutable service table for this active scope. Nested compiler
@@ -1313,9 +1399,11 @@ pub struct ActiveEvaluator<'a, 'js> {
 /// hands its ID to the caller. Preserve a pending JS exception across cleanup;
 /// a terminal engine failure can prevent release, but ordinary errors cannot
 /// keep an unreachable imported value rooted for the rest of the session.
+#[cfg(light_quickjs)]
 fn release_failed_import(ctx: &Ctx<'_>, index: u64, error: rquickjs::Error) -> rquickjs::Error {
     release_failed_imports(ctx, &[index], error)
 }
+#[cfg(light_quickjs)]
 fn release_failed_imports(
     ctx: &Ctx<'_>,
     indices: &[u64],
@@ -1336,6 +1424,7 @@ fn release_failed_imports(
     error
 }
 
+#[cfg(light_quickjs)]
 impl<'js> ActiveEvaluator<'_, 'js> {
     pub fn control(&self) -> ExecutionControl {
         self.control.clone()
@@ -1556,6 +1645,7 @@ impl<'js> ActiveEvaluator<'_, 'js> {
         ))
     }
 }
+#[cfg(light_quickjs)]
 impl Drop for Evaluator {
     fn drop(&mut self) {
         // Interrupts may prevent explicit clear; Context/Runtime GC still owns all
@@ -1574,11 +1664,13 @@ impl Drop for Evaluator {
 // The engine's own memory ceiling can be caught in JavaScript. Track rejected
 // allocations at the allocator boundary so that catching cannot reset a limit.
 // All pointer layout/alignment work delegates to the upstream RustAllocator.
+#[cfg(light_quickjs)]
 struct LimitedAllocator {
     used: usize,
     limit: usize,
     control: Weak<ControlState>,
 }
+#[cfg(light_quickjs)]
 impl LimitedAllocator {
     fn reject(&self) -> *mut u8 {
         if let Some(state) = self.control.upgrade() {
@@ -1597,6 +1689,7 @@ impl LimitedAllocator {
 }
 // SAFETY: every allocation and its usable size use the same upstream allocator;
 // failure leaves an existing realloc allocation untouched. No pointer escapes.
+#[cfg(light_quickjs)]
 unsafe impl Allocator for LimitedAllocator {
     fn alloc(&mut self, size: usize) -> *mut u8 {
         if !self.fits(0, size) {
@@ -1656,6 +1749,7 @@ unsafe impl Allocator for LimitedAllocator {
     }
 }
 
+#[cfg(light_quickjs)]
 impl Drop for LimitedAllocator {
     fn drop(&mut self) {
         debug_assert_eq!(
@@ -1667,12 +1761,14 @@ impl Drop for LimitedAllocator {
 
 // The callable returns Rust-only data; IntoJs creates all temporary engine edges
 // under the callback's actual lifetime. No lifetime cast or persistent capture.
+#[cfg(light_quickjs)]
 struct BridgeOutput {
     data: Form,
     bridge: Rc<RefCell<BridgeState>>,
     control: ExecutionControl,
     limits: ConversionLimits,
 }
+#[cfg(light_quickjs)]
 impl<'js> rquickjs::IntoJs<'js> for BridgeOutput {
     fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<rquickjs::Value<'js>> {
         self.bridge.borrow_mut().retain(&self.data);
@@ -2699,6 +2795,7 @@ pub enum HostArity {
     Range { min: usize, max: usize },
 }
 impl HostArity {
+    #[cfg_attr(not(light_quickjs), allow(dead_code))]
     pub(crate) fn accepts(self, n: usize) -> bool {
         match self {
             Self::Exact(a) => n == a,
@@ -2712,6 +2809,7 @@ impl HostArity {
 pub(crate) trait HostScope {
     fn control(&self) -> ExecutionControl;
     /// The index of `id`, an error when it belongs to another session.
+    #[cfg_attr(not(light_quickjs), allow(dead_code))]
     fn check(&self, id: ValueId) -> Result<u64, EvalError>;
     fn number(&self, value: ValueId) -> Result<f64, EvalError>;
     fn string(&self, value: ValueId) -> Result<String, EvalError>;
@@ -2733,6 +2831,7 @@ pub struct HostCall<'a, 'js> {
     _engine: std::marker::PhantomData<&'js ()>,
 }
 impl<'a> HostCall<'a, '_> {
+    #[cfg_attr(not(light_quickjs), allow(dead_code))]
     pub(crate) fn new(scope: &'a dyn HostScope) -> Self {
         Self {
             scope,
@@ -2741,6 +2840,7 @@ impl<'a> HostCall<'a, '_> {
         }
     }
     /// The IDs the callback created and still owns.
+    #[cfg_attr(not(light_quickjs), allow(dead_code))]
     pub(crate) fn into_owned(self) -> Vec<ValueId> {
         self.owned.into_inner()
     }
@@ -2785,10 +2885,12 @@ impl<'a> HostCall<'a, '_> {
     }
 }
 /// The QuickJS scope of a host callback.
+#[cfg(light_quickjs)]
 struct QuickHost<'a, 'js> {
     active: ActiveEvaluator<'a, 'js>,
     unit_exception: RefCell<Option<rquickjs::Value<'js>>>,
 }
+#[cfg(light_quickjs)]
 impl HostScope for QuickHost<'_, '_> {
     fn control(&self) -> ExecutionControl {
         self.active.control()
@@ -2838,7 +2940,8 @@ impl HostScope for QuickHost<'_, '_> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EvalEngine {
     /// The embedded QuickJS heap, the only engine of a build without V8
-    /// (`--no-default-features`, WebAssembly).
+    /// (`--no-default-features`); a WebAssembly build has none, and its
+    /// sessions fail to start.
     #[cfg_attr(not(light_v8), default)]
     QuickJs,
     /// A V8 isolate, the default where the build has V8.
@@ -2921,10 +3024,16 @@ pub(crate) fn session_evaluator(
     options: EvaluatorOptions,
 ) -> Result<Box<dyn SessionEvaluator>, EvalError> {
     match engine {
+        #[cfg(light_quickjs)]
         EvalEngine::QuickJs => {
             let evaluator = Evaluator::interactive(options)?;
             evaluator.track_rejections();
             Ok(Box::new(evaluator))
+        }
+        #[cfg(not(light_quickjs))]
+        EvalEngine::QuickJs => {
+            let _ = options;
+            Err(no_quickjs())
         }
         #[cfg(light_v8)]
         EvalEngine::V8 => Ok(Box::new(crate::v8_evaluator::V8Evaluator::interactive(
@@ -2932,6 +3041,7 @@ pub(crate) fn session_evaluator(
         )?)),
     }
 }
+#[cfg(light_quickjs)]
 impl SessionEvaluator for Evaluator {
     fn control(&self) -> ExecutionControl {
         Evaluator::control(self)

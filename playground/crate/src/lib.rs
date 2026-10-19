@@ -1,8 +1,9 @@
 //! The browser playground's WebAssembly entry. The page hands over its files
-//! and an entry namespace; this compiles them with light-cljs (macros expand in
-//! the embedded QuickJS, inside this module) and returns the JavaScript, which
-//! the page then runs in the browser's own engine.
-use std::cell::Cell;
+//! and an entry namespace; this compiles them with light-cljs and returns the
+//! JavaScript, which the page then runs in the browser's own engine. Macros
+//! expand in that engine too, through the page's macro host
+//! (playground/macro-host.js): the module embeds no JavaScript engine of its
+//! own (light-cljs-357, docs/browser-macros.md).
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -24,11 +25,12 @@ extern "C" {
 }
 
 // The page's macro host (playground/macro-host.js), looked up when a call is
-// made, so a module that never selects browser macros needs none.
+// made. A compile when the page has installed none has no engine for its
+// macros, and fails with the build's "embeds no QuickJS" diagnostic.
 #[wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(js_namespace = lightCljsMacroHost, js_name = engine)]
-    fn host_engine() -> String;
+    #[wasm_bindgen(catch, js_namespace = lightCljsMacroHost, js_name = engine)]
+    fn host_engine() -> Result<String, JsValue>;
     #[wasm_bindgen(catch, js_namespace = lightCljsMacroHost, js_name = open)]
     fn host_open(session: f64, services: &str) -> Result<(), JsValue>;
     #[wasm_bindgen(catch, js_namespace = lightCljsMacroHost, js_name = call)]
@@ -51,7 +53,7 @@ struct BrowserHost;
 
 impl ScriptHost for BrowserHost {
     fn engine(&self) -> String {
-        host_engine()
+        host_engine().unwrap_or_else(|error| host_error(error))
     }
     fn open(&self, session: u64, services: &str) -> Result<(), String> {
         host_open(session as f64, services).map_err(host_error)
@@ -67,19 +69,6 @@ impl ScriptHost for BrowserHost {
     }
 }
 
-thread_local! {
-    static BROWSER_MACROS: Cell<bool> = const { Cell::new(false) };
-}
-
-/// Run the macros of later compilations in this JavaScript engine (true),
-/// through `globalThis.lightCljsMacroHost`, or in the embedded QuickJS
-/// (false, the default). light-cljs-307's prototype; see
-/// docs/browser-macros.md.
-#[wasm_bindgen]
-pub fn set_browser_macros(enabled: bool) {
-    BROWSER_MACROS.with(|cell| cell.set(enabled));
-}
-
 /// The macro host's way back in: a compiler service its session called.
 #[wasm_bindgen]
 pub fn serve_macro_host(
@@ -91,10 +80,10 @@ pub fn serve_macro_host(
     light_cljs::host_evaluator::serve(session as u64, index as usize, strings, request)
 }
 
-/// The clock that the engine's wasm shim and the evaluator's session deadline
-/// import on wasm32-unknown-unknown: microseconds since the Unix epoch.
-/// Defining it here resolves the import at link time, so the module needs no
-/// `env` import object.
+/// The clock that the evaluator's session deadline imports on
+/// wasm32-unknown-unknown: microseconds since the Unix epoch. Defining it here
+/// resolves the import at link time, so the module needs no `env` import
+/// object.
 #[unsafe(no_mangle)]
 pub extern "C" fn __rquickjs_host_now_us() -> f64 {
     now() * 1000.0
@@ -255,7 +244,7 @@ fn prepare(
     };
     let mut collected = Vec::new();
     let mut host = MacroHost::new();
-    if BROWSER_MACROS.with(Cell::get) {
+    if host_engine().is_ok() {
         host.set_script_host(Rc::new(BrowserHost));
     }
     let program = analyze_namespace_entry_with_provider(

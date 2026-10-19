@@ -7,18 +7,15 @@
 ;;   bb playground/build.bb serve   serve playground/dist on http://localhost:8787
 ;;   bb playground/build.bb         build, then serve
 ;;
-;; Needs: a Rust toolchain with the wasm32-unknown-unknown target, a clang that
-;; can emit wasm32 objects (Homebrew llvm on macOS; Apple's clang cannot), and
-;; the wasm-bindgen CLI at the version playground/crate/Cargo.toml pins.
+;; Needs: a Rust toolchain with the wasm32-unknown-unknown target and the
+;; wasm-bindgen CLI at the version playground/crate/Cargo.toml pins. No C
+;; compiler: the module embeds no QuickJS (light-cljs-357).
 ;; See playground/README.md.
 ;;
 ;; Toolchain discovery, each overridable through the environment:
 ;;   LIGHT_CLJS_CARGO   the cargo command (default: `rustup run stable cargo`
 ;;                      against ~/.rustup-wasm when that isolated install
 ;;                      exists, else `cargo`)
-;;   CC_wasm32_unknown_unknown / AR_wasm32_unknown_unknown
-;;                      the C compiler and archiver for QuickJS (default:
-;;                      Homebrew llvm's clang and llvm-ar when installed)
 ;;   WASM_BINDGEN       the wasm-bindgen binary (default: on PATH)
 (ns build
   (:require [babashka.fs :as fs]
@@ -74,17 +71,6 @@
           {:command ["cargo"]
            :env (if (zero? exit) (linker-env (str/trim out)) {})})))))
 
-(defn c-toolchain-env []
-  (let [llvm (brew-prefix "llvm")]
-    {"CC_wasm32_unknown_unknown"
-     (or (System/getenv "CC_wasm32_unknown_unknown")
-         (first-existing [(some-> llvm (str "/bin/clang"))])
-         "clang")
-     "AR_wasm32_unknown_unknown"
-     (or (System/getenv "AR_wasm32_unknown_unknown")
-         (first-existing [(some-> llvm (str "/bin/llvm-ar"))])
-         "llvm-ar")}))
-
 (defn pinned-wasm-bindgen []
   (let [manifest (slurp (str (fs/path crate-dir "Cargo.toml")))]
     (or (second (re-find #"wasm-bindgen\s*=\s*\"=([0-9.]+)\"" manifest))
@@ -108,9 +94,7 @@
 
 (defn build []
   (let [{:keys [command env]} (cargo-command)
-        env (merge env (c-toolchain-env))
         wasm-bindgen (wasm-bindgen-binary)]
-    (println "C compiler for QuickJS:" (get env "CC_wasm32_unknown_unknown"))
     (run! {:command (into command ["build" "--release" "--target" "wasm32-unknown-unknown"])
            :env env :dir crate-dir})
     (let [wasm (fs/path crate-dir "target" "wasm32-unknown-unknown" "release" (str wasm-name ".wasm"))

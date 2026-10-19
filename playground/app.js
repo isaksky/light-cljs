@@ -12,7 +12,6 @@ const ui = {
   warnings: el("warnings"),
   pseudo: el("pseudo"),
   sizes: el("sizes"),
-  browserMacros: el("browser-macros"),
   run: el("run"),
   compile: el("compile"),
   stop: el("stop"),
@@ -80,7 +79,7 @@ function loadExample(example, { ask = true } = {}) {
     renderExamples();
     return;
   }
-  const options = { optimize: ui.optimize.value, warnings: ui.warnings.checked, pseudo: ui.pseudo.checked, sizes: ui.sizes.checked, browserMacros: ui.browserMacros.checked };
+  const options = { optimize: ui.optimize.value, warnings: ui.warnings.checked, pseudo: ui.pseudo.checked, sizes: ui.sizes.checked };
   state = Object.assign(fromExample(example), options);
   save();
   applyState();
@@ -274,7 +273,6 @@ async function compileAndRun(andRun) {
   state.warnings = ui.warnings.checked;
   state.pseudo = ui.pseudo.checked;
   state.sizes = ui.sizes.checked;
-  state.browserMacros = ui.browserMacros.checked;
   save();
   setStatus("compiling…");
   ui.stop.disabled = false;
@@ -286,7 +284,6 @@ async function compileAndRun(andRun) {
     warnings: state.warnings,
     pseudo: state.pseudo,
     sizes: state.sizes,
-    macros: state.browserMacros ? "browser" : "embedded",
   });
   // A newer compile owns the views, and stop reported a cancelled one.
   if (outcome.status === "stale" || outcome.status === "cancelled") return;
@@ -331,8 +328,6 @@ function applyState() {
   ui.warnings.checked = !!state.warnings;
   ui.pseudo.checked = !!state.pseudo;
   ui.sizes.checked = !!state.sizes;
-  // On unless turned off (light-cljs-356); state saved before 307 has no field.
-  ui.browserMacros.checked = state.browserMacros ?? true;
   selectFile(0);
 }
 

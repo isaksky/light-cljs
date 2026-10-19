@@ -1,20 +1,30 @@
 //! Structured compiler/engine transport. Descriptors are actual engine arrays;
 //! no printing, reader invocation, serde or JSON participates in conversion.
+#[cfg(light_quickjs)]
 use crate::CollectionKind as C;
-use crate::compiler_data::{CompilerLiteralKind as L, Datum, DatumKind as D, Form};
+#[cfg(light_quickjs)]
+use crate::compiler_data::{CompilerLiteralKind as L, Form};
+use crate::compiler_data::{Datum, DatumKind as D};
+#[cfg(light_quickjs)]
 use crate::evaluator::ExecutionControl;
+#[cfg(light_quickjs)]
 use rquickjs::class::{JsClass, Trace, Tracer, Writable};
+#[cfg(light_quickjs)]
 use rquickjs::{Array, Class, Ctx, JsLifetime};
+#[cfg(light_quickjs)]
 use std::collections::{HashMap, VecDeque};
 
 /// In-process descriptor ABI version shared with the canonical runtime.
 pub const FORM_BRIDGE_VERSION: u32 = 5;
+#[cfg(light_quickjs)]
 const ENVIRONMENT_SLOTS: usize = 64;
+#[cfg(light_quickjs)]
 const ENVIRONMENT_CHILD_SLOTS: usize = 128;
 
 /// Transport text as a native engine string, without an array allocation and
 /// property operation for every code unit. The UTF-16 API preserves unpaired
 /// surrogates, which converting through a Rust UTF-8 string would lose.
+#[cfg(light_quickjs)]
 fn engine_string<'js>(ctx: &Ctx<'js>, units: &[u16]) -> rquickjs::Result<rquickjs::String<'js>> {
     // SAFETY: QuickJS copies this live slice and returns an owned value in ctx.
     let value = unsafe {
@@ -31,6 +41,7 @@ fn engine_string<'js>(ctx: &Ctx<'js>, units: &[u16]) -> rquickjs::Result<rquickj
     rquickjs::String::from_value(value)
 }
 
+#[cfg(light_quickjs)]
 fn string_units(value: rquickjs::String<'_>) -> rquickjs::Result<Vec<u16>> {
     let ctx = value.ctx().as_raw().as_ptr();
     let mut len = 0;
@@ -61,6 +72,7 @@ impl Default for ConversionLimits {
     }
 }
 #[derive(Default)]
+#[cfg(light_quickjs)]
 pub(crate) struct BridgeState {
     pub(crate) forms: HashMap<usize, Form>,
     pub(crate) importing_environment: bool,
@@ -75,12 +87,14 @@ pub(crate) struct BridgeState {
     pub(crate) live_provenance: std::rc::Rc<std::cell::Cell<usize>>,
 }
 #[derive(Clone)]
+#[cfg(light_quickjs)]
 struct EnvironmentEntry {
     data: Datum,
     slot: usize,
     nodes: usize,
     depth: usize,
 }
+#[cfg(light_quickjs)]
 struct ChildImport<'js> {
     // Only previous imports are eligible references. A new descriptor may
     // decode after another reference to it, particularly through metadata.
@@ -93,6 +107,7 @@ struct ChildImport<'js> {
 /// scalars retain their latest provenance by value. There are no engine edges
 /// here: collecting an object releases its Rust data, while a macro that saves
 /// an input keeps its source and lexical spelling.
+#[cfg(light_quickjs)]
 struct BorrowedDatum {
     original: Datum,
     canonical: Option<Datum>,
@@ -101,18 +116,22 @@ struct BorrowedDatum {
     live: std::rc::Rc<std::cell::Cell<usize>>,
 }
 #[cfg(test)]
+#[cfg(light_quickjs)]
 impl Drop for BorrowedDatum {
     fn drop(&mut self) {
         self.live.set(self.live.get() - 1);
     }
 }
 // SAFETY: BorrowedDatum contains only owned Rust data, with no JS lifetimes.
+#[cfg(light_quickjs)]
 unsafe impl<'js> JsLifetime<'js> for BorrowedDatum {
     type Changed<'to> = Self;
 }
+#[cfg(light_quickjs)]
 impl<'js> Trace<'js> for BorrowedDatum {
     fn trace<'a>(&self, _: Tracer<'a, 'js>) {}
 }
+#[cfg(light_quickjs)]
 impl<'js> JsClass<'js> for BorrowedDatum {
     const NAME: &'static str = "CompilerProvenance";
     type Mutable = Writable;
@@ -120,9 +139,11 @@ impl<'js> JsClass<'js> for BorrowedDatum {
         Ok(None)
     }
 }
+#[cfg(light_quickjs)]
 fn error(message: impl Into<String>) -> rquickjs::Error {
     rquickjs::Error::new_from_js_message("compiler descriptor", "form", message.into())
 }
+#[cfg(light_quickjs)]
 impl BridgeState {
     pub(crate) fn reset_environment_cache(&mut self) {
         // A failed import may have installed only some engine slots. Never
@@ -669,6 +690,7 @@ pub(crate) fn exact(a: &Datum, b: &Datum) -> bool {
     }
 }
 
+#[cfg(light_quickjs)]
 fn immutable(data: &Datum) -> bool {
     data.metadata().is_none_or(|m| immutable(&m))
         && match data.kind() {
@@ -678,6 +700,7 @@ fn immutable(data: &Datum) -> bool {
         }
 }
 
+#[cfg(light_quickjs)]
 fn dimensions(data: &Datum) -> (usize, usize) {
     let mut nodes = 1;
     let mut depth = 1;

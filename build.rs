@@ -31,12 +31,18 @@ use js_syntax::{Join, Kind, Shape, TerseWriter};
 
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(light_v8)");
+    println!("cargo::rustc-check-cfg=cfg(light_quickjs)");
     println!(
         "cargo::rustc-env=LIGHT_CLJS_COMPILER_IDENTITY={}",
         sha256::hex(&compiler_identity())
     );
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    // The embedded QuickJS, which Cargo.toml links on every target but wasm32
+    // (light-cljs-357).
+    if arch != "wasm32" {
+        println!("cargo::rustc-cfg=light_quickjs");
+    }
     if env::var_os("CARGO_FEATURE_V8_MACROS").is_some()
         && matches!(arch.as_str(), "aarch64" | "x86_64")
         && matches!(os.as_str(), "macos" | "linux" | "windows")

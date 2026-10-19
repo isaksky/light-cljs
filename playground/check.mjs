@@ -1,15 +1,17 @@
-// Checks a built playground/dist from Node: loads the wasm package, compiles
-// every example in examples.js at every optimization level, runs the output
-// and compares the program's value, and checks that `compile_chunks` writes
-// each of them as one file, its `--esm` module. Then it compiles a program
+// Checks a built playground/dist from Node: loads the wasm package, checks
+// that it embeds no QuickJS, compiles every example in examples.js at every
+// optimization level, runs the output and compares the program's value, and
+// checks that `compile_chunks` writes each of them as one file, its `--esm`
+// module. Then it compiles a program
 // with two lazy features through `compile_chunks` at every level, checks the
 // manifest against the files, and runs the modules through the compiler
 // tests' Node driver against the single file. Then come a located error, a
-// missing namespace and an unknown level, which leave every output empty.
+// missing namespace and an unknown level, which leave every output empty,
+// and programs that test macro semantics in this engine.
 // Last, the page's compiler worker gives the direct results, drops a
-// superseded one, ends a compile whose browser macros spin past the 10 s
-// deadline with the embedded engine's diagnostic, and compiles correctly
-// after a stopped, replaced or failed worker.
+// superseded one, ends a compile whose macros spin past the 10 s deadline
+// with the located diagnostic of an engine that checks it, and compiles
+// correctly after a stopped, replaced or failed worker.
 // `bb playground/build.bb check` runs it; CI runs it after the build.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -24,9 +26,14 @@ const dist = path.join(here, "dist");
 const pkg = path.join(dist, "pkg");
 // The one Node driver for single-file `--esm` and chunked builds.
 const driver = path.join(here, "..", "tests", "support", "chunked_execution.mjs");
-const { default: init, compile, compile_chunks, serve_macro_host, set_browser_macros, version } = await import(path.join(pkg, "light_cljs_playground.js"));
+const { default: init, compile, compile_chunks, serve_macro_host, version } = await import(path.join(pkg, "light_cljs_playground.js"));
 const { EXAMPLES } = await import(path.join(dist, "examples.js"));
-await init({ module_or_path: fs.readFileSync(path.join(pkg, "light_cljs_playground_bg.wasm")) });
+const wasmBytes = fs.readFileSync(path.join(pkg, "light_cljs_playground_bg.wasm"));
+await init({ module_or_path: wasmBytes });
+// The module runs every macro through the page's macro host, here in Node's
+// engine as compiler-worker.js does in a browser's.
+const { createMacroHost } = await import(path.join(dist, "macro-host.js"));
+globalThis.lightCljsMacroHost = createMacroHost(serve_macro_host);
 
 let failures = 0;
 function check(condition, message) {
@@ -34,6 +41,12 @@ function check(condition, message) {
     failures += 1;
     console.error("FAIL:", message);
   }
+}
+
+// The module embeds no QuickJS (light-cljs-357): none of the engine's own
+// texts, which its atom table and parser carry, are in it.
+for (const text of ["InternalError", "out of memory in regexp execution"]) {
+  check(!wasmBytes.includes(text), `the module contains QuickJS's "${text}"`);
 }
 
 // Runs a compiled program, returning its value and what it logged.
@@ -302,15 +315,15 @@ for (const [name, build] of [
   checkNoOutput(`${name} unknown level`, level);
 }
 
-// Browser macros (light-cljs-307, docs/browser-macros.md): with macro-host.js
-// installed, macros run in this engine instead of the module's QuickJS.
-// Every example at every level, and programs that lean on macro semantics
-// (a helper the compiler emits on demand, recursion, gensyms, &form and &env,
-// a form returned unchanged keeping its location, special numbers, unpaired
-// surrogates), compile to exactly what QuickJS gives. A macro's error differs
-// only in the stack trace QuickJS appends to its message.
-const { createMacroHost } = await import(path.join(dist, "macro-host.js"));
-globalThis.lightCljsMacroHost = createMacroHost(serve_macro_host);
+// Macros run in this engine through macro-host.js (light-cljs-307; the module
+// embeds no engine of its own since light-cljs-357, docs/browser-macros.md),
+// so every compile above already expanded its macros here. Programs that
+// lean on macro semantics (a helper the compiler emits on demand, recursion,
+// gensyms, &form and &env, a form returned unchanged keeping its location,
+// special numbers, unpaired surrogates) and a macro's failures give, at
+// every level, what the embedded QuickJS gave before light-cljs-357 (the
+// prototype compared every field of both engines' results, its output
+// included), less the stack trace QuickJS appended to a macro's error.
 const SEMANTICS = `(ns demo.main)
 (defn helper [x] (list 'inc x))
 (defmacro via-helper [x] (helper x))
@@ -326,18 +339,18 @@ const SEMANTICS = `(ns demo.main)
 (js/console.log (via-helper 41) (line-of) (pr-str (nums)) (text "x") (same? (+ 1 2)) (my-and 1 2 3) (traced :t (+ 1 2)))
 (ident (undeclared-thing 1))
 `;
-const macroPrograms = [
-  ...EXAMPLES.map((example) => [example.id, example.files.map((file) => file.path), example.files.map((file) => file.source), example.entry]),
-  ["semantics", ["demo/main.cljs"], [SEMANTICS], "demo.main"],
-  ["throws", ["demo/main.cljs"], ['(ns demo.main)\n(defmacro boom [] (throw (ex-info "macro failed" {})))\n(boom)\n'], "demo.main"],
-  ["bad result", ["demo/main.cljs"], ["(ns demo.main)\n(defmacro bad [] (atom 1))\n(bad)\n"], "demo.main"],
+// The macro's failure, at the call on line 3, with the definition on line 2.
+const macroFailure = (name, message, definition) =>
+  [null, `demo/main.cljs:3:1: macro expansion: while expanding ${name}: demo/main.cljs:3:1: macro demo.main/${name}: ${message}; definition demo/main.cljs:2:1 (bytes ${definition})`, "demo/main.cljs", 3, 1, "", ""];
+const FAILURES = [
+  ["throws", '(ns demo.main)\n(defmacro boom [] (throw (ex-info "macro failed" {})))\n(boom)\n', macroFailure("boom", "Error: macro failed", "70..76")],
+  ["bad result", "(ns demo.main)\n(defmacro bad [] (atom 1))\n(bad)\n", macroFailure("bad", "Error: Unsupported macro result atom at $", "42..47")],
 ];
-// Programs whose browser-macro result is also checked on its own: a helper
-// keeps the macro generation and values it was defined against (22, not
-// 112); a compiler service that fails under a JavaScript catch still fails
-// the compile with its own diagnostic (QuickJS reports only that the session
-// was invalidated, so that one is not compared); a literal a macro mutates is
-// not restored from the compiler's original.
+// Programs checked by their value: a helper keeps the macro generation and
+// values it was defined against (22, not 112); a compiler service that fails
+// under a JavaScript catch still fails the compile with its own diagnostic
+// (the embedded QuickJS reported only that the session was invalidated); a
+// literal a macro mutates is not restored from the compiler's original.
 const SNAPSHOTS = `(ns demo.main)
 (def factor 2)
 (defmacro old [] 10)
@@ -349,49 +362,76 @@ const SNAPSHOTS = `(ns demo.main)
 `;
 const CAUGHT = "(ns demo.main)\n(declare helper)\n(defmacro m [] (try (helper) (catch :default e :caught)))\n(defn helper [] (m))\n(m)\n";
 const MUTATED = '(ns demo.main)\n(defmacro bump [o] (aset o "x" 2) o)\n(.-x (bump #js {:x 1}))\n';
-macroPrograms.push(
-  ["definition snapshots", ["demo/main.cljs"], [SNAPSHOTS], "demo.main"],
-  ["mutated literal", ["demo/main.cljs"], [MUTATED], "demo.main"],
-);
-const withoutStack = (fields) => fields.map((field) => (typeof field === "string" ? field.replace(/\n {4}at [^\n]*/g, "").replace(/\n;/g, ";") : field));
-let browserCompiles = 0;
-for (const [name, paths, sources, entry] of macroPrograms) {
-  for (const level of ["none", "prepare", "advanced"]) {
-    set_browser_macros(false);
-    const embedded = fields(compile(paths, sources, entry, level, true, false, level === "advanced", false));
-    set_browser_macros(true);
-    const browser = fields(compile(paths, sources, entry, level, true, false, level === "advanced", false));
-    set_browser_macros(false);
-    check(isDeepStrictEqual(browser, withoutStack(embedded)), `${name} @ ${level} with browser macros: ${JSON.stringify(browser).slice(0, 400)} is not ${JSON.stringify(embedded).slice(0, 400)}`);
-    browserCompiles += 1;
-  }
-}
-// A macro sees the engine it runs in: QuickJS has neither `process` nor
-// `navigator`, and this one has one of them.
-const ENGINE = ["(ns demo.main)\n(defmacro hosted? [] (boolean (or (exists? js/process) (exists? js/navigator))))\n(hosted?)\n"];
 function hosted(js) {
   return js == null ? js : String(run(js).value);
 }
-set_browser_macros(true);
+let macroCompiles = 0;
 for (const level of ["none", "prepare", "advanced"]) {
+  const semantics = compile(["demo/main.cljs"], [SEMANTICS], "demo.main", level, true, false, false, false);
+  check(
+    semantics.error == null && semantics.warnings === "undeclared-var: Use of undeclared Var demo.main/undeclared-thing (source 0, bytes 782..798)",
+    `macro semantics @ ${level}: ${semantics.error ?? semantics.warnings}`,
+  );
+  check(typeof semantics.js === "string" && semantics.js.length > 0, `macro semantics @ ${level}: no output`);
+  if (semantics.js != null) {
+    const printed = [];
+    const log = console.log;
+    console.log = (...args) => printed.push(args.map(String).join(" "));
+    let thrown = null;
+    try {
+      (0, eval)(semantics.js);
+    } catch (error) {
+      thrown = error;
+    } finally {
+      console.log = log;
+    }
+    // The last form calls the undeclared Var, which is undefined.
+    check(thrown instanceof TypeError, `macro semantics @ ${level}: the undeclared call gave ${thrown}`);
+    const expected = ['["a" "b"]', "42 null [##NaN ##Inf ##-Inf -0.0 0.1 1e+300 9007199254740992] xé \u{1f600} \ud800 true 3 [:t 3]"];
+    check(isDeepStrictEqual(printed, expected), `macro semantics @ ${level}: printed ${JSON.stringify(printed)}`);
+  }
+  for (const [name, source, expected] of FAILURES) {
+    const failed = fields(compile(["demo/main.cljs"], [source], "demo.main", level, true, false, false, false));
+    check(isDeepStrictEqual(failed, expected), `macro ${name} @ ${level}: ${JSON.stringify(failed)}`);
+  }
   const snapshots = compile(["demo/main.cljs"], [SNAPSHOTS], "demo.main", level, true, false, false, false);
-  check(hosted(snapshots.js) === "[22 22]", `browser macros, definition snapshots @ ${level}: ${snapshots.error ?? hosted(snapshots.js)}`);
+  check(hosted(snapshots.js) === "[22 22]", `macros, definition snapshots @ ${level}: ${snapshots.error ?? hosted(snapshots.js)}`);
   const caught = compile(["demo/main.cljs"], [CAUGHT], "demo.main", level, true, false, false, false);
-  check(caught.js == null && String(caught.error).includes("compile dependency cycle"), `browser macros, caught service failure @ ${level}: ${caught.error ?? caught.js?.slice(0, 100)}`);
+  check(caught.js == null && String(caught.error).includes("compile dependency cycle"), `macros, caught service failure @ ${level}: ${caught.error ?? caught.js?.slice(0, 100)}`);
   const mutated = compile(["demo/main.cljs"], [MUTATED], "demo.main", level, true, false, false, false);
-  check(hosted(mutated.js) === "2", `browser macros, mutated literal @ ${level}: ${mutated.error ?? hosted(mutated.js)}`);
+  check(hosted(mutated.js) === "2", `macros, mutated literal @ ${level}: ${mutated.error ?? hosted(mutated.js)}`);
+  macroCompiles += 3 + FAILURES.length;
 }
-check(hosted(compile(["demo/main.cljs"], ENGINE, "demo.main", "none", true, false, false, false).js) === "true", "browser macros ran in QuickJS");
+// A macro sees the engine it runs in, which has `process` or `navigator`.
+const ENGINE = ["(ns demo.main)\n(defmacro hosted? [] (boolean (or (exists? js/process) (exists? js/navigator))))\n(hosted?)\n"];
+check(hosted(compile(["demo/main.cljs"], ENGINE, "demo.main", "none", true, false, false, false).js) === "true", "macros did not run in this engine");
 // Compiles share this realm, but a global one compile's macros define is gone
 // when the next one starts, even beside one they made non-configurable.
 const LEAK = ['(ns demo.main)\n(defmacro leak [] (.defineProperty js/Object js/globalThis "leakedFixed" #js {:value 1}) (set! js/globalThis.leaked 42) nil)\n(leak)\n'];
 const PEEK = ["(ns demo.main)\n(defmacro peek [] (js/String (.-leaked js/globalThis)))\n(peek)\n"];
-check(compile(["demo/main.cljs"], LEAK, "demo.main", "none", true, false, false, false).error == null, "browser macros: the leaking compile failed");
+check(compile(["demo/main.cljs"], LEAK, "demo.main", "none", true, false, false, false).error == null, "macros: the leaking compile failed");
 const peeked = compile(["demo/main.cljs"], PEEK, "demo.main", "none", true, false, false, false);
-check(hosted(peeked.js) === "undefined", `browser macros: a global leaked into the next compile: ${peeked.error ?? hosted(peeked.js)}`);
-set_browser_macros(false);
-check(hosted(compile(["demo/main.cljs"], ENGINE, "demo.main", "none", true, false, false, false).js) === "false", "embedded macros ran in this engine");
-console.log(`browser macros: ${browserCompiles} compiles identical to the embedded engine's`);
+check(hosted(peeked.js) === "undefined", `macros: a global leaked into the next compile: ${peeked.error ?? hosted(peeked.js)}`);
+// Without the page's macro host the module has no engine for macros, which
+// every program needs (`when` is one): the compile fails with the build's
+// diagnostic and leaves the module usable.
+{
+  const pageHost = globalThis.lightCljsMacroHost;
+  delete globalThis.lightCljsMacroHost;
+  let hostless;
+  try {
+    hostless = compile(["demo/main.cljs"], ["(ns demo.main)\n(when true 1)\n"], "demo.main", "none", true, false, false, false);
+  } finally {
+    globalThis.lightCljsMacroHost = pageHost;
+  }
+  check(
+    hostless.js == null && String(hostless.error).includes("this light-cljs build embeds no QuickJS: run compiler macros through a ScriptHost"),
+    `macros without a macro host: ${hostless.error ?? hostless.js?.slice(0, 100)}`,
+  );
+  const again = compile(["demo/main.cljs"], ["(ns demo.main)\n(when true 1)\n"], "demo.main", "none", true, false, false, false);
+  check(hosted(again.js) === "1", `macros after a compile without a macro host: ${again.error ?? hosted(again.js)}`);
+}
+console.log(`macros in this engine: ${macroCompiles} compiles as the embedded QuickJS gave them`);
 
 // The page compiles in compiler-worker.js through compiler.js. Here both run
 // in a worker_threads worker behind an adapter that gives it the web worker
@@ -452,10 +492,10 @@ for (const example of EXAMPLES) {
   await checkWorkerCompile(`${example.id} @ advanced`, request(examplePaths(example), exampleSources(example), example.entry, "advanced"));
 }
 for (const example of EXAMPLES) {
-  await checkWorkerCompile(`${example.id} @ none, browser macros`, { ...request(examplePaths(example), exampleSources(example), example.entry, "none"), macros: "browser" });
+  await checkWorkerCompile(`${example.id} @ none`, request(examplePaths(example), exampleSources(example), example.entry, "none"));
 }
-const hostedOutcome = await compiler.compile({ ...request(["demo/main.cljs"], ENGINE, "demo.main", "none"), macros: "browser" });
-check(hostedOutcome.status === "done" && hosted(hostedOutcome.result.js) === "true", `worker: browser macros ran in QuickJS: ${JSON.stringify(hostedOutcome).slice(0, 200)}`);
+const hostedOutcome = await compiler.compile(request(["demo/main.cljs"], ENGINE, "demo.main", "none"));
+check(hostedOutcome.status === "done" && hosted(hostedOutcome.result.js) === "true", `worker: macros did not run in this engine: ${JSON.stringify(hostedOutcome).slice(0, 200)}`);
 await checkWorkerCompile("located error", request(["demo/main.cljs"], ["(ns demo.main)\n(defn f [x] (g x)"], "demo.main", "prepare"));
 const warned = await checkWorkerCompile("warning", request(["demo/main.cljs"], ["(ns demo.main)\n(defn f [x] (g x))\n1"], "demo.main", "prepare"));
 check(warned.result?.warnings.includes("undeclared"), `worker warning: ${JSON.stringify(warned.result?.warnings)}`);
@@ -469,47 +509,62 @@ check((await superseded).status === "stale", `worker: the superseded compile res
 await newest;
 
 // A macro that spins until the 10 s session deadline, stopped after 1 s.
-// Browser macros have no deadline inside JavaScript: Stop ends such a
-// compile at once, and the watchdog below ends it after the deadline.
+// Macros have no deadline inside JavaScript: Stop ends such a compile at
+// once, and the watchdog below ends it after the deadline.
 let ticks = 0;
-for (const macros of ["embedded", "browser"]) {
-  const spin = compiler.compile({
-    ...request(["demo/spin.cljs"], ["(ns demo.spin)\n(defmacro spin [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i)))\n(spin)\n"], "demo.spin", "none"),
-    macros,
-  });
+{
+  const spin = compiler.compile(
+    request(["demo/spin.cljs"], ["(ns demo.spin)\n(defmacro spin [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i)))\n(spin)\n"], "demo.spin", "none"),
+  );
   let spinOutcome = null;
   spin.then((outcome) => (spinOutcome = outcome));
-  ticks = 0;
   const ticker = setInterval(() => (ticks += 1), 20);
   await new Promise((resolve) => setTimeout(resolve, 1000));
   clearInterval(ticker);
-  check(spinOutcome == null && compiler.busy, `worker, ${macros} macros: the spinning compile settled early: ${JSON.stringify(spinOutcome)}`);
-  check(ticks >= 10, `worker, ${macros} macros: this thread ticked ${ticks} times in 1 s while the compile ran`);
+  check(spinOutcome == null && compiler.busy, `worker: the spinning compile settled early: ${JSON.stringify(spinOutcome)}`);
+  check(ticks >= 10, `worker: this thread ticked ${ticks} times in 1 s while the compile ran`);
   const workersBefore = threads.length;
-  check(compiler.cancel(), `worker, ${macros} macros: cancel found no pending compile`);
-  check((await spin).status === "cancelled", `worker, ${macros} macros: the stopped compile resolved ${JSON.stringify(await spin)}`);
-  check(threads.length === workersBefore + 1 && !compiler.busy, `worker, ${macros} macros: ${threads.length - workersBefore} workers started by cancel`);
-  const after = await checkWorkerCompile(`${first.id} after cancel, ${macros} macros`, request(examplePaths(first), exampleSources(first), first.entry, "prepare"));
+  check(compiler.cancel(), "worker: cancel found no pending compile");
+  check((await spin).status === "cancelled", `worker: the stopped compile resolved ${JSON.stringify(await spin)}`);
+  check(threads.length === workersBefore + 1 && !compiler.busy, `worker: ${threads.length - workersBefore} workers started by cancel`);
+  const after = await checkWorkerCompile(`${first.id} after cancel`, request(examplePaths(first), exampleSources(first), first.entry, "prepare"));
   if (after.status === "done") {
     const text = String(run(after.result.js).value);
-    check(text === first.expect, `worker ${first.id} after cancel, ${macros} macros: value ${text}, expected ${first.expect}`);
+    check(text === first.expect, `worker ${first.id} after cancel: value ${text}, expected ${first.expect}`);
   }
 }
 
-// With browser macros, compiler.js's watchdog ends a spinning compile on its
-// own after the 10 s deadline (light-cljs-356), with the located diagnostic
-// the embedded engine gives, which a second compiler instance computes in
-// another thread meanwhile: a macro that spins, a macro whose helper (a
-// unit the macro's call registers through the compiler) spins, and a
-// newer compile queued behind a spinning one, which then runs. They run at
-// once, each in its own worker, while this thread keeps ticking.
+// compiler.js's watchdog ends a spinning compile on its own after the 10 s
+// deadline (light-cljs-356), with the located diagnostic an engine that
+// checks the deadline itself gives (the embedded QuickJS gave exactly these
+// before light-cljs-357, and the native compiler's still does): a macro
+// that spins, a macro whose helper (a unit the macro's call registers
+// through the compiler) spins, and a newer compile queued behind a spinning
+// one, which then runs. They run at once, each in its own worker, while this
+// thread keeps ticking.
+// The deadline at the call at `line`:`column` to `spin`, defined on line
+// `definition` (bytes `bytes`).
+const deadlineAt = (line, column, definition, bytes) => [
+  null,
+  `demo/spin.cljs:${line}:${column}: macro expansion: while expanding spin: demo/spin.cljs:${line}:${column}: macro demo.spin/spin: JavaScript session deadline exceeded; definition demo/spin.cljs:${definition}:1 (bytes ${bytes})`,
+  "demo/spin.cljs",
+  line,
+  column,
+  "",
+  "",
+];
 const SPINS = [
-  ["spinning macro", "(ns demo.spin)\n(defmacro spin [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i)))\n(spin)\n"],
-  ["spinning helper", "(ns demo.spin)\n(defn helper [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i)))\n(defmacro spin [] (helper))\n(def x 1)\n  (spin)\n"],
+  ["spinning macro", "(ns demo.spin)\n(defmacro spin [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i)))\n(spin)\n", deadlineAt(3, 1, 2, "81..87")],
+  [
+    "spinning helper",
+    "(ns demo.spin)\n(defn helper [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i)))\n(defmacro spin [] (helper))\n(def x 1)\n  (spin)\n",
+    deadlineAt(5, 3, 3, "119..125"),
+  ],
   // Past the worker's first 500 ms, which it does not report.
   [
     "macro spinning after a slow one",
     "(ns demo.spin)\n(defmacro slow [] (let [t (js/Date.now)] (loop [] (when (< (- (js/Date.now) t) 700) (recur)))) nil)\n(defmacro spin [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i)))\n(slow)\n(spin)\n",
+    deadlineAt(5, 1, 3, "188..194"),
   ],
 ];
 // The deadline without a location, and a result a double claims.
@@ -538,7 +593,7 @@ function scriptedWorker(script) {
   const thread = spawnWorker();
   const answer = new Promise((resolve) => (thread.onmessage = ({ data }) => data.type === "compiled" && resolve(data)));
   thread.postMessage({ type: "init", module: wasmModule });
-  thread.postMessage({ type: "compile", id: 1, ...request(["demo/spin.cljs"], [SPINS[0][1]], "demo.spin", "none"), macros: "browser", stopAt: 0, fingerprint: 1 });
+  thread.postMessage({ type: "compile", id: 1, ...request(["demo/spin.cljs"], [SPINS[0][1]], "demo.spin", "none"), stopAt: 0, fingerprint: 1 });
   const replayed = await answer;
   check(replayed.stopped === false && String(replayed.result.error).includes("JavaScript session deadline exceeded"), `replay with another fingerprint: ${JSON.stringify(replayed).slice(0, 300)}`);
   thread.terminate();
@@ -547,32 +602,27 @@ const watchdogStart = performance.now();
 let watchdogTicks = 0;
 const watchdogTicker = setInterval(() => (watchdogTicks += 1), 20);
 const watched = await Promise.all([
-  ...SPINS.map(async ([name, source]) => {
-    const spinRequest = request(["demo/spin.cljs"], [source], "demo.spin", "none");
+  ...SPINS.map(async ([name, source, expected]) => {
     const browser = createCompiler({ spawn: spawnWorker, module: wasmModule });
-    const embedded = createCompiler({ spawn: spawnWorker, module: wasmModule });
     const begun = performance.now();
-    const [outcome, reference] = await Promise.all([
-      browser.compile({ ...spinRequest, macros: "browser" }).then((outcome) => ({ ...outcome, elapsed: performance.now() - begun })),
-      embedded.compile({ ...spinRequest, macros: "embedded" }),
-    ]);
-    check(outcome.status === "done" && reference.status === "done", `watchdog, ${name}: ${JSON.stringify([outcome, reference]).slice(0, 300)}`);
-    if (outcome.status !== "done" || reference.status !== "done") return null;
-    check(String(reference.result.error).includes("JavaScript session deadline exceeded"), `watchdog, ${name}: the embedded engine gave ${reference.result.error}`);
-    check(isDeepStrictEqual(fields(outcome.result), fields(reference.result)), `watchdog, ${name}: ${JSON.stringify(fields(outcome.result))} is not the embedded ${JSON.stringify(fields(reference.result))}`);
+    const outcome = await browser.compile(request(["demo/spin.cljs"], [source], "demo.spin", "none"));
+    outcome.elapsed = performance.now() - begun;
+    check(outcome.status === "done", `watchdog, ${name}: ${JSON.stringify(outcome).slice(0, 300)}`);
+    if (outcome.status !== "done") return null;
+    check(isDeepStrictEqual(fields(outcome.result), expected), `watchdog, ${name}: ${JSON.stringify(fields(outcome.result))} is not ${JSON.stringify(expected)}`);
     check(outcome.elapsed >= DEADLINE_MS && outcome.elapsed < DEADLINE_MS + 3000, `watchdog, ${name}: ended after ${outcome.elapsed.toFixed(0)} ms`);
     check(outcome.result.millis >= DEADLINE_MS && !browser.busy, `watchdog, ${name}: millis ${outcome.result.millis}, busy ${browser.busy}`);
     // The compiler that replayed it compiles correctly afterwards.
-    const after = await browser.compile({ ...request(examplePaths(first), exampleSources(first), first.entry, "none"), macros: "browser" });
+    const after = await browser.compile(request(examplePaths(first), exampleSources(first), first.entry, "none"));
     check(after.status === "done" && String(run(after.result.js).value) === first.expect, `watchdog, ${name}: then ${JSON.stringify(after).slice(0, 200)}`);
     return `${name} ${outcome.elapsed.toFixed(0)} ms`;
   }),
   (async () => {
     const queued = createCompiler({ spawn: spawnWorker, module: wasmModule });
-    const spinning = queued.compile({ ...request(["demo/spin.cljs"], [SPINS[0][1]], "demo.spin", "none"), macros: "browser" });
+    const spinning = queued.compile(request(["demo/spin.cljs"], [SPINS[0][1]], "demo.spin", "none"));
     const begun = performance.now();
     const newest = request(examplePaths(first), exampleSources(first), first.entry, "prepare");
-    const outcome = await queued.compile({ ...newest, macros: "browser" });
+    const outcome = await queued.compile(newest);
     const elapsed = performance.now() - begun;
     check((await spinning).status === "stale", `watchdog, queued: the spinning compile resolved ${JSON.stringify(await spinning).slice(0, 200)}`);
     check(outcome.status === "done" && isDeepStrictEqual(fields(outcome.result), direct(newest)), `watchdog, queued: ${JSON.stringify(outcome).slice(0, 200)}`);
@@ -584,11 +634,11 @@ const watched = await Promise.all([
   (async () => {
     const left = createCompiler({ spawn: spawnWorker, module: wasmModule });
     const LATER = ["(ns demo.main)\n(defmacro later [] (js/setTimeout (fn [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i))) 0) 1)\n(later)\n"];
-    const leaving = await left.compile({ ...request(["demo/main.cljs"], LATER, "demo.main", "none"), macros: "browser" });
+    const leaving = await left.compile(request(["demo/main.cljs"], LATER, "demo.main", "none"));
     check(leaving.status === "done" && leaving.result.error == null, `watchdog, timer left behind: ${JSON.stringify(leaving).slice(0, 200)}`);
     const begun = performance.now();
     const next = request(examplePaths(first), exampleSources(first), first.entry, "none");
-    const outcome = await left.compile({ ...next, macros: "browser" });
+    const outcome = await left.compile(next);
     const elapsed = performance.now() - begun;
     check(outcome.status === "done" && isDeepStrictEqual(fields(outcome.result), direct(next)), `watchdog, after a timer left behind: ${JSON.stringify(outcome).slice(0, 200)}`);
     check(elapsed >= DEADLINE_MS && elapsed < DEADLINE_MS + 3000, `watchdog, after a timer left behind: ran after ${elapsed.toFixed(0)} ms`);
@@ -600,7 +650,7 @@ const watched = await Promise.all([
     const late = createCompiler({ spawn: spawnWorker, module: wasmModule });
     const source = SPINS[2][1].replace(" 700)", " 8000)");
     const begun = performance.now();
-    const outcome = await late.compile({ ...request(["demo/spin.cljs"], [source], "demo.spin", "none"), macros: "browser" });
+    const outcome = await late.compile(request(["demo/spin.cljs"], [source], "demo.spin", "none"));
     const elapsed = performance.now() - begun;
     check(outcome.status === "done" && isDeepStrictEqual(fields(outcome.result), UNLOCATED), `watchdog, late spin: ${JSON.stringify(outcome).slice(0, 300)}`);
     check(elapsed >= DEADLINE_MS && elapsed < DEADLINE_MS + 1000 && !late.busy, `watchdog, late spin: ended after ${elapsed.toFixed(0)} ms, busy ${late.busy}`);
@@ -620,7 +670,7 @@ const watched = await Promise.all([
     const doubles = [scriptedWorker((message, reply) => reported && reply([3, 77])), rerun];
     const scripted = createCompiler({ spawn: () => doubles.shift() ?? spawnWorker(), module: wasmModule });
     const begun = performance.now();
-    const outcome = await scripted.compile({ ...request(["demo/spin.cljs"], [SPINS[0][1]], "demo.spin", "none"), macros: "browser" });
+    const outcome = await scripted.compile(request(["demo/spin.cljs"], [SPINS[0][1]], "demo.spin", "none"));
     const elapsed = performance.now() - begun;
     check(outcome.status === "done" && isDeepStrictEqual(fields(outcome.result), UNLOCATED) && outcome.result.millis >= DEADLINE_MS, `watchdog, ${name}: ${JSON.stringify(outcome).slice(0, 300)}`);
     check(elapsed >= DEADLINE_MS && elapsed < DEADLINE_MS + ALLOWANCE_MS + 1000 && !scripted.busy && doubles.length === 0, `watchdog, ${name}: ended after ${elapsed.toFixed(0)} ms, busy ${scripted.busy}, ${doubles.length} doubles unused`);
@@ -628,7 +678,7 @@ const watched = await Promise.all([
     check(rerun.compiles.length === 1 && isDeepStrictEqual(rerunMode, { quiet: undefined, stopAt: undefined, fingerprint: undefined, ...mode }), `watchdog, ${name}: rerun as ${JSON.stringify(rerun.compiles)}`);
     // A double that answered is kept, as a healthy worker; one that never
     // did was replaced by a real worker.
-    const after = await scripted.compile({ ...request(examplePaths(first), exampleSources(first), first.entry, "none"), macros: "browser" });
+    const after = await scripted.compile(request(examplePaths(first), exampleSources(first), first.entry, "none"));
     const kept = completes ? rerun.compiles.length === 2 && after.result?.js === OK_RESULT.js : String(run(after.result.js).value) === first.expect;
     check(after.status === "done" && kept, `watchdog, ${name}: then ${JSON.stringify(after).slice(0, 200)}`);
     return `${name} ${elapsed.toFixed(0)} ms`;
@@ -681,7 +731,7 @@ for (const how of ["failed", "error", "before ready"]) {
     `worker ${how}: after the failure ${JSON.stringify(recovered).slice(0, 200)}`,
   );
 }
-console.log(`compiler worker: a compile stopped with each macro engine, the last after ${ticks} ticks of this thread, three failures recovered`);
+console.log(`compiler worker: a compile stopped after ${ticks} ticks of this thread, three failures recovered`);
 await Promise.all(threads.map((thread) => thread.terminate()));
 
 if (failures) {

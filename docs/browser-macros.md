@@ -1,13 +1,13 @@
 # Browser-native macros for the playground
 
-Status: the playground's default since light-cljs-356 (added by
-light-cljs-307 as an option). The playground's
-WebAssembly module embeds QuickJS so that the compiler can run macros while it
-compiles. This document records a second way: the compiler runs the same
-compiler-emitted macro JavaScript in the browser's own engine, the one already
-running the module. It covers how that works, what it preserves, where its
-isolation and resource limits differ from QuickJS, what it measured, and
-whether to adopt it.
+Status: the playground's only macro engine since light-cljs-357 (added by
+light-cljs-307 as an option, the default since light-cljs-356). Until then the
+playground's WebAssembly module embedded QuickJS so that the compiler could
+run macros while it compiles. This document records the other way: the
+compiler runs the same compiler-emitted macro JavaScript in the browser's own
+engine, the one already running the module. It covers how that works, what it
+preserves, where its isolation and resource limits differ from QuickJS, what
+it measured, and whether to adopt it.
 
 ## How it works
 
@@ -39,15 +39,14 @@ object). The table lives until the session closes: a synchronous bridge has
 no finalization it could observe.
 
 `MacroHost::set_script_host` selects the host for clean compilations;
-interactive sessions and data readers keep QuickJS. `cache_key` keys such a
-compilation's artifacts with `host` and the engine's own description.
+interactive sessions and data readers keep QuickJS, so a build without it
+(WebAssembly) cannot run them. `cache_key` keys such a compilation's
+artifacts with `host` and the engine's own description.
 
 In the playground, `playground/macro-host.js` implements `ScriptHost` in the
-compiler worker (`globalThis.lightCljsMacroHost`). The module exports
-`set_browser_macros(bool)` and `serve_macro_host`; `compiler-worker.js` runs
-a request's macros in the browser when it carries `macros: "browser"`, and
-the page sends that when its "browser macros" checkbox is checked, as it is
-unless the person turned it off.
+compiler worker (`globalThis.lightCljsMacroHost`), and the module exports
+`serve_macro_host`. Every compile runs its macros there: the module embeds
+no engine of its own (light-cljs-357, below).
 
 ## What it preserves
 
@@ -135,7 +134,8 @@ helpers 0.14 MB and the Rust that only drives QuickJS (rquickjs,
 ## Verdict
 
 Ready to adopt as an option; not yet as the playground's only engine.
-light-cljs-356 made it the default (below).
+light-cljs-356 made it the default and light-cljs-357 the only engine
+(below).
 
 - Macro output is identical to QuickJS in every check, across three engines,
   and compiles are 2.5 to 3.2 times faster. The checkbox can stay, and could
@@ -148,7 +148,8 @@ light-cljs-356 made it the default (below).
   readers (`MacroHost::install_reader_build_services` and the reader heap),
   interactive sessions and `EvalSession` use the concrete QuickJS
   `Evaluator`; they need the host evaluator too, or a `cfg` that leaves them
-  out of the playground, before `rquickjs` can leave the module.
+  out of the playground, before `rquickjs` can leave the module. (Done by
+  light-cljs-357, with a `cfg`.)
 - JSON costs 30 ms on the engine side alone, plus Rust's encoding and parsing. The V8 bridge's
   environment cache (`encode_environment`) and folding each import with its
   snapshot into one call would cut it, if the playground needs more speed.
@@ -191,8 +192,9 @@ deadline for browser-macro compiles from outside the worker:
   fails with the evaluator's own text, `JavaScript session deadline
   exceeded`, which the compiler wraps as it wraps QuickJS's, so the result is
   the embedded engine's located diagnostic, byte for byte (`check.mjs`
-  compares them), with `millis` counted from the first start. The replay
-  claims the location only when its trace at that call is the fingerprint.
+  compares them, since light-cljs-357 with QuickJS's written out), with
+  `millis` counted from the first start. The replay claims the location only
+  when its trace at that call is the fingerprint.
 - A call open since the first 500 ms is unnamed, so the watchdog first
   replays the request as a probe that posts every call and takes the call it
   keeps open for 1 s: every earlier call returned within the original's first
@@ -217,3 +219,35 @@ at load average 6 to 8, two runs: 203 / 210 and 209 / 212 ms in Chromium,
 299 / 302 and 314 / 315 ms in Firefox, 187 / 192 and 199 / 203 ms in WebKit.
 `check.mjs` takes about 22 s instead of 8 s: its nine watchdog cases, three
 with worker doubles for the fallbacks, wait out the deadline together.
+
+### As built (light-cljs-357): QuickJS leaves the module
+
+- The root crate depends on `rquickjs` only off wasm32, and `build.rs` sets
+  `light_quickjs` wherever it is linked. Without it, `evaluator::Evaluator`
+  is an uninhabited enum whose constructors fail with "this light-cljs build
+  embeds no QuickJS: run compiler macros through a ScriptHost", so a clean
+  compile without a script host, an interactive session (`EvalSession`) and
+  a compiler data reader report that instead of linking an engine;
+  `form_bridge` keeps only its engine-neutral parts. Native builds, with V8
+  or QuickJS-only (`--no-default-features`), compile the same code as
+  before. The playground crate depends on light-cljs without V8 and drops
+  the `rquickjs-sys` patch; the module links no C, so `build.bb` and CI no
+  longer look for a wasm32 C compiler and archiver.
+- What replaces the fallback (the checkbox off, with QuickJS enforcing its
+  own deadline): nothing in the page. The crate gives `MacroHost` the page's
+  host whenever the page has installed one (without one a compile fails with
+  the diagnostic above, which `check.mjs` checks); `set_browser_macros`, the
+  `macros` request field and the checkbox are gone, and the watchdog arms
+  for every compile. The deadline is the watchdog's, whose replay gives the
+  located diagnostic QuickJS gave; Stop still ends a compile at once.
+- `check.mjs` cannot compare the two engines in one module any more. Its
+  examples, at every level, now expand in the browser's engine and are
+  checked as before, by value, printed lines and output sizes; the
+  macro-semantics programs, the two failing macros and the three spinning
+  ones are checked against the fields and printed lines that the embedded
+  QuickJS gave on master `d2e55f9`, less its stack trace, written out in the
+  check. Every example's output (JavaScript, `--esm`, chunks, size report)
+  matched master's module byte for byte. The native suites keep QuickJS and
+  V8 as the reference for macro semantics.
+- The module is 5,535,568 bytes (1,657,208 gzip -9), 17.9% (22.2%) smaller
+  than master's 6,744,468 (2,130,291); benchmarks/compiler.md has the table.

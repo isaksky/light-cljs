@@ -515,7 +515,8 @@ The engines are ready for concurrent use.
   queue; a worker constructs a local host bound to its own evaluator from
   transferable data.
 
-QuickJS remains for interactive sessions and WebAssembly, which stay serial.
+QuickJS remains for interactive sessions, and WebAssembly (whose embedder runs
+the macros since light-cljs-357) has no engine of its own; both stay serial.
 Parsing and IR work must not come to require V8.
 
 The built-in file provider can be parallelized directly. A caller-supplied

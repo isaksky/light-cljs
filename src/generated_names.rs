@@ -381,6 +381,7 @@ impl Drop for RestoreGensymScope<'_> {
 
 /// Forget which heap was put in which scope: a heap created now can take
 /// the place of one that went away.
+#[cfg_attr(not(light_quickjs), allow(dead_code))]
 pub(crate) fn forget_installed_scopes() {
     INSTALLED.set((0, 0));
 }

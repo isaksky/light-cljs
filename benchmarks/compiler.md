@@ -4997,3 +4997,25 @@ of their ratchet ceilings rise by 1,000. Of the `advanced` fixtures only
 `eight-records`, whose `area` calls run the dispatcher, changed: from
 32,364 to 32,601 bytes. In the others no dispatcher is emitted or every
 call is devirtualized.
+
+## The playground's module without QuickJS — October 19, 2026
+
+light-cljs-357 leaves QuickJS out of every wasm32 build, so the playground's
+macros run only in the browser's engine
+([docs/browser-macros.md](../docs/browser-macros.md#as-built-light-cljs-357-quickjs-leaves-the-module)).
+`light_cljs_playground_bg.wasm` from `bb playground/build.bb build` (Rust
+1.99.0, wasm-bindgen 0.2.129, no `wasm-opt`), master `d2e55f9` against this
+change:
+
+| Build | Bytes | gzip -9 |
+|---|---|---|
+| With QuickJS (`d2e55f9`) | 6,744,468 | 2,130,291 |
+| Without QuickJS | 5,535,568 (−17.9%) | 1,657,208 (−22.2%) |
+
+The module is 1,208,900 bytes and 473,083 gzip bytes smaller, more than
+light-cljs-307's projection of about 1.05 / 0.39 MB, which counted rquickjs,
+its C engine and its wasm shims but not the QuickJS halves of `evaluator.rs`
+and `form_bridge.rs`. Every example compiles, at every level, to the same
+JavaScript, `--esm` module, chunked build and size report that master's module gave
+with its embedded QuickJS (compared by hash, outside the repo), and the build
+compiles no C.

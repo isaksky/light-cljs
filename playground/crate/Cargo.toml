@@ -9,13 +9,11 @@ description = "The browser playground's WebAssembly entry: light-cljs compiled f
 crate-type = ["cdylib"]
 
 [dependencies]
-light-cljs = { path = "../.." }
+# Without V8, which wasm32 cannot link anyway; QuickJS is left out on wasm32
+# by the root crate itself (light-cljs-357).
+light-cljs = { path = "../..", default-features = false }
 # Pinned: the wasm-bindgen CLI that playground/build.bb runs must match exactly.
 wasm-bindgen = "=0.2.129"
-
-# The same engine fix as the root crate; patches only apply from the build root.
-[patch.crates-io]
-rquickjs-sys = { path = "../../vendor/rquickjs-sys" }
 
 [profile.release]
 opt-level = 3

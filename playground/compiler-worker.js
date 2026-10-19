@@ -5,9 +5,9 @@
 // is answered by one "started" and then one "compiled" message with the same
 // id, in order.
 //
-// A request with `macros: "browser"` runs its macros in this worker's own
-// JavaScript engine through macro-host.js instead of in the module's QuickJS
-// (light-cljs-307, docs/browser-macros.md). The 10 s session deadline is not
+// Macros run in this worker's own JavaScript engine through macro-host.js
+// (light-cljs-307; the module embeds no engine of its own since
+// light-cljs-357, docs/browser-macros.md). The 10 s session deadline is not
 // checked while JavaScript runs there, so compiler.js keeps a watchdog
 // (light-cljs-356), and this worker tells it which macro host call is open.
 // It numbers a compile's host calls from 0 and, once the compile has run
@@ -19,9 +19,9 @@
 // a compile makes thousands of host calls, so one that ends sooner posts
 // nothing. A request with `stopAt: N` and `fingerprint` replays a stopped
 // compile: host call N fails with the deadline's own diagnostic instead of
-// running, so the compiler reports it where the embedded engine would, and
+// running, so the compiler reports it where the deadline struck, and
 // "compiled" says `stopped: true` when the trace there was `fingerprint`.
-import init, { compile, serve_macro_host, set_browser_macros, version } from "./pkg/light_cljs_playground.js";
+import init, { compile, serve_macro_host, version } from "./pkg/light_cljs_playground.js";
 import { createMacroHost } from "./macro-host.js";
 
 // The evaluator's text for an expired session (src/evaluator.rs).
@@ -108,7 +108,7 @@ async function receive(message) {
     return;
   }
   if (message.type !== "compile") return;
-  const { id, paths, sources, entry, optimize, warnings, pseudo, sizes, macros } = message;
+  const { id, paths, sources, entry, optimize, warnings, pseudo, sizes } = message;
   try {
     await ready;
   } catch (error) {
@@ -124,7 +124,6 @@ async function receive(message) {
   posting = performance.now() + (message.quiet ?? QUIET_MS);
   let result;
   try {
-    set_browser_macros(macros === "browser");
     result = compile(paths, sources, entry, optimize, warnings, pseudo, sizes, false);
   } catch (error) {
     // A panic leaves the module unusable: report it, and the page replaces

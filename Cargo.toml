@@ -10,10 +10,11 @@ readme = "README.md"
 # See LICENSE, epl-v10.html and THIRD_PARTY_NOTICES.md.
 license = "MIT AND EPL-1.0"
 
-[dependencies]
-rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
-
+# QuickJS is the native builds' interactive and data-reader engine (and every
+# compile-time engine without V8). WebAssembly builds leave it out: their
+# embedder supplies the engine (`host_evaluator::ScriptHost`, light-cljs-357).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
 mimalloc = "=0.1.52"
 
 [target.'cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), any(target_os = "macos", target_os = "linux", target_os = "windows")))'.dependencies]
@@ -24,7 +25,8 @@ cc = "=1.7.0"
 
 [features]
 default = ["v8-macros"]
-# Native clean compilations use V8; interactive sessions and wasm use QuickJS.
+# Native clean compilations use V8; interactive sessions use QuickJS, and wasm
+# embeds no engine (light-cljs-357).
 v8-macros = ["dep:v8"]
 # Benchmark-only allocation instrumentation, absent from normal timing runs.
 count-allocations = []

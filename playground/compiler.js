@@ -8,15 +8,16 @@
 // starts a fresh one from the same compiled module; that costs one
 // instantiation, and the next compile redoes the macro bootstrap.
 //
-// A compile with browser macros (`macros: "browser"`) also has a watchdog
-// (light-cljs-356, docs/browser-macros.md): the embedded QuickJS checks the
-// macro session's 10 s deadline while JavaScript runs, the browser's engine
-// does not. A compile that has run DEADLINE_MS with a macro host call still
-// open can only end with the deadline, which the compiler checks when the
-// call returns, so the watchdog terminates its worker. To give the located
-// diagnostic the embedded engine gives, it replays the request in a fresh
-// worker with `stopAt` naming that call, which then fails at once; the
-// worker checks that the replay reached it by the same path (`fingerprint`).
+// Every compile also has a watchdog (light-cljs-356, docs/browser-macros.md):
+// macros run in the browser's engine, which does not check the macro
+// session's 10 s deadline while JavaScript runs. A compile that has run
+// DEADLINE_MS with a macro host call still open can only end with the
+// deadline, which the compiler checks when the call returns, so the watchdog
+// terminates its worker. To give the located diagnostic that an engine
+// checking the deadline itself gives (the native compiler's QuickJS), it
+// replays the request in a fresh worker with `stopAt` naming that call,
+// which then fails at once; the worker checks that the replay reached it by
+// the same path (`fingerprint`).
 // The worker reports calls only after a compile's first 500 ms, so for a call
 // open since then the watchdog first replays the request as a probe that
 // reports every call (`quiet: 0`) and takes the call it keeps open for
@@ -176,7 +177,6 @@ export function createCompiler({ spawn, module }) {
     const now = performance.now();
     entry.at ??= now;
     running = { id, since: now, open: null, known: false, entered: new Map(), expired: false };
-    if (entry.request.macros !== "browser") return;
     if (!entry.phase) return arm(DEADLINE_MS + GRACE_MS, expired);
     bound = setTimeout(giveUp, Math.max(0, entry.at + DEADLINE_MS + GRACE_MS + ALLOWANCE_MS - now));
     if (entry.phase === "probe") arm(PROBE_QUIET_MS, quiet);

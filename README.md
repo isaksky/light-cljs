@@ -76,7 +76,9 @@ cargo build --release
 ```
 
 `cargo build --release --no-default-features` selects the QuickJS-only compiler
-and needs Rust and a C compiler. WebAssembly builds also use QuickJS. The native
+and needs Rust and a C compiler. WebAssembly builds embed no JavaScript engine:
+their embedder runs the macros (`host_evaluator::ScriptHost`, as the browser
+playground does). The native
 V8 backend runs the macros of clean compilations and the forms of `--eval` and
 `--repl` (whose macros stay in QuickJS); generated applications carry the same
 JavaScript runtime.
@@ -425,15 +427,14 @@ cargo run --quiet -- --analyze --text '(let* [x 10] x)'  # resolved Program
 
 [playground/](playground/) is a static page that runs the compiler in the
 browser, published at <https://isaksky.github.io/light-cljs/playground/>:
-light-cljs built for `wasm32-unknown-unknown` (QuickJS included, for macro
-expansion) compiles several in-memory namespaces at any `--optimize` level, and
-the emitted JavaScript runs in the browser's own engine inside a worker.
+light-cljs built for `wasm32-unknown-unknown` compiles several in-memory
+namespaces at any `--optimize` level, and the emitted JavaScript runs in the
+browser's own engine inside a worker.
 A dropdown offers examples from a single namespace to a calculator in several.
-By default its macros run in the browser's own engine, which compiles
-macro-heavy programs about three times faster than the embedded QuickJS, with
-a watchdog that ends a compile whose macro runs past the 10 s deadline; the
-"browser macros" checkbox switches back to QuickJS
-([docs/browser-macros.md](docs/browser-macros.md)).
+Its macros run in the browser's own engine too, about three times faster than
+the QuickJS the module embedded until light-cljs-357, which made the module
+1.2 MB larger, with a watchdog that ends a compile whose macro runs past the 10 s
+deadline ([docs/browser-macros.md](docs/browser-macros.md)).
 `bb playground/build.bb` builds and serves it; see
 [playground/README.md](playground/README.md) for the toolchain it needs.
 

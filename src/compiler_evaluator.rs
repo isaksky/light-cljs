@@ -18,6 +18,23 @@ pub(crate) trait CompilerEvaluator: MacroEvaluator {
     #[cfg(all(test, light_v8))]
     fn number(&self, id: ValueId) -> Result<f64, EvalError>;
 }
+#[cfg(not(light_quickjs))]
+impl CompilerEvaluator for Evaluator {
+    fn evaluate_js(&self, _: &str) -> Result<ValueId, EvalError> {
+        match *self {}
+    }
+    fn install_compiler_service(self: Rc<Self>, _: &str, _: UnitService) -> Result<(), EvalError> {
+        match *self {}
+    }
+    fn install_string_service(&self, _: &str, _: StringService) -> Result<(), EvalError> {
+        match *self {}
+    }
+    #[cfg(all(test, light_v8))]
+    fn number(&self, _: ValueId) -> Result<f64, EvalError> {
+        match *self {}
+    }
+}
+#[cfg(light_quickjs)]
 impl CompilerEvaluator for Evaluator {
     fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError> {
         Evaluator::evaluate_js(self, expression)

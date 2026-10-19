@@ -40,16 +40,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24.18.0'
-      # ubuntu-latest has `clang` but llvm-ar only as `llvm-ar-<major>`, and cc-rs
-      # needs an llvm-ar to archive QuickJS's wasm32 objects. Name the one
-      # matching the default clang, installing that LLVM if the image lacks it.
-      - name: Select the LLVM archiver for wasm32
-        run: |
-          ls /usr/bin/llvm-ar* /usr/bin/clang* || true
-          major=$(clang -dumpversion | cut -d. -f1)
-          command -v "llvm-ar-$major" || { sudo apt-get update -q && sudo apt-get install -y -q "llvm-$major"; }
-          echo "AR_wasm32_unknown_unknown=llvm-ar-$major" >> "$GITHUB_ENV"
-      - run: clang --version && bb --version
+      # The module compiles no C (light-cljs-357), so no wasm32 clang or llvm-ar.
+      - run: bb --version
       - run: bb playground/build.bb build
       # A playground that fails its checks must not deploy.
       - run: bb playground/build.bb check
