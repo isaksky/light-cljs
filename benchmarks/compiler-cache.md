@@ -797,8 +797,8 @@ process, every count zero after each) and `tests/dev_watch.rs`
 `repeated_steps_hold_bounded_engine_state_and_no_artifact` (45 watch steps
 that rerun a macro; payloads grow by 26 a step and flatten at 866 after
 33 steps, when the bridge's environment cache is full; the session engine's
-registry roots one more value a step, 47 to 91, the redefined macro's
-function, light-cljs-381). A Penpot cold
+registry roots 47 values after every step: before light-cljs-381 released
+a redefined macro's function it rooted one more a step, 47 to 91). A Penpot cold
 build makes 2.1 million bridge payloads, each counted with two relaxed
 atomic adds.
 

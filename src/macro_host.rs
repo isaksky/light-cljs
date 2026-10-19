@@ -796,9 +796,11 @@ const OPAQUE_PACKAGES_PRELUDE: &str = r#"rt => {
 impl MacroHost {
     /// Collect the garbage of the host's compile-time engines in full,
     /// between operations: its macro engine, once started, and the engine
-    /// of its compiler data readers.
+    /// of its compiler data readers, once the macro engine has released the
+    /// functions of macros no declaration holds.
     pub(crate) fn collect_garbage(&self) {
         if let Some(bootstrap) = &self.engine.bootstrap {
+            bootstrap.release_dropped();
             bootstrap.evaluator.collect_garbage();
         }
         if let Some(evaluator) = &self.engine.data_readers.borrow().evaluator {
@@ -807,10 +809,14 @@ impl MacroHost {
     }
     /// The values the host's macro engine roots for their `ValueId`s
     /// ([`crate::compiler_evaluator::CompilerEvaluator::value_roots`]), 0
-    /// before it starts.
+    /// before it starts, once it has released the functions of macros no
+    /// declaration holds.
     pub(crate) fn value_roots(&self) -> Result<usize, crate::evaluator::EvalError> {
         match &self.engine.bootstrap {
-            Some(bootstrap) => bootstrap.evaluator.value_roots(),
+            Some(bootstrap) => {
+                bootstrap.release_dropped();
+                bootstrap.evaluator.value_roots()
+            }
             None => Ok(0),
         }
     }

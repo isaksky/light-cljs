@@ -1823,11 +1823,33 @@ steps, then stay flat (shrinking the slots to 8 and 16 flattens them after
 3 steps). Values an engine roots in its private `ValueId` registry live in
 the engine and go with it, so the process-wide counts cover them for builds
 through `engines`; for a session, `--watch --stats` also prints the session
-engine's `value-roots`. They grow by one a step in that test, without a
-plateau: the redefined macro's function, which nothing releases when a
-redefinition replaces it (light-cljs-381). The `ps` RSS growth is allocator policy, not retention: it
+engine's `value-roots`, which that test asserts are the same, 47, after
+every step. A source macro's function is owned by its declarations: the
+last one dropped, in any frame or table layer, queues the function, and the
+macro engine releases it before its next declaration, count or full
+collection ("As built (light-cljs-381)" below). The `ps` RSS growth is allocator policy, not retention: it
 plateaus, and is lower with the nano allocator off (benchmarks/compiler-cache.md,
 "Live counts and the RSS growth").
+
+#### As built (light-cljs-381)
+
+Each step of that test that recompiled `app.macros` (one `defmacro`) left
+the replaced macro's function rooted in the session engine's registry, 47
+values after the first step and 91 after the 45th. `CompiledMacro` held the function as a bare
+`ValueId`, copied into every frame's and layer's declaration, so nothing
+knew when the last copy went. It now holds an `Arc<MacroValue>`
+(`compiler_bootstrap.rs`), and an installed macro's shared cell holds a
+`MacroValue` once its function is evaluated. Dropping the last one, on any
+thread, pushes the ID onto the bootstrap's queue of dropped values; the
+tables stay `Send` and `Sync`, and the drop never enters an engine.
+`Bootstrap::release_dropped` releases the queue in the engine outside any
+expansion: when a macro is declared, and before `MacroHost::value_roots`
+and `collect_garbage`. A frame still expanding with the old definition
+holds its own copy, so its function stays rooted until that frame drops.
+Only a function evaluated in the bootstrap's own engine is owned this way;
+the bootstrap macros live as long as their engine, and a worker's
+`foreign_macros` evaluations go with the worker's engine, as before.
+`value-roots` is now 47 after each of the 45 steps.
 
 ### Open questions (light-cljs-328)
 

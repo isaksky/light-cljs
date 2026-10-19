@@ -431,6 +431,27 @@ fn a_standalone_session_survives_idle_time_between_compilations() {
     );
 }
 
+/// A redefinition releases the replaced macro's function from the session
+/// engine's registry once nothing expands with it (light-cljs-381): the
+/// engine roots as many values after each redefinition, and the latest
+/// definition is the one that expands, also within one compilation.
+#[test]
+fn redefining_a_macro_roots_no_more_values_in_the_session_engine() {
+    let dev = DevSession::new(&EvalOptions::default()).unwrap();
+    let engine = Evaluator::new(Default::default()).unwrap();
+    let mut roots = Vec::new();
+    for step in 0..12 {
+        let defined = dev.source(&input(&format!(
+            "(defmacro m [] {step}) (defmacro m [] (+ 100 {step})) (m)"
+        )));
+        assert_eq!(apply(&engine, &defined), format!("{}", 100 + step));
+        dev.collect_garbage();
+        roots.push(dev.value_roots().unwrap());
+    }
+    assert!(roots[0] > 0, "{roots:?}");
+    assert!(roots.iter().all(|&r| r == roots[0]), "{roots:?}");
+}
+
 /// While the session's heap interprets a load, a unit that throws stops it:
 /// the definitions after it are never compiled, the requiring namespace is
 /// current again, the exception keeps its data, and the namespace loads

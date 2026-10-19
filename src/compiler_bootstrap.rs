@@ -62,6 +62,56 @@ const MACROS: &[(&str, &str)] = &[
 pub(crate) struct Bootstrap {
     pub(crate) evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
     functions: HashMap<String, CompiledMacro>,
+    /// The source macro functions evaluated in `evaluator` whose last
+    /// declaration is gone, to release there ([`Self::release_dropped`]).
+    dropped: DroppedValues,
+}
+/// Values whose owners ([`MacroValue`]) were dropped, on whatever thread,
+/// for their engine to release between operations.
+type DroppedValues = std::sync::Arc<std::sync::Mutex<Vec<ValueId>>>;
+impl Bootstrap {
+    /// An owner of `function`, evaluated in `engine`, that has this
+    /// bootstrap's engine release it once the last declaration holding it is
+    /// dropped. A function of another engine is never released, as before.
+    fn own(&self, engine: &dyn crate::evaluator::MacroEvaluator, function: ValueId) -> MacroValue {
+        let same = std::ptr::addr_eq(
+            engine as *const dyn crate::evaluator::MacroEvaluator,
+            Rc::as_ptr(&self.evaluator),
+        );
+        MacroValue {
+            id: function,
+            dropped: same.then(|| self.dropped.clone()),
+        }
+    }
+    /// Release in the engine the macro functions no declaration holds any
+    /// more. Outside the engine only: between operations, or where a
+    /// declaration or expansion is about to enter it.
+    pub(crate) fn release_dropped(&self) {
+        let dropped = std::mem::take(&mut *self.dropped.lock().unwrap_or_else(|e| e.into_inner()));
+        for function in dropped {
+            // A cancelled or failed engine refuses; its values go with it.
+            let _ = self.evaluator.release(function);
+        }
+    }
+}
+/// A macro's compile-time function in the engine that evaluated it, which
+/// that engine releases once every declaration holding it, in any frame or
+/// layer of the tables, has been dropped (light-cljs-381). A redefinition
+/// replaces the declaration, so a long watch or REPL session roots one
+/// function per live macro, not one per definition.
+struct MacroValue {
+    id: ValueId,
+    dropped: Option<DroppedValues>,
+}
+impl Drop for MacroValue {
+    fn drop(&mut self) {
+        if let Some(dropped) = &self.dropped {
+            dropped
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(self.id);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -250,7 +300,14 @@ fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> R
         bootstrap.functions.insert(
             (*name).into(),
             CompiledMacro {
-                function: MacroFunction::Ready(function, None),
+                // The bootstrap's own, for as long as its engine.
+                function: MacroFunction::Ready(
+                    std::sync::Arc::new(MacroValue {
+                        id: function,
+                        dropped: None,
+                    }),
+                    None,
+                ),
                 definition,
                 metadata: None,
                 generation: 0,
@@ -309,6 +366,7 @@ fn build_in(
     let mut bootstrap = Bootstrap {
         evaluator,
         functions: HashMap::new(),
+        dropped: Default::default(),
     };
     let mut host = MacroHost::new();
     host.tables.bootstrap_seed = true;
@@ -446,7 +504,7 @@ pub(crate) struct CompiledMacro {
 enum MacroFunction {
     /// Evaluated in the engine that declared it; a source macro's also with
     /// the code that declared it, which a worker's engine evaluates itself.
-    Ready(ValueId, Option<std::sync::Arc<MacroCode>>),
+    Ready(std::sync::Arc<MacroValue>, Option<std::sync::Arc<MacroCode>>),
     /// Shared by every frame's copy of the declaration, so the function is
     /// evaluated once.
     Installed(std::sync::Arc<std::sync::Mutex<InstalledFunction>>),
@@ -461,7 +519,7 @@ pub(crate) struct MacroCode {
 }
 struct InstalledFunction {
     unit: crate::emitter::DeferredUnit,
-    function: Option<ValueId>,
+    function: Option<MacroValue>,
 }
 impl CompiledMacro {
     /// A macro of a namespace installed from its artifact
@@ -500,11 +558,11 @@ impl CompiledMacro {
             return self.foreign_function(engine, binding);
         }
         let installed = match &self.function {
-            MacroFunction::Ready(function, _) => return Ok(*function),
+            MacroFunction::Ready(function, _) => return Ok(function.id),
             MacroFunction::Installed(installed) => installed,
         };
-        if let Some(function) = installed.lock().expect("installed macro").function {
-            return Ok(function);
+        if let Some(function) = &installed.lock().expect("installed macro").function {
+            return Ok(function.id);
         }
         let (registration, unit) = installed.lock().expect("installed macro").unit.emit();
         engine
@@ -516,7 +574,14 @@ impl CompiledMacro {
                 unit
             ))
             .map_err(|e| e.to_string())?;
-        installed.lock().expect("installed macro").function = Some(function);
+        let owner = match &binding.bootstrap {
+            Some(bootstrap) => bootstrap.own(engine, function),
+            None => MacroValue {
+                id: function,
+                dropped: None,
+            },
+        };
+        installed.lock().expect("installed macro").function = Some(owner);
         Ok(function)
     }
     /// [`Self::function`] in a worker's engine: the declaring engine's
@@ -529,7 +594,7 @@ impl CompiledMacro {
         let key = match &self.function {
             MacroFunction::Ready(_, Some(code)) => std::sync::Arc::as_ptr(code) as usize,
             // A bootstrap macro, which the worker's own bootstrap holds.
-            MacroFunction::Ready(function, None) => return Ok(*function),
+            MacroFunction::Ready(function, None) => return Ok(function.id),
             MacroFunction::Installed(installed) => std::sync::Arc::as_ptr(installed) as usize,
         };
         if let Some(&function) = binding.foreign_macros.borrow().get(&key) {
@@ -697,6 +762,7 @@ impl MacroHost {
             }
         }
         let bootstrap = self.engine.bootstrap.as_ref().unwrap().clone();
+        bootstrap.release_dropped();
         if let Some(session) = self.session_handle() {
             session.attach(&bootstrap, self)?;
         }
@@ -728,6 +794,7 @@ impl MacroHost {
                 unit
             ))
             .map_err(|e| e.to_string())?;
+        let function = std::sync::Arc::new(bootstrap.own(engine, function));
         let code = std::sync::Arc::new(MacroCode { registration, unit });
         self.insert_javascript_macro(
             format!("{namespace}/{name}"),
@@ -1112,6 +1179,7 @@ mod tests {
             let mut bootstrap = Bootstrap {
                 evaluator: evaluator.clone(),
                 functions: HashMap::new(),
+                dropped: Default::default(),
             };
             let prefix = if collect {
                 "(js/bootstrapCollect)\n"

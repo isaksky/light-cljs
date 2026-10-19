@@ -2272,7 +2272,9 @@ fn a_watch_starts_from_the_default_cache_directory() {
 /// artifact and the same engines and engine handles after each step, and
 /// bridge payloads that stop growing (`compile_stats::live_counts`, the line
 /// `--stats` adds to each step after a full collection, which also gives
-/// `DevSession::value_roots`). The payloads grow
+/// `DevSession::value_roots`), and the same values rooted in the session
+/// engine's registry after each step, since a redefinition releases the
+/// replaced macro's function (light-cljs-381). The payloads grow
 /// by those of the macro environments each step imports until the bridge's
 /// bounded cache of environments (64 slots and 128 child slots) is full,
 /// after about 33 steps here, so the last ten of 45 steps are flat. The
@@ -2337,8 +2339,9 @@ fn repeated_steps_hold_bounded_engine_state_and_no_artifact() {
         counts.iter().all(|c| c[1] == engines && c[2] == handles),
         "{counts:?}"
     );
-    // The value roots still grow by one a step, the redefined macro's
-    // function; light-cljs-381 releases it and asserts them flat here.
+    // A redefinition releases the function of the macro it replaces, so
+    // the session engine roots as many values after every step.
+    assert!(counts.iter().all(|c| c[4] == counts[0][4]), "{counts:?}");
     let last = &counts[counts.len() - 10..];
     assert!(last.iter().all(|c| c[3] == last[0][3]), "{counts:?}");
 }
