@@ -54,6 +54,29 @@ in JavaScript within an engine entry, and only pairs new since a unit's last
 read cross into Rust, once per entry. The traced runs' spread (2.4 s for the
 parent) is larger than any difference between them.
 
+## Scalar provenance per macro call (light-cljs-371, October 19, 2026)
+
+Parent `042d61b` (its `src/js_runtime.js`, the only functional difference)
+against the bridge that gives each macro call its own scalar table, Penpot
+`app.main --optimize none`, eight alternating pairs (parent first in rounds
+1-4, candidate first in 5-8) at 1-minute load 5.1 to 15.3 while two other
+workers were active. Each build's output has one SHA-256 in all eight runs;
+they differ only in the runtime source that `--optimize none` embeds.
+
+| Build | Wall (s), round 1-8 | Median wall | Peak RSS (GB), round 1-8 | Median RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `042d61b` | 24.99, 24.91, 25.19, 27.20, 27.45, 27.68, 26.70, 26.02 | 26.36 | 0.931, 0.939, 0.954, 0.979, 0.970, 0.995, 0.982, 0.952 | 0.962 |
+| Per-call scalar tables | 24.47, 24.92, 27.75, 27.75, 27.69, 26.99, 26.93, 26.04 | 26.96 | 0.890, 0.923, 0.920, 0.946, 0.936, 0.950, 0.924, 0.911 | 0.923 |
+
+The medians are +2.3% wall and -4.0% peak RSS; the median of the eight
+paired differences is +0.13 s (+0.5%), and the load rose from 5 to 15
+during the run. An earlier eight-pair run of the same mechanism at load 3.4
+to 8.8 (which also registered the macro form's own scalars) gave medians of
+25.68 s and 25.72 s (+0.2%, paired -0.16 s) and 0.941 and 0.912 GB
+(-3.2%). The wall time is within noise of the +2% gate; peak RSS is lower
+because a call's table holds only its own scalars and goes when its input
+is released.
+
 ## Shared session catalog (light-cljs-335, October 18, 2026)
 
 Parent `00d9b70` against the catalog behind a `Mutex`, Penpot `app.main

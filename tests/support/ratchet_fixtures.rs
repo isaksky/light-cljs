@@ -403,7 +403,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defn area ([w] (area w w)) ([w h] (* w h)))
                  (defn fib ([n] (fib n 0 1)) ([n a b] (if (zero? n) a (recur (dec n) b (+ a b)))))
                  (+ (clamp 15) (area 3) (area 2 5) (fib 10))",
-        ceilings: [488_000, 488_000, 400],
+        ceilings: [489_000, 489_000, 400],
         removed: [0, 0, 2],
         printed: "84\n",
     },
@@ -515,7 +515,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "defmulti",
         source: "(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (m {:k :a}))",
-        ceilings: [486_000, 486_000, 11_000],
+        ceilings: [487_000, 487_000, 11_000],
         removed: [0, 0, 0],
         printed: "1\nundefined\n",
     },
@@ -618,7 +618,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             ),
             GREET,
         ],
-        ceilings: [487_000, 487_000, 600],
+        ceilings: [488_000, 487_000, 600],
         removed: [0, 1, 2],
         printed: "null\nhello lazy\n",
     },

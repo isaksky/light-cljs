@@ -4477,7 +4477,8 @@
   // Versioned in-process compiler bridge. Descriptors are private arrays,
   // never printed text or JSON. Only brands above authorize language values.
   function compilerFormBridge() {
-    const borrowed = new WeakMap(), literals = new WeakMap(), primitives = new Map(), environments = new Map(), macroInputs = new WeakMap();
+    const borrowed = new WeakMap(), literals = new WeakMap(), environments = new Map(), macroInputs = new WeakMap(), frames = new WeakMap();
+    let primitives = new Map();
     const negativeZero = Object.freeze({});
     const primitiveKey = v => typeof v === "number" && Object.is(v, -0) ? negativeZero : v;
     const dateTime = Function.prototype.call.bind(Date.prototype.getTime);
@@ -4497,7 +4498,7 @@
       while (pending.length) {
         const ready = pending.pop(), d = pending.pop();
         if (ready) {
-          const value = decodeNode(d, values); values.set(d, value);
+          const value = decodeNode(d, values, false, macroInput); values.set(d, value);
           if (d[5] != null) environments.set(d[5], value);
           continue;
         }
@@ -4514,7 +4515,7 @@
         }
       }
       const value = values.get(root);
-      if (macroInput) macroInputs.set(value, {root, values});
+      if (macroInput) { macroInputs.set(value, {root, values}); frames.set(value, primitives); primitives = new Map(); }
       if (snapshotLimits === null) return value;
       // Only final replacements matter when a large import recycles a slot.
       // Discarded map/set entries and literal payloads may have no snapshot;
@@ -4532,7 +4533,7 @@
       if (published) for (const [slot, d] of updates) environments.set(slot, values.get(d));
       return [value, snapshots, published];
     }
-    function decodeNode(d, values, reuse = false) {
+    function decodeNode(d, values, reuse = false, input = false) {
       const decode = child => values.get(child);
       const kind = d[0], id = d[1], metadata = d[2], a = d[3], b = d[4];
       let value;
@@ -4569,9 +4570,8 @@
       }
       if (id != null && id !== 0) {
         if (value != null && typeof value === "object") borrowed.set(value, id);
-        // Scalars have no observable object lifetime. Keep only their latest
-        // provenance by value, including when a macro saves one for a later call.
-        else primitives.set(primitiveKey(value), id);
+        // A scalar has no identity: keep its latest provenance in this call's table.
+        else if (!input) primitives.set(primitiveKey(value), id);
       }
       return value;
     }
@@ -4579,6 +4579,7 @@
       const input = macroInputs.get(form);
       if (!input || input.root[0] !== "list") throw new Error("Missing compiler macro input");
       const args = [], snapshots = [];
+      primitives.clear();
       try {
         for (const descriptor of input.root[3].slice(1)) {
           // Restore the same per-argument metadata/provenance order as a new
@@ -4733,7 +4734,7 @@
       }
       return visit(value, "$", 0);
     }
-    return Object.freeze({version: 5, decode, encode, macroArguments, releaseMacroInput: value => macroInputs.delete(value),
+    return Object.freeze({version: 5, decode, encode, macroArguments, releaseMacroInput: value => { macroInputs.delete(value); primitives = frames.get(value) ?? primitives; },
       check: () => { if (terminal != null) throw new Error(terminal); },
       // Explicit descriptors authorize host literal data; ordinary objects remain invalid.
       jsArray: items => { const v = Array.from(items); literals.set(v, "js-array"); return v; },

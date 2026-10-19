@@ -1668,7 +1668,38 @@ mod javascript_form_bridge {
         }
     }
     #[test]
-    fn saved_scalars_keep_provenance_between_macro_calls() {
+    // A macro expanded while another call runs (a helper analyzed on demand
+    // from its body) has a scalar table of its own, and the outer call's
+    // table is back once it returns.
+    fn a_nested_expansion_leaves_the_outer_calls_scalar_arguments() {
+        use light_cljs::evaluator::MacroEvaluator;
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let identity = e.evaluate_js("(form, env, x) => x").unwrap();
+        let limits = ConversionLimits::default();
+        let nil = Datum::new(DatumKind::Nil);
+        let mut host = MacroHost::new();
+        let outer = read("(macros/identity 5)");
+        let form = e.import_macro_form(&outer, limits).unwrap();
+        let environment = e.import_environment(&nil, limits).unwrap();
+        let args = e.macro_arguments(form, &outer, limits).unwrap();
+        let inner = read("(macros/identity    5)");
+        let nested = host
+            .expand_javascript(&e, identity, &inner, &nil, origin(&inner))
+            .unwrap();
+        assert_eq!(nested.span().bytes(), inner.children()[1].span().bytes());
+        let result = e
+            .export_form(args[0], &outer, origin(&outer), limits)
+            .unwrap();
+        assert_eq!(result.span().bytes(), outer.children()[1].span().bytes());
+        for id in [form, environment].into_iter().chain(args) {
+            e.release(id).unwrap();
+        }
+    }
+    #[test]
+    // A scalar has no identity to tell a saved one from an equal new one, so
+    // a later call that returns it gives it its own span, as it would a new
+    // scalar: what an isolate's earlier calls saw never decides a span.
+    fn saved_scalars_take_the_span_of_the_call_that_returns_them() {
         for source in ["(macros/identity 1M)", "(macros/identity \"saved-scalar\")"] {
             let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
             let save = e
@@ -1676,7 +1707,6 @@ mod javascript_form_bridge {
                 .unwrap();
             let get = e.evaluate_js("() => globalThis.savedScalar").unwrap();
             let call = read(source);
-            let scalar = call.children()[1].clone();
             let mut host = MacroHost::new();
             let nil = Datum::new(DatumKind::Nil);
             host.expand_javascript(&e, save, &call, &nil, origin(&call))
@@ -1686,9 +1716,13 @@ mod javascript_form_bridge {
             let result = host
                 .expand_javascript(&e, get, &later, &nil, origin(&later))
                 .unwrap();
-            assert_eq!(result.span().source().id(), scalar.span().source().id());
-            assert_eq!(result.span().bytes(), scalar.span().bytes());
-            assert_eq!(result.node().origin, scalar.node().origin);
+            assert_eq!(
+                format!("{:?}", result.data().kind()),
+                format!("{:?}", call.children()[1].data().kind())
+            );
+            assert_eq!(result.span().source().id(), later.span().source().id());
+            assert_eq!(result.span().bytes(), later.span().bytes());
+            assert!(matches!(result.node().origin, Origin::MacroExpansion(_)));
         }
     }
     #[test]

@@ -171,7 +171,12 @@ the canonical runtime's private metadata store and never affects equality/hash.
 
 An engine-private weak map retains borrowed compiler data, original ordered
 children and locations for live imported objects. Scalars keep only their latest
-provenance by value. Conversion snapshots the canonical form once on import;
+provenance by value, in a table of each macro call's own, from its macro form's
+import to its release, that starts from the call's arguments: a returned scalar
+takes the source of an equal argument (or of a scalar the call itself imports),
+else the call's, never that of an earlier or nested call or of the environment,
+so its span does not depend on which calls an isolate ran before
+(light-cljs-371). Conversion snapshots the canonical form once on import;
 immutable environment components reuse a bounded cache: 64 complete components
 and 128 child collections. Locals descriptions share the unchanged lexical
 prefix, including shadowed bindings. Child references name the previous completed

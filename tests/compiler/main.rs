@@ -120,6 +120,7 @@ mod literal_map_traversal;
 mod literal_numeric;
 mod literal_set_traversal;
 mod local_api_source_context;
+mod macro_scalar_spans;
 mod macros;
 mod map_entries;
 mod map_reader_order;

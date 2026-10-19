@@ -104,7 +104,8 @@ struct ChildImport<'js> {
 }
 
 /// The engine owns object provenance through its weak map of imported objects;
-/// scalars retain their latest provenance by value. There are no engine edges
+/// scalars retain their latest provenance by value, in a table of the current
+/// macro call's own that starts from its arguments. There are no engine edges
 /// here: collecting an object releases its Rust data, while a macro that saves
 /// an input keeps its source and lexical spelling.
 #[cfg(light_quickjs)]

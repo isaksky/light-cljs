@@ -2135,11 +2135,8 @@ mod active_tests {
             assert!(error.contains("invalid UUID"), "{error}");
         }
         evaluator.collect_garbage();
-        assert_eq!(
-            live.get(),
-            1,
-            "only the latest scalar provenance may remain"
-        );
+        // Each call's scalar table goes when its input is released.
+        assert_eq!(live.get(), 0, "no scalar provenance may outlive its call");
         evaluator.release(function).unwrap();
         drop(evaluator);
         assert_eq!(live.get(), 0);

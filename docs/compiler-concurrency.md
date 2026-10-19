@@ -1154,6 +1154,22 @@ output changes once, when stage A lands.
   under different task histories; matching one fixed assignment is not
   enough. A worker whose isolate failed is discarded, not returned to the
   pool.
+  - *As built (light-cljs-371):* the form bridge kept one provenance per
+    scalar value, the latest imported, so a scalar a macro returned took the
+    span of an equal scalar from whatever call this isolate had seen last,
+    and source maps differed between slot counts on master. Each macro call
+    now has a scalar table of its own (`compilerFormBridge` in
+    `src/js_runtime.js`, so both engines), pushed when its input is
+    imported, reset to its arguments by `macroArguments` and popped when the
+    input is released, so a call made while another runs (a helper analyzed
+    on demand) leaves the outer call's table intact. A returned scalar has
+    the span of an equal argument scalar, or of a scalar the call imports
+    while it runs, else that of the call. The environment's scalars do not
+    count, since which of its components are re-imported or reused from the
+    environment cache also depends on history; nor does a scalar a macro
+    saved in an earlier call, which has no identity to tell it from an equal
+    new one. `tests/compiler/macro_scalar_spans.rs` and
+    `macros::javascript_form_bridge` cover these cases.
 - **Generated names.** Replace the four process-wide Rust counters and the
   per-heap JS `gensym` counter with allocation that is deterministic per
   unit: a unit-local counter plus a canonical unit discriminator, remapped or
