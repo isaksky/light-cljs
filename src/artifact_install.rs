@@ -1333,7 +1333,7 @@ impl Installer<'_> {
                     once,
                     group,
                     location,
-                } => InstalledRegistration::Bundle(std::rc::Rc::new(BundleRecord {
+                } => InstalledRegistration::Bundle(std::sync::Arc::new(BundleRecord {
                     products: products.clone(),
                     unit: self.unit(*unit),
                     extensions: extensions

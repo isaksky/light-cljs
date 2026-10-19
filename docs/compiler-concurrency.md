@@ -415,8 +415,8 @@ callback row and the `compiler_reader.rs` row above are resolved; the
   (`src/compilation_session.rs`) installs `__lightCompileUnit` and
   `light.build`'s `__lightBuildService` in an engine from a weak
   `CatalogView`. `CompilationSession` is the coordinator's view; a worker
-  installs them with a view of its own. Making the catalog behind it
-  thread-safe is light-cljs-335's.
+  installs them with a view of its own. The catalog behind it is
+  thread-safe since light-cljs-335 (below).
 - **V8 starts first.** `--compile` initializes the V8 platform at the start
   of `analyze_entry`, before the load pool's threads start
   (`v8_evaluator::initialize_platform`). An evaluator made elsewhere still
@@ -432,6 +432,65 @@ callback row and the `compiler_reader.rs` row above are resolved; the
   readers an environment was taken with on another thread, and give a bound
   engine a catalog view of its own, through which `__lightCompileUnit` and
   `light.build` requests reach it.
+
+As built (light-cljs-335): the `compilation_session.rs` rows are resolved.
+
+- **One shared catalog.** `SharedCatalog` (`src/compilation_session.rs`) is
+  the units, the Var bindings, the active and `defmulti` targets and the
+  ordered registrations behind one `Mutex`, with one `Condvar`, and a `const`
+  assertion keeps it `Send + Sync`. A unit is `Unstarted`, `Analyzing(owner)`,
+  `Analyzed(Arc<Program>, warnings)`, `Prepared(sync::Weak<Program>,
+  warnings, Arc<DeferredUnit>)` (the prepared compile-time JavaScript is the
+  `DeferredUnit`'s source) or `Failed(message, diagnostic)`. Its inputs are
+  its form, its snapshot and the `MacroEnvironment` of the host it was
+  registered with (`MacroHost::into_parts`); the registering thread keeps the
+  host's `EngineBinding`, by unit ID.
+- **One producer, many waiters.** A demand claims an `Unstarted` unit, waits
+  on the condvar with a predicate loop while another thread's analysis owns
+  it, and otherwise reuses the result or the failure, which every waiter
+  shares and nothing retries. The lock covers that bookkeeping only: the
+  analysis, the preparation of a unit's JavaScript and the drop of a
+  program run outside it, and the condvar is notified only when a thread
+  waits. A unit counts its waiters: when the application takes the analyzed
+  program (`release_application_ir`) while one waits, the unit keeps a strong
+  reference until the last waiter has its own, and `__lightCompileUnit`
+  falls back to the prepared JavaScript if the program went first. The claim
+  is guarded from the moment it is taken, so an analysis that unwinds still
+  fails its unit as interrupted and wakes its waiters.
+- **Cycles.** Each view joins the catalog with a thread slot that holds its
+  stack of units being analyzed and the unit it waits for. A unit met again
+  on the demanding thread's own stack is the serial diagnostic, unchanged. A
+  wait that would close a cycle across threads walks owner, waited unit,
+  owner, and reports "compile dependency cycle" with the cycle's units in
+  demand order from the lowest (source index, unit ID), and that unit again.
+  The thread that would close it gets the error; its failure reaches the
+  others as their waits end. The root-initializer cycle stays separate, in
+  JavaScript.
+- **Per isolate.** The coordinator's bootstrap engine and how many of the
+  catalog's registrations it holds are fields of its view,
+  `CompilationSession`, and no longer of the catalog. `WorkerView` is a
+  worker's view: its host (`MacroHost::bind`), whose binding each analysis
+  frame is taken from, its own slot, and its own count. It installs
+  `__lightCompileUnit`, `light.build`, the root registry and the runtime in
+  its engine, and before each analysis or `__lightCompileUnit` it installs
+  the registrations made since it last looked. Analysis is shared; a unit's
+  registration and roots are evaluated in each engine that asks for it.
+- **Left for later.** Only the coordinator registers units. A worker frame
+  has no `CompilationSession`, so analysis that needs one there, such as a
+  definition's `:test` unit, is for light-cljs-338's eligibility; source
+  macros in worker engines are light-cljs-339's.
+- **Tests.** `compilation_session::worker_tests` registers units in a fresh
+  catalog and analyzes them on worker threads without an engine: two threads
+  demanding one unit share one analysis and the same `Arc<Program>`; three
+  demanding a failing unit all get its one failure, and a later demand does
+  not retry it; a two-thread wait cycle reports `cljs.user/a -> cljs.user/c
+  -> cljs.user/a` whichever thread asks; a waiter that wakes only after the
+  coordinator's application took the program still gets it; a producer that
+  panics wakes its two waiters with "analysis interrupted", which a later
+  demand gets too. A worker engine evaluates a unit the coordinator prepared
+  through its own `__lightCompileUnit`, without a second analysis. Roots
+  initialized once per isolate with a stateful initializer are
+  light-cljs-367's test.
 
 The engines are ready for concurrent use.
 

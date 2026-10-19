@@ -1,17 +1,27 @@
-//! Owned deferred analysis. No catalog borrow survives analysis or engine entry.
+//! Owned deferred analysis. No catalog lock survives analysis or engine entry.
 //! Frames retain immutable definition-site resolution/macro snapshots. JS roots
 //! have their own state machine; analysis cycles are diagnosed separately.
+//!
+//! The catalog of units is shared by every thread of a compilation
+//! ([`SharedCatalog`]): one thread analyzes a unit, and every other thread
+//! that demands it meanwhile waits for that analysis and shares its result
+//! or its failure. What is bound to one compile-time engine, the engine and
+//! the registrations installed in it, stays with the view of the thread that
+//! owns the engine: [`CompilationSession`] on the coordinator, [`WorkerView`]
+//! on a worker (docs/compiler-concurrency.md, "As built (light-cljs-335)").
 use crate::{
     MacroHost, Program,
     analyzer::{AnalysisOptions, AnalysisWarning, NamespaceResolution},
     compiler_bootstrap::Bootstrap,
     compiler_data::{Datum, DatumKind, Form, Name},
     evaluator::MacroEvaluator,
+    macro_host::{EngineBinding, MacroEnvironment},
 };
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     rc::Rc,
+    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
 };
 
 pub(crate) struct DefinitionSnapshot {
@@ -62,31 +72,45 @@ struct Unit {
     // data it needs; these inputs must not pin an obsolete second snapshot.
     // Keep large inputs out of line so completed units retain no empty space
     // for the definition snapshot or the macro host's many shared tables.
-    form: Option<Form>,
-    snapshot: Option<Box<DefinitionSnapshot>>,
-    host: Option<Box<MacroHost>>,
+    inputs: Option<Box<UnitInputs>>,
     state: AnalysisState,
     analyses: usize,
     // Count actual engine demand separately from pure source preparation.
     // Ready or failed JavaScript roots never initialize a second time.
     emitted: bool,
+    /// How many threads wait for its analysis, and while one does after
+    /// the application took the analyzed program, a strong reference to
+    /// it, so that every waiter gets it ([`CompilationSession::release_application_ir`]).
+    waiters: u32,
+    retained: Option<Arc<Program>>,
+}
+/// What any thread analyzes a unit from: its form, its definition snapshot
+/// and the sendable part of the host it was registered with. The thread
+/// that registered it keeps the host's engine binding.
+struct UnitInputs {
+    form: Form,
+    snapshot: DefinitionSnapshot,
+    environment: MacroEnvironment,
 }
 #[derive(Clone)]
 enum AnalysisState {
     Unstarted,
-    Analyzing,
-    Analyzed(Rc<Program>, Vec<AnalysisWarning>),
+    /// Being analyzed by the thread with this slot in [`Catalog::threads`].
+    Analyzing(usize),
+    Analyzed(Arc<Program>, Vec<AnalysisWarning>),
+    /// Released to its application owner, which holds the analyzed program
+    /// while it copies it; the compile-time JavaScript stays.
     Prepared(
-        std::rc::Weak<Program>,
+        std::sync::Weak<Program>,
         Vec<AnalysisWarning>,
-        Rc<crate::emitter::DeferredUnit>,
+        Arc<crate::emitter::DeferredUnit>,
     ),
     Failed(String, Option<crate::AnalysisError>),
 }
 #[derive(Clone)]
 enum Registration {
     Root(String, Option<usize>, Option<usize>, bool, String),
-    Bundle(Rc<BundleRecord>),
+    Bundle(Arc<BundleRecord>),
 }
 /// A declaration bundle's registration, kept as data: its JavaScript names
 /// the bundle's unit ID, which an artifact records as a relocatable reference.
@@ -143,19 +167,256 @@ impl BundleRecord {
 }
 #[derive(Default)]
 struct Catalog {
-    units: Vec<Rc<RefCell<Unit>>>,
+    units: Vec<Unit>,
     active: HashMap<String, bool>,
     // Only active defmulti products have stable named demand keys.
     multifn_targets: HashMap<String, String>,
     bindings: HashMap<String, (VarId, usize)>,
-    stack: Vec<usize>,
-    bootstrap: Option<Bootstrap>,
+    /// Every registration in order; each engine installs them in this order
+    /// and records how far it got in its own view.
     registrations: Vec<Registration>,
     bundle_count: usize,
+    /// By the slot each view joined with ([`SharedCatalog::join`]).
+    threads: Vec<AnalysisThread>,
+    /// How many threads wait for a unit another thread analyzes.
+    waiting: usize,
 }
+/// A thread's analyses: the units it analyzes, the innermost last, each
+/// demanded by the one below it, and the unit it waits for.
 #[derive(Default)]
+struct AnalysisThread {
+    stack: Vec<usize>,
+    waiting: Option<usize>,
+}
+/// The units of one compilation, shared by the threads that analyze them.
+/// One thread analyzes each unit, and any other that demands it meanwhile
+/// waits for that analysis. The lock is held for bookkeeping only: no
+/// analysis, engine entry or large destructor runs under it.
+#[derive(Default)]
+pub(crate) struct SharedCatalog {
+    catalog: Mutex<Catalog>,
+    /// Notified when a unit stops being analyzed.
+    settled: Condvar,
+    #[cfg(test)]
+    on_claim: Mutex<Option<ClaimHook>>,
+    /// Runs on a waiting thread each time its wait ends, without the lock.
+    #[cfg(test)]
+    on_wake: Mutex<Option<ClaimHook>>,
+}
+const _: () = {
+    const fn send_sync<T: Send + Sync>() {}
+    send_sync::<SharedCatalog>();
+};
+/// What a demand for a unit gets from the catalog.
+enum Claim {
+    /// The demanding thread analyzes the unit, at this depth of its stack.
+    Analyze(Box<UnitInputs>, usize),
+    /// The unit was too deep in the thread's stack and has failed.
+    TooDeep(Box<UnitInputs>, usize),
+    /// Another analysis's result.
+    Reuse(Arc<Program>, Vec<AnalysisWarning>),
+}
+/// Runs on the thread that claimed a unit, before it analyzes the unit.
+#[cfg(test)]
+type ClaimHook = Box<dyn Fn(usize) + Send>;
+const DEPTH_LIMIT: &str = "compiler macro expansion depth limit exceeded in deferred units";
+impl SharedCatalog {
+    fn lock(&self) -> MutexGuard<'_, Catalog> {
+        self.catalog.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+    /// A slot for a new view's thread.
+    fn join(&self) -> usize {
+        let mut c = self.lock();
+        c.threads.push(AnalysisThread::default());
+        c.threads.len() - 1
+    }
+    /// Demand unit `id` for the thread in slot `thread`: claim it if no
+    /// thread has analyzed it, wait if another analyzes it, and reuse what
+    /// the analysis gave if it is done.
+    fn claim(&self, thread: usize, id: usize) -> Result<Claim, String> {
+        // Dropped after the lock is released.
+        let mut _released = None;
+        let mut guard = self.lock();
+        loop {
+            let c = &mut *guard;
+            let state = &c.units.get(id).ok_or("unknown compilation unit")?.state;
+            if let AnalysisState::Analyzing(owner) = *state
+                && owner != thread
+            {
+                if c.threads[thread].waiting.is_none() {
+                    if let Some(path) = c.wait_cycle(thread, id) {
+                        return Err(format!("compile dependency cycle: {path}"));
+                    }
+                    c.threads[thread].waiting = Some(id);
+                    c.waiting += 1;
+                    c.units[id].waiters += 1;
+                }
+                guard = self
+                    .settled
+                    .wait(guard)
+                    .unwrap_or_else(PoisonError::into_inner);
+                #[cfg(test)]
+                if let Some(hook) = &*self.on_wake.lock().unwrap() {
+                    drop(guard);
+                    hook(id);
+                    guard = self.lock();
+                }
+                continue;
+            }
+            if c.threads[thread].waiting.take().is_some() {
+                c.waiting -= 1;
+                let unit = &mut c.units[id];
+                unit.waiters -= 1;
+                if unit.waiters == 0 {
+                    _released = unit.retained.take();
+                }
+            }
+            match &c.units[id].state {
+                AnalysisState::Analyzed(program, warnings) => {
+                    return Ok(Claim::Reuse(program.clone(), warnings.clone()));
+                }
+                AnalysisState::Prepared(program, warnings, _) => {
+                    return program
+                        .upgrade()
+                        .map(|program| Claim::Reuse(program, warnings.clone()))
+                        .ok_or_else(|| "application IR was already transferred".to_owned());
+                }
+                AnalysisState::Failed(error, _) => return Err(error.clone()),
+                // Met again on this thread's own stack.
+                AnalysisState::Analyzing(_) => {
+                    let mut path = c.threads[thread]
+                        .stack
+                        .iter()
+                        .map(|&i| c.units[i].name.clone())
+                        .collect::<Vec<_>>();
+                    path.push(c.units[id].name.clone());
+                    return Err(format!("compile dependency cycle: {}", path.join(" -> ")));
+                }
+                AnalysisState::Unstarted => (),
+            }
+            let depth = c.threads[thread].stack.len();
+            let unit = &mut c.units[id];
+            let inputs = unit.inputs.take().expect("unstarted unit inputs");
+            if depth >= inputs.environment.limits().expansion_depth.min(64) {
+                unit.state = AnalysisState::Failed(DEPTH_LIMIT.to_owned(), None);
+                return Ok(Claim::TooDeep(inputs, depth));
+            }
+            unit.state = AnalysisState::Analyzing(thread);
+            unit.analyses += 1;
+            // The request has stable identity even if a newer same-kind source
+            // generation is activated while this frame is suspended.
+            debug_assert!(unit.request.generation > 0);
+            debug_assert_eq!(c.bindings[&unit.name].0, unit.request.var);
+            c.threads[thread].stack.push(id);
+            return Ok(Claim::Analyze(inputs, depth));
+        }
+    }
+    /// End the analysis of unit `id` that the thread in slot `thread` claimed
+    /// with `state`, or as interrupted, and wake the threads waiting for it.
+    fn settle(&self, thread: usize, id: usize, state: Option<AnalysisState>) {
+        let (previous, waiting) = {
+            let mut c = self.lock();
+            let c = &mut *c;
+            let popped = c.threads[thread].stack.pop();
+            debug_assert_eq!(popped, Some(id));
+            let unit = &mut c.units[id];
+            let previous = matches!(unit.state, AnalysisState::Analyzing(_)).then(|| {
+                std::mem::replace(
+                    &mut unit.state,
+                    state.unwrap_or_else(|| {
+                        AnalysisState::Failed("analysis interrupted".into(), None)
+                    }),
+                )
+            });
+            (previous, c.waiting > 0)
+        };
+        drop(previous);
+        if waiting {
+            self.settled.notify_all();
+        }
+    }
+    /// The unit `id`'s initializer, prepared, unless it is not yet.
+    fn prepared(&self, id: usize) -> Result<Option<Arc<crate::emitter::DeferredUnit>>, String> {
+        let c = self.lock();
+        match &c.units.get(id).ok_or("unknown compilation unit")?.state {
+            AnalysisState::Prepared(_, _, prepared) => Ok(Some(prepared.clone())),
+            _ => Ok(None),
+        }
+    }
+    fn set_emitted(&self, id: usize) {
+        self.lock().units[id].emitted = true;
+    }
+    fn unit_name(&self, id: usize) -> String {
+        self.lock().units[id].name.clone()
+    }
+    /// The source indexes of the units the thread in slot `thread`
+    /// analyzes, the innermost last.
+    fn analysis_sources(&self, thread: usize) -> Vec<u32> {
+        let c = self.lock();
+        c.threads[thread]
+            .stack
+            .iter()
+            .filter_map(|&unit| Some(c.units.get(unit)?.source))
+            .collect()
+    }
+    fn unit_source(&self, id: usize) -> Option<u32> {
+        Some(self.lock().units.get(id)?.source)
+    }
+}
+impl Catalog {
+    /// If the thread in slot `thread` waiting for unit `id` would close a
+    /// cycle of waits, the cycle's units in demand order from the one with
+    /// the lowest source index, and then that one again. Each analysis
+    /// thread waits for one unit at most, so the walk follows one chain:
+    /// the owner of `id`, the unit its thread waits for, and so on.
+    fn wait_cycle(&self, thread: usize, id: usize) -> Option<String> {
+        let mut cycle = Vec::new();
+        let mut unit = id;
+        for _ in 0..self.threads.len() {
+            let AnalysisState::Analyzing(owner) = self.units[unit].state else {
+                return None;
+            };
+            // Each unit from the waited one up its owner's stack demanded the
+            // next; the innermost demanded what the owner waits for.
+            let stack = &self.threads[owner].stack;
+            let at = stack.iter().position(|&u| u == unit)?;
+            cycle.extend_from_slice(&stack[at..]);
+            if owner == thread {
+                let first = (0..cycle.len())
+                    .min_by_key(|&i| (self.units[cycle[i]].source, cycle[i]))
+                    .unwrap_or(0);
+                cycle.rotate_left(first);
+                cycle.push(cycle[0]);
+                let names = cycle
+                    .iter()
+                    .map(|&u| self.units[u].name.as_str())
+                    .collect::<Vec<_>>();
+                return Some(names.join(" -> "));
+            }
+            unit = self.threads[owner].waiting?;
+        }
+        None
+    }
+}
+/// The registrations a compile-time engine has installed: per engine, and
+/// so per thread.
+#[derive(Default)]
+struct InstalledRegistrations {
+    bootstrap: Option<Bootstrap>,
+    /// How many of the catalog's registrations `bootstrap` holds.
+    installed: usize,
+}
+/// The coordinator's view of the catalog: the shared units, with the engine
+/// of the coordinator's thread and the engine bindings of the hosts it
+/// registered units with.
 pub(crate) struct CompilationSession {
-    catalog: RefCell<Catalog>,
+    shared: Arc<SharedCatalog>,
+    /// This view's slot in the catalog's analysis threads.
+    thread: usize,
+    engine: RefCell<InstalledRegistrations>,
+    /// By unit ID, the engine binding of the host the unit was registered
+    /// with, until its analysis takes a frame of it.
+    unit_bindings: RefCell<Vec<Option<Box<EngineBinding>>>>,
     /// While namespace artifacts are captured ([`crate::artifact_capture`]),
     /// what the catalog does not otherwise keep about its units and macros.
     capture: RefCell<Option<SessionCapture>>,
@@ -233,7 +494,7 @@ pub(crate) enum InstalledRegistration {
         once: bool,
         location: String,
     },
-    Bundle(Rc<BundleRecord>),
+    Bundle(Arc<BundleRecord>),
 }
 /// A registration as capture reads it from the catalog.
 pub(crate) enum RegistrationRecord {
@@ -244,12 +505,33 @@ pub(crate) enum RegistrationRecord {
         once: bool,
         location: String,
     },
-    Bundle(Rc<BundleRecord>),
+    Bundle(Arc<BundleRecord>),
+}
+impl Default for CompilationSession {
+    fn default() -> Self {
+        let shared = Arc::new(SharedCatalog::default());
+        let thread = shared.join();
+        Self {
+            shared,
+            thread,
+            engine: Default::default(),
+            unit_bindings: Default::default(),
+            capture: Default::default(),
+            gensyms_pending: Default::default(),
+            gensym_floor: Default::default(),
+            gensyms_logged: Default::default(),
+        }
+    }
 }
 impl CompilationSession {
+    /// The catalog this view shares with the views of other threads.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn shared(&self) -> &Arc<SharedCatalog> {
+        &self.shared
+    }
     /// Record what namespace artifacts need from now on.
     pub fn begin_capture(&self) {
-        let first_unit = self.catalog.borrow().units.len();
+        let first_unit = self.shared.lock().units.len();
         *self.capture.borrow_mut() = Some(SessionCapture {
             first_unit,
             ..Default::default()
@@ -260,7 +542,7 @@ impl CompilationSession {
     }
     /// How many units, registrations and bundles the catalog holds.
     pub fn capture_marks(&self) -> (usize, usize, usize) {
-        let c = self.catalog.borrow();
+        let c = self.shared.lock();
         (c.units.len(), c.registrations.len(), c.bundle_count)
     }
     pub fn capture_macro(
@@ -310,32 +592,50 @@ impl CompilationSession {
     }
     /// The units from ID `from` on.
     pub fn captured_units(&self, from: usize) -> Result<Vec<UnitRecord>, String> {
-        let catalog = self.catalog.borrow();
+        let units = self
+            .shared
+            .lock()
+            .units
+            .iter()
+            .skip(from)
+            .map(|unit| {
+                let prepared = match &unit.state {
+                    AnalysisState::Prepared(_, _, prepared) => Ok(prepared.clone()),
+                    AnalysisState::Unstarted => Err("a deferred unit was never analyzed"),
+                    AnalysisState::Analyzing(_) => Err("a deferred unit is still being analyzed"),
+                    AnalysisState::Analyzed(..) => {
+                        Err("a deferred unit was analyzed but not prepared")
+                    }
+                    AnalysisState::Failed(..) => Err("a deferred unit failed"),
+                };
+                let request = unit.request.generation;
+                (
+                    unit.name.clone(),
+                    request,
+                    unit.analyses,
+                    unit.emitted,
+                    prepared,
+                )
+            })
+            .collect::<Vec<_>>();
         let mut capture = self.capture.borrow_mut();
         let capture = capture.as_mut().ok_or("capture is off")?;
         let mut records = Vec::new();
-        for (id, unit) in catalog.units.iter().enumerate().skip(from) {
+        for (id, (name, generation, analyses, emitted, prepared)) in (from..).zip(units) {
             let entry = id
                 .checked_sub(capture.first_unit)
                 .and_then(|index| capture.units.get_mut(index))
                 .ok_or("a unit registered before capture began")?;
-            let unit = unit.borrow();
-            let reader_contexts = match &unit.state {
-                AnalysisState::Prepared(_, _, prepared) => Some(prepared.reader_contexts().clone()),
-                _ => None,
-            };
-            let code = match &unit.state {
-                AnalysisState::Prepared(_, _, prepared) => Ok(prepared.code().to_owned()),
-                AnalysisState::Unstarted => Err("a deferred unit was never analyzed"),
-                AnalysisState::Analyzing => Err("a deferred unit is still being analyzed"),
-                AnalysisState::Analyzed(..) => Err("a deferred unit was analyzed but not prepared"),
-                AnalysisState::Failed(..) => Err("a deferred unit failed"),
-            };
+            let reader_contexts = prepared
+                .as_ref()
+                .ok()
+                .map(|prepared| prepared.reader_contexts().clone());
+            let code = prepared.map(|prepared| prepared.code().to_owned());
             records.push(UnitRecord {
-                name: unit.name.clone(),
-                generation: unit.request.generation,
-                analyses: unit.analyses,
-                emitted: unit.emitted,
+                name,
+                generation,
+                analyses,
+                emitted,
                 code,
                 view_globals: entry.view_globals,
                 extension_frontier: entry.extension_frontier,
@@ -347,8 +647,8 @@ impl CompilationSession {
     }
     /// The registrations from position `from` on.
     pub fn captured_registrations(&self, from: usize) -> Vec<RegistrationRecord> {
-        self.catalog
-            .borrow()
+        self.shared
+            .lock()
             .registrations
             .iter()
             .skip(from)
@@ -366,7 +666,7 @@ impl CompilationSession {
     }
     /// The ID the next registered unit gets.
     pub fn next_unit(&self) -> usize {
-        self.catalog.borrow().units.len()
+        self.shared.lock().units.len()
     }
     /// Register again, in order, the units and registrations of a namespace
     /// installed from its artifact (`crate::artifact_install`), as
@@ -384,8 +684,8 @@ impl CompilationSession {
     ) -> Result<(), String> {
         let mut units = units.into_iter();
         for registration in registrations {
-            let bootstrap = {
-                let mut c = self.catalog.borrow_mut();
+            let end = {
+                let mut c = self.shared.lock();
                 let c = &mut *c;
                 match &registration {
                     InstalledRegistration::Root {
@@ -415,21 +715,21 @@ impl CompilationSession {
                             if let Some(capture) = self.capture.borrow_mut().as_mut() {
                                 capture.units.push(UnitCapture::default());
                             }
-                            c.units.push(Rc::new(RefCell::new(Unit {
+                            c.units.push(Unit {
                                 request,
                                 name: name.clone(),
                                 source,
-                                form: None,
-                                snapshot: None,
-                                host: None,
+                                inputs: None,
                                 state: AnalysisState::Prepared(
-                                    std::rc::Weak::new(),
+                                    std::sync::Weak::new(),
                                     Vec::new(),
-                                    Rc::new(prepared),
+                                    Arc::new(prepared),
                                 ),
                                 analyses: 0,
                                 emitted: false,
-                            })));
+                                waiters: 0,
+                                retained: None,
+                            });
                         }
                         if !(unit.is_none() && c.active.contains_key(name)
                             || *once && c.active.get(name).is_some_and(|defined| *defined))
@@ -461,26 +761,9 @@ impl CompilationSession {
                         }
                     }
                 }
-                c.bootstrap.clone()
+                c.registrations.len()
             };
-            if let Some(bootstrap) = bootstrap {
-                let engine = bootstrap.evaluator.as_ref();
-                match registration {
-                    InstalledRegistration::Root {
-                        name,
-                        unit,
-                        test,
-                        once,
-                        location,
-                    } => Self::install_root(engine, &name, unit, test, once, &location)?,
-                    InstalledRegistration::Bundle(bundle) => {
-                        let value = engine
-                            .evaluate_unit(&bundle.source())
-                            .map_err(|e| e.to_string())?;
-                        engine.release(value).map_err(|e| e.to_string())?;
-                    }
-                }
-            }
+            self.install_registrations(end, |_| Ok(()))?;
         }
         if units.next().is_some() {
             return Err("an installed unit has no root".into());
@@ -488,7 +771,28 @@ impl CompilationSession {
         Ok(())
     }
     pub fn bootstrap(&self) -> Option<Bootstrap> {
-        self.catalog.borrow().bootstrap.clone()
+        self.engine.borrow().bootstrap.clone()
+    }
+    /// Install in this view's engine, if it has one, the catalog's
+    /// registrations before position `end` that it lacks, in order;
+    /// `before_last` runs in the engine before the last of them.
+    fn install_registrations(
+        &self,
+        end: usize,
+        before_last: impl FnOnce(&dyn MacroEvaluator) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut installed = self.engine.borrow_mut();
+        let Some(bootstrap) = installed.bootstrap.clone() else {
+            return Ok(());
+        };
+        let start = installed.installed;
+        if start >= end {
+            return Ok(());
+        }
+        installed.installed = end;
+        drop(installed);
+        let pending = self.shared.lock().registrations[start..end].to_vec();
+        install_registrations(bootstrap.evaluator.as_ref(), &pending, before_last)
     }
     /// Keep the compile-time runtime's `gensym` from returning any of
     /// `names` in this compilation: now if the session has started, else
@@ -609,34 +913,12 @@ impl CompilationSession {
         Rc::new(Self::default())
     }
     pub fn attach(self: &Rc<Self>, bootstrap: &Bootstrap, host: &MacroHost) -> Result<(), String> {
-        if self.catalog.borrow().bootstrap.is_some() {
+        if self.engine.borrow().bootstrap.is_some() {
             return Ok(());
         }
         let evaluator = &bootstrap.evaluator;
         let view: std::rc::Weak<dyn CatalogView> = Rc::downgrade(self) as std::rc::Weak<Self>;
-        install_catalog_services(
-            evaluator,
-            view,
-            host.engine.build.clone(),
-            host.engine.dependency_log.clone(),
-        )?;
-        // Registry and root states stay in JS, so ready reads never cross Rust.
-        let value = evaluator
-            .evaluate_js(include_str!("compiler_roots.js"))
-            .map_err(|e| e.to_string())?;
-        evaluator.release(value).map_err(|e| e.to_string())?;
-        let value = evaluator
-            .evaluate_js(&format!(
-                "(globalThis.lightCljsBuild = ({})(globalThis.__lightBuildService, globalThis.__lightBuildCaller), null)",
-                crate::build_services::BUILD_OBJECT
-            ))
-            .map_err(|e| e.to_string())?;
-        evaluator.release(value).map_err(|e| e.to_string())?;
-        // Capture the canonical runtime without a second runtime or native adapter.
-        let value = evaluator
-            .evaluate_unit("rt => { globalThis.__lightRuntimeForCompiler = rt; return null; }")
-            .map_err(|e| e.to_string())?;
-        evaluator.release(value).map_err(|e| e.to_string())?;
+        prepare_engine(evaluator, view, &host.engine)?;
         // What installed namespaces reserved before the session started, and
         // the log capture reads.
         let pending = std::mem::take(&mut *self.gensyms_pending.borrow_mut());
@@ -645,52 +927,32 @@ impl CompilationSession {
         if self.gensyms_logged.get() {
             Self::take_gensyms_from(evaluator.as_ref())?;
         }
-        let registrations = {
-            let mut catalog = self.catalog.borrow_mut();
-            catalog.bootstrap = Some(bootstrap.clone());
-            catalog.registrations.clone()
-        };
-        for registration in registrations {
-            match registration {
-                Registration::Root(name, unit, test, once, location) => {
-                    Self::install_root(evaluator.as_ref(), &name, unit, test, once, &location)?
-                }
-                Registration::Bundle(bundle) => {
-                    let value = evaluator
-                        .evaluate_unit(&bundle.source())
-                        .map_err(|e| e.to_string())?;
-                    evaluator.release(value).map_err(|e| e.to_string())?;
-                }
-            }
-        }
-        Ok(())
+        self.engine.borrow_mut().bootstrap = Some(bootstrap.clone());
+        let end = self.shared.lock().registrations.len();
+        self.install_registrations(end, |_| Ok(()))
     }
     pub fn compilation_uses(&self) -> Vec<crate::analyzer::CompilationUse> {
-        self.catalog
-            .borrow()
+        self.shared
+            .lock()
             .units
             .iter()
-            .map(|unit| {
-                let unit = unit.borrow();
-                crate::analyzer::CompilationUse {
-                    name: unit.name.clone(),
-                    generation: unit.request.generation,
-                    analyses: unit.analyses,
-                    emissions: usize::from(unit.emitted),
-                }
+            .map(|unit| crate::analyzer::CompilationUse {
+                name: unit.name.clone(),
+                generation: unit.request.generation,
+                analyses: unit.analyses,
+                emissions: usize::from(unit.emitted),
             })
             .collect()
     }
     /// How many units this compilation registered, analyzed, prepared and
     /// executed (`--stats`).
     pub fn unit_counts(&self) -> crate::compile_stats::DeferredUnitCounts {
-        let catalog = self.catalog.borrow();
+        let catalog = self.shared.lock();
         let mut counts = crate::compile_stats::DeferredUnitCounts {
             registered: catalog.units.len(),
             ..Default::default()
         };
         for unit in &catalog.units {
-            let unit = unit.borrow();
             counts.analyzed += usize::from(unit.analyses > 0);
             counts.prepared += usize::from(matches!(unit.state, AnalysisState::Prepared(..)));
             counts.executed += usize::from(unit.emitted);
@@ -698,10 +960,10 @@ impl CompilationSession {
         counts
     }
     pub fn extension_frontier(&self) -> usize {
-        self.catalog.borrow().bundle_count
+        self.shared.lock().bundle_count
     }
     pub fn multifn_target(&self, name: &str) -> Option<String> {
-        self.catalog.borrow().multifn_targets.get(name).cloned()
+        self.shared.lock().multifn_targets.get(name).cloned()
     }
     pub fn register_bundle(
         &self,
@@ -725,22 +987,24 @@ impl CompilationSession {
                 format!("{}/{}", b.namespace, b.name)
             })
             .collect::<Vec<_>>();
-        let name = format!("declaration#{}", self.catalog.borrow().units.len());
+        let name = format!("declaration#{}", self.shared.lock().units.len());
         let unit = self
             .register(name, Some(form), snapshot, host, false, location.clone())?
             .unwrap();
         let group = analyzed.is_some();
         if let Some(mut program) = analyzed {
             program.shrink_to_fit();
-            let unit = self.catalog.borrow().units[unit].clone();
-            let mut unit = unit.borrow_mut();
-            unit.state = AnalysisState::Analyzed(Rc::new(program), Vec::new());
-            unit.analyses = 1;
-            unit.form = None;
-            unit.snapshot = None;
-            unit.host = None;
+            let inputs = {
+                let mut c = self.shared.lock();
+                let entry = &mut c.units[unit];
+                entry.state = AnalysisState::Analyzed(Arc::new(program), Vec::new());
+                entry.analyses = 1;
+                entry.inputs.take()
+            };
+            let binding = self.take_unit_binding(unit);
+            drop((inputs, binding));
         }
-        let bundle = Rc::new(BundleRecord {
+        let bundle = Arc::new(BundleRecord {
             products: names,
             unit,
             extensions: extensions.to_vec(),
@@ -748,9 +1012,8 @@ impl CompilationSession {
             once,
             group,
         });
-        let source = bundle.source();
-        let bootstrap = {
-            let mut c = self.catalog.borrow_mut();
+        let end = {
+            let mut c = self.shared.lock();
             c.registrations.push(Registration::Bundle(bundle));
             c.bundle_count += 1;
             for g in products {
@@ -766,32 +1029,17 @@ impl CompilationSession {
                 }
                 c.active.insert(name, true);
             }
-            c.bootstrap.clone()
+            c.registrations.len()
         };
-        if let Some(bootstrap) = bootstrap {
-            let engine = bootstrap.evaluator.as_ref();
-            // Initializers that call `gensym` number in the scope that
-            // registers them.
-            crate::generated_names::sync_gensym_scope(engine).map_err(|e| e.to_string())?;
-            let value = engine.evaluate_unit(&source).map_err(|e| e.to_string())?;
-            engine.release(value).map_err(|e| e.to_string())?;
-        }
+        // Initializers that call `gensym` number in the scope that
+        // registers them.
+        self.install_registrations(end, |engine| {
+            crate::generated_names::sync_gensym_scope(engine).map_err(|e| e.to_string())
+        })?;
         if group {
             self.release_application_ir(unit);
         }
         Ok(unit)
-    }
-    fn install_root(
-        engine: &dyn MacroEvaluator,
-        name: &str,
-        unit: Option<usize>,
-        test: Option<usize>,
-        once: bool,
-        location: &str,
-    ) -> Result<(), String> {
-        engine
-            .register_compiler_root(name, unit, once, location, test)
-            .map_err(|e| e.to_string())
     }
     pub fn register(
         &self,
@@ -805,7 +1053,7 @@ impl CompilationSession {
         // Executable metadata has its own source-site unit and root state.
         // Reflecting it cannot analyze or execute the ordinary initializer.
         if let Some(test) = snapshot.definition_test.take().filter(|_| form.is_some()) {
-            let test_name = format!("{name} :test#{}", self.catalog.borrow().units.len());
+            let test_name = format!("{name} :test#{}", self.shared.lock().units.len());
             snapshot.definition_test_unit = self.register(
                 test_name,
                 Some(test),
@@ -816,8 +1064,14 @@ impl CompilationSession {
             )?;
         }
         let test = snapshot.definition_test_unit;
-        let (id, bootstrap) = {
-            let mut c = self.catalog.borrow_mut();
+        #[cfg(test)]
+        if let Some(form) = &form {
+            worker_tests::retain(self.next_unit(), form, &snapshot, &host);
+        }
+        let (environment, binding) = host.into_parts();
+        let (id, end) = {
+            let mut c = self.shared.lock();
+            let c = &mut *c;
             let next_var = VarId(c.bindings.len());
             let binding = c.bindings.entry(name.clone()).or_insert((next_var, 0));
             if form.is_some() {
@@ -836,19 +1090,21 @@ impl CompilationSession {
                         added: Vec::new(),
                     });
                 }
-                #[cfg(test)]
-                worker_tests::retain(id, &form, &snapshot, &host);
-                c.units.push(Rc::new(RefCell::new(Unit {
+                c.units.push(Unit {
                     request,
                     name: name.clone(),
                     source: snapshot.source_index as u32,
-                    form: Some(form),
-                    snapshot: Some(Box::new(snapshot)),
-                    host: Some(Box::new(host)),
+                    inputs: Some(Box::new(UnitInputs {
+                        form,
+                        snapshot,
+                        environment,
+                    })),
                     state: AnalysisState::Unstarted,
                     analyses: 0,
                     emitted: false,
-                })));
+                    waiters: 0,
+                    retained: None,
+                });
                 id
             });
             if !(id.is_none() && c.active.contains_key(&name)
@@ -857,30 +1113,22 @@ impl CompilationSession {
                 c.multifn_targets.remove(&name);
                 c.active.insert(name.clone(), id.is_some());
             }
-            c.registrations.push(Registration::Root(
-                name.clone(),
-                id,
-                test,
-                once,
-                location.clone(),
-            ));
-            (id, c.bootstrap.clone())
+            c.registrations
+                .push(Registration::Root(name, id, test, once, location));
+            (id, c.registrations.len())
         };
-        if let Some(bootstrap) = bootstrap {
-            Self::install_root(
-                bootstrap.evaluator.as_ref(),
-                &name,
-                id,
-                test,
-                once,
-                &location,
-            )?;
+        if let Some(id) = id {
+            let mut bindings = self.unit_bindings.borrow_mut();
+            if bindings.len() <= id {
+                bindings.resize_with(id + 1, || None);
+            }
+            bindings[id] = Some(Box::new(binding));
         }
+        self.install_registrations(end, |_| Ok(()))?;
         Ok(id)
     }
     pub fn diagnostic(&self, id: usize) -> Option<crate::AnalysisError> {
-        let unit = self.catalog.borrow().units.get(id)?.clone();
-        match &unit.borrow().state {
+        match &self.shared.lock().units.get(id)?.state {
             AnalysisState::Failed(_, diagnostic) => diagnostic.clone(),
             _ => None,
         }
@@ -888,163 +1136,226 @@ impl CompilationSession {
     /// Called after the analyzed body has been copied into its application
     /// owner. Preparing source is pure: execution and registration stay lazy.
     pub fn release_application_ir(&self, id: usize) {
-        let unit = self.catalog.borrow().units[id].clone();
-        let mut unit = unit.borrow_mut();
-        if let AnalysisState::Analyzed(program, warnings) = &unit.state {
-            unit.state = AnalysisState::Prepared(
-                Rc::downgrade(program),
-                warnings.clone(),
-                Rc::new(crate::emitter::DeferredUnit::prepare(program)),
-            );
-        }
+        let program = match &self.shared.lock().units[id].state {
+            AnalysisState::Analyzed(program, _) => program.clone(),
+            _ => return,
+        };
+        // Prepared outside the lock; the analyzed program is dropped by its
+        // last holder, outside it too.
+        let prepared = Arc::new(crate::emitter::DeferredUnit::prepare(&program));
+        let previous = {
+            let mut c = self.shared.lock();
+            let state = &mut c.units[id].state;
+            match std::mem::replace(state, AnalysisState::Unstarted) {
+                AnalysisState::Analyzed(program, warnings) => {
+                    *state = AnalysisState::Prepared(Arc::downgrade(&program), warnings, prepared);
+                    // Threads waiting for the analysis have not taken it yet.
+                    let unit = &mut c.units[id];
+                    if unit.waiters > 0 {
+                        unit.retained = Some(program);
+                        None
+                    } else {
+                        Some(program)
+                    }
+                }
+                other => {
+                    *state = other;
+                    None
+                }
+            }
+        };
+        drop((previous, program));
+    }
+    /// The engine binding unit `id` was registered with, if its analysis
+    /// has not taken it.
+    fn take_unit_binding(&self, id: usize) -> Option<Box<EngineBinding>> {
+        self.unit_bindings
+            .borrow_mut()
+            .get_mut(id)
+            .and_then(Option::take)
     }
     pub fn analyze(
         &self,
         id: usize,
         engine: Option<&dyn MacroEvaluator>,
-    ) -> Result<(Rc<Program>, Vec<AnalysisWarning>), String> {
-        let (unit, bootstrap) = {
-            let c = self.catalog.borrow();
-            (
-                c.units.get(id).cloned().ok_or("unknown compilation unit")?,
-                c.bootstrap.clone(),
-            )
-        };
-        let (form, snapshot, mut host) = {
-            let mut unit = unit.borrow_mut();
-            match &unit.state {
-                AnalysisState::Analyzed(program, warnings) => {
-                    return Ok((program.clone(), warnings.clone()));
-                }
-                AnalysisState::Prepared(program, warnings, _) => {
-                    return program
-                        .upgrade()
-                        .map(|program| (program, warnings.clone()))
-                        .ok_or_else(|| "application IR was already transferred".to_owned());
-                }
-                AnalysisState::Failed(error, _) => return Err(error.clone()),
-                AnalysisState::Analyzing => {
-                    let c = self.catalog.borrow();
-                    let mut path = c
-                        .stack
-                        .iter()
-                        .map(|i| {
-                            if *i == id {
-                                unit.name.clone()
-                            } else {
-                                c.units[*i].borrow().name.clone()
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    path.push(unit.name.clone());
-                    return Err(format!("compile dependency cycle: {}", path.join(" -> ")));
-                }
-                AnalysisState::Unstarted => (),
-            }
-            let depth = self.catalog.borrow().stack.len();
-            let host = unit.host.as_ref().expect("unstarted unit host");
-            crate::macro_host::WorkMarks::note(&host.engine.work.unit_depth, depth + 1);
-            if depth >= host.limits.expansion_depth.min(64) {
-                let message =
-                    "compiler macro expansion depth limit exceeded in deferred units".to_owned();
-                unit.state = AnalysisState::Failed(message.clone(), None);
-                unit.form = None;
-                unit.snapshot = None;
-                unit.host = None;
-                return Err(message);
-            }
-            unit.state = AnalysisState::Analyzing;
-            unit.analyses += 1;
-            // The request has stable identity even if a newer same-kind source
-            // generation is activated while this frame is suspended.
-            let request = unit.request;
-            debug_assert!(request.generation > 0);
-            debug_assert_eq!(self.catalog.borrow().bindings[&unit.name].0, request.var);
-            // A unit is analyzed once; its registration-time host is not needed
-            // after its analysis frame is taken.
-            let mut host = unit
-                .host
-                .take()
-                .expect("unstarted unit host")
-                .macro_analysis_frame();
-            if host.engine.bootstrap.is_none() {
-                host.engine.bootstrap = bootstrap;
-            }
-            (
-                unit.form.take().expect("unstarted unit form"),
-                unit.snapshot.take().expect("unstarted unit snapshot"),
-                host,
-            )
-        };
-        let depth = {
-            let mut catalog = self.catalog.borrow_mut();
-            catalog.stack.push(id);
-            catalog.stack.len() - 1
-        };
-        // Declared before the frontier guard, so the frontier's transitions
-        // count in the unit's frame (`--stats`, [`crate::compile_trace`]).
-        let _traced = crate::compile_trace::enter_unit(
-            || crate::compile_trace::UnitInfo {
-                id,
-                source: unit.borrow().source,
-                name: unit.borrow().name.clone(),
-                span: form.span(),
-                depth,
-            },
-            &host,
-        );
-        let guard = AnalysisGuard {
-            session: self,
-            unit: unit.clone(),
-            id,
-        };
-        let evaluator = host.engine.bootstrap.as_ref().map(|b| b.evaluator.clone());
-        let engine = engine.or_else(|| {
-            evaluator
-                .as_ref()
-                .map(|e| e.as_ref() as &dyn MacroEvaluator)
+    ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
+        let bootstrap = self.bootstrap();
+        let analysis = analyze_unit(&self.shared, self.thread, id, engine, || {
+            let binding = self.take_unit_binding(id).expect("unstarted unit host");
+            (*binding, bootstrap)
         });
-        let _frontier = if let Some(engine) = engine {
-            engine
-                .compiler_frontier(Some(snapshot.extension_frontier))
-                .map_err(|e| e.to_string())?;
-            Some(FrontierGuard { engine })
-        } else {
-            None
-        };
-        // The unit's macros number in its scope; whatever demanded it, such
-        // as a running macro calling it, numbers in its own again after.
-        let _gensyms = crate::generated_names::RestoreGensymScope(engine);
-        let analysis = crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
-        let diagnostic = analysis.as_ref().err().cloned();
-        let result = analysis
-            .map(|(mut p, w)| {
-                p.shrink_to_fit();
-                (Rc::new(p), w)
-            })
-            .map_err(|e| {
-                let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
-                format!(
-                    "{}:{}:{}: {}: {e}",
-                    loc.source,
-                    loc.line,
-                    loc.column,
-                    unit.borrow().name
-                )
-            });
-        unit.borrow_mut().state = match &result {
-            Ok((p, w)) => AnalysisState::Analyzed(p.clone(), w.clone()),
-            Err(e) => AnalysisState::Failed(e.clone(), diagnostic),
-        };
-        drop(guard);
-        result
+        // Analyzed on another thread, the unit's binding is no longer needed.
+        drop(self.take_unit_binding(id));
+        analysis
     }
+}
+/// Analyze unit `id` on the thread in slot `thread`, or wait for the thread
+/// that analyzes it, or reuse what an analysis gave. `binding` gives the
+/// engine binding the unit's analysis frame is taken from, and the bootstrap
+/// engine the frame gets if the binding has none.
+fn analyze_unit(
+    shared: &SharedCatalog,
+    thread: usize,
+    id: usize,
+    engine: Option<&dyn MacroEvaluator>,
+    binding: impl FnOnce() -> (EngineBinding, Option<Bootstrap>),
+) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
+    let (inputs, depth) = match shared.claim(thread, id)? {
+        Claim::Reuse(program, warnings) => return Ok((program, warnings)),
+        Claim::TooDeep(inputs, depth) => {
+            let (binding, _) = binding();
+            crate::macro_host::WorkMarks::note(&binding.work.unit_depth, depth + 1);
+            drop((inputs, binding));
+            return Err(DEPTH_LIMIT.to_owned());
+        }
+        Claim::Analyze(inputs, depth) => (inputs, depth),
+    };
+    // From here on, however the analysis ends, even by unwinding, the unit
+    // settles and its waiters wake.
+    let mut guard = AnalysisGuard {
+        shared,
+        thread,
+        id,
+        state: None,
+    };
+    #[cfg(test)]
+    if let Some(hook) = &*shared
+        .on_claim
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+    {
+        hook(id);
+    }
+    let UnitInputs {
+        form,
+        snapshot,
+        environment,
+    } = *inputs;
+    let (binding, bootstrap) = binding();
+    crate::macro_host::WorkMarks::note(&binding.work.unit_depth, depth + 1);
+    // A unit is analyzed once; its registration-time host is not needed
+    // after its analysis frame is taken.
+    let mut host = MacroHost::from_parts(environment, binding).macro_analysis_frame();
+    if host.engine.bootstrap.is_none() {
+        host.engine.bootstrap = bootstrap;
+    }
+    // Declared before the frontier guard, so the frontier's transitions
+    // count in the unit's frame (`--stats`, [`crate::compile_trace`]).
+    let _traced = crate::compile_trace::enter_unit(
+        || crate::compile_trace::UnitInfo {
+            id,
+            source: shared.unit_source(id).unwrap_or_default(),
+            name: shared.unit_name(id),
+            span: form.span(),
+            depth,
+        },
+        &host,
+    );
+    let evaluator = host.engine.bootstrap.as_ref().map(|b| b.evaluator.clone());
+    let engine = engine.or_else(|| {
+        evaluator
+            .as_ref()
+            .map(|e| e.as_ref() as &dyn MacroEvaluator)
+    });
+    let _frontier = if let Some(engine) = engine {
+        engine
+            .compiler_frontier(Some(snapshot.extension_frontier))
+            .map_err(|e| e.to_string())?;
+        Some(FrontierGuard { engine })
+    } else {
+        None
+    };
+    // The unit's macros number in its scope; whatever demanded it, such
+    // as a running macro calling it, numbers in its own again after.
+    let _gensyms = crate::generated_names::RestoreGensymScope(engine);
+    let analysis = crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
+    let diagnostic = analysis.as_ref().err().cloned();
+    let result = analysis
+        .map(|(mut p, w)| {
+            p.shrink_to_fit();
+            (Arc::new(p), w)
+        })
+        .map_err(|e| {
+            let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
+            format!(
+                "{}:{}:{}: {}: {e}",
+                loc.source,
+                loc.line,
+                loc.column,
+                shared.unit_name(id)
+            )
+        });
+    guard.state = Some(match &result {
+        Ok((p, w)) => AnalysisState::Analyzed(p.clone(), w.clone()),
+        Err(e) => AnalysisState::Failed(e.clone(), diagnostic),
+    });
+    drop(guard);
+    result
+}
+/// Install `registrations` in `engine` in order; `before_last` runs in it
+/// before the last of them.
+fn install_registrations(
+    engine: &dyn MacroEvaluator,
+    registrations: &[Registration],
+    before_last: impl FnOnce(&dyn MacroEvaluator) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut before_last = Some(before_last);
+    for (index, registration) in registrations.iter().enumerate() {
+        if index + 1 == registrations.len()
+            && let Some(before_last) = before_last.take()
+        {
+            before_last(engine)?;
+        }
+        match registration {
+            Registration::Root(name, unit, test, once, location) => engine
+                .register_compiler_root(name, *unit, *once, location, *test)
+                .map_err(|e| e.to_string())?,
+            Registration::Bundle(bundle) => {
+                let value = engine
+                    .evaluate_unit(&bundle.source())
+                    .map_err(|e| e.to_string())?;
+                engine.release(value).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+/// Make `evaluator` a compile-time engine of the compilation `view` sees:
+/// its services, the registry of roots and `light.build`.
+fn prepare_engine(
+    evaluator: &Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
+    view: std::rc::Weak<dyn CatalogView>,
+    binding: &EngineBinding,
+) -> Result<(), String> {
+    install_catalog_services(
+        evaluator,
+        view,
+        binding.build.clone(),
+        binding.dependency_log.clone(),
+    )?;
+    // Registry and root states stay in JS, so ready reads never cross Rust.
+    let value = evaluator
+        .evaluate_js(include_str!("compiler_roots.js"))
+        .map_err(|e| e.to_string())?;
+    evaluator.release(value).map_err(|e| e.to_string())?;
+    let value = evaluator
+        .evaluate_js(&format!(
+            "(globalThis.lightCljsBuild = ({})(globalThis.__lightBuildService, globalThis.__lightBuildCaller), null)",
+            crate::build_services::BUILD_OBJECT
+        ))
+        .map_err(|e| e.to_string())?;
+    evaluator.release(value).map_err(|e| e.to_string())?;
+    // Capture the canonical runtime without a second runtime or native adapter.
+    let value = evaluator
+        .evaluate_unit("rt => { globalThis.__lightRuntimeForCompiler = rt; return null; }")
+        .map_err(|e| e.to_string())?;
+    evaluator.release(value).map_err(|e| e.to_string())
 }
 /// What the services installed in a compile-time engine reach: the units of
 /// the compilation as the engine's thread sees them. The coordinator's
 /// engine reaches its [`CompilationSession`]; a worker's engine reaches its
-/// own view of the shared catalog (docs/compiler-concurrency.md, "As built
-/// (light-cljs-334)").
+/// [`WorkerView`] of the shared catalog (docs/compiler-concurrency.md, "As
+/// built (light-cljs-334)" and "As built (light-cljs-335)").
 pub(crate) trait CatalogView {
     /// `__lightCompileUnit`: unit `id`'s initializer, analyzed first if it
     /// is not yet, with the registration it needs evaluated in `active`.
@@ -1055,39 +1366,119 @@ pub(crate) trait CatalogView {
     /// innermost last.
     fn analysis_sources(&self) -> Vec<u32>;
 }
+/// `__lightCompileUnit` in `active` for a view whose analyses `analyze` runs:
+/// analysis is shared by the threads, and the unit's registration is
+/// evaluated in the engine of the thread that asks.
+fn compile_unit_in(
+    shared: &SharedCatalog,
+    active: &dyn MacroEvaluator,
+    id: usize,
+    analyze: impl FnOnce() -> Result<(Arc<Program>, Vec<AnalysisWarning>), String>,
+) -> Result<String, String> {
+    let prepared = shared.prepared(id)?;
+    crate::compile_trace::executed(id, prepared.is_some());
+    let (registration, code) = if let Some(prepared) = prepared {
+        prepared.emit()
+    } else {
+        match analyze() {
+            Ok((program, _)) => crate::emitter::emit_deferred_unit(&program),
+            // Another thread analyzed it and its application took the
+            // program after this one looked; its JavaScript is prepared.
+            Err(error) => match shared.prepared(id)? {
+                Some(prepared) => prepared.emit(),
+                None => return Err(error),
+            },
+        }
+    };
+    shared.set_emitted(id);
+    active
+        .evaluate_registration(&registration.source, &registration.chunks)
+        .map_err(|e| e.to_string())?;
+    Ok(code)
+}
 impl CatalogView for CompilationSession {
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
-        let unit = self.catalog.borrow().units[id].clone();
-        let prepared = match &unit.borrow().state {
-            AnalysisState::Prepared(_, _, prepared) => Some(prepared.clone()),
-            _ => None,
-        };
-        crate::compile_trace::executed(id, prepared.is_some());
-        let (registration, code) = if let Some(prepared) = prepared {
-            prepared.emit()
-        } else {
-            let (program, _) = self.analyze(id, Some(active))?;
-            crate::emitter::emit_deferred_unit(&program)
-        };
-        unit.borrow_mut().emitted = true;
-        active
-            .evaluate_registration(&registration.source, &registration.chunks)
-            .map_err(|e| e.to_string())?;
-        Ok(code)
+        compile_unit_in(&self.shared, active, id, || self.analyze(id, Some(active)))
     }
     fn unit_source(&self, id: usize) -> Option<u32> {
-        let catalog = self.catalog.try_borrow().ok()?;
-        Some(catalog.units.get(id)?.try_borrow().ok()?.source)
+        self.shared.unit_source(id)
     }
     fn analysis_sources(&self) -> Vec<u32> {
-        let Ok(catalog) = self.catalog.try_borrow() else {
-            return Vec::new();
+        self.shared.analysis_sources(self.thread)
+    }
+}
+/// A worker thread's view of a [`SharedCatalog`]: the units it analyzes and
+/// waits for are the compilation's, and the registrations it installs and
+/// the roots it evaluates are its own engine's. Made, used and dropped on
+/// the worker's thread.
+pub(crate) struct WorkerView {
+    shared: Arc<SharedCatalog>,
+    thread: usize,
+    /// The worker's host ([`MacroHost::bind`]), whose binding each unit's
+    /// analysis frame is taken from.
+    host: MacroHost,
+    /// How many of the catalog's registrations the host's engine holds.
+    installed: Cell<usize>,
+}
+#[cfg_attr(not(test), allow(dead_code))]
+impl WorkerView {
+    /// A view of `shared` for this thread, which analyzes in frames of
+    /// `host`. If the host has an engine, the engine reaches the view
+    /// through its services.
+    pub(crate) fn new(shared: Arc<SharedCatalog>, host: MacroHost) -> Result<Rc<Self>, String> {
+        let thread = shared.join();
+        let view = Rc::new(Self {
+            shared,
+            thread,
+            host,
+            installed: Cell::new(0),
+        });
+        if let Some(bootstrap) = &view.host.engine.bootstrap {
+            let weak: std::rc::Weak<dyn CatalogView> = Rc::downgrade(&view) as std::rc::Weak<Self>;
+            prepare_engine(&bootstrap.evaluator, weak, &view.host.engine)?;
+        }
+        Ok(view)
+    }
+    /// Install in this thread's engine the registrations made since it last
+    /// looked, through `active` while the engine runs code that demands.
+    fn install(&self, active: Option<&dyn MacroEvaluator>) -> Result<(), String> {
+        let Some(bootstrap) = &self.host.engine.bootstrap else {
+            return Ok(());
         };
-        catalog
-            .stack
-            .iter()
-            .filter_map(|&unit| Some(catalog.units.get(unit)?.try_borrow().ok()?.source))
-            .collect()
+        let pending = {
+            let c = self.shared.lock();
+            if c.registrations.len() == self.installed.get() {
+                return Ok(());
+            }
+            let pending = c.registrations[self.installed.get()..].to_vec();
+            self.installed.set(c.registrations.len());
+            pending
+        };
+        let engine = active.unwrap_or(bootstrap.evaluator.as_ref());
+        install_registrations(engine, &pending, |_| Ok(()))
+    }
+    /// Unit `id`'s analysis, by this thread or another.
+    pub(crate) fn analyze(
+        &self,
+        id: usize,
+        engine: Option<&dyn MacroEvaluator>,
+    ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
+        self.install(engine)?;
+        analyze_unit(&self.shared, self.thread, id, engine, || {
+            (self.host.engine.frame(), None)
+        })
+    }
+}
+impl CatalogView for WorkerView {
+    fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
+        self.install(Some(active))?;
+        compile_unit_in(&self.shared, active, id, || self.analyze(id, Some(active)))
+    }
+    fn unit_source(&self, id: usize) -> Option<u32> {
+        self.shared.unit_source(id)
+    }
+    fn analysis_sources(&self) -> Vec<u32> {
+        self.shared.analysis_sources(self.thread)
     }
 }
 /// Install in `evaluator` the services through which its code reaches the
@@ -1149,20 +1540,17 @@ impl Clone for DefinitionSnapshot {
         }
     }
 }
+/// Settles a claimed unit however its analysis ends: with `state`, or as
+/// interrupted.
 struct AnalysisGuard<'a> {
-    session: &'a CompilationSession,
-    unit: Rc<RefCell<Unit>>,
+    shared: &'a SharedCatalog,
+    thread: usize,
     id: usize,
+    state: Option<AnalysisState>,
 }
 impl Drop for AnalysisGuard<'_> {
     fn drop(&mut self) {
-        let mut c = self.session.catalog.borrow_mut();
-        let popped = c.stack.pop();
-        debug_assert_eq!(popped, Some(self.id));
-        let mut unit = self.unit.borrow_mut();
-        if matches!(unit.state, AnalysisState::Analyzing) {
-            unit.state = AnalysisState::Failed("analysis interrupted".into(), None);
-        }
+        self.shared.settle(self.thread, self.id, self.state.take());
     }
 }
 
@@ -1195,18 +1583,17 @@ mod retention_tests {
         crate::compile_with_macros("(defn f [x] (+ x 1)) (defmacro m [] (f 41)) (m)", &mut host)
             .unwrap();
         let session = host.session_handle().unwrap();
-        let catalog = session.catalog.borrow();
+        let catalog = session.shared.lock();
+        let bindings = session.unit_bindings.borrow();
         let mut completed = 0;
-        for unit in &catalog.units {
-            let unit = unit.borrow();
+        for (id, unit) in catalog.units.iter().enumerate() {
             if matches!(
                 unit.state,
                 AnalysisState::Analyzed(..) | AnalysisState::Prepared(..)
             ) {
                 completed += 1;
-                assert!(unit.form.is_none());
-                assert!(unit.snapshot.is_none());
-                assert!(unit.host.is_none());
+                assert!(unit.inputs.is_none());
+                assert!(bindings.get(id).is_none_or(Option::is_none));
             }
         }
         assert!(completed > 0);
@@ -1218,10 +1605,10 @@ mod retention_tests {
         crate::compile_with_macros("(defn f [x] (+ x 1)) (defmacro m [] (f 41)) (m)", &mut host)
             .unwrap();
         let session = host.session_handle().unwrap();
-        let catalog = session.catalog.borrow();
+        let catalog = session.shared.lock();
         let mut released = 0;
         for unit in &catalog.units {
-            if let AnalysisState::Prepared(program, _, code) = &unit.borrow().state {
+            if let AnalysisState::Prepared(program, _, code) = &unit.state {
                 assert!(program.upgrade().is_none());
                 assert!(!code.emit().1.is_empty());
                 released += 1;
@@ -1268,8 +1655,7 @@ mod worker_tests {
 
     /// The unit's prepared JavaScript as the main thread's session has it.
     fn main_code(session: &CompilationSession, id: usize) -> String {
-        let unit = session.catalog.borrow().units[id].clone();
-        let state = unit.borrow().state.clone();
+        let state = session.shared.lock().units[id].state.clone();
         match state {
             AnalysisState::Prepared(_, _, prepared) => prepared.code().to_owned(),
             AnalysisState::Analyzed(program, _) => crate::emitter::DeferredUnit::prepare(&program)
@@ -1297,7 +1683,7 @@ mod worker_tests {
         .unwrap();
         let jobs = RETAINED.take().unwrap();
         let session = host.session_handle().unwrap();
-        let name = |id: usize| session.catalog.borrow().units[id].borrow().name.clone();
+        let name = |id: usize| session.shared.unit_name(id);
         let mut expected: Vec<_> = jobs
             .iter()
             .map(|(id, ..)| (name(*id), main_code(&session, *id)))
@@ -1491,5 +1877,285 @@ mod worker_tests {
         })
         .join()
         .unwrap();
+    }
+
+    /// A coordinator's session whose catalog holds the units `source`
+    /// registers, unanalyzed, by name, and the environment a worker binds.
+    fn registered(source: &str) -> (CompilationSession, HashMap<String, usize>, MacroEnvironment) {
+        RETAINED.set(Some(Vec::new()));
+        let mut host = MacroHost::new();
+        // Whether or not the compilation's own analyses succeed.
+        let _ = crate::compile_with_macros(source, &mut host);
+        let jobs = RETAINED.take().unwrap();
+        let compiled = host.session_handle().unwrap();
+        let session = CompilationSession::default();
+        let mut units = HashMap::new();
+        for (id, form, snapshot, environment) in jobs {
+            let name = compiled.shared.unit_name(id);
+            let worker = MacroHost::bind(environment, None).unwrap();
+            let unit = session
+                .register(
+                    name.clone(),
+                    Some(form),
+                    snapshot,
+                    worker,
+                    false,
+                    name.clone(),
+                )
+                .unwrap()
+                .unwrap();
+            units.insert(name, unit);
+        }
+        (session, units, host.environment())
+    }
+
+    /// Hold each claimed unit's analysis until `waiters` threads wait for
+    /// a unit.
+    fn hold_claims(shared: &Arc<SharedCatalog>, waiters: usize) {
+        let catalog = Arc::downgrade(shared);
+        *shared.on_claim.lock().unwrap() = Some(Box::new(move |_| {
+            let catalog = catalog.upgrade().unwrap();
+            while catalog.lock().waiting < waiters {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }));
+    }
+
+    /// Analyze unit `id` on `threads` workers at once, each with a view of
+    /// its own and no engine.
+    fn demand_together(
+        shared: &Arc<SharedCatalog>,
+        environment: &MacroEnvironment,
+        id: usize,
+        threads: usize,
+    ) -> Vec<Result<Arc<Program>, String>> {
+        std::thread::scope(|scope| {
+            let workers = (0..threads)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let host = MacroHost::bind(environment.clone(), None).unwrap();
+                        let view = WorkerView::new(shared.clone(), host).unwrap();
+                        view.analyze(id, None).map(|(program, _)| program)
+                    })
+                })
+                .collect::<Vec<_>>();
+            workers.into_iter().map(|w| w.join().unwrap()).collect()
+        })
+    }
+
+    #[test]
+    fn two_threads_demanding_one_unit_share_its_one_analysis() {
+        let (session, units, environment) = registered("(defn plain [x] (+ x 1))");
+        let id = units["cljs.user/plain"];
+        let shared = session.shared().clone();
+        hold_claims(&shared, 1);
+        let results = demand_together(&shared, &environment, id, 2);
+        let [Ok(first), Ok(second)] = &results[..] else {
+            panic!("{results:?}");
+        };
+        // One thread analyzed it while the other waited for that analysis.
+        assert!(Arc::ptr_eq(first, second));
+        assert_eq!(shared.lock().units[id].analyses, 1);
+        assert_eq!(shared.lock().waiting, 0);
+        // The coordinator reuses it too.
+        let (again, _) = session.analyze(id, None).unwrap();
+        assert!(Arc::ptr_eq(first, &again));
+        assert_eq!(shared.lock().units[id].analyses, 1);
+        let code = crate::emitter::DeferredUnit::prepare(first)
+            .code()
+            .to_owned();
+        assert!(code.contains("rt.core.add"), "{code}");
+    }
+
+    #[test]
+    fn every_thread_waiting_for_a_failed_unit_sees_its_one_failure() {
+        let (session, units, environment) = registered("(defn bad [] (recur 1))");
+        let id = units["cljs.user/bad"];
+        let shared = session.shared().clone();
+        hold_claims(&shared, 2);
+        let results = demand_together(&shared, &environment, id, 3);
+        let errors = results
+            .into_iter()
+            .map(|result| result.unwrap_err())
+            .collect::<Vec<_>>();
+        assert!(
+            errors[0].contains("cljs.user/bad") && errors[0].contains("recur argument count"),
+            "{errors:?}"
+        );
+        assert!(errors.iter().all(|error| *error == errors[0]), "{errors:?}");
+        assert_eq!(shared.lock().units[id].analyses, 1);
+        // A later demand is not a retry.
+        assert_eq!(session.analyze(id, None).unwrap_err(), errors[0]);
+        assert!(session.diagnostic(id).is_some());
+        assert_eq!(shared.lock().units[id].analyses, 1);
+    }
+
+    #[test]
+    fn a_wait_that_would_close_a_cycle_across_threads_reports_it_from_the_lowest_unit() {
+        let (session, units, _) = registered("(defn a [] 1) (defn b [] 2) (defn c [] 3)");
+        let (a, c) = (units["cljs.user/a"], units["cljs.user/c"]);
+        assert!(a < c);
+        let shared = session.shared().clone();
+        let (first, second) = (shared.join(), shared.join());
+        assert!(matches!(shared.claim(first, c), Ok(Claim::Analyze(..))));
+        assert!(matches!(shared.claim(second, a), Ok(Claim::Analyze(..))));
+        let error = std::thread::scope(|scope| {
+            // `c`'s analysis demands `a`, which the second thread analyzes.
+            let waiter = scope.spawn(|| shared.claim(first, a).map(drop));
+            while shared.lock().waiting == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            // `a`'s analysis demands `c`: that wait would close the cycle,
+            // which reads from `a`, the lower unit, whichever thread asks.
+            let error = shared.claim(second, c).map(drop).unwrap_err();
+            assert_eq!(
+                error,
+                "compile dependency cycle: cljs.user/a -> cljs.user/c -> cljs.user/a"
+            );
+            // The error fails `a`, and the waiting thread shares the failure.
+            shared.settle(second, a, Some(AnalysisState::Failed(error.clone(), None)));
+            assert_eq!(waiter.join().unwrap().unwrap_err(), error);
+            error
+        });
+        shared.settle(first, c, Some(AnalysisState::Failed(error, None)));
+        let c = shared.lock();
+        assert!(
+            c.threads
+                .iter()
+                .all(|t| t.stack.is_empty() && t.waiting.is_none())
+        );
+        assert_eq!(c.waiting, 0);
+    }
+
+    #[test]
+    fn a_worker_engine_installs_the_registrations_and_evaluates_what_the_catalog_prepared() {
+        let mut host = MacroHost::new();
+        crate::compile_with_macros("(defn f [x] (+ x 1)) (defmacro m [] (f 41)) (m)", &mut host)
+            .unwrap();
+        let session = host.session_handle().unwrap();
+        let shared = session.shared().clone();
+        let id = (0..session.next_unit())
+            .find(|&id| shared.unit_name(id) == "cljs.user/f")
+            .unwrap();
+        assert!(shared.prepared(id).unwrap().is_some());
+        let analyses = shared.lock().units[id].analyses;
+        let environment = host.environment();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let evaluator = engine(&environment);
+                    let host = MacroHost::bind(environment.clone(), Some(evaluator.clone())).unwrap();
+                    let view = WorkerView::new(shared.clone(), host).unwrap();
+                    // The unit's initializer runs in this engine, where `f`'s
+                    // root was registered from the catalog.
+                    let value = evaluator
+                        .evaluate_js(&format!(
+                            "(() => {{ const f = (0, eval)(globalThis.__lightCompileUnit({id}))(globalThis.__lightRuntimeForCompiler); if (f(41) !== 42) throw new Error(String(f)); return null; }})()"
+                        ))
+                        .unwrap();
+                    evaluator.release(value).unwrap();
+                    assert_eq!(view.installed.get(), shared.lock().registrations.len());
+                })
+                .join()
+                .unwrap();
+        });
+        // Evaluated again in another engine, not analyzed again.
+        assert_eq!(shared.lock().units[id].analyses, analyses);
+    }
+
+    #[test]
+    fn a_waiter_gets_the_analysis_after_the_application_took_the_program() {
+        let source = (0..3)
+            .map(|i| format!("(defn u{i} [x] (+ x {i}))"))
+            .collect::<String>();
+        let (session, units, environment) = registered(&source);
+        let shared = session.shared().clone();
+        hold_claims(&shared, 1);
+        // A waiter wakes only once the application has taken the program.
+        let catalog = Arc::downgrade(&shared);
+        *shared.on_wake.lock().unwrap() = Some(Box::new(move |id| {
+            let catalog = catalog.upgrade().unwrap();
+            while !matches!(catalog.lock().units[id].state, AnalysisState::Prepared(..)) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }));
+        for i in 0..3 {
+            let id = units[&format!("cljs.user/u{i}")];
+            let waited = std::thread::scope(|scope| {
+                let waiter = scope.spawn(|| {
+                    let host = MacroHost::bind(environment.clone(), None).unwrap();
+                    let view = WorkerView::new(shared.clone(), host).unwrap();
+                    view.analyze(id, None).map(|(program, _)| program)
+                });
+                // The coordinator analyzes the unit while the worker waits,
+                // then its application takes the program and drops it
+                // before the worker wakes.
+                let (program, _) = session.analyze(id, None).unwrap();
+                let code = crate::emitter::DeferredUnit::prepare(&program)
+                    .code()
+                    .to_owned();
+                session.release_application_ir(id);
+                drop(program);
+                (waiter.join().unwrap(), code)
+            });
+            let (Ok(program), code) = waited else {
+                panic!("u{i}: {:?}", waited.0);
+            };
+            assert_eq!(crate::emitter::DeferredUnit::prepare(&program).code(), code);
+            let c = shared.lock();
+            assert_eq!(c.units[id].analyses, 1);
+            assert!(c.units[id].retained.is_none() && c.units[id].waiters == 0);
+        }
+    }
+
+    #[test]
+    fn a_producer_that_unwinds_wakes_every_waiter_with_its_interruption() {
+        let (session, units, environment) = registered("(defn plain [x] (+ x 1))");
+        let id = units["cljs.user/plain"];
+        let shared = session.shared().clone();
+        let catalog = Arc::downgrade(&shared);
+        *shared.on_claim.lock().unwrap() = Some(Box::new(move |_| {
+            let catalog = catalog.upgrade().unwrap();
+            while catalog.lock().waiting < 2 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            panic!("the producer unwinds");
+        }));
+        let results = std::thread::scope(|scope| {
+            let workers = (0..3)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let host = MacroHost::bind(environment.clone(), None).unwrap();
+                        let view = WorkerView::new(shared.clone(), host).unwrap();
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            view.analyze(id, None).map(drop)
+                        }))
+                    })
+                })
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .map(|w| w.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.iter().filter(|r| r.is_err()).count(), 1);
+        let errors = results
+            .into_iter()
+            .filter_map(Result::ok)
+            .map(Result::unwrap_err)
+            .collect::<Vec<_>>();
+        assert_eq!(errors, ["analysis interrupted", "analysis interrupted"]);
+        assert_eq!(
+            session.analyze(id, None).unwrap_err(),
+            "analysis interrupted"
+        );
+        let c = shared.lock();
+        assert_eq!(c.units[id].analyses, 1);
+        assert_eq!(c.waiting, 0);
+        assert!(
+            c.threads
+                .iter()
+                .all(|t| t.stack.is_empty() && t.waiting.is_none())
+        );
     }
 }

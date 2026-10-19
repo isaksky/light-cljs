@@ -278,6 +278,10 @@ impl MacroEnvironment {
     pub(crate) fn evaluator_options(&self) -> &crate::evaluator::EvaluatorOptions {
         &self.evaluator_options
     }
+    /// The limits the host was made with.
+    pub(crate) fn limits(&self) -> &MacroLimits {
+        &self.limits
+    }
 }
 
 /// The layered tables of declared imports, macros and bindings, the flags
@@ -386,7 +390,7 @@ impl EngineBinding {
     /// What an analysis frame shares with the binding it was taken from:
     /// its engines, caches and counters, and its session, which the frame
     /// reaches weakly.
-    fn frame(&self) -> Self {
+    pub(crate) fn frame(&self) -> Self {
         Self {
             data_readers: self.data_readers.clone(),
             interactive_control: self.interactive_control.clone(),
@@ -1219,7 +1223,28 @@ impl MacroHost {
             },
         }
     }
-    fn from_parts(environment: MacroEnvironment, engine: EngineBinding) -> Self {
+    /// The host's two parts as they are, which [`Self::from_parts`] puts
+    /// back together: the compilation catalog keeps a unit's environment,
+    /// from which any thread may analyze it, and the thread that registered
+    /// the unit keeps the binding (docs/compiler-concurrency.md, "As built
+    /// (light-cljs-335)").
+    pub(crate) fn into_parts(self) -> (MacroEnvironment, EngineBinding) {
+        let Self {
+            limits,
+            evaluator_options,
+            opaque_packages,
+            tables,
+            engine,
+        } = self;
+        let environment = MacroEnvironment {
+            limits,
+            evaluator_options,
+            opaque_packages,
+            tables,
+        };
+        (environment, engine)
+    }
+    pub(crate) fn from_parts(environment: MacroEnvironment, engine: EngineBinding) -> Self {
         let MacroEnvironment {
             limits,
             evaluator_options,

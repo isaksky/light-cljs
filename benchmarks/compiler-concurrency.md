@@ -11,6 +11,22 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Shared session catalog (light-cljs-335, October 18, 2026)
+
+Parent `00d9b70` against the catalog behind a `Mutex`, Penpot `app.main
+--optimize none`, three alternating pairs (parent first) at 1-minute load
+9.96 to 10.05 while two other workers were active. Output is 33,624,590
+bytes with the same SHA-256 in all six runs.
+
+| Build | Wall (s), round 1-3 | Median wall | Peak RSS (GB), round 1-3 | Median RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `00d9b70` | 26.11, 25.80, 25.82 | 25.82 | 0.976, 0.960, 0.960 | 0.960 |
+| Shared catalog | 25.86, 25.98, 26.14 | 25.98 | 0.976, 0.960, 0.955 | 0.960 |
+
+The medians are +0.6% wall and 0.0% peak RSS, within the +2% and +3% gate.
+Penpot registers about 13,000 units; each demand now takes an uncontended
+lock two or three times where it borrowed a `RefCell`, and no thread waits.
+
 ## Host split (light-cljs-334, October 18, 2026)
 
 Parent `6280d29` against the two-part macro host, Penpot `app.main
