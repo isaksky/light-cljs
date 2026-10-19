@@ -218,7 +218,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (reduce + (map (fn [i] (let [r (row i)]
                                           (+ (count (:pos r)) (count (get-in r [:meta :dims])))))
                                 (range 10)))",
-        ceilings: [466_000, 466_000, 26_000],
+        ceilings: [467_000, 467_000, 26_000],
         removed: [0, 0, 1],
         printed: "50\n",
     },
@@ -281,7 +281,7 @@ pub const FIXTURES: &[Fixture] = &[
                  [(->R1 1 2) (->R2 2 3) (->R3 3 4) (->R4 4 5) (->R5 5 6) (->R6 6 7) (->R7 7 8) \
                  (->R8 8 9) (T1. 9 10) (T2. 10 11) (T3. 11 12) (T4. 12 13) (T5. 13 14) \
                  (T6. 14 15) (T7. 15 16) (T8. 16 17)])",
-        ceilings: [477_000, 477_000, 33_000],
+        ceilings: [478_000, 478_000, 33_000],
         removed: [0, 0, 0],
         printed: "819\n",
     },
@@ -390,7 +390,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defn area ([w] (area w w)) ([w h] (* w h)))
                  (defn fib ([n] (fib n 0 1)) ([n a b] (if (zero? n) a (recur (dec n) b (+ a b)))))
                  (+ (clamp 15) (area 3) (area 2 5) (fib 10))",
-        ceilings: [468_000, 468_000, 400],
+        ceilings: [469_000, 469_000, 400],
         removed: [0, 0, 2],
         printed: "84\n",
     },
@@ -622,7 +622,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             ),
             GREET,
         ],
-        ceilings: [466_000, 466_000, 300],
+        ceilings: [467_000, 467_000, 300],
         removed: [0, 0, 0],
         printed: "null\nhello lazy\n",
     },

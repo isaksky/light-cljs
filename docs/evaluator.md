@@ -345,7 +345,10 @@ source failure still drains them first, then is the error reported
 snapshot, so in every mode the namespace's macros are recorded in it again after
 the drain: each macro it defines, as upstream's Vars, is one of the bindings
 it registers, and a runtime syntax quote of the name resolves in the namespace
-(light-cljs-362).
+(light-cljs-362). Special forms are the exception: as in the compiler's reader
+and upstream, a syntax quote leaves `def`, `catch`, `&` and the rest
+unqualified before any namespace lookup, so clojure.spec.alpha's `def` macro
+does not make "`def" read as `clojure.spec.alpha/def` (light-cljs-368).
 
 The unit cache is scoped to a fresh compilation. No application-source artifact
 survives host reuse, so source, options, imports and selected conditional edits

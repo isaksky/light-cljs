@@ -643,3 +643,16 @@ parent's binary at load 9 to 12 with two other workers active: medians 26.77 s
 and 0.959 GB against 25.92 s and 0.964 GB (+3.3% wall, -0.5% RSS; the means are
 26.70 s against 26.67 s, +0.1%). The change adds one macro-name lookup per
 namespace that defines macros.
+
+## Special forms in the runtime syntax quote, cache off (light-cljs-368, October 18, 2026)
+
+The runtime reader's syntax quote now leaves the compiler reader's special forms
+unqualified before the namespace's bindings, excludes and refers. Penpot
+`main-none` output changes only in the runtime's `syntaxQuote` (three hunks,
++182 bytes to 33,627,652). A probe compiled from the Penpot sources reads "`def"
+and "`catch" in `clojure.spec.alpha` and `cljs.spec.alpha` as `(quote def)` and
+`(quote catch)` (before: `(quote clojure.spec.alpha/def)` and so on), while
+"`fdef" still reads `(quote clojure.spec.alpha/fdef)`. Alternating three runs each
+with the parent's binary at load 12 to 16 with two other workers active: medians
+25.96 s and 0.973 GB against 28.23 s and 0.964 GB (-8.0% wall, +0.9% RSS), which
+is load noise for a change outside compilation.

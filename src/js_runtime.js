@@ -9454,14 +9454,14 @@
       const sym = name => rt.symbol('cljs.core', name);
       if (data?.kind === 'symbol') {
         let resolved = value;
-        if (data.namespace === null) {
+        // Special forms stay unqualified even where the namespace binds them.
+        const special = data.namespace === null && '& . case* catch def deftype* do finally fn* if let* letfn* loop* monitor-enter monitor-exit new quote recur reify* set! throw try var'.split(' ').includes(data.name);
+        if (data.namespace === null && !special) {
           if (data.name.endsWith('#')) { if (!gensyms.has(data.name)) gensyms.set(data.name, gensym(data.name.slice(0,-1) + '__')); resolved = gensyms.get(data.name); }
-          else if (!['if','do','let*','fn*','loop*','recur','throw','try','new','set!','quote','var','def'].includes(data.name)) {
-            resolved = rt.symbol(readerCoreNames.has(data.name) ? 'cljs.core' : currentName, data.name);
-          }
+          else resolved = rt.symbol(readerCoreNames.has(data.name) ? 'cljs.core' : currentName, data.name);
         }
         if (data.namespace !== null && context?.aliases.has(data.namespace)) resolved = rt.symbol(context.aliases.get(data.namespace), data.name);
-        if (data.namespace === null && !data.name.endsWith('#')) {
+        if (data.namespace === null && !special && !data.name.endsWith('#')) {
           const bound = context?.bindings.has(data.name) || context?.declared?.get(data.name) < context?.visible;
           if (bound || context?.excludes.has(data.name)) resolved = rt.symbol(currentName, data.name);
           const referred = context?.refers.get(data.name);

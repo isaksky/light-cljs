@@ -559,6 +559,39 @@ fn runtime_reader_binds_macros_defined_after_a_drained_unit() {
     assert_eq!(run(&js), "[1 app/repeat app/one]\n");
 }
 
+/// A namespace that binds a special form's name, as clojure.spec.alpha binds
+/// `def` with its macro, still reads the special form unqualified in a syntax
+/// quote at run time, as its source's own syntax quote does and as upstream,
+/// where syntax quote leaves special symbols alone before any namespace lookup
+/// (light-cljs-368).
+#[test]
+fn runtime_reader_leaves_special_forms_a_namespace_binds_unqualified() {
+    let root = TempDir::new("cljs-reader-bound-special");
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(
+        root.join("app/dep.cljs"),
+        "(ns app.dep) (defmacro new [] 3) (defmacro dep [] 4)",
+    )
+    .unwrap();
+    // Bound by a macro, excluded from cljs.core, referred from a dependency,
+    // and `&`, which nothing binds.
+    std::fs::write(
+        root.join("app/m.cljs"),
+        r##"(ns app.m (:refer-clojure :exclude [var]) (:require [app.dep :refer [new dep]]))
+            (defmacro def [] 1) (defmacro catch [] 2)
+            (pr-str [(read-string "`def") `def (read-string "`catch") `catch
+                     (read-string "`var") `var (read-string "`new") `new
+                     (read-string "`&") `& (read-string "`dep") `dep])"##,
+    )
+    .unwrap();
+    let js = light_cljs::compile_namespace("app.m", std::slice::from_ref(root.path())).unwrap();
+    assert_eq!(
+        run(&js),
+        "[(quote def) def (quote catch) catch (quote var) var (quote new) new \
+         (quote &) & (quote app.dep/dep) app.dep/dep]\n"
+    );
+}
+
 #[test]
 fn runtime_reader_macro_and_reused_session_contexts_are_explicit() {
     use light_cljs::{EvalOptions, EvalSession};
