@@ -269,14 +269,30 @@ fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> R
 /// The bootstrap heap is `owner`'s compile-time evaluator, so its settings
 /// (including the `*assert*` source macros read) reach every macro it runs.
 fn build(owner: &MacroHost, cache: bool) -> Result<Bootstrap, String> {
+    let evaluator = owner.new_compiler_evaluator().map_err(|e| e.to_string())?;
+    build_in(evaluator, cache)
+}
+/// The bootstrap of a host bound to `evaluator` on its own thread
+/// ([`MacroHost::bind`]): the process-wide units installed in it, compiled
+/// only if no thread has compiled them yet.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn bind(
+    evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
+) -> Result<Bootstrap, String> {
+    build_in(evaluator, true)
+}
+fn build_in(
+    evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
+    cache: bool,
+) -> Result<Bootstrap, String> {
     let cached = if cache { UNITS.get() } else { None };
     let _names = crate::generated_names::enter_namespace(crate::generated_names::BOOTSTRAP_SCOPE);
     let mut bootstrap = Bootstrap {
-        evaluator: owner.new_compiler_evaluator().map_err(|e| e.to_string())?,
+        evaluator,
         functions: HashMap::new(),
     };
     let mut host = MacroHost::new();
-    host.bootstrap_seed = true;
+    host.tables.bootstrap_seed = true;
     let compiled_core;
     let core = match cached {
         Some(units) => &units[0],
@@ -290,7 +306,7 @@ fn build(owner: &MacroHost, cache: bool) -> Result<Bootstrap, String> {
         &mut bootstrap,
         &MACROS.iter().map(|p| p.0).collect::<Vec<_>>(),
     )?;
-    host.bootstrap = Some(bootstrap.clone());
+    host.engine.bootstrap = Some(bootstrap.clone());
     let compiled_sequence;
     let sequence = match cached {
         Some(units) => &units[1],
@@ -317,18 +333,18 @@ impl MacroHost {
         env: &Datum,
         engine: Option<&dyn crate::evaluator::MacroEvaluator>,
     ) -> Result<Form, String> {
-        if self.bootstrap.is_none() {
-            if self.bootstrap_seed && self.session_handle().is_none() {
+        if self.engine.bootstrap.is_none() {
+            if self.tables.bootstrap_seed && self.session_handle().is_none() {
                 return Err(format!("bootstrap primitive seed cannot expand {name}"));
             }
-            self.bootstrap = self
+            self.engine.bootstrap = self
                 .session_handle()
                 .and_then(|session| session.bootstrap());
-            if self.bootstrap.is_none() {
-                self.bootstrap = Some(build(self, true)?);
+            if self.engine.bootstrap.is_none() {
+                self.engine.bootstrap = Some(build(self, true)?);
             }
         }
-        let bootstrap = self.bootstrap.as_ref().unwrap().clone();
+        let bootstrap = self.engine.bootstrap.as_ref().unwrap().clone();
         if engine.is_none()
             && let Some(session) = self.session_handle()
         {
@@ -366,7 +382,7 @@ impl MacroHost {
         let mut remaining = self
             .limits
             .generated_nodes
-            .saturating_sub(self.generated_nodes.get())
+            .saturating_sub(self.engine.generated_nodes.get())
             / 2;
         let budget = remaining;
         let env = if !declaration.reads_environment
@@ -376,10 +392,10 @@ impl MacroHost {
             // can cost more, so a namespace needs the budget that elision
             // needed: twice the environment's nodes
             // ([`crate::macro_host::WorkMarks`]).
-            if self.work.measuring.get() {
+            if self.engine.work.measuring.get() {
                 crate::macro_host::WorkMarks::note(
-                    &self.work.node_peak,
-                    self.generated_nodes.get() + 2 * (budget - remaining),
+                    &self.engine.work.node_peak,
+                    self.engine.generated_nodes.get() + 2 * (budget - remaining),
                 );
             }
             &unused
@@ -389,7 +405,7 @@ impl MacroHost {
         let result =
             self.expand_javascript(engine, declaration.function(engine)?, call, env, origin);
         if result.is_err() {
-            self.bootstrap = None;
+            self.engine.bootstrap = None;
         }
         result
     }
@@ -410,7 +426,7 @@ enum MacroFunction {
     Ready(ValueId),
     /// Shared by every frame's copy of the declaration, so the function is
     /// evaluated once.
-    Installed(Rc<std::cell::RefCell<InstalledFunction>>),
+    Installed(std::sync::Arc<std::sync::Mutex<InstalledFunction>>),
 }
 struct InstalledFunction {
     unit: crate::emitter::DeferredUnit,
@@ -428,7 +444,7 @@ impl CompiledMacro {
         generation: usize,
     ) -> Self {
         Self {
-            function: MacroFunction::Installed(Rc::new(std::cell::RefCell::new(
+            function: MacroFunction::Installed(std::sync::Arc::new(std::sync::Mutex::new(
                 InstalledFunction {
                     unit,
                     function: None,
@@ -447,10 +463,10 @@ impl CompiledMacro {
             MacroFunction::Ready(function) => return Ok(*function),
             MacroFunction::Installed(installed) => installed,
         };
-        if let Some(function) = installed.borrow().function {
+        if let Some(function) = installed.lock().expect("installed macro").function {
             return Ok(function);
         }
-        let (registration, unit) = installed.borrow().unit.emit();
+        let (registration, unit) = installed.lock().expect("installed macro").unit.emit();
         engine
             .evaluate_registration(&registration.source, &registration.chunks)
             .map_err(|e| e.to_string())?;
@@ -460,7 +476,7 @@ impl CompiledMacro {
                 unit
             ))
             .map_err(|e| e.to_string())?;
-        installed.borrow_mut().function = Some(function);
+        installed.lock().expect("installed macro").function = Some(function);
         Ok(function)
     }
     /// The `defmacro` form's place.
@@ -575,6 +591,7 @@ impl MacroHost {
             }
         }
         let generation = self
+            .tables
             .javascript_macros
             .get(&format!("{namespace}/{name}"))
             .map_or(1, |previous| previous.generation + 1);
@@ -593,15 +610,15 @@ impl MacroHost {
             &name,
             crate::macro_host::SourceBindingKind::Macro,
         )?;
-        if self.bootstrap.is_none() {
-            self.bootstrap = self
+        if self.engine.bootstrap.is_none() {
+            self.engine.bootstrap = self
                 .session_handle()
                 .and_then(|session| session.bootstrap());
-            if self.bootstrap.is_none() {
-                self.bootstrap = Some(build(self, true)?);
+            if self.engine.bootstrap.is_none() {
+                self.engine.bootstrap = Some(build(self, true)?);
             }
         }
-        let bootstrap = self.bootstrap.as_ref().unwrap().clone();
+        let bootstrap = self.engine.bootstrap.as_ref().unwrap().clone();
         if let Some(session) = self.session_handle() {
             session.attach(&bootstrap, self)?;
         }
@@ -643,7 +660,7 @@ impl MacroHost {
                 reads_environment: true,
             },
         );
-        self.macro_environment = Default::default();
+        self.engine.macro_environment = Default::default();
         Ok(())
     }
     pub(crate) fn source_macro_key(&self, namespace: &str, name: &str) -> Option<String> {
@@ -654,7 +671,7 @@ impl MacroHost {
             // A fully qualified macro of a namespace the program loaded: a macro
             // expansion names its own namespace's dependencies, as upstream.
             let key = format!("{qualifier}/{member}");
-            let found = self.javascript_macros.contains_key(&key);
+            let found = self.tables.javascript_macros.contains_key(&key);
             if found {
                 self.observe(|log| {
                     log.named(
@@ -667,6 +684,7 @@ impl MacroHost {
         }
         if self.has_source_value(namespace, name)
             || self
+                .tables
                 .javascript_macros
                 .contains_key(&format!("{namespace}/{name}"))
         {
@@ -677,7 +695,7 @@ impl MacroHost {
     }
     pub(crate) fn has_javascript_macro(&self, namespace: &str, name: &str) -> bool {
         self.source_macro_key(namespace, name)
-            .is_some_and(|key| self.javascript_macros.contains_key(&key))
+            .is_some_and(|key| self.tables.javascript_macros.contains_key(&key))
     }
     pub(crate) fn expand_source_javascript(
         &mut self,
@@ -691,6 +709,7 @@ impl MacroHost {
             .source_macro_key(namespace, name)
             .ok_or_else(|| format!("macro {name} is not visible in namespace {namespace}"))?;
         let declaration = self
+            .tables
             .javascript_macros
             .get(&key)
             .ok_or_else(|| format!("compile-time macro {key} is not declared"))?
@@ -703,18 +722,23 @@ impl MacroHost {
         }
         // A macro installed from an artifact may be the compilation's first:
         // its session starts as declaring one would have started it.
-        if self.bootstrap.is_none() && matches!(declaration.function, MacroFunction::Installed(_)) {
-            self.bootstrap = self
+        if self.engine.bootstrap.is_none()
+            && matches!(declaration.function, MacroFunction::Installed(_))
+        {
+            self.engine.bootstrap = self
                 .session_handle()
                 .and_then(|session| session.bootstrap());
-            if self.bootstrap.is_none() {
-                self.bootstrap = Some(build(self, true)?);
+            if self.engine.bootstrap.is_none() {
+                self.engine.bootstrap = Some(build(self, true)?);
             }
-            if let (Some(session), Some(bootstrap)) = (self.session_handle(), &self.bootstrap) {
+            if let (Some(session), Some(bootstrap)) =
+                (self.session_handle(), &self.engine.bootstrap)
+            {
                 session.attach(bootstrap, self)?;
             }
         }
         let bootstrap = self
+            .engine
             .bootstrap
             .as_ref()
             .ok_or("macro session failed")?
@@ -755,7 +779,7 @@ mod tests {
             ("(js* \"arguments[1]\")", true),
         ] {
             let mut host = MacroHost::new();
-            host.bootstrap_seed = true;
+            host.tables.bootstrap_seed = true;
             let source = format!("(def sample (fn* [&form &env] {body}))");
             let syntax = crate::parse(&source).unwrap();
             let program = crate::analyze_with_macros(&source, &syntax, &mut host).unwrap();
@@ -774,7 +798,7 @@ mod tests {
             assert_eq!(reads_macro_environment(&program, init), expected, "{body}");
         }
         let mut host = MacroHost::new();
-        host.bootstrap_seed = true;
+        host.tables.bootstrap_seed = true;
         let source = "(def ^:macro sample (fn* [&form &env] 42))";
         let syntax = crate::parse(source).unwrap();
         let wrapped = crate::analyze_with_macros(source, &syntax, &mut host).unwrap();
@@ -826,7 +850,7 @@ mod tests {
             "(def hits (atom 0)) (let [] (def value (do (swap! hits inc) (js/cancelDemand 0)))) (defmacro m [] (try value (catch :default e 42)))",
         ] {
             crate::compile_with_macros(source, &mut host).unwrap();
-            let evaluator = host.bootstrap.as_ref().unwrap().evaluator.clone();
+            let evaluator = host.engine.bootstrap.as_ref().unwrap().evaluator.clone();
             let control = evaluator.control();
             evaluator
                 .clone()
@@ -838,7 +862,7 @@ mod tests {
                     }),
                 )
                 .unwrap();
-            let function = host.javascript_macros["cljs.user/m"]
+            let function = host.tables.javascript_macros["cljs.user/m"]
                 .function(evaluator.as_ref())
                 .unwrap();
             let error = evaluator.call(function, &[]).unwrap_err();
@@ -852,7 +876,7 @@ mod tests {
             assert!(js.contains("return 42"));
             assert!(!Rc::ptr_eq(
                 &evaluator,
-                &host.bootstrap.as_ref().unwrap().evaluator
+                &host.engine.bootstrap.as_ref().unwrap().evaluator
             ));
         }
     }
@@ -871,8 +895,8 @@ mod tests {
         })
         .unwrap();
         let control = evaluator.control();
-        host.interactive = true;
-        host.interactive_control = Some(control.clone());
+        host.tables.interactive = true;
+        host.engine.interactive_control = Some(control.clone());
         host.evaluator_options.poll_budget = u64::MAX;
         host.evaluator_options.timeout = Duration::from_secs(10);
         let canceller = std::thread::spawn(move || {
@@ -889,8 +913,8 @@ mod tests {
 
         // The cancelled session was discarded. The same host starts a clean
         // bootstrap and the recovered program executes to 42 in a fresh session.
-        host.interactive_control = None;
-        host.interactive = false;
+        host.engine.interactive_control = None;
+        host.tables.interactive = false;
         host.evaluator_options = crate::evaluator::EvaluatorOptions::default();
         let source = "(let [x 42] (defn value [] x)) (defmacro m [] (value)) (m)";
         let syntax = crate::parse(source).unwrap();
@@ -904,7 +928,7 @@ mod tests {
     fn declaration_products_are_atomic_and_unfinished_value_reads_cycle() {
         let mut host = MacroHost::new();
         crate::compile_with_macros("(defmacro ready [] 42)", &mut host).unwrap();
-        let evaluator = host.bootstrap.as_ref().unwrap().evaluator.clone();
+        let evaluator = host.engine.bootstrap.as_ref().unwrap().evaluator.clone();
         let value = evaluator.evaluate_unit(r#"rt => {
           const roots = globalThis.__lightCompilerRoots, products = globalThis.__lightCompilerBundleProducts;
           const names = ["test/T", "test/->T"];
@@ -947,7 +971,7 @@ mod tests {
             &mut host,
         )
         .unwrap();
-        let evaluator = host.bootstrap.as_ref().unwrap().evaluator.clone();
+        let evaluator = host.engine.bootstrap.as_ref().unwrap().evaluator.clone();
         let control = evaluator.control();
         evaluator
             .clone()
@@ -959,7 +983,7 @@ mod tests {
                 }),
             )
             .unwrap();
-        let function = host.javascript_macros["cljs.user/m"]
+        let function = host.tables.javascript_macros["cljs.user/m"]
             .function(evaluator.as_ref())
             .unwrap();
         let error = evaluator.call(function, &[]).unwrap_err();
@@ -972,7 +996,7 @@ mod tests {
         assert!(js.contains("return 42"));
         assert!(!Rc::ptr_eq(
             &evaluator,
-            &host.bootstrap.as_ref().unwrap().evaluator
+            &host.engine.bootstrap.as_ref().unwrap().evaluator
         ));
     }
 
@@ -981,7 +1005,7 @@ mod tests {
         let mut outputs = Vec::new();
         for collect in [false, true] {
             let mut host = MacroHost::new();
-            host.bootstrap_seed = true;
+            host.tables.bootstrap_seed = true;
             let evaluator = Rc::new(Evaluator::new(Default::default()).unwrap());
             evaluator.install_gc_callback("bootstrapCollect").unwrap();
             let mut bootstrap = Bootstrap {
@@ -1000,7 +1024,7 @@ mod tests {
                 &MACROS.iter().map(|p| p.0).collect::<Vec<_>>(),
             )
             .unwrap();
-            host.bootstrap = Some(bootstrap.clone());
+            host.engine.bootstrap = Some(bootstrap.clone());
             let sequences = compile(
                 &format!("{prefix}{SEQUENCES}\n{{\"for\" sequence-for \"doseq\" sequence-doseq}}"),
                 &mut host,
@@ -1008,7 +1032,7 @@ mod tests {
             .unwrap();
             install(&sequences, &mut bootstrap, &["for", "doseq"]).unwrap();
             evaluator.collect_garbage();
-            host.bootstrap = Some(bootstrap);
+            host.engine.bootstrap = Some(bootstrap);
             let program = crate::analyze_with_macros(
                 "[(-> 2 inc (* 4)) (vec (for [x [1 2 3] :when (odd? x)] (* x x)))]",
                 &crate::parse("[(-> 2 inc (* 4)) (vec (for [x [1 2 3] :when (odd? x)] (* x x)))]")

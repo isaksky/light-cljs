@@ -11,6 +11,25 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Host split (light-cljs-334, October 18, 2026)
+
+Parent `6280d29` against the two-part macro host, Penpot `app.main
+--optimize none`, six alternating pairs (parent first in rounds 1-3,
+candidate first in 4-6) at 1-minute load 4.9 to 12.0 while two other
+workers were active. Output is 33,624,590 bytes with the same SHA-256 in
+all twelve runs.
+
+| Build | Wall (s), round 1-6 | Median wall | Peak RSS (GB), round 1-6 | Median RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `6280d29` | 26.90, 26.41, 26.31, 26.58, 24.67, 24.99 | 26.36 | 0.961, 0.973, 0.976, 0.959, 0.933, 0.934 | 0.960 |
+| `MacroEnvironment` and `EngineBinding` | 26.29, 26.49, 26.44, 26.24, 24.81, 24.85 | 26.27 | 0.957, 0.971, 0.964, 0.944, 0.940, 0.927 | 0.951 |
+
+The medians are -0.4% wall and -1.0% peak RSS, within the +2% and +3%
+gate; the median of the six paired differences is -0.03 s, and both builds
+ran 1.5 s faster once the load fell in rounds 5 and 6. A frame is built
+from the same clones as before, and the platform is initialized once per
+process either way.
+
 ## Generated names per unit (light-cljs-332, October 18, 2026)
 
 Parent `8982972` against per-unit generated names, Penpot `app.main

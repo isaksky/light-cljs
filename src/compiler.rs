@@ -2370,6 +2370,10 @@ fn analyze_entry(
         mut cache,
         slots,
     } = recorders;
+    // V8 is initialized before this compilation starts a thread: the load
+    // pool's now, the analysis workers' later.
+    #[cfg(light_v8)]
+    crate::v8_evaluator::initialize_platform();
     let cache_reservation = cache
         .as_deref()
         .filter(|_| reserve.is_none())
@@ -2436,17 +2440,18 @@ fn analyze_entry(
     // Analysis logs what it observes beyond the `ns` forms only while a
     // manifest is recorded, and stops when this compilation ends, however.
     let observations = (manifest.is_some() || cache.is_some()).then(|| {
-        *macros.dependency_log.borrow_mut() = Some(crate::dependency_manifest::ObservationLog {
-            configuration: Some(macros.configuration.fingerprint()),
-            ..Default::default()
-        });
-        ObservationGuard(macros.dependency_log.clone())
+        *macros.engine.dependency_log.borrow_mut() =
+            Some(crate::dependency_manifest::ObservationLog {
+                configuration: Some(macros.tables.configuration.fingerprint()),
+                ..Default::default()
+            });
+        ObservationGuard(macros.engine.dependency_log.clone())
     });
     // `light.build` serves this compilation, with the provider's resources.
     let build = crate::build_services::BuildGuard::enter(
-        &macros.build,
+        &macros.engine.build,
         sources.resources(),
-        macros.configuration.clone(),
+        macros.tables.configuration.clone(),
     );
     let mut index = 0;
     while index < loader.ordered.len() {
@@ -2675,7 +2680,7 @@ fn analyze_entry(
             stats.install = Some(install_counts);
         }
         stats.macro_calls = macros.executed_expansions();
-        stats.peak_macro_nodes = macros.generated_nodes.get();
+        stats.peak_macro_nodes = macros.engine.generated_nodes.get();
         stats.trace = recording.and_then(crate::compile_trace::Recording::finish);
         if let Some(session) = macros.session_handle() {
             stats.deferred_units = session.unit_counts();
@@ -2699,6 +2704,7 @@ fn analyze_entry(
         // a drained deferred unit can restore to a snapshot from before a
         // later `defmacro`.
         let owners: std::collections::HashSet<&str> = macros
+            .tables
             .javascript_macros
             .keys()
             .filter_map(|key| key.split_once('/').map(|(owner, _)| owner))

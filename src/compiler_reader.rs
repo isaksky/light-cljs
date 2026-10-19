@@ -1464,19 +1464,49 @@ pub struct NamespaceView {
     pub bindings: HashMap<Name, ResolvedBinding>,
     pub declaration_frontier: usize,
     pub source: crate::compiler_data::SourceId,
-    core_bindings: std::rc::Rc<HashMap<Name, ResolvedBinding>>,
+    core_bindings: std::sync::Arc<HashMap<Name, ResolvedBinding>>,
 }
 impl NamespaceView {
     pub fn new(namespace: &str, source: &Source) -> Self {
-        thread_local! {
-            static CORE: std::rc::Rc<HashMap<Name, ResolvedBinding>> = std::rc::Rc::new(core_public_bindings().enumerate().filter_map(|(index, (name, kind))| {
-                if crate::CoreFnId::resolve(name).is_none() && !crate::compiler_names::core_macro(name) && !crate::compiler_names::is_definition_macro("cljs.core", name) { return None; }
-                let qualified = Name::new(Some("cljs.core"), name);
-                let kind = if crate::CoreFnId::resolve(name).is_none() && (crate::compiler_names::core_macro(name) || crate::compiler_names::is_definition_macro("cljs.core", name)) { BindingKind::Macro } else { kind };
-                Some((qualified.clone(), ResolvedBinding { id: BindingId(usize::MAX - index), kind, name: qualified }))
-            }).collect());
-        }
-        let core_bindings = CORE.with(Clone::clone);
+        // One table for every thread of the process.
+        static CORE: std::sync::OnceLock<std::sync::Arc<HashMap<Name, ResolvedBinding>>> =
+            std::sync::OnceLock::new();
+        let core_bindings = CORE
+            .get_or_init(|| {
+                std::sync::Arc::new(
+                    core_public_bindings()
+                        .enumerate()
+                        .filter_map(|(index, (name, kind))| {
+                            if crate::CoreFnId::resolve(name).is_none()
+                                && !crate::compiler_names::core_macro(name)
+                                && !crate::compiler_names::is_definition_macro("cljs.core", name)
+                            {
+                                return None;
+                            }
+                            let qualified = Name::new(Some("cljs.core"), name);
+                            let kind = if crate::CoreFnId::resolve(name).is_none()
+                                && (crate::compiler_names::core_macro(name)
+                                    || crate::compiler_names::is_definition_macro(
+                                        "cljs.core",
+                                        name,
+                                    )) {
+                                BindingKind::Macro
+                            } else {
+                                kind
+                            };
+                            Some((
+                                qualified.clone(),
+                                ResolvedBinding {
+                                    id: BindingId(usize::MAX - index),
+                                    kind,
+                                    name: qualified,
+                                },
+                            ))
+                        })
+                        .collect(),
+                )
+            })
+            .clone();
         Self {
             namespace: Name::new(None, namespace),
             aliases: HashMap::new(),

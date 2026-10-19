@@ -3208,7 +3208,7 @@ pub(crate) fn analyze_deferred_form(
     // A unit's names depend only on where it was registered, not on when
     // it is analyzed, what was analyzed before it or on which thread.
     let _names = snapshot.names.clone().map(crate::generated_names::enter);
-    let evaluator = host.bootstrap.as_ref().map(|b| b.evaluator.clone());
+    let evaluator = host.engine.bootstrap.as_ref().map(|b| b.evaluator.clone());
     let engine = engine.or_else(|| {
         evaluator
             .as_ref()
@@ -4482,7 +4482,7 @@ impl Analyzer<'_> {
             return false;
         }
         crate::macro_host::WorkMarks::note(
-            &self.macro_host.work.analysis_depth,
+            &self.macro_host.engine.work.analysis_depth,
             self.analysis_depth + 1,
         );
         self.analysis_depth >= crate::macro_host::GENERATED_NESTING_LIMIT
@@ -4491,7 +4491,7 @@ impl Analyzer<'_> {
     /// Whether expanding at `depth` exceeds the expansion depth limit,
     /// noting the depth checked for the namespace's accounting.
     fn expansion_depth_exceeded(&self, depth: usize) -> bool {
-        crate::macro_host::WorkMarks::note(&self.macro_host.work.macro_depth, depth + 1);
+        crate::macro_host::WorkMarks::note(&self.macro_host.engine.work.macro_depth, depth + 1);
         depth >= self.macro_host.limits.expansion_depth.min(64)
     }
 
@@ -5206,7 +5206,7 @@ impl Analyzer<'_> {
         let form = self
             .compiler_read_form(id)
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
-        if self.macro_host.bootstrap_seed {
+        if self.macro_host.tables.bootstrap_seed {
             let lowered = crate::compiler_bootstrap::lower_declaration(&form)
                 .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?
                 .1;
@@ -5410,7 +5410,7 @@ impl Analyzer<'_> {
         if let Some(local) = self.lookup(name) {
             return Ok(ExprKind::Local(local));
         }
-        if self.macro_host.bootstrap_seed
+        if self.macro_host.tables.bootstrap_seed
             && self.macro_host.has_source_value(self.namespace, name)
             && !self
                 .globals
@@ -9620,7 +9620,7 @@ impl Analyzer<'_> {
             if let Some(session) = self.macro_host.session_handle()
                 && session.capturing()
                 && let Some(key) = self.macro_host.source_macro_key(self.namespace, target)
-                && let Some(declaration) = self.macro_host.javascript_macros.get(&key)
+                && let Some(declaration) = self.macro_host.tables.javascript_macros.get(&key)
             {
                 let definition = declaration.definition();
                 session.capture_expansion(crate::compilation_session::CapturedExpansion {
@@ -10073,7 +10073,11 @@ impl Analyzer<'_> {
                 .reader_refers(self.namespace)
                 .hash(&mut hasher);
             self.resolution.excludes.hash(&mut hasher);
-            self.macro_host.javascript_macros.len().hash(&mut hasher);
+            self.macro_host
+                .tables
+                .javascript_macros
+                .len()
+                .hash(&mut hasher);
             hasher.finish()
         };
         if self

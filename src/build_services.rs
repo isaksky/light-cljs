@@ -24,7 +24,7 @@ use std::{cell::RefCell, rc::Rc};
 pub(crate) struct BuildContext {
     resources: Option<Rc<dyn ResourceProvider>>,
     /// What `light.build/config` answers.
-    configuration: Rc<BuildConfiguration>,
+    configuration: std::sync::Arc<BuildConfiguration>,
     /// Each source by source index, as analysis reaches it.
     sources: Vec<Option<Site>>,
     /// The source being analyzed.
@@ -54,7 +54,7 @@ impl BuildGuard {
     pub(crate) fn enter(
         build: &SharedBuild,
         resources: Option<Rc<dyn ResourceProvider>>,
-        configuration: Rc<BuildConfiguration>,
+        configuration: std::sync::Arc<BuildConfiguration>,
     ) -> Self {
         let previous = build.borrow_mut().replace(BuildContext {
             resources,

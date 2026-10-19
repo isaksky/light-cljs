@@ -249,14 +249,14 @@ pub fn compiler_identity(host: &MacroHost) -> Digest {
         .digest(&build_identity())
         .number(u64::from(crate::artifact_codec::SCHEMA_VERSION))
         .digest(&crate::artifact_codec::core_table());
-    if let Some(script) = &host.script_host
-        && !host.interactive
+    if let Some(script) = &host.engine.script_host
+        && !host.tables.interactive
     {
         fingerprint.text("host").text(&script.engine());
         return fingerprint.finish();
     }
     #[cfg(light_v8)]
-    if !host.interactive {
+    if !host.tables.interactive {
         fingerprint.text("v8").text(v8::V8::get_version());
         return fingerprint.finish();
     }
@@ -833,7 +833,7 @@ mod tests {
     fn the_macro_engine_is_part_of_the_compiler_identity() {
         let clean = MacroHost::new();
         let mut interactive = MacroHost::new();
-        interactive.interactive = true;
+        interactive.tables.interactive = true;
         let (v8, quickjs) = (compiler_identity(&clean), compiler_identity(&interactive));
         if cfg!(light_v8) {
             assert_ne!(v8, quickjs);

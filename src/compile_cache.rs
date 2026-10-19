@@ -294,7 +294,7 @@ impl CompileCache {
         let id = NamespaceId(self.prefix.len() as u32 - 1);
         let name = self.prefix.record(id).name.clone();
         self.prefix.set_macros(id, declares_macros(macros, &name));
-        if let Some(log) = macros.dependency_log.borrow().as_ref() {
+        if let Some(log) = macros.engine.dependency_log.borrow().as_ref() {
             self.prefix.skip_observations(log);
         }
         self.keys.append(&name, *key);
@@ -326,7 +326,7 @@ impl CompileCache {
         let index = self.prefix.len();
         let name = loader.sources[index].name.clone();
         let id = {
-            let log = macros.dependency_log.borrow();
+            let log = macros.engine.dependency_log.borrow();
             let log = log.as_ref().expect("the cache records observations");
             self.prefix.push_analyzed(
                 loader,
@@ -485,7 +485,7 @@ impl CompileCache {
 /// Whether `namespace` declares macros in `macros`' inventory, which makes a
 /// require of it a macro-provider edge.
 fn declares_macros(macros: &MacroHost, namespace: &str) -> bool {
-    macros.javascript_macros.keys().any(|key| {
+    macros.tables.javascript_macros.keys().any(|key| {
         key.split_once('/')
             .is_some_and(|(owner, _)| owner == namespace)
     })

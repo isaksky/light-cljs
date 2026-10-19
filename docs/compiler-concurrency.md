@@ -375,6 +375,64 @@ session pellets (light-cljs-334, 335). Function-local `RefCell`s (in
 | `compiler_reader.rs` `NamespaceView` | `core_bindings: Rc<HashMap<Name, ResolvedBinding>>` from a `thread_local!` `CORE` | per-thread lazy state, `Rc` | `NamespaceView` and the analyzer's `ReaderView` (stage C); as an `Arc` in a `OnceLock` it would be shared |
 | `evaluator.rs`, `v8_evaluator.rs`, `v8_bridge.rs` | isolate and runtime handles, `Rc<State>`, `RefCell`/`Cell` engine state | engine | must not move; one per thread |
 
+As built (light-cljs-334): the `macro_host.rs` rows, the `__lightCompileUnit`
+callback row and the `compiler_reader.rs` row above are resolved; the
+`compilation_session.rs` rows are the session pellet's (light-cljs-335).
+
+- **Two parts.** A `MacroHost` is its sendable data and an `EngineBinding`
+  (`src/macro_host.rs`). The data is the limits, the evaluator options and the
+  opaque-packages setting, which stay fields of the host so that callers can
+  borrow them apart, and `MacroTables`: the layered imports, renames, namespace
+  symbols and docs, runtime Vars, macro declarations and their names, source
+  bindings, the name policy, the reader generation, the build configuration
+  (now an `Arc`) and the data readers' emitted sources. `MacroHost::environment`
+  takes all of it as a `MacroEnvironment`, as an analysis frame sees it. The
+  binding holds the bootstrap engine, the data-reader engine and the reader
+  functions evaluated in it, the session handle, the four environment caches,
+  the budget counters and work marks, the reader declarations, the dependency
+  log, the `light.build` context and the script host.
+- **Checked in every build.** A `const` assertion fails the build if
+  `MacroEnvironment` stops being `Send + Sync`, and another if
+  `EngineBinding` becomes either; a marker field keeps it neither whatever its
+  other fields become.
+- **The serial path** builds every analysis frame from the two parts: the
+  environment and a frame of the coordinator's binding, which shares its
+  engines, caches, counters and session as before. Output is byte-identical.
+- **A worker's host** is `MacroHost::bind(environment, evaluator)`, with an
+  engine made on the worker's thread. The engine gets the host's preludes and
+  the process-wide bootstrap units through `compiler_bootstrap::bind`, so no
+  thread compiles them again. Without an engine, the host analyzes what runs
+  no macro in one, which is light-cljs-338's case. The bound binding starts
+  with no session, empty caches and zero counters; one aggregate budget is
+  light-cljs-341's.
+- **Source macros stay with their engine.** A declaration's function is a
+  value ID of the engine that evaluated it, which any other engine refuses
+  ("Value ID belongs to another JavaScript session"). An installed macro's
+  cached function is behind an `Arc<Mutex>` now, so the tables are sendable,
+  but it is still one engine's. Installing macro code in each isolate is
+  light-cljs-339's.
+- **The services' seam.** `install_catalog_services`
+  (`src/compilation_session.rs`) installs `__lightCompileUnit` and
+  `light.build`'s `__lightBuildService` in an engine from a weak
+  `CatalogView`. `CompilationSession` is the coordinator's view; a worker
+  installs them with a view of its own. Making the catalog behind it
+  thread-safe is light-cljs-335's.
+- **V8 starts first.** `--compile` initializes the V8 platform at the start
+  of `analyze_entry`, before the load pool's threads start
+  (`v8_evaluator::initialize_platform`). An evaluator made elsewhere still
+  initializes it on first use.
+- **One table of core bindings.** `NamespaceView`'s core bindings are one
+  `OnceLock<Arc>` for the process instead of an `Rc` per thread, and
+  `NamespaceView` is in the `compiler_data.rs` assertion.
+- **Tests.** `compilation_session::worker_tests` keeps the inputs of each
+  unit a compilation registers, sends them to another thread, binds a fresh
+  engine there (V8, or QuickJS in a QuickJS-only build) and analyzes a
+  macro-free unit, with an engine and without, and a unit that expands `when`
+  and `->`, to the main thread's prepared JavaScript. Others run the data
+  readers an environment was taken with on another thread, and give a bound
+  engine a catalog view of its own, through which `__lightCompileUnit` and
+  `light.build` requests reach it.
+
 The engines are ready for concurrent use.
 
 - The V8 platform is initialized once per process (`OnceLock` in `platform()`,
@@ -1131,9 +1189,9 @@ output changes once, when stage A lands.
 | --- | --- |
 | `arena`, `shared`, `layered`, `name_index` | `Rc` → `Arc`; the `Arena` lookup hint `Cell` becomes per-thread or a relaxed atomic. Measured cost of the `Rc` swap (with `compiler_data`): none observed in a three-run sample. Done in light-cljs-333 (relaxed atomic). |
 | `compiler_data` | `Rc` → `Arc` for `Name`, `Source`, `Datum`, `Form`, `Origin`; `OnceCell` → `OnceLock`. Done in light-cljs-333. |
-| `macro_host` | Split into sendable environment data (layered maps, limits, options) and a per-thread engine binding (bootstrap evaluator, data-reader evaluator, session). The `Rc<RefCell>` environment caches become per worker. |
+| `macro_host` | Split into sendable environment data (layered maps, limits, options) and a per-thread engine binding (bootstrap evaluator, data-reader evaluator, session). The `Rc<RefCell>` environment caches become per worker. Done in light-cljs-334 (`MacroEnvironment` and `EngineBinding`). |
 | `compilation_session` | Catalog behind a `Mutex`, unit state with an owner and a `Condvar`, analyzed IR as `Arc<Program>`, prepared JS as `Arc<str>`; per-isolate registration state moves to the worker; wait-for graph for cross-worker cycles; shared failure per unit |
-| Engines | One `V8Evaluator` per worker; platform init before spawning; process-wide bootstrap JS cache (done in light-cljs-332); `__lightCompileUnit` callbacks bound to the worker's catalog handle |
+| Engines | One `V8Evaluator` per worker; platform init before spawning; process-wide bootstrap JS cache (done in light-cljs-332); `__lightCompileUnit` callbacks bound to the worker's catalog handle (the platform init and the callback seam, `CatalogView`, done in light-cljs-334) |
 | Loader | Task per file; namespace records with readiness counts; deterministic DFS reconstruction; diamond coalescing; parallel built-in provider, serial custom providers |
 | Names, warnings, limits | Deterministic per-unit allocation (done in light-cljs-332: per-thread scopes, digest discriminators, scoped `gensym`, process-wide bootstrap); per-task buffers; merge-time accounting; aggregate memory budget |
 | Driver | `std::thread::scope` pool, one mutex, two condvars, phase and per-worker deques, batch claims and stealing, critical-path priority, in-order merge, completion accounting, panic and shutdown handling; `--jobs N`, default 1 until the gates below pass |

@@ -379,7 +379,7 @@ impl DevSession {
         let mut host = crate::MacroHost::new();
         host.limits = options.compiler;
         host.evaluator_options = options.engine.clone();
-        host.interactive_control = Some(control.clone());
+        host.engine.interactive_control = Some(control.clone());
         host.set_build_configuration(options.configuration.clone());
         host.opaque_packages = options.opaque_packages;
         for (tag, source) in &options.data_readers {
@@ -445,6 +445,7 @@ impl DevSession {
         self.compiler
             .borrow()
             .host
+            .tables
             .javascript_macros
             .keys()
             .any(|name| name.starts_with(&prefix))
@@ -455,6 +456,7 @@ impl DevSession {
         self.compiler
             .borrow()
             .host
+            .tables
             .javascript_macros
             .keys()
             .filter_map(|name| name.split_once('/').map(|(owner, _)| owner.to_owned()))
@@ -482,7 +484,7 @@ impl DevSession {
     ) -> (T, crate::dependency_manifest::Observations) {
         let log = {
             let compiler = self.compiler.borrow();
-            let log = compiler.host.dependency_log.clone();
+            let log = compiler.host.engine.dependency_log.clone();
             *log.borrow_mut() = Some(crate::dependency_manifest::ObservationLog::default());
             log
         };

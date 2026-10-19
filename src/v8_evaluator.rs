@@ -188,6 +188,13 @@ extern "C" fn near_heap_limit(data: *mut std::ffi::c_void, current: usize, _: us
     state.handle.terminate_execution();
     current.saturating_add(16 * 1024 * 1024)
 }
+/// Initialize V8 for the process, once. A compilation calls it before it
+/// starts any thread (docs/compiler-concurrency.md, "Thread safety today"):
+/// where memory protection keys are in use, a thread made before V8 was
+/// initialized cannot enter an isolate.
+pub(crate) fn initialize_platform() {
+    platform();
+}
 fn platform() -> v8::SharedRef<v8::Platform> {
     static PLATFORM: OnceLock<v8::SharedRef<v8::Platform>> = OnceLock::new();
     PLATFORM

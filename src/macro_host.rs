@@ -239,9 +239,55 @@ struct ReaderEnvironment {
 
 /// Macro configuration and compiler metadata. Each clean compilation owns a fresh
 /// QuickJS bootstrap session; reusing this host never reuses JavaScript macro roots.
+///
+/// A host has two parts (docs/compiler-concurrency.md, "Thread safety
+/// today"). Its settings and [`MacroTables`] are sendable data, which a
+/// worker receives as a [`MacroEnvironment`]; the settings stay fields of
+/// the host, so that callers can set them apart. Its [`EngineBinding`] is
+/// the per-thread state bound to one compile-time engine, which never
+/// leaves the thread that made it. A worker builds its own host from an
+/// environment and its own evaluator ([`Self::bind`]).
 #[derive(Default)]
 pub struct MacroHost {
-    compiler_data_readers: std::rc::Rc<std::cell::RefCell<CompilerDataReaders>>,
+    pub limits: MacroLimits,
+    /// Configuration only: JS roots belong to each fresh compilation session.
+    pub evaluator_options: crate::evaluator::EvaluatorOptions,
+    /// Give compile-time heaps an opaque JavaScript package registry: every
+    /// package, export, call and construction answers an inert stub, so the
+    /// initializers that macro expansion demands (such as an extension whose
+    /// target type a package builds) run without the host's packages, which
+    /// only the application has.
+    pub opaque_packages: bool,
+    pub(crate) tables: MacroTables,
+    pub(crate) engine: EngineBinding,
+}
+
+/// The sendable part of a [`MacroHost`], which a worker receives: the
+/// host's settings and tables as an analysis frame sees them
+/// ([`MacroHost::environment`]).
+#[derive(Clone)]
+pub(crate) struct MacroEnvironment {
+    limits: MacroLimits,
+    evaluator_options: crate::evaluator::EvaluatorOptions,
+    opaque_packages: bool,
+    tables: MacroTables,
+}
+impl MacroEnvironment {
+    /// The options a worker's own engine is made with.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn evaluator_options(&self) -> &crate::evaluator::EvaluatorOptions {
+        &self.evaluator_options
+    }
+}
+
+/// The layered tables of declared imports, macros and bindings, the flags
+/// and the sources of the compiler data readers. They hold no engine value
+/// that could be used from another thread: a source macro's function is a
+/// value ID scoped to the engine that evaluated it, which another engine
+/// refuses.
+#[derive(Clone, Default)]
+pub(crate) struct MacroTables {
+    data_readers: std::sync::Arc<DataReaderSources>,
     imports: crate::layered::Layered<String, Vec<MacroImport>>,
     renames: crate::layered::Layered<String, Vec<(String, String, String)>>,
     namespace_symbols: crate::layered::Layered<String, crate::compiler_data::Datum>,
@@ -249,21 +295,34 @@ pub struct MacroHost {
     /// By `namespace/name`, whether the Var is private.
     runtime_vars: crate::layered::Layered<String, bool>,
     namespace_imports: crate::layered::Layered<String, Vec<(String, String)>>,
-    pub limits: MacroLimits,
-    /// Configuration only: JS roots belong to each fresh compilation session.
-    pub evaluator_options: crate::evaluator::EvaluatorOptions,
     assertions_disabled: bool,
     pub(crate) interactive: bool,
-    pub(crate) interactive_control: Option<crate::evaluator::ExecutionControl>,
     pub(crate) name_policy: Option<crate::eval_compiler::NamePolicy>,
-    pub(crate) bootstrap: Option<crate::compiler_bootstrap::Bootstrap>,
     pub(crate) bootstrap_seed: bool,
     pub(crate) javascript_macros:
         crate::layered::Layered<String, crate::compiler_bootstrap::CompiledMacro>,
     /// The names of `javascript_macros` by namespace, sorted
-    /// ([`Self::source_macro_names`]); change both through
-    /// [`Self::insert_javascript_macro`].
+    /// ([`MacroHost::source_macro_names`]); change both through
+    /// [`MacroHost::insert_javascript_macro`].
     macro_names: crate::layered::Layered<String, Vec<String>>,
+    pub(crate) source_bindings: crate::layered::Layered<String, SourceBindingKind>,
+    /// The compilation whose declared bindings the session holds.
+    pub(crate) reader_generation: u64,
+    /// The build configuration `light.build/config` answers
+    /// ([`MacroHost::set_build_configuration`]).
+    pub(crate) configuration: std::sync::Arc<crate::build_services::BuildConfiguration>,
+}
+
+/// The per-thread part of a [`MacroHost`]: its compile-time engines, the
+/// session they serve, and the caches and counters its analysis frames
+/// share. Neither `Send` nor `Sync`: it is made, used and dropped on one
+/// thread.
+#[derive(Default)]
+pub(crate) struct EngineBinding {
+    /// The data-reader engine and the reader functions evaluated in it.
+    data_readers: std::rc::Rc<std::cell::RefCell<DataReaderEngine>>,
+    pub(crate) interactive_control: Option<crate::evaluator::ExecutionControl>,
+    pub(crate) bootstrap: Option<crate::compiler_bootstrap::Bootstrap>,
     /// Shared by frames with the same macro inventory; replaced on declaration.
     pub(crate) macro_environment:
         std::rc::Rc<std::cell::RefCell<Option<crate::compiler_data::Datum>>>,
@@ -271,7 +330,6 @@ pub struct MacroHost {
     // Shared by analysis frames, but bounded to one complete lexical view.
     local_environment: std::rc::Rc<std::cell::RefCell<Option<LocalEnvironment>>>,
     reader_environment: std::rc::Rc<std::cell::RefCell<Option<ReaderEnvironment>>>,
-    pub(crate) source_bindings: crate::layered::Layered<String, SourceBindingKind>,
     pub(crate) session: Option<std::rc::Rc<crate::compilation_session::CompilationSession>>,
     pub(crate) session_ref: std::rc::Weak<crate::compilation_session::CompilationSession>,
     pub(crate) expansions: std::rc::Rc<std::cell::Cell<usize>>,
@@ -279,22 +337,14 @@ pub struct MacroHost {
     /// The compilation's high-water marks and charges, shared like the
     /// counters ([`WorkMarks`]).
     pub(crate) work: std::rc::Rc<WorkMarks>,
-    /// Give compile-time heaps an opaque JavaScript package registry: every
-    /// package, export, call and construction answers an inert stub, so the
-    /// initializers that macro expansion demands (such as an extension whose
-    /// target type a package builds) run without the host's packages, which
-    /// only the application has.
-    pub opaque_packages: bool,
     /// The engine clean compilations run their macros in instead of the
-    /// built-in ones ([`Self::set_script_host`]).
+    /// built-in ones ([`MacroHost::set_script_host`]).
     pub(crate) script_host: Option<std::rc::Rc<dyn crate::host_evaluator::ScriptHost>>,
     /// Per namespace, the globals registered as its declared bindings in the
     /// compile-time session: the position after the last one registered and
     /// how many of the namespace's own globals were among them. Shared by
     /// the analysis frames of one compilation.
     pub(crate) reader_declared: std::rc::Rc<std::cell::RefCell<HashMap<String, (usize, usize)>>>,
-    /// The compilation whose declared bindings the session holds.
-    pub(crate) reader_generation: u64,
     /// While a dependency manifest is recorded, what analysis observes
     /// beyond the `ns` forms; shared by the analysis frames of the
     /// compilation ([`crate::dependency_manifest`]).
@@ -303,11 +353,68 @@ pub struct MacroHost {
     /// The compilation `light.build` serves, shared by the analysis frames
     /// and the services installed in its heaps ([`crate::build_services`]).
     pub(crate) build: crate::build_services::SharedBuild,
-    /// The build configuration `light.build/config` answers
-    /// ([`Self::set_build_configuration`]).
-    pub(crate) configuration: std::rc::Rc<crate::build_services::BuildConfiguration>,
+    /// Keeps the binding on its thread whatever its fields become.
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
+// A worker receives a `MacroEnvironment`; an `EngineBinding` never moves
+// (docs/compiler-concurrency.md, "Thread safety today"). Both hold in every
+// build, not only test builds.
+const _: () = {
+    const fn send_sync<T: Send + Sync>() {}
+    send_sync::<MacroEnvironment>();
+};
+const _: fn() = || {
+    // Ambiguous, and so an error, if the binding were `Send`, or `Sync`.
+    trait AmbiguousIfSend<A> {
+        fn check() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+    struct IsSend;
+    impl<T: ?Sized + Send> AmbiguousIfSend<IsSend> for T {}
+    let _ = <EngineBinding as AmbiguousIfSend<_>>::check;
+    trait AmbiguousIfSync<A> {
+        fn check() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+    struct IsSync;
+    impl<T: ?Sized + Sync> AmbiguousIfSync<IsSync> for T {}
+    let _ = <EngineBinding as AmbiguousIfSync<_>>::check;
+};
+
+impl EngineBinding {
+    /// What an analysis frame shares with the binding it was taken from:
+    /// its engines, caches and counters, and its session, which the frame
+    /// reaches weakly.
+    fn frame(&self) -> Self {
+        Self {
+            data_readers: self.data_readers.clone(),
+            interactive_control: self.interactive_control.clone(),
+            bootstrap: self.bootstrap.clone(),
+            macro_environment: self.macro_environment.clone(),
+            namespace_environment: self.namespace_environment.clone(),
+            local_environment: self.local_environment.clone(),
+            reader_environment: self.reader_environment.clone(),
+            session: None,
+            session_ref: self
+                .session_handle()
+                .map_or_else(std::rc::Weak::new, |s| std::rc::Rc::downgrade(&s)),
+            expansions: self.expansions.clone(),
+            generated_nodes: self.generated_nodes.clone(),
+            work: self.work.clone(),
+            script_host: self.script_host.clone(),
+            reader_declared: self.reader_declared.clone(),
+            dependency_log: self.dependency_log.clone(),
+            build: self.build.clone(),
+            _thread: std::marker::PhantomData,
+        }
+    }
+    pub(crate) fn session_handle(
+        &self,
+    ) -> Option<std::rc::Rc<crate::compilation_session::CompilationSession>> {
+        self.session.clone().or_else(|| self.session_ref.upgrade())
+    }
+}
 /// A namespace's entries in the macro host's tables, borrowed.
 pub(crate) struct NamespaceDeclarations<'a> {
     pub imports: &'a [MacroImport],
@@ -340,10 +447,15 @@ pub(crate) struct ReaderRegistration {
     visible: usize,
 }
 
-#[derive(Default)]
-struct CompilerDataReaders {
+/// The compiler data readers' emitted units, by tag, and the default one's.
+#[derive(Clone, Default)]
+struct DataReaderSources {
     units: HashMap<Name, String>,
     default_unit: Option<String>,
+}
+/// The data-reader heap of one binding and the functions evaluated in it.
+#[derive(Default)]
+struct DataReaderEngine {
     default_function: Option<crate::evaluator::ValueId>,
     evaluator: Option<std::rc::Rc<crate::evaluator::Evaluator>>,
     functions: HashMap<Name, crate::evaluator::ValueId>,
@@ -381,58 +493,30 @@ impl MacroHost {
         std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
         crate::evaluator::EvalError,
     > {
-        if let Some(host) = &self.script_host
-            && !self.interactive
+        if let Some(host) = &self.engine.script_host
+            && !self.tables.interactive
         {
-            use crate::evaluator::MacroEvaluator;
             let evaluator =
                 crate::host_evaluator::HostEvaluator::new(host.clone(), &self.evaluator_options)?;
-            if self.assertions_disabled {
-                let done = evaluator
-                    .evaluate_unit("rt => { rt.core.assertions = false; return null; }")?;
-                evaluator.release(done)?;
-            }
-            if self.opaque_packages {
-                let done = evaluator.evaluate_unit(OPAQUE_PACKAGES_PRELUDE)?;
-                evaluator.release(done)?;
-            }
+            self.prepare_compiler_evaluator(&evaluator)?;
             return Ok(std::rc::Rc::new(evaluator));
         }
         #[cfg(light_v8)]
-        if !self.interactive {
-            use crate::evaluator::MacroEvaluator;
+        if !self.tables.interactive {
             let evaluator = crate::v8_evaluator::V8Evaluator::new(self.evaluator_options.clone())?;
-            if self.assertions_disabled {
-                let done = evaluator
-                    .evaluate_unit("rt => { rt.core.assertions = false; return null; }")?;
-                evaluator.release(done)?;
-            }
-            if self.opaque_packages {
-                let done = evaluator.evaluate_unit(OPAQUE_PACKAGES_PRELUDE)?;
-                evaluator.release(done)?;
-            }
+            self.prepare_compiler_evaluator(&evaluator)?;
             return Ok(std::rc::Rc::new(evaluator));
         }
         Ok(std::rc::Rc::new(self.new_evaluator()?))
     }
-    /// Allocate a fresh synchronous heap for a clean compilation. Its dynamic
-    /// `*assert*` follows [`Self::set_assertions`], so the macros, functions and
-    /// data readers it runs read the setting, as upstream's `:elide-asserts`
-    /// binds `clojure.core/*assert*` while compiling.
-    pub fn new_evaluator(
+    /// Give a fresh compile-time engine this host's settings: its
+    /// `*assert*` and, with [`MacroEnvironment::opaque_packages`], the
+    /// opaque package registry.
+    fn prepare_compiler_evaluator(
         &self,
-    ) -> Result<crate::evaluator::Evaluator, crate::evaluator::EvalError> {
-        let evaluator = if let Some(control) = &self.interactive_control {
-            crate::evaluator::Evaluator::interactive_with_control(
-                self.evaluator_options.clone(),
-                control.clone(),
-            )
-        } else if self.interactive {
-            crate::evaluator::Evaluator::interactive(self.evaluator_options.clone())
-        } else {
-            crate::evaluator::Evaluator::new(self.evaluator_options.clone())
-        }?;
-        if self.assertions_disabled {
+        evaluator: &dyn crate::evaluator::MacroEvaluator,
+    ) -> Result<(), crate::evaluator::EvalError> {
+        if self.tables.assertions_disabled {
             let done =
                 evaluator.evaluate_unit("rt => { rt.core.assertions = false; return null; }")?;
             evaluator.release(done)?;
@@ -441,6 +525,26 @@ impl MacroHost {
             let done = evaluator.evaluate_unit(OPAQUE_PACKAGES_PRELUDE)?;
             evaluator.release(done)?;
         }
+        Ok(())
+    }
+    /// Allocate a fresh synchronous heap for a clean compilation. Its dynamic
+    /// `*assert*` follows [`Self::set_assertions`], so the macros, functions and
+    /// data readers it runs read the setting, as upstream's `:elide-asserts`
+    /// binds `clojure.core/*assert*` while compiling.
+    pub fn new_evaluator(
+        &self,
+    ) -> Result<crate::evaluator::Evaluator, crate::evaluator::EvalError> {
+        let evaluator = if let Some(control) = &self.engine.interactive_control {
+            crate::evaluator::Evaluator::interactive_with_control(
+                self.evaluator_options.clone(),
+                control.clone(),
+            )
+        } else if self.tables.interactive {
+            crate::evaluator::Evaluator::interactive(self.evaluator_options.clone())
+        } else {
+            crate::evaluator::Evaluator::new(self.evaluator_options.clone())
+        }?;
+        self.prepare_compiler_evaluator(&evaluator)?;
         Ok(evaluator)
     }
 
@@ -454,25 +558,25 @@ impl MacroHost {
         environment: &crate::compiler_data::Datum,
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
-        if self.expansions.get() >= self.limits.expansions {
+        if self.engine.expansions.get() >= self.limits.expansions {
             return Err("compiler macro expansion limit exceeded".into());
         }
-        self.expansions.set(self.expansions.get() + 1);
+        self.engine.expansions.set(self.engine.expansions.get() + 1);
         // The conversions below take at most the remaining node budget each,
         // so a namespace needs room for the largest of its inputs too.
-        if self.work.measuring.get() {
+        if self.engine.work.measuring.get() {
             let input =
-                WorkMarks::nodes(&call.data()).max(self.work.environment_nodes(environment));
+                WorkMarks::nodes(&call.data()).max(self.engine.work.environment_nodes(environment));
             WorkMarks::note(
-                &self.work.node_peak,
-                self.generated_nodes.get().saturating_add(input),
+                &self.engine.work.node_peak,
+                self.engine.generated_nodes.get().saturating_add(input),
             );
         }
         let limits = crate::form_bridge::ConversionLimits {
             nodes: self
                 .limits
                 .generated_nodes
-                .saturating_sub(self.generated_nodes.get()),
+                .saturating_sub(self.engine.generated_nodes.get()),
             depth: 128,
         };
         let run = || -> Result<Form, crate::evaluator::EvalError> {
@@ -502,13 +606,13 @@ impl MacroHost {
         let expanded = run();
         // What the conversions charged on the JavaScript side, which bounds
         // them by the same remaining budget.
-        if self.work.measuring.get() && expanded.is_ok() {
-            match take_encode_peak(evaluator, &self.work.encode_peak) {
+        if self.engine.work.measuring.get() && expanded.is_ok() {
+            match take_encode_peak(evaluator, &self.engine.work.encode_peak) {
                 Some(peak) => WorkMarks::note(
-                    &self.work.node_peak,
-                    self.generated_nodes.get().saturating_add(peak),
+                    &self.engine.work.node_peak,
+                    self.engine.generated_nodes.get().saturating_add(peak),
                 ),
-                None => self.work.unmeasured.set(true),
+                None => self.engine.work.unmeasured.set(true),
             }
         }
         let expanded = expanded.map_err(|e| {
@@ -538,12 +642,13 @@ impl MacroHost {
             }
             message
         })?;
-        self.generated_nodes.set(
-            self.generated_nodes
+        self.engine.generated_nodes.set(
+            self.engine
+                .generated_nodes
                 .get()
                 .saturating_add(expanded.nodes().len()),
         );
-        if self.generated_nodes.get() > self.limits.generated_nodes {
+        if self.engine.generated_nodes.get() > self.limits.generated_nodes {
             return Err("compiler macro generated-node limit exceeded".into());
         }
         Ok(expanded)
@@ -557,15 +662,15 @@ impl MacroHost {
     /// playground; docs/browser-macros.md). Interactive sessions and data
     /// readers keep the built-in QuickJS.
     pub fn set_script_host(&mut self, host: std::rc::Rc<dyn crate::host_evaluator::ScriptHost>) {
-        self.script_host = Some(host);
+        self.engine.script_host = Some(host);
     }
     /// Control assertion emission for this host (enabled by default). Disabled
     /// assertions omit both condition and message, including function pre/post checks.
     pub fn set_assertions(&mut self, enabled: bool) {
-        self.assertions_disabled = !enabled;
+        self.tables.assertions_disabled = !enabled;
     }
     pub fn assertions_enabled(&self) -> bool {
-        !self.assertions_disabled
+        !self.tables.assertions_disabled
     }
     /// Read immutable compiler-owned data without initializing an evaluator.
     pub fn read_compiler_form(
@@ -623,7 +728,10 @@ impl MacroHost {
         evaluator: &crate::evaluator::Evaluator,
     ) -> Result<(), crate::evaluator::EvalError> {
         use crate::compiler_evaluator::CompilerEvaluator;
-        let (build, log) = (self.build.clone(), self.dependency_log.clone());
+        let (build, log) = (
+            self.engine.build.clone(),
+            self.engine.dependency_log.clone(),
+        );
         evaluator.install_string_service(
             "__lightBuildService",
             std::rc::Rc::new(move |request| {
@@ -651,8 +759,10 @@ impl MacroHost {
         let syntax = crate::parse(function_source).map_err(|e| e.to_string())?;
         let program = crate::analyze(function_source, &syntax).map_err(|e| e.to_string())?;
         let unit = crate::emitter::emit_js_unit(&program);
-        let mut readers = self.compiler_data_readers.borrow_mut();
-        readers.units.insert(tag.clone(), unit);
+        std::sync::Arc::make_mut(&mut self.tables.data_readers)
+            .units
+            .insert(tag.clone(), unit);
+        let mut readers = self.engine.data_readers.borrow_mut();
         if let Some(id) = readers.functions.remove(&tag)
             && let Some(evaluator) = &readers.evaluator
         {
@@ -668,8 +778,9 @@ impl MacroHost {
     ) -> Result<(), String> {
         let syntax = crate::parse(function_source).map_err(|e| e.to_string())?;
         let program = crate::analyze(function_source, &syntax).map_err(|e| e.to_string())?;
-        let mut readers = self.compiler_data_readers.borrow_mut();
-        readers.default_unit = Some(crate::emitter::emit_js_unit(&program));
+        std::sync::Arc::make_mut(&mut self.tables.data_readers).default_unit =
+            Some(crate::emitter::emit_js_unit(&program));
+        let mut readers = self.engine.data_readers.borrow_mut();
         if let Some(id) = readers.default_function.take()
             && let Some(evaluator) = &readers.evaluator
         {
@@ -680,7 +791,7 @@ impl MacroHost {
     /// Add the compiler data readers to a cache key: each tag with its
     /// reader's emitted unit, in tag order, then the default reader's.
     pub(crate) fn fingerprint_data_readers(&self, fingerprint: &mut crate::sha256::Fingerprint) {
-        let readers = self.compiler_data_readers.borrow();
+        let readers = &self.tables.data_readers;
         let mut units: Vec<_> = readers
             .units
             .iter()
@@ -698,7 +809,7 @@ impl MacroHost {
     }
     /// Add an interactive host's name policy to a cache key.
     pub(crate) fn fingerprint_name_policy(&self, fingerprint: &mut crate::sha256::Fingerprint) {
-        let Some(policy) = &self.name_policy else {
+        let Some(policy) = &self.tables.name_policy else {
             fingerprint.absent();
             return;
         };
@@ -729,8 +840,9 @@ impl MacroHost {
     ) -> Result<Option<crate::compiler_data::Datum>, String> {
         let run = || -> Result<Option<crate::compiler_data::Datum>, String> {
             let (evaluator, function, fallback) = {
-                let mut readers = self.compiler_data_readers.borrow_mut();
-                let fallback = !readers.units.contains_key(tag);
+                let sources = &self.tables.data_readers;
+                let mut readers = self.engine.data_readers.borrow_mut();
+                let fallback = !sources.units.contains_key(tag);
                 let unit = if fallback {
                     if tag.namespace().is_none()
                         && matches!(
@@ -740,9 +852,9 @@ impl MacroHost {
                     {
                         return Ok(None);
                     }
-                    readers.default_unit.clone()
+                    sources.default_unit.clone()
                 } else {
-                    readers.units.get(tag).cloned()
+                    sources.units.get(tag).cloned()
                 };
                 let Some(unit) = unit else {
                     return Ok(None);
@@ -778,9 +890,9 @@ impl MacroHost {
             };
             // Each conversion takes at most the node limit itself, so a
             // namespace needs a limit of at least its largest.
-            let measuring = self.work.measuring.get();
+            let measuring = self.engine.work.measuring.get();
             if measuring {
-                WorkMarks::note(&self.work.conversion_peak, WorkMarks::nodes(value));
+                WorkMarks::note(&self.engine.work.conversion_peak, WorkMarks::nodes(value));
             }
             let argument = evaluator
                 .import_data(value, limits)
@@ -814,17 +926,17 @@ impl MacroHost {
                 .map_err(|e| e.to_string());
             let _ = evaluator.release(result);
             if measuring && data.is_ok() {
-                let readers = self.compiler_data_readers.borrow();
+                let readers = self.engine.data_readers.borrow();
                 match take_encode_peak(&*evaluator, &readers.encode_peak) {
-                    Some(peak) => WorkMarks::note(&self.work.conversion_peak, peak),
-                    None => self.work.unmeasured.set(true),
+                    Some(peak) => WorkMarks::note(&self.engine.work.conversion_peak, peak),
+                    None => self.engine.work.unmeasured.set(true),
                 }
             }
             data.map(Some)
         };
         let result = run();
         if result.is_err() {
-            let mut readers = self.compiler_data_readers.borrow_mut();
+            let mut readers = self.engine.data_readers.borrow_mut();
             readers.evaluator = None;
             readers.functions.clear();
             readers.default_function = None;
@@ -853,11 +965,11 @@ impl MacroHost {
                 )
                 .nodes()
                 .len();
-                let generated = self.generated_nodes.get().saturating_add(size);
+                let generated = self.engine.generated_nodes.get().saturating_add(size);
                 if generated > self.limits.generated_nodes {
                     return Err("compiler reader generated-node limit exceeded".into());
                 }
-                self.generated_nodes.set(generated);
+                self.engine.generated_nodes.set(generated);
             }
             Ok(value)
         };
@@ -878,7 +990,7 @@ impl MacroHost {
         caller: &str,
         imports: Vec<MacroImport>,
     ) -> Result<(), String> {
-        let current = self.imports.entry_or_default(caller.to_owned());
+        let current = self.tables.imports.entry_or_default(caller.to_owned());
         for import in imports {
             if let Some(alias) = &import.alias
                 && current.iter().any(|old| {
@@ -910,12 +1022,12 @@ impl MacroHost {
         caller: &str,
         imports: Vec<MacroImport>,
     ) -> Result<(), String> {
-        let previous = self.imports.remove(caller);
+        let previous = self.tables.imports.remove(caller);
         let result = self.set_interactive_imports(caller, imports);
         if result.is_err() {
             match previous {
-                Some(previous) => self.imports.insert(caller.to_owned(), previous),
-                None => self.imports.remove(caller),
+                Some(previous) => self.tables.imports.insert(caller.to_owned(), previous),
+                None => self.tables.imports.remove(caller),
             };
         }
         result
@@ -964,10 +1076,10 @@ impl MacroHost {
                 }
             }
         }
-        self.imports.insert(caller.to_owned(), imports);
-        self.renames.remove(caller);
-        self.namespace_symbols.remove(caller);
-        self.namespace_docs.remove(caller);
+        self.tables.imports.insert(caller.to_owned(), imports);
+        self.tables.renames.remove(caller);
+        self.tables.namespace_symbols.remove(caller);
+        self.tables.namespace_docs.remove(caller);
         Ok(())
     }
     pub(crate) fn set_namespace_symbol(
@@ -976,15 +1088,17 @@ impl MacroHost {
         symbol: crate::compiler_data::Datum,
         doc: Option<crate::compiler_data::Datum>,
     ) {
-        self.namespace_symbols.insert(namespace.to_owned(), symbol);
+        self.tables
+            .namespace_symbols
+            .insert(namespace.to_owned(), symbol);
         if let Some(doc) = doc {
-            self.namespace_docs.insert(namespace.to_owned(), doc);
+            self.tables.namespace_docs.insert(namespace.to_owned(), doc);
         }
     }
     /// `namespace`'s symbol as its `ns` form named it, with the form's
     /// metadata, docstring and attribute map as its metadata.
     pub(crate) fn namespace_symbol(&self, namespace: &str) -> Option<&crate::compiler_data::Datum> {
-        self.namespace_symbols.get(namespace)
+        self.tables.namespace_symbols.get(namespace)
     }
     /// Replace `namespace`'s symbol and docstring in `&env` ([`Self::set_namespace_symbol`]),
     /// or forget them: a session's `ns` form without metadata has none.
@@ -996,8 +1110,8 @@ impl MacroHost {
             Option<crate::compiler_data::Datum>,
         )>,
     ) {
-        self.namespace_symbols.remove(namespace);
-        self.namespace_docs.remove(namespace);
+        self.tables.namespace_symbols.remove(namespace);
+        self.tables.namespace_docs.remove(namespace);
         if let Some((symbol, doc)) = symbol {
             self.set_namespace_symbol(namespace, symbol, doc);
         }
@@ -1007,13 +1121,22 @@ impl MacroHost {
     /// form's docstring ([`crate::artifact_capture`]).
     pub(crate) fn namespace_declarations(&self, namespace: &str) -> NamespaceDeclarations<'_> {
         NamespaceDeclarations {
-            imports: self.imports.get(namespace).map_or(&[], Vec::as_slice),
-            renames: self.renames.get(namespace).map_or(&[], Vec::as_slice),
+            imports: self
+                .tables
+                .imports
+                .get(namespace)
+                .map_or(&[], Vec::as_slice),
+            renames: self
+                .tables
+                .renames
+                .get(namespace)
+                .map_or(&[], Vec::as_slice),
             namespace_imports: self
+                .tables
                 .namespace_imports
                 .get(namespace)
                 .map_or(&[], Vec::as_slice),
-            doc: self.namespace_docs.get(namespace),
+            doc: self.tables.namespace_docs.get(namespace),
         }
     }
     /// Restore what `prepare_source` and analysis declared for a namespace
@@ -1029,17 +1152,20 @@ impl MacroHost {
         symbol: Option<crate::compiler_data::Datum>,
         doc: Option<crate::compiler_data::Datum>,
     ) {
-        self.imports.insert(namespace.to_owned(), imports);
-        self.renames.insert(namespace.to_owned(), renames);
-        self.namespace_imports
+        self.tables.imports.insert(namespace.to_owned(), imports);
+        self.tables.renames.insert(namespace.to_owned(), renames);
+        self.tables
+            .namespace_imports
             .insert(namespace.to_owned(), namespace_imports);
-        self.namespace_symbols.remove(namespace);
-        self.namespace_docs.remove(namespace);
+        self.tables.namespace_symbols.remove(namespace);
+        self.tables.namespace_docs.remove(namespace);
         if let Some(symbol) = symbol {
-            self.namespace_symbols.insert(namespace.to_owned(), symbol);
+            self.tables
+                .namespace_symbols
+                .insert(namespace.to_owned(), symbol);
         }
         if let Some(doc) = doc {
-            self.namespace_docs.insert(namespace.to_owned(), doc);
+            self.tables.namespace_docs.insert(namespace.to_owned(), doc);
         }
     }
     /// Declare a macro of an installed namespace (`crate::artifact_install`)
@@ -1050,55 +1176,76 @@ impl MacroHost {
         declaration: crate::compiler_bootstrap::CompiledMacro,
     ) {
         self.insert_javascript_macro(key, declaration);
-        self.macro_environment = Default::default();
+        self.engine.macro_environment = Default::default();
     }
     /// Whether `namespace/name` is a Var of the compile-time session, and
     /// whether it is private.
     pub(crate) fn runtime_var(&self, key: &str) -> Option<bool> {
-        self.runtime_vars.get(key).copied()
+        self.tables.runtime_vars.get(key).copied()
     }
     pub(crate) fn set_renames(&mut self, caller: &str, renames: Vec<(String, String, String)>) {
-        self.renames.insert(caller.to_owned(), renames);
+        self.tables.renames.insert(caller.to_owned(), renames);
     }
+    /// A frame for analysis on this thread: this host's environment as it
+    /// is now ([`Self::environment`]) with the binding's engines, caches,
+    /// counters and session ([`EngineBinding`]).
     pub(crate) fn macro_analysis_frame(&self) -> Self {
-        Self {
-            compiler_data_readers: self.compiler_data_readers.clone(),
-            imports: self.imports.clone(),
-            renames: self.renames.clone(),
-            namespace_symbols: self.namespace_symbols.clone(),
-            namespace_docs: self.namespace_docs.clone(),
-            runtime_vars: self.runtime_vars.clone(),
-            namespace_imports: self.namespace_imports.clone(),
+        Self::from_parts(self.environment(), self.engine.frame())
+    }
+    /// The sendable part of an analysis frame of this host: what was
+    /// declared up to now, and nothing declared after. A worker binds it to
+    /// an engine of its own ([`Self::bind`]).
+    pub(crate) fn environment(&self) -> MacroEnvironment {
+        MacroEnvironment {
             limits: self.limits,
             evaluator_options: self.evaluator_options.clone(),
-            assertions_disabled: self.assertions_disabled,
-            interactive: self.interactive,
-            interactive_control: self.interactive_control.clone(),
-            name_policy: self.name_policy.clone(),
-            bootstrap: self.bootstrap.clone(),
-            bootstrap_seed: true,
-            javascript_macros: self.javascript_macros.clone(),
-            macro_names: self.macro_names.clone(),
-            macro_environment: self.macro_environment.clone(),
-            namespace_environment: self.namespace_environment.clone(),
-            local_environment: self.local_environment.clone(),
-            reader_environment: self.reader_environment.clone(),
-            source_bindings: self.source_bindings.clone(),
-            session_ref: self
-                .session_handle()
-                .map_or_else(std::rc::Weak::new, |s| std::rc::Rc::downgrade(&s)),
-            expansions: self.expansions.clone(),
-            generated_nodes: self.generated_nodes.clone(),
-            work: self.work.clone(),
             opaque_packages: self.opaque_packages,
-            script_host: self.script_host.clone(),
-            reader_declared: self.reader_declared.clone(),
-            reader_generation: self.reader_generation,
-            dependency_log: self.dependency_log.clone(),
-            build: self.build.clone(),
-            configuration: self.configuration.clone(),
-            ..Self::default()
+            tables: MacroTables {
+                bootstrap_seed: true,
+                ..self.tables.clone()
+            },
         }
+    }
+    fn from_parts(environment: MacroEnvironment, engine: EngineBinding) -> Self {
+        let MacroEnvironment {
+            limits,
+            evaluator_options,
+            opaque_packages,
+            tables,
+        } = environment;
+        Self {
+            limits,
+            evaluator_options,
+            opaque_packages,
+            tables,
+            engine,
+        }
+    }
+    /// A host that analyzes on this thread from `environment`, which may
+    /// have been made on another, bound to `evaluator`, a compile-time
+    /// engine made on this thread. The evaluator gets the host's settings
+    /// and the process-wide bootstrap units, which no thread compiles a
+    /// second time, as the engine of a fresh compilation would; without
+    /// one, the host analyzes only what runs no macro in an engine.
+    ///
+    /// The binding starts with no session, empty environment caches and
+    /// zero counters. Source macros declared in another engine are not
+    /// callable in this one: their functions are values of the engine that
+    /// evaluated them, which this one refuses (docs/compiler-concurrency.md,
+    /// "As built (light-cljs-334)").
+    // Tests bind worker hosts today; the pool's workers will (light-cljs-338, 339).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn bind(
+        environment: MacroEnvironment,
+        evaluator: Option<std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>>,
+    ) -> Result<Self, String> {
+        let mut host = Self::from_parts(environment, EngineBinding::default());
+        if let Some(evaluator) = evaluator {
+            host.prepare_compiler_evaluator(evaluator.as_ref())
+                .map_err(|e| e.to_string())?;
+            host.engine.bootstrap = Some(crate::compiler_bootstrap::bind(evaluator)?);
+        }
+        Ok(host)
     }
     /// The build configuration `light.build/config` answers in the
     /// compilations this host analyzes, as `--config KEY=EDN` gives it.
@@ -1108,43 +1255,43 @@ impl MacroHost {
         &mut self,
         configuration: crate::build_services::BuildConfiguration,
     ) {
-        self.configuration = std::rc::Rc::new(configuration);
+        self.tables.configuration = std::sync::Arc::new(configuration);
     }
     pub fn build_configuration(&self) -> &crate::build_services::BuildConfiguration {
-        &self.configuration
+        &self.tables.configuration
     }
     /// Log an observation for the dependency manifest, if one is recorded.
     pub(crate) fn observe(
         &self,
         record: impl FnOnce(&mut crate::dependency_manifest::ObservationLog),
     ) {
-        if let Some(log) = self.dependency_log.borrow_mut().as_mut() {
+        if let Some(log) = self.engine.dependency_log.borrow_mut().as_mut() {
             record(log);
         }
     }
     pub(crate) fn defers_source_units(&self) -> bool {
-        !self.bootstrap_seed
+        !self.tables.bootstrap_seed
     }
     /// Begin measuring the next namespace's logical work
     /// ([`WorkMarks`]): its counts start here, and its marks from nothing.
     pub(crate) fn begin_namespace_work(&self) -> WorkStart {
-        let work = &self.work;
+        let work = &self.engine.work;
         work.measuring.set(true);
-        work.node_peak.set(self.generated_nodes.get());
+        work.node_peak.set(self.engine.generated_nodes.get());
         work.macro_depth.set(0);
         work.analysis_depth.set(0);
         work.unit_depth.set(0);
         work.conversion_peak.set(0);
         work.unmeasured.set(false);
         WorkStart {
-            expansions: self.expansions.get(),
-            generated_nodes: self.generated_nodes.get(),
+            expansions: self.engine.expansions.get(),
+            generated_nodes: self.engine.generated_nodes.get(),
         }
     }
     /// The macro calls the compilation executed: its expansions less those
     /// installed artifacts charged.
     pub(crate) fn executed_expansions(&self) -> usize {
-        self.expansions.get() - self.work.charged_expansions.get()
+        self.engine.expansions.get() - self.engine.work.charged_expansions.get()
     }
     /// Why the compilation's compile-time work cannot go on: its session's
     /// execution control, or `control`, is cancelled or terminal. Checked
@@ -1153,10 +1300,12 @@ impl MacroHost {
         &self,
         control: Option<&crate::evaluator::ExecutionControl>,
     ) -> Option<String> {
-        let session = self
-            .interactive_control
-            .clone()
-            .or_else(|| self.bootstrap.as_ref().map(|b| b.evaluator.control()));
+        let session = self.engine.interactive_control.clone().or_else(|| {
+            self.engine
+                .bootstrap
+                .as_ref()
+                .map(|b| b.evaluator.control())
+        });
         control
             .into_iter()
             .chain(session.as_ref())
@@ -1166,37 +1315,40 @@ impl MacroHost {
     pub(crate) fn session_handle(
         &self,
     ) -> Option<std::rc::Rc<crate::compilation_session::CompilationSession>> {
-        self.session.clone().or_else(|| self.session_ref.upgrade())
+        self.engine.session_handle()
     }
     pub(crate) fn has_source_value(&self, namespace: &str, name: &str) -> bool {
-        self.source_bindings.get(&format!("{namespace}/{name}")) == Some(&SourceBindingKind::Value)
+        self.tables
+            .source_bindings
+            .get(&format!("{namespace}/{name}"))
+            == Some(&SourceBindingKind::Value)
     }
     pub(crate) fn begin_compilation(&mut self) {
-        if !self.bootstrap_seed {
-            let mut readers = self.compiler_data_readers.borrow_mut();
+        if !self.tables.bootstrap_seed {
+            let mut readers = self.engine.data_readers.borrow_mut();
             readers.evaluator = None;
             readers.functions.clear();
             readers.default_function = None;
             drop(readers);
-            self.bootstrap = None;
-            self.javascript_macros.clear();
-            self.macro_names.clear();
-            self.macro_environment = Default::default();
-            self.namespace_environment = Default::default();
-            self.local_environment = Default::default();
-            self.reader_environment = Default::default();
-            self.source_bindings.clear();
-            self.session = Some(crate::compilation_session::CompilationSession::new());
-            self.session_ref = std::rc::Weak::new();
+            self.engine.bootstrap = None;
+            self.tables.javascript_macros.clear();
+            self.tables.macro_names.clear();
+            self.engine.macro_environment = Default::default();
+            self.engine.namespace_environment = Default::default();
+            self.engine.local_environment = Default::default();
+            self.engine.reader_environment = Default::default();
+            self.tables.source_bindings.clear();
+            self.engine.session = Some(crate::compilation_session::CompilationSession::new());
+            self.engine.session_ref = std::rc::Weak::new();
         }
-        self.expansions = Default::default();
-        self.generated_nodes = Default::default();
-        self.work = Default::default();
-        self.reader_declared = Default::default();
-        self.reader_generation =
+        self.engine.expansions = Default::default();
+        self.engine.generated_nodes = Default::default();
+        self.engine.work = Default::default();
+        self.engine.reader_declared = Default::default();
+        self.tables.reader_generation =
             READER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.runtime_vars.clear();
-        self.namespace_imports.clear();
+        self.tables.runtime_vars.clear();
+        self.tables.namespace_imports.clear();
     }
     pub(crate) fn register_source_binding(
         &mut self,
@@ -1206,6 +1358,7 @@ impl MacroHost {
     ) -> Result<(), String> {
         let key = format!("{namespace}/{name}");
         if self
+            .tables
             .source_bindings
             .get(&key)
             .is_some_and(|previous| *previous != kind)
@@ -1214,7 +1367,7 @@ impl MacroHost {
                 "binding {key} cannot change between an ordinary Var and a compile-time macro; use distinct names for the two phases"
             ));
         }
-        self.source_bindings.insert(key, kind);
+        self.tables.source_bindings.insert(key, kind);
         Ok(())
     }
     pub(crate) fn register_runtime_var(
@@ -1224,7 +1377,8 @@ impl MacroHost {
         private: bool,
     ) -> Result<(), String> {
         self.register_source_binding(namespace, name, SourceBindingKind::Value)?;
-        self.runtime_vars
+        self.tables
+            .runtime_vars
             .insert(format!("{namespace}/{name}"), private);
         Ok(())
     }
@@ -1236,7 +1390,8 @@ impl MacroHost {
         if caller == qualifier {
             return Some(caller);
         }
-        self.imports
+        self.tables
+            .imports
             .get(caller)
             .into_iter()
             .flatten()
@@ -1245,6 +1400,7 @@ impl MacroHost {
     }
     pub(crate) fn source_binding_private(&self, namespace: &str, name: &str) -> bool {
         if self
+            .tables
             .runtime_vars
             .get(&format!("{namespace}/{name}"))
             .copied()
@@ -1252,7 +1408,8 @@ impl MacroHost {
         {
             return true;
         }
-        self.javascript_macros
+        self.tables
+            .javascript_macros
             .get(&format!("{namespace}/{name}"))
             .and_then(|m| m.metadata.as_ref())
             .and_then(|m| {
@@ -1274,6 +1431,7 @@ impl MacroHost {
         imports: Vec<(String, String)>,
     ) {
         let current = self
+            .tables
             .namespace_imports
             .entry_or_default(namespace.to_owned());
         for import in imports {
@@ -1287,16 +1445,24 @@ impl MacroHost {
         namespace: &str,
         imports: Vec<(String, String)>,
     ) {
-        self.namespace_imports.insert(namespace.to_owned(), imports);
+        self.tables
+            .namespace_imports
+            .insert(namespace.to_owned(), imports);
     }
     pub(crate) fn definition_macro(&self, caller: &str, operator: &str) -> Option<String> {
-        let imports = self.imports.get(caller).map(Vec::as_slice).unwrap_or(&[]);
+        let imports = self
+            .tables
+            .imports
+            .get(caller)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         let target = if let Some((qualifier, name)) = operator.split_once('/') {
             imports
                 .iter()
                 .find(|i| i.namespace == qualifier || i.alias.as_deref() == Some(qualifier))
                 .map(|i| (i.namespace.as_str(), name))
         } else if let Some((_, ns, name)) = self
+            .tables
             .renames
             .get(caller)
             .into_iter()
@@ -1320,6 +1486,7 @@ impl MacroHost {
             return Ok(core_macro(name));
         }
         if self
+            .tables
             .javascript_macros
             .contains_key(&format!("{namespace}/{name}"))
         {
@@ -1345,7 +1512,12 @@ impl MacroHost {
         operator: &str,
         shadow_core: bool,
     ) -> Option<(String, String)> {
-        let imports = self.imports.get(caller).map(Vec::as_slice).unwrap_or(&[]);
+        let imports = self
+            .tables
+            .imports
+            .get(caller)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         if let Some((qualifier, name)) = operator.split_once('/') {
             if qualifier == "cljs.core" || qualifier == "clojure.core" {
                 core_macro(name).then(|| ("clojure.core".to_owned(), name.to_owned()))
@@ -1364,6 +1536,7 @@ impl MacroHost {
                     })
             }
         } else if let Some((_, namespace, name)) = self
+            .tables
             .renames
             .get(caller)
             .into_iter()
@@ -1446,16 +1619,17 @@ impl MacroHost {
             None => self.expand_namespace_reflection(form, name)?,
         };
         if let Some(expanded) = &expanded {
-            if self.expansions.get() >= self.limits.expansions {
+            if self.engine.expansions.get() >= self.limits.expansions {
                 return Err("compiler macro expansion limit exceeded".into());
             }
-            self.expansions.set(self.expansions.get() + 1);
-            self.generated_nodes.set(
-                self.generated_nodes
+            self.engine.expansions.set(self.engine.expansions.get() + 1);
+            self.engine.generated_nodes.set(
+                self.engine
+                    .generated_nodes
                     .get()
                     .saturating_add(expanded.nodes().len()),
             );
-            if self.generated_nodes.get() > self.limits.generated_nodes {
+            if self.engine.generated_nodes.get() > self.limits.generated_nodes {
                 return Err("compiler macro generated-node limit exceeded".into());
             }
         }
@@ -1468,7 +1642,7 @@ impl MacroHost {
         requested: &str,
     ) -> Option<(String, String, Option<crate::compiler_data::Datum>)> {
         if let Some(key) = self.source_macro_key(caller, requested)
-            && let Some(declaration) = self.javascript_macros.get(&key)
+            && let Some(declaration) = self.tables.javascript_macros.get(&key)
         {
             let (namespace, name) = key.split_once('/')?;
             return Some((namespace.into(), name.into(), declaration.metadata.clone()));
@@ -1529,12 +1703,14 @@ impl MacroHost {
                     .map(|(local, ns, original)| (local, format!("{ns}/{original}")))
                     .collect()
             } else if operation == "ns-imports" {
-                self.namespace_imports
+                self.tables
+                    .namespace_imports
                     .get(&namespace)
                     .cloned()
                     .unwrap_or_default()
             } else {
-                self.runtime_vars
+                self.tables
+                    .runtime_vars
                     .iter()
                     .filter_map(|(key, private)| {
                         let (owner, local) = key.split_once('/')?;
@@ -1558,7 +1734,7 @@ impl MacroHost {
                             .map(|(local, _)| (local.into(), format!("cljs.core/{local}"))),
                     );
                 }
-                declarations.extend(self.javascript_macros.keys().filter_map(|key| {
+                declarations.extend(self.tables.javascript_macros.keys().filter_map(|key| {
                     let (ns, local) = key.split_once('/')?;
                     (ns == namespace
                         && (operation == "ns-interns" || !self.source_binding_private(ns, local)))
@@ -1585,7 +1761,7 @@ impl MacroHost {
         run().map(Some).map_err(|e| e.to_string())
     }
     pub(crate) fn register_macro_view(&self, view: &mut crate::compiler_reader::NamespaceView) {
-        let mut names = self.javascript_macros.keys().collect::<Vec<_>>();
+        let mut names = self.tables.javascript_macros.keys().collect::<Vec<_>>();
         names.sort();
         for (index, key) in names.into_iter().enumerate() {
             let (namespace, local) = key.split_once('/').unwrap();
@@ -1609,6 +1785,7 @@ impl MacroHost {
     }
     pub(crate) fn reader_refers(&self, namespace: &str) -> Vec<(String, String, String)> {
         let mut names = self
+            .tables
             .imports
             .get(namespace)
             .into_iter()
@@ -1620,7 +1797,14 @@ impl MacroHost {
                     .map(|name| (name.clone(), import.namespace.clone(), name.clone()))
             })
             .collect::<Vec<_>>();
-        names.extend(self.renames.get(namespace).into_iter().flatten().cloned());
+        names.extend(
+            self.tables
+                .renames
+                .get(namespace)
+                .into_iter()
+                .flatten()
+                .cloned(),
+        );
         names
     }
     pub(crate) fn reader_aliases(
@@ -1634,7 +1818,7 @@ impl MacroHost {
             .map(|n| (n.clone(), n.clone()))
             .collect::<Vec<_>>();
         aliases.extend_from_slice(runtime);
-        if let Some(imports) = self.imports.get(namespace) {
+        if let Some(imports) = self.tables.imports.get(namespace) {
             for import in imports {
                 aliases.push((import.namespace.clone(), import.namespace.clone()));
                 if let Some(alias) = &import.alias {
@@ -1647,7 +1831,11 @@ impl MacroHost {
     /// The names of `namespace`'s source macros, sorted, from the index
     /// rather than every macro.
     pub(crate) fn source_macro_names(&self, namespace: &str) -> Vec<String> {
-        self.macro_names.get(namespace).cloned().unwrap_or_default()
+        self.tables
+            .macro_names
+            .get(namespace)
+            .cloned()
+            .unwrap_or_default()
     }
     /// Declare the source macro `key` (`namespace/name`).
     pub(crate) fn insert_javascript_macro(
@@ -1655,15 +1843,18 @@ impl MacroHost {
         key: String,
         declaration: crate::compiler_bootstrap::CompiledMacro,
     ) {
-        if !self.javascript_macros.contains_key(&key)
+        if !self.tables.javascript_macros.contains_key(&key)
             && let Some((namespace, name)) = key.split_once('/')
         {
-            let names = self.macro_names.entry_or_default(namespace.to_owned());
+            let names = self
+                .tables
+                .macro_names
+                .entry_or_default(namespace.to_owned());
             if let Err(position) = names.binary_search_by(|old| old.as_str().cmp(name)) {
                 names.insert(position, name.to_owned());
             }
         }
-        self.javascript_macros.insert(key, declaration);
+        self.tables.javascript_macros.insert(key, declaration);
     }
 
     /// Add the reader context of `namespace` to a macro's environment. The
@@ -1686,6 +1877,7 @@ impl MacroHost {
         let key = |s| c.keyword(Name::new(None, s));
         let mut registration = None;
         let (position, count) = self
+            .engine
             .reader_declared
             .borrow()
             .get(namespace)
@@ -1712,7 +1904,7 @@ impl MacroHost {
                 .chain(self.reader_refers(namespace))
                 .collect(),
             excludes: resolution.excludes.clone(),
-            generation: self.reader_generation,
+            generation: self.tables.reader_generation,
             from: count,
             names,
             visible,
@@ -1724,7 +1916,7 @@ impl MacroHost {
                 .collect(),
         };
         let context = {
-            let mut cache = self.reader_environment.borrow_mut();
+            let mut cache = self.engine.reader_environment.borrow_mut();
             if let Some(cached) = cache.as_ref().filter(|c| c.key == context_key) {
                 cached.data.clone()
             } else {
@@ -1776,7 +1968,7 @@ impl MacroHost {
         let Some(registration) = registration else {
             return;
         };
-        let mut declared = self.reader_declared.borrow_mut();
+        let mut declared = self.engine.reader_declared.borrow_mut();
         let entry = declared.entry(registration.namespace).or_insert((0, 0));
         if registration.position >= entry.0 {
             *entry = (registration.position, registration.visible);
@@ -1792,10 +1984,16 @@ impl MacroHost {
         requires: &[String],
         location: (usize, usize),
     ) -> Result<crate::compiler_data::Datum, String> {
-        let imports = self.imports.get(namespace).cloned().unwrap_or_default();
-        let namespace_symbol = self.namespace_symbols.get(namespace).cloned();
-        let namespace_doc = self.namespace_docs.get(namespace).cloned();
+        let imports = self
+            .tables
+            .imports
+            .get(namespace)
+            .cloned()
+            .unwrap_or_default();
+        let namespace_symbol = self.tables.namespace_symbols.get(namespace).cloned();
+        let namespace_doc = self.tables.namespace_docs.get(namespace).cloned();
         let namespace_imports = self
+            .tables
             .namespace_imports
             .get(namespace)
             .cloned()
@@ -1810,12 +2008,12 @@ impl MacroHost {
         };
         let sym = |s: &str| c.symbol(Name::new(None, s));
         let macro_environment = {
-            let mut cache = self.macro_environment.borrow_mut();
+            let mut cache = self.engine.macro_environment.borrow_mut();
             if let Some(data) = cache.as_ref() {
                 data.clone()
             } else {
                 let data = c.map(&{
-                    let mut declarations = self.javascript_macros.iter().collect::<Vec<_>>();
+                    let mut declarations = self.tables.javascript_macros.iter().collect::<Vec<_>>();
                     declarations.sort_by(|a, b| a.0.cmp(b.0));
                     declarations
                         .into_iter()
@@ -1837,13 +2035,18 @@ impl MacroHost {
             aliases: aliases.to_vec(),
             requires: requires.to_vec(),
             imports: imports.clone(),
-            renames: self.renames.get(namespace).cloned().unwrap_or_default(),
+            renames: self
+                .tables
+                .renames
+                .get(namespace)
+                .cloned()
+                .unwrap_or_default(),
             namespace_imports: namespace_imports.clone(),
             symbol: namespace_symbol.as_ref().map(|d| d.identity()),
             doc: namespace_doc.as_ref().map(|d| d.identity()),
         };
         let namespace_environment = {
-            let mut cache = self.namespace_environment.borrow_mut();
+            let mut cache = self.engine.namespace_environment.borrow_mut();
             if let Some(cached) = cache.as_ref().filter(|c| c.key == namespace_key) {
                 cached.data.clone()
             } else {
@@ -1858,7 +2061,7 @@ impl MacroHost {
                         macro_refers.push((sym(name), sym(&import.namespace)));
                     }
                 }
-                for (local, target, _) in self.renames.get(namespace).into_iter().flatten() {
+                for (local, target, _) in self.tables.renames.get(namespace).into_iter().flatten() {
                     macro_refers.push((sym(local), sym(target)));
                 }
                 let mut runtime = requires
@@ -1900,7 +2103,7 @@ impl MacroHost {
         };
         let build = || -> Result<crate::compiler_data::Datum, String> {
             let local_map = {
-                let mut cache = self.local_environment.borrow_mut();
+                let mut cache = self.engine.local_environment.borrow_mut();
                 if let Some(cached) = cache.as_ref().filter(|c| c.locals == locals) {
                     cached.data.clone()
                 } else {
@@ -2233,7 +2436,7 @@ impl MacroHost {
         target: &str,
         shadow_core: bool,
     ) -> Result<(), String> {
-        let Some(policy) = &self.name_policy else {
+        let Some(policy) = &self.tables.name_policy else {
             return Ok(());
         };
         let name = self.source_macro_key(namespace, target).or_else(|| {
@@ -2286,12 +2489,7 @@ mod compiler_default_reader_tests {
             DatumKind::CompilerLiteral { .. }
         ));
         host.begin_compilation();
-        assert!(
-            host.compiler_data_readers
-                .borrow()
-                .default_function
-                .is_none()
-        );
+        assert!(host.engine.data_readers.borrow().default_function.is_none());
         assert_eq!(read(&mut host, "#unknown 9").children().len(), 2);
         host.register_compiler_default_data_reader("(fn [tag value] 42)")
             .unwrap();

@@ -451,8 +451,8 @@ pub(crate) struct Counters {
 impl Counters {
     pub(crate) fn of(host: &crate::MacroHost) -> Self {
         Self {
-            expansions: host.expansions.clone(),
-            nodes: host.generated_nodes.clone(),
+            expansions: host.engine.expansions.clone(),
+            nodes: host.engine.generated_nodes.clone(),
         }
     }
 
@@ -1039,8 +1039,12 @@ mod tests {
     fn macro_calls_and_nodes_count_in_the_innermost_frame() {
         let host = crate::MacroHost::new();
         let charge = |expansions: usize, nodes: usize| {
-            host.expansions.set(host.expansions.get() + expansions);
-            host.generated_nodes.set(host.generated_nodes.get() + nodes);
+            host.engine
+                .expansions
+                .set(host.engine.expansions.get() + expansions);
+            host.engine
+                .generated_nodes
+                .set(host.engine.generated_nodes.get() + nodes);
         };
         let recording = record();
         {

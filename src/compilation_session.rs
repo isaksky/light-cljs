@@ -613,61 +613,13 @@ impl CompilationSession {
             return Ok(());
         }
         let evaluator = &bootstrap.evaluator;
-        // `light.build`: a request names the units whose initializers run;
-        // the catalog knows the units being analyzed.
-        let weak = Rc::downgrade(self);
-        let (build, log) = (host.build.clone(), host.dependency_log.clone());
-        evaluator
-            .install_string_service(
-                "__lightBuildService",
-                Rc::new(move |request| {
-                    let session = weak.upgrade();
-                    let catalog = session
-                        .as_ref()
-                        .and_then(|session| session.catalog.try_borrow().ok());
-                    let source = |unit: usize| {
-                        let catalog = catalog.as_ref()?;
-                        Some(catalog.units.get(unit)?.try_borrow().ok()?.source)
-                    };
-                    let analysis = catalog.as_ref().map_or_else(Vec::new, |catalog| {
-                        catalog
-                            .stack
-                            .iter()
-                            .filter_map(|&unit| source(unit))
-                            .collect()
-                    });
-                    let units = |unit| source(unit);
-                    crate::build_services::serve_request(&build, &log, request, units, analysis)
-                }),
-            )
-            .map_err(|e| e.to_string())?;
-        let weak = Rc::downgrade(self);
-        evaluator
-            .clone()
-            .install_compiler_service(
-                "__lightCompileUnit",
-                Rc::new(move |active, id| {
-                    let session = weak.upgrade().ok_or("compilation session expired")?;
-                    let unit = session.catalog.borrow().units[id as usize].clone();
-                    let prepared = match &unit.borrow().state {
-                        AnalysisState::Prepared(_, _, prepared) => Some(prepared.clone()),
-                        _ => None,
-                    };
-                    crate::compile_trace::executed(id as usize, prepared.is_some());
-                    let (registration, code) = if let Some(prepared) = prepared {
-                        prepared.emit()
-                    } else {
-                        let (program, _) = session.analyze(id as usize, Some(active))?;
-                        crate::emitter::emit_deferred_unit(&program)
-                    };
-                    unit.borrow_mut().emitted = true;
-                    active
-                        .evaluate_registration(&registration.source, &registration.chunks)
-                        .map_err(|e| e.to_string())?;
-                    Ok(code)
-                }),
-            )
-            .map_err(|e| e.to_string())?;
+        let view: std::rc::Weak<dyn CatalogView> = Rc::downgrade(self) as std::rc::Weak<Self>;
+        install_catalog_services(
+            evaluator,
+            view,
+            host.engine.build.clone(),
+            host.engine.dependency_log.clone(),
+        )?;
         // Registry and root states stay in JS, so ready reads never cross Rust.
         let value = evaluator
             .evaluate_js(include_str!("compiler_roots.js"))
@@ -884,6 +836,8 @@ impl CompilationSession {
                         added: Vec::new(),
                     });
                 }
+                #[cfg(test)]
+                worker_tests::retain(id, &form, &snapshot, &host);
                 c.units.push(Rc::new(RefCell::new(Unit {
                     request,
                     name: name.clone(),
@@ -989,7 +943,7 @@ impl CompilationSession {
             }
             let depth = self.catalog.borrow().stack.len();
             let host = unit.host.as_ref().expect("unstarted unit host");
-            crate::macro_host::WorkMarks::note(&host.work.unit_depth, depth + 1);
+            crate::macro_host::WorkMarks::note(&host.engine.work.unit_depth, depth + 1);
             if depth >= host.limits.expansion_depth.min(64) {
                 let message =
                     "compiler macro expansion depth limit exceeded in deferred units".to_owned();
@@ -1013,8 +967,8 @@ impl CompilationSession {
                 .take()
                 .expect("unstarted unit host")
                 .macro_analysis_frame();
-            if host.bootstrap.is_none() {
-                host.bootstrap = bootstrap;
+            if host.engine.bootstrap.is_none() {
+                host.engine.bootstrap = bootstrap;
             }
             (
                 unit.form.take().expect("unstarted unit form"),
@@ -1044,7 +998,7 @@ impl CompilationSession {
             unit: unit.clone(),
             id,
         };
-        let evaluator = host.bootstrap.as_ref().map(|b| b.evaluator.clone());
+        let evaluator = host.engine.bootstrap.as_ref().map(|b| b.evaluator.clone());
         let engine = engine.or_else(|| {
             evaluator
                 .as_ref()
@@ -1085,6 +1039,93 @@ impl CompilationSession {
         drop(guard);
         result
     }
+}
+/// What the services installed in a compile-time engine reach: the units of
+/// the compilation as the engine's thread sees them. The coordinator's
+/// engine reaches its [`CompilationSession`]; a worker's engine reaches its
+/// own view of the shared catalog (docs/compiler-concurrency.md, "As built
+/// (light-cljs-334)").
+pub(crate) trait CatalogView {
+    /// `__lightCompileUnit`: unit `id`'s initializer, analyzed first if it
+    /// is not yet, with the registration it needs evaluated in `active`.
+    fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String>;
+    /// `light.build`: the source index of unit `id`, if the catalog can tell.
+    fn unit_source(&self, id: usize) -> Option<u32>;
+    /// `light.build`: the source indexes of the units being analyzed, the
+    /// innermost last.
+    fn analysis_sources(&self) -> Vec<u32>;
+}
+impl CatalogView for CompilationSession {
+    fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
+        let unit = self.catalog.borrow().units[id].clone();
+        let prepared = match &unit.borrow().state {
+            AnalysisState::Prepared(_, _, prepared) => Some(prepared.clone()),
+            _ => None,
+        };
+        crate::compile_trace::executed(id, prepared.is_some());
+        let (registration, code) = if let Some(prepared) = prepared {
+            prepared.emit()
+        } else {
+            let (program, _) = self.analyze(id, Some(active))?;
+            crate::emitter::emit_deferred_unit(&program)
+        };
+        unit.borrow_mut().emitted = true;
+        active
+            .evaluate_registration(&registration.source, &registration.chunks)
+            .map_err(|e| e.to_string())?;
+        Ok(code)
+    }
+    fn unit_source(&self, id: usize) -> Option<u32> {
+        let catalog = self.catalog.try_borrow().ok()?;
+        Some(catalog.units.get(id)?.try_borrow().ok()?.source)
+    }
+    fn analysis_sources(&self) -> Vec<u32> {
+        let Ok(catalog) = self.catalog.try_borrow() else {
+            return Vec::new();
+        };
+        catalog
+            .stack
+            .iter()
+            .filter_map(|&unit| Some(catalog.units.get(unit)?.try_borrow().ok()?.source))
+            .collect()
+    }
+}
+/// Install in `evaluator` the services through which its code reaches the
+/// compilation: `__lightCompileUnit`, which demands units from `view`, and
+/// `light.build`'s requests, which `build` serves and `log` records. The
+/// view is weak: the catalog may own the engine.
+pub(crate) fn install_catalog_services(
+    evaluator: &Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
+    view: std::rc::Weak<dyn CatalogView>,
+    build: crate::build_services::SharedBuild,
+    log: Rc<RefCell<Option<crate::dependency_manifest::ObservationLog>>>,
+) -> Result<(), String> {
+    // `light.build`: a request names the units whose initializers run; the
+    // catalog knows the units being analyzed.
+    let requests = view.clone();
+    evaluator
+        .install_string_service(
+            "__lightBuildService",
+            Rc::new(move |request| {
+                let view = requests.upgrade();
+                let analysis = view
+                    .as_ref()
+                    .map_or_else(Vec::new, |view| view.analysis_sources());
+                let units = |unit| view.as_ref()?.unit_source(unit);
+                crate::build_services::serve_request(&build, &log, request, units, analysis)
+            }),
+        )
+        .map_err(|e| e.to_string())?;
+    evaluator
+        .clone()
+        .install_compiler_service(
+            "__lightCompileUnit",
+            Rc::new(move |active, id| {
+                let view = view.upgrade().ok_or("compilation session expired")?;
+                view.compile_unit(active, id as usize)
+            }),
+        )
+        .map_err(|e| e.to_string())
 }
 impl Clone for DefinitionSnapshot {
     fn clone(&self) -> Self {
@@ -1187,5 +1228,268 @@ mod retention_tests {
             }
         }
         assert!(released > 0);
+    }
+}
+
+#[cfg(test)]
+mod worker_tests {
+    //! A unit analyzed by a worker from what it can receive (docs/compiler-concurrency.md,
+    //! "As built (light-cljs-334)").
+    use super::*;
+    use crate::macro_host::MacroEnvironment;
+
+    /// What a worker receives to analyze one unit.
+    type Job = (usize, Form, DefinitionSnapshot, MacroEnvironment);
+
+    thread_local! {
+        static RETAINED: RefCell<Option<Vec<Job>>> = const { RefCell::new(None) };
+    }
+
+    /// While a test retains them, keep the inputs of each unit registered on
+    /// this thread as a worker would receive them.
+    pub(super) fn retain(id: usize, form: &Form, snapshot: &DefinitionSnapshot, host: &MacroHost) {
+        RETAINED.with_borrow_mut(|retained| {
+            if let Some(jobs) = retained {
+                jobs.push((id, form.clone(), snapshot.clone(), host.environment()));
+            }
+        });
+    }
+
+    /// A fresh compile-time engine of the build's kind, made on this thread.
+    fn engine(
+        environment: &MacroEnvironment,
+    ) -> Rc<dyn crate::compiler_evaluator::CompilerEvaluator> {
+        let options = environment.evaluator_options().clone();
+        #[cfg(light_v8)]
+        return Rc::new(crate::v8_evaluator::V8Evaluator::new(options).unwrap());
+        #[cfg(not(light_v8))]
+        Rc::new(crate::evaluator::Evaluator::new(options).unwrap())
+    }
+
+    /// The unit's prepared JavaScript as the main thread's session has it.
+    fn main_code(session: &CompilationSession, id: usize) -> String {
+        let unit = session.catalog.borrow().units[id].clone();
+        let state = unit.borrow().state.clone();
+        match state {
+            AnalysisState::Prepared(_, _, prepared) => prepared.code().to_owned(),
+            AnalysisState::Analyzed(program, _) => crate::emitter::DeferredUnit::prepare(&program)
+                .code()
+                .to_owned(),
+            AnalysisState::Unstarted => {
+                let (program, _) = session.analyze(id, None).unwrap();
+                crate::emitter::DeferredUnit::prepare(&program)
+                    .code()
+                    .to_owned()
+            }
+            _ => panic!("unit {id} did not analyze"),
+        }
+    }
+
+    #[test]
+    fn a_worker_binds_a_sent_environment_and_analyzes_units_as_the_main_thread() {
+        RETAINED.set(Some(Vec::new()));
+        let mut host = MacroHost::new();
+        crate::compile_with_macros(
+            "(defn plain [x] (+ x 1))
+             (defn expanded [x] (when (pos? x) (-> x inc (* 2))))",
+            &mut host,
+        )
+        .unwrap();
+        let jobs = RETAINED.take().unwrap();
+        let session = host.session_handle().unwrap();
+        let name = |id: usize| session.catalog.borrow().units[id].borrow().name.clone();
+        let mut expected: Vec<_> = jobs
+            .iter()
+            .map(|(id, ..)| (name(*id), main_code(&session, *id)))
+            .collect();
+        expected.sort();
+        assert!(
+            expected
+                .iter()
+                .any(|(name, code)| name == "cljs.user/plain" && code.contains("rt.core.add")),
+            "{expected:?}"
+        );
+        // The core macros expanded: no call of them is left.
+        assert!(
+            expected
+                .iter()
+                .any(|(name, code)| name == "cljs.user/expanded"
+                    && !code.contains("when")
+                    && code.contains("rt.core.isPositive")
+                    && code.contains("rt.core.multiply")),
+            "{expected:?}"
+        );
+        let names: HashMap<usize, String> = jobs.iter().map(|(id, ..)| (*id, name(*id))).collect();
+        // The jobs cross to another thread, which binds its own engine.
+        let found = std::thread::spawn(move || {
+            let mut found: Vec<_> = jobs
+                .into_iter()
+                .map(|(id, form, snapshot, environment)| {
+                    let engine = engine(&environment);
+                    let mut host = MacroHost::bind(environment.clone(), Some(engine)).unwrap();
+                    let (program, _) =
+                        crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, None)
+                            .unwrap();
+                    let code = crate::emitter::DeferredUnit::prepare(&program)
+                        .code()
+                        .to_owned();
+                    // A unit that expands no macro needs no engine at all.
+                    if names[&id] == "cljs.user/plain" {
+                        let mut host = MacroHost::bind(environment, None).unwrap();
+                        let (program, _) = crate::analyzer::analyze_deferred_form(
+                            &form, &mut host, &snapshot, None,
+                        )
+                        .unwrap();
+                        assert_eq!(crate::emitter::DeferredUnit::prepare(&program).code(), code);
+                    }
+                    (names[&id].clone(), code)
+                })
+                .collect();
+            found.sort();
+            found
+        })
+        .join()
+        .unwrap();
+        assert_eq!(found, expected);
+    }
+
+    /// A catalog view whose every unit initializes to 42.
+    struct Answers(Cell<Option<usize>>);
+    impl CatalogView for Answers {
+        fn compile_unit(&self, _: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
+            self.0.set(Some(id));
+            Ok("(rt) => 42".into())
+        }
+        fn unit_source(&self, _: usize) -> Option<u32> {
+            None
+        }
+        fn analysis_sources(&self) -> Vec<u32> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn a_bound_engine_reaches_the_catalog_view_its_thread_gives_it() {
+        let environment = MacroHost::new().environment();
+        std::thread::spawn(move || {
+            let evaluator = engine(&environment);
+            let host = MacroHost::bind(environment, Some(evaluator.clone())).unwrap();
+            let view = Rc::new(Answers(Cell::new(None)));
+            let weak = Rc::downgrade(&view) as std::rc::Weak<Answers>;
+            install_catalog_services(
+                &evaluator,
+                weak,
+                host.engine.build.clone(),
+                host.engine.dependency_log.clone(),
+            )
+            .unwrap();
+            let value = evaluator
+                .evaluate_js(
+                    "(() => { if ((0, eval)(globalThis.__lightCompileUnit(7))(null) !== 42) throw new Error(\"not the view's unit\"); return null; })()",
+                )
+                .unwrap();
+            evaluator.release(value).unwrap();
+            assert_eq!(view.0.get(), Some(7));
+            // Without its view, the engine reports the session gone.
+            drop(view);
+            assert!(
+                evaluator
+                    .evaluate_js("globalThis.__lightCompileUnit(7)")
+                    .unwrap_err()
+                    .0
+                    .contains("compilation session expired")
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn a_worker_runs_the_data_readers_its_environment_was_taken_with() {
+        fn number(form: &Form) -> f64 {
+            match form.data().kind() {
+                DatumKind::Integer(n) => *n as f64,
+                DatumKind::Double(n) => *n,
+                _ => panic!("expected a number: {form:?}"),
+            }
+        }
+        fn read(host: &mut MacroHost, text: &str) -> Form {
+            let source = crate::compiler_data::Source::new("reader.cljs", text);
+            host.read_compiler_form(&source).unwrap().unwrap()
+        }
+        let mut host = MacroHost::new();
+        host.register_compiler_default_data_reader("(fn [tag value] (* value 10))")
+            .unwrap();
+        host.register_compiler_data_reader(Name::new(None, "named"), "(fn [value] (+ value 1))")
+            .unwrap();
+        // The coordinator's own reader functions are evaluated and cached.
+        assert_eq!(number(&read(&mut host, "#named 7")), 8.0);
+        assert_eq!(number(&read(&mut host, "#other 7")), 70.0);
+        let environment = host.environment();
+        // Readers registered after the environment was taken are not its.
+        host.register_compiler_data_reader(Name::new(None, "named"), "(fn [value] (- value 1))")
+            .unwrap();
+        host.register_compiler_default_data_reader("(fn [tag value] 0)")
+            .unwrap();
+        assert_eq!(number(&read(&mut host, "#named 7")), 6.0);
+        std::thread::spawn(move || {
+            let mut worker = MacroHost::bind(environment, None).unwrap();
+            assert_eq!(number(&read(&mut worker, "#named 7")), 8.0);
+            assert_eq!(number(&read(&mut worker, "#other 7")), 70.0);
+            // Built-in tags keep their reader before the default one.
+            assert!(matches!(
+                read(&mut worker, "#inst \"2020-01-01\"").data().kind(),
+                DatumKind::CompilerLiteral { .. }
+            ));
+        })
+        .join()
+        .unwrap();
+        assert_eq!(number(&read(&mut host, "#other 7")), 0.0);
+    }
+
+    /// A catalog view that records what `light.build` asked of it.
+    struct Sources(RefCell<Vec<usize>>, Cell<bool>);
+    impl CatalogView for Sources {
+        fn compile_unit(&self, _: &dyn MacroEvaluator, _: usize) -> Result<String, String> {
+            Err("no units".into())
+        }
+        fn unit_source(&self, id: usize) -> Option<u32> {
+            self.0.borrow_mut().push(id);
+            Some(100 + id as u32)
+        }
+        fn analysis_sources(&self) -> Vec<u32> {
+            self.1.set(true);
+            vec![9]
+        }
+    }
+
+    #[test]
+    fn a_bound_engine_asks_its_own_catalog_view_whom_build_requests_come_from() {
+        let environment = MacroHost::new().environment();
+        std::thread::spawn(move || {
+            let evaluator = engine(&environment);
+            let host = MacroHost::bind(environment, Some(evaluator.clone())).unwrap();
+            let view = Rc::new(Sources(RefCell::new(Vec::new()), Cell::new(false)));
+            let weak = Rc::downgrade(&view) as std::rc::Weak<Sources>;
+            install_catalog_services(
+                &evaluator,
+                weak,
+                host.engine.build.clone(),
+                host.engine.dependency_log.clone(),
+            )
+            .unwrap();
+            // An initializer of units 3 and 5 asks; no compilation serves
+            // this engine's builds, so the answer is an error.
+            let value = evaluator
+                .evaluate_js(
+                    r#"(() => { const answer = globalThis.__lightBuildService("i\u00003,5\u0000config\u0000a\u0000b"); if (!answer.startsWith("e")) throw new Error(answer); return null; })()"#,
+                )
+                .unwrap();
+            evaluator.release(value).unwrap();
+            assert_eq!(*view.0.borrow(), [3, 5]);
+            assert!(view.1.get());
+        })
+        .join()
+        .unwrap();
     }
 }

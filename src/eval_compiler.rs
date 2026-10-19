@@ -60,9 +60,12 @@ impl InteractiveCompiler {
     }
     pub(crate) fn with_host(mut host: MacroHost) -> Self {
         host.begin_compilation();
-        host.interactive = true;
-        let build =
-            crate::build_services::BuildGuard::enter(&host.build, None, host.configuration.clone());
+        host.tables.interactive = true;
+        let build = crate::build_services::BuildGuard::enter(
+            &host.engine.build,
+            None,
+            host.tables.configuration.clone(),
+        );
         Self {
             build,
             host,
@@ -165,6 +168,7 @@ impl InteractiveCompiler {
                 .any(|g| g.namespace == *namespace && g.name == *name && g.declared)
                 || self
                     .host
+                    .tables
                     .javascript_macros
                     .contains_key(&format!("{namespace}/{name}"))
                 || (matches!(namespace.as_str(), "cljs.core" | "clojure.core")
@@ -413,6 +417,7 @@ impl InteractiveCompiler {
         let macro_key = |name: &Name| {
             let key = format!("{}/{}", text(name.namespace()?), text(name.name()));
             self.host
+                .tables
                 .javascript_macros
                 .contains_key(&key)
                 .then_some(key)
@@ -506,7 +511,7 @@ impl InteractiveCompiler {
     fn analyze_forms(&mut self, forms: &[Form], ahead: bool) -> Result<Program, AnalysisError> {
         let source = forms[0].span().source().clone();
         self.build_site(source.name());
-        self.host.name_policy = Some(self.policy.clone());
+        self.host.tables.name_policy = Some(self.policy.clone());
         let mut resolution = self.resolution.clone();
         resolution.source_name = Some(source.name().into());
         let mut dropped = Vec::new();
@@ -644,7 +649,7 @@ impl InteractiveCompiler {
             } else {
                 String::from_utf16_lossy(name.name())
             };
-            self.host.name_policy = Some(self.policy.clone());
+            self.host.tables.name_policy = Some(self.policy.clone());
             let shadow = self.host.has_source_value(&self.namespace, &target)
                 || self.resolution.excludes.contains(&target);
             self.host

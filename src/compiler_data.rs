@@ -976,6 +976,7 @@ const _: () = {
     send_sync::<crate::application::PreparedApplication>();
     send_sync::<crate::name_index::NameIndex>();
     send_sync::<crate::compilation_session::DefinitionSnapshot>();
+    send_sync::<crate::compiler_reader::NamespaceView>();
 };
 
 #[cfg(test)]

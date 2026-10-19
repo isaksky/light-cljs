@@ -128,13 +128,13 @@ pub(crate) fn analysis_policy(options: ir::AnalysisOptions) -> AnalysisPolicy {
 /// ([`crate::macro_host::WorkMarks`]), or None if part of it could not be
 /// measured.
 fn accounting(macro_host: &MacroHost, start: crate::macro_host::WorkStart) -> Option<Accounting> {
-    let work = &macro_host.work;
+    let work = &macro_host.engine.work;
     if work.unmeasured.get() {
         return None;
     }
-    let nodes = macro_host.generated_nodes.get();
+    let nodes = macro_host.engine.generated_nodes.get();
     Some(Accounting {
-        expansions: (macro_host.expansions.get() - start.expansions) as u64,
+        expansions: (macro_host.engine.expansions.get() - start.expansions) as u64,
         generated_nodes: (nodes - start.generated_nodes) as u64,
         node_peak: (work.node_peak.get().max(nodes) - start.generated_nodes) as u64,
         macro_depth: work.macro_depth.get() as u32,
@@ -870,10 +870,14 @@ impl Converter<'_> {
                 span: bytes(&binding.span),
                 source: self.source(binding.source_index),
                 private: host.runtime_var(&key),
-                binding: host.source_bindings.get(&key).map(|kind| match kind {
-                    SourceBindingKind::Value => BindingKind::Value,
-                    SourceBindingKind::Macro => BindingKind::Macro,
-                }),
+                binding: host
+                    .tables
+                    .source_bindings
+                    .get(&key)
+                    .map(|kind| match kind {
+                        SourceBindingKind::Value => BindingKind::Value,
+                        SourceBindingKind::Macro => BindingKind::Macro,
+                    }),
             });
         }
         // Tables keyed by earlier entries may only keep them as they were.
@@ -1211,6 +1215,7 @@ impl Converter<'_> {
             };
             let declaration = self
                 .macro_host
+                .tables
                 .javascript_macros
                 .get(&captured.key)
                 .ok_or_else(|| format!("macro {} is not declared", captured.key))?;
@@ -1298,7 +1303,7 @@ mod tests {
         let mut host = MacroHost::new();
         let session = CompilationSession::new();
         session.begin_capture();
-        host.session = Some(session.clone());
+        host.engine.session = Some(session.clone());
         let mut program = crate::analyzer::empty_program();
         let start = begin(&mut program, 0, &[], Some(&session));
         session.capture_macro("lib.refused/m".into(), "rt => null".into(), 0, None);

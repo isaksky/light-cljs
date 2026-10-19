@@ -331,6 +331,7 @@ fn resolve(
         }
         if let Some(kind) = global.binding {
             let previous = macro_host
+                .tables
                 .source_bindings
                 .get(&format!("{}/{}", global.namespace, global.name));
             if previous.is_some_and(|previous| *previous != source_binding(kind)) {
@@ -391,6 +392,7 @@ fn resolve(
     for declaration in &artifact.declarations.macros {
         let key = format!("{}/{}", header.namespace, declaration.name);
         if macro_host
+            .tables
             .source_bindings
             .get(&key)
             .is_some_and(|previous| *previous != SourceBindingKind::Macro)
@@ -449,14 +451,17 @@ fn admit(accounting: Option<&Accounting>, macro_host: &MacroHost) -> Result<(), 
     let accounting = accounting.ok_or("it records no accounting of its work")?;
     let limits = &macro_host.limits;
     let left = |limit: usize, used: usize| limit.saturating_sub(used) as u64;
-    let expansions = left(limits.expansions, macro_host.expansions.get());
+    let expansions = left(limits.expansions, macro_host.engine.expansions.get());
     if accounting.expansions > expansions {
         return Err(format!(
             "its {} macro expansions exceed the {expansions} the compilation has left",
             accounting.expansions
         ));
     }
-    let nodes = left(limits.generated_nodes, macro_host.generated_nodes.get());
+    let nodes = left(
+        limits.generated_nodes,
+        macro_host.engine.generated_nodes.get(),
+    );
     if accounting.node_peak > nodes {
         return Err(format!(
             "its {} generated nodes need room the compilation's {nodes} lack",
@@ -486,13 +491,15 @@ fn admit(accounting: Option<&Accounting>, macro_host: &MacroHost) -> Result<(), 
 fn charge(accounting: &Accounting, macro_host: &MacroHost) {
     let expansions = accounting.expansions as usize;
     macro_host
+        .engine
         .expansions
-        .set(macro_host.expansions.get() + expansions);
-    let charged = &macro_host.work.charged_expansions;
+        .set(macro_host.engine.expansions.get() + expansions);
+    let charged = &macro_host.engine.work.charged_expansions;
     charged.set(charged.get() + expansions);
     macro_host
+        .engine
         .generated_nodes
-        .set(macro_host.generated_nodes.get() + accounting.generated_nodes as usize);
+        .set(macro_host.engine.generated_nodes.get() + accounting.generated_nodes as usize);
 }
 
 /// The compiler's spelling of a warning kind an artifact names by its text.
