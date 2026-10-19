@@ -1755,4 +1755,65 @@ console.log('public find preserves one search and direct receiver dispatch');
     assert.deepEqual(fresh.map(answers), expected);
   }
 }
+// ... and so are those of vectors, maps, sets and queues and the branches of
+// `nth`, `get`, `conj` and `assoc` (light-cljs-358): a host object that
+// inherits a collection's prototype answers every operation as it would
+// without a kind number, whatever number it holds, and a collection holding
+// another kind's number answers as its own kind.
+{
+  const make = () => [c.vector(1, 2), c.subvec(c.vector(1, 2, 3), 1), c.vec(c.range(40)), c.hashMap('a', 1),
+    c.arrayMap('a', 1, 'b', 2), c.sortedMap('b', 2, 'a', 1), c.hashSet(1, 2), c.sortedSet(2, 1),
+    c.into(c.PersistentQueue.EMPTY, c.vector(1, 2)), c.list(1, 2), c.mapSeq(c.inc, c.vector(1, 2)), c.first(c.hashMap('k', 'v'))];
+  const own = prototype => Object.getOwnPropertySymbols(prototype).filter(symbol => symbol !== Symbol.iterator);
+  const [key] = own(Object.getPrototypeOf(c.list(1)));
+  const outcome = thunk => { try { return 'ok ' + c.prStr(thunk()); } catch (error) { return 'error ' + error.message; } };
+  const answers = value => [() => c.seq(value), () => c.first(value), () => c.rest(value), () => c.next(value), () => c.count(value),
+    () => c.nth(value, 0), () => c.nth(value, 1, 'nf'), () => c.nth(value, 7, 'nf'), () => c.get(value, 0), () => c.get(value, 'a', 'nf'),
+    () => c.get(value, 1, 'nf'), () => c.contains(value, 'a'), () => c.conj(value, 3), () => c.assoc(value, 0, 9), () => c.assoc(value, 'z', 9)]
+    .map(outcome);
+  for (const value of make().slice(0, 9)) assert.equal(typeof Object.getPrototypeOf(value)[key], 'number');
+  const expected = make().map(answers);
+  // A host object without a kind number takes the operations' own paths.
+  const forge = (value, kind) => Object.defineProperty(Object.create(Object.getPrototypeOf(value)), key, {value: kind});
+  const plain = make().map(value => answers(forge(value, undefined)));
+  for (const kind of [0, 1, 2, 3, 4, 5, 6, 7, 8, 1.5, -1, NaN, '5', null]) {
+    assert.deepEqual(make().map(value => answers(forge(value, kind))), plain, `forged with kind ${String(kind)}`);
+    assert.deepEqual(answers({[key]: kind}), answers({}), `host object with kind ${String(kind)}`);
+    const fresh = make();
+    for (const value of fresh) Object.defineProperty(value, key, {value: kind});
+    assert.deepEqual(fresh.map(answers), expected, `values holding kind ${String(kind)}`);
+  }
+}
+// The collections' and the lazy seqs' branches look a method that
+// JavaScript gives a runtime value up once, as the operations do (the Sol
+// review of light-cljs-358): a getter that counts its reads is read once and
+// its method called once per operation.
+{
+  const sentinel = c.PROTOCOL_SENTINEL;
+  const counted = (value, slot, method, marker) => {
+    let reads = 0;
+    if (marker) value[marker] = sentinel;
+    Object.defineProperty(value, slot, {get() { const n = ++reads; return (...args) => method(n, ...args); }, configurable: true});
+    return () => reads;
+  };
+  const cases = [
+    [c.vector(1), 'cljs$core$ICollection$_conj$arity$2', null, v => c.conj(v, 2)],
+    [c.hashSet(1), 'cljs$core$ICollection$_conj$arity$2', null, s => c.conj(s, 2)],
+    [c.hashMap('a', 1), 'cljs$core$ICollection$_conj$arity$2', null, m => c.conj(m, c.vector('b', 2))],
+    [c.into(c.PersistentQueue.EMPTY, c.vector(1)), 'cljs$core$ICollection$_conj$arity$2', null, q => c.conj(q, 2)],
+    [c.vector(1), 'cljs$core$IAssociative$_assoc$arity$3', null, v => c.assoc(v, 0, 2)],
+    [c.hashMap('a', 1), 'cljs$core$IAssociative$_assoc$arity$3', null, m => c.assoc(m, 'a', 2)],
+    [c.vector(1), 'cljs$core$ILookup$_lookup$arity$2', 'cljs$core$ILookup$', v => c.get(v, 0)],
+    [c.hashMap('a', 1), 'cljs$core$ILookup$_lookup$arity$3', 'cljs$core$ILookup$', m => c.get(m, 'a', 'nf')],
+    [c.cons(0, c.list(1)), 'cljs$core$ISeq$_rest$arity$1', 'cljs$core$ISeq$', s => c.next(s)],
+    [c.mapSeq(c.inc, c.vector(1, 2)), 'cljs$core$ISeqable$_seq$arity$1', 'cljs$core$ISeqable$', s => c.first(s)],
+  ];
+  for (const [value, slot, marker, op] of cases) {
+    const calls = [];
+    const reads = counted(value, slot, (n, ...args) => { calls.push(n); return c.list(n); }, marker);
+    op(value);
+    assert.equal(reads(), 1, `${slot} read once`);
+    assert.deepEqual(calls, [1], `${slot} called once`);
+  }
+}
 console.log('kind tables stay private to the runtime');

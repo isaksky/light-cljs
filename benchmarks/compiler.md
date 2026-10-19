@@ -5097,3 +5097,47 @@ it in Node takes about 0.25 ms longer (1.14 to 1.40 ms in a fresh
 context), as it resolves the 68 keys, and in QuickJS its peak while the
 evaluator loads it crosses 4 MiB (the evaluation tests' small heap grows
 to 5 MiB).
+
+## Collection kinds — October 19, 2026
+
+light-cljs-358 (second part) gives vectors, maps, sets and queues kinds of
+the kind tables, which `seq`, `count`, `nth`, `get`, `conj` and `assoc`
+read once per call, and lets the cells' and lazy seqs' branches answer
+where protocol implementations exist
+([advanced-optimization.md](../docs/advanced-optimization.md#phase-2-collection-kinds)).
+
+The hub microbenchmark (one program per variant at `advanced`, Node
+v24.18.0 on the 24-CPU Mac, median of 15 rounds of 100 calls after 300
+untimed ones, each call 1,000 operations on a 16-item vector, a 16-entry
+hash map, a three-entry array map, a 16-member set or a four-item queue;
+the first part, `5453a5a`, and this change alternating, two runs each,
+one-minute load 4.8–5.8). Milliseconds per call:
+
+| Operation | First part | This change | With a `deftype`: first part | This change |
+| --- | ---: | ---: | ---: | ---: |
+| `count` of the four collections | 0.217 | 0.064 | 0.278 | 0.126 |
+| `get` of the hash map | 0.027 | 0.016 | 0.099 | 0.088 |
+| `get` of the array map | 0.137 | 0.094 | 0.166 | 0.117 |
+| `get` of the vector | 0.072 | 0.013 | 0.087 | 0.025 |
+| `nth` of the vector | 0.0095 | 0.0033 | 0.021 | 0.023 |
+| `conj` onto a vector | 0.035 | 0.031 | 0.345 | 0.074 |
+| `conj` onto a set (200 items) | 0.037 | 0.035 | 0.116 | 0.054 |
+| `assoc` into an array map | 0.96 | 0.94 | 1.00 | 0.97 |
+| `assoc` onto the vector | 0.080 | 0.039 | 0.102 | 0.061 |
+| `first`/`next` down a vector's seq (100 walks) | 0.136 | 0.131 | 0.184 | 0.179 |
+| `first`/`rest` down a lazy seq | 0.117 | 0.117 | 0.445 | 0.434 |
+| `first`/`next` down a list | 0.156 | 0.157 | 0.360 | 0.253 |
+
+With a `deftype`, `conj` took its slow path on every call (its fast path
+needs no protocol lookup), and `nth` now crosses two wrappers, its
+protocol lookup's and its kinds'.
+
+**Bytes.** At `advanced` a program that keeps one of these operations and
+builds a collection keeps its wrapper (about 200 bytes), the branches of
+the collections it builds and the tables: `vector-only` 5,053 to 5,085,
+`map-only` 7,313 to 7,879 (keywords call `get`), `map-printed` 12,925 to 13,494, `seq-pipeline` 29,203 to 29,332, `keyword-lookups` 33,355 to
+34,722, `mapv-count` 35,247 to 36,226, `constant-keys` 45,468 to 47,532 and
+`features` 72,736 to 75,501; `println-hi`, `rest-fn` and the record
+fixtures do not move. The runtime that `none` and `prepare` embed grows by
+10,120 bytes, and the QuickJS evaluator's smallest heap that loads it from
+4,128 to 4,200 KiB.

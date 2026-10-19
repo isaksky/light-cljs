@@ -1405,9 +1405,10 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
         ],
     );
     // 6,942 bytes before light-cljs-291 and 7,453 after: `privateStore` and
-    // `kindedStore` for the maps' and transients' stores.
+    // `kindedStore` for the maps' and transients' stores; 7,867 after
+    // light-cljs-358: `get` behind its kinds' branches and the maps' branch.
     let output = advanced(target).emit_js();
-    assert!(output.len() < 7_500, "{} bytes", output.len());
+    assert!(output.len() < 8_000, "{} bytes", output.len());
     // The public constructor, by name and through a quoted literal, which
     // keeps its positional array.
     let public = "(let [m (cljs.core/PersistentArrayMap. nil 2 #js [:a 1 :b 2] nil) q '{:x 1 \"y\" 2}]
@@ -2174,9 +2175,10 @@ fn lazy_branches_preserve_host_iterator_demand() {
 
 /// An `ISeqable` marker and method that JavaScript writes on a runtime seq
 /// give what the operations' own paths give where protocol implementations
-/// exist, as the branches leave every value to those paths there: a value
-/// that is already a seq is not asked for its seq, as upstream's is not.
-/// Expected values are master's at `none`.
+/// exist, as the branches look for what those paths would find there
+/// (light-cljs-358; they gave every value to the paths before): a value that
+/// is already a seq is not asked for its seq, as upstream's is not. Expected
+/// values are master's at `none`.
 #[test]
 fn direct_seq_slots_give_what_the_operations_paths_give() {
     every_level(
@@ -2190,6 +2192,155 @@ fn direct_seq_slots_give_what_the_operations_paths_give() {
            (set! (.-cljs$core$ISeqable$_seq$arity$1 l) (fn [_] (list 6)))
            (pr-str [(first s) (rest s) (count s) (first v) (rest v) (count v) (first l) (rest l) (some? (T.))]))",
         "[1 (2 3) 3 4 (5) 2 nil () true]",
+    );
+}
+
+/// Vectors, maps, sets and queues are kinds 4 to 7 of the kind tables
+/// (light-cljs-358): `seq` and `count` read their branches, `nth` a vector's,
+/// `get` a vector's and a map's, `conj` every collection's and `assoc` a
+/// vector's and a map's. Every collection, including those the branches
+/// leave to the operations (public constructors' values with slots,
+/// subvectors, map entries, sorted collections), answers at every level as
+/// master's runtime does at `none`, metadata included. A program calling
+/// `get` on a map and `nth` on a vector keeps those branches.
+#[test]
+fn collection_operations_read_the_kind_tables() {
+    every_level(
+        "(let [m {:a 1 :b 2} hm (zipmap (range 20) (range 20)) sm (sorted-map :b 2 :a 1) s #{1 2} ss (sorted-set 3 1)
+               q (into cljs.core/PersistentQueue.EMPTY [1 2]) v [1 2 3] sv (subvec [1 2 3 4] 1 3) e (first {:k :v})
+               big (vec (range 40)) wm (with-meta [1] {:m 1}) ws (with-meta #{1} {:m 2}) wq (with-meta q {:m 3})
+               wmap (with-meta {:a 1} {:m 4}) pv (cljs.core/PersistentVector. nil 2 5 (.-EMPTY-NODE cljs.core/PersistentVector) (array 7 8) nil)
+               pm (cljs.core/PersistentArrayMap. nil 1 (array :x 9) nil) ps (cljs.core/PersistentHashSet. nil (hash-map 4 nil) nil)
+               pq (cljs.core/PersistentQueue. nil 1 (list 5) nil nil)]
+           (pr-str [(mapv count [m hm sm s ss q v sv e big pv pm ps pq [] {} #{}])
+                    (mapv seq [m sm s ss q v sv [] {} #{} pv pm ps pq])
+                    (take 3 (seq hm)) (take 3 (seq big))
+                    [(nth v 0) (nth v 5 :nf) (nth sv 1) (nth e 1) (nth v 1.5) (nth big 39) (nth pv 1) (nth v -1 :neg)
+                     (try (nth v 9) (catch :default x :oob)) (try (nth e 2) (catch :default x :oob-e)) (nth e 2 :nf-e)]
+                    [(get v 1) (get v 7 :nf) (get v -1) (get v 1.5) (get m :a) (get m :z :nf) (get hm 7) (get hm 99 :nf)
+                     (get sm :a) (get sm :q :nf) (get sv 0) (get e 0) (get e 1 :x) (get s 1) (get ss 3) (get pv 0) (get pm :x) (get v nil) (get m nil)]
+                    [(conj v 4) (conj m [:c 3]) (conj s 3) (conj s 1) (conj ss 2) (seq (conj q 3)) (conj sv 9) (conj e 1)
+                     (conj sm [:c 3]) (conj m {:d 4}) (conj pv 9) (conj pm [:y 1]) (conj ps 5) (seq (conj pq 6)) (count (conj big 1))
+                     (conj [] 1) (conj {} [1 2]) (conj #{} nil)]
+                    [(assoc v 0 :x) (assoc v 3 :y) (assoc m :c 3) (count (assoc hm 99 1)) (assoc sv 0 :z) (assoc sm :c 3)
+                     (assoc pv 0 :p) (assoc pm :x 1) (assoc e 0 :k2) (assoc {} :a 1) (assoc [] 0 1)
+                     (try (assoc v 9 1) (catch :default x :oob)) (try (assoc v :k 1) (catch :default x (.-message x)))]
+                    (mapv meta [(conj wm 2) (conj ws 3) (conj wq 4) (conj wmap [:b 2]) (assoc wm 0 1) (assoc wmap :c 1)])
+                    [(contains? m :a) (contains? m :z) (contains? v 1) (contains? hm 3) (contains? s 2) (contains? sm :b)]]))",
+        r#"[[2 20 2 2 2 2 3 2 2 40 2 1 1 1 0 0 0] [([:a 1] [:b 2]) ([:a 1] [:b 2]) (1 2) (1 3) (1 2) (1 2 3) (2 3) nil nil nil (7 8) ([:x 9]) (4) (5)] ([0 0] [1 1] [2 2]) (0 1 2) [1 :nf 3 :v 2 39 8 :neg :oob :oob-e :nf-e] [2 :nf nil 2 1 :nf 7 :nf 1 :nf 2 :k :v 1 3 7 9 nil nil] [[1 2 3 4] {:a 1, :b 2, :c 3} #{1 2 3} #{1 2} #{1 2 3} (1 2 3) [2 3 9] [:k :v 1] {:a 1, :b 2, :c 3} {:a 1, :b 2, :d 4} [7 8 9] {:x 9, :y 1} #{4 5} (5 6) 41 [1] {1 2} #{nil}] [[:x 2 3] [1 2 3 :y] {:a 1, :b 2, :c 3} 21 [:z 3] {:a 1, :b 2, :c 3} [:p 8] {:x 1} [:k2 :v] {:a 1} [1] :oob "Vector key must be a number"] [{:m 1} {:m 2} {:m 3} {:m 4} {:m 1} {:m 4}] [true false true true true true]]"#,
+    );
+    let kept = units(
+        "(let [m (zipmap (range 9) (range 9)) v (vec (range 3)) q (into cljs.core/PersistentQueue.EMPTY [1])]
+           (js/console.log (get m 1) (nth v 1) (count v) (conj v 1) (assoc m 1 2) (seq #{1}) (count q)))",
+    );
+    for unit in [
+        "kindTables",
+        "PersistentVectorValue.type",
+        "PersistentHashMapValue.type",
+        "get.branches",
+        "get.maps",
+        "get.trie",
+        "nth.branches",
+        "nth.vectors",
+        "count.branches",
+        "count.vectors",
+        "count.queues",
+        "conj.branches",
+        "conj.vectors",
+        "assoc.branches",
+        "assoc.maps",
+        "seq.branches",
+        "seq.sets",
+    ] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+}
+
+/// Where protocol implementations exist, the collections' branches make the
+/// protocol lookups their operations make first, and the cells' and lazy
+/// seqs' branches look for the implementations that their operations' paths
+/// would find (light-cljs-358, where they gave every value to those paths
+/// before): methods that JavaScript writes on runtime values are called as
+/// often, and give what, they did. Records and program types keep their own
+/// methods. Expected values are master's at `none`; at `advanced`, master
+/// and this runtime alike ignore an `ILookup` that JavaScript gives a vector
+/// or a map, which the second program therefore runs at `none` and
+/// `prepare` only.
+#[test]
+fn collection_branches_find_what_javascript_gives_runtime_values() {
+    let common = "(defrecord R [a])
+         (deftype T [] ILookup (-lookup [_ k] [:t k]) (-lookup [_ k nf] [:t k nf]))
+         (let [calls (atom [])
+               note (fn [tag] (swap! calls conj tag))
+               v [1 2 3] m {:a 1} s #{1} q (into cljs.core/PersistentQueue.EMPTY [1])
+               lv (list 1 2) lz (lazy-seq lv) c (cons 0 (list 1 2)) cl (cons 0 (lazy-seq (list 5 6)))
+               inner (list 3 4) lz2 (lazy-seq inner) lz3 (lazy-seq (list 7 8))]
+           LOOKUPS
+           (set! (.-cljs$core$ICollection$_conj$arity$2 s) (fn [_ x] (note :s-conj) [:sc x]))
+           (set! (.-cljs$core$ICollection$_conj$arity$2 q) (fn [_ x] (note :q-conj) [:qc x]))
+           (set! (.-cljs$core$IAssociative$_assoc$arity$3 m) (fn [_ k x] (note :m-assoc) [:ma k x]))
+           (set! (.-cljs$core$ISeqable$ inner) cljs.core/PROTOCOL_SENTINEL)
+           (set! (.-cljs$core$ISeqable$_seq$arity$1 inner) (fn [_] (note :inner-seq) (list 9)))
+           (set! (.-cljs$core$ISeq$ c) cljs.core/PROTOCOL_SENTINEL)
+           (set! (.-cljs$core$ISeq$_rest$arity$1 c) (fn [_] (note :c-rest) (list :r)))
+           (set! (.-cljs$core$ISeqable$ lz3) cljs.core/PROTOCOL_SENTINEL)
+           (set! (.-cljs$core$ISeqable$_seq$arity$1 lz3) (fn [_] (note :lz3-seq) (list :z)))
+           (let [results [(get v 0) (get v 0 :nf) (nth v 0) (get m :a) (get m :a :nf) (conj v 4) (conj m [:b 2])
+                          (conj s 2) (conj q 2) (assoc m :b 1) (assoc v 0 :x) (count v) (count m) (count s) (count q)
+                          (first lz) (rest lz) (next lz) (count lz) (seq lz)
+                          (first lz2) (rest lz2) (next lz2) (seq lz2) (count lz2)
+                          (next c) (next cl) (first cl) (rest cl)
+                          (first lz3) (rest lz3) (next lz3) (seq lz3)
+                          (get (->R 1) :a) (get (T.) :k) (get (T.) :k :nf) (contains? (->R 1) :a) (conj (->R 1) [:b 2])
+                          (assoc (->R 1) :a 2) (count (->R 1)) (seq (->R 1)) (get (assoc (->R 1) :z 3) :z)]]
+             (pr-str [results @calls])))";
+    let tail = "[:x 2 3] 3 1 1 1 1 (2) (2) 2 (1 2) 3 (4) (4) (9) 1 (:r) (5 6) 0 (5 6) nil () nil (:z) 1 \
+         [:t :k] [:t :k :nf] true #cljs.user.R{:a 1, :b 2} #cljs.user.R{:a 2} 1 ([:a 1]) 3]";
+    let calls = ":m-assoc :s-conj :q-conj :m-assoc :inner-seq :inner-seq :inner-seq :inner-seq :inner-seq \
+         :c-rest :lz3-seq :lz3-seq :lz3-seq :lz3-seq]]";
+    every_level(
+        &common.replace("LOOKUPS", ""),
+        &format!("[[1 1 1 1 1 [1 2 3 4] [:ma :b 2] [:sc 2] [:qc 2] [:ma :b 1] {tail} [{calls}"),
+    );
+    let lookups = "(set! (.-cljs$core$ILookup$ v) cljs.core/PROTOCOL_SENTINEL)
+           (set! (.-cljs$core$ILookup$_lookup$arity$2 v) (fn [_ k] (note :v-lookup) [:vl k]))
+           (set! (.-cljs$core$ILookup$_lookup$arity$3 v) (fn [_ k nf] (note :v-lookup3) [:vl k nf]))
+           (set! (.-cljs$core$ILookup$ m) cljs.core/PROTOCOL_SENTINEL)
+           (set! (.-cljs$core$ILookup$_lookup$arity$2 m) (fn [_ k] (note :m-lookup) [:ml k]))";
+    let source = common.replace("LOOKUPS", lookups);
+    let program = program(&source);
+    for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {
+        let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+        assert_eq!(
+            execute(&format!("console.log({js});")),
+            format!(
+                "[[[:vl 0] [:vl 0 :nf] 1 [:ml :a] 1 [1 2 3 4] [:ma :b 2] [:sc 2] [:qc 2] [:ma :b 1] {tail} \
+                 [:v-lookup :v-lookup3 :m-lookup {calls}\n"
+            ),
+            "at {level}"
+        );
+    }
+}
+
+/// `extend-type` of a collection type and `specify!` of a collection empty
+/// the kind tables, as for the seq kinds: the operations then find those
+/// implementations, and the other collections answer as before. Expected
+/// values are master's at `none`.
+#[test]
+fn extensions_reaching_the_collection_kinds_empty_the_tables() {
+    every_level(
+        "(extend-type PersistentVector
+           ICounted (-count [_] 7)
+           ILookup (-lookup ([_ k] [:l k]) ([_ k nf] [:l k nf]))
+           IIndexed (-nth ([_ i] [:n i]) ([_ i nf] [:n i nf]))
+           ICollection (-conj [_ x] [:c x])
+           IAssociative (-assoc [_ k x] [:a k x]) (-contains-key? [_ k] :ck))
+         (let [sm (specify! {:a 1} ILookup (-lookup ([_ k] [:sl k]) ([_ k nf] [:sl k nf])) ICounted (-count [_] 11))
+               ss (specify! #{1} ICollection (-conj [_ x] [:sc x]))]
+           (pr-str [(count [1]) (get [1] 0) (get [1] 0 :nf) (nth [1] 0) (nth [1] 0 :nf) (conj [1] 2) (assoc [1] 0 2)
+                    (get sm :a) (count sm) (conj ss 2) (get {:b 2} :b) (count {:b 2}) (conj #{5} 2) (assoc {:b 2} :c 3)
+                    (count (list 1 2)) (first (map inc [1])) (seq #{3}) (count (subvec [1 2 3] 1))]))",
+        "[7 [:l 0] [:l 0 :nf] [:n 0] [:n 0 :nf] [:c 2] [:a 0 2] [:sl :a] 11 [:sc 2] 2 1 #{5 2} {:b 2, :c 3} 2 2 (3) 6]",
     );
 }
 

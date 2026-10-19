@@ -1777,7 +1777,8 @@ slice keeps only where a program builds a lazy seq or a cell:
   its vector), and map, set and reversed seqs no kind. `nth`, `get`, `conj`
   and `assoc`, and protocol method keys as interned values instead of the
   strings `publicMethod` looks up in `publicMethodInfos` per call, are not
-  converted (the keys are since light-cljs-358, below).
+  converted (the keys and those operations' branches are since
+  light-cljs-358, below).
 
 #### Phase 2 resolved protocol keys
 
@@ -1840,13 +1841,88 @@ mask, its marker's and the method's slot names) on every call, wherever
   0.8 to 1.0 KB; the runtime `none` and `prepare` embed grows by about
   9.1 KB. Details in `benchmarks/compiler.md` ("Protocol keys resolved
   once").
-- **Left for later (the rest of light-cljs-358).** Vectors, maps, sets and
-  queues have no kind, `nth`, `get`, `conj` and `assoc` no kind branches,
-  and the cells' and lazy seqs' branches still give way wherever a protocol
-  lookup exists (`protocolHooks.publicMethod`). A hub microbenchmark in
-  `benchmarks/compiler.md` finds `count` of a vector and a map, which probe
-  the other kinds' stores first, the cost worth a kind branch; `get` and
-  `nth` already test their kind's store first.
+- **Settled by the second part of light-cljs-358**, below: collection
+  kinds, the branches of `nth`, `get`, `conj` and `assoc`, and the cells'
+  and lazy seqs' branches where protocol lookups exist.
+
+#### Phase 2 collection kinds
+
+As built (light-cljs-358, second part). Vectors, maps, sets and queues had
+no kind, so `count` of a vector or a map probed `publicCollectionSlots`,
+`cells`, `transients`, the chunk stores and `queues` first (64% of a hub
+microbenchmark), `nth`, `get`, `conj` and `assoc` read no kind, and the
+cells' and lazy seqs' branches gave every value to their operations
+wherever a protocol lookup existed, that is in every program with a
+`deftype`, `defrecord` or `reify`.
+
+- **Kinds.** `kindTables` holds eight tables of nine branches, by
+  operation: 0 `seq`, 1 `first`, 2 `rest`, 3 `next`, 4 `count`, 5 `nth`,
+  6 `get`, 7 `conj`, 8 `assoc`, and the wrappers read `kindTables[kind &
+  7]`. The `.type` units give `PersistentVectorValue` and `SubvecValue`
+  kind 4, the three map types kind 5, the two set types kind 6 and
+  `PersistentQueueValue` kind 7; map entries and records have no kind, and
+  answer through the operations.
+- **Branches.** Kinds 4 to 7 have branches of `seq` and `count` (a value
+  with public constructor slots, which can hold another count, takes the
+  operation); vectors of `nth`, `get`, `conj` and `assoc`, maps of `get`,
+  `conj` and `assoc`, sets and queues of `conj`. A hash map's `get` searches
+  its trie (`kindHooks.trieValue`, an effect of `PersistentHashMapValue`).
+  Subvectors, values with slots and map entries forged into a vector's
+  prototype take the operations.
+- **Wrappers.** `nth.branches`, `get.branches`, `conj.branches` and
+  `assoc.branches` are effects of exactly the types of the kinds with a
+  branch of their operation, as `seq.branches` is of the kinds 1, 2 and 4
+  to 7 and `first.branches` of 1 and 2. `nth.branches` sits inside
+  `nth.protocol`, which looks for implementations first. `get`, `conj` and
+  `assoc` make their protocol lookups in the operation itself, so their
+  branches make the same lookup (`protocolHooks.publicMethod` for `get`,
+  `protocolHooks.builtin` for `conj` and `assoc`) and call the method it
+  finds, as the operation would, so that a method getter is read once; `get` takes the operation for `contains?`'s `missing`, which a
+  branch could not tell from its own answer. `conj` of a vector or a set
+  copies metadata as its fast path does, or with `preserveMeta` where its
+  other path would (`conjMeta`).
+- **Cells and lazy seqs.** Their branches no longer give way wherever
+  `protocolHooks.publicMethod` exists. `first` and `rest` of a cell call
+  nothing their wrappers have not looked for. `next` of a cell other than a
+  list takes the seq of what a `-rest` that JavaScript gave it gives, or
+  its rest's seq with `seq`. A lazy seq's branch takes its operation's own
+  steps: the seq of the lazy seq, by an `ISeqable` implementation that
+  JavaScript gave it or by `kindHooks.seqLazy`, then the generic operation
+  of what it realized, each lookup made once. `externalMethod`, which
+  `builtin` and `publicDeclared` call where `extend-type` exists, takes the
+  resolved key and reads its protocol's name instead of splitting the text.
+- **Tests.** `runtime_manifest`: `kind_table_entries_are_installed_by_the_types_of_their_kind`
+  checks kinds 1 to 7, the nine wrappers and 28 entries, each wrapper an
+  effect of exactly the types of the kinds with its entry; a protocol
+  method's install waits for the operation of a kind table entry that
+  dispatches it; 308 conditional effects. `builtin_types`:
+  `collection_operations_read_the_kind_tables`,
+  `collection_branches_find_what_javascript_gives_runtime_values` and
+  `extensions_reaching_the_collection_kinds_empty_the_tables`, with
+  expected values from master's runtime at `none`; `js_runtime.test.js`
+  checks that host objects with a collection's prototype answer every
+  operation as without a kind number, whatever number they hold, and that a
+  method getter JavaScript gives a collection or a seq is read once per
+  operation; `protocol_lookups_take_keys_resolved_at_load` also checks
+  `publicDeclared` and `externalMethod`.
+- **Measured.** In Node at `advanced` (ms per 1,000 operations, the first
+  part against this one): `count` of the four collections 0.217 to 0.064,
+  `get` of a vector 0.072 to 0.013, of a 16-entry hash map 0.027 to 0.016,
+  of an array map 0.137 to 0.094, `nth` 0.0095 to 0.0033, `assoc` onto a
+  vector 0.080 to 0.039; with a `deftype` in the program, `conj` onto a
+  vector 0.345 to 0.074, onto a set 0.116 to 0.054, `count` 0.278 to 0.126,
+  `next` down a list 0.360 to 0.253, and `nth` 0.021 to 0.023 (its two
+  wrappers). At `advanced` a program that keeps one of these operations and
+  builds a collection grows by 30 to 2,770 bytes (`map-only` 7,313 to
+  7,824, `features` 72,736 to 75,501); the runtime that `none` and `prepare`
+  embed by 10.1 KB, and the evaluator's QuickJS peaks at 4,200 KiB while
+  loading it (4,128 before). Details in `benchmarks/compiler.md`
+  ("Collection kinds").
+- **Left for later.** `first`, `rest` and `next` of the collections, which
+  take their seqs, have no branch; nor does `get` of a set, and map entries
+  have no kind, so their `nth` takes the operation. `extend-type`'s
+  dispatchers and implementations stay in maps by the key's text. At `advanced`, an `ILookup` that JavaScript writes on a vector
+  or a map is not found, as on master.
 
 #### Phase 2 builtin types, map entries
 

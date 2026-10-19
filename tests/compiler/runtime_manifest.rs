@@ -445,7 +445,7 @@ fn branches_wrapper(text: &str) -> Option<(&str, u32)> {
         let (name, _) = line.strip_prefix("  ")?.split_once(" = (operation => ")?;
         Some(name)
     })?;
-    let (_, after) = text.split_once("kindTables[kind & 3][")?;
+    let (_, after) = text.split_once("kindTables[kind & 7][")?;
     let index = after[..after.find(']')?].parse().ok()?;
     text.trim_end()
         .ends_with(&format!("({name});"))
@@ -525,11 +525,17 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
                                 .iter()
                                 .any(|number| resolved.contains(number)))
                 })
-                // A dispatch site in a unit wrapping an operation is needed
-                // wherever the operation is.
-                .flat_map(|user| match wrapped_binding(body(user)) {
-                    Some(_) => manifest.conditions(user).to_vec(),
-                    None => vec![user],
+                // A dispatch site in a unit wrapping an operation, or in a
+                // kind table entry (light-cljs-358), is needed wherever the
+                // operation is.
+                .flat_map(|user| {
+                    if wrapped_binding(body(user)).is_some()
+                        || !installed_kind_entries(body(user)).is_empty()
+                    {
+                        manifest.conditions(user).to_vec()
+                    } else {
+                        vec![user]
+                    }
                 })
                 .collect()
         } else if unit.name.ends_with(".statics") {
@@ -674,8 +680,11 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // of vectors that `isa?` compares, and the global hierarchy's `atom` and
     // `isa?`'s `supers` where protocol implementations can see them
     // (light-cljs-239), and the 68 resolved protocol keys, `methodKey` for the
-    // core dispatchers and the slot reads of `get` and `contains?` (light-cljs-358).
-    assert_eq!(checked, 286);
+    // core dispatchers and the slot reads of `get` and `contains?`, and the
+    // 17 kind table entries of vectors, maps, sets and queues, the wrappers
+    // of `nth`, `get`, `conj` and `assoc` behind them and the trie search of
+    // `get.maps` (light-cljs-358).
+    assert_eq!(checked, 308);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -830,6 +839,8 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("seqTree", Kind::Units(&["treeMapConstructor"])),
     ("sortedMapSeq", Kind::Units(&["treeMapConstructor"])),
     ("seqSet", Kind::Stores(&["sets"])),
+    // Hash maps' tries, which `get.maps` searches (light-cljs-358).
+    ("trieValue", Kind::Units(&["PersistentHashMapValue"])),
     // Views with a `vec` slot, which the public ChunkedSeq constructor builds.
     ("restChunkedSeq", Kind::Units(&["ChunkedSeqValue"])),
     // Views of queues.
@@ -1156,7 +1167,10 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
 /// branches of the kinds it builds, and no type of the kind can build a value
 /// whose branch is missing. Each kind's entry for an operation is installed
 /// once, and the operations' wrappers, which read the entries, are effects of
-/// every type of the kinds 1 and 2 (lazy seqs and cells). The types of kind 3
+/// every type of the kinds with an entry for their operation: lazy seqs (1),
+/// cells (2), vectors (4), maps (5), sets (6) and queues (7), light-cljs-358
+/// adding the last four and the wrappers of `nth`, `get`, `conj` and
+/// `assoc`. The types of kind 3
 /// (views) take their number only where a wrapper of an operation with a
 /// kind 3 entry is kept, so a program that builds views and no lazy seq or
 /// cell keeps no wrapper.
@@ -1206,9 +1220,10 @@ fn kind_table_entries_are_installed_by_the_types_of_their_kind() {
             types.entry(kind).or_default().push(binding);
         }
     }
-    assert_eq!(types.keys().copied().collect::<Vec<_>>(), [1, 2, 3]);
-    let mut building: Vec<&str> = [1, 2].iter().flat_map(|kind| types[kind].clone()).collect();
-    building.sort_unstable();
+    assert_eq!(
+        types.keys().copied().collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5, 6, 7]
+    );
     let mut wrapped = Vec::new();
     let mut seen = Vec::new();
     for (index, unit) in manifest.units.iter().enumerate() {
@@ -1220,8 +1235,7 @@ fn kind_table_entries_are_installed_by_the_types_of_their_kind() {
                 .targets
                 .clone();
             targets.sort_unstable();
-            assert_eq!(targets, building, "targets of `{}`", unit.name);
-            wrapped.push((entry, operation, unit.name));
+            wrapped.push((entry, operation, unit.name, targets));
         }
         for (kind, operation) in installed_kind_entries(body(index)) {
             let effect = unit
@@ -1241,18 +1255,33 @@ fn kind_table_entries_are_installed_by_the_types_of_their_kind() {
             seen.push((kind, operation));
         }
     }
+    // A wrapper is an effect of every type of the kinds with types of their
+    // own (all but views) that have an entry for its operation.
+    for (entry, operation, name, targets) in &wrapped {
+        let mut building: Vec<&str> = types
+            .iter()
+            .filter(|(kind, _)| **kind != 3 && seen.contains(&(**kind, *entry)))
+            .flat_map(|(_, bindings)| bindings.clone())
+            .collect();
+        building.sort_unstable();
+        assert_eq!(targets, &building, "targets of `{name}` ({operation})");
+    }
     wrapped.sort_unstable();
     assert_eq!(
         wrapped
             .iter()
-            .map(|(entry, operation, _)| (*entry, *operation))
+            .map(|(entry, operation, _, _)| (*entry, *operation))
             .collect::<Vec<_>>(),
         [
             (0, "seq"),
             (1, "first"),
             (2, "rest"),
             (3, "next"),
-            (4, "count")
+            (4, "count"),
+            (5, "nth"),
+            (6, "get"),
+            (7, "conj"),
+            (8, "assoc")
         ]
     );
     seen.sort_unstable();
@@ -1270,13 +1299,30 @@ fn kind_table_entries_are_installed_by_the_types_of_their_kind() {
             (2, 3),
             (2, 4),
             (3, 1),
+            (4, 0),
+            (4, 4),
+            (4, 5),
+            (4, 6),
+            (4, 7),
+            (4, 8),
+            (5, 0),
+            (5, 4),
+            (5, 6),
+            (5, 7),
+            (5, 8),
+            (6, 0),
+            (6, 4),
+            (6, 7),
+            (7, 0),
+            (7, 4),
+            (7, 7),
         ]
     );
     // A view's number waits for the wrappers that read a kind 3 entry.
     let mut readers: Vec<&str> = wrapped
         .iter()
-        .filter(|(entry, _, _)| seen.contains(&(3, *entry)))
-        .map(|(_, _, name)| *name)
+        .filter(|(entry, _, _, _)| seen.contains(&(3, *entry)))
+        .map(|(_, _, name, _)| *name)
         .collect();
     readers.sort_unstable();
     for (name, when) in riding {
@@ -1293,8 +1339,10 @@ fn kind_table_entries_are_installed_by_the_types_of_their_kind() {
 /// `structuralEqualPair` requires. `kindHooks.entryIndex` is read by `lookup`,
 /// which a record reaches only from `get`, after `protocolHooks.publicMethod`
 /// finds `recordMethods.lookup`: both wait for `get`. The other callers of
-/// `lookup` take maps and sets: their own prototypes' methods and set
-/// equality, whose other value implements `ISet`.
+/// `lookup` take maps and sets: their own prototypes' methods, set
+/// equality, whose other value implements `ISet`, and `get.maps`, the branch
+/// of `get` for maps (light-cljs-358), which a record, whose type has no kind,
+/// never reaches.
 #[test]
 fn kind_hooks_skip_records() {
     let manifest = manifest();
@@ -1348,6 +1396,7 @@ fn kind_hooks_skip_records() {
             "setPrototype",
             "lookup",
             "get",
+            "get.maps",
             "makeSet.equiv"
         ]
     );
@@ -1542,6 +1591,8 @@ fn units_assigning_a_binding_share_its_unit() {
         [
             "MapEntryType <- MapEntryType.lean",
             "MapEntryType <- MapEntryType.vector",
+            "assoc <- assoc.branches",
+            "conj <- conj.branches",
             "contains <- contains.own",
             "copyEntries <- copyEntries.trie",
             "count <- count.branches",
@@ -1570,6 +1621,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "first <- first.branches",
             "first <- first.protocol",
             "gensymCounter <- gensym",
+            "get <- get.branches",
             "get <- get.own",
             "globalHierarchy <- getGlobalHierarchy",
             "identityCounter <- hash",
@@ -1584,6 +1636,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "mapEntry <- mapEntry.vector",
             "next <- next.branches",
             "next <- next.protocol",
+            "nth <- nth.branches",
             "nth <- nth.protocol",
             "patchDeclaration <- declarationTransaction",
             "patchDeclaration <- extendType",
@@ -1894,7 +1947,14 @@ fn protocol_lookups_take_keys_resolved_at_load() {
         }
     }
     assert!(sites >= 100, "{sites} dispatch sites");
-    for lookup in ["ownMethod", "ownProtocol", "builtin", "publicMethod"] {
+    for lookup in [
+        "ownMethod",
+        "ownProtocol",
+        "builtin",
+        "publicMethod",
+        "publicDeclared",
+        "externalMethod",
+    ] {
         let text = body(manifest.unit_of(lookup).unwrap().0);
         for parsing in [
             ".slice(",

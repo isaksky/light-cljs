@@ -2643,8 +2643,10 @@ fn the_features_runtime_splits_by_signature() {
         .retention();
     let manifest = light_cljs::runtime_manifest::RuntimeManifest::embedded();
     // The wrappers of `lookup` and of structural equality (light-cljs-247),
-    // which assign the binding startup declares.
+    // and of `get` behind its kinds' branches (light-cljs-358), which assign
+    // the binding startup declares.
     let wrappers = [
+        ("get", "get.branches"),
         ("lookup", "lookup.trie"),
         ("lookup", "lookup.members"),
         ("lookup", "lookup.sets"),
@@ -2809,9 +2811,10 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
         "{from_shared:?}\n{listing}"
     );
     let total = files.iter().map(|(_, source)| source.len()).sum::<usize>();
-    // light-cljs-291 adds `kindedStore` (about 500 bytes) to the startup chunk.
+    // light-cljs-291 adds `kindedStore` (about 500 bytes) to the startup chunk,
+    // and light-cljs-358 the collections' kind branches (about 2.5 KB).
     assert!(
-        total + 1_000 <= 73_207 + 2_944 + 600,
+        total + 1_000 <= 73_207 + 2_944 + 600 + 2_500,
         "{total} bytes\n{listing}"
     );
 }
