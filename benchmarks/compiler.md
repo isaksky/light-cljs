@@ -5165,14 +5165,14 @@ call `(f 20)`, median / minimum; upstream is timed in the same rounds:
 | --- | ---: | --- | ---: | ---: | ---: |
 | before | 5.3 | record-keys | 6.416 / 6.123 | 0.834 / 0.786 | 7.7× |
 | before | 5.3 | record-protocol | 0.023 / 0.020 | 0.023 / 0.018 | 0.99× |
-| after | 3.6 | record-keys | 1.662 / 1.618 | 0.806 / 0.788 | 2.06× |
-| after | 3.6 | record-protocol | 0.021 / 0.019 | 0.020 / 0.018 | 1.0× |
+| after | 7.3 | record-keys | 1.750 / 1.705 | 0.846 / 0.815 | 2.07× |
+| after | 7.3 | record-protocol | 0.025 / 0.021 | 0.023 / 0.021 | 1.1× |
 
 Before was over the 2× the pellet allowed, so at `advanced` a record type
 now gets its own `-equiv` and `-hash`, which read its fields directly and
 add the fields' keyword hashes and the type's name hash as constants
 (docs/advanced-optimization.md, "Per-type record equality and hash"). The
-after ratio, 2.06×, is within the 5% tolerance of 2×. Before, half the
+after ratio, 2.07× (2.06× and 2.09× in two other runs), is within the 5% tolerance of 2×. Before, half the
 time went to `mungeMember`, which the shared methods' `field` runs on
 every field read, and the shared hash built a map entry per field. What
 remains is mostly the map and set operations themselves (`assoc` and
@@ -5186,7 +5186,7 @@ The other columns of the same runs, ms per call:
 
 | Workload | Node none / prepare, before | Node none / prepare, after | QuickJS advanced, before / after |
 | --- | ---: | ---: | ---: |
-| record-keys | 9.12 / 9.24 | 8.79 / 8.86 | 38.9 / 17.4 |
+| record-keys | 9.12 / 9.24 | 9.26 / 9.25 | 38.9 / 18.1 |
 
 Below `advanced` the shared methods run, as before. **Bytes.** No size
 ratchet fixture moves at `advanced` (no fixture with a record keeps an

@@ -111,7 +111,7 @@
 
 //! Per-type record equality and hash (light-cljs-267, 2026-10-19): at
 //! advanced a record type of a program that compares or hashes values gets
-//! its own `-equiv` and `-hash` (`record-keys` 7.7x to 2.06x upstream); no
+//! its own `-equiv` and `-hash` (`record-keys` 7.7x to 2.07x upstream); no
 //! fixture's advanced size moves. The readable runtime grows 283 bytes for
 //! `recordEntriesHash`, which the shared record hash and the per-type one
 //! share; the five none/prepare ceiling pairs it passed move to the next

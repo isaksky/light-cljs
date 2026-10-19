@@ -2331,7 +2331,7 @@ host-facing methods of the vector and the keyword.
     its text and nothing else. Where they are not written the shared
     methods answer the same, more slowly. The `record-keys` workload
     (benchmarks/compiler.md, "Record equality and hash") went from 7.7×
-    to 2.06× upstream's time.
+    to 2.07× upstream's time.
   - **One unit per core dispatcher (light-cljs-254).** The unit
     `seqProtocol` declared eight core dispatchers and
     `protocolHooks.dispatchers` installed six; each is a unit of its own now,
