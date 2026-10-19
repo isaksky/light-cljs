@@ -496,6 +496,46 @@ fn duplicate_demands_for_one_unit_from_several_workers_share_one_analysis() {
     assert_several_workers("duplicate demands");
 }
 
+/// An expansion limit crossed inside a helper that a unit's macro demanded
+/// fails with the one-slot error, the helper's wrapped in the macro's,
+/// whether the demanding unit's worker analyzed the helper, another worker
+/// did as a job of its own, or one demanding it later did (light-cljs-377).
+#[test]
+fn limits_crossed_inside_demanded_helpers_fail_the_same_way_under_any_schedule() {
+    if skipped() {
+        return;
+    }
+    fn limited<const EXPANSIONS: usize>() -> MacroHost {
+        let mut host = stress_host();
+        host.limits.expansions = EXPANSIONS;
+        host
+    }
+    // Limits that `parallel_diagnostics` finds crossed in the first, the
+    // fourth and the last helper.
+    for host in [
+        limited::<29> as fn() -> MacroHost,
+        limited::<47>,
+        limited::<66>,
+    ] {
+        let sources = Sources::new();
+        crate::parallel_diagnostics::helper_demands(&sources);
+        let fixture = Fixture {
+            sources,
+            entry: "app.h",
+            warning_mode: false,
+            blockers: Vec::new(),
+            host,
+        };
+        let oracle = stress("helper limits", &fixture);
+        let error = oracle.output.unwrap_err();
+        assert!(
+            error.contains(": macro app.h/outer") && error.contains(": app.h/h"),
+            "{error}"
+        );
+    }
+    assert_several_workers("helper limits");
+}
+
 /// Warnings from units on several workers, and ordinary errors of two
 /// failing units where the later fails first: the one-slot warnings in
 /// their order and the earlier unit's error under any schedule.

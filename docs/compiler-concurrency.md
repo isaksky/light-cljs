@@ -1710,12 +1710,38 @@ output changes once, when stage A lands.
     builds source-macro units at every expansion limit from 1 to the
     build's count and at forty node limits, and
     `exact_boundary_depth_failures_name_the_same_unit_at_one_and_four_slots`
-    at every expansion depth, at one and four slots. One case stays
-    inexact: a limit crossed inside a helper unit that a worker's macro
-    demanded and analyzed inline is charged as the outer unit's event, so
-    the error names the same outer unit and the inner call, but its text
-    may lack the nested failure's wrapping that the serial build's message
-    has (not tested; light-cljs-377).
+    at every expansion depth, at one and four slots.
+    *As built (light-cljs-377), helper demands.* A unit a running macro
+    demands is no longer charged as part of the demanding unit. A worker
+    records it on its own (`MacroFreeUnit` nests), and the demanding unit
+    records a `UnitEvent::Demand` where the demand was made. The charge
+    takes the demanded unit's charges at the first demand for it in
+    charge order, or at its own place in the drain if that comes first.
+    That is where the serial build analyzed it, whichever worker analyzed
+    it. Before this, a helper analyzed inline was charged after the
+    macro's own expansion. A helper that another worker took as a job of
+    its own was charged at its own place, after the units that demand it,
+    so a limit could fail a later unit or none. A JavaScript expansion is
+    now recorded as a start, where it is counted, and an end, with the
+    nodes it generated. A demanded unit's failure is thrown out through
+    the expansions still under way. It begins with the unit's
+    `source:line:column: unit`, then the macro's own wrapping
+    (`macro_error_wrapping`: the call, the macro, `; definition`,
+    `; helper`, kept only for an expansion that demanded a unit), then
+    the analyzer's `while expanding NAME:` at the call. The result is the
+    one-slot error byte for byte, and the demanded unit is failed too.
+    `parallel_diagnostics::limits_crossed_inside_a_demanded_helper_fail_with_the_one_slot_error`
+    sweeps every expansion limit and sixty node limits through eight
+    helpers that eight units' macros demand, at one and four slots.
+    `schedule_stress::limits_crossed_inside_demanded_helpers_fail_the_same_way_under_any_schedule`
+    builds three of those limits under the perturbed schedules. Some
+    cases stay inexact; the build already fails in all of them:
+    - A demand nested deeper than the slot depth limit allows.
+    - A macro that catches a demanded unit's failure and carries on.
+    - A JavaScript expansion inside another's run. Its thrown error is
+      wrapped by the innermost expansion only.
+    A demanded unit's `gensym` names and trace rows stay in the stream of
+    the unit whose macro demanded it.
   - *Soft cap.* The coordinator publishes what it has charged
     (`SharedCatalog::raise_charged`, at each submission and charge), a
     lower bound of what precedes any unit it has not charged yet; a unit

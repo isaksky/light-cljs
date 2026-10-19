@@ -123,6 +123,18 @@ pub(crate) struct UnitCharges {
     /// the unit (light-cljs-369, [`crate::compile_trace::replay`]).
     trace: Option<Box<crate::compile_trace::WorkerRows>>,
 }
+/// A failure met while charging, on its way out through the expansions and
+/// demands that enclose it ([`UnitCharges::charge`]).
+enum Failure {
+    /// An analysis error at a form of the unit being charged.
+    Analysis(crate::AnalysisError),
+    /// What a demanded unit's failure threw into the running macro that
+    /// demanded it, and that unit's diagnostic, if it has one, which a
+    /// demand that no expansion encloses fails with instead.
+    Thrown(String, Option<crate::AnalysisError>),
+    /// A failure with a message and no diagnostic, as is.
+    Plain(String),
+}
 impl UnitCharges {
     /// Add the charges to `binding`'s counters and marks, and spend the
     /// unit's polls from `control`, the execution control its analysis on
@@ -137,25 +149,90 @@ impl UnitCharges {
         mut control: Option<crate::evaluator::ExecutionControl>,
         start: &dyn Fn() -> Option<crate::evaluator::ExecutionControl>,
         session: &CompilationSession,
-    ) -> Result<(), (String, crate::AnalysisError)> {
+    ) -> Result<(), (String, Option<crate::AnalysisError>)> {
+        match self.charge_events(binding, depth, &mut control, start, session) {
+            Ok(()) => Ok(()),
+            Err(Failure::Analysis(diagnostic) | Failure::Thrown(_, Some(diagnostic))) => {
+                Err((format!("{}: {diagnostic}", self.location), Some(diagnostic)))
+            }
+            Err(Failure::Plain(message) | Failure::Thrown(message, None)) => Err((message, None)),
+        }
+    }
+    /// [`Self::charge`], failing as the unit's analysis would have. A unit
+    /// that a running macro demanded ([`UnitEvent::Demand`]) is charged
+    /// there, at `depth + 1`, if no earlier charge took its charges, as the
+    /// serial build analyzed it there (light-cljs-377); if it fails, so does
+    /// this unit, with the error the demand threw wrapped as each enclosing
+    /// expansion wraps it.
+    ///
+    /// [`UnitEvent::Demand`]: crate::macro_host::UnitEvent::Demand
+    fn charge_events(
+        &self,
+        binding: &EngineBinding,
+        depth: usize,
+        control: &mut Option<crate::evaluator::ExecutionControl>,
+        start: &dyn Fn() -> Option<crate::evaluator::ExecutionControl>,
+        session: &CompilationSession,
+    ) -> Result<(), Failure> {
         use crate::macro_host::UnitEvent;
         use crate::macro_host::WorkMarks;
         WorkMarks::note(&binding.work.unit_depth, depth + 1);
         WorkMarks::note(&binding.work.macro_depth, self.macro_depth);
         WorkMarks::note(&binding.work.analysis_depth, self.analysis_depth);
         let (expansions, nodes) = (&binding.expansions, &binding.generated_nodes);
-        let fail = |span: &std::ops::Range<usize>, message: String| {
-            let diagnostic = crate::AnalysisError {
+        fn at(span: &std::ops::Range<usize>, message: String) -> Failure {
+            Failure::Analysis(crate::AnalysisError {
                 span: span.clone(),
                 kind: crate::AnalysisErrorKind::MacroExpansion(message),
-            };
-            Err((format!("{}: {diagnostic}", self.location), diagnostic))
+            })
+        }
+        // An error of a JavaScript expansion, as the analyzer reports it
+        // at the call it expanded.
+        fn exceeded(
+            span: &std::ops::Range<usize>,
+            site: &Option<(String, std::ops::Range<usize>)>,
+            message: &str,
+        ) -> Failure {
+            match site {
+                Some((operator, span)) => {
+                    at(span, format!("while expanding {operator}: {message}"))
+                }
+                None => at(span, message.into()),
+            }
+        }
+        // The JavaScript expansions under way, innermost last.
+        let mut open: Vec<&UnitEvent> = Vec::new();
+        // `failure` out through the expansions under way: what a demand
+        // threw becomes the innermost one's error, the macro's wrapping
+        // around it, as the analyzer reports it at the call.
+        let fail = |open: &[&UnitEvent], mut failure: Failure| {
+            for event in open.iter().rev() {
+                if let (
+                    UnitEvent::Script {
+                        span,
+                        site,
+                        wrapping,
+                    },
+                    Failure::Thrown(thrown, _),
+                ) = (event, &failure)
+                {
+                    let (before, after) = wrapping
+                        .as_deref()
+                        .map_or(("", ""), |(before, after)| (before, after));
+                    failure = exceeded(span, site, &format!("{before}{thrown}{after}"));
+                }
+            }
+            Err(match failure {
+                Failure::Thrown(_, Some(diagnostic)) => Failure::Analysis(diagnostic),
+                Failure::Thrown(message, None) => Failure::Plain(message),
+                failure => failure,
+            })
         };
         for event in &self.events {
             match event {
                 UnitEvent::Poll(span) => {
                     if let Some(Err(error)) = control.as_ref().map(|control| control.poll()) {
-                        return fail(span, error.to_string());
+                        return fail(&open, at(span, error.to_string()));
                     }
                 }
                 UnitEvent::Expansion(expansion) => {
@@ -168,36 +245,79 @@ impl UnitCharges {
                             .then_some("compiler macro generated-node limit exceeded")
                     };
                     if let Some(message) = exceeded {
-                        return fail(
-                            &expansion.span,
-                            format!("while expanding {}: {message}", expansion.operator),
-                        );
+                        let message = format!("while expanding {}: {message}", expansion.operator);
+                        return fail(&open, at(&expansion.span, message));
                     }
                 }
-                // The limits as `MacroHost::expand_javascript` checks them,
-                // failing as the analyzer reports them at the call it
-                // expanded.
-                UnitEvent::Script {
-                    nodes: generated,
-                    span,
-                    site,
-                } => {
+                // The limits as `MacroHost::expand_javascript` checks them:
+                // the expansion counts before it runs, and what it
+                // generated after.
+                UnitEvent::Script { span, site, .. } => {
                     if control.is_none() {
-                        control = start();
+                        *control = start();
                     }
-                    let fail = |message: &str| match site {
-                        Some((operator, span)) => {
-                            fail(span, format!("while expanding {operator}: {message}"))
-                        }
-                        None => fail(span, message.into()),
-                    };
                     if expansions.get() >= self.limits.0 {
-                        return fail("compiler macro expansion limit exceeded");
+                        let failure =
+                            exceeded(span, site, "compiler macro expansion limit exceeded");
+                        return fail(&open, failure);
                     }
                     expansions.set(expansions.get() + 1);
-                    nodes.set(nodes.get().saturating_add(*generated));
-                    if nodes.get() > self.limits.1 {
-                        return fail("compiler macro generated-node limit exceeded");
+                    open.push(event);
+                }
+                UnitEvent::ScriptEnd(generated) => {
+                    let Some(UnitEvent::Script { span, site, .. }) = open.pop() else {
+                        continue;
+                    };
+                    nodes.set(nodes.get().saturating_add(generated.unwrap_or(0)));
+                    if generated.is_some() && nodes.get() > self.limits.1 {
+                        let failure =
+                            exceeded(span, site, "compiler macro generated-node limit exceeded");
+                        return fail(&open, failure);
+                    }
+                }
+                UnitEvent::Demand(id) => {
+                    let Some(mut charges) = session.shared.take_charges(*id) else {
+                        continue;
+                    };
+                    // Demanded this deep, its claim would have failed.
+                    if depth + 1 >= charges.depth_limit {
+                        WorkMarks::note(&binding.work.unit_depth, depth + 2);
+                        session.shared.fail(*id, DEPTH_LIMIT.to_owned(), None);
+                        return fail(&open, Failure::Thrown(DEPTH_LIMIT.to_owned(), None));
+                    }
+                    if let Some(rows) = charges.trace.take() {
+                        crate::compile_trace::replay(*rows, depth + 1);
+                    }
+                    match charges.charge_events(binding, depth + 1, control, start, session) {
+                        Ok(()) => {}
+                        // The demanded unit fails as its analysis here
+                        // would have failed it, and its error is thrown
+                        // into the macro that demanded it.
+                        Err(
+                            Failure::Analysis(diagnostic) | Failure::Thrown(_, Some(diagnostic)),
+                        ) => {
+                            let thrown = format!("{}: {diagnostic}", charges.location);
+                            (session.shared).fail(*id, thrown.clone(), Some(diagnostic.clone()));
+                            return fail(&open, Failure::Thrown(thrown, Some(diagnostic)));
+                        }
+                        Err(Failure::Plain(message) | Failure::Thrown(message, None)) => {
+                            session.shared.fail(*id, message.clone(), None);
+                            return Err(Failure::Plain(message));
+                        }
+                    }
+                    let UnitCharges {
+                        observations,
+                        gensyms,
+                        ..
+                    } = *charges;
+                    if let (Some(observations), Some(log)) =
+                        (observations, binding.dependency_log.borrow_mut().as_mut())
+                    {
+                        log.absorb(*observations);
+                    }
+                    if let Err(error) = session.absorb_gensyms(gensyms) {
+                        session.shared.fail(*id, error.clone(), None);
+                        return Err(Failure::Plain(error));
                     }
                 }
                 // What capture records, where a serial build records it.
@@ -1838,7 +1958,7 @@ impl CompilationSession {
             if let Err((message, diagnostic)) =
                 charges.charge(&binding, depth, control, &start, self)
             {
-                self.shared.fail(id, message.clone(), Some(diagnostic));
+                self.shared.fail(id, message.clone(), diagnostic);
                 return Err(message);
             }
             // The unit's trace frame counted these; the frame it is
@@ -1884,6 +2004,10 @@ fn analyze_unit(
         on_worker,
         server,
     } = demand;
+    // A unit demanded while this thread records one, by a macro running in
+    // its analysis, is charged where it is demanded unless something before
+    // charged it, wherever it was analyzed (light-cljs-377).
+    let nested = crate::macro_host::record_demand(id);
     let (inputs, depth, name, macro_free) = match shared.claim(thread, id, queued, server)? {
         Claim::Reuse(program, warnings) => return Ok((program, warnings)),
         Claim::TooDeep(inputs, depth) => {
@@ -1926,10 +2050,10 @@ fn analyze_unit(
     // A macro-free unit, on any thread, and any unit a worker analyzes
     // record what they would charge to the compilation, which the
     // coordinator charges in its order ([`UnitCharges`]); a unit demanded
-    // while one is recorded is recorded with it, in its place, as the
-    // serial build charged it.
-    let nested = crate::macro_host::MacroFreeUnit::active();
-    let records = !nested && (macro_free || on_worker);
+    // while one is recorded is recorded on its own, and charged where the
+    // first demand for it in that order is, as the serial build charged it
+    // ([`crate::macro_host::UnitEvent::Demand`]).
+    let records = nested || macro_free || on_worker;
     if records {
         // Counted where the unit is charged ([`UnitCharges`]), from what
         // the coordinator charged before it; the unit's trace frame counts
@@ -1978,7 +2102,9 @@ fn analyze_unit(
             // `gensym` gives from here on, which the unit's analysis hands
             // the coordinator; what the engine gave before, setting itself
             // up or installing the catalog's registrations, is its own.
-            let logs_gensyms = on_worker && recording.capture;
+            // A unit demanded while one is recorded gives its names in the
+            // log of the one whose macro demanded it.
+            let logs_gensyms = on_worker && recording.capture && !nested;
             let started_log = match engine {
                 Some(engine) if logs_gensyms => {
                     CompilationSession::take_gensyms_from(engine).map(drop)
@@ -2025,8 +2151,11 @@ fn analyze_unit(
     if let Some((mut charges, time)) = charges {
         // On a worker, the trace of the unit, whose frame has closed, and
         // of those it demanded, which the coordinator records where it
-        // charges the unit.
-        charges.trace = crate::compile_trace::take_worker_rows();
+        // charges the unit; a demanded unit's rows are in the trace of the
+        // unit whose macro demanded it.
+        if !nested {
+            charges.trace = crate::compile_trace::take_worker_rows();
+        }
         shared.record_charges(id, charges, time);
     }
     let diagnostic = analysis.as_ref().err().cloned();

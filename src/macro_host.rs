@@ -59,16 +59,29 @@ pub(crate) struct NativeExpansion {
 pub(crate) enum UnitEvent {
     Poll(std::ops::Range<usize>),
     Expansion(NativeExpansion),
-    /// A JavaScript macro's expansion in a unit a pool worker analyzed in
-    /// its own engine (light-cljs-339), with the nodes it generated and
-    /// the call's span, and the operator as spelled and the call's span
-    /// where the analyzer expanded it ([`ExpansionSite`]), whose limit
-    /// error names the operator.
+    /// A JavaScript macro's expansion begins in a unit a pool worker
+    /// analyzed in its own engine (light-cljs-339), where its expansion is
+    /// counted: the call's span, and the operator as spelled and the call's
+    /// span where the analyzer expanded it ([`ExpansionSite`]), whose limit
+    /// error names the operator. What the expansion demands follows it,
+    /// until its [`UnitEvent::ScriptEnd`].
     Script {
-        nodes: usize,
         span: std::ops::Range<usize>,
         site: Option<(String, std::ops::Range<usize>)>,
+        /// If the expansion demanded a unit ([`UnitEvent::Demand`]), what
+        /// its error wraps an error the demand threw in: the text before
+        /// and after it ([`macro_error_wrapping`]).
+        wrapping: Option<Box<(String, String)>>,
     },
+    /// The expansion that began last ends, with the nodes it generated, or
+    /// with none if it failed.
+    ScriptEnd(Option<usize>),
+    /// A running macro demanded this unit (light-cljs-377): the serial
+    /// build would have analyzed it here, nested in the expansion, if it
+    /// was not yet, so its charges are charged here if they are not yet,
+    /// and a limit crossed in them fails with the nested unit's error
+    /// wrapped as the expansion's.
+    Demand(usize),
     /// While artifacts are captured (light-cljs-374): the namespace's node
     /// budget had to leave room for this many nodes beyond those generated
     /// so far ([`WorkMarks::node_peak`]).
@@ -100,6 +113,8 @@ struct MacroFreeAnalysis {
     events: Vec<UnitEvent>,
     /// The macro call the analyzer expands ([`ExpansionSite`]).
     site: Option<(String, std::ops::Range<usize>)>,
+    /// How many units its running macros demanded ([`record_demand`]).
+    demands: usize,
     capture: bool,
     /// What the analysis observed, while a manifest is recorded.
     observations: Option<crate::dependency_manifest::ObservationLog>,
@@ -118,32 +133,30 @@ pub(crate) struct RecordedUnit {
 /// eligibility check and panics with the unit named
 /// ([`forbid_engine_entry`]); and its polls and native expansions are
 /// recorded instead of charged ([`record_poll`], [`record_native_expansion`]),
-/// which [`Self::finish`] returns.
-pub(crate) struct MacroFreeUnit(Option<MacroFreeAnalysis>);
+/// which [`Self::finish`] returns. It holds the analysis this thread
+/// recorded before, which it restores once: units nest, as a unit that a
+/// recorded unit's macro demands is recorded on its own (light-cljs-377).
+pub(crate) struct MacroFreeUnit(Option<Option<MacroFreeAnalysis>>);
 impl MacroFreeUnit {
     /// Record the analysis of unit `name` on this thread; with `forbid`, it
     /// was found macro-free and must not enter an engine. `recording` is
     /// what the compilation records of it beyond its charges.
     pub(crate) fn enter(name: String, forbid: bool, recording: UnitRecording) -> Self {
-        Self(MACRO_FREE_UNIT.with(|unit| {
+        Self(Some(MACRO_FREE_UNIT.with(|unit| {
             unit.replace(Some(MacroFreeAnalysis {
                 name,
                 forbid,
                 events: Vec::new(),
                 site: None,
+                demands: 0,
                 capture: recording.capture,
                 observations: recording.observe.then(Default::default),
             }))
-        }))
-    }
-    /// Whether this thread records a unit's analysis, whose nested demands
-    /// it then records too, in their place.
-    pub(crate) fn active() -> bool {
-        MACRO_FREE_UNIT.with(|unit| unit.borrow().is_some())
+        })))
     }
     /// What the analysis recorded, in order.
     pub(crate) fn finish(mut self) -> RecordedUnit {
-        let previous = self.0.take();
+        let previous = self.0.take().flatten();
         let analysis = MACRO_FREE_UNIT.with(|unit| unit.replace(previous));
         let (events, observations) =
             analysis.map_or_else(Default::default, |a| (a.events, a.observations));
@@ -201,8 +214,9 @@ fn record_capture(event: impl FnOnce() -> UnitEvent) -> bool {
 }
 impl Drop for MacroFreeUnit {
     fn drop(&mut self) {
-        let previous = self.0.take();
-        MACRO_FREE_UNIT.with(|unit| *unit.borrow_mut() = previous);
+        if let Some(previous) = self.0.take() {
+            MACRO_FREE_UNIT.with(|unit| *unit.borrow_mut() = previous);
+        }
     }
 }
 /// Panic if this thread analyzes a macro-free unit: `what` reached the
@@ -227,18 +241,85 @@ pub(crate) fn record_native_expansion(expansion: impl FnOnce() -> NativeExpansio
         }
     });
 }
-/// Record a JavaScript macro's expansion if this thread records a unit's
-/// analysis.
-pub(crate) fn record_script_expansion(nodes: usize, span: impl FnOnce() -> std::ops::Range<usize>) {
-    MACRO_FREE_UNIT.with(|unit| {
-        if let Some(analysis) = &mut *unit.borrow_mut() {
+/// A JavaScript macro's expansion that began in the unit this thread
+/// records: its event's index, and how many units the unit had demanded.
+pub(crate) struct ScriptStart(Option<(usize, usize)>);
+/// Record that a JavaScript macro's expansion begins, if this thread
+/// records a unit's analysis.
+pub(crate) fn record_script_start(span: impl FnOnce() -> std::ops::Range<usize>) -> ScriptStart {
+    ScriptStart(MACRO_FREE_UNIT.with(|unit| {
+        unit.borrow_mut().as_mut().map(|analysis| {
             analysis.events.push(UnitEvent::Script {
-                nodes,
                 span: span(),
                 site: analysis.site.clone(),
+                wrapping: None,
             });
+            (analysis.events.len() - 1, analysis.demands)
+        })
+    }))
+}
+/// Record that the expansion `start` ends, with the nodes it generated or
+/// none if it failed; if it demanded a unit, its start keeps `wrapping`.
+pub(crate) fn record_script_end(
+    start: ScriptStart,
+    nodes: Option<usize>,
+    wrapping: impl FnOnce() -> (String, String),
+) {
+    let Some((index, demands)) = start.0 else {
+        return;
+    };
+    MACRO_FREE_UNIT.with(|unit| {
+        if let Some(analysis) = &mut *unit.borrow_mut() {
+            if analysis.demands != demands
+                && let Some(UnitEvent::Script { wrapping: slot, .. }) =
+                    analysis.events.get_mut(index)
+            {
+                *slot = Some(Box::new(wrapping()));
+            }
+            analysis.events.push(UnitEvent::ScriptEnd(nodes));
         }
     });
+}
+/// Record that a running macro demands unit `id`, if this thread records a
+/// unit's analysis: whether it does.
+pub(crate) fn record_demand(id: usize) -> bool {
+    MACRO_FREE_UNIT.with(|unit| match &mut *unit.borrow_mut() {
+        Some(analysis) => {
+            analysis.demands += 1;
+            analysis.events.push(UnitEvent::Demand(id));
+            true
+        }
+        None => false,
+    })
+}
+/// The text that a JavaScript macro's expansion error puts before and after
+/// the error its function threw, for the expansion `origin` describes.
+fn macro_error_wrapping(origin: &crate::compiler_data::ExpansionOrigin) -> (String, String) {
+    let location = crate::compiler_data::DiagnosticLocation::from_span(&origin.call);
+    let before = format!(
+        "{}:{}:{}: macro {}/{}: ",
+        location.source,
+        location.line,
+        location.column,
+        String::from_utf16_lossy(origin.macro_name.namespace().unwrap_or(&[])),
+        String::from_utf16_lossy(origin.macro_name.name()),
+    );
+    let mut after = String::new();
+    if let Some(definition) = &origin.definition {
+        let d = crate::compiler_data::DiagnosticLocation::from_span(definition);
+        after.push_str(&format!(
+            "; definition {}:{}:{}",
+            d.source, d.line, d.column
+        ));
+    }
+    for helper in &origin.helpers {
+        after.push_str(&format!(
+            "; helper {}/{}",
+            String::from_utf16_lossy(helper.namespace().unwrap_or(&[])),
+            String::from_utf16_lossy(helper.name())
+        ));
+    }
+    (before, after)
 }
 /// While alive, the analyzer expands the macro call `operator` (as
 /// spelled) spanning `span` on this thread, whose limit errors it reports
@@ -875,7 +956,11 @@ impl MacroHost {
         environment: &crate::compiler_data::Datum,
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
+        // Recorded where it is counted, so that what it demands is charged
+        // after it, as with one slot (light-cljs-377).
+        let start = record_script_start(|| origin.call.bytes());
         if self.engine.expansions.get() >= self.limits.expansions {
+            record_script_end(start, None, || macro_error_wrapping(&origin));
             return Err("compiler macro expansion limit exceeded".into());
         }
         self.engine.expansions.set(self.engine.expansions.get() + 1);
@@ -944,34 +1029,15 @@ impl MacroHost {
                 None => self.note_unmeasured(),
             }
         }
+        record_script_end(
+            start,
+            expanded.as_ref().ok().map(|form| form.nodes().len()),
+            || macro_error_wrapping(&origin),
+        );
         let expanded = expanded.map_err(|e| {
-            let location = crate::compiler_data::DiagnosticLocation::from_span(&origin.call);
-            let mut message = format!(
-                "{}:{}:{}: macro {}/{}: {}",
-                location.source,
-                location.line,
-                location.column,
-                String::from_utf16_lossy(origin.macro_name.namespace().unwrap_or(&[])),
-                String::from_utf16_lossy(origin.macro_name.name()),
-                e
-            );
-            if let Some(definition) = &origin.definition {
-                let d = crate::compiler_data::DiagnosticLocation::from_span(definition);
-                message.push_str(&format!(
-                    "; definition {}:{}:{}",
-                    d.source, d.line, d.column
-                ));
-            }
-            for helper in &origin.helpers {
-                message.push_str(&format!(
-                    "; helper {}/{}",
-                    String::from_utf16_lossy(helper.namespace().unwrap_or(&[])),
-                    String::from_utf16_lossy(helper.name())
-                ));
-            }
-            message
+            let (before, after) = macro_error_wrapping(&origin);
+            format!("{before}{e}{after}")
         })?;
-        record_script_expansion(expanded.nodes().len(), || origin.call.bytes());
         self.engine.generated_nodes.set(
             self.engine
                 .generated_nodes
