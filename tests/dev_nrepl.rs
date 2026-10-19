@@ -419,8 +419,16 @@ fn nrepl_operations_round_trip_through_a_node_runtime() {
         fs::read_to_string(&port_file).unwrap(),
         watch.nrepl.rsplit_once(':').unwrap().1
     );
-    let (_runtime, runtime_lines) = watch.runtime();
     let mut client = watch.client(&watch.nrepl);
+    // Completions and lookups need no runtime.
+    let early = client.one("\"op\":\"lookup\",\"ns\":\"app.view\",\"sym\":\"state/click!\"");
+    assert_eq!(
+        info(&early)[..3],
+        ["ns=app.state", "name=click!", "type=function"]
+    );
+    let early = client.one("\"op\":\"completions\",\"ns\":\"app.view\",\"prefix\":\"ren\"");
+    assert_eq!(candidates(&early), ["render function app.view"]);
+    let (_runtime, runtime_lines) = watch.runtime();
 
     let described = client.one("\"op\":\"describe\"");
     let Some(Json::Object(ops)) = described.get("ops") else {
@@ -594,6 +602,8 @@ fn nrepl_operations_round_trip_through_a_node_runtime() {
             "name=labeled",
             "type=macro",
             "macro=true",
+            "arglists-str=([label & body])",
+            "doc=The string of `label`, a colon and the bracketed `body`.",
             "status=done"
         ]
     );
@@ -610,6 +620,14 @@ fn nrepl_operations_round_trip_through_a_node_runtime() {
     assert!(
         map[4].starts_with("doc=Returns a lazy sequence"),
         "{map:#?}"
+    );
+    assert_eq!(
+        lookup(&mut client, "app.view", "*print-length*")[..3],
+        ["ns=cljs.core", "name=*print-length*", "type=var"]
+    );
+    assert_eq!(
+        complete(&mut client, "app.view", "*print-len"),
+        ["*print-length* var cljs.core"]
     );
     assert_eq!(
         lookup(&mut client, "app.view", "click!"),
@@ -671,22 +689,22 @@ fn nrepl_operations_round_trip_through_a_node_runtime() {
         )
     ));
     until(&runtime_lines, "busy", "the runtime");
-    let mismatch = client.one(&format!(
+    // From another connection, too.
+    let mut second = watch.client(&watch.nrepl);
+    let mismatch = second.one(&format!(
         "\"op\":\"interrupt\",\"session\":\"{session}\",\"interrupt-id\":\"other\""
     ));
     assert_eq!(
         statuses(&mismatch),
         ["error", "interrupt-id-mismatch", "done"]
     );
-    let interrupt = client.send(&format!(
+    let interrupt = second.one(&format!(
         "\"op\":\"interrupt\",\"session\":\"{session}\",\"interrupt-id\":\"{busy}\""
     ));
-    let responses = collect(&mut client, &[&interrupt, &busy]);
-    assert_eq!(summary(&responses[0]), ["status: done"]);
-    assert_eq!(
-        summary(&responses[1]),
-        ["status: interrupted", "status: done"]
-    );
+    assert_eq!(summary(&[interrupt]), ["status: done"]);
+    second.close();
+    let ended = collect(&mut client, &[&busy]).pop().unwrap();
+    assert_eq!(summary(&ended), ["status: interrupted", "status: done"]);
     assert!(
         !runtime_lines
             .try_iter()
@@ -733,10 +751,30 @@ fn nrepl_operations_round_trip_through_a_node_runtime() {
     client.close();
 
     // SIGINT ends the watch, and .nrepl-port goes with it.
+    #[cfg(unix)]
+    {
+        assert_eq!(interrupt_watch(&mut watch).code(), Some(130));
+        assert!(!port_file.exists());
+    }
+}
+
+/// Send SIGINT to `watch` and wait for it to exit.
+#[cfg(unix)]
+fn interrupt_watch(watch: &mut Watch) -> std::process::ExitStatus {
     let pid = watch.process.0.id().to_string();
     let status = Command::new("kill").args(["-INT", &pid]).status().unwrap();
     assert!(status.success());
-    let exit = watch.process.0.wait().unwrap();
-    assert_eq!(exit.code(), Some(130), "{exit}");
-    assert!(!port_file.exists());
+    watch.process.0.wait().unwrap()
+}
+
+/// A signal leaves `.nrepl-port` alone when another server has written its
+/// port there since.
+#[cfg(unix)]
+#[test]
+fn a_signal_leaves_another_servers_port_file() {
+    let mut watch = Watch::start("dev-nrepl-port");
+    let port_file = watch.dir.join(".nrepl-port");
+    fs::write(&port_file, "1").unwrap();
+    assert_eq!(interrupt_watch(&mut watch).code(), Some(130));
+    assert_eq!(fs::read_to_string(&port_file).unwrap(), "1");
 }

@@ -848,7 +848,9 @@ preflight is a word in capitals and the server answers no preflight).
 `--nrepl PORT` (0 for any free port, or the `--serve` port itself) also
 listens on PORT, on the server's host, and writes the port into
 `.nrepl-port` in the working directory, where editors look for it; the file
-goes when the watch ends, also on SIGINT, SIGTERM and SIGHUP. Bencode is read
+goes when the watch ends, also on SIGINT, SIGTERM and SIGHUP, unless another
+server has written its port there since. Without `--nrepl` no file is
+written, and an editor is given the `--serve` port. Bencode is read
 and written by hand (`light_cljs::dev_nrepl::Bencode`), a message at most
 16 MiB and nested at most 64 deep.
 
@@ -876,8 +878,8 @@ under `--repl --connect`. The operations, each answered with the request's
   (`light-cljs/compile-error`, `light-cljs/runtime-error` or
   `light-cljs/command-error`) with `status` `eval-error`, and the next form
   runs. Warnings come as `err`, `WARNING: <nrepl>:1:2: Use of undeclared
-  Var app.main/f [undeclared-var]`. A session evaluates its messages in
-  order.
+  Var app.main/f [undeclared-var]`. A session's evaluations run one at a
+  time, in the order they arrive, from any connection.
 - **`load-file`** evaluates `file`, the text of a file named `file-path`
   (or `file-name`), as `eval` does from its first line, answers with the
   last form's `value`, and leaves the session's namespace as it was. As
@@ -885,7 +887,7 @@ under `--repl --connect`. The operations, each answered with the request's
   build does not have does not join the build.
 - **`interrupt`** ends the running evaluation of `session` (whose message
   `id` `interrupt-id` names, when given; another answers `error
-  interrupt-id-mismatch`): the evaluation stops waiting for the runtime and
+  interrupt-id-mismatch`), from any connection: the evaluation stops waiting for the runtime and
   runs no further form, answering `status` `interrupted` and then `done`.
   The runtime finishes what it was sent, since nothing can stop a page's
   JavaScript, and the session's next form runs after it there. With nothing
@@ -899,8 +901,11 @@ under `--repl --connect`. The operations, each answered with the request's
   cljs.core's it does not exclude, its aliases and the program's namespaces.
 - **`lookup`** answers `info` for `sym` in `ns`: `ns`, `name`, `type`, and
   for a definition its `arglists-str`, `doc`, `file`, `line` and `column`
-  (`macro` `true` for a macro, whose metadata stays in the macro session;
-  cljs.core's from the pinned upstream metadata); a symbol it does not know
+  (`macro` `true` and the `defmacro`'s arglists and docstring for a macro,
+  from the macro session; cljs.core's from the pinned upstream metadata,
+  `var` for a core Var without arglists such as `*print-length*`); a
+  completion of another namespace's names leaves out its private
+  definitions and macros; a symbol it does not know
   answers an empty `info` and `status` `done no-info`.
 - **`ls-sessions`** answers `sessions`, the IDs of the open sessions.
 
@@ -917,8 +922,10 @@ ms over 20) in `tests/dev_nrepl.rs`, debug CLI with a Node runtime.
 `examples/dev` with a Node runtime and a Node bencode client
 (tests/support/nrepl_client.mjs): every operation above; `eval` with `ns`,
 history, errors, warnings and a reader error; completions and lookups of
-own, aliased, referred, qualified and core names; a REPL definition read by
+own, aliased, referred, qualified and core names, also before a runtime
+connects; a REPL definition read by
 a save and kept by a reload of its namespace; `load-file`; an interrupt of a
-runtime busy with a form; sessions; nREPL on the server's own port; and
-`.nrepl-port` written and removed on SIGINT. No editor is part of the test;
+runtime busy with a form, from another connection; sessions; nREPL on the server's own port; and
+`.nrepl-port` written and removed on SIGINT, and left alone when another
+server's port is in it. No editor is part of the test;
 Calva, CIDER and Conjure were not checked by hand.

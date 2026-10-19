@@ -200,6 +200,11 @@ struct ReplSession {
     interrupted: bool,
     /// The request ID of the `invoke` whose reply it waits for, if any.
     pending: Option<String>,
+    /// The ID of the nREPL message the running evaluation answers, if any.
+    message: Option<String>,
+    /// Held by an evaluation from start to end, so that a session's
+    /// evaluations run one at a time whichever connection sends them.
+    lock: Arc<Mutex<()>>,
 }
 
 /// How many REPL units the server keeps for mapping error stacks.
@@ -541,16 +546,20 @@ impl Shared {
         true
     }
 
-    /// End the running evaluation of session `session`: it stops waiting
-    /// for the reply of the runtime, which keeps running what it was sent,
-    /// and runs no further form. Whether one was running.
-    pub(crate) fn interrupt(&self, session: u64) -> bool {
+    /// End the running evaluation of session `session`, when `message` is
+    /// none or the ID of the nREPL message it answers: it stops waiting for
+    /// the reply of the runtime, which keeps running what it was sent, and
+    /// runs no further form.
+    pub(crate) fn interrupt(&self, session: u64, message: Option<&str>) -> Interrupt {
         let mut state = self.state();
         let Some(entry) = state.sessions.get_mut(&session) else {
-            return false;
+            return Interrupt::Idle;
         };
         if !entry.evaluating {
-            return false;
+            return Interrupt::Idle;
+        }
+        if message.is_some_and(|message| entry.message.as_deref() != Some(message)) {
+            return Interrupt::Mismatch;
         }
         entry.interrupted = true;
         if let Some(id) = entry.pending.take()
@@ -558,8 +567,18 @@ impl Shared {
         {
             let _ = sender.send(Json::Object(vec![("interrupted".into(), Json::Bool(true))]));
         }
-        true
+        Interrupt::Interrupted
     }
+}
+
+/// What [`Shared::interrupt`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Interrupt {
+    Interrupted,
+    /// No evaluation of the session is running.
+    Idle,
+    /// The running evaluation answers another message.
+    Mismatch,
 }
 
 impl State {
@@ -1175,7 +1194,15 @@ fn repl(stream: &mut TcpStream, shared: &Shared, request: &Request) -> io::Resul
             let print = print_options(json.get("print"));
             let mut results = Vec::new();
             let each = &mut |result: &FormResult, _: &str| results.push(result_json(result));
-            match evaluate(shared, session, &file, &text, &print, each) {
+            let evaluation = Evaluation {
+                file: &file,
+                text: &text,
+                print: &print,
+                namespace: None,
+                restore: false,
+                message: None,
+            };
+            match evaluate(shared, session, &evaluation, each) {
                 Ok(evaluated) => {
                     let mut body = String::from("{\"namespace\":");
                     json_string(&mut body, &evaluated.namespace);
@@ -1255,19 +1282,45 @@ pub(crate) struct Evaluated {
     pub(crate) interrupted: bool,
 }
 
-/// Evaluate the forms of `text` one at a time for REPL session `session`:
-/// each is compiled on the compiler's thread in the session's namespace,
-/// then runs on the session's runtime, before the next is read, and `each`
-/// receives its result and the namespace after it. How it ended, or why the
-/// server could not answer.
+/// An evaluation for [`evaluate`].
+pub(crate) struct Evaluation<'a> {
+    /// The forms' text, read as the source `file`.
+    pub(crate) file: &'a str,
+    pub(crate) text: &'a str,
+    pub(crate) print: &'a PrintOptions,
+    /// The namespace to make the session's first, if any.
+    pub(crate) namespace: Option<&'a str>,
+    /// Whether to leave the session's namespace as it was before.
+    pub(crate) restore: bool,
+    /// The ID of the nREPL message it answers, which an interrupt may name.
+    pub(crate) message: Option<&'a str>,
+}
+
+/// Evaluate the forms of `evaluation` one at a time for REPL session
+/// `session`, after the session's earlier evaluations: each is compiled on
+/// the compiler's thread in the session's namespace, then runs on the
+/// session's runtime, before the next is read, and `each` receives its
+/// result and the namespace after it. How it ended, or why the server could
+/// not answer.
 pub(crate) fn evaluate(
     shared: &Shared,
     session: u64,
-    file: &str,
-    text: &str,
-    print: &PrintOptions,
+    evaluation: &Evaluation,
     each: &mut dyn FnMut(&FormResult, &str),
 ) -> Result<Evaluated, String> {
+    let Some(lock) = shared
+        .state()
+        .sessions
+        .get(&session)
+        .map(|entry| entry.lock.clone())
+    else {
+        return Err(format!("REPL session {session} was closed"));
+    };
+    let _turn = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Evaluation {
+        file, text, print, ..
+    } = *evaluation;
+    let mut restore = None;
     let mut started = false;
     let result = (|| {
         let mut cursor = 0;
@@ -1284,6 +1337,13 @@ pub(crate) fn evaluate(
                         // An interrupt from before the evaluation ends
                         // nothing.
                         (entry.evaluating, entry.interrupted) = (true, false);
+                        entry.message = evaluation.message.map(str::to_owned);
+                        if evaluation.restore {
+                            restore = Some(entry.namespace.clone());
+                        }
+                        if let Some(namespace) = evaluation.namespace {
+                            entry.namespace = namespace.to_owned();
+                        }
                     }
                     entry.namespace.clone()
                 });
@@ -1324,6 +1384,10 @@ pub(crate) fn evaluate(
     let namespace = entry.map(|entry| {
         if started {
             (entry.evaluating, entry.interrupted, entry.pending) = (false, false, None);
+            entry.message = None;
+        }
+        if let Some(namespace) = restore.take() {
+            entry.namespace = namespace;
         }
         entry.namespace.clone()
     });

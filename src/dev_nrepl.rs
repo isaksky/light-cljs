@@ -14,7 +14,7 @@
 
 use crate::compiler_data::{DatumKind, Form};
 use crate::dev_repl::ReplRequest;
-use crate::dev_server::{FormError, FormResult, Shared, evaluate, placed};
+use crate::dev_server::{Evaluation, FormError, FormResult, Interrupt, Shared, evaluate, placed};
 use crate::dev_session::DevSession;
 use crate::eval_session::PrintOptions;
 use crate::source_provider::SourceInput;
@@ -277,16 +277,39 @@ fn core_namespace(namespace: &str) -> bool {
     matches!(namespace, "cljs.core" | "clojure.core")
 }
 
-/// The public names of cljs.core the compiler provides, with whether each
-/// is a macro.
-fn core_names() -> impl Iterator<Item = (&'static str, bool)> {
-    include_str!("core_public_bindings.tsv")
-        .lines()
-        .filter_map(|line| line.split_once('\t'))
-        .filter(|(name, _)| {
-            crate::CoreFnId::resolve(name).is_some() || crate::compiler_names::core_macro(name)
+/// The public names of cljs.core the compiler provides, with their kinds:
+/// `macro`, `function` for a Var whose pinned metadata gives arglists, and
+/// `var`.
+fn core_names() -> impl Iterator<Item = (&'static str, &'static str)> {
+    static NAMES: std::sync::OnceLock<Vec<(&'static str, &'static str)>> =
+        std::sync::OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            let functions = include_str!("core_var_metadata.tsv")
+                .lines()
+                .filter_map(|line| line.split_once('\t'))
+                .filter(|(_, metadata)| metadata.contains(":arglists (["))
+                .map(|(name, _)| name)
+                .collect::<std::collections::HashSet<_>>();
+            include_str!("core_public_bindings.tsv")
+                .lines()
+                .filter_map(|line| line.split_once('\t'))
+                .filter(|(name, _)| {
+                    crate::CoreFnId::resolve(name).is_some()
+                        || crate::compiler_names::core_macro(name)
+                })
+                .map(|(name, kind)| {
+                    let kind = match kind {
+                        "Macro" => "macro",
+                        _ if functions.contains(name) => "function",
+                        _ => "var",
+                    };
+                    (name, kind)
+                })
+                .collect()
         })
-        .map(|(name, kind)| (name, kind == "Macro"))
+        .iter()
+        .copied()
 }
 
 /// The retained program's view of the session's namespaces, for completions
@@ -295,6 +318,8 @@ struct Names<'a> {
     session: &'a DevSession,
     program: &'a Program,
     globals: &'a crate::emitter::NamespaceGlobals,
+    /// The macro session, which keeps the source macros' metadata.
+    host: &'a crate::MacroHost,
 }
 
 /// A definition the retained program has: its name, whether it is private
@@ -355,7 +380,7 @@ impl<'a> Names<'a> {
     fn public(&self, namespace: &str, private: bool) -> Vec<(String, &'static str)> {
         if core_namespace(namespace) {
             return core_names()
-                .map(|(name, macro_)| (name.to_owned(), if macro_ { "macro" } else { "function" }))
+                .map(|(name, kind)| (name.to_owned(), kind))
                 .collect();
         }
         let mut names = self
@@ -365,6 +390,7 @@ impl<'a> Names<'a> {
             .collect::<Vec<_>>();
         names.extend(
             self.macros(namespace)
+                .filter(|name| private || !self.host.source_binding_private(namespace, name))
                 .map(|name| (name.to_owned(), "macro")),
         );
         names
@@ -410,15 +436,23 @@ impl<'a> Names<'a> {
     /// What `namespace/name` is.
     fn info(&self, namespace: &str, name: &str) -> Option<Info> {
         if core_namespace(namespace) {
-            let (_, macro_) = core_names().find(|(core, _)| *core == name)?;
+            let (_, kind) = core_names().find(|(core, _)| *core == name)?;
             let mut info = Info {
                 namespace: "cljs.core".into(),
                 name: name.into(),
-                kind: if macro_ { "macro" } else { "function" },
+                kind,
                 ..Info::default()
             };
             if let Some(metadata) = crate::compiler_reader::core_metadata(name) {
-                self.core_metadata(metadata, &mut info);
+                let source = SourceInput::new("<core metadata>", metadata);
+                if let Some(map) = self
+                    .session
+                    .read_forms(&source)
+                    .ok()
+                    .and_then(|forms| forms.first().map(Form::data))
+                {
+                    datum_info(&map, &mut info);
+                }
             }
             return Some(info);
         }
@@ -462,43 +496,70 @@ impl<'a> Names<'a> {
                 column: number("column"),
             });
         }
-        self.macros(namespace)
-            .any(|macro_| macro_ == name)
-            .then(|| Info {
-                namespace: namespace.into(),
-                name: name.into(),
-                kind: "macro",
-                ..Info::default()
-            })
-    }
-
-    /// Fill `info` from the EDN `metadata` of a core definition.
-    fn core_metadata(&self, metadata: &str, info: &mut Info) {
-        let source = SourceInput::new("<core metadata>", metadata);
-        let Ok(forms) = self.session.read_forms(&source) else {
-            return;
+        if !self.macros(namespace).any(|macro_| macro_ == name) {
+            return None;
+        }
+        let mut info = Info {
+            namespace: namespace.into(),
+            name: name.into(),
+            kind: "macro",
+            ..Info::default()
         };
-        let Some(map) = forms.first() else { return };
-        let children = map.children();
-        for pair in children.as_chunks::<2>().0 {
-            let DatumKind::Keyword(key) = pair[0].data().kind().clone() else {
-                continue;
-            };
-            let value = pair[1].data();
-            match (String::from_utf16_lossy(key.name()).as_str(), value.kind()) {
-                ("doc", DatumKind::String(text)) => info.doc = Some(String::from_utf16_lossy(text)),
-                ("file", DatumKind::String(text)) => {
-                    info.file = Some(String::from_utf16_lossy(text));
-                }
-                ("line", DatumKind::Integer(n)) => info.line = Some(*n),
-                ("column", DatumKind::Integer(n)) => info.column = Some(*n),
-                ("arglists", _) => {
-                    let mut out = String::new();
-                    form_edn(&pair[1], &mut out);
-                    info.arglists = Some(out);
-                }
-                _ => {}
+        if let Some(metadata) = self
+            .host
+            .tables
+            .javascript_macros
+            .get(&format!("{namespace}/{name}"))
+            .and_then(|declaration| declaration.metadata.as_ref())
+        {
+            datum_info(metadata, &mut info);
+        }
+        Some(info)
+    }
+}
+
+/// Fill `info` from `metadata`, a metadata map as data: a core
+/// definition's pinned metadata or a source macro's.
+fn datum_info(metadata: &crate::compiler_data::Datum, info: &mut Info) {
+    let DatumKind::Collection {
+        kind: CollectionKind::Map,
+        children,
+    } = metadata.kind()
+    else {
+        return;
+    };
+    for pair in children.as_chunks::<2>().0 {
+        let DatumKind::Keyword(key) = pair[0].kind().clone() else {
+            continue;
+        };
+        let value = &pair[1];
+        match (String::from_utf16_lossy(key.name()).as_str(), value.kind()) {
+            ("doc", DatumKind::String(text)) => info.doc = Some(String::from_utf16_lossy(text)),
+            ("file", DatumKind::String(text)) => {
+                info.file = Some(String::from_utf16_lossy(text));
             }
+            ("line", DatumKind::Integer(n)) => info.line = Some(*n),
+            ("column", DatumKind::Integer(n)) => info.column = Some(*n),
+            ("arglists", kind) => {
+                // A macro's arglists come quoted.
+                let value = match kind {
+                    DatumKind::Collection {
+                        kind: CollectionKind::List,
+                        children,
+                    } if children.len() == 2
+                        && matches!(children[0].kind(), DatumKind::Symbol(name)
+                                if name.namespace().is_none()
+                                    && String::from_utf16_lossy(name.name()) == "quote") =>
+                    {
+                        &children[1]
+                    }
+                    _ => value,
+                };
+                let mut out = String::new();
+                datum_edn(value, &mut out);
+                info.arglists = Some(out);
+            }
+            _ => {}
         }
     }
 }
@@ -567,8 +628,8 @@ fn expr_edn(program: &Program, id: crate::ExprId, out: &mut String) {
     }
 }
 
-/// Append the form `form` as EDN.
-fn form_edn(form: &Form, out: &mut String) {
+/// Append `data` as EDN.
+fn datum_edn(data: &crate::compiler_data::Datum, out: &mut String) {
     let name = |name: &crate::compiler_data::Name, out: &mut String| {
         if let Some(namespace) = name.namespace() {
             out.push_str(&String::from_utf16_lossy(namespace));
@@ -576,7 +637,6 @@ fn form_edn(form: &Form, out: &mut String) {
         }
         out.push_str(&String::from_utf16_lossy(name.name()));
     };
-    let data = form.data();
     match data.kind() {
         DatumKind::Nil => out.push_str("nil"),
         DatumKind::Boolean(value) => out.push_str(if *value { "true" } else { "false" }),
@@ -590,7 +650,7 @@ fn form_edn(form: &Form, out: &mut String) {
             out.push(':');
             name(keyword, out);
         }
-        DatumKind::Collection { kind, .. } => {
+        DatumKind::Collection { kind, children } => {
             let (open, close) = match kind {
                 CollectionKind::List => ("(", ')'),
                 CollectionKind::AnonymousFn => ("#(", ')'),
@@ -599,11 +659,11 @@ fn form_edn(form: &Form, out: &mut String) {
                 CollectionKind::Set => ("#{", '}'),
             };
             out.push_str(open);
-            for (index, child) in form.children().iter().enumerate() {
+            for (index, child) in children.iter().enumerate() {
                 if index > 0 {
                     out.push(' ');
                 }
-                form_edn(child, out);
+                datum_edn(child, out);
             }
             out.push(close);
         }
@@ -625,6 +685,7 @@ pub fn completions(session: &DevSession, namespace: &str, prefix: &str) -> Vec<C
         session,
         program,
         globals: compiler.namespace_globals(),
+        host: &compiler.host,
     };
     let mut found = BTreeMap::new();
     let mut add = |candidate: String, namespace: Option<&str>, kind: &'static str| {
@@ -657,15 +718,11 @@ pub fn completions(session: &DevSession, namespace: &str, prefix: &str) -> Vec<C
             add(local.clone(), Some(target), kind);
         }
     }
-    for (name, macro_) in core_names() {
+    for (name, kind) in core_names() {
         if name.starts_with(prefix)
             && !context.is_some_and(|context| context.excludes.iter().any(|n| n == name))
         {
-            add(
-                name.to_owned(),
-                Some("cljs.core"),
-                if macro_ { "macro" } else { "function" },
-            );
+            add(name.to_owned(), Some("cljs.core"), kind);
         }
     }
     for (alias, _) in context.into_iter().flat_map(|c| c.aliases.iter()) {
@@ -689,6 +746,7 @@ pub fn lookup(session: &DevSession, namespace: &str, symbol: &str) -> Option<Inf
         session,
         program,
         globals: compiler.namespace_globals(),
+        host: &compiler.host,
     };
     let (target, name) = names.resolve(namespace, symbol)?;
     names.info(&target, &name)
@@ -709,7 +767,7 @@ impl PortFile {
         let text = port.to_string();
         std::fs::write(&path, &text)?;
         #[cfg(unix)]
-        signals::remove_on_exit(&path);
+        signals::remove_on_exit(&path, &text);
         Ok(Self { path, text })
     }
 
@@ -732,41 +790,67 @@ impl Drop for PortFile {
 #[cfg(unix)]
 mod signals {
     //! Removing the port file when a signal ends the process: the handler
-    //! only unlinks a path prepared before and exits, both async-signal-safe.
-    use std::ffi::{CString, c_char, c_int};
+    //! reads the file, unlinks it when it still holds this server's port,
+    //! and exits, all with async-signal-safe calls on data prepared before.
+    use std::ffi::{CString, c_char, c_int, c_void};
     use std::os::unix::ffi::OsStrExt;
     use std::sync::atomic::{AtomicPtr, Ordering};
 
-    static PATH: AtomicPtr<c_char> = AtomicPtr::new(std::ptr::null_mut());
+    /// The port file's path and the text this server wrote into it.
+    struct Owned {
+        path: CString,
+        text: Vec<u8>,
+    }
+
+    static OWNED: AtomicPtr<Owned> = AtomicPtr::new(std::ptr::null_mut());
 
     unsafe extern "C" {
         fn signal(signum: c_int, handler: usize) -> usize;
+        fn open(path: *const c_char, flags: c_int, ...) -> c_int;
+        fn read(fd: c_int, buffer: *mut c_void, count: usize) -> isize;
+        fn close(fd: c_int) -> c_int;
         fn unlink(path: *const c_char) -> c_int;
         fn _exit(status: c_int) -> !;
     }
 
     /// SIGHUP, SIGINT and SIGTERM, which are 1, 2 and 15 on every unix.
     const SIGNALS: [c_int; 3] = [1, 2, 15];
+    /// O_RDONLY, 0 on every unix.
+    const READ_ONLY: c_int = 0;
 
     extern "C" fn handle(signum: c_int) {
-        let path = PATH.load(Ordering::SeqCst);
-        // SAFETY: `path` is null or a CString leaked by `remove_on_exit`,
-        // never freed; unlink and _exit are async-signal-safe.
+        let owned = OWNED.load(Ordering::SeqCst);
+        // SAFETY: `owned` is null or an `Owned` leaked by `remove_on_exit`,
+        // never freed; open, read, close, unlink and _exit are
+        // async-signal-safe, and the buffer is on the stack.
         unsafe {
-            if !path.is_null() {
-                unlink(path);
+            if let Some(owned) = owned.as_ref() {
+                let mut buffer = [0u8; 16];
+                let fd = open(owned.path.as_ptr(), READ_ONLY);
+                if fd >= 0 {
+                    let count = read(fd, buffer.as_mut_ptr().cast(), buffer.len());
+                    close(fd);
+                    // Another server may have written the file since.
+                    if usize::try_from(count).is_ok_and(|count| buffer[..count] == owned.text[..]) {
+                        unlink(owned.path.as_ptr());
+                    }
+                }
             }
             _exit(128 + signum)
         }
     }
 
-    pub(super) fn remove_on_exit(path: &std::path::Path) {
+    pub(super) fn remove_on_exit(path: &std::path::Path, text: &str) {
         let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
             return;
         };
+        let owned = Box::new(Owned {
+            path,
+            text: text.as_bytes().to_vec(),
+        });
         // Leaked: a handler running on another thread may still read an
         // earlier one.
-        PATH.store(path.into_raw(), Ordering::SeqCst);
+        OWNED.store(Box::into_raw(owned), Ordering::SeqCst);
         for signum in SIGNALS {
             // SAFETY: `handle` is an `extern "C" fn(c_int)`, a valid
             // sighandler_t.
@@ -777,7 +861,7 @@ mod signals {
     }
 
     pub(super) fn forget() {
-        PATH.store(std::ptr::null_mut(), Ordering::SeqCst);
+        OWNED.store(std::ptr::null_mut(), Ordering::SeqCst);
     }
 }
 
@@ -802,8 +886,6 @@ struct Connection {
     writer: Arc<Mutex<TcpStream>>,
     /// The eval queue of each session this connection evaluated in.
     workers: HashMap<u64, Sender<Job>>,
-    /// The `id` of the message each session is evaluating.
-    running: Arc<Mutex<HashMap<u64, String>>>,
     /// The sessions this connection opened, which it closes when it ends.
     opened: Vec<u64>,
     /// The session a message without one uses, opened on first use: its
@@ -845,7 +927,6 @@ pub(crate) fn connection(stream: TcpStream, shared: &Arc<Shared>) -> io::Result<
         shared: shared.clone(),
         writer: Arc::new(Mutex::new(stream)),
         workers: HashMap::new(),
-        running: Arc::default(),
         opened: Vec::new(),
         own: None,
     };
@@ -860,7 +941,7 @@ pub(crate) fn connection(stream: TcpStream, shared: &Arc<Shared>) -> io::Result<
     // The client's sessions end with it: their evaluations stop waiting.
     connection.workers.clear();
     for session in connection.opened {
-        shared.interrupt(session);
+        shared.interrupt(session, None);
         shared.close_session(session);
     }
     let _ = connection
@@ -990,7 +1071,7 @@ impl Connection {
                     return;
                 };
                 self.workers.remove(&number);
-                self.shared.interrupt(number);
+                self.shared.interrupt(number, None);
                 self.shared.close_session(number);
                 self.opened.retain(|opened| *opened != number);
                 if self.own.as_ref().is_some_and(|(own, _)| *own == number) {
@@ -1015,19 +1096,11 @@ impl Connection {
                 let Some((number, id)) = self.session(&message) else {
                     return;
                 };
-                let running = self
-                    .running
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .get(&number)
-                    .cloned();
                 let asked = message.get("interrupt-id").and_then(Bencode::as_str);
-                let statuses: &[&str] = match (running, asked) {
-                    (Some(running), Some(asked)) if running != asked => {
-                        &["error", "interrupt-id-mismatch", "done"]
-                    }
-                    (Some(_), _) if self.shared.interrupt(number) => &["done"],
-                    _ => &["session-idle", "done"],
+                let statuses: &[&str] = match self.shared.interrupt(number, asked) {
+                    Interrupt::Interrupted => &["done"],
+                    Interrupt::Idle => &["session-idle", "done"],
+                    Interrupt::Mismatch => &["error", "interrupt-id-mismatch", "done"],
                 };
                 self.reply(&message, Some(&id), status(statuses));
             }
@@ -1091,16 +1164,12 @@ impl Connection {
         };
         let worker = self.workers.entry(session).or_insert_with(|| {
             let (sender, jobs) = channel::<Job>();
-            let (shared, writer, running) = (
-                self.shared.clone(),
-                self.writer.clone(),
-                self.running.clone(),
-            );
+            let (shared, writer) = (self.shared.clone(), self.writer.clone());
             let _ = std::thread::Builder::new()
                 .name("light-cljs nREPL eval".into())
                 .spawn(move || {
                     for job in jobs {
-                        run(&shared, &writer, &running, job);
+                        run(&shared, &writer, job);
                     }
                 });
             sender
@@ -1228,32 +1297,10 @@ impl Connection {
 /// `value` with the `ns` after it per form (the last alone for
 /// `load-file`), an `err` and an `ex` for a form that failed and `err` for
 /// warnings, then `done`, after `interrupted` when an interrupt ended it.
-fn run(
-    shared: &Shared,
-    writer: &Mutex<TcpStream>,
-    running: &Mutex<HashMap<u64, String>>,
-    job: Job,
-) {
+fn run(shared: &Shared, writer: &Mutex<TcpStream>, job: Job) {
     let session = Some(job.session_id.as_str());
     let message = &job.message;
-    let id = message
-        .get("id")
-        .and_then(Bencode::as_str)
-        .unwrap_or_default();
-    running
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(job.session, id.to_owned());
-    if let Some(namespace) = &job.namespace {
-        shared.set_session_namespace(job.session, namespace);
-    }
     let text = placed(&job.code, job.line, job.column);
-    // A file loads in its own namespace and leaves the session's as it was.
-    let restore = if job.last_only {
-        shared.session_namespace(job.session)
-    } else {
-        None
-    };
     let mut last = None;
     let each = &mut |result: &FormResult, namespace: &str| {
         for warning in &result.warnings {
@@ -1300,27 +1347,27 @@ fn run(
         }
     };
     let print = PrintOptions::default();
-    let outcome = evaluate(shared, job.session, &job.file, &text, &print, each);
-    if let Some(namespace) = &restore {
-        shared.set_session_namespace(job.session, namespace);
-        if let Some((_, after)) = &mut last {
-            after.clone_from(namespace);
-        }
-    }
-    running
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&job.session);
+    // A file loads in its own namespace and leaves the session's as it was.
+    let evaluation = Evaluation {
+        file: &job.file,
+        text: &text,
+        print: &print,
+        namespace: job.namespace.as_deref(),
+        restore: job.last_only,
+        message: message.get("id").and_then(Bencode::as_str),
+    };
+    let outcome = evaluate(shared, job.session, &evaluation, each);
     match outcome {
         Ok(evaluated) => {
-            if let Some((value, namespace)) = last {
+            if let Some((value, _)) = last {
+                let namespace = &evaluated.namespace;
                 send(
                     writer,
                     message,
                     session,
                     Bencode::dict([
                         ("value", Bencode::text(&value)),
-                        ("ns", Bencode::text(&namespace)),
+                        ("ns", Bencode::text(namespace)),
                     ]),
                 );
             }

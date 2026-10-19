@@ -495,13 +495,14 @@ a connected REPL session of the server, so `eval` and `load-file` take the
 terminal client's path: the form goes to the watch's thread as a
 `ReplRequest`, its unit to the session's runtime, and the value or the error
 the runtime gives back becomes `value` and `ns`, or `err` and `ex`, per
-form. Each session's messages run in order on a thread of the connection.
+form. A session's evaluations run one at a time, from any connection, on
+threads of the connections.
 `completions` and `lookup` are `ReplRequest`s too, answered on the watch's
 thread from the retained program: its definitions by namespace, their
 metadata (`:arglists`, `:doc`, `:file`, `:line`, `:column`, `:private`), each
-namespace's reader context (aliases, refers, excludes, macros), and
-cljs.core's pinned metadata. A macro's own docstring and arglists stay in
-the macro session, so `lookup` gives a macro its namespace and name alone.
+namespace's reader context (aliases, refers, excludes, macros), the macro
+session's metadata of source macros (arglists, docstring, privacy), and
+cljs.core's pinned metadata.
 `interrupt` drops the session's pending runtime request, answering the
 waiting evaluation as interrupted, and runs no further form; the runtime
 finishes the form it was sent. A `load-file` evaluates the file's text as
