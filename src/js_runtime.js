@@ -166,7 +166,7 @@
   // 6 `get`, 7 `conj`, 8 `assoc`. The kinds are 1 lazy seqs (`LazySeq`),
   // 2 cells (`ChunkedCons`, `Cons`, `ListValue`, `IntegerRangeValue`,
   // `RangeValue`), 3 views (`IndexedSeqValue`, `ChunkedSeqValue`), which have
-  // a branch of `first` only and take their number only where a kind 1 or 2
+  // a branch of `first` only and take their number only where `first`'s
   // wrapper is kept, 4 vectors (`PersistentVectorValue`, `SubvecValue`),
   // 5 maps (`PersistentArrayMapValue`, `PersistentHashMapValue`,
   // `treeMapConstructor`), 6 sets (`PersistentHashSetValue`,
@@ -233,7 +233,7 @@
     // dispatch (`keySlot`): naming every arity of every key as the runtime
     // loads took more memory than the evaluator's smallest heaps allow. It
     // inherits nothing a program could give arrays.
-    return {key, name, mask: mask[0], bit: mask[1], marker: protocolSlot(name, 0), meta: name === "IMeta", info: undefined, slots: Object.create(null)};
+    return {key, name, mask: mask[0], bit: mask[1], marker: protocolSlot(name, 0), meta: name === "IMeta", info: undefined, cell: undefined, slots: Object.create(null)};
   }
   //@unit keySlot requires: protocolSlot
   // The slot name of a resolved key's method for `arity`, named once.
@@ -381,20 +381,20 @@
   //@unit installMethods.IReversibleRseqKey effect: installMethods when: rseq requires: methodKey,
   //@ methodKeys
   methodKeys[47] = methodKey("IReversible/-rseq");
-  //@unit installMethods.ISeqFirstKey effect: installMethods when: first requires: methodKey,
+  //@unit installMethods.ISeqFirstKey effect: installMethods when: first, firstSeq requires: methodKey,
   //@ methodKeys
   methodKeys[48] = methodKey("ISeq/-first");
   //@unit installMethods.ISeqKey effect: installMethods when: cons, isSeq, nth requires: methodKey,
   //@ methodKeys
   methodKeys[49] = methodKey("ISeq");
-  //@unit installMethods.ISeqRestKey effect: installMethods when: next, rest requires: methodKey,
+  //@unit installMethods.ISeqRestKey effect: installMethods when: next, rest, restSeq requires: methodKey,
   //@ methodKeys
   methodKeys[50] = methodKey("ISeq/-rest");
   //@unit installMethods.ISeqableKey effect: installMethods when: count, isSeqable requires: methodKey,
   //@ methodKeys
   methodKeys[51] = methodKey("ISeqable");
-  //@unit installMethods.ISeqableSeqKey effect: installMethods when: lazyBranch, reduce, rseq, seq
-  //@ requires: methodKey, methodKeys
+  //@unit installMethods.ISeqableSeqKey effect: installMethods when: lazyBranch, reduce, rseq, seq,
+  //@ seqBranch, vectorFirst, vectorRest requires: methodKey, methodKeys
   methodKeys[52] = methodKey("ISeqable/-seq");
   //@unit installMethods.ISequentialKey effect: installMethods when: isSequential, nth,
   //@ structuralEqualPair requires: methodKey, methodKeys
@@ -954,20 +954,21 @@
     }
     return lazy.value = current;
   };
-  //@unit queueFromArray.seq effect: queueFromArray when: seq requires: concat, IndexedSeqValue,
-  //@ kindHooks, publicCollectionSlots, seq, view
+  //@unit queueFromArray.seq effect: queueFromArray when: first, rest, seq requires: concat,
+  //@ IndexedSeqValue, kindHooks, publicCollectionSlots, seq, view
   kindHooks.seqQueue = (value, queue) => {
     if (publicCollectionSlots.has(value)) { const q = publicCollectionSlots.get(value); return seq(concat(q.front, q.rear)); }
     return queue.length ? view(IndexedSeqValue, queue, 0, false, "queue") : null;
   };
-  //@unit makeVector.seq effect: makeVector, mapEntry when: seq requires: ChunkedSeqValue,
+  //@unit makeVector.seq effect: makeVector, mapEntry when: seq, vectorFirst, vectorRest requires: ChunkedSeqValue,
   //@ IndexedSeqValue, kindHooks, vectorChunk, view
   // A vector of at most 32 items walks its tail; a longer one is upstream's
   // chunked seq over its trie's leaves.
   kindHooks.seqVector = (value, store) => !store.cnt ? null : store.cnt <= 32 ? view(IndexedSeqValue, vectorChunk(value, 0), 0, true)
     : ChunkedSeqValue(value, vectorChunk(value, 0), 0, 0, null, null);
-  //@unit makeMap.seq effect: makeMap, treeMapConstructor, recordMethods when: seq requires: IndexedSeqValue,
-  //@ kindHooks, mapEntry, mapKinds, mapTraversal, NodeSeqType, publicCollectionSlots, view
+  //@unit makeMap.seq effect: makeMap, treeMapConstructor, recordMethods when: first, rest, seq
+  //@ requires: IndexedSeqValue, kindHooks, mapEntry, mapKinds, mapTraversal, NodeSeqType,
+  //@ publicCollectionSlots, view
   kindHooks.seqMap = value => {
     const treeSlots = publicCollectionSlots.get(value);
     if (treeSlots && "tree" in treeSlots) return kindHooks.seqTree(treeSlots);
@@ -975,13 +976,13 @@
     return entries.length ? view(kind === "hash-map" ? NodeSeqType : kind === "sorted-map" ? kindHooks.sortedMapSeq : IndexedSeqValue,
       Object.freeze(entries.map(entry => mapEntry(entry.key, entry.value))), 0, false, kind) : null;
   };
-  //@unit treeMapConstructor.seq effect: treeMapConstructor when: seq requires: kindHooks,
+  //@unit treeMapConstructor.seq effect: treeMapConstructor when: first, rest, seq requires: kindHooks,
   //@ treeMapPush, treeMapSeqConstructor
   // Only the sorted-map operations, which keep its constructor, build a map
   // of that kind or with a tree.
   kindHooks.seqTree = slots => slots.cnt > 0 ? treeMapSeqConstructor(null, treeMapPush(slots.tree, null, true), true, slots.cnt, null) : null;
   kindHooks.sortedMapSeq = treeMapSeqConstructor;
-  //@unit makeSet.seq effect: makeSet, treeSetConstructor when: seq requires: IndexedSeqValue,
+  //@unit makeSet.seq effect: makeSet, treeSetConstructor when: first, rest, seq requires: IndexedSeqValue,
   //@ kindHooks, setTraversal, view
   kindHooks.seqSet = (value, members) => members.length
     ? view(IndexedSeqValue, Object.freeze(setTraversal(value).map(entry => entry.key)), 0, false, "set") : null;
@@ -1021,15 +1022,21 @@
     }});
     return value;
   }
-  //@unit first requires: cells, chunks, iteratorSeqs, lazyValues, methodKeys, protocolHooks,
-  //@ publicCollectionSlots, queues, seq, views
+  //@unit first requires: cells, chunks, firstSeq, iteratorSeqs, lazyValues, publicCollectionSlots,
+  //@ queues, seq, views
   function first(value) {
     if (value == null) return null;
     if (queues.has(value) && publicCollectionSlots.has(value)) return first(publicCollectionSlots.get(value).front);
     if (chunks.get(value)?.integer) return chunks.get(value).start;
     if (lazyValues.has(value)) { seq(value); return first(lazyValues.get(value).value); }
     // Existing ISeq values do not redispatch ISeqable.
-    const current = cells.has(value) || views.has(value) || iteratorSeqs.has(value) ? value : seq(value);
+    return firstSeq(cells.has(value) || views.has(value) || iteratorSeqs.has(value) ? value : seq(value));
+  }
+  //@unit firstSeq requires: cells, iteratorSeqs, methodKeys, protocolHooks, publicCollectionSlots,
+  //@ views
+  // `first`'s steps once it has the seq `current` of its value, which the
+  // collections' branches take too (`seqBranch`, light-cljs-375).
+  function firstSeq(current) {
     if (current === null) return null;
     const cell = cells.get(current);
     if (cell) return cell.kind === "list" && cell.count === 0 && !publicCollectionSlots.has(current) ? null : cell.head;
@@ -1043,11 +1050,14 @@
   }
 
   //@unit first.branches effect: ChunkedCons, Cons, IntegerRangeValue, LazySeq, ListValue,
-  //@ RangeValue when: first requires: first, kindOps, kindTables, missing
-  // As `seq.branches`.
+  //@ MapEntryType, PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue,
+  //@ PersistentQueueValue, PersistentVectorValue, RangeValue, SubvecValue, treeMapConstructor,
+  //@ treeSetConstructor when: first requires: first, foundMissing, kindOps, kindTables, missing
+  // As `seq.branches`; an item that is `missing` comes back from the
+  // collections' branches as `foundMissing` (`seqBranch`), as from `get`'s.
   first = (operation => Object.defineProperty(function (value) {
     const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 15][1](value) : missing;
-    return result !== missing ? result : operation(value);
+    return result === missing ? operation(value) : result === foundMissing ? missing : result;
   }, "name", {value: operation.name}))(first);
   //@unit first.protocol effect: installMethods when: first requires: behindProtocol, first,
   //@ methodKeys, protocolHooks
@@ -1064,12 +1074,16 @@
   //@unit LazySeq.first effect: LazySeq when: first requires: first, kindTables, lazyBranch
   kindTables[1][1] = lazyBranch(1, value => first(value));
 
-  //@unit rest requires: cells, emptyList, iteratorSeqs, kindHooks, lazyValues, methodKeys,
-  //@ protocolHooks, publicCollectionSlots, seq, view, views
+  //@unit rest requires: cells, emptyList, iteratorSeqs, lazyValues, restSeq, seq, views
   function rest(value) {
     if (value == null) return emptyList;
     if (lazyValues.has(value)) { seq(value); return rest(lazyValues.get(value).value); }
-    const current = cells.has(value) || views.has(value) || iteratorSeqs.has(value) ? value : seq(value);
+    return restSeq(cells.has(value) || views.has(value) || iteratorSeqs.has(value) ? value : seq(value));
+  }
+  //@unit restSeq requires: cells, emptyList, iteratorSeqs, kindHooks, methodKeys, protocolHooks,
+  //@ publicCollectionSlots, view, views
+  // `rest`'s steps once it has the seq `current` of its value, as `firstSeq`.
+  function restSeq(current) {
     if (current === null) return emptyList;
     const cell = cells.get(current);
     if (cell) return cell.kind === "list" ? cell.count === 1 || cell.count === 0 && !publicCollectionSlots.has(current) ? emptyList : cell.tail : cell.tail ?? emptyList;
@@ -1088,12 +1102,14 @@
       ? view(slice.Type, slice.storage, slice.offset + 1, slice.indexed, slice.kind, slice.tail) : slice.tail ?? emptyList;
     return slice.kind === "queue" ? kindHooks.restQueue(tail, current) : tail;
   }
-  //@unit rest.branches effect: ChunkedCons, Cons, IntegerRangeValue, LazySeq, ListValue, RangeValue
-  //@ when: rest requires: kindOps, kindTables, missing, rest
-  // As `seq.branches`.
+  //@unit rest.branches effect: ChunkedCons, Cons, IntegerRangeValue, LazySeq, ListValue,
+  //@ MapEntryType, PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue,
+  //@ PersistentQueueValue, PersistentVectorValue, RangeValue, SubvecValue, treeMapConstructor,
+  //@ treeSetConstructor when: rest requires: foundMissing, kindOps, kindTables, missing, rest
+  // As `first.branches`.
   rest = (operation => Object.defineProperty(function (value) {
     const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 15][2](value) : missing;
-    return result !== missing ? result : operation(value);
+    return result === missing ? operation(value) : result === foundMissing ? missing : result;
   }, "name", {value: operation.name}))(rest);
   //@unit rest.protocol effect: installMethods when: rest requires: behindProtocol, methodKeys,
   //@ protocolHooks, rest
@@ -1107,12 +1123,12 @@
   };
   //@unit LazySeq.rest effect: LazySeq when: rest requires: kindTables, lazyBranch, rest
   kindTables[1][2] = lazyBranch(2, value => rest(value));
-  //@unit ChunkedSeqValue.rest effect: ChunkedSeqValue when: rest requires: ChunkedSeqValue,
+  //@unit ChunkedSeqValue.rest effect: ChunkedSeqValue when: restSeq requires: ChunkedSeqValue,
   //@ chunkedVectorRest, kindHooks
   // A view with the `vec` slot is a ChunkedSeq its public constructor built.
   kindHooks.restChunkedSeq = (current, slice, slots) => slice.offset + 1 < slice.storage.length
     ? ChunkedSeqValue(slots.vec, slots.node, slots.i, slice.offset + 1, null, null) : chunkedVectorRest(slots);
-  //@unit queueFromArray.rest effect: queueFromArray when: rest requires: collectionWithMeta,
+  //@unit queueFromArray.rest effect: queueFromArray when: restSeq requires: collectionWithMeta,
   //@ kindHooks, meta
   kindHooks.restQueue = (tail, current) => collectionWithMeta(tail, meta(current));
 
@@ -1130,12 +1146,13 @@
     return seq(rest(value));
   }
 
-  //@unit next.branches effect: ChunkedCons, Cons, IntegerRangeValue, LazySeq, ListValue, RangeValue
-  //@ when: next requires: kindOps, kindTables, missing, next
-  // As `seq.branches`.
+  //@unit next.branches effect: ChunkedCons, Cons, IntegerRangeValue, LazySeq, ListValue,
+  //@ MapEntryType, PersistentVectorValue, RangeValue, SubvecValue when: next requires: foundMissing,
+  //@ kindOps, kindTables, missing, next
+  // As `first.branches`.
   next = (operation => Object.defineProperty(function (value) {
     const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 15][3](value) : missing;
-    return result !== missing ? result : operation(value);
+    return result === missing ? operation(value) : result === foundMissing ? missing : result;
   }, "name", {value: operation.name}))(next);
   //@unit next.protocol effect: installMethods when: next requires: behindProtocol, methodKeys,
   //@ next, protocolHooks
@@ -1160,6 +1177,92 @@
   };
   //@unit LazySeq.next effect: LazySeq when: next requires: kindTables, lazyBranch, next
   kindTables[1][3] = lazyBranch(3, value => next(value));
+  //@unit seqBranch requires: foundMissing, methodKeys, missing, protocolHooks
+  // The branch of `first` or `rest` for the collections, kinds 4 to 8
+  // (light-cljs-375), which their operations give the seq of the value: for
+  // a value in `store`, the operation's steps on that seq (`then`: `firstSeq`
+  // or `restSeq`), the seq by an `ISeqable` implementation that JavaScript
+  // gave the value, looked up once as `seq` does, or else by its kind's
+  // `seq` (`seqOf` the value and its payload). An item that is `missing`
+  // comes back as `foundMissing`, which the wrappers turn back.
+  function seqBranch(store, seqOf, then) {
+    return value => {
+      const payload = store.get(value);
+      if (payload === undefined) return missing;
+      const own = protocolHooks.publicMethod?.(value, methodKeys[52], 1, true), result = then(own ? own.call(value, value) : seqOf(value, payload));
+      return result === missing ? foundMissing : result;
+    };
+  }
+  //@unit vectorFirst requires: firstSeq, foundMissing, kindHooks, methodKeys, missing,
+  //@ protocolHooks, publicCollectionSlots, vectorNth, vectors
+  // `first` of a vector or a map entry, kinds 4 and 8, as `seqBranch`: the
+  // seq the operation takes starts with the item at 0, which the branch
+  // reads without the seq, unless an `ISeqable` implementation gives the
+  // seq, or the value has a public constructor's slots or its store reads a
+  // caller's array (`callerTail`, also of the store a subvector views),
+  // which can be shorter than its count or hold getters.
+  function vectorFirst(value) {
+    const store = vectors.get(value);
+    if (store === undefined) return missing;
+    const own = protocolHooks.publicMethod?.(value, methodKeys[52], 1, true);
+    const item = own ? firstSeq(own.call(value, value))
+      : publicCollectionSlots.has(value) || (store.sub ?? store).callerTail ? firstSeq(kindHooks.seqVector(value, store))
+      : store.cnt ? vectorNth(store, 0) : null;
+    return item === missing ? foundMissing : item;
+  }
+  //@unit vectorRest requires: ChunkedSeqValue, foundMissing, IndexedSeqValue, kindHooks,
+  //@ methodKeys, missing, protocolHooks, publicCollectionSlots, rest, restSeq, seq, vectorChunk,
+  //@ vectors, view
+  // `rest` of a vector or a map entry, and with `empty` null its `next`, as
+  // `vectorFirst`: the rest of its seq, built from index 1 (`kindHooks.seqVector`
+  // chunks a vector of more than 32 items), which is its own seq. Where
+  // protocol implementations exist or the value's seq is its kind's, `next`
+  // is the seq of `rest`, as the operation takes it.
+  function vectorRest(value, empty) {
+    const store = vectors.get(value);
+    if (store === undefined) return missing;
+    const method = protocolHooks.publicMethod, shared = publicCollectionSlots.has(value) || (store.sub ?? store).callerTail;
+    const own = empty === null ? undefined : method?.(value, methodKeys[52], 1, true);
+    if (!shared && !own && (empty !== null || !method)) return store.cnt < 2 ? empty : store.cnt <= 32
+      ? view(IndexedSeqValue, vectorChunk(value, 0), 1, true) : ChunkedSeqValue(value, vectorChunk(value, 0), 0, 1, null, null);
+    const result = empty === null ? seq(rest(value)) : restSeq(own ? own.call(value, value) : kindHooks.seqVector(value, store));
+    return result === missing ? foundMissing : result;
+  }
+  //@unit first.vectors effect: PersistentVectorValue, SubvecValue when: first requires: kindTables,
+  //@ vectorFirst
+  kindTables[4][1] = vectorFirst;
+  //@unit rest.vectors effect: PersistentVectorValue, SubvecValue when: rest requires: emptyList,
+  //@ kindTables, vectorRest
+  kindTables[4][2] = value => vectorRest(value, emptyList);
+  //@unit next.vectors effect: PersistentVectorValue, SubvecValue when: next requires: kindTables,
+  //@ vectorRest
+  kindTables[4][3] = value => vectorRest(value, null);
+  //@unit first.entries effect: MapEntryType when: first requires: kindTables, vectorFirst
+  kindTables[8][1] = vectorFirst;
+  //@unit rest.entries effect: MapEntryType when: rest requires: emptyList, kindTables, vectorRest
+  kindTables[8][2] = value => vectorRest(value, emptyList);
+  //@unit next.entries effect: MapEntryType when: next requires: kindTables, vectorRest
+  kindTables[8][3] = value => vectorRest(value, null);
+  //@unit first.maps effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor
+  //@ when: first requires: firstSeq, kindHooks, kindTables, maps, seqBranch
+  kindTables[5][1] = seqBranch(maps, value => kindHooks.seqMap(value), firstSeq);
+  //@unit rest.maps effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor
+  //@ when: rest requires: kindHooks, kindTables, maps, restSeq, seqBranch
+  kindTables[5][2] = seqBranch(maps, value => kindHooks.seqMap(value), restSeq);
+  //@unit first.sets effect: PersistentHashSetValue, treeSetConstructor when: first requires: firstSeq,
+  //@ kindHooks, kindTables, seqBranch, sets
+  kindTables[6][1] = seqBranch(sets, (value, members) => kindHooks.seqSet(value, members), firstSeq);
+  //@unit rest.sets effect: PersistentHashSetValue, treeSetConstructor when: rest requires: kindHooks,
+  //@ kindTables, restSeq, seqBranch, sets
+  kindTables[6][2] = seqBranch(sets, (value, members) => kindHooks.seqSet(value, members), restSeq);
+  //@unit first.queues effect: PersistentQueueValue when: first requires: firstSeq, kindHooks,
+  //@ kindTables, missing, publicCollectionSlots, queues, seqBranch
+  // A queue that the public constructor built takes the operations, whose
+  // `first` reads its front.
+  kindTables[7][1] = (branch => value => publicCollectionSlots.has(value) ? missing : branch(value))(seqBranch(queues, (value, queue) => kindHooks.seqQueue(value, queue), firstSeq));
+  //@unit rest.queues effect: PersistentQueueValue when: rest requires: kindHooks, kindTables,
+  //@ queues, restSeq, seqBranch
+  kindTables[7][2] = seqBranch(queues, (value, queue) => kindHooks.seqQueue(value, queue), restSeq);
 
   //@unit seqToMap requires: first, into, mapFromArray, next, seq, toArray
   function seqToMap(value) {
@@ -3641,8 +3744,9 @@
   //@unit IndexedSeqValue.viewKind effect: IndexedSeqValue when: first.branches requires: IndexedSeqValue,
   //@ kindOps
   // Views, the seqs of arrays, strings and vectors, are kind 3 where a kind
-  // with types of its own (lazy seqs or cells) wraps an operation: a program
-  // that builds only views keeps the operations' own paths, and no wrapper.
+  // with types of its own (lazy seqs, cells or the collections) wraps
+  // `first`: a program that builds only views keeps the operations' own
+  // paths, and no wrapper.
   IndexedSeqValue.prototype[kindOps] = 3;
   //@unit ChunkedSeqValue.viewKind effect: ChunkedSeqValue when: first.branches requires: ChunkedSeqValue,
   //@ kindOps
@@ -3820,8 +3924,7 @@
   const foundMissing = Object.freeze({});
   //@unit get.branches effect: MapEntryType, PersistentArrayMapValue, PersistentHashMapValue,
   //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue, treeMapConstructor,
-  //@ treeSetConstructor when: get requires: foundMissing, get, kindOps, kindTables,
-  //@ missing
+  //@ treeSetConstructor when: get requires: foundMissing, get, kindOps, kindTables, missing
   // As `seq.branches`, for two or three arguments; a branch takes the value,
   // the key, the item for a key it lacks and the arity, which the protocol
   // lookup it makes first needs. `contains?` asks for `missing`, which a
@@ -3833,8 +3936,7 @@
     return result === missing ? operation.apply(null, arguments) : result === foundMissing ? missing : result;
   }, "name", {value: operation.name}))(get);
   //@unit get.vectors effect: PersistentVectorValue, SubvecValue when: get requires: foundMissing,
-  //@ kindTables,
-  //@ mapEntries, methodKeys, missing, protocolHooks, vectorNth, vectors
+  //@ kindTables, mapEntries, methodKeys, missing, protocolHooks, vectorNth, vectors
   // `lookup` of a vector, after the protocol lookup that `get` makes first,
   // whose method it calls as `get` would.
   kindTables[4][6] = (value, key, notFound, arity) => {
@@ -3845,8 +3947,8 @@
     return typeof key === "number" && key >= 0 && key < store.cnt ? vectorNth(store, key, notFound) : notFound;
   };
   //@unit get.maps effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor when: get
-  //@ requires: collectionEntryIndex, foundMissing, kindHooks, kindTables, lookup, maps, methodKeys, missing,
-  //@ protocolHooks, publicCollectionSlots
+  //@ requires: collectionEntryIndex, foundMissing, kindHooks, kindTables, lookup, maps, methodKeys,
+  //@ missing, protocolHooks, publicCollectionSlots
   // Likewise of a map: a hash map's trie is searched as `lookup.trie` does,
   // entries without slots as `lookup` does, and others, as trees, take
   // `lookup`.
@@ -6776,7 +6878,19 @@
   //@unit protocolNames
   const protocolNames = new WeakMap(), protocolValues = new Map(), protocolFunctions = new Map(), protocolVariables = new Map(), protocolGetters = new Map();
   //@unit nativeMethods
+  // The implementations `extend-type` gives host types, `object` and
+  // `default`, by a protocol method key's text and then the type's name, and
+  // the dispatch cells by a key's text (`dispatchCell`).
   const nativeMethods = new Map(), coreDispatchers = new Map();
+  //@unit dispatchCell requires: coreDispatchers
+  // The dispatch cell of a protocol method key's text (light-cljs-375): the
+  // core protocol dispatcher `coreMethod` made for it (`dispatcher`), the
+  // implementations `extend-type` gave host types for it (`natives`, the
+  // key's entry of `nativeMethods`, which the declaration journal sets and
+  // undoes with it) and its core protocol (`protocol`). A resolved key
+  // (`methodKey`) holds its cell once `externalMethod` has looked it up, so
+  // that a call reads them without a lookup by the key's text.
+  function dispatchCell(text) { return coreDispatchers.get(text) ?? coreDispatchers.set(text, {}).get(text); }
   //@unit protocol mutator requires: protocolNames, protocolValues, setDeclaration
   function protocol(name) {
     const value = function () {};
@@ -6824,21 +6938,21 @@
     if (method != null) return method;
     return protocolHooks.externalMethod?.(value, key, arity);
   }
-  //@unit externalMethod requires: builtinCoreImplementation, coreDispatchers, coreProtocolsByName,
+  //@unit externalMethod requires: builtinCoreImplementation, coreProtocolsByName, dispatchCell,
   //@ nativeMethods, nativeType
-  // It takes a resolved key (`methodKey`, light-cljs-358), whose protocol's
-  // name it reads rather than slicing the key's text; the dispatchers and
-  // implementations `extend-type` installs stay in maps by the key's text,
-  // which `extend-type` updates.
+  // It takes a resolved key (`methodKey`, light-cljs-358), whose dispatch
+  // cell (`dispatchCell`) it keeps, with the key's core protocol, on its
+  // first call: the dispatchers and implementations `extend-type` installs
+  // are read from the cell, which `coreMethod` and `extend-type` update.
   function externalMethod(value, key, arity) {
-    const text = key.key, external = coreDispatchers.get(text);
+    const cell = key.cell ?? (key.cell = dispatchCell(key.key)), external = cell.dispatcher;
     const dispatch = external?.[nativeType(value)] ?? external?._;
     if (!nativeMethods.size && !dispatch) return undefined;
-    const protocol = coreProtocolsByName.get(key.name);
+    const protocol = cell.protocol ?? (cell.protocol = coreProtocolsByName.get(key.name) ?? null);
     // Native-object fallback cannot override an owned collection's direct
     // core implementation. Its public operation handles the private payload.
     if (protocol && builtinCoreImplementation(protocol, value)) return undefined;
-    return dispatch ?? nativeMethods.get(text)?.get(nativeType(value))?.get(arity) ?? nativeMethods.get(text)?.get("_")?.get(arity);
+    return dispatch ?? cell.natives?.get(nativeType(value))?.get(arity) ?? cell.natives?.get("_")?.get(arity);
   }
   //@unit publicMethodInfo requires: coreProtocolNames, coreProtocolsByName, nativeImplementations,
   //@ protocolMasks, protocolSlot
@@ -6958,9 +7072,9 @@
     setDeclaration(protocolGetters, key, getter ?? (() => protocolVariables.get(metadataName)));
     return method;
   }
-  //@unit extendType mutator requires: coreDispatchers, coreProtocolsByName, installMethods,
-  //@ invalidArity, kindOps, kindTables, nativeMethods, patchDeclaration, protocolFunctions,
-  //@ protocolGetters, protocolSentinel, protocolValues, setDeclaration
+  //@unit extendType mutator requires: coreDispatchers, coreProtocolsByName, dispatchCell,
+  //@ installMethods, invalidArity, kindOps, kindTables, nativeMethods, patchDeclaration,
+  //@ protocolFunctions, protocolGetters, protocolSentinel, protocolValues, setDeclaration
   function extendType(target, methods) {
     let result = null;
     if (typeof target === "string") {
@@ -6975,7 +7089,7 @@
       }
       for (const [key, implementations] of grouped) {
         if (implementations.has(0)) continue;
-        const dispatch = protocolGetters.get(key)?.() ?? coreDispatchers.get(key);
+        const dispatch = protocolGetters.get(key)?.() ?? coreDispatchers.get(key)?.dispatcher;
         const implementation = function (...args) {
           const method = implementations.size === 1 ? implementations.values().next().value : implementations.get(args.length);
           return method ? method.call(null, ...args) : invalidArity(args.length);
@@ -6983,7 +7097,13 @@
         result = implementation;
         if (dispatch) patchDeclaration(dispatch, target, {value: implementation, writable: true, configurable: true, enumerable: true});
         if (!protocolFunctions.has(key)) {
-          if (!nativeMethods.has(key)) setDeclaration(nativeMethods, key, new Map());
+          // A key's implementations go in its entry and its dispatch cell
+          // alike, each through the journal (`dispatchCell`).
+          if (!nativeMethods.has(key)) {
+            const natives = new Map();
+            setDeclaration(nativeMethods, key, natives);
+            patchDeclaration(dispatchCell(key), "natives", {value: natives, writable: true, configurable: true, enumerable: true});
+          }
           setDeclaration(nativeMethods.get(key), target, implementations);
         }
       }
@@ -7247,8 +7367,9 @@
       const extmap = dissoc(this.__extmap, key);
       return recordCopy(this, Type, this.__meta, seq(extmap) === null ? null : extmap, null);
     }]]);
-  //@unit recordMethods.seq effect: recordMethods when: lazyBranch, reduce, rseq, seq, seqProtocol
-  //@ requires: recordEntries, recordMethodTable, seq, vectorFromArray
+  //@unit recordMethods.seq effect: recordMethods when: lazyBranch, reduce, rseq, seq, seqBranch,
+  //@ seqProtocol, vectorFirst, vectorRest requires: recordEntries, recordMethodTable, seq,
+  //@ vectorFromArray
   recordMethodTable.push(Type => [
     ["ISeqable/-seq", 1, function () { return seq(vectorFromArray(recordEntries(this, Type))); }]]);
   //@unit recordMethods.iterator effect: recordMethods when: iterator, iteratorProtocol requires: iteratorInit,
@@ -8845,7 +8966,7 @@
     return jsSet(array, index, value);
   }
 
-  //@unit coreMethod mutator requires: coreDispatchers, invalidArity, protocolHooks
+  //@unit coreMethod mutator requires: dispatchCell, invalidArity, protocolHooks
   // A protocol implementation (`protocolHooks`), else `fallback` where the
   // protocol's own test (`countedValue`) answers it.
   function coreMethod(key, arities, fallback, native) {
@@ -8863,7 +8984,7 @@
       if (native(value)) return fallback(value, ...args);
       throw new Error("No protocol method " + key + " defined for this value");
     };
-    coreDispatchers.set(key, dispatch);
+    dispatchCell(key).dispatcher = dispatch;
     return dispatch;
   }
   //@unit everyValue
@@ -9450,11 +9571,12 @@
     if (!mapEntries.has(entry)) throw new Error("No protocol method IMapEntry/-val defined for this value");
     return nth(entry, 1);
   }
-  //@unit protocolHooks.builtin effect: installMethods when: addWatchProtocol, assoc,
-  //@ collectionWithMeta, compareKeys, conj, conjBangOwn, conjMeta, conjTransient, coreMethod,
-  //@ count, derefProtocol, disj, dissoc, equalPair, first, hash, iterator, Loadable.dispatch,
+  //@unit protocolHooks.builtin effect: installMethods when: Loadable.dispatch, addWatchProtocol,
+  //@ assoc, collectionWithMeta, compareKeys, conj, conjBangOwn, conjMeta, conjTransient,
+  //@ coreMethod, count, derefProtocol, disj, dissoc, equalPair, firstSeq, hash, iterator,
   //@ metaSupported, name, namespace, notifyWatches, objectEquiv, peek, pop, removeWatchProtocol,
-  //@ rest, rseq, stateProtocol, vresetProtocol, withMetaSupported requires: builtin, protocolHooks
+  //@ restSeq, rseq, stateProtocol, vresetProtocol, withMetaSupported requires: builtin,
+  //@ protocolHooks
   protocolHooks.builtin = builtin;
   //@unit protocolHooks.external effect: extendType when: builtin, publicDeclared requires: externalMethod,
   //@ protocolHooks
@@ -9467,17 +9589,18 @@
   // protocol implementations, which their host-facing methods and fields then
   // answer through the generic operations (`hostHooks`).
   protocolHooks.extend = true;
-  //@unit protocolHooks.ownMethod effect: installMethods when: chunkStore, contains, count,
-  //@ dropFirstChunk, empty, find, first, get, lazyBranch, meta, next, nth, printSequential,
-  //@ printValues, printWriterImpl, reduce, reduceKv, rest, rseq, seq, subvec, SubvecValue requires: ownDeclared,
-  //@ ownMethod, protocolHooks
+  //@unit protocolHooks.ownMethod effect: installMethods when: SubvecValue, chunkStore, contains,
+  //@ count, dropFirstChunk, empty, find, first, get, lazyBranch, meta, next, nth, printSequential,
+  //@ printValues, printWriterImpl, reduce, reduceKv, rest, rseq, seq, seqBranch, subvec,
+  //@ vectorFirst, vectorRest requires: ownDeclared, ownMethod, protocolHooks
   // Every protocol implementation goes through `installMethods`.
   protocolHooks.publicMethod = ownMethod;
   protocolHooks.declaredMethod = ownDeclared;
-  //@unit protocolHooks.publicMethod effect: extendType, extendInstance when: chunkStore, contains,
-  //@ count, dropFirstChunk, empty, find, first, get, lazyBranch, meta, next, nth, printSequential,
-  //@ printValues, printWriterImpl, reduce, reduceKv, rest, rseq, seq, subvec, SubvecValue requires: protocolHooks,
-  //@ publicDeclared, publicMethod
+  //@unit protocolHooks.publicMethod effect: extendType, extendInstance when: SubvecValue,
+  //@ chunkStore, contains, count, dropFirstChunk, empty, find, first, get, lazyBranch, meta, next,
+  //@ nth, printSequential, printValues, printWriterImpl, reduce, reduceKv, rest, rseq, seq,
+  //@ seqBranch, subvec, vectorFirst, vectorRest requires: protocolHooks, publicDeclared,
+  //@ publicMethod
   // ... and only `extend-type` and `specify!` give the runtime's values and
   // host values implementations, which `publicMethod` finds.
   protocolHooks.publicMethod = publicMethod;

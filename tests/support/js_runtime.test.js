@@ -1811,6 +1811,10 @@ console.log('public find preserves one search and direct receiver dispatch');
     [c.first(c.hashMap('a', 1)), 'cljs$core$IIndexed$_nth$arity$2', 'cljs$core$IIndexed$', e => c.nth(e, 0)],
     [c.cons(0, c.list(1)), 'cljs$core$ISeq$_rest$arity$1', 'cljs$core$ISeq$', s => c.next(s)],
     [c.mapSeq(c.inc, c.vector(1, 2)), 'cljs$core$ISeqable$_seq$arity$1', 'cljs$core$ISeqable$', s => c.first(s)],
+    // The collections' `first`, `rest` and `next` (light-cljs-375).
+    ...[() => c.vector(1, 2), () => c.vec(c.range(40)), () => c.subvec(c.vector(1, 2, 3), 1), () => c.first(c.hashMap('a', 1)),
+      () => c.hashMap('a', 1), () => c.hashSet(1), () => c.sortedSet(2, 1), () => c.into(c.PersistentQueue.EMPTY, c.vector(1))]
+      .flatMap(make => [c.first, c.rest, c.next].map(op => [make(), 'cljs$core$ISeqable$_seq$arity$1', 'cljs$core$ISeqable$', op])),
   ];
   for (const [value, slot, marker, op] of cases) {
     const calls = [];
@@ -1832,5 +1836,84 @@ for (const make of [() => c.hashSet(1), () => c.set(c.range(20)), () => c.vector
   value.cljs$core$ILookup$_lookup$arity$2 = () => ++calls === 1 ? saved : 42;
   assert.equal(c.get(value, 1), saved);
   assert.equal(calls, 1);
+  // ... and so is a `-seq` whose seq starts with it, by `first`
+  // (light-cljs-375).
+  let seqs = 0;
+  value.cljs$core$ISeqable$ = c.PROTOCOL_SENTINEL;
+  value.cljs$core$ISeqable$_seq$arity$1 = () => (seqs++, c.list(saved));
+  assert.equal(c.first(value), saved);
+  assert.equal(seqs, 1);
+}
+// ... and by `rest` and `next` of the collections (Sol review of
+// light-cljs-375): a `-seq` whose seq's rest is `missing`, or whose rest's
+// seq is, is called once, and the operation gives that answer.
+{
+  const donor = c.hashSet(1);
+  let saved;
+  donor.cljs$core$ILookup$ = c.PROTOCOL_SENTINEL;
+  donor.cljs$core$ILookup$_lookup$arity$3 = (_, k, nf) => (saved = nf);
+  c.contains(donor, 9);
+  for (const make of [() => c.vector(1, 2), () => c.vec(c.range(40)), () => c.first(c.hashMap('a', 1)), () => c.hashMap('a', 1),
+    () => c.hashSet(1), () => c.into(c.PersistentQueue.EMPTY, c.vector(1))]) {
+    const value = make();
+    let seqs = 0;
+    value.cljs$core$ISeqable$ = c.PROTOCOL_SENTINEL;
+    value.cljs$core$ISeqable$_seq$arity$1 = () => (seqs++, new c.Cons(null, 1, saved, null));
+    assert.equal(c.rest(value), saved);
+    assert.equal(seqs, 1);
+    let tails = 0;
+    const tail = runtime.makeReify([['ISeqable', 0, null], ['ISeqable/-seq', 1, () => (tails++, saved)]]);
+    value.cljs$core$ISeqable$_seq$arity$1 = () => (seqs++, new c.Cons(null, 1, tail, null));
+    assert.equal(c.next(value), saved);
+    assert.deepEqual([seqs, tails], [2, 1]);
+  }
+}
+{
+  // A subvector of a vector the public constructor built over a caller's
+  // array reads the array as its seq does once the array shrinks.
+  const items = [7, 8, 9];
+  const shared = c.subvec(new c.PersistentVector(null, 3, 5, c.PersistentVector.EMPTY_NODE, items, null), 0, 3);
+  items.length = 0;
+  assert.equal(c.first(shared), null);
+  assert.equal(c.rest(shared), c.List.EMPTY);
+  assert.equal(c.next(shared), null);
+}
+// The dispatch cells that resolved keys keep (light-cljs-375) follow the
+// declaration journal: a key looked up before any `extend-type` of it, with
+// a core dispatcher (`ICounted/-count`) or without one (`IDeref/-deref`),
+// finds what a transaction installs, replaces, rolls back, undoes, redoes and
+// restores, beside an unrelated extension that stays.
+{
+  const r = (0, eval)(fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8'));
+  const core = r.core;
+  const outcome = thunk => { try { return thunk(); } catch (error) { return 'error'; } };
+  const answers = () => [outcome(() => core.deref(5)), outcome(() => core.count(5)), outcome(() => core.deref('s')), outcome(() => core.count(true))];
+  assert.deepEqual(answers(), ['error', 'error', 'error', 'error']);
+  r.extendType('boolean', [['ICounted/-count', 1, () => 'b']]);
+  const before = answers();
+  assert.deepEqual(before, ['error', 'error', 'error', 'b']);
+  const install = r.declarationTransaction(() => r.extendType('number', [['IDeref/-deref', 1, n => n + 1], ['ICounted/-count', 1, () => 'n']]), true);
+  const installed = answers();
+  assert.deepEqual(installed, [6, 'n', 'error', 'b']);
+  const replace = r.declarationTransaction(() => r.extendType('number', [['IDeref/-deref', 1, n => n + 2], ['ICounted/-count', 1, () => 'm']]), true);
+  assert.deepEqual(answers(), [7, 'm', 'error', 'b']);
+  assert.throws(() => r.declarationTransaction(() => {
+    r.extendType('string', [['IDeref/-deref', 1, s => s + '!'], ['ICounted/-count', 1, () => 's']]);
+    assert.deepEqual(answers(), [7, 'm', 's!', 'b']);
+    throw new Error('bundle failure');
+  }), /bundle failure/);
+  assert.deepEqual(answers(), [7, 'm', 'error', 'b']);
+  r.applyDeclarationPatches(replace.patches, false);
+  assert.deepEqual(answers(), installed);
+  const saved = r.snapshotDeclarationPatches(install.patches);
+  r.applyDeclarationPatches(install.patches, false);
+  assert.deepEqual(answers(), before);
+  r.applyDeclarationPatches(install.patches, true);
+  assert.deepEqual(answers(), installed);
+  r.applyDeclarationPatches(install.patches, false);
+  r.restoreDeclarationPatches(saved);
+  assert.deepEqual(answers(), installed);
+  r.applyDeclarationPatches(replace.patches, true);
+  assert.deepEqual(answers(), [7, 'm', 'error', 'b']);
 }
 console.log('kind tables stay private to the runtime');

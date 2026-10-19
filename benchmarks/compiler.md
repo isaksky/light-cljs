@@ -5417,3 +5417,72 @@ which the wrapper turns back into `missing`. Rerun after that fix at a
 one-minute load of 4.6–6.5, the table's rows do not move beyond the noise
 (`get` of the two sets 0.207–0.213 to 0.166–0.170; with a `deftype`
 0.294–0.347 to 0.264–0.342).
+
+## Collections' first, rest and next — October 19, 2026
+
+light-cljs-375 gives `first` and `rest` of vectors, map entries, maps, sets
+and queues, and `next` of vectors and entries, branches of the kind tables,
+and puts `extend-type`'s dispatchers and host implementations in dispatch
+cells that resolved keys hold
+([advanced-optimization.md](../docs/advanced-optimization.md#phase-2-the-collections-first-rest-and-next-and-dispatch-cells)).
+
+A microbenchmark (one program at `advanced`, and the same with a `deftype`
+implementing `ISeqable`, Node v24.18.0 on the 24-CPU Mac; each row is five
+rounds of 10^6 calls after five untimed ones; the light-cljs-373 runtime
+`c0ec46a` and this change alternating, two runs each, one-minute load
+3.6–5.2). µs per call, the mean of the two runs:
+
+| Operation | Before | After | With a `deftype`: before | After |
+| --- | ---: | ---: | ---: | ---: |
+| `first` of a three-item vector | 0.096 | 0.011 | 0.109 | 0.025 |
+| `first` of a 40-item vector | 0.394 | 0.012 | 0.352 | 0.026 |
+| `first` of a subvector | 0.140 | 0.016 | 0.162 | 0.030 |
+| `count` of `rest` of a three-item vector | 0.222 | 0.151 | 0.238 | 0.175 |
+| `next` of a three-item vector | 0.180 | 0.044 | 0.207 | 0.146 |
+| `next` of a one-item vector | 0.132 | 0.013 | 0.178 | 0.095 |
+| `first` of `rest` of a 40-item vector | 0.93 | 0.32 | 0.87 | 0.37 |
+| `first` of `next` of a 40-item vector | 0.89 | 0.40 | 0.95 | 0.50 |
+| `(let [[a & more] v] ...)` | 0.224 | 0.220 | 0.284 | 0.286 |
+| `first` of a map entry | 0.116 | 0.024 | 0.143 | 0.050 |
+| `first` of `rest` of an entry | 0.160 | 0.086 | 0.199 | 0.128 |
+| `first` of a two-entry array map | 0.886 | 0.716 | 0.894 | 0.730 |
+| `first` of `rest` of that map | 0.892 | 0.804 | 0.931 | 0.898 |
+| `next` of that map (no branch) | 0.926 | 0.896 | 1.017 | 0.989 |
+| `first` of a three-member set | 0.224 | 0.184 | 0.251 | 0.214 |
+| `first` of `rest` of that set | 0.262 | 0.249 | 0.310 | 0.301 |
+| `first` of a two-item queue | 0.118 | 0.071 | 0.148 | 0.104 |
+
+Destructuring takes `nth` and `nthnext`, which this change does not touch.
+With protocol implementations `next` of a vector is `seq` of `rest`, as the
+operation takes it, whose wrappers look for `-rest` and `-seq`. A first
+version also had `next` branches for maps, sets and queues: `next` of the
+map 0.915 to 0.880 (one run at load 8) for 132 bytes in every program with
+a map and `next`, against 0.926 to 0.896 without them, so they were
+dropped.
+
+The `--levels` workloads, which call `first`, `rest` and `next` of no
+collection, do not move beyond the noise (µs per call at `advanced` in
+Node, light-cljs-373 / this change, median of three alternating pairs at
+one-minute load 4.3–14.7): `seq-pipeline` 147 / 141, `vector-conj` 2,000
+152 / 157, `map-assoc` 2,000 560 / 539, `set-conj` 2,000 472 / 446,
+`vector-nth` 2,000 54.6 / 54.0, `map-into` 2,000 449 / 447. A first pair of
+thirteen workloads at load 5.6 had the candidate 1–10% slower on the
+collection rows and the second, at load 12–16, 2–8% faster; the rerun
+above alternates more often. QuickJS `seq-pipeline` at `advanced` 1,425 /
+1,432 and `queue-ops` 15,322 / 15,290.
+
+**Bytes.** At `advanced` a program that keeps `first`, `rest` or `next`
+and builds a collection keeps those wrappers (about 150 bytes each), the
+views' kind and their `first` branch, `vectorFirst` (208) and `vectorRest`
+(362) with a vector or a map entry, and `seqBranch` (159) and 32 bytes an
+entry with a map, a set or a queue; `firstSeq` and `restSeq` add 19 bytes
+each to `first` and `rest`, and a program with a core protocol dispatcher
+keeps `dispatchCell` (54): `println-hi` 4,795 to 4,853, `vector-printed`
+10,992 to 11,052, `seq-pipeline` 29,338 to 29,491, `keyword-lookups` 35,170
+to 36,193, `eight-records` 35,315 to 36,720 (4.0%, the most), `constant-keys`
+48,297 to 49,398, `event-maps` 33,665 to 34,637, `mapv-count` 36,234 to
+37,013, `callbacks` 43,845 to 44,663, `features` 76,265 to 77,371;
+`vector-only`, `map-only` and `set-only` do not move. The runtime that
+`none` and `prepare` embed grows by 5.8 KB (1.2%), and the QuickJS
+evaluator's smallest heap that loads it and evaluates `(first [1 2])` from
+4,224 to 4,256 KiB (16 KiB steps).

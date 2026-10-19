@@ -1919,10 +1919,11 @@ wherever a protocol lookup existed, that is in every program with a
   loading it (4,128 before). Details in `benchmarks/compiler.md`
   ("Collection kinds").
 - **Left for later.** `first`, `rest` and `next` of the collections, which
-  take their seqs, have no branch; nor does `get` of a set, and map entries
-  have no kind, so their `nth` takes the operation (both since
-  light-cljs-373, below). `extend-type`'s
-  dispatchers and implementations stay in maps by the key's text. At `advanced`, an `ILookup` that JavaScript writes on a vector
+  take their seqs, have no branch (since light-cljs-375, below); nor does
+  `get` of a set, and map entries have no kind, so their `nth` takes the
+  operation (both since light-cljs-373, below). `extend-type`'s
+  dispatchers and implementations stay in maps by the key's text (dispatch
+  cells since light-cljs-375). At `advanced`, an `ILookup` that JavaScript writes on a vector
   or a map is not found, as on master.
 
 #### Phase 2 sets' `get` and map entry kinds
@@ -1963,7 +1964,7 @@ in turn.
   `missing` rather than calling the operation and the method again (Sol
   review of this change).
 - **Not done.** `first`, `rest` and `next` of the collections and the
-  dispatch cells for `extend-type` are light-cljs-375.
+  dispatch cells for `extend-type` are light-cljs-375 (below).
 - **Tests.** `runtime_manifest`: kinds 1 to 8, 33 entries, 314
   conditional effects, `trieMember` in `KIND_HOOKS`.
   `builtin_types::collection_operations_read_the_kind_tables` runs sets of
@@ -1976,6 +1977,86 @@ in turn.
   answering with `missing` is called once.
 - **Measured.** See `benchmarks/compiler.md` ("Sets' get and map entry
   kinds").
+
+#### Phase 2 the collections' `first`, `rest` and `next`, and dispatch cells
+
+As built (light-cljs-375). `first`, `rest` and `next` of a vector, a map
+entry, a map, a set or a queue took their operations, which probe the
+queue, chunk, lazy seq, cell, view and iterator stores and then take the
+seq of the value through `seq`'s wrappers; and `externalMethod`, on every
+call where `extend-type` exists, looked up the core dispatcher and the
+host types' implementations of a key by its text.
+
+- **Continuations.** `firstSeq` and `restSeq` are `first`'s and `rest`'s
+  steps once they have the seq of their value, which the operations and
+  the branches share.
+- **Branches.** `first` and `rest` of kinds 4 to 8 and `next` of kinds 4
+  (vectors) and 8 (map entries) have entries. A vector's or an entry's
+  (`vectorFirst`, `vectorRest`) read its item at 0, or build the seq from
+  index 1 that `rest` of its seq would give (a view of its first leaf, or
+  for more than 32 items the chunked seq at offset 1, which is its own seq,
+  so also its `next`), with no seq of the value. Where protocol
+  implementations exist, an `ISeqable` implementation that JavaScript gave
+  the value is looked up once, as `seq` does, and its seq goes to
+  `firstSeq` or `restSeq`; a public constructor's value, and one whose
+  store reads a caller's array (`callerTail`, as a subvector of such a
+  vector does), whose tail the seq reads and which can be
+  shorter than its count, takes the kind's `seq` and the continuation (Sol
+  review of this change); `next` there is `seq` of `rest`, as the operation
+  takes it, whose wrappers look for `-rest` and `-seq`. Maps, sets and
+  queues take `seqBranch`: the lookup, else the kind's `seq` hook, then the
+  continuation; a queue that the public constructor built takes the
+  operation's `first`, which reads its front. An answer that is `missing`
+  (which `contains?` hands `-lookup`, and a `-seq` can give back) comes
+  back as `foundMissing`, which the wrappers of `first`, `rest` and `next`
+  turn back, as for `get`, rather than calling the operation and the
+  method again (Sol review of this change).
+- **No `next` for maps, sets and queues.** A first version had them (a
+  `nextBranch` taking `next` of the seq of the value, or `seq` of `rest`
+  where protocol implementations exist): `next` of a two-entry map 0.915
+  to 0.880 µs (4%, one run at load 8) for 132 bytes in every program with
+  a map and `next` (`nextBranch` 103, `next.maps` 29).
+  Without them the operation's `seq` of `rest` takes `rest`'s branch, and
+  `next` of that map goes from 0.926 to 0.896 (3%, two runs each at load
+  4 to 5), so they were dropped.
+- **Dispatch cells.** `coreDispatchers` maps a key's text to its cell
+  (`dispatchCell`): the dispatcher `coreMethod` made (`dispatcher`), the
+  implementations `extend-type` gave host types (`natives`, the entry of
+  `nativeMethods`, set with it through the declaration journal, so that a
+  reload's undo and redo move both) and the key's core protocol
+  (`protocol`). A resolved key (`methodKey`) holds its cell (`cell`) once
+  `externalMethod` has looked it up, after which a call makes no lookup by
+  the key's text. `extendType` reads the dispatcher it patches from the
+  cell.
+- **Tests.** `runtime_manifest`: 45 kind table entries, 326 conditional
+  effects. `builtin_types::collection_operations_read_the_kind_tables`
+  runs `first`, `rest` and `next` of every collection kind and
+  representation (subvectors, transients' vectors, public constructors'
+  values, metadata, empty ones) and the types and metadata of the seqs
+  they give, and checks the kept branches;
+  `collection_branches_find_what_javascript_gives_runtime_values` checks
+  the `-seq` and `ISeq` methods JavaScript gives collections at every
+  level, all against master's output. `js_runtime.test.js`: a `-seq`
+  getter JavaScript gives a vector, an entry, a map, a set or a queue is
+  read once by each of `first`, `rest` and `next`, and one whose seq starts
+  with `missing`, or whose rest or rest's seq is, is called once by `first`,
+  `rest` and `next`; extensions of host types that resolved keys looked
+  up before them follow transactions, rollback, undo, redo and snapshot
+  restoration through the dispatch cells; a subvector over a caller's
+  array that shrinks reads it as its seq does.
+- **Measured.** In Node at `advanced`, µs per call over 10^6 calls, the
+  light-cljs-373 runtime against this one: `first` of a three-item vector
+  0.096 to 0.011 (with a `deftype` 0.109 to 0.025), of a 40-item vector
+  0.394 to 0.012, of a subvector 0.140 to 0.016, `next` of a three-item
+  vector 0.180 to 0.044 (0.207 to 0.146), `rest` 0.222 to 0.151, `next` of
+  a 40-item vector 0.89 to 0.40, `first` of an entry 0.116 to 0.024, of a
+  two-entry map 0.886 to 0.716, of a set 0.224 to 0.184, of a queue 0.118
+  to 0.071, `rest` of a map 0.892 to 0.804, of a set 0.262 to 0.249.
+  Destructuring `[a & more]` of a vector does not move (it takes `nth`).
+  Maps', sets' and queues' branches are kept for these gains at about
+  220 bytes (`seqBranch` 159, 32 each entry) where a program builds one of
+  them and keeps `first` or `rest`. Sizes and the `--levels` workloads in
+  `benchmarks/compiler.md` ("Collections' first, rest and next").
 
 #### Phase 2 builtin types, map entries
 

@@ -685,8 +685,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // of `nth`, `get`, `conj` and `assoc` behind them and the trie search of
     // `get.maps` (light-cljs-358), and the branches of `get` for sets, with
     // their trie search, and of `seq`, `count`, `nth` and `get` for map entries
-    // (light-cljs-373).
-    assert_eq!(checked, 314);
+    // (light-cljs-373), and the 12 branches of `first` and `rest` for vectors,
+    // maps, sets, queues and map entries and of `next` for vectors and map
+    // entries (light-cljs-375).
+    assert_eq!(checked, 326);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1174,7 +1176,9 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
 /// every type of the kinds with an entry for their operation: lazy seqs (1),
 /// cells (2), vectors (4), maps (5), sets (6), queues (7) and map entries
 /// (8), light-cljs-358 adding kinds 4 to 7 and the wrappers of `nth`, `get`,
-/// `conj` and `assoc`, light-cljs-373 map entries. The types of kind 3
+/// `conj` and `assoc`, light-cljs-373 map entries, light-cljs-375 the entries
+/// of `first` and `rest` for kinds 4 to 8 and of `next` for kinds 4 and 8.
+/// The types of kind 3
 /// (views) take their number only where a wrapper of an operation with a
 /// kind 3 entry is kept, so a program that builds views and no lazy seq or
 /// cell keeps no wrapper.
@@ -1304,24 +1308,36 @@ fn kind_table_entries_are_installed_by_the_types_of_their_kind() {
             (2, 4),
             (3, 1),
             (4, 0),
+            (4, 1),
+            (4, 2),
+            (4, 3),
             (4, 4),
             (4, 5),
             (4, 6),
             (4, 7),
             (4, 8),
             (5, 0),
+            (5, 1),
+            (5, 2),
             (5, 4),
             (5, 6),
             (5, 7),
             (5, 8),
             (6, 0),
+            (6, 1),
+            (6, 2),
             (6, 4),
             (6, 6),
             (6, 7),
             (7, 0),
+            (7, 1),
+            (7, 2),
             (7, 4),
             (7, 7),
             (8, 0),
+            (8, 1),
+            (8, 2),
+            (8, 3),
             (8, 4),
             (8, 5),
             (8, 6),

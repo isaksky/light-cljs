@@ -2299,6 +2299,69 @@ fn collection_operations_read_the_kind_tables() {
         assert!(!kept.contains(&unit), "{unit}: {kept:?}");
     }
     assert!(units("(get (set (range 20)) 3)").contains(&"get.members"));
+    // `first`, `rest` and `next` of every collection kind read the tables
+    // too (light-cljs-375): vectors of every size and representation (a
+    // subvector, one a transient built, the public constructor's, with
+    // metadata), map entries, maps, sets and queues, empty ones included,
+    // and the types and metadata of the seqs they give.
+    let seqs = "(let [v [1 2 3] v1 [7] v0 [] big (vec (range 40)) sv (subvec [1 2 3 4] 1 3) e (first {:k :v}) m {:a 1 :b 2}
+               hm (zipmap (range 20) (range 20)) sm (sorted-map :b 2 :a 1) s #{1 2} ss (sorted-set 3 1) hs (set (range 20))
+               q (into cljs.core/PersistentQueue.EMPTY [1 2]) q1 (conj cljs.core/PersistentQueue.EMPTY 5)
+               wv (with-meta [1 2] {:m 1}) wq (with-meta q {:m 3})
+               pv (cljs.core/PersistentVector. nil 2 5 (.-EMPTY-NODE cljs.core/PersistentVector) (array 7 8) nil)
+               pq (cljs.core/PersistentQueue. nil 1 (list 5) nil nil) tv (persistent! (conj! (transient [1]) 2))
+               sbig (subvec big 1 39) es (first (zipmap (range 20) (range 20)))]
+           (pr-str [(mapv first [v v1 v0 big sv e m hm sm s ss hs q q1 wv pv pq tv sbig es {} #{} cljs.core/PersistentQueue.EMPTY])
+                    (mapv rest [v v1 v0 sv e m sm s ss q q1 wv pv pq tv es {} #{} cljs.core/PersistentQueue.EMPTY])
+                    (mapv next [v v1 v0 sv e m sm s ss q q1 wv pv pq tv es {} #{} cljs.core/PersistentQueue.EMPTY])
+                    (take 3 (rest big)) (take 3 (next big)) (first (rest big)) (first (next (next big))) (count (rest big))
+                    (count (next hm)) (first (rest hm)) (first (rest hs)) (count (next sbig)) (first (rest sbig))
+                    (mapv meta [(rest v) (rest q) (next q) (rest wq) (next wq) (rest wv) (next wv)])
+                    [(instance? cljs.core/IndexedSeq (rest v)) (instance? cljs.core/ChunkedSeq (rest big)) (instance? cljs.core/ChunkedSeq (next big))
+                     (chunked-seq? (rest big)) (seq? (rest v)) (identical? (rest v0) ()) (seq? (next sv))]
+                    (let [[a & r] v [b & r2] big [k vv & r3] e] [a r b (count r2) k vv r3])]))";
+    every_level(
+        seqs,
+        "[[1 7 nil 0 2 :k [:a 1] [0 0] [:a 1] 1 1 0 1 5 1 7 5 1 1 0 nil nil nil] \
+         [(2 3) () () (3) (:v) ([:b 2]) ([:b 2]) (2) (3) (2) () (2) (8) () (2) (0) () () ()] \
+         [(2 3) nil nil (3) (:v) ([:b 2]) ([:b 2]) (2) (3) (2) nil (2) (8) nil (2) (0) nil nil nil] \
+         (1 2 3) (1 2 3) 1 2 39 19 [1 1] 1 37 2 [nil nil nil nil nil nil nil] [true true true true true true true] \
+         [1 (2 3) 0 39 :k :v nil]]",
+    );
+    // A subvector of, and an `assoc` onto, a vector the public constructor
+    // built over a caller's array, which then shrinks, answer as their seqs
+    // do (Sol review of light-cljs-375).
+    every_level(
+        "(let [a (array 7 8 9) sv (subvec (cljs.core/PersistentVector. nil 3 5 (.-EMPTY-NODE cljs.core/PersistentVector) a nil) 0 3)
+               av (assoc (cljs.core/PersistentVector. nil 2 5 (.-EMPTY-NODE cljs.core/PersistentVector) a nil) 0 1)]
+           (set! (.-length a) 0)
+           (pr-str [(first sv) (identical? (rest sv) ()) (next sv) (first av) (rest av) (next av)]))",
+        "[nil true nil 1 (8 9) (8 9)]",
+    );
+    let kept = units(seqs);
+    for unit in [
+        "first.branches",
+        "rest.branches",
+        "next.branches",
+        "first.vectors",
+        "rest.vectors",
+        "next.vectors",
+        "first.entries",
+        "first.maps",
+        "rest.sets",
+        "next.entries",
+        "vectorFirst",
+        "vectorRest",
+    ] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+    // A program with vectors and no other collection keeps the vectors'
+    // branches and not the helpers of the other kinds.
+    let kept = units("(js/console.log (first (vec (range 3))) (first [:a]))");
+    assert!(kept.contains(&"first.vectors"), "{kept:?}");
+    for unit in ["first.maps", "seqBranch", "nextBranch"] {
+        assert!(!kept.contains(&unit), "{unit}: {kept:?}");
+    }
 }
 
 /// Where protocol implementations exist, the collections' branches make the
@@ -2365,6 +2428,49 @@ fn collection_branches_find_what_javascript_gives_runtime_values() {
             "at {level}"
         );
     }
+    // The collections' `first`, `rest` and `next` (light-cljs-375) call a
+    // `-seq` that JavaScript gives a vector, an entry, a map, a set, a queue
+    // or a subvector once each, and the `ISeq` methods it gives a vector
+    // where the operations find them; at `advanced`, master and this runtime
+    // alike give `first` of the let-bound vectors their items.
+    let seqs = "(deftype T [] ISeqable (-seq [_] (list :t)))
+         (let [calls (atom [])
+               note (fn [tag] (swap! calls conj tag))
+               v [1 2 3] big (vec (range 40)) e (first {:k :v}) m {:a 1} s #{1} q (into cljs.core/PersistentQueue.EMPTY [1 2])
+               sv (subvec [1 2 3 4] 1 3) wv [4 5] pv (cljs.core/PersistentVector. nil 2 5 (.-EMPTY-NODE cljs.core/PersistentVector) (array 7 8) nil)]
+           (doseq [[x tag] [[v :v] [e :e] [m :m] [s :s] [q :q] [sv :sv]]]
+             (set! (.-cljs$core$ISeqable$ x) cljs.core/PROTOCOL_SENTINEL)
+             (set! (.-cljs$core$ISeqable$_seq$arity$1 x) (fn [_] (note tag) (list tag 2))))
+           (set! (.-cljs$core$ISeq$ wv) cljs.core/PROTOCOL_SENTINEL)
+           (set! (.-cljs$core$ISeq$_rest$arity$1 wv) (fn [_] (note :wv-rest) (list :r)))
+           (set! (.-cljs$core$ISeq$_first$arity$1 wv) (fn [_] (note :wv-first) :f))
+           (pr-str [[(first v) (rest v) (next v) (first e) (rest e) (next e) (first m) (rest m) (next m) (first s) (rest s) (next s)
+                     (first q) (rest q) (next q) (first sv) (rest sv) (next sv)]
+                    [(first wv) (rest wv) (next wv) (first big) (first (rest big)) (count (next big)) (first pv) (rest pv) (next pv) (first (T.))
+                     (first [9]) (rest [9]) (next [9]) (next [8 9]) (first []) (next [])]
+                    @calls]))";
+    let seq_program = self::program(seqs);
+    for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {
+        let js = prepare_application(&seq_program, ApplicationOptions::new(level)).emit_js();
+        assert_eq!(
+            execute(&format!("console.log({js});")),
+            "[[:v (2) (2) :e (2) (2) :m (2) (2) :s (2) (2) :q (2) (2) :sv (2) (2)] \
+             [:f (:r) (:r) 0 1 39 7 (8) (8) :t 9 () nil (9) nil nil] \
+             [:v :v :v :e :e :e :m :m :m :s :s :s :q :q :q :sv :sv :sv :wv-first :wv-rest :wv-rest]]\n",
+            "at {level}"
+        );
+    }
+    let js = prepare_application(
+        &seq_program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    )
+    .emit_js();
+    assert_eq!(
+        execute(&format!("console.log({js});")),
+        "[[1 (2) (2) :e (2) (2) :m (2) (2) :s (2) (2) :q (2) (2) :sv (2) (2)] \
+         [4 (:r) (:r) 0 1 39 7 (8) (8) :t 9 () nil (9) nil nil] \
+         [:v :v :e :e :e :m :m :m :s :s :s :q :q :q :sv :sv :sv :wv-rest :wv-rest]]\n"
+    );
 }
 
 /// `extend-type` of a collection type and `specify!` of a collection empty
