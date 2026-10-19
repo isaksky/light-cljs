@@ -3244,6 +3244,7 @@ fn merge_unit(
     let traced = enter(Stage::Append, source_index, None);
     let root = crate::program_fragment::append(program, &fragment, &shared, false, own_namespace);
     drop(traced);
+    session.merged_ir(unit);
     if release {
         let _traced = enter(Stage::Release, source_index, None);
         session.release_application_ir(unit);

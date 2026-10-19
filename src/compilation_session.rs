@@ -317,6 +317,45 @@ struct Catalog {
     requests: std::collections::VecDeque<BuildRequest>,
     replies: Vec<(u64, String, Option<Box<BuildLog>>)>,
     next_ticket: u64,
+    /// With `--stats`, the analyzed unit IR waiting to merge
+    /// ([`CompilationSession::measure_queued_ir`]).
+    queued_ir: QueuedIr,
+}
+/// The analyzed unit IR of a compilation measured with `--stats` that
+/// waits to merge into its program: from when a unit's analysis settles,
+/// on whichever thread, while the catalog holds it for the drain to take
+/// and while its namespace holds the drained unit for
+/// [`crate::analyzer::NamespaceAnalysis::merge_front`], until it merges.
+#[derive(Default)]
+struct QueuedIr {
+    /// Each unit's estimate while it waits, by unit ID
+    /// ([`crate::program_fragment::SharedPrefix::added_bytes`]).
+    held: Vec<usize>,
+    bytes: usize,
+    units: usize,
+    peak: crate::compile_stats::QueuedIrPeak,
+}
+impl QueuedIr {
+    fn hold(&mut self, id: usize, bytes: usize) {
+        if self.held.len() <= id {
+            self.held.resize(id + 1, 0);
+        }
+        if self.held[id] == 0 && bytes > 0 {
+            self.held[id] = bytes;
+            self.bytes += bytes;
+            self.units += 1;
+            self.peak.bytes = self.peak.bytes.max(self.bytes);
+            self.peak.units = self.peak.units.max(self.units);
+        }
+    }
+    fn merged(&mut self, id: usize) {
+        if let Some(held) = self.held.get_mut(id)
+            && *held > 0
+        {
+            self.bytes -= std::mem::take(held);
+            self.units -= 1;
+        }
+    }
 }
 struct BuildRequest {
     ticket: u64,
@@ -375,6 +414,9 @@ pub(crate) struct SharedCatalog {
     /// which a unit recorded off the coordinator hands it
     /// ([`crate::macro_host::UnitRecording`]); set when the pool starts.
     recording: std::sync::OnceLock<crate::macro_host::UnitRecording>,
+    /// Whether [`Catalog::queued_ir`] is measured: only with `--stats`, so
+    /// that a build without reads one relaxed load per unit.
+    measuring_ir: std::sync::atomic::AtomicBool,
     /// The build's test-only perturbation ([`crate::scheduler::Perturbation`]):
     /// the unit pool's scheduling, and the unit whose analysis panics.
     #[cfg(debug_assertions)]
@@ -460,6 +502,16 @@ impl SharedCatalog {
             let _ = self.failed_job.fetch_update(Relaxed, Relaxed, |failed| {
                 (failed == 0 || id + 1 < failed).then_some(id + 1)
             });
+        }
+    }
+    /// Whether the catalog measures the IR waiting to merge (`--stats`).
+    fn measuring_ir(&self) -> bool {
+        self.measuring_ir.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    /// [`CompilationSession::merged_ir`] on any thread.
+    fn merged_ir(&self, id: usize) {
+        if self.measuring_ir() {
+            self.lock().queued_ir.merged(id);
         }
     }
     /// What the build's isolates share, once its pool runs engines.
@@ -607,11 +659,16 @@ impl SharedCatalog {
         }
     }
     /// End the analysis of unit `id` that the thread in slot `thread` claimed
-    /// with `state`, or as interrupted, and wake the threads waiting for it.
-    fn settle(&self, thread: usize, id: usize, state: Option<AnalysisState>) {
+    /// with `state`, or as interrupted, and wake the threads waiting for it;
+    /// `held` is the analyzed IR's estimated bytes when
+    /// [`Self::measuring_ir`], or 0.
+    fn settle(&self, thread: usize, id: usize, state: Option<AnalysisState>, held: usize) {
         let (previous, waiting) = {
             let mut c = self.lock();
             let c = &mut *c;
+            if held > 0 && matches!(state, Some(AnalysisState::Analyzed(..))) {
+                c.queued_ir.hold(id, held);
+            }
             let popped = c.threads[thread].stack.pop();
             debug_assert_eq!(popped, Some(id));
             let unit = &mut c.units[id];
@@ -1377,6 +1434,26 @@ impl CompilationSession {
             })
             .collect()
     }
+    /// Measure, from now on until [`Self::queued_ir`], the analyzed unit IR
+    /// waiting to merge (`--stats`).
+    pub(crate) fn measure_queued_ir(&self) {
+        self.shared.lock().queued_ir = QueuedIr::default();
+        self.shared
+            .measuring_ir
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// The most analyzed unit IR that waited to merge since
+    /// [`Self::measure_queued_ir`], which stops measuring.
+    pub(crate) fn queued_ir(&self) -> crate::compile_stats::QueuedIrPeak {
+        self.shared
+            .measuring_ir
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        std::mem::take(&mut self.shared.lock().queued_ir).peak
+    }
+    /// Note that unit `id`'s analyzed IR merged into its program.
+    pub(crate) fn merged_ir(&self, id: usize) {
+        self.shared.merged_ir(id);
+    }
     /// How many units this compilation registered, analyzed, prepared and
     /// executed (`--stats`).
     pub fn unit_counts(&self) -> crate::compile_stats::DeferredUnitCounts {
@@ -1923,6 +2000,7 @@ fn analyze_unit(
         thread,
         id,
         state: None,
+        held: 0,
     };
     #[cfg(test)]
     if let Some(hook) = &*shared
@@ -2067,6 +2145,12 @@ fn analyze_unit(
                 shared.unit_name(id)
             )
         });
+    if let Ok((p, _)) = &result
+        && shared.measuring_ir()
+    {
+        guard.held = crate::program_fragment::SharedPrefix::same(&snapshot.resolution_program)
+            .added_bytes(p);
+    }
     guard.state = Some(match &result {
         Ok((p, w)) => AnalysisState::Analyzed(p.clone(), w.clone()),
         Err(e) => AnalysisState::Failed(e.clone(), diagnostic),
@@ -2414,12 +2498,19 @@ pub(crate) fn analyze_definition_test(
     let worker = host.engine.worker.as_ref().and_then(std::rc::Weak::upgrade);
     worker.expect("compilation session").analyze(unit, engine)
 }
-/// Give the analyzed `:test` unit `unit` to its application owner
+/// Give the analyzed `:test` unit `unit`, whose IR its definition's
+/// appended, to its application owner
 /// ([`CompilationSession::release_application_ir`]) from either thread.
 pub(crate) fn release_definition_test(host: &MacroHost, unit: usize) {
     match (host.session_handle(), &host.engine.catalog) {
-        (Some(session), _) => session.release_application_ir(unit),
-        (None, Some(catalog)) => catalog.release_application_ir(unit),
+        (Some(session), _) => {
+            session.merged_ir(unit);
+            session.release_application_ir(unit);
+        }
+        (None, Some(catalog)) => {
+            catalog.merged_ir(unit);
+            catalog.release_application_ir(unit);
+        }
         (None, None) => {}
     }
 }
@@ -2819,10 +2910,13 @@ struct AnalysisGuard<'a> {
     thread: usize,
     id: usize,
     state: Option<AnalysisState>,
+    /// The analyzed IR's estimated bytes, when measured.
+    held: usize,
 }
 impl Drop for AnalysisGuard<'_> {
     fn drop(&mut self) {
-        self.shared.settle(self.thread, self.id, self.state.take());
+        self.shared
+            .settle(self.thread, self.id, self.state.take(), self.held);
     }
 }
 
@@ -3287,7 +3381,7 @@ mod worker_tests {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             std::thread::sleep(blocked);
-            shared.settle(second, a, Some(AnalysisState::Failed("x".into(), None)));
+            shared.settle(second, a, Some(AnalysisState::Failed("x".into(), None)), 0);
             waiter.join().unwrap()
         });
         let wait = trace.stage(Stage::Wait).time;
@@ -3326,11 +3420,16 @@ mod worker_tests {
                 "compile dependency cycle: cljs.user/a -> cljs.user/c -> cljs.user/a"
             );
             // The error fails `a`, and the waiting thread shares the failure.
-            shared.settle(second, a, Some(AnalysisState::Failed(error.clone(), None)));
+            shared.settle(
+                second,
+                a,
+                Some(AnalysisState::Failed(error.clone(), None)),
+                0,
+            );
             assert_eq!(waiter.join().unwrap().unwrap_err(), error);
             error
         });
-        shared.settle(first, c, Some(AnalysisState::Failed(error, None)));
+        shared.settle(first, c, Some(AnalysisState::Failed(error, None)), 0);
         let c = shared.lock();
         assert!(
             c.threads

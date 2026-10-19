@@ -1610,6 +1610,62 @@ impl ParseRecords {
     }
 }
 
+/// With `--stats`, the parsed trees the loader holds: each source's from
+/// when it is parsed until its tree is released after its analysis
+/// ([`compile_stats::ParsedTreePeak`]).
+#[derive(Default)]
+struct ParsedTrees {
+    /// Each loaded source's estimate, in source order.
+    bytes: Vec<usize>,
+    held: usize,
+    files: usize,
+    peak: compile_stats::ParsedTreePeak,
+}
+
+impl ParsedTrees {
+    /// Count the sources loaded since the last call.
+    fn loaded(&mut self, ordered: &[NamespaceSource]) {
+        for file in &ordered[self.bytes.len()..] {
+            let bytes = tree_bytes(file);
+            self.bytes.push(bytes);
+            self.held += bytes;
+            self.files += 1;
+        }
+        self.peak.bytes = self.peak.bytes.max(self.held);
+        self.peak.files = self.peak.files.max(self.files);
+    }
+
+    /// Note that source `index`'s tree was released.
+    fn released(&mut self, index: usize) {
+        if let Some(bytes) = self.bytes.get_mut(index) {
+            self.held -= std::mem::take(bytes);
+            self.files -= 1;
+        }
+    }
+}
+
+/// An estimate of the bytes a loaded source's text and syntax tree hold:
+/// the text, its nodes and roots, the nodes' child lists and decoded
+/// strings.
+fn tree_bytes(file: &NamespaceSource) -> usize {
+    use crate::parser::{Node, NodeKind, StringValue};
+    use std::mem::size_of;
+    let syntax = &file.syntax;
+    let owned: usize = syntax
+        .nodes
+        .iter()
+        .map(|node| match &node.kind {
+            NodeKind::Collection { children, .. } => children.len() * size_of::<NodeId>(),
+            NodeKind::String(StringValue::Decoded(units)) => 2 * units.len(),
+            _ => 0,
+        })
+        .sum();
+    file.source.len()
+        + syntax.nodes.len() * size_of::<Node>()
+        + syntax.roots.len() * size_of::<NodeId>()
+        + owned
+}
+
 struct Loader<'a> {
     /// Where namespace sources come from: explicit roots on disk for the CLI
     /// (`FileSourceProvider`), or anything else the caller supplies.
@@ -2562,6 +2618,11 @@ fn analyze_entry(
     let started = compile_stats::start(timed);
     loader.load(entry)?;
     compile_stats::add(&mut resolve_parse, started);
+    // `--stats`: the parsed trees the loader holds.
+    let mut trees = timed.then(ParsedTrees::default);
+    if let Some(trees) = &mut trees {
+        trees.loaded(&loader.ordered);
+    }
     let entry_index = loader.ordered.len() - 1;
     source_warnings(&loader.ordered, 0, options, warnings);
     let analysis_started = compile_stats::start(timed);
@@ -2593,6 +2654,9 @@ fn analyze_entry(
     }
     if timed {
         analysis.deferred_time = Some(Duration::ZERO);
+        if let Some(session) = macros.session_handle() {
+            session.measure_queued_ir();
+        }
     }
     let mut capture_counts = crate::compile_stats::CaptureCounts::default();
     if capturing && let Some(session) = macros.session_handle() {
@@ -2892,6 +2956,9 @@ fn analyze_entry(
             let syntax = &mut loader.ordered[index].syntax;
             syntax.nodes = Vec::new();
             syntax.roots = Vec::new();
+            if let Some(trees) = &mut trees {
+                trees.released(index);
+            }
             let loaded = loader.ordered.len();
             let started = compile_stats::start(timed);
             for (namespace, span) in analysis.lazy_namespaces().to_vec() {
@@ -2908,6 +2975,9 @@ fn analyze_entry(
                 })?;
             }
             compile_stats::add(&mut lazy_parse, started);
+            if let Some(trees) = &mut trees {
+                trees.loaded(&loader.ordered);
+            }
             source_warnings(&loader.ordered, loaded, options, warnings);
             index += 1;
         }
@@ -2977,6 +3047,10 @@ fn analyze_entry(
         stats.trace = recording.and_then(crate::compile_trace::Recording::finish);
         if let Some(session) = macros.session_handle() {
             stats.deferred_units = session.unit_counts();
+            stats.memory.queued_ir = session.queued_ir();
+        }
+        if let Some(trees) = trees {
+            stats.memory.parsed_trees = trees.peak;
         }
         stats.parse_pool = loader.parse_pool;
         compile_stats::add(&mut stats.wall, begun);

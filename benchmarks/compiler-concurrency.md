@@ -46,6 +46,41 @@ bridge is the only functional difference), Penpot `main-none` with no
 The medians are +0.6% wall and +1.1% peak RSS, inside the +2% and +3%
 gate (the parent's 32.94 s is one outlier under load).
 
+## Memory report (light-cljs-376, October 19, 2026)
+
+`--stats` adds `memory.*` lines: the peak RSS, the most parsed trees the
+loader held and the most unit IR waiting to merge
+(docs/compiler-concurrency.md, "As built (light-cljs-376)"). Parent
+`b2cf31d` (base) against this change (cand), without `--stats`,
+alternating rounds at 1-minute load 4.6 to 7.4; a first comparison on the
+earlier parent `3d22a2d`, at load 5.0 to 11.3, is the second row.
+
+| Configuration | Rounds | Base wall (s) | Cand wall (s) | Base RSS (GB) | Cand RSS (GB) |
+| --- | --- | --- | --- | --- | --- |
+| serial, no `--stats` | 3 | 24.88 (24.88-25.29) | 24.98 (24.30-25.09) | 0.923 | 0.910 |
+| same, on `3d22a2d` | 3 | 23.89 (23.76-25.68) | 24.11 (23.74-25.74) | 0.926 | 0.911 |
+
+The serial gate holds: +0.4% wall and -1.4% peak RSS against the parent
+(+0.9% and -1.7% on `3d22a2d`), within the spread.
+The candidate's report on Penpot main (922 namespaces, 13,367 units), one
+run each at load 3.4 to 3.7:
+
+| Counter | `--jobs 1` | `--jobs 8` |
+| --- | --- | --- |
+| `memory.peak-rss-bytes` | 925,073,408 | 1,694,564,352 |
+| `memory.parsed-trees.peak-bytes` | 48,404,344 | 48,404,344 |
+| `memory.parsed-trees.peak-files` | 601 | 601 |
+| `memory.queued-ir.peak-bytes` | 16,141,654 | 16,141,654 |
+| `memory.queued-ir.peak-units` | 317 | 317 |
+
+At most 601 of the 922 sources held their trees at once (48 MB, 5% of the
+serial RSS); the rest load lazily, after earlier trees are released. The
+queued IR (16 MB) peaks
+where two namespaces' drained units wait for a merge, which is the same at
+both job counts because each drain still waits for its pooled units before
+its namespace returns. The 0.77 GB the eight-slot build adds is outside
+both accounts (the worker isolates' heaps among it).
+
 ## Stage A gate (light-cljs-343, October 19, 2026)
 
 The benchmark that decides the `--jobs` default (docs/compiler-concurrency.md,

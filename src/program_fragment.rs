@@ -120,6 +120,53 @@ impl SharedPrefix {
             namespaces: snapshot.namespaces.len(),
         }
     }
+
+    /// An estimate of the bytes `fragment` adds to what it shares, for
+    /// `--stats`: each table's entries after the shared ones times the
+    /// entry's size, and the added strings' UTF-16 code units. Entries' own
+    /// heap data (such as an expression's argument vector) is not counted.
+    pub(crate) fn added_bytes(&self, fragment: &Program) -> usize {
+        use std::mem::size_of;
+        let added = |len: usize, shared: usize, size: usize| len.saturating_sub(shared) * size;
+        let strings: usize = fragment
+            .strings
+            .range(self.strings.min(fragment.strings.len())..fragment.strings.len())
+            .map(|string| 2 * string.len())
+            .sum();
+        added(fragment.exprs.len(), self.exprs, size_of::<Expr>())
+            + added(fragment.strings.len(), self.strings, size_of::<Vec<u16>>())
+            + strings
+            + added(
+                fragment.named_literals.len(),
+                self.named_literals,
+                size_of::<NamedLiteral>(),
+            )
+            + added(
+                fragment.locals.len(),
+                self.locals,
+                size_of::<LocalBinding>(),
+            )
+            + added(
+                fragment.recur_targets.len(),
+                self.recur_targets,
+                size_of::<RecurTarget>(),
+            )
+            + added(
+                fragment.globals.len(),
+                self.globals,
+                size_of::<GlobalBinding>(),
+            )
+            + added(
+                fragment.js_globals.len(),
+                self.js_globals,
+                size_of::<JsGlobal>(),
+            )
+            + added(
+                fragment.namespaces.len(),
+                self.namespaces,
+                size_of::<String>(),
+            )
+    }
 }
 
 /// Maps one fragment table's IDs to the target's: the first `shared` keep

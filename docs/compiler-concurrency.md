@@ -1795,8 +1795,43 @@ output changes once, when stage A lands.
     runs a macro that recurses until V8's `RangeError` on workers: caught,
     the build goes on; uncaught, it fails with the same message at one
     and four slots.
-  - *Not built.* `--stats` has no RSS report, so queued IR and parsed
-    trees are not yet accounted in one; light-cljs-376 adds them.
+  - *As built (light-cljs-376), the memory report.* `--stats` ends its
+    counters with `memory.*` lines (`compile_stats::MemoryCounts`), which
+    account the process, the loader's sources and the queued unit IR
+    separately:
+    - `memory.peak-rss-bytes` is `getrusage(RUSAGE_SELF)`'s `ru_maxrss`
+      (bytes on macOS, kilobytes times 1024 on Linux, through a local
+      `extern "C"` declaration, no crate), read when the CLI reports; it
+      is omitted where the platform has none.
+    - `memory.parsed-trees.peak-bytes` and `-files`: `analyze_entry`
+      counts each source the loader appended (after the first load and
+      after each namespace's lazy loads) as its text plus nodes, roots,
+      child lists and decoded strings, and uncounts it where its tree is
+      released after its analysis; the peak is the largest sum. The text
+      stays for diagnostics after the release, but is counted only while
+      its tree is held. Every eagerly reached source is parsed before the
+      first analysis, so the peak is normally right after loading.
+    - `memory.queued-ir.peak-bytes` and `-units`: a unit's analysis, on
+      whichever thread, settles with its estimate
+      (`SharedPrefix::added_bytes`: each IR table's entries after the
+      snapshot's times the entry size, plus the added strings), which the
+      catalog adds under its lock; `merge_unit` removes it when the
+      fragment is appended, and `release_definition_test` when a
+      definition appends its `:test` unit's. So a unit counts while a pooled analysis waits
+      in the catalog for the drain to take it, while the drain's namespace
+      holds it until `merge_front` after the next namespace's top-level
+      pass, and also while a serially analyzed unit a macro demanded waits
+      for its drain. Without `--stats` each analysis and merge reads one
+      relaxed atomic and nothing else.
+    `tests/cli.rs`
+    `stats_reports_peak_rss_parsed_trees_and_queued_unit_ir_at_any_job_count`
+    checks the lines at one and four slots, with
+    `stats_parsed_tree_peaks_exclude_trees_released_before_a_lazy_load`
+    and `stats_queued_ir_peaks_drop_test_units_their_definitions_appended`
+    for the releases. On Penpot main the trees peak
+    at 48 MB (601 sources at once) and the queued IR at 16 MB (317 units)
+    at both one and eight slots, against 0.93 and 1.69 GB of RSS
+    (benchmarks/compiler-concurrency.md, "Memory report").
 
 ## Engineering inventory
 

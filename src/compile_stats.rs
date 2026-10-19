@@ -8,7 +8,7 @@
 //! namespaces with the most macro calls under a `[macro-calls-by-namespace]`
 //! line, one `NAMESPACE COUNT` line each. Times are milliseconds with one
 //! decimal. Later counters, such as the cache's, are added as further
-//! `key value` lines ahead of the table.
+//! `key value` lines ahead of the table; the `memory.*` lines come last.
 
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -143,6 +143,88 @@ pub struct CompileStats {
     pub cache: Option<CacheCounts>,
     /// The exclusive-stage trace of the analysis ([`crate::compile_trace`]).
     pub trace: Option<crate::compile_trace::Trace>,
+    /// What the compilation held in memory at its peaks.
+    pub memory: MemoryCounts,
+}
+
+/// What a compilation held in memory: the process's peak resident set and,
+/// estimated from table lengths times element sizes, the most parsed
+/// syntax trees and the most analyzed unit IR waiting to merge it held at
+/// once (README `--stats`; docs/compiler-concurrency.md, "As built
+/// (light-cljs-376)").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MemoryCounts {
+    /// The process's peak resident set size so far, in bytes
+    /// ([`peak_rss`]), where the platform reports one: set by the caller
+    /// that reports the compilation, as the CLI does.
+    pub peak_rss: Option<u64>,
+    /// The loader's parsed sources: each from when it is parsed until its
+    /// tree is released after its namespace's analysis.
+    pub parsed_trees: ParsedTreePeak,
+    pub queued_ir: QueuedIrPeak,
+}
+
+/// The most parsed syntax trees the loader held at once: their files, and
+/// the bytes of their source text, nodes, roots and child lists.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParsedTreePeak {
+    pub bytes: usize,
+    pub files: usize,
+}
+
+/// The most analyzed deferred-unit IR waiting to merge into the program at
+/// once, and the most units: from when a unit's analysis settles, on
+/// whichever thread, while the catalog holds it for its namespace's drain
+/// and while the namespace holds the drained unit until its units merge
+/// after the next namespace's top-level pass. Each unit counts the table
+/// entries its fragment adds to its snapshot's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct QueuedIrPeak {
+    pub bytes: usize,
+    pub units: usize,
+}
+
+/// The process's peak resident set size so far in bytes, from
+/// `getrusage(RUSAGE_SELF)`, on macOS and Linux.
+pub fn peak_rss() -> Option<u64> {
+    #[cfg(all(
+        any(target_os = "macos", target_os = "linux"),
+        target_pointer_width = "64"
+    ))]
+    {
+        /// `struct rusage` of 64-bit macOS and Linux: two `timeval`s, then
+        /// fourteen `long`s, `ru_maxrss` first.
+        #[repr(C)]
+        struct Usage {
+            times: [i64; 4],
+            maxrss: i64,
+            rest: [i64; 13],
+        }
+        unsafe extern "C" {
+            fn getrusage(who: i32, usage: *mut Usage) -> i32;
+        }
+        let mut usage = Usage {
+            times: [0; 4],
+            maxrss: 0,
+            rest: [0; 13],
+        };
+        // SAFETY: `usage` is a writable `struct rusage`; RUSAGE_SELF is 0.
+        if unsafe { getrusage(0, &mut usage) } != 0 {
+            return None;
+        }
+        let maxrss = u64::try_from(usage.maxrss).ok()?;
+        // Bytes on macOS, kilobytes on Linux.
+        if cfg!(target_os = "macos") {
+            Some(maxrss)
+        } else {
+            Some(maxrss * 1024)
+        }
+    }
+    #[cfg(not(all(
+        any(target_os = "macos", target_os = "linux"),
+        target_pointer_width = "64"
+    )))]
+    None
 }
 
 /// What a build's persistent cache did: each namespace is a hit, a miss
@@ -425,6 +507,14 @@ impl CompileStats {
         if let Some(trace) = &self.trace {
             trace.lines(&mut line);
         }
+        let memory = &self.memory;
+        if let Some(rss) = memory.peak_rss {
+            line("memory.peak-rss-bytes", &rss);
+        }
+        line("memory.parsed-trees.peak-bytes", &memory.parsed_trees.bytes);
+        line("memory.parsed-trees.peak-files", &memory.parsed_trees.files);
+        line("memory.queued-ir.peak-bytes", &memory.queued_ir.bytes);
+        line("memory.queued-ir.peak-units", &memory.queued_ir.units);
         out.push_str("[macro-calls-by-namespace]\n");
         let mut order = (0..self.namespaces.len()).collect::<Vec<_>>();
         // Most calls first; ties in source order.
@@ -482,6 +572,37 @@ mod tests {
         assert!(!report.contains("session-load"));
         assert!(report.ends_with("[macro-calls-by-namespace]\nb 5\na 1\nc 1\n"));
         assert!(!report.contains("cache.codec"));
+    }
+
+    #[test]
+    fn report_lists_memory_counters_last_with_the_resident_set_where_known() {
+        let mut stats = CompileStats {
+            memory: MemoryCounts {
+                peak_rss: Some(5_000_000),
+                parsed_trees: ParsedTreePeak {
+                    bytes: 4096,
+                    files: 3,
+                },
+                queued_ir: QueuedIrPeak {
+                    bytes: 2048,
+                    units: 7,
+                },
+            },
+            ..CompileStats::default()
+        };
+        let lines = "memory.parsed-trees.peak-bytes 4096\n\
+                     memory.parsed-trees.peak-files 3\n\
+                     memory.queued-ir.peak-bytes 2048\n\
+                     memory.queued-ir.peak-units 7\n\
+                     [macro-calls-by-namespace]\n";
+        let report = stats.report();
+        assert!(
+            report.ends_with(&format!("\nmemory.peak-rss-bytes 5000000\n{lines}")),
+            "{report}"
+        );
+        stats.memory.peak_rss = None;
+        let report = stats.report();
+        assert!(report.ends_with(&format!("\ntime.macro-free-units-ms 0.0\n{lines}")));
     }
 
     #[test]

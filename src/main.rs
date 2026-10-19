@@ -916,6 +916,7 @@ fn report_stats(
 ) -> Result<(), Box<dyn Error>> {
     if let Some(mut stats) = stats {
         stats.wall = begun.elapsed();
+        stats.memory.peak_rss = light_cljs::compile_stats::peak_rss();
         if let Some(path) = file {
             let trace = stats
                 .trace_file()

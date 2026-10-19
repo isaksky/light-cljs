@@ -337,7 +337,18 @@ come from a trace of *exclusive* stage times, in which nested work counts
 once: loading, the top-level passes without the units they demand, each
 deferred unit without the units it demands, the drains' bookkeeping, the
 V8 time of each, the units that entered the macro host and the ready width of
-each namespace's drain. `--stats-file PATH` (which implies `--stats`) also
+each namespace's drain. The `memory.*` counters come last:
+`memory.peak-rss-bytes`, the process's peak resident set so far (from
+`getrusage`, on macOS and Linux only; for `--watch` it covers the whole
+session); `memory.parsed-trees.peak-bytes` and `-files`, the most parsed
+sources the loader held at once, each from when it is parsed until its tree
+is released after its namespace's analysis (its text, nodes, roots, child
+lists and decoded strings); and `memory.queued-ir.peak-bytes` and `-units`,
+the most analyzed deferred-unit IR waiting to merge into the program at
+once, from when a unit's analysis ends, on whichever thread, until its
+namespace's units merge after the next namespace's top-level pass. Both
+peaks are estimates, table lengths times element sizes, without an
+expression's own vectors. `--stats-file PATH` (which implies `--stats`) also
 writes that trace to `PATH` as tab-separated `stage`, `namespace` and `unit`
 rows (and `execute` and `read` rows for the compile-time roots evaluated
 and read), with each unit's position, demander and costs, for

@@ -1350,6 +1350,198 @@ fn stats_reports_phase_times_and_macro_calls_on_stderr_without_changing_output()
     );
 }
 
+/// `--stats` reports what the build held in memory: the process's peak
+/// resident set, the most parsed trees the loader held at once and the
+/// most analyzed unit IR waiting to merge, at one slot and with the pool
+/// analyzing units on workers (light-cljs-376).
+#[test]
+fn stats_reports_peak_rss_parsed_trees_and_queued_unit_ir_at_any_job_count() {
+    let sources = TempDir::new("cli-stats-memory");
+    std::fs::create_dir(sources.join("app")).unwrap();
+    let write =
+        |name: &str, text: &str| std::fs::write(sources.join("app").join(name), text).unwrap();
+    for (index, name) in ["a", "b", "c"].iter().enumerate() {
+        write(
+            &format!("{name}.cljs"),
+            &format!(
+                "(ns app.{name})
+                 (defn scale [x] (* x {index}))
+                 (defn label [x] (str \"{name}-\" (scale x)))
+                 (defn total [xs] (reduce + (map scale xs)))
+                 (def answer (total [1 2 3]))"
+            ),
+        );
+    }
+    write(
+        "main.cljs",
+        "(ns app.main (:require [app.a :as a] [app.b :as b] [app.c :as c]))
+         (defn show [] (js/console.log (a/label 1) (b/label 2) (c/total [1 2]) a/answer))
+         (show)",
+    );
+    let root = sources.path().to_str().unwrap();
+    let args = ["--compile", "--entry", "app.main", "--source-root", root];
+    let plain = light_cljs(&args);
+    assert!(plain.status.success());
+    for jobs in ["1", "4"] {
+        let output = light_cljs(&[&args[..], &["--stats", "--jobs", jobs]].concat());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "{stderr}");
+        assert_eq!(output.stdout, plain.stdout, "--jobs {jobs}");
+        let (counters, _) = parse_stats(&stderr);
+        let value = |key: &str| {
+            counters
+                .iter()
+                .find(|(name, _)| name == key)
+                .unwrap_or_else(|| panic!("{key} in {stderr}"))
+                .1
+        };
+        // The memory lines follow the other counters, in this order.
+        let keys = counters
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .skip_while(|key| !key.starts_with("memory."))
+            .collect::<Vec<_>>();
+        let mut expected = vec![
+            "memory.parsed-trees.peak-bytes",
+            "memory.parsed-trees.peak-files",
+            "memory.queued-ir.peak-bytes",
+            "memory.queued-ir.peak-units",
+        ];
+        if cfg!(any(target_os = "macos", target_os = "linux")) {
+            expected.insert(0, "memory.peak-rss-bytes");
+            // In bytes, not kilobytes: the compiler alone holds over 1 MB.
+            assert!(value("memory.peak-rss-bytes") > 1e6, "{stderr}");
+        }
+        assert_eq!(keys, expected, "{stderr}");
+        // Every source is parsed before the first is analyzed, and each
+        // tree holds at least its text.
+        assert_eq!(value("memory.parsed-trees.peak-files"), 4.0, "{stderr}");
+        let text: usize = ["a", "b", "c", "main"]
+            .iter()
+            .map(|name| {
+                std::fs::metadata(sources.join("app").join(format!("{name}.cljs")))
+                    .unwrap()
+                    .len() as usize
+            })
+            .sum();
+        assert!(
+            value("memory.parsed-trees.peak-bytes") > text as f64,
+            "{stderr}"
+        );
+        // A namespace's drained units wait for the next one's top-level
+        // pass, so at least one namespace's are queued at once.
+        assert!(value("memory.queued-ir.peak-units") >= 3.0, "{stderr}");
+        assert!(
+            value("memory.queued-ir.peak-bytes") > 100.0 * value("memory.queued-ir.peak-units"),
+            "{stderr}"
+        );
+        if jobs == "4" && cfg!(feature = "v8-macros") {
+            assert!(value("deferred-units.pooled") > 0.0, "{stderr}");
+        }
+    }
+}
+
+/// A definition's `:test` unit leaves the queued IR when the definition's
+/// analysis appends it, so the peak does not grow with the namespaces that
+/// have such tests (light-cljs-376).
+#[test]
+fn stats_queued_ir_peaks_drop_test_units_their_definitions_appended() {
+    let sources = TempDir::new("cli-stats-test-units");
+    std::fs::create_dir(sources.join("app")).unwrap();
+    let write =
+        |name: &str, text: &str| std::fs::write(sources.join("app").join(name), text).unwrap();
+    let names = (1..=8).map(|i| format!("app.n{i}")).collect::<Vec<_>>();
+    for (i, name) in names.iter().enumerate() {
+        write(
+            &format!("n{}.cljs", i + 1),
+            &format!("(ns {name}) (defn f {{:test (fn [] (assert (= 42 (f))))}} [] 42)"),
+        );
+    }
+    write(
+        "main.cljs",
+        &format!(
+            "(ns app.main (:require {})) (js/console.log (app.n1/f))",
+            names.iter().map(|n| format!("[{n}]")).collect::<String>()
+        ),
+    );
+    let root = sources.path().to_str().unwrap();
+    let args = ["--compile", "--entry", "app.main", "--source-root", root];
+    for jobs in ["1", "4"] {
+        let output = light_cljs(&[&args[..], &["--stats", "--jobs", jobs]].concat());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "{stderr}");
+        let (counters, _) = parse_stats(&stderr);
+        let value = |key: &str| {
+            counters
+                .iter()
+                .find(|(name, _)| name == key)
+                .unwrap_or_else(|| panic!("{key} in {stderr}"))
+                .1
+        };
+        assert_eq!(value("deferred-units.registered"), 16.0, "{stderr}");
+        // Two namespaces' definitions and a test unit at most, not the
+        // eight test units.
+        let units = value("memory.queued-ir.peak-units");
+        assert!((1.0..=3.0).contains(&units), "{stderr}");
+    }
+}
+
+/// A lazily loaded source is parsed after the trees before it are
+/// released, so the parsed-tree peak counts what is held at once, not every
+/// source the build parsed (light-cljs-376).
+#[test]
+fn stats_parsed_tree_peaks_exclude_trees_released_before_a_lazy_load() {
+    let sources = TempDir::new("cli-stats-lazy-trees");
+    std::fs::create_dir(sources.join("app")).unwrap();
+    let write =
+        |name: &str, text: &str| std::fs::write(sources.join("app").join(name), text).unwrap();
+    // app.main and light.lazy load first; app.b after app.main's analysis,
+    // app.c after app.b's.
+    write(
+        "main.cljs",
+        "(ns app.main (:require [light.lazy :as lazy]))
+         (def b (lazy/loadable app.b/start))
+         (defn start [] (lazy/load b))
+         (start)",
+    );
+    write(
+        "b.cljs",
+        "(ns app.b (:require [light.lazy :as lazy]))
+         (def c (lazy/loadable app.c/start))
+         (defn start [] (lazy/load c))",
+    );
+    write("c.cljs", "(ns app.c) (defn start [] (js/console.log 1))");
+    let root = sources.path().to_str().unwrap();
+    let args = ["--compile", "--entry", "app.main", "--source-root", root];
+    let plain = light_cljs(&args);
+    assert!(plain.status.success());
+    for jobs in ["1", "4"] {
+        let output = light_cljs(&[&args[..], &["--stats", "--jobs", jobs]].concat());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "{stderr}");
+        assert_eq!(output.stdout, plain.stdout, "--jobs {jobs}");
+        let (counters, _) = parse_stats(&stderr);
+        let value = |key: &str| {
+            counters
+                .iter()
+                .find(|(name, _)| name == key)
+                .unwrap_or_else(|| panic!("{key} in {stderr}"))
+                .1
+        };
+        assert_eq!(value("namespaces"), 4.0, "{stderr}");
+        assert_eq!(value("memory.parsed-trees.peak-files"), 2.0, "{stderr}");
+        let text = |name: &str| {
+            std::fs::metadata(sources.join("app").join(name))
+                .unwrap()
+                .len() as f64
+        };
+        // Held with light.lazy's tree, app.main's is the peak's; app.b's
+        // and app.c's come later, alone.
+        let peak = value("memory.parsed-trees.peak-bytes");
+        assert!(peak > text("main.cljs"), "{stderr}");
+    }
+}
+
 /// `--stats-file PATH` writes the exclusive-stage trace: stage totals that
 /// add up to the traced wall time, each namespace with its requires, and each
 /// unit with its demander. A macro the top level calls demands its helper
