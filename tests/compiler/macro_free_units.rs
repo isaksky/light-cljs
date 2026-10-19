@@ -28,6 +28,10 @@ impl Sources {
 /// spans and its stats.
 struct Built {
     output: Result<String, String>,
+    /// Every expression's source index and span, and the source-mapped
+    /// output, of a build that succeeded.
+    spans: Vec<(usize, std::ops::Range<usize>)>,
+    mapped: Option<(String, light_cljs::source_map::SourceMapping)>,
     warnings: Vec<(String, String, usize, std::ops::Range<usize>)>,
     stats: CompileStats,
 }
@@ -60,7 +64,18 @@ fn build_with(
             ..Default::default()
         },
     );
+    let program = analyzed.as_ref().ok().map(|(program, _)| program);
     Built {
+        spans: program.map_or_else(Vec::new, |program| {
+            program
+                .exprs
+                .iter()
+                .map(|e| (e.source_index, e.span.clone()))
+                .collect()
+        }),
+        mapped: program.map(|program| {
+            light_cljs::prepare_application(program, Default::default()).emit_js_mapped()
+        }),
         output: analyzed
             .map(|(program, _)| emit_js(&program))
             .map_err(|error| error.to_string()),
@@ -103,6 +118,8 @@ fn same_at_every_slot_count(sources: &Sources, entry: &str, warning_mode: bool) 
         for _ in 0..3 {
             let pooled = build(sources, entry, slots, warning_mode);
             assert_eq!(pooled.output, serial.output, "{slots} slots");
+            assert_eq!(pooled.spans, serial.spans, "{slots} slots");
+            assert_eq!(pooled.mapped, serial.mapped, "{slots} slots");
             assert_eq!(pooled.warnings, serial.warnings, "{slots} slots");
             assert_eq!(
                 pooled.stats.macro_calls, serial.stats.macro_calls,

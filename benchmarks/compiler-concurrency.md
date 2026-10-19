@@ -104,9 +104,13 @@ globals a unit adds keep their IDs, `publish_globals`). With
 JavaScript (SHA-256 `1fe5da19...`), source maps (`e95f9ee4...`) and
 warnings (none) on the new order, in 26.3 s, 27.5 s and 27.5 s at load
 about 6; 5,304 of the 13,367 units are macro-free, taking about 0.3 to
-0.45 s of 17 s of deferred units at `--jobs 2` and `8`. In the fixtures,
-the span of a scalar a JavaScript macro returns can still differ between
-`--jobs` values, which Penpot does not show (light-cljs-371).
+0.45 s of 17 s of deferred units at `--jobs 2` and `8`. Rebased onto
+light-cljs-358 and light-cljs-371, `--jobs 1`, `2` and `8` again give
+identical JavaScript (33,647,728 bytes, `93c6546d...`), source maps
+(`8d2a3f10...`) and warnings (none), in 29.4 s, 28.9 s and 27.4 s at load
+14 to 17. With 371's per-call scalar tables the fixtures' expression
+spans and source maps are the same at every `--jobs` value too
+(`same_at_every_slot_count`).
 
 ## Macro-free units on the pool (light-cljs-338, October 18, 2026)
 
