@@ -1551,6 +1551,102 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
     );
 }
 
+/// The read edges of `--stats-file` cover roots whose JavaScript was
+/// prepared before their first evaluation and record bundles, such as a
+/// record's, when a macro forces them; each (demander, unit) pair once.
+#[test]
+fn stats_file_traces_prepared_and_bundle_root_reads() {
+    let sources = TempDir::new("cli-stats-file-reads");
+    std::fs::create_dir(sources.join("app")).unwrap();
+    let write =
+        |name: &str, text: &str| std::fs::write(sources.join("app").join(name), text).unwrap();
+    write(
+        "shapes.cljs",
+        "(ns app.shapes)
+         (defprotocol Area (area [s]))
+         (defrecord Square [n] Area (area [_] (* n n)))
+         (defn square [n] (->Square n))
+         (defmacro square-area [n] (area (square n)))",
+    );
+    write(
+        "main.cljs",
+        "(ns app.main (:require [app.shapes :refer [square-area]]))
+         (js/console.log (square-area 3) (square-area 4))
+         (def later (square-area 5))
+         (js/console.log later)",
+    );
+    let root = sources.path().to_str().unwrap();
+    let file = sources.join("trace.tsv");
+    let output = light_cljs(&[
+        "--compile",
+        "--entry",
+        "app.main",
+        "--source-root",
+        root,
+        "--stats-file",
+        file.to_str().unwrap(),
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let trace = std::fs::read_to_string(&file).unwrap();
+    let rows = |kind: &str| {
+        trace
+            .lines()
+            .filter_map(|line| {
+                let (row, rest) = line.split_once('\t')?;
+                (row == kind).then(|| rest.split('\t').map(str::to_owned).collect::<Vec<_>>())
+            })
+            .collect::<Vec<_>>()
+    };
+    // The protocol's and the record's declarations are bundles; `square` is
+    // a plain root. All three were drained and prepared in app.shapes.
+    let units = rows("unit");
+    let id = |name: &str| {
+        units
+            .iter()
+            .find(|row| row[2] == name)
+            .unwrap_or_else(|| panic!("{name} in {trace}"))[0]
+            .clone()
+    };
+    let (protocol, record, square, later) = (
+        id("declaration#0"),
+        id("declaration#1"),
+        id("app.shapes/square"),
+        id("app.main/later"),
+    );
+    // app.main's top level evaluates each for the first time, from
+    // prepared JavaScript.
+    let mut executions = rows("execute");
+    executions.sort();
+    let mut expected: Vec<_> = [&protocol, &record, &square]
+        .into_iter()
+        .map(|unit| vec![unit.clone(), "top-level".into(), "1".into(), "1".into()])
+        .collect();
+    expected.sort();
+    assert_eq!(executions, expected, "{trace}");
+    // Its two expansions read each once, and `later`'s expansion reads the
+    // three ready ones again: `square`, the record's constructor it calls
+    // and the protocol `area` dispatches on.
+    let row = |unit: &String, kind: &str, demander: &str| {
+        vec![unit.clone(), kind.to_owned(), demander.to_owned()]
+    };
+    assert_eq!(
+        rows("read"),
+        [
+            row(&protocol, "top-level", "1"),
+            row(&square, "top-level", "1"),
+            row(&record, "top-level", "1"),
+            row(&protocol, "unit", &later),
+            row(&square, "unit", &later),
+            row(&record, "unit", &later),
+        ],
+        "{trace}"
+    );
+}
+
 /// `LIGHT_CLJS_CAPTURE_ARTIFACTS=encode` encodes and decodes every captured
 /// artifact and reports the sizes with `--stats`; the output is unchanged.
 #[test]
