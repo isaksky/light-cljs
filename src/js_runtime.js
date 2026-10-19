@@ -24,7 +24,16 @@
   };
   //@unit symbols
   const symbols = new WeakMap();
-  //@unit privateStore
+  //@unit weakMapStores
+  // A host whose WeakMap entries cost less than private fields, as the
+  // evaluator's reference-counting QuickJS, states so before the runtime
+  // loads; a `privateStore` or `kindedStore` is then a WeakMap, as
+  // unforgeable a brand. The engine is never sniffed (light-cljs-292).
+  // Where it is not, a store tests that a value can hold a private field
+  // with `canHoldField`, which V8 inlines.
+  const weakMapStores = globalThis.lightCljsWeakMapStores === true,
+    canHoldField = value => typeof value === "object" ? value !== null : typeof value === "function";
+  //@unit privateStore requires: canHoldField, weakMapStores
   // A store like a vector's, with a private field of its own: the seq kinds'
   // stores (`cells`, `views`, `lazyValues`, `chunks`), and those of the other
   // values that operations build one per call (`reducedValues`, `transients`,
@@ -37,33 +46,34 @@
   // which the seq operations do not feel; `vectors` keeps its own, since
   // sharing slowed `conj` and `nth` on a vector by a third.
   function privateStore() {
+    if (weakMapStores) { const store = new WeakMap(); store.reset = store.set; return store; }
     const Store = class extends (function (value) { return value; }) {
       #s;
-      static has(value) { return (typeof value === "object" ? value !== null : typeof value === "function") && #s in value; }
-      // Not `Store.has`: QuickJS, which does not inline it, would call it.
-      static get(value) { if ((typeof value === "object" ? value !== null : typeof value === "function") && #s in value) return value.#s; }
+      static has(value) { return canHoldField(value) && #s in value; }
+      static get(value) { if (canHoldField(value) && #s in value) return value.#s; }
       static set(value, payload) { new Store(value).#s = payload; }
       static reset(value, payload) { value.#s = payload; }
     };
     return Store;
   }
-  //@unit kindedStore
+  //@unit kindedStore requires: canHoldField, weakMapStores
   // The store of the maps and sets outside the hash tries (`maps`, `sets`):
   // a `privateStore` that also keeps a value's kind (`mapKinds`, `setKinds`)
   // in a second private field, so that a map or set, which each `assoc` or
   // `conj` builds, gets both with one construction (light-cljs-291). A
   // value's kind is set after its payload.
   function kindedStore() {
+    if (weakMapStores) { const store = new WeakMap(); store.reset = store.set; store.kinds = new WeakMap(); return store; }
     const Store = class extends (function (value) { return value; }) {
       #s; #k;
-      static has(value) { return (typeof value === "object" ? value !== null : typeof value === "function") && #s in value; }
-      static get(value) { if ((typeof value === "object" ? value !== null : typeof value === "function") && #s in value) return value.#s; }
+      static has(value) { return canHoldField(value) && #s in value; }
+      static get(value) { if (canHoldField(value) && #s in value) return value.#s; }
       static set(value, payload) { new Store(value).#s = payload; }
       static reset(value, payload) { value.#s = payload; }
       static kinds = {
         // Not `Store.has`, which the hash tries and records replace.
-        has: value => (typeof value === "object" ? value !== null : typeof value === "function") && #s in value && value.#k !== undefined,
-        get(value) { if ((typeof value === "object" ? value !== null : typeof value === "function") && #s in value) return value.#k; },
+        has: value => canHoldField(value) && #s in value && value.#k !== undefined,
+        get(value) { if (canHoldField(value) && #s in value) return value.#k; },
         set(value, kind) { value.#k = kind; return this; }
       };
     };

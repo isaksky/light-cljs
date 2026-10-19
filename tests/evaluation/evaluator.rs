@@ -375,3 +375,20 @@ fn quoted_javascript_macro_literals_execute_in_fresh_quickjs_and_node_heaps() {
         }
     }
 }
+#[test]
+fn quickjs_sessions_keep_payload_stores_in_weak_maps() {
+    // The evaluator states that a WeakMap entry costs its QuickJS less than a
+    // private field, so the session's runtime stores a `reduced` marker's
+    // payload with one entry, where Node's runtime writes none (light-cljs-292).
+    let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+    let writes = e
+        .evaluate_unit(
+            "rt => { const set = WeakMap.prototype.set; let writes = 0; \
+             WeakMap.prototype.set = function (...args) { writes++; return set.apply(this, args); }; \
+             let marker; try { marker = rt.core.reduced(42); } finally { WeakMap.prototype.set = set; } \
+             return rt.core.isReduced(marker) && rt.core.deref(marker) === 42 \
+               && globalThis.lightCljsWeakMapStores === true ? writes : -1; }",
+        )
+        .unwrap();
+    assert_eq!(e.number(writes).unwrap(), 1.0);
+}

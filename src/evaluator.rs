@@ -286,7 +286,11 @@ impl Evaluator {
             preserve_language_errors,
             rejected: Rc::new(Cell::new(false)),
         };
+        // QuickJS frees short-lived values by reference counting, so a WeakMap
+        // entry costs it less than adding a private field: every runtime this
+        // session loads keeps its payload stores in WeakMaps (light-cljs-292).
         session.enter(|ctx| ctx.eval::<(), _>(format!(r#"
+            globalThis.lightCljsWeakMapStores = true;
             const __lightEvaluator = (() => {{
               const rt = {RUNTIME_SOURCE};
               const values = new Map(); let next = 1; let lastError = null;

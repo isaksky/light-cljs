@@ -1129,6 +1129,14 @@ operation builds one per call keep theirs in private fields too
 array maps and sets ([Hash maps](#hash-maps)). A step of `repeat` stores no nil
 metadata or hash, and no positional constructor stores a null hash; the compiler
 form bridge reads a repeat as having nil metadata, as it does a lazy seq.
+A host that states `globalThis.lightCljsWeakMapStores` before a runtime loads,
+as the evaluator does in its QuickJS sessions (macro expansion there, and
+`--eval` or `--repl` with `--engine quickjs`), gets all of these stores as
+`WeakMap`s instead (light-cljs-292), as unforgeable a brand: QuickJS frees
+short-lived values by reference counting, so an entry costs it less than
+adding a private field, which runs a class's constructors. The runtime reads
+the statement once when it loads and never sniffs the engine; vectors and the
+hash tries keep their private fields in every host.
 `rest` at the end (including nil) is the empty list, while `next` is nil. Each tail
 is O(1), so complete traversal is linear. String traversal produces UTF-16
 one-unit strings. `conj` of a generic seq produces a seq-cons, distinct from a list.

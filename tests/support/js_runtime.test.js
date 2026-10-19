@@ -1630,6 +1630,66 @@ console.log('seq payloads are private fields that host objects cannot copy');
 }
 console.log('reduced markers, transients, queues and array maps and sets are private fields too');
 
+// A host that states `lightCljsWeakMapStores`, as the evaluator's QuickJS does,
+// gets those stores as WeakMaps (light-cljs-292): each value then writes its
+// entries, the values behave as before, and a host object that inherits a
+// value's prototype or copies its own properties is still none of them.
+{
+  const set = WeakMap.prototype.set;
+  let writes = 0;
+  // Counted from before the runtime loads, as the hash tries' stores keep
+  // the `set` they find (`trieBrand`).
+  WeakMap.prototype.set = function (...args) { writes++; return set.apply(this, args); };
+  globalThis.lightCljsWeakMapStores = true;
+  let fresh, built;
+  try {
+    try { fresh = (0, eval)(fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8')); }
+    finally { delete globalThis.lightCljsWeakMapStores; }
+    const f = fresh.core, key = f.keyword('a'), map = f.arrayMap(key, 1), members = f.hashSet(1);
+    const steps = f.mapcat(f.identity, f.drop(1, f.partition(2, f.filter(f.isEven, f.mapSeq(f.inc, f.range(200))))));
+    assert.equal(f.reduce(f.add, 0, steps), 10094);
+    const lazy = f.mapSeq(x => x + 1, f.range(3)), chunked = f.seq(f.mapSeq(x => x + 1, f.range(40)));
+    built = {
+      lazy, chunked, chunk: f.chunkFirst(chunked), view: f.seq([1, 2, 3]), cons: f.cons(0, lazy), list: f.list(1, 2),
+      reduced: f.reduced(1), transientVector: f.transient(f.vector(1)), transientMap: f.transient(map),
+      transientSet: f.transient(members), queue: f.conj(fresh.queueFromArray([1]), 2), iteratorSeq: f.seq(new Set([1, 2])),
+      arrayMap: f.arrayMap(key, 2), assoc: f.assoc(map, 2, 3), set: f.hashSet(1, 2), conj: f.conj(members, 2),
+      persisted: f.persistentBang(f.assocBang(f.transient(map), 5, 1)), repeat: f.repeat(2, 1)
+    };
+    assert.ok(writes > 0);
+    writes = 0;
+    f.reduced(2);
+    assert.equal(writes, 1);
+    writes = 0;
+    f.arrayMap(key, 3);
+    assert.equal(writes, 2);
+  } finally { WeakMap.prototype.set = set; }
+  const f = fresh.core, key = f.keyword('a');
+  assert.equal(f.isChunkedSeq(built.chunked), true);
+  assert.equal(f.count(built.chunk), 32);
+  assert.equal(f.prStr(f.vector(built.cons, built.list, built.view, built.lazy)), '[(0 1 2 3) (1 2) (1 2 3) (1 2 3)]');
+  assert.equal(f.deref(built.reduced), 1);
+  assert.equal(f.isReduced(built.reduced), true);
+  assert.equal(f.prStr(f.persistentBang(built.transientVector)), '[1]');
+  assert.equal(f.prStr(f.persistentBang(built.transientMap)), '{:a 1}');
+  assert.equal(f.prStr(f.persistentBang(built.transientSet)), '#{1}');
+  assert.equal(f.prStr(built.queue), '#queue [1 2]');
+  assert.equal(f.count(built.iteratorSeq), 2);
+  assert.equal(f.prStr(f.vector(built.arrayMap, built.assoc, built.persisted, built.set, built.conj, built.repeat)),
+    '[{:a 2} {:a 1, 2 3} {:a 1, 5 1} #{1 2} #{1 2} (1 1)]');
+  assert.equal(f.equal(built.assoc, f.hashMap(key, 1, 2, 3)), true);
+  assert.equal(f.isMap(built.arrayMap), true);
+  assert.equal(f.isSet(built.conj), true);
+  for (const value of Object.values(built)) {
+    for (const candidate of [Object.create(Object.getPrototypeOf(value)), Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))]) {
+      for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isChunkedSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
+      assert.equal(fresh.inspect(candidate), null);
+      assert.throws(() => f.count(candidate), /count not supported/);
+    }
+  }
+}
+console.log('a host that states WeakMap stores keeps its payloads in WeakMaps, as unforgeable');
+
 // Public find and the IFind fallback consume one retained map search.
 {
   const events = [];

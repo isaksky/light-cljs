@@ -4804,3 +4804,84 @@ end at 17.0 MB used before the final collection and 3.3 MB after
 (`LIGHT_V8_STATS`). The long session is quadratic on both engines: each
 `def`'s unit registers the namespace with every binding so far (13.8 MB of
 unit source at 2,000 forms against 3.5 MB at 1,000).
+
+## WeakMap stores in QuickJS — October 18, 2026
+
+light-cljs-292 gives QuickJS back the throughput that private-field stores
+cost it (light-cljs-259, light-cljs-291). The evaluator states
+`globalThis.lightCljsWeakMapStores = true` before its QuickJS session loads a
+runtime, and `privateStore()` and `kindedStore()` then return `WeakMap`s
+(with `reset` and, for the kinded store, a `kinds` map), as unforgeable a
+brand; Node, browsers and the V8 macro host state nothing and keep the
+private fields. The runtime reads the statement once when it loads and never
+sniffs the engine
+([compiler.md](../docs/compiler.md#lists-vectors-and-seqs)). In a QuickJS
+microbenchmark, stamping and reading one value costs about 210 ns through a
+private-field store and 65 ns through a `WeakMap`: adding the field runs the
+derived constructor, the base constructor (which allocates a `this` it
+discards) and the field initializer, where `WeakMap.prototype.set` is one
+native call that reference counting cleans up. A derived base constructor,
+which allocates nothing, saved only 20 ns of that.
+
+Command, with a copy of the bench binary built on master `6280d29` and one
+on this change, run in turn from the same tree (master then change, then
+change then master), and once with master `b8c199a`'s bench binary, the
+master before light-cljs-259, against this change:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --samples 15 \
+  --only seq-pipeline,reduced-early,transient-batches,queue-ops,iterator-seq,event-maps,keyword-lookups,constant-keys,constant-literals,record-protocol,vector-conj,map-assoc,set-conj,map-into,vector-into \
+  --output DIR
+```
+
+Node v24.18.0, macOS 15 (Darwin 24.6) ARM64 VM, 24 CPUs, two other workers
+running (one-minute load 8 to 10). Median µs per call, before / after, first
+pair then second:
+
+| Workload | n | Level | QuickJS | Node |
+| --- | ---: | --- | ---: | ---: |
+| seq-pipeline | 200 | `advanced` | 1,755 / 1,440; 1,757 / 1,446 | 152 / 151; 154 / 147 |
+| seq-pipeline | 200 | `none` | 9,932 / 8,323; 9,884 / 8,328 | 887 / 904; 889 / 886 |
+| reduced-early | 5000 | `advanced` | 22,515 / 17,034; 22,517 / 16,953 | 1,149 / 1,148; 1,141 / 1,151 |
+| reduced-early | 5000 | `none` | 57,163 / 50,525; 56,915 / 50,489 | 2,749 / 2,749; 2,753 / 2,733 |
+| transient-batches | 2000 | `advanced` | 24,622 / 21,002; 24,628 / 20,983 | 2,192 / 2,205; 2,154 / 2,171 |
+| queue-ops | 2000 | `advanced` | 21,437 / 15,990; 21,436 / 15,990 | 2,723 / 2,703; 2,718 / 2,690 |
+| iterator-seq | 2000 | `advanced` | 6,626 / 4,307; 6,677 / 4,257 | 491 / 499; 495 / 498 |
+| event-maps | 5000 | `advanced` | 10,562 / 9,062; 10,548 / 9,048 | 721 / 719; 724 / 723 |
+| event-maps | 5000 | `none` | 138,087 / 126,999; 138,746 / 126,023 | 16,766 / 16,894; 16,667 / 16,745 |
+| keyword-lookups | 2000 | `advanced` | 20,942 / 18,871; 20,994 / 18,841 | 1,561 / 1,587; 1,579 / 1,593 |
+| keyword-lookups | 2000 | `none` | 95,110 / 85,330; 94,770 / 85,128 | 10,130 / 10,135; 10,116 / 10,149 |
+| constant-keys | 200 | `advanced` | 6,803 / 5,730; 6,854 / 5,724 | 672 / 663; 673 / 674 |
+| constant-literals | 2000 | `none` | 137,007 / 121,064; 137,216 / 121,380 | 15,173 / 15,303; 15,088 / 15,059 |
+| record-protocol | 2000 | `advanced` | 642 / 645; 644 / 652 | 24.8 / 23.9; 24.7 / 24.1 |
+
+`prepare` moved as `none` did. Every QuickJS row that builds values of these
+kinds is 10% to 36% faster, and each is now at or below light-cljs-291's
+"before" (for example `queue-ops` 18,668, `iterator-seq` 5,838, `reduced-early`
+21,395 and `constant-keys` 6,177 there). In Node every row, and the collection
+workloads (`vector-conj`, `vector-into`, `map-assoc`, `map-into` and `set-conj`
+at 2,000 and 20,000), stayed within 2% in the second pair and within 4% in the
+first; light-cljs-291's Node gains stand.
+
+Against the master before light-cljs-259 (`b8c199a`), `seq-pipeline` at
+`advanced` in QuickJS takes 1,416 µs to its 2,593 (load 3), and 1,458 to its
+2,719 in a second run (load 9 to 12); in Node 143 and 161 µs, against 330 after
+light-cljs-259.
+
+`constant-keys` in Node remains about 4% slower than before light-cljs-291
+(555 to 575 µs in seven-process medians of the compiled program, after this
+change): a CPU profile puts the difference in `structuralEqualPair`, whose
+`maps.has` and `sets.has` now test a private brand on keywords, vectors, maps
+and sets alike, where a `WeakMap`'s `has` did not depend on the receiver's
+shape. Giving sets a `kindedStore` class of their own made it slower (598 µs).
+
+Sizes (bytes, size ratchet): the runtime that every `none` and `prepare`
+output embeds grew 387 bytes (`console-log-sum` 464,850 to 465,237), and the
+nineteen ceiling pairs it passed rose to the next 1,000. At `advanced` no
+output grew: the stores test a value that can hold a field with one shared
+function (`canHoldField`, which V8 inlines) instead of an inline expression
+in each method, which pays for the `WeakMap` branches. Outputs that keep
+`kindedStore` shrink by 18 bytes (`keyword-only` 3,396 to 3,378), `defmulti` by 14, and those
+that keep both stores by 53 to 61 (`seq-pipeline` 29,388 to 29,335, `atom-str`
+3,013 to 2,952); the ceilings of `atom-str`, `vector-printed`, `map-printed`
+and `defmulti` moved down.
