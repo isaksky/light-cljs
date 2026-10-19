@@ -77,6 +77,45 @@ to 8.8 (which also registered the macro form's own scalars) gave medians of
 because a call's table holds only its own scalars and goes when its input
 is released.
 
+## Macro-free units on the pool (light-cljs-338, October 18, 2026)
+
+Parent `ad8eebf` (light-cljs-335 on `916b75b`) against macro-free units
+dispatched with `--jobs N`, Penpot `app.main --optimize none` at the
+default `--jobs 1`, six alternating pairs (parent first) in two sets of
+three, at 1-minute load 6.9 falling to 2.2 while two other workers were
+active. Output is 33,624,590 bytes with the same SHA-256 in all twelve runs,
+the parent's.
+
+| Build | Wall (s), round 1-6 | Median wall | Peak RSS (GB), round 1-6 | Median RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `ad8eebf` | 25.91, 24.55, 24.31, 24.87, 23.87, 23.79 | 24.43 | 0.934, 0.928, 0.934, 0.920, 0.937, 0.917 | 0.931 |
+| Macro-free units | 25.45, 24.57, 26.05, 24.59, 23.74, 24.19 | 24.58 | 0.942, 0.946, 0.916, 0.933, 0.926, 0.909 | 0.930 |
+
+The medians are +0.6% wall and -0.1% peak RSS (the first set alone, at the
+higher load, +3.7% and +0.9%; the second +1.3% and +0.7%), within the +2%
+and +3% gate: at `--jobs 1` no unit is judged, and the hot path gained a
+lock per unit demand and a thread-local check per native expansion.
+
+After the review fixes (each analyzed form now also checks that
+thread-local, to record its poll in a macro-free unit) and a rebase onto
+`52eb4f0`, whose output is 33,627,652 bytes, four more alternating pairs
+against that parent `68cc85c` ran at load 6.9 to 19.8 while two other
+workers ran suites: parent 29.64, 33.71, 25.88, 26.68 s, candidate 25.74,
+40.29, 25.94, 26.46 s (medians 28.16 and 26.20 s); in the two quieter
+rounds the pairs differ by +0.2% and -0.8%. Peak RSS medians are 0.959 GB
+for both (-0.1%). All eight outputs have the same SHA-256. At `--jobs 1`,
+`2` and `8` the JavaScript, source maps and warnings are again identical;
+5,304 units are macro-free (a `js*` template with a named placeholder no
+longer is).
+
+With `--source-map` and `--stats`, `--jobs 1`, `2` and `8` give
+byte-identical JavaScript (33,624,623 bytes with the map comment), source
+maps (12,788,534 bytes) and warnings. At `--jobs 2` and `8`, 5,319 of the
+13,367 units are macro-free (40%), and their analysis takes 310 ms and
+520 ms (summed over the threads that ran them) of 19.2 s and 19.0 s of
+deferred units; walls were 27.5 s, 27.8 s and 27.2 s at a load near 11, so
+the first cut gives no measurable speedup, as the design expected.
+
 ## Shared session catalog (light-cljs-335, October 18, 2026)
 
 Parent `00d9b70` against the catalog behind a `Mutex`, Penpot `app.main

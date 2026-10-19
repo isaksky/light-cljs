@@ -1043,6 +1043,77 @@ way to stage A, useful for shaking out the merge, the pool and the transfer
 boundary without a second isolate. It is not a design of its own, and its
 eligible share of Penpot is expected to be small.
 
+*As built (light-cljs-338), the narrower first cut, without the merge-order
+change:*
+
+- *Eligibility.* With `--jobs N` above one, `Analyzer::definition` judges
+  each unit as it registers it, from the resolver its snapshot freezes
+  (`macro_free_form`): every list whose operator could name a macro other
+  than the native `let`, `loop`, `fn` and `letfn` (source, imported and
+  bootstrap macros alike, through `has_javascript_macro` and `macro_name`),
+  every intrinsic the analyzer lowers itself, a nested `def`, `ns`, `var` or
+  lazy reference, a `js*` template with a named placeholder, a symbol
+  naming a macro in a value position, and a qualified or dotted symbol whose namespace is neither the unit's own, an
+  alias, a require, `js` nor the core makes it ineligible; so does `:test`
+  metadata, whose unit is analyzed through the session. Whether the file
+  defines macros does not enter: a call to a function the file later turns
+  into a macro is eligible, as its snapshot sees it. At `--jobs 1` nothing
+  is judged, so the serial build does no new work.
+- *The guard.* A macro-free unit is analyzed under
+  `macro_host::MacroFreeUnit` on whichever thread takes it. Entering a core
+  or source macro's JavaScript, declaring a macro, calling a data reader,
+  registering a nested definition's Var or recording a dependency
+  observation panics there with the unit named (`forbid_engine_entry`); a
+  worker's panic is raised again on the coordinator when the drain ends. The
+  whole suite was run once with every build forced to four unit slots (not
+  committed): no unit tripped it.
+- *Dispatch.* A namespace's drain with at least one macro-free unit runs in
+  `compilation_session::with_unit_pool`: `scheduler::run` with the build's
+  slots, whose workers each own a `WorkerView` of the shared catalog bound
+  to an engine-free `MacroHost`, and whose jobs are the macro-free units'
+  IDs. The coordinator drains every unit in unit order exactly as before:
+  for a pooled unit the catalog's claim makes it reuse a finished analysis,
+  wait for a running one, or analyze one no worker has started yet itself.
+  A worker's analysis is the catalog's `Analyzed` state, with its warnings,
+  which the drain appends in unit order. Ineligible units drain inline at
+  today's point, so the counter fixture still prints `1 2` at `--jobs 8`.
+  The pool is started per drain; 339 keeps one for the build.
+- *Accounting.* A macro-free unit's analysis counts with counters and work
+  marks of its own, polls no execution control, and records in order each
+  form's poll (its span) and each native expansion attempt, before its
+  limit checks (`UnitEvent`: its nodes, operator and span). The
+  coordinator charges them to the compilation when it first takes the
+  analysis, in its order (`UnitCharges::charge`): it polls the control the
+  unit's analysis there would have polled, and checks the expansion and
+  generated-node limits per expansion as `expand_compiler_seed` does, so a
+  limit crossed inside a pooled unit fails with the error, message and
+  position of the serial build, and `--stats` and the cache's work marks
+  do not depend on `--jobs`. No analysis is run again for it. A worker
+  does not notice a cancellation or deadline itself; the charge does. The
+  poll budget is not exact even with one slot, since V8's interrupts poll
+  on a timer, so a build whose budget runs out may report it at another
+  form; it runs out at every `--jobs` value.
+- *Trace.* The exclusive-stage trace is per thread, so units analyzed on
+  workers are not in it; `--stats` adds `deferred-units.macro-free` and
+  `time.macro-free-units-ms`, the summed analysis time of those units on
+  whichever thread.
+- *Append.* `program_fragment::append` checks in every build that each
+  shared table is a prefix of both programs and that the last shared global
+  names the same binding (`SharedPrefix::check`); a unit test appends a
+  fragment after its target grew past the snapshot, as the merge after the
+  next namespace's top-level pass will: the body's global merges with the
+  same-named one the target reserved meanwhile, the target's later change
+  to a shared global stays, and the program runs.
+
+The merge-order change is not in it. Appending a namespace's fragments
+after a later namespace's top-level pass means a namespace's program is no
+longer one contiguous range, which `artifact_capture` (the tails of every
+table from the namespace's start) and `artifact_install` (one contiguous
+append, units registered `Prepared`) assume; lazy targets inside bodies
+are found only at the merge; a later namespace's error must wait for the
+earlier units to report the earliest one; and cross-namespace arity
+warnings read the bodies. See "Open questions".
+
 ### Stage C: parallel namespaces
 
 This stage removes the serial top-level chain.
@@ -1430,6 +1501,41 @@ file or macro, and a small program where pool start-up dominates. Measure
 none and advanced separately, and cold builds separately from retained
 sessions. A Penpot output comparison is not a browser run; the browser run
 is part of the stage A gate.
+
+## Open questions
+
+- *Merging after the top-level passes (left by light-cljs-338).* Stage A's
+  one deterministic output change, a namespace's unit fragments appended
+  after the next namespace's top-level pass (or after every top-level pass,
+  which the 6.0 s floor above needs), is not made yet, so output is still
+  today's at every `--jobs` value. It needs, in one change with the
+  re-baselined fixtures:
+  - *Two-part artifacts.* `artifact_capture::begin`/`finish` capture the
+    tails of every table from where the namespace began, and
+    `artifact_install` appends an artifact as one contiguous range with its
+    units registered `Prepared`, which keeps the IDs of an uncached build
+    (docs/compiler-cache.md, "Installing"). With the merge moved, a
+    namespace's program is its top-level range and, later, its fragments'
+    range, with another namespace's declarations between: capture must
+    record both, and install must append the second part where the merge
+    appends it, or cached builds stop matching uncached ones
+    (`tests/compiler/cache_modes.rs`).
+  - *Lazy targets in bodies.* The loader reads a namespace's new lazy
+    targets right after its analysis (`lazy_namespaces_since`); targets
+    inside bodies appear only once their fragments merge.
+  - *Errors.* A later namespace's top-level error must wait for the earlier
+    namespace's pending units and is reported only if none of them fails
+    (the earliest canonical error, light-cljs-341).
+  - *Warnings.* `collect_expression_warnings` and the cross-namespace
+    `DiagnosticArities` read each namespace's bodies after its drain; they
+    move to the merge.
+  `program_fragment::append` already appends a fragment after its target
+  grew past the snapshot (see "As built (light-cljs-338)" under Stage A).
+- *What the first cut buys.* On Penpot main 5,319 of 13,367 units (40%)
+  are macro-free, but their analysis takes about 0.3 to 0.5 s of the 19 s of
+  deferred units (2 to 3%): they are constants, data and small functions.
+  The narrow cut gains nothing measurable; stage A's gain needs the
+  per-worker isolates of light-cljs-339.
 
 ## Method and reproduction
 

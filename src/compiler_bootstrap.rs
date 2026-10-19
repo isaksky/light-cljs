@@ -333,6 +333,7 @@ impl MacroHost {
         env: &Datum,
         engine: Option<&dyn crate::evaluator::MacroEvaluator>,
     ) -> Result<Form, String> {
+        crate::macro_host::forbid_engine_entry(name);
         if self.engine.bootstrap.is_none() {
             if self.tables.bootstrap_seed && self.session_handle().is_none() {
                 return Err(format!("bootstrap primitive seed cannot expand {name}"));
@@ -563,6 +564,7 @@ impl MacroHost {
         snapshot: crate::compilation_session::DefinitionSnapshot,
         engine: Option<&dyn crate::evaluator::MacroEvaluator>,
     ) -> Result<(), String> {
+        crate::macro_host::forbid_engine_entry("a macro declaration");
         let (name, _, function) = lower_declaration(form)?;
         // The declaration seed computes docs, user arglists and merged name,
         // leading and trailing metadata without executing any source body.
@@ -705,6 +707,7 @@ impl MacroHost {
         env: &Datum,
         engine: Option<&dyn crate::evaluator::MacroEvaluator>,
     ) -> Result<Form, String> {
+        crate::macro_host::forbid_engine_entry(name);
         let key = self
             .source_macro_key(namespace, name)
             .ok_or_else(|| format!("macro {name} is not visible in namespace {namespace}"))?;

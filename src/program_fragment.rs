@@ -25,6 +25,82 @@ impl SharedPrefix {
         self.globals
     }
 
+    /// Check, in every build, what [`append`] relies on: each shared table is
+    /// a prefix of both programs, however much the target grew since the
+    /// snapshot (a unit's fragment may be appended after later namespaces'
+    /// top-level passes, docs/compiler-concurrency.md, "Stage A"), and the
+    /// last shared global names the same binding in both. The full
+    /// comparison is a debug assertion.
+    fn check(&self, target: &Program, fragment: &Program) {
+        let tables = [
+            (
+                "expressions",
+                self.exprs,
+                target.exprs.len(),
+                fragment.exprs.len(),
+            ),
+            (
+                "strings",
+                self.strings,
+                target.strings.len(),
+                fragment.strings.len(),
+            ),
+            (
+                "named literals",
+                self.named_literals,
+                target.named_literals.len(),
+                fragment.named_literals.len(),
+            ),
+            (
+                "locals",
+                self.locals,
+                target.locals.len(),
+                fragment.locals.len(),
+            ),
+            (
+                "recur targets",
+                self.recur_targets,
+                target.recur_targets.len(),
+                fragment.recur_targets.len(),
+            ),
+            (
+                "globals",
+                self.globals,
+                target.globals.len(),
+                fragment.globals.len(),
+            ),
+            (
+                "host globals",
+                self.js_globals,
+                target.js_globals.len(),
+                fragment.js_globals.len(),
+            ),
+            (
+                "namespaces",
+                self.namespaces,
+                target.namespaces.len(),
+                fragment.namespaces.len(),
+            ),
+        ];
+        for (table, shared, target, fragment) in tables {
+            assert!(
+                shared <= target && shared <= fragment,
+                "a fragment shares {shared} {table} with a program holding {target}, from a snapshot holding {fragment}: it was not analyzed from a prefix of that program"
+            );
+        }
+        if let Some(last) = self.globals.checked_sub(1) {
+            let (a, b) = (&target.globals[last], &fragment.globals[last]);
+            assert!(
+                a.namespace == b.namespace && a.name == b.name,
+                "a fragment's shared global {}/{} is {}/{} in its program",
+                b.namespace,
+                b.name,
+                a.namespace,
+                a.name
+            );
+        }
+    }
+
     /// All of `snapshot` at the same IDs, for a fragment appended to another
     /// program analyzed from the same snapshot.
     pub(crate) fn same(snapshot: &Program) -> Self {
@@ -74,6 +150,7 @@ pub(crate) fn append(
     shared: &SharedPrefix,
     update_shared_globals: bool,
 ) -> ExprId {
+    shared.check(target, fragment);
     let exprs = Ids::new(shared.exprs, target.exprs.len());
     // Shared globals keep their IDs and, unless the caller wants the
     // fragment's view of them, their live flags and metadata.
@@ -1159,6 +1236,68 @@ mod tests {
         );
         let stdout = String::from_utf8(output.stdout).unwrap();
         assert_eq!(stdout, "[42 :sample/value \"fragment\"]\n");
+    }
+
+    /// A unit's fragment appended after the target grew past its snapshot,
+    /// as when a later namespace's top-level pass runs before an earlier
+    /// namespace's units merge (docs/compiler-concurrency.md, "Stage A"): its
+    /// IDs move past the target's newer entries, a global the body declares
+    /// merges with the same-named one the target reserved meanwhile, and
+    /// what the target changed on a shared global since is kept.
+    #[test]
+    fn a_fragment_appends_after_its_target_grew_past_the_snapshot() {
+        let mut target = analyze("(def ^{:doc \"x\"} x 1)");
+        let (snapshot, shared) = resolution_snapshot(&mut target);
+        // The unit's analysis: its snapshot and what its body adds.
+        let mut fragment = snapshot;
+        fragment.root = append(
+            &mut fragment,
+            &analyze("(do (def later 1) (str later \"-body\"))"),
+            &SharedPrefix::default(),
+            true,
+        );
+        // The later namespace declares the same Var, adds its own entries
+        // to every table, and drops the shared global's metadata.
+        let grown = append(
+            &mut target,
+            &analyze("(def later 2) (let [n \"next\"] n)"),
+            &SharedPrefix::default(),
+            true,
+        );
+        target.globals[0].metadata = None;
+        let (globals, strings, locals) = (
+            target.globals.len(),
+            target.strings.len(),
+            target.locals.len(),
+        );
+        let root = append(&mut target, &fragment, &shared, false);
+        assert_eq!(target.globals.len(), globals, "`later` merges");
+        assert_eq!(
+            target.globals[0].metadata, None,
+            "the target's change stays"
+        );
+        assert!(target.strings.len() > strings && target.locals.len() == locals);
+        target.exprs.push(Expr {
+            kind: ExprKind::Do(vec![grown, root]),
+            span: 0..0,
+            context: ExprContext::Value,
+            source_index: 0,
+        });
+        target.root = ExprId(target.exprs.len() - 1);
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let context = rquickjs::Context::full(&runtime).unwrap();
+        context.with(|ctx| {
+            let value: String = ctx.eval(crate::emit_js(&target)).unwrap();
+            assert_eq!(value, "1-body");
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "was not analyzed from a prefix of that program")]
+    fn a_fragment_of_another_program_is_refused() {
+        let mut target = analyze("(def x 1) (def y 2) (def z 3)");
+        let (snapshot, shared) = resolution_snapshot(&mut target);
+        append(&mut analyze("1"), &snapshot, &shared, false);
     }
 
     #[test]

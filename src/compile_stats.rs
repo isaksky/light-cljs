@@ -76,6 +76,12 @@ pub struct DeferredUnitCounts {
     pub prepared: usize,
     /// Units a macro or another unit executed at compile time.
     pub executed: usize,
+    /// Units found macro-free at registration, which `--jobs N` analyzes
+    /// on pool workers (docs/compiler-concurrency.md, "As built
+    /// (light-cljs-338)").
+    pub macro_free: usize,
+    /// The time spent analyzing macro-free units, on whichever thread.
+    pub macro_free_time: std::time::Duration,
 }
 
 /// The numbers of one compilation; see the module documentation.
@@ -307,6 +313,11 @@ impl CompileStats {
         line("deferred-units.analyzed", &self.deferred_units.analyzed);
         line("deferred-units.prepared", &self.deferred_units.prepared);
         line("deferred-units.executed", &self.deferred_units.executed);
+        line("deferred-units.macro-free", &self.deferred_units.macro_free);
+        line(
+            "time.macro-free-units-ms",
+            &ms(self.deferred_units.macro_free_time),
+        );
         if let Some(capture) = &self.capture {
             line("cache.capture.namespaces", &capture.captured);
             line("cache.capture.skipped", &capture.skipped);

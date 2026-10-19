@@ -2421,6 +2421,8 @@ fn analyze_entry(
     let mut cache_time = Duration::ZERO;
     let mut analysis = NamespaceAnalysis::new(macros);
     analysis.begin_generated_names(names_start);
+    // Each namespace's macro-free units may be analyzed on the pool.
+    analysis.unit_slots = parse_slots(slots);
     // The compilation's session exists from here on.
     if let Some(reservation) = reserve
         && let Some(session) = macros.session_handle()

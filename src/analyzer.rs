@@ -3010,6 +3010,9 @@ struct Analyzer<'a> {
     /// What the last macro environment built names for the session, recorded
     /// once an expansion has used it.
     pending_reader_registration: Option<crate::macro_host::ReaderRegistration>,
+    /// The CPU work slots its namespace's macro-free units may be analyzed
+    /// on (`--jobs N`, [`crate::compilation_session::with_unit_pool`]).
+    unit_slots: crate::scheduler::Slots,
 }
 
 /// The reader's view of an analyzer's namespace, kept between forms and
@@ -3394,6 +3397,7 @@ fn analyze_input(
         namespace_globals: snapshot.map_or_else(Default::default, |s| s.namespace_globals.clone()),
         session_namespaces: Default::default(),
         pending_reader_registration: None,
+        unit_slots: crate::scheduler::Slots::ONE,
     };
     let mut interactive_arities = None;
     if let Some(indexes) = &indexes {
@@ -3623,6 +3627,9 @@ pub(crate) struct NamespaceAnalysis {
     /// With `--stats`, the time spent draining deferred units so far
     /// ([`crate::compile_stats::PhaseTimes::deferred_units`]).
     pub(crate) deferred_time: Option<std::time::Duration>,
+    /// The CPU work slots each namespace's macro-free units may be
+    /// analyzed on (`--jobs N`): one, inline, outside native V8 builds.
+    pub(crate) unit_slots: crate::scheduler::Slots,
     /// Indexes over the program that installing artifacts resolves against
     /// ([`crate::artifact_install`]), extended as the program grows.
     install_index: crate::artifact_install::InstallIndex,
@@ -3644,6 +3651,7 @@ impl NamespaceAnalysis {
             roots: Vec::new(),
             requires: Vec::new(),
             deferred_time: None,
+            unit_slots: crate::scheduler::Slots::ONE,
             install_index: Default::default(),
         }
     }
@@ -3739,6 +3747,7 @@ impl NamespaceAnalysis {
             namespace_globals: Default::default(),
             session_namespaces: Default::default(),
             pending_reader_registration: None,
+            unit_slots: self.unit_slots,
         };
         analyzer.first_expr = analyzer.program.exprs.len();
         for (local, namespace, original) in &analyzer.resolution.refers.clone() {
@@ -4570,7 +4579,10 @@ impl Analyzer<'_> {
     }
 
     fn form(&mut self, id: NodeId, context: ExprContext) -> Result<ExprId, AnalysisError> {
-        if let Some(engine) = self.engine {
+        // A macro-free unit's polls are charged where the unit is.
+        if !crate::macro_host::record_poll(|| self.syntax.nodes[id.0].span.clone())
+            && let Some(engine) = self.engine
+        {
             engine
                 .control()
                 .poll()
@@ -6454,6 +6466,239 @@ impl Analyzer<'_> {
         self.datum(node, ExprContext::Value)
     }
 
+    /// Whether analyzing `form` as a unit registered now can reach no
+    /// compile-time engine and change nothing in the macro host, judged from
+    /// the resolver as it stands at registration, which the unit's snapshot
+    /// freezes (docs/compiler-concurrency.md, "As built (light-cljs-338)").
+    /// Conservative: every list whose operator could name a macro other than
+    /// the native `let`, `loop`, `fn` and `letfn` (imported, source and
+    /// bootstrap macros alike), every intrinsic, nested definition and lazy
+    /// reference, every symbol naming a macro, and every qualified or dotted
+    /// symbol whose namespace analysis would record as an observation makes
+    /// the unit ineligible. Whether the file defines macros does not enter.
+    fn macro_free_form(&self, form: &Form) -> bool {
+        self.macro_free_datum(&form.data(), 0)
+    }
+
+    fn macro_free_datum(&self, datum: &crate::compiler_data::Datum, depth: usize) -> bool {
+        use crate::compiler_data::DatumKind;
+        // Deep forms take the serial path rather than a deep walk here.
+        if depth > 256 {
+            return false;
+        }
+        if let Some(metadata) = datum.metadata()
+            && !self.macro_free_datum(&metadata, depth + 1)
+        {
+            return false;
+        }
+        match datum.kind() {
+            DatumKind::Nil
+            | DatumKind::Boolean(_)
+            | DatumKind::Integer(_)
+            | DatumKind::Double(_)
+            | DatumKind::Ratio { .. }
+            | DatumKind::Character(_)
+            | DatumKind::String(_)
+            | DatumKind::Keyword(_) => true,
+            DatumKind::Symbol(name) => self.macro_free_symbol(name, false),
+            DatumKind::CompilerLiteral { payload, .. } => self.macro_free_datum(payload, depth + 1),
+            DatumKind::Collection {
+                kind: CollectionKind::Vector | CollectionKind::Map | CollectionKind::Set,
+                children,
+            } => children
+                .iter()
+                .all(|child| self.macro_free_datum(child, depth + 1)),
+            DatumKind::Collection {
+                kind: CollectionKind::List,
+                children,
+            } => {
+                let Some((operator, args)) = children.split_first() else {
+                    return true;
+                };
+                if let DatumKind::Symbol(name) = operator.kind() {
+                    let spelled = name
+                        .namespace()
+                        .is_none()
+                        .then(|| String::from_utf16_lossy(name.name()));
+                    if spelled.as_deref() == Some("quote") {
+                        return true;
+                    }
+                    // A template's named placeholders resolve symbols the
+                    // walk does not see.
+                    if spelled.as_deref() == Some("js*")
+                        && !args.first().is_some_and(|template| {
+                            matches!(template.kind(), DatumKind::String(text)
+                                if !String::from_utf16_lossy(text)
+                                    .split("~{")
+                                    .skip(1)
+                                    .any(|rest| !rest.starts_with('}')))
+                        })
+                    {
+                        return false;
+                    }
+                    if !self.macro_free_symbol(name, true) {
+                        return false;
+                    }
+                } else if !self.macro_free_datum(operator, depth + 1) {
+                    return false;
+                }
+                args.iter().all(|arg| self.macro_free_datum(arg, depth + 1))
+            }
+            DatumKind::Collection { .. } => false,
+        }
+    }
+
+    /// Whether symbol `name`, as an operator or a value, resolves without the
+    /// macro host's engine or an observation ([`Self::macro_free_form`]).
+    fn macro_free_symbol(&self, name: &crate::compiler_data::Name, operator: bool) -> bool {
+        let member = String::from_utf16_lossy(name.name());
+        let qualifier = name.namespace().map(String::from_utf16_lossy);
+        let spelled = match &qualifier {
+            Some(qualifier) => format!("{qualifier}/{member}"),
+            None => member.clone(),
+        };
+        if let Some(qualifier) = &qualifier {
+            let target = self.alias_target(qualifier);
+            if !(qualifier == "js"
+                || target == self.namespace
+                || matches!(target.as_str(), "cljs.core" | "clojure.core")
+                || self.aliases.iter().any(|(alias, _)| alias == qualifier)
+                || self.requires.contains(&target))
+                || target == LAZY_NAMESPACE
+            {
+                return false;
+            }
+        } else if member.contains('.') {
+            // Interop methods and fields, and constructors of undotted names.
+            let method = member
+                .strip_prefix(".-")
+                .or_else(|| member.strip_prefix('.'));
+            let constructor = member.strip_suffix('.');
+            if !method
+                .or(constructor)
+                .is_some_and(|rest| !rest.is_empty() && !rest.contains('.'))
+            {
+                return false;
+            }
+            if method.is_some() {
+                return operator;
+            }
+        }
+        if operator
+            && qualifier.is_none()
+            && matches!(
+                member.as_str(),
+                "if" | "do"
+                    | "let*"
+                    | "letfn*"
+                    | "loop*"
+                    | "recur"
+                    | "try"
+                    | "catch"
+                    | "finally"
+                    | "throw"
+                    | "case*"
+                    | "fn*"
+                    | "set!"
+                    | "new"
+                    | "."
+                    | "js*"
+                    | "&"
+            )
+        {
+            return true;
+        }
+        if matches!(
+            member.as_str(),
+            "def"
+                | "ns"
+                | "ns*"
+                | "deftype*"
+                | "defrecord*"
+                | "var"
+                | "macroexpand"
+                | "macroexpand-1"
+        ) {
+            return false;
+        }
+        // Any intrinsic the analyzer lowers itself, shadowed or not.
+        if self
+            .macro_host
+            .definition_macro(self.namespace, &spelled)
+            .is_some()
+            || self.resolution.refers.iter().any(|(local, ns, name)| {
+                *local == member && crate::compiler_names::is_definition_macro(ns, name)
+            })
+            || matches!(
+                member.as_str(),
+                "defmacro"
+                    | "delay"
+                    | "lazy-seq"
+                    | "defonce"
+                    | "goog-define"
+                    | "declare"
+                    | "binding"
+                    | "with-redefs"
+                    | "resolve"
+                    | "require-macros"
+                    | "use-macros"
+                    | "require"
+                    | "exists?"
+                    | "with-out-str"
+                    | "this-as"
+                    | "await"
+                    | "js-arguments"
+                    | "copy-arguments"
+                    | "reify"
+                    | "satisfies?"
+                    | "implements?"
+                    | "defmulti"
+                    | "defmethod"
+                    | "defprotocol"
+                    | "extend-type"
+                    | "extend-protocol"
+                    | "specify!"
+                    | "specify"
+                    | "deftype"
+                    | "defrecord"
+                    | "assert"
+                    | "compiler-assert*"
+                    | "compiler-case*"
+                    | "loadable"
+                    | "loadable-type"
+            )
+        {
+            return false;
+        }
+        // A core-aliased name resolves as the core one.
+        let core = match &qualifier {
+            Some(qualifier)
+                if self.alias_target(qualifier) == "cljs.core"
+                    || self.alias_target(qualifier) == "clojure.core" =>
+            {
+                format!("cljs.core/{member}")
+            }
+            _ => spelled.clone(),
+        };
+        if self.macro_host.has_javascript_macro(self.namespace, &core)
+            || self
+                .macro_host
+                .has_javascript_macro(self.namespace, &spelled)
+        {
+            return false;
+        }
+        // Only core macros expand besides source ones; of those, these four
+        // expand natively, with no engine.
+        match self.macro_host.macro_name(self.namespace, &core, false) {
+            Some((namespace, name))
+                if matches!(namespace.as_str(), "cljs.core" | "clojure.core") =>
+            {
+                operator && matches!(name.as_str(), "let" | "loop" | "fn" | "letfn")
+            }
+            _ => true,
+        }
+    }
+
     /// A deferred unit's definition-time environment, and what its resolution
     /// program shares with this one for appending the unit's analysis.
     fn definition_snapshot(
@@ -6551,6 +6796,34 @@ impl Analyzer<'_> {
             return Ok(());
         };
         let units = std::mem::take(&mut self.deferred);
+        // With `--jobs N`, pool workers analyze the macro-free units while
+        // this thread drains every unit in order, as with one slot.
+        let pooled = if self.unit_slots.get() > 1 {
+            units
+                .iter()
+                .map(|d| d.unit)
+                .filter(|&unit| session.shared().macro_free(unit))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        if pooled.is_empty() {
+            return self.drain_units(&session, units, keep_later);
+        }
+        let shared = session.shared().clone();
+        crate::compilation_session::with_unit_pool(&shared, self.unit_slots, pooled, || {
+            self.drain_units(&session, units, keep_later)
+        })
+    }
+
+    /// Append `units` in order, analyzing each unless another thread has
+    /// ([`Self::drain_deferred_keeping`]).
+    fn drain_units(
+        &mut self,
+        session: &crate::compilation_session::CompilationSession,
+        units: Vec<DeferredUnit>,
+        keep_later: bool,
+    ) -> Result<(), AnalysisError> {
         // The source's warnings from the first unit's position on, which the
         // units' warnings are merged into. Positions only grow, and the
         // units without one come last.
@@ -6842,6 +7115,11 @@ impl Analyzer<'_> {
                 .macro_host
                 .session_handle()
                 .expect("compilation session");
+            // Only `--jobs N` dispatches macro-free units; a `:test` unit
+            // is analyzed with its definition, through the session.
+            let macro_free = self.unit_slots.get() > 1
+                && test_form.is_none()
+                && form.as_ref().is_some_and(|form| self.macro_free_form(form));
             let (mut snapshot, shared) = self.definition_snapshot();
             snapshot.definition_test = test_form.clone();
             let unit = session
@@ -6861,6 +7139,9 @@ impl Analyzer<'_> {
                 )
                 .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
             Ok(unit.map(|unit| {
+                if macro_free {
+                    session.set_macro_free(unit);
+                }
                 let placeholder = self.push(
                     ExprKind::Nil,
                     self.syntax.nodes[initializer.unwrap().0].span.clone(),
@@ -9680,6 +9961,7 @@ impl Analyzer<'_> {
                 .expand_compiler_seed(
                     &form,
                     &crate::compiler_data::Name::new(Some("cljs.core"), core_name),
+                    Some((&name, &call_span)),
                 )
                 .map_err(error)?
             {

@@ -83,6 +83,83 @@ struct Unit {
     /// it, so that every waiter gets it ([`CompilationSession::release_application_ir`]).
     waiters: u32,
     retained: Option<Arc<Program>>,
+    /// Whether its form was found macro-free when it was registered, so
+    /// that any thread may analyze it with no compile-time engine
+    /// ([`CompilationSession::set_macro_free`]).
+    macro_free: bool,
+    /// What its macro-free analysis counted, until the coordinator
+    /// charges it ([`UnitCharges`]), and how long the analysis took.
+    charges: Option<Box<UnitCharges>>,
+    time: std::time::Duration,
+}
+/// What a macro-free unit's analysis counts, on whichever thread it ran:
+/// it runs with counters and marks of its own, and the coordinator charges
+/// them to the compilation's when it first takes the analysis, checking the
+/// limits as each native expansion would have where the unit is charged,
+/// so that limits, their errors and `--stats` do not depend on `--jobs`.
+pub(crate) struct UnitCharges {
+    events: Vec<crate::macro_host::UnitEvent>,
+    macro_depth: usize,
+    analysis_depth: usize,
+    /// The unit's expansion and generated-node limits.
+    limits: (usize, usize),
+    /// `source:line:column: unit` of its form, which its failure message
+    /// begins with.
+    location: String,
+}
+impl UnitCharges {
+    /// Add the charges to `binding`'s counters and marks, and spend the
+    /// unit's polls from `control`, the execution control its analysis on
+    /// the charging thread would have polled; the unit was analyzed at
+    /// `depth` of that thread's stack. The first poll or native expansion
+    /// that fails fails the unit, with the message and diagnostic its
+    /// analysis there would have given.
+    fn charge(
+        &self,
+        binding: &EngineBinding,
+        depth: usize,
+        control: Option<&crate::evaluator::ExecutionControl>,
+    ) -> Result<(), (String, crate::AnalysisError)> {
+        use crate::macro_host::UnitEvent;
+        use crate::macro_host::WorkMarks;
+        WorkMarks::note(&binding.work.unit_depth, depth + 1);
+        WorkMarks::note(&binding.work.macro_depth, self.macro_depth);
+        WorkMarks::note(&binding.work.analysis_depth, self.analysis_depth);
+        let (expansions, nodes) = (&binding.expansions, &binding.generated_nodes);
+        let fail = |span: &std::ops::Range<usize>, message: String| {
+            let diagnostic = crate::AnalysisError {
+                span: span.clone(),
+                kind: crate::AnalysisErrorKind::MacroExpansion(message),
+            };
+            Err((format!("{}: {diagnostic}", self.location), diagnostic))
+        };
+        for event in &self.events {
+            match event {
+                UnitEvent::Poll(span) => {
+                    if let Some(Err(error)) = control.map(|control| control.poll()) {
+                        return fail(span, error.to_string());
+                    }
+                }
+                UnitEvent::Expansion(expansion) => {
+                    let exceeded = if expansions.get() >= self.limits.0 {
+                        Some("compiler macro expansion limit exceeded")
+                    } else {
+                        expansions.set(expansions.get() + 1);
+                        nodes.set(nodes.get().saturating_add(expansion.nodes));
+                        (nodes.get() > self.limits.1)
+                            .then_some("compiler macro generated-node limit exceeded")
+                    };
+                    if let Some(message) = exceeded {
+                        return fail(
+                            &expansion.span,
+                            format!("while expanding {}: {message}", expansion.operator),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 /// What any thread analyzes a unit from: its form, its definition snapshot
 /// and the sendable part of the host it was registered with. The thread
@@ -209,8 +286,9 @@ const _: () = {
 };
 /// What a demand for a unit gets from the catalog.
 enum Claim {
-    /// The demanding thread analyzes the unit, at this depth of its stack.
-    Analyze(Box<UnitInputs>, usize),
+    /// The demanding thread analyzes the unit, at this depth of its stack;
+    /// with its name if the unit is macro-free.
+    Analyze(Box<UnitInputs>, usize, Option<String>),
     /// The unit was too deep in the thread's stack and has failed.
     TooDeep(Box<UnitInputs>, usize),
     /// Another analysis's result.
@@ -303,12 +381,13 @@ impl SharedCatalog {
             }
             unit.state = AnalysisState::Analyzing(thread);
             unit.analyses += 1;
+            let macro_free = unit.macro_free.then(|| unit.name.clone());
             // The request has stable identity even if a newer same-kind source
             // generation is activated while this frame is suspended.
             debug_assert!(unit.request.generation > 0);
             debug_assert_eq!(c.bindings[&unit.name].0, unit.request.var);
             c.threads[thread].stack.push(id);
-            return Ok(Claim::Analyze(inputs, depth));
+            return Ok(Claim::Analyze(inputs, depth, macro_free));
         }
     }
     /// End the analysis of unit `id` that the thread in slot `thread` claimed
@@ -345,6 +424,30 @@ impl SharedCatalog {
     }
     fn set_emitted(&self, id: usize) {
         self.lock().units[id].emitted = true;
+    }
+    fn record_charges(&self, id: usize, charges: UnitCharges, time: std::time::Duration) {
+        let mut c = self.lock();
+        c.units[id].charges = Some(Box::new(charges));
+        c.units[id].time = time;
+    }
+    /// Unit `id`'s charges, once ([`UnitCharges`]).
+    fn take_charges(&self, id: usize) -> Option<Box<UnitCharges>> {
+        self.lock().units.get_mut(id)?.charges.take()
+    }
+    /// Fail unit `id`, analyzed, as its charges did.
+    fn fail(&self, id: usize, message: String, diagnostic: crate::AnalysisError) {
+        let previous = std::mem::replace(
+            &mut self.lock().units[id].state,
+            AnalysisState::Failed(message, Some(diagnostic)),
+        );
+        drop(previous);
+    }
+    /// Whether unit `id` is macro-free.
+    pub(crate) fn macro_free(&self, id: usize) -> bool {
+        self.lock()
+            .units
+            .get(id)
+            .is_some_and(|unit| unit.macro_free)
     }
     fn unit_name(&self, id: usize) -> String {
         self.lock().units[id].name.clone()
@@ -729,6 +832,9 @@ impl CompilationSession {
                                 emitted: false,
                                 waiters: 0,
                                 retained: None,
+                                macro_free: false,
+                                charges: None,
+                                time: Default::default(),
                             });
                         }
                         if !(unit.is_none() && c.active.contains_key(name)
@@ -953,6 +1059,8 @@ impl CompilationSession {
             ..Default::default()
         };
         for unit in &catalog.units {
+            counts.macro_free += usize::from(unit.macro_free);
+            counts.macro_free_time += unit.time;
             counts.analyzed += usize::from(unit.analyses > 0);
             counts.prepared += usize::from(matches!(unit.state, AnalysisState::Prepared(..)));
             counts.executed += usize::from(unit.emitted);
@@ -1104,6 +1212,9 @@ impl CompilationSession {
                     emitted: false,
                     waiters: 0,
                     retained: None,
+                    macro_free: false,
+                    charges: None,
+                    time: Default::default(),
                 });
                 id
             });
@@ -1126,6 +1237,13 @@ impl CompilationSession {
         }
         self.install_registrations(end, |_| Ok(()))?;
         Ok(id)
+    }
+    /// Mark unit `id`, just registered, as macro-free: its form reaches no
+    /// compile-time engine, so a pool worker may analyze it, and every
+    /// analysis of it panics if it does reach one
+    /// ([`crate::macro_host::MacroFreeUnit`]).
+    pub fn set_macro_free(&self, id: usize) {
+        self.shared.lock().units[id].macro_free = true;
     }
     pub fn diagnostic(&self, id: usize) -> Option<crate::AnalysisError> {
         match &self.shared.lock().units.get(id)?.state {
@@ -1180,12 +1298,42 @@ impl CompilationSession {
         engine: Option<&dyn MacroEvaluator>,
     ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
         let bootstrap = self.bootstrap();
+        // A macro-free unit's analysis is charged to the counters of the
+        // binding it was registered with, a frame of the compilation's.
+        let counters = self
+            .shared
+            .macro_free(id)
+            .then(|| {
+                self.unit_bindings
+                    .borrow()
+                    .get(id)
+                    .and_then(Option::as_ref)
+                    .map(|binding| binding.frame())
+            })
+            .flatten();
         let analysis = analyze_unit(&self.shared, self.thread, id, engine, || {
             let binding = self.take_unit_binding(id).expect("unstarted unit host");
             (*binding, bootstrap)
         });
         // Analyzed on another thread, the unit's binding is no longer needed.
         drop(self.take_unit_binding(id));
+        if let Some(binding) = counters
+            && let Some(charges) = self.shared.take_charges(id)
+        {
+            let depth = self.shared.lock().threads[self.thread].stack.len();
+            // What its analysis here would have polled ([`analyze_unit`]).
+            let control = engine.map(|engine| engine.control()).or_else(|| {
+                binding
+                    .bootstrap
+                    .as_ref()
+                    .or(self.bootstrap().as_ref())
+                    .map(|b| b.evaluator.control())
+            });
+            if let Err((message, diagnostic)) = charges.charge(&binding, depth, control.as_ref()) {
+                self.shared.fail(id, message.clone(), diagnostic);
+                return Err(message);
+            }
+        }
         analysis
     }
 }
@@ -1200,7 +1348,7 @@ fn analyze_unit(
     engine: Option<&dyn MacroEvaluator>,
     binding: impl FnOnce() -> (EngineBinding, Option<Bootstrap>),
 ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
-    let (inputs, depth) = match shared.claim(thread, id)? {
+    let (inputs, depth, macro_free) = match shared.claim(thread, id)? {
         Claim::Reuse(program, warnings) => return Ok((program, warnings)),
         Claim::TooDeep(inputs, depth) => {
             let (binding, _) = binding();
@@ -1208,7 +1356,7 @@ fn analyze_unit(
             drop((inputs, binding));
             return Err(DEPTH_LIMIT.to_owned());
         }
-        Claim::Analyze(inputs, depth) => (inputs, depth),
+        Claim::Analyze(inputs, depth, macro_free) => (inputs, depth, macro_free),
     };
     // From here on, however the analysis ends, even by unwinding, the unit
     // settles and its waiters wake.
@@ -1268,7 +1416,28 @@ fn analyze_unit(
     // The unit's macros number in its scope; whatever demanded it, such
     // as a running macro calling it, numbers in its own again after.
     let _gensyms = crate::generated_names::RestoreGensymScope(engine);
-    let analysis = crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
+    let analysis = if let Some(name) = macro_free {
+        let started = std::time::Instant::now();
+        // Counted where the unit is charged ([`UnitCharges`]).
+        host.engine.expansions = Default::default();
+        host.engine.generated_nodes = Default::default();
+        host.engine.work = Default::default();
+        let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
+        let location = format!("{}:{}:{}: {name}", loc.source, loc.line, loc.column);
+        let free = crate::macro_host::MacroFreeUnit::enter(name);
+        let analysis = crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
+        let charges = UnitCharges {
+            events: free.finish(),
+            macro_depth: host.engine.work.macro_depth.get(),
+            analysis_depth: host.engine.work.analysis_depth.get(),
+            limits: (host.limits.expansions, host.limits.generated_nodes),
+            location,
+        };
+        shared.record_charges(id, charges, started.elapsed());
+        analysis
+    } else {
+        crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine)
+    };
     let diagnostic = analysis.as_ref().err().cloned();
     let result = analysis
         .map(|(mut p, w)| {
@@ -1485,6 +1654,54 @@ impl WorkerView {
             (self.host.engine.frame(), None)
         })
     }
+}
+/// A macro-free unit for a pool worker to analyze.
+struct UnitJob(usize);
+impl crate::scheduler::Job for UnitJob {
+    fn phase(&self) -> usize {
+        0
+    }
+}
+/// Run `coordinate` on this thread while the workers of `slots` analyze the
+/// macro-free `units` of `shared`, each with no compile-time engine
+/// (docs/compiler-concurrency.md, "As built (light-cljs-338)"). The
+/// analyses go to the catalog, where the coordinator's own demands claim,
+/// wait for or reuse them, in its order: nothing here decides an order, and
+/// a unit the coordinator reaches first it analyzes itself. Returns once
+/// every job has run. A worker's panic, such as the eligibility check's,
+/// panics the build.
+pub(crate) fn with_unit_pool<R>(
+    shared: &Arc<SharedCatalog>,
+    slots: crate::scheduler::Slots,
+    units: Vec<usize>,
+    coordinate: impl FnOnce() -> R,
+) -> R {
+    use crate::scheduler::{Config, Next};
+    let pooled = crate::scheduler::run(
+        &Config::new(slots, 1),
+        |_slot| WorkerView::new(shared.clone(), MacroHost::default()),
+        |view, UnitJob(id), _worker| {
+            // The outcome is in the catalog; a failed unit is reported by
+            // the coordinator when it reaches it, as a serial drain would.
+            if let Ok(view) = view {
+                let _ = view.analyze(id, None);
+            }
+        },
+        |pool| {
+            pool.submit_batch(units.into_iter().map(UnitJob));
+            let result = coordinate();
+            loop {
+                match pool.next_outcome() {
+                    Ok(Next::Outcome(())) => {}
+                    Ok(Next::Quiescent) => break,
+                    Ok(Next::Stalled { .. }) => unreachable!("unit jobs hold no demands"),
+                    Err(panic) => panic!("{panic}"),
+                }
+            }
+            result
+        },
+    );
+    pooled.unwrap_or_else(|error| panic!("{error}"))
 }
 impl CatalogView for WorkerView {
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String> {

@@ -676,10 +676,11 @@ impl InteractiveCompiler {
             } else {
                 match self.host.macro_name(&self.namespace, &target, shadow) {
                     Some((ns, name)) if ns == "cljs.core" || ns == "clojure.core" => {
-                        if let Some(expanded) = self
-                            .host
-                            .expand_compiler_seed(&form, &Name::new(Some("cljs.core"), &name))?
-                        {
+                        if let Some(expanded) = self.host.expand_compiler_seed(
+                            &form,
+                            &Name::new(Some("cljs.core"), &name),
+                            None,
+                        )? {
                             Some(expanded)
                         } else {
                             let (env, registration) = self.reader_environment(env)?;

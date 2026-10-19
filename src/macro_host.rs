@@ -34,6 +34,100 @@ impl Default for MacroLimits {
 /// runtime forms are an error.
 pub(crate) const GENERATED_NESTING_LIMIT: usize = 128;
 
+thread_local! {
+    /// The macro-free unit this thread analyzes, if any ([`MacroFreeUnit`]).
+    static MACRO_FREE_UNIT: std::cell::RefCell<Option<MacroFreeAnalysis>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A native expansion in a macro-free unit's analysis: the nodes it
+/// generated, and the operator as spelled and the span of the call, for the
+/// limit error the expansion gives where the unit is charged.
+#[derive(Clone, Debug)]
+pub(crate) struct NativeExpansion {
+    pub nodes: usize,
+    pub operator: String,
+    pub span: std::ops::Range<usize>,
+}
+
+/// What a macro-free unit's analysis would have charged to the
+/// compilation, in order: a poll of the execution control at each form,
+/// with the form's span, and each native expansion.
+#[derive(Clone, Debug)]
+pub(crate) enum UnitEvent {
+    Poll(std::ops::Range<usize>),
+    Expansion(NativeExpansion),
+}
+
+struct MacroFreeAnalysis {
+    name: String,
+    events: Vec<UnitEvent>,
+}
+
+/// While alive, the analysis on this thread is of a unit found macro-free
+/// at registration (docs/compiler-concurrency.md, "As built
+/// (light-cljs-338)"): an entry into a compile-time engine, or an effect on
+/// the host that a pool worker would not hand back, is a bug in the
+/// eligibility check and panics with the unit named
+/// ([`forbid_engine_entry`]); and its polls and native expansions are
+/// recorded instead of charged ([`record_poll`], [`record_native_expansion`]),
+/// which [`Self::finish`] returns.
+pub(crate) struct MacroFreeUnit(Option<MacroFreeAnalysis>);
+impl MacroFreeUnit {
+    pub(crate) fn enter(name: String) -> Self {
+        Self(MACRO_FREE_UNIT.with(|unit| {
+            unit.replace(Some(MacroFreeAnalysis {
+                name,
+                events: Vec::new(),
+            }))
+        }))
+    }
+    /// What the analysis recorded, in order.
+    pub(crate) fn finish(mut self) -> Vec<UnitEvent> {
+        let previous = self.0.take();
+        MACRO_FREE_UNIT
+            .with(|unit| unit.replace(previous))
+            .map_or_else(Vec::new, |analysis| analysis.events)
+    }
+}
+impl Drop for MacroFreeUnit {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        MACRO_FREE_UNIT.with(|unit| *unit.borrow_mut() = previous);
+    }
+}
+/// Panic if this thread analyzes a macro-free unit: `what` reached the
+/// macro host.
+pub(crate) fn forbid_engine_entry(what: &str) {
+    MACRO_FREE_UNIT.with(|unit| {
+        if let Some(analysis) = &*unit.borrow() {
+            panic!(
+                "compile unit {} was dispatched as macro-free, but its analysis reached the macro host ({what}): the eligibility check is wrong",
+                analysis.name
+            );
+        }
+    });
+}
+/// Record a native expansion if this thread analyzes a macro-free unit.
+pub(crate) fn record_native_expansion(expansion: impl FnOnce() -> NativeExpansion) {
+    MACRO_FREE_UNIT.with(|unit| {
+        if let Some(analysis) = &mut *unit.borrow_mut() {
+            analysis.events.push(UnitEvent::Expansion(expansion()));
+        }
+    });
+}
+/// Record a poll at a form spanning `span` if this thread analyzes a
+/// macro-free unit, which then does not poll: whether it recorded one.
+pub(crate) fn record_poll(span: impl FnOnce() -> std::ops::Range<usize>) -> bool {
+    MACRO_FREE_UNIT.with(|unit| match &mut *unit.borrow_mut() {
+        Some(analysis) => {
+            analysis.events.push(UnitEvent::Poll(span()));
+            true
+        }
+        None => false,
+    })
+}
+
 /// High-water marks of a compilation's logical work, shared by its analysis
 /// frames like the expansion and node counters, which namespace capture
 /// reads as each namespace's accounting (docs/compiler-cache.md, "Loading,
@@ -842,6 +936,7 @@ impl MacroHost {
         tag: &Name,
         value: &crate::compiler_data::Datum,
     ) -> Result<Option<crate::compiler_data::Datum>, String> {
+        forbid_engine_entry("a data reader");
         let run =
             || -> Result<Option<crate::compiler_data::Datum>, String> {
                 let (evaluator, function, fallback) = {
@@ -1303,6 +1398,8 @@ impl MacroHost {
         &self,
         record: impl FnOnce(&mut crate::dependency_manifest::ObservationLog),
     ) {
+        // A worker's binding records no observations for the manifest.
+        forbid_engine_entry("a dependency observation");
         if let Some(log) = self.engine.dependency_log.borrow_mut().as_mut() {
             record(log);
         }
@@ -1414,6 +1511,7 @@ impl MacroHost {
         name: &str,
         private: bool,
     ) -> Result<(), String> {
+        forbid_engine_entry("a nested definition");
         self.register_source_binding(namespace, name, SourceBindingKind::Value)?;
         self.tables
             .runtime_vars
@@ -1593,10 +1691,13 @@ impl MacroHost {
                 })
         }
     }
+    /// `site`, the operator as spelled and the call's span, is recorded
+    /// with the attempt in a macro-free unit ([`record_native_expansion`]).
     pub(crate) fn expand_compiler_seed(
         &mut self,
         form: &Form,
         name: &Name,
+        site: Option<(&str, &std::ops::Range<usize>)>,
     ) -> Result<Option<Form>, String> {
         let builder = crate::compiler_data::DataBuilder;
         let extended = crate::compiler_destructuring::expand(&builder, form, name)?;
@@ -1657,6 +1758,13 @@ impl MacroHost {
             None => self.expand_namespace_reflection(form, name)?,
         };
         if let Some(expanded) = &expanded {
+            if let Some((operator, span)) = site {
+                record_native_expansion(|| NativeExpansion {
+                    nodes: expanded.nodes().len(),
+                    operator: operator.to_owned(),
+                    span: span.clone(),
+                });
+            }
             if self.engine.expansions.get() >= self.limits.expansions {
                 return Err("compiler macro expansion limit exceeded".into());
             }
