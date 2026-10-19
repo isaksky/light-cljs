@@ -1,5 +1,50 @@
-use light_cljs::{EvalOptions, EvalSession};
-fn printed(s: &mut EvalSession, source: &str) -> String {
+use light_cljs::{EvalEngine, EvalOptions};
+
+/// The engine this copy of the suite runs its sessions on. main.rs includes
+/// the file once per engine: `eval_sessions` runs on the default engine (V8
+/// where the build has it), and `eval_sessions_quickjs` on QuickJS.
+fn engine() -> EvalEngine {
+    if module_path!().ends_with("_quickjs") {
+        EvalEngine::QuickJs
+    } else {
+        EvalEngine::default()
+    }
+}
+/// A session on [`engine`], whatever engine its options name.
+struct EvalSession(light_cljs::EvalSession);
+impl EvalSession {
+    fn new(mut options: EvalOptions) -> Result<Self, light_cljs::EvalDiagnostic> {
+        options.backend = engine();
+        light_cljs::EvalSession::new(options).map(Self)
+    }
+}
+impl std::ops::Deref for EvalSession {
+    type Target = light_cljs::EvalSession;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for EvalSession {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl std::fmt::Debug for EvalSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "EvalSession({})", self.backend().name())
+    }
+}
+
+/// A heap limit the session's own allocations reach soon: QuickJS starts in
+/// well under 4 MB, and V8 refuses a limit under 16 MB at startup.
+fn small_heap() -> usize {
+    if engine() == EvalEngine::QuickJs {
+        4 * 1024 * 1024
+    } else {
+        32 * 1024 * 1024
+    }
+}
+fn printed(s: &mut light_cljs::EvalSession, source: &str) -> String {
     let v = s.eval_string(source).unwrap().value;
     let text = s.print(v).unwrap();
     s.release(v).unwrap();
@@ -39,6 +84,69 @@ fn language_errors_keep_effects_and_restore_scopes() {
     assert_eq!(printed(&mut s, "@a"), "2");
 }
 
+/// Rust text cannot hold a lone surrogate: `string`, a host function's
+/// `string` and the raw output callback reject one; printing escapes it.
+#[test]
+fn rust_string_conversion_rejects_lone_surrogates() {
+    use light_cljs::{HostArity, HostFunction};
+    use std::rc::Rc;
+    let mut s = EvalSession::new(EvalOptions {
+        functions: vec![HostFunction {
+            name: "host/text".into(),
+            arity: HostArity::Exact(1),
+            callback: Rc::new(|call, args| {
+                call.string(args[0])?;
+                Ok(args[0])
+            }),
+        }],
+        output: Some(Rc::new(|_| Ok(()))),
+        ..Default::default()
+    })
+    .unwrap();
+    let lone = s
+        .eval_string("(str \"a\" (js/String.fromCharCode 0xD800))")
+        .unwrap()
+        .value;
+    assert!(s.string(lone).is_err());
+    assert_eq!(s.print(lone).unwrap(), "\"a\\ud800\"");
+    let pair = s.eval_string("(str \"\\uD83D\\uDE00\")").unwrap().value;
+    assert_eq!(s.string(pair).unwrap(), "\u{1F600}");
+    assert!(
+        s.eval_string("(host/text (js/String.fromCharCode 0xDC00))")
+            .is_err()
+    );
+    assert!(
+        s.eval_string("(print (js/String.fromCharCode 0xD800))")
+            .is_err()
+    );
+    assert_eq!(printed(&mut s, "(host/text \"ok\")"), "\"ok\"");
+}
+/// A host function that panics ends the session, even when the language
+/// catches the error, until `reset`.
+#[test]
+fn host_callback_panics_are_terminal_until_reset() {
+    use light_cljs::{HostArity, HostFunction};
+    use std::rc::Rc;
+    let mut s = EvalSession::new(EvalOptions {
+        functions: vec![HostFunction {
+            name: "host/boom".into(),
+            arity: HostArity::Exact(0),
+            callback: Rc::new(|_, _| panic!("boom")),
+        }],
+        ..Default::default()
+    })
+    .unwrap();
+    let error = s
+        .eval_string("(try (host/boom) (catch :default _ :caught))")
+        .unwrap_err();
+    assert!(
+        error.message.contains("invalidated") || error.message.contains("panicked"),
+        "{error}"
+    );
+    assert!(s.eval_string("42").is_err());
+    s.reset().unwrap();
+    assert_eq!(printed(&mut s, "42"), "42");
+}
 #[test]
 fn typed_callbacks_reenter_and_preserve_owned_errors() {
     use light_cljs::compiler_data::{Datum, DatumKind};
@@ -346,7 +454,7 @@ fn source_output_limits_and_oom_are_explicit() {
     assert_eq!(printed(&mut output, "42"), "42");
     let mut memory = EvalSession::new(EvalOptions {
         engine: light_cljs::evaluator::EvaluatorOptions {
-            memory_limit: 4 * 1024 * 1024,
+            memory_limit: small_heap(),
             ..Default::default()
         },
         ..Default::default()
@@ -624,7 +732,7 @@ fn promise_jobs_stay_within_the_session_limits() {
         ),
         (
             EvaluatorOptions {
-                memory_limit: 4 * 1024 * 1024,
+                memory_limit: small_heap(),
                 ..Default::default()
             },
             "(def a #js []) (defn grow [_] (.push a (.fill (js/Array. 4096) 1)) (.then (js/Promise.resolve) grow)) (grow nil)",

@@ -2,7 +2,9 @@
 use crate::compiler_data::{Datum, DatumKind, Form, Origin, Source, SourceSpan};
 use crate::dev_session::{Action, DevSession, Interpreter, Mode, Unit};
 pub use crate::eval_compiler::NamePolicy;
-use crate::evaluator::{EvalError, Evaluator, EvaluatorOptions, ExecutionControl, ValueId};
+use crate::evaluator::{
+    EvalEngine, EvalError, EvaluatorOptions, ExecutionControl, SessionEvaluator, ValueId,
+};
 pub use crate::evaluator::{HostArity, HostCall};
 use crate::form_bridge::ConversionLimits;
 use crate::source_provider::{SourceInput, SourceProvider};
@@ -65,7 +67,11 @@ pub type FileProvider = Rc<dyn Fn(&FileLoadRequest) -> Result<Option<SourceInput
 pub struct EvalOptions {
     pub namespace: String,
     pub aliases: Vec<(String, String)>,
+    /// The runtime heap's limits.
     pub engine: EvaluatorOptions,
+    /// The JavaScript engine the forms run in: V8 by default where the build
+    /// has it, else QuickJS. The compiler's macros run in QuickJS either way.
+    pub backend: EvalEngine,
     pub compiler: crate::MacroLimits,
     pub max_source_bytes: usize,
     pub max_output_bytes: usize,
@@ -124,6 +130,7 @@ impl Default for EvalOptions {
             namespace: "cljs.user".into(),
             aliases: vec![],
             engine: EvaluatorOptions::default(),
+            backend: EvalEngine::default(),
             compiler: crate::MacroLimits::default(),
             max_source_bytes: 4 * 1024 * 1024,
             max_output_bytes: 1024 * 1024,
@@ -241,7 +248,7 @@ impl Drop for FileLoadGuard {
 /// "Actions"). The runtime's `load-file`, `eval` and `macroexpand` call the
 /// same compiler while a unit runs.
 pub struct EvalSession {
-    engine: Evaluator,
+    engine: Box<dyn SessionEvaluator>,
     namespace_update: ValueId,
     dev: Rc<DevSession>,
     options: EvalOptions,
@@ -254,8 +261,7 @@ pub struct EvalSession {
 }
 impl EvalSession {
     pub fn new(options: EvalOptions) -> Result<Self, EvalDiagnostic> {
-        let engine = Evaluator::interactive(options.engine.clone())?;
-        engine.track_rejections();
+        let engine = crate::evaluator::session_evaluator(options.backend, options.engine.clone())?;
         let namespace_update = engine
             .evaluate_js("name => { rt.core.currentNs = rt.core.createNs(name); return null; }")?;
         let dev = DevSession::with_control(&options, Some(engine.control()))?;
@@ -298,6 +304,15 @@ impl EvalSession {
     }
     pub fn control(&self) -> ExecutionControl {
         self.engine.control()
+    }
+    /// The engine the session's forms run in ([`EvalOptions::backend`]).
+    pub fn backend(&self) -> EvalEngine {
+        self.options.backend
+    }
+    /// The live heap bytes of the session's runtime engine (not of its
+    /// compiler's), for retention measurements.
+    pub fn memory_usage_bytes(&self) -> i64 {
+        self.engine.memory_usage_bytes()
     }
     pub fn namespace(&self) -> String {
         self.dev.namespace()
@@ -827,9 +842,7 @@ impl EvalSession {
             }
         }
         if let Some(input) = self.options.input.clone() {
-            let value = self
-                .engine
-                .input_provider("<host-input>", move |control| input(control))?;
+            let value = self.engine.input_provider("<host-input>", input)?;
             self.engine.bind("readerCurrentInputValue", value, true)?;
             self.engine.release(value)?;
         }

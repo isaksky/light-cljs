@@ -27,6 +27,11 @@ mod eval_cli;
 mod eval_examples;
 mod eval_nsstar;
 mod eval_sessions;
+// The same session contract on QuickJS, where the default engine is V8.
+#[cfg(feature = "v8-macros")]
+#[allow(clippy::duplicate_mod)]
+#[path = "eval_sessions.rs"]
+mod eval_sessions_quickjs;
 mod evaluator;
 mod evaluator_conformance;
 mod evaluator_migration;

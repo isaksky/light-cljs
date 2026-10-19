@@ -63,6 +63,7 @@ pub use eval_session::{
     EvalDiagnostic, EvalOptions, EvalResult, EvalSession, HostArity, HostCall, HostFunction,
     UnhandledRejections, WarningOutput,
 };
+pub use evaluator::EvalEngine;
 mod eval_compiler;
 pub mod form_bridge;
 pub mod host_evaluator;

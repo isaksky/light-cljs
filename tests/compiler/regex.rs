@@ -112,8 +112,17 @@ fn regex_failures_reuse_sessions_and_reset_clears_state_and_bounds() {
         .eval_string("(re-pattern \"[\")")
         .unwrap_err()
         .message;
-    assert!(
+    // Each engine words its own SyntaxError.
+    let (quickjs, v8) = (
         error.contains("unexpected end") && error.contains("RegExp"),
+        error.contains("Invalid regular expression") && error.contains("Unterminated"),
+    );
+    assert!(
+        if session.backend() == light_cljs::EvalEngine::QuickJs {
+            quickjs
+        } else {
+            v8
+        },
         "{error}"
     );
     let value = session

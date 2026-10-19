@@ -4776,3 +4776,31 @@ bytes (a map literal 6,942 to 7,453 bytes; `(count (.split "a,b" ","))` 1,876 to
 2,361; protocol tests of a type or record 6,127 and 5,847 to 6,622 and 6,372; a
 type's `count` 7,558 to 8,043), and that of the chunked build in
 tests/compiler/chunks.rs by 600.
+
+## Engines of --eval and --repl — October 18, 2026
+
+light-cljs-305 runs the forms of `--eval` and `--repl` in V8 by default and
+keeps QuickJS as `--engine quickjs`; the macros of both stay in QuickJS. The
+release binary, each workload run alternately on both engines with
+`--timeout-ms 120000` and an unlimited poll budget, the median of n runs.
+Wall time includes process start; RSS is the process's maximum resident set
+(`/usr/bin/time -l`). Load average 3 to 4 on a 24-vCPU Mac shared with two
+other workers.
+
+| Workload | n | QuickJS | V8 |
+| --- | --- | --- | --- |
+| Startup: `--eval --text 1` | 7 | 34.9 ms, 13.2 MB | 15.9 ms, 22.5 MB |
+| Library loading: require `clojure.string`, `.set`, `.walk`, `.edn`, `cljs.reader` | 7 | 149.6 ms, 28.0 MB | 130.4 ms, 41.3 MB |
+| Compute: `(reduce + (map inc (range 300000)))` | 5 | 5,125.8 ms, 27.1 MB | 373.2 ms, 47.8 MB |
+| Promise jobs: a chain of 50,000 `.then` | 5 | 68.1 ms, 44.3 MB | 24.5 ms, 34.6 MB |
+| Long session: `--repl` with 6,000 forms (3,000 `def`s of a 50-element vector, each summed) | 3 | 9,630.4 ms, 38.5 MB | 3,010.5 ms, 98.3 MB |
+
+The long session first reached V8's 64 MB default heap limit at about
+5,000 forms with 2.6 MB live: V8 keeps every source `eval` compiles in its
+eval cache until a low-memory collection, and a session compiles a new
+source per form. The V8 session now begins each operation with such a
+collection when the heap holds more than half its limit; the 6,000 forms
+end at 17.0 MB used before the final collection and 3.3 MB after
+(`LIGHT_V8_STATS`). The long session is quadratic on both engines: each
+`def`'s unit registers the namespace with every binding so far (13.8 MB of
+unit source at 2,000 forms against 3.5 MB at 1,000).

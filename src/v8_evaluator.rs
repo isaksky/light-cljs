@@ -23,6 +23,8 @@ use v8::{Local, PinScope};
 mod buffer_tests;
 #[path = "v8_buffers.rs"]
 mod buffers;
+#[path = "v8_session.rs"]
+mod session;
 #[path = "v8_stack.rs"]
 mod stack;
 #[path = "v8_watchdog.rs"]
@@ -42,6 +44,14 @@ struct State {
     pending_error: RefCell<Option<EvalError>>,
     source_bytes: Cell<usize>,
     source_units: Cell<usize>,
+    /// An interactive session's heap ([`V8Evaluator::interactive`]): a
+    /// language exception is an ordinary error and leaves the session usable.
+    interactive: Cell<bool>,
+    /// Whether a promise was rejected with no handler since the last
+    /// `unhandled_rejections`, which then has a record to take.
+    rejected: Cell<bool>,
+    host_functions: RefCell<Vec<session::HostEntry>>,
+    input_providers: RefCell<Vec<crate::eval_session::Input>>,
 }
 #[derive(Default)]
 struct NamespaceCache {
@@ -199,6 +209,12 @@ fn platform() -> v8::SharedRef<v8::Platform> {
     static PLATFORM: OnceLock<v8::SharedRef<v8::Platform>> = OnceLock::new();
     PLATFORM
         .get_or_init(|| {
+            // Code that on-stack replacement compiles on a background thread
+            // ignores termination and interrupts once installed: a loop such
+            // as `while (true) a = new Array(4096).fill(1)` outlived the
+            // deadline and the heap limit (it grew to V8's 4 GB fatal OOM).
+            // Compiling OSR code on the isolate's own thread keeps both.
+            v8::V8::set_flags_from_string("--no-concurrent-osr");
             if let Ok(flags) = std::env::var("LIGHT_V8_FLAGS") {
                 v8::V8::set_flags_from_string(&flags);
             }
@@ -311,6 +327,10 @@ impl V8Evaluator {
             pending_error: RefCell::new(None),
             source_bytes: Cell::new(0),
             source_units: Cell::new(0),
+            interactive: Cell::new(false),
+            rejected: Cell::new(false),
+            host_functions: RefCell::new(Vec::new()),
+            input_providers: RefCell::new(Vec::new()),
         });
         isolate.set_slot(state.clone());
         isolate.add_gc_epilogue_callback(after_gc, std::ptr::null_mut(), v8::GCType::kGCTypeAll);
@@ -496,7 +516,11 @@ impl Active<'_, '_, '_> {
         {
             return Err(error);
         }
-        if let Err(error) = &result {
+        // An interactive heap keeps going after a language exception; a
+        // termination (a limit or cancellation) already made the control terminal.
+        if let Err(error) = &result
+            && !self.state.interactive.get()
+        {
             self.state.remember_error(error);
             self.state.control.invalidate();
         }

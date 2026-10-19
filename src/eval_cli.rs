@@ -3,7 +3,7 @@ use light_cljs::compiler_data::{Datum, DatumKind, Name};
 use light_cljs::eval_session::PrintOptions;
 use light_cljs::evaluator::{EvalError, ValueId};
 use light_cljs::source_provider::{FileSourceProvider, SourceInput};
-use light_cljs::{EvalDiagnostic, EvalOptions, EvalSession, UnhandledRejections};
+use light_cljs::{EvalDiagnostic, EvalEngine, EvalOptions, EvalSession, UnhandledRejections};
 use std::{
     cell::{Cell, RefCell},
     error::Error,
@@ -22,6 +22,8 @@ pub const USAGE: &str = "Compiled JavaScript evaluation:
   light-cljs --repl --connect HOST:PORT [--print-length N] [--print-level N]
 
   --source-root DIR  Explicit .cljs/.cljc namespace roots (.cljs first)
+  --engine NAME      JavaScript engine the forms run in: v8 (the default in a
+                     build with V8) or quickjs. Macros run in QuickJS either way
   --poll-budget N    Cooperative engine/compiler polls per operation (1000000)
   --memory-limit N   JavaScript heap bytes (67108864)
   --stack-limit N    JavaScript stack bytes (1048576)
@@ -175,6 +177,11 @@ fn options(repl: bool, mut args: impl Iterator<Item = OsString>) -> Result<Optio
                 }
                 "--print-level" => {
                     options.eval.print.level = Some(size(&mut args, flag)?);
+                    continue;
+                }
+                "--engine" => {
+                    let name = argument(&mut args, flag)?;
+                    options.eval.backend = EvalEngine::parse(name.to_str().unwrap_or(""))?;
                     continue;
                 }
                 "--elide-asserts" => {

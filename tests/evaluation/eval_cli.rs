@@ -780,3 +780,80 @@ fn examples_dev_loads_and_reloads_through_require_in_the_repl() {
          clicks: [2]\nnil\nnil\n2\n",
     );
 }
+
+/// `--engine` chooses the engine the forms run in, V8 by default where the
+/// build has it. Both keep the interactive contract: definitions and history
+/// persist, values print the same, language errors leave the session usable
+/// with `*e` bound, the language reads the REPL's own input, promise jobs run
+/// after each form with unhandled rejections reported, and a deadline is
+/// terminal.
+#[test]
+fn both_engines_keep_the_repl_and_eval_contract() {
+    let transcript = "(def x 41)\n(inc x)\n(+ *1 1)\n\
+                      (throw (ex-info \"boom\" {:k 1}))\n(:k (ex-data *e))\n\
+                      (read-line)typed\n\
+                      (def p (atom nil))\n(.then (js/Promise.resolve 5) #(reset! p %))\n@p\n\
+                      (js/Promise.reject (ex-info \"lost\" {}))\n:after\n\
+                      (defn ^:async f [] (inc (await (js/Promise.resolve 1))))\n\
+                      (do (.then (f) #(reset! p %)) nil)\n@p\n\
+                      (let [h (js-obj)] (aset h \"k\" [1 {:a #{2}}]) h)\n\
+                      (loop [] (recur))\n";
+    let stdout = "41\n42\n43\n1\n\"typed\"\n#object[cljs.core.Atom {:val nil}]\n\
+                  #object[Promise [object Promise]]\n5\n#object[Promise [object Promise]]\n\
+                  :after\n#object[Function]\nnil\n2\n#js {:k [1 {:a #{2}}]}\n";
+    let mut engines = vec!["quickjs"];
+    if cfg!(feature = "v8-macros") {
+        engines.push("v8");
+    }
+    for engine in engines {
+        let output = run(
+            &["--repl", "--engine", engine, "--timeout-ms", "2000"],
+            transcript,
+        );
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(!output.status.success(), "{engine}: {stderr}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            stdout,
+            "{engine}: {stderr}"
+        );
+        // QuickJS adds the stack of the error to its diagnostic.
+        let lines: Vec<_> = stderr
+            .lines()
+            .filter(|l| l.starts_with("light-cljs: "))
+            .collect();
+        assert_eq!(lines.len(), 3, "{engine}: {stderr}");
+        assert!(lines[0].contains("boom"), "{engine}: {stderr}");
+        assert_eq!(
+            lines[1],
+            "light-cljs: WARNING: unhandled promise rejection: #error {:message \"lost\", :data {}}",
+            "{engine}"
+        );
+        assert!(
+            lines[2].contains("deadline exceeded; start a fresh --repl command"),
+            "{engine}: {stderr}"
+        );
+        ok(
+            run(
+                &[
+                    "--eval",
+                    "--engine",
+                    engine,
+                    "--text",
+                    "(def a 1) (println :out) (+ a 1)",
+                ],
+                "",
+            ),
+            ":out\n2\n",
+        );
+    }
+    let output = run(&["--eval", "--engine", "spidermonkey", "--text", "1"], "");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unknown engine spidermonkey"));
+    let output = run(
+        &["--repl", "--connect", "127.0.0.1:1", "--engine", "quickjs"],
+        "",
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--engine does not apply"));
+}

@@ -58,7 +58,9 @@ source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─
   `clojure.walk`, `clojure.edn`, `cljs.reader` and `light.lazy` live in
   `src/compiler_libraries/`.
 - **Evaluation** (`src/eval_session.rs`, `eval_compiler.rs`, `eval_cli.rs`)
-  compiles forms incrementally and executes them in a persistent QuickJS heap.
+  compiles forms incrementally and executes them in a persistent V8 isolate, or
+  a QuickJS heap with `--engine quickjs` and in builds without V8
+  (`src/v8_session.rs`, `src/evaluator.rs`).
 
 ## Building
 
@@ -75,14 +77,15 @@ cargo build --release
 
 `cargo build --release --no-default-features` selects the QuickJS-only compiler
 and needs Rust and a C compiler. WebAssembly builds also use QuickJS. The native
-V8 backend changes macro execution only; the runner and REPL continue to use
-QuickJS, and generated applications carry the same JavaScript runtime.
+V8 backend runs the macros of clean compilations and the forms of `--eval` and
+`--repl` (whose macros stay in QuickJS); generated applications carry the same
+JavaScript runtime.
 
 ## Command-line usage
 
 Run `cargo run -- --help` for the full option list.
 
-### Evaluate scripts and use the REPL (embedded QuickJS)
+### Evaluate scripts and use the REPL (embedded V8 or QuickJS)
 
 ```sh
 cargo run --quiet -- --eval --text '(/ 1 2)'
@@ -103,7 +106,9 @@ stderr). Namespaces are loaded only from explicit `--source-root DIR` options
 (`.cljs` is preferred over `.cljc`); `.clj` files are rejected. Resource limits:
 `--poll-budget`, `--memory-limit`, `--stack-limit`, `--timeout-ms`,
 `--source-limit`, `--output-limit`, plus `--print-length`/`--print-level` for the
-printed result. `--warnings` analyzes as `--compile --warnings` does, printing
+printed result. `--engine quickjs` runs the forms in QuickJS instead of V8,
+the default where the build has V8.
+`--warnings` analyzes as `--compile --warnings` does, printing
 undeclared Vars and arity conflicts to stderr instead of rejecting the form, so
 `(require 'app.view :reload)` of a file that uses a Var another file defines
 later still loads. Details: [docs/evaluation.md](docs/evaluation.md#script-and-repl-commands).

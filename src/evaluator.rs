@@ -820,7 +820,7 @@ impl Evaluator {
                         &format!("{name}: invalid arity {}", ids.len()),
                     ));
                 }
-                let call = HostCall {
+                let host = QuickHost {
                     active: ActiveEvaluator {
                         services: ctx.eval("__lightEvaluator")?,
                         ctx: ctx.clone(),
@@ -829,9 +829,9 @@ impl Evaluator {
                         bridge: &bridge,
                         preserve_language_errors: true,
                     },
-                    owned: RefCell::new(Vec::new()),
                     unit_exception: RefCell::new(None),
                 };
+                let call = HostCall::new(&host);
                 let args = ids
                     .into_iter()
                     .map(|index| ValueId {
@@ -843,7 +843,7 @@ impl Evaluator {
                     callback(&call, &args)
                 }));
                 let result = match result {
-                    Ok(result) => result.and_then(|id| call.active.check(id)),
+                    Ok(result) => result.and_then(|id| HostScope::check(&host, id)),
                     Err(_) => {
                         control.invalidate();
                         Err(EvalError(format!("{name}: host callback panicked")))
@@ -853,16 +853,16 @@ impl Evaluator {
                     control.poll()?;
                     Ok(index)
                 });
-                let owned = call.owned.into_inner();
+                let owned = call.into_owned();
                 match result {
                     Ok(index) => Ok(std::iter::once(index)
                         .chain(owned.into_iter().map(|id| id.index))
                         .collect::<Vec<_>>()),
                     Err(error) => {
                         for id in owned {
-                            let _ = call.active.release(id);
+                            let _ = host.active.release(id);
                         }
-                        if let Some(exception) = call.unit_exception.into_inner() {
+                        if let Some(exception) = host.unit_exception.into_inner() {
                             let rethrow: Function = ctx.eval("__lightEvaluator.rethrowError")?;
                             return rethrow.call((exception, format!("{name}: {error}")));
                         }
@@ -2695,7 +2695,7 @@ pub enum HostArity {
     Range { min: usize, max: usize },
 }
 impl HostArity {
-    fn accepts(self, n: usize) -> bool {
+    pub(crate) fn accepts(self, n: usize) -> bool {
         match self {
             Self::Exact(a) => n == a,
             Self::AtLeast(a) => n >= a,
@@ -2703,40 +2703,68 @@ impl HostArity {
         }
     }
 }
+/// One engine's active callback scope, as a [`HostCall`] uses it. IDs it
+/// returns are not yet owned by the callback.
+pub(crate) trait HostScope {
+    fn control(&self) -> ExecutionControl;
+    /// The index of `id`, an error when it belongs to another session.
+    fn check(&self, id: ValueId) -> Result<u64, EvalError>;
+    fn number(&self, value: ValueId) -> Result<f64, EvalError>;
+    fn string(&self, value: ValueId) -> Result<String, EvalError>;
+    fn print(&self, value: ValueId) -> Result<String, EvalError>;
+    fn data(&self, value: ValueId) -> Result<Datum, EvalError>;
+    fn value(&self, data: &Datum) -> Result<ValueId, EvalError>;
+    fn invoke(&self, function: ValueId, args: &[ValueId]) -> Result<ValueId, EvalError>;
+    fn release(&self, value: ValueId) -> Result<(), EvalError>;
+    /// Run a compiler unit. When it throws, the scope keeps the exception, so
+    /// that a callback failing with its error rethrows the original value.
+    fn unit(&self, source: &str) -> Result<ValueId, EvalError>;
+}
 /// Engine-neutral view of one active callback. It never reacquires the engine
 /// lock; recursive invocation uses the already active context. IDs created here
 /// and argument IDs expire when the callback returns.
 pub struct HostCall<'a, 'js> {
-    active: ActiveEvaluator<'a, 'js>,
+    scope: &'a dyn HostScope,
     owned: RefCell<Vec<ValueId>>,
-    unit_exception: RefCell<Option<rquickjs::Value<'js>>>,
+    _engine: std::marker::PhantomData<&'js ()>,
 }
-impl HostCall<'_, '_> {
+impl<'a> HostCall<'a, '_> {
+    pub(crate) fn new(scope: &'a dyn HostScope) -> Self {
+        Self {
+            scope,
+            owned: RefCell::new(Vec::new()),
+            _engine: std::marker::PhantomData,
+        }
+    }
+    /// The IDs the callback created and still owns.
+    pub(crate) fn into_owned(self) -> Vec<ValueId> {
+        self.owned.into_inner()
+    }
     fn own(&self, value: Result<ValueId, EvalError>) -> Result<ValueId, EvalError> {
         let value = value?;
         self.owned.borrow_mut().push(value);
         Ok(value)
     }
     pub fn number(&self, value: ValueId) -> Result<f64, EvalError> {
-        self.active.number(value)
+        self.scope.number(value)
     }
     pub fn string(&self, value: ValueId) -> Result<String, EvalError> {
-        self.active.string(value)
+        self.scope.string(value)
     }
     pub fn print(&self, value: ValueId) -> Result<String, EvalError> {
-        self.active.print(value)
+        self.scope.print(value)
     }
     pub fn data(&self, value: ValueId) -> Result<Datum, EvalError> {
-        self.active.export_data(value, ConversionLimits::default())
+        self.scope.data(value)
     }
     pub fn value(&self, data: &Datum) -> Result<ValueId, EvalError> {
-        self.own(self.active.import_data(data, ConversionLimits::default()))
+        self.own(self.scope.value(data))
     }
     pub fn invoke(&self, function: ValueId, args: &[ValueId]) -> Result<ValueId, EvalError> {
-        self.own(self.active.call(function, args))
+        self.own(self.scope.invoke(function, args))
     }
     pub fn control(&self) -> ExecutionControl {
-        self.active.control()
+        self.scope.control()
     }
     pub(crate) fn release_scoped(&self, value: ValueId) -> Result<(), EvalError> {
         let mut owned = self.owned.borrow_mut();
@@ -2744,11 +2772,48 @@ impl HostCall<'_, '_> {
             .iter()
             .position(|id| *id == value)
             .ok_or_else(|| EvalError("value is not owned by this callback".into()))?;
-        self.active.release(value)?;
+        self.scope.release(value)?;
         owned.swap_remove(index);
         Ok(())
     }
     pub(crate) fn unit(&self, source: &str) -> Result<ValueId, EvalError> {
+        self.own(self.scope.unit(source))
+    }
+}
+/// The QuickJS scope of a host callback.
+struct QuickHost<'a, 'js> {
+    active: ActiveEvaluator<'a, 'js>,
+    unit_exception: RefCell<Option<rquickjs::Value<'js>>>,
+}
+impl HostScope for QuickHost<'_, '_> {
+    fn control(&self) -> ExecutionControl {
+        self.active.control()
+    }
+    fn check(&self, id: ValueId) -> Result<u64, EvalError> {
+        self.active.check(id)
+    }
+    fn number(&self, value: ValueId) -> Result<f64, EvalError> {
+        self.active.number(value)
+    }
+    fn string(&self, value: ValueId) -> Result<String, EvalError> {
+        self.active.string(value)
+    }
+    fn print(&self, value: ValueId) -> Result<String, EvalError> {
+        self.active.print(value)
+    }
+    fn data(&self, value: ValueId) -> Result<Datum, EvalError> {
+        self.active.export_data(value, ConversionLimits::default())
+    }
+    fn value(&self, data: &Datum) -> Result<ValueId, EvalError> {
+        self.active.import_data(data, ConversionLimits::default())
+    }
+    fn invoke(&self, function: ValueId, args: &[ValueId]) -> Result<ValueId, EvalError> {
+        self.active.call(function, args)
+    }
+    fn release(&self, value: ValueId) -> Result<(), EvalError> {
+        self.active.release(value)
+    }
+    fn unit(&self, source: &str) -> Result<ValueId, EvalError> {
         self.unit_exception.borrow_mut().take();
         let result = self.active.evaluate_unit(source);
         if result.is_err()
@@ -2760,7 +2825,187 @@ impl HostCall<'_, '_> {
         {
             *self.unit_exception.borrow_mut() = Some(exception);
         }
-        self.own(result)
+        result
+    }
+}
+
+/// The JavaScript engine of an interactive session ([`crate::EvalSession`],
+/// `--eval`, `--repl`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EvalEngine {
+    /// The embedded QuickJS heap, the only engine of a build without V8
+    /// (`--no-default-features`, WebAssembly).
+    #[cfg_attr(not(light_v8), default)]
+    QuickJs,
+    /// A V8 isolate, the default where the build has V8.
+    #[cfg(light_v8)]
+    #[default]
+    V8,
+}
+impl EvalEngine {
+    /// The engine `name` (`quickjs` or `v8`) names, when this build has it.
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name {
+            "quickjs" => Ok(Self::QuickJs),
+            #[cfg(light_v8)]
+            "v8" => Ok(Self::V8),
+            #[cfg(not(light_v8))]
+            "v8" => Err("this light-cljs was built without V8; use --engine quickjs".into()),
+            _ => Err(format!("unknown engine {name}; use quickjs or v8")),
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::QuickJs => "quickjs",
+            #[cfg(light_v8)]
+            Self::V8 => "v8",
+        }
+    }
+}
+
+/// The runtime heap of an interactive session: the operations
+/// [`crate::EvalSession`] performs at an outer boundary, which QuickJS and V8
+/// both provide. Language exceptions are ordinary errors here, and the heap
+/// stays usable after them; resource limits and cancellation stay terminal.
+pub(crate) trait SessionEvaluator {
+    fn control(&self) -> ExecutionControl;
+    fn begin_operation(&self, options: &EvaluatorOptions) -> Result<(), EvalError> {
+        self.control().begin(options)
+    }
+    fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError>;
+    fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError> {
+        self.evaluate_unit(&format!("(rt) => ({expression}\n)"))
+    }
+    fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError>;
+    fn number(&self, id: ValueId) -> Result<f64, EvalError>;
+    fn string(&self, id: ValueId) -> Result<String, EvalError>;
+    fn print(&self, id: ValueId) -> Result<String, EvalError>;
+    fn release(&self, id: ValueId) -> Result<(), EvalError>;
+    fn import_data(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError>;
+    fn export_data(&self, id: ValueId, limits: ConversionLimits) -> Result<Datum, EvalError>;
+    fn validate(&self, id: ValueId) -> Result<(), EvalError>;
+    /// Bind an application root, or with `core` a runtime core field.
+    fn bind(&self, name: &str, id: ValueId, core: bool) -> Result<(), EvalError>;
+    fn lookup(&self, name: &str, core: bool) -> Result<ValueId, EvalError>;
+    /// The `ex-data` of the last exception, unless nil.
+    fn error_data(&self) -> Option<Datum>;
+    fn last_exception(&self) -> Result<ValueId, EvalError>;
+    /// Run the pending promise jobs, as [`Evaluator::run_jobs`] describes.
+    fn run_jobs(&self, keep: bool) -> Result<(), EvalError>;
+    /// Take the promises rejected with no handler, as
+    /// [`Evaluator::unhandled_rejections`] describes.
+    fn unhandled_rejections(&self, limit: u32, raise: bool) -> Result<Vec<String>, EvalError>;
+    fn input_provider(
+        &self,
+        name: &str,
+        provider: crate::eval_session::Input,
+    ) -> Result<ValueId, EvalError>;
+    fn input_window(&self, more: bool) -> Result<(String, usize, bool, usize), EvalError>;
+    fn input_action(&self, action: &str, units: usize) -> Result<(), EvalError>;
+    fn install_host_function(
+        &self,
+        name: &str,
+        arity: HostArity,
+        callback: crate::eval_session::HostCallback,
+    ) -> Result<ValueId, EvalError>;
+    /// Live engine heap bytes, for retention measurements.
+    fn memory_usage_bytes(&self) -> i64;
+}
+/// A fresh interactive heap of `engine`, with promise rejection tracking on.
+pub(crate) fn session_evaluator(
+    engine: EvalEngine,
+    options: EvaluatorOptions,
+) -> Result<Box<dyn SessionEvaluator>, EvalError> {
+    match engine {
+        EvalEngine::QuickJs => {
+            let evaluator = Evaluator::interactive(options)?;
+            evaluator.track_rejections();
+            Ok(Box::new(evaluator))
+        }
+        #[cfg(light_v8)]
+        EvalEngine::V8 => Ok(Box::new(crate::v8_evaluator::V8Evaluator::interactive(
+            options,
+        )?)),
+    }
+}
+impl SessionEvaluator for Evaluator {
+    fn control(&self) -> ExecutionControl {
+        Evaluator::control(self)
+    }
+    fn begin_operation(&self, options: &EvaluatorOptions) -> Result<(), EvalError> {
+        Evaluator::begin_operation(self, options)
+    }
+    fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
+        Evaluator::evaluate_unit(self, source)
+    }
+    fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError> {
+        Evaluator::evaluate_js(self, expression)
+    }
+    fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
+        Evaluator::call(self, function, arguments)
+    }
+    fn number(&self, id: ValueId) -> Result<f64, EvalError> {
+        Evaluator::number(self, id)
+    }
+    fn string(&self, id: ValueId) -> Result<String, EvalError> {
+        Evaluator::string(self, id)
+    }
+    fn print(&self, id: ValueId) -> Result<String, EvalError> {
+        Evaluator::print(self, id)
+    }
+    fn release(&self, id: ValueId) -> Result<(), EvalError> {
+        Evaluator::release(self, id)
+    }
+    fn import_data(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {
+        Evaluator::import_data(self, data, limits)
+    }
+    fn export_data(&self, id: ValueId, limits: ConversionLimits) -> Result<Datum, EvalError> {
+        Evaluator::export_data(self, id, limits)
+    }
+    fn validate(&self, id: ValueId) -> Result<(), EvalError> {
+        Evaluator::validate(self, id)
+    }
+    fn bind(&self, name: &str, id: ValueId, core: bool) -> Result<(), EvalError> {
+        Evaluator::bind(self, name, id, core)
+    }
+    fn lookup(&self, name: &str, core: bool) -> Result<ValueId, EvalError> {
+        Evaluator::lookup(self, name, core)
+    }
+    fn error_data(&self) -> Option<Datum> {
+        Evaluator::error_data(self)
+    }
+    fn last_exception(&self) -> Result<ValueId, EvalError> {
+        Evaluator::last_exception(self)
+    }
+    fn run_jobs(&self, keep: bool) -> Result<(), EvalError> {
+        Evaluator::run_jobs(self, keep)
+    }
+    fn unhandled_rejections(&self, limit: u32, raise: bool) -> Result<Vec<String>, EvalError> {
+        Evaluator::unhandled_rejections(self, limit, raise)
+    }
+    fn input_provider(
+        &self,
+        name: &str,
+        provider: crate::eval_session::Input,
+    ) -> Result<ValueId, EvalError> {
+        Evaluator::input_provider(self, name, move |control| provider(control))
+    }
+    fn input_window(&self, more: bool) -> Result<(String, usize, bool, usize), EvalError> {
+        Evaluator::input_window(self, more)
+    }
+    fn input_action(&self, action: &str, units: usize) -> Result<(), EvalError> {
+        Evaluator::input_action(self, action, units)
+    }
+    fn install_host_function(
+        &self,
+        name: &str,
+        arity: HostArity,
+        callback: crate::eval_session::HostCallback,
+    ) -> Result<ValueId, EvalError> {
+        Evaluator::install_host_function(self, name, arity, callback)
+    }
+    fn memory_usage_bytes(&self) -> i64 {
+        Evaluator::memory_usage_bytes(self)
     }
 }
 
