@@ -1,6 +1,13 @@
 # Multi-threaded compilation: research and design
 
-Status: proposed design, October 17, 2026. Nothing here is implemented. The
+Status, October 19, 2026: stage A is built behind `--jobs N` and stays
+experimental with a default of 1, because the stage A gate was missed on
+Penpot (0.79x of `--jobs 1` at eight jobs, 1.8x peak RSS, source maps that
+depend on the schedule; light-cljs-343 under "Gates and first steps").
+Stages C and D are not built. The "As built" notes record what was
+implemented; the rest of the document is the design as proposed.
+
+Original status: proposed design, October 17, 2026. Nothing here is implemented. The
 document merges the feasibility research (measurements, schedule models and
 the scheduler, discovery and failure semantics) with the review of that
 research, which tightened the measurement claims and separated the policies.
@@ -1710,43 +1717,12 @@ output changes once, when stage A lands.
     builds source-macro units at every expansion limit from 1 to the
     build's count and at forty node limits, and
     `exact_boundary_depth_failures_name_the_same_unit_at_one_and_four_slots`
-    at every expansion depth, at one and four slots.
-    *As built (light-cljs-377), helper demands.* A unit a running macro
-    demands is no longer charged as part of the demanding unit. A worker
-    records it on its own (`MacroFreeUnit` nests), and the demanding unit
-    records a `UnitEvent::Demand` where the demand was made. The charge
-    takes the demanded unit's charges at the first demand for it in
-    charge order, or at its own place in the drain if that comes first.
-    That is where the serial build analyzed it, whichever worker analyzed
-    it. Before this, a helper analyzed inline was charged after the
-    macro's own expansion. A helper that another worker took as a job of
-    its own was charged at its own place, after the units that demand it,
-    so a limit could fail a later unit or none. A JavaScript expansion is
-    now recorded as a start, where it is counted, and an end, with the
-    nodes it generated. A demanded unit's failure is thrown out through
-    the expansions still under way. It begins with the unit's
-    `source:line:column: unit`, then the macro's own wrapping
-    (`macro_error_wrapping`: the call, the macro, `; definition`,
-    `; helper`, kept only for an expansion that demanded a unit), then
-    the analyzer's `while expanding NAME:` at the call. The result is the
-    one-slot error byte for byte, and the demanded unit is failed too.
-    `parallel_diagnostics::limits_crossed_inside_a_demanded_helper_fail_with_the_one_slot_error`
-    sweeps every expansion limit and sixty node limits through eight
-    helpers that eight units' macros demand, at one and four slots.
-    `schedule_stress::limits_crossed_inside_demanded_helpers_fail_the_same_way_under_any_schedule`
-    builds three of those limits under the perturbed schedules. Some
-    cases stay inexact; the build already fails in all of them:
-    - A demand nested deeper than the slot depth limit allows.
-    - A macro that catches a demanded unit's failure and carries on.
-    - A JavaScript expansion inside another's run. Its thrown error is
-      wrapped by the innermost expansion only.
-    While a manifest is recorded, what the demanding unit observed before
-    a demand is kept as a `UnitEvent::Observed` event ahead of it. The
-    manifest's inputs then keep the one-slot order: before, inside the
-    helper, after
-    (`worker_isolates::a_demanded_helpers_observations_keep_their_place_in_the_manifest`).
-    A demanded unit's `gensym` names and trace rows stay in the stream of
-    the unit whose macro demanded it.
+    at every expansion depth, at one and four slots. One case stays
+    inexact: a limit crossed inside a helper unit that a worker's macro
+    demanded and analyzed inline is charged as the outer unit's event, so
+    the error names the same outer unit and the inner call, but its text
+    may lack the nested failure's wrapping that the serial build's message
+    has (not tested; light-cljs-377).
   - *Soft cap.* The coordinator publishes what it has charged
     (`SharedCatalog::raise_charged`, at each submission and charge), a
     lower bound of what precedes any unit it has not charged yet; a unit
@@ -1932,6 +1908,67 @@ in detail.
    speedup against the unchanged serial compiler at the parent commit, and
    the scaling against `--jobs 1` of the new code. A slower new baseline
    must not pass as good scaling.
+
+   *As built (light-cljs-343): the gate is missed, and `--jobs` stays 1 by
+   default.* `benchmarks/jobs.bb` alternates the parent commit's binary with
+   the candidate at each `--jobs` value, on Penpot through `penpot.bb` and
+   on generated fixtures; `--stats` gains the scheduler's counters
+   (`pool.workers`, `time.pool-ms`, `pool.utilization`, `pool.jobs`,
+   `pool.jobs.local`, `pool.claims`, `pool.claimed`, `pool.steals`,
+   `pool.stolen`, `pool.parks`, `pool.peak-admitted`, `pool.peak-backlog`,
+   `pool.lock-contended`, `catalog.lock-contended`, the queue waits
+   `time.pool.queue-wait-ms` and `time.pool.queue-wait.max-ms`, and the
+   parse queue's `parse-pool.*` lines). Medians of three
+   alternating rounds, Penpot `app.main` (`none`: the rebased set at load
+   2 to 3, and the first set at load 3 to 5 where marked; `advanced`: load
+   4 to 14; full tables in
+   [benchmarks/compiler-concurrency.md](../benchmarks/compiler-concurrency.md#stage-a-gate-light-cljs-343-october-19-2026)):
+
+   | Build | `none` wall | vs `--jobs 1` | Peak RSS vs `--jobs 1` | `advanced` wall | vs `--jobs 1` |
+   | --- | ---: | ---: | ---: | ---: | ---: |
+   | Before the scheduler (`8ad35f6`), serial | 26.40 s (load 10) | | | | |
+   | Parent, no `--jobs` | 23.37 s | 1.00x | 0.98x | 32.49 s | 1.02x |
+   | `--jobs 1` | 23.32 s | 1 | 1 (0.907 GB) | 31.80 s | 1 |
+   | `--jobs 2` (first set) | 26.13 s | 1.05x | 1.11x | 33.94 s | 1.07x |
+   | `--jobs 4` | 18.92 s | 0.81x | 1.39x | 26.88 s | 0.85x |
+   | `--jobs 8` | 18.39 s | 0.79x | 1.80x | 28.59 s | 0.90x |
+   | `--jobs 12` (first set) | 21.15 s | 0.85x | 2.22x | 28.89 s | 0.91x |
+
+   | Gate | Result |
+   | --- | --- |
+   | Output identical across `--jobs 1/4/8` | JavaScript yes: one SHA-256 in every Penpot build at every N, and the 12-seed stress passes. Source maps no: they differ between N and between runs at one N (light-cljs-379) |
+   | `--jobs 8` at most 50% of `--jobs 1` | no: 0.79x (0.83x and 0.84x in two noisier sets); against the compiler before the scheduler, 1.23x faster at the same load |
+   | Peak RSS at most 1.5x | no: 1.80x (1.82x, 1.78x) |
+   | Browser run (light-cljs-309) | not available: 309 was closed without a procedure |
+
+   Generated fixtures whose namespaces hold hundreds of units (`macros`,
+   `wide`, `chain`) reach 0.44x at eight jobs; a one-namespace program pays
+   about 50 ms and 80 MB for the isolates, and `instaparse.abnf`, one 1.6 s
+   unit, gains nothing. Two slots are always slower than one. The default
+   macro memory limit (64 MiB) stays: it gives two isolates, so a flipped
+   default would have run as `--jobs 2` unless that limit rose too.
+
+   *What the trace says about the next investment.* At eight slots the
+   coordinator spends 9.5 s of a 19.6 s build waiting at drains
+   (`trace.wait-ms`) and 6.7 s in top-level passes, while the workers are
+   busy 17% of their time (`pool.utilization`). With the serial trace's
+   costs, a namespace's top-level pass plus `max(longest unit, unit total /
+   W)`, summed over the 914 drains, is 14.4 s at 7 workers and 14.3 s at 11,
+   about 0.66x of `--jobs 1` with loading and emission: no amount of cheaper
+   bridge work, transfer or isolate reuse reaches 50% while the
+   coordinator waits at each drain. The first investment is therefore
+   overlap: letting the coordinator go on past a drain (the open question
+   of light-cljs-339, which needs a second ID-order change and so a user
+   decision) or stage C's parallel top-level passes; `dag.bb`'s Option U,
+   serial top-level passes with units on 8 workers, is 5.9 s. Second, the
+   per-unit inflation: worker units cost 21.8 s at eight slots against
+   15.8 s on one worker (+38%), with 1,090 helper initializations against
+   the serial 277 and 0.40 s of isolate start-up, so warm or shared helper
+   state per isolate is the next lever after overlap. Lock contention
+   (about 2,200 contended acquisitions of the pool's lock, 3,900 of the
+   catalog's), steals (3,400) and queue waits (3.6 ms a unit on average,
+   a parse job well under one) are not costs worth attacking. Stage C
+   should be cut with the overlap as its first pellet.
 5. Stage C, the top-level queue, on top of cache Phase 2's relocatable
    fragments. Then per-namespace emission.
 
@@ -1954,7 +1991,7 @@ Validation that the prototype must cover:
 | Completion | empty queues mid-discovery do not end the build; successors register before completion checks; one-thread inline execution progresses |
 | Limits | shared expansion and node limits, no replay, no replenished budgets; aggregate memory budget; bounded backlog; stack behavior on pool threads |
 | Backends | native V8; QuickJS-only; wasm without threads; thread-affine custom providers |
-| Performance | cold Penpot builds and small fixtures; wall, user, system, peak RSS; per-stage queue depth and wait, lock contention, steal counts, worker utilization, critical path and main-isolate time; isolate start-up and helper initialization |
+| Performance | cold Penpot builds and small fixtures; wall, user, system, peak RSS; per-stage queue depth and wait, lock contention, steal counts, worker utilization, critical path and main-isolate time; isolate start-up and helper initialization; measured by light-cljs-343 with `benchmarks/jobs.bb` ("Gates and first steps", item 4) |
 
 Benchmark with the existing Babashka workflow: sequential, non-overlapping
 baseline and candidate runs, several alternating repetitions, a pinned
@@ -2036,6 +2073,20 @@ is part of the stage A gate.
   before; macro-free units analyzed on workers export nothing there, so in
   the fixtures such spans, and with them source maps, can differ between
   `--jobs` values (JavaScript and warnings do not; Penpot's maps do not).
+- *Source maps depend on the schedule (light-cljs-343).* The group's
+  decision is byte-identical output for every `--jobs` value and every
+  scheduling order. Penpot main's JavaScript is, but its source map at
+  `--jobs 4` and `8` differs from `--jobs 1`'s and from run to run, and
+  so do the maps of small fixtures whose units expand a macro that returns
+  collections a compile-time helper built: at one job those elements map
+  into the helper's source, on a worker isolate they do not. Filed as
+  light-cljs-379, which the stage A gate needs besides the overlap below.
+- *The 50% gate and the waiting coordinator (light-cljs-343).* While the
+  coordinator waits at each drain (the light-cljs-339 entry above), Penpot
+  main's ideal is about 0.66x of `--jobs 1` at any N, from the serial
+  trace's own costs, so stage A as built cannot pass its gate. Passing it
+  needs the coordinator to go on past a drain, which needs the second
+  ID-order change, or stage C.
 - *What the first cut buys.* On Penpot main 5,319 of 13,367 units (40%)
   are macro-free, but their analysis takes about 0.3 to 0.5 s of the 19 s of
   deferred units (2 to 3%): they are constants, data and small functions.

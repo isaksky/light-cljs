@@ -345,7 +345,11 @@ and read), with each unit's position, demander and costs, for
 
 `--jobs N` with `--compile` is experimental. It allows the compilation N CPU
 work slots, the calling thread's included, so at most N-1 worker threads.
-The default is 1. Sources are read and parsed on that pool, the source
+The default is 1: on Penpot, eight jobs take 0.79x the wall time of one
+with 1.8x the peak memory, short of the design's gate of 0.5x and 1.5x
+([benchmarks/compiler-concurrency.md](benchmarks/compiler-concurrency.md#stage-a-gate-light-cljs-343-october-19-2026)),
+while programs whose namespaces have hundreds of definitions reach about
+0.45x. Sources are read and parsed on that pool, the source
 order coming from the require edges and not from which file finished first;
 and each namespace's deferred units (its definitions' bodies) are analyzed on
 it, each worker in a V8 isolate of its own, while the calling thread drains
@@ -362,8 +366,7 @@ thread's isolate in source order, as one job does, so the example prints
 `1 2` at every N, while the other namespaces' units still go to the pool.
 `^:light-cljs/no-cache` keeps a namespace out of the cache only and gives no
 such affinity; an undeclared provider is treated as pure and nothing
-detects its effects. While `--cache-dir` is on, only units that expand no macro but
-the native `let`, `fn`, `loop` and `letfn` go to the pool. Warnings and
+detects its effects. Warnings and
 errors do not depend on N either: warnings come in source order, and a
 failed build reports the error the first failing unit in source order
 gives, whichever worker failed first, after which the workers' remaining
@@ -377,7 +380,10 @@ engines), each is allowed a base share and takes more from what the others
 have not taken, and one that cannot get what it needs fails the build.
 `--macro-timeout-ms` is one deadline for the build, from the pool's start;
 `--macro-poll-budget` is per isolate. A timeout or memory failure depends on
-scheduling, so its message is not promised to be the same at every N. The pool is described in
+scheduling, so its message is not promised to be the same at every N. With
+`--stats` the report adds `pool.*` lines: the workers, the pool's time and
+utilization, the jobs, claims, steals and parks, the peak queue depth and the
+lock contention. The pool is described in
 [docs/compiler-concurrency.md](docs/compiler-concurrency.md#the-scheduler).
 
 `--cache-dir DIR` with `--compile --entry` (also with `--reloadable`, `--esm`

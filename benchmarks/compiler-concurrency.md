@@ -11,6 +11,233 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Stage A gate (light-cljs-343, October 19, 2026)
+
+The benchmark that decides the `--jobs` default (docs/compiler-concurrency.md,
+"Gates and first steps", item 4). [jobs.bb](jobs.bb) runs every
+configuration once per round, rotating their order each round: the parent
+commit's binary without `--jobs`, then the candidate at each `--jobs` value.
+Penpot scenarios go through [penpot.bb](penpot.bb) (its 4 GB
+`--macro-memory-limit` gives every slot an isolate); each output is hashed
+and deleted. The candidate is the parent plus this pellet's `--stats`
+counters, whose cost on the hot paths is one `try_lock` before the pool's
+and the catalog's locks and a timestamp per pool job. One other worker
+shared the machine throughout, so every set records its 1-minute load; no
+set was free of it. Commands, one output directory per invocation:
+
+```sh
+bb benchmarks/jobs.bb OUT/penpot --parent PARENT --candidate CANDIDATE main-none main-advanced
+bb benchmarks/jobs.bb OUT/fixtures --parent PARENT --candidate CANDIDATE small macros wide chain abnf
+bb benchmarks/jobs.bb OUT/maps --candidate CANDIDATE --jobs 1,4,8 --source-maps main-none
+bb benchmarks/jobs.bb OUT/stats --candidate CANDIDATE --rounds 1 --stats main-none
+```
+
+**Verdict: the gate is missed, so the default stays `--jobs 1`.**
+
+| Gate | Needed | Measured | Holds? |
+| --- | --- | --- | --- |
+| Output across `--jobs 1/4/8` | identical, source maps included | JavaScript: one SHA-256 (`8cd7a9299b5490d3...`, 33,635,310 bytes) in all 73 Penpot `main-none` builds without a map at every N, parents included, and one (`f3b0885177569204...`) in the 8 with one; `--optimize advanced` one SHA-256 in all 36; `LIGHT_CLJS_STRESS_SEEDS=12 cargo nextest run --test compiler schedule_stress::` passes (12 tests at 1, 2, 4 and 8 slots, 76.9 s). Source maps: differ between N, and between two runs at the same N above one (light-cljs-379) | no (maps) |
+| Penpot main wall at `--jobs 8` | at most 0.50x of `--jobs 1` | 0.79x, 0.83x and 0.84x in three sets | no |
+| Peak RSS at `--jobs 8` | at most 1.5x of `--jobs 1` | 1.80x, 1.82x, 1.78x | no |
+| Browser run of light-cljs-309's procedure | passes, if 309 landed | 309 was closed without the work: no procedure exists (docs/penpot-browser-bundle.md), so none was run | n/a |
+
+### Penpot `app.main --optimize none`
+
+Three sets of three rounds each. The **quiet set** ran after light-cljs-369
+landed: parent `f74ee80`, load 2.0 to 3.3.
+
+| Build | Wall (s), rounds 1-3 | Median | vs `--jobs 1` | User (s) | System (s) | Peak RSS (GB) | RSS vs `--jobs 1` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Parent, no `--jobs` | 23.30, 23.37, 23.37 | 23.37 | 1.00x | 28.0 | 0.93 | 0.889 | 0.98x |
+| `--jobs 1` | 23.19, 23.32, 23.32 | 23.32 | 1 | 28.0 | 0.92 | 0.907 | 1 |
+| `--jobs 4` | 18.80, 18.93, 18.92 | 18.92 | 0.81x | 32.7 | 1.25 | 1.264 | 1.39x |
+| `--jobs 8` | 18.97, 18.39, 18.32 | 18.39 | 0.79x | 37.4 | 1.79 | 1.634 | 1.80x |
+
+The **review set**, with the review's fixes (queue waits and parse-pool
+counts): parent `f74ee80`, load 2.3 to 3.3 in round 1 and 6.3 to 9.9 in
+rounds 2 and 3, when the other worker's suite ran.
+
+| Build | Wall (s), rounds 1-3 | Median | vs `--jobs 1` | User (s) | System (s) | Peak RSS (GB) | RSS vs `--jobs 1` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Parent, no `--jobs` | 23.80, 25.25, 25.19 | 25.19 | 1.04x | 30.3 | 1.10 | 0.921 | 1.01x |
+| `--jobs 1` | 23.54, 24.26, 25.13 | 24.26 | 1 | 29.2 | 1.03 | 0.915 | 1 |
+| `--jobs 2` | 25.02, 27.96, 26.50 | 26.50 | 1.09x | 32.6 | 1.50 | 1.058 | 1.16x |
+| `--jobs 4` | 19.13, 20.15, 20.31 | 20.15 | 0.83x | 34.9 | 1.47 | 1.286 | 1.41x |
+| `--jobs 8` | 19.56, 20.24, 21.19 | 20.24 | 0.83x | 40.5 | 2.07 | 1.662 | 1.82x |
+| `--jobs 12` | 21.21, 20.06, 21.23 | 21.21 | 0.87x | 45.6 | 3.68 | 2.094 | 2.29x |
+
+The **first set**: parent `d816503`, load 3.2 to 5.2.
+
+| Build | Wall (s), rounds 1-3 | Median | vs `--jobs 1` | User (s) | System (s) | Peak RSS (GB) | RSS vs `--jobs 1` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Parent, no `--jobs` | 23.95, 24.71, 24.45 | 24.45 | 0.98x | 29.3 | 1.0 | 0.921 | 0.99x |
+| `--jobs 1` | 24.99, 24.93, 24.73 | 24.93 | 1 | 30.0 | 1.1 | 0.931 | 1 |
+| `--jobs 2` | 26.11, 26.13, 26.17 | 26.13 | 1.05x | 32.0 | 1.4 | 1.033 | 1.11x |
+| `--jobs 4` | 19.96, 20.08, 20.14 | 20.08 | 0.81x | 34.5 | 1.4 | 1.287 | 1.38x |
+| `--jobs 8` | 20.05, 21.07, 21.02 | 21.02 | 0.84x | 41.9 | 2.2 | 1.658 | 1.78x |
+| `--jobs 12` | 20.07, 21.40, 21.15 | 21.15 | 0.85x | 45.8 | 3.5 | 2.063 | 2.22x |
+
+- **Against the unchanged serial compiler.** `8ad35f6`, the commit before
+  the scheduler (light-cljs-336), alternated with the first candidate at
+  load 9.4 to 10.6: 26.40 s (26.27 to 26.96), 32.1 s user, 0.963 GB,
+  against 25.23 s (25.23 to 25.75) at `--jobs 1` and 21.49 s (21.31 to
+  21.55), 42.6 s user, 1.689 GB at `--jobs 8`. The parallel build is 1.23x
+  faster than the compiler before stage A (0.81x its wall), and `--jobs 1`
+  is 4% faster than it; its output differs, by light-cljs-338's
+  merge-order change. A slower new baseline does not flatter the scaling.
+- **Serial gate for the counters.** The first set and a four-round set at
+  load 2.5 to 7.2 (parent 24.26 s, `--jobs 1` 23.86 s), seven pairs in
+  all, give medians of 24.45 s and 24.73 s (+1.1%) and 0.921 and 0.931 GB
+  (+1.1%); the quiet set gives -0.2% and +2.0%, and the review set -3.7%
+  and -0.7%. Inside the +2% / +3% gate.
+- **Two slots are slower than one** everywhere (1.05x to 1.09x here, 1.04x
+  to 1.07x at advanced, 1.11x to 1.13x on the macro fixtures): one worker
+  analyzes while the coordinator waits for it, so nothing overlaps but the
+  transfer costs.
+- **Source maps** (`--source-maps`, one round, load 2.8 to 3.7): the parent
+  and `--jobs 1` give one map (`6bfb6e930e0da1bf...`); `--jobs 4` and `8`
+  give others, and a second round gave two more, so the map depends on the
+  schedule. The JavaScript stays `f3b0885177569204...` (the build with its
+  `sourceMappingURL` line) at every N. Filed as light-cljs-379, with a
+  three-line reproduction; light-cljs-371 fixed only macro-free units'
+  scalars.
+
+### Penpot `app.main --optimize advanced`
+
+Two sets of three rounds; all 36 outputs have SHA-256
+`61c1049decf41d58...`. The first: parent `d816503`, load 3.9 to 14.3 (the
+other worker's suite started in round 2). The review set: parent `f74ee80`,
+load 3.1 to 14.3.
+
+| Build | Wall (s), first set | Median | Review set | Median | vs `--jobs 1` (first, review) | User (s) | System (s) | Peak RSS (GB) | RSS vs `--jobs 1` |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Parent | 31.66, 32.84, 32.49 | 32.49 | 34.03, 32.09, 31.15 | 32.09 | 1.02x, 0.99x | 37.7 | 1.3 | 1.107 | 1.01x |
+| `--jobs 1` | 31.80, 30.87, 32.18 | 31.80 | 31.13, 32.45, 32.26 | 32.26 | 1 | 36.7 | 1.3 | 1.100 | 1 |
+| `--jobs 2` | 32.62, 42.14, 33.94 | 33.94 | 42.58, 33.68, 33.37 | 33.68 | 1.07x, 1.04x | 40.1 | 1.7 | 1.196 | 1.09x |
+| `--jobs 4` | 25.93, 26.88, 27.61 | 26.88 | 31.61, 27.16, 26.91 | 27.16 | 0.85x, 0.84x | 41.5 | 1.5 | 1.433 | 1.30x |
+| `--jobs 8` | 25.42, 28.62, 28.59 | 28.59 | 37.93, 27.95, 27.71 | 27.95 | 0.90x, 0.87x | 50.2 | 3.1 | 1.778 | 1.62x |
+| `--jobs 12` | 26.68, 28.89, 29.52 | 28.89 | 27.08, 28.55, 25.96 | 27.08 | 0.91x, 0.84x | 54.9 | 4.1 | 2.181 | 1.98x |
+
+User, system and RSS are the first set's medians; the review set's are
+within 4% of them. Advanced preparation and emission run after analysis
+on the calling thread, so the same ~5 s saving is a smaller share.
+
+### What `--stats` says
+
+One `--stats` round of the review set's candidate on `main-none`, at load
+2.7 to 3.8, with light-cljs-369's worker rows and `wait` stage. The
+`--jobs 1` trace has no pool.
+
+| Counter | `--jobs 1` | 2 | 4 | 8 | 12 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `time.wall-ms` | 23,815 | 24,846 | 19,070 | 19,569 | 20,463 |
+| `trace.top-level-ms` (main isolate) | 5,882 | 6,162 | 6,175 | 6,705 | 6,880 |
+| `trace.wait-ms` (main isolate waiting for pooled units at drains) | 0 | 15,371 | 9,703 | 9,490 | 10,121 |
+| `trace.engine-ms` (main isolate's V8) | 13,957 | 4,605 | 4,566 | 5,197 | 5,345 |
+| `pool.workers` | | 1 | 3 | 7 | 11 |
+| `time.worker-units-ms` (serial units: 16,765) | | 15,759 | 17,644 | 21,772 | 26,092 |
+| `time.pool-ms` | | 23,948 | 18,215 | 18,718 | 19,596 |
+| `pool.utilization` | | 0.658 | 0.323 | 0.166 | 0.121 |
+| `time.worker-isolate-startup-ms` | | 43 | 133 | 399 | 741 |
+| `pool.worker-initializations` (main isolate alone: 277) | | 273 | 551 | 1,090 | 1,615 |
+| `pool.steals` / `pool.stolen` | | 0 / 0 | 1,456 / 1,785 | 3,415 / 4,303 | 4,631 / 5,908 |
+| `time.pool.queue-wait-ms` (summed over 12,817 jobs) | | 232,676 | 81,900 | 45,808 | 37,821 |
+| `time.pool.queue-wait.max-ms` | | 1,676 | 117 | 83 | 84 |
+| `pool.lock-contended` | | 17 | 1,174 | 2,188 | 2,078 |
+| `catalog.lock-contended` | | 1,226 | 1,856 | 3,934 | 5,853 |
+| `parse-pool.jobs` | | 922 | 922 | 922 | 922 |
+| `parse-pool.peak-admitted` | | 222 | 221 | 216 | 222 |
+| `parse-pool.steals` | | 0 | 15 | 47 | 86 |
+| `time.parse-pool.queue-wait-ms` (summed) / max | | 9,749 / 24.5 | 3,332 / 8.5 | 1,942 / 6.4 | 1,519 / 5.2 |
+| `parse-pool.lock-contended` | | 2 | 59 | 213 | 251 |
+
+At every N above one, 12,817 of 13,367 units go to the unit pool as one
+batch per namespace, claimed in 3,567 claims; its peak admitted is the
+widest drain, 304 units, and its backlog peaks at one batch. Utilization is
+the workers' unit time over their capacity, `time.worker-units-ms /
+(pool.workers x time.pool-ms)`. A queued unit waits 3.6 ms on average at
+eight jobs (at most 83 ms), and a parse job well under a millisecond. Lock
+contention is a few thousand acquisitions in a 19 s build, not a
+bottleneck. The first set's `--stats` round (parent `d816503`, before
+light-cljs-369, so its coordinator wait is in `trace.drain-ms`) agrees
+within 7%: 10,150 ms of waiting, 22,772 ms of worker units and 0.165
+utilization at eight jobs.
+
+- **Critical path and the floor of this shape.** `dag.bb` on a `--jobs 1`
+  `--stats-file` trace of the candidate gives a critical path of 2.92 s
+  at namespace granularity and 1.73 s with units fully parallel, and
+  Option U (serial top-level passes, units on 8 workers) 5.93 s. But the
+  coordinator waits at each drain, so a namespace's units only overlap
+  each other: with the trace's serial costs, each namespace's top-level
+  pass plus `max(longest unit, unit total / W)` sums to 21.92 s at one
+  worker, 16.56 s at 2, 14.36 s at 7 and 14.27 s at 11 (a 5.89 s floor of
+  top-level passes, and 1.6 s in `instaparse.abnf`'s one unit). With about
+  1 s of loading, preparation and emission the ideal `--jobs 8` build is
+  about 15.4 s, 0.66x of `--jobs 1`: the 50% gate cannot be met in this
+  shape at any N, however cheap the workers become.
+- **Where the rest goes.** The quiet set's 18.4 s is 3 s above that ideal:
+  units cost 21.8 s of worker time at eight slots against 15.8 s on one
+  worker and 16.8 s serially (+38%), from cold isolates (0.40 s of
+  start-up), helpers initialized again in each isolate (1,090 worker
+  initializations, and 1,208 root executions against the serial build's
+  277), and the shared machine's memory bandwidth at eight threads; the
+  main isolate's top-level passes also slow by 10 to 15%.
+
+### Fixtures
+
+Generated by `jobs.bb` (`--optimize none`, the Penpot macro limits), the
+review set's three rounds at load 3.4 to 4.6; each scenario's outputs have
+one SHA-256 at every N. `/usr/bin/time` resolves 10 ms. The first set, at
+load 8.1 to 12.0, agreed within 10% except `abnf` at eight jobs (1.16 s).
+
+| Scenario | Build | Wall (s), rounds 1-3 | Median | vs `--jobs 1` | User (s) | System (s) | Peak RSS (MB) |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `small`: one namespace, two definitions, pool start-up dominates | parent | 0.00, 0.00, 0.00 | 0.00 | | 0.00 | 0.00 | 11 |
+| | `--jobs 1` | 0.00, 0.00, 0.00 | 0.00 | 1 | 0.00 | 0.00 | 11 |
+| | `--jobs 2` | 0.05, 0.05, 0.05 | 0.05 | | 0.06 | 0.00 | 61 |
+| | `--jobs 4` | 0.05, 0.05, 0.05 | 0.05 | | 0.12 | 0.01 | 91 |
+| | `--jobs 8` | 0.05, 0.05, 0.05 | 0.05 | | 0.12 | 0.01 | 95 |
+| | `--jobs 12` | 0.05, 0.05, 0.05 | 0.05 | | 0.11 | 0.01 | 94 |
+| `macros`: 4 namespaces of 600 macro-expanding definitions | parent | 0.70, 0.69, 0.71 | 0.70 | 1.00x | 0.87 | 0.04 | 193 |
+| | `--jobs 1` | 0.70, 0.68, 0.70 | 0.70 | 1 | 0.88 | 0.04 | 192 |
+| | `--jobs 2` | 0.77, 0.78, 0.78 | 0.78 | 1.11x | 0.97 | 0.09 | 202 |
+| | `--jobs 4` | 0.41, 0.42, 0.41 | 0.41 | 0.59x | 1.27 | 0.11 | 300 |
+| | `--jobs 8` | 0.31, 0.30, 0.32 | 0.31 | 0.44x | 1.73 | 0.29 | 383 |
+| | `--jobs 12` | 0.31, 0.30, 0.30 | 0.30 | 0.43x | 2.11 | 0.79 | 462 |
+| `wide`: 64 independent namespaces of 60 such definitions | parent | 1.14, 1.11, 1.12 | 1.12 | 1.01x | 1.33 | 0.06 | 184 |
+| | `--jobs 1` | 1.10, 1.11, 1.19 | 1.11 | 1 | 1.31 | 0.06 | 185 |
+| | `--jobs 2` | 1.23, 1.27, 1.25 | 1.25 | 1.13x | 1.48 | 0.14 | 193 |
+| | `--jobs 4` | 0.64, 0.65, 0.65 | 0.65 | 0.59x | 1.86 | 0.16 | 346 |
+| | `--jobs 8` | 0.49, 0.49, 0.50 | 0.49 | 0.44x | 2.52 | 0.31 | 446 |
+| | `--jobs 12` | 0.50, 0.47, 0.48 | 0.48 | 0.43x | 3.06 | 0.87 | 533 |
+| `chain`: 64 namespaces, each requiring the previous | parent | 1.14, 1.15, 1.34 | 1.15 | 0.99x | 1.37 | 0.07 | 189 |
+| | `--jobs 1` | 1.16, 1.16, 1.30 | 1.16 | 1 | 1.37 | 0.07 | 188 |
+| | `--jobs 2` | 1.27, 1.30, 1.56 | 1.30 | 1.12x | 1.53 | 0.14 | 201 |
+| | `--jobs 4` | 0.67, 0.67, 0.81 | 0.67 | 0.58x | 1.93 | 0.17 | 348 |
+| | `--jobs 8` | 0.51, 0.51, 0.64 | 0.51 | 0.44x | 2.58 | 0.32 | 453 |
+| | `--jobs 12` | 0.48, 0.49, 0.61 | 0.49 | 0.42x | 3.16 | 0.81 | 550 |
+| `abnf`: Penpot's `instaparse.abnf` alone, one 1.6 s unit | parent | 1.15, 1.16, 1.13 | 1.15 | 1.00x | 1.48 | 0.05 | 180 |
+| | `--jobs 1` | 1.16, 1.15, 1.14 | 1.15 | 1 | 1.48 | 0.05 | 180 |
+| | `--jobs 2` | 1.18, 1.19, 1.34 | 1.19 | 1.03x | 1.55 | 0.06 | 190 |
+| | `--jobs 4` | 1.11, 1.13, 1.13 | 1.13 | 0.98x | 1.71 | 0.08 | 249 |
+| | `--jobs 8` | 1.36, 1.33, 1.35 | 1.35 | 1.17x | 2.35 | 0.14 | 355 |
+| | `--jobs 12` | 1.10, 1.38, 1.36 | 1.36 | 1.18x | 2.72 | 0.28 | 457 |
+
+Programs whose namespaces have hundreds of units and short top-level passes
+reach 0.44x at eight jobs, inside the wall gate though not the memory one
+(2.0x to 2.4x), but Penpot's units are spread over 914 drains averaging 15
+units. A single huge unit gains nothing and can lose up to 0.2 s to the
+other isolates' start-up, and every program pays about 50 ms and 80 MB for
+the isolates. The fixtures' source maps differ between `--jobs 1` and `8`
+(light-cljs-379), except `small`'s.
+
+- **The default macro memory limit.** The default `--macro-memory-limit`
+  (64 MiB) gives two isolates, so a default `--jobs 8` would build as `--jobs 2`
+  does, slower than one job: the `wide` fixture without the 4 GB limit takes
+  1.22 s at `--jobs 1`, 1.40 s at 2 and 1.49 s at 8, with one worker
+  (`pool.workers 1`). A flipped default would have had to raise
+  it; with the default at 1 it stays 64 MiB.
+
 ## Unit traces from pool workers (light-cljs-369, October 19, 2026)
 
 `--stats-file` keeps the units pool workers analyze, recorded where the

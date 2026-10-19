@@ -1143,3 +1143,50 @@ fn perturbed_small_queues_progress_with_every_worker_busy() {
         }
     });
 }
+
+/// `PoolCounts::contended` counts the acquisitions of the pool's lock that
+/// found it held, and no others (light-cljs-343).
+#[test]
+fn a_contended_acquisition_of_the_pool_lock_is_counted_once() {
+    within(30, || {
+        run(
+            &config(1, 1),
+            |_slot| (),
+            |(), task: Task, _worker| task.id,
+            |coordinator| {
+                let shared = coordinator.shared;
+                drop(shared.lock());
+                assert_eq!(coordinator.counts().contended, 0);
+                let held = shared.lock();
+                thread::scope(|scope| {
+                    let waiter = scope.spawn(|| drop(shared.lock()));
+                    while shared.contended.load(Ordering::Relaxed) == 0 {
+                        thread::yield_now();
+                    }
+                    drop(held);
+                    waiter.join().unwrap();
+                });
+                assert_eq!(coordinator.counts().contended, 1);
+                drop(shared.lock());
+                assert_eq!(coordinator.counts().contended, 1);
+            },
+        )
+        .expect("the pool runs");
+    });
+}
+
+/// A started job's wait since its submission is added to
+/// `PoolCounts::queue_wait` and bounds `queue_wait_max` (light-cljs-343).
+#[test]
+fn a_started_job_adds_its_queue_wait() {
+    let (mut state, _limits) = state(1, 1, Limits::default());
+    let entry = Entry::new(task(1), 1);
+    thread::sleep(Duration::from_millis(5));
+    let _ = state.start(entry);
+    let first = state.counts.queue_wait;
+    assert!(first >= Duration::from_millis(5), "{first:?}");
+    assert_eq!(state.counts.queue_wait_max, first);
+    let _ = state.start(Entry::new(task(2), 1));
+    let second = state.counts.queue_wait - first;
+    assert_eq!(state.counts.queue_wait_max, first.max(second));
+}

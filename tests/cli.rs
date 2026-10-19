@@ -1901,6 +1901,83 @@ fn worker_isolates_match_a_fresh_isolate_per_unit() {
     }
 }
 
+/// With `--jobs N --stats`, the report says what the unit pool's scheduler
+/// did (light-cljs-343): its workers, how long it ran and their
+/// utilization, the jobs it started and how (claims, steals, local runs),
+/// its parks, its peak queue depth and how often its lock and the unit
+/// catalog's were found held.
+#[test]
+fn jobs_stats_report_the_unit_pool_scheduler() {
+    if !cfg!(feature = "v8-macros") {
+        return; // QuickJS-only builds have one slot, so no pool.
+    }
+    let root = TempDir::new("cljs-cli-pool-stats");
+    std::fs::write(
+        root.join("macros.cljs"),
+        "(ns macros) (defn helper [x] (list 'inc x)) (defmacro twice [x] (helper (helper x)))",
+    )
+    .unwrap();
+    let mut body = String::from("(ns main (:require [macros :refer [twice]]))\n");
+    for k in 0..24 {
+        body.push_str(&format!("(defn f{k} [n] (when (pos? n) (twice n)))\n"));
+    }
+    body.push_str("(js/console.log (f3 1))\n");
+    std::fs::write(root.join("main.cljs"), body).unwrap();
+    let root_arg = root.to_str().unwrap();
+    let entry = ["--compile", "--entry", "main", "--source-root", root_arg];
+    let limit = ["--macro-memory-limit", "268435456", "--stats"];
+    let output = light_cljs(&[&entry[..], &["--jobs", "4"], &limit[..]].concat());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{stderr}");
+    let stat = |key: &str| -> f64 {
+        let prefix = format!("{key} ");
+        let line = stderr.lines().find(|line| line.starts_with(&prefix));
+        let line = line.unwrap_or_else(|| panic!("no {key} in {stderr}"));
+        line[prefix.len()..].parse().unwrap()
+    };
+    assert_eq!(stat("pool.workers"), 3.0, "{stderr}");
+    assert!(stat("time.pool-ms") > 0.0, "{stderr}");
+    assert!((0.0..=1.0).contains(&stat("pool.utilization")), "{stderr}");
+    // Every pooled unit ran as one job, taken by a claim, a steal or from
+    // the worker's own deque.
+    let jobs = stat("pool.jobs");
+    assert_eq!(jobs, stat("deferred-units.pooled"), "{stderr}");
+    assert!(jobs >= 24.0, "{stderr}");
+    assert!(stat("pool.claims") >= 1.0, "{stderr}");
+    let taken = stat("pool.claimed") + stat("pool.stolen") + stat("pool.jobs.local");
+    assert!(taken >= jobs, "{stderr}");
+    assert!(stat("pool.peak-admitted") >= 1.0, "{stderr}");
+    let (wait, longest) = (
+        stat("time.pool.queue-wait-ms"),
+        stat("time.pool.queue-wait.max-ms"),
+    );
+    assert!(wait >= longest && longest > 0.0, "{stderr}");
+    // The parse queue's pool parsed both sources. The contention counters'
+    // increments are tested where the locks are (scheduler and session).
+    assert_eq!(stat("parse-pool.jobs"), 2.0, "{stderr}");
+    assert!(stat("parse-pool.peak-admitted") >= 1.0, "{stderr}");
+    for key in [
+        "pool.steals",
+        "pool.parks",
+        "pool.peak-backlog",
+        "pool.lock-contended",
+        "catalog.lock-contended",
+        "parse-pool.steals",
+        "parse-pool.parks",
+        "parse-pool.peak-backlog",
+        "time.parse-pool.queue-wait-ms",
+        "time.parse-pool.queue-wait.max-ms",
+        "parse-pool.lock-contended",
+    ] {
+        assert!(stat(key) >= 0.0, "{key}: {stderr}");
+    }
+    // One job: no pool, so no pool lines.
+    let serial = light_cljs(&[&entry[..], &limit[..]].concat());
+    let stderr = String::from_utf8(serial.stderr).unwrap();
+    assert!(serial.status.success(), "{stderr}");
+    assert!(!stderr.contains("pool."), "{stderr}");
+}
+
 #[test]
 fn a_build_stopped_at_its_deadline_writes_no_output_at_any_job_count() {
     // Every unit's macro spins until the build's one deadline stops it, on

@@ -1632,6 +1632,9 @@ struct Loader<'a> {
     /// The parse pool's test-only perturbation.
     #[cfg(debug_assertions)]
     perturbation: Option<crate::scheduler::Perturbation>,
+    /// What the parse pool's scheduler did over the load phases, when it
+    /// had workers, for `--stats`.
+    parse_pool: Option<crate::scheduler::PoolCounts>,
 }
 
 impl Loader<'_> {
@@ -1770,7 +1773,7 @@ impl Loader<'_> {
                             }
                             parses.publish(outcome);
                         }
-                        Ok(Next::Quiescent) => return Ok(()),
+                        Ok(Next::Quiescent) => return Ok(pool.counts()),
                         Ok(Next::Stalled { .. }) => {
                             unreachable!("the parse queue holds no demands")
                         }
@@ -1779,7 +1782,12 @@ impl Loader<'_> {
                 }
             },
         );
-        pooled.unwrap_or_else(|error| Err(NamespaceCompileError::new(error.to_string())))
+        let counts =
+            pooled.unwrap_or_else(|error| Err(NamespaceCompileError::new(error.to_string())))?;
+        if self.slots.workers() > 0 {
+            self.parse_pool.get_or_insert_default().absorb(&counts);
+        }
+        Ok(())
     }
 
     fn visit(&mut self, name: &str) -> Result<(), NamespaceCompileError> {
@@ -2540,6 +2548,7 @@ fn analyze_entry(
         slots: parse_slots(slots),
         parses: ParseRecords::default(),
         pooled_times: Vec::new(),
+        parse_pool: None,
         // Its own log: the perturbation's is the unit pool's assignment.
         #[cfg(debug_assertions)]
         perturbation: perturbation
@@ -2969,6 +2978,7 @@ fn analyze_entry(
         if let Some(session) = macros.session_handle() {
             stats.deferred_units = session.unit_counts();
         }
+        stats.parse_pool = loader.parse_pool;
         compile_stats::add(&mut stats.wall, begun);
     }
     // With the cache, installed namespaces observed nothing: the records it

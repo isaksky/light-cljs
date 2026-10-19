@@ -32,8 +32,8 @@ use std::{
     num::NonZeroUsize,
     panic::{self, AssertUnwindSafe},
     sync::{
-        Condvar, Mutex, MutexGuard,
-        atomic::{AtomicBool, Ordering},
+        Condvar, Mutex, MutexGuard, TryLockError,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
 };
@@ -228,7 +228,7 @@ impl fmt::Display for PoolError {
 impl std::error::Error for PoolError {}
 
 /// What the pool did, for `--stats` and tests.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PoolCounts {
     /// Jobs started, by any path.
     pub started: u64,
@@ -251,6 +251,35 @@ pub struct PoolCounts {
     pub peak_backlog: usize,
     /// Jobs dropped unstarted by [`Coordinator::cancel`].
     pub cancelled: u64,
+    /// Acquisitions of the pool's lock that found it held by another
+    /// slot, its contention.
+    pub contended: u64,
+    /// The time started jobs waited from submission to their start, in
+    /// all and at most: the queues' wait.
+    pub queue_wait: std::time::Duration,
+    pub queue_wait_max: std::time::Duration,
+}
+
+impl PoolCounts {
+    /// Add `other`'s counts, of a later run, to these: sums, and maxima
+    /// for the peaks.
+    pub fn absorb(&mut self, other: &PoolCounts) {
+        self.started += other.started;
+        self.urgent += other.urgent;
+        self.local += other.local;
+        self.claims += other.claims;
+        self.claimed += other.claimed;
+        self.steals += other.steals;
+        self.stolen += other.stolen;
+        self.phase_switches += other.phase_switches;
+        self.parks += other.parks;
+        self.peak_admitted = self.peak_admitted.max(other.peak_admitted);
+        self.peak_backlog = self.peak_backlog.max(other.peak_backlog);
+        self.cancelled += other.cancelled;
+        self.contended += other.contended;
+        self.queue_wait += other.queue_wait;
+        self.queue_wait_max = self.queue_wait_max.max(other.queue_wait_max);
+    }
 }
 
 /// A job admitted to a queue, with what the scheduler reads of it.
@@ -262,6 +291,8 @@ struct Entry<J> {
     bytes: u64,
     /// Submission order, which breaks priority ties across phases.
     seq: u64,
+    /// When it was submitted, for [`PoolCounts::queue_wait`].
+    queued: std::time::Instant,
     #[cfg(debug_assertions)]
     key: u64,
 }
@@ -279,6 +310,7 @@ impl<J: Job> Entry<J> {
             cost: job.cost(),
             bytes: job.bytes(),
             seq: 0,
+            queued: std::time::Instant::now(),
             #[cfg(debug_assertions)]
             key: job.key(),
             job,
@@ -485,6 +517,9 @@ impl<J: Job, O> State<J, O> {
         self.clock += 1;
         self.served[entry.phase] = self.clock;
         self.counts.started += 1;
+        let waited = entry.queued.elapsed();
+        self.counts.queue_wait += waited;
+        self.counts.queue_wait_max = self.counts.queue_wait_max.max(waited);
         entry
     }
 
@@ -672,6 +707,8 @@ struct Shared<J, O> {
     outcomes: Condvar,
     /// Mirrors `State::cancelled` for running jobs to poll.
     cancelled: AtomicBool,
+    /// [`PoolCounts::contended`], kept outside the lock it counts.
+    contended: AtomicU64,
     limits: Limits,
     phases: usize,
     #[cfg(debug_assertions)]
@@ -682,9 +719,16 @@ impl<J: Job, O> Shared<J, O> {
     fn lock(&self) -> MutexGuard<'_, State<J, O>> {
         // A panic under the lock is a scheduler bug; shutdown still needs
         // the state, so poisoning is not a second failure.
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        match self.state.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                self.contended.fetch_add(1, Ordering::Relaxed);
+                self.state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            }
+        }
     }
 
     /// Wake workers for `count` newly runnable jobs: one for one, all for
@@ -1023,7 +1067,9 @@ impl<J: Job, O, W> Coordinator<'_, J, O, W> {
 
     /// What the pool has done so far.
     pub fn counts(&self) -> PoolCounts {
-        self.shared.lock().counts.clone()
+        let mut counts = self.shared.lock().counts;
+        counts.contended = self.shared.contended.load(Ordering::Relaxed);
+        counts
     }
 
     /// Jobs submitted but not yet admitted, which a caller producing work
@@ -1139,6 +1185,7 @@ where
         work: Condvar::new(),
         outcomes: Condvar::new(),
         cancelled: AtomicBool::new(false),
+        contended: AtomicU64::new(0),
         limits: limits(config),
         phases: config.phases,
         #[cfg(debug_assertions)]

@@ -1,7 +1,8 @@
 #!/usr/bin/env bb
 ;; Sequential cold-process builds of the existing Penpot port on macOS.
 ;; Build the release binary and finish tests before running this script.
-;; Usage: bb benchmarks/penpot.bb OUTPUT-DIR [render main-none main-advanced shadow-release shadow-compile]
+;; Usage: bb benchmarks/penpot.bb OUTPUT-DIR [render main-none main-advanced abnf shadow-release shadow-compile]
+;; (abnf, instaparse.abnf alone, the port's largest single unit, runs only when named)
 ;; LIGHT_CLJS_BINARY optionally selects an immutable candidate binary.
 ;; LIGHT_CLJS_EXTRA_ARGS optionally adds whitespace-separated compiler flags to
 ;; every light-cljs job, for example "--stats". With --stats, the report is
@@ -29,6 +30,7 @@
 (def jobs {"render" ["app.render" "--optimize" "none"]
            "main-none" ["app.main" "--optimize" "none"]
            "main-advanced" ["app.main" "--optimize" "advanced" "--pseudo-names" "--elide-asserts"]
+           "abnf" ["instaparse.abnf" "--optimize" "none"]
            "shadow-release" "release"
            "shadow-compile" "compile"})
 (def selected (or (seq (rest *command-line-args*))

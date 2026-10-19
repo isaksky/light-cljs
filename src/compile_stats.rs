@@ -93,6 +93,14 @@ pub struct DeferredUnitCounts {
     pub worker_isolate_startup: std::time::Duration,
     pub worker_unit_time: std::time::Duration,
     pub worker_initializations: usize,
+    /// The pool's worker threads, how long it ran, what its scheduler did
+    /// (claims, steals, parks, queue depth and lock contention), and how
+    /// often the unit catalog's lock was found held, on any thread
+    /// (light-cljs-343).
+    pub pool_workers: usize,
+    pub pool_time: std::time::Duration,
+    pub pool: crate::scheduler::PoolCounts,
+    pub catalog_contended: u64,
 }
 
 /// The numbers of one compilation; see the module documentation.
@@ -113,6 +121,8 @@ pub struct CompileStats {
     /// installed namespaces charged.
     pub peak_macro_nodes: usize,
     pub deferred_units: DeferredUnitCounts,
+    /// What the parse queue's pool did, when it had workers.
+    pub parse_pool: Option<crate::scheduler::PoolCounts>,
     /// `--watch`: loading the program into the watch's development session
     /// after the startup build.
     pub session_load: Option<Duration>,
@@ -339,6 +349,41 @@ impl CompileStats {
             );
             line("time.worker-units-ms", &ms(units.worker_unit_time));
             line("pool.worker-initializations", &units.worker_initializations);
+            let pool = &units.pool;
+            line("pool.workers", &units.pool_workers);
+            line("time.pool-ms", &ms(units.pool_time));
+            // The share of the workers' time spent analyzing units.
+            let capacity = units.pool_time.as_secs_f64() * units.pool_workers as f64;
+            let busy = units.worker_unit_time.as_secs_f64();
+            let utilization = if capacity > 0.0 { busy / capacity } else { 0.0 };
+            line("pool.utilization", &format!("{utilization:.3}"));
+            line("pool.jobs", &pool.started);
+            line("pool.jobs.local", &pool.local);
+            line("pool.claims", &pool.claims);
+            line("pool.claimed", &pool.claimed);
+            line("pool.steals", &pool.steals);
+            line("pool.stolen", &pool.stolen);
+            line("pool.parks", &pool.parks);
+            line("pool.peak-admitted", &pool.peak_admitted);
+            line("pool.peak-backlog", &pool.peak_backlog);
+            line("time.pool.queue-wait-ms", &ms(pool.queue_wait));
+            line("time.pool.queue-wait.max-ms", &ms(pool.queue_wait_max));
+            line("pool.lock-contended", &pool.contended);
+            line("catalog.lock-contended", &units.catalog_contended);
+        }
+        // The parse queue's pool, when it had workers (light-cljs-343).
+        if let Some(pool) = &self.parse_pool {
+            line("parse-pool.jobs", &pool.started);
+            line("parse-pool.steals", &pool.steals);
+            line("parse-pool.parks", &pool.parks);
+            line("parse-pool.peak-admitted", &pool.peak_admitted);
+            line("parse-pool.peak-backlog", &pool.peak_backlog);
+            line("time.parse-pool.queue-wait-ms", &ms(pool.queue_wait));
+            line(
+                "time.parse-pool.queue-wait.max-ms",
+                &ms(pool.queue_wait_max),
+            );
+            line("parse-pool.lock-contended", &pool.contended);
         }
         if let Some(capture) = &self.capture {
             line("cache.capture.namespaces", &capture.captured);
