@@ -41,7 +41,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/light-cljs/v8
-          key: light-cljs-v8-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml', 'vendor/v8/Cargo.toml', 'vendor/v8/build.rs', 'vendor/v8/upstream_build.rs', 'vendor/v8/prepare.bb', 'vendor/v8/engine-budget.patch') }}
+          key: light-cljs-v8-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml', 'vendor/v8/Cargo.toml', 'vendor/v8/build.rs', 'vendor/v8/cache.rs', 'vendor/v8/upstream_build.rs', 'vendor/v8/prepare.bb', 'vendor/v8/engine-budget.patch') }}
           restore-keys: light-cljs-v8-${{ runner.os }}-${{ runner.arch }}-
       - name: Reuse a cached engine
         id: cached

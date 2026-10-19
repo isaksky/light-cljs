@@ -43,7 +43,7 @@ normal build: the machine-wide cache below, then the source recipe, is the defau
 
 ## Machine-wide engine cache
 
-A source build runs once per machine for a given engine. `build.rs` keeps each
+A source build runs once per machine for a given engine. `build.rs` (with the cache logic in `cache.rs`) keeps each
 built archive and its generated `src_binding.rs` in a per-user cache and reuses
 them from every checkout, worktree and clean target directory, so no gn, ninja,
 source download or bindgen step runs on a hit. The default location is
@@ -63,7 +63,7 @@ their archives differ in the build-directory names embedded in source paths,
 so the debug and release profiles keep separate entries. The directory name
 carries a hash of this material and the entry records it in full; an entry is
 used only when the recorded material is identical. Changing any key input
-misses and builds from source. Bump `CACHE_SCHEMA` in `build.rs` when the
+misses and builds from source. Bump `CACHE_SCHEMA` in `cache.rs` when the
 wrapper itself changes what a source build produces. Tool locations (`GN`,
 `NINJA`, `PYTHON`, compiler caches, `LIBCLANG_PATH`) and the installed SDK are
 not keyed; after a toolchain change that should rebuild the engine, delete the
@@ -75,6 +75,8 @@ pair into a private `.tmp-` directory, flushing it and renaming it into place,
 so readers never see a partial entry. An interrupted publish leaves only the
 temporary directory, which no lookup reads and a later publish removes after a
 day. An entry whose recorded file sizes do not match is ignored and replaced.
+light-cljs's `tests/v8_cache.rs` checks that a source build publishes its pair from
+`gn_out` and that a fresh target directory then reuses it without building.
 
 Settings, read by the build script:
 
@@ -93,7 +95,7 @@ Explicit `RUSTY_V8_ARCHIVE`/`RUSTY_V8_SRC_BINDING_PATH` pairs bypass the cache.
 
 CI runners start without this cache. The `v8-engine` job in
 `.github/workflows/conformance.yml` restores the cache directory from the Actions
-cache under a key hashed from the root and engine `Cargo.toml`, `build.rs` and the
+cache under a key hashed from the root and engine `Cargo.toml`, `build.rs`, `cache.rs` and the
 three key files above (falling back to the newest engine), checks the crate with
 `LIGHT_CLJS_V8_CACHE=require` and, only on a miss, builds from source.
 `bb vendor/v8/ci-cache.bb CACHE-DIR TARGET-DIR` then deletes every entry the build
