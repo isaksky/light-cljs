@@ -1093,7 +1093,7 @@ eligible share of Penpot is expected to be small.
   on a timer, so a build whose budget runs out may report it at another
   form; it runs out at every `--jobs` value.
 - *Trace.* The exclusive-stage trace is per thread, so units analyzed on
-  workers are not in it; `--stats` adds `deferred-units.macro-free` and
+  workers are not in it (until light-cljs-369, below); `--stats` adds `deferred-units.macro-free` and
   `time.macro-free-units-ms`, the summed analysis time of those units on
   whichever thread.
 - *Append.* `program_fragment::append` checks in every build that each
@@ -1240,11 +1240,31 @@ The one deterministic ID-order change of this stage is made, at every
   across namespaces has nothing to order yet, and the jobs keep phase 0
   and priority 0, one batch per namespace in source order, which workers
   claim four at a time and steal.
-- *Trace.* The exclusive-stage trace stays per thread, so worker units are
-  not in it (light-cljs-369); `--stats` adds `deferred-units.pooled`,
-  `pool.worker-isolates`, `time.worker-isolate-startup-ms`,
-  `time.worker-units-ms` and `pool.worker-initializations` when the pool
-  ran. JIT share per worker is not measured.
+- *Trace.* The exclusive-stage trace stays per thread; `--stats` adds
+  `deferred-units.pooled`, `pool.worker-isolates`,
+  `time.worker-isolate-startup-ms`, `time.worker-units-ms` and
+  `pool.worker-initializations` when the pool ran. JIT share per worker is
+  not measured. *As built (light-cljs-369):* worker units are in it. While
+  the coordinator records, each pool slot's thread records its unit
+  analyses (`compile_trace::record_worker`), and a unit's rows, with those
+  of the units it demanded and its `execute` and `read` rows, travel with
+  its `UnitCharges`. The coordinator records them where it charges the
+  unit, so `unit` rows come in the order a serial build gives: what the
+  job itself demanded becomes the coordinator's innermost frame (the drain
+  for a pooled unit), depths count from the coordinator's stack, and the
+  `thread` column is the slot (1 to N-1). Their times are the workers'
+  work: they enter no stage total or wait, as the parse jobs' do not. A
+  unit counted on counters of its own (a worker's, or a macro-free one's
+  on the coordinator) now has its trace frame bound to them, so native
+  expansions and nodes are its own; frames count the work of frames inside
+  them only on the same counters, and what a charge adds is subtracted
+  from the frame it is charged in (`compile_trace::charged`). A worker's
+  isolate first evaluating a ready root adds an `execute` row with
+  `prepared` 1 the serial build does not have. A unit demanded by another
+  pooled unit is the demander's nested row or a drained one depending on
+  which job claimed it first. The CLI fixture
+  `stats_file_traces_exclusive_stages_and_demand_edges` checks the rows at
+  `--jobs 1`, 2 and 8.
 
 *As built (light-cljs-374), recording on workers:* capturing artifacts
 (`--cache-dir`, `EntryRecorders::capture`) and recording a dependency

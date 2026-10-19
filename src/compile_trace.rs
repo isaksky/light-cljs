@@ -20,6 +20,14 @@
 //! that ends each engine entry hands it the serial, so that it can report
 //! them in one call as read edges from that frame ([`root_reads`]).
 //!
+//! With `--jobs`, each pool worker records its unit analyses on its own
+//! thread ([`record_worker`]) and hands their rows to the coordinator with
+//! the unit's charges, and the coordinator records them where it takes the
+//! unit's analysis, in its order, as a serial build would have
+//! ([`replay`]). A unit counted on counters of its own, a worker's or a
+//! macro-free one's, is not counted by the frames around it until the
+//! coordinator charges it ([`charged`]).
+//!
 //! Without a recording ([`record`]) nothing here reads a clock or allocates:
 //! each hook loads one relaxed atomic and returns.
 
@@ -206,7 +214,8 @@ pub struct UnitTrace {
     pub demander: Demander,
     /// How many unit analyses were open below it.
     pub depth: u32,
-    /// The thread that analyzed it; 0 is the coordinator, the only one.
+    /// The thread that analyzed it: 0 is the coordinator, and a pool
+    /// worker is its slot, from 1 ([`replay`]).
     pub thread: u32,
 }
 
@@ -511,6 +520,16 @@ impl Counters {
     fn read(&self) -> (usize, usize) {
         (self.expansions.get(), self.nodes.get())
     }
+
+    /// Which counters these are: a frame counts the work of the frames
+    /// inside it only where they count the same ones ([`charged`]).
+    fn key(&self) -> usize {
+        counter_key(&self.expansions)
+    }
+}
+
+fn counter_key(expansions: &Rc<Cell<usize>>) -> usize {
+    Rc::as_ptr(expansions) as usize
 }
 
 /// What a unit frame records beyond its times.
@@ -541,6 +560,8 @@ struct Frame {
     engine: Duration,
     engine_calls: u64,
     counted: Option<(usize, usize)>,
+    /// The [`Counters::key`] of the counters it reads, or 0.
+    counter: usize,
     child_counts: (usize, usize),
     /// The engine depth when the frame opened, restored when it closes.
     saved_depth: u32,
@@ -564,6 +585,7 @@ impl Frame {
             engine: Duration::ZERO,
             engine_calls: 0,
             counted: None,
+            counter: 0,
             child_counts: (0, 0),
             saved_depth: 0,
             host: false,
@@ -593,6 +615,8 @@ struct Recorder {
     demanders: Vec<Demander>,
     /// The edges in [`Trace::reads`].
     read_edges: std::collections::HashSet<Read>,
+    /// The thread's [`UnitTrace::thread`].
+    thread: u32,
 }
 
 impl Recorder {
@@ -657,7 +681,11 @@ impl Recorder {
         };
         let parent = self.frames.last_mut().expect("root frame");
         parent.children += inclusive;
-        if let Some((inclusive, _)) = own_counts {
+        // What a frame counts on counters of its own reaches its parent's
+        // where the unit is charged, if at all ([`charged`]).
+        if let Some((inclusive, _)) = own_counts
+            && parent.counter == frame.counter
+        {
             parent.child_counts.0 += inclusive.0;
             parent.child_counts.1 += inclusive.1;
         }
@@ -708,7 +736,7 @@ impl Recorder {
                     host: frame.host,
                     demander,
                     depth: start.depth,
-                    thread: 0,
+                    thread: self.thread,
                 });
             }
             Stage::Other | Stage::Finish => {}
@@ -745,6 +773,18 @@ pub(crate) struct Recording {
 /// Start recording this thread's compilation. A thread already recording
 /// keeps its recording, and the inner one records nothing of its own.
 pub(crate) fn record() -> Recording {
+    record_thread(0)
+}
+
+/// Start recording the unit analyses of the build's pool worker in slot
+/// `slot`, which the coordinator records where it charges each unit
+/// ([`take_worker_rows`], [`replay`]). On a thread already recording, such
+/// as the coordinator running the pool's jobs inline, it records nothing.
+pub(crate) fn record_worker(slot: usize) -> Recording {
+    record_thread(slot as u32)
+}
+
+fn record_thread(thread: u32) -> Recording {
     let on = RECORDER.with(|recorder| {
         let mut recorder = recorder.borrow_mut();
         if recorder.is_some() {
@@ -762,6 +802,7 @@ pub(crate) fn record() -> Recording {
             loads: Vec::new(),
             demanders: vec![Demander::Other(Stage::Other)],
             read_edges: Default::default(),
+            thread,
         });
         true
     });
@@ -851,7 +892,9 @@ pub(crate) fn enter(stage: Stage, owner: usize, host: Option<&crate::MacroHost>)
     let counters = host.map(Counters::of);
     let counts = counters.as_ref().map(Counters::read);
     let on = with_recorder(|recorder| {
-        recorder.push(Frame::new(stage, owner as u32, Instant::now()), counts);
+        let mut frame = Frame::new(stage, owner as u32, Instant::now());
+        frame.counter = counters.as_ref().map_or(0, Counters::key);
+        recorder.push(frame, counts);
     })
     .is_some();
     Span { on, counters }
@@ -875,6 +918,7 @@ pub(crate) fn enter_unit(info: impl FnOnce() -> UnitInfo, host: &crate::MacroHos
         .unwrap_or((0, 0));
     let on = with_recorder(|recorder| {
         let mut frame = Frame::new(Stage::Unit, info.id as u32, Instant::now());
+        frame.counter = counters.key();
         frame.unit = Some(Box::new(UnitStart {
             id: info.id as u32,
             source: info.source,
@@ -975,6 +1019,98 @@ pub(crate) fn pooled_loads(wall: Duration, times: impl IntoIterator<Item = Durat
 /// artifact.
 pub(crate) fn installed(index: usize) {
     with_recorder(|recorder| recorder.namespace(index as u32).installed = true);
+}
+
+/// What a pool worker recorded of one unit's analysis, the units it
+/// demanded included, for the coordinator to record where it charges the
+/// unit ([`replay`]).
+#[derive(Debug, Default)]
+pub(crate) struct WorkerRows {
+    units: Vec<UnitTrace>,
+    executions: Vec<Execution>,
+    reads: Vec<Read>,
+}
+
+/// On a pool worker that records ([`record_worker`]), the rows recorded
+/// since it last took them: the unit just analyzed, after the units it
+/// demanded. None on the coordinator, which records its own rows in place.
+pub(crate) fn take_worker_rows() -> Option<Box<WorkerRows>> {
+    with_recorder(|recorder| {
+        if recorder.thread == 0 {
+            return None;
+        }
+        // The coordinator keeps each pair once.
+        recorder.read_edges.clear();
+        let trace = &mut recorder.trace;
+        let rows = WorkerRows {
+            units: std::mem::take(&mut trace.units),
+            executions: std::mem::take(&mut trace.executions),
+            reads: std::mem::take(&mut trace.reads),
+        };
+        let empty = rows.units.is_empty() && rows.executions.is_empty() && rows.reads.is_empty();
+        (!empty).then(|| Box::new(rows))
+    })
+    .flatten()
+}
+
+/// Record on the coordinator the rows a pool worker recorded of a unit it
+/// analyzed, where the coordinator takes the analysis, with `depth` unit
+/// analyses open on its stack. What the worker's own root frame demanded,
+/// its job's unit, the innermost frame here demands, as it would have in
+/// a serial build, and every unit's depth counts from `depth`. Their times
+/// are the workers' work, not the coordinator's wall time, so they are in
+/// no stage total or wait, as the parse jobs' are not ([`pooled_loads`]).
+pub(crate) fn replay(rows: WorkerRows, depth: usize) {
+    with_recorder(|recorder| {
+        let worker_root = Demander::Other(Stage::Other);
+        let frame = recorder.frames.last_mut().expect("root frame");
+        let here = Demander::of(frame.stage, frame.owner);
+        let place = |demander| {
+            if demander == worker_root {
+                here
+            } else {
+                demander
+            }
+        };
+        let trace = &mut recorder.trace;
+        for mut unit in rows.units {
+            if unit.demander == worker_root && frame.stage == Stage::Unit {
+                frame.host |= unit.host;
+            }
+            unit.demander = place(unit.demander);
+            unit.depth += depth as u32;
+            trace.units.push(unit);
+        }
+        trace
+            .executions
+            .extend(rows.executions.into_iter().map(|execution| Execution {
+                demander: place(execution.demander),
+                ..execution
+            }));
+        for read in rows.reads {
+            let read = Read {
+                demander: place(read.demander),
+                ..read
+            };
+            if recorder.read_edges.insert(read) {
+                trace.reads.push(read);
+            }
+        }
+    });
+}
+
+/// A unit counted on counters of its own, on a worker or as a macro-free
+/// unit, charged `expansions` and `nodes` to the counters `counter` stands
+/// for: the work of a unit inside the innermost frame that counts these,
+/// which that frame does not count as its own.
+pub(crate) fn charged(counter: &Rc<Cell<usize>>, expansions: usize, nodes: usize) {
+    with_recorder(|recorder| {
+        let key = counter_key(counter);
+        if let Some(frame) = recorder.frames.iter_mut().rev().find(|f| f.counter == key) {
+            frame.child_counts.0 += expansions;
+            frame.child_counts.1 += nodes;
+        }
+    });
 }
 
 /// An engine service call begins; the result goes to [`engine_exit`].
@@ -1260,5 +1396,85 @@ mod tests {
             assert!(!engine_enter());
             checked.wait();
         });
+    }
+
+    fn charge(host: &crate::MacroHost, expansions: usize, nodes: usize) {
+        let engine = &host.engine;
+        engine.expansions.set(engine.expansions.get() + expansions);
+        engine
+            .generated_nodes
+            .set(engine.generated_nodes.get() + nodes);
+    }
+
+    #[test]
+    fn worker_rows_are_recorded_where_the_coordinator_charges_their_unit() {
+        let recording = record();
+        let host = crate::MacroHost::new();
+        {
+            let _top = enter(Stage::TopLevel, 0, Some(&host));
+            charge(&host, 1, 10);
+            // The coordinator records its own rows in place.
+            assert!(take_worker_rows().is_none());
+            let rows = std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        let _worker = record_worker(3);
+                        // The unit counts on counters of its own; a unit it
+                        // demands counts on its host's.
+                        let own = crate::MacroHost::new();
+                        {
+                            let _unit = enter_unit(|| unit_info(5, 0), &own);
+                            charge(&own, 2, 20);
+                            {
+                                let inner = crate::MacroHost::new();
+                                let _inner = enter_unit(|| unit_info(6, 1), &inner);
+                                charge(&inner, 4, 40);
+                            }
+                            executed(6, false);
+                            root_reads(&format!("{}:6", frame().unwrap()));
+                        }
+                        let rows = take_worker_rows().unwrap();
+                        assert!(take_worker_rows().is_none());
+                        rows
+                    })
+                    .join()
+                    .unwrap()
+            });
+            replay(*rows, 2);
+            // Charging the unit adds what the worker counted.
+            charge(&host, 6, 60);
+            charged(&host.engine.expansions, 6, 60);
+        }
+        let trace = recording.finish().unwrap();
+        let units: Vec<_> = trace
+            .units
+            .iter()
+            .map(|u| (u.id, u.demander, u.depth, u.thread, u.expansions, u.nodes))
+            .collect();
+        assert_eq!(
+            units,
+            [
+                (6, Demander::Unit(5), 3, 3, 4, 40),
+                (5, Demander::TopLevel(0), 2, 3, 2, 20)
+            ]
+        );
+        assert_eq!(trace.namespaces[0].top_level_expansions, 1);
+        assert_eq!(
+            trace.executions,
+            [Execution {
+                unit: 6,
+                demander: Demander::Unit(5),
+                prepared: false
+            }]
+        );
+        assert_eq!(
+            trace.reads,
+            [Read {
+                unit: 6,
+                demander: Demander::Unit(5)
+            }]
+        );
+        // The workers' work is in no stage total of the coordinator's.
+        assert_eq!(trace.exclusive_total(), trace.wall);
     }
 }

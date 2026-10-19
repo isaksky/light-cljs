@@ -118,6 +118,10 @@ pub(crate) struct UnitCharges {
     /// charges the unit (light-cljs-374).
     observations: Option<Box<crate::dependency_manifest::ObservationLog>>,
     gensyms: Vec<Vec<u16>>,
+    /// What a worker's `--stats-file` trace recorded of the unit and the
+    /// units it demanded, which the coordinator records where it charges
+    /// the unit (light-cljs-369, [`crate::compile_trace::replay`]).
+    trace: Option<Box<crate::compile_trace::WorkerRows>>,
 }
 impl UnitCharges {
     /// Add the charges to `binding`'s counters and marks, and spend the
@@ -1794,7 +1798,7 @@ impl CompilationSession {
             crate::macro_host::WorkMarks::note(&binding.work.unit_depth, depth + 1);
         }
         if let Some(binding) = counters
-            && let Some(charges) = self.shared.take_charges(id)
+            && let Some(mut charges) = self.shared.take_charges(id)
         {
             let depth = self.shared.lock().threads[self.thread].stack.len();
             // What its analysis here would have polled ([`analyze_unit`]).
@@ -1812,6 +1816,12 @@ impl CompilationSession {
                 self.shared.fail(id, DEPTH_LIMIT.to_owned(), None);
                 return Err(DEPTH_LIMIT.to_owned());
             }
+            // A worker's trace rows go where the serial build would have
+            // recorded them, as the charges do (light-cljs-369).
+            if let Some(rows) = charges.trace.take() {
+                crate::compile_trace::replay(*rows, depth);
+            }
+            let before = (binding.expansions.get(), binding.generated_nodes.get());
             // A worker's unit that expanded a JavaScript macro would have
             // started the coordinator's engine with one slot, at that
             // expansion; it starts it there, so later polls are spent.
@@ -1825,6 +1835,13 @@ impl CompilationSession {
                 self.shared.fail(id, message.clone(), Some(diagnostic));
                 return Err(message);
             }
+            // The unit's trace frame counted these; the frame it is
+            // charged in does not count them as its own.
+            crate::compile_trace::charged(
+                &binding.expansions,
+                binding.expansions.get().saturating_sub(before.0),
+                binding.generated_nodes.get().saturating_sub(before.1),
+            );
             let UnitCharges {
                 observations,
                 gensyms,
@@ -1900,94 +1917,112 @@ fn analyze_unit(
     if host.engine.bootstrap.is_none() {
         host.engine.bootstrap = bootstrap;
     }
-    // Declared before the frontier guard, so the frontier's transitions
-    // count in the unit's frame (`--stats`, [`crate::compile_trace`]).
-    let _traced = crate::compile_trace::enter_unit(
-        || crate::compile_trace::UnitInfo {
-            id,
-            source: shared.unit_source(id).unwrap_or_default(),
-            name: shared.unit_name(id),
-            span: form.span(),
-            depth,
-        },
-        &host,
-    );
-    let evaluator = host.engine.bootstrap.as_ref().map(|b| b.evaluator.clone());
-    let engine = engine.or_else(|| {
-        evaluator
-            .as_ref()
-            .map(|e| e.as_ref() as &dyn MacroEvaluator)
-    });
-    let _frontier = if let Some(engine) = engine {
-        engine
-            .compiler_frontier(Some(snapshot.extension_frontier))
-            .map_err(|e| e.to_string())?;
-        Some(FrontierGuard { engine })
-    } else {
-        None
-    };
-    // The unit's macros number in its scope; whatever demanded it, such
-    // as a running macro calling it, numbers in its own again after.
-    let _gensyms = crate::generated_names::RestoreGensymScope(engine);
     // A macro-free unit, on any thread, and any unit a worker analyzes
     // record what they would charge to the compilation, which the
     // coordinator charges in its order ([`UnitCharges`]); a unit demanded
     // while one is recorded is recorded with it, in its place, as the
     // serial build charged it.
     let nested = crate::macro_host::MacroFreeUnit::active();
-    let analysis = if !nested && (macro_free || on_worker) {
-        let started = std::time::Instant::now();
-        // Counted where the unit is charged ([`UnitCharges`]), from
-        // what the coordinator charged before it.
+    let records = !nested && (macro_free || on_worker);
+    if records {
+        // Counted where the unit is charged ([`UnitCharges`]), from what
+        // the coordinator charged before it; the unit's trace frame counts
+        // these.
         let (expansions, nodes) = shared.charged();
         host.engine.expansions = std::rc::Rc::new(std::cell::Cell::new(expansions));
         host.engine.generated_nodes = std::rc::Rc::new(std::cell::Cell::new(nodes));
-        host.engine.work = Default::default();
-        let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
-        let location = format!("{}:{}:{}: {name}", loc.source, loc.line, loc.column);
-        let recording = shared.recording();
-        // While artifacts are captured, a worker's engine logs what `gensym`
-        // gives from here on, which the unit's analysis hands the
-        // coordinator; what the engine gave before, setting itself up or
-        // installing the catalog's registrations, is its own.
-        let logs_gensyms = on_worker && recording.capture;
-        let started_log = match engine {
-            Some(engine) if logs_gensyms => CompilationSession::take_gensyms_from(engine).map(drop),
-            _ => Ok(()),
-        };
-        let free = crate::macro_host::MacroFreeUnit::enter(name, macro_free, recording);
-        let analysis = crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
-        let recorded = free.finish();
-        // What `gensym` gave in this worker's engine, for the artifact
-        // ([`CompilationSession::take_gensyms`]).
-        let gensyms = match engine {
-            Some(engine) if logs_gensyms => started_log
-                .and_then(|()| CompilationSession::take_gensyms_from(engine))
-                .map(|(_, names)| names),
-            _ => Ok(Vec::new()),
-        };
-        let mut events = recorded.events;
-        // Names it cannot account for keep its namespace's artifact from
-        // being installed, as an unmeasured conversion does.
-        let gensyms = gensyms.unwrap_or_else(|_| {
-            events.push(crate::macro_host::UnitEvent::Unmeasured);
-            Vec::new()
+    }
+    let (analysis, charges) = {
+        // Declared before the frontier guard, so the frontier's transitions
+        // count in the unit's frame (`--stats`, [`crate::compile_trace`]).
+        let _traced = crate::compile_trace::enter_unit(
+            || crate::compile_trace::UnitInfo {
+                id,
+                source: shared.unit_source(id).unwrap_or_default(),
+                name: shared.unit_name(id),
+                span: form.span(),
+                depth,
+            },
+            &host,
+        );
+        let evaluator = host.engine.bootstrap.as_ref().map(|b| b.evaluator.clone());
+        let engine = engine.or_else(|| {
+            evaluator
+                .as_ref()
+                .map(|e| e.as_ref() as &dyn MacroEvaluator)
         });
-        let charges = UnitCharges {
-            events,
-            macro_depth: host.engine.work.macro_depth.get(),
-            analysis_depth: host.engine.work.analysis_depth.get(),
-            limits: (host.limits.expansions, host.limits.generated_nodes),
-            depth_limit: host.limits.expansion_depth.min(64),
-            location,
-            observations: recorded.observations,
-            gensyms,
+        let _frontier = if let Some(engine) = engine {
+            engine
+                .compiler_frontier(Some(snapshot.extension_frontier))
+                .map_err(|e| e.to_string())?;
+            Some(FrontierGuard { engine })
+        } else {
+            None
         };
-        shared.record_charges(id, charges, started.elapsed());
-        analysis
-    } else {
-        crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine)
+        // The unit's macros number in its scope; whatever demanded it, such
+        // as a running macro calling it, numbers in its own again after.
+        let _gensyms = crate::generated_names::RestoreGensymScope(engine);
+        if records {
+            let started = std::time::Instant::now();
+            host.engine.work = Default::default();
+            let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
+            let location = format!("{}:{}:{}: {name}", loc.source, loc.line, loc.column);
+            let recording = shared.recording();
+            // While artifacts are captured, a worker's engine logs what
+            // `gensym` gives from here on, which the unit's analysis hands
+            // the coordinator; what the engine gave before, setting itself
+            // up or installing the catalog's registrations, is its own.
+            let logs_gensyms = on_worker && recording.capture;
+            let started_log = match engine {
+                Some(engine) if logs_gensyms => {
+                    CompilationSession::take_gensyms_from(engine).map(drop)
+                }
+                _ => Ok(()),
+            };
+            let free = crate::macro_host::MacroFreeUnit::enter(name, macro_free, recording);
+            let analysis =
+                crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
+            let recorded = free.finish();
+            // What `gensym` gave in this worker's engine, for the artifact
+            // ([`CompilationSession::take_gensyms`]).
+            let gensyms = match engine {
+                Some(engine) if logs_gensyms => started_log
+                    .and_then(|()| CompilationSession::take_gensyms_from(engine))
+                    .map(|(_, names)| names),
+                _ => Ok(Vec::new()),
+            };
+            let mut events = recorded.events;
+            // Names it cannot account for keep its namespace's artifact from
+            // being installed, as an unmeasured conversion does.
+            let gensyms = gensyms.unwrap_or_else(|_| {
+                events.push(crate::macro_host::UnitEvent::Unmeasured);
+                Vec::new()
+            });
+            let charges = UnitCharges {
+                events,
+                macro_depth: host.engine.work.macro_depth.get(),
+                analysis_depth: host.engine.work.analysis_depth.get(),
+                limits: (host.limits.expansions, host.limits.generated_nodes),
+                depth_limit: host.limits.expansion_depth.min(64),
+                location,
+                observations: recorded.observations,
+                gensyms,
+                trace: None,
+            };
+            (analysis, Some((charges, started.elapsed())))
+        } else {
+            let analysis =
+                crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
+            (analysis, None)
+        }
     };
+    if let Some((mut charges, time)) = charges {
+        // On a worker, the trace of the unit, whose frame has closed, and
+        // of those it demanded, which the coordinator records where it
+        // charges the unit.
+        charges.trace = crate::compile_trace::take_worker_rows();
+        shared.record_charges(id, charges, time);
+    }
     let diagnostic = analysis.as_ref().err().cloned();
     let result = analysis
         .map(|(mut p, w)| {
@@ -2420,13 +2455,16 @@ impl UnitPool {
         environment: MacroEnvironment,
     ) -> Result<Self, String> {
         let inbox = Arc::new(Inbox::default());
+        // Started on the coordinator: its workers record their units'
+        // traces while it records its own.
+        let traced = crate::compile_trace::recording();
         let thread = {
             let inbox = inbox.clone();
             let shared = shared.clone();
             let environment = environment.clone();
             std::thread::Builder::new()
                 .name("light-cljs-units".into())
-                .spawn(move || serve_pool(&inbox, &shared, slots, engines, &environment))
+                .spawn(move || serve_pool(&inbox, &shared, slots, engines, &environment, traced))
                 .map_err(|e| format!("cannot start the compiler's unit pool: {e}"))?
         };
         Ok(Self {
@@ -2526,6 +2564,13 @@ fn worker_view(
     }
     Ok(view)
 }
+/// A pool slot's state, made and dropped on its thread: its catalog view,
+/// and its trace recording, made before the view so that the view's engine
+/// reports root reads.
+struct WorkerSlot {
+    view: Option<Rc<WorkerView>>,
+    _trace: Option<crate::compile_trace::Recording>,
+}
 /// The pool's thread: run the scheduler, submitting each batch the inbox
 /// gets and consuming outcomes, until the inbox closes and every job has
 /// run. A worker's panic stops the pool and ends every wait in the catalog.
@@ -2535,6 +2580,7 @@ fn serve_pool(
     slots: crate::scheduler::Slots,
     engines: PoolEngines,
     environment: &MacroEnvironment,
+    traced: bool,
 ) -> Result<(), String> {
     use crate::scheduler::{Config, Next};
     let mut config = Config::new(slots, 1);
@@ -2549,8 +2595,12 @@ fn serve_pool(
         &config,
         // A slot makes its view on its first job, and again after its
         // engine failed for good, which is retired, not reused; with
-        // `Fresh`, for every job.
-        |_slot| None::<Rc<WorkerView>>,
+        // `Fresh`, for every job. While the coordinator records a trace,
+        // the slot's thread records its units' for it (light-cljs-369).
+        |slot| WorkerSlot {
+            view: None,
+            _trace: traced.then(|| crate::compile_trace::record_worker(slot)),
+        },
         |slot, UnitJob(id), _worker| {
             // The outcome is in the catalog; a failed unit is reported by
             // the coordinator when it reaches it, as a serial drain would,
@@ -2558,7 +2608,7 @@ fn serve_pool(
             if !shared.admits(id) {
                 return;
             }
-            let view = match slot.take() {
+            let view = match slot.view.take() {
                 Some(view) => view,
                 None => match worker_view(shared, engines, environment) {
                     Ok(view) => view,
@@ -2577,7 +2627,7 @@ fn serve_pool(
             shared.note_job(id);
             PoolCounters::add(&shared.counters.unit_ns, started);
             if engines != PoolEngines::Fresh && !view.terminal() && !view.holds_headroom() {
-                *slot = Some(view);
+                slot.view = Some(view);
             }
         },
         |pool| -> Result<(), String> {

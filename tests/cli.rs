@@ -1354,7 +1354,10 @@ fn stats_reports_phase_times_and_macro_calls_on_stderr_without_changing_output()
 /// add up to the traced wall time, each namespace with its requires, and each
 /// unit with its demander. A macro the top level calls demands its helper
 /// from the top-level pass; a macro a unit's body expands demands its helper
-/// from that unit; the rest are drained. Output is unchanged.
+/// from that unit; the rest are drained. Output is unchanged. With `--jobs`,
+/// the units pool workers analyze keep their rows, demanders, depths and
+/// macro calls, recorded where the coordinator takes their analyses, in the
+/// same order (light-cljs-369).
 #[test]
 fn stats_file_traces_exclusive_stages_and_demand_edges() {
     let sources = TempDir::new("cli-stats-file");
@@ -1382,162 +1385,187 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
     let plain = light_cljs(&args);
     assert!(plain.status.success());
     let file = sources.join("trace.tsv");
-    let mut traced = args.to_vec();
-    traced.extend(["--stats-file", file.to_str().unwrap()]);
-    let output = light_cljs(&traced);
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(output.status.success(), "{stderr}");
-    assert_eq!(output.stdout, plain.stdout);
-    // The report keeps its shape, with the trace's counters.
-    let (counters, _) = parse_stats(&stderr);
-    let value = |key: &str| {
-        counters
-            .iter()
-            .find(|(name, _)| name == key)
-            .unwrap_or_else(|| panic!("{key} in {stderr}"))
-            .1
-    };
-    let trace = std::fs::read_to_string(&file).unwrap();
-    let mut lines = trace.lines();
-    assert_eq!(lines.next(), Some("light-cljs-trace\t2"));
-    let rows = |kind: &str| {
-        trace
-            .lines()
-            .filter_map(|line| {
-                let (row, rest) = line.split_once('\t')?;
-                (row == kind).then(|| rest.split('\t').collect::<Vec<_>>())
-            })
-            .collect::<Vec<_>>()
-    };
-    // Exclusive stage times add up to the traced wall time.
-    let stages = rows("stage");
-    let stage = |name: &str| -> u128 {
-        stages
-            .iter()
-            .find(|row| row[0] == name)
-            .unwrap_or_else(|| panic!("stage {name} in {trace}"))[1]
-            .parse()
-            .unwrap()
-    };
-    let exclusive: u128 = [
-        "other",
-        "load",
-        "prepare-source",
-        "top-level",
-        "drain",
-        "append",
-        "index",
-        "release",
-        "warnings",
-        "unit",
-        "finish",
-    ]
-    .into_iter()
-    .map(stage)
-    .sum();
-    let wall = stage("trace-wall");
-    assert!(exclusive <= wall && wall - exclusive <= 11, "{trace}");
-    assert!(stage("wall") >= wall);
-    assert_eq!(value("trace.units"), 5.0);
-    // Namespaces by source index, with their requires.
-    let namespaces = rows("namespace");
-    let summary: Vec<_> = namespaces
-        .iter()
-        .map(|row| (row[0], row[1], row[13]))
-        .collect();
-    assert_eq!(
-        summary,
-        [("0", "app.macros", ""), ("1", "app.main", "app.macros")]
-    );
-    // Each unit's name, demander and depth.
-    let units = rows("unit");
-    let edges: Vec<_> = units
-        .iter()
-        .map(|row| (row[2], row[12], row[13], row[14]))
-        .collect();
-    assert_eq!(
-        edges,
-        [
-            ("app.macros/inner", "unit", "1", "1"),
-            ("app.macros/outer", "top-level", "0", "0"),
-            ("app.macros/bumped", "drain", "0", "0"),
-            ("app.macros/native", "drain", "0", "0"),
-            ("app.macros/plain", "drain", "0", "0"),
-        ],
-        "{trace}"
-    );
-    let unit = |name: &str| units.iter().find(|row| row[2] == name).unwrap();
-    // A native macro is a macro call, though not a host entry.
-    assert_eq!(unit("app.macros/native")[9], "1");
-    assert_eq!(unit("app.macros/plain")[9], "0");
-    // The first evaluation of each root, with its demander: `bump` at the
-    // top level evaluates `outer`, whose analysis expands `twice`, which
-    // evaluates `inner`.
-    let ids = |name: &str| unit(name)[0].to_owned();
-    let executions: Vec<_> = rows("execute")
-        .iter()
-        .map(|row| row.iter().map(|cell| cell.to_string()).collect::<Vec<_>>())
-        .collect();
-    assert_eq!(
-        executions,
-        [
-            [
-                ids("app.macros/outer"),
-                "top-level".into(),
-                "0".into(),
-                "0".into()
-            ],
-            [
-                ids("app.macros/inner"),
-                "unit".into(),
-                ids("app.macros/outer"),
-                "0".into()
-            ],
+    let mut serial_executions = Vec::new();
+    for jobs in ["1", "2", "8"] {
+        let mut traced = args.to_vec();
+        traced.extend(["--jobs", jobs, "--stats-file", file.to_str().unwrap()]);
+        let output = light_cljs(&traced);
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "{stderr}");
+        assert_eq!(output.stdout, plain.stdout);
+        // The report keeps its shape, with the trace's counters.
+        let (counters, _) = parse_stats(&stderr);
+        let value = |key: &str| {
+            counters
+                .iter()
+                .find(|(name, _)| name == key)
+                .unwrap_or_else(|| panic!("{key} in {stderr}"))
+                .1
+        };
+        let trace = std::fs::read_to_string(&file).unwrap();
+        let mut lines = trace.lines();
+        assert_eq!(lines.next(), Some("light-cljs-trace\t2"));
+        let rows = |kind: &str| {
+            trace
+                .lines()
+                .filter_map(|line| {
+                    let (row, rest) = line.split_once('\t')?;
+                    (row == kind).then(|| rest.split('\t').collect::<Vec<_>>())
+                })
+                .collect::<Vec<_>>()
+        };
+        // Exclusive stage times add up to the traced wall time.
+        let stages = rows("stage");
+        let stage = |name: &str| -> u128 {
+            stages
+                .iter()
+                .find(|row| row[0] == name)
+                .unwrap_or_else(|| panic!("stage {name} in {trace}"))[1]
+                .parse()
+                .unwrap()
+        };
+        let exclusive: u128 = [
+            "other",
+            "load",
+            "prepare-source",
+            "top-level",
+            "drain",
+            "append",
+            "index",
+            "release",
+            "warnings",
+            "unit",
+            "finish",
         ]
-    );
-    assert_eq!(value("trace.executions"), 2.0);
-    // Every root a force touches, with the frame it was read in, once per
-    // pair: the first evaluations again, and the reads of `outer` once it is
-    // ready, by `bumped`'s expansion of `bump` and by `app.main`'s top level.
-    // `inner`'s read is recorded first: its frame's entry ended first.
-    let reads: Vec<_> = rows("read")
-        .iter()
-        .map(|row| row.iter().map(|cell| cell.to_string()).collect::<Vec<_>>())
-        .collect();
-    let read =
-        |unit: &str, kind: &str, demander: String| vec![ids(unit), kind.to_owned(), demander];
-    assert_eq!(
-        reads,
-        [
-            read("app.macros/inner", "unit", ids("app.macros/outer")),
-            read("app.macros/outer", "top-level", "0".into()),
-            read("app.macros/outer", "unit", ids("app.macros/bumped")),
-            read("app.macros/outer", "top-level", "1".into()),
-        ],
-        "{trace}"
-    );
-    assert_eq!(value("trace.reads"), 4.0);
-    assert_eq!(value("trace.reads.cross-namespace"), 1.0);
-    // `outer` waited for `inner`, which it demanded.
-    assert_eq!(unit("app.macros/outer")[8], unit("app.macros/inner")[5]);
-    // Positions are the forms' lines.
-    assert_eq!(unit("app.macros/plain")[3], "9");
-    // Only the units that run a JavaScript macro enter the host.
-    if cfg!(feature = "v8-macros") {
-        let host: Vec<_> = units.iter().map(|row| (row[2], row[11])).collect();
+        .into_iter()
+        .map(stage)
+        .sum();
+        let wall = stage("trace-wall");
+        assert!(exclusive <= wall && wall - exclusive <= 11, "{trace}");
+        assert!(stage("wall") >= wall);
+        assert_eq!(value("trace.units"), 5.0, "--jobs {jobs}: {trace}");
+        // Namespaces by source index, with their requires.
+        let namespaces = rows("namespace");
+        let summary: Vec<_> = namespaces
+            .iter()
+            .map(|row| (row[0], row[1], row[11], row[13]))
+            .collect();
         assert_eq!(
-            host,
+            summary,
             [
-                ("app.macros/inner", "0"),
-                ("app.macros/outer", "1"),
-                ("app.macros/bumped", "1"),
-                ("app.macros/native", "0"),
-                ("app.macros/plain", "0"),
-            ]
+                ("0", "app.macros", "5", ""),
+                ("1", "app.main", "1", "app.macros")
+            ],
+            "--jobs {jobs}: {trace}"
         );
-        assert_eq!(value("trace.units.host"), 2.0);
-        assert_eq!(value("trace.units.without-macro-calls"), 1.0);
-        assert!(value("trace.engine-ms") > 0.0);
+        // Each unit's name, demander and depth, whichever thread analyzed
+        // it, and the macro calls and nodes it made itself.
+        let units = rows("unit");
+        let edges: Vec<_> = units
+            .iter()
+            .map(|row| (row[2], row[12], row[13], row[14], row[9], row[10]))
+            .collect();
+        assert_eq!(
+            edges,
+            [
+                ("app.macros/inner", "unit", "1", "1", "1", "11"),
+                ("app.macros/outer", "top-level", "0", "0", "2", "13"),
+                ("app.macros/bumped", "drain", "0", "0", "1", "1"),
+                ("app.macros/native", "drain", "0", "0", "1", "6"),
+                ("app.macros/plain", "drain", "0", "0", "0", "0"),
+            ],
+            "--jobs {jobs}: {trace}"
+        );
+        let slots: u32 = jobs.parse().unwrap();
+        for row in &units {
+            let thread: u32 = row[15].parse().unwrap();
+            assert!(thread < slots, "--jobs {jobs}: {trace}");
+        }
+        let unit = |name: &str| units.iter().find(|row| row[2] == name).unwrap();
+        // A native macro is a macro call, though not a host entry.
+        assert_eq!(unit("app.macros/native")[9], "1");
+        assert_eq!(unit("app.macros/plain")[9], "0");
+        // The first evaluation of each root, with its demander: `bump` at
+        // the top level evaluates `outer`, whose analysis expands `twice`,
+        // which evaluates `inner`.
+        let ids = |name: &str| unit(name)[0].to_owned();
+        let executions: Vec<_> = rows("execute")
+            .iter()
+            .map(|row| row.iter().map(|cell| cell.to_string()).collect::<Vec<_>>())
+            .collect();
+        if jobs == "1" {
+            assert_eq!(
+                executions,
+                [
+                    [
+                        ids("app.macros/outer"),
+                        "top-level".into(),
+                        "0".into(),
+                        "0".into()
+                    ],
+                    [
+                        ids("app.macros/inner"),
+                        "unit".into(),
+                        ids("app.macros/outer"),
+                        "0".into()
+                    ],
+                ]
+            );
+            assert_eq!(value("trace.executions"), 2.0);
+            serial_executions = executions;
+        } else {
+            // A worker's isolate evaluates a prepared root the first time
+            // a unit it analyzes reads it, as the coordinator's does.
+            let (serial, isolates): (Vec<_>, Vec<_>) = executions
+                .into_iter()
+                .partition(|row| serial_executions.contains(row));
+            assert_eq!(serial, serial_executions, "--jobs {jobs}: {trace}");
+            assert!(isolates.iter().all(|row| row[3] == "1"), "{trace}");
+        }
+        // Every root a force touches, with the frame it was read in, once
+        // per pair: the first evaluations again, and the reads of `outer`
+        // once it is ready, by `bumped`'s expansion of `bump` and by
+        // `app.main`'s top level. `inner`'s read is recorded first: its
+        // frame's entry ended first.
+        let reads: Vec<_> = rows("read")
+            .iter()
+            .map(|row| row.iter().map(|cell| cell.to_string()).collect::<Vec<_>>())
+            .collect();
+        let read =
+            |unit: &str, kind: &str, demander: String| vec![ids(unit), kind.to_owned(), demander];
+        assert_eq!(
+            reads,
+            [
+                read("app.macros/inner", "unit", ids("app.macros/outer")),
+                read("app.macros/outer", "top-level", "0".into()),
+                read("app.macros/outer", "unit", ids("app.macros/bumped")),
+                read("app.macros/outer", "top-level", "1".into()),
+            ],
+            "--jobs {jobs}: {trace}"
+        );
+        assert_eq!(value("trace.reads"), 4.0);
+        assert_eq!(value("trace.reads.cross-namespace"), 1.0);
+        // `outer` waited for `inner`, which it demanded.
+        assert_eq!(unit("app.macros/outer")[8], unit("app.macros/inner")[5]);
+        // Positions are the forms' lines.
+        assert_eq!(unit("app.macros/plain")[3], "9");
+        // Only the units that run a JavaScript macro enter the host.
+        if cfg!(feature = "v8-macros") {
+            let host: Vec<_> = units.iter().map(|row| (row[2], row[11])).collect();
+            assert_eq!(
+                host,
+                [
+                    ("app.macros/inner", "0"),
+                    ("app.macros/outer", "1"),
+                    ("app.macros/bumped", "1"),
+                    ("app.macros/native", "0"),
+                    ("app.macros/plain", "0"),
+                ]
+            );
+            assert_eq!(value("trace.units.host"), 2.0);
+            assert_eq!(value("trace.units.without-macro-calls"), 1.0);
+            assert!(value("trace.engine-ms") > 0.0);
+        }
     }
     // `--stats-file` needs a path, and a namespace compilation.
     let output = light_cljs(&["--compile", "--text", "1", "--stats-file"]);
