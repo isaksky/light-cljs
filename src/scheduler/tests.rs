@@ -1088,3 +1088,58 @@ fn a_perturbed_worker_runs_a_batch_out_of_submission_order() {
         assert!(reordered);
     });
 }
+
+/// Small bounds with every worker busy at once: one-job batches, as many
+/// admitted jobs as workers, the first jobs waiting on a barrier that only
+/// opens once each worker runs one, and the rest of the jobs and their
+/// local pushes in the backlog. The perturbed pool still finishes them all.
+#[cfg(debug_assertions)]
+#[test]
+fn perturbed_small_queues_progress_with_every_worker_busy() {
+    within(60, || {
+        let workers = 4;
+        for seed in 1..=4u64 {
+            let mut config = config(workers + 1, 1);
+            let perturbation = Perturbation {
+                seed,
+                limits: Some(Limits {
+                    batch_jobs: 1,
+                    admitted_jobs: workers,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            config.perturbation = Some(perturbation.clone());
+            let barrier = std::sync::Barrier::new(workers);
+            let (ran, counts) = run(
+                &config,
+                |_| (),
+                |_: &mut (), job: Task, worker: &Worker<'_, Task, u64>| {
+                    if job.id < workers as u64 {
+                        barrier.wait();
+                    }
+                    if job.id < 40 {
+                        worker.push_local(task(job.id + 100));
+                    }
+                    job.id
+                },
+                |coordinator| {
+                    coordinator.submit_batch((0..40).map(task));
+                    let mut ran = 0;
+                    loop {
+                        match coordinator.next_outcome().unwrap() {
+                            Next::Outcome(_) => ran += 1,
+                            Next::Quiescent => break,
+                            other => panic!("unexpected {other:?}"),
+                        }
+                    }
+                    (ran, coordinator.counts())
+                },
+            )
+            .unwrap();
+            assert_eq!(ran, 80, "seed {seed}");
+            assert_eq!(counts.peak_admitted, workers, "seed {seed}");
+            assert!(counts.peak_backlog > workers, "seed {seed}: {counts:?}");
+        }
+    });
+}

@@ -34,7 +34,8 @@ pub struct Perturbation {
     /// callback a running macro's nested demand enters, on whichever
     /// thread's engine runs the macro.
     pub panic_in: Option<String>,
-    /// Every job started, in start order: the deque index of the worker
+    /// Every job this pool started (the parse queue gets a log of its own),
+    /// in start order: the deque index of the worker
     /// that ran it (0 on the inline path) and its key. A test prints it as
     /// the assignment that gave a result.
     pub log: Arc<Mutex<Vec<(usize, u64)>>>,

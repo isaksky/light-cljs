@@ -2540,8 +2540,14 @@ fn analyze_entry(
         slots: parse_slots(slots),
         parses: ParseRecords::default(),
         pooled_times: Vec::new(),
+        // Its own log: the perturbation's is the unit pool's assignment.
         #[cfg(debug_assertions)]
-        perturbation: perturbation.clone(),
+        perturbation: perturbation
+            .clone()
+            .map(|p| crate::scheduler::Perturbation {
+                log: Default::default(),
+                ..p
+            }),
     };
     let mut resolve_parse = Duration::ZERO;
     let started = compile_stats::start(timed);

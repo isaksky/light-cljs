@@ -4,7 +4,7 @@
 //! affinity namespace between pooled ones, and liveness and failure
 //! fixtures, built at one, two, four and eight slots under the test-only
 //! [`Perturbation`] (randomized delays at job boundaries, random batches
-//! and steal victims, a forced assignment, one-job admission), each build
+//! and steal victims, a forced assignment, small admission bounds), each build
 //! checked against the unperturbed one-slot build: JavaScript, spans,
 //! source maps, warnings, errors and logical work counts, with the entry
 //! value and initialization order from running it.
@@ -13,7 +13,7 @@
 //! wall-clock cap per test, `LIGHT_CLJS_STRESS_SECONDS` (30 by default),
 //! checked after each seed, which stops further seeds with a note; each
 //! fixture's first seed always runs whole. With the default three seeds a
-//! test takes 1 to 15 s on a quiet machine and the cap is not reached. A
+//! test takes 0.1 to 20 s at moderate load and the cap is not reached. A
 //! failure prints its seed, slots, mode and the assignment the pool
 //! logged; `LIGHT_CLJS_STRESS_SEEDS=12 LIGHT_CLJS_STRESS_SECONDS=600`
 //! runs a longer stress.
@@ -90,23 +90,41 @@ enum Mode {
     Fixed,
     /// Free, with one-job batches and one admitted job.
     Tight,
+    /// Free, with one-job batches and seven admitted jobs, the most worker
+    /// threads a build here has: every worker busy, the rest in the
+    /// backlog.
+    Saturated,
 }
 
-const MODES: [Mode; 3] = [Mode::Free, Mode::Fixed, Mode::Tight];
+const MODES: [Mode; 4] = [Mode::Free, Mode::Fixed, Mode::Tight, Mode::Saturated];
 
 fn perturbation(base: &Perturbation, seed: u64, mode: Mode) -> Perturbation {
+    let admitted = match mode {
+        Mode::Tight => Some(1),
+        Mode::Saturated => Some(7),
+        _ => None,
+    };
     Perturbation {
         seed,
         fixed: matches!(mode, Mode::Fixed),
-        limits: matches!(mode, Mode::Tight).then(|| Limits {
+        limits: admitted.map(|admitted_jobs| Limits {
             batch_jobs: 1,
-            admitted_jobs: 1,
+            admitted_jobs,
             ..Default::default()
         }),
         fresh_isolates: base.fresh_isolates,
         panic_in: base.panic_in.clone(),
         ..Default::default()
     }
+}
+
+/// A host whose macro memory limit gives eight slots eight isolates of
+/// 32 MiB (`isolate_count`): the default 64 MiB gives two, so every slot
+/// count above two would run one worker.
+fn stress_host() -> MacroHost {
+    let mut host = MacroHost::new();
+    host.evaluator_options.memory_limit = 256 << 20;
+    host
 }
 
 /// Sources, an entry and how to build it.
@@ -129,7 +147,7 @@ impl Fixture {
             entry,
             warning_mode: false,
             blockers: Vec::new(),
-            host: MacroHost::new,
+            host: stress_host,
         }
     }
 
@@ -285,10 +303,28 @@ fn stress_keyed(test: &str, fixture: &Fixture, base: Perturbation, key: ErrorKey
                 let p = perturbation(&base, seed, mode);
                 let built = fixture.build(slots, Some(p.clone()));
                 check_keyed(&oracle, &built, &|| describe(slots, mode, &p), key);
+                note_workers(&p);
             }
         }
     });
     oracle
+}
+
+thread_local! {
+    /// The most unit-pool workers one build of this test ran units on.
+    static WIDEST: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn note_workers(p: &Perturbation) {
+    let workers = p.assignment().len();
+    WIDEST.with(|widest| widest.set(widest.get().max(workers)));
+}
+
+/// Fail unless some build of this test ran units on several workers, so
+/// that its cross-worker cases did happen.
+fn assert_several_workers(test: &str) {
+    let widest = WIDEST.with(|widest| widest.get());
+    assert!(widest >= 2, "{test}: no build ran units on two workers");
 }
 
 fn stress(test: &str, fixture: &Fixture) -> Built {
@@ -436,6 +472,7 @@ fn safe_units_around_an_affinity_namespace_are_the_same_under_any_schedule() {
     );
     let pooled = fixture.build(4, None).stats.deferred_units;
     assert!(pooled.pooled >= 48, "{pooled:?}");
+    assert_several_workers("mixed");
 }
 
 /// Several workers demand one helper's unit at once: one analyzes it and
@@ -456,6 +493,68 @@ fn duplicate_demands_for_one_unit_from_several_workers_share_one_analysis() {
     let fixture = Fixture::main(&body);
     let oracle = stress("duplicate demands", &fixture);
     assert_eq!(execute(oracle.output.as_ref().unwrap()), "0 46\n");
+    assert_several_workers("duplicate demands");
+}
+
+/// Warnings from units on several workers, and ordinary errors of two
+/// failing units where the later fails first: the one-slot warnings in
+/// their order and the earlier unit's error under any schedule.
+#[test]
+fn warnings_and_ordinary_errors_are_the_same_under_any_schedule() {
+    if skipped() {
+        return;
+    }
+    let macros = "(ns app.m) (defmacro call-missing [n] (list (symbol (str \"missing-\" n)) n)) (defn two [a b] [a b])";
+    let mut files = vec![("app/m.cljs".to_owned(), macros.to_owned())];
+    let mut requires = String::new();
+    for n in 0..2 {
+        let mut body = format!("(ns app.w{n} (:require [app.m :refer [call-missing two]]))\n");
+        for k in 0..6 {
+            body.push_str(&format!(
+                "(defn f{k} [] [(call-missing {k}) (two 1) (+ 1 {k})])\n(def v{k} (when (f{k}) undeclared-{n}-{k}))\n"
+            ));
+        }
+        files.push((format!("app/w{n}.cljs"), body));
+        requires.push_str(&format!(" [app.w{n}]"));
+    }
+    files.push((
+        "app/main.cljs".to_owned(),
+        format!("(ns app.main (:require{requires})) (js/console.log app.w1/v1)"),
+    ));
+    let files: Vec<_> = files
+        .iter()
+        .map(|(p, s)| (p.as_str(), s.as_str()))
+        .collect();
+    let mut warned = Fixture::new("app.main", &files);
+    warned.warning_mode = true;
+    let oracle = stress("warnings", &warned);
+    assert!(oracle.output.is_ok(), "{:?}", oracle.output);
+    // Two warnings per `k` in each namespace, as parallel_diagnostics has.
+    assert_eq!(oracle.warnings.len(), 2 * 6 * 2, "{:?}", oracle.warnings);
+    assert_several_workers("warnings");
+    let failing = Fixture::new(
+        "app.e",
+        &[
+            (
+                "app/m.cljs",
+                "(ns app.m) (defmacro fast-fail [] (throw (js/Error. \"later failure\"))) \
+                 (defmacro slow-fail [] (let [end (+ (js/Date.now) 40)] (loop [] (when (< (js/Date.now) end) (recur)))) \
+                 (throw (js/Error. \"earlier failure\")))",
+            ),
+            (
+                "app/e.cljs",
+                "(ns app.e (:require [app.m :refer [slow-fail fast-fail]]))\n\
+                 (defn f0 [] 0)\n(defn f1 [] (slow-fail))\n(defn f2 [] 2)\n(defn f3 [] (fast-fail))\n\
+                 (defn f4 [] (fast-fail))\n(js/console.log (f0))",
+            ),
+        ],
+    );
+    let oracle = stress("ordinary errors", &failing);
+    let error = oracle.output.unwrap_err();
+    assert!(
+        error.contains("earlier failure") && error.contains("app/e.cljs:3:"),
+        "{error}"
+    );
 }
 
 /// Units on two workers each demand a helper whose analysis demands the
@@ -504,6 +603,7 @@ fn a_cross_worker_cycle_fails_the_build_at_the_same_unit_under_any_schedule() {
             && error.contains("compile dependency cycle: app.main/a -> app.main/b -> app.main/a"),
         "{error}"
     );
+    assert_several_workers("cycle");
 }
 
 /// A Rust panic inside `__lightCompileUnit`, the callback a running
@@ -611,7 +711,7 @@ fn an_isolate_past_the_deadline_fails_the_build_under_any_schedule() {
              (defn c [] 3)",
         );
         fixture.host = || {
-            let mut host = MacroHost::new();
+            let mut host = stress_host();
             host.evaluator_options.timeout = Duration::from_millis(300);
             host
         };
@@ -775,7 +875,9 @@ fn persistent_worker_isolates_match_a_fresh_isolate_per_unit_after_any_history()
                         describe(4, Mode::Fixed, &fresh)
                     )
                 });
+                note_workers(&persistent);
             }
         });
     }
+    assert_several_workers("worker history");
 }

@@ -1480,9 +1480,10 @@ output changes once, when stage A lands.
     victim and amount; or, with `fixed`, an assignment of each job to the
     worker the seed's hash of its key picks, which no other worker
     claims or steals, in a random order. `limits` replaces the pool's
-    bounds (the stress uses one-job batches and one admitted job, every
-    worker saturated). It logs where each job ran, which a failure
-    prints. Two compiler hooks ride on it: `fresh_isolates`, a fresh
+    bounds (the stress uses one-job batches with one admitted job, and
+    with seven, every worker busy and the rest in the backlog). It logs
+    where each unit job ran, which a failure prints (the parse queue keeps
+    a log of its own). Two compiler hooks ride on it: `fresh_isolates`, a fresh
     isolate per unit as `LIGHT_CLJS_FRESH_UNIT_ISOLATES` gives, and
     `panic_in`, a Rust panic inside `__lightCompileUnit` for one Var's
     unit, the callback a running macro's nested demand enters; with
@@ -1493,9 +1494,14 @@ output changes once, when stage A lands.
     `defonce`, saved functions, the extension frontier, transitive helpers
     with their initialization order), of `compile_time_units.rs` and of
     `deferred.rs`, and a mixed fixture (pure units, the counter's provider
-    as `--cache-blocker`, pure units, printing `1 2`), at 1, 2, 4 and 8
-    slots, in three modes (free, fixed, tight) per seed, against the
-    one-slot build: JavaScript, spans, source maps, warnings, errors,
+    as `--cache-blocker`, pure units, printing `1 2`), and warning-mode
+    and failing fixtures (24 warnings from units on several workers; an
+    earlier unit's error against a later one that fails first), at 1, 2,
+    4 and 8 slots, in four modes (free, fixed, tight, saturated) per seed,
+    with a 256 MiB macro memory limit so that eight slots get eight
+    isolates (the default 64 MiB gives two, one worker at any slot
+    count), against the one-slot build: JavaScript, spans, source maps,
+    warnings, errors,
     macro calls, peak nodes, per-namespace calls and units registered,
     analyzed and prepared, with the entry value and initialization order
     from running it in Node. *Worker history:* six fixtures with a fresh
@@ -1510,16 +1516,20 @@ output changes once, when stage A lands.
     cross-worker cycle while the coordinator waits, a provider panic
     during discovery, the callback panic during nested demand, tight
     bounds, and `--jobs 1` with the same seeds (its inline parse queue is
-    perturbed too); none hangs. The run is bounded: seeds 1 to 3 (or
+    perturbed too); none hangs, and the tests whose cases need it check
+    that some build ran units on two workers or more. The run is bounded:
+    seeds 1 to 3 (or
     `LIGHT_CLJS_STRESS_SEEDS`) and a cap per test of 30 s
     (`LIGHT_CLJS_STRESS_SECONDS`) checked after each seed, each fixture's
-    first seed always running. With three seeds the eleven tests take 0.1
-    to 15 s each, 15 s of wall time together under nextest; twelve seeds
-    took 58 s for the longest
+    first seed always running. With three seeds the twelve tests take 0.1
+    to 20 s each, 20 s of wall time together under nextest at load 4 to
+    9; twelve seeds took 76 s for the longest
     ([benchmarks](../benchmarks/compiler-concurrency.md)). QuickJS-only
     builds skip each test with a note. Synthetic tests next to the
     scheduler check that a perturbed pool runs every job once in each
-    mode and that a fixed assignment holds. Findings: a pool panic's
+    mode, that a fixed assignment holds, and that one-job batches with as
+    many admitted jobs as workers finish while every worker waits on a
+    barrier that opens only when all are busy. Findings: a pool panic's
     message named the slot that ran the job (`compiler worker 3
     panicked`), so a provider that panicked during discovery failed the
     build with a different error per schedule; the message no longer

@@ -20,15 +20,16 @@ paths, apart from a pool panic's message, which no longer names the slot,
 and a constant-false test in `Worker::push_local`. No Penpot rows were
 taken: there is no serial-path change to gate, and two other workers were
 testing on the machine. The suite's cost, with `cargo nextest run --test
-compiler schedule_stress::` after the build, at 1-minute load 5.2 to 5.6:
+compiler schedule_stress::` after the build, at 1-minute load 3.9 to 8.7
+with two other workers active:
 
 | Seeds | Cap per test | Tests | Shortest | Longest test = wall |
 | --- | ---: | ---: | ---: | ---: |
-| 3 (default) | 30 s | 11 | 0.1 s | 15.0 s |
-| 12 (`LIGHT_CLJS_STRESS_SEEDS=12`) | 600 s | 11 | 0.5 s | 58.3 s |
+| 3 (default) | 30 s | 12 | 0.1 s | 19.8 s |
+| 12 (`LIGHT_CLJS_STRESS_SEEDS=12`) | 600 s | 12 | 1.0 s | 76.3 s |
 
 The longest is the nine single-namespace fixtures of `macros.rs` at 1, 2, 4
-and 8 slots in three modes per seed (108 builds per seed); the 30 s cap
+and 8 slots in four modes per seed (144 builds per seed); the 30 s cap
 (`LIGHT_CLJS_STRESS_SECONDS`) is not reached with three seeds and bounds the
 run under load, where a test stops after the seed that crossed it.
 
