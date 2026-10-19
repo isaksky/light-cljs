@@ -6518,13 +6518,12 @@ impl Analyzer<'_> {
     }
 
     /// Appending a drained unit restores the reader context of its snapshot,
-    /// which may predate the namespace's later macros. A warning-mode
-    /// namespace that defines macros drains its units only now, so its
-    /// macros are recorded again, as a drain after every form left them.
-    /// Without warnings the context stays the one the last unit restores,
-    /// keeping that output as it is.
+    /// which may predate the namespace's later macros, so they are recorded
+    /// again, in every mode. As upstream, where the macros a namespace
+    /// defines are its Vars, a runtime syntax quote of any of them then
+    /// resolves in the namespace, not through cljs.core or a refer.
     fn refresh_reader_macros_after_drain(&mut self) {
-        if self.options.warning_mode && self.defines_macros {
+        if self.defines_macros {
             self.refresh_reader_macros();
         }
     }

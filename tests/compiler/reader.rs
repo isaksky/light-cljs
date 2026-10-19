@@ -542,6 +542,23 @@ fn runtime_reader_registers_aliases_refers_and_source_namespace_entries() {
     assert_eq!(run(&js), "true\n");
 }
 
+/// A macro defined after a form the end-of-namespace drain analyzes is one of
+/// its namespace's bindings at run time, as upstream, where it is the
+/// namespace's Var: a syntax quote of its name resolves there, not in
+/// cljs.core (light-cljs-362).
+#[test]
+fn runtime_reader_binds_macros_defined_after_a_drained_unit() {
+    let root = TempDir::new("cljs-reader-later-macro");
+    std::fs::write(
+        root.join("app.cljs"),
+        r##"(ns app) (defmacro one [] 1) (def value (one)) (defmacro repeat [] 2)
+            (pr-str [value (second (read-string "`repeat")) (second (read-string "`one"))])"##,
+    )
+    .unwrap();
+    let js = light_cljs::compile_namespace("app", std::slice::from_ref(root.path())).unwrap();
+    assert_eq!(run(&js), "[1 app/repeat app/one]\n");
+}
+
 #[test]
 fn runtime_reader_macro_and_reused_session_contexts_are_explicit() {
     use light_cljs::{EvalOptions, EvalSession};

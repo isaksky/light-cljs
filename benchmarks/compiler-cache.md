@@ -629,3 +629,17 @@ but not used.
   peak RSS. Of that, reading and checking manifests and keys takes about
   0.50 s (`cache.validate-ms`), decoding 0.48 s and installing 0.18 s.
 - **Disk**: 922 artifacts, 105 MB of objects, 108 MB with the indexes.
+
+## Reader macros after the end drain, cache off (light-cljs-362, October 18, 2026)
+
+Without warnings a namespace's reader context now records the macros it
+defines after its last deferred unit, as warning mode did since light-cljs-360.
+Penpot `main-none` output changes only in the `bindings` of 18
+`registerReaderNamespace` calls (36 changed lines, +2,493 bytes to 33,627,083),
+each only adding names: `cuerdas.core` gains `ffmt`, `app.common.logging` its
+level macros, `clojure.spec.alpha` and `cljs.spec.alpha` `and assert coll-of def
+fdef keys map-of nilable or`, and so on. Alternating three runs each with the
+parent's binary at load 9 to 12 with two other workers active: medians 26.77 s
+and 0.959 GB against 25.92 s and 0.964 GB (+3.3% wall, -0.5% RSS; the means are
+26.70 s against 26.67 s, +0.1%). The change adds one macro-name lookup per
+namespace that defines macros.

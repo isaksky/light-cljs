@@ -322,6 +322,38 @@ fn warning_mode_units_drained_at_the_end_keep_macros_and_stop_warnings_at_a_fail
 }
 
 #[test]
+fn units_drained_at_the_end_keep_later_macros_in_the_reader_context_in_every_mode() {
+    use std::fs;
+    let root = TempDir::new("end-drain-macros");
+    fs::create_dir_all(root.join("app")).unwrap();
+    fs::write(
+        root.join("app/m.cljs"),
+        "(ns app.m) (defmacro one [] 1) (def value (one)) (defmacro two [] 2)",
+    )
+    .unwrap();
+    for warning_mode in [false, true] {
+        let mut diagnostics = Vec::new();
+        let program = light_cljs::compiler::analyze_namespace_entry(
+            "app.m",
+            std::slice::from_ref(root.path()),
+            &mut light_cljs::MacroHost::new(),
+            AnalysisOptions {
+                warning_mode,
+                ..AnalysisOptions::default()
+            },
+            &mut diagnostics,
+        )
+        .unwrap();
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(
+            program.reader_contexts["app.m"].macros,
+            ["one", "two"],
+            "warning mode {warning_mode}"
+        );
+    }
+}
+
+#[test]
 fn namespace_private_access_and_reserved_alias_have_structured_locations() {
     use std::fs;
     let root = TempDir::new("warnings");

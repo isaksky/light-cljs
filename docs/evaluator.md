@@ -341,7 +341,11 @@ definition of the namespace, which upstream loads as Clojure before they expand
 (a `(declare f)`, a macro calling `f`, a use, then the `defn f`, as in
 cuerdas.core). Their warnings keep the order a per-form drain gives, and a later
 source failure still drains them first, then is the error reported
-(light-cljs-360).
+(light-cljs-360). Appending a drained unit restores the reader context of its
+snapshot, so in every mode the namespace's macros are recorded in it again after
+the drain: each macro it defines, as upstream's Vars, is one of the bindings
+it registers, and a runtime syntax quote of the name resolves in the namespace
+(light-cljs-362).
 
 The unit cache is scoped to a fresh compilation. No application-source artifact
 survives host reuse, so source, options, imports and selected conditional edits
