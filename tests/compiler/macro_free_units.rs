@@ -5,6 +5,7 @@
 //! warnings and errors of a build with one.
 use crate::temp_dir::TempDir;
 use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning, ExprKind};
+use light_cljs::application::{ApplicationOptions, OptimizationLevel};
 use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
 use light_cljs::scheduler::Slots;
 use light_cljs::{CompileStats, MacroHost, emit_js};
@@ -32,9 +33,9 @@ impl Sources {
 pub(crate) struct Built {
     pub(crate) output: Result<String, String>,
     /// Every expression's source index and span, and the source-mapped
-    /// output, of a build that succeeded.
+    /// output at `none` and at `prepare`, of a build that succeeded.
     pub(crate) spans: Vec<(usize, std::ops::Range<usize>)>,
-    pub(crate) mapped: Option<(String, light_cljs::source_map::SourceMapping)>,
+    pub(crate) mapped: Vec<(String, light_cljs::source_map::SourceMapping)>,
     pub(crate) warnings: Vec<(String, String, usize, std::ops::Range<usize>)>,
     pub(crate) stats: CompileStats,
 }
@@ -104,8 +105,16 @@ pub(crate) fn build_configured(
                 .map(|e| (e.source_index, e.span.clone()))
                 .collect()
         }),
-        mapped: program.map(|program| {
-            light_cljs::prepare_application(program, Default::default()).emit_js_mapped()
+        mapped: program.map_or_else(Vec::new, |program| {
+            [OptimizationLevel::None, OptimizationLevel::Prepare]
+                .map(|optimize| {
+                    let options = ApplicationOptions {
+                        optimize,
+                        ..Default::default()
+                    };
+                    light_cljs::prepare_application(program, options).emit_js_mapped()
+                })
+                .into()
         }),
         output: analyzed
             .map(|(program, _)| emit_js(&program))
@@ -141,17 +150,27 @@ pub(crate) fn execute(js: &str) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
-/// Build `entry` at one, two and eight slots, several rounds each, and
-/// check every build against the one-slot build; return that build.
+/// A host whose memory budget gives each of eight slots an isolate of the
+/// default size, where the default budget runs only one worker isolate.
+fn isolate_per_slot() -> MacroHost {
+    let mut host = MacroHost::new();
+    host.evaluator_options.memory_limit *= 8;
+    host
+}
+
+/// Build `entry` at one, two, four and eight slots, several rounds each,
+/// with an isolate for every slot, and check every build's program, spans,
+/// source maps, warnings and macro counts against the one-slot build;
+/// return that build.
 pub(crate) fn same_at_every_slot_count(
     sources: &Sources,
     entry: &str,
     warning_mode: bool,
 ) -> Built {
-    let serial = build(sources, entry, 1, warning_mode);
-    for slots in [2, 8] {
+    let serial = build_with(sources, entry, 1, warning_mode, isolate_per_slot());
+    for slots in [2, 4, 8] {
         for _ in 0..3 {
-            let pooled = build(sources, entry, slots, warning_mode);
+            let pooled = build_with(sources, entry, slots, warning_mode, isolate_per_slot());
             assert_eq!(pooled.output, serial.output, "{slots} slots");
             assert_eq!(pooled.spans, serial.spans, "{slots} slots");
             assert_eq!(pooled.mapped, serial.mapped, "{slots} slots");

@@ -178,7 +178,7 @@ struct Observed<'a> {
     /// The JavaScript, or what is compared of the error.
     output: Result<&'a str, String>,
     spans: &'a [(usize, std::ops::Range<usize>)],
-    mapped: &'a Option<(String, light_cljs::source_map::SourceMapping)>,
+    mapped: &'a [(String, light_cljs::source_map::SourceMapping)],
     warnings: &'a [(String, String, usize, std::ops::Range<usize>)],
     macro_calls: usize,
     peak_macro_nodes: usize,

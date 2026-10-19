@@ -11,6 +11,41 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Keyword provenance per macro call (light-cljs-379, October 19, 2026)
+
+Interned keywords kept the provenance of the first form an isolate
+imported them from, so Penpot main's source map depended on which isolate
+analyzed which unit (docs/compiler-concurrency.md, "As built
+(light-cljs-379)"). Bisected with Penpot `app.main --optimize none --stats
+--source-map` and the pellet's three-line fixture:
+
+| Binary | Penpot maps (`--jobs` 1, 8, 8) | Fixture maps (`--jobs` 1, 4, 8) |
+| --- | --- | --- |
+| `d2c6858` (light-cljs-338) | one | one |
+| `19b789e` (light-cljs-339) | three | two (1 differs) |
+| `b2cf31d` (master, parent) | three | two (1 differs) |
+| This change | one, also at `--jobs 4` twice | one, also at 2 |
+
+The JavaScript has one digest per binary in every run, and no build warns.
+`bb benchmarks/jobs.bb OUT --jobs 1,8 --source-maps macros wide chain abnf`
+(three rounds, load 4.6 to 7.5) gives one output and one map digest per
+scenario: `macros` `171535049adac490/92e221109b4e2248`, `wide`
+`efc72f3be4f07bca/d946fd64afb57c64`, `chain`
+`fc2a4fe895bac093/73a5ca122381520c`, `abnf`
+`2790787d86b1f104/e5e815e3e08fe73d`.
+
+Serial gate, parent `b2cf31d` against this change (the runtime's form
+bridge is the only functional difference), Penpot `main-none` with no
+`--jobs`, four alternating pairs at 1-minute load 3.4 to 6.5:
+
+| Build | Wall (s), round 1-4 | Median wall | Peak RSS (GB), round 1-4 | Median RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `b2cf31d` | 24.85, 23.42, 23.86, 32.94 | 24.36 | 0.925, 0.907, 0.911, 0.925 | 0.918 |
+| Keywords per call | 24.66, 24.26, 24.86, 24.32 | 24.49 | 0.901, 0.936, 0.920, 0.938 | 0.928 |
+
+The medians are +0.6% wall and +1.1% peak RSS, inside the +2% and +3%
+gate (the parent's 32.94 s is one outlier under load).
+
 ## Stage A gate (light-cljs-343, October 19, 2026)
 
 The benchmark that decides the `--jobs` default (docs/compiler-concurrency.md,
@@ -229,7 +264,7 @@ reach 0.44x at eight jobs, inside the wall gate though not the memory one
 units. A single huge unit gains nothing and can lose up to 0.2 s to the
 other isolates' start-up, and every program pays about 50 ms and 80 MB for
 the isolates. The fixtures' source maps differ between `--jobs 1` and `8`
-(light-cljs-379), except `small`'s.
+(light-cljs-379, since fixed), except `small`'s.
 
 - **The default macro memory limit.** The default `--macro-memory-limit`
   (64 MiB) gives two isolates, so a default `--jobs 8` would build as `--jobs 2`

@@ -4729,8 +4729,8 @@
         metadataValues.set(value, m);
       }
       if (id != null && id !== 0) {
-        if (value != null && typeof value === "object") borrowed.set(value, id);
-        // A scalar has no identity: keep its latest provenance in this call's table.
+        // Scalars and interned keywords: the latest provenance in this call's table.
+        if (value != null && typeof value === "object" && kind !== "keyword") borrowed.set(value, id);
         else if (!input) primitives.set(primitiveKey(value), id);
       }
       return value;
@@ -4889,7 +4889,7 @@
           const metadata = object && (metadataValues.has(v) || lazyValues.has(v) || cells.get(v)?.kind === "chunked-cons" || cells.get(v)?.kind === "repeat")
             ? visit(metadataValues.has(v) ? metadataValues.get(v) : null, path + ".meta", depth + 1) : null;
           if (object) unseen?.delete(v);
-          return [tag, object ? borrowed.get(v) ?? null : primitives.get(primitiveKey(v)) ?? null, metadata, a, b];
+          return [tag, (object && tag !== "keyword" ? borrowed.get(v) : primitives.get(primitiveKey(v))) ?? null, metadata, a, b];
         } finally { if (object) active.delete(v); }
       }
       return visit(value, "$", 0);

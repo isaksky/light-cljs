@@ -4,29 +4,7 @@
 //! installs the source macros, helpers and extensions it needs from the
 //! shared catalog, and the build emits the program, warnings and errors of
 //! a build with one slot.
-use crate::macro_free_units::{Built, Sources, build, execute};
-
-/// Build `entry` at one slot, then at two, four and eight, three rounds
-/// each, and check each against the first; return the one-slot build.
-fn same_at_one_two_four_and_eight(sources: &Sources, entry: &str, warning_mode: bool) -> Built {
-    let serial = build(sources, entry, 1, warning_mode);
-    for slots in [2, 4, 8] {
-        for _ in 0..3 {
-            let pooled = build(sources, entry, slots, warning_mode);
-            assert_eq!(pooled.output, serial.output, "{slots} slots");
-            assert_eq!(pooled.warnings, serial.warnings, "{slots} slots");
-            assert_eq!(
-                pooled.stats.macro_calls, serial.stats.macro_calls,
-                "{slots} slots"
-            );
-            assert_eq!(
-                pooled.stats.peak_macro_nodes, serial.stats.peak_macro_nodes,
-                "{slots} slots"
-            );
-        }
-    }
-    serial
-}
+use crate::macro_free_units::{Sources, build, execute, same_at_every_slot_count};
 
 const MACROS: &str = r#"(ns app.m)
 (defn helper [x] (list 'inc x))
@@ -69,7 +47,7 @@ fn units_expanding_source_and_core_macros_emit_the_one_slot_program() {
 (def z (twice a/x))
 (js/console.log a/x a/y (a/f 2) a/g a/h a/i (pr-str (a/k)) (a/l 1) a/m z (a/kind {}))"#,
         );
-    let serial = same_at_one_two_four_and_eight(&sources, "app.main", false);
+    let serial = same_at_every_slot_count(&sources, "app.main", false);
     assert_eq!(
         execute(&serial.output.unwrap()),
         "3 2 6 2 9 5 [2 3 4] 6 a 5 other\n"
@@ -87,6 +65,26 @@ fn units_expanding_source_and_core_macros_emit_the_one_slot_program() {
 }
 
 #[test]
+fn helper_built_macro_results_map_alike_in_every_isolate() {
+    // `table` builds `{:k i}` at compile time. Its keyword is the engine's
+    // interned one, which no input of either `rows` call holds: the result's
+    // spans are each call's own, never those of an earlier form some
+    // isolate imported `:k` from (light-cljs-379).
+    let sources = Sources::new();
+    sources
+        .write(
+            "app/m.cljs",
+            "(ns app.m) (defn table [n] (vec (for [i (range n)] {:k i}))) (defmacro rows [n] (table n))",
+        )
+        .write(
+            "app/main.cljs",
+            "(ns app.main (:require [app.m :refer [rows]])) (def a (rows 3)) (def b (rows 2)) (js/console.log (count a) (count b))",
+        );
+    let serial = same_at_every_slot_count(&sources, "app.main", false);
+    assert_eq!(execute(&serial.output.unwrap()), "3 2\n");
+}
+
+#[test]
 fn warnings_and_errors_of_units_on_workers_are_the_one_slot_ones() {
     let sources = Sources::new();
     sources.write("app/m.cljc", MACROS).write(
@@ -97,7 +95,7 @@ fn warnings_and_errors_of_units_on_workers_are_the_one_slot_ones() {
 (def ok (twice 1))
 (js/console.log ok)"#,
     );
-    let serial = same_at_one_two_four_and_eight(&sources, "app.w", true);
+    let serial = same_at_every_slot_count(&sources, "app.w", true);
     assert!(
         serial.warnings.iter().any(|w| w.1.contains("missing-one")),
         "{:?}",
@@ -112,7 +110,7 @@ fn warnings_and_errors_of_units_on_workers_are_the_one_slot_ones() {
 (def bad (boom))
 (def after (twice 2))"#,
     );
-    let serial = same_at_one_two_four_and_eight(&sources, "app.e", false);
+    let serial = same_at_every_slot_count(&sources, "app.e", false);
     let error = serial.output.unwrap_err();
     assert!(error.contains("boom in a unit"), "{error}");
 }
@@ -130,7 +128,7 @@ fn a_helper_demanded_from_a_worker_initializes_in_its_isolate() {
 (def b (twice (looked-up :b)))
 (js/console.log a b (looked-up :a))"#,
     );
-    let serial = same_at_one_two_four_and_eight(&sources, "app.main", false);
+    let serial = same_at_every_slot_count(&sources, "app.main", false);
     assert_eq!(execute(&serial.output.unwrap()), "1 4 1\n");
 }
 
@@ -148,7 +146,7 @@ fn a_helper_with_test_metadata_demanded_from_a_worker_is_analyzed_there() {
 (defn f {:test (fn [] true)} [] 42)
 (js/console.log x)"#,
     );
-    let serial = same_at_one_two_four_and_eight(&sources, "app.t", false);
+    let serial = same_at_every_slot_count(&sources, "app.t", false);
     assert_eq!(execute(&serial.output.unwrap()), "42\n");
 }
 
@@ -197,7 +195,7 @@ fn a_persistent_worker_sees_each_units_own_macro_inventory() {
 (def again (seen))
 (js/console.log before after again)"#,
     );
-    let serial = same_at_one_two_four_and_eight(&sources, "app.main", false);
+    let serial = same_at_every_slot_count(&sources, "app.main", false);
     assert_eq!(execute(&serial.output.unwrap()), "false true true\n");
 }
 

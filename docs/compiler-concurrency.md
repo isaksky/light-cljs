@@ -2,8 +2,9 @@
 
 Status, October 19, 2026: stage A is built behind `--jobs N` and stays
 experimental with a default of 1, because the stage A gate was missed on
-Penpot (0.79x of `--jobs 1` at eight jobs, 1.8x peak RSS, source maps that
-depend on the schedule; light-cljs-343 under "Gates and first steps").
+Penpot (0.79x of `--jobs 1` at eight jobs, 1.8x peak RSS, and source maps
+that depended on the schedule until light-cljs-379; light-cljs-343 under
+"Gates and first steps").
 Stages C and D are not built. The "As built" notes record what was
 implemented; the rest of the document is the design as proposed.
 
@@ -1505,6 +1506,28 @@ output changes once, when stage A lands.
     saved in an earlier call, which has no identity to tell it from an equal
     new one. `tests/compiler/macro_scalar_spans.rs` and
     `macros::javascript_form_bridge` cover these cases.
+  - *As built (light-cljs-379):* keywords take their provenance from the
+    same per-call table. The runtime interns keywords, so the bridge's
+    object provenance put a keyword's on the one interned value, where it
+    stayed for the isolate's life: a keyword a macro's helper built (`{:k i}`
+    in `table`) took the span of the last form this isolate imported that
+    keyword from, the helper's own source after the main isolate expanded
+    its `for`, nothing in a worker isolate that never did. Penpot main's
+    source map so differed between `--jobs` values and between two runs at
+    one value above one, while the JavaScript did not; bisected to
+    light-cljs-339 (`d2c6858` gave one map at 1 and 8 jobs, `19b789e` three
+    maps in three runs). A keyword the macro returns now has the span of an
+    equal keyword among its arguments, or one it imports while it runs,
+    else that of the call, in every isolate and at every slot count; at one
+    job such elements lose the helper spans they had, which named whatever
+    form the isolate happened to have seen. Other values the bridge makes
+    are fresh objects, so this was the only interned one.
+    `macro_free_units::same_at_every_slot_count` now compares spans and the
+    `none` and `prepare` source maps at 1, 2, 4 and 8 slots with an isolate
+    per slot (the default memory budget ran one worker isolate, which hid
+    this), and `worker_isolates` uses it for every fixture, the
+    reproduction (`helper_built_macro_results_map_alike_in_every_isolate`)
+    included.
   - *As built (light-cljs-342), the determinism stress.* The hook is
     `scheduler::Perturbation`, compiled under `cfg(debug_assertions)`, so
     every test build has it and release binaries have none of it (a
@@ -1936,7 +1959,7 @@ in detail.
 
    | Gate | Result |
    | --- | --- |
-   | Output identical across `--jobs 1/4/8` | JavaScript yes: one SHA-256 in every Penpot build at every N, and the 12-seed stress passes. Source maps no: they differ between N and between runs at one N (light-cljs-379) |
+   | Output identical across `--jobs 1/4/8` | JavaScript yes: one SHA-256 in every Penpot build at every N, and the 12-seed stress passes. Source maps no: they differ between N and between runs at one N (fixed by light-cljs-379) |
    | `--jobs 8` at most 50% of `--jobs 1` | no: 0.79x (0.83x and 0.84x in two noisier sets); against the compiler before the scheduler, 1.23x faster at the same load |
    | Peak RSS at most 1.5x | no: 1.80x (1.82x, 1.78x) |
    | Browser run (light-cljs-309) | not available: 309 was closed without a procedure |
@@ -2081,6 +2104,10 @@ is part of the stage A gate.
   collections a compile-time helper built: at one job those elements map
   into the helper's source, on a worker isolate they do not. Filed as
   light-cljs-379, which the stage A gate needs besides the overlap below.
+  *Settled (light-cljs-379):* the cause was interned keywords keeping the
+  provenance of the isolate's first import (the light-cljs-371 entry
+  above); the worker's spans, the call's own, are the right ones, and every
+  isolate now gives them.
 - *The 50% gate and the waiting coordinator (light-cljs-343).* While the
   coordinator waits at each drain (the light-cljs-339 entry above), Penpot
   main's ideal is about 0.66x of `--jobs 1` at any N, from the serial
