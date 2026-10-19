@@ -1436,6 +1436,7 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
             "warnings",
             "unit",
             "finish",
+            "wait",
         ]
         .into_iter()
         .map(stage)

@@ -1253,7 +1253,18 @@ The one deterministic ID-order change of this stage is made, at every
   job itself demanded becomes the coordinator's innermost frame (the drain
   for a pooled unit), depths count from the coordinator's stack, and the
   `thread` column is the slot (1 to N-1). Their times are the workers'
-  work: they enter no stage total or wait, as the parse jobs' do not. A
+  work: they enter no stage total, as the parse jobs' do not, though a
+  top-level pass that demanded one counts it as its wait, as in a serial
+  build. The time any thread is blocked in the catalog, for another
+  thread's analysis or a forwarded request's answer, is a new exclusive
+  stage, `wait` (`compile_trace::wait`), so a drain's time and a blocked
+  worker unit's time and engine share are no longer the waited-for unit's
+  work counted twice. Once the coordinator records worker rows, a unit
+  that another worker analyzed on its own before a unit reused it, which
+  the drain reaches later, is moved before every row that demanded,
+  executed or read it (`dependencies_first`), so that dependencies precede
+  demanders as `dag.bb` assumes; a trace with no worker rows keeps its
+  order. A
   unit counted on counters of its own (a worker's, or a macro-free one's
   on the coordinator) now has its trace frame bound to them, so native
   expansions and nodes are its own; frames count the work of frames inside

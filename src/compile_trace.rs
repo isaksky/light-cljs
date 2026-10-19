@@ -75,10 +75,14 @@ pub enum Stage {
     Unit,
     /// Closing the program (`NamespaceAnalysis::finish`).
     Finish,
+    /// Blocked in the unit catalog, waiting for another thread's analysis
+    /// of a unit or its answer to a forwarded request: no work of this
+    /// thread's ([`wait`]).
+    Wait,
 }
 
 impl Stage {
-    pub const ALL: [Stage; 11] = [
+    pub const ALL: [Stage; 12] = [
         Stage::Other,
         Stage::Load,
         Stage::PrepareSource,
@@ -90,6 +94,7 @@ impl Stage {
         Stage::Warnings,
         Stage::Unit,
         Stage::Finish,
+        Stage::Wait,
     ];
 
     /// The stage's name in the report and the trace file.
@@ -106,6 +111,7 @@ impl Stage {
             Stage::Warnings => "warnings",
             Stage::Unit => "unit",
             Stage::Finish => "finish",
+            Stage::Wait => "wait",
         }
     }
 }
@@ -237,6 +243,9 @@ pub struct Trace {
     pub engine_entries: u64,
     /// By source index.
     pub namespaces: Vec<NamespaceTrace>,
+    /// In the order analyses finished on one thread; with pool workers, in
+    /// the order the coordinator took them, then each after the units its
+    /// analysis demanded or read ([`dependencies_first`]).
     pub units: Vec<UnitTrace>,
     /// Each time a unit's compile-time root was first evaluated in the
     /// engine, in order: an execution demand edge.
@@ -739,7 +748,7 @@ impl Recorder {
                     thread: self.thread,
                 });
             }
-            Stage::Other | Stage::Finish => {}
+            Stage::Other | Stage::Finish | Stage::Wait => {}
         }
     }
 }
@@ -842,6 +851,9 @@ impl Recording {
             }
         }
         trace.wall = wall;
+        if trace.units.iter().any(|unit| unit.thread != 0) {
+            trace.units = dependencies_first(std::mem::take(&mut trace.units), &trace);
+        }
         Some(trace)
     }
 
@@ -1021,6 +1033,74 @@ pub(crate) fn installed(index: usize) {
     with_recorder(|recorder| recorder.namespace(index as u32).installed = true);
 }
 
+/// `units` in their order, except that each comes after the rows of the
+/// units it demanded, executed or read, as a serial build finishes them:
+/// with pool workers, a unit another worker analyzed on its own, before a
+/// unit that then reused it, is taken by the coordinator where the drain
+/// reaches it, which may be after its demander. A cycle is broken at the
+/// row it is entered from. With no edge to a later row, the order stays.
+fn dependencies_first(units: Vec<UnitTrace>, trace: &Trace) -> Vec<UnitTrace> {
+    let ids = units.iter().map(|unit| unit.id as usize + 1).max();
+    let mut row_of = vec![usize::MAX; ids.unwrap_or(0)];
+    for (row, unit) in units.iter().enumerate() {
+        row_of[unit.id as usize] = row;
+    }
+    let row = |id: u32| {
+        row_of
+            .get(id as usize)
+            .copied()
+            .filter(|&r| r != usize::MAX)
+    };
+    let mut deps = vec![Vec::new(); units.len()];
+    let edges = (trace.executions.iter().map(|e| (e.demander, e.unit)))
+        .chain(trace.reads.iter().map(|r| (r.demander, r.unit)))
+        .chain(units.iter().map(|u| (u.demander, u.id)));
+    for (demander, unit) in edges {
+        if let Demander::Unit(demander) = demander
+            && demander != unit
+            && let (Some(from), Some(to)) = (row(demander), row(unit))
+        {
+            deps[from].push(to);
+        }
+    }
+    // Post-order from each row in turn; 1 is open, 2 is placed.
+    let mut state = vec![0u8; units.len()];
+    let mut order = Vec::with_capacity(units.len());
+    let mut stack = Vec::new();
+    for start in 0..units.len() {
+        if state[start] != 0 {
+            continue;
+        }
+        state[start] = 1;
+        stack.push((start, 0));
+        while let Some((row, next)) = stack.last_mut() {
+            if let Some(&dep) = deps[*row].get(*next) {
+                *next += 1;
+                if state[dep] == 0 {
+                    state[dep] = 1;
+                    stack.push((dep, 0));
+                }
+            } else {
+                state[*row] = 2;
+                order.push(*row);
+                stack.pop();
+            }
+        }
+    }
+    let mut rows: Vec<_> = units.into_iter().map(Some).collect();
+    order
+        .into_iter()
+        .filter_map(|row| rows[row].take())
+        .collect()
+}
+
+/// Open a [`Stage::Wait`] frame: this thread blocks, in the unit catalog,
+/// on unit `unit`'s analysis by another thread or on an answer, so that the
+/// time is neither the frame's it blocks in nor its engine time.
+pub(crate) fn wait(unit: usize) -> Span {
+    enter(Stage::Wait, unit, None)
+}
+
 /// What a pool worker recorded of one unit's analysis, the units it
 /// demanded included, for the coordinator to record where it charges the
 /// unit ([`replay`]).
@@ -1059,7 +1139,10 @@ pub(crate) fn take_worker_rows() -> Option<Box<WorkerRows>> {
 /// its job's unit, the innermost frame here demands, as it would have in
 /// a serial build, and every unit's depth counts from `depth`. Their times
 /// are the workers' work, not the coordinator's wall time, so they are in
-/// no stage total or wait, as the parse jobs' are not ([`pooled_loads`]).
+/// no stage total, as the parse jobs' are not ([`pooled_loads`]); a
+/// top-level pass that demanded the job's unit waited for it, as for a
+/// unit it analyzed itself. The time the coordinator was blocked for them
+/// is in [`Stage::Wait`].
 pub(crate) fn replay(rows: WorkerRows, depth: usize) {
     with_recorder(|recorder| {
         let worker_root = Demander::Other(Stage::Other);
@@ -1074,8 +1157,15 @@ pub(crate) fn replay(rows: WorkerRows, depth: usize) {
         };
         let trace = &mut recorder.trace;
         for mut unit in rows.units {
-            if unit.demander == worker_root && frame.stage == Stage::Unit {
-                frame.host |= unit.host;
+            if unit.demander == worker_root {
+                // What the frame demanded, as a unit it analyzed would be;
+                // the time it was blocked is a wait frame's.
+                if matches!(frame.stage, Stage::TopLevel | Stage::Unit) {
+                    frame.demanded += unit.inclusive();
+                }
+                if frame.stage == Stage::Unit {
+                    frame.host |= unit.host;
+                }
             }
             unit.demander = place(unit.demander);
             unit.depth += depth as u32;
@@ -1474,7 +1564,83 @@ mod tests {
                 demander: Demander::Unit(5)
             }]
         );
-        // The workers' work is in no stage total of the coordinator's.
+        // The workers' work is in no stage total of the coordinator's; the
+        // top level waited for the unit it demanded.
         assert_eq!(trace.exclusive_total(), trace.wall);
+        assert_eq!(
+            trace.namespaces[0].top_level_wait,
+            trace.units[1].inclusive()
+        );
+    }
+
+    #[test]
+    fn rows_taken_after_a_unit_that_read_them_move_before_it() {
+        let row = |id, thread, demander| UnitTrace {
+            id,
+            source: 0,
+            name: format!("a/u{id}"),
+            line: 1,
+            column: 1,
+            time: Duration::ZERO,
+            engine: Duration::ZERO,
+            engine_calls: 0,
+            wait: Duration::ZERO,
+            expansions: 0,
+            nodes: 0,
+            host: false,
+            demander,
+            depth: 0,
+            thread,
+        };
+        let ids = |units: &[UnitTrace]| units.iter().map(|u| u.id).collect::<Vec<_>>();
+        // Unit 4 read unit 7, which another worker analyzed on its own and
+        // the drain reached after 4; unit 9 executed 4, and 3 is nested in 9.
+        let units = vec![
+            row(4, 1, Demander::Drain(0)),
+            row(3, 2, Demander::Unit(9)),
+            row(9, 2, Demander::Drain(0)),
+            row(7, 2, Demander::Drain(0)),
+        ];
+        let trace = Trace {
+            reads: vec![
+                Read {
+                    unit: 7,
+                    demander: Demander::Unit(4),
+                },
+                Read {
+                    unit: 4,
+                    demander: Demander::Unit(4),
+                },
+            ],
+            executions: vec![Execution {
+                unit: 4,
+                demander: Demander::Unit(9),
+                prepared: true,
+            }],
+            ..Trace::default()
+        };
+        assert_eq!(
+            ids(&dependencies_first(units.clone(), &trace)),
+            [7, 4, 3, 9]
+        );
+        // Rows already after what they read keep their order.
+        let ordered = dependencies_first(units, &trace);
+        assert_eq!(ids(&dependencies_first(ordered, &trace)), [7, 4, 3, 9]);
+        // A cycle is broken at the row it is entered from.
+        let cycle = Trace {
+            reads: vec![
+                Read {
+                    unit: 2,
+                    demander: Demander::Unit(1),
+                },
+                Read {
+                    unit: 1,
+                    demander: Demander::Unit(2),
+                },
+            ],
+            ..Trace::default()
+        };
+        let units = vec![row(1, 1, Demander::Drain(0)), row(2, 1, Demander::Drain(0))];
+        assert_eq!(ids(&dependencies_first(units, &cycle)), [2, 1]);
     }
 }

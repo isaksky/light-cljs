@@ -486,6 +486,8 @@ impl SharedCatalog {
     ) -> Result<Claim, String> {
         // Dropped after the lock is released.
         let mut _released = None;
+        // The trace's frame for the time this thread blocks here.
+        let mut _blocked = None;
         let mut guard = self.lock();
         loop {
             if let Some(serve) = server
@@ -520,6 +522,9 @@ impl SharedCatalog {
                     c.threads[thread].waiting = Some(id);
                     c.waiting += 1;
                     c.units[id].waiters += 1;
+                }
+                if _blocked.is_none() {
+                    _blocked = Some(crate::compile_trace::wait(id));
                 }
                 guard = self
                     .settled
@@ -627,6 +632,7 @@ impl SharedCatalog {
             ticket
         };
         self.settled.notify_all();
+        let _blocked = crate::compile_trace::wait(0);
         let mut c = self.lock();
         loop {
             if let Some(at) = c.replies.iter().position(|(t, _, _)| *t == ticket) {
@@ -3201,6 +3207,41 @@ mod worker_tests {
         assert_eq!(session.analyze(id, None).unwrap_err(), errors[0]);
         assert!(session.diagnostic(id).is_some());
         assert_eq!(shared.lock().units[id].analyses, 1);
+    }
+
+    #[test]
+    fn a_traced_thread_blocked_in_the_catalog_records_a_wait_not_work() {
+        use crate::compile_trace::{Stage, enter, record};
+        let (session, units, _) = registered("(defn a [] 1)");
+        let a = units["cljs.user/a"];
+        let shared = session.shared().clone();
+        let (first, second) = (shared.join(), shared.join());
+        assert!(matches!(
+            shared.claim(second, a, false, None),
+            Ok(Claim::Analyze(..))
+        ));
+        let blocked = std::time::Duration::from_millis(30);
+        let trace = std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| {
+                let recording = record();
+                {
+                    let _drain = enter(Stage::Drain, 0, None);
+                    assert!(shared.claim(first, a, false, None).is_err());
+                }
+                recording.finish().unwrap()
+            });
+            while shared.lock().waiting == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            std::thread::sleep(blocked);
+            shared.settle(second, a, Some(AnalysisState::Failed("x".into(), None)));
+            waiter.join().unwrap()
+        });
+        let wait = trace.stage(Stage::Wait).time;
+        assert!(wait >= blocked, "{wait:?}");
+        // The drain's own time is what it did around the wait.
+        assert!(trace.namespaces[0].drain < blocked, "{trace:?}");
+        assert_eq!(trace.exclusive_total(), trace.wall);
     }
 
     #[test]
