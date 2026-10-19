@@ -27,7 +27,7 @@
       <label><input id="warnings" type="checkbox"> warnings</label>
       <label><input id="pseudo" type="checkbox"> pseudo names</label>
       <label><input id="sizes" type="checkbox"> size report</label>
-      <label title="Run macros in this browser's JavaScript engine instead of the compiler's embedded QuickJS (experimental)"><input id="browser-macros" type="checkbox"> browser macros</label>
+      <label title="Run macros in this browser's JavaScript engine, about three times faster, instead of the compiler's embedded QuickJS; either way a macro still running after 10 s ends the compile"><input id="browser-macros" type="checkbox" checked> browser macros</label>
       <button id="run" class="primary" title="Cmd/Ctrl+Enter">Compile &amp; run</button>
       <button id="compile" title="Shift+Cmd/Ctrl+Enter">Compile</button>
       <button id="stop" title="Stop the compile or the running program" disabled>Stop</button>
@@ -54,7 +54,9 @@
 
   <footer class="muted">
     Compiled in WebAssembly by light-cljs in a worker that Stop cancels (macros
-    expand in an embedded QuickJS); the output runs in this browser inside
+    expand in this browser's engine, or with "browser macros" off in an
+    embedded QuickJS, and a macro still running after 10 s ends the compile);
+    the output runs in this browser inside
     another worker, which is terminated after 10 s.
     Call <code>(enable-console-print!)</code> before <code>println</code>, as in ClojureScript.
     Files are kept in this browser's local storage.

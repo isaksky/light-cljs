@@ -1,6 +1,7 @@
 # Browser-native macros for the playground
 
-Status: prototype (light-cljs-307), off by default. The playground's
+Status: the playground's default since light-cljs-356 (added by
+light-cljs-307 as an option). The playground's
 WebAssembly module embeds QuickJS so that the compiler can run macros while it
 compiles. This document records a second way: the compiler runs the same
 compiler-emitted macro JavaScript in the browser's own engine, the one already
@@ -45,7 +46,8 @@ In the playground, `playground/macro-host.js` implements `ScriptHost` in the
 compiler worker (`globalThis.lightCljsMacroHost`). The module exports
 `set_browser_macros(bool)` and `serve_macro_host`; `compiler-worker.js` runs
 a request's macros in the browser when it carries `macros: "browser"`, and
-the page sends that when its "browser macros" checkbox is checked.
+the page sends that when its "browser macros" checkbox is checked, as it is
+unless the person turned it off.
 
 ## What it preserves
 
@@ -81,7 +83,7 @@ the page sends that when its "browser macros" checkbox is checked.
 |---|---|---|
 | Heap | A fresh heap per compile | The compiler worker's one realm. Opening a session deletes the globals earlier sessions added; changes to builtins persist until the worker is replaced |
 | Capabilities | ECMAScript only | Everything a module worker has: `fetch`, `WebSocket`, `postMessage` to the page (a macro could forge a "compiled" answer), `navigator`, `indexedDB`, the macro host itself |
-| Time | The interrupt handler charges a fuel budget of one million polls and checks the 10 s session deadline while JavaScript runs | Checked only at bridge boundaries. A loop inside JavaScript runs until the page's Stop terminates the worker (`check.mjs` checks both engines) |
+| Time | The interrupt handler charges a fuel budget of one million polls and checks the 10 s session deadline while JavaScript runs | Checked, with the poll budget, only at bridge boundaries. A loop inside JavaScript runs until the page's Stop or, after the deadline, `compiler.js`'s watchdog terminates the worker; the watchdog's replay then reports the deadline as QuickJS would (`check.mjs` checks both) |
 | Memory | 64 MiB allocation ceiling, terminal | The browser's per-worker heap limit (gigabytes); exhausting it kills the worker, which the page replaces |
 | Stack | 1 MiB engine stack, terminal | The browser's stack; overflow is a catchable RangeError, reported as the macro's error |
 | Determinism | One engine everywhere | Each browser's engine. Output was identical across Chromium, Firefox and WebKit here, but a macro that formats numbers with `Intl`, reads the time zone or relies on engine-specific behavior can expand differently per browser |
@@ -133,6 +135,7 @@ helpers 0.14 MB and the Rust that only drives QuickJS (rquickjs,
 ## Verdict
 
 Ready to adopt as an option; not yet as the playground's only engine.
+light-cljs-356 made it the default (below).
 
 - Macro output is identical to QuickJS in every check, across three engines,
   and compiles are 2.5 to 3.2 times faster. The checkbox can stay, and could
@@ -140,7 +143,7 @@ Ready to adopt as an option; not yet as the playground's only engine.
 - The 10 s deadline does not hold inside JavaScript. Before defaulting to
   browser macros, `compiler.js` should stop a compile after the same 10 s by
   terminating its worker, so a runaway macro ends without the user pressing
-  Stop.
+  Stop. (Done by light-cljs-356.)
 - The download saving requires removing QuickJS from the wasm build. Data
   readers (`MacroHost::install_reader_build_services` and the reader heap),
   interactive sessions and `EvalSession` use the concrete QuickJS
@@ -165,3 +168,52 @@ Ready to adopt as an option; not yet as the playground's only engine.
   module worker in each browser, compares both engines' results for every
   example at every level and times the program above. Safari itself was not
   driven; WebKit stands in for it.
+
+### As built (light-cljs-356): the deadline watchdog, and on by default
+
+The "browser macros" checkbox is now on unless the person turned it off (a
+saved `false` is kept), and `playground/compiler.js` enforces the 10 s
+deadline for browser-macro compiles from outside the worker:
+
+- `compiler-worker.js` numbers a compile's host calls and folds each call's
+  service and arguments (only their length when long) into a 32-bit FNV-1a
+  trace. Once the compile has run 500 ms, it posts `[N, trace]` for each call
+  it starts and which call is innermost open whenever a call or a compiler
+  service returns. A post costs 7 to 27 µs in a browser and the program above
+  makes about 5,400 host calls: posting every call slowed it by 17% in
+  Chromium, 15% in Firefox and 40% in WebKit, so compiles that end within
+  500 ms post nothing.
+- Once a compile has run 10 s (plus 250 ms, since the compiler's clock starts
+  after the worker reports the start) with a host call open, the compile can
+  only end with the deadline: the compiler checks it when the call returns.
+  The watchdog terminates the worker and replays the request in a fresh one
+  with `stopAt` naming that call and `fingerprint` its trace. There the call
+  fails with the evaluator's own text, `JavaScript session deadline
+  exceeded`, which the compiler wraps as it wraps QuickJS's, so the result is
+  the embedded engine's located diagnostic, byte for byte (`check.mjs`
+  compares them), with `millis` counted from the first start. The replay
+  claims the location only when its trace at that call is the fingerprint.
+- A call open since the first 500 ms is unnamed, so the watchdog first
+  replays the request as a probe that posts every call and takes the call it
+  keeps open for 1 s: every earlier call returned within the original's first
+  500 ms. A spinning macro therefore ends after about 11.5 s (11.4 s in
+  Chromium, WebKit and Firefox here), and one that starts spinning after
+  500 ms after about 10.3 s plus the replay.
+- A replay redoes every macro before the stuck call, so a call that started
+  more than 1.5 s into its run is not replayed, and probes and replays end
+  within 3 s of the deadline. These, a probe or replay that ends without
+  reaching the call, and a replay whose trace differs (a macro that reads the
+  clock or random numbers can take another path) give the deadline
+  diagnostic without a location.
+- With no host call open, the compiler's own code is running; it reports the
+  deadline at its next host call, so the watchdog waits. A worker that does
+  not start a queued compile within 10 s, because a timer a macro left behind
+  keeps it busy, is replaced and the newest request sent again; a compile
+  queued behind a spinning one runs in the replacement.
+
+The worker's bookkeeping left the program above unchanged within noise:
+median of ten warm compiles, master's worker against this one, alternating,
+at load average 6 to 8, two runs: 203 / 210 and 209 / 212 ms in Chromium,
+299 / 302 and 314 / 315 ms in Firefox, 187 / 192 and 199 / 203 ms in WebKit.
+`check.mjs` takes about 22 s instead of 8 s: its nine watchdog cases, three
+with worker doubles for the fallbacks, wait out the deadline together.

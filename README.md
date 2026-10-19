@@ -429,8 +429,10 @@ light-cljs built for `wasm32-unknown-unknown` (QuickJS included, for macro
 expansion) compiles several in-memory namespaces at any `--optimize` level, and
 the emitted JavaScript runs in the browser's own engine inside a worker.
 A dropdown offers examples from a single namespace to a calculator in several.
-The "browser macros" checkbox runs macros in the browser's own engine instead,
-a prototype that compiles macro-heavy programs about three times faster
+By default its macros run in the browser's own engine, which compiles
+macro-heavy programs about three times faster than the embedded QuickJS, with
+a watchdog that ends a compile whose macro runs past the 10 s deadline; the
+"browser macros" checkbox switches back to QuickJS
 ([docs/browser-macros.md](docs/browser-macros.md)).
 `bb playground/build.bb` builds and serves it; see
 [playground/README.md](playground/README.md) for the toolchain it needs.

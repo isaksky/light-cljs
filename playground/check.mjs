@@ -7,7 +7,9 @@
 // tests' Node driver against the single file. Then come a located error, a
 // missing namespace and an unknown level, which leave every output empty.
 // Last, the page's compiler worker gives the direct results, drops a
-// superseded one, and compiles correctly after a stopped or failed worker.
+// superseded one, ends a compile whose browser macros spin past the 10 s
+// deadline with the embedded engine's diagnostic, and compiles correctly
+// after a stopped, replaced or failed worker.
 // `bb playground/build.bb check` runs it; CI runs it after the build.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -396,7 +398,7 @@ console.log(`browser macros: ${browserCompiles} compiles identical to the embedd
 // globals it uses: its results are the direct compile's, a superseded request
 // resolves stale, and stopping a compile that spins in a macro leaves a fresh
 // worker that compiles correctly, while this thread keeps running.
-const { createCompiler } = await import(path.join(dist, "compiler.js"));
+const { createCompiler, DEADLINE_MS, ALLOWANCE_MS } = await import(path.join(dist, "compiler.js"));
 const ADAPTER = `
 const { parentPort, workerData } = require("node:worker_threads");
 globalThis.self = globalThis;
@@ -467,8 +469,8 @@ check((await superseded).status === "stale", `worker: the superseded compile res
 await newest;
 
 // A macro that spins until the 10 s session deadline, stopped after 1 s.
-// Browser macros have no deadline inside JavaScript, so stopping the worker
-// is what ends such a compile there.
+// Browser macros have no deadline inside JavaScript: Stop ends such a
+// compile at once, and the watchdog below ends it after the deadline.
 let ticks = 0;
 for (const macros of ["embedded", "browser"]) {
   const spin = compiler.compile({
@@ -493,6 +495,149 @@ for (const macros of ["embedded", "browser"]) {
     check(text === first.expect, `worker ${first.id} after cancel, ${macros} macros: value ${text}, expected ${first.expect}`);
   }
 }
+
+// With browser macros, compiler.js's watchdog ends a spinning compile on its
+// own after the 10 s deadline (light-cljs-356), with the located diagnostic
+// the embedded engine gives, which a second compiler instance computes in
+// another thread meanwhile: a macro that spins, a macro whose helper (a
+// unit the macro's call registers through the compiler) spins, and a
+// newer compile queued behind a spinning one, which then runs. They run at
+// once, each in its own worker, while this thread keeps ticking.
+const SPINS = [
+  ["spinning macro", "(ns demo.spin)\n(defmacro spin [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i)))\n(spin)\n"],
+  ["spinning helper", "(ns demo.spin)\n(defn helper [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i)))\n(defmacro spin [] (helper))\n(def x 1)\n  (spin)\n"],
+  // Past the worker's first 500 ms, which it does not report.
+  [
+    "macro spinning after a slow one",
+    "(ns demo.spin)\n(defmacro slow [] (let [t (js/Date.now)] (loop [] (when (< (- (js/Date.now) t) 700) (recur)))) nil)\n(defmacro spin [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i)))\n(slow)\n(spin)\n",
+  ],
+];
+// The deadline without a location, and a result a double claims.
+const UNLOCATED = [null, "JavaScript session deadline exceeded", null, 0, 0, "", ""];
+const OK_RESULT = { js: "1", error: null, error_file: null, error_line: 0, error_column: 0, warnings: "", size_report: "", millis: 1 };
+// A worker double that is ready, says "started" for each compile, keeps
+// the compile messages and then does `script(message, reply)`.
+function scriptedWorker(script) {
+  const handle = {
+    onmessage: null,
+    onerror: null,
+    compiles: [],
+    postMessage(message) {
+      const reply = (data) => queueMicrotask(() => handle.onmessage?.({ data }));
+      if (message.type === "init") return reply({ type: "ready", version: version() });
+      handle.compiles.push(message);
+      reply({ type: "started", id: message.id });
+      script(message, reply);
+    },
+    terminate() {},
+  };
+  return handle;
+}
+// A replay whose fingerprint is not the trace at its call says so.
+{
+  const thread = spawnWorker();
+  const answer = new Promise((resolve) => (thread.onmessage = ({ data }) => data.type === "compiled" && resolve(data)));
+  thread.postMessage({ type: "init", module: wasmModule });
+  thread.postMessage({ type: "compile", id: 1, ...request(["demo/spin.cljs"], [SPINS[0][1]], "demo.spin", "none"), macros: "browser", stopAt: 0, fingerprint: 1 });
+  const replayed = await answer;
+  check(replayed.stopped === false && String(replayed.result.error).includes("JavaScript session deadline exceeded"), `replay with another fingerprint: ${JSON.stringify(replayed).slice(0, 300)}`);
+  thread.terminate();
+}
+const watchdogStart = performance.now();
+let watchdogTicks = 0;
+const watchdogTicker = setInterval(() => (watchdogTicks += 1), 20);
+const watched = await Promise.all([
+  ...SPINS.map(async ([name, source]) => {
+    const spinRequest = request(["demo/spin.cljs"], [source], "demo.spin", "none");
+    const browser = createCompiler({ spawn: spawnWorker, module: wasmModule });
+    const embedded = createCompiler({ spawn: spawnWorker, module: wasmModule });
+    const begun = performance.now();
+    const [outcome, reference] = await Promise.all([
+      browser.compile({ ...spinRequest, macros: "browser" }).then((outcome) => ({ ...outcome, elapsed: performance.now() - begun })),
+      embedded.compile({ ...spinRequest, macros: "embedded" }),
+    ]);
+    check(outcome.status === "done" && reference.status === "done", `watchdog, ${name}: ${JSON.stringify([outcome, reference]).slice(0, 300)}`);
+    if (outcome.status !== "done" || reference.status !== "done") return null;
+    check(String(reference.result.error).includes("JavaScript session deadline exceeded"), `watchdog, ${name}: the embedded engine gave ${reference.result.error}`);
+    check(isDeepStrictEqual(fields(outcome.result), fields(reference.result)), `watchdog, ${name}: ${JSON.stringify(fields(outcome.result))} is not the embedded ${JSON.stringify(fields(reference.result))}`);
+    check(outcome.elapsed >= DEADLINE_MS && outcome.elapsed < DEADLINE_MS + 3000, `watchdog, ${name}: ended after ${outcome.elapsed.toFixed(0)} ms`);
+    check(outcome.result.millis >= DEADLINE_MS && !browser.busy, `watchdog, ${name}: millis ${outcome.result.millis}, busy ${browser.busy}`);
+    // The compiler that replayed it compiles correctly afterwards.
+    const after = await browser.compile({ ...request(examplePaths(first), exampleSources(first), first.entry, "none"), macros: "browser" });
+    check(after.status === "done" && String(run(after.result.js).value) === first.expect, `watchdog, ${name}: then ${JSON.stringify(after).slice(0, 200)}`);
+    return `${name} ${outcome.elapsed.toFixed(0)} ms`;
+  }),
+  (async () => {
+    const queued = createCompiler({ spawn: spawnWorker, module: wasmModule });
+    const spinning = queued.compile({ ...request(["demo/spin.cljs"], [SPINS[0][1]], "demo.spin", "none"), macros: "browser" });
+    const begun = performance.now();
+    const newest = request(examplePaths(first), exampleSources(first), first.entry, "prepare");
+    const outcome = await queued.compile({ ...newest, macros: "browser" });
+    const elapsed = performance.now() - begun;
+    check((await spinning).status === "stale", `watchdog, queued: the spinning compile resolved ${JSON.stringify(await spinning).slice(0, 200)}`);
+    check(outcome.status === "done" && isDeepStrictEqual(fields(outcome.result), direct(newest)), `watchdog, queued: ${JSON.stringify(outcome).slice(0, 200)}`);
+    check(elapsed >= DEADLINE_MS && elapsed < DEADLINE_MS + 3000, `watchdog, queued: ran after ${elapsed.toFixed(0)} ms`);
+    return `queued ${elapsed.toFixed(0)} ms`;
+  })(),
+  // A macro that leaves a spinning timer behind compiles, but its worker
+  // never starts the next compile: that one is sent to a fresh worker.
+  (async () => {
+    const left = createCompiler({ spawn: spawnWorker, module: wasmModule });
+    const LATER = ["(ns demo.main)\n(defmacro later [] (js/setTimeout (fn [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i))) 0) 1)\n(later)\n"];
+    const leaving = await left.compile({ ...request(["demo/main.cljs"], LATER, "demo.main", "none"), macros: "browser" });
+    check(leaving.status === "done" && leaving.result.error == null, `watchdog, timer left behind: ${JSON.stringify(leaving).slice(0, 200)}`);
+    const begun = performance.now();
+    const next = request(examplePaths(first), exampleSources(first), first.entry, "none");
+    const outcome = await left.compile({ ...next, macros: "browser" });
+    const elapsed = performance.now() - begun;
+    check(outcome.status === "done" && isDeepStrictEqual(fields(outcome.result), direct(next)), `watchdog, after a timer left behind: ${JSON.stringify(outcome).slice(0, 200)}`);
+    check(elapsed >= DEADLINE_MS && elapsed < DEADLINE_MS + 3000, `watchdog, after a timer left behind: ran after ${elapsed.toFixed(0)} ms`);
+    return `timer left behind ${elapsed.toFixed(0)} ms`;
+  })(),
+  // A spin that starts 8 s in is not replayed, since the replay would redo
+  // those 8 s: it ends at the deadline, without a location.
+  (async () => {
+    const late = createCompiler({ spawn: spawnWorker, module: wasmModule });
+    const source = SPINS[2][1].replace(" 700)", " 8000)");
+    const begun = performance.now();
+    const outcome = await late.compile({ ...request(["demo/spin.cljs"], [source], "demo.spin", "none"), macros: "browser" });
+    const elapsed = performance.now() - begun;
+    check(outcome.status === "done" && isDeepStrictEqual(fields(outcome.result), UNLOCATED), `watchdog, late spin: ${JSON.stringify(outcome).slice(0, 300)}`);
+    check(elapsed >= DEADLINE_MS && elapsed < DEADLINE_MS + 1000 && !late.busy, `watchdog, late spin: ended after ${elapsed.toFixed(0)} ms, busy ${late.busy}`);
+    return `late spin ${elapsed.toFixed(0)} ms`;
+  })(),
+  // Probes and replays that do not stop where they should, through worker
+  // doubles: each gives the deadline without a location, within the
+  // allowance, and the next compile runs in a real worker.
+  ...[
+    // Nothing reported, so a probe; it compiles after all.
+    ["probe that completes", false, true, { quiet: 0 }],
+    // Call 3 reported open, so a replay to it; that does not stop there.
+    ["replay that takes another path", true, true, { stopAt: 3, fingerprint: 77 }],
+    ["replay that never ends", true, false, { stopAt: 3, fingerprint: 77 }],
+  ].map(async ([name, reported, completes, mode]) => {
+    const rerun = scriptedWorker((message, reply) => completes && reply({ type: "compiled", id: message.id, result: OK_RESULT, stopped: false }));
+    const doubles = [scriptedWorker((message, reply) => reported && reply([3, 77])), rerun];
+    const scripted = createCompiler({ spawn: () => doubles.shift() ?? spawnWorker(), module: wasmModule });
+    const begun = performance.now();
+    const outcome = await scripted.compile({ ...request(["demo/spin.cljs"], [SPINS[0][1]], "demo.spin", "none"), macros: "browser" });
+    const elapsed = performance.now() - begun;
+    check(outcome.status === "done" && isDeepStrictEqual(fields(outcome.result), UNLOCATED) && outcome.result.millis >= DEADLINE_MS, `watchdog, ${name}: ${JSON.stringify(outcome).slice(0, 300)}`);
+    check(elapsed >= DEADLINE_MS && elapsed < DEADLINE_MS + ALLOWANCE_MS + 1000 && !scripted.busy && doubles.length === 0, `watchdog, ${name}: ended after ${elapsed.toFixed(0)} ms, busy ${scripted.busy}, ${doubles.length} doubles unused`);
+    const rerunMode = { quiet: rerun.compiles[0]?.quiet, stopAt: rerun.compiles[0]?.stopAt, fingerprint: rerun.compiles[0]?.fingerprint };
+    check(rerun.compiles.length === 1 && isDeepStrictEqual(rerunMode, { quiet: undefined, stopAt: undefined, fingerprint: undefined, ...mode }), `watchdog, ${name}: rerun as ${JSON.stringify(rerun.compiles)}`);
+    // A double that answered is kept, as a healthy worker; one that never
+    // did was replaced by a real worker.
+    const after = await scripted.compile({ ...request(examplePaths(first), exampleSources(first), first.entry, "none"), macros: "browser" });
+    const kept = completes ? rerun.compiles.length === 2 && after.result?.js === OK_RESULT.js : String(run(after.result.js).value) === first.expect;
+    check(after.status === "done" && kept, `watchdog, ${name}: then ${JSON.stringify(after).slice(0, 200)}`);
+    return `${name} ${elapsed.toFixed(0)} ms`;
+  }),
+]);
+clearInterval(watchdogTicker);
+const watchdogMillis = performance.now() - watchdogStart;
+check(watchdogTicks >= watchdogMillis / 20 / 4, `watchdog: this thread ticked ${watchdogTicks} times in ${watchdogMillis.toFixed(0)} ms`);
+console.log(`watchdog: ${watched.join(", ")}, without Stop`);
 
 // A worker that fails is dropped: its pending compiles resolve failed (the
 // older one stale) and the next compile starts a fresh worker. The doubles

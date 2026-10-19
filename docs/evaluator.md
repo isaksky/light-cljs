@@ -18,7 +18,7 @@ requires at least 16 MiB. See [native engine build details](../vendor/v8/README.
 A third implementation, `host_evaluator::HostEvaluator`, drives the same V8
 services in an engine the embedder supplies through `ScriptHost`; the browser
 playground uses it to run macros in the browser
-([browser macros](browser-macros.md), a prototype).
+([browser macros](browser-macros.md), the playground's default).
 The remainder of this document describes the public QuickJS evaluator API.
 
 `evaluator::Evaluator` executes compiler-produced JavaScript with exactly

@@ -30,7 +30,8 @@ warnings, pseudo_names, size_report, esm)`. It feeds the files to
 in-memory `SourceProvider` (namespace dots become directories, hyphens
 underscores, `.cljs` before `.cljc`), prepares the application at the chosen
 level and emits the JavaScript. Macros expand in the embedded QuickJS, which is
-compiled into the same wasm module. `compile_chunks(paths, sources, entry,
+compiled into the same wasm module, unless the page selects browser macros
+(below, the default). `compile_chunks(paths, sources, entry,
 optimize, warnings, pseudo_names, size_report)` compiles the same way into a
 chunked build, the CLI's `--out-dir` ([docs/compiler.md, "Chunked
 builds"](../docs/compiler.md#chunked-builds)): its result holds the file
@@ -61,19 +62,24 @@ Two things differ from the native build:
   10 seconds. Call `(enable-console-print!)` before printing, as in
   ClojureScript.
 
-With the "browser macros" checkbox, a compile request carries `macros:
-"browser"` and its macros run in the compiler worker's own JavaScript engine
-instead of QuickJS: `set_browser_macros(true)` makes the crate hand
-`MacroHost::set_script_host` a host that calls `globalThis.lightCljsMacroHost`,
-which `macro-host.js` provides, and `serve_macro_host` is the way back in for
-the compiler services macros call. The output is the same; macro-heavy
-compiles are about three times faster, and a macro that never returns runs
-until Stop, since the 10 s deadline is not checked inside the browser's
-JavaScript. [docs/browser-macros.md](../docs/browser-macros.md) has the
-details, the isolation differences and the measurements. `check.mjs` compiles
-every example at every level, and programs that stress macro semantics, with
-both engines and requires identical results, and stops a spinning compile in
-each.
+With the "browser macros" checkbox, on by default since light-cljs-356, a
+compile request carries `macros: "browser"` and its macros run in the
+compiler worker's own JavaScript engine instead of QuickJS:
+`set_browser_macros(true)` makes the crate hand `MacroHost::set_script_host` a
+host that calls `globalThis.lightCljsMacroHost`, which `macro-host.js`
+provides, and `serve_macro_host` is the way back in for the compiler services
+macros call. The output is the same, and macro-heavy compiles are about three
+times faster. The 10 s deadline is not checked inside the browser's
+JavaScript, so `compiler.js` keeps a watchdog: a compile with a macro still
+running after 10 s has its worker terminated and is replayed in a fresh one up
+to that macro call, which then fails with the diagnostic the embedded engine
+gives, in about 11 s and without Stop.
+[docs/browser-macros.md](../docs/browser-macros.md) has the details, the
+isolation differences and the measurements. `check.mjs` compiles every
+example at every level, and programs that stress macro semantics, with both
+engines and requires identical results, stops a spinning compile in each, and
+checks that spinning browser macros end on their own with the embedded
+engine's diagnostic.
 
 The example dropdown replaces all files with one of the programs in
 `examples.js`, from a single namespace up to a calculator spread over several.

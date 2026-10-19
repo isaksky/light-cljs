@@ -331,7 +331,8 @@ function applyState() {
   ui.warnings.checked = !!state.warnings;
   ui.pseudo.checked = !!state.pseudo;
   ui.sizes.checked = !!state.sizes;
-  ui.browserMacros.checked = !!state.browserMacros;
+  // On unless turned off (light-cljs-356); state saved before 307 has no field.
+  ui.browserMacros.checked = state.browserMacros ?? true;
   selectFile(0);
 }
 
