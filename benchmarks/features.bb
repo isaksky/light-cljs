@@ -109,7 +109,7 @@
                     :let [file (str (fs/path out (str ns "." level ".js")))
                           {:keys [err]} (process/shell
                                          {:out (fs/file file) :err :string :dir (str root)}
-                                         binary "--compile" "--optimize" level "--size-report"
+                                         binary "--compile" "--no-cache" "--optimize" level "--size-report"
                                          "--entry" (str ns) "--source-root" (str source-root)
                                          "--esm")
                           gzip (:out (process/shell {:out :bytes} "gzip" "-9" "-n" "-c" file))]]

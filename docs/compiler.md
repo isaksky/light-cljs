@@ -1645,9 +1645,10 @@ sources, mismatched declarations, analysis errors, and parse errors include the
 originating file/location when available. No output is emitted on failure.
 The result is one combined JavaScript expression whose value is the entry
 namespace's final form (with `--esm`, an ES module whose default export it is; with `--out-dir`, a directory of ES modules, below). There is no package manager or parallel
-scheduler. Builds are fresh unless `--cache-dir DIR` asks for the persistent
-compiler cache: each namespace whose conservative key (its source and
-resolution, the keys of every namespace its compilation depends on, its
+scheduler. Builds use the persistent compiler cache by default
+(light-cljs-328), in `.light-cljs/cache` under the current directory or in
+`--cache-dir DIR`, and are fresh with `--no-cache`: each namespace whose
+conservative key (its source and resolution, the keys of every namespace its compilation depends on, its
 `light.build` inputs, the analysis and macro options, the `--config` map and
 the compiler's own identity) matches a stored artifact is installed from it
 at its place in source order instead of being analyzed, so none of its macro

@@ -18,7 +18,7 @@ pub(crate) const FEATURES_RECORD: &str = concat!(
 pub(crate) fn compile_features(level: OptimizationLevel, esm: bool) -> String {
     let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
     command
-        .args(["--compile", "--optimize", level.name()])
+        .args(["--compile", "--no-cache", "--optimize", level.name()])
         .args(["--entry", "app.main", "--source-root"])
         .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/features"));
     if esm {

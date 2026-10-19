@@ -40,6 +40,11 @@ use crate::source_provider::SourceProvider;
 use std::path::PathBuf;
 use std::time::Instant;
 
+/// Where `--compile --entry`, `--reloadable` and `--watch` keep the cache
+/// without `--cache-dir` or `--no-cache`: `.light-cljs/cache` under the
+/// current directory (light-cljs-328).
+pub const DEFAULT_DIR: &str = ".light-cljs/cache";
+
 /// What a build asks of the persistent cache.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CacheOptions {

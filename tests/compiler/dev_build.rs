@@ -41,10 +41,27 @@ const EXAMPLE_MANIFEST: &str = r#"{
 }
 "#;
 
+/// `args` with `--no-cache` after `--compile` when they compile namespaces
+/// and name no cache, so the default cache directory (`.light-cljs/cache`
+/// under the current directory) carries nothing from one test to the next.
+fn uncached<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut args = args.to_vec();
+    let named = args
+        .iter()
+        .any(|arg| *arg == "--cache-dir" || *arg == "--no-cache");
+    if args.contains(&"--entry")
+        && !named
+        && let Some(at) = args.iter().position(|arg| *arg == "--compile")
+    {
+        args.insert(at + 1, "--no-cache");
+    }
+    args
+}
+
 /// The output of the CLI for `args`, which must succeed without diagnostics.
 fn light_cljs(args: &[&str]) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-        .args(args)
+        .args(uncached(args))
         .output()
         .unwrap();
     assert!(
@@ -58,7 +75,14 @@ fn light_cljs(args: &[&str]) -> String {
 /// The CLI's dev build of `app.main` from the source root `root`, in `out`.
 fn dev_build(root: &Path, out: &Path) {
     let [root, out] = [root, out].map(|path| path.to_str().unwrap());
-    let args = ["--compile", "--entry", "app.main", "--source-root", root];
+    let args = [
+        "--compile",
+        "--no-cache",
+        "--entry",
+        "app.main",
+        "--source-root",
+        root,
+    ];
     assert_eq!(
         light_cljs(&[&args[..], &["--reloadable", "--out-dir", out]].concat()),
         ""
@@ -390,7 +414,13 @@ fn namespaces_named_like_build_files_keep_their_own_unit_files() {
     // The CLI warns of single-segment namespaces in a dev build.
     let out = dir.join("cli");
     let build = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-        .args(["--compile", "--entry", "index", "--source-root"])
+        .args([
+            "--compile",
+            "--no-cache",
+            "--entry",
+            "index",
+            "--source-root",
+        ])
         .arg(&root)
         .args(["--reloadable", "--out-dir"])
         .arg(&out)
@@ -510,7 +540,14 @@ fn dev_builds_analyze_in_warning_mode() {
     );
     let root = root.to_str().unwrap();
     let out = dir.join("dev");
-    let base = ["--compile", "--entry", "app.main", "--source-root", root];
+    let base = [
+        "--compile",
+        "--no-cache",
+        "--entry",
+        "app.main",
+        "--source-root",
+        root,
+    ];
     let strict = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
         .args(base)
         .output()
@@ -618,7 +655,14 @@ fn reloadable_flags_are_checked() {
     let dir = TempDir::new("dev-flags");
     let out = dir.join("dev");
     let out = out.to_str().unwrap();
-    let base = ["--compile", "--entry", "app.main", "--source-root", EXAMPLE];
+    let base = [
+        "--compile",
+        "--no-cache",
+        "--entry",
+        "app.main",
+        "--source-root",
+        EXAMPLE,
+    ];
     for (extra, message) in [
         (&["--reloadable"][..], "--reloadable requires --out-dir DIR"),
         (

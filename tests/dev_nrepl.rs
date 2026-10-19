@@ -102,7 +102,14 @@ impl Watch {
             fs::copy(Path::new(EXAMPLE).join(&file), src.join(&file)).unwrap();
         }
         let mut child = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-            .args(["--watch", "--entry", "app.main", "--source-root", "src"])
+            .args([
+                "--watch",
+                "--no-cache",
+                "--entry",
+                "app.main",
+                "--source-root",
+                "src",
+            ])
             .args(["--out-dir", "dev", "--poll-ms", "20", "--serve", "0"])
             .args(["--nrepl", "0"])
             .current_dir(&*dir)

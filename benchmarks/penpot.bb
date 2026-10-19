@@ -7,7 +7,9 @@
 ;; LIGHT_CLJS_EXTRA_ARGS optionally adds whitespace-separated compiler flags to
 ;; every light-cljs job, for example "--stats". With --stats, the report is
 ;; saved as JOB.stats.txt next to JOB.time.txt and its counters are recorded in
-;; results.edn under :stats.
+;; results.edn under :stats. Builds are cold: a binary whose cache is on by
+;; default (light-cljs-328) gets --no-cache unless the extra flags name
+;; --cache-dir.
 (require '[babashka.fs :as fs]
          '[babashka.process :as process]
          '[clojure.java.io :as io]
@@ -36,6 +38,9 @@
 (def selected (or (seq (rest *command-line-args*))
                   ["render" "main-none" "main-advanced" "shadow-release" "shadow-compile"]))
 (def extra-args (some-> (System/getenv "LIGHT_CLJS_EXTRA_ARGS") str/trim not-empty (str/split #"\s+")))
+(def no-cache (when (and (not (some #{"--cache-dir"} extra-args))
+                         (str/includes? (:out (process/sh binary "--help")) "--no-cache"))
+                ["--no-cache"]))
 
 (defn stats-report
   "The lines of the --stats report in a job's stderr: its version line, the
@@ -64,7 +69,7 @@
         stderr (fs/file output (str job ".time.txt"))
         command (if shadow?
                   ["clojure" "-M:dev:shadow-cljs" spec "main"]
-                  (concat common roots ["--entry" (first spec)] (rest spec) extra-args))]
+                  (concat common roots ["--entry" (first spec)] (rest spec) no-cache extra-args))]
     (when shadow?
       ;; These are generated compiler caches, never port sources.
       (fs/delete-tree (fs/path frontend ".shadow-cljs"))

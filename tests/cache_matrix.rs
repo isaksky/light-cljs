@@ -127,6 +127,8 @@ impl Project {
         command.arg("--stats");
         if cached {
             command.arg("--cache-dir").arg(self.cache());
+        } else {
+            command.arg("--no-cache");
         }
         command.args(extra);
         command

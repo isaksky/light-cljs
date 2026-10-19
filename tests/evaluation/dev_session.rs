@@ -332,7 +332,14 @@ fn units_without_a_heap_reload_a_running_dev_build_in_node() {
     let dir = TempDir::new("dev-session");
     let out = dir.join("dev");
     let status = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-        .args(["--compile", "--entry", "app.main", "--source-root", EXAMPLE])
+        .args([
+            "--compile",
+            "--no-cache",
+            "--entry",
+            "app.main",
+            "--source-root",
+            EXAMPLE,
+        ])
         .arg("--reloadable")
         .arg("--out-dir")
         .arg(&out)

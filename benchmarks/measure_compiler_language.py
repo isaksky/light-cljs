@@ -19,7 +19,7 @@ subprocess.run(["cargo", "build", "--locked", "--quiet"], cwd=ROOT, check=True, 
 binary = ROOT / "target/debug/light-cljs"
 fixture = ROOT / "tests/fixtures/namespaces/integrated"
 javascript = subprocess.check_output(
-    [str(binary), "--compile", "--entry", "integrated.main", "--source-root", str(fixture)],
+    [str(binary), "--compile", "--no-cache", "--entry", "integrated.main", "--source-root", str(fixture)],
     cwd=ROOT, timeout=30)
 marker = b" = // Original bounded runtime"
 assert javascript.count(marker) == 1, "namespace program must embed exactly one runtime"

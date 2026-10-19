@@ -87,6 +87,8 @@ impl Project {
             .arg("--stats");
         if cached {
             command.arg("--cache-dir").arg(self.cache());
+        } else if !extra.contains(&"--cache-dir") {
+            command.arg("--no-cache");
         }
         command.args(extra);
         command
@@ -227,8 +229,8 @@ fn a_warm_hit_and_a_parallel_miss_match_one_job() {
     let project = Project::new(FIXTURE);
     let caches = [project.dir.join("cache-1"), project.dir.join("cache-4")];
     let build = |cache: &Path, jobs: &str| {
-        let mut command = project.command("main", &["--jobs", jobs], false);
-        command.arg("--cache-dir").arg(cache);
+        let cache = cache.to_str().unwrap();
+        let mut command = project.command("main", &["--jobs", jobs, "--cache-dir", cache], false);
         Project::finish(command.output().unwrap())
     };
     for cache in &caches {
@@ -293,9 +295,10 @@ fn a_cold_parallel_build_expands_units_on_workers_and_publishes_the_one_job_arti
     assert_eq!(oracle.run(), "h3 8 6 [\"hi\" \"hi\" \"hi\"] 16\n");
     let build = |cache: &Path, jobs: &str| {
         // Room for four isolates, so several workers record at once.
+        let cache = cache.to_str().unwrap();
         let extra = ["--jobs", jobs, "--macro-memory-limit", "268435456"];
+        let extra = [&extra[..], &["--cache-dir", cache]].concat();
         let mut command = project.command("main", &extra, false);
-        command.arg("--cache-dir").arg(cache);
         Project::finish(command.output().unwrap())
     };
     let objects = |cache: &Path| {
@@ -470,6 +473,77 @@ fn cache_flags_require_an_entry_and_change_nothing_without_one() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("require --entry"));
+}
+
+/// The cache is on by default (light-cljs-328): a build that names no cache
+/// keeps it in `.light-cljs/cache` under the current directory, a second
+/// build there is warm, `--no-cache` neither reads nor writes it, and
+/// `--no-cache` with `--cache-dir` is refused.
+#[test]
+fn the_cache_is_on_by_default_under_the_current_directory() {
+    let project = Project::new(FIXTURE);
+    let oracle = project.uncached("main");
+    let default = project.dir.join(".light-cljs/cache");
+    assert!(!default.exists(), "--no-cache wrote the default cache");
+    let build = |extra: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .current_dir(&*project.dir)
+            .args(["--compile", "--entry", "main", "--source-root", "src"])
+            .arg("--stats")
+            .args(extra)
+            .output()
+            .unwrap();
+        Project::finish(output)
+    };
+    let populating = build(&[]);
+    assert_eq!(populating.js, oracle.js);
+    assert_eq!(
+        populating.stat("cache.published"),
+        5,
+        "{}",
+        populating.stats
+    );
+    assert!(default.join("v1/objects").is_dir());
+    let warm = build(&[]);
+    assert_eq!(warm.stat("cache.hits"), 5, "{}", warm.stats);
+    assert_eq!(warm.stat("macro-calls"), 0);
+    assert_eq!(warm.js, oracle.js);
+    let objects = || fs::read_dir(default.join("v1/objects")).unwrap().count();
+    let before = objects();
+    // After the namespace flags too.
+    let fresh = build(&["--no-cache"]);
+    assert!(!fresh.stats.contains("cache.hits"), "{}", fresh.stats);
+    assert_eq!(fresh.js, oracle.js);
+    assert_eq!(objects(), before);
+    // A dev build keeps its own artifacts in the same default directory.
+    let dev = project.dir.join("dev");
+    let reloadable = build(&["--reloadable", "--out-dir", dev.to_str().unwrap()]);
+    assert_eq!(
+        reloadable.stat("cache.published"),
+        5,
+        "{}",
+        reloadable.stats
+    );
+    assert!(objects() > before);
+    let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .current_dir(&*project.dir)
+        .args([
+            "--compile",
+            "--no-cache",
+            "--entry",
+            "main",
+            "--source-root",
+        ])
+        .args(["src", "--cache-dir", "elsewhere"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("--no-cache and --cache-dir exclude each other"),
+        "{stderr}"
+    );
+    assert!(!project.dir.join("elsewhere").exists());
 }
 
 const INPUTS: &[(&str, &str)] = &[

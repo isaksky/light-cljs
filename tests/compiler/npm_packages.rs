@@ -121,7 +121,13 @@ fn unbundled_output_reads_the_registry_at_each_use() {
     assert!(js.contains("pkg(\"react\")[\"default\"][\"version\"]"));
     // The CLI writes the same bare expression without --esm.
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-        .args(["--compile", "--entry", "npm.alias", "--source-root"])
+        .args([
+            "--compile",
+            "--no-cache",
+            "--entry",
+            "npm.alias",
+            "--source-root",
+        ])
         .arg(&root)
         .output()
         .unwrap();
@@ -221,6 +227,7 @@ fn bundler_module_imports_only_surviving_package_references() {
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
         .args([
             "--compile",
+            "--no-cache",
             "--esm",
             "--entry",
             "npm.bundle",
@@ -276,7 +283,13 @@ fn bundler_modules_run_at_every_optimization_level() {
     write_bundle_packages(&dir);
     for level in OptimizationLevel::ALL {
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-            .args(["--compile", "--esm", "--optimize", level.name()])
+            .args([
+                "--compile",
+                "--no-cache",
+                "--esm",
+                "--optimize",
+                level.name(),
+            ])
             .args(["--entry", "npm.bundle", "--source-root"])
             .arg(&root)
             .output()
@@ -332,7 +345,14 @@ fn bundler_chunks_import_packages_only_in_the_feature_chunk() {
     dir.write("package.json", "{\"type\": \"module\"}\n");
     let compile = |level: OptimizationLevel, entry: &str, output: &[&str]| {
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-            .args(["--compile", "--optimize", level.name(), "--entry", entry])
+            .args([
+                "--compile",
+                "--no-cache",
+                "--optimize",
+                level.name(),
+                "--entry",
+                entry,
+            ])
             .arg("--source-root")
             .arg(&root)
             .args(output)
@@ -449,6 +469,7 @@ fn string_libspecs_without_bindings_warn_instead_of_failing() {
         .args([
             "--warnings",
             "--compile",
+            "--no-cache",
             "--entry",
             "main",
             "--source-root",

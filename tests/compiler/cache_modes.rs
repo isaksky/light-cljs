@@ -310,6 +310,8 @@ impl Project {
             .args(flags);
         if cached {
             command.arg("--cache-dir").arg(self.cache());
+        } else {
+            command.arg("--no-cache");
         }
         let output = command.output().unwrap();
         let map = out.join("app.js.map");

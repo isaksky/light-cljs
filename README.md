@@ -187,14 +187,15 @@ to a namespace its macros require recompiles the namespaces that use its
 macros, a change to a file a macro read through `light.build` recompiles the
 namespaces that read it, every step recompiles the namespaces marked
 `^:dev/always` and those that depend on them, and a form that fails prints its
-error and leaves the previous unit. With `--cache-dir DIR` the watch starts
-from the persistent compiler cache (below): its startup build runs once, in
+error and leaves the previous unit. The watch starts from the persistent
+compiler cache (below), in `.light-cljs/cache` or in `--cache-dir DIR`: its
+startup build runs once, in
 the session's own engine, installing every namespace whose artifact is
 current instead of analyzing it, and the session compiles later edits
 against that build as if it had loaded the namespaces itself. Steps neither
 read nor write the cache, so a restart analyzes what changed since the
-cache was last filled; a fresh uncached start is a restart without
-`--cache-dir`, and deleting the directory never touches a running watch.
+cache was last filled; a fresh uncached start is a restart with
+`--no-cache`, and deleting the directory never touches a running watch.
 `--cache-blocker NS` (repeatable) keeps NS and its compilation consumers
 out of the cache; a blocker never makes a step recompile. A large program
 raises the macro limits with the flags `--compile` takes,
@@ -397,11 +398,12 @@ utilization, the jobs, claims, steals and parks, the peak queue depth and the
 lock contention. The pool is described in
 [docs/compiler-concurrency.md](docs/compiler-concurrency.md#the-scheduler).
 
-`--cache-dir DIR` with `--compile --entry` (also with `--reloadable`, `--esm`
-and `--out-dir`, at every `--optimize` level) and with `--watch` keeps a persistent compiler
-cache in DIR, created when missing. A namespace whose source, resolution,
-dependencies, `light.build` inputs, options, `--config` map and compiler are
-unchanged is installed from its stored artifact instead of being analyzed,
+`--compile --entry` (also with `--reloadable`, `--esm` and `--out-dir`, at
+every `--optimize` level) and `--watch` keep a persistent compiler cache, on
+by default since light-cljs-328, in `.light-cljs/cache` under the current
+directory, or in DIR with `--cache-dir DIR`, created when missing. A
+namespace whose source, resolution, dependencies, `light.build` inputs,
+options, `--config` map and compiler are unchanged is installed from its stored artifact instead of being analyzed,
 so its macro calls do not run again; every other namespace is analyzed and
 stored. For macros that follow the cache contract
 ([docs/compiler-cache.md](docs/compiler-cache.md#cache-contract)), the output
@@ -409,10 +411,15 @@ is byte for byte the uncached build's; a macro with side effects across
 namespaces does not repeat them on a hit. `--cache-blocker NS` (repeatable)
 keeps NS and every namespace whose compilation depends on it from reading or
 writing the cache, as `^:dev/always` on a namespace does for it and its
-consumers and `^:light-cljs/no-cache` for that namespace alone. Without
-`--cache-dir` nothing reads or writes a cache. The directory is disposable
-derived data, bounded to three artifacts per namespace and 1 GiB; never
-commit it. With `--stats` the report adds `cache.hits`, `cache.misses` with
+consumers and `^:light-cljs/no-cache` for that namespace alone. With
+`--no-cache` nothing reads or writes a cache: the build is a fresh uncached
+one, and `--no-cache` with `--cache-dir` is an error. The directory is
+disposable derived data, bounded to three artifacts per namespace and 1 GiB;
+never commit it (add `.light-cljs/` to `.gitignore`). On Penpot a warm build
+with nothing edited takes 7% of an uncached one's time and filling the cache
+costs about 10% more
+([benchmarks/compiler-cache.md](benchmarks/compiler-cache.md)). With
+`--stats` the report adds `cache.hits`, `cache.misses` with
 `cache.miss.KIND` per first differing key component (`source`,
 `dependencies`, ...) or failure (`no-artifact`, `unreadable`, ...),
 `cache.bypasses` with `cache.bypass.REASON`, bytes read and written and the

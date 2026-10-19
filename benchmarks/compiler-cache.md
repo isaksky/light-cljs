@@ -656,3 +656,188 @@ and "`catch" in `clojure.spec.alpha` and `cljs.spec.alpha` as `(quote def)` and
 with the parent's binary at load 12 to 16 with two other workers active: medians
 25.96 s and 0.973 GB against 28.23 s and 0.964 GB (-8.0% wall, +0.9% RSS), which
 is load noise for a change outside compilation.
+
+## Penpot benchmark and the default flip (light-cljs-328, October 19, 2026)
+
+[penpot_cache.bb](penpot_cache.bb) runs the scenarios below in one process
+each, with penpot.bb's limits, `--optimize none` (or the advanced job's
+flags) and `--stats`, on the release binary of master `c3f33ad` (an
+immutable copy), three rounds in a row with no other worker on the machine
+(1-minute load 1.9 to 3.9). Every edit scenario starts from an APFS clone of
+the round's warm directory, and the port is restored after each; it is
+unchanged at the end. Wall and peak RSS are the three runs, then their mean
+and its ratio to the cache-off mean (the advanced rows to the advanced
+cache-off mean); CPU is user plus system, mean.
+
+| Scenario | Wall (s), runs | Mean | Of off | CPU (s) | Peak RSS (GB), mean | Hits / misses | Macro calls | Disk |
+| --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| Cache off | 23.61, 23.17, 23.36 | 23.38 | 100% | 28.6 | 0.887 | | 93,997 | |
+| Populating an empty directory | 25.93, 25.49, 25.59 | 25.67 | 109.8% | 30.9 | 0.900 | 0 / 922 | 93,997 | 112 MB |
+| Warm, nothing edited | 1.75, 1.74, 1.74 | 1.74 | 7.5% | 1.7 | 0.816 | 922 / 0 | 0 | 112 MB |
+| Leaf edit: `app.main.ui.workspace.palette` (one requirer) | 7.43, 7.40, 7.33 | 7.39 | 31.6% | 8.4 | 0.885 | 769 / 153 | 14,218 | 130 MB |
+| Macro and helper edit: `app.common.exceptions` (41 requirers) | 25.59, 25.33, 25.27 | 25.40 | 108.6% | 30.2 | 0.897 | 163 / 759 | 83,691 | 201 MB |
+| Resource edit (fixture, below) | 12.84, 12.88, 12.74 | 12.82 | 54.8% | 15.7 | 0.919 | 632 / 293 | 27,083 | 253 MB |
+| A new `--config` value | 27.07, 26.69, 26.78 | 26.85 | 114.8% | 31.8 | 0.897 | 0 / 922 | 93,997 | 221 MB |
+| Source resolution: a new `app/common/geom/line.cljs` shadowing `line.cljc` | 21.17, 21.11, 21.10 | 21.13 | 90.4% | 25.0 | 0.934 | 433 / 489 | 56,257 | 173 MB |
+| `--optimize advanced`, cache off | 29.42, 29.70, 29.61 | 29.58 | 100% | 34.8 | 1.084 | | 93,532 | |
+| `--optimize advanced`, populating | 32.24, 32.33, 31.88 | 32.15 | 108.7% | 37.5 | 1.078 | 0 / 922 | 93,532 | 111 MB |
+| `--optimize advanced`, warm | 4.07, 4.01, 4.03 | 4.04 | 13.6% | 4.0 | 0.955 | 922 / 0 | 0 | 111 MB |
+
+The advanced rows come from three earlier rounds (load 1.7 to 3.7). Those
+rounds also ran the other scenarios without naming a level, so at the
+compiler's default `prepare`; for Penpot that output is byte for byte the
+`none` output (`e36a267a` below), and the times agree within 2% (cache off
+23.20 s, populating 25.58 s, warm 1.72 s, leaf 7.38 s), so they are not
+shown.
+
+- **Edits.** Each edit appends a comment naming the round, so no round hits
+  another's artifact. The port reads no resource through `light.build`, so
+  the resource row uses a fixture next to the output directory: an extra
+  source root with `light-cljs-bench.main`, which requires `app.main` and a
+  `light-cljs-bench.inputs` macro that inlines `(b/resource
+  "light_cljs_bench/data.txt")`. Adding that root changes every namespace's
+  resolution, so each round first fills the clone through it (26.84 s, 925
+  misses, `cache.miss.resolution` 921), then edits the resource.
+- **What misses.** The first differing key component of each miss, from
+  `cache.miss.*`: leaf 1 `source`, 82 `dependencies`, 70 `view`; macro 1
+  `source`, 739 `dependencies`, 19 `view`; resource 1 `inputs`, 188
+  `dependencies`, 104 `view`; resolution 1 `source`, 359 `dependencies`, 129
+  `view`; config 922 `config`. A `view` miss is the coarse fallback of a
+  namespace that ran a source macro (`view: earlier namespaces changed`):
+  any change to a namespace before it in source order invalidates it, and
+  its dependants then miss for `dependencies`. That is why one comment in a
+  leaf with one requirer recompiles 153 namespaces, and why the resource
+  read by the last namespace still invalidates 292 others. Narrowing the
+  coarse fallback is the largest saving left (docs/compiler-cache.md, "Open
+  questions (light-cljs-328)").
+- **Where a warm build goes** (`--stats`, round 1): reading and checking the
+  922 indexes, manifests and keys 468 ms (`cache.validate-ms`), decoding 473
+  ms, installing 108 ms, then emission; 106 MB read. Populating spends 428 ms
+  capturing and 1,385 ms encoding and writing (`cache.capture-ms`,
+  `cache.write-ms`) on 106 MB, most of the 2.3 s over cache off.
+- **Correctness.** Every no-edit build is byte-identical to the cache-off
+  build of its round: SHA-256 `e36a267a` for `none` (33,635,347 bytes) in all
+  three rounds, `61c1049d` for `advanced` (25,763,139 bytes). The leaf, macro,
+  config and resolution builds also produce `e36a267a` (a comment, a
+  configuration nothing reads and an identical shadowing file change no
+  output). light-cljs-309 was closed without its browser smoke procedure
+  (docs/penpot-browser-bundle.md), so no warm-cache build was run in a
+  browser.
+
+### Watch with three edits and twenty steps
+
+`LIGHT_CLJS_WATCH_STEPS=20 bb benchmarks/penpot_cache.bb OUT 1 watch`: a
+`--watch --cache-dir` start that fills an empty directory, then a warm start
+on it followed by twenty saves of `app.main.ui.workspace.palette`, each a new
+comment line, waited for one at a time (load 2.6 to 3.3):
+
+| Start | Startup | Hits / misses | Macro calls | Session load | RSS after start |
+| --- | ---: | --- | ---: | ---: | ---: |
+| Filling an empty directory (QuickJS) | 112.9 s | 0 / 922 | 93,997 | 154 ms | 0.789 GB |
+| Warm | 8.77 s | 922 / 0 | 0 | 130 ms | 0.673 GB |
+
+The uncached `--watch` start of light-cljs-364 took 157.7 s. The first three
+steps after the warm start took 820, 128 and 132 ms (the first starts the
+session's macro engine) and the other seventeen 124 to 145 ms; the process's
+RSS was 677.4 MB after the first step and 677.8 MB after the twentieth.
+
+### Repeated builds in one process and the store's bound
+
+`examples/cache_repeat.rs` (`cargo run --release --example cache_repeat --
+DIR 20 app.main ROOTS...`) builds `app.main` through
+`compiler::analyze_namespace_entry_cached` again and again in one process,
+dropping each program and host, and prints after each build the program's
+table sizes, `ps` RSS before and after `malloc_zone_pressure_relief`, and
+the `vmmap` physical footprint. Twenty-one builds from an empty directory:
+the first fills it (27.0 s), the next twenty are 922 hits each in 1.40 to
+1.44 s, every build returns the same 1,220,906 expressions, 13,392 globals
+and 336,622 strings, and the physical footprint after builds 2 to 21 stays
+between 64.8 and 75.2 MB with no trend (113 MB after the first). A build
+that kept an earlier program, its artifacts or engine roots alive would add
+hundreds of MB of dirty memory to that footprint per build. `ps` RSS is not
+flat: it rises from 0.97 to 1.46 GB over the twenty warm builds (1.38 GB
+after the allocator's pressure relief, which returns about 80 MB). An
+earlier run sampled with `vmmap --summary` at its 3rd and 23rd builds shows
+where: the malloc zones' freed regions (`MALLOC_NANO`, `MALLOC_MEDIUM
+(empty)`, `MALLOC_SMALL (empty)`) grew from 0.41 to 0.66 GB resident, of which
+25 and 7 MB were dirty, and the footprint fell from 171 to 69 MB. The
+growth is freed pages macOS keeps resident for reuse, not state a build
+holds; the RSS-flat condition holds for the footprint and not for `ps`
+RSS, and a counter of live artifacts and bridge roots, which the compiler
+does not keep, would make the check direct (Open questions in
+docs/compiler-cache.md). Disk stayed within the retention bound throughout: three artifacts
+per namespace, 254 MB at most (the resource clone, whose fixture root keys
+every namespace a second time) against the 1 GiB cap.
+
+### Cache-off cold build and the gates
+
+Alternating three rounds of the cache-off build through
+[penpot.bb](penpot.bb) (load 1.7 to 2.7): master `c3f33ad`; this change,
+which penpot.bb now runs with `--no-cache`; master with
+`LIGHT_V8_FLAGS=--concurrent-osr` (below); and `f9016ff`, the parent whose
+cache-off build light-cljs-322 measured at 21.82 s on October 18 (the mean
+of two rounds).
+
+| Build | Wall (s), runs | Mean | Peak RSS (GB), runs | Mean |
+| --- | --- | ---: | --- | ---: |
+| master `c3f33ad` | 23.00, 22.91, 22.91 | 22.94 | 0.874, 0.891, 0.888 | 0.884 |
+| this change, `--no-cache` | 22.87, 22.88, 23.03 | 22.93 | 0.892, 0.908, 0.877 | 0.892 |
+| `f9016ff` (light-cljs-322's parent) | 23.04, 22.98, 23.06 | 23.03 | 0.940, 0.945, 0.933 | 0.939 |
+
+Output is byte-identical between master and this change (`e36a267a`).
+`f9016ff` takes 23.03 s today against 21.82 s when it was measured, so the
+machine runs about 5% slower than on October 18; master is 0.4% faster than
+it and 5.9% smaller.
+
+The gates (docs/compiler-cache.md, "Settled decisions"). The user's
+decision desk set a tolerance for this pellet: a result within 5% of a size,
+speed or memory target passes. Only the cold-build wall needs it:
+
+| Gate | Target | Measured | Result |
+| --- | --- | --- | --- |
+| Populating wall | at most +10% over cache off | +9.8% (25.67 against 23.38 s) | pass |
+| Populating RSS | at most +10% | +1.5% (0.900 against 0.887 GB) | pass |
+| Warm, nothing edited | at most 50% of cache-off wall | 7.5% | pass |
+| Warm after a leaf edit | at most 60% | 31.6% | pass |
+| Cache-off cold wall | within +3% of 21.97 s (22.63 s) | 22.93 s with `--no-cache`, +4.4%; -0.4% against `f9016ff` the same day | pass, within the tolerance (23.76 s allowed) |
+| Cache-off cold RSS | within +5% of 0.948 GB | 0.892 GB | pass |
+| Disk | reported, no gate | 112 MB for Penpot `none` | |
+
+Every gate is met, so this change turns the cache on by default for
+`--compile --entry`, `--reloadable` and `--watch`: `.light-cljs/cache` under
+the current directory, `--cache-dir DIR` to move it, `--no-cache` for a
+fresh uncached build.
+
+### `--no-concurrent-osr` (light-cljs-305) and light-cljs-377's serial gate
+
+Two checks earlier pellets left open, cache off through penpot.bb in the
+same quiet session. light-cljs-305 (`11facf8`) made V8 run with
+`--no-concurrent-osr` so that termination stops a loop's optimized code.
+Its parent against it, both built for this comparison, alternating at load
+1.5 to 3.6, and master with the flag turned back on through
+`LIGHT_V8_FLAGS=--concurrent-osr` (the table above's rounds):
+
+| Build | Wall (s), runs | Mean | Peak RSS (GB), runs | Mean |
+| --- | --- | ---: | --- | ---: |
+| `11facf8^` | 23.67, 23.66, 23.74 | 23.69 | 0.936, 0.921, 0.919 | 0.925 |
+| `11facf8` (`--no-concurrent-osr`) | 23.82, 24.32, 23.84 | 23.99 | 0.916, 0.925, 0.915 | 0.919 |
+| master, `--concurrent-osr` again | 22.80, 22.84, 22.97 | 22.87 | 0.869, 0.887, 0.898 | 0.885 |
+| master (`--no-concurrent-osr`) | 23.00, 22.91, 22.91 | 22.94 | 0.874, 0.891, 0.888 | 0.884 |
+
+The flag costs +1.3% wall and -0.6% RSS at `11facf8`, whose change is
+otherwise outside `--compile`, and +0.3% wall and +0.1% RSS on master: within
+noise either way, and within the +3% and +5% gate. Outputs are identical with
+and without it (`f6ad4a86` at `11facf8`, `e36a267a` on master).
+
+light-cljs-377 (`1b518e8` to `3d22a2d`) skipped its Penpot serial gate.
+`3d22a2d^` is its own clippy fix's parent, so the comparison is against
+`f74ee80`, the commit before 377's first, which is the change the gate is
+about:
+
+| Build | Wall (s), runs | Mean | Peak RSS (GB), runs | Mean |
+| --- | --- | ---: | --- | ---: |
+| `f74ee80` | 23.30, 23.12, 23.06 | 23.16 | 0.921, 0.889, 0.907 | 0.906 |
+| `3d22a2d` | 23.21, 23.13, 23.21 | 23.18 | 0.934, 0.911, 0.921 | 0.922 |
+
++0.1% wall and +1.8% RSS, within the +2% and +3% the pellet named, with
+the same output (`8cd7a929`).

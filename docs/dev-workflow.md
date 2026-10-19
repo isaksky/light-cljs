@@ -1086,7 +1086,9 @@ these; a finding that contradicts one goes under "Open questions".
   in-memory state. As built (light-cljs-327): `--watch --cache-dir DIR`
   compiles its startup build once, in the session's engine, with the cache,
   and the session starts from that build (`DevSession::compile_entry`);
-  steps neither read nor write the cache.
+  steps neither read nor write the cache. Since light-cljs-328 the cache is
+  on by default, in `.light-cljs/cache`, and `--no-cache` gives the uncached
+  start this document describes.
 
 ## Open questions
 

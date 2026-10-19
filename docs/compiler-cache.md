@@ -1,8 +1,10 @@
 # Persistent compiler cache design
 
-Status: implemented behind `--cache-dir` for `--compile --entry`
-(light-cljs-322) and for `--watch` startup (light-cljs-327), opt-in during
-rollout. This design builds on `b51af6a` and the existing
+Status: implemented for `--compile --entry` (light-cljs-322) and for
+`--watch` startup (light-cljs-327), and on by default since light-cljs-328,
+whose Penpot benchmark met the rollout gates ("Validation and performance
+gates"): the cache lives in `.light-cljs/cache` under the current directory,
+`--cache-dir DIR` moves it and `--no-cache` turns it off. This design builds on `b51af6a` and the existing
 [development workflow](dev-workflow.md).
 
 Cache completed namespace compilation in a versioned binary format. Reuse it
@@ -33,6 +35,15 @@ test that contradicts one is recorded under a new "Open questions" section.
   - Once the cache is on by default, its default location is
     `.light-cljs/cache` under the current directory, and `--no-cache` turns it
     off. A fresh uncached build means no `--cache-dir` (later, `--no-cache`).
+
+    *As built (light-cljs-328):* the default is flipped. Without either flag,
+    `--compile --entry` (`--reloadable`, `--esm` and `--out-dir` too) and
+    `--watch` keep the cache in `.light-cljs/cache` under the current
+    directory (`compile_cache::DEFAULT_DIR`); `--no-cache` is the fresh
+    uncached build, and naming it with `--cache-dir` is an error. A
+    single-file `--compile` has no cache and accepts `--no-cache` as a no-op.
+    This repository ignores `.light-cljs/`, and every test that runs the
+    binary on namespaces passes `--no-cache` or its own `--cache-dir`.
 - **Namespace metadata.**
   - `^:light-cljs/no-cache` covers that namespace only: no reads or writes;
     ordinary invalidation still applies.
@@ -1343,7 +1354,8 @@ Watch steps do not read or publish artifacts: a step compiles one file's
 forms in the session's scope, not a namespace analysis whose capture an
 artifact describes, so a restart analyzes what changed since the cache was
 last filled. Deleting the cache directory never affects a live session; a
-fresh uncached start is a restart without `--cache-dir`. Numbers are in
+fresh uncached start is a restart without `--cache-dir` (since light-cljs-328,
+with `--no-cache`). Numbers are in
 [benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md), "Watch
 startup from the cache".
 
@@ -1463,6 +1475,11 @@ persistence remain out of scope.
    validation, bounded decoding, atomic writes, explicit cache controls, and miss
    diagnostics. Keep caching opt-in during rollout; produce measured unchanged
    restart and localized-edit wins before enabling it by default.
+
+   *As built (light-cljs-328), enabling it by default:* the Penpot benchmark
+   ("Validation and performance gates") met every gate, and the cache is on
+   by default for `--compile --entry`, `--reloadable` and `--watch`, as the
+   CLI bullet of "Settled decisions" describes.
 
    *As built (light-cljs-320), the byte format:* manifests, bounded decoding
    and integrity hashes are `src/artifact_codec.rs`, described under
@@ -1652,7 +1669,7 @@ cannot register, is a child process of the test binary through
 | Cancellation | In process (`tests/compiler/cache_contract.rs`); no test cancels a decode through `--compile` |
 | Dev, ordinary output, advanced output, and lazy modules | light-cljs-324 |
 | Session startup followed by edits | light-cljs-325 to 327 |
-| Repeated builds and teardown | Store retention in `tests/artifact_store.rs`; sessions: light-cljs-325 to 327 |
+| Repeated builds and teardown | Store retention in `tests/artifact_store.rs`; sessions: light-cljs-325 to 327; on Penpot, `examples/cache_repeat.rs` and twenty watch steps (light-cljs-328, below) |
 
 The matrix found two key and manifest faults, fixed here:
 
@@ -1738,3 +1755,62 @@ configuration, and source-resolution changes. Record wall/CPU time, peak RSS,
 disk size, executed expansions, hit/bypass counts, and load/write costs. Alternate
 baseline and candidate runs on a quiet machine. Preserve reasonable cold-build
 and memory costs while measuring the actual warm-build savings.
+
+*As built (light-cljs-328), the Penpot benchmark and the default:*
+[benchmarks/penpot_cache.bb](../benchmarks/penpot_cache.bb) runs the
+scenarios above on Penpot `app.main`, and
+[benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md), "Penpot
+benchmark and the default flip", has every run. Means of three rounds on
+master `c3f33ad`, quiet machine:
+
+| Scenario | Wall | Of cache off | Peak RSS | Hits / misses |
+| --- | ---: | ---: | ---: | --- |
+| Cache off (`none`) | 23.38 s | 100% | 0.887 GB | |
+| Populating | 25.67 s | 109.8% | 0.900 GB | 0 / 922 |
+| Warm, nothing edited | 1.74 s | 7.5% | 0.816 GB | 922 / 0 |
+| Warm after a leaf edit | 7.39 s | 31.6% | 0.885 GB | 769 / 153 |
+| Warm after a macro and helper edit | 25.40 s | 108.6% | 0.897 GB | 163 / 759 |
+| Warm after a resource edit (fixture) | 12.82 s | 54.8% | 0.919 GB | 632 / 293 |
+| A new `--config` value | 26.85 s | 114.8% | 0.897 GB | 0 / 922 |
+| A new shadowing source file | 21.13 s | 90.4% | 0.934 GB | 433 / 489 |
+| `advanced`, warm | 4.04 s | 13.6% of 29.58 s | 0.955 GB | 922 / 0 |
+| `--watch` start, warm | 8.77 s | 5.6% of 157.7 s uncached | 0.673 GB | 922 / 0 |
+
+The cache directory holds 112 MB for Penpot. Warm outputs are
+byte-identical to the cache-off build's. Every flip gate passes: populating
+is +9.8% wall and +1.5% RSS; warm with no edit 7.5% and after the leaf edit
+31.6%. The cache-off build, now `--no-cache`, is 22.93 s and 0.892 GB,
++4.4% over the 21.97 s of the decision, which passes only with the
+tolerance the user's decision desk set for this pellet (a result within 5%
+of a target passes: 23.76 s here). On the same day the commit that measured
+21.82 s takes 23.03 s, so the difference is the machine, and the cold build
+is 0.4% faster than then. The cache is therefore on by default ("Settled
+decisions").
+
+The row "Repeated builds and teardown": twenty warm builds in one process
+through `compiler::analyze_namespace_entry_cached`
+(`examples/cache_repeat.rs`) keep the same program tables and a flat
+physical footprint (65 to 75 MB after each); twenty `--watch` steps keep the
+process's RSS within 0.5 MB; the store stays within its bound (three
+artifacts per namespace, at most 254 MB here, against 1 GiB). `ps` RSS of
+the repeated builds still rises, by about 25 MB a build, in malloc regions
+macOS keeps resident after they are freed, which the footprint excludes.
+
+### Open questions (light-cljs-328)
+
+- **The coarse fallback dominates edit costs.** A namespace that ran a
+  source macro takes a `view` key over every earlier namespace, so any
+  change before it in source order invalidates it, and its dependants then
+  miss for `dependencies`. On Penpot a comment in a leaf with one requirer
+  recompiles 153 namespaces (70 of them for `view`), a resource read by the
+  last namespace 293, and a macro namespace with 41 requirers 759, which
+  costs as much as cache off. Recording which earlier namespaces a source
+  macro's expansion actually observed would localize these; it belongs to
+  Phase 5 (light-cljs-329) with the populating write cost (1.4 s of
+  encoding and writing on 106 MB, which leaves populating at +9.8% against
+  its +10% gate).
+- **Retained state is measured indirectly.** The repeated-build check rests
+  on the physical footprint and the program's table sizes; the compiler
+  keeps no count of live artifacts or engine bridge roots, and `ps` RSS
+  grows with freed malloc regions, so the literal "RSS flat" condition holds
+  only for the footprint.

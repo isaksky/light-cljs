@@ -147,6 +147,7 @@ impl Watch {
             .arg(dir.join("dev"))
             .args(["--poll-ms", "20", "--serve", port])
             .args(flags)
+            .args((!flags.contains(&"--cache-dir")).then_some("--no-cache"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -620,7 +621,14 @@ fn get_serves_the_build_the_sources_and_a_page() {
 fn example_build(dir: &Path) -> PathBuf {
     let out = dir.join("dev");
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-        .args(["--compile", "--entry", "app.main", "--source-root", EXAMPLE])
+        .args([
+            "--compile",
+            "--no-cache",
+            "--entry",
+            "app.main",
+            "--source-root",
+            EXAMPLE,
+        ])
         .arg("--reloadable")
         .arg("--out-dir")
         .arg(&out)

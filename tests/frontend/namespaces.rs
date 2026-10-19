@@ -52,7 +52,13 @@ fn acceptance_program_prints_four_from_api_and_cli() {
         "4\n"
     );
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-        .args(["--compile", "--entry", "demo.main", "--source-root"])
+        .args([
+            "--compile",
+            "--no-cache",
+            "--entry",
+            "demo.main",
+            "--source-root",
+        ])
         .arg(root)
         .output()
         .unwrap();
@@ -133,7 +139,7 @@ fn namespace_paths_munge_hyphens_and_multiple_roots_are_explicit() {
         "5\n"
     );
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-        .args(["--compile", "--source-root"])
+        .args(["--compile", "--no-cache", "--source-root"])
         .arg(entry.0.path())
         .args(["--entry", "my-app.main", "--source-root"])
         .arg(deps.0.path())
@@ -552,7 +558,13 @@ fn shared_primitive_selection_preserves_reader_context_and_matches_cli() {
     s.write("main.cljc", "(ns main) #?(:clj missing-jvm-symbol :cljs 3)");
     let shared = s.compile("main").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-        .args(["--compile", "--entry", "main", "--source-root"])
+        .args([
+            "--compile",
+            "--no-cache",
+            "--entry",
+            "main",
+            "--source-root",
+        ])
         .arg(s.0.path())
         .output()
         .unwrap();

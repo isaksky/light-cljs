@@ -3,9 +3,10 @@
 //! then poll the source roots and rewrite the unit of each namespace whose
 //! file changed, compiled against the session's retained program.
 //!
-//! Without `--cache-dir` the startup build runs with the native engine and
+//! With `--no-cache` the startup build runs with the native engine and
 //! the session then loads the program again, as a `require` of the entry.
-//! With it, the startup build runs once, in the session's host and engine,
+//! Otherwise (the default cache directory or `--cache-dir`) the startup
+//! build runs once, in the session's host and engine,
 //! with the persistent cache, and the session starts from that build
 //! (`DevSession::compile_entry`, docs/compiler-cache.md, "Development
 //! sessions and engine boundaries"): its manifest, from the records the
@@ -67,7 +68,7 @@ pub const USAGE: &str = "Watch:
              [--poll-ms N] [--elide-asserts] [--stats] [--config KEY=EDN ...]
              [--macro-expansions N] [--macro-nodes N] [--macro-timeout-ms N]
              [--macro-memory-limit N] [--macro-poll-budget N]
-             [--cache-dir DIR] [--cache-blocker NS ...]
+             [--cache-dir DIR | --no-cache] [--cache-blocker NS ...]
              [--serve PORT [--serve-host HOST] [--reload-dependents] [--nrepl PORT]]
 
 Write the dev build of --compile --reloadable into DIR, then poll the .cljs
@@ -100,15 +101,18 @@ application has.
 With --config KEY=EDN, repeatable, give light.build/config the value EDN for
 the keyword KEY in the build and in every step, as --compile does.
 
-With --cache-dir DIR, start from the persistent compiler cache in DIR, as
---compile --cache-dir keeps it: the startup build runs once, in the engine
+Start from the persistent compiler cache that --compile keeps, in
+.light-cljs/cache under the current directory or in DIR with --cache-dir
+DIR: the startup build runs once, in the engine
 of the watch's session, installing each namespace whose artifact is current
 instead of analyzing it (its macros do not run) and storing the others, and
 the session starts from that build, compiling later steps as if it had
 loaded every namespace itself. Steps neither read nor write the cache, so a
-restart analyzes what changed since the cache was last filled. Deleting DIR
-does not change a running watch; a fresh uncached start is a restart
-without --cache-dir. With --stats, the report adds the cache.* lines.
+restart analyzes what changed since the cache was last filled. Deleting the
+directory does not change a running watch. With --no-cache the start is a
+fresh uncached one: the startup build runs with the native engine and the
+session loads the program again. With --stats, the report adds the cache.*
+lines.
 
 With --cache-blocker NS, repeatable, keep NS and every namespace whose
 compilation depends on it out of the persistent compiler cache, as --compile
@@ -161,7 +165,8 @@ struct Options {
     configuration: light_cljs::BuildConfiguration,
     /// `--cache-blocker NS`, for the policy evaluator and the cache.
     blockers: Vec<String>,
-    /// `--cache-dir DIR`: start from the persistent compiler cache.
+    /// Where the persistent compiler cache the watch starts from is: the
+    /// default directory or `--cache-dir DIR`, and `None` with `--no-cache`.
     cache_dir: Option<PathBuf>,
     /// `--macro-expansions N` and the other macro limit flags, for the
     /// startup build and the session.
@@ -178,6 +183,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
     let mut configuration = light_cljs::BuildConfiguration::new();
     let mut blockers = Vec::new();
     let mut cache_dir = None;
+    let mut no_cache = false;
     let mut macro_limits = crate::MacroLimitFlags::default();
     while let Some(arg) = args.next() {
         let flag = arg.to_str().unwrap_or("");
@@ -253,6 +259,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
                     .map_err(|_| "--cache-blocker must be valid UTF-8")?,
             ),
             "--cache-dir" => cache_dir = Some(PathBuf::from(value()?)),
+            "--no-cache" => no_cache = true,
             _ if macro_limits.accept(flag, &mut args)? => {}
             _ => return Err(format!("unexpected watch option: {flag}\n{USAGE}").into()),
         }
@@ -271,6 +278,12 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
     if nrepl.is_some() && serve.is_none() {
         return Err("--nrepl requires --serve PORT".into());
     }
+    if no_cache && cache_dir.is_some() {
+        return Err("--no-cache and --cache-dir exclude each other".into());
+    }
+    let cache_dir = (!no_cache).then(|| {
+        cache_dir.unwrap_or_else(|| PathBuf::from(light_cljs::compile_cache::DEFAULT_DIR))
+    });
     Ok(Some(Options {
         entry,
         roots,

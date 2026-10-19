@@ -5,3 +5,4 @@
 /playground/dist
 /playground/crate/target
 /site/dist
+.light-cljs/

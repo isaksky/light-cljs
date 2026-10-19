@@ -1604,7 +1604,13 @@ fn collection_namespace_macros_execute_typed_results_once_with_fresh_runtime_sta
         {
             let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
             command
-                .args(["--compile", "--entry", "batch.main", "--source-root"])
+                .args([
+                    "--compile",
+                    "--no-cache",
+                    "--entry",
+                    "batch.main",
+                    "--source-root",
+                ])
                 .arg(&example);
             command
         },

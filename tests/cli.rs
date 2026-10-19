@@ -217,9 +217,26 @@ fn vector_keyword_acceptance_compiles_and_executes_from_cli() {
 fn light_cljs(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_light-cljs"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(args)
+        .args(uncached(args))
         .output()
         .unwrap()
+}
+
+/// `args` with `--no-cache` after `--compile` when they compile namespaces
+/// and name no cache, so the default cache directory (`.light-cljs/cache`
+/// under the current directory) carries nothing from one test to the next.
+fn uncached<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut args = args.to_vec();
+    let named = args
+        .iter()
+        .any(|arg| *arg == "--cache-dir" || *arg == "--no-cache");
+    if args.contains(&"--entry")
+        && !named
+        && let Some(at) = args.iter().position(|arg| *arg == "--compile")
+    {
+        args.insert(at + 1, "--no-cache");
+    }
+    args
 }
 
 fn compiled(args: &[&str]) -> String {
@@ -1917,7 +1934,7 @@ fn codec_measurement_reports_sizes_without_changing_output() {
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .env("LIGHT_CLJS_CAPTURE_ARTIFACTS", "encode")
-        .args(args)
+        .args(uncached(&args))
         .arg("--stats")
         .output()
         .unwrap();
@@ -2058,7 +2075,7 @@ fn worker_isolates_match_a_fresh_isolate_per_unit() {
     let run = |jobs: &[&str], env: &[(&str, &str)]| {
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
             .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .args([&entry[..], &["--jobs"], jobs].concat())
+            .args(uncached(&[&entry[..], &["--jobs"], jobs].concat()))
             .envs(env.iter().copied())
             .output()
             .unwrap();
@@ -2191,6 +2208,7 @@ fn a_build_stopped_at_its_deadline_writes_no_output_at_any_job_count() {
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
             .args([
                 "--compile",
+                "--no-cache",
                 "--entry",
                 "main",
                 "--source-root",

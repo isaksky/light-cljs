@@ -115,6 +115,7 @@ impl Watch {
             .arg(dir.join("dev"))
             .args(["--poll-ms", "20"])
             .args(args)
+            .args((!args.contains(&"--cache-dir")).then_some("--no-cache"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -211,7 +212,13 @@ impl Watch {
         let fresh = self.dir.join("fresh");
         let _ = fs::remove_dir_all(&fresh);
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-            .args(["--compile", "--entry", "app.main", "--source-root"])
+            .args([
+                "--compile",
+                "--no-cache",
+                "--entry",
+                "app.main",
+                "--source-root",
+            ])
             .arg(self.dir.join("src"))
             .arg("--reloadable")
             .arg("--out-dir")
@@ -1449,7 +1456,13 @@ fn the_macro_limit_flags_raise_the_startup_build_and_the_steps_limits() {
     }
     many_expansions(&dir.join("src"));
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-        .args(["--watch", "--entry", "app.main", "--source-root"])
+        .args([
+            "--watch",
+            "--no-cache",
+            "--entry",
+            "app.main",
+            "--source-root",
+        ])
         .arg(dir.join("src"))
         .arg("--out-dir")
         .arg(dir.join("dev"))
@@ -1582,6 +1595,8 @@ fn each_macro_limit_flag_bounds_the_startup_build() {
                 .args([flag, value]);
             if cached {
                 command.arg("--cache-dir").arg(&cache);
+            } else {
+                command.arg("--no-cache");
             }
             let output = command.stdin(Stdio::null()).output().unwrap();
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1598,6 +1613,8 @@ fn watch_refuses_missing_options_and_a_failing_first_build() {
     let dir = TempDir::new("dev-watch-options");
     let out = dir.join("dev");
     let out = out.to_str().unwrap();
+    let cache = dir.join("cache");
+    let cache = cache.to_str().unwrap();
     for (args, message) in [
         (
             &["--source-root", EXAMPLE, "--out-dir", out][..],
@@ -1651,6 +1668,34 @@ fn watch_refuses_missing_options_and_a_failing_first_build() {
         (
             &[
                 "--entry",
+                "app.main",
+                "--source-root",
+                EXAMPLE,
+                "--out-dir",
+                out,
+                "--no-cache",
+                "--cache-dir",
+                cache,
+            ][..],
+            "--no-cache and --cache-dir exclude each other",
+        ),
+        (
+            &[
+                "--cache-dir",
+                cache,
+                "--entry",
+                "app.main",
+                "--source-root",
+                EXAMPLE,
+                "--out-dir",
+                out,
+                "--no-cache",
+            ][..],
+            "--no-cache and --cache-dir exclude each other",
+        ),
+        (
+            &[
+                "--entry",
                 "app.missing",
                 "--source-root",
                 EXAMPLE,
@@ -1675,6 +1720,7 @@ fn watch_refuses_missing_options_and_a_failing_first_build() {
         );
     }
     assert!(!dir.join("dev/manifest.json").exists());
+    assert!(!dir.join("cache").exists());
 }
 
 /// The value of `key` in the `--stats` report among `lines`.
@@ -2162,4 +2208,58 @@ fn an_unprovided_goog_require_is_a_host_namespace_in_the_session() {
         pair.reload(&["app.text.js"]),
         record("start\nclicks: [1]\nreloading\nclicks: [2]\n")
     );
+}
+
+/// The cache is on by default (light-cljs-328): a watch that names no cache
+/// starts from `.light-cljs/cache` under the current directory, filling it
+/// on its first start and installing every namespace on the next, while
+/// `--no-cache` starts uncached and writes nothing there.
+#[test]
+fn a_watch_starts_from_the_default_cache_directory() {
+    let dir = TempDir::new("dev-watch-default-cache");
+    fs::create_dir_all(dir.join("src/app")).unwrap();
+    for name in ["state", "macros", "view", "main"] {
+        let file = format!("app/{name}.cljs");
+        fs::copy(Path::new(EXAMPLE).join(&file), dir.join("src").join(&file)).unwrap();
+    }
+    let start = |extra: &[&str]| -> Vec<String> {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .current_dir(&*dir)
+            .args(["--watch", "--entry", "app.main", "--source-root", "src"])
+            .args(["--out-dir", "dev", "--poll-ms", "20", "--stats"])
+            .args(extra)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = Vec::new();
+        for line in BufReader::new(child.stderr.take().unwrap()).lines() {
+            let line = line.unwrap();
+            let built = line.starts_with("light-cljs: built ");
+            lines.push(line);
+            if built {
+                break;
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            lines
+                .last()
+                .is_some_and(|line| line.starts_with("light-cljs: built ")),
+            "{lines:#?}"
+        );
+        lines
+    };
+    let cache = dir.join(".light-cljs/cache");
+    let uncached = start(&["--no-cache"]);
+    assert!(!uncached.iter().any(|line| line.starts_with("cache.")));
+    assert!(!cache.exists());
+    let filling = start(&[]);
+    assert_eq!(stat(&filling, "cache.published"), "4", "{filling:#?}");
+    assert!(cache.join("v1/objects").is_dir());
+    let warm = start(&[]);
+    assert_eq!(stat(&warm, "cache.hits"), "4", "{warm:#?}");
+    assert_eq!(stat(&warm, "macro-calls"), "0");
 }

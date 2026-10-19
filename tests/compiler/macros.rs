@@ -308,7 +308,13 @@ fn two_runtime_namespaces_use_cljs_macros_through_api_and_cli() {
         "12\n"
     );
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-        .args(["--compile", "--entry", "demo.main", "--source-root"])
+        .args([
+            "--compile",
+            "--no-cache",
+            "--entry",
+            "demo.main",
+            "--source-root",
+        ])
         .arg(root)
         .output()
         .unwrap();
@@ -1146,7 +1152,13 @@ fn unsupported_generated_collection_program_forms_keep_file_macro_and_callsite_d
             Some(source.find("(m/emit-bad)").unwrap()..source.len())
         );
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-            .args(["--compile", "--entry", "bad.main", "--source-root"])
+            .args([
+                "--compile",
+                "--no-cache",
+                "--entry",
+                "bad.main",
+                "--source-root",
+            ])
             .arg(sources.0.path())
             .output()
             .unwrap();
@@ -3412,7 +3424,7 @@ fn ordinary_dual_use_require_executes_exact_tools_example_through_api_and_cli() 
         }
     }
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-        .args(["--compile", "--entry", "app", "--source-root"])
+        .args(["--compile", "--no-cache", "--entry", "app", "--source-root"])
         .arg(s.0.path())
         .output()
         .unwrap();

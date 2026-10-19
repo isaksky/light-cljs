@@ -6,6 +6,12 @@
 //! server compiles each form with the watch's session and runs it in a
 //! runtime, which prints the value.
 
+/// `--no-cache` unless `args` name a cache: the default cache directory
+/// would carry artifacts from one test to the next.
+fn no_cache<'a>(mut args: impl Iterator<Item = &'a str>) -> Option<&'static str> {
+    (!args.any(|arg| arg == "--cache-dir")).then_some("--no-cache")
+}
+
 #[path = "support/temp_dir.rs"]
 #[allow(dead_code)]
 mod temp_dir;
@@ -123,6 +129,7 @@ impl Watch {
             .arg(dir.join("dev"))
             .args(["--poll-ms", "20", "--serve", port])
             .args(args)
+            .args(no_cache(args.iter().map(String::as_str)))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())

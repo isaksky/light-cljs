@@ -2293,10 +2293,27 @@ fn a_program_reaching_reflection_keeps_a_chunk_of_no_code() {
     }
 }
 
+/// `args` with `--no-cache` after `--compile` when they compile namespaces
+/// and name no cache, so the default cache directory (`.light-cljs/cache`
+/// under the current directory) carries nothing from one test to the next.
+fn uncached<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut args = args.to_vec();
+    let named = args
+        .iter()
+        .any(|arg| *arg == "--cache-dir" || *arg == "--no-cache");
+    if args.contains(&"--entry")
+        && !named
+        && let Some(at) = args.iter().position(|arg| *arg == "--compile")
+    {
+        args.insert(at + 1, "--no-cache");
+    }
+    args
+}
+
 /// The CLI's output for `args`: whether it succeeded, its stdout and stderr.
 fn cli(args: &[&str]) -> (bool, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-        .args(args)
+        .args(uncached(args))
         .output()
         .unwrap();
     (

@@ -154,6 +154,12 @@
      :fields (select-keys record [:wall-seconds :user-seconds :system-seconds :peak-rss-bytes :stats])
      :error (when-not (zero? (:exit result)) (str/join "\n" (take-last 5 (str/split-lines (str (:err result) (:out result))))))}))
 
+;; Builds are cold: a binary whose cache is on by default (light-cljs-328)
+;; gets --no-cache.
+(def no-cache
+  (memoize (fn [binary]
+             (when (str/includes? (:out (process/sh binary "--help")) "--no-cache") ["--no-cache"]))))
+
 (defn run-fixture [scenario binary args dir]
   (let [root (write-fixture scenario)
         js (fs/path dir (str scenario ".js"))
@@ -162,7 +168,7 @@
                          "--macro-expansions" "100000000" "--macro-nodes" "4000000000"
                          "--macro-timeout-ms" "3600000" "--macro-memory-limit" "4000000000"
                          "--macro-poll-budget" "1000000000000"]
-                        args)
+                        (no-cache binary) args)
         result (with-open [out (io/output-stream (str js))]
                  (apply process/shell {:dir (str repo) :continue true :out out :err :string} command))
         timing (:err result)]

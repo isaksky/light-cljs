@@ -32,6 +32,9 @@
 (fs/delete-tree cache)
 (def binary (or (System/getenv "LIGHT_CLJS_BINARY")
                 (str (fs/path repo "target/release/light-cljs"))))
+;; Without --cache, a binary whose cache is on by default (light-cljs-328)
+;; starts uncached with --no-cache.
+(def no-cache (when (str/includes? (:out (process/sh binary "--help")) "--no-cache") ["--no-cache"]))
 
 (defn macro-namespace
   "Macro namespace `k`: macros whose expansions call a helper, destructure
@@ -97,7 +100,7 @@
         _ (fs/delete-tree out)
         proc (process/process (concat [binary "--watch" "--entry" entry "--source-root" root
                                        "--out-dir" out "--stats" "--poll-ms" "60000"]
-                                      (when cache? ["--cache-dir" cache]))
+                                      (if cache? ["--cache-dir" cache] no-cache))
                               {:err :pipe :out :inherit})
         lines (with-open [reader (io/reader (:err proc))]
                 (loop [lines []]

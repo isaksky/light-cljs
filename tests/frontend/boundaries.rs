@@ -151,7 +151,13 @@ fn namespace_boundaries_retain_file_spans_and_emit_no_partial_javascript() {
         assert_eq!(error.path, Some(fs::canonicalize(&file).unwrap()), "{id}");
         assert!(error.message.contains(message), "{id}: {error}");
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
-            .args(["--compile", "--entry", "boundary", "--source-root"])
+            .args([
+                "--compile",
+                "--no-cache",
+                "--entry",
+                "boundary",
+                "--source-root",
+            ])
             .arg(sources.path())
             .output()
             .unwrap();

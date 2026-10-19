@@ -64,6 +64,8 @@
                       "--macro-poll-budget" "1000000000000"]
                      (mapcat #(vector "--source-root" %) roots)
                      ["--entry" entry "--optimize" "none"]
+                     ;; A cold build: --no-cache where the cache is on by default.
+                     (when (str/includes? (:out (process/sh binary "--help")) "--no-cache") ["--no-cache"])
                      (:extra options)))
 (def js-file (fs/file output (str entry ".js")))
 (def probe-file (fs/file output (str entry ".probe.tsv")))
