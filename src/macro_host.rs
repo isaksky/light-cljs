@@ -55,7 +55,7 @@ pub(crate) struct NativeExpansion {
 /// What a macro-free unit's analysis would have charged to the
 /// compilation, in order: a poll of the execution control at each form,
 /// with the form's span, and each native expansion.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) enum UnitEvent {
     Poll(std::ops::Range<usize>),
     Expansion(NativeExpansion),
@@ -82,6 +82,11 @@ pub(crate) enum UnitEvent {
     /// and a limit crossed in them fails with the nested unit's error
     /// wrapped as the expansion's.
     Demand(usize),
+    /// What the unit observed before a [`UnitEvent::Demand`] that follows,
+    /// while a dependency manifest is recorded, which the charge adds
+    /// before the demanded unit's, in the order the serial build observed
+    /// them; the charge takes it, once.
+    Observed(std::cell::RefCell<Option<Box<crate::dependency_manifest::ObservationLog>>>),
     /// While artifacts are captured (light-cljs-374): the namespace's node
     /// budget had to leave room for this many nodes beyond those generated
     /// so far ([`WorkMarks::node_peak`]).
@@ -286,6 +291,20 @@ pub(crate) fn record_demand(id: usize) -> bool {
     MACRO_FREE_UNIT.with(|unit| match &mut *unit.borrow_mut() {
         Some(analysis) => {
             analysis.demands += 1;
+            // What it observed so far precedes what the demanded unit does.
+            if let Some(log) = &mut analysis.observations {
+                let log = std::mem::take(log);
+                if !(log.loaded.is_empty()
+                    && log.named.is_empty()
+                    && log.absent.is_empty()
+                    && log.executes.is_empty()
+                    && log.inputs.is_empty())
+                {
+                    analysis
+                        .events
+                        .push(UnitEvent::Observed(Some(Box::new(log)).into()));
+                }
+            }
             analysis.events.push(UnitEvent::Demand(id));
             true
         }

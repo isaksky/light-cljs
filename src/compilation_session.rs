@@ -320,6 +320,13 @@ impl UnitCharges {
                         return Err(Failure::Plain(error));
                     }
                 }
+                UnitEvent::Observed(observations) => {
+                    if let Some(log) = binding.dependency_log.borrow_mut().as_mut() {
+                        if let Some(observations) = observations.take() {
+                            log.absorb(*observations);
+                        }
+                    }
+                }
                 // What capture records, where a serial build records it.
                 UnitEvent::Room(extra) => {
                     WorkMarks::note(&binding.work.node_peak, nodes.get().saturating_add(*extra));

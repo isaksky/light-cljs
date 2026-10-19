@@ -1740,6 +1740,11 @@ output changes once, when stage A lands.
     - A macro that catches a demanded unit's failure and carries on.
     - A JavaScript expansion inside another's run. Its thrown error is
       wrapped by the innermost expansion only.
+    While a manifest is recorded, what the demanding unit observed before
+    a demand is kept as a `UnitEvent::Observed` event ahead of it. The
+    manifest's inputs then keep the one-slot order: before, inside the
+    helper, after
+    (`worker_isolates::a_demanded_helpers_observations_keep_their_place_in_the_manifest`).
     A demanded unit's `gensym` names and trace rows stay in the stream of
     the unit whose macro demanded it.
   - *Soft cap.* The coordinator publishes what it has charged
