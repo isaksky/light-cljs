@@ -1777,7 +1777,76 @@ slice keeps only where a program builds a lazy seq or a cell:
   its vector), and map, set and reversed seqs no kind. `nth`, `get`, `conj`
   and `assoc`, and protocol method keys as interned values instead of the
   strings `publicMethod` looks up in `publicMethodInfos` per call, are not
-  converted.
+  converted (the keys are since light-cljs-358, below).
+
+#### Phase 2 resolved protocol keys
+
+As built (light-cljs-358, first part). The generic operations asked the
+protocol lookups (`ownMethod`, `publicMethod`, `builtin`, `ownProtocol` and
+the `satisfies`/`implements` hooks) for a method by its text,
+`"ILookup/-lookup"`, which they sliced and looked up in maps (the protocol's
+mask, its marker's and the method's slot names) on every call, wherever
+`installMethods` is kept, that is in every program with a `deftype`,
+`defrecord` or `reify`.
+
+- **Keys.** `methodKey(text)` resolves a key once: its protocol's mask
+  property and bit, its marker and whether it is `IMeta`'s. Its method's
+  slot for an arity is named on the first dispatch with it (`keySlot`):
+  naming every arity of the 68 keys as the runtime loads took more memory
+  than the evaluator's 4 MiB test heaps allow. `info`, which `publicMethod`
+  and the `satisfies` hooks need only where `extend-type` or `specify!`
+  exists, is filled in on their first call with the key. Each key has a number, and an effect of
+  `installMethods` that waits for the operations dispatching it resolves it
+  into the array `methodKeys` near the start of the runtime,
+  `methodKeys[30] = methodKey("ILookup/-lookup")` (with `protocolMaskNames`,
+  `protocolMasks`, `protocolSlot` and the member munging it reads, which
+  moved there). The operations read it with a constant index,
+  `protocolHooks.publicMethod?.(value, methodKeys[30], ...)`, only where they
+  find a lookup: a program without protocol implementations keeps neither
+  keys nor `methodKey`, and its call sites are shorter than the key's text
+  was. The 68 keys are 34 methods and 34 protocols the operations test
+  (`protocolHooks.satisfies?.(methodKeys[11], value)` for `ICounted`). A
+  core dispatcher (`coreMethod`) resolves its key through
+  `protocolHooks.methodKey` as it is made where the machinery has loaded,
+  else on its first call that finds a lookup (a chunk can load the
+  machinery after the dispatcher's); `stateProtocol` takes the text, for
+  its error, and the resolved key.
+- **Hubs.** `ownMethod` reads the mask bit before the marker (a value of a
+  program type has it; declaring the protocol demands the method's protocol
+  as the marker did). `get.own` and `contains.own`, effects of
+  `installMethods`, wrap `get` and `contains?`: where a value's type
+  declares the protocol by its mask bit, as records and `deftype`s do, they
+  read and call its slot themselves, so the engine's feedback for the read
+  is theirs rather than that of the lookup every operation shares. A
+  declared slot without a method finishes as the lookup would, from the
+  slot as read (`protocolHooks.declaredMethod`: `ownDeclared` or
+  `publicDeclared`, the lookups' own tails), since a getter can have
+  changed the value; any other value takes the operation.
+- **Tests.** `runtime_manifest`: `protocol_lookups_take_keys_resolved_at_load`
+  (no dispatch site passes a key's text, every number read is installed
+  once, and the lookups slice nothing); a key install's `when:` names the
+  units reading its number (`key_install`, `key_reads`), and a unit reading
+  a record method's key dispatches the method. `records`: `get` and
+  `contains?` of records, a `deftype`, `extend-type` and `specify!`
+  replacements, and maps, vectors and nil in the same program, at every
+  level; `builtin_types`: `masked_lookup_getters_preserve_selected_dispatch`.
+  The QuickJS evaluator tests' small heap grows from 4 to 5 MiB: loading
+  the runtime peaked just under 4 MiB on master and now just over.
+- **Measured.** light-cljs-266's `record-lookup` at `advanced` in Node goes
+  from 14× to 2.5× upstream with this change (1.268 to 0.220 ms a call);
+  `seq-pipeline` and `record-protocol` keep no key and do not move. At
+  `advanced` programs without protocol implementations shrink by up to 355
+  bytes, `record-protocol` grows by 6 and the protocol-heavy fixtures by
+  0.8 to 1.0 KB; the runtime `none` and `prepare` embed grows by about
+  9.1 KB. Details in `benchmarks/compiler.md` ("Protocol keys resolved
+  once").
+- **Left for later (the rest of light-cljs-358).** Vectors, maps, sets and
+  queues have no kind, `nth`, `get`, `conj` and `assoc` no kind branches,
+  and the cells' and lazy seqs' branches still give way wherever a protocol
+  lookup exists (`protocolHooks.publicMethod`). A hub microbenchmark in
+  `benchmarks/compiler.md` finds `count` of a vector and a map, which probe
+  the other kinds' stores first, the cost worth a kind branch; `get` and
+  `nth` already test their kind's store first.
 
 #### Phase 2 builtin types, map entries
 

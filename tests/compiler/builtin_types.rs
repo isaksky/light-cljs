@@ -168,6 +168,48 @@ fn selected_protocol_missing_method_does_not_fall_back_after_a_getter_mutation()
     );
 }
 
+/// As above, for values that declare `ILookup` and `IAssociative` by their
+/// mask bits, whose slots `get` and `contains?` read themselves (`get.own`,
+/// `contains.own`, light-cljs-358): a getter that clears the bit and the
+/// marker cannot turn a missing method into a missing key, with
+/// `extend-type`'s lookup (`specify!`) and without it (a `deftype`).
+#[test]
+fn masked_lookup_getters_preserve_selected_dispatch() {
+    let run = |make: &str| {
+        format!(
+            r#"(let [run (fn [found]
+                     (let [value {make}]
+                       (doseq [[slot marker] [["cljs$core$ILookup$_lookup$arity$3" "cljs$core$ILookup$"]
+                                              ["cljs$core$IAssociative$_contains_key_QMARK_$arity$2" "cljs$core$IAssociative$"]]]
+                         (js/Object.defineProperty value slot
+                           #js {{:get (fn []
+                                       (set! (.-cljs$lang$protocol_mask$partition0$ value) 0)
+                                       (js-delete value marker)
+                                       (case found :fn (fn [& _] :found) :false false nil))}}))
+                       (set! (.-cljs$lang$protocol_mask$partition0$ value) (bit-or 256 512))
+                       [(try (get value :key :fallback) (catch :default error (.-message error)))
+                        (do (set! (.-cljs$lang$protocol_mask$partition0$ value) (bit-or 256 512))
+                            (try (contains? value :key) (catch :default error (.-message error))))]))]
+               (pr-str [(run nil) (run :false) (run :fn)]))"#
+        )
+    };
+    let missing = r#"["No protocol method ILookup/-lookup defined for this value" "No protocol method IAssociative/-contains-key? defined for this value"]"#;
+    let expected = format!("[{missing} {missing} [:found :found]]");
+    every_level(
+        &run(
+            "(specify! (js-obj) ILookup (-lookup [_ _] :two) (-lookup [_ _ _] :three) IAssociative (-contains-key? [_ _] true) (-assoc [v _ _] v))",
+        ),
+        &expected,
+    );
+    every_level(
+        &format!(
+            "(deftype T [] ILookup (-lookup [_ _] :two) (-lookup [_ _ _] :three) IAssociative (-contains-key? [_ _] true) (-assoc [v _ _] v)) {}",
+            run("(T.)")
+        ),
+        &expected,
+    );
+}
+
 /// The runtime units an `Advanced` program embeds.
 fn units(source: &str) -> Vec<&'static str> {
     advanced(source)

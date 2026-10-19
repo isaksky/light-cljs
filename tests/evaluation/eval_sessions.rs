@@ -35,11 +35,12 @@ impl std::fmt::Debug for EvalSession {
     }
 }
 
-/// A heap limit the session's own allocations reach soon: QuickJS starts in
-/// well under 4 MB, and V8 refuses a limit under 16 MB at startup.
+/// A heap limit the session's own allocations reach soon: QuickJS peaks at
+/// about 4 MiB while it loads the runtime (light-cljs-358), and V8 refuses a
+/// limit under 16 MB at startup.
 fn small_heap() -> usize {
     if engine() == EvalEngine::QuickJs {
-        4 * 1024 * 1024
+        5 * 1024 * 1024
     } else {
         32 * 1024 * 1024
     }

@@ -414,3 +414,22 @@ fn nested_record_redefinitions_copy_to_the_current_constructor() {
         "[true,true,true,false,2]\n"
     );
 }
+
+/// `get` and `contains?` call the slot of a value whose type declares the
+/// protocol by its mask bit themselves (`get.own`, `contains.own`,
+/// light-cljs-358): a record's, a type's, one that `extend-type` replaced and
+/// one that `specify!` gave an instance. Maps, vectors and nil in the same
+/// program take the operations.
+#[test]
+fn get_and_contains_call_declared_slots_and_their_replacements() {
+    assert_eq!(
+        run("(defrecord R [a]) (defrecord S [a])
+             (deftype T [] ILookup (-lookup [_ k] (str \"t\" (name k))) (-lookup [_ k nf] (str \"t\" (name k) nf)))
+             (extend-type S IAssociative (-contains-key? [_ k] (= k :zz)) (-assoc [s _ _] s))
+             (let [r (->R 1) t (T.) s (->S 1) u (specify! (->R 2) ILookup (-lookup ([_ _] \"u\") ([_ _ nf] (str \"u\" nf))))]
+               (array (get r :a) (get r :b 3) (:a r) (contains? r :a) (contains? r :b) (get t :x) (get t :x 4) (:x t)
+                      (contains? s :a) (contains? s :zz) (get u :a) (get u :a 5) (:a u)
+                      (get {:a 6} :a) (get [7] 0) (contains? {:a 1} :a) (contains? [1] 0) (get nil :a 8) (contains? nil :a)))"),
+        "[1,3,1,true,false,\"tx\",\"tx4\",\"tx\",false,true,\"u\",\"u5\",\"u\",6,7,true,true,8,false]\n"
+    );
+}

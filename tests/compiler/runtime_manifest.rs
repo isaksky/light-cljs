@@ -328,6 +328,32 @@ fn method_keys(text: &str) -> Vec<(&str, bool)> {
     keys
 }
 
+/// The number and the core protocol method key, or core protocol, that a
+/// unit resolves for the protocol machinery, `methodKeys[30] =
+/// methodKey("ILookup/-lookup");` (light-cljs-358). The generic operations
+/// read it as `methodKeys[30]`.
+fn key_install(text: &str) -> Option<(usize, &str)> {
+    text.lines().find_map(|line| {
+        let (number, call) = line
+            .trim()
+            .strip_prefix("methodKeys[")?
+            .split_once("] = methodKey(\"")?;
+        Some((number.parse().ok()?, call.strip_suffix("\");")?))
+    })
+}
+
+/// The numbers of the resolved keys a unit reads (`methodKeys[30]`), other
+/// than the one it installs.
+fn key_reads(text: &str) -> Vec<usize> {
+    text.match_indices("methodKeys[")
+        .filter_map(|(start, needle)| {
+            let after = &text[start + needle.len()..];
+            let (number, rest) = after.split_once(']')?;
+            (!rest.starts_with(" = methodKey(")).then(|| number.parse().ok())?
+        })
+        .collect()
+}
+
 /// The hook tables a conditional effect may fill in (`typeHooks.rest =
 /// fnRest`), each read as `<table>.<key>`, and the core cells, whose initial
 /// value such an effect may set (`coreCells.rand = hostRand`). `multiHooks`
@@ -457,14 +483,47 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
             .into_iter()
             .filter_map(|(key, entry)| entry.then_some(key))
             .collect();
-        let users: Vec<UnitId> = if !installed.is_empty() {
+        // A reader that is itself an effect stands for its `when:` list, or
+        // else its targets, unless this list names the effect itself.
+        let conditions_of = |reader: UnitId| -> Vec<UnitId> {
+            match &manifest.units[reader.0].effect {
+                Some(effect) if effect.when.is_empty() => effect
+                    .targets
+                    .iter()
+                    .filter_map(|target| manifest.unit_of(target))
+                    .collect(),
+                // A list may name the effect itself, kept only with a
+                // target, instead of its conditions.
+                Some(_) if manifest.conditions(id).contains(&reader) => vec![reader],
+                Some(_) => manifest.conditions(reader).to_vec(),
+                None => vec![reader],
+            }
+        };
+        let users: Vec<UnitId> = if let Some((number, _)) = key_install(body(id)) {
+            // A resolved key is needed where a unit reads it.
+            (0..manifest.units.len())
+                .map(UnitId)
+                .filter(|&other| other != id && key_reads(body(other)).contains(&number))
+                .flat_map(conditions_of)
+                .collect()
+        } else if !installed.is_empty() {
+            // A unit dispatches a key it names, or whose resolved key it reads.
+            let resolved: Vec<usize> = (0..manifest.units.len())
+                .filter_map(|other| key_install(body(UnitId(other))))
+                .filter(|(_, key)| installed.contains(key))
+                .map(|(number, _)| number)
+                .collect();
             (0..manifest.units.len())
                 .map(UnitId)
                 .filter(|&other| {
                     other != id
-                        && method_keys(body(other))
+                        && key_install(body(other)).is_none()
+                        && (method_keys(body(other))
                             .iter()
                             .any(|(key, entry)| !entry && installed.contains(key))
+                            || key_reads(body(other))
+                                .iter()
+                                .any(|number| resolved.contains(number)))
                 })
                 // A dispatch site in a unit wrapping an operation is needed
                 // wherever the operation is.
@@ -576,18 +635,7 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
                             || branches_wrapper(body(other))
                                 .is_some_and(|(_, index)| entries.contains(&index)))
                 })
-                .flat_map(|reader| match &manifest.units[reader.0].effect {
-                    Some(effect) if effect.when.is_empty() => effect
-                        .targets
-                        .iter()
-                        .filter_map(|target| manifest.unit_of(target))
-                        .collect(),
-                    // A list may name the effect itself, kept only with a
-                    // target, instead of its conditions.
-                    Some(_) if manifest.conditions(id).contains(&reader) => vec![reader],
-                    Some(_) => manifest.conditions(reader).to_vec(),
-                    None => vec![reader],
-                })
+                .flat_map(conditions_of)
                 .collect()
         };
         let mut expected: Vec<&str> = users
@@ -625,8 +673,9 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // of six types (light-cljs-247), and the tables of multimethods, the items
     // of vectors that `isa?` compares, and the global hierarchy's `atom` and
     // `isa?`'s `supers` where protocol implementations can see them
-    // (light-cljs-239).
-    assert_eq!(checked, 215);
+    // (light-cljs-239), and the 68 resolved protocol keys, `methodKey` for the
+    // core dispatchers and the slot reads of `get` and `contains?` (light-cljs-358).
+    assert_eq!(checked, 286);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1309,7 +1358,11 @@ fn kind_hooks_skip_records() {
     ] {
         waits_for(effect, "get");
     }
-    assert!(body("get").contains("protocolHooks.publicMethod?.(value, \"ILookup/-lookup\""));
+    assert!(
+        body("installMethods.ILookupLookupKey")
+            .contains("methodKeys[30] = methodKey(\"ILookup/-lookup\");")
+    );
+    assert!(body("get").contains("protocolHooks.publicMethod?.(value, methodKeys[30]"));
 }
 
 /// `PROTOCOL_ROOTS` are exactly the core protocols that conditional effects
@@ -1489,6 +1542,7 @@ fn units_assigning_a_binding_share_its_unit() {
         [
             "MapEntryType <- MapEntryType.lean",
             "MapEntryType <- MapEntryType.vector",
+            "contains <- contains.own",
             "copyEntries <- copyEntries.trie",
             "count <- count.branches",
             "count <- count.protocol",
@@ -1498,7 +1552,10 @@ fn units_assigning_a_binding_share_its_unit() {
             "declarationJournal <- multiState",
             "demandProtocol <- MultiFn.tables",
             "demandProtocol <- declarationReceiver",
+            "demandProtocol <- demandKey",
             "demandProtocol <- directMethod",
+            "demandProtocol <- keyMarker",
+            "demandProtocol <- keyMethod",
             "demandProtocol <- methods",
             "demandProtocol <- preferMethod",
             "demandProtocol <- prefers",
@@ -1513,6 +1570,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "first <- first.branches",
             "first <- first.protocol",
             "gensymCounter <- gensym",
+            "get <- get.own",
             "globalHierarchy <- getGlobalHierarchy",
             "identityCounter <- hash",
             "lookup <- lookup.members",
@@ -1773,4 +1831,79 @@ fn brand_readers_are_the_units_that_require_type_brand() {
         .map(|unit| unit.name)
         .collect::<Vec<_>>();
     assert_eq!(readers, light_cljs::runtime_slice::BRAND_READERS);
+}
+
+/// The generic operations pass the protocol lookups (`ownMethod`,
+/// `publicMethod`, `builtin`, `ownProtocol` and the `satisfies` hooks) a key
+/// resolved where the runtime loads, read by number (`methodKeys[30]`), never
+/// a key's text, which the lookups sliced and looked up in maps on every call
+/// wherever `installMethods` is kept (light-cljs-358). Every number read has
+/// one install, and the lookups take nothing apart.
+#[test]
+fn protocol_lookups_take_keys_resolved_at_load() {
+    let manifest = manifest();
+    let body = |unit: usize| &ANNOTATED_RUNTIME[manifest.units[unit].body_range.clone()];
+    let mut installed = std::collections::BTreeMap::new();
+    for unit in 0..manifest.units.len() {
+        if let Some((number, key)) = key_install(body(unit)) {
+            assert!(
+                installed.insert(number, key).is_none(),
+                "`methodKeys[{number}]` installed twice"
+            );
+        }
+    }
+    assert_eq!(
+        installed.keys().copied().collect::<Vec<_>>(),
+        (0..installed.len()).collect::<Vec<_>>()
+    );
+    let mut sites = 0;
+    for unit in 0..manifest.units.len() {
+        let text = body(unit);
+        for lookup in [
+            "protocolHooks.publicMethod?.(",
+            "protocolHooks.builtin?.(",
+            "protocolHooks.satisfies?.(",
+            "protocolHooks.implements?.(",
+            "implementing?.(",
+        ] {
+            for (start, _) in text.match_indices(lookup) {
+                let arguments = &text[start + lookup.len()..];
+                let key = if lookup.contains("satisfies")
+                    || lookup.contains("implements")
+                    || lookup.starts_with("implementing")
+                {
+                    arguments
+                } else {
+                    &arguments[arguments.find(", ").unwrap() + 2..]
+                };
+                assert!(
+                    !key.starts_with('"'),
+                    "`{}` passes a key's text: {}",
+                    manifest.units[unit].name,
+                    &arguments[..arguments.find(')').unwrap_or(arguments.len())]
+                );
+                sites += 1;
+            }
+        }
+        for number in key_reads(text) {
+            assert!(
+                installed.contains_key(&number),
+                "`{}` reads `methodKeys[{number}]`, which nothing installs",
+                manifest.units[unit].name
+            );
+        }
+    }
+    assert!(sites >= 100, "{sites} dispatch sites");
+    for lookup in ["ownMethod", "ownProtocol", "builtin", "publicMethod"] {
+        let text = body(manifest.unit_of(lookup).unwrap().0);
+        for parsing in [
+            ".slice(",
+            ".split(",
+            "indexOf(",
+            "protocolMasks.get(",
+            "protocolSlot(",
+        ] {
+            assert!(!text.contains(parsing), "`{lookup}` calls `{parsing}`");
+        }
+    }
 }

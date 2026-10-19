@@ -5019,3 +5019,81 @@ and `form_bridge.rs`. Every example compiles, at every level, to the same
 JavaScript, `--esm` module, chunked build and size report that master's module gave
 with its embedded QuickJS (compared by hash, outside the repo), and the build
 compiles no C.
+
+## Protocol keys resolved once — October 18, 2026
+
+light-cljs-358 (first part) resolves the protocol method keys the generic
+operations dispatch once, as the protocol machinery loads, instead of
+slicing a key's text and looking it up in maps on every call wherever
+`installMethods` is kept; `get` and `contains?` call a record's or a
+`deftype`'s slot themselves
+([advanced-optimization.md](../docs/advanced-optimization.md#phase-2-resolved-protocol-keys)).
+
+Command, on the 24-CPU Mac (Node v24.18.0, macOS 15 ARM64), with two other
+workers building and testing:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only record-lookup,record-protocol,seq-pipeline --output DIR
+```
+
+`record-lookup` (light-cljs-266's workload: keyword, `get` and `contains?`
+lookups on two record types the call site cannot see, and a `reify`
+method) is not on master yet, so its rows compare light-cljs-266's branch
+(`68050ed`) alone with that branch and this change together; the other
+rows compare master `f106ff1` with this change. Milliseconds per call at
+`advanced` in Node, median / minimum, upstream in the same rounds:
+
+| Build | One-minute load (start–end) | Workload | light-cljs `advanced` | Upstream `:advanced` | light-cljs / upstream |
+| --- | ---: | --- | ---: | ---: | ---: |
+| light-cljs-266 alone | 8.4–10.0 | record-lookup | 1.268 / 1.190 | 0.089 / 0.083 | 14× |
+| with this change | 10.3–10.1 | record-lookup | 0.220 / 0.196 | 0.088 / 0.083 | 2.5× |
+| master | 3.5–8.4 | seq-pipeline | 0.151 / 0.139 | 0.088 / 0.072 | 1.7× |
+| this change | 6.1–4.3 | seq-pipeline | 0.142 / 0.137 | 0.075 / 0.070 | 1.9× |
+| master | 3.5–8.4 | record-protocol | 0.025 / 0.021 | 0.027 / 0.021 | 0.93× |
+| this change | 6.1–4.3 | record-protocol | 0.021 / 0.020 | 0.020 / 0.018 | 1.0× |
+
+`seq-pipeline` and `record-protocol` keep no resolved key at `advanced`
+(their protocol calls are devirtualized or absent), so their rows move with
+the load, and upstream's with them. The other columns of the same runs, ms
+per call, before → after:
+
+| Workload | Node `none` | QuickJS `advanced` | QuickJS `none` |
+| --- | ---: | ---: | ---: |
+| record-lookup | 1.307 → 1.090 | 15.22 → 8.12 | 24.53 → 20.62 |
+| seq-pipeline | 0.904 → 0.838 | 1.435 → 1.386 | 8.37 → 7.92 |
+| record-protocol | 0.109 → 0.098 | 0.647 → 0.587 | 3.96 → 3.86 |
+
+The steps, timed by hand on `record-lookup` compiled with light-cljs-266's
+branch and each step of this change (one Node process, 200 untimed and
+15 × 50 timed calls, median ms per call): 1.23 alone; 0.44 with the keys
+resolved; 0.39 with `get` calling a found method without spreading
+`arguments`; 0.31 with `ownMethod` reading the mask bit first; 0.19 with
+the slot reads of `get` and `contains?`. In a profile of the last, the
+slot reads take about a fifth of the time and the protocol lookups under
+5%; most of the rest is the keyword's call, which tests its brand, and the
+record's three-argument `-lookup`, which light-cljs-266 changes.
+
+A hub microbenchmark for what is left of light-cljs-358: `get` and `nth` on
+a 16-entry hash map and vector and `count` of both, in a program that also
+builds a lazy seq (so the kind wrappers exist), 20,000 iterations a call at
+`advanced`: 2.66 ms, of which `count` and its wrapper take 64% (the
+vector's and the map's counts probe `publicCollectionSlots`, `cells`,
+`transients`, the chunk stores and `queues` first), `get` 10% and `nth` 5%:
+`get` and `nth` already test their kind's store first.
+
+**Bytes.** At `advanced` a program without protocol implementations keeps
+no key, and its dispatch sites are shorter than the key texts were: most
+fixtures drop by 20 to 355 bytes (`seq-pipeline` 29,335 to 29,203,
+`features` 73,091 to 72,736); `println-hi` grows by 24. A program with
+protocol implementations keeps `methodKey` (about 170 bytes), the slot
+readers, and an install of about 25 bytes for each key its operations
+dispatch: `record-protocol` 5,209 to 5,215, `eight-records` 32,601 to
+33,555, `closed-params` 13,575 to 14,362, `callbacks` 41,302 to 42,308 and
+`protocol-params` 46,338 to 47,377, whose `advanced` ceilings rise by
+1,000. The runtime that `none` and `prepare` embed, with every key and its
+comments, grew by about 9.1 KB, so their ceilings rise by 10,000; loading
+it in Node takes about 0.25 ms longer (1.14 to 1.40 ms in a fresh
+context), as it resolves the 68 keys, and in QuickJS its peak while the
+evaluator loads it crosses 4 MiB (the evaluation tests' small heap grows
+to 5 MiB).

@@ -175,7 +175,7 @@ fn deadline_allocation_and_panics_produce_owned_failures() {
     std::thread::sleep(Duration::from_millis(110));
     assert!(e.evaluate_js("42").unwrap_err().0.contains("deadline"));
     let e = Evaluator::new(EvaluatorOptions {
-        memory_limit: 4 * 1024 * 1024,
+        memory_limit: 5 * 1024 * 1024,
         ..Default::default()
     })
     .unwrap();
