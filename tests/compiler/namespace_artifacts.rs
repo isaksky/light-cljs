@@ -410,11 +410,17 @@ fn protocols_and_records_record_their_tables() {
         2
     );
     assert!(d.record_constructors.contains(&own("Square")));
-    assert!(!d.field_bindings.is_empty());
-    assert!(d.field_bindings.iter().any(|(_, _, mutable)| *mutable));
-    assert!(!d.type_methods.is_empty());
+    // The types' methods are analyzed in deferred units, which merge after
+    // the next namespace's top-level pass: their fields and recur targets
+    // are the bodies'.
+    let bodies = shapes.bodies.as_deref().expect("the units' bodies");
+    let b = &bodies.declarations;
+    assert!(d.field_bindings.is_empty() && d.type_methods.is_empty());
+    assert!(!b.field_bindings.is_empty());
+    assert!(b.field_bindings.iter().any(|(_, _, mutable)| *mutable));
+    assert!(!b.type_methods.is_empty());
     assert!(d.globals[0..].iter().any(|g| g.flags.type_descriptor));
-    assert!(shapes.ir.exprs.iter().any(|expr| matches!(
+    assert!(bodies.ir.exprs.iter().any(|expr| matches!(
         &expr.kind,
         ExprKind::DefType { record: true, layout, .. } if layout.fields == ["side"]
     )));
@@ -434,6 +440,7 @@ fn lazy_targets_and_patches_of_an_earlier_namespace_global() {
             "app/main.cljs",
             "(ns app.main (:require [light.lazy :as lazy]))\n\
              (def editor (lazy/loadable app.editor/start))\n\
+             (lazy/loadable app.editor/start)\n\
              (fn [] editor)\n",
         ),
         (
@@ -493,6 +500,25 @@ fn lazy_targets_and_patches_of_an_earlier_namespace_global() {
     let metadata = patch.metadata.expect("start's metadata");
     assert!((metadata.0 as usize) < editor.ir.exprs.len());
     assert!(editor.describe().contains("patch External(0)"));
+    // The initializer's site is in a deferred unit, whose body merges after
+    // app.editor's top-level pass: its target is that global by identity.
+    let bodies = main.bodies.as_deref().expect("the units' bodies");
+    let [target] = bodies.declarations.lazy_targets.as_slice() else {
+        panic!("{:?}", bodies.declarations.lazy_targets)
+    };
+    assert_eq!(target.namespace, "app.editor");
+    let Some(GlobalRef::External(index)) = target.global else {
+        panic!("{:?}", target.global)
+    };
+    let external = &bodies.references.globals[index as usize];
+    assert_eq!(
+        (
+            external.namespace.as_str(),
+            external.name.as_str(),
+            external.declared
+        ),
+        ("app.editor", "start", true)
+    );
 }
 
 #[test]
@@ -590,7 +616,19 @@ fn every_namespace_of_a_program_is_captured_in_source_order() {
     let c = find(&artifacts, "a.c");
     assert_eq!(c.declarations.requires, ["a.b"]);
     assert_eq!(c.declarations.aliases, [("b".to_owned(), "a.b".to_owned())]);
-    assert_eq!(c.references.globals.len(), 1);
+    // `b/x` is read in `y`'s initializer, a deferred unit, whose body
+    // merges after the next namespace's top-level pass.
+    assert!(c.references.globals.is_empty());
+    let bodies = c.bodies.as_deref().expect("the units' bodies");
+    assert_eq!(
+        bodies
+            .references
+            .globals
+            .iter()
+            .map(|g| (g.namespace.as_str(), g.name.as_str()))
+            .collect::<Vec<_>>(),
+        [("a.b", "x")]
+    );
     assert!(c.patches.is_empty() && c.units.units.iter().all(|u| !u.code.text.is_empty()));
     assert!(c.header.path.ends_with("a/c.cljs"));
 }
@@ -760,13 +798,14 @@ fn nested_macro_expansion_origins_are_captured() {
 
 #[test]
 fn lazy_targets_capture_reserved_protocols_and_records() {
+    // The sites are top-level forms, which reserve the targets before
+    // app.types runs; a definition's would merge after it.
     let sources = Sources::new(&[
         (
             "app/main.cljs",
             "(ns app.main (:require [light.lazy :as lazy]))\n\
-             (def p (lazy/loadable app.types/P))\n\
-             (def r (lazy/loadable app.types/R))\n\
-             (fn [] [p r])\n",
+             [(lazy/loadable app.types/P) (lazy/loadable app.types/R)]\n\
+             (fn [] nil)\n",
         ),
         (
             "app/types.cljs",

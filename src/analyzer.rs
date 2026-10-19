@@ -2881,6 +2881,230 @@ pub(crate) struct NamespaceResolution {
 
 pub(crate) type DiagnosticArities = HashMap<GlobalId, Vec<(usize, bool)>>;
 
+/// The expression warnings of source `source_index` among `program`'s
+/// expressions in `ranges` (its own, in ID order), added to `warnings`,
+/// which are then sorted by source and offset. `arities`, the earlier
+/// sources' declared arities, is first extended with those `declarations`
+/// declare; `checked` holds the source's checked array accesses.
+fn expression_warnings(
+    program: &Program,
+    ranges: &[std::ops::Range<usize>],
+    declarations: &[std::ops::Range<usize>],
+    source_index: usize,
+    checked: &std::collections::HashSet<ExprId>,
+    arities: &mut DiagnosticArities,
+    warnings: &mut Vec<AnalysisWarning>,
+) {
+    let mut locals = HashMap::new();
+    // Each local's type is a finite union. Iterate recurrence edges until
+    // no union changes; unknown operands remain unknown, never guessed.
+    for _ in 0..=program.locals.len() * 8 {
+        let before = locals.clone();
+        for expr in ranges
+            .iter()
+            .flat_map(|range| program.exprs.range(range.clone()))
+        {
+            match &expr.kind {
+                ExprKind::Let { bindings, .. } | ExprKind::Loop { bindings, .. } => {
+                    for &(local, init) in bindings {
+                        let kind = diagnostic_type(program, init, &locals, 0);
+                        *locals.entry(local).or_insert(0) |= kind;
+                    }
+                }
+                ExprKind::Recur { target, args } => {
+                    for (&local, &arg) in program.recur_targets[target.0].params.iter().zip(args) {
+                        let kind = diagnostic_type(program, arg, &locals, 0);
+                        *locals.entry(local).or_insert(0) |= kind;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if locals == before {
+            break;
+        }
+    }
+    // The namespace loader retains its earlier declaration index. Extend
+    // it with this source's finalized expressions, preserving the union of
+    // overloads and redefinitions without rescanning the entire program.
+    for range in declarations {
+        extend_arities(program, range.clone(), arities);
+    }
+    // Assignment targets are children, not separate array reads. Build
+    // their index once: checking each access by scanning all expressions
+    // makes checked-array diagnostics quadratic in large programs.
+    let assignment_targets: std::collections::HashSet<ExprId> = if checked.is_empty() {
+        std::collections::HashSet::new()
+    } else {
+        program
+            .exprs
+            .iter()
+            .filter_map(|expr| match expr.kind {
+                ExprKind::SetGlobal { target, .. } => Some(target),
+                _ => None,
+            })
+            .collect()
+    };
+    for (expr_index, expr) in ranges
+        .iter()
+        .flat_map(|range| (range.start..).zip(program.exprs.range(range.clone())))
+    {
+        if expr.source_index != source_index {
+            continue;
+        }
+        let mut warning = None;
+        let mut arithmetic = Vec::new();
+        if let ExprKind::Call { callee, args } = &expr.kind {
+            match program.exprs[callee.0].kind {
+                ExprKind::CoreFn(core)
+                    if matches!(
+                        core,
+                        CoreFnId::Add | CoreFnId::Subtract | CoreFnId::Multiply | CoreFnId::Divide
+                    ) =>
+                {
+                    let mut types = args
+                        .iter()
+                        .map(|&arg| diagnostic_type(program, arg, &locals, 0))
+                        .collect::<Vec<_>>();
+                    if core == CoreFnId::Divide && args.len() == 1 {
+                        types.insert(0, DIAGNOSTIC_NUMBER);
+                    }
+                    let operands = if types.len() <= 2 {
+                        vec![types]
+                    } else {
+                        std::iter::once(types[..2].to_vec())
+                            .chain(types[2..].iter().map(|&kind| vec![DIAGNOSTIC_NUMBER, kind]))
+                            .collect()
+                    };
+                    for types in operands {
+                        if types.iter().any(|kind| {
+                            kind & (DIAGNOSTIC_ANY | DIAGNOSTIC_NUMBER | DIAGNOSTIC_NIL) == 0
+                                && *kind != 0
+                        }) {
+                            let operator = match core {
+                                CoreFnId::Add => "+",
+                                CoreFnId::Subtract => "-",
+                                CoreFnId::Multiply => "*",
+                                _ => "/",
+                            };
+                            arithmetic.push(("invalid-arithmetic", format!("cljs.core/{operator}, all arguments must be numbers, got [{}] instead", types.into_iter().map(diagnostic_type_name).collect::<Vec<_>>().join(" "))));
+                        }
+                    }
+                }
+                ExprKind::Global(global) => {
+                    let arities = arities.get(&global).map(Vec::as_slice).unwrap_or(&[]);
+                    if !arities.is_empty()
+                        && !arities.iter().any(|&(fixed, variadic)| {
+                            args.len() == fixed || (variadic && args.len() >= fixed)
+                        })
+                    {
+                        let binding = &program.globals[global.0];
+                        warning = Some((
+                            "fn-arity",
+                            format!(
+                                "Wrong number of args ({}) passed to {}/{}",
+                                args.len(),
+                                binding.namespace,
+                                binding.name
+                            ),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if checked.contains(&ExprId(expr_index)) {
+            let indexed = match &expr.kind {
+                ExprKind::JsIndex { receiver, indices } => {
+                    Some((*receiver, indices.as_slice(), None))
+                }
+                ExprKind::SetGlobal { target, value } => match &program.exprs[target.0].kind {
+                    ExprKind::JsIndex { receiver, indices } => {
+                        Some((*receiver, indices.as_slice(), Some(*value)))
+                    }
+                    _ => None,
+                },
+                ExprKind::Call { callee, args } => match program.exprs[callee.0].kind {
+                    ExprKind::CoreFn(CoreFnId::CheckedAGet | CoreFnId::CheckedAGetStrict) => {
+                        Some((args[0], &args[1..], None))
+                    }
+                    ExprKind::CoreFn(CoreFnId::CheckedASet | CoreFnId::CheckedASetStrict) => {
+                        Some((args[0], &args[1..args.len() - 1], args.last().copied()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some((receiver, indices, value)) = indexed {
+                // The assignment target is a child, not a separate aget.
+                let assignment_target =
+                    value.is_none() && assignment_targets.contains(&ExprId(expr_index));
+                if !assignment_target {
+                    let mut types = vec![diagnostic_type(program, receiver, &locals, 0)];
+                    types.extend(
+                        indices
+                            .iter()
+                            .map(|&id| diagnostic_type(program, id, &locals, 0)),
+                    );
+                    if (types[0] & (DIAGNOSTIC_ARRAY | DIAGNOSTIC_ANY) == 0)
+                        || types[1..]
+                            .iter()
+                            .any(|t| t & (DIAGNOSTIC_NUMBER | DIAGNOSTIC_ANY) == 0)
+                    {
+                        let operator = if value.is_some() { "aset" } else { "aget" };
+                        if let Some(value) = value {
+                            types.push(diagnostic_type(program, value, &locals, 0));
+                        }
+                        let required = if value.is_some() {
+                            "an array, followed by numeric indices, followed by a value"
+                        } else {
+                            "an array followed by numeric indices"
+                        };
+                        let alternative = if value.is_some() {
+                            "set"
+                        } else if indices.len() > 1 {
+                            "getValueByKeys"
+                        } else {
+                            "get"
+                        };
+                        warning = Some((
+                            "invalid-array-access",
+                            format!(
+                                "cljs.core/{operator}, arguments must be {required}, got [{}] instead (consider goog.object/{alternative} for object access)",
+                                types
+                                    .into_iter()
+                                    .map(diagnostic_type_name)
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        for (kind, message) in arithmetic.into_iter().chain(warning) {
+            // Some intrinsic lowering shares an indexed child node. Emit
+            // each source diagnostic once, retaining separate occurrences.
+            if kind != "invalid-array-access"
+                || !warnings.iter().any(|w| {
+                    w.source_index == expr.source_index
+                        && w.span == expr.span
+                        && w.kind == kind
+                        && w.message == message
+                })
+            {
+                warnings.push(AnalysisWarning {
+                    kind,
+                    message,
+                    span: expr.span.clone(),
+                    source_index: expr.source_index,
+                });
+            }
+        }
+    }
+    warnings.sort_by_key(|warning| (warning.source_index, warning.span.start));
+}
+
 /// The arities the definitions among `program`'s expressions from `from` on
 /// declare, added to `arities`: what an analysis of a form against `program`
 /// would find there.
@@ -2889,13 +3113,17 @@ pub(crate) fn extend_declared_arities(
     from: usize,
     arities: &mut DiagnosticArities,
 ) {
-    extend_arities(program, from, arities);
+    extend_arities(program, from..program.exprs.len(), arities);
 }
 
 /// Add the arities the definitions among `program.exprs[from..]` declare:
 /// each `fn` a `def` binds, and each type constructor's field count.
-fn extend_arities(program: &Program, from: usize, arities: &mut DiagnosticArities) {
-    for definition in program.exprs.tail_from(from) {
+fn extend_arities(
+    program: &Program,
+    range: std::ops::Range<usize>,
+    arities: &mut DiagnosticArities,
+) {
+    for definition in program.exprs.range(range) {
         match &definition.kind {
             ExprKind::DefType { layout, .. } => {
                 if let Some(global) = layout.constructor {
@@ -2941,6 +3169,108 @@ struct DeferredUnit {
     warnings_at: Option<usize>,
 }
 
+/// A deferred unit analyzed by a drain, whose fragment [`merge_unit`]
+/// appends.
+struct DrainedUnit {
+    placeholder: ExprId,
+    unit: usize,
+    program: std::sync::Arc<Program>,
+    shared: crate::program_fragment::SharedPrefix,
+}
+
+/// Give `program` the globals a drained unit's analysis added before its
+/// fragment merges, as appending it where it drained did, so that the next
+/// namespace resolves them: a new one as the unit has it but without its
+/// metadata, which the merge adds, and to an existing one of the same name
+/// the flags the unit declared it with. The merge then finds them by name.
+fn publish_globals(
+    program: &mut Program,
+    globals: &mut crate::name_index::NameIndex,
+    fragment: &Program,
+    shared: &crate::program_fragment::SharedPrefix,
+) {
+    for global in fragment
+        .globals
+        .range(shared.globals()..fragment.globals.len())
+    {
+        let key = (global.namespace.clone(), global.name.clone());
+        match globals.get(&key) {
+            Some(&id) => {
+                if global.declared {
+                    let existing = &mut program.globals[id.0];
+                    existing.declared = true;
+                    existing.type_descriptor = global.type_descriptor;
+                    existing.constant = global.constant;
+                    existing.define = global.define;
+                    existing.boolean_tag = global.boolean_tag;
+                }
+            }
+            None => {
+                let id = GlobalId(program.globals.len());
+                let mut binding = global.clone();
+                binding.metadata = None;
+                program.globals.push(binding);
+                globals.insert(key, id);
+            }
+        }
+    }
+}
+
+/// Append drained unit `drained` of source `source_index` to `program` and
+/// index the globals it adds; `release` gives its analysis back to the
+/// catalog after. The unit was analyzed from a snapshot of `program`, a
+/// prefix of it, so only what it added is appended. Its snapshot-time view
+/// of the shared globals must not roll back a later declaration's live
+/// metadata or flags, so those stay as they are; of its reader contexts,
+/// only `own_namespace`'s is taken when it is given, the one a unit's
+/// analysis writes, since the others may predate later refreshes.
+fn merge_unit(
+    program: &mut Program,
+    globals: &mut crate::name_index::NameIndex,
+    session: &crate::compilation_session::CompilationSession,
+    drained: DrainedUnit,
+    source_index: usize,
+    own_namespace: Option<&str>,
+    release: bool,
+) -> ExprId {
+    use crate::compile_trace::{Stage, enter};
+    let DrainedUnit {
+        placeholder,
+        unit,
+        program: fragment,
+        shared,
+    } = drained;
+    let defined = program.globals.len();
+    let traced = enter(Stage::Append, source_index, None);
+    let root = crate::program_fragment::append(program, &fragment, &shared, false, own_namespace);
+    drop(traced);
+    if release {
+        let _traced = enter(Stage::Release, source_index, None);
+        session.release_application_ir(unit);
+    }
+    let _traced = enter(Stage::Index, source_index, None);
+    for (index, global) in program.globals.iter().enumerate().skip(defined) {
+        globals.insert(
+            (global.namespace.clone(), global.name.clone()),
+            GlobalId(index),
+        );
+    }
+    if session.capturing() {
+        let added = fragment
+            .globals
+            .range(shared.globals()..fragment.globals.len())
+            .filter_map(|global| {
+                globals
+                    .get(&(global.namespace.clone(), global.name.clone()))
+                    .map(|id| id.0)
+            })
+            .collect();
+        session.capture_added_globals(unit, added);
+    }
+    program.exprs[placeholder.0].kind = ExprKind::Do(vec![root]);
+    root
+}
+
 struct Analyzer<'a> {
     source: &'a str,
     syntax: Cow<'a, SyntaxTree>,
@@ -2957,6 +3287,10 @@ struct Analyzer<'a> {
     /// Deferred units in registration order, drained when the source's
     /// top-level forms are analyzed.
     deferred: Vec<DeferredUnit>,
+    /// For a namespace of a [`NamespaceAnalysis`], the units its drains
+    /// analyzed, which merge into the program after the next namespace's
+    /// top-level pass; `None` appends each where it drains.
+    drained: Option<Vec<DrainedUnit>>,
     macro_depth: usize,
     analysis_depth: usize,
     macro_source: Option<Source>,
@@ -3368,6 +3702,7 @@ fn analyze_input(
         macro_host,
         engine,
         deferred: Vec::new(),
+        drained: None,
         macro_depth: 0,
         analysis_depth: 0,
         macro_source: owned_forms.first().map(|form| form.span().source().clone()),
@@ -3478,6 +3813,7 @@ fn analyze_input(
             &program,
             &crate::program_fragment::SharedPrefix::same(&snapshot.resolution_program),
             true,
+            None,
         );
         session.release_application_ir(unit);
         analyzer.warnings.extend(warnings);
@@ -3586,17 +3922,26 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
     for (source_index, input) in inputs.iter().enumerate() {
         let resolution =
             prepare(macro_host, source_index).map_err(|error| (source_index, error))?;
-        analysis
-            .analyze(
-                input,
-                resolution,
-                source_index + 1 == inputs.len(),
-                macro_host,
-                options,
-                warnings,
-            )
-            .map_err(|error| (source_index, error))?;
+        let analyzed = analysis.analyze(
+            input,
+            resolution,
+            source_index + 1 == inputs.len(),
+            macro_host,
+            options,
+            warnings,
+        );
+        // The previous namespace's units merge after this one's top-level
+        // pass; all of them when it failed, so that their warnings are
+        // reported. Without artifacts, nothing can fail to merge.
+        if analyzed.is_err() {
+            let _ = analysis.merge_all(macro_host, warnings);
+        }
+        analyzed.map_err(|error| (source_index, error))?;
+        while analysis.pending_merges() > 1 {
+            let _ = analysis.merge_front(macro_host, warnings);
+        }
     }
+    let _ = analysis.merge_all(macro_host, warnings);
     analysis.finish(inputs.len().saturating_sub(1), macro_host)
 }
 
@@ -3633,6 +3978,46 @@ pub(crate) struct NamespaceAnalysis {
     /// Indexes over the program that installing artifacts resolves against
     /// ([`crate::artifact_install`]), extended as the program grows.
     install_index: crate::artifact_install::InstallIndex,
+    /// The namespaces analyzed or installed whose units have not merged,
+    /// oldest first: after the next namespace's top-level pass, the
+    /// caller merges each with [`Self::merge_front`].
+    pending: std::collections::VecDeque<Pending>,
+    /// The namespaces the last namespace's lazy references name, in site
+    /// order ([`Self::lazy_namespaces`]).
+    last_lazy: Vec<(String, Span)>,
+}
+
+/// A namespace whose units merge after the next namespace's top-level pass.
+enum Pending {
+    Analyzed(DrainedNamespace),
+    /// Installed from an artifact, whose bodies install then
+    /// ([`crate::artifact_install::install_bodies`]).
+    Installed {
+        artifact: Box<crate::namespace_artifact::NamespaceArtifact>,
+        top: crate::artifact_install::InstalledTop,
+        source_index: usize,
+        /// The expressions its first part installed.
+        exprs: std::ops::Range<usize>,
+    },
+}
+
+/// What merging a namespace appended ([`NamespaceAnalysis::merge_front`]).
+pub(crate) struct Merged {
+    pub(crate) source_index: usize,
+    /// Each merged unit's placeholder and the root of its body.
+    pub(crate) placeholders: Vec<(ExprId, ExprId)>,
+}
+
+/// A namespace whose analysis returned, with what merging its drained
+/// units needs ([`NamespaceAnalysis::merge_front`]).
+struct DrainedNamespace {
+    namespace: String,
+    source_index: usize,
+    /// The expressions of its top-level pass.
+    top: std::ops::Range<usize>,
+    units: Vec<DrainedUnit>,
+    checked_array_exprs: std::collections::HashSet<ExprId>,
+    defines_macros: bool,
 }
 
 impl NamespaceAnalysis {
@@ -3653,17 +4038,21 @@ impl NamespaceAnalysis {
             deferred_time: None,
             unit_slots: crate::scheduler::Slots::ONE,
             install_index: Default::default(),
+            pending: Default::default(),
+            last_lazy: Vec::new(),
         }
     }
 
-    /// How many lazy reference sites the sources analyzed so far hold.
-    pub(crate) fn lazy_target_count(&self) -> usize {
-        self.program.lazy_targets.len()
+    /// The distinct namespaces the lazy references of the namespace last
+    /// analyzed or installed name, in site order, with the first site's
+    /// span: its units' sites included, before they merge.
+    pub(crate) fn lazy_namespaces(&self) -> &[(String, Span)] {
+        &self.last_lazy
     }
 
     /// The distinct namespaces the lazy targets from site `first` on name, in
     /// site order.
-    pub(crate) fn lazy_namespaces_since(&self, first: usize) -> Vec<(String, Span)> {
+    fn lazy_namespaces_since(&self, first: usize) -> Vec<(String, Span)> {
         let mut namespaces: Vec<(String, Span)> = Vec::new();
         for target in &self.program.lazy_targets[first..] {
             let namespace = &self.program.lazy_namespaces[target.namespace];
@@ -3679,6 +4068,8 @@ impl NamespaceAnalysis {
 
     /// Analyze the next source, whose dependencies were analyzed before it.
     /// `result` marks the entry namespace, whose value is the program's.
+    /// Its units merge once the caller has analyzed or installed the next
+    /// one ([`Self::merge_front`]).
     pub(crate) fn analyze(
         &mut self,
         input: &NamespaceInput<'_>,
@@ -3688,7 +4079,131 @@ impl NamespaceAnalysis {
         options: AnalysisOptions,
         warnings: &mut Vec<AnalysisWarning>,
     ) -> Result<(), AnalysisError> {
+        let analyzed =
+            self.analyze_source(input, resolution, result, macro_host, options, warnings)?;
+        self.pending.push_back(Pending::Analyzed(analyzed));
+        Ok(())
+    }
+
+    /// How many namespaces wait to merge their units.
+    pub(crate) fn pending_merges(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Merge the units of the oldest namespace waiting to, after the next
+    /// namespace's top-level pass (docs/compiler-concurrency.md, "Stage
+    /// A"): append its drained units in unit order, or install its
+    /// artifact's bodies, and report the expression warnings that read
+    /// them. An installation that fails fails the compilation.
+    pub(crate) fn merge_front(
+        &mut self,
+        macro_host: &MacroHost,
+        warnings: &mut Vec<AnalysisWarning>,
+    ) -> Result<Option<Merged>, String> {
+        let Some(pending) = self.pending.pop_front() else {
+            return Ok(None);
+        };
+        let drained = match pending {
+            Pending::Analyzed(drained) => drained,
+            Pending::Installed {
+                artifact,
+                top,
+                source_index,
+                exprs,
+            } => {
+                let bodies = self.program.exprs.len();
+                crate::artifact_install::install_bodies(
+                    crate::artifact_install::Target {
+                        program: &mut self.program,
+                        names: &mut self.globals,
+                        index: &mut self.install_index,
+                        source_index,
+                        warnings,
+                    },
+                    &artifact,
+                    top,
+                )?;
+                for range in [exprs, bodies..self.program.exprs.len()] {
+                    extend_arities(&self.program, range, &mut self.arities);
+                }
+                return Ok(Some(Merged {
+                    source_index,
+                    placeholders: Vec::new(),
+                }));
+            }
+        };
+        let bodies = self.program.exprs.len();
+        let mut placeholders = Vec::with_capacity(drained.units.len());
+        if let Some(session) = macro_host.session_handle() {
+            for unit in drained.units {
+                let placeholder = unit.placeholder;
+                let root = merge_unit(
+                    &mut self.program,
+                    &mut self.globals,
+                    &session,
+                    unit,
+                    drained.source_index,
+                    Some(&drained.namespace),
+                    false,
+                );
+                placeholders.push((placeholder, root));
+            }
+        }
+        // Appending restored the reader context of the units' snapshots.
+        if drained.defines_macros {
+            let macros = macro_host.source_macro_names(&drained.namespace);
+            if self.program.reader_contexts[drained.namespace.as_str()].macros != macros {
+                self.program
+                    .reader_contexts
+                    .get_mut(drained.namespace.as_str())
+                    .unwrap()
+                    .macros = macros;
+            }
+        }
+        let _traced = crate::compile_trace::enter(
+            crate::compile_trace::Stage::Warnings,
+            drained.source_index,
+            None,
+        );
+        let ranges = [drained.top, bodies..self.program.exprs.len()];
+        expression_warnings(
+            &self.program,
+            &ranges,
+            &ranges,
+            drained.source_index,
+            &drained.checked_array_exprs,
+            &mut self.arities,
+            warnings,
+        );
+        Ok(Some(Merged {
+            source_index: drained.source_index,
+            placeholders,
+        }))
+    }
+
+    /// Merge every namespace waiting to, in order: before the program is
+    /// finished, or when a namespace failed, so that the earlier ones'
+    /// warnings are reported.
+    pub(crate) fn merge_all(
+        &mut self,
+        macro_host: &MacroHost,
+        warnings: &mut Vec<AnalysisWarning>,
+    ) -> Result<(), String> {
+        while self.merge_front(macro_host, warnings)?.is_some() {}
+        Ok(())
+    }
+
+    fn analyze_source(
+        &mut self,
+        input: &NamespaceInput<'_>,
+        resolution: NamespaceResolution,
+        result: bool,
+        macro_host: &mut MacroHost,
+        options: AnalysisOptions,
+        warnings: &mut Vec<AnalysisWarning>,
+    ) -> Result<DrainedNamespace, AnalysisError> {
         let source_index = self.roots.len();
+        let first_lazy = self.program.lazy_targets.len();
         // The names its analysis generates, deferred units included, are
         // the same whenever and wherever it runs ([`crate::generated_names`]).
         let _names = crate::generated_names::enter_namespace(
@@ -3718,6 +4233,7 @@ impl NamespaceAnalysis {
             macro_host,
             engine: None,
             deferred: Vec::new(),
+            drained: Some(Vec::new()),
             macro_depth: 0,
             analysis_depth: 0,
             macro_source: None,
@@ -3750,6 +4266,80 @@ impl NamespaceAnalysis {
             unit_slots: self.unit_slots,
         };
         analyzer.first_expr = analyzer.program.exprs.len();
+        let outcome = namespace_forms(
+            &mut analyzer,
+            input,
+            &source_roots,
+            result,
+            &mut self.deferred_time,
+            top_level,
+        );
+        let top = analyzer.first_expr..analyzer.program.exprs.len();
+        let units = analyzer.drained.take().unwrap_or_default();
+        let checked_array_exprs = std::mem::take(&mut analyzer.checked_array_exprs);
+        let defines_macros = analyzer.defines_macros;
+        if !analyzer
+            .program
+            .namespaces
+            .iter()
+            .any(|ns| ns == input.name)
+        {
+            analyzer.program.namespaces.push(input.name.into());
+        }
+        self.program = analyzer.program;
+        self.globals = analyzer.globals;
+        let root = outcome?;
+        // The namespaces its lazy references name, in the order its
+        // program had them when its units appended where they drained:
+        // the top-level pass's sites, then each unit's.
+        let mut lazy: Vec<(String, Span)> = Vec::new();
+        let mut note = |namespace: &String, span: &Span| {
+            if !lazy.iter().any(|(existing, _)| existing == namespace) {
+                lazy.push((namespace.clone(), span.clone()));
+            }
+        };
+        for target in &self.program.lazy_targets[first_lazy..] {
+            note(
+                &self.program.lazy_namespaces[target.namespace],
+                &self.program.exprs[target.site.0].span,
+            );
+        }
+        for unit in &units {
+            for target in unit.program.lazy_targets.iter() {
+                if target.site.0 >= unit.shared.exprs() {
+                    note(
+                        &unit.program.lazy_namespaces[target.namespace],
+                        &unit.program.exprs[target.site.0].span,
+                    );
+                }
+            }
+        }
+        self.last_lazy = lazy;
+        self.roots.push(root);
+        self.requires.push(input.requires.to_vec());
+        Ok(DrainedNamespace {
+            namespace: input.name.into(),
+            source_index,
+            top,
+            units,
+            checked_array_exprs,
+            defines_macros,
+        })
+    }
+}
+
+/// A namespace's top-level pass and drain ([`NamespaceAnalysis::analyze`]):
+/// the value of its body, or the error that stopped it.
+fn namespace_forms(
+    analyzer: &mut Analyzer<'_>,
+    input: &NamespaceInput<'_>,
+    source_roots: &[NodeId],
+    result: bool,
+    deferred_time: &mut Option<std::time::Duration>,
+    top_level: crate::compile_trace::Span,
+) -> Result<ExprId, AnalysisError> {
+    let source_index = analyzer.source_index;
+    {
         for (local, namespace, original) in &analyzer.resolution.refers.clone() {
             let runtime = if matches!(namespace.as_str(), "cljs.core" | "clojure.core") {
                 CoreFnId::resolve(original).is_some()
@@ -3811,34 +4401,20 @@ impl NamespaceAnalysis {
             .namespace_entries
             .insert(root, input.name.into());
         drop(top_level);
-        let drained = crate::compile_stats::start(self.deferred_time.is_some());
+        let drained = crate::compile_stats::start(deferred_time.is_some());
         let drain =
             crate::compile_trace::enter(crate::compile_trace::Stage::Drain, source_index, None);
         analyzer.drain_deferred()?;
         drop(drain);
-        if let Some(time) = &mut self.deferred_time {
+        if let Some(time) = deferred_time {
             crate::compile_stats::add(time, drained);
         }
         analyzer.refresh_reader_macros_after_drain();
-        let traced =
-            crate::compile_trace::enter(crate::compile_trace::Stage::Warnings, source_index, None);
-        analyzer.collect_expression_warnings(Some(&mut self.arities));
-        drop(traced);
-        if !analyzer
-            .program
-            .namespaces
-            .iter()
-            .any(|ns| ns == input.name)
-        {
-            analyzer.program.namespaces.push(input.name.into());
-        }
-        self.program = analyzer.program;
-        self.globals = analyzer.globals;
-        self.roots.push(root);
-        self.requires.push(input.requires.to_vec());
-        Ok(())
+        Ok(root)
     }
+}
 
+impl NamespaceAnalysis {
     /// Begin capturing the next namespace's artifact
     /// ([`crate::artifact_capture`]), before its analysis.
     pub(crate) fn begin_capture(
@@ -3849,6 +4425,22 @@ impl NamespaceAnalysis {
         crate::artifact_capture::begin(
             &mut self.program,
             self.roots.len(),
+            warnings,
+            macro_host.session_handle().as_deref(),
+        )
+    }
+
+    /// Begin capturing what merging the units of source `source_index`
+    /// appends ([`Self::finish_bodies`]).
+    pub(crate) fn begin_bodies_capture(
+        &mut self,
+        source_index: usize,
+        warnings: &[AnalysisWarning],
+        macro_host: &MacroHost,
+    ) -> crate::artifact_capture::CaptureStart {
+        crate::artifact_capture::begin(
+            &mut self.program,
+            source_index,
             warnings,
             macro_host.session_handle().as_deref(),
         )
@@ -3883,6 +4475,37 @@ impl NamespaceAnalysis {
         )
     }
 
+    /// Capture into `artifact`, the first part of a namespace's artifact
+    /// begun at `top`, what the merge of its units, begun at `start`, just
+    /// appended ([`crate::artifact_capture::finish_bodies`]).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn finish_bodies(
+        &self,
+        artifact: &mut crate::namespace_artifact::NamespaceArtifact,
+        top: &crate::artifact_capture::CaptureStart,
+        start: &crate::artifact_capture::CaptureStart,
+        merged: &Merged,
+        units: std::ops::Range<usize>,
+        macro_host: &MacroHost,
+        warnings: &[AnalysisWarning],
+    ) -> Result<(), String> {
+        crate::artifact_capture::finish_bodies(
+            artifact,
+            top,
+            start,
+            crate::artifact_capture::Completed {
+                program: &self.program,
+                names: &self.globals,
+                root: ExprId(0),
+                source_index: merged.source_index,
+                warnings,
+            },
+            &merged.placeholders,
+            units,
+            macro_host,
+        )
+    }
+
     /// Install the next source from its artifact in place of analyzing it
     /// ([`crate::artifact_install`]): what [`Self::analyze`] would have
     /// added to the program, the macro host and the compilation session,
@@ -3900,6 +4523,9 @@ impl NamespaceAnalysis {
         warnings: &mut Vec<AnalysisWarning>,
     ) -> Result<(), crate::artifact_install::InstallError> {
         let first_expr = self.program.exprs.len();
+        let first_lazy = self.program.lazy_targets.len();
+        let first_unit = macro_host.session_handle().map_or(0, |s| s.next_unit());
+        let source_index = self.roots.len();
         let root = crate::artifact_install::install(
             crate::artifact_install::Target {
                 program: &mut self.program,
@@ -3912,9 +4538,30 @@ impl NamespaceAnalysis {
             source,
             macro_host,
         )?;
-        extend_arities(&self.program, first_expr, &mut self.arities);
+        let mut lazy = self.lazy_namespaces_since(first_lazy);
+        if let Some(bodies) = &artifact.bodies {
+            for target in &bodies.declarations.lazy_targets {
+                if !lazy
+                    .iter()
+                    .any(|(existing, _)| *existing == target.namespace)
+                {
+                    let (start, end) = bodies.ir.exprs[target.site.0 as usize].span;
+                    lazy.push((target.namespace.clone(), start as usize..end as usize));
+                }
+            }
+        }
+        self.last_lazy = lazy;
         self.roots.push(root);
         self.requires.push(artifact.declarations.requires.clone());
+        self.pending.push_back(Pending::Installed {
+            artifact: Box::new(artifact.bodies_only()),
+            top: crate::artifact_install::InstalledTop {
+                exprs: first_expr,
+                first_unit,
+            },
+            source_index,
+            exprs: first_expr..self.program.exprs.len(),
+        });
         Ok(())
     }
 
@@ -4264,224 +4911,22 @@ impl Analyzer<'_> {
     }
 
     fn collect_expression_warnings(&mut self, prior_arities: Option<&mut DiagnosticArities>) {
-        let mut locals = HashMap::new();
-        // Each local's type is a finite union. Iterate recurrence edges until
-        // no union changes; unknown operands remain unknown, never guessed.
-        for _ in 0..=self.program.locals.len() * 8 {
-            let before = locals.clone();
-            for expr in self.program.exprs.tail_from(self.first_expr) {
-                match &expr.kind {
-                    ExprKind::Let { bindings, .. } | ExprKind::Loop { bindings, .. } => {
-                        for &(local, init) in bindings {
-                            let kind = diagnostic_type(&self.program, init, &locals, 0);
-                            *locals.entry(local).or_insert(0) |= kind;
-                        }
-                    }
-                    ExprKind::Recur { target, args } => {
-                        for (&local, &arg) in
-                            self.program.recur_targets[target.0].params.iter().zip(args)
-                        {
-                            let kind = diagnostic_type(&self.program, arg, &locals, 0);
-                            *locals.entry(local).or_insert(0) |= kind;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if locals == before {
-                break;
-            }
-        }
+        let all = self.first_expr..self.program.exprs.len();
         let declarations = if self.deferred_unit || prior_arities.is_some() {
-            self.first_expr
+            all.clone()
         } else {
-            0
+            0..self.program.exprs.len()
         };
-        // The namespace loader retains its earlier declaration index. Extend
-        // it with this source's finalized expressions, preserving the union of
-        // overloads and redefinitions without rescanning the entire program.
         let mut local_arities = DiagnosticArities::new();
-        let arities = prior_arities.unwrap_or(&mut local_arities);
-        extend_arities(&self.program, declarations, arities);
-        // Assignment targets are children, not separate array reads. Build
-        // their index once: checking each access by scanning all expressions
-        // makes checked-array diagnostics quadratic in large programs.
-        let assignment_targets: std::collections::HashSet<ExprId> =
-            if self.checked_array_exprs.is_empty() {
-                std::collections::HashSet::new()
-            } else {
-                self.program
-                    .exprs
-                    .iter()
-                    .filter_map(|expr| match expr.kind {
-                        ExprKind::SetGlobal { target, .. } => Some(target),
-                        _ => None,
-                    })
-                    .collect()
-            };
-        for (expr_index, expr) in
-            (self.first_expr..).zip(self.program.exprs.tail_from(self.first_expr))
-        {
-            if expr.source_index != self.source_index {
-                continue;
-            }
-            let mut warning = None;
-            let mut arithmetic = Vec::new();
-            if let ExprKind::Call { callee, args } = &expr.kind {
-                match self.program.exprs[callee.0].kind {
-                    ExprKind::CoreFn(core)
-                        if matches!(
-                            core,
-                            CoreFnId::Add
-                                | CoreFnId::Subtract
-                                | CoreFnId::Multiply
-                                | CoreFnId::Divide
-                        ) =>
-                    {
-                        let mut types = args
-                            .iter()
-                            .map(|&arg| diagnostic_type(&self.program, arg, &locals, 0))
-                            .collect::<Vec<_>>();
-                        if core == CoreFnId::Divide && args.len() == 1 {
-                            types.insert(0, DIAGNOSTIC_NUMBER);
-                        }
-                        let operands = if types.len() <= 2 {
-                            vec![types]
-                        } else {
-                            std::iter::once(types[..2].to_vec())
-                                .chain(types[2..].iter().map(|&kind| vec![DIAGNOSTIC_NUMBER, kind]))
-                                .collect()
-                        };
-                        for types in operands {
-                            if types.iter().any(|kind| {
-                                kind & (DIAGNOSTIC_ANY | DIAGNOSTIC_NUMBER | DIAGNOSTIC_NIL) == 0
-                                    && *kind != 0
-                            }) {
-                                let operator = match core {
-                                    CoreFnId::Add => "+",
-                                    CoreFnId::Subtract => "-",
-                                    CoreFnId::Multiply => "*",
-                                    _ => "/",
-                                };
-                                arithmetic.push(("invalid-arithmetic", format!("cljs.core/{operator}, all arguments must be numbers, got [{}] instead", types.into_iter().map(diagnostic_type_name).collect::<Vec<_>>().join(" "))));
-                            }
-                        }
-                    }
-                    ExprKind::Global(global) => {
-                        let arities = arities.get(&global).map(Vec::as_slice).unwrap_or(&[]);
-                        if !arities.is_empty()
-                            && !arities.iter().any(|&(fixed, variadic)| {
-                                args.len() == fixed || (variadic && args.len() >= fixed)
-                            })
-                        {
-                            let binding = &self.program.globals[global.0];
-                            warning = Some((
-                                "fn-arity",
-                                format!(
-                                    "Wrong number of args ({}) passed to {}/{}",
-                                    args.len(),
-                                    binding.namespace,
-                                    binding.name
-                                ),
-                            ));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if self.checked_array_exprs.contains(&ExprId(expr_index)) {
-                let indexed = match &expr.kind {
-                    ExprKind::JsIndex { receiver, indices } => {
-                        Some((*receiver, indices.as_slice(), None))
-                    }
-                    ExprKind::SetGlobal { target, value } => {
-                        match &self.program.exprs[target.0].kind {
-                            ExprKind::JsIndex { receiver, indices } => {
-                                Some((*receiver, indices.as_slice(), Some(*value)))
-                            }
-                            _ => None,
-                        }
-                    }
-                    ExprKind::Call { callee, args } => match self.program.exprs[callee.0].kind {
-                        ExprKind::CoreFn(CoreFnId::CheckedAGet | CoreFnId::CheckedAGetStrict) => {
-                            Some((args[0], &args[1..], None))
-                        }
-                        ExprKind::CoreFn(CoreFnId::CheckedASet | CoreFnId::CheckedASetStrict) => {
-                            Some((args[0], &args[1..args.len() - 1], args.last().copied()))
-                        }
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                if let Some((receiver, indices, value)) = indexed {
-                    // The assignment target is a child, not a separate aget.
-                    let assignment_target =
-                        value.is_none() && assignment_targets.contains(&ExprId(expr_index));
-                    if !assignment_target {
-                        let mut types = vec![diagnostic_type(&self.program, receiver, &locals, 0)];
-                        types.extend(
-                            indices
-                                .iter()
-                                .map(|&id| diagnostic_type(&self.program, id, &locals, 0)),
-                        );
-                        if (types[0] & (DIAGNOSTIC_ARRAY | DIAGNOSTIC_ANY) == 0)
-                            || types[1..]
-                                .iter()
-                                .any(|t| t & (DIAGNOSTIC_NUMBER | DIAGNOSTIC_ANY) == 0)
-                        {
-                            let operator = if value.is_some() { "aset" } else { "aget" };
-                            if let Some(value) = value {
-                                types.push(diagnostic_type(&self.program, value, &locals, 0));
-                            }
-                            let required = if value.is_some() {
-                                "an array, followed by numeric indices, followed by a value"
-                            } else {
-                                "an array followed by numeric indices"
-                            };
-                            let alternative = if value.is_some() {
-                                "set"
-                            } else if indices.len() > 1 {
-                                "getValueByKeys"
-                            } else {
-                                "get"
-                            };
-                            warning = Some((
-                                "invalid-array-access",
-                                format!(
-                                    "cljs.core/{operator}, arguments must be {required}, got [{}] instead (consider goog.object/{alternative} for object access)",
-                                    types
-                                        .into_iter()
-                                        .map(diagnostic_type_name)
-                                        .collect::<Vec<_>>()
-                                        .join(" ")
-                                ),
-                            ));
-                        }
-                    }
-                }
-            }
-            for (kind, message) in arithmetic.into_iter().chain(warning) {
-                // Some intrinsic lowering shares an indexed child node. Emit
-                // each source diagnostic once, retaining separate occurrences.
-                if kind != "invalid-array-access"
-                    || !self.warnings.iter().any(|w| {
-                        w.source_index == expr.source_index
-                            && w.span == expr.span
-                            && w.kind == kind
-                            && w.message == message
-                    })
-                {
-                    self.warnings.push(AnalysisWarning {
-                        kind,
-                        message,
-                        span: expr.span.clone(),
-                        source_index: expr.source_index,
-                    });
-                }
-            }
-        }
-        self.warnings
-            .sort_by_key(|warning| (warning.source_index, warning.span.start));
+        expression_warnings(
+            &self.program,
+            &[all],
+            &[declarations],
+            self.source_index,
+            &self.checked_array_exprs,
+            prior_arities.unwrap_or(&mut local_arities),
+            self.warnings,
+        );
     }
 
     /// Whether forms generated by a macro nest deeper than analysis allows,
@@ -6855,38 +7300,43 @@ impl Analyzer<'_> {
                     break;
                 }
             };
-            use crate::compile_trace::{Stage, enter};
-            let defined = self.program.globals.len();
-            // The unit was analyzed from a snapshot of this program, so only
-            // what it added is appended. Its snapshot-time view of the shared
-            // globals must not roll back a later source declaration's live
-            // metadata/flags, so those stay as they are.
-            let traced = enter(Stage::Append, self.source_index, None);
-            let root = crate::program_fragment::append(&mut self.program, &program, &shared, false);
-            drop(traced);
-            let traced = enter(Stage::Release, self.source_index, None);
-            session.release_application_ir(unit);
-            drop(traced);
-            let _traced = enter(Stage::Index, self.source_index, None);
-            for (index, global) in self.program.globals.iter().enumerate().skip(defined) {
-                self.globals.insert(
-                    (global.namespace.clone(), global.name.clone()),
-                    GlobalId(index),
-                );
+            let drained = DrainedUnit {
+                placeholder,
+                unit,
+                program,
+                shared,
+            };
+            match &mut self.drained {
+                // A namespace's units merge after the next namespace's
+                // top-level pass ([`NamespaceAnalysis::merge_front`]); the
+                // catalog's copy is released now, as when they appended here.
+                Some(drained_units) => {
+                    publish_globals(
+                        &mut self.program,
+                        &mut self.globals,
+                        &drained.program,
+                        &drained.shared,
+                    );
+                    drained_units.push(drained);
+                    let _traced = crate::compile_trace::enter(
+                        crate::compile_trace::Stage::Release,
+                        self.source_index,
+                        None,
+                    );
+                    session.release_application_ir(unit);
+                }
+                None => {
+                    merge_unit(
+                        &mut self.program,
+                        &mut self.globals,
+                        session,
+                        drained,
+                        self.source_index,
+                        None,
+                        true,
+                    );
+                }
             }
-            if session.capturing() {
-                let added = program
-                    .globals
-                    .range(shared.globals()..program.globals.len())
-                    .filter_map(|global| {
-                        self.globals
-                            .get(&(global.namespace.clone(), global.name.clone()))
-                            .map(|id| id.0)
-                    })
-                    .collect();
-                session.capture_added_globals(unit, added);
-            }
-            self.program.exprs[placeholder.0].kind = ExprKind::Do(vec![root]);
             self.warnings.extend(warnings);
         }
         if failure.is_none() || keep_later {

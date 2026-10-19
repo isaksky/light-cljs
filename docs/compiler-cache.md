@@ -895,6 +895,33 @@ subexpressions alone); installation refuses them too. Every failure is a typed
 reports as a miss. The encoder refuses reader data deeper than the default
 depth limit, so it never writes an artifact the decoder would refuse.
 
+*As built (light-cljs-338), two-part artifacts:* a namespace's deferred
+units now merge into the program after the next namespace's top-level pass
+(docs/compiler-concurrency.md, "Stage A"), so its program is two ranges with
+another namespace's declarations between them, and an artifact holds both.
+Its first part is captured where the namespace's analysis returns, as
+before, with its units and registrations; `NamespaceArtifact::bodies` holds
+the second, captured when the merge has appended it
+(`artifact_capture::finish_bodies`, begun just before the merge): its own IR
+tables, globals, side-table entries and lazy targets, the patches the merge
+made to earlier globals (the namespace's top-level ones included), its own
+external references by name, each unit's placeholder and the root of its
+body, and the namespace's reader context after the merge. The merge's
+warnings, the namespace's expression warnings, join the first part's, which
+installing it reports. A unit's view names the globals its merge added by
+namespace, name and flags (`AddedGlobal`), which is all a registration reads,
+since they exist only after the merge. Installation follows the same
+order: `artifact_install::install` appends the first part where the
+analysis would have run and registers its units, and
+`artifact_install::install_bodies` appends the bodies, patches their
+placeholders and resolves their references after the next namespace's
+top-level pass, reserving an external global the namespaces between no
+longer create, as the merge would have; a cached build keeps the IDs of an
+uncached one. The cache keys a namespace when its analysis returns and
+publishes its artifact once its bodies are captured (`CompileCache::analyzed`
+and `publish`). The bodies are written after the declarations and the IR
+in their sections, `SCHEMA_VERSION` 7.
+
 The decoder reads only its own `SCHEMA_VERSION`; there is no migration,
 since artifacts are disposable. Any change to the bytes written bumps it.
 That includes a field added to an artifact type, which does not compile

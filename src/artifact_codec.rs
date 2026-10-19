@@ -66,7 +66,7 @@ use std::sync::OnceLock;
 
 pub const MAGIC: [u8; 8] = *b"LCLJSART";
 /// The encoding's version. Bump it with any change to the bytes written.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
@@ -337,6 +337,7 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
         references,
         names,
         accounting,
+        bodies,
     } = artifact;
     let Header {
         namespace,
@@ -366,34 +367,31 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
                 out.index(root.0);
                 out.policy(*policy);
                 out.declarations(declarations);
-                out.list(patches, |out, patch| {
-                    let GlobalPatch {
-                        global,
-                        flags,
-                        metadata,
-                    } = patch;
-                    out.global(*global);
-                    out.flags(*flags);
-                    out.option_index(metadata.map(|e| e.0));
-                });
-                let References {
-                    namespaces: _,
-                    globals,
-                } = references;
-                out.list(globals, |out, global| {
-                    let ExternalGlobal {
-                        namespace,
-                        name,
-                        declared,
-                        private,
-                    } = global;
-                    out.str(namespace);
-                    out.str(name);
-                    out.bool(*declared);
-                    out.option_bool(*private);
-                });
+                out.patches(patches);
+                out.external_globals(&references.globals);
+                // The bodies' declarations, patches and references; their
+                // IR is in the IR section.
+                match bodies {
+                    None => out.u8(0),
+                    Some(bodies) => {
+                        out.u8(1);
+                        out.declarations(&bodies.declarations);
+                        out.patches(&bodies.patches);
+                        out.strs(&bodies.references.namespaces);
+                        out.external_globals(&bodies.references.globals);
+                    }
+                }
             }
-            Section::Ir => out.ir(ir),
+            Section::Ir => {
+                out.ir(ir);
+                if let Some(bodies) = bodies {
+                    out.ir(&bodies.ir);
+                    out.list(&bodies.placeholders, |out, (placeholder, root)| {
+                        out.index(placeholder.0);
+                        out.index(root.0);
+                    });
+                }
+            }
             Section::Units => out.deferred_units(units),
             Section::Diagnostics => out.diagnostics(diagnostics),
             Section::Names => {
@@ -885,6 +883,32 @@ impl Writer<'_> {
     fn locals(&mut self, items: &[LocalRef]) {
         self.list(items, |out, l| out.index(l.0));
     }
+    fn patches(&mut self, patches: &[GlobalPatch]) {
+        self.list(patches, |out, patch| {
+            let GlobalPatch {
+                global,
+                flags,
+                metadata,
+            } = patch;
+            out.global(*global);
+            out.flags(*flags);
+            out.option_index(metadata.map(|e| e.0));
+        });
+    }
+    fn external_globals(&mut self, globals: &[ExternalGlobal]) {
+        self.list(globals, |out, global| {
+            let ExternalGlobal {
+                namespace,
+                name,
+                declared,
+                private,
+            } = global;
+            out.str(namespace);
+            out.str(name);
+            out.bool(*declared);
+            out.option_bool(*private);
+        });
+    }
     fn flags(&mut self, flags: GlobalFlags) {
         let GlobalFlags {
             type_descriptor,
@@ -931,7 +955,11 @@ impl Writer<'_> {
             reader_context,
         } = view;
         self.index(*own_globals);
-        self.list(added, |out, &g| out.global(g));
+        self.list(added, |out, added| {
+            out.str(&added.namespace);
+            out.str(&added.name);
+            out.flags(added.flags);
+        });
         match reader_context {
             None => self.u8(0),
             Some(context) => {
@@ -2025,25 +2053,29 @@ pub fn decode(
     };
     let mut declarations = r.declarations()?;
     declarations.requires = manifest.requires.clone();
-    let patches = r.list(|r| {
-        Ok(GlobalPatch {
-            global: r.global()?,
-            flags: r.flags()?,
-            metadata: r.option_index()?.map(ExprRef),
-        })
-    })?;
-    let globals = r.list(|r| {
-        Ok(ExternalGlobal {
-            namespace: r.string()?,
-            name: r.string()?,
-            declared: r.bool()?,
-            private: r.option_bool()?,
-        })
-    })?;
+    let patches = r.patches()?;
+    let globals = r.external_globals()?;
+    let mut bodies = if r.present("bodies")? {
+        Some(Box::new(Bodies {
+            declarations: r.declarations()?,
+            patches: r.patches()?,
+            references: References {
+                namespaces: r.strings()?,
+                globals: r.external_globals()?,
+            },
+            ..Default::default()
+        }))
+    } else {
+        None
+    };
     r.input.end()?;
 
     let mut r = reader(2)?;
     let ir = r.ir()?;
+    if let Some(bodies) = &mut bodies {
+        bodies.ir = r.ir()?;
+        bodies.placeholders = r.list(|r| Ok((ExprRef(r.index()?), ExprRef(r.index()?))))?;
+    }
     r.input.end()?;
 
     let mut r = reader(3)?;
@@ -2093,6 +2125,7 @@ pub fn decode(
         },
         names,
         accounting,
+        bodies,
     };
     if cancelled() {
         return Err(DecodeError::Cancelled);
@@ -2470,6 +2503,25 @@ impl<'a> Reader<'a> {
     fn locals(&mut self) -> Result<Vec<LocalRef>, DecodeError> {
         self.list(Self::local)
     }
+    fn patches(&mut self) -> Result<Vec<GlobalPatch>, DecodeError> {
+        self.list(|r| {
+            Ok(GlobalPatch {
+                global: r.global()?,
+                flags: r.flags()?,
+                metadata: r.option_index()?.map(ExprRef),
+            })
+        })
+    }
+    fn external_globals(&mut self) -> Result<Vec<ExternalGlobal>, DecodeError> {
+        self.list(|r| {
+            Ok(ExternalGlobal {
+                namespace: r.string()?,
+                name: r.string()?,
+                declared: r.bool()?,
+                private: r.option_bool()?,
+            })
+        })
+    }
     fn flags(&mut self) -> Result<GlobalFlags, DecodeError> {
         let bits = self.byte()?;
         if bits >> 5 != 0 {
@@ -2506,7 +2558,13 @@ impl<'a> Reader<'a> {
     fn view(&mut self) -> Result<RegistrationView, DecodeError> {
         Ok(RegistrationView {
             own_globals: self.index()?,
-            added: self.list(Self::global)?,
+            added: self.list(|r| {
+                Ok(AddedGlobal {
+                    namespace: r.string()?,
+                    name: r.string()?,
+                    flags: r.flags()?,
+                })
+            })?,
             reader_context: if self.present("reader context")? {
                 Some(self.reader_context()?)
             } else {
@@ -3426,7 +3484,15 @@ mod tests {
         };
         let view = RegistrationView {
             own_globals: 1,
-            added: vec![GlobalRef::Own(0), GlobalRef::External(0)],
+            added: vec![AddedGlobal {
+                namespace: "app.core".into(),
+                name: "helper".into(),
+                flags: GlobalFlags {
+                    declared: true,
+                    constant: true,
+                    ..Default::default()
+                },
+            }],
             reader_context: Some(reader_context()),
         };
         let site = Site {
@@ -3642,6 +3708,58 @@ mod tests {
                 unit_depth: u32::MAX,
                 conversion_peak: 41,
             }),
+            bodies: Some(Box::new(Bodies {
+                ir: SemanticIr {
+                    exprs: vec![
+                        Expr {
+                            kind: ExprKind::Global(GlobalRef::External(0)),
+                            span: (5, 9),
+                            context: ExprContext::Value,
+                            source: SourceRef::Namespace(0),
+                        },
+                        Expr {
+                            kind: ExprKind::Do(vec![ExprRef(0)]),
+                            span: (1, 9),
+                            context: ExprContext::Return,
+                            source: SourceRef::Own,
+                        },
+                    ],
+                    strings: vec![units("body")],
+                    ..Default::default()
+                },
+                declarations: Declarations {
+                    globals: vec![Global {
+                        namespace: "app.core".into(),
+                        name: "nested".into(),
+                        flags: GlobalFlags {
+                            declared: true,
+                            ..Default::default()
+                        },
+                        metadata: Some(ExprRef(1)),
+                        span: (2, 3),
+                        source: SourceRef::Own,
+                        private: Some(false),
+                        binding: None,
+                    }],
+                    reader_context: reader_context(),
+                    ..Default::default()
+                },
+                patches: vec![GlobalPatch {
+                    global: GlobalRef::External(0),
+                    flags: GlobalFlags::default(),
+                    metadata: None,
+                }],
+                references: References {
+                    namespaces: vec!["app.util".into()],
+                    globals: vec![ExternalGlobal {
+                        namespace: "app.core".into(),
+                        name: "top".into(),
+                        declared: true,
+                        private: None,
+                    }],
+                },
+                placeholders: vec![(ExprRef(0), ExprRef(1))],
+            })),
         }
     }
 
@@ -4096,6 +4214,7 @@ mod tests {
     #[test]
     fn cyclic_ir_is_refused_and_shared_ir_is_not() {
         let mut artifact = sample(0);
+        artifact.bodies = None;
         let root = artifact.header.root;
         artifact.ir.exprs[root.0 as usize].kind = ExprKind::Do(vec![root]);
         let error = decoded(&encode(&artifact, &fields()).unwrap()).unwrap_err();
@@ -4111,9 +4230,10 @@ mod tests {
             decoded(&encode(&artifact, &fields()).unwrap()),
             Err(DecodeError::Invalid(_))
         ));
-        // `sample` shares expression 0 among nearly every other expression.
+        // `sample` shares expression 0 among nearly every other expression;
+        // its bodies' chain of two adds to its own.
         let artifact = sample(0);
-        assert_eq!(artifact.ir_depth(), Ok(2));
+        assert_eq!(artifact.ir_depth(), Ok(4));
         assert_eq!(
             decoded(&encode(&artifact, &fields()).unwrap()).unwrap(),
             artifact
@@ -4123,6 +4243,7 @@ mod tests {
     #[test]
     fn expression_chains_deeper_than_the_limit_are_refused() {
         let mut artifact = sample(0);
+        artifact.bodies = None;
         let start = artifact.ir.exprs.len() as u32;
         for index in 0..100 {
             artifact.ir.exprs.push(Expr {
@@ -4146,6 +4267,45 @@ mod tests {
                 what: "expression nesting",
                 value: 101,
                 limit: 100
+            }
+        );
+    }
+
+    #[test]
+    fn expression_chains_in_bodies_count_toward_the_limit() {
+        // The sample's own chain is short; a chain in its bodies, whose
+        // roots install under the first part's placeholders, adds to it.
+        let mut artifact = sample(0);
+        let bodies = artifact.bodies.as_deref_mut().unwrap();
+        let start = bodies.ir.exprs.len() as u32;
+        for index in 0..100 {
+            bodies.ir.exprs.push(Expr {
+                kind: ExprKind::Throw(ExprRef(if index == 0 { 0 } else { start + index - 1 })),
+                span: (0, 0),
+                context: ExprContext::Value,
+                source: SourceRef::Own,
+            });
+        }
+        bodies.placeholders.push((ExprRef(0), ExprRef(start + 99)));
+        let depth = artifact.ir_depth().unwrap();
+        let top = {
+            let mut top = artifact.clone();
+            top.bodies = None;
+            top.ir_depth().unwrap()
+        };
+        assert_eq!(depth, top + 101);
+        let bytes = encode(&artifact, &fields()).unwrap();
+        decoded(&bytes).unwrap();
+        let limits = DecodeLimits {
+            max_ir_depth: depth - 1,
+            ..DecodeLimits::default()
+        };
+        assert_eq!(
+            decode(&bytes, &limits, &|| false).unwrap_err(),
+            DecodeError::Limit {
+                what: "expression nesting",
+                value: depth.into(),
+                limit: (depth - 1).into()
             }
         );
     }

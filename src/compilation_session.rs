@@ -103,6 +103,9 @@ pub(crate) struct UnitCharges {
     analysis_depth: usize,
     /// The unit's expansion and generated-node limits.
     limits: (usize, usize),
+    /// The stack depth at which a demand for the unit fails
+    /// ([`SharedCatalog::claim`]).
+    depth_limit: usize,
     /// `source:line:column: unit` of its form, which its failure message
     /// begins with.
     location: String,
@@ -435,10 +438,10 @@ impl SharedCatalog {
         self.lock().units.get_mut(id)?.charges.take()
     }
     /// Fail unit `id`, analyzed, as its charges did.
-    fn fail(&self, id: usize, message: String, diagnostic: crate::AnalysisError) {
+    fn fail(&self, id: usize, message: String, diagnostic: Option<crate::AnalysisError>) {
         let previous = std::mem::replace(
             &mut self.lock().units[id].state,
-            AnalysisState::Failed(message, Some(diagnostic)),
+            AnalysisState::Failed(message, diagnostic),
         );
         drop(previous);
     }
@@ -692,6 +695,19 @@ impl CompilationSession {
         {
             entry.added = added;
         }
+    }
+    /// The program globals the merge of unit `unit` appended
+    /// ([`Self::capture_added_globals`]), taken.
+    pub fn take_added_globals(&self, unit: usize) -> Vec<usize> {
+        self.capture
+            .borrow_mut()
+            .as_mut()
+            .and_then(|capture| {
+                let index = unit.checked_sub(capture.first_unit)?;
+                capture.units.get_mut(index)
+            })
+            .map(|entry| std::mem::take(&mut entry.added))
+            .unwrap_or_default()
     }
     /// The units from ID `from` on.
     pub fn captured_units(&self, from: usize) -> Result<Vec<UnitRecord>, String> {
@@ -1329,8 +1345,15 @@ impl CompilationSession {
                     .or(self.bootstrap().as_ref())
                     .map(|b| b.evaluator.control())
             });
+            // A demand this deep fails before the unit is analyzed, as
+            // its claim would have failed it with one slot.
+            if depth >= charges.depth_limit {
+                crate::macro_host::WorkMarks::note(&binding.work.unit_depth, depth + 1);
+                self.shared.fail(id, DEPTH_LIMIT.to_owned(), None);
+                return Err(DEPTH_LIMIT.to_owned());
+            }
             if let Err((message, diagnostic)) = charges.charge(&binding, depth, control.as_ref()) {
-                self.shared.fail(id, message.clone(), diagnostic);
+                self.shared.fail(id, message.clone(), Some(diagnostic));
                 return Err(message);
             }
         }
@@ -1431,6 +1454,7 @@ fn analyze_unit(
             macro_depth: host.engine.work.macro_depth.get(),
             analysis_depth: host.engine.work.analysis_depth.get(),
             limits: (host.limits.expansions, host.limits.generated_nodes),
+            depth_limit: host.limits.expansion_depth.min(64),
             location,
         };
         shared.record_charges(id, charges, started.elapsed());

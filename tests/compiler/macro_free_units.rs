@@ -4,7 +4,7 @@
 //! analyze those units with no compile-time engine, emits the program,
 //! warnings and errors of a build with one.
 use crate::temp_dir::TempDir;
-use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning};
+use light_cljs::analyzer::{AnalysisOptions, AnalysisWarning, ExprKind};
 use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
 use light_cljs::scheduler::Slots;
 use light_cljs::{CompileStats, MacroHost, emit_js};
@@ -24,10 +24,11 @@ impl Sources {
     }
 }
 
-/// What a build made: its JavaScript or error, its warnings and its stats.
+/// What a build made: its JavaScript or error, its warnings with their
+/// spans and its stats.
 struct Built {
     output: Result<String, String>,
-    warnings: Vec<(String, String, usize)>,
+    warnings: Vec<(String, String, usize, std::ops::Range<usize>)>,
     stats: CompileStats,
 }
 
@@ -65,7 +66,7 @@ fn build_with(
             .map_err(|error| error.to_string()),
         warnings: warnings
             .into_iter()
-            .map(|w| (w.kind.to_owned(), w.message, w.source_index))
+            .map(|w| (w.kind.to_owned(), w.message, w.source_index, w.span))
             .collect(),
         stats,
     }
@@ -363,4 +364,95 @@ fn a_template_naming_a_var_by_placeholder_is_not_macro_free() {
     // `plain`, `x`, and nothing else of the three namespaces.
     let pooled = build(&sources, "app.main", 8, false);
     assert_eq!(pooled.stats.deferred_units.macro_free, pooled_count(2));
+}
+
+/// A namespace's units merge after the next namespace's top-level pass, the
+/// one ID-order change of stage A (docs/compiler-concurrency.md, "Merge"):
+/// the entry's top-level expressions come before its dependency's bodies,
+/// and the program is the same at every slot count.
+#[test]
+fn a_namespaces_bodies_follow_the_next_namespaces_top_level_pass() {
+    let sources = Sources::new();
+    sources
+        .write(
+            "app/a.cljs",
+            "(ns app.a) (defn body [] \"a-body\") (def top 1)",
+        )
+        .write(
+            "app/main.cljs",
+            "(ns app.main (:require [app.a :as a])) (defn main-body [] \"main-top\") (js/console.log (a/body) a/top (main-body))",
+        );
+    let mut programs = Vec::new();
+    for slots in [1, 2, 8] {
+        let mut warnings = Vec::new();
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app.main",
+            std::slice::from_ref(sources.0.path()),
+            &mut MacroHost::new(),
+            AnalysisOptions::default(),
+            &mut warnings,
+            EntryRecorders {
+                slots: Slots::new(slots).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let string = |text: &str| {
+            let text = text.encode_utf16().collect::<Vec<_>>();
+            program
+                .exprs
+                .iter()
+                .position(|expr| {
+                    matches!(expr.kind, ExprKind::String(id) if program.strings[id.0] == text)
+                })
+                .expect("a string expression")
+        };
+        let source = |name: &str| program.namespaces.iter().position(|n| n == name).unwrap();
+        let (a, main) = (source("app.a"), source("app.main"));
+        let first_main = program
+            .exprs
+            .iter()
+            .position(|expr| expr.source_index == main)
+            .unwrap();
+        // The program's root, last, is not a source's.
+        let last_a = program
+            .exprs
+            .iter()
+            .take(program.root.0)
+            .rposition(|expr| expr.source_index == a)
+            .unwrap();
+        assert!(
+            first_main < string("a-body") && string("a-body") <= last_a,
+            "{slots} slots: app.a's body follows app.main's first top-level expression"
+        );
+        assert!(
+            string("main-top") > last_a,
+            "{slots} slots: app.main's bodies follow app.a's"
+        );
+        let js = emit_js(&program);
+        assert_eq!(execute(&js), "a-body 1 main-top\n");
+        programs.push(js);
+    }
+    assert!(programs.windows(2).all(|pair| pair[0] == pair[1]));
+}
+
+/// A Var a deferred initializer defines is the next namespace's to resolve,
+/// qualified, through an alias and referred, although the initializer's body
+/// merges only after that namespace's top-level pass; and cached builds,
+/// installing either namespace, match.
+#[test]
+fn body_discovered_vars_resolve_in_the_next_namespace() {
+    let sources = Sources::new();
+    sources
+        .write(
+            "app/a.cljs",
+            "(ns app.a) (def init (do (def answer 42) nil))",
+        )
+        .write(
+            "app/main.cljs",
+            "(ns app.main (:require [app.a :as a :refer [answer]])) (js/console.log app.a/answer a/answer answer)",
+        );
+    let serial = same_at_every_slot_count(&sources, "app.main", false);
+    assert_eq!(execute(&serial.output.unwrap()), "42 42 42\n");
+    crate::cache_contract::check_mixed(sources.0.path(), "app.main");
 }

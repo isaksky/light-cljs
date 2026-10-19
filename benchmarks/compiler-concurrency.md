@@ -77,6 +77,37 @@ to 8.8 (which also registered the macro form's own scalars) gave medians of
 because a call's table holds only its own scalars and goes when its input
 is released.
 
+## Units merged after the next namespace's top-level pass (light-cljs-338, October 18, 2026)
+
+Parent `66cbbf0` (light-cljs-335) against the whole of light-cljs-338 (the
+macro-free units below, and each namespace's fragments merged after the
+next namespace's analysis, with two-part artifacts), Penpot `app.main
+--optimize none` at the default `--jobs 1`, three alternating pairs (parent
+first) at 1-minute load 2.5 to 3.0 while two other workers were active,
+before the review fixes, and three more at load 5.3 to 10.3 after them
+(final).
+
+| Build | Wall (s), round 1-3 | Median wall | Peak RSS (GB), round 1-3 | Median RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `66cbbf0` | 23.85, 24.29, 24.42 | 24.29 | 0.930, 0.923, 0.931 | 0.930 |
+| Before review fixes | 23.68, 24.50, 24.80 | 24.50 | 0.910, 0.920, 0.935 | 0.920 |
+| Parent `66cbbf0` | 26.32, 28.94, 26.78 | 26.78 | 0.979, 0.977, 0.943 | 0.977 |
+| Final | 24.77, 25.95, 26.62 | 25.95 | 0.911, 0.957, 0.953 | 0.953 |
+
+The medians are +0.9% wall and -1.2% peak RSS in the quiet set and -3.1%
+and -2.5% in the loaded one, within the +2% and +3% gate. The parent's
+output is 33,628,109 bytes and the final one 33,628,234, each the same in
+its runs; they differ in 14,119 lines, the generated local and recur names
+that follow expression IDs: the one ID-order change of stage A (the
+globals a unit adds keep their IDs, `publish_globals`). With
+`--source-map` and `--stats`, `--jobs 1`, `2` and `8` give byte-identical
+JavaScript (SHA-256 `1fe5da19...`), source maps (`e95f9ee4...`) and
+warnings (none) on the new order, in 26.3 s, 27.5 s and 27.5 s at load
+about 6; 5,304 of the 13,367 units are macro-free, taking about 0.3 to
+0.45 s of 17 s of deferred units at `--jobs 2` and `8`. In the fixtures,
+the span of a scalar a JavaScript macro returns can still differ between
+`--jobs` values, which Penpot does not show (light-cljs-371).
+
 ## Macro-free units on the pool (light-cljs-338, October 18, 2026)
 
 Parent `ad8eebf` (light-cljs-335 on `916b75b`) against macro-free units

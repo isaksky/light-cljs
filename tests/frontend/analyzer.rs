@@ -225,12 +225,14 @@ fn namespace_and_alias_references_ignore_same_spelled_lexical_bindings() {
         references,
         [
             (0, "value", ExprKind::Local(local(0))),
-            (0, "value", ExprKind::Global(dep)),
             (1, "value", ExprKind::Local(local(1))),
             (1, "lexical.main/value", ExprKind::Global(main)),
             (1, "lib/value", ExprKind::Global(dep)),
             (1, "lexical.static/value", ExprKind::Global(dep)),
             (1, "value", ExprKind::Global(main)),
+            // `read-value`'s body, a deferred unit, merges after the next
+            // namespace's top-level pass (docs/compiler-concurrency.md).
+            (0, "value", ExprKind::Global(dep)),
         ]
     );
     for binding in &program.locals {

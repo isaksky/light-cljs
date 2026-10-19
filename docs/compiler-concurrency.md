@@ -1043,8 +1043,7 @@ way to stage A, useful for shaking out the merge, the pool and the transfer
 boundary without a second isolate. It is not a design of its own, and its
 eligible share of Penpot is expected to be small.
 
-*As built (light-cljs-338), the narrower first cut, without the merge-order
-change:*
+*As built (light-cljs-338), the narrower first cut:*
 
 - *Eligibility.* With `--jobs N` above one, `Analyzer::definition` judges
   each unit as it registers it, from the resolver its snapshot freezes
@@ -1105,14 +1104,53 @@ change:*
   same-named one the target reserved meanwhile, the target's later change
   to a shared global stays, and the program runs.
 
-The merge-order change is not in it. Appending a namespace's fragments
-after a later namespace's top-level pass means a namespace's program is no
-longer one contiguous range, which `artifact_capture` (the tails of every
-table from the namespace's start) and `artifact_install` (one contiguous
-append, units registered `Prepared`) assume; lazy targets inside bodies
-are found only at the merge; a later namespace's error must wait for the
-earlier units to report the earliest one; and cross-namespace arity
-warnings read the bodies. See "Open questions".
+*The merge after the top-level passes (light-cljs-338, second part).*
+The one deterministic ID-order change of this stage is made, at every
+`--jobs` value and in QuickJS-only builds alike:
+
+- *Order.* `NamespaceAnalysis::analyze` still analyzes, claims or waits for
+  each unit in unit order at its drain, where errors, warnings and
+  compile-time effects happen as before, but keeps each unit's fragment
+  instead of appending it (`DrainedUnit`). The loader merges a namespace's
+  fragments (`NamespaceAnalysis::merge_front`) once the next namespace has
+  been analyzed or installed, and every remaining one before `finish` or
+  when a namespace fails. The program of `a`, then `main` is now `a`'s
+  top-level pass, `main`'s, `a`'s bodies, `main`'s bodies; nothing else
+  appends between the next namespace's top-level pass and its own drain,
+  so merging after its drain gives the same IDs as merging before it.
+  The globals a unit's analysis added (a nested `def`'s Var, a
+  reservation) are given to the program at the drain, without their
+  metadata, as appending there did (`publish_globals`), so the next
+  namespace resolves them and they keep their IDs; the merge finds them by
+  name.
+  `macro_free_units::a_namespaces_bodies_follow_the_next_namespaces_top_level_pass`
+  checks the order and that `--jobs 1`, `2` and `8` emit the same program.
+- *Append.* A unit's fragment may reach only its own namespace's reader
+  context: merged after later namespaces, its snapshot's view of the
+  others may predate their refreshes (`program_fragment::append`'s
+  `own_namespace`). Its reservations merge with a same-named global by
+  name, as before.
+- *Lazy targets.* The loader reads a namespace's lazy targets when its
+  analysis returns, from its top-level pass and from its units' fragments
+  before they merge (`NamespaceAnalysis::lazy_namespaces`), in the order
+  the program had them, so lazily reached sources load in the same order.
+  `finish` reports the first missing target in ID order, which can now be
+  a later namespace's top-level one.
+- *Warnings.* Units' warnings are reported at the drain as before. The
+  expression warnings, which read the bodies, and the cross-namespace
+  `DiagnosticArities` move to the merge (`expression_warnings` over the
+  namespace's two ranges); since warnings are sorted by source and offset
+  after each namespace, their order is unchanged.
+- *Errors.* The analysis that fails is still the first in unit order at
+  its drain; the namespaces before it merge first, so their warnings are
+  still reported. With asynchronous units (light-cljs-339 on) a later
+  namespace's error waits for the earlier units (light-cljs-341).
+- *Artifacts.* A namespace's artifact is two parts: what its analysis
+  appended, captured and keyed when it returns, and its bodies, captured
+  when they merge and installed at the same point (docs/compiler-cache.md,
+  "As built (light-cljs-338), two-part artifacts"), so cached builds keep
+  matching uncached ones (`tests/compiler/cache_modes.rs`,
+  `cache_contract.rs`).
 
 ### Stage C: parallel namespaces
 
@@ -1504,33 +1542,19 @@ is part of the stage A gate.
 
 ## Open questions
 
-- *Merging after the top-level passes (left by light-cljs-338).* Stage A's
-  one deterministic output change, a namespace's unit fragments appended
-  after the next namespace's top-level pass (or after every top-level pass,
-  which the 6.0 s floor above needs), is not made yet, so output is still
-  today's at every `--jobs` value. It needs, in one change with the
-  re-baselined fixtures:
-  - *Two-part artifacts.* `artifact_capture::begin`/`finish` capture the
-    tails of every table from where the namespace began, and
-    `artifact_install` appends an artifact as one contiguous range with its
-    units registered `Prepared`, which keeps the IDs of an uncached build
-    (docs/compiler-cache.md, "Installing"). With the merge moved, a
-    namespace's program is its top-level range and, later, its fragments'
-    range, with another namespace's declarations between: capture must
-    record both, and install must append the second part where the merge
-    appends it, or cached builds stop matching uncached ones
-    (`tests/compiler/cache_modes.rs`).
-  - *Lazy targets in bodies.* The loader reads a namespace's new lazy
-    targets right after its analysis (`lazy_namespaces_since`); targets
-    inside bodies appear only once their fragments merge.
-  - *Errors.* A later namespace's top-level error must wait for the earlier
-    namespace's pending units and is reported only if none of them fails
-    (the earliest canonical error, light-cljs-341).
-  - *Warnings.* `collect_expression_warnings` and the cross-namespace
-    `DiagnosticArities` read each namespace's bodies after its drain; they
-    move to the merge.
-  `program_fragment::append` already appends a fragment after its target
-  grew past the snapshot (see "As built (light-cljs-338)" under Stage A).
+- *Merging after the top-level passes (settled by light-cljs-338).* Made as
+  described under "Stage A": fragments merge after the next namespace's
+  analysis, artifacts are two parts, lazy targets are read from the
+  fragments, and expression warnings and arities move to the merge. Still
+  open: whether stage A's workers need the merge after every top-level
+  pass, which the 6.0 s floor above assumes; that would be a second
+  ID-order change, which the group context does not allow.
+- *Scalar provenance (light-cljs-371).* The runtime keeps the latest
+  provenance of each scalar value it exported, so the span of a scalar a
+  JavaScript macro returns depends on what the main isolate exported
+  before; macro-free units analyzed on workers export nothing there, so in
+  the fixtures such spans, and with them source maps, can differ between
+  `--jobs` values (JavaScript and warnings do not; Penpot's maps do not).
 - *What the first cut buys.* On Penpot main 5,319 of 13,367 units (40%)
   are macro-free, but their analysis takes about 0.3 to 0.5 s of the 19 s of
   deferred units (2 to 3%): they are constants, data and small functions.

@@ -2352,6 +2352,110 @@ pub fn analyze_namespace_entry_with_provider(
 ///
 /// With `stats`, also time the phases and count each namespace's macro
 /// calls; without, no clock is read.
+/// The artifact of a namespace whose first part was captured where its
+/// analysis returned, until its units merge ([`merge_namespace`]).
+struct PendingCapture {
+    /// The namespace's position in the loader's order.
+    index: usize,
+    start: crate::artifact_capture::CaptureStart,
+    /// Its deferred units.
+    units: std::ops::Range<usize>,
+    artifact: Result<crate::namespace_artifact::NamespaceArtifact, String>,
+    /// Its key in the persistent cache, which publishes it.
+    publication: Option<Option<crate::compile_cache::Publication>>,
+}
+
+/// What merging a namespace's units reaches ([`merge_namespace`]).
+struct Merging<'a, 'b> {
+    macros: &'a MacroHost,
+    warnings: &'a mut Vec<AnalysisWarning>,
+    ordered: &'a [NamespaceSource],
+    sources: &'a dyn SourceProvider,
+    cache: Option<&'a mut crate::compile_cache::CompileCache>,
+    sink: Option<&'a mut (dyn FnMut(crate::namespace_artifact::NamespaceCapture) + 'b)>,
+    counts: &'a mut crate::compile_stats::CaptureCounts,
+    cache_time: &'a mut Duration,
+    timed: bool,
+}
+
+/// Merge the units of the oldest namespace waiting to, finish its
+/// artifact's bodies if it was captured, and publish it.
+fn merge_namespace(
+    analysis: &mut NamespaceAnalysis,
+    captures: &mut std::collections::VecDeque<Option<PendingCapture>>,
+    merging: Merging<'_, '_>,
+) -> Result<(), NamespaceCompileError> {
+    let Merging {
+        macros,
+        warnings,
+        ordered,
+        sources,
+        cache,
+        sink,
+        counts,
+        cache_time,
+        timed,
+    } = merging;
+    let capture = captures.pop_front().flatten();
+    let started = compile_stats::start(timed && capture.is_some());
+    let start = capture
+        .as_ref()
+        .map(|capture| analysis.begin_bodies_capture(capture.index, warnings, macros));
+    compile_stats::add(&mut counts.time, started);
+    let merged = analysis.merge_front(macros, warnings);
+    let (Some(mut capture), Some(start)) = (capture, start) else {
+        return merged
+            .map(|_| ())
+            .map_err(|message| NamespaceCompileError::new(format!("installing: {message}")));
+    };
+    let file = &ordered[capture.index];
+    let merged = merged.map_err(|message| {
+        NamespaceCompileError::new(format!("installing {}: {message}", file.name))
+    })?;
+    let started = compile_stats::start(timed);
+    if let (Ok(artifact), Some(merged)) = (&mut capture.artifact, &merged)
+        && let Err(reason) = analysis.finish_bodies(
+            artifact,
+            &capture.start,
+            &start,
+            merged,
+            capture.units.clone(),
+            macros,
+            warnings,
+        )
+    {
+        capture.artifact = Err(reason);
+    }
+    match &capture.artifact {
+        Ok(artifact) => {
+            counts.captured += 1;
+            if timed {
+                counts.bytes += artifact.approximate_bytes();
+            }
+        }
+        Err(_) => counts.skipped += 1,
+    }
+    compile_stats::add(&mut counts.time, started);
+    let started = compile_stats::start(timed);
+    match (cache, capture.publication) {
+        (Some(cache), Some(publication)) => {
+            if let Some(publication) = publication {
+                cache.publish(publication, &file.source, sources, capture.artifact);
+            }
+        }
+        _ => {
+            if let Some(sink) = sink {
+                sink(crate::namespace_artifact::NamespaceCapture {
+                    namespace: file.name.clone(),
+                    artifact: capture.artifact,
+                });
+            }
+        }
+    }
+    compile_stats::add(cache_time, started);
+    Ok(())
+}
+
 fn analyze_entry(
     entry: &str,
     sources: &dyn SourceProvider,
@@ -2455,207 +2559,258 @@ fn analyze_entry(
         sources.resources(),
         macros.tables.configuration.clone(),
     );
+    // The artifacts captured of the namespaces waiting to merge their
+    // units, in the analysis's order (`None` for one not captured): each is
+    // finished when its units merge, after the next namespace's top-level
+    // pass, and published then.
+    let mut captures: std::collections::VecDeque<Option<PendingCapture>> = Default::default();
     let mut index = 0;
-    while index < loader.ordered.len() {
-        let file = &loader.ordered[index];
-        let calls_before = macros.executed_expansions();
-        let at = |error: AnalysisError| {
-            NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
-        };
-        let first_lazy = analysis.lazy_target_count();
-        crate::compile_trace::namespace(index, &file.name, file.source.len(), &file.requires);
-        macros.observe(|log| log.window = index as u32);
-        build.analyze(index, &file.name, file.path.to_str());
-        // A cancelled compilation stops at the next namespace.
-        if let Some(reason) = control.and_then(|control| control.check().err()) {
-            return Err(NamespaceCompileError::new(format!(
-                "compiling {}: {}",
-                file.name, reason.0
-            )));
-        }
-        // An artifact installs at the frontier its analysis would have run.
-        let started = compile_stats::start(timed);
-        let cached = match (cache.as_deref_mut(), &loader.record) {
-            (Some(cache), Some(record)) => {
-                let cancelled = || macros.halted(control).is_some();
-                cache
-                    .lookup(record, &file.source, sources, &cancelled)
-                    .map_err(|message| {
-                        NamespaceCompileError::new(format!("loading {}: {message}", file.name))
-                    })?
-            }
-            _ => None,
-        };
-        compile_stats::add(&mut cache_time, started);
-        let installed = match cached
-            .as_ref()
-            .or_else(|| install.and_then(|lookup| lookup(&file.name)))
-        {
-            Some(artifact) => {
-                let started = compile_stats::start(timed);
-                let path = file.path.to_string_lossy();
-                let outcome = analysis.install(
-                    artifact,
-                    &crate::artifact_install::InstallSource {
-                        namespace: &file.name,
-                        path: &path,
-                        text: &file.source,
-                        entry: index == entry_index,
-                        options,
-                        control,
-                    },
-                    macros,
-                    warnings,
-                );
-                compile_stats::add(&mut install_counts.time, started);
-                match outcome {
-                    Ok(()) => {
-                        if let (Some(cache), Some(_)) = (cache.as_deref_mut(), &cached) {
-                            cache.installed(macros);
-                        }
-                        install_counts.installed.push(file.name.clone());
-                        crate::compile_trace::installed(index);
-                        true
-                    }
-                    Err(crate::artifact_install::InstallError::Refused(reason)) => {
-                        if let (Some(cache), Some(_)) = (cache.as_deref_mut(), &cached) {
-                            cache.refused(&reason);
-                        }
-                        install_counts.refused.push((file.name.clone(), reason));
-                        false
-                    }
-                    Err(crate::artifact_install::InstallError::Failed(message)) => {
-                        return Err(NamespaceCompileError::new(format!(
-                            "installing {}: {message}",
-                            file.name
-                        ))
-                        .at(&file.path, &file.source, 0..0));
-                    }
-                }
-            }
-            None => false,
-        };
-        // A decoded artifact is released once installed.
-        drop(cached);
-        if !installed {
-            let names_from = crate::generated_names::current();
-            let work = capturing.then(|| macros.begin_namespace_work());
-            let traced = crate::compile_trace::enter(
-                crate::compile_trace::Stage::PrepareSource,
-                index,
-                None,
-            );
-            let resolution = prepare_source(macros, file).map_err(at)?;
-            drop(traced);
-            let captured = capturing.then(|| {
-                let started = compile_stats::start(timed);
-                let start = analysis.begin_capture(warnings, macros);
-                compile_stats::add(&mut capture_counts.time, started);
-                (start, resolution.clone())
-            });
-            let input = NamespaceInput {
-                name: &file.name,
-                source: &file.source,
-                syntax: &file.syntax,
-                aliases: &file.aliases,
-                requires: &file.requires,
-            };
-            analysis
-                .analyze(
-                    &input,
-                    resolution,
-                    index == entry_index,
-                    macros,
-                    options,
-                    warnings,
+    let looped = (|| -> Result<(), NamespaceCompileError> {
+        while index < loader.ordered.len() {
+            let file = &loader.ordered[index];
+            let calls_before = macros.executed_expansions();
+            let at = |error: AnalysisError| {
+                NamespaceCompileError::new(error.to_string()).at(
+                    &file.path,
+                    &file.source,
+                    error.span,
                 )
-                .map_err(at)?;
-            if let (Some((start, resolution)), Some(work)) = (&captured, work) {
-                let started = compile_stats::start(timed);
-                let path = file.path.to_string_lossy();
-                let artifact = analysis.finish_capture(
-                    start,
-                    crate::artifact_capture::CaptureInput {
-                        namespace: &file.name,
-                        path: &path,
-                        source_length: file.source.len(),
-                        entry: index == entry_index,
-                        resolution,
-                        aliases: &file.aliases,
-                        requires: &file.requires,
-                        names_from,
-                        options,
-                        work,
-                        control,
-                    },
-                    macros,
-                    warnings,
-                );
-                match &artifact {
-                    Ok(artifact) => {
-                        capture_counts.captured += 1;
-                        if timed {
-                            capture_counts.bytes += artifact.approximate_bytes();
-                        }
-                    }
-                    Err(_) => capture_counts.skipped += 1,
+            };
+            crate::compile_trace::namespace(index, &file.name, file.source.len(), &file.requires);
+            macros.observe(|log| log.window = index as u32);
+            build.analyze(index, &file.name, file.path.to_str());
+            // A cancelled compilation stops at the next namespace.
+            if let Some(reason) = control.and_then(|control| control.check().err()) {
+                return Err(NamespaceCompileError::new(format!(
+                    "compiling {}: {}",
+                    file.name, reason.0
+                )));
+            }
+            // An artifact installs at the frontier its analysis would have run.
+            let started = compile_stats::start(timed);
+            let cached = match (cache.as_deref_mut(), &loader.record) {
+                (Some(cache), Some(record)) => {
+                    let cancelled = || macros.halted(control).is_some();
+                    cache
+                        .lookup(record, &file.source, sources, &cancelled)
+                        .map_err(|message| {
+                            NamespaceCompileError::new(format!("loading {}: {message}", file.name))
+                        })?
                 }
-                drop(captured);
-                compile_stats::add(&mut capture_counts.time, started);
-                let started = compile_stats::start(timed);
-                match (cache.as_deref_mut(), &loader.record) {
-                    (Some(cache), Some(record)) => cache.analyzed(
-                        record,
-                        &file.source,
-                        sources,
+                _ => None,
+            };
+            compile_stats::add(&mut cache_time, started);
+            let installed = match cached
+                .as_ref()
+                .or_else(|| install.and_then(|lookup| lookup(&file.name)))
+            {
+                Some(artifact) => {
+                    let started = compile_stats::start(timed);
+                    let path = file.path.to_string_lossy();
+                    let outcome = analysis.install(
+                        artifact,
+                        &crate::artifact_install::InstallSource {
+                            namespace: &file.name,
+                            path: &path,
+                            text: &file.source,
+                            entry: index == entry_index,
+                            options,
+                            control,
+                        },
                         macros,
-                        analysis.program_namespaces(),
-                        Some(artifact),
-                    ),
-                    _ => {
-                        if let Some(sink) = capture.as_deref_mut() {
-                            sink(crate::namespace_artifact::NamespaceCapture {
-                                namespace: file.name.clone(),
-                                artifact,
-                            });
+                        warnings,
+                    );
+                    compile_stats::add(&mut install_counts.time, started);
+                    match outcome {
+                        Ok(()) => {
+                            if let (Some(cache), Some(_)) = (cache.as_deref_mut(), &cached) {
+                                cache.installed(macros);
+                            }
+                            install_counts.installed.push(file.name.clone());
+                            crate::compile_trace::installed(index);
+                            true
+                        }
+                        Err(crate::artifact_install::InstallError::Refused(reason)) => {
+                            if let (Some(cache), Some(_)) = (cache.as_deref_mut(), &cached) {
+                                cache.refused(&reason);
+                            }
+                            install_counts.refused.push((file.name.clone(), reason));
+                            false
+                        }
+                        Err(crate::artifact_install::InstallError::Failed(message)) => {
+                            return Err(NamespaceCompileError::new(format!(
+                                "installing {}: {message}",
+                                file.name
+                            ))
+                            .at(&file.path, &file.source, 0..0));
                         }
                     }
                 }
-                compile_stats::add(&mut cache_time, started);
-            }
-        }
-        if let Some(stats) = stats.as_deref_mut() {
-            stats.namespaces.push(compile_stats::NamespaceStats {
-                name: file.name.clone(),
-                macro_calls: macros.executed_expansions() - calls_before,
-            });
-        }
-        // Deferred definitions own their forms and resolution snapshots now.
-        // Keep source text for diagnostics, but release each parsed tree as
-        // soon as analysis finishes instead of retaining all trees until the
-        // last namespace (including lazily discovered ones) has completed.
-        let syntax = &mut loader.ordered[index].syntax;
-        syntax.nodes = Vec::new();
-        syntax.roots = Vec::new();
-        let loaded = loader.ordered.len();
-        let started = compile_stats::start(timed);
-        for (namespace, span) in analysis.lazy_namespaces_since(first_lazy) {
-            if let Some(record) = &mut loader.record {
-                record.lazy.push((index as u32, namespace.clone()));
-            }
-            loader.visit_lazy(&namespace, index).map_err(|error| {
-                if error.path.is_none() {
-                    let file = &loader.ordered[index];
-                    error.at(&file.path, &file.source, span)
+                None => false,
+            };
+            // A decoded artifact is released once installed.
+            drop(cached);
+            if installed {
+                captures.push_back(None);
+            } else {
+                let names_from = crate::generated_names::current();
+                let work = capturing.then(|| macros.begin_namespace_work());
+                let traced = crate::compile_trace::enter(
+                    crate::compile_trace::Stage::PrepareSource,
+                    index,
+                    None,
+                );
+                let resolution = prepare_source(macros, file).map_err(at)?;
+                drop(traced);
+                let captured = capturing.then(|| {
+                    let started = compile_stats::start(timed);
+                    let start = analysis.begin_capture(warnings, macros);
+                    compile_stats::add(&mut capture_counts.time, started);
+                    (start, resolution.clone())
+                });
+                let input = NamespaceInput {
+                    name: &file.name,
+                    source: &file.source,
+                    syntax: &file.syntax,
+                    aliases: &file.aliases,
+                    requires: &file.requires,
+                };
+                analysis
+                    .analyze(
+                        &input,
+                        resolution,
+                        index == entry_index,
+                        macros,
+                        options,
+                        warnings,
+                    )
+                    .map_err(at)?;
+                if let (Some((start, resolution)), Some(work)) = (&captured, work) {
+                    let started = compile_stats::start(timed);
+                    let path = file.path.to_string_lossy();
+                    let artifact = analysis.finish_capture(
+                        start,
+                        crate::artifact_capture::CaptureInput {
+                            namespace: &file.name,
+                            path: &path,
+                            source_length: file.source.len(),
+                            entry: index == entry_index,
+                            resolution,
+                            aliases: &file.aliases,
+                            requires: &file.requires,
+                            names_from,
+                            options,
+                            work,
+                            control,
+                        },
+                        macros,
+                        warnings,
+                    );
+                    let units = match macros.session_handle() {
+                        Some(session) => start.units()..session.capture_marks().0,
+                        None => 0..0,
+                    };
+                    compile_stats::add(&mut capture_counts.time, started);
+                    let started = compile_stats::start(timed);
+                    // Keyed now, published once its units merge.
+                    let publication = match (cache.as_deref_mut(), &loader.record) {
+                        (Some(cache), Some(record)) => Some(cache.analyzed(
+                            record,
+                            &file.source,
+                            macros,
+                            analysis.program_namespaces(),
+                        )),
+                        _ => None,
+                    };
+                    compile_stats::add(&mut cache_time, started);
+                    let (start, _) = captured.expect("captured");
+                    captures.push_back(Some(PendingCapture {
+                        index,
+                        start,
+                        units,
+                        artifact,
+                        publication,
+                    }));
                 } else {
-                    error
+                    captures.push_back(None);
                 }
-            })?;
+            }
+            // The previous namespace's units merge after this one's top-level
+            // pass.
+            while analysis.pending_merges() > 1 {
+                merge_namespace(
+                    &mut analysis,
+                    &mut captures,
+                    Merging {
+                        macros,
+                        warnings,
+                        ordered: &loader.ordered,
+                        sources,
+                        cache: cache.as_deref_mut(),
+                        sink: capture.as_deref_mut(),
+                        counts: &mut capture_counts,
+                        cache_time: &mut cache_time,
+                        timed,
+                    },
+                )?;
+            }
+            if let Some(stats) = stats.as_deref_mut() {
+                stats.namespaces.push(compile_stats::NamespaceStats {
+                    name: file.name.clone(),
+                    macro_calls: macros.executed_expansions() - calls_before,
+                });
+            }
+            // Deferred definitions own their forms and resolution snapshots now.
+            // Keep source text for diagnostics, but release each parsed tree as
+            // soon as analysis finishes instead of retaining all trees until the
+            // last namespace (including lazily discovered ones) has completed.
+            let syntax = &mut loader.ordered[index].syntax;
+            syntax.nodes = Vec::new();
+            syntax.roots = Vec::new();
+            let loaded = loader.ordered.len();
+            let started = compile_stats::start(timed);
+            for (namespace, span) in analysis.lazy_namespaces().to_vec() {
+                if let Some(record) = &mut loader.record {
+                    record.lazy.push((index as u32, namespace.clone()));
+                }
+                loader.visit_lazy(&namespace, index).map_err(|error| {
+                    if error.path.is_none() {
+                        let file = &loader.ordered[index];
+                        error.at(&file.path, &file.source, span)
+                    } else {
+                        error
+                    }
+                })?;
+            }
+            compile_stats::add(&mut lazy_parse, started);
+            source_warnings(&loader.ordered, loaded, options, warnings);
+            index += 1;
         }
-        compile_stats::add(&mut lazy_parse, started);
-        source_warnings(&loader.ordered, loaded, options, warnings);
-        index += 1;
+        Ok(())
+    })();
+    // Every namespace merges its units before the program is finished, and
+    // when one failed, so that the earlier ones' warnings are reported and
+    // their artifacts published.
+    let mut merged = Ok(());
+    while analysis.pending_merges() > 0 && merged.is_ok() {
+        merged = merge_namespace(
+            &mut analysis,
+            &mut captures,
+            Merging {
+                macros,
+                warnings,
+                ordered: &loader.ordered,
+                sources,
+                cache: cache.as_deref_mut(),
+                sink: capture.as_deref_mut(),
+                counts: &mut capture_counts,
+                cache_time: &mut cache_time,
+                timed,
+            },
+        );
     }
+    looped?;
+    merged?;
     let deferred_time = analysis.deferred_time;
     let traced = crate::compile_trace::enter(crate::compile_trace::Stage::Finish, 0, None);
     let program = analysis

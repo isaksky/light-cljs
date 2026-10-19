@@ -53,6 +53,13 @@ pub(crate) struct CaptureStart {
     >,
 }
 
+impl CaptureStart {
+    /// How many units the session held.
+    pub(crate) fn units(&self) -> usize {
+        self.units
+    }
+}
+
 /// Note the program's tables before the next namespace's analysis.
 pub(crate) fn begin(
     program: &mut Program,
@@ -192,7 +199,7 @@ pub(crate) fn finish(
         names: completed.names,
         macro_host,
         source_index: completed.source_index,
-        units_end,
+        units: start.units..units_end,
         references: References::default(),
         external_globals: HashMap::new(),
         namespaces: HashMap::new(),
@@ -342,9 +349,177 @@ pub(crate) fn finish(
             }
         },
         accounting: accounting(macro_host, input.work),
+        bodies: None,
     };
     debug_assert_eq!(artifact.validate(), Ok(()));
     Ok(artifact)
+}
+
+/// The program globals `added`, as a registration names them.
+fn added_globals(program: &Program, added: &[usize]) -> Vec<AddedGlobal> {
+    added
+        .iter()
+        .map(|&id| {
+            let binding = &program.globals[id];
+            AddedGlobal {
+                namespace: binding.namespace.clone(),
+                name: binding.name.clone(),
+                flags: Converter::flags(binding),
+            }
+        })
+        .collect()
+}
+
+/// The bodies of a namespace whose first part [`finish`] captured into
+/// `artifact` where its analysis returned: what merging its drained units
+/// appended after the next namespace's top-level pass
+/// (docs/compiler-concurrency.md, "Stage A"). `start` was taken by
+/// [`begin`] just before the merge, `top` when the namespace began;
+/// `placeholders` are each merged unit's placeholder and root, and `units`
+/// the namespace's units, whose views get the globals their merge added.
+/// The merge's warnings, the namespace's expression warnings, join the
+/// artifact's, which installation reports when the first part installs.
+pub(crate) fn finish_bodies(
+    artifact: &mut NamespaceArtifact,
+    top: &CaptureStart,
+    start: &CaptureStart,
+    completed: Completed<'_>,
+    placeholders: &[(ir::ExprId, ir::ExprId)],
+    units: std::ops::Range<usize>,
+    macro_host: &MacroHost,
+) -> Result<(), String> {
+    let program = completed.program;
+    let session = macro_host.session_handle();
+    if let Some(session) = &session {
+        for (offset, unit) in units.clone().enumerate() {
+            let added = session.take_added_globals(unit);
+            let entry = artifact
+                .units
+                .units
+                .get_mut(offset)
+                .ok_or("a merged unit is not the namespace's")?;
+            entry.view.added = added_globals(program, &added);
+        }
+    }
+    let mut c = Converter {
+        program,
+        start,
+        names: completed.names,
+        macro_host,
+        source_index: completed.source_index,
+        units,
+        references: References::default(),
+        external_globals: HashMap::new(),
+        namespaces: HashMap::new(),
+        strings: program.strings.tail_from(start.strings).cloned().collect(),
+        external_strings: HashMap::new(),
+        named_literals: Vec::new(),
+        external_named: HashMap::new(),
+        js_globals: HashMap::new(),
+        js_table: Vec::new(),
+    };
+    for literal in program.named_literals.tail_from(start.named_literals) {
+        let literal = c.literal(literal)?;
+        c.named_literals.push(literal);
+    }
+    let exprs = program
+        .exprs
+        .tail_from(start.exprs)
+        .map(|expr| {
+            Ok(Expr {
+                kind: c.kind(&expr.kind)?,
+                span: bytes(&expr.span),
+                context: expr.context,
+                source: c.source(expr.source_index),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let locals = program
+        .locals
+        .tail_from(start.locals)
+        .map(|local| LocalBinding {
+            name: local.name.clone(),
+            span: bytes(&local.span),
+            source: c.source(local.source_index),
+        })
+        .collect::<Vec<_>>();
+    let recur_targets = program
+        .recur_targets
+        .tail_from(start.recur_targets)
+        .map(|target| {
+            Ok(RecurTarget {
+                params: c.locals(&target.params)?,
+                protocol_impl: target.protocol_impl,
+                receiver_from_this: target.receiver_from_this,
+                used: target.used,
+                argument_slots: target
+                    .argument_slots
+                    .iter()
+                    .map(|slot| slot.map(|slot| slot as u32))
+                    .collect(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let placeholders = placeholders
+        .iter()
+        .map(|&(placeholder, root)| {
+            let placeholder = placeholder
+                .0
+                .checked_sub(top.exprs)
+                .filter(|&index| index < artifact.ir.exprs.len())
+                .ok_or("a placeholder is not the namespace's")?;
+            Ok((ExprRef(placeholder as u32), c.expr(root)?))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let namespace = artifact.header.namespace.clone();
+    let declarations = c.tables(&namespace)?;
+    let patches = c.patches()?;
+    let mut before = start.own_warnings.clone();
+    let own = completed
+        .warnings
+        .iter()
+        .filter(|warning| warning.source_index == completed.source_index)
+        .filter(|warning| match before.iter().position(|b| b == *warning) {
+            Some(index) => {
+                before.swap_remove(index);
+                false
+            }
+            None => true,
+        })
+        .collect::<Vec<_>>();
+    if completed.warnings.len() - start.warnings != own.len() {
+        return Err("the merge reported warnings about another source".into());
+    }
+    let warnings = own
+        .into_iter()
+        .map(|warning| Warning {
+            kind: warning.kind.to_owned(),
+            message: warning.message.clone(),
+            span: bytes(&warning.span),
+            source: SourceRef::Own,
+        })
+        .collect::<Vec<_>>();
+    artifact.diagnostics.warnings.extend(warnings);
+    let ir = SemanticIr {
+        exprs,
+        locals,
+        recur_targets,
+        strings: std::mem::take(&mut c.strings),
+        named_literals: std::mem::take(&mut c.named_literals),
+        js_globals: std::mem::take(&mut c.js_table),
+    };
+    let bodies = Bodies {
+        ir,
+        declarations,
+        patches,
+        references: c.references,
+        placeholders,
+    };
+    if bodies != Bodies::default() {
+        artifact.bodies = Some(Box::new(bodies));
+    }
+    debug_assert_eq!(artifact.validate(), Ok(()));
+    Ok(())
 }
 
 /// Earlier globals first, then the namespace's own, each in creation order.
@@ -365,7 +540,8 @@ struct Converter<'a> {
     names: &'a crate::name_index::NameIndex,
     macro_host: &'a MacroHost,
     source_index: usize,
-    units_end: usize,
+    /// The namespace's deferred units.
+    units: std::ops::Range<usize>,
     references: References,
     external_globals: HashMap<usize, u32>,
     namespaces: HashMap<usize, u32>,
@@ -431,8 +607,8 @@ impl Converter<'_> {
             })
     }
     fn unit(&self, id: usize) -> Result<UnitRef, String> {
-        if (self.start.units..self.units_end).contains(&id) {
-            Ok(UnitRef((id - self.start.units) as u32))
+        if self.units.contains(&id) {
+            Ok(UnitRef((id - self.units.start) as u32))
         } else {
             Err(format!(
                 "the namespace refers to deferred unit {id} of another namespace"
@@ -856,6 +1032,50 @@ impl Converter<'_> {
     }
 
     fn declarations(&mut self, input: &CaptureInput<'_>) -> Result<Declarations, String> {
+        let host = self.macro_host;
+        let tables = self.tables(input.namespace)?;
+        let declared = host.namespace_declarations(input.namespace);
+        Ok(Declarations {
+            aliases: input.aliases.to_vec(),
+            requires: input.requires.to_vec(),
+            refers: input.resolution.refers.clone(),
+            excludes: input.resolution.excludes.clone(),
+            js_refers: input
+                .resolution
+                .js_refers
+                .iter()
+                .map(|(local, refer)| {
+                    (
+                        local.clone(),
+                        match refer {
+                            ir::JsRefer::Global(path) => JsRefer::Global(path.clone()),
+                            ir::JsRefer::Package(package, export) => {
+                                JsRefer::Package(package.clone(), export.clone())
+                            }
+                        },
+                    )
+                })
+                .collect(),
+            imports: declared
+                .imports
+                .iter()
+                .map(|import| Import {
+                    namespace: import.namespace.clone(),
+                    alias: import.alias.clone(),
+                    refers: import.refers.clone(),
+                })
+                .collect(),
+            renames: declared.renames.to_vec(),
+            namespace_imports: declared.namespace_imports.to_vec(),
+            namespace_symbol: host.namespace_symbol(input.namespace).map(datum),
+            namespace_doc: declared.doc.map(datum),
+            ..tables
+        })
+    }
+
+    /// The globals, side-table entries, reader context and lazy targets
+    /// of `namespace` the analysis added since the start.
+    fn tables(&mut self, namespace: &str) -> Result<Declarations, String> {
         let program = self.program;
         let start = self.start;
         let host = self.macro_host;
@@ -940,18 +1160,18 @@ impl Converter<'_> {
             macro_functions.push(self.expr(*expr)?);
         }
         macro_functions.sort_by_key(|expr| expr.0);
-        for namespace in program.namespaces.range(0..start.namespaces) {
-            if namespace != input.namespace
-                && start.reader_contexts.get(namespace) != program.reader_contexts.get(namespace)
+        for other in program.namespaces.range(0..start.namespaces) {
+            if other != namespace
+                && start.reader_contexts.get(other) != program.reader_contexts.get(other)
             {
                 return Err(format!(
-                    "the namespace changed the reader context of {namespace}"
+                    "the namespace changed the reader context of {other}"
                 ));
             }
         }
         let reader_context = program
             .reader_contexts
-            .get(input.namespace)
+            .get(namespace)
             .map(|context| ReaderContext {
                 aliases: context.aliases.clone(),
                 refers: context.refers.clone(),
@@ -967,7 +1187,6 @@ impl Converter<'_> {
                 global: self.optional_global(target.global)?,
             });
         }
-        let declared = host.namespace_declarations(input.namespace);
         Ok(Declarations {
             globals,
             protocols,
@@ -975,42 +1194,9 @@ impl Converter<'_> {
             field_bindings,
             type_methods,
             macro_functions,
-            macros: Vec::new(),
-            aliases: input.aliases.to_vec(),
-            requires: input.requires.to_vec(),
-            refers: input.resolution.refers.clone(),
-            excludes: input.resolution.excludes.clone(),
-            js_refers: input
-                .resolution
-                .js_refers
-                .iter()
-                .map(|(local, refer)| {
-                    (
-                        local.clone(),
-                        match refer {
-                            ir::JsRefer::Global(path) => JsRefer::Global(path.clone()),
-                            ir::JsRefer::Package(package, export) => {
-                                JsRefer::Package(package.clone(), export.clone())
-                            }
-                        },
-                    )
-                })
-                .collect(),
             reader_context,
-            imports: declared
-                .imports
-                .iter()
-                .map(|import| Import {
-                    namespace: import.namespace.clone(),
-                    alias: import.alias.clone(),
-                    refers: import.refers.clone(),
-                })
-                .collect(),
-            renames: declared.renames.to_vec(),
-            namespace_imports: declared.namespace_imports.to_vec(),
-            namespace_symbol: host.namespace_symbol(input.namespace).map(datum),
-            namespace_doc: declared.doc.map(datum),
             lazy_targets,
+            ..Default::default()
         })
     }
 
@@ -1106,10 +1292,7 @@ impl Converter<'_> {
     ) -> Result<RegistrationView, String> {
         Ok(RegistrationView {
             own_globals: view.saturating_sub(self.start.globals) as u32,
-            added: added
-                .iter()
-                .map(|&id| self.global(GlobalId(id)))
-                .collect::<Result<_, _>>()?,
+            added: added_globals(self.program, added),
             reader_context: context.map(|context| ReaderContext {
                 aliases: context.aliases.clone(),
                 refers: context.refers.clone(),

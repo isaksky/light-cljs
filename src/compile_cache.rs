@@ -311,18 +311,17 @@ impl CompileCache {
         self.miss("refused", reason.to_owned());
     }
 
-    /// The namespace the last lookup did not install was analyzed, and
-    /// captured as `artifact`: key it, decide its policy and publish it.
-    #[allow(clippy::too_many_arguments)]
+    /// The namespace the last lookup did not install was analyzed: key it
+    /// and decide its policy, and say whether its artifact, captured once
+    /// its units merge after the next namespace's top-level pass, is to be
+    /// published ([`Self::publish`]).
     pub(crate) fn analyzed(
         &mut self,
         loader: &LoaderRecord,
         text: &str,
-        sources: &dyn SourceProvider,
         macros: &MacroHost,
         program_namespaces: &crate::arena::Arena<String>,
-        artifact: Option<Result<NamespaceArtifact, String>>,
-    ) {
+    ) -> Option<Publication> {
         let index = self.prefix.len();
         let name = loader.sources[index].name.clone();
         let id = {
@@ -351,25 +350,37 @@ impl CompileCache {
         let pending = self.pending.take();
         if metadata.no_cache {
             self.bypass(&name, Bypass::NoCache, String::new());
-            return;
+            return None;
         }
         if let Some((reason, _)) = propagated {
             let path = self.path(id);
             self.bypass(&name, reason, path);
-            return;
+            return None;
         }
         let (kind, description) = match pending {
             Some(Pending::Miss(kind, description)) => (kind, description),
             _ => ("no-artifact", "no artifact was published".to_owned()),
         };
         self.counts.misses.push((name.clone(), kind, description));
+        Some(Publication { name, id, key })
+    }
+
+    /// Publish the artifact captured of the namespace [`Self::analyzed`]
+    /// keyed as `publication`, read from `text`.
+    pub(crate) fn publish(
+        &mut self,
+        publication: Publication,
+        text: &str,
+        sources: &dyn SourceProvider,
+        artifact: Result<NamespaceArtifact, String>,
+    ) {
+        let Publication { name, id, key } = publication;
         let artifact = match artifact {
-            Some(Ok(artifact)) => artifact,
-            Some(Err(reason)) => {
+            Ok(artifact) => artifact,
+            Err(reason) => {
                 self.counts.unpublished.push((name, reason));
                 return;
             }
-            None => return,
         };
         let record = self.prefix.record(id);
         let fields = ManifestFields {
@@ -514,4 +525,12 @@ fn bypass_name(reason: Bypass) -> &'static str {
         Bypass::Blocked => "blocked",
         Bypass::NonCacheableInput => "non-cacheable-input",
     }
+}
+
+/// An analyzed namespace the cache keyed and will publish once its artifact
+/// is complete ([`CompileCache::analyzed`]).
+pub(crate) struct Publication {
+    name: String,
+    id: NamespaceId,
+    key: FrontEndKey,
 }

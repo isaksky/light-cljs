@@ -25,6 +25,11 @@ impl SharedPrefix {
         self.globals
     }
 
+    /// How many expressions the fragment shares.
+    pub(crate) fn exprs(&self) -> usize {
+        self.exprs
+    }
+
     /// Check, in every build, what [`append`] relies on: each shared table is
     /// a prefix of both programs, however much the target grew since the
     /// snapshot (a unit's fragment may be appended after later namespaces'
@@ -144,11 +149,16 @@ impl Ids {
 /// Existing global IDs remain stable; a fragment definition updates its flags,
 /// and supplied metadata replaces metadata on the matching global. Entries in
 /// `shared` are the target's own: they keep their target IDs and are not copied.
+/// With `own_namespace`, the fragment's reader context of that namespace is
+/// the only one it may change (one absent from the target is still added):
+/// a unit appended after later namespaces' analyses has a snapshot's view of
+/// the others, which they may have refreshed since.
 pub(crate) fn append(
     target: &mut Program,
     fragment: &Program,
     shared: &SharedPrefix,
     update_shared_globals: bool,
+    own_namespace: Option<&str>,
 ) -> ExprId {
     shared.check(target, fragment);
     let exprs = Ids::new(shared.exprs, target.exprs.len());
@@ -193,7 +203,9 @@ pub(crate) fn append(
         }
     }
     for (namespace, context) in fragment.reader_contexts.iter() {
-        if target.reader_contexts.get(namespace) != Some(context) {
+        let current = target.reader_contexts.get(namespace);
+        let owned = own_namespace.is_none_or(|own| own == namespace) || current.is_none();
+        if owned && current != Some(context) {
             target
                 .reader_contexts
                 .insert(namespace.clone(), context.clone());
@@ -1207,7 +1219,7 @@ mod tests {
             .iter()
             .position(|g| g.name == "shared")
             .unwrap();
-        let root = append(&mut target, &fragment, &SharedPrefix::default(), true);
+        let root = append(&mut target, &fragment, &SharedPrefix::default(), true, None);
         assert_eq!(target.root, original_root);
         assert_eq!(
             target.globals.iter().filter(|g| g.name == "shared").count(),
@@ -1255,6 +1267,7 @@ mod tests {
             &analyze("(do (def later 1) (str later \"-body\"))"),
             &SharedPrefix::default(),
             true,
+            None,
         );
         // The later namespace declares the same Var, adds its own entries
         // to every table, and drops the shared global's metadata.
@@ -1263,6 +1276,7 @@ mod tests {
             &analyze("(def later 2) (let [n \"next\"] n)"),
             &SharedPrefix::default(),
             true,
+            None,
         );
         target.globals[0].metadata = None;
         let (globals, strings, locals) = (
@@ -1270,7 +1284,7 @@ mod tests {
             target.strings.len(),
             target.locals.len(),
         );
-        let root = append(&mut target, &fragment, &shared, false);
+        let root = append(&mut target, &fragment, &shared, false, None);
         assert_eq!(target.globals.len(), globals, "`later` merges");
         assert_eq!(
             target.globals[0].metadata, None,
@@ -1297,7 +1311,7 @@ mod tests {
     fn a_fragment_of_another_program_is_refused() {
         let mut target = analyze("(def x 1) (def y 2) (def z 3)");
         let (snapshot, shared) = resolution_snapshot(&mut target);
-        append(&mut analyze("1"), &snapshot, &shared, false);
+        append(&mut analyze("1"), &snapshot, &shared, false, None);
     }
 
     #[test]
@@ -1306,7 +1320,7 @@ mod tests {
         let fragment = analyze("(def ^{:doc \"new\"} shared 2)");
         let offset = target.exprs.len();
         let metadata = fragment.globals[0].metadata.unwrap();
-        append(&mut target, &fragment, &SharedPrefix::default(), true);
+        append(&mut target, &fragment, &SharedPrefix::default(), true, None);
         assert_eq!(
             target.globals[0].metadata,
             Some(ExprId(metadata.0 + offset))
@@ -1314,7 +1328,7 @@ mod tests {
         let preserved = target.globals[0].metadata;
         let mut fragment = analyze("(def shared 3)");
         fragment.globals[0].metadata = None;
-        append(&mut target, &fragment, &SharedPrefix::default(), true);
+        append(&mut target, &fragment, &SharedPrefix::default(), true, None);
         assert_eq!(target.globals[0].metadata, preserved);
     }
     #[test]

@@ -99,6 +99,33 @@ pub struct NamespaceArtifact {
     /// The logical work the namespace charged. An artifact without it is
     /// never installed.
     pub accounting: Option<Accounting>,
+    /// What merging the namespace's deferred units added, which installs
+    /// after the next namespace's top-level pass, as the merge appends it
+    /// (docs/compiler-concurrency.md, "Stage A"); `None` when it has no
+    /// units.
+    pub bodies: Option<Box<Bodies>>,
+}
+
+/// The second part of a namespace's program: what the merge of its drained
+/// units appended after the next namespace's top-level pass. Its tables and
+/// references are its own, like an artifact's: an expression, local, recur
+/// target, string, name, host path, own global or lazy target reference
+/// indexes these, and an external global or namespace one these
+/// `references`, resolved when it installs. Its unit references are the
+/// artifact's units.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Bodies {
+    pub ir: SemanticIr,
+    /// Its globals, side-table entries and lazy targets, and the reader
+    /// context of the namespace after the merge; the other fields are empty.
+    pub declarations: Declarations,
+    /// Changes the merge made to globals created before it, the
+    /// namespace's top-level ones included.
+    pub patches: Vec<GlobalPatch>,
+    pub references: References,
+    /// Each unit's placeholder among the artifact's expressions and the
+    /// root of its body among these.
+    pub placeholders: Vec<(ExprRef, ExprRef)>,
 }
 
 /// Source identity and the shape of the namespace's body.
@@ -310,8 +337,16 @@ pub struct RelocatableCode {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RegistrationView {
     pub own_globals: u32,
-    pub added: Vec<GlobalRef>,
+    pub added: Vec<AddedGlobal>,
     pub reader_context: Option<ReaderContext>,
+}
+
+/// A global a unit's own analysis added, as its registration names it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AddedGlobal {
+    pub namespace: String,
+    pub name: String,
+    pub flags: GlobalFlags,
 }
 
 /// The semantic IR of the namespace's body and of its drained deferred units,
@@ -1077,14 +1112,145 @@ fn kind_references(kind: &ExprKind, visit: &mut impl FnMut(Reference)) {
     }
 }
 
+/// Check that every reference of an artifact's IR, declarations and patches,
+/// or of its bodies', names an entry of their tables, with `units` units,
+/// and that the expressions reach `roots` without a cycle.
+fn validate_tables(
+    ir: &SemanticIr,
+    declarations: &Declarations,
+    references: &References,
+    patches: &[GlobalPatch],
+    units: usize,
+    roots: &[ExprRef],
+) -> Result<(), String> {
+    let fits = |what: &str, index: u32, len: usize| {
+        if (index as usize) < len {
+            Ok(())
+        } else {
+            Err(format!("{what} {index} is outside its table of {len}"))
+        }
+    };
+    let source = |source: SourceRef| match source {
+        SourceRef::Own => Ok(()),
+        SourceRef::Namespace(index) => fits("namespace", index, references.namespaces.len()),
+    };
+    let global = |global: GlobalRef| match global {
+        GlobalRef::Own(index) => fits("global", index, declarations.globals.len()),
+        GlobalRef::External(index) => fits("external global", index, references.globals.len()),
+    };
+    let expr = |id: ExprRef| fits("expression", id.0, ir.exprs.len());
+    let local = |id: LocalRef| fits("local", id.0, ir.locals.len());
+    let recur = |id: RecurRef| fits("recur target", id.0, ir.recur_targets.len());
+    let unit = |id: UnitRef| fits("unit", id.0, units);
+    let string = |id: StringRef| fits("string", id.0, ir.strings.len());
+    let mut error = None;
+    for (index, entry) in ir.exprs.iter().enumerate() {
+        source(entry.source)?;
+        kind_references(&entry.kind, &mut |reference| {
+            let checked = match reference {
+                Reference::Expr(id) => expr(id),
+                Reference::Local(id) => local(id),
+                Reference::Recur(id) => recur(id),
+                Reference::String(id) => string(id),
+                Reference::Named(id) => fits("name", id.0, ir.named_literals.len()),
+                Reference::Global(id) => global(id),
+                Reference::JsGlobal(id) => fits("host path", id.0, ir.js_globals.len()),
+                Reference::Lazy(id) => fits("lazy target", id.0, declarations.lazy_targets.len()),
+                Reference::Unit(id) => unit(id),
+            };
+            if let Err(message) = checked {
+                error.get_or_insert(format!("expression {index}: {message}"));
+            }
+        });
+    }
+    if let Some(error) = error {
+        return Err(error);
+    }
+    for binding in &ir.locals {
+        source(binding.source)?;
+    }
+    for target in &ir.recur_targets {
+        target.params.iter().try_for_each(|&id| local(id))?;
+    }
+    for literal in &ir.named_literals {
+        literal.namespace.iter().try_for_each(|&id| string(id))?;
+        string(literal.name)?;
+    }
+    roots.iter().try_for_each(|&root| expr(root))?;
+    ir_depth(&ir.exprs)?;
+    for entry in &declarations.globals {
+        source(entry.source)?;
+        entry.metadata.iter().try_for_each(|&id| expr(id))?;
+    }
+    for (protocol, methods) in &declarations.protocols {
+        global(*protocol)?;
+        methods
+            .iter()
+            .try_for_each(|method| global(method.global))?;
+    }
+    declarations
+        .record_constructors
+        .iter()
+        .try_for_each(|&id| global(id))?;
+    for &(binding, target, _) in &declarations.field_bindings {
+        local(binding)?;
+        recur(target)?;
+    }
+    declarations
+        .type_methods
+        .iter()
+        .try_for_each(|&id| recur(id))?;
+    declarations
+        .macro_functions
+        .iter()
+        .try_for_each(|&id| expr(id))?;
+    for target in &declarations.lazy_targets {
+        expr(target.site)?;
+        target.global.iter().try_for_each(|&id| global(id))?;
+    }
+    for patch in patches {
+        global(patch.global)?;
+        patch.metadata.iter().try_for_each(|&id| expr(id))?;
+    }
+    Ok(())
+}
+
 impl NamespaceArtifact {
+    /// The header and bodies alone, which installing the bodies reads
+    /// ([`crate::artifact_install::install_bodies`]).
+    pub(crate) fn bodies_only(&self) -> Self {
+        Self {
+            header: self.header.clone(),
+            declarations: Default::default(),
+            ir: Default::default(),
+            patches: Vec::new(),
+            units: Default::default(),
+            diagnostics: Default::default(),
+            references: Default::default(),
+            names: Default::default(),
+            accounting: None,
+            bodies: self.bodies.clone(),
+        }
+    }
+
     /// The longest chain of semantic IR expressions, each a child of the one
     /// before. An error when an expression reference is outside the table or
     /// the expressions form a cycle, which no analysis produces and which
     /// the compiler's recursive passes could not finish. Shared children are
-    /// fine.
+    /// fine. With bodies, whose roots installation puts under the first
+    /// part's placeholders, it bounds the chain by both parts' longest.
     pub fn ir_depth(&self) -> Result<u32, String> {
-        let exprs = &self.ir.exprs;
+        let top = ir_depth(&self.ir.exprs)?;
+        match &self.bodies {
+            Some(bodies) => Ok(top.saturating_add(ir_depth(&bodies.ir.exprs)?)),
+            None => Ok(top),
+        }
+    }
+}
+
+/// [`NamespaceArtifact::ir_depth`] of `exprs`.
+fn ir_depth(exprs: &[Expr]) -> Result<u32, String> {
+    {
         let count = exprs.len();
         // The children of expression `i` are `targets[offsets[i]..offsets[i + 1]]`.
         let mut offsets = Vec::with_capacity(count + 1);
@@ -1147,13 +1313,48 @@ impl NamespaceArtifact {
         }
         Ok(deepest)
     }
+}
 
+impl NamespaceArtifact {
     /// Check that every reference the artifact holds names an entry of its
     /// own tables, and that its expressions form no cycle, so installing it
     /// needs nothing but the artifact and the identities it names.
     pub fn validate(&self) -> Result<(), String> {
         self.names.validate()?;
         let ir = &self.ir;
+        let units = self.units.units.len();
+        validate_tables(
+            ir,
+            &self.declarations,
+            &self.references,
+            &self.patches,
+            units,
+            &[self.header.root],
+        )?;
+        if let Some(bodies) = &self.bodies {
+            let roots = bodies
+                .placeholders
+                .iter()
+                .map(|&(placeholder, root)| {
+                    if (placeholder.0 as usize) < ir.exprs.len() {
+                        Ok(root)
+                    } else {
+                        Err(format!(
+                            "placeholder {} is outside its table",
+                            placeholder.0
+                        ))
+                    }
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            validate_tables(
+                &bodies.ir,
+                &bodies.declarations,
+                &bodies.references,
+                &bodies.patches,
+                units,
+                &roots,
+            )?;
+        }
         let fits = |what: &str, index: u32, len: usize| {
             if (index as usize) < len {
                 Ok(())
@@ -1167,89 +1368,8 @@ impl NamespaceArtifact {
                 fits("namespace", index, self.references.namespaces.len())
             }
         };
-        let global = |global: GlobalRef| match global {
-            GlobalRef::Own(index) => fits("global", index, self.declarations.globals.len()),
-            GlobalRef::External(index) => {
-                fits("external global", index, self.references.globals.len())
-            }
-        };
-        let expr = |id: ExprRef| fits("expression", id.0, ir.exprs.len());
-        let local = |id: LocalRef| fits("local", id.0, ir.locals.len());
-        let recur = |id: RecurRef| fits("recur target", id.0, ir.recur_targets.len());
-        let unit = |id: UnitRef| fits("unit", id.0, self.units.units.len());
-        let string = |id: StringRef| fits("string", id.0, ir.strings.len());
-        let mut error = None;
-        for (index, entry) in ir.exprs.iter().enumerate() {
-            source(entry.source)?;
-            kind_references(&entry.kind, &mut |reference| {
-                let checked = match reference {
-                    Reference::Expr(id) => expr(id),
-                    Reference::Local(id) => local(id),
-                    Reference::Recur(id) => recur(id),
-                    Reference::String(id) => string(id),
-                    Reference::Named(id) => fits("name", id.0, ir.named_literals.len()),
-                    Reference::Global(id) => global(id),
-                    Reference::JsGlobal(id) => fits("host path", id.0, ir.js_globals.len()),
-                    Reference::Lazy(id) => {
-                        fits("lazy target", id.0, self.declarations.lazy_targets.len())
-                    }
-                    Reference::Unit(id) => unit(id),
-                };
-                if let Err(message) = checked {
-                    error.get_or_insert(format!("expression {index}: {message}"));
-                }
-            });
-        }
-        if let Some(error) = error {
-            return Err(error);
-        }
-        for binding in &ir.locals {
-            source(binding.source)?;
-        }
-        for target in &ir.recur_targets {
-            target.params.iter().try_for_each(|&id| local(id))?;
-        }
-        for literal in &ir.named_literals {
-            literal.namespace.iter().try_for_each(|&id| string(id))?;
-            string(literal.name)?;
-        }
-        expr(self.header.root)?;
-        self.ir_depth()?;
+        let unit = |id: UnitRef| fits("unit", id.0, units);
         let declarations = &self.declarations;
-        for entry in &declarations.globals {
-            source(entry.source)?;
-            entry.metadata.iter().try_for_each(|&id| expr(id))?;
-        }
-        for (protocol, methods) in &declarations.protocols {
-            global(*protocol)?;
-            methods
-                .iter()
-                .try_for_each(|method| global(method.global))?;
-        }
-        declarations
-            .record_constructors
-            .iter()
-            .try_for_each(|&id| global(id))?;
-        for &(binding, target, _) in &declarations.field_bindings {
-            local(binding)?;
-            recur(target)?;
-        }
-        declarations
-            .type_methods
-            .iter()
-            .try_for_each(|&id| recur(id))?;
-        declarations
-            .macro_functions
-            .iter()
-            .try_for_each(|&id| expr(id))?;
-        for target in &declarations.lazy_targets {
-            expr(target.site)?;
-            target.global.iter().try_for_each(|&id| global(id))?;
-        }
-        for patch in &self.patches {
-            global(patch.global)?;
-            patch.metadata.iter().try_for_each(|&id| expr(id))?;
-        }
         // The references are in text order and do not overlap, so
         // installation can rewrite them in one pass.
         let code = |code: &RelocatableCode| {
@@ -1275,7 +1395,7 @@ impl NamespaceArtifact {
                 view.own_globals,
                 declarations.globals.len() + 1,
             )?;
-            view.added.iter().try_for_each(|&id| global(id))
+            Ok::<(), String>(())
         };
         for declaration in &declarations.macros {
             code(&declaration.code)?;
@@ -1650,6 +1770,35 @@ impl NamespaceArtifact {
             None => writeln!(out, "not recorded"),
         }
         .unwrap();
+        if let Some(bodies) = &self.bodies {
+            let d = &bodies.declarations;
+            writeln!(out, "[bodies]").unwrap();
+            writeln!(
+                out,
+                "exprs {} placeholders {:?}",
+                bodies.ir.exprs.len(),
+                bodies.placeholders
+            )
+            .unwrap();
+            for (index, global) in d.globals.iter().enumerate() {
+                writeln!(
+                    out,
+                    "global {index} {}/{} {:?}",
+                    global.namespace, global.name, global.flags
+                )
+                .unwrap();
+            }
+            writeln!(out, "protocols {:?}", d.protocols).unwrap();
+            writeln!(
+                out,
+                "records {:?} fields {:?} methods {:?}",
+                d.record_constructors, d.field_bindings, d.type_methods
+            )
+            .unwrap();
+            writeln!(out, "lazy {:?}", d.lazy_targets).unwrap();
+            writeln!(out, "patches {:?}", bodies.patches).unwrap();
+            writeln!(out, "references {:?}", bodies.references).unwrap();
+        }
         out
     }
 }

@@ -186,6 +186,112 @@ pub(crate) fn install(
     .map_err(InstallError::Failed)
 }
 
+/// Where an installed artifact's first part landed, which installing its
+/// bodies refers to.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct InstalledTop {
+    /// The program's expression count before it installed.
+    pub exprs: usize,
+    /// The session unit ID of its first unit.
+    pub first_unit: usize,
+}
+
+/// Install the bodies of `artifact`, whose first part installed at `top`,
+/// where the merge of its namespace's units would have appended them: after
+/// the next namespace's top-level pass (docs/compiler-concurrency.md,
+/// "Stage A"). Their external globals and namespaces are found by name
+/// now, and a global of theirs merges with a same-named one the program
+/// has, as the merge's append does; a missing namespace fails the
+/// compilation, since the first part changed it.
+pub(crate) fn install_bodies(
+    target: Target<'_>,
+    artifact: &NamespaceArtifact,
+    top: InstalledTop,
+) -> Result<(), String> {
+    let Target {
+        program,
+        names,
+        index,
+        source_index,
+        warnings,
+    } = target;
+    let Some(bodies) = artifact.bodies.as_deref() else {
+        return Ok(());
+    };
+    index.extend(program);
+    let namespaces = bodies
+        .references
+        .namespaces
+        .iter()
+        .map(|name| {
+            index
+                .namespaces
+                .get(name)
+                .copied()
+                .ok_or_else(|| format!("namespace {name} is not loaded before its bodies"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut globals = Vec::with_capacity(bodies.references.globals.len());
+    let mut metadata = Vec::with_capacity(bodies.references.globals.len());
+    for external in &bodies.references.globals {
+        let key = (external.namespace.clone(), external.name.clone());
+        // A global the namespaces between the parts created, which the
+        // bodies' reference merged with when they were captured: when those
+        // namespaces no longer create it, the reference reserves it, as
+        // the merge would have appended the units' reservation.
+        let id = match names.get(&key) {
+            Some(&id) => id,
+            None => {
+                let id = GlobalId(program.globals.len());
+                program.globals.push(ir::GlobalBinding {
+                    type_descriptor: false,
+                    declared: false,
+                    constant: false,
+                    define: false,
+                    boolean_tag: false,
+                    metadata: None,
+                    namespace: external.namespace.clone(),
+                    name: external.name.clone(),
+                    span: 0..0,
+                    source_index,
+                });
+                names.insert(key, id);
+                id
+            }
+        };
+        globals.push(id);
+        metadata.push(program.globals[id.0].metadata);
+    }
+    let source = InstallSource {
+        namespace: &artifact.header.namespace,
+        path: &artifact.header.path,
+        text: "",
+        entry: artifact.header.entry,
+        options: Default::default(),
+        control: None,
+    };
+    Installer {
+        program,
+        names,
+        index,
+        artifact,
+        source: &source,
+        resolved: Resolved {
+            source_index,
+            namespaces,
+            globals,
+            metadata,
+            new_namespace: false,
+            first_unit: top.first_unit,
+            warning_kinds: Vec::new(),
+        },
+        bases: Bases::default(),
+        warnings,
+    }
+    .bodies(bodies, top);
+    Ok(())
+}
+
 /// Hold the names an installed artifact generated, and keep every later
 /// allocation of this compilation from producing one
 /// ([`crate::generated_names`]).
@@ -551,6 +657,9 @@ struct Bases {
     globals: usize,
     lazy_targets: usize,
     js_globals: Vec<ir::JsGlobalId>,
+    /// Where the bodies' own globals are, when they install: appended, or
+    /// a same-named global the program has.
+    own_globals: Vec<GlobalId>,
 }
 
 struct Installer<'a> {
@@ -591,7 +700,10 @@ impl Installer<'_> {
     }
     fn global(&self, global: GlobalRef) -> GlobalId {
         match global {
-            GlobalRef::Own(index) => GlobalId(self.bases.globals + index as usize),
+            GlobalRef::Own(index) => match self.bases.own_globals.get(index as usize) {
+                Some(&id) => id,
+                None => GlobalId(self.bases.globals + index as usize),
+            },
             GlobalRef::External(index) => self.resolved.globals[index as usize],
         }
     }
@@ -630,6 +742,7 @@ impl Installer<'_> {
             globals: program.globals.len(),
             lazy_targets: program.lazy_targets.len(),
             js_globals: Vec::new(),
+            own_globals: Vec::new(),
         };
         let ir = &artifact.ir;
         self.program.strings.extend(ir.strings.iter().cloned());
@@ -845,6 +958,202 @@ impl Installer<'_> {
         self.warnings
             .sort_by_key(|warning| (warning.source_index, warning.span.start));
         Ok(root)
+    }
+
+    /// Append `bodies` as [`install_bodies`] says.
+    fn bodies(mut self, bodies: &Bodies, top: InstalledTop) {
+        let program = &*self.program;
+        self.bases = Bases {
+            exprs: program.exprs.len(),
+            locals: program.locals.len(),
+            recur_targets: program.recur_targets.len(),
+            strings: program.strings.len(),
+            named_literals: program.named_literals.len(),
+            globals: program.globals.len(),
+            lazy_targets: program.lazy_targets.len(),
+            js_globals: Vec::new(),
+            own_globals: Vec::new(),
+        };
+        let ir = &bodies.ir;
+        self.program.strings.extend(ir.strings.iter().cloned());
+        let literals = ir
+            .named_literals
+            .iter()
+            .map(|literal| ir::NamedLiteral {
+                namespace: literal.namespace.map(|id| self.string(id)),
+                name: self.string(literal.name),
+            })
+            .collect::<Vec<_>>();
+        self.program.named_literals.extend(literals);
+        let mut js_globals = Vec::with_capacity(ir.js_globals.len());
+        for path in &ir.js_globals {
+            let id = match self.index.js_globals.get(path) {
+                Some(&id) => id,
+                None => {
+                    let id = self.program.js_globals.len();
+                    self.program
+                        .js_globals
+                        .push(ir::JsGlobal { path: path.clone() });
+                    self.index.js_globals.insert(path.clone(), id);
+                    id
+                }
+            };
+            js_globals.push(ir::JsGlobalId(id));
+        }
+        self.index.indexed_js_globals = self.program.js_globals.len();
+        self.bases.js_globals = js_globals;
+        let declarations = &bodies.declarations;
+        for global in &declarations.globals {
+            if let Some(&id) = self
+                .names
+                .get(&(global.namespace.clone(), global.name.clone()))
+            {
+                let metadata = self.optional(global.metadata);
+                let existing = &mut self.program.globals[id.0];
+                if global.flags.declared {
+                    existing.declared = true;
+                    existing.type_descriptor = global.flags.type_descriptor;
+                    existing.constant = global.flags.constant;
+                    existing.define = global.flags.define;
+                    existing.boolean_tag = global.flags.boolean_tag;
+                }
+                if metadata.is_some() {
+                    existing.metadata = metadata;
+                }
+                self.bases.own_globals.push(id);
+                continue;
+            }
+            let binding = ir::GlobalBinding {
+                type_descriptor: global.flags.type_descriptor,
+                declared: global.flags.declared,
+                constant: global.flags.constant,
+                define: global.flags.define,
+                boolean_tag: global.flags.boolean_tag,
+                metadata: self.optional(global.metadata),
+                namespace: global.namespace.clone(),
+                name: global.name.clone(),
+                span: span(global.span),
+                source_index: self.source_index(global.source),
+            };
+            let id = GlobalId(self.program.globals.len());
+            self.program.globals.push(binding);
+            self.names
+                .insert((global.namespace.clone(), global.name.clone()), id);
+            self.bases.own_globals.push(id);
+        }
+        let locals = ir
+            .locals
+            .iter()
+            .map(|local| ir::LocalBinding {
+                name: local.name.clone(),
+                span: span(local.span),
+                source_index: self.source_index(local.source),
+            })
+            .collect::<Vec<_>>();
+        self.program.locals.extend(locals);
+        let targets = ir
+            .recur_targets
+            .iter()
+            .map(|target| ir::RecurTarget {
+                params: self.locals(&target.params),
+                protocol_impl: target.protocol_impl,
+                receiver_from_this: target.receiver_from_this,
+                used: target.used,
+                argument_slots: target
+                    .argument_slots
+                    .iter()
+                    .map(|slot| slot.map(|slot| slot as usize))
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        self.program.recur_targets.extend(targets);
+        let exprs = ir
+            .exprs
+            .iter()
+            .map(|expr| ir::Expr {
+                kind: self.kind(&expr.kind),
+                span: span(expr.span),
+                context: expr.context,
+                source_index: self.source_index(expr.source),
+            })
+            .collect::<Vec<_>>();
+        self.program.exprs.extend(exprs);
+        for target in &declarations.lazy_targets {
+            let lazy_namespace = match self.index.lazy_namespaces.get(&target.namespace) {
+                Some(&index) => index,
+                None => {
+                    let index = self.program.lazy_namespaces.len();
+                    self.program.lazy_namespaces.push(target.namespace.clone());
+                    self.index
+                        .lazy_namespaces
+                        .insert(target.namespace.clone(), index);
+                    index
+                }
+            };
+            let lazy = ir::LazyTarget {
+                site: self.expr(target.site),
+                namespace: lazy_namespace,
+                global: self.optional_global(target.global),
+            };
+            self.program.lazy_targets.push(lazy);
+        }
+        self.index.indexed_lazy_namespaces = self.program.lazy_namespaces.len();
+        for patch in &bodies.patches {
+            let id = self.global(patch.global);
+            let metadata = self.optional(patch.metadata);
+            let global = &mut self.program.globals[id.0];
+            global.type_descriptor = patch.flags.type_descriptor;
+            global.declared = patch.flags.declared;
+            global.constant = patch.flags.constant;
+            global.define = patch.flags.define;
+            global.boolean_tag = patch.flags.boolean_tag;
+            if metadata.is_some() {
+                global.metadata = metadata;
+            }
+        }
+        for (global, methods) in &declarations.protocols {
+            let methods = methods
+                .iter()
+                .map(|method| self.protocol_method(method))
+                .collect();
+            let global = self.global(*global);
+            self.program.protocols.insert(global, methods);
+        }
+        for &global in &declarations.record_constructors {
+            let global = self.global(global);
+            self.program.record_constructors.insert(global);
+        }
+        for &(local, target, mutable) in &declarations.field_bindings {
+            let entry = (self.local(local), (self.recur(target), mutable));
+            self.program.field_bindings.insert(entry.0, entry.1);
+        }
+        for &target in &declarations.type_methods {
+            let target = self.recur(target);
+            self.program.type_methods.insert(target);
+        }
+        for &expr in &declarations.macro_functions {
+            let expr = self.expr(expr);
+            self.program.macro_functions.insert(expr);
+        }
+        for &(placeholder, root) in &bodies.placeholders {
+            let root = self.expr(root);
+            self.program.exprs[top.exprs + placeholder.0 as usize].kind =
+                ir::ExprKind::Do(vec![root]);
+        }
+        let namespace = &self.artifact.header.namespace;
+        let context = &declarations.reader_context;
+        let context = ir::RuntimeReaderNamespace {
+            aliases: context.aliases.clone(),
+            refers: context.refers.clone(),
+            excludes: context.excludes.clone(),
+            macros: context.macros.clone(),
+        };
+        if self.program.reader_contexts.get(namespace).map(|c| &**c) != Some(&context) {
+            self.program
+                .reader_contexts
+                .insert(namespace.to_owned(), context.into());
+        }
+        self.index.extend(self.program);
     }
 
     /// Stop when the compilation is cancelled or its compile-time session
@@ -1185,8 +1494,20 @@ impl Installer<'_> {
         views: &HashMap<u32, crate::arena::Arena<ir::GlobalBinding>>,
     ) -> crate::emitter::DeferredUnit {
         let mut globals = views[&view.own_globals].clone();
-        for &added in &view.added {
-            globals.push(self.program.globals[self.global(added).0].clone());
+        // Registration reads only their names and flags.
+        for added in &view.added {
+            globals.push(ir::GlobalBinding {
+                type_descriptor: added.flags.type_descriptor,
+                declared: added.flags.declared,
+                constant: added.flags.constant,
+                define: added.flags.define,
+                boolean_tag: added.flags.boolean_tag,
+                metadata: None,
+                namespace: added.namespace.clone(),
+                name: added.name.clone(),
+                span: 0..0,
+                source_index: self.resolved.source_index,
+            });
         }
         let mut reader_contexts = self.program.reader_contexts.clone();
         let namespace = &self.artifact.header.namespace;
