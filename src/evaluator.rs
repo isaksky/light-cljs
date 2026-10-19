@@ -262,6 +262,7 @@ impl Evaluator {
                 "JavaScript memory limit must be at least 1048576 bytes for engine startup".into(),
             ));
         }
+        crate::generated_names::forget_installed_scopes();
         let control = shared.unwrap_or(ExecutionControl::new(&options)?);
         let runtime = Runtime::new_with_alloc(LimitedAllocator {
             used: 0,
@@ -344,6 +345,7 @@ impl Evaluator {
                     hostDiagnostic = null;
                   }} catch (error) {{ lastError = error; const message = exceptionMessage(error); if (message !== undefined) throw new Error(message); throw error; }}
                 }},
+                gensymScope: (serial, prefix, retired) => bridge.gensymScope(serial, prefix, retired),
                 call: (id, ids) => {{
                   try {{ const result = save(Reflect.apply(get(id), null, ids.map(get))); hostDiagnostic = null; return result; }}
                   catch (error) {{
@@ -1015,6 +1017,23 @@ pub trait MacroEvaluator {
         let value = self.evaluate_unit(&source)?;
         self.release(value)
     }
+    /// What tells this evaluator's heap apart from every other living one,
+    /// the same for every handle to it, or 0 when the evaluator does not say
+    /// ([`crate::generated_names::sync_gensym_scope`]).
+    fn heap(&self) -> usize {
+        0
+    }
+    /// Make the compile-time runtime's `gensym` number in the scope of
+    /// generated names `serial`, appending `prefix` and the scope's own
+    /// count, or with its counter for serial 0
+    /// ([`crate::generated_names::Scope`]).
+    fn gensym_scope(&self, serial: u64, prefix: &str, retired: &str) -> Result<(), EvalError> {
+        debug_assert!(prefix.bytes().all(|b| b.is_ascii_digit() || b == b'_'));
+        let value = self.evaluate_unit(&format!(
+            "rt => {{ rt.compilerForms.gensymScope({serial}, \"{prefix}\", \"{retired}\"); return null; }}"
+        ))?;
+        self.release(value)
+    }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError>;
     fn import_form(&self, form: &Form, limits: ConversionLimits) -> Result<ValueId, EvalError>;
     fn import_data(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError>;
@@ -1075,6 +1094,12 @@ impl MacroEvaluator for Evaluator {
     }
     fn compiler_frontier(&self, next: Option<usize>) -> Result<(), EvalError> {
         self.with_active(|active| active.compiler_frontier(next))
+    }
+    fn heap(&self) -> usize {
+        Rc::as_ptr(&self.bridge) as usize
+    }
+    fn gensym_scope(&self, serial: u64, prefix: &str, retired: &str) -> Result<(), EvalError> {
+        self.with_active(|active| active.gensym_scope(serial, prefix, retired))
     }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
         Evaluator::call(self, function, arguments)
@@ -1173,6 +1198,15 @@ impl MacroEvaluator for ActiveEvaluator<'_, '_> {
         self.enter(|_| {
             let f: Function = self.services.get("compilerFrontier")?;
             f.call((next,))
+        })
+    }
+    fn heap(&self) -> usize {
+        Rc::as_ptr(self.bridge) as usize
+    }
+    fn gensym_scope(&self, serial: u64, prefix: &str, retired: &str) -> Result<(), EvalError> {
+        self.enter(|_| {
+            let f: Function = self.services.get("gensymScope")?;
+            f.call::<_, ()>((serial as f64, prefix, retired))
         })
     }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {

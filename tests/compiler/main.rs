@@ -96,6 +96,7 @@ mod extensions;
 mod features_example;
 mod find_effects;
 mod folding_inlining;
+mod generated_names;
 mod generated_optimization;
 mod hash_branch_effects;
 mod hash_map_from_arrays;

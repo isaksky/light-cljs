@@ -11,6 +11,23 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Generated names per unit (light-cljs-332, October 18, 2026)
+
+Parent `8982972` against per-unit generated names, Penpot `app.main
+--optimize none`, six alternating pairs (parent first in odd rounds) at
+1-minute load 9.0 falling to 2.9 while two other workers were active.
+
+| Build | Wall (s), round 1-6 | Median wall | Peak RSS (GB), round 1-6 | Median RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent `8982972` | 25.97, 25.72, 26.47, 25.31, 25.36, 26.43 | 25.85 | 0.933, 0.969, 0.945, 0.936, 0.928, 0.919 | 0.935 |
+| Per-unit names | 25.53, 25.59, 27.01, 25.56, 25.80, 25.61 | 25.60 | 0.924, 0.921, 0.951, 0.927, 0.933, 0.955 | 0.930 |
+
+The medians are -1.0% wall and -0.5% peak RSS, within the +2% and +3%
+gate. Output grows from 33,610,277 to 33,622,574 bytes (+12,297, 0.04%):
+the quoted symbols and names that spell a scope's 64-bit discriminator.
+Both outputs are the same in every run of their build. The scope switch
+costs one engine call per change of the heap's scope, not per expansion.
+
 ## Parse queue (light-cljs-337, October 18, 2026)
 
 Parent `460b91a` against the parse queue, Penpot `app.main --optimize

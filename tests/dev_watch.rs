@@ -2090,6 +2090,35 @@ fn goog_example(src: &Path) {
     fs::write(src.join("app/view.cljs"), view).unwrap();
 }
 
+/// A session that loaded the program itself and one that installed it from
+/// the cache write the same unit and map, byte for byte, for a step whose
+/// forms generate names: `or`'s `gensym`, and a syntax-quote gensym and a
+/// `gensym` of a macro. The startup build allocates each namespace's names
+/// in its own scope (light-cljs-332), so it leaves the session's
+/// process-wide counters and its runtime's `gensym` counter where a session
+/// that ran none of its macros has them.
+#[test]
+fn a_step_generates_the_same_names_cold_and_warm() {
+    let mut pair = Pair::start("dev-watch-names", &[], |src| {
+        fs::write(
+            src.join("app/logic.cljs"),
+            "(ns app.logic)\n\n(defmacro both [a b] `(let [x# ~a] (and x# ~b)))\n\n(defmacro tagged [] (list 'quote (gensym \"tag\")))\n\n(defn pick [a b] (or a (both b a)))\n\n(def tag (tagged))\n",
+        )
+        .unwrap();
+        let view = fs::read_to_string(src.join("app/view.cljs")).unwrap();
+        let view = view.replace(
+            "[app.state :as state]",
+            "[app.state :as state]\n            [app.logic :as logic]",
+        );
+        fs::write(src.join("app/view.cljs"), view).unwrap();
+    });
+    let text = pair.cold.source("app/logic.cljs");
+    let text = format!("{text}\n(defn more [a b] (or a (both a b) (tagged)))\n");
+    assert_eq!(pair.save("app/logic.cljs", &text), "app.logic, app.view");
+    let unit = pair.cold.read("app.logic.js");
+    assert!(unit.contains("tag"), "{unit}");
+}
+
 /// A `goog.*` namespace that no source root provides is a JavaScript host
 /// namespace in the session as in the startup build: neither loads it, and
 /// its alias and refers name host paths. A session that loaded the program

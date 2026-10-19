@@ -476,6 +476,8 @@ impl MacroHost {
             depth: 128,
         };
         let run = || -> Result<Form, crate::evaluator::EvalError> {
+            // Its `gensym` names belong to the unit that expands it.
+            crate::generated_names::sync_gensym_scope(evaluator)?;
             let mut args = Vec::new();
             let mut result = None;
             let expanded = (|| {

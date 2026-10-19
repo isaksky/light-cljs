@@ -31,6 +31,9 @@ pub(crate) struct DefinitionSnapshot {
     pub definition_test: Option<Form>,
     pub definition_test_unit: Option<usize>,
     pub extension_frontier: usize,
+    /// The scope of generated names the unit is analyzed in, numbered in
+    /// the scope it was registered from ([`crate::generated_names::child`]).
+    pub names: Option<std::sync::Arc<str>>,
 }
 pub(crate) struct BundleRegistration<'a> {
     pub products: &'a [crate::analyzer::GlobalId],
@@ -815,6 +818,9 @@ impl CompilationSession {
         };
         if let Some(bootstrap) = bootstrap {
             let engine = bootstrap.evaluator.as_ref();
+            // Initializers that call `gensym` number in the scope that
+            // registers them.
+            crate::generated_names::sync_gensym_scope(engine).map_err(|e| e.to_string())?;
             let value = engine.evaluate_unit(&source).map_err(|e| e.to_string())?;
             engine.release(value).map_err(|e| e.to_string())?;
         }
@@ -1052,6 +1058,9 @@ impl CompilationSession {
         } else {
             None
         };
+        // The unit's macros number in its scope; whatever demanded it, such
+        // as a running macro calling it, numbers in its own again after.
+        let _gensyms = crate::generated_names::RestoreGensymScope(engine);
         let analysis = crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
         let diagnostic = analysis.as_ref().err().cloned();
         let result = analysis
@@ -1095,6 +1104,7 @@ impl Clone for DefinitionSnapshot {
             definition_test: self.definition_test.clone(),
             definition_test_unit: self.definition_test_unit,
             extension_frontier: self.extension_frontier,
+            names: self.names.clone(),
         }
     }
 }

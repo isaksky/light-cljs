@@ -2599,15 +2599,22 @@ only a build that passes the same time can reuse its artifacts.
 
 Syntax-quote `x#`, `#()` parameters, `binding` and destructuring locals and
 `gensym` give fresh names, which a macro may rely on being distinct, never on
-their numbers. With the compiler cache ([compiler-cache.md](compiler-cache.md),
-"Generated names"), a namespace installed from its artifact keeps the names its
-capturing compilation allocated, including gensyms that escape into constants,
-and every fresh allocation of the compilation is reserved above them. Numeric
-suffixes therefore differ between a cached and an uncached build, and between
-builds that hit different namespaces. A macro whose expansion needs the
-allocation sequence itself to repeat, for example one that derives a persisted
-identifier from a `gensym` suffix, must opt out of the cache: mark each
-namespace that expands it `^:light-cljs/no-cache`, or make the macro's
+their numbers. In a `--compile --entry` build each namespace, and each unit
+it registers, numbers in a scope of its own: a name spells a digest of the
+namespace's name and source, the unit, and a count of the scope's own
+(`x__D_N__auto__`, `G__D_K_N`; docs/compiler-concurrency.md, "Generated
+names"). The same source therefore gives the same names in every build,
+whatever the process compiled before, on any thread and wherever the
+namespace loads. A single-source compilation and REPL forms number from
+process-wide counters (`x__N__auto__`, `G__N`), as upstream does. With the
+compiler cache ([compiler-cache.md](compiler-cache.md), "Generated names"), a
+namespace installed from its artifact keeps the names its capturing
+compilation allocated, including gensyms that escape into constants, which
+are the names a fresh analysis of its source gives. A macro whose expansion
+needs the allocation sequence itself to repeat, for example one that derives
+a persisted identifier from a `gensym` suffix, must still opt out of the
+cache when that sequence depends on more than its namespace's source: mark
+each namespace that expands it `^:light-cljs/no-cache`, or make the macro's
 namespace a cache blocker, so that it and every compilation consumer of it
 recompile.
 

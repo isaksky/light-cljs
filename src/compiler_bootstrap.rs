@@ -8,7 +8,7 @@ use crate::{
     evaluator::ValueId,
     form_bridge::ConversionLimits,
 };
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{collections::HashMap, rc::Rc};
 
 const CORE: &str = include_str!("compiler_core_macros.cljs");
 const SEQUENCES: &str = include_str!("compiler_sequence_macros.cljs");
@@ -155,11 +155,13 @@ fn elidable_environment(
     }
 }
 
-thread_local! {
-    // Generated in memory from these exact include_str! inputs by this binary.
-    // No disk artifact, source hash ambiguity or mutable JS state is retained.
-    static UNITS: RefCell<Option<Vec<BootstrapUnit>>> = const { RefCell::new(None) };
-}
+// Generated in memory from these exact include_str! inputs by this binary,
+// once per process for every thread: they are read and analyzed in the
+// bootstrap's own scope of generated names, so every thread, and every
+// compilation before or after another, gets the same text and the same
+// suffixes (crate::generated_names::BOOTSTRAP_SCOPE). No disk artifact,
+// source hash ambiguity or mutable JS state is retained.
+static UNITS: std::sync::OnceLock<[BootstrapUnit; 2]> = std::sync::OnceLock::new();
 fn compile(source: &str, host: &mut MacroHost) -> Result<BootstrapUnit, String> {
     let syntax = crate::parse(source).map_err(|e| e.to_string())?;
     let program = crate::analyze_with_macros(source, &syntax, host).map_err(|e| {
@@ -267,37 +269,43 @@ fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> R
 /// The bootstrap heap is `owner`'s compile-time evaluator, so its settings
 /// (including the `*assert*` source macros read) reach every macro it runs.
 fn build(owner: &MacroHost, cache: bool) -> Result<Bootstrap, String> {
-    let cached = if cache {
-        UNITS.with(|u| u.borrow().clone())
-    } else {
-        None
-    };
+    let cached = if cache { UNITS.get() } else { None };
+    let _names = crate::generated_names::enter_namespace(crate::generated_names::BOOTSTRAP_SCOPE);
     let mut bootstrap = Bootstrap {
         evaluator: owner.new_compiler_evaluator().map_err(|e| e.to_string())?,
         functions: HashMap::new(),
     };
     let mut host = MacroHost::new();
     host.bootstrap_seed = true;
-    let core = match &cached {
-        Some(units) => units[0].clone(),
-        None => compile(&core_source(), &mut host)?,
+    let compiled_core;
+    let core = match cached {
+        Some(units) => &units[0],
+        None => {
+            compiled_core = compile(&core_source(), &mut host)?;
+            &compiled_core
+        }
     };
     install(
-        &core,
+        core,
         &mut bootstrap,
         &MACROS.iter().map(|p| p.0).collect::<Vec<_>>(),
     )?;
     host.bootstrap = Some(bootstrap.clone());
-    let sequence = match &cached {
-        Some(units) => units[1].clone(),
-        None => compile(
-            &format!("{SEQUENCES}\n{{\"for\" sequence-for \"doseq\" sequence-doseq}}"),
-            &mut host,
-        )?,
+    let compiled_sequence;
+    let sequence = match cached {
+        Some(units) => &units[1],
+        None => {
+            compiled_sequence = compile(
+                &format!("{SEQUENCES}\n{{\"for\" sequence-for \"doseq\" sequence-doseq}}"),
+                &mut host,
+            )?;
+            &compiled_sequence
+        }
     };
-    install(&sequence, &mut bootstrap, &["for", "doseq"])?;
+    install(sequence, &mut bootstrap, &["for", "doseq"])?;
     if cache && cached.is_none() {
-        UNITS.with(|u| *u.borrow_mut() = Some(vec![core, sequence]));
+        // Another thread may have set them first, to the same text.
+        let _ = UNITS.set([core.clone(), sequence.clone()]);
     }
     Ok(bootstrap)
 }

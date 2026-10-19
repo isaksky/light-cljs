@@ -1062,12 +1062,11 @@ fn compile_unreserved(
     compile_installing(input, entry, &chosen, false).unwrap()
 }
 
-/// A namespace compiled fresh before a later hit, which allocates more names
-/// than when the hit was captured, reaches the hit's numbers in a new
-/// process. The hit's names are reserved before the first namespace, so the
-/// fresh ones stay apart. Without that reservation, a hit whose window the
-/// fresh namespace allocated from is refused and compiled fresh, and gensyms
-/// compare equal.
+/// A namespace compiled fresh before a later hit allocates more names than
+/// when the hit was captured. Each namespace's names spell its own scope
+/// (light-cljs-332), so the fresh ones reach none of the hit's, reserved or
+/// not: the hit installs, and gensyms escaping as data stay apart and keep
+/// the names they were captured with.
 #[test]
 fn a_hit_installed_after_a_fresh_namespace_keeps_its_names_apart() {
     let sources = Sources::new(&AUTO_NAMES);
@@ -1092,14 +1091,10 @@ fn a_hit_installed_after_a_fresh_namespace_keeps_its_names_apart() {
     generated_names::rewind(&start);
     let (program, stats) = compile_unreserved(input, "main", &captured, &["q"]);
     let install = stats.install.unwrap();
-    assert_eq!(install.installed, Vec::<String>::new());
-    assert_eq!(
-        install.refused,
-        [(
-            "q".to_owned(),
-            "its syntax-quote names overlap ones the compilation already holds".to_owned()
-        )]
-    );
+    assert_eq!(install.installed, ["q"]);
+    assert_eq!(install.refused, Vec::<(String, String)>::new());
+    assert_hygienic(&program, &expected, "q after a fresh p, unreserved");
+    assert_eq!(none_output(&program), none_output(&expected));
     assert_eq!(run(&program), printed);
     generated_names::rewind(&start);
     let (program, _) = compile_mixed(input, "main", &captured, &["q"]);
@@ -1121,20 +1116,22 @@ fn a_hit_installed_after_a_fresh_namespace_keeps_its_names_apart() {
     .unwrap();
     let hits = ["macros", "b"];
     let (program, _) = compile_unreserved(input, "main", &captured, &hits);
-    let (_, equal) = printed_gensyms(&run(&program));
-    assert_ne!(equal, "false false", "the fixture does not collide");
+    let (unreserved, equal) = printed_gensyms(&run(&program));
+    assert_eq!(equal, "false false", "{unreserved:?}");
+    assert_eq!(unreserved[2..], names[2..]);
     let (program, _) = compile_mixed(input, "main", &captured, &hits);
     let (mixed, equal) = printed_gensyms(&run(&program));
     assert_eq!(equal, "false false", "{mixed:?}");
     assert_eq!(mixed[2..], names[2..]);
 }
 
-/// Artifacts captured in separate compilations can retain the same
-/// generated names for different identities. The second of two such
-/// artifacts is refused, by its overlapping window or its gensym spelling,
-/// and its namespace is compiled fresh.
+/// Artifacts captured in separate compilations, at the same source index,
+/// once retained the same process-wide numbers for different identities,
+/// and the second was refused. Since each namespace's names spell its own
+/// scope (light-cljs-332), they share none: both install, and their
+/// gensyms escaping as data stay apart.
 #[test]
-fn independently_captured_artifacts_that_share_names_are_not_both_installed() {
+fn independently_captured_artifacts_keep_their_names_apart() {
     let mut files = AUTO_NAMES.to_vec();
     files.push(("pmain.cljs", "(ns pmain (:require [p]))"));
     files.push(("qmain.cljs", "(ns qmain (:require [q]))"));
@@ -1149,14 +1146,8 @@ fn independently_captured_artifacts_that_share_names_are_not_both_installed() {
     let chosen = HashMap::from([("p", &p.artifacts["p"]), ("q", &q.artifacts["q"])]);
     let (program, stats) = compile_installing(input, "main", &chosen, true).unwrap();
     let install = stats.install.unwrap();
-    assert_eq!(install.installed, ["p"]);
-    assert_eq!(
-        install.refused,
-        [(
-            "q".to_owned(),
-            "its syntax-quote names overlap ones the compilation already holds".to_owned()
-        )]
-    );
+    assert_eq!(install.installed, ["p", "q"]);
+    assert_eq!(install.refused, Vec::<(String, String)>::new());
     assert_eq!(run(&program), expected);
 
     let mut files = GENSYM_DATA.to_vec();
@@ -1167,20 +1158,11 @@ fn independently_captured_artifacts_that_share_names_are_not_both_installed() {
     let input = Input::Roots(&roots);
     let a = capture(input, "amain", &[]).unwrap();
     let b = capture(input, "bmain", &[]).unwrap();
-    assert_eq!(
-        a.artifacts["a"].names.gensyms,
-        b.artifacts["b"].names.gensyms
-    );
     let chosen = HashMap::from([("a", &a.artifacts["a"]), ("b", &b.artifacts["b"])]);
     let (program, stats) = compile_installing(input, "main", &chosen, true).unwrap();
     let install = stats.install.unwrap();
-    assert_eq!(install.installed, ["a"]);
-    assert_eq!(install.refused.len(), 1, "{:?}", install.refused);
-    assert!(
-        install.refused[0].1.starts_with("its gensym "),
-        "{:?}",
-        install.refused
-    );
+    assert_eq!(install.installed, ["a", "b"]);
+    assert_eq!(install.refused, Vec::<(String, String)>::new());
     let (names, equal) = printed_gensyms(&run(&program));
     assert_eq!(equal, "false false", "{names:?}");
 }

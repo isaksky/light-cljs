@@ -260,6 +260,12 @@ fn child() {
                 if std::env::var_os("LOOP").is_none() {
                     break;
                 }
+                // Each round republishes its artifacts under the same keys
+                // with other bytes: a single-source compilation allocates
+                // from the process-wide counters, whose windows the next
+                // round's artifacts record (light-cljs-332 made a
+                // namespace's own names the same in every round).
+                light_cljs::compile("`x#").unwrap();
             }
             if var("TRIM_AFTER") == "1" {
                 println!("trim {:?}", store.trim(&Retention::default(), &[]).is_ok());

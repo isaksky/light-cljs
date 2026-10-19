@@ -257,6 +257,7 @@ impl V8Evaluator {
                 "JavaScript memory limit must be at least 1048576 bytes for engine startup",
             ));
         }
+        crate::generated_names::forget_installed_scopes();
         // Isolate allocation precedes the near-limit callback. Retain the
         // conservative startup minimum until that native startup allocation
         // has a separate failure boundary.
@@ -668,6 +669,18 @@ impl MacroEvaluator for Active<'_, '_, '_> {
             Ok(())
         })
     }
+    fn heap(&self) -> usize {
+        std::ptr::from_ref(self.state) as usize
+    }
+    fn gensym_scope(&self, serial: u64, prefix: &str, retired: &str) -> Result<(), EvalError> {
+        self.enter(|scope| {
+            let serial = v8::Number::new(scope, serial as f64).into();
+            let prefix = bridge::string(scope, prefix)?.into();
+            let retired = bridge::string(scope, retired)?.into();
+            invoke(scope, self.state, "gensymScope", &[serial, prefix, retired])?;
+            Ok(())
+        })
+    }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
         let function = self.check(function)?;
         let arguments = arguments
@@ -875,6 +888,12 @@ impl MacroEvaluator for V8Evaluator {
     }
     fn compiler_frontier(&self, next: Option<usize>) -> Result<(), EvalError> {
         self.with_active(|e| e.compiler_frontier(next))
+    }
+    fn heap(&self) -> usize {
+        Rc::as_ptr(&self.state) as usize
+    }
+    fn gensym_scope(&self, serial: u64, prefix: &str, retired: &str) -> Result<(), EvalError> {
+        self.with_active(|e| e.gensym_scope(serial, prefix, retired))
     }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
         self.with_active(|e| e.call(function, arguments))

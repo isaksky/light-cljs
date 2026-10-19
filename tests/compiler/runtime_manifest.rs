@@ -176,11 +176,11 @@ fn units_concatenate_back_to_the_annotated_file_and_the_embedded_runtime() {
     // The compile-time evaluators run it with the compiler's own hooks,
     // whole lines that output never embeds (build.rs `compiler_runtime`).
     let hook = |line: &str| {
-        ["gensymLog", "encode.peak", "encode.active"]
+        ["gensymLog", "gensymScope", "encode.peak", "encode.active"]
             .iter()
             .any(|hook| line.contains(hook))
     };
-    for name in ["gensymLog", "encode.peak", "encode.active"] {
+    for name in ["gensymLog", "gensymScope", "encode.peak", "encode.active"] {
         assert!(
             RUNTIME_SOURCE.contains(name) && !RUNTIME.contains(name),
             "{name}"

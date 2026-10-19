@@ -1044,6 +1044,53 @@ output changes once, when stage A lands.
   is not hygiene. The cache needs the same thing ("Generated names" in
   compiler-cache.md). Make the bootstrap JS cache process-wide, so every
   thread gets the same text.
+  - *As built (light-cljs-332):* `src/generated_names.rs` keeps a stack of
+    scopes per thread. A namespace's analysis enters the scope of its
+    discriminator, and each unit registered in a scope gets that scope's
+    prefix and count (`D_K`) in its definition snapshot, which its analysis
+    enters whenever and wherever it runs. The four Rust allocators number in
+    the innermost scope: the reader's syntax-quote and `#()` names as `D_N`,
+    expansion's `binding` and destructuring locals as `D_0_N`, each with a
+    count of the scope's own, so a namespace's read names depend on its
+    source alone. Before a macro expands, `sync_gensym_scope` tells the
+    compile-time runtime's `gensym` the innermost scope (a `gensymScope`
+    hook that output never embeds, set only when the heap's scope changes);
+    `gensym` then appends the prefix and that scope's count in the runtime
+    (`G__D_K_N`), and skips no decoded names, so the names do not depend on
+    the heap's history. The bootstrap macros are compiled once per process
+    into a `OnceLock`, in a scope of their own (discriminator 0). Analysis
+    outside every scope (a single source, REPL and evaluation forms) keeps
+    the process-wide counters. Nothing is rewritten at merge.
+  - *Decision (light-cljs-332):* the discriminator is not the namespace's
+    source index but a 64-bit FNV-1a digest of its name and source text.
+    With the source index, a cache hit's names, captured at another index,
+    could meet a fresh namespace's at that index, which needed either a
+    reservation floor that every fresh name moved above (growing with each
+    recapture) or rewriting. With the digest a namespace's names depend
+    only on its own source and expansions: a hit retains what a fresh
+    analysis of the same source gives, a fresh namespace next to hits gives
+    what an uncached build gives, and a namespace whose source changed gives
+    other names than the ones hits captured from it. Stage C needs no
+    canonical position to name a namespace either. Two namespaces of a
+    build collide only if their digests do (about 2^-64 per pair).
+  - The heap is also put in the innermost scope before a compile-time
+    initializer bundle runs, so its `gensym`s number in the scope that
+    registered it, and back in the expanding unit's scope after a unit
+    analyzed on demand returns (`RestoreGensymScope`), so a running macro
+    that demanded it goes on in its own. A scope that ends is retired: the
+    next `gensymScope` call drops its count from the runtime, so retained
+    sessions do not accumulate them. A dev session's file load is a scope
+    of its namespace and text, so a watch step names alike in a session
+    that loaded the program and in one installed from the cache.
+  - *Open:* a `gensym` that runs outside a macro expansion and outside an
+    initializer, such as in a deferred unit's function called later at
+    compile time, numbers in the scope the heap was last put in: unique and
+    deterministic serially, but not tied to the unit that runs it.
+    Per-worker isolates (light-cljs-339) should keep it in mind. A custom
+    data reader's evaluator stays unscoped (light-cljs-350).
+    `READER_GENERATION` stays process-wide: it only tells compilations
+    apart for a macro environment's reader, is compared for equality and
+    never reaches output or artifacts.
 - **Warnings.** Buffer them per task and emit them at merge in canonical
   order. Cross-namespace arity warnings move to the merge post-pass.
 - **Errors.** Report the failure with the earliest canonical position, which
@@ -1086,9 +1133,9 @@ output changes once, when stage A lands.
 | `compiler_data` | `Rc` → `Arc` for `Name`, `Source`, `Datum`, `Form`, `Origin`; `OnceCell` → `OnceLock`. Done in light-cljs-333. |
 | `macro_host` | Split into sendable environment data (layered maps, limits, options) and a per-thread engine binding (bootstrap evaluator, data-reader evaluator, session). The `Rc<RefCell>` environment caches become per worker. |
 | `compilation_session` | Catalog behind a `Mutex`, unit state with an owner and a `Condvar`, analyzed IR as `Arc<Program>`, prepared JS as `Arc<str>`; per-isolate registration state moves to the worker; wait-for graph for cross-worker cycles; shared failure per unit |
-| Engines | One `V8Evaluator` per worker; platform init before spawning; process-wide bootstrap JS cache; `__lightCompileUnit` callbacks bound to the worker's catalog handle |
+| Engines | One `V8Evaluator` per worker; platform init before spawning; process-wide bootstrap JS cache (done in light-cljs-332); `__lightCompileUnit` callbacks bound to the worker's catalog handle |
 | Loader | Task per file; namespace records with readiness counts; deterministic DFS reconstruction; diamond coalescing; parallel built-in provider, serial custom providers |
-| Names, warnings, limits | Deterministic per-unit allocation; per-task buffers; merge-time accounting; aggregate memory budget |
+| Names, warnings, limits | Deterministic per-unit allocation (done in light-cljs-332: per-thread scopes, digest discriminators, scoped `gensym`, process-wide bootstrap); per-task buffers; merge-time accounting; aggregate memory budget |
 | Driver | `std::thread::scope` pool, one mutex, two condvars, phase and per-worker deques, batch claims and stealing, critical-path priority, in-order merge, completion accounting, panic and shutdown handling; `--jobs N`, default 1 until the gates below pass |
 | Stage C | Program view over prefix and overlays, fragment relocation and interned-table canonicalization at commit, closure-based visibility (shared with cache Phase 2) |
 

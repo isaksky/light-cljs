@@ -3205,6 +3205,9 @@ pub(crate) fn analyze_deferred_form(
     engine: Option<&dyn crate::evaluator::MacroEvaluator>,
 ) -> Result<(Program, Vec<AnalysisWarning>), AnalysisError> {
     let mut warnings = vec![];
+    // A unit's names depend only on where it was registered, not on when
+    // it is analyzed, what was analyzed before it or on which thread.
+    let _names = snapshot.names.clone().map(crate::generated_names::enter);
     let evaluator = host.bootstrap.as_ref().map(|b| b.evaluator.clone());
     let engine = engine.or_else(|| {
         evaluator
@@ -3678,6 +3681,11 @@ impl NamespaceAnalysis {
         warnings: &mut Vec<AnalysisWarning>,
     ) -> Result<(), AnalysisError> {
         let source_index = self.roots.len();
+        // The names its analysis generates, deferred units included, are
+        // the same whenever and wherever it runs ([`crate::generated_names`]).
+        let _names = crate::generated_names::enter_namespace(
+            crate::generated_names::namespace_discriminator(input.name, input.source),
+        );
         let top_level = crate::compile_trace::enter(
             crate::compile_trace::Stage::TopLevel,
             source_index,
@@ -3843,7 +3851,6 @@ impl NamespaceAnalysis {
     pub(crate) fn begin_generated_names(&mut self, from: crate::generated_names::Counters) {
         self.install_index.begin_generated_names(from);
     }
-
     /// The artifact of the namespace [`Self::analyze`] just completed.
     pub(crate) fn finish_capture(
         &self,
@@ -6478,6 +6485,7 @@ impl Analyzer<'_> {
                 .macro_host
                 .session_handle()
                 .map_or(0, |s| s.extension_frontier()),
+            names: crate::generated_names::child(),
         };
         (snapshot, shared)
     }

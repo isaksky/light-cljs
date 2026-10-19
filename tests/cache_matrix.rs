@@ -825,7 +825,8 @@ const GENERATIONS: &[(&str, &str)] = &[
     ),
 ];
 
-/// A script with each gensym spelling of `gen/tag` (the string `"t12"`, the
+/// A script with each gensym spelling of `gen/tag` (a string such as `"t12"`,
+/// or `"tD_K_1"` in a namespace's scope since light-cljs-332, the
 /// only generated name that escapes into the fixture's output) renamed by
 /// first occurrence, distinct spellings to distinct names: a hit keeps the
 /// spelling it was captured with, so a mixed build may number them
@@ -838,7 +839,7 @@ fn normalized(js: &str) -> String {
     while let Some(at) = rest.find("\"t") {
         out.push_str(&rest[..at]);
         let digits = rest[at + 2..]
-            .find(|c: char| !c.is_ascii_digit())
+            .find(|c: char| !c.is_ascii_digit() && c != '_')
             .map_or(rest.len(), |end| at + 2 + end);
         if digits > at + 2 && rest[digits..].starts_with('"') {
             let spelling = &rest[at + 1..digits];
@@ -870,6 +871,14 @@ fn normalized_renames_only_tag_spellings_and_keeps_their_identity() {
     assert_ne!(
         normalized(&script("t3", "t4")),
         normalized(&script("t3", "t3"))
+    );
+    assert_eq!(
+        normalized(&script("t17_2_1", "t17_3_1")),
+        normalized(&script("t90_2_1", "t5_3_1"))
+    );
+    assert_ne!(
+        normalized(&script("t17_2_1", "t17_3_1")),
+        normalized(&script("t17_2_1", "t17_2_1"))
     );
     assert_ne!(normalized("[l1, l2]"), normalized("[l1, l1]"));
     assert_ne!(normalized("\"value1\""), normalized("\"value2\""));

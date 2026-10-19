@@ -705,6 +705,17 @@ impl DevSession {
                 declared: HashSet::new(),
                 defined_ahead: false,
             }));
+        // A file's forms generate names in a scope of the namespace it loads
+        // in and its text, as a build's namespace does, so a session that
+        // loaded the program itself and one installed from the cache name a
+        // step's alike (crate::generated_names). Files of one text loaded
+        // in two namespaces, which only files without an `ns` form can be,
+        // take two scopes.
+        let _names = (mode == Mode::Load).then(|| {
+            crate::generated_names::enter_namespace(
+                crate::generated_names::namespace_discriminator(&self.namespace(), &source.source),
+            )
+        });
         let mut cursor = 0;
         let result = (|| {
             loop {

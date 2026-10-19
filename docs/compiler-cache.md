@@ -1011,6 +1011,28 @@ separate compilations, a hit installed into a running runtime, gensym
 prefixes ending in digits and gensyms escaping as data, against the
 uncached build's binding table, output and execution.
 
+*As built (light-cljs-332):* a namespace's analysis and each unit it
+registers now allocate in a scope of their own (docs/compiler-concurrency.md,
+"Generated names"): every name spells the namespace's discriminator, a
+digest of its name and source, then the unit and a count of the scope's
+own, `x__D_N__auto__`, `binding__D_0_N__auto__`, `G__D_K_N`, and the
+bootstrap macros read in scope 0 once per process. A namespace's names
+therefore no longer depend on where it loads or on what the compilation
+allocated before it: a hit retains exactly what a fresh analysis of its
+source gives, a namespace compiled fresh next to hits gives what the
+uncached build gives, and the cached builds of
+`tests/compiler/cache_modes.rs` match the uncached ones byte for byte,
+source maps' `names` included. Scoped names never meet one another's, so
+the windows, the early reservation and the refusals above now act only on
+what is allocated outside every scope, and on the unscoped `gensym`
+counter and the spellings, which the capture still records (scoped
+`gensym`s skip no reserved spellings: theirs carry the digest). The
+bootstrap gap above is closed. A namespace whose source changed takes
+other names than those hits captured from its earlier source; one whose
+source is unchanged but whose requirements' macros changed keeps the
+names its reader allocates, which count apart from what its expansions
+allocate, so a hit retaining them still means the same symbols.
+
 ## Loading, diagnostics, and storage
 
 ```mermaid
@@ -1629,15 +1651,12 @@ cache:
 - `--elide-asserts` and the dev build (`--reloadable --out-dir`) miss every
   namespace for its options, then hit what they published. A build that
   analyzes while the cache holds artifacts reserves every candidate's
-  generated names first ("Generated names"), so its fresh suffixes differ
-  from the uncached build's, and so do those of every later hit on what it
-  published: the dev build's source maps name `v__21__auto__` and
-  `object7` where the uncached ones name `v__7__auto__` and `object3`.
-  These builds are compared after writing the counter of each generated
-  name in a source map's `names` (`x__N__auto__`, `pK__N#`, `G__N`,
-  `objectN`) as `#`; everything else, the output and the mappings
-  included, must be equal. Each mode filling its own empty cache is byte
-  for byte the uncached build, the dev build's maps included.
+  generated names first ("Generated names"). Until light-cljs-332 that
+  shifted its fresh suffixes from the uncached build's, and those of every
+  later hit on what it published, so these builds were compared up to the
+  counters of generated names. Since then a namespace's names are its own
+  scope's whatever the cache holds, and every build here, the dev build's
+  source maps included, is byte for byte the uncached build.
 - Hits do not skip the checks of the assembled program. Editing only a
   lazy target's namespace leaves the namespace holding the `loadable` a hit
   (a `LAZY` edge is not a compilation dependency), so removing the target's

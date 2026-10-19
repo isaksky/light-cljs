@@ -60,6 +60,7 @@
                     hostDiagnostic = null;
                   } catch (error) { lastError = error; const message = exceptionMessage(error); if (message !== undefined) throw new Error(message); throw error; }
                 },
+                gensymScope: (serial, prefix, retired) => bridge.gensymScope(serial, prefix, retired),
                 call: (id, ids) => {
                   try { const result = save(Reflect.apply(get(id), null, ids.map(get))); hostDiagnostic = null; return result; }
                   catch (error) {

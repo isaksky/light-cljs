@@ -167,6 +167,14 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   clears the log, so that a namespace artifact records the spellings its
 ///   analysis generated and where the counter stood; `raiseGensyms` moves
 ///   the counter past an installed artifact's (`src/generated_names.rs`).
+/// - `gensymScope` makes `gensym` number in the compiler's scope of
+///   generated names that the macro being expanded runs in: its prefix and a
+///   count of the scope's own, which starts at zero the first time the
+///   runtime sees the scope, so that two runtimes expanding one unit give
+///   the same names and two units never give the same one. In a scope it
+///   skips no `generatedNames`, so its names do not depend on what the heap
+///   decoded before; it still logs them. Scope 0 is none, where `gensym`
+///   uses its counter (`src/generated_names.rs`, `Scope`).
 /// - `encode` records what each encoding charged its node limit when it
 ///   ends, and `takeEncodePeak` hands over the most that any encoding which
 ///   ended since the last call charged and starts again, so that a
@@ -177,11 +185,16 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   own cost, and a nested `takeEncodePeak` leaves the outer ones running.
 fn compiler_runtime(runtime: &str) -> String {
     const ENCODE_END: &str = "      return visit(value, \"$\", 0);\n    }\n    return Object.freeze({version: 5, decode, encode,";
-    const HOOKS: [(&str, &str, &str); 5] = [
+    const HOOKS: [(&str, &str, &str); 6] = [
         (
             "  const generatedNames = new Set();\n",
             "",
-            "  let gensymLog = null;\n",
+            "  let gensymLog = null;\n  let gensymScope = null; const gensymScopes = new Map();\n",
+        ),
+        (
+            "    let name; do { name = base + ++gensymCounter; } while (generatedNames.has(name));\n",
+            "    let name",
+            "    if (gensymScope !== null) { const name = base + gensymScope.prefix + ++gensymScope.count; if (gensymLog !== null) gensymLog.push(name); return symbolCore(name); }\n",
         ),
         (
             "    generatedNames.add(name);\n    return symbolCore(name);\n",
@@ -194,6 +207,7 @@ fn compiler_runtime(runtime: &str) -> String {
             concat!(
                 "      takeGensyms: () => { const names = gensymLog ?? []; gensymLog = []; return vectorFromArray([gensymCounter, ...names]); }, raiseGensyms: floor => { if (floor > gensymCounter) gensymCounter = floor; },\n",
                 "      takeEncodePeak: () => { const peak = encode.peak ?? 0; encode.peak = 0; return peak; },\n",
+                "      gensymScope: (serial, prefix, retired) => { if (retired) for (const ended of retired.split(\",\")) gensymScopes.delete(+ended); if (serial === 0) { gensymScope = null; return null; } let scope = gensymScopes.get(serial); if (scope === undefined) gensymScopes.set(serial, scope = {prefix, count: 0}); gensymScope = scope; return null; }, gensymScopeCount: () => gensymScopes.size,\n",
             ),
         ),
         (

@@ -247,6 +247,31 @@ fn load_file_loads_its_forms_and_stays_in_its_namespace() {
     assert_eq!(apply(&engine, &directive), "nil");
 }
 
+/// A loaded file generates names in a scope of its namespace and text
+/// (light-cljs-332): one text without an `ns` form, loaded in two
+/// namespaces, quotes two distinct gensyms, and loading it again in one of
+/// them quotes the same one again.
+#[test]
+fn namespace_less_load_files_get_distinct_gensyms() {
+    let dev = dev_session(
+        &[(
+            "lib",
+            "(ns lib) (defmacro uniq [] (list 'quote (gensym \"tag\")))",
+        )],
+        Rc::default(),
+    );
+    let engine = Evaluator::new(Default::default()).unwrap();
+    let file = SourceInput::new("tag.cljs", "(def tag (lib/uniq)) tag");
+    let mut tags = Vec::new();
+    for namespace in ["a", "b", "a"] {
+        let entered = dev.source(&input(&format!("(ns {namespace} (:require [lib]))")));
+        apply(&engine, &entered);
+        tags.push(apply(&engine, &dev.load_file(&file)));
+    }
+    assert_ne!(tags[0], tags[1], "{tags:?}");
+    assert_eq!(tags[0], tags[2], "{tags:?}");
+}
+
 /// A form that does not compile ends the actions with its located error,
 /// after the actions of the forms before it; nothing after it is compiled,
 /// and the session goes on.

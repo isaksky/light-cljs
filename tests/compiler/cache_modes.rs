@@ -160,31 +160,6 @@ impl Build {
         }
     }
 
-    /// [`Self::assert_same`] up to the numbers of generated names: a build
-    /// that analyzes namespaces while the cache holds artifacts reserves the
-    /// names every candidate retains before its first namespace, so its
-    /// fresh suffixes (`v__21__auto__` and `object7` where the uncached
-    /// build has `v__7__auto__` and `object3`) need not match an uncached run's
-    /// (docs/compiler-cache.md, "Generated names"). Only the `names` of
-    /// source maps spell them; everything else must be equal byte for byte.
-    fn assert_same_but_generated_names(&self, oracle: &Build, mode: &str) {
-        let normalized = |build: &Build| Build {
-            success: build.success,
-            js: build.js.clone(),
-            stderr: build.stderr.clone(),
-            map: build.map.as_deref().map(renumbered_names),
-            files: build
-                .files
-                .iter()
-                .map(|(name, text)| match name.ends_with(".map") {
-                    true => (name.clone(), renumbered_names(text)),
-                    false => (name.clone(), text.clone()),
-                })
-                .collect(),
-        };
-        normalized(self).assert_same(&normalized(oracle), mode);
-    }
-
     /// Require that every namespace was installed from the cache and none
     /// was analyzed or published.
     fn assert_all_hits(&self, mode: &str) {
@@ -264,94 +239,6 @@ enum Layout {
     Module,
     Chunks,
     Dev,
-}
-
-/// The source map `map` with the counter of each generated name in its
-/// `names` written as `#`, and nothing else changed: mappings, sources,
-/// their contents and every other name stay as they are.
-fn renumbered_names(map: &str) -> String {
-    let Some(start) = map.find("\"names\":[").map(|at| at + "\"names\":[".len()) else {
-        return map.to_owned();
-    };
-    let end = start + map[start..].find(']').expect("the names end");
-    let names = map[start..end]
-        .split(',')
-        .map(
-            |entry| match entry.strip_prefix('"').and_then(|e| e.strip_suffix('"')) {
-                Some(name) => format!(
-                    "\"{}\"",
-                    generated_name(name).unwrap_or_else(|| name.into())
-                ),
-                None => entry.to_owned(),
-            },
-        )
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("{}{names}{}", &map[..start], &map[end..])
-}
-
-/// `name` with its counter as `#` when it is a name the compiler generates:
-/// syntax-quote's `x__N__auto__`, a `#()` parameter `pK__N#`, and the
-/// runtime `gensym`'s `G__N` and `objectN` (`js-obj`'s).
-fn generated_name(name: &str) -> Option<String> {
-    let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
-    if let Some(rest) = name.strip_suffix("__auto__") {
-        let (prefix, counter) = rest.rsplit_once("__")?;
-        return digits(counter).then(|| format!("{prefix}__#__auto__"));
-    }
-    if let Some(rest) = name.strip_suffix('#') {
-        let (prefix, counter) = rest.rsplit_once("__")?;
-        return (prefix.starts_with('p') && digits(&prefix[1..]) && digits(counter))
-            .then(|| format!("{prefix}__##"));
-    }
-    ["G__", "object"].iter().find_map(|prefix| {
-        let counter = name.strip_prefix(prefix)?;
-        digits(counter).then(|| format!("{prefix}#"))
-    })
-}
-
-/// The comparison after [`renumbered_names`] tells generated names apart
-/// from everything else.
-#[test]
-fn only_generated_names_are_renumbered() {
-    let map = |names: &str, mappings: &str| {
-        format!(
-            r#"{{"version":3,"sources":["a1.cljs"],"names":[{names}],"mappings":"{mappings}"}}"#
-        )
-    };
-    let fresh = map(
-        r#""start","v__21__auto__","object7","p1__9#","G__4","x1""#,
-        "AAA0B",
-    );
-    let uncached = map(
-        r#""start","v__7__auto__","object3","p1__2#","G__12","x1""#,
-        "AAA0B",
-    );
-    assert_eq!(renumbered_names(&fresh), renumbered_names(&uncached));
-    // Another mapping, ordinary name or source is still a difference.
-    for (names, mappings) in [
-        (
-            r#""start","v__7__auto__","object3","p1__2#","G__12","x1""#,
-            "AAA2B",
-        ),
-        (
-            r#""start","v__7__auto__","object3","p1__2#","G__12","x2""#,
-            "AAA0B",
-        ),
-        (
-            r#""start","v__7__auto__","object3","p2__2#","G__12","x1""#,
-            "AAA0B",
-        ),
-    ] {
-        assert_ne!(
-            renumbered_names(&fresh),
-            renumbered_names(&map(names, mappings))
-        );
-    }
-    assert_ne!(
-        renumbered_names(&fresh),
-        renumbered_names(&fresh.replace("a1.cljs", "a2.cljs"))
-    );
 }
 
 /// Where `text` first differs from `expected`, with some context.
@@ -672,8 +559,9 @@ const ANALYSIS_MODES: &[(&str, &[&str], Layout)] = &[
 /// mode misses every namespace for its options and publishes beside them,
 /// and the next hits them all; the script build still hits its own
 /// artifacts afterwards. These builds analyze while the cache holds
-/// artifacts, so they match the uncached build up to the numbers of
-/// generated names.
+/// artifacts, and match the uncached build byte for byte, the names of
+/// their source maps included: a namespace's generated names are its own
+/// scope's (light-cljs-332), whatever the cache holds.
 #[test]
 fn options_analysis_reads_miss_once_then_hit() {
     let project = Project::new();
@@ -681,7 +569,7 @@ fn options_analysis_reads_miss_once_then_hit() {
     for (index, (mode, flags, layout)) in ANALYSIS_MODES.iter().enumerate() {
         let oracle = project.build(flags, false);
         let first = project.build(flags, true);
-        first.assert_same_but_generated_names(&oracle, &format!("{mode}, first build"));
+        first.assert_same(&oracle, &format!("{mode}, first build"));
         // The second elide-asserts mode is emission-only against the first.
         if index == 1 {
             first.assert_all_hits(mode);
@@ -692,7 +580,7 @@ fn options_analysis_reads_miss_once_then_hit() {
             assert_eq!(first.stat("cache.published"), NAMESPACES, "{mode}");
         }
         let warm = project.build(flags, true);
-        warm.assert_same_but_generated_names(&oracle, mode);
+        warm.assert_same(&oracle, mode);
         warm.assert_all_hits(mode);
         let record = warm.run(&project, *layout);
         assert_eq!(record, oracle.run(&project, *layout), "{mode}");

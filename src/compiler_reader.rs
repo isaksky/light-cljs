@@ -225,7 +225,7 @@ pub enum UnsupportedSyntax {
     Regex,
 }
 struct Anonymous {
-    unique: Option<u64>,
+    unique: Option<crate::generated_names::GeneratedId>,
     names: HashMap<i64, Datum>,
     rest: Option<Datum>,
     max: usize,
@@ -1002,7 +1002,7 @@ impl Lowerer<'_> {
                 if let Some(value) = self.gensyms.get(&name) {
                     value.clone()
                 } else {
-                    // Process-wide freshness also covers independent owners/readers.
+                    // Fresh in its scope, or process-wide outside every scope.
                     let number = crate::generated_names::next_syntax_quote();
                     let mut text = name.name()[..name.name().len() - 1].to_vec();
                     text.extend(format!("__{number}__auto__").encode_utf16());
@@ -1303,6 +1303,7 @@ impl Lowerer<'_> {
                     None,
                     &args
                         .unique
+                        .as_ref()
                         .map_or_else(|| format!("%{index}#"), |id| format!("p{index}__{id}#")),
                 ))
             });
@@ -1375,6 +1376,7 @@ impl Lowerer<'_> {
                         None,
                         &args
                             .unique
+                            .as_ref()
                             .map_or_else(|| "%&#".into(), |id| format!("rest__{id}#")),
                     ))
                 })
@@ -1388,6 +1390,7 @@ impl Lowerer<'_> {
                         None,
                         &args
                             .unique
+                            .as_ref()
                             .map_or_else(|| format!("%{n}#"), |id| format!("p{n}__{id}#")),
                     ))
                 })
