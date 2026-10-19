@@ -250,7 +250,7 @@ fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> R
         bootstrap.functions.insert(
             (*name).into(),
             CompiledMacro {
-                function: MacroFunction::Ready(function),
+                function: MacroFunction::Ready(function, None),
                 definition,
                 metadata: None,
                 generation: 0,
@@ -268,7 +268,7 @@ fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> R
 }
 /// The bootstrap heap is `owner`'s compile-time evaluator, so its settings
 /// (including the `*assert*` source macros read) reach every macro it runs.
-fn build(owner: &MacroHost, cache: bool) -> Result<Bootstrap, String> {
+pub(crate) fn build(owner: &MacroHost, cache: bool) -> Result<Bootstrap, String> {
     let evaluator = owner.new_compiler_evaluator().map_err(|e| e.to_string())?;
     build_in(evaluator, cache)
 }
@@ -370,10 +370,8 @@ impl MacroHost {
         // they are expanding, or observe later user protocol replacements.
         // Keep source macros on their normal declaration frontier, and restore
         // any installed extensions (including executed mutations) on return.
-        let _frontier = self
-            .session_handle()
-            .filter(|session| session.extension_frontier() != 0)
-            .map(|_| crate::compilation_session::FrontierGuard::bootstrap(engine))
+        let _frontier = (self.engine.extension_frontier() != 0)
+            .then(|| crate::compilation_session::FrontierGuard::bootstrap(engine))
             .transpose()?;
         // Only unwrapped bootstrap functions with an unused &env qualify.
         // Core macros execute at frontier zero, where user protocol extensions
@@ -403,8 +401,13 @@ impl MacroHost {
         } else {
             env
         };
-        let result =
-            self.expand_javascript(engine, declaration.function(engine)?, call, env, origin);
+        let result = self.expand_javascript(
+            engine,
+            declaration.function(engine, &self.engine)?,
+            call,
+            env,
+            origin,
+        );
         if result.is_err() {
             self.engine.bootstrap = None;
         }
@@ -424,10 +427,20 @@ pub(crate) struct CompiledMacro {
 /// a macro installed from its namespace's artifact, on its first expansion.
 #[derive(Clone)]
 enum MacroFunction {
-    Ready(ValueId),
+    /// Evaluated in the engine that declared it; a source macro's also with
+    /// the code that declared it, which a worker's engine evaluates itself.
+    Ready(ValueId, Option<std::sync::Arc<MacroCode>>),
     /// Shared by every frame's copy of the declaration, so the function is
     /// evaluated once.
     Installed(std::sync::Arc<std::sync::Mutex<InstalledFunction>>),
+}
+/// A source macro's compile-time function as declaring it emitted it. The
+/// declaring engine's value is not callable in another engine, so a
+/// worker's engine evaluates this once for itself (docs/compiler-concurrency.md,
+/// "As built (light-cljs-339)").
+pub(crate) struct MacroCode {
+    registration: crate::emitter::NamespaceRegistration,
+    unit: String,
 }
 struct InstalledFunction {
     unit: crate::emitter::DeferredUnit,
@@ -458,10 +471,19 @@ impl CompiledMacro {
         }
     }
     /// The function to call, evaluating an installed macro's on `engine` the
-    /// first time, as declaring it would have.
-    fn function(&self, engine: &dyn crate::evaluator::MacroEvaluator) -> Result<ValueId, String> {
+    /// first time, as declaring it would have. In a worker's engine
+    /// (`binding` is foreign), a source macro is evaluated once from its
+    /// code, into the binding's own table.
+    fn function(
+        &self,
+        engine: &dyn crate::evaluator::MacroEvaluator,
+        binding: &crate::macro_host::EngineBinding,
+    ) -> Result<ValueId, String> {
+        if binding.foreign {
+            return self.foreign_function(engine, binding);
+        }
         let installed = match &self.function {
-            MacroFunction::Ready(function) => return Ok(*function),
+            MacroFunction::Ready(function, _) => return Ok(*function),
             MacroFunction::Installed(installed) => installed,
         };
         if let Some(function) = installed.lock().expect("installed macro").function {
@@ -478,6 +500,43 @@ impl CompiledMacro {
             ))
             .map_err(|e| e.to_string())?;
         installed.lock().expect("installed macro").function = Some(function);
+        Ok(function)
+    }
+    /// [`Self::function`] in a worker's engine: the declaring engine's
+    /// value, or the installed macro's shared one, belongs to another.
+    fn foreign_function(
+        &self,
+        engine: &dyn crate::evaluator::MacroEvaluator,
+        binding: &crate::macro_host::EngineBinding,
+    ) -> Result<ValueId, String> {
+        let key = match &self.function {
+            MacroFunction::Ready(_, Some(code)) => std::sync::Arc::as_ptr(code) as usize,
+            // A bootstrap macro, which the worker's own bootstrap holds.
+            MacroFunction::Ready(function, None) => return Ok(*function),
+            MacroFunction::Installed(installed) => std::sync::Arc::as_ptr(installed) as usize,
+        };
+        if let Some(&function) = binding.foreign_macros.borrow().get(&key) {
+            return Ok(function);
+        }
+        let emitted;
+        let (registration, unit) = match &self.function {
+            MacroFunction::Ready(_, Some(code)) => (&code.registration, &code.unit),
+            MacroFunction::Installed(installed) => {
+                emitted = installed.lock().expect("installed macro").unit.emit();
+                (&emitted.0, &emitted.1)
+            }
+            MacroFunction::Ready(_, None) => unreachable!("bootstrap macros returned above"),
+        };
+        engine
+            .evaluate_registration(&registration.source, &registration.chunks)
+            .map_err(|e| e.to_string())?;
+        let function = engine
+            .evaluate_unit(&format!(
+                "rt => rt.core.macroReaderFunction(({})(rt))",
+                unit
+            ))
+            .map_err(|e| e.to_string())?;
+        binding.foreign_macros.borrow_mut().insert(key, function);
         Ok(function)
     }
     /// The `defmacro` form's place.
@@ -652,10 +711,11 @@ impl MacroHost {
                 unit
             ))
             .map_err(|e| e.to_string())?;
+        let code = std::sync::Arc::new(MacroCode { registration, unit });
         self.insert_javascript_macro(
             format!("{namespace}/{name}"),
             CompiledMacro {
-                function: MacroFunction::Ready(function),
+                function: MacroFunction::Ready(function, Some(code)),
                 definition: form.span(),
                 metadata: Some(metadata),
                 generation,
@@ -748,7 +808,7 @@ impl MacroHost {
             .clone();
         let (ns, name) = key.split_once('/').unwrap();
         let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
-        let function = declaration.function(engine)?;
+        let function = declaration.function(engine, &self.engine)?;
         self.expand_javascript(
             engine,
             function,
@@ -866,7 +926,7 @@ mod tests {
                 )
                 .unwrap();
             let function = host.tables.javascript_macros["cljs.user/m"]
-                .function(evaluator.as_ref())
+                .function(evaluator.as_ref(), &host.engine)
                 .unwrap();
             let error = evaluator.call(function, &[]).unwrap_err();
             assert!(error.0.contains("cancelled"), "{error}");
@@ -987,7 +1047,7 @@ mod tests {
             )
             .unwrap();
         let function = host.tables.javascript_macros["cljs.user/m"]
-            .function(evaluator.as_ref())
+            .function(evaluator.as_ref(), &host.engine)
             .unwrap();
         let error = evaluator.call(function, &[]).unwrap_err();
         assert!(error.0.contains("cancelled"), "{error}");

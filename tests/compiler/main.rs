@@ -214,3 +214,4 @@ mod utility_macros;
 mod var_test_metadata;
 mod warnings;
 mod watch_keys;
+mod worker_isolates;

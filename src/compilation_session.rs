@@ -87,6 +87,9 @@ struct Unit {
     /// that any thread may analyze it with no compile-time engine
     /// ([`CompilationSession::set_macro_free`]).
     macro_free: bool,
+    /// Whether the drain gives it to the build's unit pool
+    /// ([`CompilationSession::set_pooled`]).
+    pooled: bool,
     /// What its macro-free analysis counted, until the coordinator
     /// charges it ([`UnitCharges`]), and how long the analysis took.
     charges: Option<Box<UnitCharges>>,
@@ -121,7 +124,8 @@ impl UnitCharges {
         &self,
         binding: &EngineBinding,
         depth: usize,
-        control: Option<&crate::evaluator::ExecutionControl>,
+        mut control: Option<crate::evaluator::ExecutionControl>,
+        start: &dyn Fn() -> Option<crate::evaluator::ExecutionControl>,
     ) -> Result<(), (String, crate::AnalysisError)> {
         use crate::macro_host::UnitEvent;
         use crate::macro_host::WorkMarks;
@@ -139,7 +143,7 @@ impl UnitCharges {
         for event in &self.events {
             match event {
                 UnitEvent::Poll(span) => {
-                    if let Some(Err(error)) = control.map(|control| control.poll()) {
+                    if let Some(Err(error)) = control.as_ref().map(|control| control.poll()) {
                         return fail(span, error.to_string());
                     }
                 }
@@ -157,6 +161,25 @@ impl UnitCharges {
                             &expansion.span,
                             format!("while expanding {}: {message}", expansion.operator),
                         );
+                    }
+                }
+                // The limits as `MacroHost::expand_javascript` checks them;
+                // the message of a limit a worker's unit crosses is the
+                // limits pellet's (light-cljs-341).
+                UnitEvent::Script {
+                    nodes: generated,
+                    span,
+                } => {
+                    if control.is_none() {
+                        control = start();
+                    }
+                    if expansions.get() >= self.limits.0 {
+                        return fail(span, "compiler macro expansion limit exceeded".into());
+                    }
+                    expansions.set(expansions.get() + 1);
+                    nodes.set(nodes.get().saturating_add(*generated));
+                    if nodes.get() > self.limits.1 {
+                        return fail(span, "compiler macro generated-node limit exceeded".into());
                     }
                 }
             }
@@ -260,7 +283,32 @@ struct Catalog {
     threads: Vec<AnalysisThread>,
     /// How many threads wait for a unit another thread analyzes.
     waiting: usize,
+    /// Why the unit pool stopped, which ends every wait.
+    abandoned: Option<String>,
+    /// `light.build` requests workers forwarded to the coordinator, and
+    /// its answers, by ticket ([`SharedCatalog::forward_build`]).
+    requests: std::collections::VecDeque<BuildRequest>,
+    replies: Vec<(u64, String)>,
+    next_ticket: u64,
 }
+struct BuildRequest {
+    ticket: u64,
+    text: String,
+    analysis: Vec<u32>,
+}
+/// How a thread demands a unit ([`analyze_unit`]): whether the pool was
+/// given it, so that this thread waits for it while it is queued; whether
+/// this thread is a pool worker, whose analyses record their charges; and
+/// how it answers the workers' `light.build` requests while it waits.
+#[derive(Clone, Copy)]
+struct Demand<'a> {
+    queued: bool,
+    on_worker: bool,
+    server: Option<BuildServer<'a>>,
+}
+/// How the coordinator answers a forwarded `light.build` request: its text
+/// and the sources the worker's analyses are of.
+type BuildServer<'a> = &'a dyn Fn(&str, Vec<u32>) -> String;
 /// A thread's analyses: the units it analyzes, the innermost last, each
 /// demanded by the one below it, and the unit it waits for.
 #[derive(Default)]
@@ -277,6 +325,8 @@ pub(crate) struct SharedCatalog {
     catalog: Mutex<Catalog>,
     /// Notified when a unit stops being analyzed.
     settled: Condvar,
+    /// What the build's unit pool did, for `--stats`.
+    counters: PoolCounters,
     #[cfg(test)]
     on_claim: Mutex<Option<ClaimHook>>,
     /// Runs on a waiting thread each time its wait ends, without the lock.
@@ -287,11 +337,26 @@ const _: () = {
     const fn send_sync<T: Send + Sync>() {}
     send_sync::<SharedCatalog>();
 };
+/// The unit pool's counts ([`crate::compile_stats::DeferredUnitCounts`]).
+#[derive(Default)]
+struct PoolCounters {
+    pooled: std::sync::atomic::AtomicUsize,
+    isolates: std::sync::atomic::AtomicUsize,
+    startup_ns: std::sync::atomic::AtomicU64,
+    unit_ns: std::sync::atomic::AtomicU64,
+    initializations: std::sync::atomic::AtomicUsize,
+}
+impl PoolCounters {
+    fn add(counter: &std::sync::atomic::AtomicU64, since: std::time::Instant) {
+        let elapsed = u64::try_from(since.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        counter.fetch_add(elapsed, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 /// What a demand for a unit gets from the catalog.
 enum Claim {
     /// The demanding thread analyzes the unit, at this depth of its stack;
-    /// with its name if the unit is macro-free.
-    Analyze(Box<UnitInputs>, usize, Option<String>),
+    /// with its name and whether it is macro-free.
+    Analyze(Box<UnitInputs>, usize, String, bool),
     /// The unit was too deep in the thread's stack and has failed.
     TooDeep(Box<UnitInputs>, usize),
     /// Another analysis's result.
@@ -314,16 +379,50 @@ impl SharedCatalog {
     /// Demand unit `id` for the thread in slot `thread`: claim it if no
     /// thread has analyzed it, wait if another analyzes it, and reuse what
     /// the analysis gave if it is done.
-    fn claim(&self, thread: usize, id: usize) -> Result<Claim, String> {
+    ///
+    /// With `queued`, the unit was given to the pool and this thread waits
+    /// for a worker to analyze it even while it is unstarted: the
+    /// coordinator never analyzes a pooled unit in its own isolate, whose
+    /// compile-time state would then depend on scheduling.
+    ///
+    /// While it waits, the coordinator serves its `light.build` requests
+    /// that workers forward with `server` ([`Self::forward_build`]).
+    fn claim(
+        &self,
+        thread: usize,
+        id: usize,
+        queued: bool,
+        server: Option<BuildServer<'_>>,
+    ) -> Result<Claim, String> {
         // Dropped after the lock is released.
         let mut _released = None;
         let mut guard = self.lock();
         loop {
+            if let Some(serve) = server
+                && let Some(request) = guard.requests.pop_front()
+            {
+                drop(guard);
+                let reply = serve(&request.text, request.analysis);
+                guard = self.lock();
+                guard.replies.push((request.ticket, reply));
+                self.settled.notify_all();
+                continue;
+            }
             let c = &mut *guard;
             let state = &c.units.get(id).ok_or("unknown compilation unit")?.state;
-            if let AnalysisState::Analyzing(owner) = *state
-                && owner != thread
-            {
+            let waits = match *state {
+                AnalysisState::Analyzing(owner) => owner != thread,
+                AnalysisState::Unstarted => queued,
+                _ => false,
+            };
+            if waits {
+                if let Some(message) = c.abandoned.clone() {
+                    if c.threads[thread].waiting.take().is_some() {
+                        c.waiting -= 1;
+                        c.units[id].waiters -= 1;
+                    }
+                    return Err(message);
+                }
                 if c.threads[thread].waiting.is_none() {
                     if let Some(path) = c.wait_cycle(thread, id) {
                         return Err(format!("compile dependency cycle: {path}"));
@@ -380,17 +479,21 @@ impl SharedCatalog {
             let inputs = unit.inputs.take().expect("unstarted unit inputs");
             if depth >= inputs.environment.limits().expansion_depth.min(64) {
                 unit.state = AnalysisState::Failed(DEPTH_LIMIT.to_owned(), None);
+                // The coordinator may wait for a pooled unit a worker fails.
+                if c.waiting > 0 {
+                    self.settled.notify_all();
+                }
                 return Ok(Claim::TooDeep(inputs, depth));
             }
             unit.state = AnalysisState::Analyzing(thread);
             unit.analyses += 1;
-            let macro_free = unit.macro_free.then(|| unit.name.clone());
+            let (name, macro_free) = (unit.name.clone(), unit.macro_free);
             // The request has stable identity even if a newer same-kind source
             // generation is activated while this frame is suspended.
             debug_assert!(unit.request.generation > 0);
             debug_assert_eq!(c.bindings[&unit.name].0, unit.request.var);
             c.threads[thread].stack.push(id);
-            return Ok(Claim::Analyze(inputs, depth, macro_free));
+            return Ok(Claim::Analyze(inputs, depth, name, macro_free));
         }
     }
     /// End the analysis of unit `id` that the thread in slot `thread` claimed
@@ -416,6 +519,61 @@ impl SharedCatalog {
         if waiting {
             self.settled.notify_all();
         }
+    }
+    /// Serve `light.build` request `text` of a worker whose analyses are
+    /// of the sources `analysis` on the coordinator, which alone has the
+    /// build's resources and log, and wait for the answer; the coordinator
+    /// answers while it waits for units ([`Self::claim`]).
+    fn forward_build(&self, text: &str, analysis: Vec<u32>) -> String {
+        let ticket = {
+            let mut c = self.lock();
+            let ticket = c.next_ticket;
+            c.next_ticket += 1;
+            c.requests.push_back(BuildRequest {
+                ticket,
+                text: text.to_owned(),
+                analysis,
+            });
+            ticket
+        };
+        self.settled.notify_all();
+        let mut c = self.lock();
+        loop {
+            if let Some(at) = c.replies.iter().position(|(t, _)| *t == ticket) {
+                return c.replies.swap_remove(at).1;
+            }
+            if let Some(message) = &c.abandoned {
+                return format!("e{message}");
+            }
+            c = self.settled.wait(c).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+    /// Fail unit `id` with `message` if no thread has started it: a worker
+    /// could not make its engine.
+    fn fail_unstarted(&self, id: usize, message: String) {
+        let waiting = {
+            let mut c = self.lock();
+            let unit = &mut c.units[id];
+            if !matches!(unit.state, AnalysisState::Unstarted) {
+                return;
+            }
+            unit.inputs = None;
+            unit.state = AnalysisState::Failed(message, None);
+            c.waiting > 0
+        };
+        if waiting {
+            self.settled.notify_all();
+        }
+    }
+    /// End every wait with `message`: the pool stopped, so units it was
+    /// given may never be analyzed.
+    pub(crate) fn abandon(&self, message: String) {
+        self.lock().abandoned.get_or_insert(message);
+        self.settled.notify_all();
+    }
+    /// How many extension bundles the compilation registered.
+    pub(crate) fn extension_frontier(&self) -> usize {
+        self.lock().bundle_count
     }
     /// The unit `id`'s initializer, prepared, unless it is not yet.
     fn prepared(&self, id: usize) -> Result<Option<Arc<crate::emitter::DeferredUnit>>, String> {
@@ -444,13 +602,6 @@ impl SharedCatalog {
             AnalysisState::Failed(message, diagnostic),
         );
         drop(previous);
-    }
-    /// Whether unit `id` is macro-free.
-    pub(crate) fn macro_free(&self, id: usize) -> bool {
-        self.lock()
-            .units
-            .get(id)
-            .is_some_and(|unit| unit.macro_free)
     }
     fn unit_name(&self, id: usize) -> String {
         self.lock().units[id].name.clone()
@@ -533,6 +684,8 @@ pub(crate) struct CompilationSession {
     gensym_floor: Cell<u64>,
     /// Whether capture reads what `gensym` returns.
     gensyms_logged: Cell<bool>,
+    /// The build's unit pool, with `--jobs N` ([`UnitPool`]).
+    pool: RefCell<Option<UnitPool>>,
 }
 /// What capture needs beyond the catalog, recorded only while it is on.
 #[derive(Default)]
@@ -626,6 +779,7 @@ impl Default for CompilationSession {
             gensyms_pending: Default::default(),
             gensym_floor: Default::default(),
             gensyms_logged: Default::default(),
+            pool: Default::default(),
         }
     }
 }
@@ -849,6 +1003,7 @@ impl CompilationSession {
                                 waiters: 0,
                                 retained: None,
                                 macro_free: false,
+                                pooled: false,
                                 charges: None,
                                 time: Default::default(),
                             });
@@ -1076,11 +1231,21 @@ impl CompilationSession {
         };
         for unit in &catalog.units {
             counts.macro_free += usize::from(unit.macro_free);
-            counts.macro_free_time += unit.time;
+            if unit.macro_free {
+                counts.macro_free_time += unit.time;
+            }
             counts.analyzed += usize::from(unit.analyses > 0);
             counts.prepared += usize::from(matches!(unit.state, AnalysisState::Prepared(..)));
             counts.executed += usize::from(unit.emitted);
         }
+        use std::sync::atomic::Ordering::Relaxed;
+        let pool = &self.shared.counters;
+        counts.pooled = pool.pooled.load(Relaxed);
+        counts.worker_isolates = pool.isolates.load(Relaxed);
+        counts.worker_isolate_startup =
+            std::time::Duration::from_nanos(pool.startup_ns.load(Relaxed));
+        counts.worker_unit_time = std::time::Duration::from_nanos(pool.unit_ns.load(Relaxed));
+        counts.worker_initializations = pool.initializations.load(Relaxed);
         counts
     }
     pub fn extension_frontier(&self) -> usize {
@@ -1229,6 +1394,7 @@ impl CompilationSession {
                     waiters: 0,
                     retained: None,
                     macro_free: false,
+                    pooled: false,
                     charges: None,
                     time: Default::default(),
                 });
@@ -1261,6 +1427,75 @@ impl CompilationSession {
     pub fn set_macro_free(&self, id: usize) {
         self.shared.lock().units[id].macro_free = true;
     }
+    /// Let the build's unit pool analyze unit `id` ([`Self::submit_units`]).
+    pub(crate) fn set_pooled(&self, id: usize) {
+        self.shared.lock().units[id].pooled = true;
+    }
+    /// Of `units`, those for the pool that no thread has started, in order.
+    pub(crate) fn poolable(&self, units: impl Iterator<Item = usize>) -> Vec<usize> {
+        let c = self.shared.lock();
+        units
+            .filter(|&id| {
+                c.units
+                    .get(id)
+                    .is_some_and(|u| u.pooled && matches!(u.state, AnalysisState::Unstarted))
+            })
+            .collect()
+    }
+    /// Start the build's unit pool of `slots`, whose workers are bound to
+    /// `environment` ([`UnitPool::start`]).
+    pub(crate) fn start_pool(
+        &self,
+        slots: crate::scheduler::Slots,
+        engines: PoolEngines,
+        environment: MacroEnvironment,
+    ) -> Result<(), String> {
+        let pool = UnitPool::start(self.shared.clone(), slots, engines, environment)?;
+        *self.pool.borrow_mut() = Some(pool);
+        Ok(())
+    }
+    /// Whether the build's unit pool takes a unit of `namespace`: with
+    /// `macro_free`, one found macro-free; with `test`, one of a definition
+    /// with `:test` metadata, analyzed with its definition through this
+    /// session. Its workers without engines take only macro-free units.
+    pub(crate) fn pools(&self, namespace: &str, macro_free: bool, test: bool) -> bool {
+        match &*self.pool.borrow() {
+            None => false,
+            Some(pool) if pool.engines == PoolEngines::None => macro_free,
+            Some(pool) => macro_free || (!test && !pool.inline.iter().any(|n| n == namespace)),
+        }
+    }
+    /// Give `units` to the build's pool: whether it has one.
+    pub(crate) fn submit_units(&self, units: Vec<usize>) -> bool {
+        match &*self.pool.borrow() {
+            Some(pool) => {
+                pool.submit(units);
+                true
+            }
+            None => false,
+        }
+    }
+    /// The coordinator's engine, started now if it has none, as the first
+    /// JavaScript macro a serial build expands starts it; `binding` is a
+    /// frame of the compilation's, which reaches this session.
+    fn start_main_engine(&self, binding: &EngineBinding) -> Option<Bootstrap> {
+        if let Some(bootstrap) = self.bootstrap() {
+            return Some(bootstrap);
+        }
+        let environment = self.pool.borrow().as_ref()?.main.clone();
+        let session = binding.session_handle()?;
+        let host = MacroHost::from_parts(environment, binding.frame());
+        let bootstrap = crate::compiler_bootstrap::build(&host, true).ok()?;
+        session.attach(&bootstrap, &host).ok()?;
+        Some(bootstrap)
+    }
+    /// Stop the build's unit pool and join its workers ([`UnitPool::finish`]).
+    pub(crate) fn finish_pool(&self) {
+        let pool = self.pool.borrow_mut().take();
+        if let Some(pool) = pool {
+            pool.finish();
+        }
+    }
     pub fn diagnostic(&self, id: usize) -> Option<crate::AnalysisError> {
         match &self.shared.lock().units.get(id)?.state {
             AnalysisState::Failed(_, diagnostic) => diagnostic.clone(),
@@ -1270,7 +1505,13 @@ impl CompilationSession {
     /// Called after the analyzed body has been copied into its application
     /// owner. Preparing source is pure: execution and registration stay lazy.
     pub fn release_application_ir(&self, id: usize) {
-        let program = match &self.shared.lock().units[id].state {
+        self.shared.release_application_ir(id);
+    }
+}
+impl SharedCatalog {
+    /// [`CompilationSession::release_application_ir`] on any thread.
+    fn release_application_ir(&self, id: usize) {
+        let program = match &self.lock().units[id].state {
             AnalysisState::Analyzed(program, _) => program.clone(),
             _ => return,
         };
@@ -1278,7 +1519,7 @@ impl CompilationSession {
         // last holder, outside it too.
         let prepared = Arc::new(crate::emitter::DeferredUnit::prepare(&program));
         let previous = {
-            let mut c = self.shared.lock();
+            let mut c = self.lock();
             let state = &mut c.units[id].state;
             match std::mem::replace(state, AnalysisState::Unstarted) {
                 AnalysisState::Analyzed(program, warnings) => {
@@ -1300,6 +1541,8 @@ impl CompilationSession {
         };
         drop((previous, program));
     }
+}
+impl CompilationSession {
     /// The engine binding unit `id` was registered with, if its analysis
     /// has not taken it.
     fn take_unit_binding(&self, id: usize) -> Option<Box<EngineBinding>> {
@@ -1313,26 +1556,72 @@ impl CompilationSession {
         id: usize,
         engine: Option<&dyn MacroEvaluator>,
     ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
+        self.analyze_in(id, engine, false)
+    }
+    /// Unit `id`'s analysis, which the drain gave to the unit pool: a
+    /// worker analyzes it, and this thread waits for it even while it is
+    /// queued ([`SharedCatalog::claim`]).
+    pub(crate) fn analyze_pooled(
+        &self,
+        id: usize,
+        engine: Option<&dyn MacroEvaluator>,
+    ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
+        self.analyze_in(id, engine, true)
+    }
+    fn analyze_in(
+        &self,
+        id: usize,
+        engine: Option<&dyn MacroEvaluator>,
+        queued: bool,
+    ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
         let bootstrap = self.bootstrap();
-        // A macro-free unit's analysis is charged to the counters of the
-        // binding it was registered with, a frame of the compilation's.
+        // A unit analyzed on a worker, or a macro-free one anywhere, is
+        // charged to the counters of the binding it was registered with, a
+        // frame of the compilation's ([`UnitCharges`]).
         let counters = self
-            .shared
-            .macro_free(id)
-            .then(|| {
-                self.unit_bindings
-                    .borrow()
-                    .get(id)
-                    .and_then(Option::as_ref)
-                    .map(|binding| binding.frame())
-            })
-            .flatten();
-        let analysis = analyze_unit(&self.shared, self.thread, id, engine, || {
-            let binding = self.take_unit_binding(id).expect("unstarted unit host");
-            (*binding, bootstrap)
-        });
+            .unit_bindings
+            .borrow()
+            .get(id)
+            .and_then(Option::as_ref)
+            .map(|binding| binding.frame());
+        // Workers forward their `light.build` requests here.
+        let serve = |text: &str, analysis: Vec<u32>| {
+            let binding = counters.as_ref().expect("a unit binding");
+            crate::build_services::serve_request(
+                &binding.build,
+                &binding.dependency_log,
+                text,
+                |unit| self.shared.unit_source(unit),
+                analysis,
+            )
+        };
+        let server = counters.is_some().then_some(&serve as BuildServer<'_>);
+        let analysis = analyze_unit(
+            &self.shared,
+            self.thread,
+            id,
+            engine,
+            Demand {
+                queued,
+                on_worker: false,
+                server,
+            },
+            || {
+                let binding = self.take_unit_binding(id).expect("unstarted unit host");
+                (*binding, bootstrap)
+            },
+        );
         // Analyzed on another thread, the unit's binding is no longer needed.
         drop(self.take_unit_binding(id));
+        // A pooled unit a worker found too deep fails here too, and needed
+        // the depth its claim here would have.
+        if queued
+            && let (Some(binding), Err(error)) = (&counters, &analysis)
+            && error == DEPTH_LIMIT
+        {
+            let depth = self.shared.lock().threads[self.thread].stack.len();
+            crate::macro_host::WorkMarks::note(&binding.work.unit_depth, depth + 1);
+        }
         if let Some(binding) = counters
             && let Some(charges) = self.shared.take_charges(id)
         {
@@ -1352,7 +1641,14 @@ impl CompilationSession {
                 self.shared.fail(id, DEPTH_LIMIT.to_owned(), None);
                 return Err(DEPTH_LIMIT.to_owned());
             }
-            if let Err((message, diagnostic)) = charges.charge(&binding, depth, control.as_ref()) {
+            // A worker's unit that expanded a JavaScript macro would have
+            // started the coordinator's engine with one slot, at that
+            // expansion; it starts it there, so later polls are spent.
+            let start = || {
+                self.start_main_engine(&binding)
+                    .map(|b| b.evaluator.control())
+            };
+            if let Err((message, diagnostic)) = charges.charge(&binding, depth, control, &start) {
                 self.shared.fail(id, message.clone(), Some(diagnostic));
                 return Err(message);
             }
@@ -1369,9 +1665,15 @@ fn analyze_unit(
     thread: usize,
     id: usize,
     engine: Option<&dyn MacroEvaluator>,
+    demand: Demand<'_>,
     binding: impl FnOnce() -> (EngineBinding, Option<Bootstrap>),
 ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
-    let (inputs, depth, macro_free) = match shared.claim(thread, id)? {
+    let Demand {
+        queued,
+        on_worker,
+        server,
+    } = demand;
+    let (inputs, depth, name, macro_free) = match shared.claim(thread, id, queued, server)? {
         Claim::Reuse(program, warnings) => return Ok((program, warnings)),
         Claim::TooDeep(inputs, depth) => {
             let (binding, _) = binding();
@@ -1379,7 +1681,7 @@ fn analyze_unit(
             drop((inputs, binding));
             return Err(DEPTH_LIMIT.to_owned());
         }
-        Claim::Analyze(inputs, depth, macro_free) => (inputs, depth, macro_free),
+        Claim::Analyze(inputs, depth, name, macro_free) => (inputs, depth, name, macro_free),
     };
     // From here on, however the analysis ends, even by unwinding, the unit
     // settles and its waiters wake.
@@ -1439,7 +1741,13 @@ fn analyze_unit(
     // The unit's macros number in its scope; whatever demanded it, such
     // as a running macro calling it, numbers in its own again after.
     let _gensyms = crate::generated_names::RestoreGensymScope(engine);
-    let analysis = if let Some(name) = macro_free {
+    // A macro-free unit, on any thread, and any unit a worker analyzes
+    // record what they would charge to the compilation, which the
+    // coordinator charges in its order ([`UnitCharges`]); a unit demanded
+    // while one is recorded is recorded with it, in its place, as the
+    // serial build charged it.
+    let nested = crate::macro_host::MacroFreeUnit::active();
+    let analysis = if !nested && (macro_free || on_worker) {
         let started = std::time::Instant::now();
         // Counted where the unit is charged ([`UnitCharges`]).
         host.engine.expansions = Default::default();
@@ -1447,7 +1755,7 @@ fn analyze_unit(
         host.engine.work = Default::default();
         let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
         let location = format!("{}:{}:{}: {name}", loc.source, loc.line, loc.column);
-        let free = crate::macro_host::MacroFreeUnit::enter(name);
+        let free = crate::macro_host::MacroFreeUnit::enter(name, macro_free);
         let analysis = crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
         let charges = UnitCharges {
             events: free.finish(),
@@ -1575,6 +1883,11 @@ pub(crate) trait CatalogView {
     /// `light.build`: the source indexes of the units being analyzed, the
     /// innermost last.
     fn analysis_sources(&self) -> Vec<u32>;
+    /// `light.build`: the answer to `request` from the thread that has the
+    /// build's resources, if this view's thread has not: a pool worker's.
+    fn forward_build(&self, _request: &str) -> Option<String> {
+        None
+    }
 }
 /// `__lightCompileUnit` in `active` for a view whose analyses `analyze` runs:
 /// analysis is shared by the threads, and the unit's registration is
@@ -1629,19 +1942,27 @@ pub(crate) struct WorkerView {
     host: MacroHost,
     /// How many of the catalog's registrations the host's engine holds.
     installed: Cell<usize>,
+    /// Whether its `light.build` requests go to the coordinator: a pool
+    /// worker's ([`SharedCatalog::forward_build`]).
+    forwards: Cell<bool>,
 }
 #[cfg_attr(not(test), allow(dead_code))]
 impl WorkerView {
     /// A view of `shared` for this thread, which analyzes in frames of
     /// `host`. If the host has an engine, the engine reaches the view
     /// through its services.
-    pub(crate) fn new(shared: Arc<SharedCatalog>, host: MacroHost) -> Result<Rc<Self>, String> {
+    pub(crate) fn new(shared: Arc<SharedCatalog>, mut host: MacroHost) -> Result<Rc<Self>, String> {
         let thread = shared.join();
-        let view = Rc::new(Self {
-            shared,
-            thread,
-            host,
-            installed: Cell::new(0),
+        host.engine.catalog = Some(shared.clone());
+        let view = Rc::new_cyclic(|view| {
+            host.engine.worker = Some(view.clone());
+            Self {
+                shared,
+                thread,
+                host,
+                installed: Cell::new(0),
+                forwards: Cell::new(false),
+            }
         });
         if let Some(bootstrap) = &view.host.engine.bootstrap {
             let weak: std::rc::Weak<dyn CatalogView> = Rc::downgrade(&view) as std::rc::Weak<Self>;
@@ -1667,6 +1988,15 @@ impl WorkerView {
         let engine = active.unwrap_or(bootstrap.evaluator.as_ref());
         install_registrations(engine, &pending, |_| Ok(()))
     }
+    /// Whether the view's engine failed for good, such as by running out of
+    /// memory or time: its worker retires it.
+    fn terminal(&self) -> bool {
+        self.host
+            .engine
+            .bootstrap
+            .as_ref()
+            .is_some_and(|b| b.evaluator.control().check().is_err())
+    }
     /// Unit `id`'s analysis, by this thread or another.
     pub(crate) fn analyze(
         &self,
@@ -1674,62 +2004,358 @@ impl WorkerView {
         engine: Option<&dyn MacroEvaluator>,
     ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
         self.install(engine)?;
-        analyze_unit(&self.shared, self.thread, id, engine, || {
-            (self.host.engine.frame(), None)
-        })
+        analyze_unit(
+            &self.shared,
+            self.thread,
+            id,
+            engine,
+            Demand {
+                queued: false,
+                on_worker: true,
+                server: None,
+            },
+            || (self.host.engine.frame(), None),
+        )
     }
 }
-/// A macro-free unit for a pool worker to analyze.
+/// A deferred unit for a pool worker to analyze.
 struct UnitJob(usize);
 impl crate::scheduler::Job for UnitJob {
     fn phase(&self) -> usize {
         0
     }
 }
-/// Run `coordinate` on this thread while the workers of `slots` analyze the
-/// macro-free `units` of `shared`, each with no compile-time engine
-/// (docs/compiler-concurrency.md, "As built (light-cljs-338)"). The
-/// analyses go to the catalog, where the coordinator's own demands claim,
-/// wait for or reuse them, in its order: nothing here decides an order, and
-/// a unit the coordinator reaches first it analyzes itself. Returns once
-/// every job has run. A worker's panic, such as the eligibility check's,
-/// panics the build.
-pub(crate) fn with_unit_pool<R>(
+/// How a build's unit pool analyzes (docs/compiler-concurrency.md, "As
+/// built (light-cljs-339)").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PoolEngines {
+    /// Workers have no compile-time engine and take only macro-free units
+    /// (light-cljs-338): while namespace artifacts are captured or a
+    /// dependency manifest is recorded, which only the coordinator does.
+    None,
+    /// Each worker owns one V8 isolate for the whole build.
+    Persistent,
+    /// Each unit is analyzed in a fresh isolate, the correctness reference
+    /// of persistent ones (`LIGHT_CLJS_FRESH_UNIT_ISOLATES=1`).
+    Fresh,
+}
+/// The pool that analyzes a build's deferred units with `--jobs N`, kept
+/// for the whole build: N-1 worker threads, each owning one compile-time
+/// engine made on it after the V8 platform, and destroyed on it when the
+/// pool finishes. Nothing engine-related enters a queue: a job is a unit
+/// ID, and a worker analyzes the unit from the catalog's sendable inputs
+/// in a host bound to its own engine ([`WorkerView`]).
+///
+/// The scheduler is driven from a thread of its own, which only submits
+/// the batches the drains hand it and consumes outcomes, so that the
+/// coordinator's analysis need not run inside the scheduler's closure; the
+/// coordinator waits for its units in the catalog ([`SharedCatalog::claim`]).
+pub(crate) struct UnitPool {
+    inbox: Arc<Inbox>,
+    shared: Arc<SharedCatalog>,
+    thread: Option<std::thread::JoinHandle<Result<(), String>>>,
+    pub(crate) engines: PoolEngines,
+    /// The namespaces whose units it does not take ([`inline_namespaces`]).
+    inline: Vec<String>,
+    /// The coordinator's settings, from which it starts its own engine
+    /// where a serial build would have ([`CompilationSession::start_main_engine`]).
+    main: MacroEnvironment,
+}
+#[derive(Default)]
+struct Inbox {
+    state: Mutex<InboxState>,
+    ready: Condvar,
+}
+#[derive(Default)]
+struct InboxState {
+    batches: std::collections::VecDeque<Vec<usize>>,
+    closed: bool,
+}
+impl Inbox {
+    fn lock(&self) -> MutexGuard<'_, InboxState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+    /// The next batch, waiting for one; None once the pool closes.
+    fn next(&self) -> Option<Vec<usize>> {
+        let mut state = self.lock();
+        loop {
+            if let Some(batch) = state.batches.pop_front() {
+                return Some(batch);
+            }
+            if state.closed {
+                return None;
+            }
+            state = self
+                .ready
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+    fn try_next(&self) -> Option<Vec<usize>> {
+        self.lock().batches.pop_front()
+    }
+    fn closed(&self) -> bool {
+        self.lock().closed
+    }
+}
+/// The analysis of the `:test` unit `unit` of a definition that `host`'s
+/// frame analyzes: through the session on the coordinator, and through the
+/// catalog view of a worker, whose demand runs inline on it.
+pub(crate) fn analyze_definition_test(
+    host: &MacroHost,
+    unit: usize,
+    engine: Option<&dyn MacroEvaluator>,
+) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
+    if let Some(session) = host.session_handle() {
+        return session.analyze(unit, engine);
+    }
+    let worker = host.engine.worker.as_ref().and_then(std::rc::Weak::upgrade);
+    worker.expect("compilation session").analyze(unit, engine)
+}
+/// Give the analyzed `:test` unit `unit` to its application owner
+/// ([`CompilationSession::release_application_ir`]) from either thread.
+pub(crate) fn release_definition_test(host: &MacroHost, unit: usize) {
+    match (host.session_handle(), &host.engine.catalog) {
+        (Some(session), _) => session.release_application_ir(unit),
+        (None, Some(catalog)) => catalog.release_application_ir(unit),
+        (None, None) => {}
+    }
+}
+/// The namespaces whose units stay on the main isolate, analyzed at their
+/// drains in source order, as `LIGHT_CLJS_INLINE_UNITS=ns,ns` names them
+/// when the pool starts: a temporary hook until the cache blocker's
+/// affinity (light-cljs-340).
+fn inline_namespaces() -> Vec<String> {
+    std::env::var("LIGHT_CLJS_INLINE_UNITS")
+        .map(|names| {
+            names
+                .split(',')
+                .filter(|n| !n.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+/// How many compile-time isolates, the main one included, `slots` work
+/// slots may run when they share the macro memory limit `limit` evenly,
+/// with each isolate's share at least 32 MiB, and that share: the isolates
+/// never hold more than `limit` together (docs/compiler-concurrency.md, "As
+/// built (light-cljs-339)").
+pub(crate) fn isolate_shares(limit: usize, slots: crate::scheduler::Slots) -> (usize, usize) {
+    let isolates = (limit / (32 << 20)).clamp(1, slots.get());
+    (isolates, limit / isolates)
+}
+
+#[cfg(test)]
+mod share_tests {
+    use crate::scheduler::Slots;
+    #[test]
+    fn isolates_share_the_memory_limit_without_exceeding_it() {
+        let slots = |n| Slots::new(n).unwrap();
+        // The default 64 MiB gives two isolates of 32 MiB, whatever N.
+        assert_eq!(super::isolate_shares(64 << 20, slots(8)), (2, 32 << 20));
+        assert_eq!(
+            super::isolate_shares(4_000_000_000, slots(8)),
+            (8, 500_000_000)
+        );
+        // Less than two shares: one isolate with the whole limit.
+        assert_eq!(super::isolate_shares(40 << 20, slots(4)), (1, 40 << 20));
+        assert_eq!(super::isolate_shares(16 << 20, slots(4)), (1, 16 << 20));
+        for limit in [16 << 20, 64 << 20, 100 << 20, 1 << 30, 4_000_000_000] {
+            for n in 1..=8 {
+                let (isolates, share) = super::isolate_shares(limit, slots(n));
+                assert!(isolates <= n && isolates * share <= limit, "{limit} {n}");
+            }
+        }
+    }
+}
+impl UnitPool {
+    /// Start the pool of `slots` for the units of `shared`. A worker's host
+    /// is bound to `environment`, the compilation host's settings, with
+    /// the isolate memory limit split ([`isolate_memory_limit`]).
+    pub(crate) fn start(
+        shared: Arc<SharedCatalog>,
+        slots: crate::scheduler::Slots,
+        engines: PoolEngines,
+        environment: MacroEnvironment,
+    ) -> Result<Self, String> {
+        let inbox = Arc::new(Inbox::default());
+        let thread = {
+            let inbox = inbox.clone();
+            let shared = shared.clone();
+            let environment = environment.clone();
+            std::thread::Builder::new()
+                .name("light-cljs-units".into())
+                .spawn(move || serve_pool(&inbox, &shared, slots, engines, &environment))
+                .map_err(|e| format!("cannot start the compiler's unit pool: {e}"))?
+        };
+        Ok(Self {
+            inbox,
+            shared,
+            thread: Some(thread),
+            engines,
+            inline: inline_namespaces(),
+            main: environment,
+        })
+    }
+    /// Give the pool `units`, one namespace's, in unit order: one batch,
+    /// which the scheduler's workers claim and steal in that order.
+    pub(crate) fn submit(&self, units: Vec<usize>) {
+        if units.is_empty() {
+            return;
+        }
+        (self.shared.counters.pooled).fetch_add(units.len(), std::sync::atomic::Ordering::Relaxed);
+        self.inbox.lock().batches.push_back(units);
+        self.inbox.ready.notify_one();
+    }
+    /// Stop the pool once its jobs have run and join its threads, which
+    /// destroy their engines. A worker's panic panics the build here, as
+    /// it does when the pool is dropped.
+    pub(crate) fn finish(mut self) {
+        if let Some(message) = self.join() {
+            panic!("{message}");
+        }
+    }
+    fn join(&mut self) -> Option<String> {
+        // Nothing waits for a unit from here on; a worker waiting for the
+        // coordinator to answer its request stops waiting.
+        self.shared.abandon("the build ended".into());
+        self.inbox.lock().closed = true;
+        self.inbox.ready.notify_all();
+        let thread = self.thread.take()?;
+        match thread.join() {
+            Ok(Ok(())) => None,
+            Ok(Err(message)) => Some(message),
+            Err(_) => Some("the compiler's unit pool panicked".into()),
+        }
+    }
+}
+impl Drop for UnitPool {
+    fn drop(&mut self) {
+        if let Some(message) = self.join() {
+            self.shared.abandon(message.clone());
+            if !std::thread::panicking() {
+                panic!("{message}");
+            }
+        }
+    }
+}
+/// A worker's view of `shared`, bound to an engine made on this thread.
+fn worker_view(
+    shared: &Arc<SharedCatalog>,
+    engines: PoolEngines,
+    environment: &MacroEnvironment,
+) -> Result<Rc<WorkerView>, String> {
+    let started = std::time::Instant::now();
+    let engine: Option<Rc<dyn crate::compiler_evaluator::CompilerEvaluator>> = match engines {
+        PoolEngines::None => None,
+        #[cfg(light_v8)]
+        PoolEngines::Persistent | PoolEngines::Fresh => Some(Rc::new(
+            crate::v8_evaluator::V8Evaluator::new(environment.evaluator_options().clone())
+                .map_err(|e| e.to_string())?,
+        )),
+        #[cfg(not(light_v8))]
+        PoolEngines::Persistent | PoolEngines::Fresh => {
+            return Err("compiler workers need V8".into());
+        }
+    };
+    let counted = engine.is_some();
+    let view = WorkerView::new(
+        shared.clone(),
+        MacroHost::bind(environment.clone(), engine)?,
+    )?;
+    view.forwards.set(true);
+    if counted {
+        let counters = &shared.counters;
+        counters
+            .isolates
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        PoolCounters::add(&counters.startup_ns, started);
+    }
+    Ok(view)
+}
+/// The pool's thread: run the scheduler, submitting each batch the inbox
+/// gets and consuming outcomes, until the inbox closes and every job has
+/// run. A worker's panic stops the pool and ends every wait in the catalog.
+fn serve_pool(
+    inbox: &Inbox,
     shared: &Arc<SharedCatalog>,
     slots: crate::scheduler::Slots,
-    units: Vec<usize>,
-    coordinate: impl FnOnce() -> R,
-) -> R {
+    engines: PoolEngines,
+    environment: &MacroEnvironment,
+) -> Result<(), String> {
     use crate::scheduler::{Config, Next};
-    let pooled = crate::scheduler::run(
-        &Config::new(slots, 1),
-        |_slot| WorkerView::new(shared.clone(), MacroHost::default()),
-        |view, UnitJob(id), _worker| {
+    let mut config = Config::new(slots, 1);
+    // A worker analyzes as deep as the coordinator, whose main thread has
+    // 8 MiB; V8's stack limit is set from where each engine entry starts.
+    config.stack_size = Some(8 << 20);
+    let run = crate::scheduler::run(
+        &config,
+        // A slot makes its view on its first job, and again after its
+        // engine failed for good, which is retired, not reused; with
+        // `Fresh`, for every job.
+        |_slot| None::<Rc<WorkerView>>,
+        |slot, UnitJob(id), _worker| {
             // The outcome is in the catalog; a failed unit is reported by
             // the coordinator when it reaches it, as a serial drain would.
-            if let Ok(view) = view {
-                let _ = view.analyze(id, None);
+            let view = match slot.take() {
+                Some(view) => view,
+                None => match worker_view(shared, engines, environment) {
+                    Ok(view) => view,
+                    Err(error) => return shared.fail_unstarted(id, error),
+                },
+            };
+            let started = std::time::Instant::now();
+            // A view that failed before claiming the unit, installing the
+            // catalog's registrations, fails it.
+            if let Err(error) = view.analyze(id, None) {
+                shared.fail_unstarted(id, error);
+            }
+            PoolCounters::add(&shared.counters.unit_ns, started);
+            if engines != PoolEngines::Fresh && !view.terminal() {
+                *slot = Some(view);
             }
         },
-        |pool| {
-            pool.submit_batch(units.into_iter().map(UnitJob));
-            let result = coordinate();
+        |pool| -> Result<(), String> {
             loop {
                 match pool.next_outcome() {
-                    Ok(Next::Outcome(())) => {}
-                    Ok(Next::Quiescent) => break,
+                    Ok(Next::Outcome(())) => {
+                        // The build ended early: what is queued is not needed.
+                        if inbox.closed() {
+                            pool.cancel();
+                        }
+                        if let Some(batch) = inbox.try_next() {
+                            pool.submit_batch(batch.into_iter().map(UnitJob));
+                        }
+                    }
+                    Ok(Next::Quiescent) => match inbox.next() {
+                        Some(batch) => pool.submit_batch(batch.into_iter().map(UnitJob)),
+                        None => return Ok(()),
+                    },
                     Ok(Next::Stalled { .. }) => unreachable!("unit jobs hold no demands"),
-                    Err(panic) => panic!("{panic}"),
+                    Err(panic) => {
+                        let message = panic.to_string();
+                        shared.abandon(message.clone());
+                        pool.cancel();
+                        return Err(message);
+                    }
                 }
             }
-            result
         },
     );
-    pooled.unwrap_or_else(|error| panic!("{error}"))
+    match run {
+        Ok(result) => result,
+        Err(error) => {
+            let message = error.to_string();
+            shared.abandon(message.clone());
+            Err(message)
+        }
+    }
 }
 impl CatalogView for WorkerView {
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
         self.install(Some(active))?;
+        (self.shared.counters.initializations).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         compile_unit_in(&self.shared, active, id, || self.analyze(id, Some(active)))
     }
     fn unit_source(&self, id: usize) -> Option<u32> {
@@ -1737,6 +2363,12 @@ impl CatalogView for WorkerView {
     }
     fn analysis_sources(&self) -> Vec<u32> {
         self.shared.analysis_sources(self.thread)
+    }
+    fn forward_build(&self, request: &str) -> Option<String> {
+        self.forwards.get().then(|| {
+            self.shared
+                .forward_build(request, self.shared.analysis_sources(self.thread))
+        })
     }
 }
 /// Install in `evaluator` the services through which its code reaches the
@@ -1757,6 +2389,9 @@ pub(crate) fn install_catalog_services(
             "__lightBuildService",
             Rc::new(move |request| {
                 let view = requests.upgrade();
+                if let Some(answer) = view.as_ref().and_then(|view| view.forward_build(request)) {
+                    return answer;
+                }
                 let analysis = view
                     .as_ref()
                     .map_or_else(Vec::new, |view| view.analysis_sources());
@@ -2255,17 +2890,23 @@ mod worker_tests {
         assert!(a < c);
         let shared = session.shared().clone();
         let (first, second) = (shared.join(), shared.join());
-        assert!(matches!(shared.claim(first, c), Ok(Claim::Analyze(..))));
-        assert!(matches!(shared.claim(second, a), Ok(Claim::Analyze(..))));
+        assert!(matches!(
+            shared.claim(first, c, false, None),
+            Ok(Claim::Analyze(..))
+        ));
+        assert!(matches!(
+            shared.claim(second, a, false, None),
+            Ok(Claim::Analyze(..))
+        ));
         let error = std::thread::scope(|scope| {
             // `c`'s analysis demands `a`, which the second thread analyzes.
-            let waiter = scope.spawn(|| shared.claim(first, a).map(drop));
+            let waiter = scope.spawn(|| shared.claim(first, a, false, None).map(drop));
             while shared.lock().waiting == 0 {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             // `a`'s analysis demands `c`: that wait would close the cycle,
             // which reads from `a`, the lower unit, whichever thread asks.
-            let error = shared.claim(second, c).map(drop).unwrap_err();
+            let error = shared.claim(second, c, false, None).map(drop).unwrap_err();
             assert_eq!(
                 error,
                 "compile dependency cycle: cljs.user/a -> cljs.user/c -> cljs.user/a"

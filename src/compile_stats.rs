@@ -82,6 +82,17 @@ pub struct DeferredUnitCounts {
     pub macro_free: usize,
     /// The time spent analyzing macro-free units, on whichever thread.
     pub macro_free_time: std::time::Duration,
+    /// With `--jobs N`, what the build's unit pool did
+    /// (docs/compiler-concurrency.md, "As built (light-cljs-339)"): the
+    /// units its drains gave it, the isolates its workers made and the
+    /// time that took, the time its workers spent analyzing their jobs,
+    /// and the compile-time units its workers' engines initialized, each
+    /// once per isolate that demanded it.
+    pub pooled: usize,
+    pub worker_isolates: usize,
+    pub worker_isolate_startup: std::time::Duration,
+    pub worker_unit_time: std::time::Duration,
+    pub worker_initializations: usize,
 }
 
 /// The numbers of one compilation; see the module documentation.
@@ -318,6 +329,17 @@ impl CompileStats {
             "time.macro-free-units-ms",
             &ms(self.deferred_units.macro_free_time),
         );
+        let units = &self.deferred_units;
+        if units.pooled > 0 || units.worker_isolates > 0 {
+            line("deferred-units.pooled", &units.pooled);
+            line("pool.worker-isolates", &units.worker_isolates);
+            line(
+                "time.worker-isolate-startup-ms",
+                &ms(units.worker_isolate_startup),
+            );
+            line("time.worker-units-ms", &ms(units.worker_unit_time));
+            line("pool.worker-initializations", &units.worker_initializations);
+        }
         if let Some(capture) = &self.capture {
             line("cache.capture.namespaces", &capture.captured);
             line("cache.capture.skipped", &capture.skipped);

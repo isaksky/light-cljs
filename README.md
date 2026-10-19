@@ -345,12 +345,19 @@ and read), with each unit's position, demander and costs, for
 
 `--jobs N` with `--compile` is experimental. It allows the compilation N CPU
 work slots, the calling thread's included, so at most N-1 worker threads.
-The default is 1. Output does not depend on N. Sources are read and parsed on
-that pool, the source order coming from the require edges and not from which
-file finished first; and each namespace's deferred units that can expand no
-macro but the native `let`, `fn`, `loop` and `letfn` are analyzed on it while
-the calling thread drains the others in order. Every other phase still runs
-on the calling thread. The pool is described in
+The default is 1. Sources are read and parsed on that pool, the source
+order coming from the require edges and not from which file finished first;
+and each namespace's deferred units (its definitions' bodies) are analyzed on
+it, each worker in a V8 isolate of its own, while the calling thread drains
+them in order. Every other phase still runs on the calling thread. Output
+does not depend on N, except where a macro's compile-time effect in one
+namespace's definition bodies is observed from another: each isolate has its
+own compile-time state, so such an effect is invisible in the others (the
+`counter` example of the design prints `1 1` with several jobs and `1 2`
+with one). While `--cache-dir` is on, only units that expand no macro but
+the native `let`, `fn`, `loop` and `letfn` go to the pool. The macro memory
+limit is split evenly between the isolates for now, each getting at least
+32 MiB, so a limit of less than 64 MiB leaves the workers without engines. The pool is described in
 [docs/compiler-concurrency.md](docs/compiler-concurrency.md#the-scheduler).
 
 `--cache-dir DIR` with `--compile --entry` (also with `--reloadable`, `--esm`

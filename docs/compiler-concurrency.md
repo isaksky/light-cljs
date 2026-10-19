@@ -1152,6 +1152,98 @@ The one deterministic ID-order change of this stage is made, at every
   matching uncached ones (`tests/compiler/cache_modes.rs`,
   `cache_contract.rs`).
 
+*As built (light-cljs-339), per-worker isolates:*
+
+- *One pool for the build.* With `--jobs N` above one, `analyze_entry`
+  starts a `compilation_session::UnitPool` once the compilation's session
+  exists and finishes it after the last namespace: `scheduler::run` with N
+  slots, so N-1 workers, each of which makes one `V8Evaluator` on its own
+  thread at its first job (after `initialize_platform`), binds it with
+  `MacroHost::bind` to the compilation host's settings and joins the
+  catalog with a `WorkerView`; the engines are destroyed on their threads
+  when the pool finishes. The scheduler is driven from a thread of its own
+  (`light-cljs-units`), which only submits the batches the drains hand it
+  and consumes outcomes, so the coordinator's analysis does not have to run
+  inside the scheduler's closure; a job is a unit ID. A worker whose engine
+  failed for good (`ExecutionControl::check`) is retired and the next job
+  on that slot makes a new one. `LIGHT_CLJS_FRESH_UNIT_ISOLATES=1` makes
+  one isolate per job instead, the correctness reference.
+- *Which units.* Every unit is the pool's (`CompilationSession::pools`)
+  except a definition's with `:test` metadata, analyzed with its
+  definition through the session (a worker that demands one analyzes its
+  test unit through its own catalog view), and those of the namespaces the
+  temporary `LIGHT_CLJS_INLINE_UNITS=ns,ns` names, which stay on the main
+  isolate until the cache blocker's affinity (light-cljs-340). While
+  artifacts are captured or a dependency manifest is recorded
+  (`--cache-dir`), which only the coordinator's session does, the workers
+  have no engine and take only macro-free units, as light-cljs-338's did.
+  QuickJS-only builds and WebAssembly have one slot, so no pool.
+- *The drain.* A namespace's drain gives the pool its units still
+  unstarted, as one batch in unit order, and then takes every unit in
+  order as before; for a pooled one it waits in the catalog even while it
+  is queued (`SharedCatalog::claim` with `queued`): the coordinator never
+  analyzes a pooled unit in the main isolate, whose compile-time state
+  would then depend on which thread got there first. A compile-time demand
+  from the coordinator (a top-level macro calling a helper) still claims,
+  waits for or reuses its unit as before, and a demand from a worker runs
+  inline on that worker.
+- *Per isolate.* A source macro's declaration keeps the JavaScript that
+  declared it (`compiler_bootstrap::MacroCode`), and a worker's engine
+  evaluates it once into its binding's own table (`EngineBinding::foreign`,
+  `foreign_macros`), as it does an installed artifact's macro; the
+  bootstrap macros are its own already. A worker installs the catalog's
+  registrations before each analysis and evaluates the roots it demands
+  through its own `__lightCompileUnit`, so a helper demanded from k
+  isolates initializes k times (`--stats`: `pool.worker-initializations`).
+  The bootstrap macros' extension frontier comes from the catalog
+  (`EngineBinding::extension_frontier`), and the macro inventory `&env`
+  shows is cached per inventory (`MacroTables::macro_version`), since one
+  worker's binding serves units of many snapshots. A worker's `light.build` request
+  is answered by the coordinator, which alone has the build's resources
+  and log, while it waits for units (`SharedCatalog::forward_build`).
+- *Accounting.* A unit a worker analyzes records its form polls, native
+  expansions and JavaScript macro expansions (`UnitEvent::Script`) with
+  counters of its own, as a macro-free unit's do, and a unit it demands
+  is recorded with it, in its place; the coordinator charges them in unit
+  order when it takes the analysis, so `--stats`' macro calls and nodes do
+  not depend on N. A unit that expanded a JavaScript macro starts the
+  coordinator's engine where a serial build's first expansion would have,
+  so the polls charged after it are spent. A limit crossed in a worker's
+  JavaScript expansion fails with the serial limit's message but not
+  always its position; one aggregate budget and the earliest canonical
+  error are light-cljs-341's.
+- *Memory.* The isolates, the main one included, share
+  `--macro-memory-limit` evenly: as many as the limit gives a share of at
+  least 32 MiB, up to N, each capped at its share, so their caps never sum
+  to more than the limit (`isolate_shares`); with fewer than two shares the
+  workers have no engine and take only macro-free units. The default
+  64 MiB gives the main isolate and one worker 32 MiB each; Penpot's 4 GB
+  gives eight isolates 500 MB. The limits pellet makes it one budget.
+- *Semantics.* The counter fixture prints `1 1` with several slots, the
+  documented undeclared behavior (`macro_free_units::the_counter_fixture_prints_one_one_at_several_slots_without_a_blocker`,
+  `tests/cli.rs` `worker_isolates_match_a_fresh_isolate_per_unit`, which
+  also checks that persistent and fresh isolates emit the same program and
+  that the inline hook restores `1 2`).
+- *Not built: the coordinator does not go on.* The pellet asked the
+  coordinator to continue to the next namespace's top-level pass once it
+  had enqueued a namespace's units. It cannot without a second ID-order
+  change: the globals a unit adds (a nested definition's Var, an existence
+  probe's or a lazy target's reservation) are given to the program at the
+  drain (`publish_globals`), before the next namespace allocates any
+  global, so that the next namespace resolves them and every global keeps
+  its serial ID. Going on would publish them after the next namespace's
+  globals, at every `--jobs` value, `--jobs 1` included. Recorded under
+  "Open questions". So the coordinator waits at each drain, and the pool
+  runs one namespace's units at a time; the longest-chain-first priority
+  across namespaces has nothing to order yet, and the jobs keep phase 0
+  and priority 0, one batch per namespace in source order, which workers
+  claim four at a time and steal.
+- *Trace.* The exclusive-stage trace stays per thread, so worker units are
+  not in it (light-cljs-369); `--stats` adds `deferred-units.pooled`,
+  `pool.worker-isolates`, `time.worker-isolate-startup-ms`,
+  `time.worker-units-ms` and `pool.worker-initializations` when the pool
+  ran. JIT share per worker is not measured.
+
 ### Stage C: parallel namespaces
 
 This stage removes the serial top-level chain.
@@ -1542,6 +1634,18 @@ is part of the stage A gate.
 
 ## Open questions
 
+- *The coordinator going on past a drain (light-cljs-339).* Stage A has the
+  coordinator enqueue a namespace's units and go on to the next
+  namespace's top-level pass. The globals the units add are published at
+  the drain today, before the next namespace allocates its own, which the
+  next namespace's resolution and every global's ID depend on
+  (`macro_free_units::body_discovered_vars_resolve_in_the_next_namespace`).
+  Going on needs them published after the next namespace's top-level
+  pass at every `--jobs` value: a second ID-order change, which the group
+  context does not allow, and a Var defined in a previous namespace's
+  body would no longer resolve in the next one. Until it is decided, the
+  pool overlaps only one namespace's units: on Penpot main the drains
+  still wait about 10 s at eight slots.
 - *Merging after the top-level passes (settled by light-cljs-338).* Made as
   described under "Stage A": fragments merge after the next namespace's
   analysis, artifacts are two parts, lazy targets are read from the

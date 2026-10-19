@@ -11,6 +11,56 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Per-worker isolates (light-cljs-339, October 19, 2026)
+
+Every deferred unit but a `:test` definition's is analyzed by a pool worker
+in a V8 isolate of its own, for the whole build, while the coordinator waits
+for each in unit order at its drain (docs/compiler-concurrency.md, "As built
+(light-cljs-339)"). Parent `d2c6858` against this change, three alternating
+rounds of parent, `--jobs 1` and `--jobs 8`, at 1-minute load 9.2 to 13.8
+with two other workers active. All ten outputs, and the fresh-isolate run
+below, are 33,647,695 bytes with SHA-256 `e5a62f541b6c26f7...`: `--jobs 8`
+emits the `--jobs 1` program.
+
+| Build | Wall (s) | Median wall | User (s), median | Peak RSS (GB) | Median RSS |
+| --- | --- | ---: | ---: | --- | ---: |
+| Parent | 26.61, 26.13, 26.84 | 26.61 | 31.9 | 0.969, 0.946, 0.913 | 0.946 |
+| `--jobs 1` | 26.14, 25.15, 26.69 | 26.14 | 31.4 | 0.927, 0.930, 0.973 | 0.930 |
+| `--jobs 8` | 19.85, 22.15, 21.12 | 21.12 | 41.0 | 1.689, 1.705, 1.721 | 1.705 |
+
+- **Serial gate.** `--jobs 1` is -1.8% wall and -1.7% peak RSS against the
+  parent on the medians, inside the +2% / +3% gate: with one slot there is
+  no pool and nothing new runs but a lock per unit for its charges.
+- **Eight slots** (no gate yet; light-cljs-343 applies it): 0.79x the
+  parent's wall and 0.81x of `--jobs 1`'s, for 1.31x the user time and
+  1.83x the peak RSS. 12,817 of 13,367 units went to the pool; the 7
+  isolates took 0.44 s in all to start, and initialized 1,090 compile-time
+  units between them where the main isolate alone initializes 277. Their
+  jobs took 21.8 s of thread time, against the 19 s the design's profile gives
+  serial deferred units: cold isolates, and helpers initialized in each.
+- **Why not more.** With `--stats` at eight slots the drains still take
+  9.8 s of the coordinator's 19.3 s: it waits at each drain for that
+  namespace's units, so the pool only ever has one namespace's units, and
+  the 7.0 s of top-level passes do not overlap them. Going on past the
+  drain needs the globals units add published after the next namespace's
+  top-level pass, a second ID-order change ("Open questions" in the
+  design).
+- **After the review fixes, rebased onto `7b8e68a`**, six alternating
+  rounds of parent and `--jobs 1` and three of `--jobs 8` at load 2.2 to
+  6.8, all fifteen outputs 33,647,839 bytes with one SHA-256
+  (`659ffab94af7e01e...`): parent 24.68 s / 0.896 GB median (23.52 to
+  25.50 s), `--jobs 1` 25.13 s (+1.8%) / 0.922 GB (+3.0%; 23.56 to 29.52
+  s), `--jobs 8` 19.84 s (0.79x of `--jobs 1`), 39.9 s user, 1.658 GB.
+  The serial build is at the gate's edge on peak RSS; the first set above
+  measured -1.7%.
+- **A fresh isolate per unit** (`LIGHT_CLJS_FRESH_UNIT_ISOLATES=1`, the
+  correctness reference) gives the same program in 120.5 s wall, 599.6 s
+  user and 1.21 GB peak RSS at `--jobs 8`: 12,817 isolates, 169 s of summed
+  start-up (13 ms each) and 49,449 initializations, since every unit
+  initializes the helpers it needs again.
+- **JIT share** per worker is not measured: the trace is per thread
+  (light-cljs-369).
+
 ## Root read edges (light-cljs-359, October 19, 2026)
 
 The trace now records every distinct (frame, unit) pair in which the engine

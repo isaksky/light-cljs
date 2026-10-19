@@ -3796,13 +3796,9 @@ fn analyze_input(
     if let Some(snapshot) = snapshot
         && let Some(unit) = snapshot.definition_test_unit
     {
-        let session = analyzer
-            .macro_host
-            .session_handle()
-            .expect("compilation session");
+        // On a pool worker, through its catalog view.
         let (program, warnings) =
-            session
-                .analyze(unit, engine)
+            crate::compilation_session::analyze_definition_test(analyzer.macro_host, unit, engine)
                 .map_err(|message| AnalysisError {
                     span: analyzer.program.exprs[analyzer.program.root.0].span.clone(),
                     kind: AnalysisErrorKind::MacroExpansion(message),
@@ -3815,7 +3811,7 @@ fn analyze_input(
             true,
             None,
         );
-        session.release_application_ir(unit);
+        crate::compilation_session::release_definition_test(analyzer.macro_host, unit);
         analyzer.warnings.extend(warnings);
         let test = analyzer.push(
             ExprKind::DefinitionTest { value, unit },
@@ -7241,24 +7237,21 @@ impl Analyzer<'_> {
             return Ok(());
         };
         let units = std::mem::take(&mut self.deferred);
-        // With `--jobs N`, pool workers analyze the macro-free units while
-        // this thread drains every unit in order, as with one slot.
+        // With `--jobs N`, the build pool analyzes the units given to it,
+        // one batch in unit order, while this thread drains every unit in
+        // order, as with one slot, waiting for those
+        // (docs/compiler-concurrency.md, "As built (light-cljs-339)").
         let pooled = if self.unit_slots.get() > 1 {
-            units
-                .iter()
-                .map(|d| d.unit)
-                .filter(|&unit| session.shared().macro_free(unit))
-                .collect::<Vec<_>>()
+            session.poolable(units.iter().map(|d| d.unit))
         } else {
             Vec::new()
         };
-        if pooled.is_empty() {
-            return self.drain_units(&session, units, keep_later);
-        }
-        let shared = session.shared().clone();
-        crate::compilation_session::with_unit_pool(&shared, self.unit_slots, pooled, || {
-            self.drain_units(&session, units, keep_later)
-        })
+        let pooled = if !pooled.is_empty() && session.submit_units(pooled.clone()) {
+            pooled
+        } else {
+            Vec::new()
+        };
+        self.drain_units(&session, units, keep_later, &pooled)
     }
 
     /// Append `units` in order, analyzing each unless another thread has
@@ -7268,7 +7261,10 @@ impl Analyzer<'_> {
         session: &crate::compilation_session::CompilationSession,
         units: Vec<DeferredUnit>,
         keep_later: bool,
+        pooled: &[usize],
     ) -> Result<(), AnalysisError> {
+        // The pooled units, a subsequence of `units`.
+        let mut pooled = pooled.iter().copied().peekable();
         // The source's warnings from the first unit's position on, which the
         // units' warnings are merged into. Positions only grow, and the
         // units without one come last.
@@ -7290,7 +7286,12 @@ impl Analyzer<'_> {
             self.warnings
                 .extend(later.by_ref().take(at.saturating_sub(position)));
             position = position.max(at);
-            let (program, warnings) = match session.analyze(unit, self.engine) {
+            let analysis = if pooled.next_if_eq(&unit).is_some() {
+                session.analyze_pooled(unit, self.engine)
+            } else {
+                session.analyze(unit, self.engine)
+            };
+            let (program, warnings) = match analysis {
                 Ok(analyzed) => analyzed,
                 Err(message) => {
                     failure = Some(session.diagnostic(unit).unwrap_or_else(|| AnalysisError {
@@ -7588,9 +7589,17 @@ impl Analyzer<'_> {
                     },
                 )
                 .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
+            // The build pool takes macro-free units, and with engines of its
+            // own every unit but a `:test` one and those of the namespaces
+            // kept on the main isolate.
+            let pooled = self.unit_slots.get() > 1
+                && session.pools(self.namespace, macro_free, test_form.is_some());
             Ok(unit.map(|unit| {
                 if macro_free {
                     session.set_macro_free(unit);
+                }
+                if pooled {
+                    session.set_pooled(unit);
                 }
                 let placeholder = self.push(
                     ExprKind::Nil,

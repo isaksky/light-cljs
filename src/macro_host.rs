@@ -57,10 +57,20 @@ pub(crate) struct NativeExpansion {
 pub(crate) enum UnitEvent {
     Poll(std::ops::Range<usize>),
     Expansion(NativeExpansion),
+    /// A JavaScript macro's expansion in a unit a pool worker analyzed in
+    /// its own engine (light-cljs-339), with the nodes it generated and
+    /// the call's span.
+    Script {
+        nodes: usize,
+        span: std::ops::Range<usize>,
+    },
 }
 
 struct MacroFreeAnalysis {
     name: String,
+    /// Whether the unit was found macro-free, so that entering an engine
+    /// is a bug; a unit a worker analyzes in its own engine records only.
+    forbid: bool,
     events: Vec<UnitEvent>,
 }
 
@@ -74,13 +84,21 @@ struct MacroFreeAnalysis {
 /// which [`Self::finish`] returns.
 pub(crate) struct MacroFreeUnit(Option<MacroFreeAnalysis>);
 impl MacroFreeUnit {
-    pub(crate) fn enter(name: String) -> Self {
+    /// Record the analysis of unit `name` on this thread; with `forbid`, it
+    /// was found macro-free and must not enter an engine.
+    pub(crate) fn enter(name: String, forbid: bool) -> Self {
         Self(MACRO_FREE_UNIT.with(|unit| {
             unit.replace(Some(MacroFreeAnalysis {
                 name,
+                forbid,
                 events: Vec::new(),
             }))
         }))
+    }
+    /// Whether this thread records a unit's analysis, whose nested demands
+    /// it then records too, in their place.
+    pub(crate) fn active() -> bool {
+        MACRO_FREE_UNIT.with(|unit| unit.borrow().is_some())
     }
     /// What the analysis recorded, in order.
     pub(crate) fn finish(mut self) -> Vec<UnitEvent> {
@@ -100,7 +118,9 @@ impl Drop for MacroFreeUnit {
 /// macro host.
 pub(crate) fn forbid_engine_entry(what: &str) {
     MACRO_FREE_UNIT.with(|unit| {
-        if let Some(analysis) = &*unit.borrow() {
+        if let Some(analysis) = &*unit.borrow()
+            && analysis.forbid
+        {
             panic!(
                 "compile unit {} was dispatched as macro-free, but its analysis reached the macro host ({what}): the eligibility check is wrong",
                 analysis.name
@@ -113,6 +133,18 @@ pub(crate) fn record_native_expansion(expansion: impl FnOnce() -> NativeExpansio
     MACRO_FREE_UNIT.with(|unit| {
         if let Some(analysis) = &mut *unit.borrow_mut() {
             analysis.events.push(UnitEvent::Expansion(expansion()));
+        }
+    });
+}
+/// Record a JavaScript macro's expansion if this thread records a unit's
+/// analysis.
+pub(crate) fn record_script_expansion(nodes: usize, span: impl FnOnce() -> std::ops::Range<usize>) {
+    MACRO_FREE_UNIT.with(|unit| {
+        if let Some(analysis) = &mut *unit.borrow_mut() {
+            analysis.events.push(UnitEvent::Script {
+                nodes,
+                span: span(),
+            });
         }
     });
 }
@@ -404,6 +436,10 @@ pub(crate) struct MacroTables {
     /// [`MacroHost::insert_javascript_macro`].
     macro_names: crate::layered::Layered<String, Vec<String>>,
     pub(crate) source_bindings: crate::layered::Layered<String, SourceBindingKind>,
+    /// Which inventory of `javascript_macros` this is, unique in the
+    /// process ([`next_macro_version`]), which a macro environment cache
+    /// is made from.
+    pub(crate) macro_version: u64,
     /// The compilation whose declared bindings the session holds.
     pub(crate) reader_generation: u64,
     /// The build configuration `light.build/config` answers
@@ -423,7 +459,7 @@ pub(crate) struct EngineBinding {
     pub(crate) bootstrap: Option<crate::compiler_bootstrap::Bootstrap>,
     /// Shared by frames with the same macro inventory; replaced on declaration.
     pub(crate) macro_environment:
-        std::rc::Rc<std::cell::RefCell<Option<crate::compiler_data::Datum>>>,
+        std::rc::Rc<std::cell::RefCell<Option<(u64, crate::compiler_data::Datum)>>>,
     namespace_environment: std::rc::Rc<std::cell::RefCell<Option<NamespaceEnvironment>>>,
     // Shared by analysis frames, but bounded to one complete lexical view.
     local_environment: std::rc::Rc<std::cell::RefCell<Option<LocalEnvironment>>>,
@@ -451,6 +487,19 @@ pub(crate) struct EngineBinding {
     /// The compilation `light.build` serves, shared by the analysis frames
     /// and the services installed in its heaps ([`crate::build_services`]).
     pub(crate) build: crate::build_services::SharedBuild,
+    /// Whether the engine is a worker's ([`MacroHost::bind`]), in which the
+    /// source macros declared in the coordinator's engine are evaluated
+    /// again, once each, into `foreign_macros`, by the identity of their
+    /// code (docs/compiler-concurrency.md, "As built (light-cljs-339)").
+    pub(crate) foreign: bool,
+    pub(crate) foreign_macros:
+        std::rc::Rc<std::cell::RefCell<HashMap<usize, crate::evaluator::ValueId>>>,
+    /// A worker's catalog, which has no session: how many extension
+    /// bundles it registered is the bootstrap macros' frontier.
+    pub(crate) catalog: Option<std::sync::Arc<crate::compilation_session::SharedCatalog>>,
+    /// A worker's view, through which a definition's `:test` unit is
+    /// analyzed there ([`crate::compilation_session::analyze_definition_test`]).
+    pub(crate) worker: Option<std::rc::Weak<crate::compilation_session::WorkerView>>,
     /// Keeps the binding on its thread whatever its fields become.
     _thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
@@ -504,6 +553,10 @@ impl EngineBinding {
             reader_declared: self.reader_declared.clone(),
             dependency_log: self.dependency_log.clone(),
             build: self.build.clone(),
+            foreign: self.foreign,
+            foreign_macros: self.foreign_macros.clone(),
+            catalog: self.catalog.clone(),
+            worker: self.worker.clone(),
             _thread: std::marker::PhantomData,
         }
     }
@@ -511,6 +564,15 @@ impl EngineBinding {
         &self,
     ) -> Option<std::rc::Rc<crate::compilation_session::CompilationSession>> {
         self.session.clone().or_else(|| self.session_ref.upgrade())
+    }
+    /// How many extension bundles the compilation registered, from its
+    /// session or, on a worker, its catalog; 0 outside a compilation.
+    pub(crate) fn extension_frontier(&self) -> usize {
+        match (&self.catalog, self.session_handle()) {
+            (_, Some(session)) => session.extension_frontier(),
+            (Some(catalog), None) => catalog.extension_frontier(),
+            (None, None) => 0,
+        }
     }
 }
 /// A namespace's entries in the macro host's tables, borrowed.
@@ -533,6 +595,12 @@ fn name_parts(name: &Name) -> (Option<String>, String) {
 /// fresh host never reuses the declarations an earlier one registered.
 /// Namespace artifacts never retain it ([`crate::generated_names`]).
 static READER_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A version for a changed macro inventory ([`MacroTables::macro_version`]).
+fn next_macro_version() -> u64 {
+    static VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    VERSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 
 /// The declarations a macro environment names for its session, recorded with
 /// [`MacroHost::register_reader_declarations`] once the environment reached it.
@@ -740,6 +808,7 @@ impl MacroHost {
             }
             message
         })?;
+        record_script_expansion(expanded.nodes().len(), || origin.call.bytes());
         self.engine.generated_nodes.set(
             self.engine
                 .generated_nodes
@@ -1372,7 +1441,13 @@ impl MacroHost {
         environment: MacroEnvironment,
         evaluator: Option<std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>>,
     ) -> Result<Self, String> {
-        let mut host = Self::from_parts(environment, EngineBinding::default());
+        let mut host = Self::from_parts(
+            environment,
+            EngineBinding {
+                foreign: true,
+                ..Default::default()
+            },
+        );
         if let Some(evaluator) = evaluator {
             host.prepare_compiler_evaluator(evaluator.as_ref())
                 .map_err(|e| e.to_string())?;
@@ -1467,6 +1542,7 @@ impl MacroHost {
             drop(readers);
             self.engine.bootstrap = None;
             self.tables.javascript_macros.clear();
+            self.tables.macro_version = next_macro_version();
             self.tables.macro_names.clear();
             self.engine.macro_environment = Default::default();
             self.engine.namespace_environment = Default::default();
@@ -2001,6 +2077,7 @@ impl MacroHost {
             }
         }
         self.tables.javascript_macros.insert(key, declaration);
+        self.tables.macro_version = next_macro_version();
     }
 
     /// Add the reader context of `namespace` to a macro's environment. The
@@ -2155,7 +2232,10 @@ impl MacroHost {
         let sym = |s: &str| c.symbol(Name::new(None, s));
         let macro_environment = {
             let mut cache = self.engine.macro_environment.borrow_mut();
-            if let Some(data) = cache.as_ref() {
+            // A worker's binding serves units of many snapshots, so the
+            // cache names the macro inventory it was made from.
+            let version = self.tables.macro_version;
+            if let Some((_, data)) = cache.as_ref().filter(|(v, _)| *v == version) {
                 data.clone()
             } else {
                 let data = c.map(&{
@@ -2172,7 +2252,7 @@ impl MacroHost {
                         })
                         .collect::<Vec<_>>()
                 })?;
-                *cache = Some(data.clone());
+                *cache = Some((version, data.clone()));
                 data
             }
         };

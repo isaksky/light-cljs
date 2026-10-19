@@ -2565,6 +2565,51 @@ fn analyze_entry(
     // pass, and published then.
     let mut captures: std::collections::VecDeque<Option<PendingCapture>> = Default::default();
     let mut index = 0;
+    // With `--jobs N` the build's deferred units are analyzed on one pool
+    // for the whole build, each worker in a V8 isolate of its own, which
+    // share the macro memory limit evenly for now; while artifacts are
+    // captured or observations logged, which only the coordinator does,
+    // its workers have no engine and take only macro-free units
+    // (docs/compiler-concurrency.md, "As built (light-cljs-339)").
+    let memory_limit = macros.evaluator_options.memory_limit;
+    let mut pool_slots = analysis.unit_slots;
+    if analysis.unit_slots.get() > 1
+        && let Some(session) = macros.session_handle()
+    {
+        use crate::compilation_session::PoolEngines;
+        let engines = if cfg!(light_v8)
+            && !capturing
+            && observations.is_none()
+            && macros.engine.script_host.is_none()
+            && !macros.tables.interactive
+        {
+            if std::env::var_os("LIGHT_CLJS_FRESH_UNIT_ISOLATES").is_some() {
+                PoolEngines::Fresh
+            } else {
+                PoolEngines::Persistent
+            }
+        } else {
+            PoolEngines::None
+        };
+        // As many isolates as the limit gives each a share of at least
+        // 32 MiB; with fewer than two, the workers have no engine.
+        let (isolates, share) =
+            crate::compilation_session::isolate_shares(memory_limit, analysis.unit_slots);
+        let engines = if isolates < 2 {
+            PoolEngines::None
+        } else {
+            engines
+        };
+        if engines != PoolEngines::None {
+            macros.evaluator_options.memory_limit = share;
+            pool_slots = crate::scheduler::Slots::new(isolates).unwrap_or(pool_slots);
+        }
+        let started = session.start_pool(pool_slots, engines, macros.environment());
+        if let Err(error) = started {
+            macros.evaluator_options.memory_limit = memory_limit;
+            return Err(NamespaceCompileError::new(error));
+        }
+    }
     let looped = (|| -> Result<(), NamespaceCompileError> {
         while index < loader.ordered.len() {
             let file = &loader.ordered[index];
@@ -2788,6 +2833,12 @@ fn analyze_entry(
         }
         Ok(())
     })();
+    // Every drain has waited for its pooled units; the workers' engines are
+    // destroyed on their threads here.
+    if let Some(session) = macros.session_handle() {
+        session.finish_pool();
+    }
+    macros.evaluator_options.memory_limit = memory_limit;
     // Every namespace merges its units before the program is finished, and
     // when one failed, so that the earlier ones' warnings are reported and
     // their artifacts published.
