@@ -2991,6 +2991,10 @@ struct Analyzer<'a> {
     /// warning-mode analysis no longer drains deferred units form by form
     /// ([`Analyzer::drain_deferred`]).
     defines_macros: bool,
+    /// Whether the forms register their definitions ahead of their turn
+    /// (`InteractiveCompiler::define_ahead`): their units stay registered,
+    /// analyzed only if a macro calls them, and are never drained.
+    registers_ahead: bool,
     /// In warning mode, the field count of each record this namespace
     /// declared in a deferred unit, for constructor arity warnings before
     /// the unit drains.
@@ -3188,7 +3192,7 @@ pub fn analyze_compiler_form(form: &Form) -> Result<Program, AnalysisError> {
         AnalysisOptions::default(),
         &mut Vec::new(),
         AnalysisInputState {
-            owned_form: Some(form),
+            owned_forms: std::slice::from_ref(form),
             ..Default::default()
         },
     )
@@ -3217,7 +3221,7 @@ pub(crate) fn analyze_deferred_form(
         snapshot.options,
         &mut warnings,
         AnalysisInputState {
-            owned_form: Some(form),
+            owned_forms: std::slice::from_ref(form),
             definition_view: Some(NamespaceAnalysisView {
                 namespace: &snapshot.namespace,
                 aliases: &snapshot.aliases,
@@ -3228,6 +3232,7 @@ pub(crate) fn analyze_deferred_form(
             engine,
             previous: None,
             indexes: None,
+            ahead: false,
         },
     )?;
     Ok((program, warnings))
@@ -3285,12 +3290,16 @@ pub(crate) struct InteractiveIndexes<'a> {
 
 #[derive(Default)]
 struct AnalysisInputState<'a> {
-    owned_form: Option<&'a Form>,
+    /// The forms analyzed as the top-level forms of the source, already read.
+    owned_forms: &'a [Form],
     definition_view: Option<NamespaceAnalysisView<'a>>,
     snapshot: Option<&'a crate::compilation_session::DefinitionSnapshot>,
     engine: Option<&'a dyn crate::evaluator::MacroEvaluator>,
     previous: Option<&'a Program>,
     indexes: Option<InteractiveIndexes<'a>>,
+    /// Whether the forms register their definitions ahead of their turn
+    /// (`Analyzer::registers_ahead`).
+    ahead: bool,
 }
 
 fn analyze_input(
@@ -3302,17 +3311,18 @@ fn analyze_input(
     state: AnalysisInputState<'_>,
 ) -> Result<Program, AnalysisError> {
     let AnalysisInputState {
-        owned_form,
+        owned_forms,
         definition_view,
         snapshot,
         engine,
         previous,
         indexes,
+        ahead,
     } = state;
     if definition_view.is_none() && previous.is_none() {
         macro_host.begin_compilation();
     }
-    let (syntax, discards) = if owned_form.is_some() {
+    let (syntax, discards) = if !owned_forms.is_empty() {
         // A deferred semantic form has already selected branches and validated
         // source discards. Re-reading the whole source would restore inactive
         // CLJC forms and replay unrelated reader work inside this unit.
@@ -3354,7 +3364,7 @@ fn analyze_input(
         deferred: Vec::new(),
         macro_depth: 0,
         analysis_depth: 0,
-        macro_source: owned_form.map(|form| form.span().source().clone()),
+        macro_source: owned_forms.first().map(|form| form.span().source().clone()),
         program: empty_program(),
         env: Environment::default(),
         recur_target: None,
@@ -3374,7 +3384,8 @@ fn analyze_input(
         asynchronous: false,
         first_expr: 0,
         deferred_unit: false,
-        defines_macros: false,
+        defines_macros: ahead,
+        registers_ahead: ahead,
         record_fields: HashMap::new(),
         reader_view: None,
         namespace_globals: snapshot.map_or_else(Default::default, |s| s.namespace_globals.clone()),
@@ -3432,8 +3443,11 @@ fn analyze_input(
             .reader_contexts
             .insert(namespace.into(), reader_context.into());
     }
-    if let Some(form) = owned_form {
-        roots = vec![analyzer.import_form(form)?];
+    if !owned_forms.is_empty() {
+        roots = owned_forms
+            .iter()
+            .map(|form| analyzer.import_form(form))
+            .collect::<Result<_, _>>()?;
     }
     let root = analyzer.body(&roots, 0..source.len(), ExprContext::Return);
     analyzer.program.root = analyzer.drained_before_failure(root)?;
@@ -3711,6 +3725,7 @@ impl NamespaceAnalysis {
             first_expr: 0,
             deferred_unit: false,
             defines_macros: false,
+            registers_ahead: false,
             record_fields: HashMap::new(),
             reader_view: None,
             namespace_globals: Default::default(),
@@ -6522,6 +6537,9 @@ impl Analyzer<'_> {
     }
 
     fn drain_deferred_keeping(&mut self, keep_later: bool) -> Result<(), AnalysisError> {
+        if self.registers_ahead {
+            return Ok(());
+        }
         let Some(session) = self.macro_host.session_handle() else {
             return Ok(());
         };
@@ -11420,17 +11438,24 @@ pub(crate) fn munge_js_member(name: &str) -> String {
 }
 
 /// Advance explicit interactive symbol state without restarting compilation roots.
-pub(crate) fn analyze_interactive_form(
-    form: &Form,
+/// `forms` are the top-level forms of one source, analyzed in turn as one
+/// program: one form, or, `ahead` of their turn, the definitions of the rest
+/// of a file, whose units a session leaves registered
+/// (`InteractiveCompiler::define_ahead`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn analyze_interactive_forms(
+    forms: &[Form],
     host: &mut MacroHost,
     previous: Option<&Program>,
     indexes: InteractiveIndexes<'_>,
     definition_view: NamespaceAnalysisView<'_>,
     options: AnalysisOptions,
     warnings: &mut Vec<AnalysisWarning>,
+    ahead: bool,
 ) -> Result<Program, AnalysisError> {
+    let source = forms[0].span().source().clone();
     analyze_input(
-        form.span().source().text(),
+        source.text(),
         &SyntaxTree {
             nodes: vec![],
             roots: vec![],
@@ -11439,10 +11464,11 @@ pub(crate) fn analyze_interactive_form(
         options,
         warnings,
         AnalysisInputState {
-            owned_form: Some(form),
+            owned_forms: forms,
             definition_view: Some(definition_view),
             previous,
             indexes: Some(indexes),
+            ahead,
             ..Default::default()
         },
     )

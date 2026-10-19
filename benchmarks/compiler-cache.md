@@ -347,6 +347,35 @@ and this change at load 5.8 to 10, gave the same output (same SHA-256) in
 26.83 s, -0.8%) and 0.906, 0.919, 0.923 GB against 0.922, 0.954, 0.924 GB
 peak RSS (medians 0.919 and 0.924 GB, +0.5%).
 
+## Uncached watch of unmodified Penpot (light-cljs-364, October 18, 2026)
+
+The session's form-by-form load now lets a macro call a definition its file
+makes after the macro's use: it registers the compile-time definitions of
+the rest of the file ahead, before a macro use while the file has pending
+declarations, or after such a call fails, and then analyzes the form again
+(docs/dev-workflow.md, "As built (light-cljs-364)"). Penpot `app.main`, with
+no overlay of `vendor/`, starts under `--watch` without `--cache-dir`.
+Release binary of this change, with the penpot.bb limits and `--stats`,
+stopped at the watching line, with peak RSS sampled every 0.5 s and two
+other workers active:
+
+| Run | Analysis | Emission + write | Session | Startup | Peak RSS | Load |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| final | 22.3 s | 20.3 s | 111.4 s | 157.7 s | 1.70 GB | 4.3 to 5.4 |
+| draft, only after a failure | 24.1 s | 22.7 s | 116.7 s | 167.6 s | 1.70 GB | 8.7 to 9.4 |
+| draft, analyzing the rest of the file ahead | 23.6 s | 22.4 s | 113.6 s | 163.4 s | 1.65 GB | 5.4 to 10.2 |
+| draft, the same with strict analysis | 23.3 s | 23.3 s | 125.4 s | 175.9 s | 1.69 GB | 5.3 to 14.2 |
+
+The 922 namespaces match light-cljs-348's run with the one-file overlay
+(115.4 s session load, 163.6 s startup, 1.69 GB): defining ahead costs
+nothing measurable. The last two rows analyzed every later form of the
+file ahead and completed its units, which made later macros visible early
+and expanded macro uses twice. The final change registers only the later
+definitions, leaves their units unanalyzed until a macro calls one, reads
+each form once, and registers them before the macro use when the file
+declared the names, so the macro runs once; the second row registered
+them only after the use failed.
+
 ## Watch invalidation (light-cljs-325, October 18, 2026)
 
 `--watch` now records the startup build's dependency manifest and revises it

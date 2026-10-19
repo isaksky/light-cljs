@@ -1236,3 +1236,159 @@ fn reflection_sees_every_namespace_of_the_session() {
     assert!(s.eval_string("(js* \"(\")").is_err());
     assert_eq!(printed(s, "(read-string \"::lib/k\")"), ":app.lib/k");
 }
+
+/// Loading a namespace whose macro calls a helper the namespace declares
+/// first and defines after the macro's use, as cuerdas.core's `unsafe-concat`
+/// calls its `repeat` in Penpot: the macro sees the whole file's definitions,
+/// as upstream's Clojure load of the file gives it, in a `DevSession` (the
+/// session of a watch without `--cache-dir`) and in an `EvalSession`, and the
+/// file's units still run in order.
+#[test]
+fn a_loaded_macro_calls_a_later_definition_of_its_namespace() {
+    // `app.loose` also uses an undeclared Var, a warning in warning mode.
+    let source = |namespace: &str, extra: &str| {
+        format!(
+            "(ns {namespace} (:refer-clojure :exclude [repeat]))\n\
+             (declare repeat)\n\
+             (defmacro stars [& xs] (repeat \"*\" (count xs)))\n\
+             (defn three [] (stars 1 2 3))\n\
+             (def early (three)){extra}\n\
+             (defn repeat [s n] (apply str (clojure.core/repeat n s)))\n\
+             (defn four [] (str (stars 1 2 3 4) (repeat \"-\" 2)))"
+        )
+    };
+    let text = source("app.text", "");
+    let loose = source("app.loose", "\n(defn bad [] (nowhere))");
+    let served = text.clone();
+    let options = EvalOptions {
+        source_provider: Some(Rc::new(move |request: &LoadRequest| {
+            let name = String::from_utf16_lossy(request.namespace.name());
+            Ok(match name.as_str() {
+                "app.text" => Some(SourceInput::new("app/text.cljc", served.clone())),
+                "app.loose" => Some(SourceInput::new("app/loose.cljc", loose.clone())),
+                _ => None,
+            })
+        })),
+        ..Default::default()
+    };
+    let dev = DevSession::new(&options).unwrap();
+    let engine = Evaluator::new(Default::default()).unwrap();
+    let require = "(require 'app.text) [app.text/early (app.text/four)]";
+    let actions = dev.source(&input(require));
+    assert!(
+        !matches!(actions.last(), Some(Action::Error(_))),
+        "{:?}",
+        shape(&actions)
+    );
+    assert_eq!(apply(&engine, &actions), r#"["***" "****--"]"#);
+    // The form's warning comes once, from its own turn, not from the forms
+    // defined ahead.
+    let actions = dev.source(&input("(require 'app.loose) (app.loose/four)"));
+    let warnings = shape(&actions)
+        .into_iter()
+        .filter(|action| action.starts_with("warnings"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        warnings,
+        ["warnings Use of undeclared Var app.loose/nowhere [undeclared-var]"]
+    );
+    assert_eq!(apply(&engine, &actions), r#""****--""#);
+    // A helper the file uses before defining it without declaring it, which
+    // warning mode allows: the use fails, and the form is analyzed again.
+    let later = dev.load_namespace_file(
+        "app.later",
+        &SourceInput::new(
+            "app/later.cljc",
+            "(ns app.later) (defmacro k [] (g)) (def w (k)) (defn g [] 3)",
+        ),
+    );
+    assert!(
+        !matches!(later.last(), Some(Action::Error(_))),
+        "{:?}",
+        shape(&later)
+    );
+    apply(&engine, &later);
+    assert_eq!(apply(&engine, &dev.source(&input("app.later/w"))), "3");
+    // Loading the file again, as a watch step does, sees the definitions too.
+    let reload = dev.load_namespace_file("app.text", &SourceInput::new("app/text.cljc", text));
+    assert!(
+        !matches!(reload.last(), Some(Action::Error(_))),
+        "{:?}",
+        shape(&reload)
+    );
+    apply(&engine, &reload);
+    assert_eq!(
+        apply(&engine, &dev.source(&input("(app.text/three)"))),
+        r#""***""#
+    );
+    // A definition the file never makes is still unavailable to the macro.
+    let missing = dev.load_namespace_file(
+        "app.text",
+        &SourceInput::new(
+            "app/text.cljc",
+            "(ns app.text) (declare gone) (defmacro m [] (gone)) (defn f [] (m)) (def x 1)",
+        ),
+    );
+    assert!(
+        matches!(missing.last(), Some(Action::Error(error))
+            if error.message.contains("unavailable definition: app.text/gone")),
+        "{:?}",
+        shape(&missing)
+    );
+
+    for warning_mode in [true, false] {
+        let mut session = EvalSession::new(EvalOptions {
+            warning_mode,
+            ..options.clone()
+        })
+        .unwrap();
+        let value = session.eval_source(&input(require)).unwrap().value;
+        assert_eq!(session.print(value).unwrap(), r#"["***" "****--"]"#);
+    }
+}
+
+/// Defining a file's later helpers ahead of their turn keeps the load's
+/// source order otherwise: a macro the file redefines later is not the one
+/// an earlier use expands, a macro use expands once, and a data reader runs
+/// once for each occurrence, and a syntax quote read ahead qualifies a name
+/// defined before it, in warning mode and not.
+#[test]
+fn defining_ahead_keeps_macro_generations_expansions_and_reads_in_order() {
+    let text = "(ns app.demo)\n\
+                (def counter (atom 0))\n\
+                (declare f)\n\
+                (defmacro m [] (swap! counter inc) (f) @counter)\n\
+                (def x (m))\n\
+                (defn f [] nil)\n\
+                (defmacro m [] 2)\n\
+                (def y (m))\n\
+                (def z #tick nil)\n\
+                (def map 7)\n\
+                (def quoted `map)";
+    for warning_mode in [true, false] {
+        let mut session = EvalSession::new(EvalOptions {
+            warning_mode,
+            data_readers: vec![(
+                light_cljs::compiler_data::Name::new(None, "tick"),
+                "(let [n (atom 0)] (fn [_] (swap! n inc)))".into(),
+            )],
+            source_provider: Some(Rc::new(move |request: &LoadRequest| {
+                let name = String::from_utf16_lossy(request.namespace.name());
+                Ok((name == "app.demo").then(|| SourceInput::new("app/demo.cljc", text)))
+            })),
+            ..Default::default()
+        })
+        .unwrap();
+        let value = session
+            .eval_source(&input(
+                "(require 'app.demo) [app.demo/x app.demo/y app.demo/z app.demo/quoted]",
+            ))
+            .unwrap()
+            .value;
+        assert_eq!(
+            session.print(value).unwrap(),
+            "[1 2 1 app.demo/map]",
+            "{warning_mode}"
+        );
+    }
+}

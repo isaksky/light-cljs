@@ -98,6 +98,27 @@ pub(crate) enum Mode {
     Load,
 }
 
+/// A file the session is loading ([`DevSession::run_source`]).
+struct LoadingFile {
+    source: SourceInput,
+    /// Forms of the file read ahead of their turn ([`DevSession::forms_ahead`]),
+    /// each with where the next form starts. The load takes them in turn
+    /// instead of reading them again, so each data reader of the file runs
+    /// once per occurrence.
+    read: VecDeque<(Form, usize)>,
+    /// Where the forms not read yet start.
+    cursor: usize,
+    /// Whether reading ahead stopped, at a directive, which may change how
+    /// the rest reads, or at a form that cannot be read yet, whose error
+    /// comes in its turn.
+    stopped: bool,
+    /// The names the file has declared and not defined yet.
+    declared: HashSet<String>,
+    /// Whether the file's definitions were registered ahead before a form
+    /// that uses a macro of its namespace ([`DevSession::analyze_loaded`]).
+    defined_ahead: bool,
+}
+
 /// The `light.lazy/loadable` references the session has analyzed but not
 /// acted on: the namespaces to load, each with the site that named it first,
 /// and the Var targets to check once they are loaded, with their sites.
@@ -135,6 +156,8 @@ pub struct DevSession {
     /// Whether units register what changed ([`Self::changed_registrations`]),
     /// as they do except in [`Self::load_namespace_file`].
     registering: Cell<bool>,
+    /// The file loading, if any, which [`Self::analyze_loaded`] reads ahead.
+    ahead: RefCell<Option<LoadingFile>>,
 }
 
 /// The build [`DevSession::compile_entry`] starts a session from.
@@ -394,6 +417,7 @@ impl DevSession {
             reload_all: RefCell::default(),
             registered: RefCell::default(),
             registering: Cell::new(true),
+            ahead: RefCell::default(),
         })
     }
     /// The current namespace.
@@ -671,11 +695,50 @@ impl DevSession {
         to: &mut dyn Interpreter,
     ) -> Result<(), EvalDiagnostic> {
         self.check_source(source)?;
+        let outer = self
+            .ahead
+            .replace((mode == Mode::Load).then(|| LoadingFile {
+                source: source.clone(),
+                read: VecDeque::new(),
+                cursor: 0,
+                stopped: false,
+                declared: HashSet::new(),
+                defined_ahead: false,
+            }));
         let mut cursor = 0;
-        while let Some(form) = self.next_form(source, &mut cursor)? {
-            self.run_form(&form, mode, to)?;
-        }
-        Ok(())
+        let result = (|| {
+            loop {
+                let read =
+                    (self.ahead.borrow_mut().as_mut()).and_then(|file| file.read.pop_front());
+                let form = match read {
+                    Some((form, next)) => {
+                        self.poll()?;
+                        cursor = next;
+                        form
+                    }
+                    None => match self.next_form(source, &mut cursor)? {
+                        Some(form) => form,
+                        None => break,
+                    },
+                };
+                if let Some(file) = self.ahead.borrow_mut().as_mut() {
+                    file.cursor = cursor;
+                    // Past the directive that stopped reading ahead.
+                    file.stopped &= !file.read.is_empty();
+                    if is_headed_by(&form, &["declare"]) {
+                        file.declared.extend(defined_names(&form));
+                    } else {
+                        for name in defined_names(&form) {
+                            file.declared.remove(&name);
+                        }
+                    }
+                }
+                self.run_form(&form, mode, to)?;
+            }
+            Ok(())
+        })();
+        *self.ahead.borrow_mut() = outer;
+        result
     }
     /// Compile one top-level form and apply its actions. A top-level `do`
     /// that holds an `ns*` form is a sequence of top-level forms.
@@ -727,7 +790,7 @@ impl DevSession {
             return self.drain_lazy(to);
         }
         self.poll()?;
-        let (unit, program, registration) = self.analyze(form)?;
+        let (unit, program, registration) = self.analyze_loaded(form)?;
         self.flush_warnings(form, to)?;
         if !program.lazy_targets.is_empty() && !self.loaded.borrow().contains(LAZY_NAMESPACE) {
             // A loadable needs no require of `light.lazy`, but its type must
@@ -776,6 +839,123 @@ impl DevSession {
     /// registered its namespaces as they were before those units.
     pub(crate) fn forget_registrations(&self) {
         self.registered.borrow_mut().clear();
+    }
+    /// [`Self::analyze`] of a top-level form of the file loading, if any.
+    /// Upstream loads the file of a namespace that defines macros as Clojure
+    /// before they expand, so they may call any definition of the file. When
+    /// one of the namespace's macros calls a definition the file has not
+    /// reached, the session registers ahead the definitions of the rest of
+    /// the file, up to its next directive
+    /// ([`InteractiveCompiler::define_ahead`]), and analyzes the form again,
+    /// as `--compile` completes a namespace's units at its end
+    /// (light-cljs-360). A file that compiles form by form is analyzed once,
+    /// as before.
+    fn analyze_loaded(
+        &self,
+        form: &Form,
+    ) -> Result<(Unit, crate::Program, Registrations), EvalDiagnostic> {
+        if self.uses_macros_ahead_of_declared(form) {
+            // Before the form's macros run, so that each runs once; a failure
+            // is the form's own again below.
+            let forms = self.forms_ahead(form)?;
+            if !forms.is_empty() {
+                let _ = self.compiler.borrow_mut().define_ahead(&forms);
+            }
+        }
+        let warnings = self.compiler.borrow().warnings.len();
+        let error = match self.analyze(form) {
+            Err(error) if self.reads_ahead(&error) => error,
+            result => return result,
+        };
+        let forms = self.forms_ahead(form)?;
+        if forms.is_empty() || self.compiler.borrow_mut().define_ahead(&forms).is_err() {
+            return Err(error);
+        }
+        // The failed analysis's warnings come again.
+        self.compiler.borrow_mut().warnings.truncate(warnings);
+        self.analyze(form)
+    }
+    /// Whether `form`, of the file loading, is the first to name a macro of
+    /// its namespace while the file has declared names it has not defined
+    /// yet, which the macro may call: the file's definitions are then
+    /// registered ahead before the form's analysis, once per file, rather
+    /// than after it fails, so its macros run once. A macro that calls a
+    /// later definition the file does not declare still fails and is retried.
+    fn uses_macros_ahead_of_declared(&self, form: &Form) -> bool {
+        let mut ahead = self.ahead.borrow_mut();
+        let Some(file) = ahead.as_mut() else {
+            return false;
+        };
+        if file.defined_ahead || file.declared.is_empty() {
+            return false;
+        }
+        let macros = self.compiler.borrow().source_macros(&self.namespace());
+        if macros.is_empty() || !names_any(form, &macros) {
+            return false;
+        }
+        file.defined_ahead = true;
+        true
+    }
+    /// Whether `error`, of a form of the file loading, is a macro of its
+    /// namespace calling a definition of the namespace that is unavailable,
+    /// declared and not defined yet.
+    fn reads_ahead(&self, error: &EvalDiagnostic) -> bool {
+        if self.ahead.borrow().is_none() {
+            return false;
+        }
+        let namespace = self.namespace();
+        error
+            .message
+            .contains(&format!("unavailable definition: {namespace}/"))
+            && !self.compiler.borrow().source_macros(&namespace).is_empty()
+    }
+    /// The definitions (`def`, `defn`, `defn-`, `defonce`, `declare`) among
+    /// the top-level forms of the file loading after the current one, up to
+    /// its end, its next directive, or a form that cannot be read yet. The
+    /// forms read stay in the file's queue for their turn
+    /// ([`LoadingFile::read`]).
+    fn forms_ahead(&self, form: &Form) -> Result<Vec<Form>, EvalDiagnostic> {
+        let mut ahead = self.ahead.borrow_mut();
+        let Some(LoadingFile {
+            source,
+            read,
+            cursor,
+            stopped,
+            ..
+        }) = ahead.as_mut()
+        else {
+            return Ok(Vec::new());
+        };
+        let mut next = read.back().map_or(*cursor, |(_, next)| *next);
+        // Each form is read as after the forms before it: a syntax quote
+        // qualifies what they define as the namespace's own.
+        let defined = |compiler: &mut InteractiveCompiler, form: &Form| {
+            compiler.defined_ahead.extend(defined_names(form));
+        };
+        defined(&mut self.compiler.borrow_mut(), form);
+        for (queued, _) in read.iter() {
+            defined(&mut self.compiler.borrow_mut(), queued);
+        }
+        while !*stopped {
+            let Ok(Some(form)) = self.compiler.borrow().next_form(source, &mut next) else {
+                *stopped = true;
+                break;
+            };
+            *stopped = is_directive_form(&form) || top_level_do(&form).is_some();
+            defined(&mut self.compiler.borrow_mut(), &form);
+            read.push_back((form, next));
+        }
+        self.compiler.borrow_mut().defined_ahead.clear();
+        let forms = read
+            .iter()
+            .map(|(form, _)| form)
+            .take_while(|form| !is_directive_form(form) && top_level_do(form).is_none())
+            .filter(|form| is_definition_form(form))
+            .cloned()
+            .collect();
+        drop(ahead);
+        self.poll()?;
+        Ok(forms)
     }
     /// Analyze one form that is not a directive into its unit, with the
     /// fragment it was emitted from and what the unit registers
@@ -1142,6 +1322,80 @@ fn is_directive(text: &str, nodes: &[crate::parser::Node], root: crate::parser::
                 | "cljs.core/require"
                 | "clojure.core/require"
         )
+}
+/// [`is_directive`] of a read form.
+fn is_directive_form(form: &Form) -> bool {
+    is_headed_by(form, &["ns", "ns*", "in-ns", "require"])
+}
+/// Whether `form` is a definition [`DevSession::forms_ahead`] registers ahead.
+fn is_definition_form(form: &Form) -> bool {
+    is_headed_by(form, &["def", "defn", "defn-", "defonce", "declare"])
+}
+/// The unqualified names a top-level form defines in its namespace, judged
+/// from its head: those of a `declare`, the name of a `def`, `defn`, `defn-`,
+/// `defonce`, `defmacro`, `defmulti` or `defprotocol`, and that of a
+/// `deftype` or `defrecord` with its constructors.
+fn defined_names(form: &Form) -> Vec<String> {
+    let children = form.children();
+    let symbol = |form: &Form| match form.data().kind() {
+        DatumKind::Symbol(name) if name.namespace().is_none() => {
+            Some(String::from_utf16_lossy(name.name()))
+        }
+        _ => None,
+    };
+    if is_headed_by(form, &["declare"]) {
+        return children.iter().skip(1).filter_map(symbol).collect();
+    }
+    let Some(name) = children.get(1).and_then(symbol) else {
+        return Vec::new();
+    };
+    if is_headed_by(form, &["deftype"]) {
+        vec![format!("->{name}"), name]
+    } else if is_headed_by(form, &["defrecord"]) {
+        vec![format!("->{name}"), format!("map->{name}"), name]
+    } else if is_headed_by(
+        form,
+        &[
+            "def",
+            "defn",
+            "defn-",
+            "defonce",
+            "defmacro",
+            "defmulti",
+            "defprotocol",
+        ],
+    ) {
+        vec![name]
+    } else {
+        Vec::new()
+    }
+}
+/// Whether a symbol anywhere in `form` has one of `names` (sorted), in any
+/// namespace, as its name.
+fn names_any(form: &Form, names: &[String]) -> bool {
+    match form.data().kind() {
+        DatumKind::Symbol(name) => names
+            .binary_search_by(|candidate| candidate.encode_utf16().cmp(name.name().iter().copied()))
+            .is_ok(),
+        _ => form.children().iter().any(|child| names_any(child, names)),
+    }
+}
+/// Whether `form` is a list headed by one of `names`, unqualified or in
+/// `cljs.core` or `clojure.core`.
+fn is_headed_by(form: &Form, names: &[&str]) -> bool {
+    if !is_list(form) {
+        return false;
+    }
+    let children = form.children();
+    let Some(DatumKind::Symbol(head)) = children.first().map(|head| head.data().kind().clone())
+    else {
+        return false;
+    };
+    names.iter().any(|name| {
+        head == Name::new(None, name)
+            || head == Name::new(Some("cljs.core"), name)
+            || head == Name::new(Some("clojure.core"), name)
+    })
 }
 fn is_list(form: &Form) -> bool {
     matches!(

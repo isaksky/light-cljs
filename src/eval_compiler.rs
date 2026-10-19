@@ -43,6 +43,11 @@ pub(crate) struct InteractiveCompiler {
     /// How many retained expressions no metadata may reach any more, which
     /// a full compaction drops once they are half of them.
     released: usize,
+    /// The names of the current namespace that the forms of a file read ahead
+    /// of their turn define before the form being read
+    /// ([`crate::dev_session`]): a syntax quote qualifies them as its own, as
+    /// when the file is read form by form ([`Self::resolve_binding`]).
+    pub(crate) defined_ahead: std::collections::HashSet<String>,
     /// `light.build` serves the compiler for its whole life: every form it
     /// reads, analyzes or expands is compile time, with its current
     /// namespace as the expansion site ([`Self::build_site`]).
@@ -80,6 +85,7 @@ impl InteractiveCompiler {
             indexed: 0,
             arities: Default::default(),
             released: 0,
+            defined_ahead: Default::default(),
         }
     }
     pub(crate) fn namespace(&self) -> &str {
@@ -416,8 +422,15 @@ impl InteractiveCompiler {
             let id = *self.names.get(&key)?;
             self.globals_at(id).filter(|g| g.declared).map(|_| id.0)
         };
+        // A name the forms read ahead define before this one, which is the
+        // latest definition of its name.
+        let ahead = |name: &Name| {
+            name.namespace().map(text).as_deref() == Some(self.namespace.as_str())
+                && self.defined_ahead.contains(&text(name.name()))
+        };
         if name.namespace().is_some() {
-            return (macro_key(name).is_some() || declared(name).is_some()).then(|| name.clone());
+            return (macro_key(name).is_some() || ahead(name) || declared(name).is_some())
+                .then(|| name.clone());
         }
         let own = Name::new(Some(&self.namespace), &text(name.name()));
         let referred = refers.get(name);
@@ -427,6 +440,9 @@ impl InteractiveCompiler {
             .max_by(|a, b| a.0.cmp(&b.0))
         {
             return Some(target.clone());
+        }
+        if ahead(&own) {
+            return Some(own);
         }
         candidates()
             .filter_map(|target| declared(target).map(|id| (id, target)))
@@ -457,16 +473,53 @@ impl InteractiveCompiler {
     fn globals_at(&self, id: crate::analyzer::GlobalId) -> Option<&crate::GlobalBinding> {
         self.program.as_ref()?.globals.get(id.0)
     }
+    /// Register ahead the compile-time definitions of `forms`, top-level
+    /// definitions of the file loading after the current form, as upstream's
+    /// Clojure load of a namespace's file gives its macros every definition
+    /// of the file before its first form expands, so a macro can call a
+    /// function the file defines after the macro's use (`(declare f)`, a
+    /// macro calling `f`, a use, then `(defn f ...)`, as in cuerdas.core).
+    /// Their top-level forms are analyzed as one program, as `--compile`
+    /// analyzes a namespace before completing its units, and the units they
+    /// register stay in the compile-time catalog unanalyzed: a unit is
+    /// analyzed only if a macro calls its definition, as upstream's Clojure
+    /// load and its ClojureScript compile each expand that definition's
+    /// macros. The program and its warnings are dropped, and each form still
+    /// defines its own when its turn comes.
+    pub(crate) fn define_ahead(&mut self, forms: &[Form]) -> Result<(), AnalysisError> {
+        if forms.is_empty() {
+            return Ok(());
+        }
+        self.analyze_forms(forms, true).map(|_| ())
+    }
+    /// The names of the macros `namespace` has defined in the session, sorted.
+    pub(crate) fn source_macros(&self, namespace: &str) -> Vec<String> {
+        self.host.source_macro_names(namespace)
+    }
     pub(crate) fn analyze_form(&mut self, form: &Form) -> Result<Program, AnalysisError> {
-        self.build_site(form.span().source().name());
+        let program = self.analyze_forms(std::slice::from_ref(form), false)?;
+        self.extend_retained(program)
+    }
+    /// Analyze `forms`, top-level forms of one source, in turn as one program
+    /// against the retained one, keeping their warnings in [`Self::warnings`],
+    /// or `ahead` of their turn ([`Self::define_ahead`]), dropping them.
+    fn analyze_forms(&mut self, forms: &[Form], ahead: bool) -> Result<Program, AnalysisError> {
+        let source = forms[0].span().source().clone();
+        self.build_site(source.name());
         self.host.name_policy = Some(self.policy.clone());
         let mut resolution = self.resolution.clone();
-        resolution.source_name = Some(form.span().source().name().into());
+        resolution.source_name = Some(source.name().into());
+        let mut dropped = Vec::new();
+        let warnings = if ahead {
+            &mut dropped
+        } else {
+            &mut self.warnings
+        };
         // Previously entered namespaces remain addressable in an explicit
         // session, through the indexes rather than as requires.
         let empty = crate::arena::Arena::new();
-        let program = crate::analyzer::analyze_interactive_form(
-            form,
+        crate::analyzer::analyze_interactive_forms(
+            forms,
             &mut self.host,
             self.program.as_ref(),
             crate::analyzer::InteractiveIndexes {
@@ -486,8 +539,12 @@ impl InteractiveCompiler {
                 resolution,
             },
             self.options,
-            &mut self.warnings,
-        )?;
+            warnings,
+            ahead,
+        )
+    }
+    /// Retain the program of a form [`Self::analyze_form`] analyzed.
+    fn extend_retained(&mut self, program: Program) -> Result<Program, AnalysisError> {
         self.check_policy(&program, self.program.as_ref().map_or(0, |p| p.exprs.len()))?;
         // The arities of the retained expressions from `rescan` on are new.
         let (retained, mut rescan) = match &self.program {

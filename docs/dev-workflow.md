@@ -657,6 +657,34 @@ macro's own reads resolve, are the namespace's own, as under `--compile`,
 where they were every namespace the session had entered: the one change a
 macro can see.
 
+As built (light-cljs-364): a loaded file's macros may call any definition
+of the file, as upstream's Clojure load of a `.cljc` file gives them before
+they expand and as `--compile` allows by completing a namespace's units at
+its end (light-cljs-360). Before the first form of a file that names a
+macro of its namespace while the file has declared names it has not
+defined yet (`(declare f)`, a macro calling `f`, a use, then
+`(defn f ...)`, as in cuerdas.core), the session registers ahead the
+definitions (`def`, `defn`, `defn-`, `defonce`, `declare`) of the rest of
+the file, up to its next directive (`InteractiveCompiler::define_ahead`).
+When a form fails anyway because one of its namespace's macros called a
+definition the file has not reached, such as one it uses undeclared, the
+session registers them then and analyzes the form again. Their top-level
+forms are analyzed as one program, which is dropped with its warnings, and
+the units they register stay unanalyzed in the compile-time catalog: one is
+analyzed only if a macro calls its definition, which expands that
+definition's macros a second time, as upstream's Clojure load and
+ClojureScript compile do. No
+other form is analyzed ahead, so a macro the file redefines later is not
+the one an earlier use expands, and each macro use expands once, besides
+the failing form's first attempt: what its macros did before the
+unavailable call runs again in the retry. The forms read ahead wait in a
+queue for their turn (`LoadingFile`), so each data reader runs once per
+occurrence, and each is read as after the forms before it: a syntax quote
+qualifies what they define as the namespace's own
+(`InteractiveCompiler::defined_ahead`). Each form still defines its own
+Vars, units and warnings in its turn, so the units run in order. Any other
+file is read and analyzed as before.
+
 ### Phase 2: watch
 
 Scope: `--watch` of "The watch loop", writing files, no server.
