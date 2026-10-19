@@ -72,12 +72,14 @@ type DroppedValues = std::sync::Arc<std::sync::Mutex<Vec<ValueId>>>;
 impl Bootstrap {
     /// An owner of `function`, evaluated in `engine`, that has this
     /// bootstrap's engine release it once the last declaration holding it is
-    /// dropped. A function of another engine is never released, as before.
+    /// dropped. `engine` may be the bootstrap's evaluator or a handle to its
+    /// heap active in a callback, such as a deferred unit's analysis; a
+    /// function of another engine is never released, as before.
     fn own(&self, engine: &dyn crate::evaluator::MacroEvaluator, function: ValueId) -> MacroValue {
         let same = std::ptr::addr_eq(
             engine as *const dyn crate::evaluator::MacroEvaluator,
             Rc::as_ptr(&self.evaluator),
-        );
+        ) || (engine.heap() != 0 && engine.heap() == self.evaluator.heap());
         MacroValue {
             id: function,
             dropped: same.then(|| self.dropped.clone()),
@@ -504,7 +506,10 @@ pub(crate) struct CompiledMacro {
 enum MacroFunction {
     /// Evaluated in the engine that declared it; a source macro's also with
     /// the code that declared it, which a worker's engine evaluates itself.
-    Ready(std::sync::Arc<MacroValue>, Option<std::sync::Arc<MacroCode>>),
+    Ready(
+        std::sync::Arc<MacroValue>,
+        Option<std::sync::Arc<MacroCode>>,
+    ),
     /// Shared by every frame's copy of the declaration, so the function is
     /// evaluated once.
     Installed(std::sync::Arc<std::sync::Mutex<InstalledFunction>>),
@@ -1008,6 +1013,62 @@ mod tests {
             error.contains("RegExp") || error.contains("regular expression"),
             "{error}"
         );
+    }
+
+    /// A function evaluated through the handle a callback receives, which is
+    /// not the bootstrap's evaluator but the same heap, is owned too, and
+    /// released only once its last owner is gone (light-cljs-381).
+    #[test]
+    fn a_function_evaluated_in_a_callback_is_released_after_its_last_owner() {
+        let mut host = MacroHost::new();
+        crate::compile_with_macros("(defmacro m [] (js/ownValue 0) 1)", &mut host).unwrap();
+        let bootstrap = host.engine.bootstrap.clone().unwrap();
+        let evaluator = bootstrap.evaluator.clone();
+        let slot = Rc::new(std::cell::RefCell::new(Some(bootstrap.clone())));
+        let owners = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (service_slot, service_owners) = (slot.clone(), owners.clone());
+        evaluator
+            .clone()
+            .install_compiler_service(
+                "ownValue",
+                Rc::new(move |active, _| {
+                    let function = active
+                        .evaluate_unit("rt => () => 1")
+                        .map_err(|e| e.to_string())?;
+                    let owner = service_slot
+                        .borrow()
+                        .as_ref()
+                        .unwrap()
+                        .own(active, function);
+                    service_owners.borrow_mut().push((
+                        std::ptr::addr_eq(
+                            active as *const dyn crate::evaluator::MacroEvaluator,
+                            Rc::as_ptr(&service_slot.borrow().as_ref().unwrap().evaluator),
+                        ),
+                        std::sync::Arc::new(owner),
+                    ));
+                    Ok("(rt) => 42".into())
+                }),
+            )
+            .unwrap();
+        let function = host.tables.javascript_macros["cljs.user/m"]
+            .function(evaluator.as_ref(), &host.engine)
+            .unwrap();
+        let result = evaluator.call(function, &[]).unwrap();
+        evaluator.release(result).unwrap();
+        // The callback's slot held the bootstrap, and with it the engine.
+        slot.borrow_mut().take();
+        let (same_object, owner) = owners.borrow_mut().pop().unwrap();
+        assert!(!same_object);
+        assert!(owner.dropped.is_some());
+        let roots = evaluator.value_roots().unwrap();
+        let copy = owner.clone();
+        drop(owner);
+        bootstrap.release_dropped();
+        assert_eq!(evaluator.value_roots().unwrap(), roots);
+        drop(copy);
+        bootstrap.release_dropped();
+        assert_eq!(evaluator.value_roots().unwrap(), roots - 1);
     }
 
     #[test]

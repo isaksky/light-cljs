@@ -1846,7 +1846,9 @@ tables stay `Send` and `Sync`, and the drop never enters an engine.
 expansion: when a macro is declared, and before `MacroHost::value_roots`
 and `collect_garbage`. A frame still expanding with the old definition
 holds its own copy, so its function stays rooted until that frame drops.
-Only a function evaluated in the bootstrap's own engine is owned this way;
+Only a function evaluated in the bootstrap's own engine, through its
+evaluator or a handle to the same heap active in a callback (such as a
+deferred unit's analysis), is owned this way;
 the bootstrap macros live as long as their engine, and a worker's
 `foreign_macros` evaluations go with the worker's engine, as before.
 `value-roots` is now 47 after each of the 45 steps.
