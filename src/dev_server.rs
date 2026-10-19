@@ -22,6 +22,9 @@
 //!   sessions, each with its namespace and chosen runtime, and evaluates
 //!   their forms, compiled by the thread that owns the watch's session
 //!   ([`DevServer::serve_repl`], [`crate::dev_repl`]) and run by a runtime.
+//! - A connection whose first byte opens a bencoded dictionary is an nREPL
+//!   client's ([`crate::dev_nrepl`]), whose sessions are those of `POST
+//!   /repl`; [`DevServer::serve_nrepl`] adds a port for nREPL alone.
 //!
 //! JSON is written by hand and read by [`Json::parse`]. The dev client,
 //! `client.js` of a dev build (src/dev_client.js), interprets the messages.
@@ -139,7 +142,7 @@ pub struct DevServer {
     address: SocketAddr,
 }
 
-struct Shared {
+pub(crate) struct Shared {
     out_dir: PathBuf,
     /// Each source root with the URL path segments its files are served
     /// under.
@@ -180,13 +183,23 @@ struct State {
     /// The newest REPL units sent, whose locations error stacks map.
     sent: VecDeque<SentUnit>,
     next_unit: u64,
+    /// The addresses of the server's further listeners, which a drop wakes.
+    listeners: Vec<SocketAddr>,
 }
 
 /// A connected REPL's session: its current namespace, and the runtime it
 /// chose with `light.dev/select!`, if any.
+#[derive(Default)]
 struct ReplSession {
     namespace: String,
     runtime: Option<u64>,
+    /// Whether an evaluation of the session is running.
+    evaluating: bool,
+    /// Whether [`Shared::interrupt`] ended that evaluation: it runs no
+    /// further form.
+    interrupted: bool,
+    /// The request ID of the `invoke` whose reply it waits for, if any.
+    pending: Option<String>,
 }
 
 /// How many REPL units the server keeps for mapping error stacks.
@@ -255,26 +268,22 @@ impl DevServer {
                 incarnation: incarnation(),
                 sent: VecDeque::new(),
                 next_unit: 1,
+                listeners: Vec::new(),
             }),
         });
-        let accepting = shared.clone();
-        std::thread::Builder::new()
-            .name("light-cljs dev server".into())
-            .spawn(move || {
-                for stream in listener.incoming() {
-                    if accepting.state().stopped {
-                        break;
-                    }
-                    let Ok(stream) = stream else { continue };
-                    let shared = accepting.clone();
-                    let _ = std::thread::Builder::new()
-                        .name("light-cljs dev connection".into())
-                        .spawn(move || {
-                            let _ = connection(stream, &shared);
-                        });
-                }
-            })?;
+        accept(listener, &shared, connection)?;
         Ok(Self { shared, address })
+    }
+
+    /// Also answer nREPL on `host` and `port` (0 for any free port), as the
+    /// server's own port does: the address it listens on.
+    pub fn serve_nrepl(&self, host: &str, port: u16) -> io::Result<SocketAddr> {
+        let addresses = (host, port).to_socket_addrs()?.collect::<Vec<_>>();
+        let listener = TcpListener::bind(&addresses[..])?;
+        let address = listener.local_addr()?;
+        self.shared.state().listeners.push(address);
+        accept(listener, &self.shared, crate::dev_nrepl::connection)?;
+        Ok(address)
     }
 
     /// The address the server listens on.
@@ -389,18 +398,48 @@ impl Drop for DevServer {
             let _ = sender.send(String::new());
         }
         state.pending.clear();
+        let mut listeners = std::mem::take(&mut state.listeners);
         drop(state);
-        // Wake the accepting thread, which sees `stopped` and drops the
-        // listener.
-        let mut wake = self.address;
-        if wake.ip().is_unspecified() {
-            wake.set_ip(match wake {
-                SocketAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
-                SocketAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
-            });
+        // Wake the accepting threads, which see `stopped` and drop their
+        // listeners.
+        listeners.push(self.address);
+        for mut wake in listeners {
+            if wake.ip().is_unspecified() {
+                wake.set_ip(match wake {
+                    SocketAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
+                    SocketAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
+                });
+            }
+            let _ = TcpStream::connect_timeout(&wake, Duration::from_secs(1));
         }
-        let _ = TcpStream::connect_timeout(&wake, Duration::from_secs(1));
     }
+}
+
+/// Accept the connections of `listener` on a thread, each served by `serve`
+/// on a thread of its own, until the server stops.
+fn accept(
+    listener: TcpListener,
+    shared: &Arc<Shared>,
+    serve: fn(TcpStream, &Arc<Shared>) -> io::Result<()>,
+) -> io::Result<()> {
+    let accepting = shared.clone();
+    std::thread::Builder::new()
+        .name("light-cljs dev server".into())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                if accepting.state().stopped {
+                    break;
+                }
+                let Ok(stream) = stream else { continue };
+                let shared = accepting.clone();
+                let _ = std::thread::Builder::new()
+                    .name("light-cljs dev connection".into())
+                    .spawn(move || {
+                        let _ = serve(stream, &shared);
+                    });
+            }
+        })?;
+    Ok(())
 }
 
 impl Shared {
@@ -408,6 +447,118 @@ impl Shared {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Where REPL forms go to be compiled, once [`DevServer::serve_repl`]
+    /// was called.
+    pub(crate) fn compiler(&self) -> Option<Sender<ReplRequest>> {
+        self.state()
+            .compiler
+            .as_ref()
+            .map(|(sender, _)| sender.clone())
+    }
+
+    /// The namespace REPL sessions start in, once [`DevServer::serve_repl`]
+    /// was called.
+    pub(crate) fn start_namespace(&self) -> Option<String> {
+        self.state()
+            .compiler
+            .as_ref()
+            .map(|(_, namespace)| namespace.clone())
+    }
+
+    /// Open a REPL session, in the namespace and with the runtime choice of
+    /// session `from` when it is one, else in the namespace REPL sessions
+    /// start in: its number, ID and namespace.
+    pub(crate) fn open_session(&self, from: Option<u64>) -> Option<(u64, String, String)> {
+        let mut state = self.state();
+        let (_, start) = state.compiler.as_ref()?;
+        let (namespace, runtime) = match from.and_then(|from| state.sessions.get(&from)) {
+            Some(from) => (from.namespace.clone(), from.runtime),
+            None => (start.clone(), None),
+        };
+        let number = state.next_session;
+        state.next_session += 1;
+        state.sessions.insert(
+            number,
+            ReplSession {
+                namespace: namespace.clone(),
+                runtime,
+                ..ReplSession::default()
+            },
+        );
+        let id = format!("{}-{number}", state.incarnation);
+        Some((number, id, namespace))
+    }
+
+    /// The number of the open session whose ID is `id`.
+    pub(crate) fn session(&self, id: &str) -> Option<u64> {
+        let state = self.state();
+        let number = id
+            .strip_prefix(state.incarnation.as_str())?
+            .strip_prefix('-')?
+            .parse::<u64>()
+            .ok()?;
+        state.sessions.contains_key(&number).then_some(number)
+    }
+
+    /// The IDs of the open sessions, oldest first.
+    pub(crate) fn session_ids(&self) -> Vec<String> {
+        let state = self.state();
+        let mut numbers = state.sessions.keys().copied().collect::<Vec<_>>();
+        numbers.sort_unstable();
+        numbers
+            .into_iter()
+            .map(|number| format!("{}-{number}", state.incarnation))
+            .collect()
+    }
+
+    /// The current namespace of session `session`.
+    pub(crate) fn session_namespace(&self, session: u64) -> Option<String> {
+        let state = self.state();
+        state.sessions.get(&session).map(|s| s.namespace.clone())
+    }
+
+    /// Make `namespace` the current namespace of session `session`.
+    pub(crate) fn set_session_namespace(&self, session: u64, namespace: &str) {
+        if let Some(entry) = self.state().sessions.get_mut(&session) {
+            entry.namespace = namespace.to_owned();
+        }
+    }
+
+    /// Close session `session`, which the runtimes forget too: whether it
+    /// was open.
+    pub(crate) fn close_session(&self, session: u64) -> bool {
+        let mut state = self.state();
+        if state.sessions.remove(&session).is_none() {
+            return false;
+        }
+        let message = format!(
+            "{{\"op\":\"forget\",\"session\":\"{}-{session}\"}}",
+            state.incarnation
+        );
+        state.broadcast(&message);
+        true
+    }
+
+    /// End the running evaluation of session `session`: it stops waiting
+    /// for the reply of the runtime, which keeps running what it was sent,
+    /// and runs no further form. Whether one was running.
+    pub(crate) fn interrupt(&self, session: u64) -> bool {
+        let mut state = self.state();
+        let Some(entry) = state.sessions.get_mut(&session) else {
+            return false;
+        };
+        if !entry.evaluating {
+            return false;
+        }
+        entry.interrupted = true;
+        if let Some(id) = entry.pending.take()
+            && let Some((_, sender)) = state.pending.remove(&id)
+        {
+            let _ = sender.send(Json::Object(vec![("interrupted".into(), Json::Bool(true))]));
+        }
+        true
     }
 }
 
@@ -710,7 +861,7 @@ fn respond_text(stream: &mut TcpStream, status: &str, text: &str) -> io::Result<
 
 /// Serve one connection: one request, then close, except that an event
 /// stream stays open until the runtime goes away.
-fn connection(stream: TcpStream, shared: &Shared) -> io::Result<()> {
+fn connection(stream: TcpStream, shared: &Arc<Shared>) -> io::Result<()> {
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     // A peer that stops reading (a frozen tab) ends its connection rather
     // than holding the thread that writes to it.
@@ -718,6 +869,14 @@ fn connection(stream: TcpStream, shared: &Shared) -> io::Result<()> {
     // A response or an event is written in parts; none waits for the
     // acknowledgement of the one before (a REPL round trip is milliseconds).
     stream.set_nodelay(true)?;
+    // An nREPL client's first message is a bencoded dictionary, `d...`,
+    // where an HTTP request begins with its method. A page cannot open such
+    // a connection: a method a page may send without a preflight is a word
+    // in capitals, and the server answers no preflight.
+    let mut first = [0; 1];
+    if stream.peek(&mut first)? == 1 && first[0] == b'd' {
+        return crate::dev_nrepl::connection(stream, shared);
+    }
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
     let request = match read_request(&mut reader) {
@@ -965,54 +1124,35 @@ fn repl(stream: &mut TcpStream, shared: &Shared, request: &Request) -> io::Resul
         Ok(_) => return respond_text(stream, "400 Bad Request", "a REPL request is a JSON object"),
         Err(error) => return respond_text(stream, "400 Bad Request", &error),
     };
-    let incarnation = shared.state().incarnation.clone();
     let session = json
         .get("session")
         .and_then(Json::as_str)
-        .and_then(|id| id.strip_prefix(&incarnation)?.strip_prefix('-'))
-        .and_then(|number| number.parse::<u64>().ok());
+        .and_then(|id| shared.session(id));
     match json.get("op").and_then(Json::as_str) {
         Some("open") => {
-            let mut state = shared.state();
-            let Some((_, namespace)) = state.compiler.clone() else {
-                drop(state);
+            let Some((_, id, namespace)) = shared.open_session(None) else {
                 return respond_text(
                     stream,
                     "503 Service Unavailable",
                     "this dev server compiles no REPL forms",
                 );
             };
-            let id = state.next_session;
-            state.next_session += 1;
-            state.sessions.insert(
-                id,
-                ReplSession {
-                    namespace: namespace.clone(),
-                    runtime: None,
-                },
-            );
-            drop(state);
-            let mut body = format!("{{\"session\":\"{incarnation}-{id}\",\"namespace\":");
+            let mut body = String::from("{\"session\":");
+            json_string(&mut body, &id);
+            body.push_str(",\"namespace\":");
             json_string(&mut body, &namespace);
             body.push('}');
             respond_json(stream, "200 OK", &body)
         }
         Some("close") => {
             // The runtimes forget the session's history too.
-            let mut state = shared.state();
-            if let Some(id) = session
-                && state.sessions.remove(&id).is_some()
-            {
-                state.broadcast(&format!(
-                    "{{\"op\":\"forget\",\"session\":\"{incarnation}-{id}\"}}"
-                ));
+            if let Some(id) = session {
+                shared.close_session(id);
             }
-            drop(state);
             respond(stream, "204 No Content", &[], &[], false)
         }
         Some("eval") => {
-            let Some(session) = session.filter(|id| shared.state().sessions.contains_key(id))
-            else {
+            let Some(session) = session else {
                 return respond_text(
                     stream,
                     "404 Not Found",
@@ -1022,23 +1162,28 @@ fn repl(stream: &mut TcpStream, shared: &Shared, request: &Request) -> io::Resul
             let Some(code) = json.get("code").and_then(Json::as_str) else {
                 return respond_text(stream, "400 Bad Request", "eval needs its \"code\"");
             };
-            let position = |key: &str, limit: f64| match json.get(key) {
-                Some(Json::Number(n)) if *n >= 1.0 && *n <= limit => *n as usize,
-                _ => 1,
+            let position = |key: &str| match json.get(key) {
+                Some(Json::Number(n)) if *n >= 1.0 && *n <= 1e9 => Some(*n as usize),
+                _ => None,
             };
-            // The text is placed at its line and column, so that the
-            // compiler locates its forms there.
-            let mut text = "\n".repeat(position("line", 1e6) - 1);
-            text.push_str(&" ".repeat(position("column", 1e4) - 1));
-            text.push_str(code);
+            let text = placed(code, position("line"), position("column"));
             let file = json
                 .get("file")
                 .and_then(Json::as_str)
                 .unwrap_or("<repl>")
                 .to_owned();
             let print = print_options(json.get("print"));
-            match evaluate(shared, session, &file, &text, &print) {
-                Ok(body) => respond_json(stream, "200 OK", &body),
+            let mut results = Vec::new();
+            let each = &mut |result: &FormResult, _: &str| results.push(result_json(result));
+            match evaluate(shared, session, &file, &text, &print, each) {
+                Ok(evaluated) => {
+                    let mut body = String::from("{\"namespace\":");
+                    json_string(&mut body, &evaluated.namespace);
+                    body.push_str(",\"results\":[");
+                    body.push_str(&results.join(","));
+                    body.push_str("]}");
+                    respond_json(stream, "200 OK", &body)
+                }
                 Err(message) => respond_text(stream, "503 Service Unavailable", &message),
             }
         }
@@ -1048,6 +1193,17 @@ fn repl(stream: &mut TcpStream, shared: &Shared, request: &Request) -> io::Resul
             "a REPL request's \"op\" is open, eval or close",
         ),
     }
+}
+
+/// `code` placed at one-based `line` and `column`, so that the compiler
+/// locates its forms there: at the first line and column when one is not
+/// given or is beyond a million lines or ten thousand columns.
+pub(crate) fn placed(code: &str, line: Option<usize>, column: Option<usize>) -> String {
+    let at = |value: Option<usize>, limit: usize| value.filter(|&n| n >= 1 && n <= limit);
+    let mut text = "\n".repeat(at(line, 1_000_000).unwrap_or(1) - 1);
+    text.push_str(&" ".repeat(at(column, 10_000).unwrap_or(1) - 1));
+    text.push_str(code);
+    text
 }
 
 /// The print options of a request's `print` object, `PrintOptions` defaults
@@ -1073,77 +1229,113 @@ fn print_options(json: Option<&Json>) -> PrintOptions {
     print
 }
 
-/// Evaluate the forms of `text` one at a time for REPL session `session`:
-/// each is compiled on the compiler's thread in the session's namespace,
-/// then runs on the session's runtime, before the next is read. The JSON
-/// response, or why the server could not answer.
-fn evaluate(
-    shared: &Shared,
-    session: u64,
-    file: &str,
-    text: &str,
-    print: &PrintOptions,
-) -> Result<String, String> {
-    let mut results = Vec::new();
-    let mut cursor = 0;
-    loop {
-        let (compiler, namespace) = {
-            let state = shared.state();
-            let compiler = state.compiler.as_ref().map(|(sender, _)| sender.clone());
-            let namespace = state.sessions.get(&session).map(|s| s.namespace.clone());
-            match (compiler, namespace) {
-                (Some(compiler), Some(namespace)) => (compiler, namespace),
-                (None, _) => return Err("this dev server compiles no REPL forms".into()),
-                (_, None) => return Err(format!("REPL session {session} was closed")),
-            }
-        };
-        let (respond, compiled) = channel();
-        let request = ReplRequest {
-            namespace,
-            file: file.to_owned(),
-            text: text.to_owned(),
-            cursor,
-            respond,
-        };
-        let stopped = || "the compiler stopped".to_owned();
-        compiler.send(request).map_err(|_| stopped())?;
-        let form = match compiled.recv().map_err(|_| stopped())? {
-            ReplForm::End => break,
-            ReplForm::Form(form) => form,
-        };
-        cursor = form.cursor;
-        if let Some(entry) = shared.state().sessions.get_mut(&session) {
-            entry.namespace = form.namespace.clone();
-        }
-        // A form that fails leaves the next to run, as under `--repl`; one
-        // that does not read moves the cursor to the end.
-        results.push(run(shared, session, &form, file, text, print));
-    }
-    let namespace = shared
-        .state()
-        .sessions
-        .get(&session)
-        .map(|s| s.namespace.clone())
-        .unwrap_or_default();
-    let mut body = String::from("{\"namespace\":");
-    json_string(&mut body, &namespace);
-    body.push_str(",\"results\":[");
-    body.push_str(&results.join(","));
-    body.push_str("]}");
-    Ok(body)
+/// What a REPL form came to.
+pub(crate) struct FormResult {
+    pub(crate) warnings: Vec<Diagnostic>,
+    /// The value as the runtime printed it, with its reference number when
+    /// it is not finite data, or the error.
+    pub(crate) outcome: Result<(String, Option<u64>), FormError>,
 }
 
-/// Run one compiled REPL form: its JSON result, `{"value"}` with a `ref`
-/// for a value that is not finite data, or `{"error"}`, with its
-/// `warnings`.
-fn run(
+/// Why a REPL form has no value.
+pub(crate) struct FormError {
+    /// `compile`, `command`, `runtime` or `interrupted`.
+    pub(crate) phase: &'static str,
+    pub(crate) diagnostic: Diagnostic,
+    /// A runtime error's stack, mapped to the sources, and its data, printed.
+    pub(crate) stack: Option<String>,
+    pub(crate) data: Option<String>,
+}
+
+/// How an evaluation ended.
+pub(crate) struct Evaluated {
+    /// The session's namespace after it.
+    pub(crate) namespace: String,
+    /// Whether [`Shared::interrupt`] ended it before its last form.
+    pub(crate) interrupted: bool,
+}
+
+/// Evaluate the forms of `text` one at a time for REPL session `session`:
+/// each is compiled on the compiler's thread in the session's namespace,
+/// then runs on the session's runtime, before the next is read, and `each`
+/// receives its result and the namespace after it. How it ended, or why the
+/// server could not answer.
+pub(crate) fn evaluate(
     shared: &Shared,
     session: u64,
-    form: &CompiledForm,
     file: &str,
     text: &str,
     print: &PrintOptions,
-) -> String {
+    each: &mut dyn FnMut(&FormResult, &str),
+) -> Result<Evaluated, String> {
+    let mut started = false;
+    let result = (|| {
+        let mut cursor = 0;
+        loop {
+            let (compiler, namespace) = {
+                let mut state = shared.state();
+                let compiler = state.compiler.as_ref().map(|(sender, _)| sender.clone());
+                let entry = state.sessions.get_mut(&session);
+                if started && entry.as_ref().is_some_and(|entry| entry.interrupted) {
+                    return Ok(true);
+                }
+                let namespace = entry.map(|entry| {
+                    if !started {
+                        // An interrupt from before the evaluation ends
+                        // nothing.
+                        (entry.evaluating, entry.interrupted) = (true, false);
+                    }
+                    entry.namespace.clone()
+                });
+                match (compiler, namespace) {
+                    (Some(compiler), Some(namespace)) => (compiler, namespace),
+                    (None, _) => return Err("this dev server compiles no REPL forms".into()),
+                    (_, None) => return Err(format!("REPL session {session} was closed")),
+                }
+            };
+            started = true;
+            let (respond, compiled) = channel();
+            let request = ReplRequest::Compile {
+                namespace,
+                file: file.to_owned(),
+                text: text.to_owned(),
+                cursor,
+                respond,
+            };
+            let stopped = || "the compiler stopped".to_owned();
+            compiler.send(request).map_err(|_| stopped())?;
+            let form = match compiled.recv().map_err(|_| stopped())? {
+                ReplForm::End => return Ok(false),
+                ReplForm::Form(form) => form,
+            };
+            cursor = form.cursor;
+            shared.set_session_namespace(session, &form.namespace);
+            // A form that fails leaves the next to run, as under `--repl`;
+            // one that does not read moves the cursor to the end.
+            let result = run(shared, session, &form, file, text, print);
+            if matches!(&result.outcome, Err(error) if error.phase == "interrupted") {
+                return Ok(true);
+            }
+            each(&result, &form.namespace);
+        }
+    })();
+    let mut state = shared.state();
+    let entry = state.sessions.get_mut(&session);
+    let namespace = entry.map(|entry| {
+        if started {
+            (entry.evaluating, entry.interrupted, entry.pending) = (false, false, None);
+        }
+        entry.namespace.clone()
+    });
+    result.map(|interrupted| Evaluated {
+        namespace: namespace.unwrap_or_default(),
+        interrupted,
+    })
+}
+
+/// A form's result as `POST /repl` answers it: `{"value"}` with a `ref` for
+/// a value that is not finite data, or `{"error"}`, with its `warnings`.
+fn result_json(form: &FormResult) -> String {
     let mut result = String::from("{\"warnings\":[");
     for (index, warning) in form.warnings.iter().enumerate() {
         if index > 0 {
@@ -1152,6 +1344,44 @@ fn run(
         write_diagnostic(&mut result, warning);
     }
     result.push(']');
+    match &form.outcome {
+        Ok((value, reference)) => {
+            result.push_str(",\"value\":");
+            json_string(&mut result, value);
+            if let Some(reference) = reference {
+                write!(result, ",\"ref\":{reference}").unwrap();
+            }
+        }
+        Err(error) => {
+            write!(
+                result,
+                ",\"error\":{{\"phase\":\"{}\",\"diagnostic\":",
+                error.phase
+            )
+            .unwrap();
+            write_diagnostic(&mut result, &error.diagnostic);
+            for (key, value) in [("stack", &error.stack), ("data", &error.data)] {
+                if let Some(value) = value {
+                    write!(result, ",\"{key}\":").unwrap();
+                    json_string(&mut result, value);
+                }
+            }
+            result.push('}');
+        }
+    }
+    result.push('}');
+    result
+}
+
+/// Run one compiled REPL form.
+fn run(
+    shared: &Shared,
+    session: u64,
+    form: &CompiledForm,
+    file: &str,
+    text: &str,
+    print: &PrintOptions,
+) -> FormResult {
     let location = (Some(file.to_owned()), Some(form.line), Some(form.column));
     let outcome = match &form.outcome {
         Outcome::Error { error, loads } => {
@@ -1180,32 +1410,19 @@ fn run(
             text,
             print,
         )
-        .map_err(|(message, stack, data)| {
-            ("runtime", Diagnostic::at(message, &location), stack, data)
+        .map_err(|(phase, message, stack, data)| {
+            (phase, Diagnostic::at(message, &location), stack, data)
         }),
     };
-    match outcome {
-        Ok((value, reference)) => {
-            result.push_str(",\"value\":");
-            json_string(&mut result, &value);
-            if let Some(reference) = reference {
-                write!(result, ",\"ref\":{reference}").unwrap();
-            }
-        }
-        Err((phase, diagnostic, stack, data)) => {
-            write!(result, ",\"error\":{{\"phase\":\"{phase}\",\"diagnostic\":").unwrap();
-            write_diagnostic(&mut result, &diagnostic);
-            for (key, value) in [("stack", stack), ("data", data)] {
-                if let Some(value) = value {
-                    write!(result, ",\"{key}\":").unwrap();
-                    json_string(&mut result, &value);
-                }
-            }
-            result.push('}');
-        }
+    FormResult {
+        warnings: form.warnings.clone(),
+        outcome: outcome.map_err(|(phase, diagnostic, stack, data)| FormError {
+            phase,
+            diagnostic,
+            stack,
+            data,
+        }),
     }
-    result.push('}');
-    result
 }
 
 impl Diagnostic {
@@ -1255,13 +1472,15 @@ fn command_value(shared: &Shared, session: u64, command: &Command) -> Result<Str
     }
 }
 
-/// A runtime error of a REPL form: its message, its stack mapped to the
-/// sources, and its data, printed.
-type Thrown = (String, Option<String>, Option<String>);
+/// Why a REPL form sent to a runtime has no value: the phase, `runtime` or
+/// `interrupted`, the error's message, its stack mapped to the sources, and
+/// its data, printed.
+type Thrown = (&'static str, String, Option<String>, Option<String>);
 
 /// Send a compiled form to the session's runtime, its loads to the others,
 /// and wait for its reply: the value printed and its reference number, or
-/// the error's message, its stack mapped to the sources, and its data.
+/// the error's message, its stack mapped to the sources, and its data. An
+/// interrupt of the session ends the wait.
 #[allow(clippy::too_many_arguments)]
 fn invoke_form(
     shared: &Shared,
@@ -1274,8 +1493,19 @@ fn invoke_form(
     text: &str,
     print: &PrintOptions,
 ) -> Result<(String, Option<u64>), Thrown> {
+    let interrupted = || {
+        (
+            "interrupted",
+            "the evaluation was interrupted".to_owned(),
+            None,
+            None,
+        )
+    };
     let invocation = {
         let mut state = shared.state();
+        if state.sessions.get(&session).is_some_and(|s| s.interrupted) {
+            return Err(interrupted());
+        }
         let selected = state.sessions.get(&session).and_then(|s| s.runtime);
         let target = state.target(selected).map_err(|message| {
             let message = match selected {
@@ -1284,7 +1514,7 @@ fn invoke_form(
                 ),
                 None => message,
             };
-            (message, None, None)
+            ("runtime", message, None, None)
         })?;
         if !loads.is_empty() {
             let mut message = String::from("{\"op\":\"run\",\"js\":");
@@ -1315,7 +1545,7 @@ fn invoke_form(
             format!("{}\n//# sourceURL={url}\n", unit.js)
         });
         let namespace = unit.map_or(form.namespace.as_str(), |unit| unit.namespace.as_str());
-        state
+        let invocation = state
             .send_invoke(
                 target,
                 &InvokeMessage {
@@ -1326,16 +1556,28 @@ fn invoke_form(
                     print,
                 },
             )
-            .map_err(|message| (message, None, None))?
+            .map_err(|message| ("runtime", message, None, None))?;
+        if let Some(entry) = state.sessions.get_mut(&session) {
+            entry.pending = Some(invocation.id.clone());
+        }
+        invocation
     };
     let runtime = invocation.runtime;
-    let reply = invocation.reply.recv().map_err(|_| {
+    let reply = invocation.reply.recv();
+    if let Some(entry) = shared.state().sessions.get_mut(&session) {
+        entry.pending = None;
+    }
+    let reply = reply.map_err(|_| {
         (
+            "runtime",
             format!("runtime {runtime} disconnected before it replied"),
             None,
             None,
         )
     })?;
+    if reply.get("interrupted").is_some() {
+        return Err(interrupted());
+    }
     if let Some(error) = reply.get("error") {
         let text = |key: &str| error.get(key).and_then(Json::as_str).map(str::to_owned);
         let message = text("message").unwrap_or_else(|| "the form threw".to_owned());
@@ -1343,7 +1585,7 @@ fn invoke_form(
             let mut state = shared.state();
             map_stack(&stack, state.sent.make_contiguous(), &shared.out_dir)
         });
-        return Err((message, stack, text("data")));
+        return Err(("runtime", message, stack, text("data")));
     }
     let value = reply
         .get("value")

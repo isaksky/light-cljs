@@ -68,7 +68,7 @@ pub const USAGE: &str = "Watch:
              [--macro-expansions N] [--macro-nodes N] [--macro-timeout-ms N]
              [--macro-memory-limit N] [--macro-poll-budget N]
              [--cache-dir DIR] [--cache-blocker NS ...]
-             [--serve PORT [--serve-host HOST] [--reload-dependents]]
+             [--serve PORT [--serve-host HOST] [--reload-dependents] [--nrepl PORT]]
 
 Write the dev build of --compile --reloadable into DIR, then poll the .cljs
 and .cljc files under the source roots, and every file a light.build
@@ -124,7 +124,15 @@ the build's client.js loads into the page between the ^:dev/before-load and
 ^:dev/after-load hooks, and its warnings and errors, which it draws over
 the page. A page that connects late catches up with the build. The server
 also answers light-cljs --repl --connect 127.0.0.1:PORT, whose forms it
-compiles with the program the watch keeps and runs in a connected runtime.
+compiles with the program the watch keeps and runs in a connected runtime,
+and nREPL clients (editors), whose sessions are such REPLs: the operations
+clone, close, describe, eval, load-file, interrupt, completions, lookup and
+ls-sessions, completions and lookup answered from the program's definitions.
+
+With --nrepl PORT (0 for any free port), also answer nREPL on PORT, on the
+host of the server (PORT may be the --serve PORT), and write the port into
+.nrepl-port in the working directory, where editors look for it, removing
+the file when the watch ends.
 
 A step loads the namespaces it recompiled, which include those that use a
 changed macro and the namespaces marked ^:dev/always, in load order; never
@@ -145,6 +153,8 @@ struct Options {
     serve_host: Option<String>,
     /// `--reload-dependents`.
     reload_dependents: bool,
+    /// `--nrepl PORT`.
+    nrepl: Option<u16>,
     /// `--stats`: report the startup build (`light_cljs::compile_stats`).
     stats: bool,
     /// `--config KEY=EDN`: what `light.build/config` answers.
@@ -163,6 +173,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
     let mut poll = Duration::from_millis(100);
     let mut assertions = true;
     let (mut serve, mut serve_host, mut reload_dependents) = (None, None, false);
+    let mut nrepl = None;
     let mut stats = false;
     let mut configuration = light_cljs::BuildConfiguration::new();
     let mut blockers = Vec::new();
@@ -217,6 +228,15 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
                 );
             }
             "--reload-dependents" => reload_dependents = true,
+            "--nrepl" => {
+                let text = value()?;
+                nrepl = Some(
+                    text.to_str()
+                        .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+                        .and_then(|text| text.parse::<u16>().ok())
+                        .ok_or("--nrepl requires a port number, 0 to 65535")?,
+                );
+            }
             "--stats" => stats = true,
             "--config" => {
                 let text = value()
@@ -248,6 +268,9 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
     if reload_dependents && serve.is_none() {
         return Err("--reload-dependents requires --serve PORT".into());
     }
+    if nrepl.is_some() && serve.is_none() {
+        return Err("--nrepl requires --serve PORT".into());
+    }
     Ok(Some(Options {
         entry,
         roots,
@@ -257,6 +280,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
         serve,
         serve_host,
         reload_dependents,
+        nrepl,
         stats,
         configuration,
         blockers,
@@ -599,6 +623,8 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     watch.refresh_hooks();
     watch.write_manifest()?;
     let mut repl = None;
+    // Removes .nrepl-port when the watch ends.
+    let mut _port_file = None;
     if let Some(port) = options.serve {
         for namespace in &watch.manifest.namespaces {
             let path = options.out_dir.join(&namespace.file);
@@ -625,6 +651,22 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
         // functions.
         light_cljs::dev_repl::declare(&watch.session)?;
         repl = Some(server.serve_repl(&options.entry));
+        if let Some(nrepl) = options.nrepl {
+            let address = if nrepl != 0 && nrepl == server.address().port() {
+                server.address()
+            } else {
+                server
+                    .serve_nrepl(host, nrepl)
+                    .map_err(|error| format!("cannot serve nREPL on {host}:{nrepl}: {error}"))?
+            };
+            let file = light_cljs::dev_nrepl::PortFile::create(Path::new("."), address.port())
+                .map_err(|error| format!("cannot write .nrepl-port: {error}"))?;
+            eprintln!(
+                "light-cljs: nREPL at {address}, its port in {}",
+                file.path().display()
+            );
+            _port_file = Some(file);
+        }
         watch.server = Some(server);
     }
     eprintln!(
@@ -641,7 +683,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
         while let Some(wait) = poll.checked_duration_since(Instant::now()) {
             match &repl {
                 Some(requests) => match requests.recv_timeout(wait) {
-                    Ok(request) => request.compile(&watch.session),
+                    Ok(request) => request.answer(&watch.session),
                     Err(RecvTimeoutError::Timeout) => break,
                     Err(RecvTimeoutError::Disconnected) => repl = None,
                 },

@@ -256,6 +256,20 @@ cargo run --quiet -- --repl --connect localhost:9630
 # {:clicks 2, :card #app.view.Card{:label "clicks", :clicks 1}}
 ```
 
+Editors connect over nREPL to the same port, or to the port of `--nrepl PORT`
+(0 for any free one), which the watch writes into `.nrepl-port` in the working
+directory while it runs. An nREPL session is such a REPL; the server answers
+`clone`, `close`, `describe`, `eval` (with `ns`), `load-file`, `interrupt`
+(which stops waiting for the runtime), `completions`, `lookup` and
+`ls-sessions`, completions and lookups from the definitions and metadata of the
+watch's program without a runtime round trip ([nREPL](docs/evaluation.md#nrepl)).
+
+```sh
+cargo run --quiet -- --watch --entry app.main --source-root examples/dev --out-dir /tmp/light-dev --serve 9630 --nrepl 0
+# light-cljs: serving /tmp/light-dev at http://127.0.0.1:9630/
+# light-cljs: nREPL at 127.0.0.1:52411, its port in /work/.nrepl-port
+```
+
 `--optimize none|prepare|advanced` after `--compile` (single files and `--entry`
 builds, with `--esm` or `--out-dir` too) picks the optimization level. `prepare`, the
 default, removes unused definitions with inert initializers and specializes
@@ -495,7 +509,7 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   (`--reloadable`) writes one unit per namespace for reloading, and `--watch`
   rewrites a saved namespace's unit, which `--serve` pushes to open pages with
   the reload policy (`^:dev/once`, `^:dev/always`, `--reload-dependents`) and
-  where `--repl --connect` evaluates; nREPL for editors is still to come. The release
+  where `--repl --connect` and editors over nREPL evaluate. The release
   optimizer, `--optimize advanced`, is still being built
   ([docs/advanced-optimization.md](docs/advanced-optimization.md)); what it does
   so far is listed under [Compile to JavaScript](#compile-to-javascript). Sizes

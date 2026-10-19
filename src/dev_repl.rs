@@ -1,9 +1,11 @@
 //! The compiler's side of the connected REPL (docs/dev-workflow.md, "The
 //! connected REPL"): `POST /repl` of the dev server ([`crate::dev_server`])
-//! hands each form to the thread that owns the watch's [`DevSession`] as a
-//! [`ReplRequest`], which [`ReplRequest::compile`] answers there with what
-//! the server sends a runtime. The compiler never waits on a runtime: the
-//! server's connection thread sends the unit and waits for the reply.
+//! and its nREPL connections ([`crate::dev_nrepl`]) hand each form to the
+//! thread that owns the watch's [`DevSession`] as a [`ReplRequest`], which
+//! [`ReplRequest::answer`] answers there with what the server sends a
+//! runtime; nREPL's completions and lookups are answered there too, from the
+//! retained program. The compiler never waits on a runtime: the server's
+//! connection thread sends the unit and waits for the reply.
 //!
 //! Also here: the REPL commands the server answers itself,
 //! `(light.dev/runtimes)` and `(light.dev/select! ID)`, and the mapping of a
@@ -34,33 +36,72 @@ pub fn declare(session: &DevSession) -> Result<(), EvalDiagnostic> {
     Ok(())
 }
 
-/// A request of the dev server to the compiler: read the top-level form of
-/// `text`, named `file`, at `cursor` in `namespace`, and compile it.
-pub struct ReplRequest {
-    pub(crate) namespace: String,
-    pub(crate) file: String,
-    pub(crate) text: String,
-    pub(crate) cursor: usize,
-    pub(crate) respond: Sender<ReplForm>,
+/// A request of the dev server to the compiler.
+pub enum ReplRequest {
+    /// Read the top-level form of `text`, named `file`, at `cursor` in
+    /// `namespace`, and compile it.
+    Compile {
+        namespace: String,
+        file: String,
+        text: String,
+        cursor: usize,
+        respond: Sender<ReplForm>,
+    },
+    /// The names that complete `prefix` in `namespace`.
+    Complete {
+        namespace: String,
+        prefix: String,
+        respond: Sender<Vec<crate::dev_nrepl::Completion>>,
+    },
+    /// What `symbol` names in `namespace`.
+    Lookup {
+        namespace: String,
+        symbol: String,
+        respond: Sender<Option<crate::dev_nrepl::Info>>,
+    },
 }
 
 impl ReplRequest {
-    /// Compile the form with `session`, on the thread that owns it, and
-    /// hand the result to the server.
-    pub fn compile(self, session: &DevSession) {
-        let form = compile(session, &self);
-        let _ = self.respond.send(form);
+    /// Answer the request with `session`, on the thread that owns it, and
+    /// hand the answer to the server.
+    pub fn answer(self, session: &DevSession) {
+        match self {
+            ReplRequest::Compile {
+                namespace,
+                file,
+                text,
+                cursor,
+                respond,
+            } => {
+                let form = compile(session, &namespace, &file, &text, cursor);
+                let _ = respond.send(form);
+            }
+            ReplRequest::Complete {
+                namespace,
+                prefix,
+                respond,
+            } => {
+                let _ = respond.send(crate::dev_nrepl::completions(session, &namespace, &prefix));
+            }
+            ReplRequest::Lookup {
+                namespace,
+                symbol,
+                respond,
+            } => {
+                let _ = respond.send(crate::dev_nrepl::lookup(session, &namespace, &symbol));
+            }
+        }
     }
 }
 
 /// What the compiler made of a request.
-pub(crate) enum ReplForm {
+pub enum ReplForm {
     /// The text has no form at the cursor.
     End,
     Form(Box<CompiledForm>),
 }
 
-pub(crate) struct CompiledForm {
+pub struct CompiledForm {
     /// The namespace current after the form, the session's from now on.
     pub(crate) namespace: String,
     /// Where the next form begins.
@@ -111,10 +152,15 @@ pub(crate) enum Command {
     Select(Option<u64>),
 }
 
-fn compile(session: &DevSession, request: &ReplRequest) -> ReplForm {
-    session.set_namespace(&request.namespace);
-    let source = SourceInput::new(&request.file, &request.text);
-    let mut cursor = request.cursor;
+fn compile(
+    session: &DevSession,
+    namespace: &str,
+    file: &str,
+    text: &str,
+    mut cursor: usize,
+) -> ReplForm {
+    session.set_namespace(namespace);
+    let source = SourceInput::new(file, text);
     let at = |span: &crate::compiler_data::SourceSpan| {
         let (line, column) = span
             .source()
@@ -143,7 +189,7 @@ fn compile(session: &DevSession, request: &ReplRequest) -> ReplForm {
                 error: Diagnostic::located(&error),
                 loads: String::new(),
             };
-            return compiled(request.text.len(), location, Vec::new(), outcome);
+            return compiled(text.len(), location, Vec::new(), outcome);
         }
     };
     let location = at(&form.span());

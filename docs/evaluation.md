@@ -827,3 +827,98 @@ the REPL; errors located in the input and in a reloaded namespace's source,
 `*e`, analysis errors and warnings; two runtimes, selection, loads reaching
 both and a namespace per connection; and the endpoint refusing what a page
 could send.
+
+## nREPL
+
+`light-cljs --watch ... --serve PORT [--nrepl PORT]` (light-cljs-289; the
+design is "The connected REPL" in
+[dev-workflow.md](dev-workflow.md#the-connected-repl)) also serves nREPL, the
+protocol editors speak, to the same runtimes as `--repl --connect`:
+
+```sh
+light-cljs --watch --entry app.main --source-root src --out-dir dev --serve 9630 --nrepl 0
+# light-cljs: serving dev at http://127.0.0.1:9630/
+# light-cljs: nREPL at 127.0.0.1:52411, its port in /work/.nrepl-port
+```
+
+The server's own port answers nREPL: a connection whose first byte opens a
+bencoded dictionary is an nREPL client's, any other an HTTP one (a page
+cannot open such a connection, since every method a page may send without a
+preflight is a word in capitals and the server answers no preflight).
+`--nrepl PORT` (0 for any free port, or the `--serve` port itself) also
+listens on PORT, on the server's host, and writes the port into
+`.nrepl-port` in the working directory, where editors look for it; the file
+goes when the watch ends, also on SIGINT, SIGTERM and SIGHUP. Bencode is read
+and written by hand (`light_cljs::dev_nrepl::Bencode`), a message at most
+16 MiB and nested at most 64 deep.
+
+An nREPL session is a connected REPL's session: its forms compile with the
+watch's session in its namespace, run in its runtime (the most recently
+connected one, until `(light.dev/select! ID)`), which prints the value under
+the default print options and keeps `*1`, `*2`, `*3` and `*e`, exactly as
+under `--repl --connect`. The operations, each answered with the request's
+`id` and `session` and a last response whose `status` has `done`:
+
+- **`clone`** opens a session, in the namespace and with the runtime choice
+  of `session` when given (not its history), else in the entry namespace;
+  `new-session` is its ID. A message with no `session` uses a session of the
+  connection's own. A connection's sessions close when it does.
+- **`close`** closes `session` (`status` `session-closed`); a closed or
+  unknown session answers `error unknown-session`.
+- **`describe`** lists `ops` (these operations), `versions` (`nrepl` and
+  `light-cljs`) and `aux` with `current-ns`.
+- **`eval`** evaluates `code`, read as being at `line` and `column` of
+  `file` (`<nrepl>` by default), after making `ns` the session's namespace
+  when given. Each form answers `value`, the printed value, and `ns`, the
+  namespace after it; a form that fails answers `err` with the text
+  `--repl --connect` prints for it (located, a runtime error with its mapped
+  stack and an `ex-info`'s data) and then `ex` and `root-ex`
+  (`light-cljs/compile-error`, `light-cljs/runtime-error` or
+  `light-cljs/command-error`) with `status` `eval-error`, and the next form
+  runs. Warnings come as `err`, `WARNING: <nrepl>:1:2: Use of undeclared
+  Var app.main/f [undeclared-var]`. A session evaluates its messages in
+  order.
+- **`load-file`** evaluates `file`, the text of a file named `file-path`
+  (or `file-name`), as `eval` does from its first line, answers with the
+  last form's `value`, and leaves the session's namespace as it was. As
+  with a `require` at the connected REPL, a namespace it loads that the
+  build does not have does not join the build.
+- **`interrupt`** ends the running evaluation of `session` (whose message
+  `id` `interrupt-id` names, when given; another answers `error
+  interrupt-id-mismatch`): the evaluation stops waiting for the runtime and
+  runs no further form, answering `status` `interrupted` and then `done`.
+  The runtime finishes what it was sent, since nothing can stop a page's
+  JavaScript, and the session's next form runs after it there. With nothing
+  running it answers `session-idle`.
+- **`completions`** answers `completions`, the names that complete
+  `prefix` in `ns` (the session's namespace by default), sorted, each
+  `{candidate, type, ns}` with `type` one of `function`, `macro`, `var` and
+  `namespace`: with a qualifier (`state/cl`, `app.state/cl`) the public
+  definitions and macros of the namespace the alias or name gives; without
+  one the namespace's own definitions and macros, those it refers,
+  cljs.core's it does not exclude, its aliases and the program's namespaces.
+- **`lookup`** answers `info` for `sym` in `ns`: `ns`, `name`, `type`, and
+  for a definition its `arglists-str`, `doc`, `file`, `line` and `column`
+  (`macro` `true` for a macro, whose metadata stays in the macro session;
+  cljs.core's from the pinned upstream metadata); a symbol it does not know
+  answers an empty `info` and `status` `done no-info`.
+- **`ls-sessions`** answers `sessions`, the IDs of the open sessions.
+
+Completions and lookups are answered on the watch's thread from the program
+it keeps (its definitions, their metadata and each namespace's aliases,
+refers and macros), so they need no runtime and see what REPL forms and
+saves defined. Other operations answer `error unknown-op`. Output a form
+prints goes to the runtime's console, not to an `out` response, and the
+runtimes read no input, so there is no `stdin`.
+
+`(+ 1 2)` takes 0.9-3.7 ms from the message sent to its `done` (median 1.3
+ms over 20) in `tests/dev_nrepl.rs`, debug CLI with a Node runtime.
+`tests/dev_nrepl.rs` runs `--watch --serve 0 --nrepl 0` on a copy of
+`examples/dev` with a Node runtime and a Node bencode client
+(tests/support/nrepl_client.mjs): every operation above; `eval` with `ns`,
+history, errors, warnings and a reader error; completions and lookups of
+own, aliased, referred, qualified and core names; a REPL definition read by
+a save and kept by a reload of its namespace; `load-file`; an interrupt of a
+runtime busy with a form; sessions; nREPL on the server's own port; and
+`.nrepl-port` written and removed on SIGINT. No editor is part of the test;
+Calva, CIDER and Conjure were not checked by hand.

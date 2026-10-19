@@ -52,7 +52,7 @@ as phases land:
 | Application state across a reload | Phase 0: a replaced unit of the example keeps the `defonce` atom, also when `app.state`'s own unit runs again | `defonce` atoms keep their value; `def` values are reinitialized, as upstream |
 | Observable behavior of the dev build | Phase 0: prints what the `none` build prints for the example, examples/features, every phase oracle and every size ratchet fixture | prints what the `none` build prints, for the same program, before any reload |
 | Recompile of one changed namespace of the example | whole program in 15-250 ms depending on size; Phase 0's whole dev build of the example 246 ms, as its `none` build (release CLI, median of 15, load 4.3); Phase 2: a saved `app.view` is its correct unit on disk 3.9-4.6 ms after the poll notices it (release CLI, 15 saves, median 4.3, load 3.5-9.7; 8.9-11.1 ms from the debug test binary), and `--watch` starts in 279-290 ms; with light-cljs-301's unit 4.0-4.6 ms (20 saves, median 4.3, load 11.7-12.3; 8.7-9.4 ms debug) | the one namespace, under 20 ms |
-| REPL round trip for `(+ 1 2)` in the page | Phase 4 (light-cljs-288): 0.72-1.01 ms from the line typed to the value printed, median 0.80, 50 round trips through headless Chrome running examples/dev, release CLI (load 2.5); 1.1-3.3 ms, median 1.4, over 20 through a Node runtime in tests/dev_repl.rs, debug CLI | under 20 ms, dominated by the compile |
+| REPL round trip for `(+ 1 2)` in the page | Phase 4 (light-cljs-288): 0.72-1.01 ms from the line typed to the value printed, median 0.80, 50 round trips through headless Chrome running examples/dev, release CLI (load 2.5); 1.1-3.3 ms, median 1.4, over 20 through a Node runtime in tests/dev_repl.rs, debug CLI; over nREPL (light-cljs-289) 0.53-1.64 ms from the message sent to its `done`, median 0.63, 50 round trips through headless Chrome running examples/dev, release CLI (load 3.7), and 0.9-3.7 ms, median 1.3, over 20 through a Node runtime in tests/dev_nrepl.rs, debug CLI (load 4.0) | under 20 ms, dominated by the compile |
 | Dev build bytes served after the first load | Phase 0: `runtime.js` 432,093 bytes once; the example's `app.view.js` 3,492 bytes (map 974), its other units 817-1,777; Phase 2's rewritten `app.view.js` 3,565 bytes (map 542), registering its namespace once (light-cljs-301; 9,385 when each form's unit registered every namespace) | the changed namespace's unit only; the runtime is served once and cached |
 
 Non-goals of this design: a bundler, npm resolution (packages stay
@@ -486,6 +486,27 @@ port is wanted): bencode framing and the operations `clone`, `close`,
 Completions and lookup are answered from the retained program's globals and
 their metadata (arglists, docstrings), without a runtime round trip.
 
+As built (light-cljs-289; the operations are in [nREPL](evaluation.md#nrepl)):
+`dev_nrepl` reads and writes bencode by hand, and the server's port tells an
+nREPL client from an HTTP one by its first byte, `d` for a bencoded
+dictionary; `--nrepl PORT` adds a listener and writes `.nrepl-port`, removed
+when the watch ends (on SIGINT, SIGTERM and SIGHUP too). An nREPL session is
+a connected REPL session of the server, so `eval` and `load-file` take the
+terminal client's path: the form goes to the watch's thread as a
+`ReplRequest`, its unit to the session's runtime, and the value or the error
+the runtime gives back becomes `value` and `ns`, or `err` and `ex`, per
+form. Each session's messages run in order on a thread of the connection.
+`completions` and `lookup` are `ReplRequest`s too, answered on the watch's
+thread from the retained program: its definitions by namespace, their
+metadata (`:arglists`, `:doc`, `:file`, `:line`, `:column`, `:private`), each
+namespace's reader context (aliases, refers, excludes, macros), and
+cljs.core's pinned metadata. A macro's own docstring and arglists stay in
+the macro session, so `lookup` gives a macro its namespace and name alone.
+`interrupt` drops the session's pending runtime request, answering the
+waiting evaluation as interrupted, and runs no further form; the runtime
+finishes the form it was sent. A `load-file` evaluates the file's text as
+`eval` does and leaves the session's namespace as it was.
+
 ### JavaScript packages in dev
 
 The compiler never resolves packages. A dev page provides them before
@@ -888,6 +909,28 @@ Scope: "The connected REPL".
 Done when: an editor connected over nREPL evaluates in the page and a watch
 reload keeps the REPL-defined Vars.
 
+Status (light-cljs-289, October 18, 2026): Phase 4 is done. nREPL
+([nREPL](evaluation.md#nrepl)) serves `clone`, `close`, `describe`, `eval`,
+`load-file`, `interrupt`, `completions`, `lookup` and `ls-sessions` on the
+server's port and on `--nrepl PORT`, with `.nrepl-port`.
+`tests/dev_nrepl.rs` drives it with a Node bencode client against
+`--watch --serve 0 --nrepl 0` on a copy of examples/dev and a Node runtime:
+every operation, a REPL definition read by a save and kept by a reload of
+its namespace, an interrupt of a runtime busy with a form, nREPL on the
+server's own port, and `.nrepl-port` removed on SIGINT. `(+ 1 2)` takes
+0.9-3.7 ms there (median 1.3 over 20, debug CLI). By the user's decision
+of October 18, 2026, the test with a Node client replaces the hand checks
+against Calva, CIDER and Conjure: no editor was run. Checked in headless
+Chrome on a copy of examples/dev served by the release CLI with `--nrepl 0`,
+through the Node client: `.nrepl-port` named the port, `(light.dev/runtimes)`
+named the HeadlessChrome runtime, `(.-title js/document)` gave
+`"light-cljs dev"`, `(app.state/click!)` changed the page's state, a thrown
+error came back as `err` and `ex`, `completions` and `lookup` answered for
+`app.view`, a `def` made over nREPL in `app.state` was read by a function a
+save added to `app.view` and kept by a save of `app.state`, SIGINT removed
+`.nrepl-port`, and `(+ 1 2)` took 0.53-1.64 ms (median 0.63 over 50, load
+3.7).
+
 Status (light-cljs-288, October 15, 2026): the terminal client and runtime
 selection are done; nREPL is light-cljs-289's, which reuses the server's
 path from a form to a runtime's reply. `--repl --connect HOST:PORT`
@@ -1061,3 +1104,7 @@ these; a finding that contradicts one goes under "Open questions".
   that names it fails there until a namespace of the build requires it.
   Whether such a namespace should join the manifest, with its unit file and
   its place in replays, is to be seen with nREPL's `load-file` (light-cljs-289).
+  As built there, `load-file` evaluates the file's text as `eval` does, so a
+  namespace it loads joins the build no more than one a `require` loads; a
+  file of the build that an editor loads is compiled again by the watch when
+  it is saved. Still open, until an editor workflow needs more.
