@@ -172,6 +172,9 @@ mod runtime_references;
 mod runtime_set_order;
 mod runtime_set_traversal;
 mod runtime_slicing;
+// The scheduling perturbation it drives exists in debug builds only.
+#[cfg(debug_assertions)]
+mod schedule_stress;
 mod sci_cljc_accepted_probe;
 mod sci_cljc_source_probe;
 mod sci_execution;

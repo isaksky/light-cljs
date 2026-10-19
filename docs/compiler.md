@@ -114,8 +114,12 @@ loader reads and parses each source in a job, whose requires go back on the
 queue, then replays its depth-first walk over the results, so source order,
 diagnostics and the dependency manifest do not depend on completion order
 (a `SourceProvider` is called on the pool only when its `concurrent` method
-opts in, as source roots do). The design, the as-built details and what the
-tests cover are in
+opts in, as source roots do). Debug builds also have a test-only
+`scheduler::Perturbation`, which a build takes through
+`EntryRecorders::perturbation`: seeded delays, random batches and steals,
+a forced assignment and tight bounds, which `tests/compiler/schedule_stress.rs`
+uses to check that output does not depend on the schedule. The design, the
+as-built details and what the tests cover are in
 [compiler-concurrency.md](compiler-concurrency.md#the-scheduler).
 
 ### Namespace reflection and reading

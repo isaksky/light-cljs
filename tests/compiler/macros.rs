@@ -101,6 +101,132 @@ fn execute(js: &str) -> String {
 fn result(js: &str) -> String {
     execute(&format!("console.log({js});"))
 }
+// Fixtures that tests/compiler/schedule_stress.rs also builds, at every
+// slot count under perturbed scheduling.
+/// The shared counter: `dep`'s call and `main`'s both increment it.
+pub(crate) const COUNTER: &[(&str, &str)] = &[
+    (
+        "macros.cljs",
+        "(ns macros) (def counter (atom 0)) (defmacro next-value [] (swap! counter inc))",
+    ),
+    (
+        "dep.cljs",
+        "(ns dep (:require [macros :refer [next-value]])) (def value (next-value))",
+    ),
+    (
+        "main.cljs",
+        "(ns main (:require [dep :as d] [macros :refer [next-value]])) (js/console.log d/value (next-value))",
+    ),
+];
+pub(crate) const TRANSITIVE_HELPERS: &[(&str, &str)] = &[
+    (
+        "leaf.cljc",
+        "(ns leaf) #?(:cljs (def factor 2) :clj (require 'jvm.missing)) (def hits (atom 0)) (swap! hits inc) (defn twice [x] (* factor x)) (js/console.log \"leaf\")",
+    ),
+    (
+        "left.cljs",
+        "(ns left (:require [leaf :as l])) (defn higher [f x] (apply f [x])) (defn helper [x] (higher l/twice x)) (defmacro doubled [x] (helper x)) (js/console.log \"left\")",
+    ),
+    (
+        "right.cljs",
+        "(ns right (:require [leaf :as l])) (defn ^:private secret [x] (l/twice x)) (defmacro exposed [x] (secret x)) (js/console.log \"right\")",
+    ),
+    (
+        "app.cljs",
+        "(ns app (:refer-clojure :exclude [when]) (:require [left :as l :refer [doubled] :rename {doubled when}] [right :as r] [leaf :as leaf])) (js/console.log (when 21) (l/doubled 21) (r/exposed 21) (let [when (fn [x] x)] (when 7)) @leaf/hits)",
+    ),
+];
+pub(crate) const SOURCE_ORDER_GENERATIONS: &str = r#"
+          (defmacro inner [] 1)
+          (defmacro outer [] (inner))
+          (defn before [] (inner))
+          (defmacro inner [] 2)
+          (defmacro nested [] '(inner))
+          (= [1 1 2 2] [(before) (outer) (inner) (nested)])"#;
+pub(crate) const GENERATED_DECLARATIONS: &str = r#"
+          (defmacro install []
+            '(do (defmacro answer [] 42) (def result (answer))))
+          (do (install) (= [42 42] [result (answer)]))"#;
+pub(crate) const NESTED_DEMANDS: &str = r#"
+          (def effects (atom []))
+          (swap! effects conj :runtime-only)
+          (def leaf (do (swap! effects conj :leaf-init) (fn [] 7)))
+          (defmacro leaf-m [] (swap! effects conj :leaf-m) (leaf))
+          (defn middle [] (leaf-m))
+          (defmacro middle-m [] (swap! effects conj :middle-m) (middle))
+          (defn outer [] (middle-m))
+          (defmacro run [] (outer))
+          (defmacro trace [] (list 'quote @effects))
+          (= [7 7 [:middle-m :leaf-m :leaf-init] [:runtime-only :leaf-init] 7]
+             [(run) (run) (trace) @effects (outer)])"#;
+pub(crate) const SNAPSHOT_GENERATIONS: &str = r#"
+          (def factor 2)
+          (defmacro old [] 10)
+          (defn helper [x] (+ (old) (* factor x)))
+          (defmacro old [] 100)
+          (def factor 3)
+          (defmacro run [] (helper 4))
+          (= [22 22] [(run) (helper 4)])"#;
+pub(crate) const MUTUAL_RECURSION: &str = r#"
+          (declare even-step odd-step)
+          (defn even-step [n] (if (zero? n) true (odd-step (dec n))))
+          (defn odd-step [n] (if (zero? n) false (even-step (dec n))))
+          (defmacro m [] (even-step 20))
+          (m)"#;
+pub(crate) const FAILED_GENERATION: &str = r#"
+          (def effects (atom 0))
+          (def broken (do (swap! effects inc) (throw (js/Error. "sticky"))))
+          (defmacro probe []
+            (let [a (try broken (catch :default e e))
+                  b (try broken (catch :default e e))]
+              (assert (identical? a b))
+              (assert (= 1 @effects)) 1))
+          (probe)
+          (defonce broken 7)
+          (probe)
+          (def broken 42)
+          (defmacro repair [] (assert (= 42 broken)) (assert (= 1 @effects)) 42)
+          (repair)"#;
+pub(crate) const DEFONCE_PENDING: &str = r#"
+          (def effects (atom 0))
+          (def pending (do (swap! effects inc) 42))
+          (defonce pending 99)
+          (def n nil) (defonce n 99)
+          (def f false) (defonce f 99)
+          (def u js/undefined) (defonce u 99)
+          (declare declared) (defonce declared 7)
+          (defmacro m []
+            (assert (= 0 @effects))
+            (assert (= 42 pending))
+            (assert (= 1 @effects))
+            (assert (nil? n)) (assert (false? f))
+            (assert (identical? js/undefined u))
+            (assert (not (exists? u)))
+            (assert (var? (resolve 'u)))
+            (assert (= 7 declared)) 42)
+          (= [42 42 nil false 99 7 1] [(m) pending n f u declared @effects])"#;
+pub(crate) const SAVED_FUNCTION_CODE: &str = r#"
+          (def factor 2)
+          (defn f [x] (+ factor x))
+          (def saved f)
+          (defmacro before [] (saved 3))
+          (before)
+          (def first-result 5)
+          (def factor 10)
+          (defn f [x] (* factor x))
+          (defmacro after [] (assert (= 13 (saved 3))) (assert (= 30 (f 3))) 13)
+          (= [5 13 13 30] [first-result (after) (saved 3) (f 3)])"#;
+pub(crate) const FRONTIER_REPLAY: &str = r#"
+      (defprotocol P (p [x])) (defprotocol Q (q [x])) (deftype T [])
+      (extend-type T P (p [_] 1))
+      (extend-type T Q (q [_] 10))
+      (defmacro snapshot [] [(p (T.)) (q (T.))])
+      (def earlier (snapshot))
+      (extend-type T P (p [_] 2))
+      (defmacro warm [] (q (T.)) (p (T.)) nil) (warm)
+      (defmacro read-earlier [] earlier)
+      (pr-str [(read-earlier) (snapshot) (p (T.)) (q (T.))])"#;
+
 // Historical fixtures use real ordinary imports so macro definitions and helpers
 // run in the same compiler-owned JavaScript sessions as user source namespaces.
 struct SourceMacros {
@@ -597,15 +723,9 @@ fn clj_companions_are_never_compiler_sources() {
 #[test]
 fn macro_namespace_effects_are_shared_once_per_compilation_with_fresh_reused_hosts() {
     let s = Sources::new();
-    s.write(
-        "macros.cljs",
-        "(ns macros) (def counter (atom 0)) (defmacro next-value [] (swap! counter inc))",
-    );
-    s.write(
-        "dep.cljs",
-        "(ns dep (:require [macros :refer [next-value]])) (def value (next-value))",
-    );
-    s.write("main.cljs", "(ns main (:require [dep :as d] [macros :refer [next-value]])) (js/console.log d/value (next-value))");
+    for (path, source) in COUNTER {
+        s.write(path, source);
+    }
     // A hit skips `dep`'s call, so mixed compilations print `1 1`:
     // tests/compiler/cache_contract.rs covers that documented skip.
     assert_eq!(execute(&s.compile_effectful("main").unwrap()), "1 2\n");
@@ -2382,13 +2502,7 @@ mod same_file_javascript_macros {
 
     #[test]
     fn source_order_preserves_expansions_and_macro_definition_generations() {
-        let source = r#"
-          (defmacro inner [] 1)
-          (defmacro outer [] (inner))
-          (defn before [] (inner))
-          (defmacro inner [] 2)
-          (defmacro nested [] '(inner))
-          (= [1 1 2 2] [(before) (outer) (inner) (nested)])"#;
+        let source = super::SOURCE_ORDER_GENERATIONS;
         assert_eq!(
             result(&compile_with_macros(source, &mut javascript_host()).unwrap()),
             "true\n"
@@ -2404,10 +2518,7 @@ mod same_file_javascript_macros {
 
     #[test]
     fn generated_declarations_and_top_level_do_interleave_in_source_order() {
-        let source = r#"
-          (defmacro install []
-            '(do (defmacro answer [] 42) (def result (answer))))
-          (do (install) (= [42 42] [result (answer)]))"#;
+        let source = super::GENERATED_DECLARATIONS;
         assert_eq!(
             result(&compile_with_macros(source, &mut javascript_host()).unwrap()),
             "true\n"
@@ -2629,40 +2740,12 @@ mod reentrant_deferred_units {
 
     #[test]
     fn nested_demands_expand_each_source_occurrence_once_and_share_ir() {
-        assert_eq!(
-            checked(
-                r#"
-          (def effects (atom []))
-          (swap! effects conj :runtime-only)
-          (def leaf (do (swap! effects conj :leaf-init) (fn [] 7)))
-          (defmacro leaf-m [] (swap! effects conj :leaf-m) (leaf))
-          (defn middle [] (leaf-m))
-          (defmacro middle-m [] (swap! effects conj :middle-m) (middle))
-          (defn outer [] (middle-m))
-          (defmacro run [] (outer))
-          (defmacro trace [] (list 'quote @effects))
-          (= [7 7 [:middle-m :leaf-m :leaf-init] [:runtime-only :leaf-init] 7]
-             [(run) (run) (trace) @effects (outer)])"#
-            ),
-            "true\n"
-        );
+        assert_eq!(checked(super::NESTED_DEMANDS), "true\n");
     }
 
     #[test]
     fn snapshots_freeze_visibility_and_macro_generations_but_roots_are_late_bound() {
-        assert_eq!(
-            checked(
-                r#"
-          (def factor 2)
-          (defmacro old [] 10)
-          (defn helper [x] (+ (old) (* factor x)))
-          (defmacro old [] 100)
-          (def factor 3)
-          (defmacro run [] (helper 4))
-          (= [22 22] [(run) (helper 4)])"#
-            ),
-            "true\n"
-        );
+        assert_eq!(checked(super::SNAPSHOT_GENERATIONS), "true\n");
         for source in [
             "(defn helper [] future) (def future 1) (helper)",
             "(defn helper [] (if false future 1)) (def future 1) (helper)",
@@ -2959,17 +3042,7 @@ mod ordinary_helper_demand {
 
     #[test]
     fn mutual_recursion_and_located_unavailable_and_initialization_cycles() {
-        assert_eq!(
-            checked(
-                r#"
-          (declare even-step odd-step)
-          (defn even-step [n] (if (zero? n) true (odd-step (dec n))))
-          (defn odd-step [n] (if (zero? n) false (even-step (dec n))))
-          (defmacro m [] (even-step 20))
-          (m)"#
-            ),
-            "true\n"
-        );
+        assert_eq!(checked(super::MUTUAL_RECURSION), "true\n");
         let error = compile_with_macros(
             "(declare future) (defmacro m [] future) (m) (def future 42)",
             &mut clean_host(),
@@ -2994,20 +3067,7 @@ mod ordinary_helper_demand {
 
     #[test]
     fn failed_generation_retains_effects_error_and_defonce_until_redefined() {
-        let source = r#"
-          (def effects (atom 0))
-          (def broken (do (swap! effects inc) (throw (js/Error. "sticky"))))
-          (defmacro probe []
-            (let [a (try broken (catch :default e e))
-                  b (try broken (catch :default e e))]
-              (assert (identical? a b))
-              (assert (= 1 @effects)) 1))
-          (probe)
-          (defonce broken 7)
-          (probe)
-          (def broken 42)
-          (defmacro repair [] (assert (= 42 broken)) (assert (= 1 @effects)) 42)
-          (repair)"#;
+        let source = super::FAILED_GENERATION;
         // The emitted application's earlier throwing initializer is intentional;
         // assertions execute in the compiler and prove the failure state policy.
         assert!(compile_with_macros(source, &mut clean_host()).is_ok());
@@ -3015,49 +3075,12 @@ mod ordinary_helper_demand {
 
     #[test]
     fn defonce_preserves_pending_nil_false_undefined_and_allows_declared_slots() {
-        assert_eq!(
-            checked(
-                r#"
-          (def effects (atom 0))
-          (def pending (do (swap! effects inc) 42))
-          (defonce pending 99)
-          (def n nil) (defonce n 99)
-          (def f false) (defonce f 99)
-          (def u js/undefined) (defonce u 99)
-          (declare declared) (defonce declared 7)
-          (defmacro m []
-            (assert (= 0 @effects))
-            (assert (= 42 pending))
-            (assert (= 1 @effects))
-            (assert (nil? n)) (assert (false? f))
-            (assert (identical? js/undefined u))
-            (assert (not (exists? u)))
-            (assert (var? (resolve 'u)))
-            (assert (= 7 declared)) 42)
-          (= [42 42 nil false 99 7 1] [(m) pending n f u declared @effects])"#
-            ),
-            "true\n"
-        );
+        assert_eq!(checked(super::DEFONCE_PENDING), "true\n");
     }
 
     #[test]
     fn saved_function_code_captures_and_active_global_generations() {
-        assert_eq!(
-            checked(
-                r#"
-          (def factor 2)
-          (defn f [x] (+ factor x))
-          (def saved f)
-          (defmacro before [] (saved 3))
-          (before)
-          (def first-result 5)
-          (def factor 10)
-          (defn f [x] (* factor x))
-          (defmacro after [] (assert (= 13 (saved 3))) (assert (= 30 (f 3))) 13)
-          (= [5 13 13 30] [first-result (after) (saved 3) (f 3)])"#
-            ),
-            "true\n"
-        );
+        assert_eq!(checked(super::SAVED_FUNCTION_CODE), "true\n");
     }
 
     #[test]
@@ -3354,16 +3377,7 @@ fn restoring_a_dispatch_frontier_preserves_executed_helper_mutation() {
 #[test]
 fn frontier_replay_orders_extensions_by_declaration_after_late_initialization() {
     let mut host = MacroHost::new();
-    let source = r#"
-      (defprotocol P (p [x])) (defprotocol Q (q [x])) (deftype T [])
-      (extend-type T P (p [_] 1))
-      (extend-type T Q (q [_] 10))
-      (defmacro snapshot [] [(p (T.)) (q (T.))])
-      (def earlier (snapshot))
-      (extend-type T P (p [_] 2))
-      (defmacro warm [] (q (T.)) (p (T.)) nil) (warm)
-      (defmacro read-earlier [] earlier)
-      (pr-str [(read-earlier) (snapshot) (p (T.)) (q (T.))])"#;
+    let source = FRONTIER_REPLAY;
     for _ in 0..2 {
         let js = compile_with_macros(source, &mut host).unwrap();
         assert_eq!(result(&js), "[[1 10] [2 10] 2 10]\n");
@@ -3406,10 +3420,9 @@ fn ordinary_dual_use_require_executes_exact_tools_example_through_api_and_cli() 
 fn ordinary_requires_share_transitive_helpers_preserve_effects_privacy_and_shadowing() {
     let s = Sources::new();
     let mut h = MacroHost::new();
-    s.write("leaf.cljc", "(ns leaf) #?(:cljs (def factor 2) :clj (require 'jvm.missing)) (def hits (atom 0)) (swap! hits inc) (defn twice [x] (* factor x)) (js/console.log \"leaf\")");
-    s.write("left.cljs", "(ns left (:require [leaf :as l])) (defn higher [f x] (apply f [x])) (defn helper [x] (higher l/twice x)) (defmacro doubled [x] (helper x)) (js/console.log \"left\")");
-    s.write("right.cljs", "(ns right (:require [leaf :as l])) (defn ^:private secret [x] (l/twice x)) (defmacro exposed [x] (secret x)) (js/console.log \"right\")");
-    s.write("app.cljs", "(ns app (:refer-clojure :exclude [when]) (:require [left :as l :refer [doubled] :rename {doubled when}] [right :as r] [leaf :as leaf])) (js/console.log (when 21) (l/doubled 21) (r/exposed 21) (let [when (fn [x] x)] (when 7)) @leaf/hits)");
+    for (path, source) in TRANSITIVE_HELPERS {
+        s.write(path, source);
+    }
     for _ in 0..2 {
         assert_eq!(
             execute(&s.compile_host("app", &mut h).unwrap()),

@@ -204,6 +204,38 @@ fn escaped(text: &str) -> String {
         .collect()
 }
 
+/// Reflection programs and what they print in `cljs.user`; also built by
+/// tests/compiler/schedule_stress.rs.
+pub(crate) const REFLECTION_PROGRAMS: &[(&str, &str)] = &[
+    ("(str *ns*)", "cljs.user"),
+    ("(binding [*ns* (create-ns 'x)] (str *ns*))", "x"),
+    ("(do (set! *ns* (create-ns 'y)) (str *ns*))", "y"),
+    ("(some? (find-ns 'cljs.user))", "true"),
+    ("(str (the-ns 'cljs.core))", "cljs.core"),
+    ("(count (all-ns))", "2"),
+    ("(str (create-ns 'z))", "z"),
+    ("(pr-str (read-string \"`foo\"))", "(quote cljs.user/foo)"),
+    (
+        "(pr-str (read-string \"[{:a 1} #js [2]]\"))",
+        "[{:a 1} #js [2]]",
+    ),
+    (
+        "(eval '(+ 1 2))",
+        "threw compiler eval service is not installed",
+    ),
+    ("(pr-str '#js [1 2])", "#js [1 2]"),
+];
+
+/// Programs whose reflective-looking calls expand at compile time.
+pub(crate) const COMPILE_TIME_EXPANSIONS: &[(&str, &str)] = &[
+    ("(pr-str (resolve 'inc))", "#'cljs.core/inc"),
+    (
+        "(def a 1) (pr-str (ns-interns 'cljs.user))",
+        "{a #'cljs.user/a}",
+    ),
+    ("(str (ns-name 'x))", "x"),
+];
+
 #[test]
 fn advanced_programs_register_namespaces_only_when_they_reach_reflection() {
     // The add unit alone: no namespace registration, so no symbol, namespace
@@ -225,25 +257,7 @@ fn advanced_programs_register_namespaces_only_when_they_reach_reflection() {
     // Reflection registers, and the program prints what `None` prints. The
     // reader is one unit, so EDN reading counts as reflection too; `eval` keeps
     // its stub; a quoted `#js` literal keeps the compiler form bridge.
-    for (source, expected) in [
-        ("(str *ns*)", "cljs.user"),
-        ("(binding [*ns* (create-ns 'x)] (str *ns*))", "x"),
-        ("(do (set! *ns* (create-ns 'y)) (str *ns*))", "y"),
-        ("(some? (find-ns 'cljs.user))", "true"),
-        ("(str (the-ns 'cljs.core))", "cljs.core"),
-        ("(count (all-ns))", "2"),
-        ("(str (create-ns 'z))", "z"),
-        ("(pr-str (read-string \"`foo\"))", "(quote cljs.user/foo)"),
-        (
-            "(pr-str (read-string \"[{:a 1} #js [2]]\"))",
-            "[{:a 1} #js [2]]",
-        ),
-        (
-            "(eval '(+ 1 2))",
-            "threw compiler eval service is not installed",
-        ),
-        ("(pr-str '#js [1 2])", "#js [1 2]"),
-    ] {
+    for &(source, expected) in REFLECTION_PROGRAMS {
         let program = program(source);
         let advanced = emit(&program, OptimizationLevel::Advanced);
         assert!(
@@ -259,14 +273,7 @@ fn advanced_programs_register_namespaces_only_when_they_reach_reflection() {
     }
     // `resolve`, `ns-publics` and `ns-interns` expand to vars at compile time,
     // and `ns-name` of a symbol reads the symbol: none of them is reflection.
-    for (source, expected) in [
-        ("(pr-str (resolve 'inc))", "#'cljs.core/inc"),
-        (
-            "(def a 1) (pr-str (ns-interns 'cljs.user))",
-            "{a #'cljs.user/a}",
-        ),
-        ("(str (ns-name 'x))", "x"),
-    ] {
+    for &(source, expected) in COMPILE_TIME_EXPANSIONS {
         let program = program(source);
         let advanced = emit(&program, OptimizationLevel::Advanced);
         assert!(

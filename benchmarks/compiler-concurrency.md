@@ -11,6 +11,27 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Determinism stress (light-cljs-342, October 19, 2026)
+
+The scheduling perturbation behind `tests/compiler/schedule_stress.rs`
+(docs/compiler-concurrency.md, "As built (light-cljs-342)") is compiled
+under `cfg(debug_assertions)`: a release binary keeps the parent's code
+paths, apart from a pool panic's message, which no longer names the slot,
+and a constant-false test in `Worker::push_local`. No Penpot rows were
+taken: there is no serial-path change to gate, and two other workers were
+testing on the machine. The suite's cost, with `cargo nextest run --test
+compiler schedule_stress::` after the build, at 1-minute load 5.2 to 5.6:
+
+| Seeds | Cap per test | Tests | Shortest | Longest test = wall |
+| --- | ---: | ---: | ---: | ---: |
+| 3 (default) | 30 s | 11 | 0.1 s | 15.0 s |
+| 12 (`LIGHT_CLJS_STRESS_SEEDS=12`) | 600 s | 11 | 0.5 s | 58.3 s |
+
+The longest is the nine single-namespace fixtures of `macros.rs` at 1, 2, 4
+and 8 slots in three modes per seed (108 builds per seed); the 30 s cap
+(`LIGHT_CLJS_STRESS_SECONDS`) is not reached with three seeds and bounds the
+run under load, where a test stops after the seed that crossed it.
+
 ## Recording on workers (light-cljs-374, October 19, 2026)
 
 Capturing artifacts and recording a manifest keep macro-expanding units on

@@ -33,8 +33,8 @@ pub(crate) struct Built {
     pub(crate) output: Result<String, String>,
     /// Every expression's source index and span, and the source-mapped
     /// output, of a build that succeeded.
-    spans: Vec<(usize, std::ops::Range<usize>)>,
-    mapped: Option<(String, light_cljs::source_map::SourceMapping)>,
+    pub(crate) spans: Vec<(usize, std::ops::Range<usize>)>,
+    pub(crate) mapped: Option<(String, light_cljs::source_map::SourceMapping)>,
     pub(crate) warnings: Vec<(String, String, usize, std::ops::Range<usize>)>,
     pub(crate) stats: CompileStats,
 }
@@ -59,11 +59,31 @@ pub(crate) fn build_blocked(
     entry: &str,
     slots: usize,
     warning_mode: bool,
+    host: MacroHost,
+    blockers: &[String],
+) -> Built {
+    build_configured(sources, entry, slots, warning_mode, host, blockers, |_| {})
+}
+
+/// [`build_blocked`] with its recorders adjusted by `configure`.
+pub(crate) fn build_configured(
+    sources: &Sources,
+    entry: &str,
+    slots: usize,
+    warning_mode: bool,
     mut host: MacroHost,
     blockers: &[String],
+    configure: impl FnOnce(&mut EntryRecorders<'_>),
 ) -> Built {
     let mut warnings: Vec<AnalysisWarning> = Vec::new();
     let mut stats = CompileStats::new();
+    let mut recorders = EntryRecorders {
+        stats: Some(&mut stats),
+        slots: Slots::new(slots).unwrap(),
+        blockers,
+        ..Default::default()
+    };
+    configure(&mut recorders);
     let analyzed = analyze_namespace_entry_recorded(
         entry,
         std::slice::from_ref(sources.0.path()),
@@ -73,12 +93,7 @@ pub(crate) fn build_blocked(
             ..Default::default()
         },
         &mut warnings,
-        EntryRecorders {
-            stats: Some(&mut stats),
-            slots: Slots::new(slots).unwrap(),
-            blockers,
-            ..Default::default()
-        },
+        recorders,
     );
     let program = analyzed.as_ref().ok().map(|(program, _)| program);
     Built {

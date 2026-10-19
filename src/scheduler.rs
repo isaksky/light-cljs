@@ -93,6 +93,13 @@ pub trait Job: Send {
     fn priority(&self) -> u64 {
         0
     }
+
+    /// A stable identity for the test-only [`Perturbation`], which keys its
+    /// delays, fixed assignment and log on it.
+    #[cfg(debug_assertions)]
+    fn key(&self) -> u64 {
+        0
+    }
 }
 
 /// The scheduler's bounds. Byte estimates guide admission; they are not a
@@ -140,6 +147,9 @@ pub struct Config {
     pub limits: Limits,
     /// The stack size of each worker thread, or the platform default.
     pub stack_size: Option<usize>,
+    /// The test-only scheduling perturbation, debug builds only.
+    #[cfg(debug_assertions)]
+    pub perturbation: Option<Perturbation>,
 }
 
 impl Config {
@@ -149,6 +159,8 @@ impl Config {
             phases,
             limits: Limits::default(),
             stack_size: None,
+            #[cfg(debug_assertions)]
+            perturbation: None,
         }
     }
 }
@@ -188,11 +200,9 @@ pub struct WorkerPanic {
 
 impl fmt::Display for WorkerPanic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "compiler worker {} panicked: {}",
-            self.slot, self.message
-        )
+        // Not the slot: which one ran a job is the schedule's choice, and
+        // a build's diagnostics must not depend on it.
+        write!(f, "a compiler worker panicked: {}", self.message)
     }
 }
 
@@ -252,6 +262,8 @@ struct Entry<J> {
     bytes: u64,
     /// Submission order, which breaks priority ties across phases.
     seq: u64,
+    #[cfg(debug_assertions)]
+    key: u64,
 }
 
 impl<J: Job> Entry<J> {
@@ -267,6 +279,8 @@ impl<J: Job> Entry<J> {
             cost: job.cost(),
             bytes: job.bytes(),
             seq: 0,
+            #[cfg(debug_assertions)]
+            key: job.key(),
             job,
         }
     }
@@ -343,6 +357,8 @@ struct State<J, O> {
     clock: u64,
     panic: Option<WorkerPanic>,
     counts: PoolCounts,
+    #[cfg(debug_assertions)]
+    perturbed: Option<perturb::Perturbed>,
 }
 
 /// What one claim found.
@@ -373,7 +389,7 @@ impl<J: Job, O> State<J, O> {
             admit_clock: 0,
             next_seq: 0,
             running: 0,
-            completed: VecDeque::with_capacity(config.limits.admitted_jobs.max(1)),
+            completed: VecDeque::with_capacity(limits(config).admitted_jobs.max(1)),
             admitted_jobs: 0,
             admitted_bytes: 0,
             demands: 0,
@@ -384,6 +400,8 @@ impl<J: Job, O> State<J, O> {
             clock: 0,
             panic: None,
             counts: PoolCounts::default(),
+            #[cfg(debug_assertions)]
+            perturbed: config.perturbation.clone().map(perturb::Perturbed::new),
         }
     }
 
@@ -509,6 +527,10 @@ impl<J: Job, O> State<J, O> {
     fn claim(&mut self, w: usize, limits: &Limits) -> Option<Claim<J>> {
         if self.shutdown || self.cancelled {
             return None;
+        }
+        #[cfg(debug_assertions)]
+        if self.perturbed.is_some() {
+            return self.claim_perturbed(w, limits);
         }
         if let Some(entry) = self.urgent.pop_front() {
             self.runnable_total -= 1;
@@ -652,6 +674,8 @@ struct Shared<J, O> {
     cancelled: AtomicBool,
     limits: Limits,
     phases: usize,
+    #[cfg(debug_assertions)]
+    perturbation: Option<Perturbation>,
 }
 
 impl<J: Job, O> Shared<J, O> {
@@ -666,6 +690,12 @@ impl<J: Job, O> Shared<J, O> {
     /// Wake workers for `count` newly runnable jobs: one for one, all for
     /// several.
     fn wake(&self, count: usize) {
+        // Under a fixed assignment only the job's owner may run it.
+        #[cfg(debug_assertions)]
+        if count > 0 && self.perturbation.as_ref().is_some_and(|p| p.fixed) {
+            self.work.notify_all();
+            return;
+        }
         match count {
             0 => {}
             1 => self.work.notify_one(),
@@ -726,7 +756,11 @@ impl<J: Job, O> Worker<'_, J, O> {
             drop(state);
             return;
         }
-        if state.backlog_len == 0 && state.has_room(&self.shared.limits, entry.bytes) {
+        #[cfg(debug_assertions)]
+        let assigned = state.assigns();
+        #[cfg(not(debug_assertions))]
+        let assigned = false;
+        if !assigned && state.backlog_len == 0 && state.has_room(&self.shared.limits, entry.bytes) {
             state.count_admission(entry.bytes);
             state.runnable[entry.phase] += 1;
             state.runnable_total += 1;
@@ -843,7 +877,17 @@ fn work<J: Job, O, W>(
             shared.work.notify_one();
         }
         let bytes = entry.bytes;
+        #[cfg(debug_assertions)]
+        let key = entry.key;
+        #[cfg(debug_assertions)]
+        if let Some(p) = &shared.perturbation {
+            p.pause(key, index, perturb::Boundary::Start);
+        }
         let result = execute_caught(&worker, &mut slot_state, make, execute, entry.job);
+        #[cfg(debug_assertions)]
+        if let Some(p) = &shared.perturbation {
+            p.pause(key, index, perturb::Boundary::Finish);
+        }
         let failed = result.is_err();
         if failed {
             // The slot's scratch state is discarded with its panic.
@@ -883,6 +927,10 @@ impl<J: Job, O, W> Coordinator<'_, J, O, W> {
     /// one newly runnable job wakes one worker.
     pub fn submit(&mut self, job: J) {
         let entry = Entry::new(job, self.shared.phases);
+        #[cfg(debug_assertions)]
+        if let Some(p) = &self.shared.perturbation {
+            p.pause(entry.key, usize::MAX, perturb::Boundary::Submit);
+        }
         let mut state = self.shared.lock();
         if state.cancelled {
             state.counts.cancelled += 1;
@@ -899,6 +947,12 @@ impl<J: Job, O, W> Coordinator<'_, J, O, W> {
             .into_iter()
             .map(|job| Entry::new(job, self.shared.phases))
             .collect();
+        #[cfg(debug_assertions)]
+        if let Some(p) = &self.shared.perturbation
+            && let Some(first) = entries.first()
+        {
+            p.pause(first.key, usize::MAX, perturb::Boundary::Submit);
+        }
         let mut state = self.shared.lock();
         if state.cancelled {
             state.counts.cancelled += entries.len() as u64;
@@ -1085,8 +1139,10 @@ where
         work: Condvar::new(),
         outcomes: Condvar::new(),
         cancelled: AtomicBool::new(false),
-        limits: config.limits.clone(),
+        limits: limits(config),
         phases: config.phases,
+        #[cfg(debug_assertions)]
+        perturbation: config.perturbation.clone(),
     };
     let make: MakeSlot<'_, W> = &make;
     let execute: Execute<'_, J, O, W> = &execute;
@@ -1134,6 +1190,20 @@ where
         None => Ok(result),
     }
 }
+
+/// The pool's bounds: a perturbation's in place of the configured ones.
+fn limits(config: &Config) -> Limits {
+    #[cfg(debug_assertions)]
+    if let Some(limits) = config.perturbation.as_ref().and_then(|p| p.limits.clone()) {
+        return limits;
+    }
+    config.limits.clone()
+}
+
+#[cfg(debug_assertions)]
+mod perturb;
+#[cfg(debug_assertions)]
+pub use perturb::Perturbation;
 
 #[cfg(test)]
 mod tests;

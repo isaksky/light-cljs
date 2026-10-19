@@ -371,6 +371,10 @@ pub(crate) struct SharedCatalog {
     /// which a unit recorded off the coordinator hands it
     /// ([`crate::macro_host::UnitRecording`]); set when the pool starts.
     recording: std::sync::OnceLock<crate::macro_host::UnitRecording>,
+    /// The build's test-only perturbation ([`crate::scheduler::Perturbation`]):
+    /// the unit pool's scheduling, and the unit whose analysis panics.
+    #[cfg(debug_assertions)]
+    perturbation: std::sync::OnceLock<crate::scheduler::Perturbation>,
     #[cfg(test)]
     on_claim: Mutex<Option<ClaimHook>>,
     /// Runs on a waiting thread each time its wait ends, without the lock.
@@ -1569,6 +1573,11 @@ impl CompilationSession {
             })
             .collect()
     }
+    /// Perturb this build's unit pool and analyses, for a stress test.
+    #[cfg(debug_assertions)]
+    pub(crate) fn perturb(&self, perturbation: crate::scheduler::Perturbation) {
+        let _ = self.shared.perturbation.set(perturbation);
+    }
     /// Start the build's unit pool of `slots`, whose workers are bound to
     /// `environment` ([`UnitPool::start`]).
     pub(crate) fn start_pool(
@@ -2107,6 +2116,13 @@ fn compile_unit_in(
     id: usize,
     analyze: impl FnOnce() -> Result<(Arc<Program>, Vec<AnalysisWarning>), String>,
 ) -> Result<String, String> {
+    #[cfg(debug_assertions)]
+    if let Some(perturbation) = shared.perturbation.get()
+        && let Some(name) = &perturbation.panic_in
+        && shared.unit_name(id) == *name
+    {
+        panic!("injected panic in the compile-unit callback for {name}");
+    }
     let prepared = shared.prepared(id)?;
     crate::compile_trace::executed(id, prepared.is_some());
     let (registration, code) = if let Some(prepared) = prepared {
@@ -2243,6 +2259,10 @@ struct UnitJob(usize);
 impl crate::scheduler::Job for UnitJob {
     fn phase(&self) -> usize {
         0
+    }
+    #[cfg(debug_assertions)]
+    fn key(&self) -> u64 {
+        self.0 as u64
     }
 }
 /// How a build's unit pool analyzes (docs/compiler-concurrency.md, "As
@@ -2499,6 +2519,10 @@ fn worker_view(
             .isolates
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         PoolCounters::add(&counters.startup_ns, started);
+        #[cfg(debug_assertions)]
+        if let Some(perturbation) = shared.perturbation.get() {
+            (perturbation.isolates).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
     Ok(view)
 }
@@ -2517,6 +2541,10 @@ fn serve_pool(
     // A worker analyzes as deep as the coordinator, whose main thread has
     // 8 MiB; V8's stack limit is set from where each engine entry starts.
     config.stack_size = Some(8 << 20);
+    #[cfg(debug_assertions)]
+    {
+        config.perturbation = shared.perturbation.get().cloned();
+    }
     let run = crate::scheduler::run(
         &config,
         // A slot makes its view on its first job, and again after its

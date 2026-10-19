@@ -1484,6 +1484,10 @@ impl crate::scheduler::Job for ParseJob {
     fn phase(&self) -> usize {
         0
     }
+    #[cfg(debug_assertions)]
+    fn key(&self) -> u64 {
+        u64::from(self.id)
+    }
 }
 
 /// What a parse job returns to the coordinator.
@@ -1625,6 +1629,9 @@ struct Loader<'a> {
     /// With `--stats`, the time of each parse job the walk took, in source
     /// order.
     pooled_times: Vec<Duration>,
+    /// The parse pool's test-only perturbation.
+    #[cfg(debug_assertions)]
+    perturbation: Option<crate::scheduler::Perturbation>,
 }
 
 impl Loader<'_> {
@@ -1723,8 +1730,14 @@ impl Loader<'_> {
             record,
             timed,
         };
+        #[allow(unused_mut)]
+        let mut config = Config::new(self.slots, 1);
+        #[cfg(debug_assertions)]
+        {
+            config.perturbation = self.perturbation.clone();
+        }
         let pooled = crate::scheduler::run(
-            &Config::new(self.slots, 1),
+            &config,
             |_slot| (),
             |(), job, _worker| run_parse_job(provider, warning_mode, job),
             |pool| {
@@ -2237,6 +2250,10 @@ pub struct EntryRecorders<'a> {
     /// ([`crate::cache_policy::BlockerReach`]). The cache's own bypass
     /// comes from [`crate::compile_cache::CacheOptions::blockers`].
     pub blockers: &'a [String],
+    /// The test-only perturbation of this compilation's pools and unit
+    /// analyses ([`crate::scheduler::Perturbation`]), debug builds only.
+    #[cfg(debug_assertions)]
+    pub perturbation: Option<crate::scheduler::Perturbation>,
 }
 
 /// The artifact to install for a namespace, if any ([`EntryRecorders::install`]).
@@ -2483,6 +2500,8 @@ fn analyze_entry(
         mut cache,
         slots,
         blockers,
+        #[cfg(debug_assertions)]
+        perturbation,
     } = recorders;
     // V8 is initialized before this compilation starts a thread: the load
     // pool's now, the analysis workers' later.
@@ -2521,6 +2540,8 @@ fn analyze_entry(
         slots: parse_slots(slots),
         parses: ParseRecords::default(),
         pooled_times: Vec::new(),
+        #[cfg(debug_assertions)]
+        perturbation: perturbation.clone(),
     };
     let mut resolve_parse = Duration::ZERO;
     let started = compile_stats::start(timed);
@@ -2537,6 +2558,16 @@ fn analyze_entry(
     analysis.begin_generated_names(names_start);
     // Each namespace's macro-free units may be analyzed on the pool.
     analysis.unit_slots = parse_slots(slots);
+    #[cfg(debug_assertions)]
+    let fresh_isolates = perturbation.as_ref().is_some_and(|p| p.fresh_isolates);
+    #[cfg(not(debug_assertions))]
+    let fresh_isolates = false;
+    #[cfg(debug_assertions)]
+    if let Some(perturbation) = perturbation
+        && let Some(session) = macros.session_handle()
+    {
+        session.perturb(perturbation);
+    }
     // The compilation's session exists from here on.
     if let Some(reservation) = reserve
         && let Some(session) = macros.session_handle()
@@ -2593,7 +2624,7 @@ fn analyze_entry(
             && macros.engine.script_host.is_none()
             && !macros.tables.interactive
         {
-            if std::env::var_os("LIGHT_CLJS_FRESH_UNIT_ISOLATES").is_some() {
+            if fresh_isolates || std::env::var_os("LIGHT_CLJS_FRESH_UNIT_ISOLATES").is_some() {
                 PoolEngines::Fresh
             } else {
                 PoolEngines::Persistent

@@ -67,6 +67,10 @@ impl Job for Task {
     fn priority(&self) -> u64 {
         self.priority
     }
+    #[cfg(debug_assertions)]
+    fn key(&self) -> u64 {
+        self.id
+    }
 }
 
 fn task(id: u64) -> Task {
@@ -993,4 +997,94 @@ fn backlog_admission_ages_phases_behind_a_higher_priority() {
     // ahead of the stream.
     assert_eq!(order, [0, 1, 2, 3, 100, 4]);
     assert_eq!(s.counts.peak_backlog, 2);
+}
+
+/// The test-only perturbation (light-cljs-342) keeps the pool's contract:
+/// every job runs once, under random batches, steals and delays, with
+/// one-job admission, and under a fixed assignment, where each job runs on
+/// the worker the seed assigns it, local pushes included.
+#[cfg(debug_assertions)]
+#[test]
+fn perturbed_pools_run_every_job_once_and_a_fixed_assignment_holds() {
+    within(120, || {
+        for slots in [1, 2, 4, 8] {
+            for seed in 1..=4u64 {
+                for (fixed, tight) in [(false, false), (true, false), (false, true)] {
+                    let graph = Graph {
+                        total: 600,
+                        fanout: 3,
+                        phases: 2,
+                        seed,
+                        bytes: 0,
+                    };
+                    let mut config = config(slots, 2);
+                    let perturbation = Perturbation {
+                        seed,
+                        fixed,
+                        limits: tight.then(|| Limits {
+                            batch_jobs: 1,
+                            admitted_jobs: 1,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    };
+                    config.perturbation = Some(perturbation.clone());
+                    let (runs, outcomes, counts) = graph.run(&config);
+                    let case = format!("slots {slots} seed {seed} fixed {fixed} tight {tight}");
+                    assert!(runs.iter().all(|&n| n == 1), "{case}");
+                    assert_eq!(outcomes.len(), 600, "{case}");
+                    assert_eq!(
+                        counts.urgent + counts.local + counts.claims + counts.steals,
+                        600,
+                        "{case}"
+                    );
+                    let log = perturbation.log.lock().unwrap().clone();
+                    assert_eq!(log.len(), 600, "{case}");
+                    if tight {
+                        assert_eq!(counts.peak_admitted, 1, "{case}");
+                    }
+                    if fixed {
+                        let workers = slots.saturating_sub(1).max(1);
+                        for &(worker, key) in &log {
+                            assert_eq!(worker, perturbation.owner(key, workers), "{case}");
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// A perturbed claim takes jobs from random places, so one worker runs a
+/// batch submitted in order out of it.
+#[cfg(debug_assertions)]
+#[test]
+fn a_perturbed_worker_runs_a_batch_out_of_submission_order() {
+    within(30, || {
+        let reordered = (1..=4u64).any(|seed| {
+            let mut config = config(2, 1);
+            let perturbation = Perturbation::seeded(seed);
+            config.perturbation = Some(perturbation.clone());
+            run(
+                &config,
+                |_| (),
+                |_: &mut (), task: Task, _: &Worker<'_, Task, u64>| task.id,
+                |coordinator| {
+                    coordinator.submit_batch((0..64).map(task));
+                    while let Next::Outcome(_) = coordinator.next_outcome().unwrap() {}
+                },
+            )
+            .unwrap();
+            let keys: Vec<u64> = perturbation
+                .log
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|e| e.1)
+                .collect();
+            assert_eq!(keys.len(), 64);
+            keys.windows(2).any(|pair| pair[0] > pair[1])
+        });
+        assert!(reordered);
+    });
 }

@@ -1467,6 +1467,66 @@ output changes once, when stage A lands.
     saved in an earlier call, which has no identity to tell it from an equal
     new one. `tests/compiler/macro_scalar_spans.rs` and
     `macros::javascript_form_bridge` cover these cases.
+  - *As built (light-cljs-342), the determinism stress.* The hook is
+    `scheduler::Perturbation`, compiled under `cfg(debug_assertions)`, so
+    every test build has it and release binaries have none of it (a
+    `cfg(test)` hook does not reach integration tests, and a cargo feature
+    that test builds turn on needs a self dev-dependency, which rewrites
+    `Cargo.lock`). A build takes one through
+    `EntryRecorders::perturbation`, and its parse queue and unit pool use
+    it. One seed drives randomized delays (sleeps up to 1 ms, yields) at
+    each job's start and finish and at submission; claims from a random
+    place in the shared queue with a random batch size; a random steal
+    victim and amount; or, with `fixed`, an assignment of each job to the
+    worker the seed's hash of its key picks, which no other worker
+    claims or steals, in a random order. `limits` replaces the pool's
+    bounds (the stress uses one-job batches and one admitted job, every
+    worker saturated). It logs where each job ran, which a failure
+    prints. Two compiler hooks ride on it: `fresh_isolates`, a fresh
+    isolate per unit as `LIGHT_CLJS_FRESH_UNIT_ISOLATES` gives, and
+    `panic_in`, a Rust panic inside `__lightCompileUnit` for one Var's
+    unit, the callback a running macro's nested demand enters; with
+    `isolates`, which counts the engines the workers made even when the
+    build fails. `tests/compiler/schedule_stress.rs` builds the fixtures
+    of `macros.rs` (source order and generations, generated declarations,
+    nested demand, snapshots, mutual recursion, a cached failure,
+    `defonce`, saved functions, the extension frontier, transitive helpers
+    with their initialization order), of `compile_time_units.rs` and of
+    `deferred.rs`, and a mixed fixture (pure units, the counter's provider
+    as `--cache-blocker`, pure units, printing `1 2`), at 1, 2, 4 and 8
+    slots, in three modes (free, fixed, tight) per seed, against the
+    one-slot build: JavaScript, spans, source maps, warnings, errors,
+    macro calls, peak nodes, per-namespace calls and units registered,
+    analyzed and prepared, with the entry value and initialization order
+    from running it in Node. *Worker history:* six fixtures with a fresh
+    isolate per unit, with persistent isolates under two fixed
+    assignments at four slots and with one worker running every unit in
+    the seed's order; all match. *Retirement:* an isolate that runs out
+    of memory, or whose `__lightCompileUnit` callback panicked, fails the
+    unit as with one slot, and with one worker in a random order a unit
+    before it then runs in a new isolate (`Perturbation::isolates` ≥ 2);
+    a deadline is the build's, so after it every isolate fails.
+    *Liveness:* duplicate demands of one helper from 24 units, a
+    cross-worker cycle while the coordinator waits, a provider panic
+    during discovery, the callback panic during nested demand, tight
+    bounds, and `--jobs 1` with the same seeds (its inline parse queue is
+    perturbed too); none hangs. The run is bounded: seeds 1 to 3 (or
+    `LIGHT_CLJS_STRESS_SEEDS`) and a cap per test of 30 s
+    (`LIGHT_CLJS_STRESS_SECONDS`) checked after each seed, each fixture's
+    first seed always running. With three seeds the eleven tests take 0.1
+    to 15 s each, 15 s of wall time together under nextest; twelve seeds
+    took 58 s for the longest
+    ([benchmarks](../benchmarks/compiler-concurrency.md)). QuickJS-only
+    builds skip each test with a note. Synthetic tests next to the
+    scheduler check that a perturbed pool runs every job once in each
+    mode and that a fixed assignment holds. Findings: a pool panic's
+    message named the slot that ran the job (`compiler worker 3
+    panicked`), so a provider that panicked during discovery failed the
+    build with a different error per schedule; the message no longer
+    names it (`WorkerPanic::slot` stays). A deadline crossed in one unit
+    can be reported at an earlier unit that a random order started after
+    it, as the Limits bullet allows. A cycle's message depends on the unit
+    it was entered from (see "Open questions").
 - **Generated names.** Replace the four process-wide Rust counters and the
   per-heap JS `gensym` counter with allocation that is deterministic per
   unit: a unit-local counter plus a canonical unit discriminator, remapped or
@@ -1834,6 +1894,31 @@ sessions. A Penpot output comparison is not a browser run; the browser run
 is part of the stage A gate.
 
 ## Open questions
+
+- *A cycle's diagnostic depends on where it was entered (light-cljs-342).*
+  `schedule_stress::a_cross_worker_cycle_fails_the_build_at_the_same_unit_under_any_schedule`,
+  seed 1 at two slots, free mode, assignment `[(0, [0, 1, 2])]`: units
+  `a` and `b` each expand a macro that calls the other. With one slot the
+  drain analyzes `a` first and `b` inside it, so `b`'s analysis meets
+  `a` on its stack and fails, and `a` reports `while expanding mb:
+  ... app.main/b: macro expansion: while expanding ma: ... compile
+  dependency cycle: app.main/a -> app.main/b -> app.main/a`. When a
+  worker starts with `b` (or with `y`, which demands `b`), `a` is
+  analyzed inside `b` and fails first, and `a` reports `while expanding
+  mb: ... compile dependency cycle: app.main/b -> app.main/a ->
+  app.main/b` (or `app.main/y -> app.main/b -> app.main/a ->
+  app.main/b`). The build fails at the same unit and expansion every
+  time, but the text differs. Two decisions make it so: a cycle met on
+  one thread's stack keeps the serial message, its demand path from the
+  bottom of the stack, unchanged ("Cycles" under the thread-safety
+  audit), while a cross-thread one is rotated to the lowest unit; and a
+  unit's stored failure is whatever its own analysis met, so an inner
+  member of a cycle carries the cycle and the outer one carries it
+  wrapped. A byte-identical diagnostic needs a canonical cycle error,
+  such as failing every member with the lowest-rotated path at its own
+  definition, not wrapped, at every job count (`--jobs 1` included),
+  which changes today's serial message. The stress compares the failing
+  unit, its expansion and the cycle's members until that is decided.
 
 - *Affinity over coarse edges and computed names (light-cljs-340).* The
   group context gives affinity to a blocker's transitive compilation
