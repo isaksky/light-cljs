@@ -91,6 +91,16 @@ Settings, read by the build script:
 
 Explicit `RUSTY_V8_ARCHIVE`/`RUSTY_V8_SRC_BINDING_PATH` pairs bypass the cache.
 
+CI runners start without this cache. The `v8-engine` job in
+`.github/workflows/conformance.yml` restores the cache directory from the Actions
+cache under a key hashed from the root and engine `Cargo.toml`, `build.rs` and the
+three key files above (falling back to the newest engine), checks the crate with
+`LIGHT_CLJS_V8_CACHE=require` and, only on a miss, builds from source.
+`bb vendor/v8/ci-cache.bb CACHE-DIR TARGET-DIR` then deletes every entry the build
+did not use (it reads the entry named in the build script's output). The job
+saves the directory for later runs and uploads it as an artifact, which the jobs
+that link V8 in the same run download before building with `LIGHT_CLJS_V8_CACHE=require`.
+
 Rust bindings: MIT, [LICENSE](LICENSE). V8: BSD and notices in
 [LICENSE.v8](LICENSE.v8). Public headers used by light-cljs's C++ adapter live in
 `../v8-headers/include` and match the patched engine. Source-build transitive

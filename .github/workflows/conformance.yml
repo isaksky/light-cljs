@@ -7,11 +7,23 @@ on:
 permissions:
   contents: read
 
+# Native builds run macros in V8 by default and `--no-default-features` builds
+# in QuickJS. fast-tests and quickjs-tests run strict Clippy and the full suite
+# with each backend; the playground job keeps the WebAssembly (QuickJS) build.
+#
+# V8 comes from the patched source build in vendor/v8 through the per-user
+# cache that vendor/v8/build.rs reads (vendor/v8/README.md). The v8-engine job
+# restores that directory from the Actions cache under a key hashed from the
+# files that decide the engine (build.rs keys the same inputs, plus the runner's
+# target, which runner.os/arch stand for), builds the engine from source only on
+# a miss (an estimated 2-4 hours on a 4-vCPU runner) and hands the directory to
+# this run's V8 jobs as an artifact. Those jobs set LIGHT_CLJS_V8_CACHE=require,
+# so a missing engine fails in seconds instead of rebuilding.
 jobs:
-  fast-tests:
-    name: Rust and Node tests
+  v8-engine:
+    name: Patched V8 engine
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -20,6 +32,73 @@ jobs:
           bb: latest
       - name: Native macro engine prerequisites
         run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
+      - name: Locate the V8 cache
+        run: echo "LIGHT_CLJS_V8_CACHE_DIR=$HOME/.cache/light-cljs/v8" >> "$GITHUB_ENV"
+      # The fallback serves a root Cargo.toml change that leaves the engine as it
+      # was; build.rs uses an entry only if its recorded inputs match this build
+      # byte for byte, so a fallback to another engine just builds from source.
+      - id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/light-cljs/v8
+          key: light-cljs-v8-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml', 'vendor/v8/Cargo.toml', 'vendor/v8/build.rs', 'vendor/v8/upstream_build.rs', 'vendor/v8/prepare.bb', 'vendor/v8/engine-budget.patch') }}
+          restore-keys: light-cljs-v8-${{ runner.os }}-${{ runner.arch }}-
+      - name: Reuse a cached engine
+        id: cached
+        continue-on-error: true
+        env:
+          LIGHT_CLJS_V8_CACHE: require
+        run: cargo check --locked --lib
+      # Sources, toolchains and objects of a source build need many GB of disk.
+      - name: Free disk space for a V8 source build
+        if: steps.cached.outcome == 'failure'
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost
+          df -h /
+      - name: Build V8 from source on a miss
+        if: steps.cached.outcome == 'failure'
+        env:
+          LIGHT_CLJS_V8_CACHE: 'on'
+        run: cargo check --locked --lib
+      - name: Keep only this build's engine
+        run: bb vendor/v8/ci-cache.bb "$LIGHT_CLJS_V8_CACHE_DIR" target
+      # This run's V8 jobs take the engine from the artifact: a cache save can
+      # be skipped (another run holding the key) while the job still succeeds.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v8-engine
+          path: ~/.cache/light-cljs/v8
+          retention-days: 1
+          if-no-files-found: error
+      - name: Save the engine for later runs
+        if: steps.restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/light-cljs/v8
+          key: ${{ steps.restore.outputs.cache-primary-key }}
+
+  fast-tests:
+    name: Rust and Node tests (V8)
+    needs: v8-engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      LIGHT_CLJS_V8_CACHE: require
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          bb: latest
+      - name: Native macro engine prerequisites
+        run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
+      - name: Locate the V8 cache
+        run: echo "LIGHT_CLJS_V8_CACHE_DIR=$HOME/.cache/light-cljs/v8" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: v8-engine
+          path: ~/.cache/light-cljs/v8
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
@@ -40,10 +119,38 @@ jobs:
       - run: node tests/support/js_core_helpers.test.js
       - run: node tests/support/execution.test.js
 
+  quickjs-tests:
+    name: Rust tests (QuickJS, no default features)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+      - name: Fetch exact compiler source
+        run: |
+          git init research/clojurescript
+          git -C research/clojurescript remote add origin https://github.com/clojure/clojurescript.git
+          git -C research/clojurescript fetch --depth 1 origin a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e
+          git -C research/clojurescript checkout --detach FETCH_HEAD
+      # The macro suites (state, snapshots, redefinition, exceptions and
+      # limits) run here with every macro in QuickJS. Tests whose expectations
+      # differ by engine branch on cfg!(feature = "v8-macros").
+      - run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
+      - run: cargo nextest run --locked --profile ci --no-default-features
+
   conformance:
     name: Pinned ClojureScript comparisons
+    needs: v8-engine
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      LIGHT_CLJS_V8_CACHE: require
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -52,6 +159,12 @@ jobs:
           bb: latest
       - name: Native macro engine prerequisites
         run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
+      - name: Locate the V8 cache
+        run: echo "LIGHT_CLJS_V8_CACHE_DIR=$HOME/.cache/light-cljs/v8" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: v8-engine
+          path: ~/.cache/light-cljs/v8
       - uses: actions/setup-node@v4
         with:
           node-version: '24.18.0'

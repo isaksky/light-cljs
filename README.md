@@ -602,6 +602,21 @@ tests at a time, starts the slowest tests first and sets the slow-test timeout;
 the `ci` profile (`cargo nextest run --profile ci`) uses every CPU and reports
 every failure.
 
+Macros run in V8 in the default build and in QuickJS with `--no-default-features`,
+so run the suite and strict Clippy both ways after changing the macro host,
+evaluators or compilation session: add `--no-default-features` to the commands
+above. Tests whose expectations differ by engine branch on
+`cfg!(feature = "v8-macros")`. CI ([.github/workflows/conformance.yml](.github/workflows/conformance.yml))
+runs Clippy and the suite once per backend (`fast-tests` with V8, `quickjs-tests`
+without), and its `v8-engine` job keeps the patched V8 in the Actions cache, keyed
+by the files that decide the engine ([engine cache](vendor/v8/README.md#machine-wide-engine-cache)),
+and hands it to the other V8 jobs, which build with `LIGHT_CLJS_V8_CACHE=require`.
+A run that finds the engine cached adds a few minutes for that job; the first run
+after a change to the engine's inputs builds V8 from source, an estimated 2 to 4
+hours on a 4-vCPU runner, before the V8 jobs start. GitHub also evicts a cache
+that no run has read for 7 days, and a branch's first run reads only its own and
+the default branch's caches.
+
 `size_ratchet` (`tests/compiler/size_ratchet.rs`) pins the emitted size of a few
 small programs (`tests/support/ratchet_fixtures.rs`) at each `--optimize` level
 and runs them at every level in Node;
