@@ -702,17 +702,31 @@ fn an_isolate_past_the_deadline_fails_the_build_under_any_schedule() {
     if skipped() {
         return;
     }
-    let fixture = {
-        let mut fixture = Fixture::main(
+    let program = |a: &str| {
+        Fixture::main(&format!(
             "(defmacro spin [] (loop [n 0] (recur (inc n))))\n\
              (defn before [] 1)\n\
-             (def a (spin))\n\
+             (def a {a})\n\
              (defn b [] 2)\n\
-             (defn c [] 3)",
-        );
+             (defn c [] 3)"
+        ))
+    };
+    // A deadline past what the build takes now without the spin, at the
+    // slot count that starts the most isolates, once the process has
+    // compiled the bootstrap.
+    static TIMEOUT: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    let without_spin = program("0");
+    without_spin.build(8, None).output.unwrap();
+    TIMEOUT.get_or_init(|| {
+        crate::macro_free_units::deadline_after(|| {
+            without_spin.build(8, None).output.unwrap();
+        })
+    });
+    let fixture = {
+        let mut fixture = program("(spin)");
         fixture.host = || {
             let mut host = stress_host();
-            host.evaluator_options.timeout = Duration::from_millis(300);
+            host.evaluator_options.timeout = *TIMEOUT.get().unwrap();
             host
         };
         fixture

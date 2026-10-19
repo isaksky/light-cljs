@@ -151,23 +151,50 @@ fn a_helper_with_test_metadata_demanded_from_a_worker_is_analyzed_there() {
 }
 
 #[test]
-fn a_worker_isolate_that_runs_out_of_time_fails_its_unit_and_the_build_ends() {
-    // `a`'s unit spins in its worker's isolate until the macro deadline:
-    // the engine fails for good and is retired, the coordinator waiting
-    // for `a` gets its failure, and the build fails at every slot count.
+fn a_first_pooled_build_compiles_the_bootstrap_before_its_deadline_starts() {
+    // As the first build of its test process, this one compiles the
+    // bootstrap units, before its isolates share a deadline: in one of
+    // them the compilation would spend it (a debug assertion in
+    // `ExecutionControl::exempt`, light-cljs-378).
     let sources = Sources::new();
     sources.write("app/m.cljc", MACROS).write(
         "app/s.cljs",
         r#"(ns app.s (:require [app.m :refer [twice]]))
+(def a (twice 1))
+(def b (for [x [1 2]] (twice x)))
+(js/console.log (pr-str [a (vec b)]))"#,
+    );
+    let built = crate::macro_free_units::build(&sources, "app.s", 4, false);
+    assert_eq!(execute(&built.output.unwrap()), "[3 [3 4]]\n");
+}
+
+#[test]
+fn a_worker_isolate_that_runs_out_of_time_fails_its_unit_and_the_build_ends() {
+    // `a`'s unit spins in its worker's isolate until the macro deadline:
+    // the engine fails for good and is retired, the coordinator waiting
+    // for `a` gets its failure, and the build fails at every slot count.
+    let program = |a: &str| {
+        let sources = Sources::new();
+        sources.write("app/m.cljc", MACROS).write(
+            "app/s.cljs",
+            &format!(
+                r#"(ns app.s (:require [app.m :refer [twice]]))
 (defmacro spin [] (loop [n 0] (recur (inc n))))
 (def before (twice 1))
-(def a (spin))
+(def a {a})
 (def b (twice 2))
-(def c (twice 3))"#,
-    );
+(def c (twice 3))"#
+            ),
+        );
+        sources
+    };
+    let (sources, without_spin) = (program("(spin)"), program("0"));
     for slots in [1, 2, 4] {
         let mut host = light_cljs::MacroHost::new();
-        host.evaluator_options.timeout = std::time::Duration::from_millis(300);
+        host.evaluator_options.timeout = crate::macro_free_units::deadline_after(|| {
+            let built = crate::macro_free_units::build(&without_spin, "app.s", slots, false);
+            built.output.unwrap();
+        });
         let built = crate::macro_free_units::build_with(&sources, "app.s", slots, false, host);
         let error = built.output.unwrap_err();
         // Wall-clock failures are scheduling-sensitive ("Semantics and

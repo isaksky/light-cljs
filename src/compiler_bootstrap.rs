@@ -281,11 +281,30 @@ pub(crate) fn bind(
 ) -> Result<Bootstrap, String> {
     build_in(evaluator, true)
 }
+/// Compile the process-wide bootstrap units now, unless a thread has, in a
+/// short-lived engine of the kind `owner` makes, with the default limits:
+/// a build with several isolates does this before it starts the deadline
+/// they share, which no isolate's own exemption stops (light-cljs-378).
+pub(crate) fn prepare(owner: &MacroHost) -> Result<(), String> {
+    if UNITS.get().is_some() {
+        return Ok(());
+    }
+    let mut host = MacroHost::new();
+    host.engine.script_host = owner.engine.script_host.clone();
+    let evaluator = host.new_compiler_evaluator().map_err(|e| e.to_string())?;
+    build_in(evaluator, true).map(drop)
+}
 fn build_in(
     evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
     cache: bool,
 ) -> Result<Bootstrap, String> {
     let cached = if cache { UNITS.get() } else { None };
+    // Compiling the units is the process's work, not the build's: the
+    // engine's deadline and poll budget stand still meanwhile, so a build
+    // is charged only for installing them, the same whether or not the
+    // process compiled them before (light-cljs-378). Their text depends on
+    // no engine or setting.
+    let control = evaluator.control();
     let _names = crate::generated_names::enter_namespace(crate::generated_names::BOOTSTRAP_SCOPE);
     let mut bootstrap = Bootstrap {
         evaluator,
@@ -297,7 +316,7 @@ fn build_in(
     let core = match cached {
         Some(units) => &units[0],
         None => {
-            compiled_core = compile(&core_source(), &mut host)?;
+            compiled_core = control.exempt(|| compile(&core_source(), &mut host))?;
             &compiled_core
         }
     };
@@ -311,10 +330,12 @@ fn build_in(
     let sequence = match cached {
         Some(units) => &units[1],
         None => {
-            compiled_sequence = compile(
-                &format!("{SEQUENCES}\n{{\"for\" sequence-for \"doseq\" sequence-doseq}}"),
-                &mut host,
-            )?;
+            compiled_sequence = control.exempt(|| {
+                compile(
+                    &format!("{SEQUENCES}\n{{\"for\" sequence-for \"doseq\" sequence-doseq}}"),
+                    &mut host,
+                )
+            })?;
             &compiled_sequence
         }
     };
@@ -823,6 +844,27 @@ impl MacroHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Compiling the bootstrap units, as a process's first build does,
+    /// spends none of the build engine's poll budget (or deadline): the
+    /// engine is charged what installing them costs, as when another build
+    /// compiled them before (light-cljs-378). An interactive host's QuickJS
+    /// engine counts its polls deterministically.
+    #[cfg(light_quickjs)]
+    #[test]
+    fn compiling_the_units_charges_nothing_to_the_build_engine() {
+        let mut owner = MacroHost::new();
+        owner.tables.interactive = true;
+        let remaining = |cache| {
+            let bootstrap = build(&owner, cache).unwrap();
+            bootstrap.evaluator.control().remaining_polls()
+        };
+        // The first build may compile the units, the second installs them.
+        remaining(true);
+        let installed = remaining(true);
+        assert!(installed < owner.evaluator_options.poll_budget);
+        assert_eq!(remaining(false), installed);
+    }
 
     #[test]
     fn bootstrap_environment_reads_follow_resolved_locals_and_reflection() {

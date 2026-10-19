@@ -2721,6 +2721,9 @@ fn analyze_entry(
         };
         let mut resources = None;
         if engines != PoolEngines::None {
+            // Every isolate installs the bootstrap units: they are compiled
+            // before the build's deadline starts (light-cljs-378).
+            crate::compiler_bootstrap::prepare(macros).map_err(NamespaceCompileError::new)?;
             pool_slots = crate::scheduler::Slots::new(isolates).unwrap_or(pool_slots);
             resources = Some(
                 crate::evaluator::BuildResources::new(&macros.evaluator_options, isolates)

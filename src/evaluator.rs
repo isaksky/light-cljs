@@ -174,6 +174,34 @@ impl ExecutionControl {
             .store(options.poll_budget, Ordering::Relaxed);
         self.poll()
     }
+    /// Run `work`, compiler work no operation is charged for, such as
+    /// compiling the process's bootstrap units: this control's deadline
+    /// and poll budget stand still while it runs. Cancellation and a linked
+    /// build's deadline still apply, and a failure met meanwhile stays, so
+    /// a build with several isolates does such work before its deadline
+    /// starts ([`crate::compiler_bootstrap::prepare`]).
+    pub(crate) fn exempt<T>(&self, work: impl FnOnce() -> T) -> T {
+        debug_assert!(
+            self.0.build.is_none(),
+            "exempt work in an isolate of a build would still spend the build's deadline"
+        );
+        let started = self.0.clock_origin.elapsed();
+        let deadline = self.0.deadline_nanos.swap(u64::MAX, Ordering::Relaxed);
+        let remaining = self.0.remaining.swap(u64::MAX, Ordering::Relaxed);
+        let result = work();
+        let spent =
+            u64::try_from((self.0.clock_origin.elapsed() - started).as_nanos()).unwrap_or(u64::MAX);
+        self.0
+            .deadline_nanos
+            .store(deadline.saturating_add(spent), Ordering::Relaxed);
+        self.0.remaining.store(remaining, Ordering::Relaxed);
+        result
+    }
+    /// What is left of the current operation's poll budget.
+    #[cfg(test)]
+    pub(crate) fn remaining_polls(&self) -> u64 {
+        self.0.remaining.load(Ordering::Relaxed)
+    }
     pub fn cancel(&self) {
         self.0.cancelled.store(true, Ordering::Relaxed);
     }
@@ -2896,6 +2924,38 @@ mod active_tests {
         other.context.as_ref().unwrap().with(|ctx| {
             assert!(evaluator.active(ctx).is_err());
         });
+    }
+
+    /// Exempt work spends neither the deadline nor the poll budget, and
+    /// the control goes on with what it had left.
+    #[test]
+    fn exempt_work_leaves_the_deadline_and_poll_budget_as_they_were() {
+        let control = ExecutionControl::new(&EvaluatorOptions {
+            timeout: Duration::from_secs(1),
+            poll_budget: 3,
+            ..Default::default()
+        })
+        .unwrap();
+        control.exempt(|| {
+            std::thread::sleep(Duration::from_millis(1200));
+            for _ in 0..10 {
+                control.poll().unwrap();
+            }
+        });
+        for _ in 0..3 {
+            control.poll().unwrap();
+        }
+        let error = control.poll().unwrap_err();
+        assert!(error.0.contains("poll budget exhausted"), "{error}");
+        let control = ExecutionControl::new(&EvaluatorOptions {
+            timeout: Duration::from_millis(1),
+            ..Default::default()
+        })
+        .unwrap();
+        control.exempt(|| std::thread::sleep(Duration::from_millis(5)));
+        std::thread::sleep(Duration::from_millis(5));
+        let error = control.poll().unwrap_err();
+        assert!(error.0.contains("deadline exceeded"), "{error}");
     }
 
     #[test]

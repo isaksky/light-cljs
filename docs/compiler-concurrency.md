@@ -1789,6 +1789,27 @@ output changes once, when stage A lands.
     timeout or memory failure is reported at depends on scheduling and is
     not promised byte-identical across job counts. `tests/cli.rs`
     `a_build_stopped_at_its_deadline_writes_no_output_at_any_job_count`.
+  - *As built (light-cljs-378), the bootstrap is not charged.* The
+    process-wide bootstrap units are compiled on the process's first use,
+    and that compilation is exempt from the engine's deadline and poll
+    budget (`ExecutionControl::exempt`), which stand still while it runs;
+    a pooled build compiles them before its resources are made, in a
+    short-lived engine with the default limits
+    (`compiler_bootstrap::prepare`), since the build's deadline has no
+    exemption. A build is charged only for installing the units, the same
+    whether or not the process compiled them before: a first build used
+    to spend about 125 ms of a debug binary's deadline, and the polls of
+    every core macro the sequence unit expands, on compiling them.
+    `compiler_bootstrap::tests::compiling_the_units_charges_nothing_to_the_build_engine`;
+    `worker_isolates.rs`
+    `a_first_pooled_build_compiles_the_bootstrap_before_its_deadline_starts`
+    fails, through a debug assertion in `exempt`, if a pooled build
+    compiles them in one of its isolates. The deadline tests in
+    `tests/compiler/schedule_stress.rs` and `worker_isolates.rs`, which
+    failed in the bootstrap under load, now spend 16-38 ms of their
+    300 ms before the spinning macro, and take a deadline of four times
+    what the same build without the spin takes at that moment when that
+    is longer (`macro_free_units::deadline_after`).
   - *Stacks.* Pool threads have 8 MiB stacks (light-cljs-339), and V8's
     limit is set from the thread each engine entry starts on.
     `deep_recursion_in_a_macro_on_a_pool_thread_meets_the_engine_stack_limit`

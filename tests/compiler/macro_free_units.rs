@@ -44,6 +44,16 @@ pub(crate) fn build(sources: &Sources, entry: &str, slots: usize, warning_mode: 
     build_with(sources, entry, slots, warning_mode, MacroHost::new())
 }
 
+/// A macro deadline that the work before a spinning macro does not reach:
+/// 300 ms, or four times what `before`, that work without the spin, takes
+/// now if load makes it slower. Tests that assert which form a wall-clock
+/// deadline stops a build at use it (light-cljs-378).
+pub(crate) fn deadline_after(before: impl FnOnce()) -> std::time::Duration {
+    let started = std::time::Instant::now();
+    before();
+    (started.elapsed() * 4).max(std::time::Duration::from_millis(300))
+}
+
 pub(crate) fn build_with(
     sources: &Sources,
     entry: &str,
