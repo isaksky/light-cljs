@@ -838,102 +838,115 @@ impl MacroHost {
         tag: &Name,
         value: &crate::compiler_data::Datum,
     ) -> Result<Option<crate::compiler_data::Datum>, String> {
-        let run = || -> Result<Option<crate::compiler_data::Datum>, String> {
-            let (evaluator, function, fallback) = {
-                let sources = &self.tables.data_readers;
-                let mut readers = self.engine.data_readers.borrow_mut();
-                let fallback = !sources.units.contains_key(tag);
-                let unit = if fallback {
-                    if tag.namespace().is_none()
-                        && matches!(
-                            String::from_utf16_lossy(tag.name()).as_ref(),
-                            "inst" | "uuid" | "js" | "queue"
-                        )
-                    {
-                        return Ok(None);
-                    }
-                    sources.default_unit.clone()
-                } else {
-                    sources.units.get(tag).cloned()
-                };
-                let Some(unit) = unit else {
-                    return Ok(None);
-                };
-                if readers.evaluator.is_none() {
-                    let evaluator = self.new_evaluator().map_err(|e| e.to_string())?;
-                    self.install_reader_build_services(&evaluator)
-                        .map_err(|e| e.to_string())?;
-                    readers.evaluator = Some(std::rc::Rc::new(evaluator));
-                }
-                let evaluator = readers.evaluator.as_ref().unwrap().clone();
-                let cached = if fallback {
-                    readers.default_function
-                } else {
-                    readers.functions.get(tag).copied()
-                };
-                let function = if let Some(function) = cached {
-                    function
-                } else {
-                    let function = evaluator.evaluate_unit(&unit).map_err(|e| e.to_string())?;
-                    if fallback {
-                        readers.default_function = Some(function);
+        let run =
+            || -> Result<Option<crate::compiler_data::Datum>, String> {
+                let (evaluator, function, fallback) = {
+                    let sources = &self.tables.data_readers;
+                    let mut readers = self.engine.data_readers.borrow_mut();
+                    let fallback = !sources.units.contains_key(tag);
+                    let unit = if fallback {
+                        if tag.namespace().is_none()
+                            && matches!(
+                                String::from_utf16_lossy(tag.name()).as_ref(),
+                                "inst" | "uuid" | "js" | "queue"
+                            )
+                        {
+                            return Ok(None);
+                        }
+                        sources.default_unit.clone()
                     } else {
-                        readers.functions.insert(tag.clone(), function);
+                        sources.units.get(tag).cloned()
+                    };
+                    let Some(unit) = unit else {
+                        return Ok(None);
+                    };
+                    if readers.evaluator.is_none() {
+                        let evaluator = self.new_evaluator().map_err(|e| e.to_string())?;
+                        self.install_reader_build_services(&evaluator)
+                            .map_err(|e| e.to_string())?;
+                        readers.evaluator = Some(std::rc::Rc::new(evaluator));
                     }
-                    function
+                    let evaluator = readers.evaluator.as_ref().unwrap().clone();
+                    let cached = if fallback {
+                        readers.default_function
+                    } else {
+                        readers.functions.get(tag).copied()
+                    };
+                    let function = if let Some(function) = cached {
+                        function
+                    } else {
+                        // In a scope of the reader's own, so that a `gensym` its
+                        // definition calls gives one name whichever namespaces
+                        // are hits and whichever reader runs first.
+                        let key = match (fallback, name_parts(tag)) {
+                            (true, _) => "#".to_owned(),
+                            (false, (Some(namespace), name)) => format!("#{namespace}/{name}"),
+                            (false, (None, name)) => format!("#{name}"),
+                        };
+                        let _scope = crate::generated_names::enter_reader_definition(&key, &unit);
+                        crate::generated_names::sync_reader_gensym_scope(&*evaluator)
+                            .map_err(|e| e.to_string())?;
+                        let function = evaluator.evaluate_unit(&unit).map_err(|e| e.to_string())?;
+                        if fallback {
+                            readers.default_function = Some(function);
+                        } else {
+                            readers.functions.insert(tag.clone(), function);
+                        }
+                        function
+                    };
+                    (evaluator, function, fallback)
                 };
-                (evaluator, function, fallback)
-            };
-            let limits = crate::form_bridge::ConversionLimits {
-                nodes: self.limits.generated_nodes,
-                depth: 128,
-            };
-            // Each conversion takes at most the node limit itself, so a
-            // namespace needs a limit of at least its largest.
-            let measuring = self.engine.work.measuring.get();
-            if measuring {
-                WorkMarks::note(&self.engine.work.conversion_peak, WorkMarks::nodes(value));
-            }
-            let argument = evaluator
-                .import_data(value, limits)
-                .map_err(|e| e.to_string())?;
-            let tag_argument = if fallback {
-                match evaluator.import_data(
-                    &crate::compiler_data::DataBuilder.symbol(tag.clone()),
-                    limits,
-                ) {
-                    Ok(value) => Some(value),
-                    Err(error) => {
-                        let _ = evaluator.release(argument);
-                        return Err(error.to_string());
+                let limits = crate::form_bridge::ConversionLimits {
+                    nodes: self.limits.generated_nodes,
+                    depth: 128,
+                };
+                // Each conversion takes at most the node limit itself, so a
+                // namespace needs a limit of at least its largest.
+                let measuring = self.engine.work.measuring.get();
+                if measuring {
+                    WorkMarks::note(&self.engine.work.conversion_peak, WorkMarks::nodes(value));
+                }
+                let argument = evaluator
+                    .import_data(value, limits)
+                    .map_err(|e| e.to_string())?;
+                let tag_argument = if fallback {
+                    match evaluator.import_data(
+                        &crate::compiler_data::DataBuilder.symbol(tag.clone()),
+                        limits,
+                    ) {
+                        Ok(value) => Some(value),
+                        Err(error) => {
+                            let _ = evaluator.release(argument);
+                            return Err(error.to_string());
+                        }
+                    }
+                } else {
+                    None
+                };
+                // Its `gensym` names belong to the namespace being read.
+                let result = crate::generated_names::sync_reader_gensym_scope(&*evaluator)
+                    .and_then(|()| match tag_argument {
+                        Some(tag_argument) => evaluator.call(function, &[tag_argument, argument]),
+                        None => evaluator.call(function, &[argument]),
+                    });
+                let _ = evaluator.release(argument);
+                if let Some(tag_argument) = tag_argument {
+                    let _ = evaluator.release(tag_argument);
+                }
+                let result = result.map_err(|e| e.to_string())?;
+                let data = evaluator
+                    .export_data(result, limits)
+                    .map_err(|e| e.to_string());
+                let _ = evaluator.release(result);
+                if measuring && data.is_ok() {
+                    let readers = self.engine.data_readers.borrow();
+                    match take_encode_peak(&*evaluator, &readers.encode_peak) {
+                        Some(peak) => WorkMarks::note(&self.engine.work.conversion_peak, peak),
+                        None => self.engine.work.unmeasured.set(true),
                     }
                 }
-            } else {
-                None
+                data.map(Some)
             };
-            let result = if let Some(tag_argument) = tag_argument {
-                evaluator.call(function, &[tag_argument, argument])
-            } else {
-                evaluator.call(function, &[argument])
-            };
-            let _ = evaluator.release(argument);
-            if let Some(tag_argument) = tag_argument {
-                let _ = evaluator.release(tag_argument);
-            }
-            let result = result.map_err(|e| e.to_string())?;
-            let data = evaluator
-                .export_data(result, limits)
-                .map_err(|e| e.to_string());
-            let _ = evaluator.release(result);
-            if measuring && data.is_ok() {
-                let readers = self.engine.data_readers.borrow();
-                match take_encode_peak(&*evaluator, &readers.encode_peak) {
-                    Some(peak) => WorkMarks::note(&self.engine.work.conversion_peak, peak),
-                    None => self.engine.work.unmeasured.set(true),
-                }
-            }
-            data.map(Some)
-        };
         let result = run();
         if result.is_err() {
             let mut readers = self.engine.data_readers.borrow_mut();

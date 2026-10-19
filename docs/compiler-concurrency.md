@@ -1144,11 +1144,17 @@ output changes once, when stage A lands.
     initializer, such as in a deferred unit's function called later at
     compile time, numbers in the scope the heap was last put in: unique and
     deterministic serially, but not tied to the unit that runs it.
-    Per-worker isolates (light-cljs-339) should keep it in mind. A custom
-    data reader's evaluator stays unscoped (light-cljs-350).
+    Per-worker isolates (light-cljs-339) should keep it in mind.
     `READER_GENERATION` stays process-wide: it only tells compilations
     apart for a macro environment's reader, is compared for equality and
     never reaches output or artifacts.
+  - *As built (light-cljs-350):* a custom data reader's evaluator is put in
+    the scope of the namespace being read before each reader call, as
+    `D_0_` and a count of its own (`sync_reader_gensym_scope`), and retires
+    ended scopes from a list of its own, so it never takes the retirements
+    the compile-time runtime is owed. Its function is evaluated in a scope
+    of the reader's own, a digest of its tag and emitted unit
+    (`enter_reader_definition`).
 - **Warnings.** Buffer them per task and emit them at merge in canonical
   order. Cross-namespace arity warnings move to the merge post-pass.
 - **Errors.** Report the failure with the earliest canonical position, which

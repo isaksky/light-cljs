@@ -1206,6 +1206,101 @@ fn installing_a_hit_reserves_its_gensyms_in_a_running_runtime() {
     assert_eq!(mixed.iter().collect::<BTreeSet<_>>().len(), 6, "{mixed:?}");
 }
 
+/// A host with the custom data readers `#test/uniq`, whose evaluator
+/// returns a quoted gensym on each call, and `#test/one` and `#test/two`,
+/// each of which returns the quoted gensym its definition made.
+fn uniq_reader_host() -> MacroHost {
+    let mut host = MacroHost::new();
+    for (tag, function) in [
+        ("uniq", "(fn [_] (list 'quote (gensym \"r\")))"),
+        ("one", "(let [s (gensym \"r\")] (fn [_] (list 'quote s)))"),
+        ("two", "(let [s (gensym \"r\")] (fn [_] (list 'quote s)))"),
+    ] {
+        host.register_compiler_data_reader(
+            light_cljs::compiler_data::Name::new(Some("test"), tag),
+            function,
+        )
+        .unwrap();
+    }
+    host
+}
+
+/// A custom data reader runs in an evaluator of its own, which a hit never
+/// starts. Its `gensym` numbers in the scope of the namespace it reads, as
+/// the compile-time runtime's does, and in a scope of the reader's own while
+/// its definition is evaluated (light-cljs-350), so a miss after a hit
+/// never returns the hit's symbol, whether a call or a definition made it;
+/// a hit keeps the symbol it was captured with, and every mix prints what
+/// the uncached build prints.
+#[test]
+fn custom_reader_gensyms_stay_distinct_across_every_mix() {
+    let sources = Sources::new(&[
+        ("a.cljs", "(ns a) (def s #test/uniq a) (def d #test/one a)"),
+        (
+            "b.cljs",
+            "(ns b) (def d #test/one b) (def s #test/uniq b) (def e #test/two b)",
+        ),
+        (
+            "main.cljs",
+            "(ns main (:require [a] [b])) (js/console.log (pr-str [a/s b/s a/d b/e b/d]) (= a/s b/s) (= a/d b/e) (= a/d b/d))",
+        ),
+    ]);
+    let roots = sources.roots();
+    let input = Input::Roots(&roots);
+    let uncached = analyze_namespace_entry_with_sources(
+        "main",
+        &roots,
+        &mut uniq_reader_host(),
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+    )
+    .unwrap()
+    .0;
+    let (expected, equal) = printed_gensyms(&run(&uncached));
+    assert_eq!(equal, "false false true", "{expected:?}");
+    let captured = capture_in(
+        input,
+        "main",
+        &[],
+        AnalysisOptions::default(),
+        &mut uniq_reader_host(),
+    )
+    .unwrap();
+    assert_eq!(captured.eligible, ["a", "b", "main"]);
+    let (names, _) = printed_gensyms(&run(&captured.program));
+    assert_eq!(names, expected);
+    for hits in every_mix(&captured) {
+        let (program, stats, _) = compile_installing_with(
+            input,
+            "main",
+            &chosen(&captured, &hits),
+            &mut uniq_reader_host(),
+            AnalysisOptions::default(),
+            None,
+        )
+        .unwrap();
+        let mut installed = stats.install.unwrap().installed;
+        installed.sort();
+        let mut wanted = hits.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        wanted.sort();
+        assert_eq!(installed, wanted);
+        let (mixed, equal) = printed_gensyms(&run(&program));
+        assert_eq!(equal, "false false true", "hits {hits:?}: {mixed:?}");
+        assert_eq!(
+            mixed.iter().collect::<BTreeSet<_>>().len(),
+            4,
+            "hits {hits:?}: {mixed:?}"
+        );
+        assert_eq!(mixed, expected, "hits {hits:?}");
+        for (index, namespace) in ["a", "b"].iter().enumerate() {
+            if hits.contains(namespace) {
+                assert_eq!(mixed[index], names[index], "hits {hits:?}");
+                assert_eq!(mixed[index + 2], names[index + 2], "hits {hits:?}");
+            }
+        }
+    }
+}
+
 /// `gensym` appends its counter to any prefix, so a prefix ending in a digit
 /// spells what another prefix spells at another count: `x1` at 1 and `x` at
 /// 11 are both `x11`. A hit's spellings are reserved as spelled, so a miss

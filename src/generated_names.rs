@@ -12,8 +12,10 @@
 //! the thread, on what the process compiled before or on the order in which
 //! units run, and no two scopes spell a name alike. The compile-time
 //! runtime's `gensym` numbers in the scope whose macro it expands
-//! ([`sync_gensym_scope`]), with its count in that runtime. The compiler's
-//! bootstrap macros read in a scope of their own ([`BOOTSTRAP_SCOPE`]).
+//! ([`sync_gensym_scope`]), with its count in that runtime, and a custom
+//! data reader's runtime in the scope of the namespace it reads
+//! ([`sync_reader_gensym_scope`]). The compiler's bootstrap macros read in
+//! a scope of their own ([`BOOTSTRAP_SCOPE`]).
 //! Since a namespace keeps its names wherever it loads and whatever the
 //! cache holds, a namespace installed from its artifact retains exactly the
 //! names a fresh analysis of its source gives, and a fresh namespace next to
@@ -51,7 +53,7 @@
 //! | [`next_binding`] | `binding__D_0_N__auto__` | `binding__N__auto__` | per scope; window reserved |
 //! | [`next_destructure`] | `compiler_destructure__D_0_N__auto__` | `compiler_destructure__N__auto__` | per scope; window reserved |
 //! | the compile-time runtime's `gensym` | `G__D_N`, `prefixD_N` | `G__N` | per scope; counter and spellings reserved |
-//! | a custom data reader evaluator's `gensym` | in reader output | the same | not scoped, not reserved (light-cljs-350) |
+//! | a custom data reader evaluator's `gensym` | `G__D_0_N` | `G__N` | per scope (light-cljs-350); not reserved |
 //! | `READER_GENERATION` (macro_host.rs) | a compilation's reader generation | | never spelled in output, never retained |
 //! | `NEXT_SOURCE` (compiler_data.rs) | [`crate::compiler_data::SourceId`] | | never spelled, never retained |
 //! | the session's unit IDs | `declaration#N`, `:test#N` | | renumbered on install |
@@ -72,9 +74,17 @@
 //! installed namespace's macros read in the installing compilation's
 //! generation. Source IDs identify loaded source text inside one process;
 //! artifacts refer to sources by index. Unit IDs are relocated by
-//! [`crate::artifact_install`]. A custom data reader runs in an evaluator of
-//! its own, whose counter is independent of the session's, so its names are
-//! not kept apart from the session's, in uncached builds either.
+//! [`crate::artifact_install`].
+//!
+//! A custom data reader runs in an evaluator of its own, which a cache hit
+//! never starts, so its counter in a miss after a hit is not where it is in
+//! an uncached build. In a scope its `gensym` spells `D_0_` and a count of
+//! the scope's own in that evaluator, which no unit's prefix `D_K` begins:
+//! its names in a namespace are the same whichever namespaces hit, so they
+//! need no reservation, and differ from the compile-time runtime's. Its
+//! function is evaluated in a scope of the reader's own
+//! ([`enter_reader_definition`]), so a `gensym` its definition calls gives
+//! one name whichever namespace first reads with it.
 //!
 //! A macro that needs the allocation sequence itself to repeat, rather than
 //! fresh names, does not keep that across a cache hit: its namespace opts
@@ -160,6 +170,13 @@ impl Scope {
     fn gensym_prefix(&self) -> String {
         format!("{}_", self.prefix)
     }
+
+    /// What a custom data reader's `gensym` appends in the scope: `D_0_`,
+    /// which no unit's prefix `D_K` begins, K being from 1, so its names,
+    /// `G__D_0_N`, are never the compile-time runtime's.
+    fn reader_gensym_prefix(&self) -> String {
+        format!("{}_0_", self.prefix)
+    }
 }
 
 thread_local! {
@@ -186,6 +203,14 @@ impl Drop for ScopeGuard {
             }
             retired.push(self.0);
         });
+        READER_RETIRED.with(|retired| {
+            if let Some(retired) = retired.borrow_mut().as_mut() {
+                if retired.len() >= RETIRED_BOUND {
+                    retired.clear();
+                }
+                retired.push(self.0);
+            }
+        });
     }
 }
 
@@ -196,6 +221,9 @@ thread_local! {
     /// The serials of the scopes that ended on this thread since a runtime
     /// was last put in a scope.
     static RETIRED: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    /// The same for the custom data readers' runtimes, kept once one was
+    /// put in a scope on this thread ([`sync_reader_gensym_scope`]).
+    static READER_RETIRED: RefCell<Option<Vec<u64>>> = const { RefCell::new(None) };
 }
 
 /// Enter the scope `prefix`, counting from one, until the guard is dropped.
@@ -244,6 +272,16 @@ pub(crate) fn namespace_discriminator(name: &str, text: &str) -> u64 {
     hash.max(1)
 }
 
+/// Enter the scope in which the custom data reader `key` (`#tag`, or `#`
+/// for the default reader) evaluates its function `unit`: its prefix is a
+/// digest of both, like a namespace's, which a namespace's never is but by
+/// a digest collision, since no namespace name begins with `#`. A `gensym`
+/// the definition calls thus gives the same name whichever reader is
+/// evaluated first and whichever namespaces are cache hits.
+pub(crate) fn enter_reader_definition(key: &str, unit: &str) -> ScopeGuard {
+    enter_namespace(namespace_discriminator(key, unit))
+}
+
 /// The prefix of a unit registered now in the innermost scope, numbered by
 /// that scope's count, or `None` outside every scope.
 pub(crate) fn child() -> Option<Arc<str>> {
@@ -268,15 +306,52 @@ pub(crate) fn sync_gensym_scope(
     engine: &dyn crate::evaluator::MacroEvaluator,
 ) -> Result<(), crate::evaluator::EvalError> {
     let scope = innermost();
-    let serial = scope.as_ref().map_or(0, |scope| scope.serial);
+    sync(
+        engine,
+        scope.as_deref(),
+        Scope::gensym_prefix,
+        &RETIRED,
+        |retired| retired.borrow_mut().drain(..).collect(),
+    )
+}
+
+/// Put the `gensym` of a custom data reader's runtime `engine` in this
+/// thread's innermost scope, or in none, as the reader is about to read
+/// there or its function is evaluated ([`enter_reader_definition`]): the
+/// names a reader returns in a namespace then spell that namespace's
+/// scope, so they are what an uncached build gives whichever namespaces
+/// are cache hits, and differ from every other namespace's and from those
+/// of the compile-time runtime (light-cljs-350).
+pub(crate) fn sync_reader_gensym_scope(
+    engine: &dyn crate::evaluator::MacroEvaluator,
+) -> Result<(), crate::evaluator::EvalError> {
+    let scope = innermost();
+    sync(
+        engine,
+        scope.as_deref(),
+        Scope::reader_gensym_prefix,
+        &READER_RETIRED,
+        |retired| std::mem::take(retired.borrow_mut().get_or_insert_default()),
+    )
+}
+
+/// Put `engine`'s `gensym` in `scope`, spelled with `prefix`, retiring in
+/// it the scopes that `take` hands over from `retired`.
+fn sync<T: 'static>(
+    engine: &dyn crate::evaluator::MacroEvaluator,
+    scope: Option<&Scope>,
+    prefix: fn(&Scope) -> String,
+    retired: &'static std::thread::LocalKey<RefCell<T>>,
+    take: fn(&RefCell<T>) -> Vec<u64>,
+) -> Result<(), crate::evaluator::EvalError> {
+    let serial = scope.map_or(0, |scope| scope.serial);
     let heap = engine.heap();
     if heap != 0 && INSTALLED.get() == (heap, serial) {
         return Ok(());
     }
-    let prefix = scope.map(|scope| scope.gensym_prefix()).unwrap_or_default();
-    let retired = RETIRED.with(|retired| {
-        let serials = retired.borrow_mut().drain(..).collect::<Vec<_>>();
-        serials
+    let prefix = scope.map(prefix).unwrap_or_default();
+    let retired = retired.with(|retired| {
+        take(retired)
             .iter()
             .map(u64::to_string)
             .collect::<Vec<_>>()
@@ -482,6 +557,48 @@ mod tests {
             evaluate(&engine, "rt => rt.compilerForms.gensymScopeCount()"),
             "0"
         );
+    }
+
+    /// A custom data reader's runtime numbers in the scope apart from the
+    /// compile-time runtime, in a scope of a reader's own while its
+    /// definition is evaluated, which counts from one again each time, and
+    /// forgets the counts of scopes that ended, which the compile-time
+    /// runtime forgets as well.
+    #[test]
+    fn reader_gensyms_number_apart_in_each_scope() {
+        let session = Evaluator::new(Default::default()).unwrap();
+        let reader = Evaluator::new(Default::default()).unwrap();
+        let read = || {
+            sync_reader_gensym_scope(&reader).unwrap();
+            evaluate(&reader, "rt => rt.core.gensym(\"g\")")
+        };
+        let definition = namespace_discriminator("#t", "unit");
+        for round in 0..2 {
+            let namespace = enter_namespace(7);
+            assert_eq!(gensym(&session), "g7_1");
+            assert_eq!(read(), "g7_0_1");
+            {
+                let _definition = enter_reader_definition("#t", "unit");
+                assert_eq!(read(), format!("g{definition}_0_1"));
+            }
+            {
+                let _unit = enter(child().unwrap());
+                assert_eq!(read(), "g7_1_0_1");
+                assert_eq!(gensym(&session), "g7_1_1");
+            }
+            assert_eq!(read(), "g7_0_2");
+            assert_eq!(gensym(&session), "g7_2");
+            drop(namespace);
+            // Outside every scope, the runtime goes on with its counter.
+            assert_eq!(read(), format!("g{}", round + 1));
+            gensym(&session);
+        }
+        for engine in [&session, &reader] {
+            assert_eq!(
+                evaluate(engine, "rt => rt.compilerForms.gensymScopeCount()"),
+                "0"
+            );
+        }
     }
 
     /// The reader's names and expansion's count apart in one scope, and a

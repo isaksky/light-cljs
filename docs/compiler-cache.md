@@ -995,7 +995,7 @@ environment's reader sees; artifacts record reader contexts without it.
 sources by index. `declaration#N` and `:test#N` are unit IDs, which
 installation renumbers. Known gaps: a custom data reader runs in its own
 evaluator, whose `gensym` counter is neither reserved nor shared with the
-session's (light-cljs-350); an artifact's spellings are the ones its own
+session's (closed by light-cljs-350, below); an artifact's spellings are the ones its own
 analysis generated, so a gensym spelling it took over from an earlier
 namespace's code is reserved by number only, which a prefix ending in a
 digit can still spell again; and a process that read the compiled bootstrap
@@ -1032,6 +1032,31 @@ other names than those hits captured from its earlier source; one whose
 source is unchanged but whose requirements' macros changed keeps the
 names its reader allocates, which count apart from what its expansions
 allocate, so a hit retaining them still means the same symbols.
+
+*As built (light-cljs-350):* the custom data reader gap above is closed by
+scoping, not by reservation. The reader's evaluator, which a hit never
+starts, puts its `gensym` in the scope of the namespace being read before
+each reader call (`generated_names::sync_reader_gensym_scope`), spelling
+`D_0_` and a count of the scope's own in that evaluator, `r3963015217_0_1`
+say; no unit prefix `D_K` begins `D_0`, so the reader's names never meet the
+compile-time runtime's either, which they could before in uncached builds
+too. A reader's names in a namespace thus depend on that namespace's source
+alone, as the session's do, and a miss after a hit gives the uncached
+build's names, so `GeneratedNames`, `Reservation` and the spelling-overlap
+refusal need no reader fields and the artifact format is unchanged. A
+reader's function is evaluated lazily, on its tag's first use, so a hit can
+move that to another namespace; it is evaluated in a scope of the reader's
+own, whose prefix digests the tag (`#` for the default reader) and the
+emitted unit (`generated_names::enter_reader_definition`), so a `gensym`
+its definition calls, `(let [s (gensym)] (fn [_] (list 'quote s)))` say,
+gives one name in every mix and takes no count from the namespace being
+read. `cache_contract::custom_reader_gensyms_stay_distinct_across_every_mix`
+checks every mix of hits and misses in process against the uncached build,
+for gensyms of reader calls and of reader definitions, and
+`cache_matrix::custom_reader_gensyms_across_processes` a hit followed by a
+miss across processes; both fail without the scoping, where the miss's
+reader counted from zero and returned the hit's symbol, and the first fails
+without the definition scope as well.
 
 ## Loading, diagnostics, and storage
 
@@ -1590,7 +1615,7 @@ cannot register, is a child process of the test binary through
 | New source, changed alias, reader metadata, `:namespaces` view | `cache_matrix::resolution_and_views`: a `.cljs` file in a later root shadowing a `.cljc` namespace, a macro provider's alias, the `:doc` of a Var a macro resolves, and a `b/depend-on! :namespaces` consumer when a namespace is added (a bypass, see below) |
 | Cache off versus always compile | `compiler_cache::policy_changes_with_an_existing_artifact`; watch: `dev_watch::an_always_namespace_recompiles_on_every_step` and its neighbours (light-cljs-325) |
 | Blocker policy changes with an existing artifact | `compiler_cache::policy_changes_with_an_existing_artifact`, `compiler_cache::counter_example_across_processes` |
-| Generated names and source-order generations | `cache_matrix::mixed_generated_names_and_source_order_generations`, over `tests/compiler/cache_contract.rs` in process |
+| Generated names and source-order generations | `cache_matrix::mixed_generated_names_and_source_order_generations`, and `cache_matrix::custom_reader_gensyms_across_processes` for a custom reader's gensyms, over `tests/compiler/cache_contract.rs` in process |
 | Lowered logical limits | `cache_matrix::lowered_limits` |
 | Corruption or concurrent writes | `compiler_cache::corrupted_artifact_is_a_miss_then_republished`, `compiler_cache::damaged_index_and_removed_require_report_their_first_reason`, `compiler_cache::two_concurrent_compiles_share_one_cache_directory`, `tests/artifact_store.rs` |
 | Cancellation | In process (`tests/compiler/cache_contract.rs`); no test cancels a decode through `--compile` |

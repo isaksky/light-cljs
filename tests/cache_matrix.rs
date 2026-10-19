@@ -519,7 +519,8 @@ fn input_read_through_a_helper_or_a_custom_reader() {
 
 impl Project {
     /// A build of `entry` by a child process of this binary with the custom
-    /// reader `#app/inline` registered, with the cache when `cached`.
+    /// readers `#app/inline` and `#app/uniq` registered, with the cache
+    /// when `cached`.
     fn child(&self, entry: &str, cached: bool) -> Build {
         let out = self.dir.join("child.js");
         let report = self.dir.join("child.stats");
@@ -548,9 +549,9 @@ impl Project {
 }
 
 /// What a child process does when `LIGHT_CACHE_MATRIX_CHILD` names an
-/// entry: compile it from `ROOTS` with the reader `#app/inline`, through
-/// the cache in `CACHE` when set, writing the script to `OUT` and the
-/// `--stats` report to `REPORT`.
+/// entry: compile it from `ROOTS` with the readers `#app/inline` and
+/// `#app/uniq`, through the cache in `CACHE` when set, writing the script
+/// to `OUT` and the `--stats` report to `REPORT`.
 #[test]
 #[ignore = "a child process of the other tests"]
 fn child() {
@@ -565,6 +566,8 @@ fn child() {
     let roots = [path("ROOTS")];
     let mut host = MacroHost::new();
     host.register_compiler_data_reader(Name::new(Some("app"), "inline"), READER)
+        .unwrap();
+    host.register_compiler_data_reader(Name::new(Some("app"), "uniq"), UNIQ_READER)
         .unwrap();
     let mut stats = CompileStats::default();
     let program = match std::env::var_os("CACHE") {
@@ -939,6 +942,47 @@ fn mixed_generated_names_and_source_order_generations() {
             assert_eq!(normalized(&mixed.js), normalized(&fresh.js));
         }
     }
+}
+
+/// A custom reader that returns a quoted gensym.
+const UNIQ_READER: &str = "(fn [_] (list 'quote (gensym \"r\")))";
+
+const READER_GENSYMS: &[(&str, &str)] = &[
+    ("app/a.cljs", "(ns app.a) (def s #app/uniq a)"),
+    ("app/b.cljs", "(ns app.b) (def s #app/uniq b)"),
+    (
+        "app/main.cljs",
+        "(ns app.main (:require [app.a :as a] [app.b :as b])) (js/console.log (pr-str [a/s b/s]) (= a/s b/s))",
+    ),
+];
+
+/// A custom reader's gensyms, in child processes of this binary: a miss
+/// after a hit, whose evaluator the hit never started, returns no symbol
+/// the hit retains, and the build is the cache-off build's byte for byte
+/// (light-cljs-350).
+#[test]
+fn custom_reader_gensyms_across_processes() {
+    let project = Project::new(READER_GENSYMS);
+    let oracle = project.child("app.main", false);
+    let printed = oracle.run();
+    assert!(printed.ends_with("] false\n"), "{printed}");
+    assert_eq!(project.child("app.main", true).js, oracle.js);
+    project.child("app.main", true).assert_all_hits(3);
+    project.write("app/b.cljs", &format!("{} ; edited", READER_GENSYMS[1].1));
+    let edited = project.child("app.main", true);
+    assert_eq!(
+        edited.rows(),
+        [
+            "app.b miss source: source changed",
+            "app.main miss dependencies: dependency app.b changed",
+        ]
+    );
+    assert_eq!(edited.stat("cache.hits"), 1);
+    assert_eq!(edited.js, project.child("app.main", false).js);
+    let mixed = edited.run();
+    assert!(mixed.ends_with("] false\n"), "{mixed}");
+    // `app.a`, a hit, keeps its symbol.
+    assert_eq!(mixed.split(' ').next(), printed.split(' ').next());
 }
 
 // -- Lowered limits -----------------------------------------------------------
