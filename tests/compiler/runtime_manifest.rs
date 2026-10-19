@@ -445,7 +445,7 @@ fn branches_wrapper(text: &str) -> Option<(&str, u32)> {
         let (name, _) = line.strip_prefix("  ")?.split_once(" = (operation => ")?;
         Some(name)
     })?;
-    let (_, after) = text.split_once("kindTables[kind & 7][")?;
+    let (_, after) = text.split_once("kindTables[kind & 15][")?;
     let index = after[..after.find(']')?].parse().ok()?;
     text.trim_end()
         .ends_with(&format!("({name});"))
@@ -683,8 +683,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // core dispatchers and the slot reads of `get` and `contains?`, and the
     // 17 kind table entries of vectors, maps, sets and queues, the wrappers
     // of `nth`, `get`, `conj` and `assoc` behind them and the trie search of
-    // `get.maps` (light-cljs-358).
-    assert_eq!(checked, 308);
+    // `get.maps` (light-cljs-358), and the branches of `get` for sets, with
+    // their trie search, and of `seq`, `count`, `nth` and `get` for map entries
+    // (light-cljs-373).
+    assert_eq!(checked, 314);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -841,6 +843,8 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("seqSet", Kind::Stores(&["sets"])),
     // Hash maps' tries, which `get.maps` searches (light-cljs-358).
     ("trieValue", Kind::Units(&["PersistentHashMapValue"])),
+    // Hash sets' tries, which `get.sets` searches (light-cljs-373).
+    ("trieMember", Kind::Units(&["publicHashSet", "putMember"])),
     // Views with a `vec` slot, which the public ChunkedSeq constructor builds.
     ("restChunkedSeq", Kind::Units(&["ChunkedSeqValue"])),
     // Views of queues.
@@ -1168,9 +1172,9 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
 /// whose branch is missing. Each kind's entry for an operation is installed
 /// once, and the operations' wrappers, which read the entries, are effects of
 /// every type of the kinds with an entry for their operation: lazy seqs (1),
-/// cells (2), vectors (4), maps (5), sets (6) and queues (7), light-cljs-358
-/// adding the last four and the wrappers of `nth`, `get`, `conj` and
-/// `assoc`. The types of kind 3
+/// cells (2), vectors (4), maps (5), sets (6), queues (7) and map entries
+/// (8), light-cljs-358 adding kinds 4 to 7 and the wrappers of `nth`, `get`,
+/// `conj` and `assoc`, light-cljs-373 map entries. The types of kind 3
 /// (views) take their number only where a wrapper of an operation with a
 /// kind 3 entry is kept, so a program that builds views and no lazy seq or
 /// cell keeps no wrapper.
@@ -1222,7 +1226,7 @@ fn kind_table_entries_are_installed_by_the_types_of_their_kind() {
     }
     assert_eq!(
         types.keys().copied().collect::<Vec<_>>(),
-        [1, 2, 3, 4, 5, 6, 7]
+        [1, 2, 3, 4, 5, 6, 7, 8]
     );
     let mut wrapped = Vec::new();
     let mut seen = Vec::new();
@@ -1312,10 +1316,15 @@ fn kind_table_entries_are_installed_by_the_types_of_their_kind() {
             (5, 8),
             (6, 0),
             (6, 4),
+            (6, 6),
             (6, 7),
             (7, 0),
             (7, 4),
             (7, 7),
+            (8, 0),
+            (8, 4),
+            (8, 5),
+            (8, 6),
         ]
     );
     // A view's number waits for the wrappers that read a kind 3 entry.

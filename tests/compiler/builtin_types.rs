@@ -1406,9 +1406,10 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
     );
     // 6,942 bytes before light-cljs-291 and 7,453 after: `privateStore` and
     // `kindedStore` for the maps' and transients' stores; 7,867 after
-    // light-cljs-358: `get` behind its kinds' branches and the maps' branch.
+    // light-cljs-358: `get` behind its kinds' branches and the maps' branch;
+    // 8,124 after light-cljs-373: the map entries' kind and `get` branch.
     let output = advanced(target).emit_js();
-    assert!(output.len() < 8_000, "{} bytes", output.len());
+    assert!(output.len() < 8_200, "{} bytes", output.len());
     // The public constructor, by name and through a quoted literal, which
     // keeps its positional array.
     let public = "(let [m (cljs.core/PersistentArrayMap. nil 2 #js [:a 1 :b 2] nil) q '{:x 1 \"y\" 2}]
@@ -2202,7 +2203,9 @@ fn direct_seq_slots_give_what_the_operations_paths_give() {
 /// leave to the operations (public constructors' values with slots,
 /// subvectors, map entries, sorted collections), answers at every level as
 /// master's runtime does at `none`, metadata included. A program calling
-/// `get` on a map and `nth` on a vector keeps those branches.
+/// `get` on a map and `nth` on a vector keeps those branches. Sets' `get` and
+/// map entries, kind 8 with branches of `seq`, `count` and `nth`, are
+/// light-cljs-373's.
 #[test]
 fn collection_operations_read_the_kind_tables() {
     every_level(
@@ -2254,6 +2257,48 @@ fn collection_operations_read_the_kind_tables() {
     ] {
         assert!(kept.contains(&unit), "{unit}: {kept:?}");
     }
+    // Sets' `get` and map entries, kind 8, read the tables too
+    // (light-cljs-373): sets of every representation (arrays, a hash set's
+    // trie, sorted, a public constructor's, with nil and with a member
+    // equal to the key but not identical to it) and entries of an array map
+    // and a hash map, each operation's indexes and keys out of range
+    // included.
+    every_level(
+        "(let [m {:k :v} e (first m) he (first (zipmap (range 20) (range 20))) s #{1 2 nil} hs (set (range 20)) ss (sorted-set 3 1)
+               ps (cljs.core/PersistentHashSet. nil (hash-map 4 nil) nil) ks #{[1 2]} hk (into #{[1 2]} (range 12)) ws (with-meta #{:a} {:m 1})]
+           (pr-str [[(get s 1) (get s 3) (get s 3 :nf) (get s nil) (get s nil :nf) (get hs 7) (get hs 99) (get hs 99 :nf) (get hs nil :nf)
+                     (get ss 1) (get ss 2 :nf) (get ps 4) (get ps 5 :nf) (identical? (get ks (list 1 2)) (first ks))
+                     (identical? (get hk (list 1 2)) (first (filter vector? hk))) (get ws :a) (contains? s nil) (contains? hs 3) (s 2) (hs 5 :nf) (:a ws) (get #{} 1 :e)]
+                    [(nth e 0) (nth e 1) (nth e 1 :nf) (nth e 2 :nf) (nth e -1 :nf) (nth e 0.5 :nf) (try (nth e 2) (catch :default x :oob))
+                     (get e 0) (get e 1) (get e 2) (get e 2 :nf) (get e nil :nf) (get e 0.0) (get e :k :nf) (count e) (seq e) (nth he 1) (get he 0)
+                     (key e) (val e) (e 0) (e 1 :x) (vector? e) (map-entry? e) (= e [:k :v])]]))",
+        "[[1 nil :nf nil nil 7 nil :nf :nf 1 :nf 4 :nf true true :a true true 2 5 :a :e] \
+         [:k :v :v :nf :nf :nf :oob :k :v nil :nf :nf :k :nf 2 (:k :v) 0 0 :k :v :k :v true true true]]",
+    );
+    // A program that builds map entries and no vector keeps the entries'
+    // branches and none of the vectors'.
+    let lean = "(let [e (first {:k :v}) f (first (seq (hash-map 1 2 3 4)))]
+           (str (nth e 0) \" \" (nth e 1 :nf) \" \" (nth e 2 :nf) \" \" (get e 1) \" \" (get e 2 :nf) \" \" (count e) \" \" (pr-str (seq e)) \" \"
+                (nth f 0) \" \" (count f) \" \" (try (nth e 5) (catch :default x \"oob\")) \" \" (get (hash-set :a (key e)) :k) \" \" (get (hash-set (val e)) :z :nf)))";
+    every_level(lean, ":k :v :nf :v :nf 2 (:k :v) 1 2 oob :k :nf");
+    let kept = units(lean);
+    for unit in [
+        "MapEntryType.lean",
+        "MapEntryType.type",
+        "seq.entries",
+        "count.entries",
+        "nth.branches",
+        "nth.entries",
+        "get.branches",
+        "get.entries",
+        "get.sets",
+    ] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+    for unit in ["PersistentVectorValue", "nth.vectors", "get.vectors"] {
+        assert!(!kept.contains(&unit), "{unit}: {kept:?}");
+    }
+    assert!(units("(get (set (range 20)) 3)").contains(&"get.members"));
 }
 
 /// Where protocol implementations exist, the collections' branches make the

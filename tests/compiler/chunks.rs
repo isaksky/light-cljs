@@ -2812,9 +2812,10 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     );
     let total = files.iter().map(|(_, source)| source.len()).sum::<usize>();
     // light-cljs-291 adds `kindedStore` (about 500 bytes) to the startup chunk,
-    // and light-cljs-358 the collections' kind branches (about 2.5 KB).
+    // and light-cljs-358 the collections' kind branches (about 2.5 KB),
+    // light-cljs-373 sets' `get` and the map entries' branches (78,320).
     assert!(
-        total + 1_000 <= 73_207 + 2_944 + 600 + 2_500,
+        total + 1_000 <= 73_207 + 2_944 + 600 + 2_500 + 1_000,
         "{total} bytes\n{listing}"
     );
 }

@@ -170,12 +170,14 @@
   // wrapper is kept, 4 vectors (`PersistentVectorValue`, `SubvecValue`),
   // 5 maps (`PersistentArrayMapValue`, `PersistentHashMapValue`,
   // `treeMapConstructor`), 6 sets (`PersistentHashSetValue`,
-  // `treeSetConstructor`) and 7 queues (`PersistentQueueValue`); table 0 is
-  // no kind's. A branch is an effect of its kind's types that waits for its
-  // operation; until then, and in table 0, the branch gives `missing`.
-  // `extend-type` and `specify!` that reach a runtime kind empty the tables,
-  // as a branch could skip the implementations they add.
-  const kindTables = Array.from({length: 8}, () => Array(9).fill(() => missing));
+  // `treeSetConstructor`), 7 queues (`PersistentQueueValue`) and 8 map
+  // entries (`MapEntryType`, light-cljs-373); tables 0 and 9 to 15, which
+  // the wrappers' `kind & 15` reaches, are no kind's. A branch is an effect
+  // of its kind's types that waits for its operation; until then, and in
+  // those tables, the branch gives `missing`. `extend-type` and `specify!`
+  // that reach a runtime kind empty the tables, as a branch could skip the
+  // implementations they add.
+  const kindTables = Array.from({length: 16}, () => Array(9).fill(() => missing));
   //@unit protocolMaskNames
   const protocolMaskNames = "IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq INext ILookup IAssociative IMap IMapEntry ISet IStack IVector IDeref IDerefWithTimeout IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable ISequential IList IRecord IReversible ISorted IPrintWithWriter IWriter IPrintWithWriter IPending IWatchable IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet IMultiFn IChunkedSeq IChunkedNext IComparable INamed ICloneable IAtom IReset ISwap IIterable IDrop".split(" ");
   //@unit protocolMasks requires: protocolMaskNames
@@ -859,9 +861,9 @@
     throw new Error(String(value) + " is not ISeqable");
   }
   //@unit seq.branches effect: ChunkedCons, Cons, IntegerRangeValue, LazySeq, ListValue,
-  //@ PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue, PersistentQueueValue,
-  //@ PersistentVectorValue, RangeValue, SubvecValue, treeMapConstructor, treeSetConstructor when: seq
-  //@ requires: kindOps, kindTables, missing, seq
+  //@ MapEntryType, PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue,
+  //@ PersistentQueueValue, PersistentVectorValue, RangeValue, SubvecValue, treeMapConstructor,
+  //@ treeSetConstructor when: seq requires: kindOps, kindTables, missing, seq
   // An operation of one value behind its branches for the kinds
   // (`kindTables`), under its name: the effects of the kinds' types wrap the
   // operation where one of them can be built, inside the protocol wrapper
@@ -877,7 +879,7 @@
   // `seq-pipeline` 6% slower, and one finding the kind's table, 10%). A
   // value with no kind number calls no branch.
   seq = (operation => Object.defineProperty(function (value) {
-    const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 7][0](value) : missing;
+    const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 15][0](value) : missing;
     return result !== missing ? result : operation(value);
   }, "name", {value: operation.name}))(seq);
   //@unit behindProtocol
@@ -997,6 +999,10 @@
   //@unit seq.queues effect: PersistentQueueValue when: seq requires: kindHooks, kindTables,
   //@ missing, queues
   kindTables[7][0] = value => { const queue = queues.get(value); return queue ? kindHooks.seqQueue(value, queue) : missing; };
+  //@unit seq.entries effect: MapEntryType when: seq requires: kindHooks, kindTables, missing,
+  //@ vectors
+  // Map entries, kind 8 (light-cljs-373), whose store is a vector's.
+  kindTables[8][0] = value => { const store = vectors.get(value); return store ? kindHooks.seqVector(value, store) : missing; };
 
   //@unit iteratorSeq requires: iteratorSeqs
   // A host iterator's seq (upstream's ES6IteratorSeq: ISeqable and ISeq, not
@@ -1040,7 +1046,7 @@
   //@ RangeValue when: first requires: first, kindOps, kindTables, missing
   // As `seq.branches`.
   first = (operation => Object.defineProperty(function (value) {
-    const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 7][1](value) : missing;
+    const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 15][1](value) : missing;
     return result !== missing ? result : operation(value);
   }, "name", {value: operation.name}))(first);
   //@unit first.protocol effect: installMethods when: first requires: behindProtocol, first,
@@ -1086,7 +1092,7 @@
   //@ when: rest requires: kindOps, kindTables, missing, rest
   // As `seq.branches`.
   rest = (operation => Object.defineProperty(function (value) {
-    const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 7][2](value) : missing;
+    const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 15][2](value) : missing;
     return result !== missing ? result : operation(value);
   }, "name", {value: operation.name}))(rest);
   //@unit rest.protocol effect: installMethods when: rest requires: behindProtocol, methodKeys,
@@ -1128,7 +1134,7 @@
   //@ when: next requires: kindOps, kindTables, missing, next
   // As `seq.branches`.
   next = (operation => Object.defineProperty(function (value) {
-    const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 7][3](value) : missing;
+    const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 15][3](value) : missing;
     return result !== missing ? result : operation(value);
   }, "name", {value: operation.name}))(next);
   //@unit next.protocol effect: installMethods when: next requires: behindProtocol, methodKeys,
@@ -2013,7 +2019,7 @@
   // As `seq.branches`, for one item: a branch takes the collection and the
   // item, and makes the protocol lookup that `conj` makes first.
   conj = (operation => Object.defineProperty(function (coll, item) {
-    const kind = coll?.[kindOps], result = typeof kind === "number" && arguments.length === 2 ? kindTables[kind & 7][7](coll, item) : missing;
+    const kind = coll?.[kindOps], result = typeof kind === "number" && arguments.length === 2 ? kindTables[kind & 15][7](coll, item) : missing;
     return result !== missing ? result : operation.apply(null, arguments);
   }, "name", {value: operation.name}))(conj);
   //@unit conjMeta requires: metadataValues, preserveMeta, protocolHooks
@@ -2094,7 +2100,7 @@
   // the key and the item, and makes the protocol lookup that `assoc` makes
   // first.
   assoc = (operation => Object.defineProperty(function (value, key, item) {
-    const kind = value?.[kindOps], result = typeof kind === "number" && arguments.length === 3 ? kindTables[kind & 7][8](value, key, item) : missing;
+    const kind = value?.[kindOps], result = typeof kind === "number" && arguments.length === 3 ? kindTables[kind & 15][8](value, key, item) : missing;
     return result !== missing ? result : operation.apply(null, arguments);
   }, "name", {value: operation.name}))(assoc);
   //@unit assoc.vectors effect: PersistentVectorValue, SubvecValue when: assoc requires: kindHooks,
@@ -2278,6 +2284,10 @@
   // The item under `key` of a hash map's trie, which `get.maps` reads
   // (light-cljs-358).
   kindHooks.trieValue = (trie, key, notFound) => { const entry = trieEntry(trie, key); return entry ? entry.value : notFound; };
+  //@unit get.members effect: publicHashSet, putMember when: get requires: kindHooks, trieEntry
+  // Likewise the member of a hash set's trie, which `get.sets` reads
+  // (light-cljs-373).
+  kindHooks.trieMember = (trie, key, notFound) => { const entry = trieEntry(trie, key); return entry ? entry.key : notFound; };
   //@unit lookup.members effect: publicHashSet, putMember when: lookup requires: lookup, sets,
   //@ trieEntry
   // Likewise a hash set's, whose members are a trie (`putMember`), kept only
@@ -3231,6 +3241,10 @@
   //@unit MapEntryType.vector effect: MapEntryType when: makeVector requires: builtinType, mapEntry,
   //@ MapEntryType, vectorPrototype
   MapEntryType = builtinType(function (key, value) { return mapEntry(key, value); }, vectorPrototype);
+  //@unit MapEntryType.type effect: MapEntryType requires: kindOps, MapEntryType
+  // Map entries are kind 8 (light-cljs-373), with branches of their own, so
+  // that a program building entries and no vector keeps no vector branch.
+  MapEntryType.prototype[kindOps] = 8;
   //@unit makeKeyword requires: keywords, KeywordValue
   function makeKeyword(namespace, name, spelling) {
     const value = Object.create(KeywordValue.prototype);
@@ -3560,12 +3574,12 @@
   }
 
   //@unit count.branches effect: ChunkedCons, Cons, IntegerRangeValue, LazySeq, ListValue,
-  //@ PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue, PersistentQueueValue,
-  //@ PersistentVectorValue, RangeValue, SubvecValue, treeMapConstructor, treeSetConstructor when: count
-  //@ requires: count, kindOps, kindTables, missing
+  //@ MapEntryType, PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue,
+  //@ PersistentQueueValue, PersistentVectorValue, RangeValue, SubvecValue, treeMapConstructor,
+  //@ treeSetConstructor when: count requires: count, kindOps, kindTables, missing
   // As `seq.branches`.
   count = (operation => Object.defineProperty(function (value) {
-    const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 7][4](value) : missing;
+    const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 15][4](value) : missing;
     return result !== missing ? result : operation(value);
   }, "name", {value: operation.name}))(count);
   //@unit count.protocol effect: installMethods when: count requires: behindProtocol, count,
@@ -3621,6 +3635,9 @@
   //@unit count.queues effect: PersistentQueueValue when: count requires: kindTables, missing,
   //@ publicCollectionSlots, queues
   kindTables[7][4] = value => { const queue = queues.get(value); return queue && !publicCollectionSlots.has(value) ? queue.length : missing; };
+  //@unit count.entries effect: MapEntryType when: count requires: kindTables, missing,
+  //@ publicCollectionSlots, vectors
+  kindTables[8][4] = value => { const store = vectors.get(value); return store && !publicCollectionSlots.has(value) ? store.cnt : missing; };
   //@unit IndexedSeqValue.viewKind effect: IndexedSeqValue when: first.branches requires: IndexedSeqValue,
   //@ kindOps
   // Views, the seqs of arrays, strings and vectors, are kind 3 where a kind
@@ -3703,7 +3720,7 @@
     throw new Error("nth not supported on this type");
   }
 
-  //@unit nth.branches effect: PersistentVectorValue, SubvecValue when: nth requires: kindOps,
+  //@unit nth.branches effect: MapEntryType, PersistentVectorValue, SubvecValue when: nth requires: kindOps,
   //@ kindTables, missing, nth
   // As `seq.branches`, for a number `index` and two or three arguments; a
   // branch takes the value, the index and the item for an index out of
@@ -3711,7 +3728,7 @@
   nth = (operation => Object.defineProperty(function (value, index, notFound) {
     const kind = value?.[kindOps], arity = arguments.length;
     const result = typeof kind === "number" && typeof index === "number" && (arity === 2 || arity === 3)
-      ? kindTables[kind & 7][5](value, index, arity === 2 ? missing : notFound) : missing;
+      ? kindTables[kind & 15][5](value, index, arity === 2 ? missing : notFound) : missing;
     return result !== missing ? result : operation.apply(null, arguments);
   }, "name", {value: operation.name}))(nth);
   //@unit nth.vectors effect: PersistentVectorValue, SubvecValue when: nth requires: kindTables,
@@ -3720,6 +3737,16 @@
   kindTables[4][5] = (value, index, notFound) => {
     const store = vectors.get(value);
     return store && !(store.cnt === 2 && mapEntries.has(value)) ? vectorNth(store, index, notFound) : missing;
+  };
+  //@unit nth.entries effect: MapEntryType when: nth requires: kindTables, mapEntries, missing,
+  //@ outOfBounds, vectors
+  // A map entry's items (light-cljs-373), which its store's tail holds, read
+  // first, as `nth` tests for an entry only at another index; a vector with
+  // the entries' prototype takes the operation at those.
+  kindTables[8][5] = (value, index, notFound) => {
+    const store = vectors.get(value);
+    if (store && store.cnt === 2 && !store.sub && (index === 0 || index === 1)) return store.tail[index];
+    return store && store.cnt === 2 && mapEntries.has(value) ? notFound === missing ? outOfBounds() : notFound : missing;
   };
   //@unit nth.protocol effect: installMethods when: nth requires: methodKeys, nth, protocolHooks
   nth = (operation => Object.defineProperty(function (value, index, notFound) {
@@ -3784,9 +3811,17 @@
     }
   }
 
-  //@unit get.branches effect: PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentVectorValue, SubvecValue, treeMapConstructor when: get requires: get, kindOps,
-  //@ kindTables, missing
+  //@unit foundMissing
+  // What a branch of `get` gives for a protocol method's answer that is
+  // `missing`, which `contains?` passes to `-lookup` as the item for a key
+  // the value lacks and a method can keep: `get.branches` gives `missing`
+  // for it, where the operation would call the method again (Sol review of
+  // light-cljs-373).
+  const foundMissing = Object.freeze({});
+  //@unit get.branches effect: MapEntryType, PersistentArrayMapValue, PersistentHashMapValue,
+  //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue, treeMapConstructor,
+  //@ treeSetConstructor when: get requires: foundMissing, get, kindOps, kindTables,
+  //@ missing
   // As `seq.branches`, for two or three arguments; a branch takes the value,
   // the key, the item for a key it lacks and the arity, which the protocol
   // lookup it makes first needs. `contains?` asks for `missing`, which a
@@ -3794,10 +3829,11 @@
   get = (operation => Object.defineProperty(function (value, key, notFound) {
     const kind = value?.[kindOps], arity = arguments.length;
     const result = typeof kind === "number" && (arity === 2 || arity === 3 && notFound !== missing)
-      ? kindTables[kind & 7][6](value, key, arity === 2 ? null : notFound, arity) : missing;
-    return result !== missing ? result : operation.apply(null, arguments);
+      ? kindTables[kind & 15][6](value, key, arity === 2 ? null : notFound, arity) : missing;
+    return result === missing ? operation.apply(null, arguments) : result === foundMissing ? missing : result;
   }, "name", {value: operation.name}))(get);
-  //@unit get.vectors effect: PersistentVectorValue, SubvecValue when: get requires: kindTables,
+  //@unit get.vectors effect: PersistentVectorValue, SubvecValue when: get requires: foundMissing,
+  //@ kindTables,
   //@ mapEntries, methodKeys, missing, protocolHooks, vectorNth, vectors
   // `lookup` of a vector, after the protocol lookup that `get` makes first,
   // whose method it calls as `get` would.
@@ -3805,11 +3841,11 @@
     const store = vectors.get(value);
     if (!store || mapEntries.has(value)) return missing;
     const method = protocolHooks.publicMethod?.(value, methodKeys[30], arity, true);
-    if (method) return arity === 2 ? method.call(value, value, key) : method.call(value, value, key, notFound);
+    if (method) { const found = arity === 2 ? method.call(value, value, key) : method.call(value, value, key, notFound); return found === missing ? foundMissing : found; }
     return typeof key === "number" && key >= 0 && key < store.cnt ? vectorNth(store, key, notFound) : notFound;
   };
   //@unit get.maps effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor when: get
-  //@ requires: collectionEntryIndex, kindHooks, kindTables, lookup, maps, methodKeys, missing,
+  //@ requires: collectionEntryIndex, foundMissing, kindHooks, kindTables, lookup, maps, methodKeys, missing,
   //@ protocolHooks, publicCollectionSlots
   // Likewise of a map: a hash map's trie is searched as `lookup.trie` does,
   // entries without slots as `lookup` does, and others, as trees, take
@@ -3818,11 +3854,33 @@
     const entries = maps.get(value);
     if (!entries) return missing;
     const method = protocolHooks.publicMethod?.(value, methodKeys[30], arity, true);
-    if (method) return arity === 2 ? method.call(value, value, key) : method.call(value, value, key, notFound);
+    if (method) { const found = arity === 2 ? method.call(value, value, key) : method.call(value, value, key, notFound); return found === missing ? foundMissing : found; }
     if (!Array.isArray(entries)) return kindHooks.trieValue(entries, key, notFound);
     if (publicCollectionSlots.has(value)) return lookup(value, key, notFound);
     const index = collectionEntryIndex(value, entries, key);
     return index < 0 ? notFound : entries[index].value;
+  };
+  //@unit get.sets effect: PersistentHashSetValue, treeSetConstructor when: get requires: collectionEntryIndex,
+  //@ foundMissing, kindHooks, kindTables, methodKeys, missing, protocolHooks, sets
+  // Likewise of a set (light-cljs-373), whose member equal to the key it
+  // gives: from a hash set's trie as `lookup.members` searches it, else as
+  // `lookup.sets` does.
+  kindTables[6][6] = (value, key, notFound, arity) => {
+    const members = sets.get(value);
+    if (!members) return missing;
+    const method = protocolHooks.publicMethod?.(value, methodKeys[30], arity, true);
+    if (method) { const found = arity === 2 ? method.call(value, value, key) : method.call(value, value, key, notFound); return found === missing ? foundMissing : found; }
+    if (!Array.isArray(members)) return kindHooks.trieMember(members, key, notFound);
+    const index = collectionEntryIndex(value, members, key);
+    return index < 0 ? notFound : members[index].key;
+  };
+  //@unit get.entries effect: MapEntryType when: get requires: kindTables, mapEntries, missing,
+  //@ protocolHooks, vectors
+  // Likewise of a map entry (light-cljs-373), as `lookup` reads it; where
+  // protocol implementations exist, the operation, which looks them up.
+  kindTables[8][6] = (value, key, notFound) => {
+    const store = vectors.get(value);
+    return store && !protocolHooks.publicMethod && mapEntries.has(value) ? key === 0 || key === 1 ? store.tail[key] : notFound : missing;
   };
   //@unit get.own effect: installMethods when: get requires: demandKey, get, keySlot, methodKeys,
   //@ protocolHooks

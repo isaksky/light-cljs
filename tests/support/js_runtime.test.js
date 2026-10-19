@@ -1771,12 +1771,12 @@ console.log('public find preserves one search and direct receiver dispatch');
     () => c.nth(value, 0), () => c.nth(value, 1, 'nf'), () => c.nth(value, 7, 'nf'), () => c.get(value, 0), () => c.get(value, 'a', 'nf'),
     () => c.get(value, 1, 'nf'), () => c.contains(value, 'a'), () => c.conj(value, 3), () => c.assoc(value, 0, 9), () => c.assoc(value, 'z', 9)]
     .map(outcome);
-  for (const value of make().slice(0, 9)) assert.equal(typeof Object.getPrototypeOf(value)[key], 'number');
+  for (const value of [...make().slice(0, 9), make()[11]]) assert.equal(typeof Object.getPrototypeOf(value)[key], 'number');
   const expected = make().map(answers);
   // A host object without a kind number takes the operations' own paths.
   const forge = (value, kind) => Object.defineProperty(Object.create(Object.getPrototypeOf(value)), key, {value: kind});
   const plain = make().map(value => answers(forge(value, undefined)));
-  for (const kind of [0, 1, 2, 3, 4, 5, 6, 7, 8, 1.5, -1, NaN, '5', null]) {
+  for (const kind of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 24, 1.5, -1, NaN, '5', null]) {
     assert.deepEqual(make().map(value => answers(forge(value, kind))), plain, `forged with kind ${String(kind)}`);
     assert.deepEqual(answers({[key]: kind}), answers({}), `host object with kind ${String(kind)}`);
     const fresh = make();
@@ -1805,6 +1805,10 @@ console.log('public find preserves one search and direct receiver dispatch');
     [c.hashMap('a', 1), 'cljs$core$IAssociative$_assoc$arity$3', null, m => c.assoc(m, 'a', 2)],
     [c.vector(1), 'cljs$core$ILookup$_lookup$arity$2', 'cljs$core$ILookup$', v => c.get(v, 0)],
     [c.hashMap('a', 1), 'cljs$core$ILookup$_lookup$arity$3', 'cljs$core$ILookup$', m => c.get(m, 'a', 'nf')],
+    [c.hashSet(1), 'cljs$core$ILookup$_lookup$arity$2', 'cljs$core$ILookup$', s => c.get(s, 1)],
+    [c.set(c.range(20)), 'cljs$core$ILookup$_lookup$arity$3', 'cljs$core$ILookup$', s => c.get(s, 1, 'nf')],
+    [c.first(c.hashMap('a', 1)), 'cljs$core$ILookup$_lookup$arity$2', 'cljs$core$ILookup$', e => c.get(e, 0)],
+    [c.first(c.hashMap('a', 1)), 'cljs$core$IIndexed$_nth$arity$2', 'cljs$core$IIndexed$', e => c.nth(e, 0)],
     [c.cons(0, c.list(1)), 'cljs$core$ISeq$_rest$arity$1', 'cljs$core$ISeq$', s => c.next(s)],
     [c.mapSeq(c.inc, c.vector(1, 2)), 'cljs$core$ISeqable$_seq$arity$1', 'cljs$core$ISeqable$', s => c.first(s)],
   ];
@@ -1815,5 +1819,18 @@ console.log('public find preserves one search and direct receiver dispatch');
     assert.equal(reads(), 1, `${slot} read once`);
     assert.deepEqual(calls, [1], `${slot} called once`);
   }
+}
+// A lookup method that answers with the item `contains?` gave it for a
+// missing key, the runtime's own `missing`, is called once by `get`, which
+// gives that answer (Sol review of light-cljs-373).
+for (const make of [() => c.hashSet(1), () => c.set(c.range(20)), () => c.vector(1), () => c.hashMap('a', 1)]) {
+  const value = make();
+  let saved, calls = 0;
+  value.cljs$core$ILookup$ = c.PROTOCOL_SENTINEL;
+  value.cljs$core$ILookup$_lookup$arity$3 = (_, k, nf) => (saved = nf);
+  c.contains(value, 9);
+  value.cljs$core$ILookup$_lookup$arity$2 = () => ++calls === 1 ? saved : 42;
+  assert.equal(c.get(value, 1), saved);
+  assert.equal(calls, 1);
 }
 console.log('kind tables stay private to the runtime');

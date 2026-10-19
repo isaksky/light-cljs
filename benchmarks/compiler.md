@@ -5357,3 +5357,63 @@ those with keyword calls shrink (`protocol-params` 488,650 to 488,620).
 in the same alternated rounds as that section's table: record-lookup at
 `advanced` is 0.134 / 0.128 and 0.134 / 0.129 ms against upstream's 0.089 and
 0.087 ms, 1.5×, within the 2× this pellet and light-cljs-266 share.
+
+## Sets' get and map entry kinds — October 19, 2026
+
+light-cljs-373 gives `get` of a set a branch of the kind tables, and map
+entries kind 8 with branches of `seq`, `count`, `nth` and `get`
+([advanced-optimization.md](../docs/advanced-optimization.md#phase-2-sets-get-and-map-entry-kinds)).
+
+A hub microbenchmark (one program per variant at `advanced`, Node
+v24.18.0 on the 24-CPU Mac, median of 15 rounds of 100 calls after 300
+untimed ones, each call 1,000 operations: `get` of a 16-member hash set
+and a three-member array set, and `nth`, destructuring, `count` and `get`
+of the entries of a 16-entry hash map; master `3545cfb` and this change
+alternating, two runs each, one-minute load 3.2–4.4). Milliseconds per
+call:
+
+| Operation | Master | This change | With a `deftype`: master | This change |
+| --- | ---: | ---: | ---: | ---: |
+| `get` of the two sets | 0.203 | 0.165 | 0.295 | 0.250 |
+| `nth` of an entry, 0 and 1 | 0.020–0.028 | 0.021 | 0.081 | 0.077 |
+| `(let [[k v] e] ...)` | 0.028 | 0.021 | 0.079 | 0.075 |
+| `count` of an entry | 0.038 | 0.0144 | 0.067 | 0.043 |
+| `get` of an entry | 0.073 | 0.017 | 0.105 | 0.113 |
+
+With protocol implementations `get` of an entry gives way to the operation
+(a branch repeating `get`'s protocol lookup took 185 bytes at `advanced`
+in every program with a map and `get`, this one 99), so it crosses the kind's table for
+nothing: 7% slower. `nth` of an entry reads the entry's items first, as
+`nth` tests for an entry only at another index; the first version of the
+branch, which tested for one first, was 1.5× slower than master.
+
+The `--levels` collection and map workloads do not move (master, this
+change; second pair, one-minute load 3.5–3.8; µs per call at `advanced`
+in Node): `set-conj` 2,000 446 / 432, `map-get` 20,000 1,286 / 1,293,
+`vector-nth` 20,000 168 / 168, `map-into` 20,000 4,213 / 4,119,
+`keyword-lookups` 1,685 / 1,667, `constant-keys` 610 / 611, `event-maps`
+708 / 704, `seq-pipeline` 140 / 140. Their programs call `get` of a set
+once and `nth` of no entry. (The first candidate run, at load 8–10, was
+2–9% slower on every row and is not counted.)
+
+**Bytes.** At `advanced` a program that builds a map keeps the entries'
+kind (18 bytes) and the entries' branches of the operations it keeps; one
+that calls `get` of a set keeps `get.sets` (230 bytes) and, with hash
+sets, `get.members` (57), and every program with `get` and a collection
+kind keeps `foundMissing` and its tests (about 56 bytes, below): `map-only`
+7,879 to 8,053, `keyword-lookups` 34,714 to 35,170, `eight-records` 34,883
+to 35,315, `constant-keys` 47,532 to 48,297, `features` 75,499 to 76,265,
+`closed-params` 14,970 to 15,027; `println-hi`, `vector-only` and
+`seq-pipeline` do not move. The runtime that `none` and `prepare` embed
+grows by 3.1 KB, and the QuickJS evaluator's smallest heap that loads it
+from 4,200 to 4,216 KiB (16 KiB steps).
+
+From the Sol review of this change: a `-lookup` that JavaScript gives a
+collection can answer with the runtime's private `missing`, which
+`contains?` passes it as the item for a missing key; `get.branches` took
+that answer for its own "no branch" and called the operation, which called
+the method again. The branches of `get` now give `foundMissing` for it,
+which the wrapper turns back into `missing`. Rerun after that fix at a
+one-minute load of 4.6–6.5, the table's rows do not move beyond the noise
+(`get` of the two sets 0.207–0.213 to 0.166–0.170; with a `deftype`
+0.294–0.347 to 0.264–0.342).

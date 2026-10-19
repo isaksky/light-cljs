@@ -1920,9 +1920,62 @@ wherever a protocol lookup existed, that is in every program with a
   ("Collection kinds").
 - **Left for later.** `first`, `rest` and `next` of the collections, which
   take their seqs, have no branch; nor does `get` of a set, and map entries
-  have no kind, so their `nth` takes the operation. `extend-type`'s
+  have no kind, so their `nth` takes the operation (both since
+  light-cljs-373, below). `extend-type`'s
   dispatchers and implementations stay in maps by the key's text. At `advanced`, an `ILookup` that JavaScript writes on a vector
   or a map is not found, as on master.
+
+#### Phase 2 sets' `get` and map entry kinds
+
+As built (light-cljs-373). `get` of a set took the operation's protocol
+lookup and then `lookup`'s chain of wrappers (hash-set trie, hash-map trie,
+tree, transients, then the sets' array search), and map entries had no
+kind, so `nth`, `count` and `seq` of an entry probed the operations' stores
+in turn.
+
+- **Kinds.** `kindTables` holds sixteen tables and the wrappers read
+  `kindTables[kind & 15]`: `MapEntryType.type` gives map entries kind 8,
+  after both definitions of the type (`MapEntryType.lean`, whose prototype
+  has the entries' own members, and `MapEntryType.vector`), and tables 0
+  and 9 to 15 are no kind's. Entries have a kind of their own rather than
+  the vectors' 4, so that a program building maps and no vector, whose
+  entries are lean, keeps no vector branch: with kind 4 every vector branch
+  would be kept wherever a map is, and `conj` and `assoc` of an entry would
+  need branches of their own.
+- **Branches.** Sets have a branch of `get` (`get.sets`): the protocol
+  lookup `get` makes first, then the member equal to the key, from a hash
+  set's trie (`kindHooks.trieMember`, an effect of `publicHashSet` and
+  `putMember`, as `lookup.members` searches it) or from members in an array
+  (`collectionEntryIndex`, as `lookup.sets`). Map entries have branches of
+  `seq`, `count`, `nth` and `get` (`seq.entries`, `count.entries`,
+  `nth.entries`, `get.entries`). `nth` reads the items at 0 and 1 first, as
+  `nth` tests for an entry only at another index, and else gives an entry's
+  item for an index out of bounds or the operation's error; a vector given
+  the entries' prototype takes the operation. Every program with a map and
+  `get` keeps `MapEntryType` and so `get.entries`, so that branch is the
+  short one (99 bytes at `advanced`): where protocol implementations exist
+  it gives way to the operation instead of repeating its lookup (185
+  bytes). `seq.branches`, `count.branches`, `nth.branches` and
+  `get.branches` are effects of `MapEntryType`, `get.branches` also of the
+  set types. A protocol method whose answer is `missing` (which `contains?`
+  passes `-lookup` for a missing key, and a method can keep) comes back from
+  the branches of `get` as `foundMissing`, which `get.branches` turns into
+  `missing` rather than calling the operation and the method again (Sol
+  review of this change).
+- **Not done.** `first`, `rest` and `next` of the collections and the
+  dispatch cells for `extend-type` are light-cljs-375.
+- **Tests.** `runtime_manifest`: kinds 1 to 8, 33 entries, 314
+  conditional effects, `trieMember` in `KIND_HOOKS`.
+  `builtin_types::collection_operations_read_the_kind_tables` runs sets of
+  every representation and entries of array and hash maps through `get`,
+  `nth`, `count` and `seq` at every level against master's output at
+  `none`, and checks that a program with entries and no vector keeps the
+  entries' branches and none of the vectors'. `js_runtime.test.js`: entries
+  hold a kind number, numbers 9 to 24 change no answer, and a lookup or
+  `-nth` getter JavaScript gives a set or an entry is read once, and one
+  answering with `missing` is called once.
+- **Measured.** See `benchmarks/compiler.md` ("Sets' get and map entry
+  kinds").
 
 #### Phase 2 builtin types, map entries
 
