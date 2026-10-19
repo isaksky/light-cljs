@@ -321,10 +321,10 @@ impl UnitCharges {
                     }
                 }
                 UnitEvent::Observed(observations) => {
-                    if let Some(log) = binding.dependency_log.borrow_mut().as_mut() {
-                        if let Some(observations) = observations.take() {
-                            log.absorb(*observations);
-                        }
+                    if let Some(log) = binding.dependency_log.borrow_mut().as_mut()
+                        && let Some(observations) = observations.take()
+                    {
+                        log.absorb(*observations);
                     }
                 }
                 // What capture records, where a serial build records it.
