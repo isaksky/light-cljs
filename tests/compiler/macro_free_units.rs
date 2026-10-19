@@ -16,6 +16,9 @@ impl Sources {
     pub(crate) fn new() -> Self {
         Self(TempDir::new("cljs-macro-free"))
     }
+    pub(crate) fn root(&self) -> &std::path::PathBuf {
+        self.0.path()
+    }
     pub(crate) fn write(&self, path: &str, source: &str) -> &Self {
         let path = self.0.join(path);
         fs::create_dir_all(path.parent().unwrap()).unwrap();

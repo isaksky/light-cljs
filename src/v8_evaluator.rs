@@ -340,7 +340,10 @@ impl V8Evaluator {
             control.clone(),
             build.map(|(resources, _)| resources.memory.clone()),
         );
-        let heap_limit = initial_heap_limit.clamp(16 * 1024 * 1024, buffers.allowance());
+        // V8 reserves its code range from the heap limit, which must be
+        // page aligned: a build's share of the memory limit need not be.
+        let heap_limit =
+            initial_heap_limit.clamp(16 * 1024 * 1024, buffers.allowance()) & !((1 << 20) - 1);
         let stack = stack::StackLimit::new(options.stack_limit)?;
         // SAFETY: the stack helper verifies a boundary within this thread's
         // stack. Rc state prevents moving the evaluator to another thread.

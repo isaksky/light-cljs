@@ -389,11 +389,9 @@ impl MacroHost {
             // can cost more, so a namespace needs the budget that elision
             // needed: twice the environment's nodes
             // ([`crate::macro_host::WorkMarks`]).
-            if self.engine.work.measuring.get() {
-                crate::macro_host::WorkMarks::note(
-                    &self.engine.work.node_peak,
-                    self.engine.generated_nodes.get() + 2 * (budget - remaining),
-                );
+            if self.measures_work() {
+                let declared = crate::macro_host::WorkMarks::declared_elsewhere(env);
+                self.note_node_room(2 * (budget - remaining + declared));
             }
             &unused
         } else {

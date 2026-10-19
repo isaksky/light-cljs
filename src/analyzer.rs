@@ -10376,20 +10376,20 @@ impl Analyzer<'_> {
                 .map_err(error)?;
             self.macro_host
                 .register_reader_declarations(self.pending_reader_registration.take());
-            if let Some(session) = self.macro_host.session_handle()
-                && session.capturing()
+            if self.macro_host.captures_expansions()
                 && let Some(key) = self.macro_host.source_macro_key(self.namespace, target)
                 && let Some(declaration) = self.macro_host.tables.javascript_macros.get(&key)
             {
                 let definition = declaration.definition();
-                session.capture_expansion(crate::compilation_session::CapturedExpansion {
+                let expansion = crate::compilation_session::CapturedExpansion {
                     generation: declaration.generation(),
                     definition_source: definition.source().name().to_owned(),
                     definition: definition.bytes(),
                     key,
                     call: call_span.clone(),
                     source_index: self.source_index,
-                });
+                };
+                self.macro_host.capture_expansion(expansion);
             }
             return self.import_form(&result).map(Some);
         }

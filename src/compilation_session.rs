@@ -112,6 +112,12 @@ pub(crate) struct UnitCharges {
     /// `source:line:column: unit` of its form, which its failure message
     /// begins with.
     location: String,
+    /// What it observed while a dependency manifest is recorded, and the
+    /// names `gensym` gave in its worker's engine while artifacts are
+    /// captured, which the coordinator adds to the compilation's where it
+    /// charges the unit (light-cljs-374).
+    observations: Option<Box<crate::dependency_manifest::ObservationLog>>,
+    gensyms: Vec<Vec<u16>>,
 }
 impl UnitCharges {
     /// Add the charges to `binding`'s counters and marks, and spend the
@@ -126,6 +132,7 @@ impl UnitCharges {
         depth: usize,
         mut control: Option<crate::evaluator::ExecutionControl>,
         start: &dyn Fn() -> Option<crate::evaluator::ExecutionControl>,
+        session: &CompilationSession,
     ) -> Result<(), (String, crate::AnalysisError)> {
         use crate::macro_host::UnitEvent;
         use crate::macro_host::WorkMarks;
@@ -189,6 +196,15 @@ impl UnitCharges {
                         return fail("compiler macro generated-node limit exceeded");
                     }
                 }
+                // What capture records, where a serial build records it.
+                UnitEvent::Room(extra) => {
+                    WorkMarks::note(&binding.work.node_peak, nodes.get().saturating_add(*extra));
+                }
+                UnitEvent::Conversion(peak) => {
+                    WorkMarks::note(&binding.work.conversion_peak, *peak);
+                }
+                UnitEvent::Unmeasured => binding.work.unmeasured.set(true),
+                UnitEvent::Captured(expansion) => session.capture_expansion((**expansion).clone()),
             }
         }
         Ok(())
@@ -295,7 +311,7 @@ struct Catalog {
     /// `light.build` requests workers forwarded to the coordinator, and
     /// its answers, by ticket ([`SharedCatalog::forward_build`]).
     requests: std::collections::VecDeque<BuildRequest>,
-    replies: Vec<(u64, String)>,
+    replies: Vec<(u64, String, Option<Box<BuildLog>>)>,
     next_ticket: u64,
 }
 struct BuildRequest {
@@ -315,7 +331,9 @@ struct Demand<'a> {
 }
 /// How the coordinator answers a forwarded `light.build` request: its text
 /// and the sources the worker's analyses are of.
-type BuildServer<'a> = &'a dyn Fn(&str, Vec<u32>) -> String;
+type BuildServer<'a> = &'a dyn Fn(&str, Vec<u32>) -> (String, Option<Box<BuildLog>>);
+/// What answering a forwarded `light.build` request recorded.
+type BuildLog = crate::dependency_manifest::ObservationLog;
 /// A thread's analyses: the units it analyzes, the innermost last, each
 /// demanded by the one below it, and the unit it waits for.
 #[derive(Default)]
@@ -349,6 +367,10 @@ pub(crate) struct SharedCatalog {
     /// failed, or 0: the drain stops at that unit, so no job after it in
     /// unit order is needed and none starts ([`Self::admits`]).
     failed_job: std::sync::atomic::AtomicUsize,
+    /// What the compilation records of each analysis beyond its charges,
+    /// which a unit recorded off the coordinator hands it
+    /// ([`crate::macro_host::UnitRecording`]); set when the pool starts.
+    recording: std::sync::OnceLock<crate::macro_host::UnitRecording>,
     #[cfg(test)]
     on_claim: Mutex<Option<ClaimHook>>,
     /// Runs on a waiting thread each time its wait ends, without the lock.
@@ -421,6 +443,10 @@ impl SharedCatalog {
     pub(crate) fn resources(&self) -> Option<&crate::evaluator::BuildResources> {
         self.resources.get()
     }
+    /// What the compilation records of each analysis beyond its charges.
+    fn recording(&self) -> crate::macro_host::UnitRecording {
+        self.recording.get().copied().unwrap_or_default()
+    }
     /// The expansions and generated nodes the coordinator has charged.
     fn charged(&self) -> (usize, usize) {
         use std::sync::atomic::Ordering::Relaxed;
@@ -458,9 +484,9 @@ impl SharedCatalog {
                 && let Some(request) = guard.requests.pop_front()
             {
                 drop(guard);
-                let reply = serve(&request.text, request.analysis);
+                let (reply, log) = serve(&request.text, request.analysis);
                 guard = self.lock();
-                guard.replies.push((request.ticket, reply));
+                guard.replies.push((request.ticket, reply, log));
                 self.settled.notify_all();
                 continue;
             }
@@ -580,7 +606,7 @@ impl SharedCatalog {
     /// of the sources `analysis` on the coordinator, which alone has the
     /// build's resources and log, and wait for the answer; the coordinator
     /// answers while it waits for units ([`Self::claim`]).
-    fn forward_build(&self, text: &str, analysis: Vec<u32>) -> String {
+    fn forward_build(&self, text: &str, analysis: Vec<u32>) -> (String, Option<Box<BuildLog>>) {
         let ticket = {
             let mut c = self.lock();
             let ticket = c.next_ticket;
@@ -595,11 +621,12 @@ impl SharedCatalog {
         self.settled.notify_all();
         let mut c = self.lock();
         loop {
-            if let Some(at) = c.replies.iter().position(|(t, _)| *t == ticket) {
-                return c.replies.swap_remove(at).1;
+            if let Some(at) = c.replies.iter().position(|(t, _, _)| *t == ticket) {
+                let (_, reply, log) = c.replies.swap_remove(at);
+                return (reply, log);
             }
             if let Some(message) = &c.abandoned {
-                return format!("e{message}");
+                return (format!("e{message}"), None);
             }
             c = self.settled.wait(c).unwrap_or_else(PoisonError::into_inner);
         }
@@ -740,6 +767,12 @@ pub(crate) struct CompilationSession {
     gensym_floor: Cell<u64>,
     /// Whether capture reads what `gensym` returns.
     gensyms_logged: Cell<bool>,
+    /// What `gensym` returned since the last [`Self::take_gensyms`], in a
+    /// serial build's order, once a pool worker's unit added its names
+    /// ([`Self::absorb_gensyms`]), and every name taken so far, which a
+    /// worker's helper initializer, run again in its isolate, gives again.
+    gensym_buffer: RefCell<Vec<Vec<u16>>>,
+    gensyms_seen: RefCell<std::collections::HashSet<Vec<u16>>>,
     /// The build's unit pool, with `--jobs N` ([`UnitPool`]).
     pool: RefCell<Option<UnitPool>>,
 }
@@ -753,6 +786,7 @@ struct SessionCapture {
     expansions: Vec<CapturedExpansion>,
 }
 /// A source macro call analysis expanded, for an artifact's provenance.
+#[derive(Clone, Debug)]
 pub(crate) struct CapturedExpansion {
     /// The macro, `ns/name`, and its generation when it ran.
     pub key: String,
@@ -835,6 +869,8 @@ impl Default for CompilationSession {
             gensyms_pending: Default::default(),
             gensym_floor: Default::default(),
             gensyms_logged: Default::default(),
+            gensym_buffer: Default::default(),
+            gensyms_seen: Default::default(),
             pool: Default::default(),
         }
     }
@@ -1171,10 +1207,45 @@ impl CompilationSession {
     /// call or since [`Self::log_gensyms`]; before the session starts, the
     /// counter it will start from and nothing.
     pub fn take_gensyms(&self) -> Result<(u64, Vec<Vec<u16>>), String> {
-        match self.bootstrap() {
-            Some(bootstrap) => Self::take_gensyms_from(bootstrap.evaluator.as_ref()),
-            None => Ok((self.gensym_floor.get(), Vec::new())),
+        let (counter, names) = match self.bootstrap() {
+            Some(bootstrap) => Self::take_gensyms_from(bootstrap.evaluator.as_ref())?,
+            None => (self.gensym_floor.get(), Vec::new()),
+        };
+        // With a pool, a worker's unit may give these names again.
+        if self.pool.borrow().is_some() {
+            self.gensyms_seen.borrow_mut().extend(names.iter().cloned());
         }
+        let mut buffer = self.gensym_buffer.take();
+        if buffer.is_empty() {
+            return Ok((counter, names));
+        }
+        buffer.extend(names);
+        Ok((counter, buffer))
+    }
+    /// Add `names`, what `gensym` gave in a pool worker's engine while it
+    /// analyzed a unit the coordinator charges now, after what this
+    /// engine's `gensym` gave before, as a serial build logs them; a name
+    /// already taken is not added again (docs/compiler-concurrency.md, "As
+    /// built (light-cljs-374)").
+    fn absorb_gensyms(&self, names: Vec<Vec<u16>>) -> Result<(), String> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        let mut seen = self.gensyms_seen.borrow_mut();
+        let mut buffer = self.gensym_buffer.borrow_mut();
+        if self.gensyms_logged.get()
+            && let Some(bootstrap) = self.bootstrap()
+        {
+            let (_, earlier) = Self::take_gensyms_from(bootstrap.evaluator.as_ref())?;
+            seen.extend(earlier.iter().cloned());
+            buffer.extend(earlier);
+        }
+        for name in names {
+            if seen.insert(name.clone()) {
+                buffer.push(name);
+            }
+        }
+        Ok(())
     }
     /// The runtime's `gensym` skips every unqualified symbol name the form
     /// bridge decodes, so importing the names as symbols reserves them.
@@ -1506,10 +1577,12 @@ impl CompilationSession {
         engines: PoolEngines,
         environment: MacroEnvironment,
         resources: Option<crate::evaluator::BuildResources>,
+        recording: crate::macro_host::UnitRecording,
     ) -> Result<(), String> {
         if let Some(resources) = resources {
             let _ = self.shared.resources.set(resources);
         }
+        let _ = self.shared.recording.set(recording);
         let pool = UnitPool::start(self.shared.clone(), slots, engines, environment)?;
         *self.pool.borrow_mut() = Some(pool);
         Ok(())
@@ -1663,16 +1736,26 @@ impl CompilationSession {
             .get(id)
             .and_then(Option::as_ref)
             .map(|binding| binding.frame());
-        // Workers forward their `light.build` requests here.
+        // Workers forward their `light.build` requests here. What a
+        // request records goes back to the worker's unit, which is charged
+        // in unit order (light-cljs-374), not in the order requests come.
         let serve = |text: &str, analysis: Vec<u32>| {
             let binding = counters.as_ref().expect("a unit binding");
-            crate::build_services::serve_request(
+            let log = binding.dependency_log.borrow().as_ref().map(|log| {
+                crate::dependency_manifest::ObservationLog {
+                    window: log.window,
+                    ..Default::default()
+                }
+            });
+            let log = Rc::new(RefCell::new(log));
+            let reply = crate::build_services::serve_request(
                 &binding.build,
-                &binding.dependency_log,
+                &log,
                 text,
                 |unit| self.shared.unit_source(unit),
                 analysis,
-            )
+            );
+            (reply, log.take().map(Box::new))
         };
         let server = counters.is_some().then_some(&serve as BuildServer<'_>);
         let analysis = analyze_unit(
@@ -1727,9 +1810,25 @@ impl CompilationSession {
                 self.start_main_engine(&binding)
                     .map(|b| b.evaluator.control())
             };
-            if let Err((message, diagnostic)) = charges.charge(&binding, depth, control, &start) {
+            if let Err((message, diagnostic)) =
+                charges.charge(&binding, depth, control, &start, self)
+            {
                 self.shared.fail(id, message.clone(), Some(diagnostic));
                 return Err(message);
+            }
+            let UnitCharges {
+                observations,
+                gensyms,
+                ..
+            } = *charges;
+            if let (Some(observations), Some(log)) =
+                (observations, binding.dependency_log.borrow_mut().as_mut())
+            {
+                log.absorb(*observations);
+            }
+            if let Err(error) = self.absorb_gensyms(gensyms) {
+                self.shared.fail(id, error.clone(), None);
+                return Err(error);
             }
             (self.shared).raise_charged(binding.expansions.get(), binding.generated_nodes.get());
         }
@@ -1837,15 +1936,43 @@ fn analyze_unit(
         host.engine.work = Default::default();
         let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
         let location = format!("{}:{}:{}: {name}", loc.source, loc.line, loc.column);
-        let free = crate::macro_host::MacroFreeUnit::enter(name, macro_free);
+        let recording = shared.recording();
+        // While artifacts are captured, a worker's engine logs what `gensym`
+        // gives from here on, which the unit's analysis hands the
+        // coordinator; what the engine gave before, setting itself up or
+        // installing the catalog's registrations, is its own.
+        let logs_gensyms = on_worker && recording.capture;
+        let started_log = match engine {
+            Some(engine) if logs_gensyms => CompilationSession::take_gensyms_from(engine).map(drop),
+            _ => Ok(()),
+        };
+        let free = crate::macro_host::MacroFreeUnit::enter(name, macro_free, recording);
         let analysis = crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
+        let recorded = free.finish();
+        // What `gensym` gave in this worker's engine, for the artifact
+        // ([`CompilationSession::take_gensyms`]).
+        let gensyms = match engine {
+            Some(engine) if logs_gensyms => started_log
+                .and_then(|()| CompilationSession::take_gensyms_from(engine))
+                .map(|(_, names)| names),
+            _ => Ok(Vec::new()),
+        };
+        let mut events = recorded.events;
+        // Names it cannot account for keep its namespace's artifact from
+        // being installed, as an unmeasured conversion does.
+        let gensyms = gensyms.unwrap_or_else(|_| {
+            events.push(crate::macro_host::UnitEvent::Unmeasured);
+            Vec::new()
+        });
         let charges = UnitCharges {
-            events: free.finish(),
+            events,
             macro_depth: host.engine.work.macro_depth.get(),
             analysis_depth: host.engine.work.analysis_depth.get(),
             limits: (host.limits.expansions, host.limits.generated_nodes),
             depth_limit: host.limits.expansion_depth.min(64),
             location,
+            observations: recorded.observations,
+            gensyms,
         };
         shared.record_charges(id, charges, started.elapsed());
         analysis
@@ -2123,8 +2250,9 @@ impl crate::scheduler::Job for UnitJob {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PoolEngines {
     /// Workers have no compile-time engine and take only macro-free units
-    /// (light-cljs-338): while namespace artifacts are captured or a
-    /// dependency manifest is recorded, which only the coordinator does.
+    /// (light-cljs-338): when the macro memory limit gives the isolates
+    /// fewer than two shares, an engine is not V8, or the compilation is
+    /// interactive.
     None,
     /// Each worker owns one V8 isolate for the whole build.
     Persistent,
@@ -2474,8 +2602,14 @@ impl CatalogView for WorkerView {
     }
     fn forward_build(&self, request: &str) -> Option<String> {
         self.forwards.get().then(|| {
-            self.shared
-                .forward_build(request, self.shared.analysis_sources(self.thread))
+            let (reply, log) = self
+                .shared
+                .forward_build(request, self.shared.analysis_sources(self.thread));
+            // What it recorded is the unit's this worker records.
+            if let Some(log) = log {
+                crate::macro_host::record_observations(*log);
+            }
+            reply
         })
     }
 }

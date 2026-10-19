@@ -11,6 +11,43 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Recording on workers (light-cljs-374, October 19, 2026)
+
+Capturing artifacts and recording a manifest keep macro-expanding units on
+the workers' isolates (docs/compiler-concurrency.md, "As built
+(light-cljs-374)"). Parent `02fc809` against this change, three
+alternating rounds per configuration at 1-minute load 2.6 to 9.0; a cold
+cache directory per run. All eighteen outputs are 33,626,443 bytes with one
+digest.
+
+| Build | Binary | Wall (s) | Median wall | Median peak RSS (GB) | Pooled units | Worker isolates |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| no cache, `--jobs 1` | parent | 24.09, 24.49, 26.76 | 24.49 | 0.918 | | |
+| no cache, `--jobs 1` | this | 23.65, 23.76, 25.67 | 23.76 | 0.936 | | |
+| cold `--cache-dir`, `--jobs 1` | parent | 25.96, 26.80, 27.06 | 26.80 | 0.931 | | |
+| cold `--cache-dir`, `--jobs 1` | this | 26.09, 26.18, 26.71 | 26.18 | 0.918 | | |
+| cold `--cache-dir`, `--jobs 8` | parent | 26.79, 27.62, 28.44 | 27.62 | 0.983 | 5,303 | 0 |
+| cold `--cache-dir`, `--jobs 8` | this | 21.89, 24.79, 25.90 | 24.79 | 1.697 | 12,817 | 7 |
+
+- **Serial gate.** Without the cache, -3.0% wall and +2.0% peak RSS on the
+  medians, inside the +2% / +3% gate; with a cold cache, -2.3% wall and
+  -1.4% peak RSS, though that build now reads the encode peak once more
+  per outermost macro expansion.
+- **Cold cache with eight jobs.** The parent's pool took only the 5,303
+  macro-free units and made no worker isolate; this change gives the pool
+  12,817 units, analyzed in seven worker isolates, for -10.2% wall on the
+  median. Peak RSS grows with the isolates, +73%, as the uncached
+  `--jobs 8` build's does: one shared budget, not a per-worker multiplier.
+  The coordinator still waits at each drain (the 339 note), which bounds
+  the gain.
+- **`--jobs 8` without the cache** aborted at the parent, before any
+  output, on Penpot's 4 GB `--macro-memory-limit`: a worker isolate's heap
+  limit, a share of the budget, was not page aligned, and V8's code range
+  check failed (`IsAligned(params.reservation_size, allocate_page_size)`).
+  This change rounds an isolate's heap limit down to a MiB;
+  `tests/cli.rs` `jobs_counts_work_slots_without_changing_output` builds
+  with `--jobs 8 --macro-memory-limit 4000000000`.
+
 ## Diagnostics, limits and one memory budget (light-cljs-341, October 19, 2026)
 
 Limits charged as running sums with exact JavaScript-macro errors, a soft

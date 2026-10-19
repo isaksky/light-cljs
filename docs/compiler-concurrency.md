@@ -1176,8 +1176,8 @@ The one deterministic ID-order change of this stage is made, at every
   replaced the temporary `LIGHT_CLJS_INLINE_UNITS` hook; "Semantics and
   determinism"). While
   artifacts are captured or a dependency manifest is recorded
-  (`--cache-dir`), which only the coordinator's session does, the workers
-  have no engine and take only macro-free units, as light-cljs-338's did.
+  (`--cache-dir`), the workers had no engine and took only macro-free
+  units, as light-cljs-338's did; light-cljs-374 lifted that (below).
   QuickJS-only builds and WebAssembly have one slot, so no pool.
 - *The drain.* A namespace's drain gives the pool its units still
   unstarted, as one batch in unit order, and then takes every unit in
@@ -1245,6 +1245,63 @@ The one deterministic ID-order change of this stage is made, at every
   `pool.worker-isolates`, `time.worker-isolate-startup-ms`,
   `time.worker-units-ms` and `pool.worker-initializations` when the pool
   ran. JIT share per worker is not measured.
+
+*As built (light-cljs-374), recording on workers:* capturing artifacts
+(`--cache-dir`, `EntryRecorders::capture`) and recording a dependency
+manifest no longer take the workers' engines away, so macro-expanding units
+go to the pool on a cold cache too, and the counter fixture prints `1 1`
+with several jobs whether or not the cache is on (the separate policies of
+"Semantics and determinism"). A unit recorded off the coordinator
+(`MacroFreeUnit` with a `UnitRecording`) keeps what the compilation records
+of an analysis with its charges, and the coordinator adds it where it
+charges the unit, in unit order, which is where a serial build records it:
+
+- *Observations.* `MacroHost::observe` logs into the unit's own
+  `ObservationLog`; a `light.build` request the coordinator answers for a
+  worker is served into a log of its own, which goes back with the answer
+  into the unit's (`SharedCatalog::forward_build`), not into the
+  compilation's in the order requests arrive. The charge adds it with
+  `ObservationLog::absorb`, through the same deduplicating appends, with
+  observations by the source being analyzed taken as the coordinator's
+  window.
+- *Capture.* A source macro call the unit expands (`UnitEvent::Captured`),
+  the room its expansions needed in the node budget (`Room`, relative to
+  the nodes generated so far), its conversion peak and an unmeasured
+  conversion are events, charged in order with its expansions. The names
+  `gensym` gave in the worker's engine during the analysis are taken from
+  that engine's log and added after what the coordinator's runtime gave
+  before them (`CompilationSession::absorb_gensyms`); a name the build took
+  already, such as one a helper's initializer gives again in another
+  isolate, is not added twice.
+- *Encode peaks.* An outermost JavaScript expansion first discards the
+  engine's encode peak, so that an expansion's accounting is of its own
+  conversions, not of the engine's history (its startup, a gensym export),
+  which differs by isolate and also differed between `--jobs 1` and
+  `--jobs N` before this pellet (`light.build`'s artifact recorded a node
+  peak of 2068 nodes at one job and 1105 at two). Serial capturing builds
+  record the smaller, history-free peak from now on. For the same reason
+  an environment's measure counts the declared names its reader context
+  leaves out because the engine holds them already (`:declared` `:from`,
+  `WorkMarks::declared_elsewhere`): a worker that had not seen a
+  namespace's earlier units sent all five of `light.build`'s names where
+  the coordinator sent one, and measured 8 nodes more.
+- *Tests.* `worker_isolates::units_on_workers_keep_the_one_slot_manifest_and_artifacts`
+  compares the manifest, every captured artifact, the program and the
+  macro calls at one, two, four and eight slots, with room for eight
+  isolates and at least two workers at four and eight, on a fixture whose units
+  read resources from macros and from a helper's initializer, name a loaded
+  unrequired namespace, reflect on one, miss a dotted namespace and
+  generate names; `tests/compiler_cache.rs`
+  `a_cold_parallel_build_expands_units_on_workers_and_publishes_the_one_job_artifacts`
+  checks that a cold `--jobs 4 --cache-dir` build pools macro-expanding
+  units in two or more worker isolates and publishes the one-job build's
+  artifact files byte for byte.
+- *Heap limits.* An isolate's heap limit, a share of the build's memory
+  budget since light-cljs-341, is rounded down to a MiB: V8 reserves its
+  code range from it, and an unaligned one (Penpot's 4 GB over eight
+  isolates) aborted the process. On Penpot a cold `--jobs 8 --cache-dir`
+  build gives the pool 12,817 units instead of 5,303, -10% wall
+  (benchmarks/compiler-concurrency.md).
 
 ### Stage C: parallel namespaces
 

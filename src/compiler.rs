@@ -2578,10 +2578,11 @@ fn analyze_entry(
     // With `--jobs N` the build's deferred units are analyzed on one pool
     // for the whole build, each worker in a V8 isolate of its own, which
     // share the build's deadline and macro memory limit, one budget for
-    // them all (light-cljs-341); while artifacts are
-    // captured or observations logged, which only the coordinator does,
-    // its workers have no engine and take only macro-free units
-    // (docs/compiler-concurrency.md, "As built (light-cljs-339)").
+    // them all (light-cljs-341). While artifacts are captured or a
+    // manifest is recorded, a worker's unit hands what its analysis
+    // observed and what capture records of it to the coordinator, which
+    // adds them where it charges the unit, in unit order
+    // (docs/compiler-concurrency.md, "As built (light-cljs-374)").
     let memory_limit = macros.evaluator_options.memory_limit;
     let mut pool_slots = analysis.unit_slots;
     if analysis.unit_slots.get() > 1
@@ -2589,8 +2590,6 @@ fn analyze_entry(
     {
         use crate::compilation_session::PoolEngines;
         let engines = if cfg!(light_v8)
-            && !capturing
-            && observations.is_none()
             && macros.engine.script_host.is_none()
             && !macros.tables.interactive
         {
@@ -2618,7 +2617,17 @@ fn analyze_entry(
                     .map_err(|e| NamespaceCompileError::new(e.0))?,
             );
         }
-        let started = session.start_pool(pool_slots, engines, macros.environment(), resources);
+        let recording = crate::macro_host::UnitRecording {
+            observe: observations.is_some(),
+            capture: capturing,
+        };
+        let started = session.start_pool(
+            pool_slots,
+            engines,
+            macros.environment(),
+            resources,
+            recording,
+        );
         if let Err(error) = started {
             macros.evaluator_options.memory_limit = memory_limit;
             return Err(NamespaceCompileError::new(error));

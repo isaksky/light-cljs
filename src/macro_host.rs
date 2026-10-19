@@ -38,6 +38,8 @@ thread_local! {
     /// The macro-free unit this thread analyzes, if any ([`MacroFreeUnit`]).
     static MACRO_FREE_UNIT: std::cell::RefCell<Option<MacroFreeAnalysis>> =
         const { std::cell::RefCell::new(None) };
+    /// How many JavaScript macro expansions run on this thread, nested.
+    static EXPANDING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// A native expansion in a macro-free unit's analysis: the nodes it
@@ -67,6 +69,27 @@ pub(crate) enum UnitEvent {
         span: std::ops::Range<usize>,
         site: Option<(String, std::ops::Range<usize>)>,
     },
+    /// While artifacts are captured (light-cljs-374): the namespace's node
+    /// budget had to leave room for this many nodes beyond those generated
+    /// so far ([`WorkMarks::node_peak`]).
+    Room(usize),
+    /// [`WorkMarks::conversion_peak`] reached this.
+    Conversion(usize),
+    /// A measurement failed ([`WorkMarks::unmeasured`]).
+    Unmeasured,
+    /// A source macro call expanded, for the artifact's provenance.
+    Captured(Box<crate::compilation_session::CapturedExpansion>),
+}
+
+/// What a recorded unit's analysis records beyond its charges: what the
+/// compilation records of every analysis, which a pool worker hands to the
+/// coordinator (docs/compiler-concurrency.md, "As built (light-cljs-374)").
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct UnitRecording {
+    /// A dependency manifest is recorded: the analysis's observations.
+    pub observe: bool,
+    /// Artifacts are captured: its source macro calls and its work marks.
+    pub capture: bool,
 }
 
 struct MacroFreeAnalysis {
@@ -77,6 +100,15 @@ struct MacroFreeAnalysis {
     events: Vec<UnitEvent>,
     /// The macro call the analyzer expands ([`ExpansionSite`]).
     site: Option<(String, std::ops::Range<usize>)>,
+    capture: bool,
+    /// What the analysis observed, while a manifest is recorded.
+    observations: Option<crate::dependency_manifest::ObservationLog>,
+}
+
+/// What a recorded unit's analysis recorded, in order ([`MacroFreeUnit::finish`]).
+pub(crate) struct RecordedUnit {
+    pub events: Vec<UnitEvent>,
+    pub observations: Option<Box<crate::dependency_manifest::ObservationLog>>,
 }
 
 /// While alive, the analysis on this thread is of a unit found macro-free
@@ -90,14 +122,17 @@ struct MacroFreeAnalysis {
 pub(crate) struct MacroFreeUnit(Option<MacroFreeAnalysis>);
 impl MacroFreeUnit {
     /// Record the analysis of unit `name` on this thread; with `forbid`, it
-    /// was found macro-free and must not enter an engine.
-    pub(crate) fn enter(name: String, forbid: bool) -> Self {
+    /// was found macro-free and must not enter an engine. `recording` is
+    /// what the compilation records of it beyond its charges.
+    pub(crate) fn enter(name: String, forbid: bool, recording: UnitRecording) -> Self {
         Self(MACRO_FREE_UNIT.with(|unit| {
             unit.replace(Some(MacroFreeAnalysis {
                 name,
                 forbid,
                 events: Vec::new(),
                 site: None,
+                capture: recording.capture,
+                observations: recording.observe.then(Default::default),
             }))
         }))
     }
@@ -107,12 +142,62 @@ impl MacroFreeUnit {
         MACRO_FREE_UNIT.with(|unit| unit.borrow().is_some())
     }
     /// What the analysis recorded, in order.
-    pub(crate) fn finish(mut self) -> Vec<UnitEvent> {
+    pub(crate) fn finish(mut self) -> RecordedUnit {
         let previous = self.0.take();
-        MACRO_FREE_UNIT
-            .with(|unit| unit.replace(previous))
-            .map_or_else(Vec::new, |analysis| analysis.events)
+        let analysis = MACRO_FREE_UNIT.with(|unit| unit.replace(previous));
+        let (events, observations) =
+            analysis.map_or_else(Default::default, |a| (a.events, a.observations));
+        RecordedUnit {
+            events,
+            observations: observations.map(Box::new),
+        }
     }
+    /// Whether this thread records a unit's analysis for a compilation that
+    /// captures artifacts, or `None` if it records none.
+    pub(crate) fn captures() -> Option<bool> {
+        MACRO_FREE_UNIT.with(|unit| unit.borrow().as_ref().map(|analysis| analysis.capture))
+    }
+}
+/// Log an observation for the dependency manifest in the unit this thread
+/// records, if it records one: `record` back if it does not, for the
+/// compilation's log. A unit recorded while no manifest is, logs nothing.
+pub(crate) fn record_observation<F>(record: F) -> Option<F>
+where
+    F: FnOnce(&mut crate::dependency_manifest::ObservationLog),
+{
+    MACRO_FREE_UNIT.with(|unit| match &mut *unit.borrow_mut() {
+        Some(analysis) => {
+            if let Some(log) = &mut analysis.observations {
+                record(log);
+            }
+            None
+        }
+        None => Some(record),
+    })
+}
+/// Add `log`, what the coordinator recorded of a `light.build` request it
+/// answered for this thread, to the unit this thread records.
+pub(crate) fn record_observations(log: crate::dependency_manifest::ObservationLog) {
+    MACRO_FREE_UNIT.with(|unit| {
+        if let Some(analysis) = &mut *unit.borrow_mut()
+            && let Some(observations) = &mut analysis.observations
+        {
+            observations.absorb(log);
+        }
+    });
+}
+/// Record `event`, one of the capture's, in the unit this thread records
+/// for a capturing compilation: whether this thread records a unit.
+fn record_capture(event: impl FnOnce() -> UnitEvent) -> bool {
+    MACRO_FREE_UNIT.with(|unit| match &mut *unit.borrow_mut() {
+        Some(analysis) => {
+            if analysis.capture {
+                analysis.events.push(event());
+            }
+            true
+        }
+        None => false,
+    })
 }
 impl Drop for MacroFreeUnit {
     fn drop(&mut self) {
@@ -320,6 +405,28 @@ impl WorkMarks {
     /// [`Self::nodes`] of a macro environment, whose large entries (the
     /// macro inventory, the namespace and the locals) are shared by the
     /// expansions that see them, so their counts are kept by identity.
+    /// The declared names the reader context of `environment` leaves out
+    /// because the engine holds them already (its `:declared` `:from`,
+    /// [`MacroHost::reader_environment`]): the nodes its conversion would
+    /// take more in an engine that holds none. Measures count them, so that
+    /// they do not depend on the engine's history, which differs by isolate
+    /// (light-cljs-374).
+    pub(crate) fn declared_elsewhere(environment: &crate::compiler_data::Datum) -> usize {
+        use crate::compiler_data::{DataBuilder, DatumKind};
+        let key = |ns, name| DataBuilder.keyword(Name::new(ns, name));
+        environment
+            .get(&key(Some("light-cljs"), "reader-context"))
+            .ok()
+            .flatten()
+            .and_then(|context| context.get(&key(None, "declared")).ok().flatten())
+            .and_then(|declared| declared.get(&key(None, "from")).ok().flatten())
+            .and_then(|from| match from.kind() {
+                DatumKind::Integer(from) => usize::try_from(*from).ok(),
+                _ => None,
+            })
+            .unwrap_or(0)
+    }
+
     fn environment_nodes(&self, environment: &crate::compiler_data::Datum) -> usize {
         use crate::compiler_data::DatumKind;
         let DatumKind::Collection { children, .. } = environment.kind() else {
@@ -779,13 +886,21 @@ impl MacroHost {
         // built (light-cljs-341)"); what they generate is charged after.
         // The cache's accounting keeps the stricter measure: a namespace
         // needs room for the largest of its inputs too.
-        if self.engine.work.measuring.get() {
-            let input =
-                WorkMarks::nodes(&call.data()).max(self.engine.work.environment_nodes(environment));
-            WorkMarks::note(
-                &self.engine.work.node_peak,
-                self.engine.generated_nodes.get().saturating_add(input),
+        let measuring = self.measures_work();
+        if measuring {
+            let input = WorkMarks::nodes(&call.data()).max(
+                self.engine.work.environment_nodes(environment)
+                    + WorkMarks::declared_elsewhere(environment),
             );
+            self.note_node_room(input);
+            // What the engine's conversions charged before this expansion,
+            // outside every other one, is not its own: the engine's history,
+            // which differs by isolate (light-cljs-374).
+            if EXPANDING.get() == 0
+                && take_encode_peak(evaluator, &self.engine.work.encode_peak).is_none()
+            {
+                self.note_unmeasured();
+            }
         }
         let limits = crate::form_bridge::ConversionLimits {
             nodes: self.limits.generated_nodes,
@@ -815,16 +930,18 @@ impl MacroHost {
             }
             expanded
         };
-        let expanded = run();
+        let expanded = {
+            EXPANDING.set(EXPANDING.get() + 1);
+            let expanded = run();
+            EXPANDING.set(EXPANDING.get() - 1);
+            expanded
+        };
         // What the conversions charged on the JavaScript side, which bounds
         // them by the same remaining budget.
-        if self.engine.work.measuring.get() && expanded.is_ok() {
+        if measuring && expanded.is_ok() {
             match take_encode_peak(evaluator, &self.engine.work.encode_peak) {
-                Some(peak) => WorkMarks::note(
-                    &self.engine.work.node_peak,
-                    self.engine.generated_nodes.get().saturating_add(peak),
-                ),
-                None => self.engine.work.unmeasured.set(true),
+                Some(peak) => self.note_node_room(peak),
+                None => self.note_unmeasured(),
             }
         }
         let expanded = expanded.map_err(|e| {
@@ -1116,9 +1233,9 @@ impl MacroHost {
                 };
                 // Each conversion takes at most the node limit itself, so a
                 // namespace needs a limit of at least its largest.
-                let measuring = self.engine.work.measuring.get();
+                let measuring = self.measures_work();
                 if measuring {
-                    WorkMarks::note(&self.engine.work.conversion_peak, WorkMarks::nodes(value));
+                    self.note_conversion(WorkMarks::nodes(value));
                 }
                 let argument = evaluator
                     .import_data(value, limits)
@@ -1155,8 +1272,8 @@ impl MacroHost {
                 if measuring && data.is_ok() {
                     let readers = self.engine.data_readers.borrow();
                     match take_encode_peak(&*evaluator, &readers.encode_peak) {
-                        Some(peak) => WorkMarks::note(&self.engine.work.conversion_peak, peak),
-                        None => self.engine.work.unmeasured.set(true),
+                        Some(peak) => self.note_conversion(peak),
+                        None => self.note_unmeasured(),
                     }
                 }
                 data.map(Some)
@@ -1519,10 +1636,63 @@ impl MacroHost {
         &self,
         record: impl FnOnce(&mut crate::dependency_manifest::ObservationLog),
     ) {
-        // A worker's binding records no observations for the manifest.
         forbid_engine_entry("a dependency observation");
+        // A unit a worker analyzes logs in its record, which the
+        // coordinator adds to the compilation's log where it charges it.
+        let Some(record) = record_observation(record) else {
+            return;
+        };
         if let Some(log) = self.engine.dependency_log.borrow_mut().as_mut() {
             record(log);
+        }
+    }
+    /// Whether this analysis measures its logical work for an artifact's
+    /// accounting ([`WorkMarks`]): in a unit this thread records, whether
+    /// the compilation captures; otherwise whether its marks measure.
+    pub(crate) fn measures_work(&self) -> bool {
+        MacroFreeUnit::captures().unwrap_or_else(|| self.engine.work.measuring.get())
+    }
+    /// Note that the namespace's node budget had to leave room for `extra`
+    /// nodes beyond those generated so far ([`WorkMarks::node_peak`]), or
+    /// record it in the unit this thread records, where it is charged.
+    pub(crate) fn note_node_room(&self, extra: usize) {
+        if !record_capture(|| UnitEvent::Room(extra)) {
+            WorkMarks::note(
+                &self.engine.work.node_peak,
+                self.engine.generated_nodes.get().saturating_add(extra),
+            );
+        }
+    }
+    /// [`WorkMarks::conversion_peak`], as [`Self::note_node_room`].
+    pub(crate) fn note_conversion(&self, nodes: usize) {
+        if !record_capture(|| UnitEvent::Conversion(nodes)) {
+            WorkMarks::note(&self.engine.work.conversion_peak, nodes);
+        }
+    }
+    /// [`WorkMarks::unmeasured`], as [`Self::note_node_room`].
+    pub(crate) fn note_unmeasured(&self) {
+        if !record_capture(|| UnitEvent::Unmeasured) {
+            self.engine.work.unmeasured.set(true);
+        }
+    }
+    /// Whether the source macro calls this analysis expands are captured
+    /// for an artifact's provenance ([`Self::capture_expansion`]).
+    pub(crate) fn captures_expansions(&self) -> bool {
+        MacroFreeUnit::captures()
+            .unwrap_or_else(|| self.session_handle().is_some_and(|s| s.capturing()))
+    }
+    /// Capture a source macro call expanded: in the session, or in the unit
+    /// this thread records, whose charge captures it in the session in
+    /// unit order (light-cljs-374).
+    pub(crate) fn capture_expansion(
+        &self,
+        expansion: crate::compilation_session::CapturedExpansion,
+    ) {
+        let mut expansion = Some(expansion);
+        if !record_capture(|| UnitEvent::Captured(Box::new(expansion.take().unwrap())))
+            && let (Some(session), Some(expansion)) = (self.session_handle(), expansion)
+        {
+            session.capture_expansion(expansion);
         }
     }
     pub(crate) fn defers_source_units(&self) -> bool {

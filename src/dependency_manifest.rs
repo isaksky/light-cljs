@@ -757,6 +757,26 @@ impl ObservationLog {
     pub fn executes(&mut self, source: usize) {
         Self::mark(&mut self.executes, source);
     }
+    /// Log what `other` logged, in its order, as if it were logged here
+    /// now: what a pool worker's unit observed, which the coordinator adds
+    /// where it charges the unit, in unit order, as a serial build logs it
+    /// (docs/compiler-concurrency.md, "As built (light-cljs-374)"). Its
+    /// observations by the source being analyzed are this log's window's.
+    pub(crate) fn absorb(&mut self, other: ObservationLog) {
+        for (observer, position) in other.loaded {
+            self.loaded(observer as usize, position as usize);
+        }
+        for (_, namespace, kinds) in other.named {
+            self.named(&namespace, kinds);
+        }
+        for (observer, namespace) in other.absent {
+            self.absent(observer as usize, &namespace);
+        }
+        for source in other.executes {
+            self.executes(source as usize);
+        }
+        self.inputs.extend(other.inputs);
+    }
 }
 
 /// What the loader recorded for one source, in load order.

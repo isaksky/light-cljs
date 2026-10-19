@@ -1151,7 +1151,11 @@ This is compiler-owned accounting, not an execution-effect log.
   so output is unchanged) through a function handle it evaluates once per
   session. Active encodings are a stack, since realizing a lazy result can
   expand another macro in the middle of one, and a nested read leaves the
-  outer encodings to record their own cost. Measuring costs that call
+  outer encodings to record their own cost. An expansion outside every
+  other one reads and drops the peak first, which is the engine's history,
+  not the expansion's (light-cljs-374: it differs by isolate, and between
+  `--jobs` values); an environment counts the declared names the engine
+  already holds too, for the same reason. Measuring costs those calls
   and a datum count per expansion, done only while capturing, with the
   environment's large shared entries counted once by identity. A bootstrap
   macro whose unused environment was elided under half the remaining

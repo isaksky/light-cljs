@@ -263,6 +263,85 @@ fn a_warm_hit_and_a_parallel_miss_match_one_job() {
     }
 }
 
+/// Definitions whose units expand source macros, one of which runs a helper
+/// at compile time, and another generates a name.
+const MACRO_UNITS: &[(&str, &str)] = &[
+    ("util.cljs", "(ns util) (defn helper [x] (str \"h\" x))"),
+    (
+        "macros.cljs",
+        "(ns macros (:require [util])) (defmacro shout [x] (util/helper x)) (defmacro twice [form] `(let [v# ~form] (+ v# v#)))",
+    ),
+    (
+        "app.cljs",
+        "(ns app (:require [macros :refer [shout twice]])) (def a (shout 3)) (def b (twice 4)) (defn c [n] (twice (inc n))) (def d (vec (for [i (range 3)] (shout i)))) (defn f1 [] (shout 1)) (defn f2 [] (twice 2)) (defn f3 [] (shout 3)) (defn f4 [] (twice 4)) (defn f5 [] (shout 5)) (defn f6 [] (twice 6)) (defn f7 [] (shout 7)) (defn f8 [] (twice 8)) (defn f9 [] (shout 9)) (defn f10 [] (twice 10)) (defn f11 [] (shout 11)) (defn f12 [] (twice 12))",
+    ),
+    (
+        "main.cljs",
+        "(ns main (:require [app] [macros :refer [twice]])) (def e (twice app/b)) (js/console.log app/a app/b (app/c 2) (pr-str app/d) e)",
+    ),
+];
+
+/// A cold cache with several jobs (light-cljs-374): capturing the misses'
+/// artifacts leaves their macro-expanding units on the workers' isolates,
+/// and the parallel build emits the uncached program and publishes the
+/// artifacts a one-job build publishes, byte for byte, which a warm parallel
+/// build then installs.
+#[test]
+fn a_cold_parallel_build_expands_units_on_workers_and_publishes_the_one_job_artifacts() {
+    let project = Project::new(MACRO_UNITS);
+    let oracle = project.uncached("main");
+    assert_eq!(oracle.run(), "h3 8 6 [\"hi\" \"hi\" \"hi\"] 16\n");
+    let build = |cache: &Path, jobs: &str| {
+        // Room for four isolates, so several workers record at once.
+        let extra = ["--jobs", jobs, "--macro-memory-limit", "268435456"];
+        let mut command = project.command("main", &extra, false);
+        command.arg("--cache-dir").arg(cache);
+        Project::finish(command.output().unwrap())
+    };
+    let objects = |cache: &Path| {
+        let mut objects: Vec<(String, Vec<u8>)> = fs::read_dir(cache.join("v1/objects"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| !name_of(path).starts_with(".tmp"))
+            .map(|path| (name_of(&path), fs::read(&path).unwrap()))
+            .collect();
+        objects.sort();
+        objects
+    };
+    let serial_cache = project.dir.join("cache-1");
+    let serial = build(&serial_cache, "1");
+    assert_eq!(serial.js, oracle.js);
+    assert_eq!(serial.stat("cache.published"), 4);
+    let mut isolates = 0;
+    for round in 0..3 {
+        let cache = project.dir.join(format!("cache-4-{round}"));
+        let parallel = build(&cache, "4");
+        assert_eq!(parallel.js, oracle.js, "round {round}");
+        assert_eq!(parallel.stat("cache.published"), 4, "round {round}");
+        assert_eq!(objects(&cache), objects(&serial_cache), "round {round}");
+        // Units that expand macros went to the pool too, analyzed in the
+        // workers' isolates; QuickJS-only builds have one slot, so no pool.
+        let (pooled, macro_free) = (
+            parallel.stat("deferred-units.pooled"),
+            parallel.stat("deferred-units.macro-free"),
+        );
+        if cfg!(feature = "v8-macros") {
+            assert!(pooled > macro_free, "{}", parallel.stats);
+            isolates = isolates.max(parallel.stat("pool.worker-isolates"));
+        } else {
+            assert_eq!(pooled, 0);
+        }
+        let warm = build(&cache, "4");
+        assert_eq!(warm.stat("cache.hits"), 4, "{}", warm.stats);
+        assert_eq!(warm.js, oracle.js);
+    }
+    // Several workers recorded at once.
+    if cfg!(feature = "v8-macros") {
+        assert!(isolates > 1, "{isolates} worker isolates");
+    }
+}
+
 #[test]
 fn policy_changes_with_an_existing_artifact() {
     let project = Project::new(FIXTURE);

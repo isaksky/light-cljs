@@ -1767,6 +1767,13 @@ fn jobs_counts_work_slots_without_changing_output() {
         let cached = [&entry[..], &["--jobs", jobs, "--cache-dir", dir]].concat();
         assert_eq!(compiled(&cached), serial);
     }
+    // A memory limit whose isolate shares are not page aligned.
+    let limited = [
+        &entry[..],
+        &["--jobs", "8", "--macro-memory-limit", "4000000000"],
+    ]
+    .concat();
+    assert_eq!(compiled(&limited), serial);
     // A single source has one namespace; the flag is accepted there too.
     assert_eq!(
         compiled(&["--compile", "--jobs", "8", "--text", "(+ 1 2)"]),

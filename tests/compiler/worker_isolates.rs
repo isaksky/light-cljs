@@ -200,3 +200,140 @@ fn a_persistent_worker_sees_each_units_own_macro_inventory() {
     let serial = same_at_one_two_four_and_eight(&sources, "app.main", false);
     assert_eq!(execute(&serial.output.unwrap()), "false true true\n");
 }
+
+/// What a build that records its dependency manifest and captures every
+/// namespace's artifact gives: its output, manifest, artifacts and stats.
+struct Recorded {
+    output: Result<String, String>,
+    manifest: light_cljs::dependency_manifest::DependencyManifest,
+    artifacts: Vec<(
+        String,
+        Result<light_cljs::namespace_artifact::NamespaceArtifact, String>,
+    )>,
+    stats: light_cljs::CompileStats,
+}
+
+fn recorded(sources: &Sources, entry: &str, slots: usize) -> Recorded {
+    let mut manifest = Default::default();
+    let mut artifacts = Vec::new();
+    let mut sink = |capture: light_cljs::namespace_artifact::NamespaceCapture| {
+        artifacts.push((capture.namespace, capture.artifact));
+    };
+    let mut stats = light_cljs::CompileStats::new();
+    // Room for eight isolates: the default limit gives two shares, one
+    // worker's and the coordinator's.
+    let mut host = light_cljs::MacroHost::new();
+    host.evaluator_options.memory_limit = 256 << 20;
+    let output = light_cljs::compiler::analyze_namespace_entry_recorded(
+        entry,
+        std::slice::from_ref(sources.root()),
+        &mut host,
+        Default::default(),
+        &mut Vec::new(),
+        light_cljs::compiler::EntryRecorders {
+            stats: Some(&mut stats),
+            manifest: Some(&mut manifest),
+            capture: Some(&mut sink),
+            slots: light_cljs::scheduler::Slots::new(slots).unwrap(),
+            ..Default::default()
+        },
+    )
+    .map(|(program, _)| light_cljs::emit_js(&program))
+    .map_err(|error| error.to_string());
+    Recorded {
+        output,
+        manifest,
+        artifacts,
+        stats,
+    }
+}
+
+#[test]
+fn units_on_workers_keep_the_one_slot_manifest_and_artifacts() {
+    // Recording a manifest or capturing artifacts leaves macro-expanding
+    // units on the workers (light-cljs-374): what their analyses observe
+    // (a resource read, by a macro and by a helper's initializer each
+    // isolate runs, a loaded namespace named without a require, a
+    // reflected namespace, a dotted symbol's absent namespace, source macro
+    // calls) and what capture records of them (expansions, generated
+    // names, accounting) are handed to the coordinator, which takes them in
+    // unit order, so both match a build with one slot.
+    let sources = Sources::new();
+    sources
+        .write(
+            "lib/helpers.cljs",
+            r#"(ns lib.helpers (:require [light.build :as b]))
+(def reads (atom 0))
+(def table (when (exists? js/lightCljsBuild) (swap! reads inc) (b/resource "lib/table.txt")))"#,
+        )
+        .write(
+            "lib/macros.cljs",
+            r#"(ns lib.macros (:require [lib.helpers :as h] [light.build :as b]))
+(defmacro table [] (str h/table " #" @h/reads))
+(defmacro inline [path] (b/resource path))
+(defmacro named [] (let [s (gensym "v")] `(let [~s 1] (+ ~s 1))))
+(defmacro twice [x] `(let [v# ~x] (+ v# v#)))"#,
+        )
+        .write("lib/other.cljs", "(ns lib.other) (def value 7)")
+        .write("lib/table.txt", "rows")
+        .write("app/data.txt", "data")
+        .write(
+            "app/a.cljs",
+            r#"(ns app.a (:require [lib.macros :refer [table inline named twice]]))
+(def t (table))
+(def i (inline "app/data.txt"))
+(def p (count (ns-publics 'lib.other)))
+(def l (twice lib.other/value))
+(def g (named))
+(defn f [] (some? Math.PI))
+(defn u1 [] (twice (named)))
+(defn u2 [] (table))
+(defn u3 [] (twice (inline "app/data.txt")))
+(defn u4 [] (named))
+(defn u5 [] (twice lib.other/value))
+(defn u6 [] (count (ns-publics 'lib.other)))
+(defn u7 [] (twice (table)))
+(defn u8 [] (named))"#,
+        )
+        .write(
+            "app/b.cljs",
+            r#"(ns app.b (:require [lib.macros :refer [table named]]))
+(def t (table))
+(def g (named))"#,
+        )
+        .write(
+            "app/main.cljs",
+            r#"(ns app.main (:require [lib.other] [app.a :as a] [app.b :as b]))
+(js/console.log a/t a/i a/p a/l a/g (a/f) b/t b/g)"#,
+        );
+    let serial = recorded(&sources, "app.main", 1);
+    let js = serial.output.as_ref().unwrap();
+    assert_eq!(execute(js), "rows #1 data 1 14 2 true rows #1 2\n");
+    assert!(serial.artifacts.iter().all(|(_, a)| a.is_ok()));
+    for slots in [2, 4, 8] {
+        let mut isolates = 0;
+        for _ in 0..3 {
+            let pooled = recorded(&sources, "app.main", slots);
+            isolates = isolates.max(pooled.stats.deferred_units.worker_isolates);
+            assert_eq!(pooled.output, serial.output, "{slots} slots");
+            assert_eq!(pooled.manifest, serial.manifest, "{slots} slots");
+            assert_eq!(pooled.artifacts, serial.artifacts, "{slots} slots");
+            assert_eq!(
+                pooled.stats.macro_calls, serial.stats.macro_calls,
+                "{slots} slots"
+            );
+            // The units that expand macros were the pool's too.
+            let units = &pooled.stats.deferred_units;
+            if cfg!(feature = "v8-macros") {
+                assert!(units.pooled > units.macro_free, "{units:?}");
+                assert!(units.worker_isolates > 0, "{units:?}");
+            } else {
+                assert_eq!(units.pooled, 0, "{units:?}");
+            }
+        }
+        // Several workers recorded at once.
+        if cfg!(feature = "v8-macros") && slots > 2 {
+            assert!(isolates > 1, "{slots} slots: {isolates} worker isolates");
+        }
+    }
+}
