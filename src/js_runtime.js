@@ -6353,36 +6353,43 @@
   //@unit metadataMethod.install effect: metadataMethod when: protocolMethod requires: metadataMethod,
   //@ typeHooks
   typeHooks.metadataMethod = metadataMethod;
-  //@unit protocolMethod mutator requires: directMethod, invalidArity, nativeType,
-  //@ protocolFunctions, protocolGetters, protocolKeys, protocolVariables, setDeclaration, typeHooks
-  function protocolMethod(key, metadataName, arities, viaMetadata = false, variadic = null, getter = null) {
-    const dispatch = function (receiver, ...args) {
-      const fixed = arities?.filter(n => n !== (variadic == null ? -1 : variadic + 2));
-      const variadicCall = variadic != null && !fixed.includes(arguments.length);
-      const arity = variadicCall ? variadic + 2 : variadic == null && arities?.length === 1 ? arities[0] : arguments.length;
-      if (!variadicCall && fixed?.length > 1 && !fixed.includes(arity)) return invalidArity(arguments.length);
-      if (variadicCall) {
-        // CLJS accepts these declarations with a warning. Its macro's literal
-        // signature expansion forwards the unbound ampersand and packed tail.
-        const actual = [receiver, ...args];
-        args = [...Array.from({length: variadic - 1}, (_, i) => actual[i + 1]), undefined, typeHooks.rest(actual, variadic)];
-      } else if (variadic == null && arities?.length === 1) args = Array.from({length: arity - 1}, (_, i) => args[i]);
-      if (viaMetadata) {
-        const implementation = typeHooks.metadataMethod(receiver, metadataName);
-        if (implementation != null) return implementation.call(null, receiver, ...args);
-      }
-      const method = directMethod(receiver, key, arity);
-      if (method != null) return method.call(receiver, receiver, ...args);
-      // Saved method values retain their direct slot while dynamic dispatch
-      // observes the current method Var, as the CLJS macro expansion does.
-      const current = getter ? getter() : protocolVariables.get(metadataName) ?? dispatch;
-      const external = current[nativeType(receiver)] ?? current._;
-      if (external != null) return external.call(null, receiver, ...args);
+  //@unit protocolMethod mutator requires: demandMethod, invalidArity, nativeType,
+  //@ protocolFunctions, protocolGetters, protocolKeys, protocolSlot, protocolVariables,
+  //@ setDeclaration, typeHooks
+  // `fast` (light-cljs-265) makes a dispatcher that calls a slot, else its first argument.
+  function protocolMethod(key, metadataName, arities, viaMetadata = false, variadic = null, getter = null, fast = null) {
+    const rest = variadic == null ? -1 : variadic + 2, fixed = arities ? arities.filter(n => n !== rest) : [];
+    const single = rest < 0 && fixed.length === 1 ? fixed[0] : 0, slots = new Map((arities ?? []).map(n => [n, protocolSlot(key, n)]));
+    // Saved method values retain their direct slot while dynamic dispatch
+    // observes the current method Var, as the CLJS macro expansion does.
+    const external = (receiver, args) => {
+      const current = getter ? getter() : protocolVariables.get(metadataName) ?? method;
+      const implementation = current[nativeType(receiver)] ?? current._;
+      if (implementation != null) return implementation.apply(null, args);
       throw new Error("No protocol method " + metadataName + " defined for this value");
     };
-    protocolKeys.set(dispatch, key); setDeclaration(protocolFunctions, key, metadataName); setDeclaration(protocolVariables, metadataName, dispatch);
+    const dispatch = function (receiver) {
+      let args = arguments, arity = args.length;
+      if (single) {
+        if (arity !== single) { args = Array.from({length: single}, (_, i) => arguments[i]); arity = single; }
+      } else if (rest >= 0 && !fixed.includes(arity)) {
+        // CLJS accepts these declarations with a warning. Its macro's literal
+        // signature expansion forwards the unbound ampersand and packed tail.
+        args = [...Array.from({length: variadic}, (_, i) => arguments[i]), undefined, typeHooks.rest(arguments, variadic)];
+        arity = rest;
+      } else if (rest < 0 && fixed.length > 1 && !fixed.includes(arity)) return invalidArity(arity);
+      if (viaMetadata) {
+        const implementation = typeHooks.metadataMethod(receiver, metadataName);
+        if (implementation != null) return implementation.call(null, ...args);
+      }
+      demandMethod(key, arity, receiver);
+      const direct = receiver == null ? undefined : receiver[slots.get(arity) ?? protocolSlot(key, arity)];
+      return direct != null ? direct.apply(receiver, args) : external(receiver, args);
+    };
+    const method = fast ? fast(function (receiver) { return single || slots.has(arguments.length) ? external(receiver, arguments) : dispatch.apply(null, arguments); }, ...fixed.map(n => slots.get(n))) : dispatch;
+    protocolKeys.set(method, key); setDeclaration(protocolFunctions, key, metadataName); setDeclaration(protocolVariables, metadataName, method);
     setDeclaration(protocolGetters, key, getter ?? (() => protocolVariables.get(metadataName)));
-    return dispatch;
+    return method;
   }
   //@unit extendType mutator requires: coreDispatchers, coreProtocolsByName, installMethods,
   //@ invalidArity, kindOps, kindTables, nativeMethods, patchDeclaration, protocolFunctions,

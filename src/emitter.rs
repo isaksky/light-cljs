@@ -2060,6 +2060,69 @@ impl<'a> Emitter<'a> {
             && !self.replaced(core.runtime_name())
     }
 
+    /// At `Advanced`, the last argument of `protocolMethod` for a method
+    /// with these fixed `arities` (receiver included) and no rest arguments,
+    /// not extendable through metadata (light-cljs-265): a function that
+    /// makes the method's dispatcher from the runtime's `m0` and the slot of
+    /// each arity, `m1`, ... The dispatcher calls the receiver's slot with the
+    /// receiver as `this`, as the shared path does, where it holds something,
+    /// and otherwise gives the call to `m0`, which goes on from that read:
+    /// `(m0, m1) => function (r0, a1 = undefined) { return r0?.[m1] != null ?
+    /// r0[m1](r0, a1) : m0(r0, a1); }`. It is a function literal of the
+    /// method's own, so that each method's dispatcher keeps call feedback of
+    /// its own in the engine. It reads the slot twice to call it, as upstream's
+    /// protocol functions do: the call through the property is what lets V8
+    /// inline the implementations of a few types, where calling the value read
+    /// once (`m2.call(r0, r0)`) took a third longer in the `protocol-dispatch`
+    /// workload. The default value keeps the dispatcher's `length` 1. A method
+    /// of one arity pads or cuts its arguments to it, as the shared path does;
+    /// with several, the argument count selects the slot, and a count that
+    /// selects none goes to `m0`.
+    fn protocol_fast_path(&mut self, arities: &[usize]) {
+        let slots = (1..=arities.len())
+            .map(|index| format!(", m{index}"))
+            .collect::<String>();
+        let widest = arities.iter().copied().max().unwrap_or(1).max(1);
+        let parameters = |arity: usize, defaulted: bool| {
+            (0..arity)
+                .map(|index| match index {
+                    0 => "r0".to_owned(),
+                    1 if defaulted => "a1 = undefined".to_owned(),
+                    _ => format!("a{index}"),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        write!(
+            self.output,
+            ", (m0{slots}) => function ({}) {{ ",
+            parameters(widest, true)
+        )
+        .unwrap();
+        if let [arity] = arities {
+            let arguments = parameters(*arity, false);
+            write!(
+                self.output,
+                "return r0?.[m1] != null ? r0[m1]({arguments}) : m0({arguments}); }}"
+            )
+            .unwrap();
+            return;
+        }
+        for (index, arity) in arities.iter().enumerate() {
+            if index > 0 {
+                self.output.push_str("else ");
+            }
+            let slot = index + 1;
+            write!(
+                self.output,
+                "if (arguments.length === {arity}) {{ if (r0?.[m{slot}] != null) return r0[m{slot}]({}); }} ",
+                parameters(*arity, false)
+            )
+            .unwrap();
+        }
+        self.output.push_str("return m0.apply(null, arguments); }");
+    }
+
     /// Whether `callee` reads a global that holds a function that reads no
     /// `this`, so that a call of it may be a plain call, `g3(a, 2)`, instead
     /// of `(g3).call(null, a, 2)` (light-cljs-262): at `Advanced`, a
@@ -5722,6 +5785,9 @@ impl<'a> Emitter<'a> {
                     )
                     .unwrap();
                     self.global(method.global);
+                    if self.inference.is_some() && !*via_metadata && method.variadic.is_none() {
+                        self.protocol_fast_path(&method.arities);
+                    }
                     self.output.push_str("); ");
                 }
                 self.output.push_str("return undefined; })()");

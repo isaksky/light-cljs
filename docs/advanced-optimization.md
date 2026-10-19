@@ -1203,6 +1203,35 @@ extension points").
   - It applies to `let` locals, constructor calls, receivers narrowed by
     `instance?` or `satisfies?`, and since light-cljs-229 the parameters of
     closed functions that every call passes an instance of the type.
+- **Per-method dispatchers.** As built (light-cljs-265): a call that is not
+  devirtualized, through the method's value (`map`, `apply`, a higher-order
+  argument) or on a receiver inference cannot type, runs the method's
+  dispatcher. `protocolMethod` used to make every dispatcher as a closure of
+  one function, so V8 kept one call feedback for every protocol method of
+  the program and it went megamorphic for all of them together. At
+  `Advanced`, a method with fixed signatures that is not
+  `:extend-via-metadata` gets its own function literal as the last argument
+  of `protocolMethod`, which makes the dispatcher from it, a function that
+  goes on after the slot read, and each arity's slot
+  (`Emitter::protocol_fast_path`):
+  `(m0, m1) => function (r0, a1 = undefined) { return r0?.[m1] != null ? r0[m1](r0, a1) : m0(r0, a1); }`.
+  The default keeps the dispatcher's `length` 1, the shared path's. With
+  several arities `arguments.length` selects the slot, and a count that
+  selects none goes to the shared path, which throws the arity error. The
+  slot is read to test it and again to call it, as upstream's protocol
+  functions do: a call through the property lets V8 inline the
+  implementations of up to four types, where calling the value read once
+  (`m2.call(r0, r0)`) took 0.47 against 0.37 ms a call of the
+  `protocol-dispatch` workload. A slot that holds nothing is read once.
+  Every call the slot does not take goes to the runtime, which keeps the semantics of every level: padding
+  or cutting to a single arity, invalid arity, metadata implementations,
+  `extend-type` of host types and nil, the `default` implementation through
+  the current method Var, and the error. The shared path computes its arity
+  tables and slots once per method and forwards `arguments` unchanged where
+  their count is the arity, instead of allocating per call. A variadic or
+  metadata-extendable method, and every method below `Advanced`, has the
+  shared path as its dispatcher. The `protocol-dispatch` steady-state
+  workload (benches/support/levels.rs) measures it against upstream.
 - **Definitions in emitted code.** `ProgramFacts` now counts definitions only
   where the root reaches them. `defprotocol` leaves a `def` without a value
   for each of its Vars in the arena, so before this no protocol method was
@@ -3737,7 +3766,10 @@ upstream states that advanced mode is unsafe for certain patterns.
   `kindHooks.countSeq`. How often and in which order the runtime reads a
   mask or marker property is not part of the contract either: a getter
   defined on one may run another number of times than at `optimize:
-  false`. A `deftype` or `defrecord` type's masks are properties of its
+  false`. The same holds for a program protocol's method slots: at
+  `advanced` the dispatcher reads a slot that holds a method twice, to test
+  and to call it, as upstream does (light-cljs-265).
+  A `deftype` or `defrecord` type's masks are properties of its
   prototype rather than of each instance (light-cljs-264), so `Object.keys`
   and `JSON.stringify` of an instance give only its fields (and a record's
   `__meta`, `__extmap` and `__hash`); reading a mask gives what lower

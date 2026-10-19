@@ -255,3 +255,51 @@ fn each_type_of_eight_records_costs_at_most_its_budget() {
     assert!(records.iter().all(|&bytes| bytes <= 220), "{records:?}");
     assert!(deftypes.iter().all(|&bytes| bytes <= 200), "{deftypes:?}");
 }
+
+/// `protocols` protocols of two one-argument methods, all implemented by one
+/// record, with every method called as a value.
+fn protocols_program(protocols: usize) -> String {
+    let mut source = String::new();
+    let mut implementations = String::new();
+    let mut methods = Vec::new();
+    for n in 1..=protocols {
+        writeln!(source, "(defprotocol P{n} (p{n}a [x]) (p{n}b [x]))").unwrap();
+        write!(
+            implementations,
+            " P{n} (p{n}a [_] (+ v {n})) (p{n}b [_] (* v {n}))"
+        )
+        .unwrap();
+        methods.extend([format!("p{n}a"), format!("p{n}b")]);
+    }
+    writeln!(source, "(defrecord R [v]{implementations})").unwrap();
+    write!(
+        source,
+        "(reduce + 0 (map #(% (->R 2)) [{}]))",
+        methods.join(" ")
+    )
+    .unwrap();
+    source
+}
+
+/// light-cljs-265: at `Advanced` each protocol of two methods past the first
+/// adds at most 350 bytes (upstream `:advanced` adds 488 for the same
+/// program; benchmarks/compiler.md, "Per-method protocol dispatchers"), of
+/// which each method's own dispatcher is about 53.
+#[test]
+fn each_two_method_protocol_costs_at_most_its_budget() {
+    let size = |protocols| {
+        let source = protocols_program(protocols);
+        let program = analyze(&source, &parse(&source).unwrap()).unwrap();
+        let js = emit(&program, OptimizationLevel::Advanced);
+        let expected: usize = (1..=protocols).map(|n| 2 + 3 * n).sum();
+        assert_eq!(
+            execute(&format!("console.log({js});")),
+            format!("{expected}\n")
+        );
+        js.len()
+    };
+    let sizes: Vec<usize> = (1..=4).map(size).collect();
+    let added: Vec<usize> = sizes.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    println!("bytes per extra two-method protocol: {added:?}");
+    assert!(added.iter().all(|&bytes| bytes <= 350), "{added:?}");
+}

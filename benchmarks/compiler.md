@@ -4885,3 +4885,85 @@ in each method, which pays for the `WeakMap` branches. Outputs that keep
 that keep both stores by 53 to 61 (`seq-pipeline` 29,388 to 29,335, `atom-str`
 3,013 to 2,952); the ceilings of `atom-str`, `vector-printed`, `map-printed`
 and `defmulti` moved down.
+## Per-method protocol dispatchers — October 18, 2026
+
+light-cljs-265 gives each protocol method of fixed signatures that is not
+`:extend-via-metadata` a dispatcher of its own at `advanced`: a function
+literal that calls the receiver's slot and leaves every other call to the
+runtime (docs/advanced-optimization.md, "Per-method dispatchers"). Before,
+every dispatcher of the program was a closure of one function in
+`protocolMethod`, so V8 kept one call feedback for all of them, and each
+call allocated (`arities.filter`, rest arguments, `Array.from` and spread
+calls). The shared path, which is every dispatcher below `advanced`, now
+computes its arity tables and slots once per method and forwards
+`arguments` as they are.
+
+The new `protocol-dispatch` workload calls `area` and `perimeter` as values,
+through a parameter of `total`, over 8 records of one type and 8 of four
+types, 32 calls an iteration; the shapes are in arrays so that the calls
+are what it times. The pellet's acceptance command, on the 24-CPU Mac (Node
+v24.18.0, macOS 15.7.3), with two other workers building and testing:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only protocol-dispatch,record-protocol --output DIR
+```
+
+"Before" is this workload on master `52eb4f0`'s compiler. Milliseconds per
+call `(f 2000)`, median / minimum; upstream is timed in the same rounds:
+
+| Build | One-minute load (median of rounds) | Workload | light-cljs `advanced` | Upstream `:advanced` | light-cljs / upstream |
+| --- | ---: | --- | ---: | ---: | ---: |
+| before | 4.2 | protocol-dispatch | 7.921 / 7.258 | 0.202 / 0.198 | 39× |
+| before | 4.2 | record-protocol | 0.022 / 0.020 | 0.021 / 0.019 | 1.0× |
+| after | 9.0 | protocol-dispatch | 0.366 / 0.355 | 0.209 / 0.199 | 1.8× |
+| after | 9.0 | record-protocol | 0.024 / 0.022 | 0.025 / 0.021 | 0.97× |
+
+That is 124 ns a protocol call before and 5.7 ns after, against 3.3 ns
+upstream. record-protocol's call is devirtualized at `advanced`
+(light-cljs-262) and its output has no dispatcher, so this change leaves
+its `advanced` output as it was; the difference is the load. The other
+columns of the same runs, ms per call:
+
+| Workload | Node none / prepare, before | Node none / prepare, after | QuickJS advanced, before / after |
+| --- | ---: | ---: | ---: |
+| protocol-dispatch | 10.20 / 10.48 | 4.40 / 4.42 | 70.1 / 11.2 |
+| record-protocol | 0.295 / 0.296 | 0.110 / 0.106 | 0.628 / 0.641 |
+
+Below `advanced` record-protocol runs the shared path, which no longer
+allocates.
+
+Two other shapes of the dispatcher were timed by hand on the way, in the
+workload's output edited by hand (200 untimed and 30 timed calls in one
+Node process). Reading the slot
+once and calling the value, `const m2 = r0?.[m1]; return m2 != null ?
+m2.call(r0, r0) : m0(r0)`, took 0.47 ms a call of the workload against
+0.37 for the shape kept, which reads the slot again to call it, as
+upstream's protocol functions do: the call through the property is what
+lets V8 inline the four types' implementations. Setting the dispatcher's
+`length` with `Object.defineProperties` took it to 0.73 ms, since `total`
+then reads `call` from functions of another shape; a default parameter
+value keeps the `length` at 1 instead. A first version of the workload
+summed the shapes with `(reduce (fn [t s] (+ t (f s))) 0 shapes)` over
+vectors: 13.9 ms before and 6.1 ms after (on master `7931693`), against
+0.61 upstream. Most of what is left there is `reduce` and `seq` over a
+vector of 8 records, about 0.7 µs each, in the core protocol wrappers
+(`reduce.protocol`, `seq.protocol`) that a program with `installMethods`
+keeps (light-cljs-302 and light-cljs-358).
+
+**Bytes.** Each method's dispatcher is about 53 bytes of terse output,
+`(z,A)=>function(B){return B?.[A]!=null?B[A](B):z(B)}`. What one more
+protocol of two methods, implemented by the one record and both methods
+called as values, adds at `advanced`, as
+`size_ratchet::each_two_method_protocol_costs_at_most_its_budget` measures
+it; upstream compiled the same programs:
+
+| Per extra | Before | After | Upstream `:advanced` |
+| --- | ---: | ---: | ---: |
+| two-method protocol | 225 | 331 | 487–488 |
+
+The runtime that `none` and `prepare` embed grew by about 560 bytes, so 18
+of their ratchet ceilings rise by 1,000. Of the `advanced` fixtures only
+`eight-records`, whose `area` calls run the dispatcher, changed: from
+32,364 to 32,601 bytes. In the others no dispatcher is emitted or every
+call is devirtualized.

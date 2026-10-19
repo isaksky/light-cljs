@@ -1502,6 +1502,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "demandProtocol <- methods",
             "demandProtocol <- preferMethod",
             "demandProtocol <- prefers",
+            "demandProtocol <- protocolMethod",
             "demandProtocol <- protocolPredicate",
             "demandProtocol <- publicMethod",
             "demandProtocol <- removeMethod",

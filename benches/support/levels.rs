@@ -82,12 +82,13 @@ macro_rules! built_map {
 /// The ratchet's seq-pipeline, record-protocol, keyword-lookups,
 /// constant-literals, constant-keys, multi-arity, event-maps, closed-params and
 /// local-arities fixtures, as workloads over `n`. `local-arities` runs the
-/// functions of `multi-arity` as local and named functions. Then the collection
+/// functions of `multi-arity` as local and named functions, and
+/// `protocol-dispatch` calls protocol methods as values (light-cljs-265). Then the collection
 /// workloads of light-cljs-233, each at [`GROWTH`]: building a vector, map and set
 /// one element at a time, `nth` and `get` over a built one, `assoc` onto a built
 /// map, `subvec` then `reduce`, and `into` a vector and a map, which goes through
 /// a transient (`map-into`, light-cljs-249).
-const STEADY: [Steady; 22] = [
+const STEADY: [Steady; 23] = [
     Steady {
         name: "seq-pipeline",
         source: "(fn [n] (reduce + 0 (->> (map inc (range n)) (filter even?) (partition 2) \
@@ -105,6 +106,31 @@ const STEADY: [Steady; 22] = [
         inputs: &[2_000],
         every_level: true,
         expected: areas,
+    },
+    // Protocol functions as values (light-cljs-265): `total` calls `area` and
+    // `perimeter` through its parameter over one record type and over four. The
+    // shapes are in arrays, which both compilers read as JavaScript does, so
+    // that the calls are what the workload times (`reduce` over a small vector
+    // of records costs light-cljs about 0.7 µs, through `reduce.protocol`).
+    Steady {
+        name: "protocol-dispatch",
+        source: "(defprotocol Shape (area [s]) (perimeter [s]))
+                 (defrecord Square [s] Shape (area [_] (* s s)) (perimeter [_] (* 4 s)))
+                 (defrecord Rect [w h] Shape (area [_] (* w h)) (perimeter [_] (* 2 (+ w h))))
+                 (defrecord Tri [b h] Shape (area [_] (quot (* b h) 2)) (perimeter [_] (* 3 b)))
+                 (defrecord Line [l] Shape (area [_] 0) (perimeter [_] l))
+                 (defn total [f shapes]
+                   (loop [i 0 t 0] (if (< i (alength shapes)) (recur (inc i) (+ t (f (aget shapes i)))) t)))
+                 (def one (into-array (map ->Square (range 1 9))))
+                 (def four (into-array (mapcat (fn [i] [(->Square i) (->Rect i 2) (->Tri i 2) (->Line i)]) (range 1 3))))
+                 (fn [n] (loop [i 0 t 0]
+                           (if (< i n)
+                             (recur (inc i) (+ t (total area one) (total perimeter one)
+                                               (total area four) (total perimeter four)))
+                             t)))",
+        inputs: &[2_000],
+        every_level: true,
+        expected: protocol_dispatch,
     },
     Steady {
         name: "keyword-lookups",
@@ -391,6 +417,12 @@ fn pipeline(n: u64) -> u64 {
 
 fn areas(n: u64) -> u64 {
     (0..n).map(|i| 2 * i).sum()
+}
+
+/// Areas 204 and perimeters 144 of the squares of sides 1 to 8, and 14 and 38
+/// of the eight shapes of four types.
+fn protocol_dispatch(n: u64) -> u64 {
+    400 * n
 }
 
 pub struct Config {
