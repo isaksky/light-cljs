@@ -1070,7 +1070,13 @@ and are ignored. Missing or out-of-range indexes throw ordinary `Error`.
 Keyword/symbol `.call` accepts a collection and optional default, using `get`
 semantics; dynamic unsupported arities throw `Error`. Invalid literal keyword
 calls are rejected with a located analysis diagnostic (upstream's invalid-call
-inlining artifacts are not reproduced).
+inlining artifacts are not reproduced). A valid one, `(:k m)` or `(:k m d)`, is
+emitted at every level as the runtime's own `get(m, :k)` or `get(m, :k, d)`
+(`rt.get`, `rt$get` at `advanced`), which is what the keyword's `.call` does
+after its brand test and argument count; upstream likewise calls the keyword's
+`IFn` arity method, which is `get` (light-cljs-370). It is not `cljs.core/get`, so a program that
+replaces that still gets the lookup from a keyword call; a keyword called
+through a local or passed to `map` or `apply` keeps `.call`.
 
 Core wrappers follow upstream fixed/overloaded/variadic behavior: `(count)`
 returns zero and fixed-argument extras evaluate before being ignored; `(=)` is

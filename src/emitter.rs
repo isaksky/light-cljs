@@ -3613,6 +3613,30 @@ impl<'a> Emitter<'a> {
         true
     }
 
+    /// `(:k m)` and `(:k m d)` at every level: the runtime's `get(m, :k)` and
+    /// `get(m, :k, d)`, which is what the keyword's `call` does once it has
+    /// tested the keyword's brand and counted its arguments (light-cljs-370).
+    /// The callee is a keyword literal, so the brand test passes and the
+    /// keyword, which has no effects, may be read after the receiver. It is the
+    /// runtime's own `get` (`rt.get`, `rt$get`), which the keyword calls, not
+    /// the core operation `cljs.core/get`, which a program may replace. Any
+    /// other argument count keeps `.call`, whose arity error it throws.
+    fn keyword_get(&mut self, keyword: ExprId, receiver: ExprId, not_found: Option<ExprId>) {
+        let site = self.site.replace(keyword);
+        let text = self.runtime_read(RuntimeName::export("get"), self.site, NameUse::Call);
+        self.site = site;
+        self.output.push_str(&text);
+        self.output.push('(');
+        self.value(receiver);
+        self.output.push_str(", ");
+        self.value(keyword);
+        if let Some(not_found) = not_found {
+            self.output.push_str(", ");
+            self.value(not_found);
+        }
+        self.output.push(')');
+    }
+
     /// `(:k rec)` or `(get rec :k)` on a record of a known program type with a
     /// field `k`: the field's property, which the record's `ILookup` reads.
     fn field_read(
@@ -6514,6 +6538,13 @@ impl<'a> Emitter<'a> {
                 }
                 if let Some(slot) = self.direct_methods.and_then(|methods| methods.get(&id)) {
                     self.direct_method_call(slot, args);
+                    return;
+                }
+                if let (ExprKind::Keyword(_), [receiver, rest @ ..]) =
+                    (&self.program.exprs[callee.0].kind, args.as_slice())
+                    && rest.len() <= 1
+                {
+                    self.keyword_get(*callee, *receiver, rest.first().copied());
                     return;
                 }
                 if let ExprKind::CoreFn(core) = self.program.exprs[callee.0].kind

@@ -394,24 +394,20 @@ fn lookups_in_maps_with_constant_keys_read_their_entries() {
         &text[start..start + text[start..].find("})));").unwrap()]
     };
     let read_map = function("g2");
-    for call in [
-        "rt$get(",
-        "rt$count(",
-        "rt$contains(",
-        "rt$isEmpty(",
-        "rt$isMap(",
-    ] {
+    for call in ["rt$count(", "rt$contains(", "rt$isEmpty(", "rt$isMap("] {
         assert!(!read_map.contains(call), "{call}: {read_map}");
     }
     // `(:w m)`, `(alias :w)`, `(:j b)` and the two literals with effects in
-    // their other values; the default with an effect keeps its call.
+    // their other values; the default with an effect keeps its lookup, a
+    // `get` (light-cljs-370).
     assert_eq!(read_map.matches("rt$maps.get(").count(), 5, "{read_map}");
-    assert_eq!(read_map.matches(".call(null, ").count(), 1, "{read_map}");
+    assert_eq!(read_map.matches("rt$get(").count(), 1, "{read_map}");
+    assert!(!read_map.contains(".call(null, "), "{read_map}");
     assert_eq!(function("g3").matches("rt$maps.get(l").count(), 2, "{text}");
     // `unshaped` keeps its lookups and its count.
     let unshaped = function("g4");
     assert!(
-        unshaped.contains("rt$count(") && unshaped.matches(".call(null, l").count() == 2,
+        unshaped.contains("rt$count(") && unshaped.matches("rt$get(l").count() == 2,
         "{unshaped}"
     );
 }

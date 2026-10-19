@@ -401,8 +401,9 @@ fn equality_lowers_to_identity_for_primitives_and_spelling_for_keyword_literals(
         ") === \"ns/k\")",
         " === 1)",
         "(\"a\" !== l",
-        // An operand that cannot be read twice is tested by its spelling only.
-        "(rt$keywordFqn((k",
+        // An operand that cannot be read twice is tested by its spelling only;
+        // `(:type m)` is a `get` (light-cljs-370).
+        "(rt$keywordFqn(rt$get(l",
     ] {
         assert!(js.contains(lowered), "{lowered}: {js}");
     }

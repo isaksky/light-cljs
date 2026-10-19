@@ -5295,3 +5295,65 @@ its size where it was crossed.
 | closed-params | 14,884 | 14,968 | 15,000 |
 | callbacks | 43,314 | 43,410 | 44,000 |
 | protocol-params | 48,384 | 48,480 | 49,000 |
+
+## Keyword-literal calls as `get` — October 19, 2026
+
+light-cljs-370 emits `(:k m)` and `(:k m d)` at every level as the runtime's
+own `get(m, :k)` and `get(m, :k, d)` (`rt.get`, `rt$get` at `advanced`)
+instead of `(k0).call(null, m)`, whose `call` tests the keyword's brand (a
+WeakMap `has`) and switches on its argument count before calling the same
+`get`.
+
+The acceptance command, with `keyword-lookups` added, on the 24-CPU Mac
+(Node v24.18.0). The `record-lookup` workload is light-cljs-266's, not yet
+on master, so both builds have light-cljs-266's branch applied locally
+(its `field` and `mungeMember` hunks dropped where master moved them):
+before is master `f2b28c3` with it, after is this change with it. The bench
+binaries were built once each and run alternately, two rounds each, at
+one-minute loads of 5.2 to 22.9 while other workers built and tested.
+Milliseconds per call `(f 2000)`, median / minimum, at `advanced`; upstream
+is timed in the same rounds:
+
+```sh
+cargo bench --locked --bench compiler -- --levels --upstream research/clojurescript \
+  --only record-lookup,record-protocol,keyword-lookups --output DIR
+```
+
+| Workload | Build, round | light-cljs `advanced` | Upstream `:advanced` | light-cljs / upstream |
+| --- | --- | ---: | ---: | ---: |
+| record-lookup | before, 1 | 0.208 / 0.202 | 0.088 / 0.085 | 2.4× |
+| record-lookup | after, 1 | 0.200 / 0.184 | 0.088 / 0.085 | 2.3× |
+| record-lookup | before, 2 | 0.212 / 0.191 | 0.089 / 0.084 | 2.4× |
+| record-lookup | after, 2 | 0.187 / 0.179 | 0.085 / 0.084 | 2.2× |
+| record-protocol | before, 1 / 2 | 0.025 / 0.026 | 0.026 / 0.023 | 0.96× / 1.1× |
+| record-protocol | after, 1 / 2 | 0.026 / 0.021 | 0.025 / 0.021 | 1.1× / 1.0× |
+| keyword-lookups | before, 1 / 2 | 1.713 / 1.696 | 0.179 / 0.172 | 9.6× / 9.8× |
+| keyword-lookups | after, 1 / 2 | 1.702 / 1.674 | 0.175 / 0.167 | 9.7× / 10.0× |
+
+record-lookup at the other levels, before → after, medians of the two
+rounds: Node `none` 1.087 → 1.066 ms and `prepare` 1.086 → 1.047 ms;
+QuickJS `advanced` 8.47 → 7.94 ms and `none` 21.29 → 20.52 ms.
+
+The 2× the pellet asks for is not met: record-lookup is 2.2–2.3×, about 6%
+faster. light-cljs-266's estimate of 1.8× came from compiled output changed
+by hand to read the record's `ILookup` and `IAssociative` slots directly at
+all three sites; `get.own` (light-cljs-358) still crosses its wrapper, the
+record's two-argument `-lookup`, which calls its three-argument slot, and
+`recordKeywordFieldIndex`. In a Node CPU profile of the workload after this
+change (light-cljs-266 applied, `--pseudo-names` output) `get`, `contains?`
+and their wrappers take about 34% of the self time and the record's lookup
+methods about 19%.
+
+**Sizes**, bytes of `--compile --optimize LEVEL` (`cargo nextest run --test
+compiler size_ratchet:: --no-capture`), before on `f2b28c3`. At `advanced`
+only programs with a keyword-literal call that is not folded or read as a
+field change: `keyword-lookups` 34,722 to 34,714, `features` 75,501 to
+75,499 and `features-direct` 75,109 to 75,107. The runtime that `none` and
+`prepare` embed exports `get` (5 bytes), so most fixtures there grow by 5;
+those with keyword calls shrink (`protocol-params` 488,650 to 488,620).
+
+**As landed**, on top of the second attempt at light-cljs-266 (its nil-extmap
+`contains?` answer and per-type keyword index, "Record field lookup" above),
+in the same alternated rounds as that section's table: record-lookup at
+`advanced` is 0.134 / 0.128 and 0.134 / 0.129 ms against upstream's 0.089 and
+0.087 ms, 1.5×, within the 2× this pellet and light-cljs-266 share.

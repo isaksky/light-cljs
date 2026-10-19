@@ -112,6 +112,7 @@ mod invoke_program_scope;
 mod iterator_helpers;
 mod iterator_name;
 mod key_shapes;
+mod keyword_calls;
 mod language_namespace;
 mod lazy;
 mod library_bodies;
