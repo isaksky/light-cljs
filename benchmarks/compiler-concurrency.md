@@ -11,6 +11,32 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Unit traces from pool workers (light-cljs-369, October 19, 2026)
+
+`--stats-file` keeps the units pool workers analyze, recorded where the
+coordinator charges them, and blocked time is the new `wait` stage
+(docs/compiler-concurrency.md, "As built (light-cljs-369)"). Parent
+`7dca71e` (base) against this change (cand), alternating rounds at 1-minute
+load 2.7 to 5.0.
+
+| Configuration | Rounds | Base wall (s) | Cand wall (s) | Base RSS (GB) | Cand RSS (GB) |
+| --- | --- | --- | --- | --- | --- |
+| serial, untraced | 3 | 25.12 (23.46-25.20) | 24.52 (23.32-24.55) | 0.906 | 0.913 |
+| serial, `--stats-file` | 4 | 25.03 (25.01-25.08) | 25.01 (24.56-25.30) | 0.927 | 0.946 |
+
+The serial gate holds: -2.4% wall, +0.8% peak RSS. Unit rows in the trace:
+
+| Configuration | Base | Cand |
+| --- | --- | --- |
+| serial | 13,361 | 13,361 |
+| `--jobs 8` | 544, all on the coordinator | 13,361 (544 on the coordinator, 1,730 to 1,937 per worker) |
+
+The trace's cost at `--jobs 8`, candidate traced against untraced, was
+within the run-to-run spread, which is wide on the shared machine: medians
+20.55 against 19.77 s over 3 rounds, 20.08 against 18.95 s over 5 (traced
+range 18.44-20.87) and 20.94 against 21.03 s over 4. Untraced `--jobs 8` is
+unchanged (cand 18.95 s against base 19.09 s over 5 rounds).
+
 ## Determinism stress (light-cljs-342, October 19, 2026)
 
 The scheduling perturbation behind `tests/compiler/schedule_stress.rs`
