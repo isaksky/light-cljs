@@ -163,23 +163,30 @@ impl UnitCharges {
                         );
                     }
                 }
-                // The limits as `MacroHost::expand_javascript` checks them;
-                // the message of a limit a worker's unit crosses is the
-                // limits pellet's (light-cljs-341).
+                // The limits as `MacroHost::expand_javascript` checks them,
+                // failing as the analyzer reports them at the call it
+                // expanded.
                 UnitEvent::Script {
                     nodes: generated,
                     span,
+                    site,
                 } => {
                     if control.is_none() {
                         control = start();
                     }
+                    let fail = |message: &str| match site {
+                        Some((operator, span)) => {
+                            fail(span, format!("while expanding {operator}: {message}"))
+                        }
+                        None => fail(span, message.into()),
+                    };
                     if expansions.get() >= self.limits.0 {
-                        return fail(span, "compiler macro expansion limit exceeded".into());
+                        return fail("compiler macro expansion limit exceeded");
                     }
                     expansions.set(expansions.get() + 1);
                     nodes.set(nodes.get().saturating_add(*generated));
                     if nodes.get() > self.limits.1 {
-                        return fail(span, "compiler macro generated-node limit exceeded".into());
+                        return fail("compiler macro generated-node limit exceeded");
                     }
                 }
             }
@@ -327,6 +334,21 @@ pub(crate) struct SharedCatalog {
     settled: Condvar,
     /// What the build's unit pool did, for `--stats`.
     counters: PoolCounters,
+    /// The compilation's expansion and generated-node counts as the
+    /// coordinator last charged them, in canonical order: a lower bound of
+    /// what precedes any unit it has not charged yet. A unit recorded off
+    /// the coordinator counts from there, so a limit its own checks reach
+    /// is one the serial build reaches too, at or before that point; this
+    /// soft cap stops runaway work early, and the charge decides the
+    /// diagnostic ([`UnitCharges`]).
+    charged: [std::sync::atomic::AtomicUsize; 2],
+    /// What the build's isolates share when its pool runs engines: its
+    /// deadline, cancellation and memory ([`crate::evaluator::BuildResources`]).
+    resources: std::sync::OnceLock<crate::evaluator::BuildResources>,
+    /// One more than the lowest unit ID of a pool job whose analysis
+    /// failed, or 0: the drain stops at that unit, so no job after it in
+    /// unit order is needed and none starts ([`Self::admits`]).
+    failed_job: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     on_claim: Mutex<Option<ClaimHook>>,
     /// Runs on a waiting thread each time its wait ends, without the lock.
@@ -369,6 +391,40 @@ const DEPTH_LIMIT: &str = "compiler macro expansion depth limit exceeded in defe
 impl SharedCatalog {
     fn lock(&self) -> MutexGuard<'_, Catalog> {
         self.catalog.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+    /// Note that the coordinator has charged `expansions` and `nodes`
+    /// ([`Self::charged`]).
+    pub(crate) fn raise_charged(&self, expansions: usize, nodes: usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.charged[0].fetch_max(expansions, Relaxed);
+        self.charged[1].fetch_max(nodes, Relaxed);
+    }
+    /// Whether the pool may start job `id`: not when a job earlier in
+    /// unit order has failed, since the coordinator's drain, which takes
+    /// the pool's units in that order, stops there and reports it
+    /// (docs/compiler-concurrency.md, "As built (light-cljs-341)").
+    fn admits(&self, id: usize) -> bool {
+        let failed = self.failed_job.load(std::sync::atomic::Ordering::Relaxed);
+        failed == 0 || id < failed
+    }
+    /// Note that pool job `id` ended with its unit failed, if it did.
+    #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
+    fn note_job(&self, id: usize) {
+        if matches!(self.lock().units[id].state, AnalysisState::Failed(..)) {
+            use std::sync::atomic::Ordering::Relaxed;
+            let _ = self.failed_job.fetch_update(Relaxed, Relaxed, |failed| {
+                (failed == 0 || id + 1 < failed).then_some(id + 1)
+            });
+        }
+    }
+    /// What the build's isolates share, once its pool runs engines.
+    pub(crate) fn resources(&self) -> Option<&crate::evaluator::BuildResources> {
+        self.resources.get()
+    }
+    /// The expansions and generated nodes the coordinator has charged.
+    fn charged(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (self.charged[0].load(Relaxed), self.charged[1].load(Relaxed))
     }
     /// A slot for a new view's thread.
     fn join(&self) -> usize {
@@ -1449,7 +1505,11 @@ impl CompilationSession {
         slots: crate::scheduler::Slots,
         engines: PoolEngines,
         environment: MacroEnvironment,
+        resources: Option<crate::evaluator::BuildResources>,
     ) -> Result<(), String> {
+        if let Some(resources) = resources {
+            let _ = self.shared.resources.set(resources);
+        }
         let pool = UnitPool::start(self.shared.clone(), slots, engines, environment)?;
         *self.pool.borrow_mut() = Some(pool);
         Ok(())
@@ -1467,9 +1527,12 @@ impl CompilationSession {
         }
     }
     /// Give `units` to the build's pool: whether it has one.
-    pub(crate) fn submit_units(&self, units: Vec<usize>) -> bool {
+    /// The compilation has charged `charged` expansions and generated
+    /// nodes before them ([`SharedCatalog::raise_charged`]).
+    pub(crate) fn submit_units(&self, units: Vec<usize>, charged: (usize, usize)) -> bool {
         match &*self.pool.borrow() {
             Some(pool) => {
+                self.shared.raise_charged(charged.0, charged.1);
                 pool.submit(units);
                 true
             }
@@ -1489,6 +1552,21 @@ impl CompilationSession {
         let bootstrap = crate::compiler_bootstrap::build(&host, true).ok()?;
         session.attach(&bootstrap, &host).ok()?;
         Some(bootstrap)
+    }
+    /// The build failed with an error the coordinator has chosen: what
+    /// the pool has not started is not needed, and what its workers run is
+    /// cancelled (docs/compiler-concurrency.md, "As built (light-cljs-341)").
+    pub(crate) fn cancel_pool(&self) {
+        if let Some(pool) = &*self.pool.borrow() {
+            let mut inbox = pool.inbox.lock();
+            inbox.batches.clear();
+            inbox.closed = true;
+            drop(inbox);
+            pool.inbox.ready.notify_all();
+        }
+        if let Some(resources) = self.shared.resources() {
+            resources.workers.cancel();
+        }
     }
     /// Stop the build's unit pool and join its workers ([`UnitPool::finish`]).
     pub(crate) fn finish_pool(&self) {
@@ -1653,6 +1731,7 @@ impl CompilationSession {
                 self.shared.fail(id, message.clone(), Some(diagnostic));
                 return Err(message);
             }
+            (self.shared).raise_charged(binding.expansions.get(), binding.generated_nodes.get());
         }
         analysis
     }
@@ -1750,9 +1829,11 @@ fn analyze_unit(
     let nested = crate::macro_host::MacroFreeUnit::active();
     let analysis = if !nested && (macro_free || on_worker) {
         let started = std::time::Instant::now();
-        // Counted where the unit is charged ([`UnitCharges`]).
-        host.engine.expansions = Default::default();
-        host.engine.generated_nodes = Default::default();
+        // Counted where the unit is charged ([`UnitCharges`]), from
+        // what the coordinator charged before it.
+        let (expansions, nodes) = shared.charged();
+        host.engine.expansions = std::rc::Rc::new(std::cell::Cell::new(expansions));
+        host.engine.generated_nodes = std::rc::Rc::new(std::cell::Cell::new(nodes));
         host.engine.work = Default::default();
         let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
         let location = format!("{}:{}:{}: {name}", loc.source, loc.line, loc.column);
@@ -1991,6 +2072,17 @@ impl WorkerView {
     }
     /// Whether the view's engine failed for good, such as by running out of
     /// memory or time: its worker retires it.
+    /// Whether the view's engine took headroom from the build's memory
+    /// budget, which only destroying it gives back: its worker retires it
+    /// after the job, so what one unit needed does not stay taken for the
+    /// rest of the build and decide which later units fit.
+    fn holds_headroom(&self) -> bool {
+        self.host
+            .engine
+            .bootstrap
+            .as_ref()
+            .is_some_and(|b| b.evaluator.holds_headroom())
+    }
     fn terminal(&self) -> bool {
         self.host
             .engine
@@ -2121,42 +2213,58 @@ pub(crate) fn release_definition_test(host: &MacroHost, unit: usize) {
     }
 }
 /// How many compile-time isolates, the main one included, `slots` work
-/// slots may run when they share the macro memory limit `limit` evenly,
-/// with each isolate's share at least 32 MiB, and that share: the isolates
-/// never hold more than `limit` together (docs/compiler-concurrency.md, "As
-/// built (light-cljs-339)").
-pub(crate) fn isolate_shares(limit: usize, slots: crate::scheduler::Slots) -> (usize, usize) {
-    let isolates = (limit / (32 << 20)).clamp(1, slots.get());
-    (isolates, limit / isolates)
+/// slots may run under the macro memory limit `limit`: as many as give
+/// each at least 32 MiB of it. They share the limit as one budget
+/// ([`crate::evaluator::MemoryPool`], docs/compiler-concurrency.md, "As
+/// built (light-cljs-341)").
+pub(crate) fn isolate_count(limit: usize, slots: crate::scheduler::Slots) -> usize {
+    (limit / (32 << 20)).clamp(1, slots.get())
 }
 
 #[cfg(test)]
 mod share_tests {
+    use crate::evaluator::MemoryPool;
     use crate::scheduler::Slots;
     #[test]
     fn isolates_share_the_memory_limit_without_exceeding_it() {
         let slots = |n| Slots::new(n).unwrap();
-        // The default 64 MiB gives two isolates of 32 MiB, whatever N.
-        assert_eq!(super::isolate_shares(64 << 20, slots(8)), (2, 32 << 20));
-        assert_eq!(
-            super::isolate_shares(4_000_000_000, slots(8)),
-            (8, 500_000_000)
-        );
+        // The default 64 MiB gives two isolates, whatever N.
+        assert_eq!(super::isolate_count(64 << 20, slots(8)), 2);
+        assert_eq!(super::isolate_count(4_000_000_000, slots(8)), 8);
         // Less than two shares: one isolate with the whole limit.
-        assert_eq!(super::isolate_shares(40 << 20, slots(4)), (1, 40 << 20));
-        assert_eq!(super::isolate_shares(16 << 20, slots(4)), (1, 16 << 20));
-        for limit in [16 << 20, 64 << 20, 100 << 20, 1 << 30, 4_000_000_000] {
-            for n in 1..=8 {
-                let (isolates, share) = super::isolate_shares(limit, slots(n));
-                assert!(isolates <= n && isolates * share <= limit, "{limit} {n}");
+        assert_eq!(super::isolate_count(40 << 20, slots(4)), 1);
+        assert_eq!(super::isolate_count(16 << 20, slots(4)), 1);
+        // Each isolate's base, and the headroom they share, never sum to
+        // more than the limit.
+        for limit in [64 << 20, 100 << 20, 256 << 20, 1 << 30, 4_000_000_000] {
+            for n in 2..=8 {
+                let isolates = super::isolate_count(limit, slots(n));
+                let pool = MemoryPool::new(limit, isolates);
+                assert!(pool.base() >= 32 << 20, "{limit} {n}");
+                assert!(
+                    isolates * pool.base() + pool.headroom() == limit,
+                    "{limit} {n}"
+                );
             }
         }
+        // The default limit leaves no headroom: two isolates of 32 MiB.
+        let pool = MemoryPool::new(64 << 20, 2);
+        assert_eq!((pool.base(), pool.headroom()), (32 << 20, 0));
+        // 256 MiB for four: 32 MiB each and 128 MiB to grow into, taken
+        // whole or in part and given back.
+        let pool = MemoryPool::new(256 << 20, 4);
+        assert_eq!((pool.base(), pool.headroom()), (32 << 20, 128 << 20));
+        assert_eq!(pool.take(100 << 20, 1), 100 << 20);
+        assert_eq!(pool.take(100 << 20, 1), 28 << 20);
+        assert_eq!(pool.take(1, 1), 0);
+        pool.give(50 << 20);
+        assert_eq!(pool.take(60 << 20, 60 << 20), 0);
+        assert_eq!(pool.take(60 << 20, 40 << 20), 50 << 20);
     }
 }
 impl UnitPool {
     /// Start the pool of `slots` for the units of `shared`. A worker's host
-    /// is bound to `environment`, the compilation host's settings, with
-    /// the isolate memory limit split ([`isolate_memory_limit`]).
+    /// is bound to `environment`, the compilation host's settings.
     pub(crate) fn start(
         shared: Arc<SharedCatalog>,
         slots: crate::scheduler::Slots,
@@ -2234,8 +2342,17 @@ fn worker_view(
         PoolEngines::None => None,
         #[cfg(light_v8)]
         PoolEngines::Persistent | PoolEngines::Fresh => Some(Rc::new(
-            crate::v8_evaluator::V8Evaluator::new(environment.evaluator_options().clone())
-                .map_err(|e| e.to_string())?,
+            match shared.resources() {
+                Some(resources) => crate::v8_evaluator::V8Evaluator::new_for_build(
+                    environment.evaluator_options().clone(),
+                    resources,
+                    &resources.workers,
+                ),
+                None => {
+                    crate::v8_evaluator::V8Evaluator::new(environment.evaluator_options().clone())
+                }
+            }
+            .map_err(|e| e.to_string())?,
         )),
         #[cfg(not(light_v8))]
         PoolEngines::Persistent | PoolEngines::Fresh => {
@@ -2280,12 +2397,19 @@ fn serve_pool(
         |_slot| None::<Rc<WorkerView>>,
         |slot, UnitJob(id), _worker| {
             // The outcome is in the catalog; a failed unit is reported by
-            // the coordinator when it reaches it, as a serial drain would.
+            // the coordinator when it reaches it, as a serial drain would,
+            // and no job after it starts.
+            if !shared.admits(id) {
+                return;
+            }
             let view = match slot.take() {
                 Some(view) => view,
                 None => match worker_view(shared, engines, environment) {
                     Ok(view) => view,
-                    Err(error) => return shared.fail_unstarted(id, error),
+                    Err(error) => {
+                        shared.fail_unstarted(id, error);
+                        return shared.note_job(id);
+                    }
                 },
             };
             let started = std::time::Instant::now();
@@ -2294,8 +2418,9 @@ fn serve_pool(
             if let Err(error) = view.analyze(id, None) {
                 shared.fail_unstarted(id, error);
             }
+            shared.note_job(id);
             PoolCounters::add(&shared.counters.unit_ns, started);
-            if engines != PoolEngines::Fresh && !view.terminal() {
+            if engines != PoolEngines::Fresh && !view.terminal() && !view.holds_headroom() {
                 *slot = Some(view);
             }
         },

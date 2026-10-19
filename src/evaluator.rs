@@ -99,6 +99,10 @@ struct ControlState {
     /// How many more [`ExecutionControl::check`]s pass before one cancels
     /// ([`ExecutionControl::cancel_after_checks`]).
     checks_left: AtomicU64,
+    /// The control of the build this one's isolate belongs to, whose
+    /// cancellation and deadline apply to this one too, and transitively
+    /// its own build's ([`ExecutionControl::linked`]).
+    build: Option<ExecutionControl>,
 }
 /// Clones share sticky cancellation, deadline and fuel across nested Rust work.
 #[derive(Clone)]
@@ -116,7 +120,38 @@ impl ExecutionControl {
                     .map_err(|_| EvalError("invalid session timeout".into()))?,
             ),
             checks_left: AtomicU64::new(u64::MAX),
+            build: None,
         })))
+    }
+    /// A control with a poll budget of its own, from `options`, that is
+    /// also cancelled when `build` is and ends at `build`'s deadline if not
+    /// before: one isolate's of several that share a build's deadline and
+    /// cancellation but count their own polls (docs/compiler-concurrency.md,
+    /// "As built (light-cljs-341)").
+    pub(crate) fn linked(
+        options: &EvaluatorOptions,
+        build: &ExecutionControl,
+    ) -> Result<Self, EvalError> {
+        let mut control = Self::new(options)?;
+        Arc::get_mut(&mut control.0).expect("a new control").build = Some(build.clone());
+        Ok(control)
+    }
+    /// Why the build this control is linked to has ended: 1 when it is
+    /// cancelled, 2 when its deadline has passed, else 0.
+    fn build_cause(&self) -> u8 {
+        let mut build = self.0.build.as_ref();
+        while let Some(control) = build {
+            if control.0.cancelled.load(Ordering::Relaxed) {
+                return 1;
+            }
+            if control.0.clock_origin.elapsed().as_nanos()
+                >= u128::from(control.0.deadline_nanos.load(Ordering::Relaxed))
+            {
+                return 2;
+            }
+            build = control.0.build.as_ref();
+        }
+        0
     }
     /// Begin an operation: a new deadline and poll budget from `options`,
     /// unless the control is cancelled or terminal, which stays.
@@ -151,12 +186,19 @@ impl ExecutionControl {
     }
     #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
     pub fn poll(&self) -> Result<(), EvalError> {
+        let build = if self.0.build.is_some() {
+            self.build_cause()
+        } else {
+            0
+        };
         let cause = if self.0.cancelled.load(Ordering::Relaxed) {
             1
         } else if self.0.clock_origin.elapsed().as_nanos()
             >= u128::from(self.0.deadline_nanos.load(Ordering::Relaxed))
         {
             2
+        } else if build != 0 {
+            build
         } else if self
             .0
             .remaining
@@ -189,7 +231,9 @@ impl ExecutionControl {
         {
             self.cancel();
         }
-        if self.0.cancelled.load(Ordering::Relaxed) {
+        if self.0.cancelled.load(Ordering::Relaxed)
+            || (self.0.build.is_some() && self.build_cause() == 1)
+        {
             let _ = self
                 .0
                 .terminal
@@ -223,6 +267,86 @@ impl ExecutionControl {
             .0
             .terminal
             .compare_exchange(0, 5, Ordering::Relaxed, Ordering::Relaxed);
+    }
+}
+
+/// The macro memory limit of one build, which all its compile-time
+/// isolates share (docs/compiler-concurrency.md, "As built
+/// (light-cljs-341)"): each isolate is allowed [`Self::base`] bytes, and
+/// grows past that only by taking from the headroom the others have not
+/// taken, which it gives back when it is destroyed, so the isolates never
+/// hold more than the limit together. An isolate that cannot take what it
+/// needs fails; none takes more silently.
+#[derive(Debug)]
+#[cfg_attr(not(light_v8), allow(dead_code))]
+pub(crate) struct MemoryPool {
+    base: usize,
+    headroom: std::sync::atomic::AtomicUsize,
+}
+#[cfg_attr(not(light_v8), allow(dead_code))]
+impl MemoryPool {
+    /// The pool of `limit` bytes for `isolates` isolates, each allowed a
+    /// base of half its even share, at least 32 MiB and at most 256 MiB,
+    /// but never more than the even share, so that what is left of the
+    /// limit is headroom to grow into.
+    pub(crate) fn new(limit: usize, isolates: usize) -> Arc<Self> {
+        let isolates = isolates.max(1);
+        let base = (limit / (2 * isolates))
+            .clamp(32 << 20, 256 << 20)
+            .min(limit / isolates);
+        Arc::new(Self {
+            base,
+            headroom: std::sync::atomic::AtomicUsize::new(limit - base * isolates),
+        })
+    }
+    /// The bytes each isolate is allowed before it takes headroom.
+    pub(crate) fn base(&self) -> usize {
+        self.base
+    }
+    /// Take up to `wanted` bytes of headroom, but nothing unless at least
+    /// `needed` are left: what was taken.
+    #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
+    pub(crate) fn take(&self, wanted: usize, needed: usize) -> usize {
+        let mut taken = 0;
+        let _ = self
+            .headroom
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
+                taken = if left >= needed { left.min(wanted) } else { 0 };
+                (taken > 0).then(|| left - taken)
+            });
+        taken
+    }
+    /// Give back `bytes` taken before.
+    pub(crate) fn give(&self, bytes: usize) {
+        self.headroom.fetch_add(bytes, Ordering::Relaxed);
+    }
+    /// The headroom no isolate has taken.
+    #[cfg(test)]
+    pub(crate) fn headroom(&self) -> usize {
+        self.headroom.load(Ordering::Relaxed)
+    }
+}
+/// What the compile-time isolates of one build with several unit slots
+/// share: the build's control, whose deadline and cancellation every
+/// isolate's own control follows; the workers' control, linked to it, which
+/// the coordinator cancels when the build fails; and the memory pool.
+#[derive(Clone)]
+#[cfg_attr(not(light_v8), allow(dead_code))]
+pub(crate) struct BuildResources {
+    pub(crate) control: ExecutionControl,
+    pub(crate) workers: ExecutionControl,
+    pub(crate) memory: Arc<MemoryPool>,
+}
+impl BuildResources {
+    /// The resources of a build with `options`, whose deadline starts now,
+    /// for `isolates` isolates.
+    pub(crate) fn new(options: &EvaluatorOptions, isolates: usize) -> Result<Self, EvalError> {
+        let control = ExecutionControl::new(options)?;
+        Ok(Self {
+            workers: ExecutionControl::linked(options, &control)?,
+            control,
+            memory: MemoryPool::new(options.memory_limit, isolates),
+        })
     }
 }
 

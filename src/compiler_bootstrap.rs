@@ -378,11 +378,9 @@ impl MacroHost {
         // cannot observe the compiler-owned map during construction. Source
         // macros and reader wrappers continue to receive the complete view.
         let unused = DataBuilder.nil();
-        let mut remaining = self
-            .limits
-            .generated_nodes
-            .saturating_sub(self.engine.generated_nodes.get())
-            / 2;
+        // Half the node limit, as each conversion takes at most the
+        // limit ([`MacroHost::expand_javascript`]).
+        let mut remaining = self.limits.generated_nodes / 2;
         let budget = remaining;
         let env = if !declaration.reads_environment
             && elidable_environment(env, &mut remaining, 128, &engine.control())

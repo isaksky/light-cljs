@@ -2577,7 +2577,8 @@ fn analyze_entry(
     let mut index = 0;
     // With `--jobs N` the build's deferred units are analyzed on one pool
     // for the whole build, each worker in a V8 isolate of its own, which
-    // share the macro memory limit evenly for now; while artifacts are
+    // share the build's deadline and macro memory limit, one budget for
+    // them all (light-cljs-341); while artifacts are
     // captured or observations logged, which only the coordinator does,
     // its workers have no engine and take only macro-free units
     // (docs/compiler-concurrency.md, "As built (light-cljs-339)").
@@ -2603,18 +2604,21 @@ fn analyze_entry(
         };
         // As many isolates as the limit gives each a share of at least
         // 32 MiB; with fewer than two, the workers have no engine.
-        let (isolates, share) =
-            crate::compilation_session::isolate_shares(memory_limit, analysis.unit_slots);
+        let isolates = crate::compilation_session::isolate_count(memory_limit, analysis.unit_slots);
         let engines = if isolates < 2 {
             PoolEngines::None
         } else {
             engines
         };
+        let mut resources = None;
         if engines != PoolEngines::None {
-            macros.evaluator_options.memory_limit = share;
             pool_slots = crate::scheduler::Slots::new(isolates).unwrap_or(pool_slots);
+            resources = Some(
+                crate::evaluator::BuildResources::new(&macros.evaluator_options, isolates)
+                    .map_err(|e| NamespaceCompileError::new(e.0))?,
+            );
         }
-        let started = session.start_pool(pool_slots, engines, macros.environment());
+        let started = session.start_pool(pool_slots, engines, macros.environment(), resources);
         if let Err(error) = started {
             macros.evaluator_options.memory_limit = memory_limit;
             return Err(NamespaceCompileError::new(error));
@@ -2855,8 +2859,13 @@ fn analyze_entry(
         Ok(())
     })();
     // Every drain has waited for its pooled units; the workers' engines are
-    // destroyed on their threads here.
+    // destroyed on their threads here. When the build failed, the error is
+    // chosen: what the workers have not started does not start, and what
+    // they run is cancelled.
     if let Some(session) = macros.session_handle() {
+        if looped.is_err() {
+            session.cancel_pool();
+        }
         session.finish_pool();
     }
     macros.evaluator_options.memory_limit = memory_limit;

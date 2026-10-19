@@ -11,6 +11,29 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Diagnostics, limits and one memory budget (light-cljs-341, October 19, 2026)
+
+Limits charged as running sums with exact JavaScript-macro errors, a soft
+cap, one deadline, cancellation after a failure and one memory budget across
+the isolates (docs/compiler-concurrency.md, "As built (light-cljs-341)").
+The serial gate: parent `9bfe2a5` against this change at the default
+`--jobs 1`, three alternating rounds at 1-minute load 6.4 to 22.7 with two
+other workers testing, so the spread is wide. All six outputs are
+33,626,443 bytes.
+
+| Build | Wall (s) | Median wall | Peak RSS (GB) | Median RSS |
+| --- | --- | ---: | --- | ---: |
+| Parent | 26.16, 37.29, 27.97 | 27.97 | 0.922, 0.940, 0.960 | 0.940 |
+| `--jobs 1` | 26.94, 26.49, 27.32 | 26.94 | 0.904, 0.981, 0.940 | 0.940 |
+
+- **Serial gate.** -3.7% wall and +0.0% peak RSS on the medians, inside the
+  +2% / +3% gate; the serial path gains only a thread-local check per
+  JavaScript expansion and an empty link check per poll.
+- **One budget.** A unit whose macro holds 96 MiB, at
+  `--macro-memory-limit 268435456 --jobs 4` (four isolates): the parent
+  fails it with the memory error (64 MiB even caps), this change builds it
+  (32 MiB bases and 128 MiB of shared headroom), as both do at `--jobs 1`.
+
 ## Cache-blocker affinity (light-cljs-340, October 19, 2026)
 
 A `--cache-blocker` namespace and the namespaces that require or name it

@@ -17,6 +17,12 @@ pub(crate) trait CompilerEvaluator: MacroEvaluator {
     fn install_string_service(&self, name: &str, callback: StringService) -> Result<(), EvalError>;
     #[cfg(all(test, light_v8))]
     fn number(&self, id: ValueId) -> Result<f64, EvalError>;
+    /// Whether the engine holds memory it took from its build's shared
+    /// budget beyond its base ([`crate::evaluator::MemoryPool`]), which it
+    /// gives back only when it is destroyed.
+    fn holds_headroom(&self) -> bool {
+        false
+    }
 }
 #[cfg(not(light_quickjs))]
 impl CompilerEvaluator for Evaluator {

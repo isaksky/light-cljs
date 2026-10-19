@@ -7258,7 +7258,14 @@ impl Analyzer<'_> {
         } else {
             Vec::new()
         };
-        let pooled = if !pooled.is_empty() && session.submit_units(pooled.clone()) {
+        let pooled = if !pooled.is_empty()
+            && session.submit_units(
+                pooled.clone(),
+                (
+                    self.macro_host.engine.expansions.get(),
+                    self.macro_host.engine.generated_nodes.get(),
+                ),
+            ) {
             pooled
         } else {
             Vec::new()
@@ -10362,6 +10369,7 @@ impl Analyzer<'_> {
             // A source macro sees the compilation's whole declaration view.
             let source = self.source_index;
             self.macro_host.observe(|log| log.executes(source));
+            let _site = crate::macro_host::ExpansionSite::enter(&name, &call_span);
             let result = self
                 .macro_host
                 .expand_source_javascript(self.namespace, target, &form, &env, self.engine)
@@ -10475,6 +10483,7 @@ impl Analyzer<'_> {
                 )
                 .map_err(error)?;
             let environment = self.array_environment(environment).map_err(error)?;
+            let _site = crate::macro_host::ExpansionSite::enter(&name, &call_span);
             let expanded = self
                 .macro_host
                 .expand_core_javascript(&core_name, &form, &environment, self.engine)

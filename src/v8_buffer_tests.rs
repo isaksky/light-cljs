@@ -10,6 +10,7 @@ fn initial_heap_threshold_can_grow_for_live_data_within_the_session_budget() {
         },
         16 * 1024 * 1024,
         || include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", RUNTIME_SOURCE),
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -36,6 +37,7 @@ fn adaptive_heap_growth_still_stops_at_the_session_budget() {
         },
         16 * 1024 * 1024,
         || include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", RUNTIME_SOURCE),
+        None,
     )
     .unwrap();
     let error = evaluator

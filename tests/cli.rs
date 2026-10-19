@@ -1864,3 +1864,57 @@ fn worker_isolates_match_a_fresh_isolate_per_unit() {
         assert_eq!(blocked, serial, "{jobs} jobs");
     }
 }
+
+#[test]
+fn a_build_stopped_at_its_deadline_writes_no_output_at_any_job_count() {
+    // Every unit's macro spins until the build's one deadline stops it, on
+    // whichever isolate it runs: the build fails and writes nothing.
+    let root = TempDir::new("cljs-cli-deadline");
+    std::fs::write(
+        root.join("macros.cljs"),
+        "(ns macros) (defmacro spin [] (loop [] (recur)))",
+    )
+    .unwrap();
+    let mut body = String::from("(ns main (:require [macros :refer [spin]]))\n");
+    for k in 0..6 {
+        body.push_str(&format!("(defn f{k} [] (spin))\n"));
+    }
+    std::fs::write(root.join("main.cljs"), body).unwrap();
+    for jobs in ["1", "4"] {
+        let out = root.join(format!("out-{jobs}"));
+        let started = std::time::Instant::now();
+        let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .args([
+                "--compile",
+                "--entry",
+                "main",
+                "--source-root",
+                root.to_str().unwrap(),
+                "--out-dir",
+                out.to_str().unwrap(),
+                "--jobs",
+                jobs,
+                "--macro-timeout-ms",
+                "400",
+                "--macro-poll-budget",
+                "1000000000",
+                "--macro-memory-limit",
+                "268435456",
+            ])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{jobs} jobs");
+        assert!(
+            stderr.contains("deadline exceeded"),
+            "{jobs} jobs: {stderr}"
+        );
+        assert!(output.stdout.is_empty(), "{jobs} jobs");
+        assert!(!out.join("main.js").exists(), "{jobs} jobs");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{jobs} jobs: {:?}",
+            started.elapsed()
+        );
+    }
+}

@@ -184,7 +184,23 @@ unsafe extern "C" fn after_gc(
 }
 extern "C" fn near_heap_limit(data: *mut std::ffi::c_void, current: usize, _: usize) -> usize {
     let state = unsafe { &*data.cast::<MemoryGuard>() };
-    let available = state.maximum.saturating_sub(state.buffers.used());
+    let used = state.buffers.used();
+    let mut available = state.buffers.allowance().saturating_sub(used);
+    // A build's isolate grows past its allowance only by taking from the
+    // build's pool what the others left (docs/compiler-concurrency.md, "As
+    // built (light-cljs-341)"); the session's limit stays its own cap.
+    let wanted = current
+        .saturating_add((current / 2).max(16 * 1024 * 1024))
+        .min(state.maximum.saturating_sub(used));
+    if state.adaptive
+        && wanted > available
+        && state.buffers.grow(
+            wanted - available,
+            current.saturating_add(1).saturating_sub(available),
+        )
+    {
+        available = state.buffers.allowance().saturating_sub(used);
+    }
     if state.adaptive && current < available {
         // Start with a modest collection threshold, but allow genuinely live
         // heaps to grow toward the configured session budget after V8 has
@@ -267,13 +283,30 @@ impl V8Evaluator {
         options: EvaluatorOptions,
         source: impl FnOnce() -> String,
     ) -> Result<Self, EvalError> {
-        Self::new_with_initial_heap_limit(options, 256 * 1024 * 1024, source)
+        Self::new_with_initial_heap_limit(options, 256 * 1024 * 1024, source, None)
+    }
+
+    /// An isolate of a build with several unit slots: its control follows
+    /// `resources`' deadline and cancellation, `parent` being the build's
+    /// or its workers' control, and its memory comes from the build's pool.
+    pub(crate) fn new_for_build(
+        options: EvaluatorOptions,
+        resources: &crate::evaluator::BuildResources,
+        parent: &ExecutionControl,
+    ) -> Result<Self, EvalError> {
+        Self::new_with_initial_heap_limit(
+            options,
+            256 * 1024 * 1024,
+            || include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", RUNTIME_SOURCE),
+            Some((resources, parent)),
+        )
     }
 
     fn new_with_initial_heap_limit(
         options: EvaluatorOptions,
         initial_heap_limit: usize,
         source: impl FnOnce() -> String,
+        build: Option<(&crate::evaluator::BuildResources, &ExecutionControl)>,
     ) -> Result<Self, EvalError> {
         if options.memory_limit < 1024 * 1024 {
             return Err(bridge::error(
@@ -289,7 +322,10 @@ impl V8Evaluator {
                 "JavaScript session memory limit exhausted during V8 startup",
             ));
         }
-        let control = ExecutionControl::new(&options)?;
+        let control = match build {
+            Some((_, parent)) => ExecutionControl::linked(&options, parent)?,
+            None => ExecutionControl::new(&options)?,
+        };
         control.poll()?;
         let platform = platform();
         let heap = v8::cppgc::Heap::create(
@@ -299,9 +335,13 @@ impl V8Evaluator {
                 sweeping_support: v8::cppgc::SweepingType::Atomic,
             },
         );
-        let heap_limit = initial_heap_limit.clamp(16 * 1024 * 1024, options.memory_limit);
+        let buffers = buffers::Budget::new(
+            options.memory_limit,
+            control.clone(),
+            build.map(|(resources, _)| resources.memory.clone()),
+        );
+        let heap_limit = initial_heap_limit.clamp(16 * 1024 * 1024, buffers.allowance());
         let stack = stack::StackLimit::new(options.stack_limit)?;
-        let buffers = buffers::Budget::new(options.memory_limit, control.clone());
         // SAFETY: the stack helper verifies a boundary within this thread's
         // stack. Rc state prevents moving the evaluator to another thread.
         let params = unsafe {
@@ -1089,6 +1129,9 @@ fn string_service(
     scope.terminate_execution();
 }
 impl CompilerEvaluator for V8Evaluator {
+    fn holds_headroom(&self) -> bool {
+        self.state.buffers.holds_headroom()
+    }
     fn install_string_service(
         &self,
         name: &str,

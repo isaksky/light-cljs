@@ -59,10 +59,13 @@ pub(crate) enum UnitEvent {
     Expansion(NativeExpansion),
     /// A JavaScript macro's expansion in a unit a pool worker analyzed in
     /// its own engine (light-cljs-339), with the nodes it generated and
-    /// the call's span.
+    /// the call's span, and the operator as spelled and the call's span
+    /// where the analyzer expanded it ([`ExpansionSite`]), whose limit
+    /// error names the operator.
     Script {
         nodes: usize,
         span: std::ops::Range<usize>,
+        site: Option<(String, std::ops::Range<usize>)>,
     },
 }
 
@@ -72,6 +75,8 @@ struct MacroFreeAnalysis {
     /// is a bug; a unit a worker analyzes in its own engine records only.
     forbid: bool,
     events: Vec<UnitEvent>,
+    /// The macro call the analyzer expands ([`ExpansionSite`]).
+    site: Option<(String, std::ops::Range<usize>)>,
 }
 
 /// While alive, the analysis on this thread is of a unit found macro-free
@@ -92,6 +97,7 @@ impl MacroFreeUnit {
                 name,
                 forbid,
                 events: Vec::new(),
+                site: None,
             }))
         }))
     }
@@ -144,9 +150,37 @@ pub(crate) fn record_script_expansion(nodes: usize, span: impl FnOnce() -> std::
             analysis.events.push(UnitEvent::Script {
                 nodes,
                 span: span(),
+                site: analysis.site.clone(),
             });
         }
     });
+}
+/// While alive, the analyzer expands the macro call `operator` (as
+/// spelled) spanning `span` on this thread, whose limit errors it reports
+/// as `while expanding operator: ...` at that span; a recorded JavaScript
+/// expansion keeps it, so that its charge fails with the same error
+/// ([`UnitEvent::Script`]). It records nothing unless this thread records
+/// a unit's analysis.
+pub(crate) struct ExpansionSite(Option<Option<(String, std::ops::Range<usize>)>>);
+impl ExpansionSite {
+    pub(crate) fn enter(operator: &str, span: &std::ops::Range<usize>) -> Self {
+        Self(MACRO_FREE_UNIT.with(|unit| {
+            unit.borrow_mut()
+                .as_mut()
+                .map(|analysis| analysis.site.replace((operator.to_owned(), span.clone())))
+        }))
+    }
+}
+impl Drop for ExpansionSite {
+    fn drop(&mut self) {
+        if let Some(previous) = self.0.take() {
+            MACRO_FREE_UNIT.with(|unit| {
+                if let Some(analysis) = &mut *unit.borrow_mut() {
+                    analysis.site = previous;
+                }
+            });
+        }
+    }
 }
 /// Record a poll at a form spanning `span` if this thread analyzes a
 /// macro-free unit, which then does not poll: whether it recorded one.
@@ -669,7 +703,17 @@ impl MacroHost {
         }
         #[cfg(light_v8)]
         if !self.tables.interactive {
-            let evaluator = crate::v8_evaluator::V8Evaluator::new(self.evaluator_options.clone())?;
+            // The main isolate of a build with several unit slots shares
+            // the build's deadline and memory with its workers.
+            let session = self.session_handle();
+            let evaluator = match session.as_ref().and_then(|s| s.shared().resources()) {
+                Some(resources) => crate::v8_evaluator::V8Evaluator::new_for_build(
+                    self.evaluator_options.clone(),
+                    resources,
+                    &resources.control,
+                )?,
+                None => crate::v8_evaluator::V8Evaluator::new(self.evaluator_options.clone())?,
+            };
             self.prepare_compiler_evaluator(&evaluator)?;
             return Ok(std::rc::Rc::new(evaluator));
         }
@@ -728,8 +772,13 @@ impl MacroHost {
             return Err("compiler macro expansion limit exceeded".into());
         }
         self.engine.expansions.set(self.engine.expansions.get() + 1);
-        // The conversions below take at most the remaining node budget each,
-        // so a namespace needs room for the largest of its inputs too.
+        // The conversions below take at most the node limit each, not
+        // what the compilation has left of it, so that whether they fit
+        // depends on the expansion alone and not on the units charged
+        // before it, wherever it runs (docs/compiler-concurrency.md, "As
+        // built (light-cljs-341)"); what they generate is charged after.
+        // The cache's accounting keeps the stricter measure: a namespace
+        // needs room for the largest of its inputs too.
         if self.engine.work.measuring.get() {
             let input =
                 WorkMarks::nodes(&call.data()).max(self.engine.work.environment_nodes(environment));
@@ -739,10 +788,7 @@ impl MacroHost {
             );
         }
         let limits = crate::form_bridge::ConversionLimits {
-            nodes: self
-                .limits
-                .generated_nodes
-                .saturating_sub(self.engine.generated_nodes.get()),
+            nodes: self.limits.generated_nodes,
             depth: 128,
         };
         let run = || -> Result<Form, crate::evaluator::EvalError> {

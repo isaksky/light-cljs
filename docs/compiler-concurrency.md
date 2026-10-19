@@ -1216,10 +1216,11 @@ The one deterministic ID-order change of this stage is made, at every
 - *Memory.* The isolates, the main one included, share
   `--macro-memory-limit` evenly: as many as the limit gives a share of at
   least 32 MiB, up to N, each capped at its share, so their caps never sum
-  to more than the limit (`isolate_shares`); with fewer than two shares the
+  to more than the limit (`isolate_shares`, now `isolate_count`); with fewer than two shares the
   workers have no engine and take only macro-free units. The default
   64 MiB gives the main isolate and one worker 32 MiB each; Penpot's 4 GB
-  gives eight isolates 500 MB. The limits pellet makes it one budget.
+  gives eight isolates 500 MB. The limits pellet makes it one budget
+  (light-cljs-341, below: the isolate count stays, the even caps go).
 - *Semantics.* The counter fixture prints `1 1` with several slots, the
   documented undeclared behavior (`macro_free_units::the_counter_fixture_prints_one_one_at_several_slots_without_a_blocker`,
   `tests/cli.rs` `worker_isolates_match_a_fresh_isolate_per_unit`, which
@@ -1503,6 +1504,111 @@ output changes once, when stage A lands.
 - **Publication is transactional.** Nothing is published as final while a
   later declaration could still change its meaning, and a failed build
   publishes no output.
+- *As built (light-cljs-341), diagnostics and limits.* The coordinator
+  still waits at each drain (the open question under "Open questions"),
+  so canonical order is the order it takes units in, and most of the
+  above follows from taking them in that order:
+  - *Warnings.* A unit's warnings are kept with its analysis in the catalog
+    (`AnalysisState::Analyzed`) on whichever thread made them and appended
+    at the drain in unit order; the expression and cross-namespace arity
+    warnings already run at the merge over the namespace's two ranges
+    (light-cljs-338). `parallel_diagnostics::warnings_are_in_the_same_order_at_every_slot_count`
+    compares source-macro units' warnings at 1, 2, 4 and 8 slots.
+  - *Errors.* The drain takes units in order and stops at the first that
+    failed, reporting its stored diagnostic, so a later unit whose worker
+    failed first is never reported
+    (`an_earlier_units_error_wins_over_a_later_workers_that_failed_first`).
+    The next namespace's top-level pass never starts before the drain ends,
+    so nothing of a later namespace runs after an earlier failure. Once a
+    pool job's unit has failed, the pool starts no job after it in unit
+    order (`SharedCatalog::admits`): the drain stops at that unit, and work
+    before it still runs, so the right error is chosen. When the
+    loader's loop fails, the error is chosen: `CompilationSession::cancel_pool`
+    drops the batches and jobs the pool has not started and cancels the
+    workers' control, so the units still running stop at their next poll
+    (`a_later_namespace_does_not_run_after_an_earlier_failure` checks that
+    seven spinning units after the failure do not delay it). Nothing is run
+    again serially. A cycle's message already carries the lowest (source,
+    unit) path (light-cljs-335).
+  - *Expansion and node limits.* Each unit off the coordinator counts its
+    own expansions and nodes as events (light-cljs-338/339), charged in
+    unit order at the drain as running sums. Two changes make the charge
+    exact for JavaScript macros: a recorded expansion keeps the operator as
+    spelled and the call's span (`macro_host::ExpansionSite`), so its limit
+    error is the analyzer's `while expanding NAME: ...` at the call, as the
+    serial build gives it; and a macro's conversions (its call, `&env`, its
+    arguments and its result) are bounded by the node limit itself rather
+    than by what the compilation has left of it, as data readers' already
+    were, so whether they fit depends on the expansion alone, not on the
+    units charged before it, and what an expansion generates is checked
+    after it, in the charge. That is a change at every job count, `--jobs 1`
+    included: a result too large for what is left now fails with
+    `generated-node limit exceeded` instead of a conversion's
+    `node limit at PATH`, and an expansion whose input is larger than what
+    is left but whose result fits succeeds. The cache's accounting keeps
+    the stricter measure (the nodes before an expansion plus its largest
+    conversion), so admission stays conservative.
+    `exact_boundary_expansion_and_node_limits_name_the_same_unit_at_one_and_four_slots`
+    builds source-macro units at every expansion limit from 1 to the
+    build's count and at forty node limits, and
+    `exact_boundary_depth_failures_name_the_same_unit_at_one_and_four_slots`
+    at every expansion depth, at one and four slots. One case stays
+    inexact: a limit crossed inside a helper unit that a worker's macro
+    demanded and analyzed inline is charged as the outer unit's event, so
+    the error names the same outer unit and the inner call, but its text
+    may lack the nested failure's wrapping that the serial build's message
+    has (not tested; light-cljs-377).
+  - *Soft cap.* The coordinator publishes what it has charged
+    (`SharedCatalog::raise_charged`, at each submission and charge), a
+    lower bound of what precedes any unit it has not charged yet; a unit
+    analyzed off the coordinator starts its counters there, so its own
+    checks fail only where the serial build fails at or before the same
+    expansion, and runaway work in a unit stops early. The charge still
+    decides the diagnostic. Workers never reset these counts, renew the
+    deadline or clear a cancellation; a limit still rejects an expansion
+    before running its producer once the unit's count reaches it.
+  - *Memory.* `--macro-memory-limit` is one budget
+    (`evaluator::MemoryPool`). As many isolates run as the limit gives at
+    least 32 MiB each (`isolate_count`, unchanged); each is allowed a base
+    of half its even share, at least 32 MiB and at most 256 MiB, and the
+    rest of the limit is headroom. An isolate whose heap reaches its
+    allowance (`near_heap_limit`) or whose backing stores would exceed it
+    (`v8_buffers::Budget`) takes what it needs from the headroom, and gives
+    back what it took when its budget is dropped: a worker whose engine
+    took headroom is retired after its job (`WorkerView::holds_headroom`),
+    so what one unit needed does not stay taken and decide which later
+    units fit (`headroom_a_worker_took_returns_for_the_main_isolate`); the
+    main isolate keeps what it took for the build. One that cannot get it
+    fails the build with the memory error, never takes more. The bases and
+    the headroom sum to the limit, so the isolates never hold more
+    together; the per-isolate limit stays each one's secondary cap. The
+    default 64 MiB still gives two isolates of 32 MiB and no headroom;
+    256 MiB at four slots gives four isolates of 32 MiB and 128 MiB to grow
+    into, and Penpot's 4 GB at eight gives eight of 250 MB and 2 GB. Builds
+    with one slot have no pool and keep today's single cap.
+    `the_memory_limit_is_one_budget_across_the_isolates`: a unit that needs
+    96 MiB of a 256 MiB limit builds at four slots, which the even split's
+    64 MiB caps refused, and one that needs 320 MiB fails in the same unit
+    at one and four slots.
+  - *Deadline and poll budget.* A pooled build's resources
+    (`evaluator::BuildResources`) are made when its pool starts: the
+    build's control, whose deadline starts then, and a workers' control
+    linked to it. Every isolate's control is linked to one of them
+    (`ExecutionControl::linked`): it counts its own poll budget, and is
+    cancelled, or reaches its deadline, when its build's is. So
+    `--macro-timeout-ms` is one deadline for the build and
+    `--macro-poll-budget` is per isolate, as `USAGE` says; which form a
+    timeout or memory failure is reported at depends on scheduling and is
+    not promised byte-identical across job counts. `tests/cli.rs`
+    `a_build_stopped_at_its_deadline_writes_no_output_at_any_job_count`.
+  - *Stacks.* Pool threads have 8 MiB stacks (light-cljs-339), and V8's
+    limit is set from the thread each engine entry starts on.
+    `deep_recursion_in_a_macro_on_a_pool_thread_meets_the_engine_stack_limit`
+    runs a macro that recurses until V8's `RangeError` on workers: caught,
+    the build goes on; uncaught, it fails with the same message at one
+    and four slots.
+  - *Not built.* `--stats` has no RSS report, so queued IR and parsed
+    trees are not yet accounted in one; light-cljs-376 adds them.
 
 ## Engineering inventory
 

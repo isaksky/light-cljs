@@ -363,9 +363,21 @@ thread's isolate in source order, as one job does, so the example prints
 `^:light-cljs/no-cache` keeps a namespace out of the cache only and gives no
 such affinity; an undeclared provider is treated as pure and nothing
 detects its effects. While `--cache-dir` is on, only units that expand no macro but
-the native `let`, `fn`, `loop` and `letfn` go to the pool. The macro memory
-limit is split evenly between the isolates for now, each getting at least
-32 MiB, so a limit of less than 64 MiB leaves the workers without engines. The pool is described in
+the native `let`, `fn`, `loop` and `letfn` go to the pool. Warnings and
+errors do not depend on N either: warnings come in source order, and a
+failed build reports the error the first failing unit in source order
+gives, whichever worker failed first, after which the workers' remaining
+work is cancelled and nothing is written. `--macro-expansions` and
+`--macro-nodes` count each unit's expansions where the units are charged in
+source order, so a limit fails in the unit and with the message one job
+gives. `--macro-memory-limit` is one budget for the calling thread's isolate
+and every worker's together: as many isolates run as the limit gives at
+least 32 MiB each (a limit of less than 64 MiB leaves the workers without
+engines), each is allowed a base share and takes more from what the others
+have not taken, and one that cannot get what it needs fails the build.
+`--macro-timeout-ms` is one deadline for the build, from the pool's start;
+`--macro-poll-budget` is per isolate. A timeout or memory failure depends on
+scheduling, so its message is not promised to be the same at every N. The pool is described in
 [docs/compiler-concurrency.md](docs/compiler-concurrency.md#the-scheduler).
 
 `--cache-dir DIR` with `--compile --entry` (also with `--reloadable`, `--esm`
