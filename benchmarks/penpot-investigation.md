@@ -14,7 +14,7 @@ with zero failures and 106 ignored in each. Both pass strict Clippy; formatting,
 three Node workflows, the source-engine build, ABI rejection check and WebAssembly
 playground checks also pass. All Penpot outputs are byte-identical to phase111
 and pass ESM syntax checks; the port is unchanged. Penpot has not been bundled
-and run in a browser. [Phase112 evidence](results/compiler-2026-10-16/penpot-phase112/README.md).
+and run in a browser; [docs/penpot-browser-bundle.md](../docs/penpot-browser-bundle.md) records what that would take. [Phase112 evidence](results/compiler-2026-10-16/penpot-phase112/README.md).
 
 The native backend and release defaults are promoted. A final collection-store
 specialization experiment yielded only a 0.7% average timing reduction and was
