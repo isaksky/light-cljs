@@ -1193,6 +1193,140 @@ fn loading_one_target_marks_other_targets_in_the_same_chunk_loaded() {
     );
 }
 
+/// Startup's `lazy$` turns a loadable's fields into properties that follow
+/// its chunk's load and gives it its own `load` (light-cljs-353): the
+/// loadable keeps the own enumerable keys of a single file's, before and
+/// after loading, `load` is not among them, and loading again resolves
+/// with the target's current value.
+#[test]
+fn a_chunked_loadable_keeps_the_single_file_s_keys() {
+    static KEYS: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (def editor (lazy/loadable app.editor/start))\n\
+             (defn keys-of [l] (.join (js/Object.keys l) \",\"))\n\
+             (js/console.log (keys-of editor))\n\
+             (defn start []\n\
+               (-> (lazy/load editor)\n\
+                   (.then (fn [f]\n\
+                            (js/console.log (f) (keys-of editor) (lazy/loaded? editor)\n\
+                                            (= f @editor))\n\
+                            (lazy/load editor)))\n\
+                   (.then (fn [f] (js/console.log (f)) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor)\n(defn start [] \"started\")\n",
+        ),
+    ];
+    let (record, _) = chunk_files(&analyze(KEYS));
+    assert_eq!(
+        record,
+        printed(
+            "app.main.js",
+            r"importer,getter\nstarted importer,getter true true\nstarted\n"
+        )
+    );
+}
+
+/// A loadable made after its chunk has loaded loads as a single file's
+/// does, on the next microtask, not after another import (the Sol review of
+/// light-cljs-353): a mutation queued right after `load` comes after the read.
+#[test]
+fn a_loadable_made_after_its_chunk_loaded_reads_on_the_next_microtask() {
+    static LATER: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (def change (lazy/loadable app.editor/change!))\n\
+             (defn start []\n\
+               (-> (lazy/load change)\n\
+                   (.then (fn [change!]\n\
+                            (let [p (lazy/load (lazy/loadable app.editor/value))]\n\
+                              (js/queueMicrotask (fn [] (change! 2)))\n\
+                              p)))\n\
+                   (.then (fn [v] (js/console.log v) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor)\n(def value 1)\n(defn change! [v] (set! value v))\n",
+        ),
+    ];
+    let (record, _) = chunk_files(&analyze(LATER));
+    assert_eq!(record, printed("app.main.js", r"1\n"));
+}
+
+/// A chunk whose evaluation throws leaves its loadables unloaded (the Sol
+/// review of light-cljs-353): `load` rejects with the feature's error
+/// itself, `loaded?` stays false for the loadable that loaded, another of
+/// the same chunk and one made after the failure, `deref` of each still
+/// throws, and loading again rejects with the same error, as a module that
+/// failed to evaluate does. A single file evaluates the feature before
+/// startup, so there is no oracle: the chunks run alone, at every level.
+#[test]
+fn a_failed_chunk_import_keeps_its_error_and_its_loadables_unloaded() {
+    static FAILING: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [app.state :as state] [light.lazy :as lazy]))\n\
+             (def editor (lazy/loadable app.editor/start))\n\
+             (def stop (lazy/loadable app.editor/stop))\n\
+             (defn deref-fails [l] (try @l false (catch :default _ true)))\n\
+             (defn start []\n\
+               (-> (lazy/load editor)\n\
+                   (.then (fn [_] (js/console.log \"loaded\"))\n\
+                          (fn [e]\n\
+                            (let [later (lazy/loadable app.editor/stop)]\n\
+                              (js/console.log (identical? e state/boom) (lazy/loaded? editor)\n\
+                                              (lazy/loaded? stop) (lazy/loaded? later)\n\
+                                              (deref-fails editor) (deref-fails stop)\n\
+                                              (deref-fails later))\n\
+                              (lazy/load later))))\n\
+                   (.then (fn [_] (js/console.log \"loaded again\"))\n\
+                          (fn [e]\n\
+                            (js/console.log \"again\" (identical? e state/boom)\n\
+                                            (lazy/loaded? editor))\n\
+                            nil))))\n\
+             start\n",
+        ),
+        (
+            "app/state.cljs",
+            "(ns app.state)\n(def boom (js/Error. \"boom\"))\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor (:require [app.state :as state]))\n\
+             (throw state/boom)\n\
+             (defn start [] \"started\")\n\
+             (defn stop [] \"stopped\")\n",
+        ),
+    ];
+    let program = analyze(FAILING);
+    for level in OptimizationLevel::ALL {
+        let output = prepare_application(&program, ApplicationOptions::new(level)).emit_chunks();
+        assert!(output.files.len() > 1, "{level}");
+        let startup = output.files[0].name.as_str();
+        let files = output
+            .files
+            .iter()
+            .map(|file| (file.name.as_str(), file.source.as_str()))
+            .collect::<Vec<_>>();
+        let record = run_modules(&files, startup)
+            .unwrap_or_else(|error| panic!("{level}: {error}\n{}", shown(&files)));
+        assert_eq!(
+            record,
+            printed(
+                startup,
+                r"true false false false true true true\nagain true false\n"
+            ),
+            "{level}"
+        );
+    }
+}
+
 /// A package only a feature requires is imported by the feature's chunk
 /// alone, under its terse name at `Advanced` too (the `package` fixture,
 /// which [`matrix`] runs with the package installed).
@@ -2899,6 +3033,14 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
         total + 1_000 <= 73_207 + 2_944 + 600 + 2_500 + 1_000 + 1_000,
         "{total} bytes\n{listing}"
     );
+    // Startup's `lazy$` is 242 bytes since light-cljs-353 (687 before).
+    let startup = files[0].1;
+    let helper = startup
+        .find("=(m=>")
+        .map(|start| &startup[start..])
+        .and_then(|rest| rest.find("([]);").map(|end| &rest[..end]))
+        .expect("startup's lazy$");
+    assert!(helper.len() <= 250, "{helper}");
 }
 
 /// A runtime binding that keeps its spelling, `Atom`, would capture at module

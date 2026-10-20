@@ -214,8 +214,8 @@ impl Emitter<'_> {
     /// A loadable of `target`, whose type `class` reads, in a chunk that may
     /// not have evaluated when the loadable's own chunk runs: an importer of
     /// that chunk and a getter that reads the target from its module
-    /// namespace object, which startup's `lazy$` ([`LAZY`]) registers under
-    /// the chunk, `lazy$("./app.editor.js", new Loadable(() =>
+    /// namespace object, which startup's `lazy$` ([`LAZY`]) keys by the
+    /// chunk's number in the plan, `lazy$(1, new Loadable(() =>
     /// import("./app.editor.js"), (m) => m.g20))`, or `() => null` for a
     /// namespace target.
     pub(super) fn lazy_loadable(&mut self, target: LazyTargetId, class: ExprId) {
@@ -225,7 +225,7 @@ impl Emitter<'_> {
             .importer(self.program, target)
             .expect("a target in another chunk");
         let specifier = quoted(&format!("./{}", chunks.plan.chunks[chunk.0].name));
-        write!(self.output, "lazy$({specifier}, new ").unwrap();
+        write!(self.output, "lazy$({}, new ", chunk.0).unwrap();
         self.value(class);
         write!(self.output, "(() => import({specifier}), ").unwrap();
         match self.program.lazy_targets[target.0].global {
@@ -331,46 +331,42 @@ fn constant_entry(name: &str) -> Option<usize> {
 
 /// Startup's helper for the loadables whose target is in a chunk that may
 /// not have evaluated when the loadable's own chunk runs,
-/// `lazy$("./app.editor.js", new Loadable(importer, getter))`, keyed by the
-/// target chunk (docs/code-splitting.md, "The loading API"). It records the
-/// module namespace object of each chunk an importer has imported, and the
-/// loadables of each chunk not imported yet. A loadable of an imported chunk
-/// is made resident at once: a getter of the module's binding and no
-/// importer, so `loaded?` and `@l` read what a single file's loadable has.
-/// Any other gets a `load` that calls its importer; when the import
-/// resolves, every loadable of that chunk becomes resident, and the loadable
-/// then loads as a resident one does. A chunk the host has imported already
-/// resolves the import at once, and one that fails to evaluate rejects it.
-/// The runtime's `Loadable` and `light.lazy/load` stay as a single file has
-/// them, so a program without chunks pays nothing for this. A chunk that
-/// another chunk's static import evaluated is not recorded until a loadable
-/// of it is loaded: chunks carry no load markers (docs/code-splitting.md,
-/// "Open questions").
-const LAZY: &str = "  const lazy$ = (() => {
-    const modules = new Map(), waiting = new Map();
-    const resident = (loadable, module) => {
-      const getter = loadable.getter;
-      loadable.getter = () => getter(module);
-      loadable.importer = null;
-    };
-    return (chunk, loadable) => {
-      if (modules.has(chunk)) {
-        resident(loadable, modules.get(chunk));
-        return loadable;
-      }
-      if (!waiting.has(chunk)) waiting.set(chunk, []);
-      waiting.get(chunk).push(loadable);
-      const importer = loadable.importer, load = loadable.load;
-      return Object.defineProperty(loadable, \"load\", {configurable: true, writable: true, value: () => importer().then((module) => {
-        if (!modules.has(chunk)) {
-          modules.set(chunk, module);
-          for (const waiter of waiting.get(chunk)) resident(waiter, module);
-          waiting.delete(chunk);
-        }
-        return load.call(loadable);
-      })});
-    };
-  })();
+/// `lazy$(1, new Loadable(importer, getter))`, keyed by the target chunk's
+/// number in the plan (docs/code-splitting.md, "The loading API"). Its one
+/// array `m` holds, by chunk `_`, the module namespace object once an
+/// importer of the chunk has imported it. It turns the loadable `_l`'s
+/// `importer` field into a property that is `null` once its chunk is
+/// recorded there and the importer `_i` before, so `loaded?` of every
+/// loadable of a chunk turns true when one of them loads, also of a loadable
+/// made after; its `getter` into one that hands the target's getter `_g` the
+/// recorded module, so `@l` reads the same fields as a single file's
+/// loadable; and gives it a non-enumerable `load` that, while the chunk is
+/// not recorded, calls its importer, records the module `_m` and derefs, and
+/// once it is, loads as the runtime's `load` `_d` does, on the next
+/// microtask like a single file's loadable rather than after an import (the
+/// Sol review of light-cljs-353). The fields keep their enumerability
+/// and order, so `js-keys` sees what a single file's loadable has. A chunk
+/// the host has imported already resolves the import at once, and one that
+/// fails to evaluate rejects it and stays unrecorded. The runtime's
+/// `Loadable` and `light.lazy/load` stay as a single file has them, so a
+/// program without chunks pays nothing for this. A chunk that another
+/// chunk's static import evaluated is not recorded until a loadable of it is
+/// loaded: chunks carry no load markers (docs/code-splitting.md, "Open
+/// questions").
+///
+/// Terse output keeps the text's local names, and no short name it gives
+/// may spell one ([`crate::terse`] excludes every name of the text that is
+/// not a compiler name), so the locals are `m`, which the getters
+/// `(m) => m.g20` spell already, and names starting with `_`, which
+/// [`crate::js_syntax::NameGenerator`] never makes. light-cljs-353 measured
+/// 687 bytes for the readable version before it, which kept each chunk's
+/// waiting loadables, and single-letter locals costing the other chunks 66
+/// bytes of longer names.
+const LAZY: &str = "  const lazy$ = ((m) => (_, _l, _i = _l.importer, _g = _l.getter, _d = _l.load) => Object.defineProperties(_l, {
+    importer: {get: () => _ in m ? null : _i},
+    getter: {value: () => _g(m[_])},
+    load: {configurable: 1, writable: 1, value: () => _ in m ? _d.call(_l) : _i().then((_m) => (m[_] = _m, _l.deref()))}
+  }))([]);
 ";
 
 /// One chunk of a chunked build: its ES module, and the chunks it imports,
@@ -1223,5 +1219,46 @@ mod tests {
         assert_eq!(assigned_binding("core$inc"), None);
         assert_eq!(global_order("g7_1"), (7, 2));
         assert_eq!(global_order("g7"), (7, 0));
+    }
+
+    /// Terse output gives no short name that `lazy$`'s text spells, so its
+    /// own names are its properties, the globals it reads, `m`, which a
+    /// loadable's getter spells already, and names no short name starts
+    /// like (light-cljs-353).
+    #[test]
+    fn the_loader_spells_no_short_name() {
+        let fixed = [
+            "const",
+            "lazy$",
+            "m",
+            "Object",
+            "defineProperties",
+            "importer",
+            "getter",
+            "load",
+            "get",
+            "value",
+            "configurable",
+            "writable",
+            "in",
+            "null",
+            "then",
+            "deref",
+            "call",
+        ];
+        let words = LAZY
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+            .filter(|word| !word.is_empty() && !word.bytes().all(|b| b.is_ascii_digit()));
+        for word in words {
+            assert!(
+                fixed.contains(&word) || word.starts_with('_'),
+                "`{word}` in lazy$ could be a short name"
+            );
+        }
+        assert!(
+            crate::js_syntax::NameGenerator::default()
+                .take(100_000)
+                .all(|name| !name.starts_with('_'))
+        );
     }
 }

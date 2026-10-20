@@ -5702,3 +5702,37 @@ the operation, which startup keeps (`lookup` 343 to 487 bytes, `get` 357 to
 first costs about the same (28 raw bytes fewer with all five). The
 wrappers stay: on 2026-10-20 the user judged converting them not worth
 doing, as it only moves bytes from startup to the shared chunk.
+
+## Startup's loader — October 20, 2026
+
+light-cljs-353 shrinks `lazy$`, startup's helper for loadables whose
+target is in a chunk not loaded yet, from 687 to 249 bytes: one array of
+recorded module namespace objects by chunk number, and properties over a
+loadable's `importer` and `getter` that read it, instead of per-chunk lists
+of waiting loadables ([code-splitting design](../docs/code-splitting.md),
+Phase 3, "As built (light-cljs-353)"). A site names its chunk by number.
+Measured with `light-cljs --compile --optimize advanced --entry app.main
+--source-root examples/features --out-dir OUT`, raw / `gzip -9 -n` bytes of
+each file, against master `8221e3b`. Same machine; one-minute load average
+4.7 (sizes do not depend on it). examples/features at `advanced`, terse:
+
+| File | Before | After |
+| --- | ---: | ---: |
+| `app.main.js`, startup | 6,714 / 2,488 | 6,243 / 2,392 |
+| `app.editor+app.reports.js` | 62,034 / 19,223 | 62,034 / 19,223 |
+| `app.editor.js` | 5,268 / 2,314 | 5,268 / 2,314 |
+| `app.reports.js` | 5,087 / 2,181 | 5,087 / 2,181 |
+| all four | 79,103 / 26,206 | 78,632 / 26,110 |
+
+At `none` startup is 504,608 bytes before and 503,963 after. Single files
+are byte for byte as before at every level. The application without its
+features, compiled as one `--esm` file at `advanced`, is 4,664 / 1,730;
+startup less the 795 bytes of runtime units `--size-report` attributes to
+the features' roots is 5,448, against the Goal's 5,064: `Loadable` 255,
+`lazy$` 249, the two sites 97 bytes over the `nil`s that replace them,
+`light.lazy/Loadable`'s definition 11, and the export lines 96. The user
+decided on 2026-10-20 that the Goal does not count the 612 bytes of chunk
+loading, so startup measures 4,836 against it, 172 over the application
+and under the target. With the helper's locals named by single letters, which
+terse output then gives no other name, the other three files were 66 bytes
+longer; its locals are `m` and names starting with `_`.
