@@ -617,7 +617,7 @@ fn advanced_records_compare_and_hash_with_their_own_methods() {
     for expected in [
         "rt$installMethods(g",
         ".prototype, [[\"IEquiv/-equiv\", 2, function(a0, a1) { return a1 != null && \
-         Object.is(this.constructor, a1.constructor) && rt$equalPair(this[\"x\"], a1[\"x\"]) && \
+         this.constructor === a1.constructor && rt$equalPair(this[\"x\"], a1[\"x\"]) && \
          rt$equalPair(this[\"y\"], a1[\"y\"]) && rt$equalPair(this[\"__extmap\"], a1[\"__extmap\"]); }], \
          [\"IHash/-hash\", 1, function() { const h = this[\"__hash\"]; if (h != null) return h; \
          const v0 = this[\"x\"], v1 = this[\"y\"], e = this[\"__extmap\"], x = e == null ? null : rt$toArray(e); \
@@ -642,6 +642,28 @@ fn advanced_records_compare_and_hash_with_their_own_methods() {
     let js = advanced(unread);
     assert!(
         !js.contains("rt$installMethods(") && !js.contains("function(a0, a1) { return a1 != null"),
+        "{js}"
+    );
+}
+
+/// light-cljs-388: a record field named `constructor` shadows the
+/// prototype's, so equality compares the two field values as the shared
+/// `-equiv` does, with `===`: `0` and `-0.0` are equal at every level, also
+/// where `Advanced` writes the record's own `-equiv`.
+#[test]
+fn record_constructor_fields_compare_signed_zeros_as_equal() {
+    let source = "(defrecord R [constructor])
+                  (let [a (atom (->R 0)) b (atom (->R -0.0))]
+                    (array (= @a @b) (= @b @a) (= @a (->R 1)) (.-constructor @b)))";
+    assert_eq!(run(source), "[true,true,false,0]\n");
+    let program = light_cljs::analyze(source, &light_cljs::parse(source).unwrap()).unwrap();
+    let js = light_cljs::prepare_application(
+        &program,
+        super::optimization::readable(light_cljs::OptimizationLevel::Advanced),
+    )
+    .emit_js();
+    assert!(
+        js.contains("function(a0, a1) { return a1 != null && this.constructor === a1.constructor"),
         "{js}"
     );
 }

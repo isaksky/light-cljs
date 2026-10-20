@@ -2495,10 +2495,13 @@ host-facing methods of the vector and the keyword.
     `Advanced` a record type defined with `defineType` gets its own
     `-equiv` and `-hash` right after it (`Emitter::record_kit`):
     `rt$installMethods(g2.prototype, [["IEquiv/-equiv", 2, function(a0, a1)
-    { return a1 != null && Object.is(this.constructor, a1.constructor) &&
+    { return a1 != null && this.constructor === a1.constructor &&
     rt$equalPair(this["w"], a1["w"]) && ... &&
     rt$equalPair(this["__extmap"], a1["__extmap"]); }], ["IHash/-hash", 1,
-    function() { ... }]]);`. The hash reads every field and the extension
+    function() { ... }]]);`. It compares constructors with `===`, as the
+    shared method does, because a field named `constructor` shadows the
+    prototype's and `Object.is` would tell `0` from `-0.0` there
+    (light-cljs-388). The hash reads every field and the extension
     map's entries first, as the shared one's `recordEntries` does, then
     adds each field's keyword hash and xors the type name's string hash as
     constants (`crate::value_hash`), and adds the entries' hashes with

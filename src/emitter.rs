@@ -5406,7 +5406,7 @@ impl<'a> Emitter<'a> {
     ///
     /// ```text
     /// rt$installMethods(g2.prototype, [["IEquiv/-equiv", 2, function(a0, a1)
-    ///   { return a1 != null && Object.is(this.constructor, a1.constructor)
+    ///   { return a1 != null && this.constructor === a1.constructor
     ///   && rt$equalPair(this["w"], a1["w"]) && ... && rt$equalPair(
     ///   this["__extmap"], a1["__extmap"]); }], ["IHash/-hash", 1,
     ///   function() { const h = this["__hash"]; if (h != null) return h;
@@ -5439,7 +5439,7 @@ impl<'a> Emitter<'a> {
         self.output.push_str(".prototype, [");
         if equiv {
             self.output.push_str(
-                "[\"IEquiv/-equiv\", 2, function(a0, a1) { return a1 != null && Object.is(this.constructor, a1.constructor)",
+                "[\"IEquiv/-equiv\", 2, function(a0, a1) { return a1 != null && this.constructor === a1.constructor",
             );
             for member in members.iter().map(String::as_str).chain(["__extmap"]) {
                 self.output.push_str(" && ");

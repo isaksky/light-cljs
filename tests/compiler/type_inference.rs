@@ -821,6 +821,9 @@ fn parameters_with_unseen_or_mixed_callers_keep_the_runtime_operations() {
     for kept in ["rt$count(", "rt$equal(", "rt$nth(", "truth("] {
         assert!(js.contains(kept), "{kept}: {js}");
     }
+    // `P`'s own `-equiv` compares constructors with `===`, as the shared
+    // method does (light-cljs-388); no `=` is lowered to one.
+    let js = js.replace("this.constructor === a1.constructor", "");
     for lowered in [").length", "rt$vectorNth(", ")[\"x\"]", " === "] {
         assert!(!js.contains(lowered), "{lowered}: {js}");
     }
