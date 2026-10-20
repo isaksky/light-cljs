@@ -1391,9 +1391,11 @@ top-level pass:
 - *What changes in meaning.* A Var or reservation a namespace's bodies
   add is visible to later namespaces from its drain point on: one of the
   next L namespaces resolves `app.a/answer` as a name no definition
-  declared yet (it still runs, since the bodies define it before the
-  namespace that names it runs), and a `:refer` of it is an error, at
-  every `--jobs` value
+  declared yet (with `--warnings` it is reported as an undeclared Var and
+  still runs, since the bodies define it before the namespace that names
+  it runs; without, it is an error as any undeclared Var is), and a
+  `:refer` of it is an error, at every `--jobs` value and, since
+  light-cljs-393, in warning mode too
   (`macro_free_units::body_discovered_vars_resolve_past_the_drain_lag`,
   which also checks a namespace past the lag). On Penpot main, counted
   with a temporary probe in `publish_globals`, four globals that bodies
@@ -1439,10 +1441,32 @@ top-level pass:
   In a plain build the expansion and node limits count in drain-point
   order (a namespace's units after the next L top-level passes), and in
   a settling build in source order; each is the same at every N. Making
-  the two orders one is light-cljs-394. In warning mode, units drained
-  form by form during the top-level pass publish their globals there, so
-  later namespaces see them before the lag; light-cljs-393 is to withhold
-  them too.
+  the two orders one is light-cljs-394.
+- *Warning mode (light-cljs-393).* With `--warnings`, `Analyzer::body`
+  drains a namespace's units after each top-level form until the namespace
+  defines a macro, so that its later forms see what earlier units define
+  (a record's fields for constructor arity warnings), and those drains
+  publish the units' globals at once. They stay the namespace's own: each
+  publication records the flags a global had before (a new one's are a
+  reservation's, all false), a definition, `declare` or type factory of
+  the global by the rest of the top-level pass takes it off that list, and
+  at the end of the pass the rest get those flags back
+  (`Analyzer::withhold_published`). A new global so keeps its ID, as an
+  undeclared reservation, which a later namespace resolves as it would
+  have reserved it. The drain point then publishes the globals of every
+  unit of the namespace in unit order, those drained form by form first,
+  as without warnings, so a body's flags win over a top-level definition's
+  there in both modes. So a later namespace within the lag reports
+  `app.a/answer` as an undeclared Var and fails a `:refer` of it in
+  warning mode too, and one past the lag resolves it
+  (`body_discovered_vars_resolve_past_the_drain_lag` runs both modes at 1,
+  2, 4 and 8 slots, with a top-level redefinition and a type factory after
+  the body's that are visible at once, and compares cached builds in both
+  modes with mixes of installed namespaces). Output in warning mode
+  keeps its global IDs. On Penpot main with `--warnings` the parent and
+  the candidate emit the same JavaScript and the same 18 warnings, byte
+  for byte, and without warnings the same JavaScript; the serial build is
+  unchanged in time and memory (benchmarks/compiler-concurrency.md).
 - *Artifacts.* The first part is captured when the namespace's analysis
   returns. Its units are recorded at the drain point, when they are
   prepared, from the first part's marks (`captured_units` and

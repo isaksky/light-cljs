@@ -496,11 +496,15 @@ fn a_namespaces_bodies_follow_the_next_namespaces_top_level_pass() {
 
 /// A Var a deferred initializer defines is published at its namespace's
 /// drain point, after the top-level passes of the `DRAIN_LAG` namespaces
-/// after it (light-cljs-391): a namespace within the lag resolves it as an
-/// undeclared name, identically at every slot count, so that a qualified or
-/// aliased reference still runs and a `:refer` of it is an error; a
-/// namespace past the lag resolves it, qualified, through an alias and
-/// referred. Cached builds, installing any of the namespaces, match.
+/// after it (light-cljs-391), with or without warning mode, whose drains
+/// after each form publish it for the namespace's own later forms only
+/// (light-cljs-393): a namespace within the lag resolves it as an
+/// undeclared name, identically at every slot count, so that with warnings
+/// a qualified or aliased reference still runs, reported as undeclared, and
+/// a `:refer` of it is an error; a namespace past the lag resolves it,
+/// qualified, through an alias and referred. A top-level definition, or a
+/// type's factory, after the body's is visible at once. Cached builds in
+/// either mode, installing any of the namespaces, match.
 #[test]
 fn body_discovered_vars_resolve_past_the_drain_lag() {
     let within = Sources::new();
@@ -515,17 +519,60 @@ fn body_discovered_vars_resolve_past_the_drain_lag() {
         );
     let serial = same_at_every_slot_count(&within, "app.main", true);
     assert_eq!(execute(serial.output.as_ref().unwrap()), "42 42\n");
-    crate::cache_contract::check_mixed(within.0.path(), "app.main");
+    let undeclared = serial
+        .warnings
+        .iter()
+        .filter(|(_, message, _, _)| message == "Use of undeclared Var app.a/answer")
+        .count();
+    assert_eq!(undeclared, 2, "{:?}", serial.warnings);
+    // Without warnings the qualified references fail, so only warning
+    // mode's artifacts are compared.
+    assert!(crate::cache_contract::check_mixed_in_mode(within.0.path(), "app.main", true) > 0);
     within.write(
         "app/main.cljs",
         "(ns app.main (:require [app.a :as a :refer [answer]])) (js/console.log answer)",
     );
-    let referred = same_at_every_slot_count(&within, "app.main", false);
-    let error = referred.output.unwrap_err();
-    assert!(
-        error.contains("app.a/answer (:refer does not name a public Var or macro)"),
-        "{error}"
+    for warning_mode in [false, true] {
+        let referred = same_at_every_slot_count(&within, "app.main", warning_mode);
+        let error = referred.output.unwrap_err();
+        assert!(
+            error.contains("app.a/answer (:refer does not name a public Var or macro)"),
+            "warning mode {warning_mode}: {error}"
+        );
+    }
+    // A top-level definition of it after the body's is the top-level
+    // pass's own, visible at once.
+    within.write(
+        "app/a.cljs",
+        "(ns app.a) (def init (do (def answer 42) nil)) (def answer 43)",
     );
+    for warning_mode in [false, true] {
+        let redefined = same_at_every_slot_count(&within, "app.main", warning_mode);
+        assert_eq!(
+            execute(redefined.output.as_ref().unwrap()),
+            "43\n",
+            "warning mode {warning_mode}"
+        );
+    }
+    // So is a type's factory the top-level pass declares after a body
+    // defined the name.
+    within
+        .write(
+            "app/a.cljs",
+            "(ns app.a) (def init (do (def ->T nil) nil)) (deftype T [x])",
+        )
+        .write(
+            "app/main.cljs",
+            "(ns app.main (:require [app.a :refer [->T]])) (js/console.log (.-x (->T 7)))",
+        );
+    for warning_mode in [false, true] {
+        let factory = same_at_every_slot_count(&within, "app.main", warning_mode);
+        assert_eq!(
+            execute(factory.output.as_ref().unwrap()),
+            "7\n",
+            "warning mode {warning_mode}"
+        );
+    }
     // `DRAIN_LAG` namespaces between them put `app.main`'s top-level pass
     // after `app.a`'s drain point.
     let past = Sources::new();
@@ -547,15 +594,23 @@ fn body_discovered_vars_resolve_past_the_drain_lag() {
             "(ns app.main (:require {requires})) (js/console.log app.a/answer a/answer answer)"
         ),
     );
-    let serial = same_at_every_slot_count(&past, "app.main", true);
-    assert_eq!(execute(serial.output.as_ref().unwrap()), "42 42 42\n");
-    assert!(
-        serial
-            .warnings
-            .iter()
-            .all(|(_, message, _, _)| !message.contains("answer")),
-        "{:?}",
-        serial.warnings
-    );
-    crate::cache_contract::check_mixed(past.0.path(), "app.main");
+    for warning_mode in [false, true] {
+        let serial = same_at_every_slot_count(&past, "app.main", warning_mode);
+        assert_eq!(
+            execute(serial.output.as_ref().unwrap()),
+            "42 42 42\n",
+            "warning mode {warning_mode}"
+        );
+        assert!(
+            serial
+                .warnings
+                .iter()
+                .all(|(_, message, _, _)| !message.contains("answer")),
+            "{:?}",
+            serial.warnings
+        );
+        assert!(
+            crate::cache_contract::check_mixed_in_mode(past.0.path(), "app.main", warning_mode) > 0
+        );
+    }
 }

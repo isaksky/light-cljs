@@ -11,6 +11,25 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Warning-mode globals withheld (light-cljs-393, October 19, 2026)
+
+In warning mode the globals that drains after each form publish stay the
+namespace's own until its drain point (docs/compiler-concurrency.md, "As
+built (light-cljs-391)", "Warning mode"). Parent `49f8a9d` against the
+candidate, three alternating rounds of `main-none` (no `--jobs`), 1-minute
+load 2.6-3.0:
+
+| `main-none` | Wall median | Range | Peak RSS median | Range |
+| --- | ---: | --- | ---: | --- |
+| parent | 23.44 s | 22.81-23.62 | 0.926 GB | 0.896-0.947 |
+| candidate | 22.41 s | 22.27-22.84 | 0.899 GB | 0.882-0.913 |
+
+The candidate is within the serial gate (-4.4% wall, -2.9% RSS, noise:
+the non-warning path gains only an empty-map check per definition). One
+`--warnings` build each (the same command line with `--warnings` first):
+23.12 s and 22.23 s, the same JavaScript and the same 18 warnings, byte
+for byte; the plain builds' JavaScript is identical too.
+
 ## The coordinator past a drain (light-cljs-391, October 19, 2026)
 
 A namespace's units are taken, charged, published and merged at its drain

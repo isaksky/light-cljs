@@ -3188,11 +3188,14 @@ struct DrainedUnit {
 /// namespace resolves them: a new one as the unit has it but without its
 /// metadata, which the merge adds, and to an existing one of the same name
 /// the flags the unit declared it with. The merge then finds them by name.
+/// `withheld` keeps the flags each global it changes had before, the first
+/// time it changes it, and a reservation's for a new one.
 fn publish_globals(
     program: &mut Program,
     globals: &mut crate::name_index::NameIndex,
     fragment: &Program,
     shared: &crate::program_fragment::SharedPrefix,
+    mut withheld: Option<&mut HashMap<GlobalId, GlobalFlags>>,
 ) {
     for global in fragment
         .globals
@@ -3203,6 +3206,11 @@ fn publish_globals(
             Some(&id) => {
                 if global.declared {
                     let existing = &mut program.globals[id.0];
+                    if let Some(withheld) = withheld.as_deref_mut() {
+                        withheld
+                            .entry(id)
+                            .or_insert_with(|| GlobalFlags::of(existing));
+                    }
                     existing.declared = true;
                     existing.type_descriptor = global.type_descriptor;
                     existing.constant = global.constant;
@@ -3216,8 +3224,42 @@ fn publish_globals(
                 binding.metadata = None;
                 program.globals.push(binding);
                 globals.insert(key, id);
+                if let Some(withheld) = withheld.as_deref_mut() {
+                    withheld.insert(id, GlobalFlags::default());
+                }
             }
         }
+    }
+}
+
+/// The flags of a global that publishing a unit's globals sets
+/// ([`publish_globals`]); a reservation's are all false.
+#[derive(Clone, Copy, Debug, Default)]
+struct GlobalFlags {
+    declared: bool,
+    type_descriptor: bool,
+    constant: bool,
+    define: bool,
+    boolean_tag: bool,
+}
+
+impl GlobalFlags {
+    fn of(binding: &GlobalBinding) -> Self {
+        Self {
+            declared: binding.declared,
+            type_descriptor: binding.type_descriptor,
+            constant: binding.constant,
+            define: binding.define,
+            boolean_tag: binding.boolean_tag,
+        }
+    }
+
+    fn restore(self, binding: &mut GlobalBinding) {
+        binding.declared = self.declared;
+        binding.type_descriptor = self.type_descriptor;
+        binding.constant = self.constant;
+        binding.define = self.define;
+        binding.boolean_tag = self.boolean_tag;
     }
 }
 
@@ -3297,6 +3339,14 @@ struct Analyzer<'a> {
     /// analyzed, which merge into the program after the next namespace's
     /// top-level pass; `None` appends each where it drains.
     drained: Option<Vec<DrainedUnit>>,
+    /// In warning mode, the globals that drains after a form published for
+    /// the namespace's own later forms ([`Analyzer::body`]), with the flags
+    /// each had before, a new one's a reservation's; the top-level pass
+    /// declaring one again (a definition, `declare` or a type's factory)
+    /// takes it out. At the end of the pass the rest get those flags back,
+    /// so that later namespaces see them from the namespace's drain point
+    /// on ([`Analyzer::withhold_published`]).
+    withheld: HashMap<GlobalId, GlobalFlags>,
     /// The units the namespace's dispatch kept for its drain point, in unit
     /// order, and those of them it gave the pool
     /// ([`Analyzer::dispatch_deferred`]).
@@ -3713,6 +3763,7 @@ fn analyze_input(
         engine,
         deferred: Vec::new(),
         drained: None,
+        withheld: HashMap::new(),
         dispatched: None,
         macro_depth: 0,
         analysis_depth: 0,
@@ -4310,6 +4361,18 @@ impl NamespaceAnalysis {
             HeldWarnings::Restored(base) => base,
             _ => 0,
         };
+        // The globals of the units drained after its forms in warning mode,
+        // withheld from later namespaces since its top-level pass
+        // ([`Analyzer::withhold_published`]), come first in unit order.
+        for unit in &drained.units {
+            publish_globals(
+                &mut self.program,
+                &mut self.globals,
+                &unit.program,
+                &unit.shared,
+                None,
+            );
+        }
         let session = macro_host.session_handle();
         if let Some(session) = &session {
             let timed = crate::compile_stats::start(self.deferred_time.is_some());
@@ -4441,7 +4504,13 @@ impl NamespaceAnalysis {
                 }
             };
             // Its globals first, then, once every unit's are, the bodies.
-            publish_globals(&mut self.program, &mut self.globals, &program, &shared);
+            publish_globals(
+                &mut self.program,
+                &mut self.globals,
+                &program,
+                &shared,
+                None,
+            );
             drained.units.push(DrainedUnit {
                 placeholder,
                 unit,
@@ -4519,6 +4588,7 @@ impl NamespaceAnalysis {
             engine: None,
             deferred: Vec::new(),
             drained: Some(Vec::new()),
+            withheld: HashMap::new(),
             dispatched: None,
             macro_depth: 0,
             analysis_depth: 0,
@@ -4566,6 +4636,7 @@ impl NamespaceAnalysis {
             &mut self.deferred_time,
             top_level,
         );
+        analyzer.withhold_published();
         let top = analyzer.first_expr..analyzer.program.exprs.len();
         let units = analyzer.drained.take().unwrap_or_default();
         let checked_array_exprs = std::mem::take(&mut analyzer.checked_array_exprs);
@@ -7461,6 +7532,19 @@ impl Analyzer<'_> {
         self.drain_deferred_keeping(false)
     }
 
+    /// At the end of a namespace's top-level pass, in warning mode, give the
+    /// globals its drains after a form published, and the pass did not
+    /// declare again, the flags they had before: a new one stays as a
+    /// reservation. Later namespaces then resolve them as they do without
+    /// warnings, from the namespace's drain point on, which publishes every
+    /// unit's globals ([`NamespaceAnalysis::merge_front`]); they keep their
+    /// IDs (docs/compiler-concurrency.md, "As built (light-cljs-391)").
+    fn withhold_published(&mut self) {
+        for (global, flags) in std::mem::take(&mut self.withheld) {
+            flags.restore(&mut self.program.globals[global.0]);
+        }
+    }
+
     /// Record the namespace's macros in its reader context.
     fn refresh_reader_macros(&mut self) {
         let macros = self.macro_host.source_macro_names(self.namespace);
@@ -7649,6 +7733,7 @@ impl Analyzer<'_> {
                         &mut self.globals,
                         &drained.program,
                         &drained.shared,
+                        Some(&mut self.withheld),
                     );
                     drained_units.push(drained);
                     let _traced = crate::compile_trace::enter(
@@ -7793,6 +7878,9 @@ impl Analyzer<'_> {
             self.globals.insert(key, global);
             global
         };
+        if !self.withheld.is_empty() {
+            self.withheld.remove(&global);
+        }
         self.program.globals[global.0].declared = true;
         self.program.globals[global.0].constant = self.metadata_is(args[0], "const", "true");
         self.program.globals[global.0].boolean_tag = self.metadata_is(args[0], "tag", "boolean");
@@ -8757,6 +8845,9 @@ impl Analyzer<'_> {
             .map_err(|e| self.error(node, AnalysisErrorKind::MacroExpansion(e)))?;
         let key = (self.namespace.to_owned(), name.clone());
         if let Some(&global) = self.globals.get(&key) {
+            if !self.withheld.is_empty() {
+                self.withheld.remove(&global);
+            }
             self.program.globals[global.0].declared = true;
             return Ok(global);
         }
@@ -9979,6 +10070,10 @@ impl Analyzer<'_> {
             let name = format!("{prefix}{name}");
             let key = (self.namespace.to_owned(), name.clone());
             if let Some(&global) = self.globals.get(&key) {
+                // The type's factory is the top-level pass's own.
+                if !self.withheld.is_empty() {
+                    self.withheld.remove(&global);
+                }
                 return global;
             }
             let global = GlobalId(self.program.globals.len());
@@ -11484,7 +11579,10 @@ impl Analyzer<'_> {
             // defines a macro of its own: its macros may call any definition
             // of the namespace, which upstream loads as Clojure before they
             // expand. Its units then drain at the end, as without warnings,
-            // and their warnings keep the order a drain here gives.
+            // and their warnings keep the order a drain here gives. What a
+            // drain here publishes is the namespace's own: later namespaces
+            // see it from its drain point on, as without warnings
+            // ([`Self::withhold_published`]).
             if self.options.warning_mode {
                 if self.defines_macros {
                     let at = self.warnings.len();

@@ -405,18 +405,29 @@ fn mixes(captured: &Captured) -> Vec<Vec<&str>> {
 /// eligible namespace a hit, the in-memory artifacts are installed as well,
 /// and both emit the same.
 pub(crate) fn check_mixed_input(input: Input<'_>, entry: &str) {
-    let options = AnalysisOptions::default();
+    check_mixed_input_with(input, entry, AnalysisOptions::default());
+}
+
+/// [`check_mixed_input`] under `options`: how many mixes it checked.
+pub(crate) fn check_mixed_input_with(
+    input: Input<'_>,
+    entry: &str,
+    options: AnalysisOptions,
+) -> usize {
     let Ok((program, uncached_warnings)) = input.analyze_with(
         entry,
         &mut MacroHost::new(),
         options,
         EntryRecorders::default(),
     ) else {
-        return;
+        return 0;
     };
     let expected = outputs(&program);
-    let captured = capture(input, entry, &[]).expect("the capturing compilation fails");
-    for (index, hits) in mixes(&captured).into_iter().enumerate() {
+    let captured =
+        capture_with(input, entry, &[], options).expect("the capturing compilation fails");
+    let mixes = mixes(&captured);
+    let checked = mixes.len();
+    for (index, hits) in mixes.into_iter().enumerate() {
         let (program, _, warnings) = compile_mixed_with(input, entry, &captured, &hits, options);
         assert_eq!(warnings, uncached_warnings, "{entry} with hits {hits:?}");
         let actual = outputs(&program);
@@ -446,11 +457,25 @@ pub(crate) fn check_mixed_input(input: Input<'_>, entry: &str) {
             }
         }
     }
+    checked
 }
 
 /// [`check_mixed_input`] for sources under `root`.
 pub(crate) fn check_mixed(root: &Path, entry: &str) {
     check_mixed_input(Input::Roots(&[root.to_path_buf()]), entry);
+}
+
+/// [`check_mixed_input_with`] for sources under `root`, with or without
+/// `warning_mode`: how many mixes it checked.
+pub(crate) fn check_mixed_in_mode(root: &Path, entry: &str, warning_mode: bool) -> usize {
+    check_mixed_input_with(
+        Input::Roots(&[root.to_path_buf()]),
+        entry,
+        AnalysisOptions {
+            warning_mode,
+            ..AnalysisOptions::default()
+        },
+    )
 }
 
 struct Sources(TempDir);
