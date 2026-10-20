@@ -1,8 +1,9 @@
 name: Conformance
 
+# Manual only: the full run builds V8 from source and takes hours on a
+# GitHub runner. Verify locally; start this by hand only when the owner asks.
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
