@@ -785,3 +785,54 @@ fn a_signal_leaves_another_servers_port_file() {
     assert_eq!(interrupt_watch(&mut watch).code(), Some(130));
     assert_eq!(fs::read_to_string(&port_file).unwrap(), "1");
 }
+
+/// A shared session runs evaluations in the order the server received them,
+/// whichever connection sent them: an update queued on one connection
+/// behind a blocked evaluation runs before one another connection sends
+/// after it.
+#[test]
+fn shared_session_requests_preserve_cross_connection_arrival_order() {
+    let watch = Watch::start("dev-nrepl-order");
+    let (_runtime, runtime_lines) = watch.runtime();
+    let mut first = watch.client(&watch.nrepl);
+    let mut second = watch.client(&watch.nrepl);
+    let session = first.clone_session();
+    assert_eq!(
+        first.value(&session, "(do (def order (atom [])) nil)"),
+        "nil"
+    );
+    // The first evaluation blocks the runtime until the test releases it.
+    let release = watch.dir.join("release");
+    let blocked = first.send(&format!(
+        "\"op\":\"eval\",\"session\":\"{session}\",\"code\":{}",
+        json(&format!(
+            "(let [fs (.getBuiltinModule js/process \"fs\")]
+               (.writeSync fs 2 \"blocked\\n\")
+               (loop [] (when-not (.existsSync fs {}) (recur)))
+               :released)",
+            json(release.to_str().unwrap())
+        ))
+    ));
+    until(&runtime_lines, "blocked", "the runtime");
+    // A connection answers its messages in order, so the answer to a
+    // `describe` shows that the server has read the `eval` sent before it.
+    let swap = |client: &mut Client, key: &str| {
+        let id = client.send(&format!(
+            "\"op\":\"eval\",\"session\":\"{session}\",\"code\":\"(swap! order conj {key})\""
+        ));
+        client.one("\"op\":\"describe\"");
+        id
+    };
+    let a = swap(&mut first, ":a");
+    let b = swap(&mut second, ":b");
+    fs::write(&release, "").unwrap();
+    let answers = collect(&mut first, &[&blocked, &a]);
+    assert_eq!(
+        summary(&answers[0]),
+        [":released @ app.main", "status: done"]
+    );
+    assert_eq!(summary(&answers[1]), ["[:a] @ app.main", "status: done"]);
+    let answer = collect(&mut second, &[&b]).pop().unwrap();
+    assert_eq!(summary(&answer), ["[:a :b] @ app.main", "status: done"]);
+    assert_eq!(first.value(&session, "@order"), "[:a :b]");
+}

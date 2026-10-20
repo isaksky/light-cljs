@@ -19,11 +19,11 @@ use crate::dev_session::DevSession;
 use crate::eval_session::PrintOptions;
 use crate::source_provider::SourceInput;
 use crate::{CollectionKind, ExprKind, Program};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -865,8 +865,10 @@ mod signals {
     }
 }
 
-/// An `eval` or `load-file` queued for a session's worker.
+/// An `eval` or `load-file` queued for a session's worker, with the
+/// connection it answers on.
 struct Job {
+    writer: Arc<Mutex<TcpStream>>,
     message: Bencode,
     session: u64,
     session_id: String,
@@ -884,8 +886,6 @@ struct Job {
 struct Connection {
     shared: Arc<Shared>,
     writer: Arc<Mutex<TcpStream>>,
-    /// The eval queue of each session this connection evaluated in.
-    workers: HashMap<u64, Sender<Job>>,
     /// The sessions this connection opened, which it closes when it ends.
     opened: Vec<u64>,
     /// The session a message without one uses, opened on first use: its
@@ -926,7 +926,6 @@ pub(crate) fn connection(stream: TcpStream, shared: &Arc<Shared>) -> io::Result<
     let mut connection = Connection {
         shared: shared.clone(),
         writer: Arc::new(Mutex::new(stream)),
-        workers: HashMap::new(),
         opened: Vec::new(),
         own: None,
     };
@@ -939,7 +938,6 @@ pub(crate) fn connection(stream: TcpStream, shared: &Arc<Shared>) -> io::Result<
         }
     };
     // The client's sessions end with it: their evaluations stop waiting.
-    connection.workers.clear();
     for session in connection.opened {
         shared.interrupt(session, None);
         shared.close_session(session);
@@ -1070,7 +1068,6 @@ impl Connection {
                 let Some((number, id)) = self.session(&message) else {
                     return;
                 };
-                self.workers.remove(&number);
                 self.shared.interrupt(number, None);
                 self.shared.close_session(number);
                 self.opened.retain(|opened| *opened != number);
@@ -1116,7 +1113,9 @@ impl Connection {
         }
     }
 
-    /// Queue an `eval` or a `load-file` on its session's worker.
+    /// Queue an `eval` or a `load-file` on its session's queue, which runs
+    /// the session's evaluations in the order they arrive from any
+    /// connection.
     fn evaluate(&mut self, message: Bencode) {
         let load = message.get("op").and_then(Bencode::as_str) == Some("load-file");
         let Some((session, session_id)) = self.session(&message) else {
@@ -1151,7 +1150,11 @@ impl Connection {
             text("file")
         }
         .unwrap_or_else(|| "<nrepl>".to_owned());
+        // The session may close before its queue takes the job, which then
+        // answers as for a session that is not open.
+        let closed = (message.get("id").cloned(), session_id.clone());
         let job = Job {
+            writer: self.writer.clone(),
             session,
             session_id,
             code,
@@ -1162,19 +1165,16 @@ impl Connection {
             last_only: load,
             message,
         };
-        let worker = self.workers.entry(session).or_insert_with(|| {
-            let (sender, jobs) = channel::<Job>();
-            let (shared, writer) = (self.shared.clone(), self.writer.clone());
-            let _ = std::thread::Builder::new()
-                .name("light-cljs nREPL eval".into())
-                .spawn(move || {
-                    for job in jobs {
-                        run(&shared, &writer, job);
-                    }
-                });
-            sender
-        });
-        let _ = worker.send(job);
+        let shared = self.shared.clone();
+        if !self
+            .shared
+            .queue(session, Box::new(move || run(&shared, job)))
+        {
+            let (id, session_id) = closed;
+            let message = Bencode::Dict(id.map(|id| (b"id".to_vec(), id)).into_iter().collect());
+            let unknown = status(&["error", "unknown-session", "done"]);
+            self.reply(&message, Some(&session_id), unknown);
+        }
     }
 
     /// Answer `completions` or `lookup` with the compiler's help.
@@ -1297,7 +1297,8 @@ impl Connection {
 /// `value` with the `ns` after it per form (the last alone for
 /// `load-file`), an `err` and an `ex` for a form that failed and `err` for
 /// warnings, then `done`, after `interrupted` when an interrupt ended it.
-fn run(shared: &Shared, writer: &Mutex<TcpStream>, job: Job) {
+fn run(shared: &Shared, job: Job) {
+    let writer = &*job.writer;
     let session = Some(job.session_id.as_str());
     let message = &job.message;
     let text = placed(&job.code, job.line, job.column);

@@ -495,8 +495,9 @@ a connected REPL session of the server, so `eval` and `load-file` take the
 terminal client's path: the form goes to the watch's thread as a
 `ReplRequest`, its unit to the session's runtime, and the value or the error
 the runtime gives back becomes `value` and `ns`, or `err` and `ex`, per
-form. A session's evaluations run one at a time, from any connection, on
-threads of the connections.
+form. A session's evaluations run one at a time, in the order they arrive
+from any connection, on one queue per session that a worker thread runs
+(light-cljs-389); each job carries the connection it answers on.
 `completions` and `lookup` are `ReplRequest`s too, answered on the watch's
 thread from the retained program: its definitions by namespace, their
 metadata (`:arglists`, `:doc`, `:file`, `:line`, `:column`, `:private`), each

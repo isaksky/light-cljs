@@ -205,7 +205,14 @@ struct ReplSession {
     /// Held by an evaluation from start to end, so that a session's
     /// evaluations run one at a time whichever connection sends them.
     lock: Arc<Mutex<()>>,
+    /// The session's queue of nREPL evaluations, which one worker thread,
+    /// started on its first use, runs in the order they arrived from any
+    /// connection. It ends when the session closes.
+    queue: Option<Sender<QueuedJob>>,
 }
+
+/// A job of a session's queue: an evaluation that sends its own responses.
+pub(crate) type QueuedJob = Box<dyn FnOnce() + Send>;
 
 /// How many REPL units the server keeps for mapping error stacks.
 const SENT_UNITS: usize = 256;
@@ -568,6 +575,35 @@ impl Shared {
             let _ = sender.send(Json::Object(vec![("interrupted".into(), Json::Bool(true))]));
         }
         Interrupt::Interrupted
+    }
+
+    /// Queue `job` on session `session`, to run on the session's worker
+    /// thread after every job queued there before it, from any connection:
+    /// whether the session was open to take it.
+    pub(crate) fn queue(&self, session: u64, job: QueuedJob) -> bool {
+        let mut state = self.state();
+        let Some(entry) = state.sessions.get_mut(&session) else {
+            return false;
+        };
+        let queue = match &mut entry.queue {
+            Some(queue) => queue,
+            empty => {
+                let (sender, jobs) = channel::<QueuedJob>();
+                let worker = std::thread::Builder::new()
+                    .name("light-cljs REPL session".into())
+                    .spawn(move || {
+                        // A job that panics leaves the queue to the next.
+                        for job in jobs {
+                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                        }
+                    });
+                if worker.is_err() {
+                    return false;
+                }
+                empty.insert(sender)
+            }
+        };
+        queue.send(job).is_ok()
     }
 }
 
