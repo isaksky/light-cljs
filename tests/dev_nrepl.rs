@@ -836,3 +836,59 @@ fn shared_session_requests_preserve_cross_connection_arrival_order() {
     assert_eq!(summary(&answer), ["[:a :b] @ app.main", "status: done"]);
     assert_eq!(first.value(&session, "@order"), "[:a :b]");
 }
+
+/// Closing a shared session ends its running evaluation as interrupted and
+/// answers each evaluation still queued on it, on the connection that sent
+/// it, with an error and `done`, without running it.
+#[test]
+fn closing_shared_session_finishes_queued_requests_without_running_them() {
+    let watch = Watch::start("dev-nrepl-close-queued");
+    let (_runtime, runtime_lines) = watch.runtime();
+    let mut first = watch.client(&watch.nrepl);
+    let mut second = watch.client(&watch.nrepl);
+    let session = first.clone_session();
+    assert_eq!(
+        first.value(&session, "(do (def order (atom [])) nil)"),
+        "nil"
+    );
+    let release = watch.dir.join("release");
+    let blocked = first.send(&format!(
+        "\"op\":\"eval\",\"session\":\"{session}\",\"code\":{}",
+        json(&format!(
+            "(let [fs (.getBuiltinModule js/process \"fs\")]
+               (.writeSync fs 2 \"blocked\\n\")
+               (loop [] (when-not (.existsSync fs {}) (recur)))
+               :released)",
+            json(release.to_str().unwrap())
+        ))
+    ));
+    until(&runtime_lines, "blocked", "the runtime");
+    let swap = |client: &mut Client, key: &str| {
+        let id = client.send(&format!(
+            "\"op\":\"eval\",\"session\":\"{session}\",\"code\":\"(swap! order conj {key})\""
+        ));
+        client.one("\"op\":\"describe\"");
+        id
+    };
+    let a = swap(&mut first, ":a");
+    let b = swap(&mut second, ":b");
+    let close = second.send(&format!("\"op\":\"close\",\"session\":\"{session}\""));
+    let answers = collect(&mut second, &[&b, &close]);
+    assert_eq!(summary(&answers[1]), ["status: session-closed done"]);
+    let closed = |answer: &[Json]| match &summary(answer)[..] {
+        [err, done] if err.starts_with("err: REPL session ") && err.ends_with(" was closed") => {
+            done.clone()
+        }
+        other => panic!("{other:#?}"),
+    };
+    assert_eq!(closed(&answers[0]), "status: error done");
+    let answers = collect(&mut first, &[&blocked, &a]);
+    assert_eq!(
+        summary(&answers[0]),
+        ["status: interrupted", "status: done"]
+    );
+    assert_eq!(closed(&answers[1]), "status: error done");
+    fs::write(&release, "").unwrap();
+    let other = first.clone_session();
+    assert_eq!(first.value(&other, "@order"), "[]");
+}
