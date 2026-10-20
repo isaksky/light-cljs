@@ -1416,8 +1416,8 @@ top-level pass:
   runs, since a control that a later failure invalidated would fail its
   replayed polls. A unit demanded while one is recorded is recorded with
   it, as on a worker, on cells of its own. A charge is taken at the drain
-  point or where the coordinator demands the unit first outside a
-  recording, whichever comes first, at every N.
+  point, at every N (since light-cljs-394; before, also where the
+  coordinator demanded the unit first outside a recording).
 - *The coordinator's engine.* A kept unit that expands a JavaScript macro
   would start the main isolate's engine inside its analysis, at the
   dispatch, and a worker's unit where it is charged, after later
@@ -1428,20 +1428,51 @@ top-level pass:
   those found macro-free, which is now judged at every slot count); a
   start that fails leaves no engine, and the expansion that needs one
   starts it again and fails as before (light-cljs-386).
-- *Observing and installing builds settle first.* A build that records
-  what analysis observes (`--cache-dir`, a manifest) or installs
-  artifacts takes a namespace's unit outcomes, and charges them, right
-  after its dispatch (`NamespaceAnalysis::settle_last`), since the
-  namespace is keyed with what its units observed before the next
-  namespace is looked up, and the next artifact is admitted by what came
-  before it; only publishing and merging wait for the drain point. Such a
-  build overlaps only one namespace's units, as before; plain builds
-  overlap L namespaces. The ID order is the same in both, so cached and
-  uncached builds keep matching (`cache_modes.rs`, `cache_contract.rs`).
-  In a plain build the expansion and node limits count in drain-point
-  order (a namespace's units after the next L top-level passes), and in
-  a settling build in source order; each is the same at every N. Making
-  the two orders one is light-cljs-394.
+- *Observing builds settle first; every build charges at the drain point
+  (light-cljs-394).* A build that records what analysis observes
+  (`--cache-dir`, a manifest) takes a namespace's unit outcomes right after
+  its dispatch (`NamespaceAnalysis::settle_last`), waiting for the pool's,
+  and logs what they observed (`CompilationSession::observe_pooled`),
+  since the namespace is keyed with it before the next namespace is looked
+  up. Such a build overlaps only one namespace's units, as before; plain
+  builds, and since light-cljs-394 builds that only install artifacts,
+  overlap L namespaces. Light-cljs-391 also charged the units there, so
+  limits counted in source order in a settling build and in drain-point
+  order in a plain one, and a limit crossed in the overlap failed at
+  different units with and without the cache. Now every build charges a
+  namespace's units at its drain point and only there:
+  - The dispatch marks its units held (`CompilationSession::hold_units`).
+    A later top-level pass that demands one before its drain point takes
+    its analysis and leaves its charges (`Take::Defer`); one that no thread
+    has started is recorded for the drain point, as the dispatch records a
+    kept unit, but for its `gensym` names, which the running macro's engine
+    cannot be asked for. The demand used to charge it, which put an earlier
+    namespace's charges in a later namespace's top-level count, which no
+    artifact of either could reproduce when only one of them is installed.
+  - Artifacts split their accounting. `Accounting` is still the whole
+    namespace's, which admission checks; `Bodies::charges` lists, unit by
+    unit in the order the drain point charged them, each expansion's nodes,
+    the operator its limit error names and its call. Installing the first
+    part charges the rest (`NamespaceArtifact::top_charges`), and the
+    installed namespace's drain point charges the bodies' list
+    (`artifact_install::charge_bodies`) before it installs them, failing at
+    the expansion and with the diagnostic the analyzed namespace's drain
+    point reports. `SCHEMA_VERSION` is 8. Its warnings are all reported then, as
+    installed at the first part; stopping them at the failing unit, as an
+    analyzed drain point does, is light-cljs-395.
+  - A unit that failed at a settle point no longer stops the build there:
+    no later namespace settles, since the pool starts none of their units,
+    and the build goes on to the failed namespace's drain point as a plain
+    one does, so the error is the plain build's at every N.
+  So `--no-cache`, cold, warm and manifest-recording builds, and every mix
+  of installed and analyzed namespaces, report the same limit error, at one
+  slot and at four
+  (`cache_contract::limits_crossed_between_bodies_and_a_later_top_level_pass_fail_alike_in_every_cache_mode`,
+  which sweeps every expansion and node limit of a fixture whose later
+  namespace's top-level macro demands an earlier namespace's helper). What
+  still differs between N is the documented case below: where a unit's own
+  analysis crosses a limit, one slot stops at its dispatch and several
+  reach its drain point after later top-level passes, which charge first.
 - *Warning mode (light-cljs-393).* With `--warnings`, `Analyzer::body`
   drains a namespace's units after each top-level form until the namespace
   defines a macro, so that its later forms see what earlier units define
@@ -1470,9 +1501,10 @@ top-level pass:
 - *Artifacts.* The first part is captured when the namespace's analysis
   returns. Its units are recorded at the drain point, when they are
   prepared, from the first part's marks (`captured_units` and
-  `captured_registrations` take ranges); in a plain build the drain
-  point's accounting, `gensym` names and captured expansions join the
-  artifact there too.
+  `captured_registrations` take ranges); the drain point's accounting,
+  its units' charges, `gensym` names and captured expansions join the
+  artifact there too, in every build since light-cljs-394 (in a plain
+  build only before).
 - *Warnings and errors.* A namespace's warnings are taken out of the
   compilation's list once its first part is captured and put back at its
   drain point (`HeldWarnings`), so later namespaces and earlier merges do

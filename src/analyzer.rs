@@ -4260,13 +4260,14 @@ impl NamespaceAnalysis {
     }
 
     /// Take the outcomes of the units of the namespace just analyzed, in
-    /// unit order, waiting for the pool's, and charge them now, before the
-    /// next namespace's top-level pass, as a drain did before light-cljs-391:
-    /// in a build that records what analysis observes or installs
-    /// artifacts, whose namespace is keyed, and whose next artifact is
-    /// admitted, by everything before it. Its drain point still publishes
-    /// and merges them after the lag. `Err` if one failed, which its drain
-    /// point reports.
+    /// unit order, waiting for the pool's, and add what they observed to
+    /// the dependency log now, before the next namespace's top-level pass:
+    /// in a build that records what analysis observes, whose namespace is
+    /// keyed by it before the next one is looked up. Their drain point
+    /// still charges, publishes and merges them after the lag, as in a
+    /// build that records nothing (light-cljs-394). `Err` at the first
+    /// that failed, which its drain point reports; the pool starts no later
+    /// unit, so no later namespace settles.
     pub(crate) fn settle_last(&self, macro_host: &MacroHost) -> Result<(), ()> {
         let (Some(Pending::Analyzed(drained)), Some(session)) =
             (self.pending.back(), macro_host.session_handle())
@@ -4275,12 +4276,8 @@ impl NamespaceAnalysis {
         };
         let mut pooled = drained.pooled.iter().copied().peekable();
         for unit in &drained.dispatched {
-            let analysis = if pooled.next_if_eq(&unit.unit).is_some() {
-                session.analyze_pooled(unit.unit, None)
-            } else {
-                session.analyze(unit.unit, None)
-            };
-            analysis.map_err(drop)?;
+            let queued = pooled.next_if_eq(&unit.unit).is_some();
+            session.observe_pooled(unit.unit, queued).map_err(drop)?;
         }
         Ok(())
     }
@@ -4312,6 +4309,9 @@ impl NamespaceAnalysis {
                 source_index,
                 exprs,
             } => {
+                // Its units are charged first, as an analyzed namespace's.
+                crate::artifact_install::charge_bodies(&artifact, macro_host)
+                    .map_err(|error| DrainError::Unit(source_index, error))?;
                 let bodies = self.program.exprs.len();
                 crate::artifact_install::install_bodies(
                     crate::artifact_install::Target {
@@ -4488,12 +4488,8 @@ impl NamespaceAnalysis {
             let at = warnings_at.map_or(usize::MAX, |at| base + at);
             warnings.extend(later.by_ref().take(at.saturating_sub(position)));
             position = position.max(at);
-            let analysis = if pooled.next_if_eq(&unit).is_some() {
-                session.analyze_pooled(unit, None)
-            } else {
-                session.analyze(unit, None)
-            };
-            let (program, unit_warnings) = match analysis {
+            let queued = pooled.next_if_eq(&unit).is_some();
+            let (program, unit_warnings) = match session.analyze_drained(unit, queued) {
                 Ok(analyzed) => analyzed,
                 Err(message) => {
                     failure = Some(session.diagnostic(unit).unwrap_or_else(|| AnalysisError {
@@ -7602,6 +7598,7 @@ impl Analyzer<'_> {
             return;
         };
         let units = std::mem::take(&mut self.deferred);
+        session.hold_units(units.iter().map(|d| d.unit));
         let charged = (
             self.macro_host.engine.expansions.get(),
             self.macro_host.engine.generated_nodes.get(),

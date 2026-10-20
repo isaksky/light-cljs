@@ -592,10 +592,15 @@ fn admit(accounting: Option<&Accounting>, macro_host: &MacroHost) -> Result<(), 
     Ok(())
 }
 
-/// Charge the compilation's budgets with an admitted artifact's counts,
-/// once: the budgets only shrink, as its analysis would have shrunk them.
-fn charge(accounting: &Accounting, macro_host: &MacroHost) {
-    let expansions = accounting.expansions as usize;
+/// Charge the compilation's budgets with an admitted artifact's counts
+/// outside its bodies' charges, once, as its first part installs: the
+/// budgets only shrink, as its analysis would have shrunk them. Its drain
+/// point charges the rest ([`charge_bodies`]).
+fn charge(artifact: &NamespaceArtifact, macro_host: &MacroHost) {
+    let Some((expansions, nodes)) = artifact.top_charges() else {
+        return;
+    };
+    let expansions = expansions as usize;
     macro_host
         .engine
         .expansions
@@ -605,7 +610,51 @@ fn charge(accounting: &Accounting, macro_host: &MacroHost) {
     macro_host
         .engine
         .generated_nodes
-        .set(macro_host.engine.generated_nodes.get() + accounting.generated_nodes as usize);
+        .set(macro_host.engine.generated_nodes.get() + nodes as usize);
+}
+
+/// Charge, at an installed namespace's drain point, what its units charged
+/// at the captured build's (light-cljs-394, [`Bodies::charges`]), unit by
+/// unit, checking `--macro-expansions` and `--macro-nodes` as that drain
+/// point did: the first expansion that crosses one is the diagnostic its
+/// analysis would report there.
+pub(crate) fn charge_bodies(
+    artifact: &NamespaceArtifact,
+    macro_host: &MacroHost,
+) -> Result<(), ir::AnalysisError> {
+    let Some(bodies) = &artifact.bodies else {
+        return Ok(());
+    };
+    let (expansions, nodes) = (
+        &macro_host.engine.expansions,
+        &macro_host.engine.generated_nodes,
+    );
+    let limits = &macro_host.limits;
+    let charged = &macro_host.engine.work.charged_expansions;
+    for expansion in bodies.charges.iter().flat_map(|charge| &charge.expansions) {
+        let exceeded = if expansions.get() >= limits.expansions {
+            Some("compiler macro expansion limit exceeded")
+        } else {
+            expansions.set(expansions.get() + 1);
+            charged.set(charged.get() + 1);
+            nodes.set(nodes.get().saturating_add(expansion.nodes as usize));
+            (nodes.get() > limits.generated_nodes)
+                .then_some("compiler macro generated-node limit exceeded")
+        };
+        if let Some(message) = exceeded {
+            return Err(ir::AnalysisError {
+                span: span(expansion.call),
+                kind: ir::AnalysisErrorKind::MacroExpansion(match &expansion.operator {
+                    Some(operator) => format!("while expanding {operator}: {message}"),
+                    None => message.to_owned(),
+                }),
+            });
+        }
+    }
+    if let Some(session) = macro_host.session_handle() {
+        session.note_charged((expansions.get(), nodes.get()));
+    }
+    Ok(())
 }
 
 /// The compiler's spelling of a warning kind an artifact names by its text.
@@ -723,9 +772,7 @@ impl Installer<'_> {
     fn run(mut self, macro_host: &mut MacroHost) -> Result<ir::ExprId, String> {
         let artifact = self.artifact;
         let namespace = artifact.header.namespace.as_str();
-        if let Some(accounting) = &artifact.accounting {
-            charge(accounting, macro_host);
-        }
+        charge(artifact, macro_host);
         reserve_generated_names(&artifact.names, self.index, macro_host)?;
         if self.resolved.new_namespace {
             self.program.namespaces.push(namespace.to_owned());

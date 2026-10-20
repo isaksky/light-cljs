@@ -90,6 +90,10 @@ struct Unit {
     /// Whether the drain gives it to the build's unit pool
     /// ([`CompilationSession::set_pooled`]).
     pooled: bool,
+    /// Whether its namespace's dispatch keeps it for the drain point, which
+    /// charges it: until then a demand takes its analysis and leaves its
+    /// charges (light-cljs-394, [`CompilationSession::hold_units`]).
+    held: bool,
     /// What its macro-free analysis counted, until the coordinator
     /// charges it ([`UnitCharges`]), and how long the analysis took.
     charges: Option<Box<UnitCharges>>,
@@ -391,11 +395,23 @@ struct Demand<'a> {
 /// ([`CompilationSession::analyze_in`]).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Take {
-    /// Charge what it recorded now: at its drain point, or where the
-    /// coordinator demands it first.
+    /// Charge what it recorded now, where the coordinator demands it, unless
+    /// its namespace's dispatch holds it for the drain point
+    /// ([`Take::Defer`]).
     Charge,
     /// Keep what it recorded for its drain point (light-cljs-391).
     Hold,
+    /// A demand of a unit held for its drain point: keep what it recorded,
+    /// recording it if no thread has analyzed it, as [`Take::Hold`] does
+    /// but for its `gensym` names, which the running macro's engine cannot
+    /// be asked for (light-cljs-394).
+    Defer,
+    /// Charge what it recorded now, at its namespace's drain point.
+    Drain,
+    /// Take only what it observed now, at its namespace's settle point,
+    /// and keep its charges for its drain point (light-cljs-394,
+    /// [`CompilationSession::observe_pooled`]).
+    Observe,
 }
 /// How the coordinator answers a forwarded `light.build` request: its text
 /// and the sources the worker's analyses are of.
@@ -789,6 +805,29 @@ impl SharedCatalog {
     fn take_charges(&self, id: usize) -> Option<Box<UnitCharges>> {
         self.lock().units.get_mut(id)?.charges.take()
     }
+    /// What unit `id` observed, once, leaving its other charges.
+    fn take_observations(
+        &self,
+        id: usize,
+    ) -> Option<Box<crate::dependency_manifest::ObservationLog>> {
+        self.lock()
+            .units
+            .get_mut(id)?
+            .charges
+            .as_mut()?
+            .observations
+            .take()
+    }
+    /// Whether unit `id` waits for its namespace's drain point to be
+    /// charged ([`CompilationSession::hold_units`]).
+    fn held(&self, id: usize) -> bool {
+        self.lock().units.get(id).is_some_and(|unit| unit.held)
+    }
+    fn release_hold(&self, id: usize) {
+        if let Some(unit) = self.lock().units.get_mut(id) {
+            unit.held = false;
+        }
+    }
     /// Fail unit `id`, analyzed, as its charges did.
     fn fail(&self, id: usize, message: String, diagnostic: Option<crate::AnalysisError>) {
         let previous = std::mem::replace(
@@ -895,6 +934,9 @@ struct SessionCapture {
     first_unit: usize,
     macros: Vec<CapturedMacro>,
     expansions: Vec<CapturedExpansion>,
+    /// By unit ID, in the order drain points charged them, the expansions
+    /// each unit charged there ([`CompilationSession::take_unit_charges`]).
+    charges: Vec<(usize, Vec<crate::macro_host::UnitEvent>)>,
 }
 /// A source macro call analysis expanded, for an artifact's provenance.
 #[derive(Clone, Debug)]
@@ -1041,6 +1083,29 @@ impl CompilationSession {
                     std::mem::take(&mut capture.expansions),
                 )
             })
+            .unwrap_or_default()
+    }
+    /// Keep, while capturing, the expansions and scripts of `events` that
+    /// a drain point charged for unit `id`.
+    fn capture_charges(&self, id: usize, events: Vec<crate::macro_host::UnitEvent>) {
+        use crate::macro_host::UnitEvent;
+        if let Some(capture) = self.capture.borrow_mut().as_mut() {
+            let events = events
+                .into_iter()
+                .filter(|event| matches!(event, UnitEvent::Expansion(_) | UnitEvent::Script { .. }))
+                .collect::<Vec<_>>();
+            if !events.is_empty() {
+                capture.charges.push((id, events));
+            }
+        }
+    }
+    /// The expansions drain points charged for each unit since the last
+    /// call, by unit ID in charge order.
+    pub(crate) fn take_unit_charges(&self) -> Vec<(usize, Vec<crate::macro_host::UnitEvent>)> {
+        self.capture
+            .borrow_mut()
+            .as_mut()
+            .map(|capture| std::mem::take(&mut capture.charges))
             .unwrap_or_default()
     }
     /// Note the program globals the analysis of `unit` appended.
@@ -1200,6 +1265,7 @@ impl CompilationSession {
                                 retained: None,
                                 macro_free: false,
                                 pooled: false,
+                                held: false,
                                 charges: None,
                                 time: Default::default(),
                             });
@@ -1669,6 +1735,7 @@ impl CompilationSession {
                     retained: None,
                     macro_free: false,
                     pooled: false,
+                    held: false,
                     charges: None,
                     time: Default::default(),
                 });
@@ -1960,6 +2027,34 @@ impl CompilationSession {
     ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
         self.analyze_in(id, engine, true, Take::Charge)
     }
+    /// Unit `id`'s analysis at its namespace's drain point, which charges
+    /// what it recorded ([`UnitCharges`]): a worker's if the pool was given
+    /// it (`queued`), waiting for it, or this thread's.
+    pub(crate) fn analyze_drained(
+        &self,
+        id: usize,
+        queued: bool,
+    ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
+        self.analyze_in(id, None, queued, Take::Drain)
+    }
+    /// Wait for unit `id`'s analysis, a worker's if the pool was given it
+    /// (`queued`), and add what it observed to the dependency log now, at
+    /// its namespace's settle point; its drain point charges the rest
+    /// (light-cljs-394). An error is the unit's failure.
+    pub(crate) fn observe_pooled(&self, id: usize, queued: bool) -> Result<(), String> {
+        self.analyze_in(id, None, queued, Take::Observe).map(drop)
+    }
+    /// Note that the dispatch of their namespace keeps `units` for its
+    /// drain point, which charges them; until then a demand of one takes
+    /// its analysis and leaves its charges (light-cljs-394).
+    pub(crate) fn hold_units(&self, units: impl Iterator<Item = usize>) {
+        let mut c = self.shared.lock();
+        for id in units {
+            if let Some(unit) = c.units.get_mut(id) {
+                unit.held = true;
+            }
+        }
+    }
     fn analyze_in(
         &self,
         id: usize,
@@ -1967,6 +2062,23 @@ impl CompilationSession {
         queued: bool,
         take: Take,
     ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
+        // A unit held for its drain point is charged there, not where a
+        // later top-level pass demands it first, so that an earlier
+        // namespace's units are charged at one point in every build, with
+        // or without the cache (light-cljs-394); one no thread has
+        // analyzed is recorded for it, as the dispatch records a kept
+        // unit. A demand while another unit is recorded counts in that
+        // recording, as before.
+        let take = match take {
+            Take::Charge if !crate::macro_host::MacroFreeUnit::active() && self.shared.held(id) => {
+                Take::Defer
+            }
+            Take::Drain => {
+                self.shared.release_hold(id);
+                Take::Drain
+            }
+            take => take,
+        };
         let bootstrap = self.bootstrap();
         // A unit analyzed on a worker, or a macro-free one anywhere, is
         // charged to the counters of the binding it was registered with, a
@@ -2014,7 +2126,7 @@ impl CompilationSession {
             Demand {
                 queued,
                 on_worker: false,
-                held: take == Take::Hold,
+                held: matches!(take, Take::Hold | Take::Defer),
                 server,
             },
             || {
@@ -2023,11 +2135,23 @@ impl CompilationSession {
             },
         );
         match take {
-            Take::Charge => {}
+            Take::Charge | Take::Drain => {}
+            // What it observed goes to the log now; the rest waits.
+            Take::Observe => {
+                if let Some(binding) = &counters
+                    && let Some(observations) = self.shared.take_observations(id)
+                    && let Some(log) = binding.dependency_log.borrow_mut().as_mut()
+                {
+                    log.absorb(*observations);
+                }
+                return analysis;
+            }
             // Its drain point charges it to the binding it was registered
             // with.
-            Take::Hold => {
-                if let Some(names) = self.engine_gensyms()? {
+            Take::Hold | Take::Defer => {
+                if take == Take::Hold
+                    && let Some(names) = self.engine_gensyms()?
+                {
                     let mut c = self.shared.lock();
                     match c.units[id].charges.as_mut() {
                         Some(charges) => charges.gensyms.extend(names),
@@ -2042,6 +2166,10 @@ impl CompilationSession {
                     && slot.is_none()
                 {
                     *slot = Some(Box::new(binding));
+                }
+                if take == Take::Defer {
+                    // No pool job after it in unit order starts if it failed.
+                    self.shared.note_job(id);
                 }
                 return analysis;
             }
@@ -2121,8 +2249,14 @@ impl CompilationSession {
             let UnitCharges {
                 observations,
                 gensyms,
+                events,
                 ..
             } = *charges;
+            // What the drain point charged, for its namespace's artifact,
+            // whose installation charges it there again.
+            if take == Take::Drain {
+                self.capture_charges(id, events);
+            }
             if let (Some(observations), Some(log)) =
                 (observations, binding.dependency_log.borrow_mut().as_mut())
             {

@@ -11,6 +11,28 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Limits charged at the drain point in every build (light-cljs-394, October 20, 2026)
+
+Every build charges a namespace's units at its drain point, and artifacts
+carry their bodies' charges (docs/compiler-concurrency.md, "As built
+(light-cljs-391)", "Observing builds settle first"). Parent `4e4ea86`
+against the candidate, three alternating rounds of `main-none` (no
+`--jobs`, `--no-cache`), 1-minute load 3.0-4.3:
+
+| `main-none` | Wall median | Range | Peak RSS median | Range |
+| --- | ---: | --- | ---: | --- |
+| parent | 23.17 s | 23.06-23.34 | 0.913 GB | 0.911-0.924 |
+| candidate | 23.69 s | 22.70-23.75 | 0.916 GB | 0.909-0.938 |
+
++2.2% wall and +0.3% RSS on medians, inside the ranges' overlap (the
+user's 5% tolerance on 2026-10-19 covers the 0.2% past the +2% gate); the
+plain path adds a lock per dispatch and per demand of a held unit. All six
+builds emit one JavaScript SHA-256. With `--cache-dir` and `--stats`, one
+cold and one warm build each: cold 25.95 s / 0.924 GB parent and 25.10 s
+/ 0.892 GB candidate, 922 published, 106.9 MB written against 105.9 MB
+(+0.9%, the charges); warm 1.87 s and 1.77 s, 922 hits, none refused, the
+same JavaScript.
+
 ## Warning-mode globals withheld (light-cljs-393, October 19, 2026)
 
 In warning mode the globals that drains after each form publish stay the

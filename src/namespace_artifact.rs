@@ -55,7 +55,7 @@ pub struct JsGlobalRef(pub u32);
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct LazyRef(pub u32);
 /// A deferred unit of [`DeferredUnits::units`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub struct UnitRef(pub u32);
 
 /// A global binding: one this namespace's analysis created
@@ -169,6 +169,33 @@ pub struct Bodies {
     /// Each unit's placeholder among the artifact's expressions and the
     /// root of its body among these.
     pub placeholders: Vec<(ExprRef, ExprRef)>,
+    /// What the namespace's drain point charged to the expansion and node
+    /// limits, unit by unit in the order it charged them, after the next
+    /// namespaces' top-level passes: the drain point of the installed
+    /// namespace charges them again there, failing where its analysis
+    /// would, while installing its first part charges only the rest of
+    /// [`NamespaceArtifact::accounting`] (light-cljs-394).
+    pub charges: Vec<UnitCharge>,
+}
+
+/// One unit's charges at its namespace's drain point ([`Bodies::charges`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnitCharge {
+    pub unit: UnitRef,
+    /// Its expansions in the order it made them, each counting one
+    /// against `--macro-expansions` and its nodes against `--macro-nodes`.
+    pub expansions: Vec<ChargedExpansion>,
+}
+
+/// An expansion a unit charged ([`UnitCharge`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChargedExpansion {
+    /// The operator a limit it crosses names, as the analyzer spelled it,
+    /// if the analyzer expanded it at a call.
+    pub operator: Option<String>,
+    /// Where a limit it crosses is reported: the call.
+    pub call: Bytes,
+    pub nodes: u64,
 }
 
 /// Source identity and the shape of the namespace's body.
@@ -1470,7 +1497,34 @@ impl NamespaceArtifact {
         {
             return Err("its node peak is below the nodes it generated".into());
         }
+        if let Some(bodies) = &self.bodies {
+            let mut previous = None;
+            for charge in &bodies.charges {
+                if charge.unit.0 as usize >= units || previous.is_some_and(|p| p >= charge.unit.0) {
+                    return Err("its bodies' charges are not of its units in order".into());
+                }
+                previous = Some(charge.unit.0);
+            }
+            if self.accounting.is_some() && self.top_charges().is_none() {
+                return Err("its bodies charge more than its accounting".into());
+            }
+        }
         self.bounds()
+    }
+
+    /// The expansions and generated nodes of [`Self::accounting`] outside
+    /// [`Bodies::charges`]: what installing its first part charges. `None`
+    /// without accounting, or if the bodies' charges exceed it.
+    pub fn top_charges(&self) -> Option<(u64, u64)> {
+        let accounting = self.accounting.as_ref()?;
+        let (mut expansions, mut nodes) = (accounting.expansions, accounting.generated_nodes);
+        for charge in self.bodies.iter().flat_map(|bodies| &bodies.charges) {
+            for expansion in &charge.expansions {
+                expansions = expansions.checked_sub(1)?;
+                nodes = nodes.checked_sub(expansion.nodes)?;
+            }
+        }
+        Some((expansions, nodes))
     }
 
     /// The structural bounds an artifact is held to besides its references:
@@ -1842,6 +1896,14 @@ impl NamespaceArtifact {
             writeln!(out, "lazy {:?}", d.lazy_targets).unwrap();
             writeln!(out, "patches {:?}", bodies.patches).unwrap();
             writeln!(out, "references {:?}", bodies.references).unwrap();
+            for charge in &bodies.charges {
+                writeln!(
+                    out,
+                    "charges unit {} {:?}",
+                    charge.unit.0, charge.expansions
+                )
+                .unwrap();
+            }
         }
         out
     }

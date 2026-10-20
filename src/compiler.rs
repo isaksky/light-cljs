@@ -2798,12 +2798,16 @@ fn analyze_entry(
             capture: capturing,
         });
     }
-    // While the build records what analysis observes, or installs
-    // artifacts, a namespace is keyed with what its units observed, and
-    // the next artifact admitted by what they charged, before the next
-    // namespace is looked up: their outcomes are taken before it, and only
-    // published and merged at their drain point.
-    let settling = observations.is_some() || install.is_some() || cache.is_some();
+    // While the build records what analysis observes, a namespace is
+    // keyed with what its units observed before the next namespace is
+    // looked up: their outcomes are taken, and their observations logged,
+    // before it, and they are charged, published and merged at their drain
+    // point, as in any build (light-cljs-394). After a unit failed there,
+    // no later namespace settles, since the pool starts none of their
+    // units; the failure is reported at its drain point, as without
+    // settling.
+    let settling = observations.is_some() || cache.is_some();
+    let mut settled_failure = false;
     let stats_base = stats.as_ref().map_or(0, |stats| stats.namespaces.len());
     // A cancelled build reports its cancellation, whatever the drain points
     // of the namespaces it leaves give.
@@ -3038,19 +3042,8 @@ fn analyze_entry(
                         file.name
                     )));
                 }
-                // Its units' failure is reported by its drain point, which
-                // the failure's drains reach.
-                if settling && analysis.settle_last(macros).is_err() {
-                    if let Some(stats) = stats.as_deref_mut() {
-                        stats.namespaces.push(compile_stats::NamespaceStats {
-                            name: file.name.clone(),
-                            macro_calls: macros.executed_expansions() - calls_before,
-                        });
-                    }
-                    return Err(NamespaceCompileError::new(format!(
-                        "compiling {}: a deferred unit failed",
-                        file.name
-                    )));
+                if settling && !settled_failure {
+                    settled_failure = analysis.settle_last(macros).is_err();
                 }
                 if let (Some((start, resolution)), Some(work)) = (&captured, work) {
                     let started = compile_stats::start(timed);

@@ -1925,6 +1925,236 @@ fn check_lowered_limits(input: Input<'_>, printed: &str) -> Captured {
     captured
 }
 
+/// An earlier namespace whose bodies expand macros, a later one whose
+/// top-level pass expands macros and demands a helper unit of the first
+/// (`wrap`, through `twice`) before that namespace's drain point, and an
+/// entry that expands one more.
+const OVERLAP: [(&str, &str); 4] = [
+    (
+        "lib/macros.cljs",
+        "(ns lib.macros) (defn wrap [x] (list 'inc x)) (defmacro twice [x] (list '* 2 (wrap x))) (defmacro wide [n] (cons 'do (repeat n 1)))",
+    ),
+    (
+        "lib/a.cljs",
+        "(ns lib.a (:require [lib.macros :refer [twice wide]])) (defn f [x] (twice (twice x))) (defn g [] (wide 4)) (defn h [x] (when x (twice x)))",
+    ),
+    (
+        "lib/b.cljs",
+        "(ns lib.b (:require [lib.macros :refer [twice wide]])) (def b (+ (twice 3) (wide 5)))",
+    ),
+    (
+        "app/main.cljs",
+        "(ns app.main (:require [lib.a :as a] [lib.b :as b] [lib.macros :refer [twice]])) (js/console.log (a/f 1) (a/g) (a/h 2) b/b (twice 4))",
+    ),
+];
+
+/// How [`overlap_build`] builds.
+enum OverlapMode<'a> {
+    NoCache,
+    /// Recording a dependency manifest.
+    Manifest,
+    /// With the cache in this directory.
+    Cached(&'a Path),
+}
+
+/// One build of `entry` under `limits` at `slots`: its output at `none` and
+/// its warnings, or its error.
+fn overlap_build(
+    roots: &[PathBuf],
+    entry: &str,
+    limits: light_cljs::MacroLimits,
+    slots: usize,
+    mode: &OverlapMode<'_>,
+) -> Result<String, String> {
+    let mut host = MacroHost::new();
+    host.limits = limits;
+    let mut warnings = Vec::new();
+    let slots = light_cljs::scheduler::Slots::new(slots).unwrap();
+    let analyzed = match mode {
+        OverlapMode::NoCache | OverlapMode::Manifest => {
+            let mut manifest = DependencyManifest::default();
+            analyze_namespace_entry_recorded(
+                entry,
+                roots,
+                &mut host,
+                AnalysisOptions::default(),
+                &mut warnings,
+                EntryRecorders {
+                    manifest: matches!(mode, OverlapMode::Manifest).then_some(&mut manifest),
+                    slots,
+                    ..EntryRecorders::default()
+                },
+            )
+            .map(|(program, _)| program)
+        }
+        OverlapMode::Cached(dir) => light_cljs::compiler::analyze_namespace_entry_cached(
+            entry,
+            roots,
+            &mut host,
+            AnalysisOptions::default(),
+            &mut warnings,
+            &light_cljs::compile_cache::CacheOptions {
+                dir: dir.to_path_buf(),
+                blockers: Vec::new(),
+            },
+            None,
+            slots,
+        )
+        .map(|(program, _)| program),
+    };
+    analyzed
+        .map(|program| format!("{}\n{warnings:?}", none_output(&program)))
+        .map_err(|error| error.to_string())
+}
+
+/// Copy the files of directory `from` into `to`, recursively.
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// Expansion and node limits crossed where an earlier namespace's bodies,
+/// charged at its drain point after the next `DRAIN_LAG` top-level passes,
+/// and a later namespace's top-level macros together exceed them fail at
+/// the same unit with and without the cache, cold or warm, and while a
+/// dependency manifest is recorded, at one and at four slots; and every
+/// mix of installed and analyzed namespaces fails as the uncached build
+/// does (light-cljs-394).
+#[test]
+fn limits_crossed_between_bodies_and_a_later_top_level_pass_fail_alike_in_every_cache_mode() {
+    let sources = Sources::new(&OVERLAP);
+    let roots = sources.roots();
+    let defaults = light_cljs::MacroLimits::default();
+    let fresh = overlap_build(&roots, "app.main", defaults, 1, &OverlapMode::NoCache).unwrap();
+    assert_eq!(execute(fresh.rsplit_once('\n').unwrap().0), "10 1 6 9 10\n");
+    let mut stats = CompileStats::new();
+    analyze_namespace_entry_recorded(
+        "app.main",
+        &roots,
+        &mut MacroHost::new(),
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+        EntryRecorders {
+            stats: Some(&mut stats),
+            ..EntryRecorders::default()
+        },
+    )
+    .unwrap();
+    let (calls, nodes) = (stats.macro_calls, stats.peak_macro_nodes);
+    assert!(calls > 10 && nodes > 20, "{calls} {nodes}");
+    // A warm cache holds every namespace, from a cold build with the
+    // default limits; each warm build reads a copy of it.
+    let warm = TempDir::new("cljs-overlap-warm");
+    let mode = OverlapMode::Cached(warm.path());
+    overlap_build(&roots, "app.main", defaults, 1, &mode).unwrap();
+    let captured = capture(Input::Roots(&roots), "app.main", &[]).unwrap();
+    assert_eq!(captured.artifacts.len(), captured.namespaces.len());
+    // Every expansion and node limit up to what the build needs, with the
+    // uncached outcomes at one and at four slots; the other builds are
+    // compared on both sides of each limit where an outcome changes.
+    let sweeps = [
+        (0..=calls + 1)
+            .map(|expansions| light_cljs::MacroLimits {
+                expansions,
+                ..defaults
+            })
+            .collect::<Vec<_>>(),
+        (0..=nodes + 1)
+            .map(|generated_nodes| light_cljs::MacroLimits {
+                generated_nodes,
+                ..defaults
+            })
+            .collect(),
+    ];
+    let none = HashMap::new();
+    let (mut failed, mut in_a, mut in_b, mut compared) = (0, 0, 0, 0);
+    for sweep in sweeps {
+        let uncached = sweep
+            .iter()
+            .map(|&limits| {
+                [1, 4].map(|slots| {
+                    overlap_build(&roots, "app.main", limits, slots, &OverlapMode::NoCache)
+                })
+            })
+            .collect::<Vec<_>>();
+        for [one, _] in &uncached {
+            if let Err(error) = one {
+                failed += 1;
+                in_a += usize::from(error.contains("lib/a.cljs"));
+                in_b += usize::from(error.contains("lib/b.cljs"));
+            }
+        }
+        let changes = |at: usize| at > 0 && uncached[at] != uncached[at - 1];
+        for (at, &limits) in sweep.iter().enumerate() {
+            if !changes(at) && !(at + 1 < sweep.len() && changes(at + 1)) {
+                continue;
+            }
+            compared += 1;
+            compare_overlap_modes(&roots, &captured, &warm, &none, limits, &uncached[at]);
+        }
+    }
+    assert!(
+        failed > 10 && in_a > 0 && in_b > 0,
+        "{failed} {in_a} {in_b}"
+    );
+    assert!(compared > 10, "{compared}");
+}
+
+/// The comparisons of
+/// [`limits_crossed_between_bodies_and_a_later_top_level_pass_fail_alike_in_every_cache_mode`]
+/// at `limits`, where the uncached build at one and at four slots gave
+/// `uncached`.
+fn compare_overlap_modes(
+    roots: &[PathBuf],
+    captured: &Captured,
+    warm: &TempDir,
+    none: &HashMap<&str, &NamespaceArtifact>,
+    limits: light_cljs::MacroLimits,
+    uncached: &[Result<String, String>; 2],
+) {
+    // Each slot count against its own build without the cache: where a
+    // unit's own analysis crosses a limit, one slot stops right after its
+    // namespace's dispatch, and four reach its drain point after later
+    // top-level passes (docs/compiler-concurrency.md, "As built
+    // (light-cljs-391)").
+    for (slots, expected) in [1, 4].into_iter().zip(uncached) {
+        let cold = TempDir::new("cljs-overlap-cold");
+        let warmed = TempDir::new("cljs-overlap-warmed");
+        copy_tree(warm.path(), warmed.path());
+        for (name, mode) in [
+            ("manifest", OverlapMode::Manifest),
+            ("cold", OverlapMode::Cached(cold.path())),
+            ("warm", OverlapMode::Cached(warmed.path())),
+        ] {
+            assert_eq!(
+                &overlap_build(roots, "app.main", limits, slots, &mode),
+                expected,
+                "{name} at {slots} slots, {limits:?}"
+            );
+        }
+    }
+    // Installing any mix of artifacts, at one slot.
+    let input = Input::Roots(roots);
+    let expected = &uncached[0];
+    assert_eq!(&limited(input, "app.main", none, limits), expected);
+    for hits in every_mix(captured) {
+        let chosen = chosen(captured, &hits);
+        assert_eq!(
+            &limited(input, "app.main", &chosen, limits),
+            expected,
+            "{limits:?} with hits {hits:?}"
+        );
+    }
+}
+
 /// A compiler data reader's input and result each take at most the node
 /// limit itself, not what is left of it, so a namespace whose reader took
 /// more nodes than a lowered `--macro-nodes` is bypassed and fails as the

@@ -66,7 +66,7 @@ use std::sync::OnceLock;
 
 pub const MAGIC: [u8; 8] = *b"LCLJSART";
 /// The encoding's version. Bump it with any change to the bytes written.
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
@@ -417,6 +417,25 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
                         out.index(*unit_depth);
                         out.uint(*conversion_peak);
                     }
+                }
+                // The bodies' charges (light-cljs-394).
+                if let Some(bodies) = bodies {
+                    out.list(&bodies.charges, |out, UnitCharge { unit, expansions }| {
+                        out.index(unit.0);
+                        out.list(
+                            expansions,
+                            |out,
+                             ChargedExpansion {
+                                 operator,
+                                 call,
+                                 nodes,
+                             }| {
+                                out.option_str(operator.as_deref());
+                                out.bytes_range(*call);
+                                out.uint(*nodes);
+                            },
+                        );
+                    });
                 }
             }
         }
@@ -2106,6 +2125,20 @@ pub fn decode(
         }),
         tag => return Err(r.tag("accounting", tag)),
     };
+    if let Some(bodies) = &mut bodies {
+        bodies.charges = r.list(|r| {
+            Ok(UnitCharge {
+                unit: UnitRef(r.index()?),
+                expansions: r.list(|r| {
+                    Ok(ChargedExpansion {
+                        operator: r.option_string()?,
+                        call: r.bytes_range()?,
+                        nodes: r.uint()?,
+                    })
+                })?,
+            })
+        })?;
+    }
     r.input.end()?;
 
     let artifact = NamespaceArtifact {
@@ -3780,6 +3813,21 @@ mod tests {
                     }],
                 },
                 placeholders: vec![(ExprRef(0), ExprRef(1))],
+                charges: vec![UnitCharge {
+                    unit: UnitRef(0),
+                    expansions: vec![
+                        ChargedExpansion {
+                            operator: Some("app.core/m".into()),
+                            call: (1, 9),
+                            nodes: 12,
+                        },
+                        ChargedExpansion {
+                            operator: None,
+                            call: (2, 3),
+                            nodes: 0,
+                        },
+                    ],
+                }],
             })),
             live: Default::default(),
         }

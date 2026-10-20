@@ -69,6 +69,10 @@ pub(crate) fn begin(
 ) -> CaptureStart {
     program.globals.freeze();
     let (units, registrations, bundles) = session.map_or((0, 0, 0), |s| s.capture_marks());
+    // What drain points without a capture charged is no namespace's here.
+    if let Some(session) = session {
+        drop(session.take_unit_charges());
+    }
     CaptureStart {
         exprs: program.exprs.len(),
         locals: program.locals.len(),
@@ -409,6 +413,11 @@ pub(crate) fn finish_bodies(
         Some(session) => Some(session.take_gensyms()?),
         None => None,
     };
+    let unit_charges = session
+        .as_ref()
+        .map(|s| s.take_unit_charges())
+        .unwrap_or_default();
+    let own_units = units.clone();
     let drained = accounting(macro_host, work);
     artifact.accounting = match (artifact.accounting.take(), drained) {
         (Some(top), Some(drained)) => Some(Accounting {
@@ -599,18 +608,57 @@ pub(crate) fn finish_bodies(
         named_literals: std::mem::take(&mut c.named_literals),
         js_globals: std::mem::take(&mut c.js_table),
     };
+    let charges = unit_charges
+        .into_iter()
+        .map(|(unit, events)| {
+            let unit = unit
+                .checked_sub(own_units.start)
+                .filter(|_| unit < own_units.end)
+                .ok_or("a drain point charged another namespace's unit")?;
+            Ok(UnitCharge {
+                unit: UnitRef(unit as u32),
+                expansions: events.into_iter().filter_map(charged_expansion).collect(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     let bodies = Bodies {
         ir,
         declarations,
         patches,
         references: c.references,
         placeholders,
+        charges,
     };
     if bodies != Bodies::default() {
         artifact.bodies = Some(Box::new(bodies));
     }
     debug_assert_eq!(artifact.validate(), Ok(()));
     Ok(())
+}
+
+/// What a drain point's charge of `event` records for installation to
+/// charge again ([`ChargedExpansion`]).
+fn charged_expansion(event: crate::macro_host::UnitEvent) -> Option<ChargedExpansion> {
+    use crate::macro_host::UnitEvent;
+    match event {
+        UnitEvent::Expansion(expansion) => Some(ChargedExpansion {
+            operator: Some(expansion.operator),
+            call: bytes(&expansion.span),
+            nodes: expansion.nodes as u64,
+        }),
+        UnitEvent::Script { nodes, span, site } => {
+            let (operator, call) = match site {
+                Some((operator, call)) => (Some(operator), call),
+                None => (None, span),
+            };
+            Some(ChargedExpansion {
+                operator,
+                call: bytes(&call),
+                nodes: nodes as u64,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Earlier globals first, then the namespace's own, each in creation order.

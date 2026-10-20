@@ -933,6 +933,22 @@ publishes its artifact once its bodies are captured (`CompileCache::analyzed`
 and `publish`). The bodies are written after the declarations and the IR
 in their sections, `SCHEMA_VERSION` 7.
 
+*As built (light-cljs-394), the bodies' charges:* every build charges a
+namespace's units to `--macro-expansions` and `--macro-nodes` at its drain
+point, after the next namespaces' top-level passes
+(docs/compiler-concurrency.md, "As built (light-cljs-391)"), so an artifact
+keeps what its drain point charged apart: `Bodies::charges`, unit by unit in
+charge order, each expansion's nodes, the operator a limit error names and
+the call it is reported at. `Accounting` stays the whole namespace's, which
+admission checks as before; installing the first part charges what is
+outside the bodies' charges (`NamespaceArtifact::top_charges`), and the
+installed namespace's drain point charges the list
+(`artifact_install::charge_bodies`), failing where and as the analyzed
+namespace's drain point would. So a limit crossed between an earlier
+namespace's bodies and a later top-level pass fails at the same unit in a
+warm, cold or uncached build and in every mix. The charges are written
+after the accounting in the names section, `SCHEMA_VERSION` 8.
+
 The decoder reads only its own `SCHEMA_VERSION`; there is no migration,
 since artifacts are disposable. Any change to the bytes written bumps it.
 That includes a field added to an artifact type, which does not compile
