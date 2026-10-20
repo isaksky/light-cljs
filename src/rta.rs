@@ -1007,7 +1007,9 @@ fn texts(program: &Program, kind: &ExprKind, mut text: impl FnMut(&str)) {
 /// Raw JavaScript with the escapes of its strings and identifiers decoded
 /// (`'\x45MPTY'` and `EMPTY` name `EMPTY`; light-cljs-247), so that a
 /// name written with them is seen. A control escape (`\n`) separates names;
-/// any other escaped character stands for itself. Decoding text outside a
+/// a line continuation (a backslash and LF, CR, CRLF, U+2028 or U+2029)
+/// contributes nothing (light-cljs-390); any other escaped character stands
+/// for itself. Decoding text outside a
 /// string can only find more names, which keeps more.
 fn unescaped(text: &str) -> std::borrow::Cow<'_, str> {
     if !text.contains('\\') {
@@ -1029,6 +1031,11 @@ fn unescaped(text: &str) -> std::borrow::Cow<'_, str> {
             char::from_u32(value)
         };
         let decoded = match chars.next() {
+            Some('\r') => {
+                chars.next_if_eq(&'\n');
+                continue;
+            }
+            Some('\n' | '\u{2028}' | '\u{2029}') => continue,
             Some('x') => hex(&mut chars, 2),
             Some('u') if chars.peek() == Some(&'{') => {
                 chars.next();

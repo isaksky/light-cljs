@@ -1381,6 +1381,21 @@ fn type_statics_named_in_raw_javascript_are_kept() {
     for unit in ["typeStatics", "PersistentVectorValue.statics"] {
         assert!(kept.contains(&unit), "{unit}: {kept:?}");
     }
+    // light-cljs-390, from the Sol review: a line continuation (a backslash
+    // and a line terminator: LF, CR, CRLF, U+2028 or U+2029) in a string
+    // contributes no character, so `'EM\` and a newline and `PTY'` names
+    // `EMPTY`.
+    let source = "(let [t (type (if (js/Math.random) [1] nil))]
+           (.join (array (js* \"~{}['EM\\\\\nPTY'] === undefined\" t)
+                         (js* \"~{}['EM\\\\\r\nPTY'] === undefined\" t)
+                         (js* \"~{}['EM\\\\\rPTY'] === undefined\" t)
+                         (js* \"~{}['EM\\\\\u{2028}PTY'] === undefined\" t)
+                         (js* \"~{}[`EM\\\\\u{2029}PTY`] === undefined\" t)) \" \"))";
+    every_level(source, "false false false false false");
+    let kept = units(&format!("(js/console.log {source})"));
+    for unit in ["typeStatics", "PersistentVectorValue.statics"] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
 }
 
 #[test]
