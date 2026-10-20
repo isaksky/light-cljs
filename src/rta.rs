@@ -1009,8 +1009,9 @@ fn texts(program: &Program, kind: &ExprKind, mut text: impl FnMut(&str)) {
 /// name written with them is seen. A control escape (`\n`) separates names;
 /// a line continuation (a backslash and LF, CR, CRLF, U+2028 or U+2029)
 /// contributes nothing (light-cljs-390); any other escaped character stands
-/// for itself. Decoding text outside a
-/// string can only find more names, which keeps more.
+/// for itself. Text outside a string, such as a comment, is decoded too, so
+/// [`names_property`] scans the text as written as well, and decoding can
+/// only find more names, which keeps more.
 fn unescaped(text: &str) -> std::borrow::Cow<'_, str> {
     if !text.contains('\\') {
         return std::borrow::Cow::Borrowed(text);
@@ -1064,9 +1065,18 @@ fn unescaped(text: &str) -> std::borrow::Cow<'_, str> {
 fn names_property(program: &Program, kind: &ExprKind, mut named: impl FnMut(&str) -> bool) -> bool {
     match kind {
         ExprKind::JsTemplate { segments, .. } => segments.iter().any(|segment| {
-            unescaped(segment)
-                .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
-                .any(&mut named)
+            let mut words = |text: &str| {
+                text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+                    .any(&mut named)
+            };
+            // The segment as written as well as decoded: a continuation
+            // removed from a comment (`// a\` and a newline) would otherwise
+            // join its last word to a name on the next line (light-cljs-390).
+            words(segment)
+                || match unescaped(segment) {
+                    std::borrow::Cow::Owned(decoded) => words(&decoded),
+                    std::borrow::Cow::Borrowed(_) => false,
+                }
         }),
         _ => {
             let mut found = false;

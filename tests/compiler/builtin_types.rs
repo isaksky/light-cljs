@@ -1369,32 +1369,32 @@ fn map_entries_keep_no_vector_type_where_no_vector_is_built() {
 
 #[test]
 fn type_statics_named_in_raw_javascript_are_kept() {
+    // Each read alone, without an empty literal that would keep the statics
+    // anyway: one form that names `EMPTY` keeps the statics for every other.
     // light-cljs-247, from the Sol review: raw JavaScript that names a static
-    // through string or identifier escapes keeps it, without an empty literal
-    // that would keep the statics anyway.
-    let source = "(let [t (type (if (js/Math.random) [1] nil))]
-           (.join (array (js* \"~{}['\\\\x45MPTY'] === undefined\" t)
-                         (js* \"~{}['\\\\u{45}MPTY'] === undefined\" t)
-                         (js* \"~{}.\\\\u0045MPTY === undefined\" t)) \" \"))";
-    every_level(source, "false false false");
-    let kept = units(&format!("(js/console.log {source})"));
-    for unit in ["typeStatics", "PersistentVectorValue.statics"] {
-        assert!(kept.contains(&unit), "{unit}: {kept:?}");
-    }
-    // light-cljs-390, from the Sol review: a line continuation (a backslash
-    // and a line terminator: LF, CR, CRLF, U+2028 or U+2029) in a string
-    // contributes no character, so `'EM\` and a newline and `PTY'` names
-    // `EMPTY`.
-    let source = "(let [t (type (if (js/Math.random) [1] nil))]
-           (.join (array (js* \"~{}['EM\\\\\nPTY'] === undefined\" t)
-                         (js* \"~{}['EM\\\\\r\nPTY'] === undefined\" t)
-                         (js* \"~{}['EM\\\\\rPTY'] === undefined\" t)
-                         (js* \"~{}['EM\\\\\u{2028}PTY'] === undefined\" t)
-                         (js* \"~{}[`EM\\\\\u{2029}PTY`] === undefined\" t)) \" \"))";
-    every_level(source, "false false false false false");
-    let kept = units(&format!("(js/console.log {source})"));
-    for unit in ["typeStatics", "PersistentVectorValue.statics"] {
-        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    // through string or identifier escapes keeps it. light-cljs-390, from the
+    // Sol review: a line continuation (a backslash and a line terminator: LF,
+    // CRLF, CR, U+2028 or U+2029) in a string or template contributes no
+    // character, so `'EM\` and a newline and `PTY'` names `EMPTY`; and one
+    // that ends a line comment does not join its last word to the name on
+    // the next line.
+    for read in [
+        "~{}['\\\\x45MPTY'] === undefined",
+        "~{}['\\\\u{45}MPTY'] === undefined",
+        "~{}.\\\\u0045MPTY === undefined",
+        "~{}['EM\\\\\nPTY'] === undefined",
+        "~{}['EM\\\\\r\nPTY'] === undefined",
+        "~{}['EM\\\\\rPTY'] === undefined",
+        "~{}['EM\\\\\u{2028}PTY'] === undefined",
+        "~{}[`EM\\\\\u{2029}PTY`] === undefined",
+        "(({// prefix\\\\\nEMPTY: v}) => v === undefined)(~{})",
+    ] {
+        let source = format!("(js* \"{read}\" (type (if (js/Math.random) [1] nil)))");
+        every_level(&source, "false");
+        let kept = units(&format!("(js/console.log {source})"));
+        for unit in ["typeStatics", "PersistentVectorValue.statics"] {
+            assert!(kept.contains(&unit), "{read:?} {unit}: {kept:?}");
+        }
     }
 }
 
