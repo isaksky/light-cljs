@@ -2450,12 +2450,14 @@ struct PendingCapture {
     start: crate::artifact_capture::CaptureStart,
     /// Its deferred units.
     units: std::ops::Range<usize>,
+    /// Where its registrations end.
+    registrations: usize,
     artifact: Result<crate::namespace_artifact::NamespaceArtifact, String>,
     /// Its key in the persistent cache, which publishes it.
     publication: Option<Option<crate::compile_cache::Publication>>,
 }
 
-/// What merging a namespace's units reaches ([`merge_namespace`]).
+/// What a namespace's drain point reaches ([`merge_namespace`]).
 struct Merging<'a, 'b> {
     macros: &'a MacroHost,
     warnings: &'a mut Vec<AnalysisWarning>,
@@ -2468,13 +2470,23 @@ struct Merging<'a, 'b> {
     timed: bool,
 }
 
-/// Merge the units of the oldest namespace waiting to, finish its
-/// artifact's bodies if it was captured, and publish it.
+/// What a namespace's drain point gave the loader ([`merge_namespace`]).
+struct DrainPoint {
+    source_index: usize,
+    /// The namespaces its bodies' lazy references name, in site order.
+    lazy: Vec<(String, std::ops::Range<usize>)>,
+    /// The macro calls its units' charges executed.
+    macro_calls: usize,
+}
+
+/// The drain point of the oldest namespace waiting for one
+/// ([`NamespaceAnalysis::merge_front`]): take, charge and merge its units,
+/// finish its artifact's bodies if it was captured, and publish it.
 fn merge_namespace(
     analysis: &mut NamespaceAnalysis,
     captures: &mut std::collections::VecDeque<Option<PendingCapture>>,
     merging: Merging<'_, '_>,
-) -> Result<(), NamespaceCompileError> {
+) -> Result<Option<DrainPoint>, NamespaceCompileError> {
     let Merging {
         macros,
         warnings,
@@ -2486,32 +2498,60 @@ fn merge_namespace(
         cache_time,
         timed,
     } = merging;
+    analysis.restore_warnings(warnings);
     let capture = captures.pop_front().flatten();
     let started = compile_stats::start(timed && capture.is_some());
-    let start = capture
-        .as_ref()
-        .map(|capture| analysis.begin_bodies_capture(capture.index, warnings, macros));
+    let start = capture.as_ref().map(|capture| {
+        (
+            analysis.begin_bodies_capture(capture.index, warnings, macros),
+            macros.begin_namespace_work(),
+        )
+    });
     compile_stats::add(&mut counts.time, started);
-    let merged = analysis.merge_front(macros, warnings);
-    let (Some(mut capture), Some(start)) = (capture, start) else {
-        return merged
-            .map(|_| ())
-            .map_err(|message| NamespaceCompileError::new(format!("installing: {message}")));
+    let calls_before = macros.executed_expansions();
+    let merged = analysis
+        .merge_front(macros, warnings)
+        .map_err(|error| match error {
+            crate::analyzer::DrainError::Unit(index, error) => {
+                let file = &ordered[index];
+                NamespaceCompileError::new(error.to_string()).at(
+                    &file.path,
+                    &file.source,
+                    error.span,
+                )
+            }
+            crate::analyzer::DrainError::Install(message) => match &capture {
+                Some(capture) => NamespaceCompileError::new(format!(
+                    "installing {}: {message}",
+                    ordered[capture.index].name
+                )),
+                None => NamespaceCompileError::new(format!("installing: {message}")),
+            },
+        })?;
+    let Some(merged) = merged else {
+        return Ok(None);
+    };
+    let point = DrainPoint {
+        source_index: merged.source_index,
+        lazy: merged.lazy.clone(),
+        macro_calls: macros.executed_expansions() - calls_before,
+    };
+    let (Some(mut capture), Some((start, work))) = (capture, start) else {
+        return Ok(Some(point));
     };
     let file = &ordered[capture.index];
-    let merged = merged.map_err(|message| {
-        NamespaceCompileError::new(format!("installing {}: {message}", file.name))
-    })?;
     let started = compile_stats::start(timed);
-    if let (Ok(artifact), Some(merged)) = (&mut capture.artifact, &merged)
+    if let Ok(artifact) = &mut capture.artifact
         && let Err(reason) = analysis.finish_bodies(
             artifact,
             &capture.start,
             &start,
-            merged,
+            &merged,
             capture.units.clone(),
+            capture.registrations,
             macros,
             warnings,
+            work,
         )
     {
         capture.artifact = Err(reason);
@@ -2543,7 +2583,7 @@ fn merge_namespace(
         }
     }
     compile_stats::add(cache_time, started);
-    Ok(())
+    Ok(Some(point))
 }
 
 fn analyze_entry(
@@ -2749,9 +2789,111 @@ fn analyze_entry(
     // A cache blocker and its consumers keep their units on this thread's
     // isolate (docs/compiler-concurrency.md, "As built (light-cljs-340)").
     let mut blocked = crate::cache_policy::BlockerReach::new(blockers);
+    // The units a namespace's dispatch keeps on this thread are recorded as
+    // a worker's are, at every `--jobs` value, and charged at its drain
+    // point (docs/compiler-concurrency.md, "As built (light-cljs-391)").
+    if let Some(session) = macros.session_handle() {
+        session.set_recording(crate::macro_host::UnitRecording {
+            observe: observations.is_some(),
+            capture: capturing,
+        });
+    }
+    // While the build records what analysis observes, or installs
+    // artifacts, a namespace is keyed with what its units observed, and
+    // the next artifact admitted by what they charged, before the next
+    // namespace is looked up: their outcomes are taken before it, and only
+    // published and merged at their drain point.
+    let settling = observations.is_some() || install.is_some() || cache.is_some();
+    let stats_base = stats.as_ref().map_or(0, |stats| stats.namespaces.len());
+    // A cancelled build reports its cancellation, whatever the drain points
+    // of the namespaces it leaves give.
+    let mut cancelled = false;
+    // A drain point that failed is the error: the namespaces after it
+    // come later, and their units may never start (`SharedCatalog::admits`).
+    let mut drain_failed = false;
+    // How many sources were loaded when each namespace waiting for its drain
+    // point began, and that of the one whose drain point failed: the sources
+    // loaded after it are read only because later namespaces ran, which a
+    // build with one slot stops before, so their warnings are not reported.
+    let mut lazy_marks: std::collections::VecDeque<(usize, usize)> = Default::default();
+    let mut failed_mark: Option<(usize, usize)> = None;
+    // The lazy references of source `requester` reach their sources now.
+    macro_rules! visit_lazy {
+        ($lazy:expr, $requester:expr) => {{
+            let requester: usize = $requester;
+            let loaded = loader.ordered.len();
+            let started = compile_stats::start(timed);
+            for (namespace, span) in $lazy {
+                if let Some(record) = &mut loader.record {
+                    record.lazy.push((requester as u32, namespace.clone()));
+                }
+                loader.visit_lazy(&namespace, requester).map_err(|error| {
+                    if error.path.is_none() {
+                        let file = &loader.ordered[requester];
+                        error.at(&file.path, &file.source, span)
+                    } else {
+                        error
+                    }
+                })?;
+            }
+            compile_stats::add(&mut lazy_parse, started);
+            if let Some(trees) = &mut trees {
+                trees.loaded(&loader.ordered);
+            }
+            source_warnings(&loader.ordered, loaded, options, warnings);
+        }};
+    }
+    // The drain point of the oldest namespace waiting for one, whose
+    // bodies' lazy references are read then: whether there was one.
+    macro_rules! drain_front {
+        () => {{
+            let mark = lazy_marks.pop_front().unwrap_or((usize::MAX, usize::MAX));
+            let point = merge_namespace(
+                &mut analysis,
+                &mut captures,
+                Merging {
+                    macros,
+                    warnings,
+                    ordered: &loader.ordered,
+                    sources,
+                    cache: cache.as_deref_mut(),
+                    sink: capture.as_deref_mut(),
+                    counts: &mut capture_counts,
+                    cache_time: &mut cache_time,
+                    timed,
+                },
+            )
+            .inspect_err(|_| {
+                drain_failed = true;
+                failed_mark = Some(mark);
+            })?;
+            match point {
+                Some(point) => {
+                    if let Some(stats) = stats.as_deref_mut()
+                        && let Some(namespace) =
+                            stats.namespaces.get_mut(stats_base + point.source_index)
+                    {
+                        namespace.macro_calls += point.macro_calls;
+                    }
+                    visit_lazy!(point.lazy, point.source_index);
+                    true
+                }
+                None => false,
+            }
+        }};
+    }
     let looped = (|| -> Result<(), NamespaceCompileError> {
-        while index < loader.ordered.len() {
+        loop {
+            // Past the last source, the namespaces still waiting reach
+            // their drain points, whose lazy references may load more.
+            if index >= loader.ordered.len() {
+                if !drain_front!() {
+                    break;
+                }
+                continue;
+            }
             let file = &loader.ordered[index];
+            let mark = loader.ordered.len();
             let symbols = file
                 .syntax
                 .nodes
@@ -2773,6 +2915,7 @@ fn analyze_entry(
             build.analyze(index, &file.name, file.path.to_str());
             // A cancelled compilation stops at the next namespace.
             if let Some(reason) = control.and_then(|control| control.check().err()) {
+                cancelled = true;
                 return Err(NamespaceCompileError::new(format!(
                     "compiling {}: {}",
                     file.name, reason.0
@@ -2844,6 +2987,7 @@ fn analyze_entry(
             drop(cached);
             if installed {
                 captures.push_back(None);
+                lazy_marks.push_back((mark, index));
             } else {
                 let names_from = crate::generated_names::current();
                 let work = capturing.then(|| macros.begin_namespace_work());
@@ -2877,6 +3021,37 @@ fn analyze_entry(
                         warnings,
                     )
                     .map_err(at)?;
+                lazy_marks.push_back((mark, index));
+                // A unit kept on this thread that failed stops the build
+                // now, before any later top-level pass, as with one slot
+                // always; its drain point, which the failure's drains
+                // reach, reports it.
+                if analysis.kept_unit_failed(macros) {
+                    if let Some(stats) = stats.as_deref_mut() {
+                        stats.namespaces.push(compile_stats::NamespaceStats {
+                            name: file.name.clone(),
+                            macro_calls: macros.executed_expansions() - calls_before,
+                        });
+                    }
+                    return Err(NamespaceCompileError::new(format!(
+                        "compiling {}: a deferred unit failed",
+                        file.name
+                    )));
+                }
+                // Its units' failure is reported by its drain point, which
+                // the failure's drains reach.
+                if settling && analysis.settle_last(macros).is_err() {
+                    if let Some(stats) = stats.as_deref_mut() {
+                        stats.namespaces.push(compile_stats::NamespaceStats {
+                            name: file.name.clone(),
+                            macro_calls: macros.executed_expansions() - calls_before,
+                        });
+                    }
+                    return Err(NamespaceCompileError::new(format!(
+                        "compiling {}: a deferred unit failed",
+                        file.name
+                    )));
+                }
                 if let (Some((start, resolution)), Some(work)) = (&captured, work) {
                     let started = compile_stats::start(timed);
                     let path = file.path.to_string_lossy();
@@ -2898,9 +3073,12 @@ fn analyze_entry(
                         macros,
                         warnings,
                     );
-                    let units = match macros.session_handle() {
-                        Some(session) => start.units()..session.capture_marks().0,
-                        None => 0..0,
+                    let (units, registrations) = match macros.session_handle() {
+                        Some(session) => {
+                            let (units, registrations, _) = session.capture_marks();
+                            (start.units()..units, registrations)
+                        }
+                        None => (0..0, 0),
                     };
                     compile_stats::add(&mut capture_counts.time, started);
                     let started = compile_stats::start(timed);
@@ -2920,6 +3098,7 @@ fn analyze_entry(
                         index,
                         start,
                         units,
+                        registrations,
                         artifact,
                         publication,
                     }));
@@ -2927,25 +3106,8 @@ fn analyze_entry(
                     captures.push_back(None);
                 }
             }
-            // The previous namespace's units merge after this one's top-level
-            // pass.
-            while analysis.pending_merges() > 1 {
-                merge_namespace(
-                    &mut analysis,
-                    &mut captures,
-                    Merging {
-                        macros,
-                        warnings,
-                        ordered: &loader.ordered,
-                        sources,
-                        cache: cache.as_deref_mut(),
-                        sink: capture.as_deref_mut(),
-                        counts: &mut capture_counts,
-                        cache_time: &mut cache_time,
-                        timed,
-                    },
-                )?;
-            }
+            // Its warnings wait with it for its drain point.
+            analysis.hold_warnings(warnings);
             if let Some(stats) = stats.as_deref_mut() {
                 stats.namespaces.push(compile_stats::NamespaceStats {
                     name: file.name.clone(),
@@ -2962,34 +3124,71 @@ fn analyze_entry(
             if let Some(trees) = &mut trees {
                 trees.released(index);
             }
-            let loaded = loader.ordered.len();
-            let started = compile_stats::start(timed);
-            for (namespace, span) in analysis.lazy_namespaces().to_vec() {
-                if let Some(record) = &mut loader.record {
-                    record.lazy.push((index as u32, namespace.clone()));
-                }
-                loader.visit_lazy(&namespace, index).map_err(|error| {
-                    if error.path.is_none() {
-                        let file = &loader.ordered[index];
-                        error.at(&file.path, &file.source, span)
-                    } else {
-                        error
-                    }
-                })?;
-            }
-            compile_stats::add(&mut lazy_parse, started);
-            if let Some(trees) = &mut trees {
-                trees.loaded(&loader.ordered);
-            }
-            source_warnings(&loader.ordered, loaded, options, warnings);
+            // Its top-level pass's lazy references are read now.
+            visit_lazy!(analysis.lazy_namespaces().to_vec(), index);
             index += 1;
+            // The namespace `DRAIN_LAG` before it reaches its drain point.
+            while analysis.pending_merges() > crate::analyzer::DRAIN_LAG {
+                drain_front!();
+            }
         }
         Ok(())
     })();
-    // Every drain has waited for its pooled units; the workers' engines are
-    // destroyed on their threads here. When the build failed, the error is
-    // chosen: what the workers have not started does not start, and what
-    // they run is cancelled.
+    // A failure is reported after the drain points of the namespaces still
+    // waiting for theirs, in order, whose units come before it; the first
+    // of those that fails is the error instead, unless the build was
+    // cancelled, and the rest are left
+    // (docs/compiler-concurrency.md, "As built (light-cljs-391)").
+    let looped = match looped {
+        Err(error) if !drain_failed => {
+            let mut chosen = error;
+            loop {
+                let mark = lazy_marks.pop_front().unwrap_or((usize::MAX, usize::MAX));
+                let drained = merge_namespace(
+                    &mut analysis,
+                    &mut captures,
+                    Merging {
+                        macros,
+                        warnings,
+                        ordered: &loader.ordered,
+                        sources,
+                        cache: cache.as_deref_mut(),
+                        sink: capture.as_deref_mut(),
+                        counts: &mut capture_counts,
+                        cache_time: &mut cache_time,
+                        timed,
+                    },
+                );
+                match drained {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(error) => {
+                        if !cancelled {
+                            chosen = error;
+                            failed_mark = Some(mark);
+                        }
+                        break;
+                    }
+                }
+            }
+            Err(chosen)
+        }
+        other => other,
+    };
+    if looped.is_err()
+        && let Some((mark, failed)) = failed_mark
+    {
+        warnings.retain(|warning| warning.source_index < mark);
+        if let Some(stats) = stats.as_deref_mut() {
+            stats
+                .namespaces
+                .truncate(stats_base + failed.saturating_add(1));
+        }
+    }
+    // Every drain point has waited for its pooled units; the workers'
+    // engines are destroyed on their threads here. When the build failed,
+    // the error is chosen: what the workers have not started does not
+    // start, and what they run is cancelled.
     if let Some(session) = macros.session_handle() {
         if looped.is_err() {
             session.cancel_pool();
@@ -2997,29 +3196,7 @@ fn analyze_entry(
         session.finish_pool();
     }
     macros.evaluator_options.memory_limit = memory_limit;
-    // Every namespace merges its units before the program is finished, and
-    // when one failed, so that the earlier ones' warnings are reported and
-    // their artifacts published.
-    let mut merged = Ok(());
-    while analysis.pending_merges() > 0 && merged.is_ok() {
-        merged = merge_namespace(
-            &mut analysis,
-            &mut captures,
-            Merging {
-                macros,
-                warnings,
-                ordered: &loader.ordered,
-                sources,
-                cache: cache.as_deref_mut(),
-                sink: capture.as_deref_mut(),
-                counts: &mut capture_counts,
-                cache_time: &mut cache_time,
-                timed,
-            },
-        );
-    }
     looped?;
-    merged?;
     let deferred_time = analysis.deferred_time;
     let traced = crate::compile_trace::enter(crate::compile_trace::Stage::Finish, 0, None);
     let program = analysis

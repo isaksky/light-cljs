@@ -101,6 +101,10 @@ struct MacroFreeAnalysis {
     /// The macro call the analyzer expands ([`ExpansionSite`]).
     site: Option<(String, std::ops::Range<usize>)>,
     capture: bool,
+    /// Whether its form polls are recorded for its charge rather than
+    /// polled: not for a unit the coordinator keeps at a dispatch, which
+    /// polls its own control as it runs (light-cljs-391).
+    polls: bool,
     /// What the analysis observed, while a manifest is recorded.
     observations: Option<crate::dependency_manifest::ObservationLog>,
 }
@@ -124,11 +128,12 @@ impl MacroFreeUnit {
     /// Record the analysis of unit `name` on this thread; with `forbid`, it
     /// was found macro-free and must not enter an engine. `recording` is
     /// what the compilation records of it beyond its charges.
-    pub(crate) fn enter(name: String, forbid: bool, recording: UnitRecording) -> Self {
+    pub(crate) fn enter(name: String, forbid: bool, recording: UnitRecording, polls: bool) -> Self {
         Self(MACRO_FREE_UNIT.with(|unit| {
             unit.replace(Some(MacroFreeAnalysis {
                 name,
                 forbid,
+                polls,
                 events: Vec::new(),
                 site: None,
                 capture: recording.capture,
@@ -271,11 +276,11 @@ impl Drop for ExpansionSite {
 /// macro-free unit, which then does not poll: whether it recorded one.
 pub(crate) fn record_poll(span: impl FnOnce() -> std::ops::Range<usize>) -> bool {
     MACRO_FREE_UNIT.with(|unit| match &mut *unit.borrow_mut() {
-        Some(analysis) => {
+        Some(analysis) if analysis.polls => {
             analysis.events.push(UnitEvent::Poll(span()));
             true
         }
-        None => false,
+        _ => false,
     })
 }
 

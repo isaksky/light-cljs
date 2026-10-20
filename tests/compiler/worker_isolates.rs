@@ -387,7 +387,15 @@ fn units_on_workers_keep_the_one_slot_manifest_and_artifacts() {
     let serial = recorded(&sources, "app.main", 1);
     let js = serial.output.as_ref().unwrap();
     assert_eq!(execute(js), "rows #1 data 1 14 2 true rows #1 2\n");
-    assert!(serial.artifacts.iter().all(|(_, a)| a.is_ok()));
+    assert!(
+        serial.artifacts.iter().all(|(_, a)| a.is_ok()),
+        "{:?}",
+        serial
+            .artifacts
+            .iter()
+            .filter_map(|(namespace, a)| a.as_ref().err().map(|e| (namespace, e)))
+            .collect::<Vec<_>>()
+    );
     for slots in [2, 4, 8] {
         let mut isolates = 0;
         for _ in 0..3 {

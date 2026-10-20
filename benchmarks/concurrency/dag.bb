@@ -293,6 +293,41 @@
     (println (format "Option U with root edges (%d edges between tasks, %d of them from a top-level pass):"
                      (count edges) (count (filter #(= :b (ffirst %)) edges))))
     (doseq [W [1 2 4 8 12 16]] (println (format "  W=%2d  %s" W (s (simulate W)))))))
+;; Option U with a fixed lag (light-cljs-391): the coordinator runs the
+;; top-level passes in source order and gives each namespace's units to the
+;; W workers, which take them earliest namespace first; it drains namespace
+;; k right after the top-level pass of k+L, waiting there for k's units, so
+;; the pass of k+L+1 starts only once they are done. Lag 0 waits at each
+;; namespace's own drain, as light-cljs-339 built it. Units cost their
+;; serial time times the inflation (light-cljs-343 measured worker units at
+;; 1.38x their one-worker time). `held` is the most units whose namespaces
+;; wait for their drain point at once (at the first W), a proxy for the
+;; queued IR.
+(when trace?
+  (let [simulate (fn [W L inflation]
+                   (loop [j 0 t 0.0 workers (vec (repeat W 0.0)) done [] held 0]
+                     (if (< j N)
+                       (let [n (nss j)
+                             t (+ t (:prep n) (:body n) (:warn n))
+                             [workers finish]
+                             (reduce (fn [[workers finish] u]
+                                       (let [[free & more] workers
+                                             end (+ (max free t) (* inflation u))]
+                                         [(vec (sort (conj (vec more) end))) (max finish end)]))
+                                     [workers t] (:unit-us n))
+                             done (conj done finish)
+                             drained (- j L)
+                             held (max held (reduce + (map #(:units (nss %)) (range (max 0 drained) (inc j)))))
+                             t (if (>= drained 0) (max t (done drained)) t)]
+                         (recur (inc j) t workers done held))
+                       [(reduce max t done) held])))]
+    (doseq [inflation [1.0 1.38]]
+      (println (format "\nOption U with a fixed lag L (drain k after the top-level pass of k+L), units at %.2fx:" inflation))
+      (doseq [L (distinct (map #(min % N) [0 1 2 3 4 6 8 16 N]))]
+        (println (format "  L=%-4s %s  held units %d"
+                         (if (= L N) "all" (str L))
+                         (str/join "  " (for [W workers] (format "W=%2d %s" W (s (first (simulate W L inflation))))))
+                         (second (simulate (first workers) L inflation))))))))
 ;; Model D: in-order commit without overlays. B's top-level pass starts once every namespace
 ;; up to its latest dependency (in source order) has finished its top-level pass; units fan out.
 (let [maxdep (mapv (fn [n] (reduce max -1 (:deps n))) nss)

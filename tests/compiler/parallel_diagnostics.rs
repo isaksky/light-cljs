@@ -170,6 +170,77 @@ fn a_later_namespace_does_not_run_after_an_earlier_failure() {
 }
 
 #[test]
+fn a_kept_units_failure_stops_the_build_before_the_next_top_level_pass() {
+    // With one slot `app.a`'s unit is analyzed at its dispatch and fails:
+    // the build stops there, so `app.b`'s top-level pass never runs, and
+    // the error is the one every slot count reports at `app.a`'s drain
+    // point (light-cljs-391). Warning mode is off, so units are not drained
+    // form by form.
+    let sources = Sources::new();
+    sources.write("app/m.cljs", FAILING);
+    sources.write(
+        "app/a.cljs",
+        "(ns app.a (:require [app.m :refer [fast-fail]]))\n(defn f0 [] 0)\n(defn f1 [] (fast-fail))",
+    );
+    sources.write(
+        "app/b.cljs",
+        "(ns app.b (:require [app.m :refer [fast-fail]])) (fast-fail)",
+    );
+    sources.write(
+        "app/main.cljs",
+        "(ns app.main (:require [app.a] [app.b])) (js/console.log (app.a/f0))",
+    );
+    let serial = build_with(&sources, "app.main", 1, false, limited(1024, 100_000));
+    let error = serial.output.as_ref().unwrap_err();
+    assert!(
+        error.contains("later failure") && error.contains("app/a.cljs:3:"),
+        "{error}"
+    );
+    assert!(serial.stats.namespaces.iter().all(|n| n.name != "app.b"));
+    for slots in [2, 4, 8] {
+        let pooled = build_with(&sources, "app.main", slots, false, limited(1024, 100_000));
+        assert_eq!(pooled.output, serial.output, "{slots} slots");
+        assert_eq!(pooled.warnings, serial.warnings, "{slots} slots");
+    }
+}
+
+#[test]
+fn a_failed_drain_point_reports_its_error_and_drains_no_later_namespace() {
+    // Without warning mode `app.a`'s unit fails at its drain point, which
+    // comes after `app.b`'s top-level pass (light-cljs-391). That failure is
+    // the error: `app.b`'s units, which fail too and which the pool does
+    // not start once an earlier unit failed, are not waited for.
+    let sources = Sources::new();
+    sources.write("app/m.cljs", FAILING);
+    sources.write(
+        "app/a.cljs",
+        "(ns app.a (:require [app.m :refer [fast-fail]]))\n(defn f0 [] (fast-fail))",
+    );
+    sources.write(
+        "app/b.cljs",
+        "(ns app.b (:require [app.m :refer [slow-fail]]))\n(defn g0 [] (slow-fail))\n(defn g1 [] (slow-fail))",
+    );
+    sources.write(
+        "app/main.cljs",
+        "(ns app.main (:require [app.a] [app.b])) (js/console.log (app.a/f0))",
+    );
+    for slots in [1, 2, 4, 8] {
+        let started = std::time::Instant::now();
+        let built = build_with(&sources, "app.main", slots, false, limited(1024, 100_000));
+        let error = built.output.unwrap_err();
+        assert!(
+            error.contains("later failure") && error.contains("app/a.cljs:2:"),
+            "{slots} slots: {error}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{slots} slots: {:?}",
+            started.elapsed()
+        );
+    }
+}
+
+#[test]
 fn warnings_are_in_the_same_order_at_every_slot_count() {
     let sources = Sources::new();
     sources.write(
@@ -290,8 +361,11 @@ fn headroom_a_worker_took_returns_for_the_main_isolate() {
     // allowed 64 MiB and share 128 MiB of headroom. A worker's unit that
     // needs 150 MiB takes most of it; the worker is retired after that job,
     // so the headroom is back when the next namespace's top-level macro on
-    // the main isolate needs as much, as with one slot. QuickJS-only builds
-    // have no pool, and QuickJS's values are twice as large.
+    // the main isolate needs as much, as with one slot: `DRAIN_LAG`
+    // namespaces between them put that pass after `app.h`'s drain point,
+    // which waits for the worker (light-cljs-391); within the lag, the two
+    // would need the headroom at once. QuickJS-only builds have no pool,
+    // and QuickJS's values are twice as large.
     if !cfg!(feature = "v8-macros") {
         return;
     }
@@ -301,9 +375,19 @@ fn headroom_a_worker_took_returns_for_the_main_isolate() {
         "app/h.cljs",
         "(ns app.h (:require [app.m :refer [hog]])) (defn h0 [] (hog 150)) (defn h1 [] 1)",
     );
+    let mut fillers = String::new();
+    for k in 0..light_cljs::analyzer::DRAIN_LAG {
+        sources.write(
+            &format!("app/f{k}.cljs"),
+            &format!("(ns app.f{k}) (def v {k})"),
+        );
+        fillers.push_str(&format!(" [app.f{k}]"));
+    }
     sources.write(
         "app/t.cljs",
-        "(ns app.t (:require [app.h] [app.m :refer [hog]])) (hog 150) (js/console.log (app.h/h0))",
+        &format!(
+            "(ns app.t (:require [app.h]{fillers} [app.m :refer [hog]])) (hog 150) (js/console.log (app.h/h0))"
+        ),
     );
     for slots in [1, 2] {
         let built = build_with(&sources, "app.t", slots, false, limited(1024, 100_000));

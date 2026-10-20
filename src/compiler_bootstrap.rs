@@ -407,6 +407,20 @@ fn build_in(
     Ok(bootstrap)
 }
 impl MacroHost {
+    /// Start the compilation's compile-time engine now, as the first
+    /// JavaScript macro it expands would: at a namespace's dispatch whose
+    /// units may need it, so that it starts at the same point whichever
+    /// thread analyzes them (light-cljs-391). Nothing without a session or
+    /// once it has an engine. A start that fails is left to the expansion
+    /// that needs it, which fails as it would have.
+    pub(crate) fn start_session_engine(&mut self) {
+        let Some(session) = self.session_handle() else {
+            return;
+        };
+        if session.start_dispatch_engine(self).is_ok() && self.engine.bootstrap.is_none() {
+            self.engine.bootstrap = session.bootstrap();
+        }
+    }
     pub(crate) fn expand_core_javascript(
         &mut self,
         name: &str,

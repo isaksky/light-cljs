@@ -2022,7 +2022,11 @@ fn cancellation_during_installation_stops_it() {
             .map(|_| ())
             .unwrap_err()
             .to_string();
-        assert_eq!(artifacts, [("lib.macros".to_owned(), true)], "{passed}");
+        assert_eq!(
+            artifacts,
+            [("lib.macros".to_owned(), true)],
+            "{passed}: {error}"
+        );
         assert_eq!(*asked.borrow(), ["lib.macros", "lib.a"], "{passed}");
         if error.contains("installing lib.a: JavaScript session cancelled") {
             stopped += 1;

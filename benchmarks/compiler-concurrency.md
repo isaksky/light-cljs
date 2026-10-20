@@ -11,6 +11,66 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## The coordinator past a drain (light-cljs-391, October 19, 2026)
+
+A namespace's units are taken, charged, published and merged at its drain
+point, after the top-level passes of the next `DRAIN_LAG` = 6 namespaces,
+while the coordinator goes on (docs/compiler-concurrency.md, "As built
+(light-cljs-391)"). `bb benchmarks/jobs.bb OUT --parent PARENT --candidate
+CANDIDATE --source-maps main-none` and `... main-advanced small macros wide
+chain abnf`, three alternating rounds each, parent `8ee35b7` (no `--jobs`)
+against the candidate at `--jobs` 1, 2, 4, 8 and 12, with another worker's
+builds and tests on the machine (1-minute load in the table).
+
+| `main-none` | Wall median | Range | vs `--jobs 1` | User | Peak RSS | vs `--jobs 1` | Load |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | --- |
+| parent | 23.61 s | 23.57-24.51 | 1.03x | 27.9 s | 1.134 GB | 1.01x | 4.6-6.4 |
+| `--jobs 1` | 23.00 s | 22.77-23.76 | 1 | 27.1 s | 1.121 GB | 1 | 4.1-5.2 |
+| `--jobs 2` | 18.29 s | 17.82-18.85 | 0.80x | 30.2 s | 1.264 GB | 1.13x | 3.9-4.8 |
+| `--jobs 4` | 12.86 s | 12.59-12.88 | 0.56x | 32.7 s | 1.475 GB | 1.32x | 4.2-4.8 |
+| `--jobs 8` | 12.40 s | 12.24-12.40 | 0.539x | 37.1 s | 1.840 GB | 1.64x | 4.1-4.7 |
+| `--jobs 12` | 12.41 s | 12.28-12.65 | 0.54x | 41.2 s | 2.245 GB | 2.00x | 4.1-5.1 |
+
+These builds also write the source map (`--source-maps`), which adds about
+0.2 GB to every row. JavaScript and source map have one SHA-256 each at
+every `--jobs` value (`ab66dc52…` and `72415c4c…`); the parent's differ
+(`9424b826…`), and its JavaScript is the candidate's except for numbered
+local names (identical once digits are removed): the definition order
+changed, nothing it resolves did. With `--warnings` both report the same 18
+warnings at one job. A `--stats` round without maps (load 5
+to 7): `--jobs 1` 23.00 s and 0.902 GB, `--jobs 8` 12.31 s (0.535x) and
+1.615 GB (1.79x); `trace.wait-ms` 2,654 at eight jobs (9,500 before),
+`trace.top-level-ms` 6,335, `pool.utilization` 0.266 (0.166),
+`time.worker-units-ms` 21,148, `pool.worker-initializations` 1,088,
+`memory.queued-ir.peak-bytes` 16.4 MB (597 units at one job, 594 at
+eight), `memory.parsed-trees.peak-bytes` 48.4 MB, macro calls 93,997 at
+both.
+
+| Other scenarios, wall median | parent | `--jobs 1` | 2 | 4 | 8 | 12 | RSS at 8 vs 1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `main-advanced` (load 2 to 18) | 29.91 s | 28.67 s | 29.00 s | 19.39 s | 18.51 s (0.65x) | 18.91 s | 1.57x |
+| `macros` | 0.68 s | 0.69 s | 0.74 s | 0.37 s | 0.27 s (0.39x) | 0.28 s | 1.87x |
+| `wide` | 1.10 s | 1.13 s | 1.12 s | 0.55 s | 0.38 s (0.34x) | 0.36 s | 2.44x |
+| `chain` | 1.14 s | 1.15 s | 1.25 s | 0.60 s | 0.42 s (0.37x) | 0.40 s | 2.48x |
+| `abnf` | 1.14 s | 1.12 s | 1.13 s | 1.06 s | 1.04 s (0.93x) | 1.04 s | 1.63x |
+| `small` | 0.00 s | 0.00 s | 0.06 s | 0.06 s | 0.06 s | 0.06 s | 6.3x |
+
+Each scenario has one output digest at every `--jobs` value. The serial
+gate holds: the candidate's `--jobs 1` is 2.6% faster than the parent and
+1% smaller in peak RSS on `main-none` (4% faster on `main-advanced`).
+
+Against the gate (0.50x with 5%, so 0.525x; RSS 1.5x with 5%, 1.575x),
+eight jobs reach 0.539x and 1.64x (1.79x without maps): both missed, so
+`--jobs` stays 1 by default. Four jobs already give 0.56x: the coordinator
+is the limit, with 6.3 s of top-level passes, 2.7 s still waiting (mostly
+for the few long units the lag cannot hide, such as instaparse.abnf's
+1.6 s), and the worker-unit inflation (21.1 s on workers against 16.0 s
+serially). The model predicted 9.8 s for this part at L = 6; the build's
+remaining 2.6 s are loading, drain-point bookkeeping and emission. The
+memory the pool adds is the isolates' (0.72 GB at eight jobs; the queued
+IR does not grow), which overlap does not shrink; no focused change to the
+isolates' share was made here.
+
 ## Keyword provenance per macro call (light-cljs-379, October 19, 2026)
 
 Interned keywords kept the provenance of the first form an isolate

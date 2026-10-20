@@ -154,6 +154,11 @@ impl UnitCharges {
         };
         for event in &self.events {
             match event {
+                // A session an engine failure invalidated, such as a later
+                // top-level pass's that the drain point comes after
+                // (light-cljs-391), fails that expansion, not the polls
+                // charged after it.
+                UnitEvent::Poll(_) if control.as_ref().is_some_and(|c| c.invalidated()) => {}
                 UnitEvent::Poll(span) => {
                     if let Some(Err(error)) = control.as_ref().map(|control| control.poll()) {
                         return fail(span, error.to_string());
@@ -376,7 +381,21 @@ struct BuildRequest {
 struct Demand<'a> {
     queued: bool,
     on_worker: bool,
+    /// Whether the coordinator analyzes the unit at its namespace's
+    /// dispatch, recording its charges for the drain point
+    /// ([`CompilationSession::analyze_held`]).
+    held: bool,
     server: Option<BuildServer<'a>>,
+}
+/// What the coordinator does with a unit's analysis once it has it
+/// ([`CompilationSession::analyze_in`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Take {
+    /// Charge what it recorded now: at its drain point, or where the
+    /// coordinator demands it first.
+    Charge,
+    /// Keep what it recorded for its drain point (light-cljs-391).
+    Hold,
 }
 /// How the coordinator answers a forwarded `light.build` request: its text
 /// and the sources the worker's analyses are of.
@@ -1034,26 +1053,15 @@ impl CompilationSession {
             entry.added = added;
         }
     }
-    /// The program globals the merge of unit `unit` appended
-    /// ([`Self::capture_added_globals`]), taken.
-    pub fn take_added_globals(&self, unit: usize) -> Vec<usize> {
-        self.capture
-            .borrow_mut()
-            .as_mut()
-            .and_then(|capture| {
-                let index = unit.checked_sub(capture.first_unit)?;
-                capture.units.get_mut(index)
-            })
-            .map(|entry| std::mem::take(&mut entry.added))
-            .unwrap_or_default()
-    }
-    /// The units from ID `from` on.
-    pub fn captured_units(&self, from: usize) -> Result<Vec<UnitRecord>, String> {
+    /// The units with IDs in `units`.
+    pub fn captured_units(&self, units: std::ops::Range<usize>) -> Result<Vec<UnitRecord>, String> {
+        let from = units.start;
         let units = self
             .shared
             .lock()
             .units
             .iter()
+            .take(units.end)
             .skip(from)
             .map(|unit| {
                 let prepared = match &unit.state {
@@ -1102,13 +1110,17 @@ impl CompilationSession {
         }
         Ok(records)
     }
-    /// The registrations from position `from` on.
-    pub fn captured_registrations(&self, from: usize) -> Vec<RegistrationRecord> {
+    /// The registrations at positions in `registrations`.
+    pub fn captured_registrations(
+        &self,
+        registrations: std::ops::Range<usize>,
+    ) -> Vec<RegistrationRecord> {
         self.shared
             .lock()
             .registrations
             .iter()
-            .skip(from)
+            .take(registrations.end)
+            .skip(registrations.start)
             .map(|registration| match registration {
                 Registration::Root(name, unit, test, once, location) => RegistrationRecord::Root {
                     name: name.clone(),
@@ -1323,21 +1335,37 @@ impl CompilationSession {
         if names.is_empty() {
             return Ok(());
         }
+        self.flush_gensyms()?;
         let mut seen = self.gensyms_seen.borrow_mut();
         let mut buffer = self.gensym_buffer.borrow_mut();
-        if self.gensyms_logged.get()
-            && let Some(bootstrap) = self.bootstrap()
-        {
-            let (_, earlier) = Self::take_gensyms_from(bootstrap.evaluator.as_ref())?;
-            seen.extend(earlier.iter().cloned());
-            buffer.extend(earlier);
-        }
         for name in names {
             if seen.insert(name.clone()) {
                 buffer.push(name);
             }
         }
         Ok(())
+    }
+    /// Move what this engine's `gensym` has given since it was last read
+    /// into the log [`Self::take_gensyms`] returns, ahead of what a unit
+    /// charged later gives.
+    fn flush_gensyms(&self) -> Result<(), String> {
+        if let Some(earlier) = self.engine_gensyms()? {
+            self.gensyms_seen
+                .borrow_mut()
+                .extend(earlier.iter().cloned());
+            self.gensym_buffer.borrow_mut().extend(earlier);
+        }
+        Ok(())
+    }
+    /// What this engine's `gensym` has given since it was last read, while
+    /// they are logged.
+    fn engine_gensyms(&self) -> Result<Option<Vec<Vec<u16>>>, String> {
+        match self.bootstrap() {
+            Some(bootstrap) if self.gensyms_logged.get() => Ok(Some(
+                Self::take_gensyms_from(bootstrap.evaluator.as_ref())?.1,
+            )),
+            _ => Ok(None),
+        }
     }
     /// The runtime's `gensym` skips every unqualified symbol name the form
     /// bridge decodes, so importing the names as symbols reserves them.
@@ -1693,6 +1721,12 @@ impl CompilationSession {
     pub(crate) fn perturb(&self, perturbation: crate::scheduler::Perturbation) {
         let _ = self.shared.perturbation.set(perturbation);
     }
+    /// Note what the compilation records of each recorded analysis beyond
+    /// its charges, with a pool or without: the units the coordinator keeps
+    /// at a dispatch are recorded too (light-cljs-391).
+    pub(crate) fn set_recording(&self, recording: crate::macro_host::UnitRecording) {
+        let _ = self.shared.recording.set(recording);
+    }
     /// Start the build's unit pool of `slots`, whose workers are bound to
     /// `environment` ([`UnitPool::start`]).
     pub(crate) fn start_pool(
@@ -1735,6 +1769,49 @@ impl CompilationSession {
             }
             None => false,
         }
+    }
+    /// Note that the compilation has charged `charged` expansions and
+    /// generated nodes, the soft cap that units recorded from here on start
+    /// from ([`SharedCatalog::raise_charged`]).
+    pub(crate) fn note_charged(&self, charged: (usize, usize)) {
+        self.shared.raise_charged(charged.0, charged.1);
+    }
+    /// Start the coordinator's engine for `host` at a namespace's dispatch,
+    /// if it has none ([`MacroHost::start_session_engine`]).
+    pub(crate) fn start_dispatch_engine(self: &Rc<Self>, host: &MacroHost) -> Result<(), String> {
+        if self.bootstrap().is_some() {
+            return Ok(());
+        }
+        #[cfg(debug_assertions)]
+        if let Some(delay) = self
+            .shared
+            .perturbation
+            .get()
+            .and_then(|p| p.main_engine_delay)
+        {
+            std::thread::sleep(delay);
+        }
+        let bootstrap = match &host.engine.bootstrap {
+            Some(bootstrap) => bootstrap.clone(),
+            None => crate::compiler_bootstrap::build(host, true)?,
+        };
+        #[cfg(debug_assertions)]
+        if let Some(delay) = self
+            .shared
+            .perturbation
+            .get()
+            .and_then(|p| p.main_attach_delay)
+        {
+            std::thread::sleep(delay);
+        }
+        // An engine that failed to attach is not the session's: the
+        // expansion that needs one starts it again, and fails as it would
+        // have without this start.
+        let attached = self.attach(&bootstrap, host);
+        if attached.is_err() {
+            self.engine.borrow_mut().bootstrap = None;
+        }
+        attached
     }
     /// The coordinator's engine, started now if it has none, as the first
     /// JavaScript macro a serial build expands starts it; `binding` is a
@@ -1787,6 +1864,13 @@ impl CompilationSession {
         if let Some(pool) = pool {
             pool.finish();
         }
+    }
+    /// Whether unit `id`'s analysis failed.
+    pub(crate) fn unit_failed(&self, id: usize) -> bool {
+        matches!(
+            self.shared.lock().units.get(id).map(|unit| &unit.state),
+            Some(AnalysisState::Failed(..))
+        )
     }
     pub fn diagnostic(&self, id: usize) -> Option<crate::AnalysisError> {
         match &self.shared.lock().units.get(id)?.state {
@@ -1848,7 +1932,23 @@ impl CompilationSession {
         id: usize,
         engine: Option<&dyn MacroEvaluator>,
     ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
-        self.analyze_in(id, engine, false)
+        self.analyze_in(id, engine, false, Take::Charge)
+    }
+    /// Analyze unit `id`, which its namespace's dispatch keeps on this
+    /// thread, recording what it charges for its drain point, where
+    /// [`Self::analyze_pooled`] charges it in unit order as it charges a
+    /// worker's unit (docs/compiler-concurrency.md, "As built
+    /// (light-cljs-391)"). An error is the unit's failure, which its drain
+    /// point reports.
+    pub(crate) fn analyze_held(
+        &self,
+        id: usize,
+        engine: Option<&dyn MacroEvaluator>,
+    ) -> Result<(), String> {
+        let analysis = self.analyze_in(id, engine, false, Take::Hold).map(drop);
+        // No pool job after it in unit order starts, as after a worker's.
+        self.shared.note_job(id);
+        analysis
     }
     /// Unit `id`'s analysis, which the drain gave to the unit pool: a
     /// worker analyzes it, and this thread waits for it even while it is
@@ -1858,13 +1958,14 @@ impl CompilationSession {
         id: usize,
         engine: Option<&dyn MacroEvaluator>,
     ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
-        self.analyze_in(id, engine, true)
+        self.analyze_in(id, engine, true, Take::Charge)
     }
     fn analyze_in(
         &self,
         id: usize,
         engine: Option<&dyn MacroEvaluator>,
         queued: bool,
+        take: Take,
     ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
         let bootstrap = self.bootstrap();
         // A unit analyzed on a worker, or a macro-free one anywhere, is
@@ -1883,7 +1984,9 @@ impl CompilationSession {
             let binding = counters.as_ref().expect("a unit binding");
             let log = binding.dependency_log.borrow().as_ref().map(|log| {
                 crate::dependency_manifest::ObservationLog {
-                    window: log.window,
+                    // The worker's unit's source, whatever namespace this
+                    // thread analyzes meanwhile (light-cljs-391).
+                    window: analysis.first().copied().unwrap_or(log.window),
                     ..Default::default()
                 }
             });
@@ -1898,6 +2001,11 @@ impl CompilationSession {
             (reply, log.take().map(Box::new))
         };
         let server = counters.is_some().then_some(&serve as BuildServer<'_>);
+        // What `gensym` gives in this engine during a kept unit's analysis
+        // is the unit's, which its drain point adds, as a worker's.
+        if take == Take::Hold {
+            self.flush_gensyms()?;
+        }
         let analysis = analyze_unit(
             &self.shared,
             self.thread,
@@ -1906,6 +2014,7 @@ impl CompilationSession {
             Demand {
                 queued,
                 on_worker: false,
+                held: take == Take::Hold,
                 server,
             },
             || {
@@ -1913,6 +2022,36 @@ impl CompilationSession {
                 (*binding, bootstrap)
             },
         );
+        match take {
+            Take::Charge => {}
+            // Its drain point charges it to the binding it was registered
+            // with.
+            Take::Hold => {
+                if let Some(names) = self.engine_gensyms()? {
+                    let mut c = self.shared.lock();
+                    match c.units[id].charges.as_mut() {
+                        Some(charges) => charges.gensyms.extend(names),
+                        None => {
+                            drop(c);
+                            self.gensym_buffer.borrow_mut().extend(names);
+                        }
+                    }
+                }
+                if let Some(binding) = counters
+                    && let Some(slot) = self.unit_bindings.borrow_mut().get_mut(id)
+                    && slot.is_none()
+                {
+                    *slot = Some(Box::new(binding));
+                }
+                return analysis;
+            }
+        }
+        // A unit that this thread demands while it records another's
+        // analysis is charged at its own drain point, or where it is
+        // demanded outside a recording, as a unit a worker demands is.
+        if crate::macro_host::MacroFreeUnit::active() {
+            return analysis;
+        }
         // Analyzed on another thread, the unit's binding is no longer needed.
         drop(self.take_unit_binding(id));
         // A pooled unit a worker found too deep fails here too, and needed
@@ -2013,6 +2152,7 @@ fn analyze_unit(
     let Demand {
         queued,
         on_worker,
+        held,
         server,
     } = demand;
     let (inputs, depth, name, macro_free) = match shared.claim(thread, id, queued, server)? {
@@ -2060,15 +2200,22 @@ fn analyze_unit(
     // coordinator charges in its order ([`UnitCharges`]); a unit demanded
     // while one is recorded is recorded with it, in its place, as the
     // serial build charged it.
+    // So does a unit the coordinator keeps at its namespace's dispatch,
+    // whose drain point charges it (light-cljs-391).
     let nested = crate::macro_host::MacroFreeUnit::active();
-    let records = !nested && (macro_free || on_worker);
-    if records {
+    let records = !nested && (macro_free || on_worker || held);
+    if records || (nested && !on_worker) {
         // Counted where the unit is charged ([`UnitCharges`]), from what
         // the coordinator charged before it; the unit's trace frame counts
-        // these.
+        // these. A unit the coordinator demands while it records another
+        // counts on its own cells too, as a worker's does on the worker's,
+        // so that only the recording charges it.
         let (expansions, nodes) = shared.charged();
         host.engine.expansions = std::rc::Rc::new(std::cell::Cell::new(expansions));
         host.engine.generated_nodes = std::rc::Rc::new(std::cell::Cell::new(nodes));
+        if !records {
+            host.engine.work = Default::default();
+        }
     }
     let (analysis, charges) = {
         // Declared before the frontier guard, so the frontier's transitions
@@ -2117,7 +2264,7 @@ fn analyze_unit(
                 }
                 _ => Ok(()),
             };
-            let free = crate::macro_host::MacroFreeUnit::enter(name, macro_free, recording);
+            let free = crate::macro_host::MacroFreeUnit::enter(name, macro_free, recording, !held);
             let analysis =
                 crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
             let recorded = free.finish();
@@ -2427,6 +2574,7 @@ impl WorkerView {
             Demand {
                 queued: false,
                 on_worker: true,
+                held: false,
                 server: None,
             },
             || (self.host.engine.frame(), None),
@@ -2898,6 +3046,25 @@ pub(crate) fn install_catalog_services(
                     .as_ref()
                     .map_or_else(Vec::new, |view| view.analysis_sources());
                 let units = |unit| view.as_ref()?.unit_source(unit);
+                // A unit this thread records logs what the request records
+                // in its record, as a worker's forwarded request does, for
+                // the drain point that charges it (light-cljs-391).
+                if crate::macro_host::MacroFreeUnit::active() && log.borrow().is_some() {
+                    let own = log.borrow().as_ref().map(|log| {
+                        crate::dependency_manifest::ObservationLog {
+                            window: log.window,
+                            ..Default::default()
+                        }
+                    });
+                    let own = Rc::new(RefCell::new(own));
+                    let answer = crate::build_services::serve_request(
+                        &build, &own, request, units, analysis,
+                    );
+                    if let Some(recorded) = own.take() {
+                        crate::macro_host::record_observations(recorded);
+                    }
+                    return answer;
+                }
                 crate::build_services::serve_request(&build, &log, request, units, analysis)
             }),
         )

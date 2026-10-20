@@ -114,7 +114,14 @@ loader reads and parses each source in a job, whose requires go back on the
 queue, then replays its depth-first walk over the results, so source order,
 diagnostics and the dependency manifest do not depend on completion order
 (a `SourceProvider` is called on the pool only when its `concurrent` method
-opts in, as source roots do). Debug builds also have a test-only
+opts in, as source roots do). The second is the unit pool: with `--jobs N`, a namespace's
+deferred units go to worker isolates when its top-level pass ends, and the
+coordinator goes on with the next namespaces; their outcomes are taken,
+charged, published and merged at the namespace's drain point, after the
+top-level passes of the next `analyzer::DRAIN_LAG` (six) namespaces, so the
+definition order is the same at every `--jobs` value, `--jobs 1` included
+([compiler-concurrency.md](compiler-concurrency.md#stage-a-parallel-deferred-units),
+"As built (light-cljs-391)"). Debug builds also have a test-only
 `scheduler::Perturbation`, which a build takes through
 `EntryRecorders::perturbation`: seeded delays, random batches and steals,
 a forced assignment and tight bounds, which `tests/compiler/schedule_stress.rs`

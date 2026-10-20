@@ -1065,7 +1065,9 @@ eligible share of Penpot is expected to be small.
   metadata, whose unit is analyzed through the session. Whether the file
   defines macros does not enter: a call to a function the file later turns
   into a macro is eligible, as its snapshot sees it. At `--jobs 1` nothing
-  is judged, so the serial build does no new work.
+  is judged, so the serial build does no new work (since light-cljs-391
+  it is judged at every value, to start the coordinator's engine at the
+  same point, but only `--jobs N` above one dispatches by it).
 - *The guard.* A macro-free unit is analyzed under
   `macro_host::MacroFreeUnit` on whichever thread takes it. Entering a core
   or source macro's JavaScript, declaring a macro, calling a data reader,
@@ -1237,20 +1239,13 @@ The one deterministic ID-order change of this stage is made, at every
   `tests/cli.rs` `worker_isolates_match_a_fresh_isolate_per_unit`, which
   also checks that persistent and fresh isolates emit the same program and
   that the inline hook restores `1 2`).
-- *Not built: the coordinator does not go on.* The pellet asked the
-  coordinator to continue to the next namespace's top-level pass once it
-  had enqueued a namespace's units. It cannot without a second ID-order
-  change: the globals a unit adds (a nested definition's Var, an existence
-  probe's or a lazy target's reservation) are given to the program at the
-  drain (`publish_globals`), before the next namespace allocates any
-  global, so that the next namespace resolves them and every global keeps
-  its serial ID. Going on would publish them after the next namespace's
-  globals, at every `--jobs` value, `--jobs 1` included. Recorded under
-  "Open questions". So the coordinator waits at each drain, and the pool
-  runs one namespace's units at a time; the longest-chain-first priority
-  across namespaces has nothing to order yet, and the jobs keep phase 0
-  and priority 0, one batch per namespace in source order, which workers
-  claim four at a time and steal.
+- *The coordinator going on.* Not built here: it needed a second ID-order
+  change, since the globals a unit adds were published at the drain,
+  before the next namespace allocated any. light-cljs-391 built it with
+  the user's 2026-10-19 decision (below). The jobs keep phase 0 and
+  priority 0, one batch per namespace, so workers take earlier
+  namespaces' units first (ties go in submission order), claim four at a
+  time and steal.
 - *Trace.* The exclusive-stage trace stays per thread; `--stats` adds
   `deferred-units.pooled`, `pool.worker-isolates`,
   `time.worker-isolate-startup-ms`, `time.worker-units-ms` and
@@ -1344,6 +1339,141 @@ charges the unit, in unit order, which is where a serial build records it:
   isolates) aborted the process. On Penpot a cold `--jobs 8 --cache-dir`
   build gives the pool 12,817 units instead of 5,303, -10% wall
   (benchmarks/compiler-concurrency.md).
+
+*As built (light-cljs-391), the coordinator goes on past a drain.* The
+user allowed a second ID-order change on 2026-10-19 (the one exception to
+the group's "One deterministic output change"), so the coordinator no
+longer waits for a namespace's units before the next namespace's
+top-level pass:
+
+- *Dispatch and drain point.* Where a namespace's drain was, its
+  *dispatch* (`Analyzer::dispatch_deferred`) gives the pool the units it
+  takes, as one batch in unit order, and analyzes the rest on the main
+  isolate at once, in unit order, recording each one's charges as a
+  worker's unit is recorded (`CompilationSession::analyze_held`); the
+  first of them that fails ends the dispatch. Every unit then waits for
+  the namespace's *drain point* (`NamespaceAnalysis::merge_front`), right
+  after the top-level pass, or artifact install, of the namespace
+  `DRAIN_LAG` after it, and for every namespace still waiting, before
+  `finish`. The drain point takes the units' outcomes in unit order,
+  waiting for the pool's, charges them (`UnitCharges::charge`, for a kept
+  unit too), publishes the globals their bodies added (`publish_globals`,
+  every unit's before any body), reports their warnings where their forms
+  ended, releases their catalog copies, merges their fragments and
+  reports the expression warnings, and returns the namespaces their
+  bodies' lazy references name, which the loader reads then; lazy
+  references from a top-level pass are read when it returns. An
+  installed namespace's bodies install there too. So with L =
+  `DRAIN_LAG`, the program is the top-level passes of namespaces 0..L,
+  namespace 0's drain point (globals, then bodies), namespace L+1's
+  top-level pass, namespace 1's drain point, and so on: a function of the
+  load order and L only, and the same at every `--jobs` value, in
+  QuickJS-only builds and whoever ran which unit.
+- *L = 6.* `benchmarks/concurrency/dag.bb` gained "Option U with a fixed
+  lag" (namespace k's units on W workers, earliest namespace first, from
+  the end of its top-level pass; the pass of k+L+1 waits for them). On the
+  serial trace of Penpot `app.main` at the parent commit (922 namespaces,
+  5.86 s of top-level passes, 16.0 s of units; about 2.0 s outside them),
+  with units at their serial cost and at the 1.38x that light-cljs-343
+  measured on workers, W = 7:
+
+  | L | 0 | 1 | 2 | 3 | 4 | 6 | 8 | 16 | all |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+  | units at 1.00x | 14.57 s | 11.10 s | 9.91 s | 9.23 s | 8.88 s | 8.49 s | 8.33 s | 7.93 s | 5.93 s |
+  | units at 1.38x | 17.86 s | 13.49 s | 11.86 s | 10.87 s | 10.34 s | 9.76 s | 9.51 s | 8.93 s | 5.95 s |
+  | most units waiting | 304 | 317 | 324 | 333 | 375 | 597 | 648 | 767 | 13,361 |
+
+  The gate, 0.525x of `--jobs 1`'s 23.3 s, leaves about 10.2 s for this
+  part; at the measured inflation L = 6 is the smallest lag that meets it
+  with room, and holds about 600 units' outcomes (the queued IR peaked at
+  16 MB for 317 units before). The long tail after L = 16 is a few long
+  units (instaparse.abnf's 1.6 s one) that only an unbounded lag hides.
+- *What changes in meaning.* A Var or reservation a namespace's bodies
+  add is visible to later namespaces from its drain point on: one of the
+  next L namespaces resolves `app.a/answer` as a name no definition
+  declared yet (it still runs, since the bodies define it before the
+  namespace that names it runs), and a `:refer` of it is an error, at
+  every `--jobs` value
+  (`macro_free_units::body_discovered_vars_resolve_past_the_drain_lag`,
+  which also checks a namespace past the lag). On Penpot main, counted
+  with a temporary probe in `publish_globals`, four globals that bodies
+  add were already named by a later namespace within the lag, all
+  reservations (`cljs-bean.core/pr-writer` three times and
+  `caching-hash` once), and no Var a body defines is named before its
+  drain point; the JavaScript is the parent's but for numbered local
+  names. With `--warnings` the parent and the candidate at one job report
+  the same 18 warnings, byte for byte, so the lag adds none.
+- *`--jobs 1`, QuickJS-only and affinity.* With one slot, and for a cache
+  blocker's consumers, every unit is kept: analyzed on the main isolate at
+  the dispatch, today's point, so compile-time effects keep their serial
+  order (the counter fixture still prints `1 2` with a blocker), but
+  charged, published and merged at the drain point like a worker's.
+  Recording a kept unit counts its expansions and nodes on cells of its
+  own and logs its observations, `light.build` requests and `gensym`
+  names in its record, for its charge; it polls its own control as it
+  runs, since a control that a later failure invalidated would fail its
+  replayed polls. A unit demanded while one is recorded is recorded with
+  it, as on a worker, on cells of its own. A charge is taken at the drain
+  point or where the coordinator demands the unit first outside a
+  recording, whichever comes first, at every N.
+- *The coordinator's engine.* A kept unit that expands a JavaScript macro
+  would start the main isolate's engine inside its analysis, at the
+  dispatch, and a worker's unit where it is charged, after later
+  top-level passes, so the engine, whose start installs the catalog's
+  registrations and can analyze units, would start at different points
+  per N. The dispatch therefore starts it, if nothing has, when one of its
+  units may enter an engine (`DeferredUnit::may_enter_engine`: all but
+  those found macro-free, which is now judged at every slot count); a
+  start that fails leaves no engine, and the expansion that needs one
+  starts it again and fails as before (light-cljs-386).
+- *Observing and installing builds settle first.* A build that records
+  what analysis observes (`--cache-dir`, a manifest) or installs
+  artifacts takes a namespace's unit outcomes, and charges them, right
+  after its dispatch (`NamespaceAnalysis::settle_last`), since the
+  namespace is keyed with what its units observed before the next
+  namespace is looked up, and the next artifact is admitted by what came
+  before it; only publishing and merging wait for the drain point. Such a
+  build overlaps only one namespace's units, as before; plain builds
+  overlap L namespaces. The ID order is the same in both, so cached and
+  uncached builds keep matching (`cache_modes.rs`, `cache_contract.rs`).
+  In a plain build the expansion and node limits count in drain-point
+  order (a namespace's units after the next L top-level passes), and in
+  a settling build in source order; each is the same at every N. Making
+  the two orders one is light-cljs-394. In warning mode, units drained
+  form by form during the top-level pass publish their globals there, so
+  later namespaces see them before the lag; light-cljs-393 is to withhold
+  them too.
+- *Artifacts.* The first part is captured when the namespace's analysis
+  returns. Its units are recorded at the drain point, when they are
+  prepared, from the first part's marks (`captured_units` and
+  `captured_registrations` take ranges); in a plain build the drain
+  point's accounting, `gensym` names and captured expansions join the
+  artifact there too.
+- *Warnings and errors.* A namespace's warnings are taken out of the
+  compilation's list once its first part is captured and put back at its
+  drain point (`HeldWarnings`), so later namespaces and earlier merges do
+  not move them; positions are relative to them. On any failure the loader
+  first reaches the drain point of every namespace still waiting, in
+  order, waiting for their units; the first of those that fails is the
+  error, and the namespaces after it are left with their warnings. A
+  drain point that fails is the error at once: later namespaces are not
+  drained, since the pool starts none of their units after a failed one
+  (`parallel_diagnostics::a_failed_drain_point_reports_its_error_and_drains_no_later_namespace`).
+  A kept unit that fails stops the build right after its dispatch, as
+  with one slot always
+  (`a_kept_units_failure_stops_the_build_before_the_next_top_level_pass`);
+  with several slots a worker's failure is found at the drain point,
+  after the next L top-level passes, so their warnings, those of the
+  sources their lazy references loaded, and their per-namespace `--stats`
+  rows are dropped then, and the error and warnings are the one-slot
+  build's. What stays different is what those passes did at compile time
+  (their macros ran) and, where an expansion or node limit is crossed
+  near the failure, which unit it names. A replayed poll on a session
+  that an engine failure invalidated, such as a later top-level pass's,
+  is skipped: that failure is that expansion's. A cancelled build still
+  reports its cancellation.
+- *Trace.* The drain point is the `drain` stage; `trace.wait-ms` is now
+  the coordinator's time blocked at drain points and on demands.
 
 ### Stage C: parallel namespaces
 
@@ -1699,6 +1829,14 @@ output changes once, when stage A lands.
   still waits at each drain (the open question under "Open questions"),
   so canonical order is the order it takes units in, and most of the
   above follows from taking them in that order:
+  (Since light-cljs-391 it takes them at each namespace's drain point,
+  after the next six top-level passes, in a fixed order at every `--jobs`
+  value: the top-level passes of a failing build's next six namespaces
+  run before a worker's unit error is reported at its drain point, and
+  their warnings are dropped (a unit kept on the coordinator stops the
+  build at once); expansion and node limits count in drain-point order, or
+  in source order in builds that record observations or install
+  artifacts. See "As built (light-cljs-391)" under "Stage A".)
   - *Warnings.* A unit's warnings are kept with its analysis in the catalog
     (`AnalysisState::Analyzed`) on whichever thread made them and appended
     at the drain in unit order; the expression and cross-namespace arity
@@ -2051,6 +2189,40 @@ in detail.
    catalog's), steals (3,400) and queue waits (3.6 ms a unit on average,
    a parse job well under one) are not costs worth attacking. Stage C
    should be cut with the overlap as its first pellet.
+
+   *Measured again (light-cljs-391): the coordinator goes on, the gates are
+   still missed, and `--jobs` stays 1 by default.* With the drain lag of
+   six namespaces ("As built (light-cljs-391)" under "Stage A"), three
+   alternating rounds of `benchmarks/jobs.bb` against the parent `8ee35b7`
+   (load 4 to 6; source maps written; full tables in
+   [benchmarks/compiler-concurrency.md](../benchmarks/compiler-concurrency.md#the-coordinator-past-a-drain-light-cljs-391-october-19-2026)):
+
+   | Build | `none` wall | vs `--jobs 1` | Peak RSS vs `--jobs 1` | `advanced` wall | vs `--jobs 1` |
+   | --- | ---: | ---: | ---: | ---: | ---: |
+   | Parent, no `--jobs` | 23.61 s | 1.03x | 1.01x | 29.91 s | 1.04x |
+   | `--jobs 1` | 23.00 s | 1 | 1 (1.121 GB) | 28.67 s | 1 |
+   | `--jobs 2` | 18.29 s | 0.80x | 1.13x | 29.00 s | 1.01x |
+   | `--jobs 4` | 12.86 s | 0.56x | 1.32x | 19.39 s | 0.68x |
+   | `--jobs 8` | 12.40 s | 0.539x | 1.64x | 18.51 s | 0.65x |
+   | `--jobs 12` | 12.41 s | 0.54x | 2.00x | 18.91 s | 0.66x |
+
+   | Gate | Result |
+   | --- | --- |
+   | Output identical across `--jobs 1/2/4/8` | yes: one SHA-256 for the JavaScript and one for the source map on Penpot `none` and one for `advanced` at every N; the 12-seed stress passes |
+   | `--jobs 8` at most 0.525x of `--jobs 1` | no: 0.539x (0.535x in a `--stats` round without maps); 1.90x faster than the parent's serial build |
+   | Peak RSS at most 1.575x | no: 1.64x with maps, 1.79x without |
+   | Serial gate (+2% wall, +3% RSS) | holds: `--jobs 1` is 2.6% faster and 1% smaller than the parent |
+   | Browser run (light-cljs-309) | not available: 309 was closed without a procedure, and none has landed since |
+
+   Since both Penpot gates are missed the default stays 1, and the flipped
+   default's macro memory limit was not measured. The coordinator now waits
+   2.7 s of a 12.3 s build at eight slots (9.5 s of 19.6 s before), and
+   four slots already give 0.56x: what remains is the coordinator's 6.3 s
+   of top-level passes, the few long units the lag cannot hide, and the
+   per-unit inflation (21.1 s of worker units against 16.0 s serially,
+   1,088 helper initializations). Stage C's parallel top-level passes, or
+   warm helper state per isolate, are the next levers; the memory gate
+   needs the isolates' share made smaller, which overlap does not change.
 5. Stage C, the top-level queue, on top of cache Phase 2's relocatable
    fragments. Then per-namespace emission.
 
@@ -2142,6 +2314,12 @@ is part of the stage A gate.
   body would no longer resolve in the next one. Until it is decided, the
   pool overlaps only one namespace's units: on Penpot main the drains
   still wait about 10 s at eight slots.
+  *Settled (light-cljs-391):* the user allowed the second ID-order change
+  on 2026-10-19. A namespace's drain point follows the top-level pass of
+  the namespace `DRAIN_LAG` = 6 after it, at every `--jobs` value, and a
+  Var its bodies define resolves from there on (see "As built
+  (light-cljs-391)" under "Stage A";
+  `macro_free_units::body_discovered_vars_resolve_past_the_drain_lag`).
 - *Merging after the top-level passes (settled by light-cljs-338).* Made as
   described under "Stage A": fragments merge after the next namespace's
   analysis, artifacts are two parts, lazy targets are read from the
@@ -2149,6 +2327,10 @@ is part of the stage A gate.
   open: whether stage A's workers need the merge after every top-level
   pass, which the 6.0 s floor above assumes; that would be a second
   ID-order change, which the group context does not allow.
+  *Settled (light-cljs-391):* no; the merge, with the units' globals,
+  moved to the drain point after a fixed lag of six top-level passes, the
+  one allowed second ID-order change, so workers overlap the next six
+  namespaces' passes, not every later one.
 - *Scalar provenance (light-cljs-371).* The runtime keeps the latest
   provenance of each scalar value it exported, so the span of a scalar a
   JavaScript macro returns depends on what the main isolate exported
@@ -2173,6 +2355,10 @@ is part of the stage A gate.
   trace's own costs, so stage A as built cannot pass its gate. Passing it
   needs the coordinator to go on past a drain, which needs the second
   ID-order change, or stage C.
+  *Settled (light-cljs-391):* the coordinator goes on with a lag of six
+  namespaces; eight jobs reach 0.539x and 1.64x peak RSS, so both gates
+  are still missed (narrowly for speed), and `--jobs` stays 1 by default
+  (see "Gates and first steps", item 4).
 - *What the first cut buys.* On Penpot main 5,319 of 13,367 units (40%)
   are macro-free, but their analysis takes about 0.3 to 0.5 s of the 19 s of
   deferred units (2 to 3%): they are constants, data and small functions.

@@ -190,9 +190,13 @@ pub(crate) fn finish(
     if program.namespaces.len() != start.namespaces.max(completed.source_index + 1) {
         return Err("the analysis added another namespace to the program".into());
     }
-    let units_end = session
-        .as_ref()
-        .map_or(start.units, |s| s.capture_marks().0);
+    let (units_end, registrations_end) =
+        session
+            .as_ref()
+            .map_or((start.units, start.registrations), |s| {
+                let (units, registrations, _) = s.capture_marks();
+                (units, registrations)
+            });
     let mut c = Converter {
         program,
         start,
@@ -200,6 +204,7 @@ pub(crate) fn finish(
         macro_host,
         source_index: completed.source_index,
         units: start.units..units_end,
+        registrations_end,
         references: References::default(),
         external_globals: HashMap::new(),
         namespaces: HashMap::new(),
@@ -255,10 +260,9 @@ pub(crate) fn finish(
     let root = c.expr(completed.root)?;
     let declarations = c.declarations(&input)?;
     let patches = c.patches()?;
-    let units = match &session {
-        Some(session) if session.capturing() => c.units(session)?,
-        _ => DeferredUnits::default(),
-    };
+    // Its units are recorded once their drain point has prepared them
+    // ([`finish_bodies`]).
+    let units = DeferredUnits::default();
     let macros = c.macros(input.namespace, captured_macros)?;
     let expansions = captured_expansions
         .into_iter()
@@ -380,6 +384,7 @@ fn added_globals(program: &Program, added: &[usize]) -> Vec<AddedGlobal> {
 /// the namespace's units, whose views get the globals their merge added.
 /// The merge's warnings, the namespace's expression warnings, join the
 /// artifact's, which installation reports when the first part installs.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn finish_bodies(
     artifact: &mut NamespaceArtifact,
     top: &CaptureStart,
@@ -387,20 +392,104 @@ pub(crate) fn finish_bodies(
     completed: Completed<'_>,
     placeholders: &[(ir::ExprId, ir::ExprId)],
     units: std::ops::Range<usize>,
+    registrations_end: usize,
     macro_host: &MacroHost,
+    work: crate::macro_host::WorkStart,
 ) -> Result<(), String> {
     let program = completed.program;
     let session = macro_host.session_handle();
-    if let Some(session) = &session {
-        for (offset, unit) in units.clone().enumerate() {
-            let added = session.take_added_globals(unit);
-            let entry = artifact
-                .units
-                .units
-                .get_mut(offset)
-                .ok_or("a merged unit is not the namespace's")?;
-            entry.view.added = added_globals(program, &added);
-        }
+    // What the drain point charged of its units, after later namespaces'
+    // top-level passes (light-cljs-391): taken first, so that a refused
+    // capture leaves nothing of it for the next namespace.
+    let (captured_macros, captured_expansions) = session
+        .as_ref()
+        .map(|s| s.take_captured())
+        .unwrap_or_default();
+    let gensyms = match &session {
+        Some(session) => Some(session.take_gensyms()?),
+        None => None,
+    };
+    let drained = accounting(macro_host, work);
+    artifact.accounting = match (artifact.accounting.take(), drained) {
+        (Some(top), Some(drained)) => Some(Accounting {
+            expansions: top.expansions + drained.expansions,
+            generated_nodes: top.generated_nodes + drained.generated_nodes,
+            node_peak: top.node_peak.max(top.generated_nodes + drained.node_peak),
+            macro_depth: top.macro_depth.max(drained.macro_depth),
+            analysis_depth: top.analysis_depth.max(drained.analysis_depth),
+            unit_depth: top.unit_depth.max(drained.unit_depth),
+            conversion_peak: top.conversion_peak.max(drained.conversion_peak),
+        }),
+        _ => None,
+    };
+    if let Some((gensym_to, names)) = gensyms {
+        artifact.names.gensym_to = artifact.names.gensym_to.max(gensym_to);
+        artifact.names.gensyms.extend(names);
+    }
+    if !captured_macros.is_empty() {
+        return Err("a unit declared a macro".into());
+    }
+    for expansion in captured_expansions {
+        // A call in another source is a unit's that one of these units
+        // demanded, named in the first part's references.
+        let source = if expansion.source_index == completed.source_index {
+            SourceRef::Own
+        } else {
+            let name = program
+                .namespaces
+                .get(expansion.source_index)
+                .cloned()
+                .ok_or("a unit expanded a macro call of an unknown source")?;
+            let namespaces = &mut artifact.references.namespaces;
+            let index = match namespaces.iter().position(|known| *known == name) {
+                Some(index) => index,
+                None => {
+                    namespaces.push(name);
+                    namespaces.len() - 1
+                }
+            };
+            SourceRef::Namespace(index as u32)
+        };
+        let (namespace, name) = expansion
+            .key
+            .split_once('/')
+            .ok_or_else(|| format!("macro key {} has no namespace", expansion.key))?;
+        artifact.diagnostics.expansions.push(MacroExpansion {
+            macro_namespace: namespace.to_owned(),
+            name: name.to_owned(),
+            generation: expansion.generation as u32,
+            call: bytes(&expansion.call),
+            source,
+            definition: Site {
+                source: expansion.definition_source,
+                bytes: bytes(&expansion.definition),
+            },
+        });
+    }
+    // Its units, prepared now, as its first part's tables give their views,
+    // with the globals their merge added.
+    if let Some(session) = &session
+        && session.capturing()
+    {
+        let mut c = Converter {
+            program,
+            start: top,
+            names: completed.names,
+            macro_host,
+            source_index: completed.source_index,
+            units: units.clone(),
+            registrations_end,
+            references: References::default(),
+            external_globals: HashMap::new(),
+            namespaces: HashMap::new(),
+            strings: Vec::new(),
+            external_strings: HashMap::new(),
+            named_literals: Vec::new(),
+            external_named: HashMap::new(),
+            js_globals: HashMap::new(),
+            js_table: Vec::new(),
+        };
+        artifact.units = c.units(session)?;
     }
     let mut c = Converter {
         program,
@@ -409,6 +498,7 @@ pub(crate) fn finish_bodies(
         macro_host,
         source_index: completed.source_index,
         units,
+        registrations_end,
         references: References::default(),
         external_globals: HashMap::new(),
         namespaces: HashMap::new(),
@@ -543,6 +633,8 @@ struct Converter<'a> {
     source_index: usize,
     /// The namespace's deferred units.
     units: std::ops::Range<usize>,
+    /// Where the namespace's registrations end.
+    registrations_end: usize,
     references: References,
     external_globals: HashMap<usize, u32>,
     namespaces: HashMap<usize, u32>,
@@ -1307,7 +1399,7 @@ impl Converter<'_> {
         let namespace = self.program.namespaces[self.source_index].clone();
         let mut units = Vec::new();
         for (offset, record) in session
-            .captured_units(self.start.units)?
+            .captured_units(self.units.clone())?
             .into_iter()
             .enumerate()
         {
@@ -1341,7 +1433,9 @@ impl Converter<'_> {
         }
         let own_method = format!("method@{}:", self.source_index);
         let mut registrations = Vec::new();
-        for registration in session.captured_registrations(self.start.registrations) {
+        for registration in
+            session.captured_registrations(self.start.registrations..self.registrations_end)
+        {
             registrations.push(match registration {
                 RegistrationRecord::Root {
                     name,

@@ -114,6 +114,10 @@ pub(crate) struct Caller {
     /// The source of the innermost unit being analyzed, whose macro
     /// expansion is the site when no initializer is innermost.
     pub analyzing: Option<u32>,
+    /// The source of the outermost unit being analyzed: the source an
+    /// input is recorded on, whatever namespace the coordinator analyzes
+    /// meanwhile (light-cljs-391).
+    pub outermost: Option<u32>,
     /// A custom data reader, recorded on the source being read.
     pub reader: bool,
 }
@@ -151,11 +155,13 @@ pub(crate) fn serve_request(
         .filter_map(&units)
         .collect();
     let analyzing = analysis.last().copied();
+    let outermost = analysis.first().copied();
     sources.extend(analysis);
     let caller = Caller {
         initializing: caller == "i",
         units: sources,
         analyzing,
+        outermost,
         reader: caller == "r",
     };
     match serve(build, log, &caller, operation, first, second) {
@@ -199,7 +205,7 @@ fn serve(
         (
             context.resources.clone(),
             context.configuration.clone(),
-            context.window as u32,
+            caller.outermost.unwrap_or(context.window as u32),
             site,
         )
     };

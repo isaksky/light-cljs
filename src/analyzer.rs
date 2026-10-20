@@ -3167,6 +3167,11 @@ struct DeferredUnit {
     /// come out in the order a drain after every form gave, as upstream
     /// reports them form by form. `None` appends them when drained.
     warnings_at: Option<usize>,
+    /// Whether its analysis may enter a compile-time engine: all but a
+    /// unit found macro-free ([`Analyzer::macro_free_form`]), judged at
+    /// every `--jobs` value so that the coordinator's engine starts at the
+    /// same point at every one ([`Analyzer::dispatch_deferred`]).
+    may_enter_engine: bool,
 }
 
 /// A deferred unit analyzed by a drain, whose fragment [`merge_unit`]
@@ -3292,6 +3297,10 @@ struct Analyzer<'a> {
     /// analyzed, which merge into the program after the next namespace's
     /// top-level pass; `None` appends each where it drains.
     drained: Option<Vec<DrainedUnit>>,
+    /// The units the namespace's dispatch kept for its drain point, in unit
+    /// order, and those of them it gave the pool
+    /// ([`Analyzer::dispatch_deferred`]).
+    dispatched: Option<(Vec<DeferredUnit>, Vec<usize>)>,
     macro_depth: usize,
     analysis_depth: usize,
     macro_source: Option<Source>,
@@ -3704,6 +3713,7 @@ fn analyze_input(
         engine,
         deferred: Vec::new(),
         drained: None,
+        dispatched: None,
         macro_depth: 0,
         analysis_depth: 0,
         macro_source: owned_forms.first().map(|form| form.span().source().clone()),
@@ -3916,29 +3926,39 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
     mut prepare: impl FnMut(&mut MacroHost, usize) -> Result<NamespaceResolution, AnalysisError>,
 ) -> Result<Program, (usize, AnalysisError)> {
     let mut analysis = NamespaceAnalysis::new(macro_host);
+    // Without artifacts, only a unit can fail a drain point.
+    let drained = |outcome: Result<(), DrainError>| match outcome {
+        Err(DrainError::Unit(source_index, error)) => Err((source_index, error)),
+        _ => Ok(()),
+    };
     for (source_index, input) in inputs.iter().enumerate() {
-        let resolution =
-            prepare(macro_host, source_index).map_err(|error| (source_index, error))?;
-        let analyzed = analysis.analyze(
-            input,
-            resolution,
-            source_index + 1 == inputs.len(),
-            macro_host,
-            options,
-            warnings,
-        );
-        // The previous namespace's units merge after this one's top-level
-        // pass; all of them when it failed, so that their warnings are
-        // reported. Without artifacts, nothing can fail to merge.
-        if analyzed.is_err() {
-            let _ = analysis.merge_all(macro_host, warnings);
+        let analyzed = prepare(macro_host, source_index).and_then(|resolution| {
+            analysis.analyze(
+                input,
+                resolution,
+                source_index + 1 == inputs.len(),
+                macro_host,
+                options,
+                warnings,
+            )
+        });
+        // A failure is reported after every earlier namespace's drain
+        // point, whose units come before it, and so whose failure would be
+        // reported instead.
+        if let Err(error) = analyzed {
+            drained(analysis.merge_all(macro_host, warnings))?;
+            return Err((source_index, error));
         }
-        analyzed.map_err(|error| (source_index, error))?;
-        while analysis.pending_merges() > 1 {
-            let _ = analysis.merge_front(macro_host, warnings);
+        analysis.hold_warnings(warnings);
+        // A namespace's drain point follows the top-level pass of the
+        // namespace `DRAIN_LAG` after it.
+        while analysis.pending_merges() > DRAIN_LAG {
+            if let Err(error) = analysis.merge_front(macro_host, warnings) {
+                drained(Err(error))?;
+            }
         }
     }
-    let _ = analysis.merge_all(macro_host, warnings);
+    drained(analysis.merge_all(macro_host, warnings))?;
     analysis.finish(inputs.len().saturating_sub(1), macro_host)
 }
 
@@ -4008,6 +4028,9 @@ pub(crate) struct Merged {
     pub(crate) source_index: usize,
     /// Each merged unit's placeholder and the root of its body.
     pub(crate) placeholders: Vec<(ExprId, ExprId)>,
+    /// The namespaces its bodies' lazy references name, in site order, with
+    /// the first site's span, which the loader reads at its drain point.
+    pub(crate) lazy: Vec<(String, Span)>,
 }
 
 /// A namespace whose analysis returned, with what merging its drained
@@ -4017,9 +4040,49 @@ struct DrainedNamespace {
     source_index: usize,
     /// The expressions of its top-level pass.
     top: std::ops::Range<usize>,
+    /// The units drained during its top-level pass (in warning mode), whose
+    /// globals are published already.
     units: Vec<DrainedUnit>,
+    /// The units its dispatch kept for its drain point, in unit order, and
+    /// those of them the pool was given ([`Analyzer::dispatch_deferred`]).
+    dispatched: Vec<DeferredUnit>,
+    pooled: Vec<usize>,
+    warnings: HeldWarnings,
     checked_array_exprs: std::collections::HashSet<ExprId>,
     defines_macros: bool,
+}
+
+/// Where a namespace's warnings are while it waits for its drain point.
+enum HeldWarnings {
+    /// In the compilation's list, from this position on: until
+    /// [`NamespaceAnalysis::hold_warnings`] takes them out of it.
+    Reported(usize),
+    /// Taken out of it, so that later namespaces' warnings and earlier
+    /// namespaces' merges do not move them; its dispatched units' warning
+    /// positions are relative to these.
+    Held(Vec<AnalysisWarning>),
+    /// Back in the compilation's list from this position on, for the drain
+    /// point ([`NamespaceAnalysis::restore_warnings`]).
+    Restored(usize),
+}
+
+/// How many namespaces' top-level passes the coordinator runs past a
+/// namespace's own before that namespace's drain point, where it takes its
+/// units' outcomes, publishes their globals and merges their fragments:
+/// namespace k is drained right after the top-level pass of k + L. A
+/// constant of the compiler, the same at every `--jobs` value, so that the
+/// definition order is (docs/compiler-concurrency.md, "As built
+/// (light-cljs-391)", where it is chosen from the trace of Penpot's main
+/// build).
+pub const DRAIN_LAG: usize = 6;
+
+/// Why a namespace's drain point failed ([`NamespaceAnalysis::merge_front`]).
+#[derive(Debug)]
+pub(crate) enum DrainError {
+    /// Its artifact's bodies did not install.
+    Install(String),
+    /// A unit of the namespace of this source index failed.
+    Unit(usize, AnalysisError),
 }
 
 impl NamespaceAnalysis {
@@ -4088,25 +4151,109 @@ impl NamespaceAnalysis {
         Ok(())
     }
 
-    /// How many namespaces wait to merge their units.
+    /// How many namespaces wait for their drain points.
     pub(crate) fn pending_merges(&self) -> usize {
         self.pending.len()
     }
 
-    /// Merge the units of the oldest namespace waiting to, after the next
-    /// namespace's top-level pass (docs/compiler-concurrency.md, "Stage
-    /// A"): append its drained units in unit order, or install its
+    /// Take the warnings the namespace just analyzed reported out of the
+    /// compilation's list, where later namespaces' warnings and earlier
+    /// namespaces' merges would move them, until its drain point
+    /// ([`HeldWarnings`]). Called once its artifact's first part, which
+    /// keeps them, is captured.
+    pub(crate) fn hold_warnings(&mut self, warnings: &mut Vec<AnalysisWarning>) {
+        if let Some(Pending::Analyzed(drained)) = self.pending.back_mut()
+            && let HeldWarnings::Reported(start) = drained.warnings
+        {
+            let start = start.min(warnings.len());
+            for unit in &mut drained.dispatched {
+                unit.warnings_at = unit.warnings_at.map(|at| at.saturating_sub(start));
+            }
+            drained.warnings = HeldWarnings::Held(warnings.split_off(start));
+        }
+    }
+
+    /// Put the warnings of the oldest namespace waiting for its drain point
+    /// back at the end of the compilation's list, before its drain point:
+    /// its artifact's bodies part, begun after this, then keeps only the
+    /// warnings its drain point adds.
+    pub(crate) fn restore_warnings(&mut self, warnings: &mut Vec<AnalysisWarning>) {
+        if let Some(Pending::Analyzed(drained)) = self.pending.front_mut()
+            && matches!(drained.warnings, HeldWarnings::Held(_))
+        {
+            let held = std::mem::replace(
+                &mut drained.warnings,
+                HeldWarnings::Restored(warnings.len()),
+            );
+            if let HeldWarnings::Held(held) = held {
+                warnings.extend(held);
+            }
+        }
+    }
+
+    /// Whether a unit the dispatch of the namespace just analyzed kept on
+    /// this thread failed: with one slot, or for a blocker's consumer, the
+    /// build stops at once, since it ranks before every later top-level
+    /// pass, and its drain point reports it.
+    pub(crate) fn kept_unit_failed(&self, macro_host: &MacroHost) -> bool {
+        let (Some(Pending::Analyzed(drained)), Some(session)) =
+            (self.pending.back(), macro_host.session_handle())
+        else {
+            return false;
+        };
+        let mut pooled = drained.pooled.iter().copied().peekable();
+        drained
+            .dispatched
+            .iter()
+            .any(|unit| pooled.next_if_eq(&unit.unit).is_none() && session.unit_failed(unit.unit))
+    }
+
+    /// Take the outcomes of the units of the namespace just analyzed, in
+    /// unit order, waiting for the pool's, and charge them now, before the
+    /// next namespace's top-level pass, as a drain did before light-cljs-391:
+    /// in a build that records what analysis observes or installs
+    /// artifacts, whose namespace is keyed, and whose next artifact is
+    /// admitted, by everything before it. Its drain point still publishes
+    /// and merges them after the lag. `Err` if one failed, which its drain
+    /// point reports.
+    pub(crate) fn settle_last(&self, macro_host: &MacroHost) -> Result<(), ()> {
+        let (Some(Pending::Analyzed(drained)), Some(session)) =
+            (self.pending.back(), macro_host.session_handle())
+        else {
+            return Ok(());
+        };
+        let mut pooled = drained.pooled.iter().copied().peekable();
+        for unit in &drained.dispatched {
+            let analysis = if pooled.next_if_eq(&unit.unit).is_some() {
+                session.analyze_pooled(unit.unit, None)
+            } else {
+                session.analyze(unit.unit, None)
+            };
+            analysis.map_err(drop)?;
+        }
+        Ok(())
+    }
+
+    /// The drain point of the oldest namespace waiting for one
+    /// (docs/compiler-concurrency.md, "As built (light-cljs-391)"), right
+    /// after the top-level pass of the namespace [`DRAIN_LAG`] after it, or
+    /// before the program is finished or a failure is reported: take its
+    /// units' outcomes in unit order, waiting for those the pool runs, and
+    /// charge them; publish the globals their bodies added; report their
+    /// warnings; then append their fragments in unit order, or install its
     /// artifact's bodies, and report the expression warnings that read
-    /// them. An installation that fails fails the compilation.
+    /// them. Returns the namespaces its bodies' lazy references name, in
+    /// site order, which the loader reads now. A unit that failed, or an
+    /// installation that fails, fails the compilation.
     pub(crate) fn merge_front(
         &mut self,
         macro_host: &MacroHost,
         warnings: &mut Vec<AnalysisWarning>,
-    ) -> Result<Option<Merged>, String> {
+    ) -> Result<Option<Merged>, DrainError> {
         let Some(pending) = self.pending.pop_front() else {
             return Ok(None);
         };
-        let drained = match pending {
+        let mut drained = match pending {
             Pending::Analyzed(drained) => drained,
             Pending::Installed {
                 artifact,
@@ -4125,25 +4272,83 @@ impl NamespaceAnalysis {
                     },
                     &artifact,
                     top,
-                )?;
+                )
+                .map_err(DrainError::Install)?;
                 for range in [exprs, bodies..self.program.exprs.len()] {
                     extend_arities(&self.program, range, &mut self.arities);
+                }
+                let mut lazy: Vec<(String, Span)> = Vec::new();
+                if let Some(bodies) = &artifact.bodies {
+                    for target in &bodies.declarations.lazy_targets {
+                        if !lazy
+                            .iter()
+                            .any(|(existing, _)| *existing == target.namespace)
+                        {
+                            let (start, end) = bodies.ir.exprs[target.site.0 as usize].span;
+                            lazy.push((target.namespace.clone(), start as usize..end as usize));
+                        }
+                    }
                 }
                 return Ok(Some(Merged {
                     source_index,
                     placeholders: Vec::new(),
+                    lazy,
                 }));
             }
         };
+        if matches!(drained.warnings, HeldWarnings::Held(_)) {
+            self.pending.push_front(Pending::Analyzed(drained));
+            self.restore_warnings(warnings);
+            let Some(Pending::Analyzed(restored)) = self.pending.pop_front() else {
+                unreachable!("the namespace was put back");
+            };
+            drained = restored;
+        }
+        // Warning positions are relative to where the namespace's warnings
+        // were put back, or absolute if they never left the list.
+        let base = match drained.warnings {
+            HeldWarnings::Restored(base) => base,
+            _ => 0,
+        };
+        let session = macro_host.session_handle();
+        if let Some(session) = &session {
+            let timed = crate::compile_stats::start(self.deferred_time.is_some());
+            let traced = crate::compile_trace::enter(
+                crate::compile_trace::Stage::Drain,
+                drained.source_index,
+                None,
+            );
+            let outcome = self.drain_dispatched(session, &mut drained, base, warnings);
+            drop(traced);
+            if let Some(time) = &mut self.deferred_time {
+                crate::compile_stats::add(time, timed);
+            }
+            outcome.map_err(|error| DrainError::Unit(drained.source_index, error))?;
+        }
+        // Its bodies' lazy references, in the order the program has them.
+        let mut lazy: Vec<(String, Span)> = Vec::new();
+        for unit in &drained.units {
+            for target in unit.program.lazy_targets.iter() {
+                let namespace = &unit.program.lazy_namespaces[target.namespace];
+                if target.site.0 >= unit.shared.exprs()
+                    && !lazy.iter().any(|(existing, _)| existing == namespace)
+                {
+                    lazy.push((
+                        namespace.clone(),
+                        unit.program.exprs[target.site.0].span.clone(),
+                    ));
+                }
+            }
+        }
         let bodies = self.program.exprs.len();
         let mut placeholders = Vec::with_capacity(drained.units.len());
-        if let Some(session) = macro_host.session_handle() {
+        if let Some(session) = &session {
             for unit in drained.units {
                 let placeholder = unit.placeholder;
                 let root = merge_unit(
                     &mut self.program,
                     &mut self.globals,
-                    &session,
+                    session,
                     unit,
                     drained.source_index,
                     Some(&drained.namespace),
@@ -4181,17 +4386,93 @@ impl NamespaceAnalysis {
         Ok(Some(Merged {
             source_index: drained.source_index,
             placeholders,
+            lazy,
         }))
     }
 
-    /// Merge every namespace waiting to, in order: before the program is
-    /// finished, or when a namespace failed, so that the earlier ones'
-    /// warnings are reported.
+    /// Take the outcomes of the units `drained`'s dispatch kept, in unit
+    /// order, as a drain did before light-cljs-391: a pooled unit's from
+    /// the worker that analyzed it, waiting if it runs, and a kept one's
+    /// from the catalog; each is charged as it is taken
+    /// ([`crate::compilation_session::CompilationSession::analyze_pooled`]),
+    /// its globals are published and its warnings go where its form ended
+    /// in the namespace's list, from `base`. The first that failed is the
+    /// error, and the namespace's warnings end at its.
+    fn drain_dispatched(
+        &mut self,
+        session: &crate::compilation_session::CompilationSession,
+        drained: &mut DrainedNamespace,
+        base: usize,
+        warnings: &mut Vec<AnalysisWarning>,
+    ) -> Result<(), AnalysisError> {
+        let units = std::mem::take(&mut drained.dispatched);
+        let mut pooled = drained.pooled.iter().copied().peekable();
+        let mut position = units
+            .first()
+            .and_then(|d| d.warnings_at)
+            .map_or(usize::MAX, |at| base + at)
+            .min(warnings.len());
+        let mut later = warnings.split_off(position).into_iter();
+        let mut failure = None;
+        for DeferredUnit {
+            placeholder,
+            unit,
+            shared,
+            warnings_at,
+            ..
+        } in units
+        {
+            let at = warnings_at.map_or(usize::MAX, |at| base + at);
+            warnings.extend(later.by_ref().take(at.saturating_sub(position)));
+            position = position.max(at);
+            let analysis = if pooled.next_if_eq(&unit).is_some() {
+                session.analyze_pooled(unit, None)
+            } else {
+                session.analyze(unit, None)
+            };
+            let (program, unit_warnings) = match analysis {
+                Ok(analyzed) => analyzed,
+                Err(message) => {
+                    failure = Some(session.diagnostic(unit).unwrap_or_else(|| AnalysisError {
+                        span: self.program.exprs[placeholder.0].span.clone(),
+                        kind: AnalysisErrorKind::MacroExpansion(message),
+                    }));
+                    break;
+                }
+            };
+            // Its globals first, then, once every unit's are, the bodies.
+            publish_globals(&mut self.program, &mut self.globals, &program, &shared);
+            drained.units.push(DrainedUnit {
+                placeholder,
+                unit,
+                program,
+                shared,
+            });
+            {
+                let _traced = crate::compile_trace::enter(
+                    crate::compile_trace::Stage::Release,
+                    drained.source_index,
+                    None,
+                );
+                session.release_application_ir(unit);
+            }
+            warnings.extend(unit_warnings);
+        }
+        if failure.is_none() {
+            warnings.extend(later);
+        }
+        failure.map_or(Ok(()), Err)
+    }
+
+    /// The drain point of every namespace waiting for one, in order:
+    /// before the program is finished, or when a namespace failed, so that
+    /// the earlier ones' warnings are reported. The first that fails is the
+    /// error, and the namespaces after it are left.
     pub(crate) fn merge_all(
         &mut self,
         macro_host: &MacroHost,
         warnings: &mut Vec<AnalysisWarning>,
-    ) -> Result<(), String> {
+    ) -> Result<(), DrainError> {
         while self.merge_front(macro_host, warnings)?.is_some() {}
         Ok(())
     }
@@ -4207,6 +4488,7 @@ impl NamespaceAnalysis {
     ) -> Result<DrainedNamespace, AnalysisError> {
         let source_index = self.roots.len();
         let first_lazy = self.program.lazy_targets.len();
+        let warnings_start = warnings.len();
         // The names its analysis generates, deferred units included, are
         // the same whenever and wherever it runs ([`crate::generated_names`]).
         let _names = crate::generated_names::enter_namespace(
@@ -4237,6 +4519,7 @@ impl NamespaceAnalysis {
             engine: None,
             deferred: Vec::new(),
             drained: Some(Vec::new()),
+            dispatched: None,
             macro_depth: 0,
             analysis_depth: 0,
             macro_source: None,
@@ -4297,33 +4580,11 @@ impl NamespaceAnalysis {
         }
         self.program = analyzer.program;
         self.globals = analyzer.globals;
+        let (dispatched, pooled) = analyzer.dispatched.take().unwrap_or_default();
         let root = outcome?;
-        // The namespaces its lazy references name, in the order its
-        // program had them when its units appended where they drained:
-        // the top-level pass's sites, then each unit's.
-        let mut lazy: Vec<(String, Span)> = Vec::new();
-        let mut note = |namespace: &String, span: &Span| {
-            if !lazy.iter().any(|(existing, _)| existing == namespace) {
-                lazy.push((namespace.clone(), span.clone()));
-            }
-        };
-        for target in &self.program.lazy_targets[first_lazy..] {
-            note(
-                &self.program.lazy_namespaces[target.namespace],
-                &self.program.exprs[target.site.0].span,
-            );
-        }
-        for unit in &units {
-            for target in unit.program.lazy_targets.iter() {
-                if target.site.0 >= unit.shared.exprs() {
-                    note(
-                        &unit.program.lazy_namespaces[target.namespace],
-                        &unit.program.exprs[target.site.0].span,
-                    );
-                }
-            }
-        }
-        self.last_lazy = lazy;
+        // The namespaces its top-level pass's lazy references name, in site
+        // order; its bodies' are read at its drain point.
+        self.last_lazy = self.lazy_namespaces_since(first_lazy);
         self.roots.push(root);
         self.requires.push(input.requires.to_vec());
         Ok(DrainedNamespace {
@@ -4331,6 +4592,9 @@ impl NamespaceAnalysis {
             source_index,
             top,
             units,
+            dispatched,
+            pooled,
+            warnings: HeldWarnings::Reported(warnings_start),
             checked_array_exprs,
             defines_macros,
         })
@@ -4413,12 +4677,12 @@ fn namespace_forms(
         let drained = crate::compile_stats::start(deferred_time.is_some());
         let drain =
             crate::compile_trace::enter(crate::compile_trace::Stage::Drain, source_index, None);
-        analyzer.drain_deferred()?;
+        // The units wait for the namespace's drain point.
+        analyzer.dispatch_deferred();
         drop(drain);
         if let Some(time) = deferred_time {
             crate::compile_stats::add(time, drained);
         }
-        analyzer.refresh_reader_macros_after_drain();
         Ok(root)
     }
 }
@@ -4495,8 +4759,10 @@ impl NamespaceAnalysis {
         start: &crate::artifact_capture::CaptureStart,
         merged: &Merged,
         units: std::ops::Range<usize>,
+        registrations_end: usize,
         macro_host: &MacroHost,
         warnings: &[AnalysisWarning],
+        work: crate::macro_host::WorkStart,
     ) -> Result<(), String> {
         crate::artifact_capture::finish_bodies(
             artifact,
@@ -4511,7 +4777,9 @@ impl NamespaceAnalysis {
             },
             &merged.placeholders,
             units,
+            registrations_end,
             macro_host,
+            work,
         )
     }
 
@@ -4547,19 +4815,8 @@ impl NamespaceAnalysis {
             source,
             macro_host,
         )?;
-        let mut lazy = self.lazy_namespaces_since(first_lazy);
-        if let Some(bodies) = &artifact.bodies {
-            for target in &bodies.declarations.lazy_targets {
-                if !lazy
-                    .iter()
-                    .any(|(existing, _)| *existing == target.namespace)
-                {
-                    let (start, end) = bodies.ir.exprs[target.site.0 as usize].span;
-                    lazy.push((target.namespace.clone(), start as usize..end as usize));
-                }
-            }
-        }
-        self.last_lazy = lazy;
+        // Its bodies' lazy references are read at its drain point.
+        self.last_lazy = self.lazy_namespaces_since(first_lazy);
         self.roots.push(root);
         self.requires.push(artifact.declarations.requires.clone());
         self.pending.push_back(Pending::Installed {
@@ -7242,6 +7499,60 @@ impl Analyzer<'_> {
         result
     }
 
+    /// At the end of a namespace's top-level pass, what its drain was
+    /// before light-cljs-391: give the build's pool the units it takes, as
+    /// one batch in unit order, and analyze the rest on this thread now,
+    /// in unit order, recording what each charges
+    /// ([`crate::compilation_session::CompilationSession::analyze_held`]);
+    /// the first of them that fails ends that. All of them wait for the
+    /// namespace's drain point ([`NamespaceAnalysis::merge_front`]), which
+    /// takes and charges them in unit order whoever analyzed them, so that
+    /// a namespace's units are the program's in the same order at every
+    /// `--jobs` value (docs/compiler-concurrency.md, "As built
+    /// (light-cljs-391)").
+    fn dispatch_deferred(&mut self) {
+        if self.registers_ahead {
+            return;
+        }
+        let Some(session) = self.macro_host.session_handle() else {
+            return;
+        };
+        let units = std::mem::take(&mut self.deferred);
+        let charged = (
+            self.macro_host.engine.expansions.get(),
+            self.macro_host.engine.generated_nodes.get(),
+        );
+        let pooled = if self.unit_slots.get() > 1 {
+            session.poolable(units.iter().map(|d| d.unit))
+        } else {
+            Vec::new()
+        };
+        let pooled = if !pooled.is_empty() && session.submit_units(pooled.clone(), charged) {
+            pooled
+        } else {
+            session.note_charged(charged);
+            Vec::new()
+        };
+        // The coordinator's engine starts here if one of the units may
+        // enter one and nothing has started it, at every `--jobs` value: a
+        // unit analyzed here would start it inside its analysis, and a
+        // worker's unit where it is charged, after later namespaces'
+        // top-level passes.
+        if units.iter().any(|d| d.may_enter_engine) {
+            self.macro_host.start_session_engine();
+        }
+        let mut given = pooled.iter().copied().peekable();
+        for deferred in &units {
+            if given.next_if_eq(&deferred.unit).is_some() {
+                continue;
+            }
+            if session.analyze_held(deferred.unit, self.engine).is_err() {
+                break;
+            }
+        }
+        self.dispatched = Some((units, pooled));
+    }
+
     fn drain_deferred_keeping(&mut self, keep_later: bool) -> Result<(), AnalysisError> {
         if self.registers_ahead {
             return Ok(());
@@ -7300,6 +7611,7 @@ impl Analyzer<'_> {
             unit,
             shared,
             warnings_at,
+            ..
         } in units
         {
             let at = warnings_at.unwrap_or(usize::MAX);
@@ -7588,9 +7900,9 @@ impl Analyzer<'_> {
                 .expect("compilation session");
             // Only `--jobs N` dispatches macro-free units; a `:test` unit
             // is analyzed with its definition, through the session.
-            let macro_free = self.unit_slots.get() > 1
-                && test_form.is_none()
-                && form.as_ref().is_some_and(|form| self.macro_free_form(form));
+            let judged =
+                test_form.is_none() && form.as_ref().is_some_and(|form| self.macro_free_form(form));
+            let macro_free = self.unit_slots.get() > 1 && judged;
             let (mut snapshot, shared) = self.definition_snapshot();
             snapshot.definition_test = test_form.clone();
             let unit = session
@@ -7631,6 +7943,7 @@ impl Analyzer<'_> {
                     unit,
                     shared,
                     warnings_at: None,
+                    may_enter_engine: !judged,
                 });
                 placeholder
             }))
@@ -8780,6 +9093,7 @@ impl Analyzer<'_> {
             unit,
             shared,
             warnings_at: None,
+            may_enter_engine: true,
         });
         Ok(expr)
     }

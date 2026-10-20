@@ -283,6 +283,10 @@ impl ExecutionControl {
             )),
         }
     }
+    /// Whether an engine or callback failure invalidated the session.
+    pub(crate) fn invalidated(&self) -> bool {
+        self.0.terminal.load(Ordering::Relaxed) == 4
+    }
     pub(crate) fn invalidate(&self) {
         let _ = self
             .0

@@ -1504,10 +1504,12 @@ fn stats_queued_ir_peaks_drop_test_units_their_definitions_appended() {
                 .1
         };
         assert_eq!(value("deferred-units.registered"), 16.0, "{stderr}");
-        // Two namespaces' definitions and a test unit at most, not the
-        // eight test units.
+        // The definitions of the namespaces waiting for their drain points
+        // (`DRAIN_LAG` and one) and a test unit at most, not their test
+        // units too (light-cljs-391).
         let units = value("memory.queued-ir.peak-units");
-        assert!((1.0..=3.0).contains(&units), "{stderr}");
+        let most = (light_cljs::analyzer::DRAIN_LAG + 2) as f64;
+        assert!((1.0..=most).contains(&units), "{stderr}");
     }
 }
 
@@ -1744,20 +1746,31 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
         // per pair: the first evaluations again, and the reads of `outer`
         // once it is ready, by `bumped`'s expansion of `bump` and by
         // `app.main`'s top level. `inner`'s read is recorded first: its
-        // frame's entry ended first.
+        // frame's entry ended first. A unit kept on the coordinator records
+        // its rows at its namespace's dispatch, before `app.main`'s top level,
+        // and a worker's unit where it is charged, at the drain point after it
+        // (light-cljs-391).
         let reads: Vec<_> = rows("read")
             .iter()
             .map(|row| row.iter().map(|cell| cell.to_string()).collect::<Vec<_>>())
             .collect();
         let read =
             |unit: &str, kind: &str, demander: String| vec![ids(unit), kind.to_owned(), demander];
+        let bumped = read("app.macros/outer", "unit", ids("app.macros/bumped"));
+        let main = read("app.macros/outer", "top-level", "1".into());
+        // QuickJS-only builds have one slot, so every unit is kept.
+        let (third, fourth) = if jobs == "1" || !cfg!(feature = "v8-macros") {
+            (bumped, main)
+        } else {
+            (main, bumped)
+        };
         assert_eq!(
             reads,
             [
                 read("app.macros/inner", "unit", ids("app.macros/outer")),
                 read("app.macros/outer", "top-level", "0".into()),
-                read("app.macros/outer", "unit", ids("app.macros/bumped")),
-                read("app.macros/outer", "top-level", "1".into()),
+                third,
+                fourth,
             ],
             "--jobs {jobs}: {trace}"
         );
@@ -1814,12 +1827,23 @@ fn stats_file_traces_prepared_and_bundle_root_reads() {
          (defn square [n] (->Square n))
          (defmacro square-area [n] (area (square n)))",
     );
+    // `DRAIN_LAG` namespaces between them put app.main's top level after
+    // app.shapes's drain point, which prepares its units (light-cljs-391).
+    let mut fillers = String::new();
+    for k in 0..light_cljs::analyzer::DRAIN_LAG {
+        write(&format!("f{k}.cljs"), &format!("(ns app.f{k}) (def v {k})"));
+        fillers.push_str(&format!(" [app.f{k}]"));
+    }
+    let main = (light_cljs::analyzer::DRAIN_LAG + 1).to_string();
+    let main = main.as_str();
     write(
         "main.cljs",
-        "(ns app.main (:require [app.shapes :refer [square-area]]))
+        &format!(
+            "(ns app.main (:require [app.shapes :refer [square-area]]{fillers}))
          (js/console.log (square-area 3) (square-area 4))
          (def later (square-area 5))
-         (js/console.log later)",
+         (js/console.log later)"
+        ),
     );
     let root = sources.path().to_str().unwrap();
     let file = sources.join("trace.tsv");
@@ -1869,7 +1893,7 @@ fn stats_file_traces_prepared_and_bundle_root_reads() {
     executions.sort();
     let mut expected: Vec<_> = [&protocol, &record, &square]
         .into_iter()
-        .map(|unit| vec![unit.clone(), "top-level".into(), "1".into(), "1".into()])
+        .map(|unit| vec![unit.clone(), "top-level".into(), main.into(), "1".into()])
         .collect();
     expected.sort();
     assert_eq!(executions, expected, "{trace}");
@@ -1882,9 +1906,9 @@ fn stats_file_traces_prepared_and_bundle_root_reads() {
     assert_eq!(
         rows("read"),
         [
-            row(&protocol, "top-level", "1"),
-            row(&square, "top-level", "1"),
-            row(&record, "top-level", "1"),
+            row(&protocol, "top-level", main),
+            row(&square, "top-level", main),
+            row(&record, "top-level", main),
             row(&protocol, "unit", &later),
             row(&square, "unit", &later),
             row(&record, "unit", &later),

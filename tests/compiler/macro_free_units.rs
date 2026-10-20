@@ -494,23 +494,68 @@ fn a_namespaces_bodies_follow_the_next_namespaces_top_level_pass() {
     assert!(programs.windows(2).all(|pair| pair[0] == pair[1]));
 }
 
-/// A Var a deferred initializer defines is the next namespace's to resolve,
-/// qualified, through an alias and referred, although the initializer's body
-/// merges only after that namespace's top-level pass; and cached builds,
-/// installing either namespace, match.
+/// A Var a deferred initializer defines is published at its namespace's
+/// drain point, after the top-level passes of the `DRAIN_LAG` namespaces
+/// after it (light-cljs-391): a namespace within the lag resolves it as an
+/// undeclared name, identically at every slot count, so that a qualified or
+/// aliased reference still runs and a `:refer` of it is an error; a
+/// namespace past the lag resolves it, qualified, through an alias and
+/// referred. Cached builds, installing any of the namespaces, match.
 #[test]
-fn body_discovered_vars_resolve_in_the_next_namespace() {
-    let sources = Sources::new();
-    sources
+fn body_discovered_vars_resolve_past_the_drain_lag() {
+    let within = Sources::new();
+    within
         .write(
             "app/a.cljs",
             "(ns app.a) (def init (do (def answer 42) nil))",
         )
         .write(
             "app/main.cljs",
-            "(ns app.main (:require [app.a :as a :refer [answer]])) (js/console.log app.a/answer a/answer answer)",
+            "(ns app.main (:require [app.a :as a])) (js/console.log app.a/answer a/answer)",
         );
-    let serial = same_at_every_slot_count(&sources, "app.main", false);
-    assert_eq!(execute(&serial.output.unwrap()), "42 42 42\n");
-    crate::cache_contract::check_mixed(sources.0.path(), "app.main");
+    let serial = same_at_every_slot_count(&within, "app.main", true);
+    assert_eq!(execute(serial.output.as_ref().unwrap()), "42 42\n");
+    crate::cache_contract::check_mixed(within.0.path(), "app.main");
+    within.write(
+        "app/main.cljs",
+        "(ns app.main (:require [app.a :as a :refer [answer]])) (js/console.log answer)",
+    );
+    let referred = same_at_every_slot_count(&within, "app.main", false);
+    let error = referred.output.unwrap_err();
+    assert!(
+        error.contains("app.a/answer (:refer does not name a public Var or macro)"),
+        "{error}"
+    );
+    // `DRAIN_LAG` namespaces between them put `app.main`'s top-level pass
+    // after `app.a`'s drain point.
+    let past = Sources::new();
+    past.write(
+        "app/a.cljs",
+        "(ns app.a) (def init (do (def answer 42) nil))",
+    );
+    let mut requires = String::from("[app.a :as a :refer [answer]]");
+    for k in 0..light_cljs::analyzer::DRAIN_LAG {
+        past.write(
+            &format!("app/f{k}.cljs"),
+            &format!("(ns app.f{k} (:require [app.a])) (def v{k} {k})"),
+        );
+        requires.push_str(&format!(" [app.f{k}]"));
+    }
+    past.write(
+        "app/main.cljs",
+        &format!(
+            "(ns app.main (:require {requires})) (js/console.log app.a/answer a/answer answer)"
+        ),
+    );
+    let serial = same_at_every_slot_count(&past, "app.main", true);
+    assert_eq!(execute(serial.output.as_ref().unwrap()), "42 42 42\n");
+    assert!(
+        serial
+            .warnings
+            .iter()
+            .all(|(_, message, _, _)| !message.contains("answer")),
+        "{:?}",
+        serial.warnings
+    );
+    crate::cache_contract::check_mixed(past.0.path(), "app.main");
 }
