@@ -11,6 +11,25 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Installed warnings held for the drain point (light-cljs-395, October 20, 2026)
+
+An installed namespace's warnings wait for its drain point, and every
+analyzed drain point keeps a copy of the namespace's warnings in report
+order for its artifact (docs/compiler-concurrency.md, "As built
+(light-cljs-391)", "Warnings of an installed namespace"). Parent `4fa6268`
+against the candidate, six alternating rounds of `main-none` (no `--jobs`,
+`--no-cache`) on a loaded machine (1-minute load 3.4-11.0); rounds 4-6,
+the quieter ones, at load 3.4-9.0:
+
+| `main-none` | Wall median (6) | Range | Wall median (rounds 4-6) | Peak RSS median (4-6) |
+| --- | ---: | --- | ---: | ---: |
+| parent | 24.43 s | 22.34-28.17 | 24.06 s | 0.918 GB |
+| candidate | 23.28 s | 22.33-31.19 | 22.52 s | 0.909 GB |
+
+No slowdown beyond the noise (the candidate's two slow rounds came with
+3-5 s of system time under load, as did none of the parent's), and RSS
+within 1%. All twelve builds emit one JavaScript SHA-256.
+
 ## Limits charged at the drain point in every build (light-cljs-394, October 20, 2026)
 
 Every build charges a namespace's units at its drain point, and artifacts

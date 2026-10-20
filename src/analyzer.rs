@@ -3102,6 +3102,11 @@ fn expression_warnings(
             }
         }
     }
+}
+
+/// Order the compilation's warnings by source and offset, stably, as each
+/// namespace's expression warnings are added.
+fn sort_warnings(warnings: &mut [AnalysisWarning]) {
     warnings.sort_by_key(|warning| (warning.source_index, warning.span.start));
 }
 
@@ -4071,6 +4076,9 @@ enum Pending {
         source_index: usize,
         /// The expressions its first part installed.
         exprs: std::ops::Range<usize>,
+        /// Its warnings, in the artifact's order, which its drain point
+        /// reports (light-cljs-395).
+        warnings: Vec<AnalysisWarning>,
     },
 }
 
@@ -4082,6 +4090,14 @@ pub(crate) struct Merged {
     /// The namespaces its bodies' lazy references name, in site order, with
     /// the first site's span, which the loader reads at its drain point.
     pub(crate) lazy: Vec<(String, Span)>,
+    /// An analyzed namespace's warnings in the order its drain point had
+    /// them before they were sorted into the compilation's, which its
+    /// artifact keeps ([`crate::namespace_artifact::Diagnostics::warnings`]).
+    pub(crate) warnings: Vec<AnalysisWarning>,
+    /// Each unit its drain point took, by session unit ID in unit order,
+    /// with how many of those warnings came before it: those a failure of
+    /// that unit keeps.
+    pub(crate) kept: Vec<(usize, usize)>,
 }
 
 /// A namespace whose analysis returned, with what merging its drained
@@ -4308,10 +4324,20 @@ impl NamespaceAnalysis {
                 top,
                 source_index,
                 exprs,
+                warnings: held,
             } => {
-                // Its units are charged first, as an analyzed namespace's.
-                crate::artifact_install::charge_bodies(&artifact, macro_host)
-                    .map_err(|error| DrainError::Unit(source_index, error))?;
+                // Its units are charged first, as an analyzed namespace's,
+                // and a failure keeps the warnings its drain point had
+                // reported before the failing unit, unsorted, as
+                // [`Self::drain_dispatched`] does.
+                if let Err((kept, error)) =
+                    crate::artifact_install::charge_bodies(&artifact, macro_host)
+                {
+                    warnings.extend(held.into_iter().take(kept));
+                    return Err(DrainError::Unit(source_index, error));
+                }
+                warnings.extend(held);
+                sort_warnings(warnings);
                 let bodies = self.program.exprs.len();
                 crate::artifact_install::install_bodies(
                     crate::artifact_install::Target {
@@ -4344,6 +4370,8 @@ impl NamespaceAnalysis {
                     source_index,
                     placeholders: Vec::new(),
                     lazy,
+                    warnings: Vec::new(),
+                    kept: Vec::new(),
                 }));
             }
         };
@@ -4361,6 +4389,12 @@ impl NamespaceAnalysis {
             HeldWarnings::Restored(base) => base,
             _ => 0,
         };
+        // Where the namespace's warnings begin in the list.
+        let from = match drained.warnings {
+            HeldWarnings::Restored(at) | HeldWarnings::Reported(at) => at,
+            HeldWarnings::Held(_) => unreachable!("the warnings were put back"),
+        };
+        let mut kept = Vec::new();
         // The globals of the units drained after its forms in warning mode,
         // withheld from later namespaces since its top-level pass
         // ([`Analyzer::withhold_published`]), come first in unit order.
@@ -4381,7 +4415,8 @@ impl NamespaceAnalysis {
                 drained.source_index,
                 None,
             );
-            let outcome = self.drain_dispatched(session, &mut drained, base, warnings);
+            let outcome =
+                self.drain_dispatched(session, &mut drained, (base, from), warnings, &mut kept);
             drop(traced);
             if let Some(time) = &mut self.deferred_time {
                 crate::compile_stats::add(time, timed);
@@ -4446,10 +4481,14 @@ impl NamespaceAnalysis {
             &mut self.arities,
             warnings,
         );
+        let own = warnings[from.min(warnings.len())..].to_vec();
+        sort_warnings(warnings);
         Ok(Some(Merged {
             source_index: drained.source_index,
             placeholders,
             lazy,
+            warnings: own,
+            kept,
         }))
     }
 
@@ -4460,13 +4499,16 @@ impl NamespaceAnalysis {
     /// ([`crate::compilation_session::CompilationSession::analyze_pooled`]),
     /// its globals are published and its warnings go where its form ended
     /// in the namespace's list, from `base`. The first that failed is the
-    /// error, and the namespace's warnings end at its.
+    /// error, and the namespace's warnings end at its. `kept` gets each
+    /// unit with how many of the namespace's warnings, which begin at
+    /// `from`, there are when it is taken.
     fn drain_dispatched(
         &mut self,
         session: &crate::compilation_session::CompilationSession,
         drained: &mut DrainedNamespace,
-        base: usize,
+        (base, from): (usize, usize),
         warnings: &mut Vec<AnalysisWarning>,
+        kept: &mut Vec<(usize, usize)>,
     ) -> Result<(), AnalysisError> {
         let units = std::mem::take(&mut drained.dispatched);
         let mut pooled = drained.pooled.iter().copied().peekable();
@@ -4488,6 +4530,7 @@ impl NamespaceAnalysis {
             let at = warnings_at.map_or(usize::MAX, |at| base + at);
             warnings.extend(later.by_ref().take(at.saturating_sub(position)));
             position = position.max(at);
+            kept.push((unit, warnings.len().saturating_sub(from)));
             let queued = pooled.next_if_eq(&unit).is_some();
             let (program, unit_warnings) = match session.analyze_drained(unit, queued) {
                 Ok(analyzed) => analyzed,
@@ -4842,7 +4885,7 @@ impl NamespaceAnalysis {
                 source_index: merged.source_index,
                 warnings,
             },
-            &merged.placeholders,
+            merged,
             units,
             registrations_end,
             macro_host,
@@ -4857,15 +4900,17 @@ impl NamespaceAnalysis {
     /// macro. An artifact that does not fit the program is refused before
     /// anything changes, and the caller analyzes the source instead; one
     /// whose declarations fail to register, or whose compilation is
-    /// cancelled while it installs, fails the namespace. Its warnings join
-    /// `warnings` where its analysis would have reported them.
+    /// cancelled while it installs, fails the namespace. Its warnings wait
+    /// for its drain point, as an analyzed namespace's do, which reports
+    /// them all, or those an analysis failing at the same unit would have
+    /// (light-cljs-395).
     pub(crate) fn install(
         &mut self,
         artifact: &crate::namespace_artifact::NamespaceArtifact,
         source: &crate::artifact_install::InstallSource<'_>,
         macro_host: &mut MacroHost,
-        warnings: &mut Vec<AnalysisWarning>,
     ) -> Result<(), crate::artifact_install::InstallError> {
+        let mut warnings = Vec::new();
         let first_expr = self.program.exprs.len();
         let first_lazy = self.program.lazy_targets.len();
         let first_unit = macro_host.session_handle().map_or(0, |s| s.next_unit());
@@ -4876,7 +4921,7 @@ impl NamespaceAnalysis {
                 names: &mut self.globals,
                 index: &mut self.install_index,
                 source_index: self.roots.len(),
-                warnings,
+                warnings: &mut warnings,
             },
             artifact,
             source,
@@ -4894,6 +4939,7 @@ impl NamespaceAnalysis {
             },
             source_index,
             exprs: first_expr..self.program.exprs.len(),
+            warnings,
         });
         Ok(())
     }
@@ -5260,6 +5306,7 @@ impl Analyzer<'_> {
             prior_arities.unwrap_or(&mut local_arities),
             self.warnings,
         );
+        sort_warnings(self.warnings);
     }
 
     /// Whether forms generated by a macro nest deeper than analysis allows,

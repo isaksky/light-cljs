@@ -182,6 +182,11 @@ pub struct Bodies {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UnitCharge {
     pub unit: UnitRef,
+    /// How many of the namespace's warnings ([`Diagnostics::warnings`])
+    /// the drain point had reported when it came to this unit: those a
+    /// build that fails at its charges keeps, its top-level warnings
+    /// through the unit's form and its earlier units' (light-cljs-395).
+    pub warnings: u32,
     /// Its expansions in the order it made them, each counting one
     /// against `--macro-expansions` and its nodes against `--macro-nodes`.
     pub expansions: Vec<ChargedExpansion>,
@@ -765,7 +770,11 @@ pub enum ExtensionIdentity {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Diagnostics {
-    /// The warnings the namespace's analysis reported, in order.
+    /// The warnings the namespace's analysis reported, in the order its
+    /// drain point had them before the compilation's warnings were sorted:
+    /// its top-level warnings with each drained unit's after its form,
+    /// then its expression warnings. A failure at a unit's charges keeps
+    /// the first [`UnitCharge::warnings`] of them.
     pub warnings: Vec<Warning>,
     /// Every source macro call the analysis expanded, in expansion order,
     /// nested expansions included: the macro-origin record of the IR they
@@ -1499,11 +1508,18 @@ impl NamespaceArtifact {
         }
         if let Some(bodies) = &self.bodies {
             let mut previous = None;
+            let mut kept = 0;
             for charge in &bodies.charges {
                 if charge.unit.0 as usize >= units || previous.is_some_and(|p| p >= charge.unit.0) {
                     return Err("its bodies' charges are not of its units in order".into());
                 }
+                if charge.warnings < kept
+                    || charge.warnings as usize > self.diagnostics.warnings.len()
+                {
+                    return Err("its bodies' charges keep warnings out of order".into());
+                }
                 previous = Some(charge.unit.0);
+                kept = charge.warnings;
             }
             if self.accounting.is_some() && self.top_charges().is_none() {
                 return Err("its bodies charge more than its accounting".into());
@@ -1899,8 +1915,8 @@ impl NamespaceArtifact {
             for charge in &bodies.charges {
                 writeln!(
                     out,
-                    "charges unit {} {:?}",
-                    charge.unit.0, charge.expansions
+                    "charges unit {} keeping {} warnings {:?}",
+                    charge.unit.0, charge.warnings, charge.expansions
                 )
                 .unwrap();
             }

@@ -2957,7 +2957,6 @@ fn analyze_entry(
                             control,
                         },
                         macros,
-                        warnings,
                     );
                     compile_stats::add(&mut install_counts.time, started);
                     match outcome {

@@ -1966,6 +1966,28 @@ fn overlap_build(
     slots: usize,
     mode: &OverlapMode<'_>,
 ) -> Result<String, String> {
+    let (outcome, warnings) = overlap_run(
+        roots,
+        entry,
+        limits,
+        slots,
+        mode,
+        AnalysisOptions::default(),
+    );
+    outcome.map(|output| format!("{output}\n{warnings:?}"))
+}
+
+/// One build of `entry` under `limits` at `slots` and `options`: its output
+/// at `none` or its error, and its warnings, which `--warnings` prints with
+/// a failed build's error too.
+fn overlap_run(
+    roots: &[PathBuf],
+    entry: &str,
+    limits: light_cljs::MacroLimits,
+    slots: usize,
+    mode: &OverlapMode<'_>,
+    options: AnalysisOptions,
+) -> (Result<String, String>, Vec<AnalysisWarning>) {
     let mut host = MacroHost::new();
     host.limits = limits;
     let mut warnings = Vec::new();
@@ -1977,7 +1999,7 @@ fn overlap_build(
                 entry,
                 roots,
                 &mut host,
-                AnalysisOptions::default(),
+                options,
                 &mut warnings,
                 EntryRecorders {
                     manifest: matches!(mode, OverlapMode::Manifest).then_some(&mut manifest),
@@ -1991,7 +2013,7 @@ fn overlap_build(
             entry,
             roots,
             &mut host,
-            AnalysisOptions::default(),
+            options,
             &mut warnings,
             &light_cljs::compile_cache::CacheOptions {
                 dir: dir.to_path_buf(),
@@ -2002,9 +2024,10 @@ fn overlap_build(
         )
         .map(|(program, _)| program),
     };
-    analyzed
-        .map(|program| format!("{}\n{warnings:?}", none_output(&program)))
-        .map_err(|error| error.to_string())
+    let outcome = analyzed
+        .map(|program| none_output(&program))
+        .map_err(|error| error.to_string());
+    (outcome, warnings)
 }
 
 /// Copy the files of directory `from` into `to`, recursively.
@@ -2153,6 +2176,185 @@ fn compare_overlap_modes(
             "{limits:?} with hits {hits:?}"
         );
     }
+}
+
+/// [`OVERLAP`] with warnings in warning mode: in `lib.a` top-level ones
+/// before, between and after its units' forms, unit ones in the bodies
+/// before and after those that expand macros, and an expression one (a
+/// call of `f` with two arguments); and in the later namespaces.
+const WARNED_OVERLAP: [(&str, &str); 4] = [
+    OVERLAP[0],
+    (
+        "lib/a.cljs",
+        "(ns lib.a (:require [lib.macros :refer [twice wide]])) (defmacro own [] 1) (def early missing-early) (defn e [] missing-e) (defn f [x] (+ missing-f (twice (twice x)))) (def mid missing-mid) (defn g [] (wide 4) missing-g) (defn later [x] js/x missing-later) (defn h [x] (when x (twice x))) (def late missing-late) (defn k [] (f 1 2))",
+    ),
+    (
+        "lib/b.cljs",
+        "(ns lib.b (:require [lib.macros :refer [twice wide]])) (def top-b missing-b) (def b (+ (twice 3) (wide 5))) (defn bf [] missing-bf)",
+    ),
+    (
+        "app/main.cljs",
+        "(ns app.main (:require [lib.a :as a] [lib.b :as b] [lib.macros :refer [twice]])) (js/console.log (a/f 1) (a/g) (a/h 2) b/b (twice 4) missing-main)",
+    ),
+];
+
+/// A build's output at `none` or its error, and its warnings.
+type Warned = (Result<String, String>, Vec<AnalysisWarning>);
+
+/// One build of `entry` in warning mode under `limits`, installing
+/// `chosen`: its output at `none` or its error, its warnings, which a
+/// failed build keeps too, and whether it installed `lib.a`, executing
+/// none of its macro calls.
+fn warned_installing(
+    roots: &[PathBuf],
+    entry: &str,
+    chosen: &HashMap<&str, &NamespaceArtifact>,
+    limits: light_cljs::MacroLimits,
+) -> (Warned, bool) {
+    let mut host = MacroHost::new();
+    host.limits = limits;
+    let lookup = |name: &str| chosen.get(name).copied();
+    let reservation =
+        generated_names::Reservation::of(chosen.values().map(|artifact| &artifact.names));
+    let mut stats = CompileStats::new();
+    let mut warnings = Vec::new();
+    let outcome = analyze_namespace_entry_recorded(
+        entry,
+        roots,
+        &mut host,
+        warning_mode(),
+        &mut warnings,
+        EntryRecorders {
+            stats: Some(&mut stats),
+            install: Some(&lookup),
+            reserve: Some(&reservation),
+            ..EntryRecorders::default()
+        },
+    )
+    .map(|(program, _)| none_output(&program))
+    .map_err(|error| error.to_string());
+    (
+        (outcome, warnings),
+        stats.macro_calls_in("lib.a") == Some(0),
+    )
+}
+
+/// Where a limit is crossed at an installed namespace's drain point, by its
+/// bodies' recorded charges, the build reports the warnings the uncached
+/// build does, which has that namespace's top-level warnings up to the
+/// failing unit's form and its earlier units' warnings, but not the failing
+/// unit's, the later forms' and units', its expression warnings or those of
+/// the namespaces whose drain points it never reaches: with and without
+/// the cache, cold or warm, and while a dependency manifest is recorded,
+/// at one and at four slots, and in every mix of installed and analyzed
+/// namespaces (light-cljs-395).
+#[test]
+fn warnings_stop_at_the_same_unit_when_cached_body_charges_fail() {
+    let sources = Sources::new(&WARNED_OVERLAP);
+    let roots = sources.roots();
+    let defaults = light_cljs::MacroLimits::default();
+    let options = warning_mode();
+    let build = |limits, slots, mode: &OverlapMode<'_>| {
+        overlap_run(&roots, "app.main", limits, slots, mode, options)
+    };
+    let (fresh, all_warnings) = build(defaults, 1, &OverlapMode::NoCache);
+    fresh.unwrap();
+    for name in ["missing-early", "missing-f", "missing-later", "missing-b"] {
+        assert!(
+            all_warnings.iter().any(|w| w.message.contains(name)),
+            "{name} in {all_warnings:#?}"
+        );
+    }
+    let mut stats = CompileStats::new();
+    analyze_namespace_entry_recorded(
+        "app.main",
+        &roots,
+        &mut MacroHost::new(),
+        options,
+        &mut Vec::new(),
+        EntryRecorders {
+            stats: Some(&mut stats),
+            ..EntryRecorders::default()
+        },
+    )
+    .unwrap();
+    let (calls, nodes) = (stats.macro_calls, stats.peak_macro_nodes);
+    let warm = TempDir::new("cljs-warned-overlap-warm");
+    build(defaults, 1, &OverlapMode::Cached(warm.path()))
+        .0
+        .unwrap();
+    let captured = capture_with(Input::Roots(&roots), "app.main", &[], options).unwrap();
+    assert_eq!(captured.artifacts.len(), captured.namespaces.len());
+    let sweeps = [
+        (0..=calls + 1)
+            .map(|expansions| light_cljs::MacroLimits {
+                expansions,
+                ..defaults
+            })
+            .collect::<Vec<_>>(),
+        (0..=nodes + 1)
+            .map(|generated_nodes| light_cljs::MacroLimits {
+                generated_nodes,
+                ..defaults
+            })
+            .collect(),
+    ];
+    // A failure in lib.a's bodies that keeps some of its warnings and drops
+    // others.
+    let lib_a_partial = |(outcome, warnings): &Warned| {
+        outcome
+            .as_ref()
+            .is_err_and(|error| error.contains("lib/a.cljs"))
+            && warnings.iter().any(|w| w.message.contains("missing-early"))
+            && !warnings.iter().any(|w| w.message.contains("missing-late"))
+    };
+    let none = HashMap::new();
+    // And those where lib.a was installed: its bodies' charges failed.
+    let (mut partial, mut installed_partial, mut compared) = (0, 0, 0);
+    for sweep in sweeps {
+        let uncached = sweep
+            .iter()
+            .map(|&limits| [1, 4].map(|slots| build(limits, slots, &OverlapMode::NoCache)))
+            .collect::<Vec<_>>();
+        let changes = |at: usize| at > 0 && uncached[at] != uncached[at - 1];
+        for (at, &limits) in sweep.iter().enumerate() {
+            if !changes(at) && !(at + 1 < sweep.len() && changes(at + 1)) {
+                continue;
+            }
+            compared += 1;
+            partial += usize::from(lib_a_partial(&uncached[at][0]));
+            for (slots, expected) in [1, 4].into_iter().zip(&uncached[at]) {
+                let cold = TempDir::new("cljs-warned-overlap-cold");
+                let warmed = TempDir::new("cljs-warned-overlap-warmed");
+                copy_tree(warm.path(), warmed.path());
+                for (name, mode) in [
+                    ("manifest", OverlapMode::Manifest),
+                    ("cold", OverlapMode::Cached(cold.path())),
+                    ("warm", OverlapMode::Cached(warmed.path())),
+                ] {
+                    assert_eq!(
+                        &build(limits, slots, &mode),
+                        expected,
+                        "{name} at {slots} slots, {limits:?}"
+                    );
+                }
+            }
+            let expected = &uncached[at][0];
+            let (outcome, installed) = warned_installing(&roots, "app.main", &none, limits);
+            assert_eq!(&outcome, expected);
+            assert!(!installed);
+            for hits in every_mix(&captured) {
+                let chosen = chosen(&captured, &hits);
+                let (outcome, installed) = warned_installing(&roots, "app.main", &chosen, limits);
+                assert_eq!(&outcome, expected, "{limits:?} with hits {hits:?}");
+                installed_partial += usize::from(lib_a_partial(&outcome) && installed);
+            }
+        }
+    }
+    assert!(
+        partial > 0 && installed_partial > 0 && compared > 10,
+        "{partial} {installed_partial} {compared}"
+    );
 }
 
 /// A compiler data reader's input and result each take at most the node

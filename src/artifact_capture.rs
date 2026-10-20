@@ -384,17 +384,20 @@ fn added_globals(program: &Program, added: &[usize]) -> Vec<AddedGlobal> {
 /// appended after the next namespace's top-level pass
 /// (docs/compiler-concurrency.md, "Stage A"). `start` was taken by
 /// [`begin`] just before the merge, `top` when the namespace began;
-/// `placeholders` are each merged unit's placeholder and root, and `units`
+/// `merged` has each merged unit's placeholder and root, and `units`
 /// the namespace's units, whose views get the globals their merge added.
-/// The merge's warnings, the namespace's expression warnings, join the
-/// artifact's, which installation reports when the first part installs.
+/// The merge's warnings, its units' and the namespace's expression
+/// warnings, join the artifact's, all of them in the order the drain point
+/// had them ([`Diagnostics::warnings`]), which installation holds for the
+/// installed namespace's drain point; each charged unit records how many
+/// of them came before it ([`UnitCharge::warnings`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn finish_bodies(
     artifact: &mut NamespaceArtifact,
     top: &CaptureStart,
     start: &CaptureStart,
     completed: Completed<'_>,
-    placeholders: &[(ir::ExprId, ir::ExprId)],
+    merged: &ir::Merged,
     units: std::ops::Range<usize>,
     registrations_end: usize,
     macro_host: &MacroHost,
@@ -560,7 +563,8 @@ pub(crate) fn finish_bodies(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let placeholders = placeholders
+    let placeholders = merged
+        .placeholders
         .iter()
         .map(|&(placeholder, root)| {
             let placeholder = placeholder
@@ -590,16 +594,25 @@ pub(crate) fn finish_bodies(
     if completed.warnings.len() - start.warnings != own.len() {
         return Err("the merge reported warnings about another source".into());
     }
-    let warnings = own
-        .into_iter()
+    // The first part's warnings and the merge's, in the drain point's order.
+    if merged.warnings.len() != artifact.diagnostics.warnings.len() + own.len()
+        || merged
+            .warnings
+            .iter()
+            .any(|warning| warning.source_index != completed.source_index)
+    {
+        return Err("the drain point's warnings are not the namespace's".into());
+    }
+    artifact.diagnostics.warnings = merged
+        .warnings
+        .iter()
         .map(|warning| Warning {
             kind: warning.kind.to_owned(),
             message: warning.message.clone(),
             span: bytes(&warning.span),
             source: SourceRef::Own,
         })
-        .collect::<Vec<_>>();
-    artifact.diagnostics.warnings.extend(warnings);
+        .collect();
     let ir = SemanticIr {
         exprs,
         locals,
@@ -608,15 +621,21 @@ pub(crate) fn finish_bodies(
         named_literals: std::mem::take(&mut c.named_literals),
         js_globals: std::mem::take(&mut c.js_table),
     };
+    // Both in unit order.
+    let mut kept = merged.kept.iter().copied();
     let charges = unit_charges
         .into_iter()
-        .map(|(unit, events)| {
-            let unit = unit
+        .map(|(id, events)| {
+            let unit = id
                 .checked_sub(own_units.start)
-                .filter(|_| unit < own_units.end)
+                .filter(|_| id < own_units.end)
                 .ok_or("a drain point charged another namespace's unit")?;
+            let (_, warnings) = kept
+                .find(|&(taken, _)| taken == id)
+                .ok_or("a drain point charged a unit it did not take")?;
             Ok(UnitCharge {
                 unit: UnitRef(unit as u32),
+                warnings: warnings as u32,
                 expansions: events.into_iter().filter_map(charged_expansion).collect(),
             })
         })

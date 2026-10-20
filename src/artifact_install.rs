@@ -108,7 +108,9 @@ pub(crate) struct Target<'a> {
     pub index: &'a mut InstallIndex,
     /// The source index the namespace takes.
     pub source_index: usize,
-    /// The compilation's warnings, which the namespace's join.
+    /// Where installing the first part puts the namespace's warnings, in
+    /// the artifact's order, for its drain point to report
+    /// ([`charge_bodies`]).
     pub warnings: &'a mut Vec<ir::AnalysisWarning>,
 }
 
@@ -617,11 +619,12 @@ fn charge(artifact: &NamespaceArtifact, macro_host: &MacroHost) {
 /// at the captured build's (light-cljs-394, [`Bodies::charges`]), unit by
 /// unit, checking `--macro-expansions` and `--macro-nodes` as that drain
 /// point did: the first expansion that crosses one is the diagnostic its
-/// analysis would report there.
+/// analysis would report there, with how many of the namespace's warnings
+/// that analysis had reported ([`crate::namespace_artifact::UnitCharge::warnings`]).
 pub(crate) fn charge_bodies(
     artifact: &NamespaceArtifact,
     macro_host: &MacroHost,
-) -> Result<(), ir::AnalysisError> {
+) -> Result<(), (usize, ir::AnalysisError)> {
     let Some(bodies) = &artifact.bodies else {
         return Ok(());
     };
@@ -631,7 +634,11 @@ pub(crate) fn charge_bodies(
     );
     let limits = &macro_host.limits;
     let charged = &macro_host.engine.work.charged_expansions;
-    for expansion in bodies.charges.iter().flat_map(|charge| &charge.expansions) {
+    for (charge, expansion) in bodies
+        .charges
+        .iter()
+        .flat_map(|charge| charge.expansions.iter().map(move |e| (charge, e)))
+    {
         let exceeded = if expansions.get() >= limits.expansions {
             Some("compiler macro expansion limit exceeded")
         } else {
@@ -642,13 +649,16 @@ pub(crate) fn charge_bodies(
                 .then_some("compiler macro generated-node limit exceeded")
         };
         if let Some(message) = exceeded {
-            return Err(ir::AnalysisError {
-                span: span(expansion.call),
-                kind: ir::AnalysisErrorKind::MacroExpansion(match &expansion.operator {
-                    Some(operator) => format!("while expanding {operator}: {message}"),
-                    None => message.to_owned(),
-                }),
-            });
+            return Err((
+                charge.warnings as usize,
+                ir::AnalysisError {
+                    span: span(expansion.call),
+                    kind: ir::AnalysisErrorKind::MacroExpansion(match &expansion.operator {
+                        Some(operator) => format!("while expanding {operator}: {message}"),
+                        None => message.to_owned(),
+                    }),
+                },
+            ));
         }
     }
     if let Some(session) = macro_host.session_handle() {
@@ -985,9 +995,8 @@ impl Installer<'_> {
         self.check(macro_host)?;
         self.declare(macro_host, &views)?;
         self.check(macro_host)?;
-        // The namespace's warnings where its analysis reported them: the
-        // analysis sorts the compilation's warnings by source and offset
-        // when it ends, stably, and its own were captured in that order.
+        // The namespace's warnings, for its drain point, which reports
+        // those its analysis would have reported (light-cljs-395).
         let source_index = self.resolved.source_index;
         for (warning, &kind) in artifact
             .diagnostics
@@ -1002,8 +1011,6 @@ impl Installer<'_> {
                 source_index,
             });
         }
-        self.warnings
-            .sort_by_key(|warning| (warning.source_index, warning.span.start));
         Ok(root)
     }
 

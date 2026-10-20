@@ -919,7 +919,8 @@ made to earlier globals (the namespace's top-level ones included), its own
 external references by name, each unit's placeholder and the root of its
 body, and the namespace's reader context after the merge. The merge's
 warnings, the namespace's expression warnings, join the first part's, which
-installing it reports. A unit's view names the globals its merge added by
+installing it reports (since light-cljs-395 its drain point reports them,
+below). A unit's view names the globals its merge added by
 namespace, name and flags (`AddedGlobal`), which is all a registration reads,
 since they exist only after the merge. Installation follows the same
 order: `artifact_install::install` appends the first part where the
@@ -948,6 +949,22 @@ namespace's drain point would. So a limit crossed between an earlier
 namespace's bodies and a later top-level pass fails at the same unit in a
 warm, cold or uncached build and in every mix. The charges are written
 after the accounting in the names section, `SCHEMA_VERSION` 8.
+
+*As built (light-cljs-395), the warnings of a failed charge:* a drain point
+that fails at a unit keeps the namespace's top-level warnings through that
+unit's form and its earlier units' warnings, and drops the failing unit's,
+the later forms' and units', and the expression warnings; the namespaces
+whose drain points the failure precedes report none. An installed
+namespace's warnings now match that. `Diagnostics::warnings` holds the
+namespace's warnings in the order its drain point had them before the
+compilation's were sorted (top-level warnings with each drained unit's
+after its form, then the expression warnings), and each `UnitCharge`
+records how many of them came before its unit (`UnitCharge::warnings`).
+Installing the first part no longer reports them: it holds them with the
+namespace until its drain point (`Pending::Installed`), which reports them
+all and sorts the compilation's warnings when the bodies' charges pass, or
+the first `UnitCharge::warnings` of them, unsorted as an analyzed drain
+point leaves them, when a charge fails. `SCHEMA_VERSION` 9.
 
 The decoder reads only its own `SCHEMA_VERSION`; there is no migration,
 since artifacts are disposable. Any change to the bytes written bumps it.
@@ -1148,9 +1165,9 @@ This is compiler-owned accounting, not an execution-effect log.
 *As built (light-cljs-318):*
 
 - **Warnings.** An installed namespace adds the warnings its artifact
-  captured, with their spans, at its source index, and the compilation's
-  warnings are then sorted by source and offset, stably, as the end of every
-  analysis sorts them; the `ns` form's warnings stay the loader's. Mixed
+  captured, with their spans, at its source index (at its drain point since
+  light-cljs-395), and the compilation's warnings are then sorted by source
+  and offset, stably, as the end of every analysis sorts them; the `ns` form's warnings stay the loader's. Mixed
   builds report the uncached build's warnings in its order, which
   `check_mixed` now asserts for every fixture it runs. A warning kind is the
   compiler's static string; installation finds it by its text in a

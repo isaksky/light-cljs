@@ -66,7 +66,7 @@ use std::sync::OnceLock;
 
 pub const MAGIC: [u8; 8] = *b"LCLJSART";
 /// The encoding's version. Bump it with any change to the bytes written.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
@@ -420,22 +420,31 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
                 }
                 // The bodies' charges (light-cljs-394).
                 if let Some(bodies) = bodies {
-                    out.list(&bodies.charges, |out, UnitCharge { unit, expansions }| {
-                        out.index(unit.0);
-                        out.list(
-                            expansions,
-                            |out,
-                             ChargedExpansion {
-                                 operator,
-                                 call,
-                                 nodes,
-                             }| {
-                                out.option_str(operator.as_deref());
-                                out.bytes_range(*call);
-                                out.uint(*nodes);
-                            },
-                        );
-                    });
+                    out.list(
+                        &bodies.charges,
+                        |out,
+                         UnitCharge {
+                             unit,
+                             warnings,
+                             expansions,
+                         }| {
+                            out.index(unit.0);
+                            out.index(*warnings);
+                            out.list(
+                                expansions,
+                                |out,
+                                 ChargedExpansion {
+                                     operator,
+                                     call,
+                                     nodes,
+                                 }| {
+                                    out.option_str(operator.as_deref());
+                                    out.bytes_range(*call);
+                                    out.uint(*nodes);
+                                },
+                            );
+                        },
+                    );
                 }
             }
         }
@@ -2129,6 +2138,7 @@ pub fn decode(
         bodies.charges = r.list(|r| {
             Ok(UnitCharge {
                 unit: UnitRef(r.index()?),
+                warnings: r.index()?,
                 expansions: r.list(|r| {
                     Ok(ChargedExpansion {
                         operator: r.option_string()?,
@@ -3815,6 +3825,7 @@ mod tests {
                 placeholders: vec![(ExprRef(0), ExprRef(1))],
                 charges: vec![UnitCharge {
                     unit: UnitRef(0),
+                    warnings: 1,
                     expansions: vec![
                         ChargedExpansion {
                             operator: Some("app.core/m".into()),
@@ -3986,6 +3997,36 @@ mod tests {
             decoded(&encode(&artifact, &ManifestFields::default()).unwrap()).unwrap(),
             artifact
         );
+    }
+
+    /// A charged unit keeps a prefix of the namespace's warnings, longer
+    /// for each later unit (light-cljs-395): a boundary past the warnings,
+    /// or one before an earlier unit's, is refused.
+    #[test]
+    fn body_warning_boundaries_are_checked() {
+        let artifact = sample(0);
+        fn charges(artifact: &mut NamespaceArtifact) -> &mut Vec<UnitCharge> {
+            &mut artifact.bodies.as_mut().unwrap().charges
+        }
+        let mut later = artifact.clone();
+        charges(&mut later).push(UnitCharge {
+            unit: UnitRef(1),
+            warnings: 1,
+            expansions: Vec::new(),
+        });
+        later.validate().unwrap();
+        let mut beyond = artifact.clone();
+        charges(&mut beyond)[0].warnings = 2;
+        let mut decreasing = later.clone();
+        charges(&mut decreasing)[0].warnings = 1;
+        charges(&mut decreasing)[1].warnings = 0;
+        for invalid in [beyond, decreasing] {
+            let error = invalid.validate().unwrap_err();
+            assert!(error.contains("keep warnings out of order"), "{error}");
+            if let Ok(bytes) = encode(&invalid, &fields()) {
+                assert!(matches!(decoded(&bytes), Err(DecodeError::Invalid(_))));
+            }
+        }
     }
 
     #[test]

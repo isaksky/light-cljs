@@ -508,6 +508,8 @@ enum Claim {
 #[cfg(test)]
 type ClaimHook = Box<dyn Fn(usize) + Send>;
 const DEPTH_LIMIT: &str = "compiler macro expansion depth limit exceeded in deferred units";
+/// Why a wait for a pooled unit after a failed one ends ([`SharedCatalog::claim`]).
+const SKIPPED_AFTER_FAILURE: &str = "an earlier unit in unit order failed";
 impl SharedCatalog {
     fn lock(&self) -> MutexGuard<'_, Catalog> {
         match self.catalog.try_lock() {
@@ -534,6 +536,12 @@ impl SharedCatalog {
     fn admits(&self, id: usize) -> bool {
         let failed = self.failed_job.load(std::sync::atomic::Ordering::Relaxed);
         failed == 0 || id < failed
+    }
+    /// Wake the threads waiting for a pool job that will not start
+    /// ([`Self::admits`]), which [`Self::claim`] then fails.
+    fn skipped(&self) {
+        let _c = self.lock();
+        self.settled.notify_all();
     }
     /// Note that pool job `id` ended with its unit failed, if it did.
     #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
@@ -615,14 +623,22 @@ impl SharedCatalog {
                 AnalysisState::Unstarted => queued,
                 _ => false,
             };
-            if waits {
-                if let Some(message) = c.abandoned.clone() {
-                    if c.threads[thread].waiting.take().is_some() {
-                        c.waiting -= 1;
-                        c.units[id].waiters -= 1;
-                    }
-                    return Err(message);
+            // A pooled unit after one that failed in unit order never
+            // starts ([`Self::admits`]): its namespace's analysis stops,
+            // and the earlier failure, whose drain point comes first, is
+            // the build's (light-cljs-395).
+            let skipped = matches!(*state, AnalysisState::Unstarted) && !self.admits(id);
+            if waits && (skipped || c.abandoned.is_some()) {
+                if c.threads[thread].waiting.take().is_some() {
+                    c.waiting -= 1;
+                    c.units[id].waiters -= 1;
                 }
+                return Err(c
+                    .abandoned
+                    .clone()
+                    .unwrap_or_else(|| SKIPPED_AFTER_FAILURE.to_owned()));
+            }
+            if waits {
                 if c.threads[thread].waiting.is_none() {
                     if let Some(path) = c.wait_cycle(thread, id) {
                         return Err(format!("compile dependency cycle: {path}"));
@@ -3064,7 +3080,7 @@ fn serve_pool(
             // the coordinator when it reaches it, as a serial drain would,
             // and no job after it starts.
             if !shared.admits(id) {
-                return;
+                return shared.skipped();
             }
             let view = match slot.view.take() {
                 Some(view) => view,

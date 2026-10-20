@@ -1457,9 +1457,10 @@ top-level pass:
     installed namespace's drain point charges the bodies' list
     (`artifact_install::charge_bodies`) before it installs them, failing at
     the expansion and with the diagnostic the analyzed namespace's drain
-    point reports. `SCHEMA_VERSION` is 8. Its warnings are all reported then, as
-    installed at the first part; stopping them at the failing unit, as an
-    analyzed drain point does, is light-cljs-395.
+    point reports. `SCHEMA_VERSION` is 8. Its warnings were all reported
+    then, as installed at the first part; since light-cljs-395 they wait for
+    its drain point, which stops them at the failing unit as an analyzed
+    drain point does (below).
   - A unit that failed at a settle point no longer stops the build there:
     no later namespace settles, since the pool starts none of their units,
     and the build goes on to the failed namespace's drain point as a plain
@@ -1528,6 +1529,26 @@ top-level pass:
   that an engine failure invalidated, such as a later top-level pass's,
   is skipped: that failure is that expansion's. A cancelled build still
   reports its cancellation.
+- *Warnings of an installed namespace (light-cljs-395).* Installing an
+  artifact's first part no longer reports its warnings: they wait with the
+  namespace for its drain point, as an analyzed namespace's do, so a
+  failure at an earlier namespace's drain point leaves them too. There the
+  bodies' charges either pass, and every warning is reported, or fail at a
+  unit, and only the warnings the analyzed drain point had reported before
+  that unit are (`UnitCharge::warnings`, recorded from
+  `NamespaceAnalysis::drain_dispatched`; docs/compiler-cache.md, "As built
+  (light-cljs-395)"). With `--warnings` a failed build prints them, so a
+  warm build failing at a limit printed warnings an uncached one does not.
+  `cache_contract::warnings_stop_at_the_same_unit_when_cached_body_charges_fail`
+  sweeps the limits of a warning-mode fixture whose macro-defining
+  namespace's units are dispatched, comparing errors and warnings of
+  `--no-cache`, cold, warm and manifest builds at one and four slots, and
+  of every mix. It found a hang at four slots: a later namespace's
+  top-level pass in warning mode drains its own units form by form, and
+  waited for a pooled one the pool never starts because an earlier unit
+  in unit order had failed (`SharedCatalog::admits`). That wait now ends
+  with an error (`SharedCatalog::claim`; a skipped job wakes waiters),
+  which the earlier failure's drain point, reached first, replaces.
 - *Trace.* The drain point is the `drain` stage; `trace.wait-ms` is now
   the coordinator's time blocked at drain points and on demands.
 
