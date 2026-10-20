@@ -5700,4 +5700,5 @@ holds 41 units and 4,704 bytes) because the test each hook needs lands in
 the operation, which startup keeps (`lookup` 343 to 487 bytes, `get` 357 to
 439); the units that leave go to the shared chunk, so loading a feature
 first costs about the same (28 raw bytes fewer with all five). The
-wrappers stay pending the user's decision.
+wrappers stay: on 2026-10-20 the user judged converting them not worth
+doing, as it only moves bytes from startup to the shared chunk.
