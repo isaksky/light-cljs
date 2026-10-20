@@ -285,10 +285,13 @@ impl LiveCounts {
 }
 
 /// Counts its owner in one of the [`LiveCounts`] counters from when it is
-/// made until it is dropped.
+/// made until it is dropped. A build with neither engine (the wasm
+/// playground) makes none.
+#[cfg_attr(not(any(light_quickjs, light_v8)), allow(dead_code))]
 pub(crate) struct Live(&'static AtomicUsize);
 
 impl Live {
+    #[cfg_attr(not(any(light_quickjs, light_v8)), allow(dead_code))]
     pub(crate) fn new(counter: &'static AtomicUsize) -> Self {
         counter.fetch_add(1, Ordering::Relaxed);
         Self(counter)

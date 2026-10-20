@@ -646,6 +646,7 @@ cargo nextest run records::record_updates          # tests whose name contains t
 cargo nextest run --no-fail-fast -j 8              # keep going after failures; 8 at a time
 cargo test --test compiler records::               # the same tests through plain cargo test
 cargo clippy --all-targets -- -D warnings
+bb playground/build.bb lint                        # the wasm32 playground crate, warnings denied
 node tests/support/js_runtime.test.js              # runtime tests directly in Node
 # after editing src/js_runtime.js: rewrite its unit `requires:` headers, then review the diff
 LIGHT_CLJS_UPDATE_RUNTIME_MANIFEST=1 cargo test --test compiler runtime_manifest::

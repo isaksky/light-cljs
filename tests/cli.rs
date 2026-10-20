@@ -1943,6 +1943,35 @@ fn dag_model_tests_pass() {
     );
 }
 
+/// The browser playground (playground/crate) compiles the library for
+/// wasm32 with neither QuickJS nor V8, a cfg path no native build takes:
+/// `bb playground/build.bb lint` checks it with warnings denied, so a change
+/// that breaks only that build (light-cljs-396) fails here and not first in
+/// the Pages deploy. Skipped when `bb` is not on PATH or the toolchain has no
+/// wasm32-unknown-unknown target (playground/README.md says how to add one).
+#[test]
+fn playground_crate_checks_for_wasm32() {
+    let skip = |why: &str| eprintln!("{why}; skipping bb playground/build.bb lint");
+    match Command::new("bb").arg("--version").output() {
+        Ok(probe) if probe.status.success() => {}
+        _ => return skip("bb unavailable"),
+    }
+    let output = Command::new("bb")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("playground/build.bb"))
+        .arg("lint")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() && stderr.contains("target may not be installed") {
+        return skip("no wasm32-unknown-unknown target");
+    }
+    assert!(
+        output.status.success(),
+        "{}{stderr}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
 /// `LIGHT_CLJS_CAPTURE_ARTIFACTS=encode` encodes and decodes every captured
 /// artifact and reports the sizes with `--stats`; the output is unchanged.
 #[test]

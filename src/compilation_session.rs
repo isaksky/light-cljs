@@ -2398,7 +2398,7 @@ fn analyze_unit(
         // as a running macro calling it, numbers in its own again after.
         let _gensyms = crate::generated_names::RestoreGensymScope(engine);
         if records {
-            let started = std::time::Instant::now();
+            let started = crate::evaluator::Instant::now();
             host.engine.work = Default::default();
             let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
             let location = format!("{}:{}:{}: {name}", loc.source, loc.line, loc.column);

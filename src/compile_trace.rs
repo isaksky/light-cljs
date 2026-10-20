@@ -976,7 +976,9 @@ pub(crate) fn executed(unit: usize, prepared: bool) {
 /// that ends each engine entry hands it to the engine, which names the
 /// entry's root reads by it ([`root_reads`]): frames opened inside an entry
 /// close before it returns, so the entry's own code ran in this frame.
+/// A build with neither engine (the wasm playground) has no such check.
 #[inline]
+#[cfg_attr(not(any(light_quickjs, light_v8)), allow(dead_code))]
 pub(crate) fn frame() -> Option<u32> {
     with_recorder(|recorder| recorder.frames.last().expect("root frame").serial)
 }

@@ -7,7 +7,7 @@ use crate::form_bridge::ConversionLimits;
 #[cfg(light_quickjs)]
 use crate::form_bridge::{BridgeState, FORM_BRIDGE_VERSION};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use host_clock::Instant;
+pub(crate) use host_clock::Instant;
 #[cfg(light_quickjs)]
 use rquickjs::allocator::{Allocator, RustAllocator};
 #[cfg(light_quickjs)]
@@ -16,7 +16,7 @@ use std::cell::RefCell;
 #[cfg(light_quickjs)]
 use std::sync::Weak;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-use std::time::Instant;
+pub(crate) use std::time::Instant;
 #[cfg(light_quickjs)]
 use std::{cell::Cell, rc::Rc};
 use std::{
@@ -32,7 +32,8 @@ use std::{
 /// is unavailable: a host-supplied clock, microseconds since the Unix epoch,
 /// which the embedder defines as `__rquickjs_host_now_us` (named for the
 /// QuickJS wasm shim, `vendor/rquickjs-sys/wasm-shim/shim.c`, which imported
-/// it too while wasm builds embedded QuickJS).
+/// it too while wasm builds embedded QuickJS). The crate's other timing on
+/// paths the playground reaches reads it as `crate::evaluator::Instant`.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod host_clock {
     use std::time::Duration;
@@ -431,6 +432,9 @@ impl Evaluator {
         match *self {}
     }
     pub fn call(&self, _: ValueId, _: &[ValueId]) -> Result<ValueId, EvalError> {
+        match *self {}
+    }
+    pub fn collect_garbage(&self) {
         match *self {}
     }
 }

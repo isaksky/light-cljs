@@ -52,7 +52,8 @@ compile.
 Two things differ from the native build:
 
 - `std::time::Instant` does not exist on `wasm32-unknown-unknown`, so the
-  evaluator's session clock (`src/evaluator.rs`, `host_clock`) reads a clock
+  evaluator's session clock (`src/evaluator.rs`, `host_clock`, which the
+  crate's other wasm-reachable timing uses as `crate::evaluator::Instant`) reads a clock
   the module imports, `__rquickjs_host_now_us` (named for the QuickJS wasm
   shim, which shared it while the module embedded QuickJS). The crate defines
   that symbol from `Date.now`, which resolves the import at link time, so the
@@ -134,6 +135,7 @@ Then:
 bb playground/build.bb build       # playground/dist
 bb playground/build.bb serve       # http://localhost:8787/
 bb playground/build.bb check       # node playground/check.mjs against dist
+bb playground/build.bb lint        # cargo check of the crate for wasm32, warnings denied
 bb playground/build.bb             # build, then serve
 ```
 
@@ -156,5 +158,15 @@ The page must be served over HTTP (modules and workers do not load from
   rustup's layout does not satisfy (seen with Rust 1.99); the script sets
   `DYLD_LIBRARY_PATH` to the toolchain's `lib` for the build.
 - The crate is not a member of the root workspace: it has its own `Cargo.lock`
-  and `target/`, and `cargo test` at the root does not build it. CI builds it
-  and runs `check.mjs`.
+  and `target/`, and `cargo build` at the root does not build it. The Pages
+  workflow builds it and runs `check.mjs`. The root suite's
+  `cli::playground_crate_checks_for_wasm32` runs `bb playground/build.bb lint`
+  (about 15 s cold, under a second warm) when the toolchain has the wasm32
+  target and skips otherwise: wasm32 is the one build of the library with
+  neither QuickJS nor V8, a cfg path no native build compiles, and until
+  light-cljs-396 a break there showed first in the Pages deploy.
+- `std::time::Instant::now` panics on wasm32-unknown-unknown ("time not
+  implemented on this platform"), and `lint` cannot see that. Code the
+  playground reaches reads `crate::evaluator::Instant`, the host clock there
+  and `std::time::Instant` natively; run `build` and `check` after touching
+  the analysis or emit path's timing.

@@ -4,6 +4,10 @@
 ;;   bb playground/build.bb build   compile playground/crate to wasm, run
 ;;                                  wasm-bindgen and assemble playground/dist
 ;;   bb playground/build.bb check   run playground/check.mjs (Node) against dist
+;;   bb playground/build.bb lint    cargo check playground/crate for wasm32 with
+;;                                  warnings denied: the one build of the
+;;                                  compiler without QuickJS or V8, which no
+;;                                  native test compiles (light-cljs-396)
 ;;   bb playground/build.bb serve   serve playground/dist on http://localhost:8787
 ;;   bb playground/build.bb         build, then serve
 ;;
@@ -139,6 +143,11 @@
     (println (str "serving " root " at http://localhost:" port "/ (Ctrl-C to stop)"))
     @(promise)))
 
+(defn lint []
+  (let [{:keys [command env]} (cargo-command)]
+    (run! {:command (into command ["check" "--target" "wasm32-unknown-unknown"])
+           :env (assoc env "RUSTFLAGS" "-D warnings") :dir crate-dir})))
+
 (defn check []
   (run! {:command ["node" (str (fs/path playground-dir "check.mjs"))] :env {} :dir playground-dir}))
 
@@ -147,6 +156,7 @@
   (case command
     "build" (build)
     "check" (check)
+    "lint" (lint)
     "serve" (serve port)
     nil (do (build) (serve port))
-    (fail "usage: bb playground/build.bb [build|check|serve [PORT]]")))
+    (fail "usage: bb playground/build.bb [build|check|lint|serve [PORT]]")))
