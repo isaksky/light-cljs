@@ -403,3 +403,73 @@ fn a_custom_data_reader_reads_configuration_and_declares_views() {
     }
     assert!(views(&manifest, "app.plain").is_empty());
 }
+
+/// Floating-point negative zero, spelled `-0.0` or reached by negative
+/// underflow, is its own JavaScript number: a macro reads it as negative
+/// zero, alone or nested, and its configuration differs from positive
+/// zero's. Integer `-0` is zero, and negative zero equals zero as a map key
+/// or set element, as the EDN reader compares.
+#[test]
+fn configuration_preserves_floating_negative_zero() {
+    let root = Root::new();
+    root.write(
+        "lib/macros.cljs",
+        r#"(ns lib.macros (:require [light.build :as b]))
+(defmacro inverse [key] (str (/ 1 (b/config key))))
+(defmacro nested [] (str (/ 1 (get-in (b/config :app/settings) [:z 0]))))"#,
+    );
+    root.write(
+        "app/core.cljs",
+        r#"(ns app.core (:require [lib.macros :refer [inverse nested]]))
+(str (inverse :app/n) " " (inverse :app/tiny) " " (inverse :app/zero) " " (inverse :app/int) " " (nested))"#,
+    );
+    let negative = configuration(&[
+        ("app/n", "-0.0"),
+        ("app/tiny", "-1e-400"),
+        ("app/zero", "0.0"),
+        ("app/int", "-0"),
+        ("app/settings", "{:z [-0.0E2]}"),
+    ]);
+    let (js, manifest) = root.build("app.core", &negative).unwrap();
+    assert_eq!(
+        execute(&js),
+        "-Infinity -Infinity Infinity Infinity -Infinity"
+    );
+    assert_eq!(negative.get("app/n"), Some("-0.0"));
+    assert_eq!(negative.get("app/tiny"), Some("-0.0"));
+    assert_eq!(negative.get("app/zero"), Some("0"));
+    assert_eq!(negative.get("app/int"), Some("0"));
+    assert_eq!(negative.get("app/settings"), Some("{:z [-0.0]}"));
+    assert_eq!(fingerprint(&manifest, "app.core"), negative.fingerprint());
+    // Positive zero in the same places is a different configuration.
+    let positive = configuration(&[
+        ("app/n", "0.0"),
+        ("app/tiny", "1e-400"),
+        ("app/zero", "0.0"),
+        ("app/int", "-0"),
+        ("app/settings", "{:z [0.0]}"),
+    ]);
+    let (js, manifest) = root.build("app.core", &positive).unwrap();
+    assert_eq!(execute(&js), "Infinity Infinity Infinity Infinity Infinity");
+    assert_eq!(fingerprint(&manifest, "app.core"), positive.fingerprint());
+    assert_ne!(negative.fingerprint(), positive.fingerprint());
+    for (one, other) in [("app/n", "app/zero"), ("app/settings", "app/settings")] {
+        let mut a = BuildConfiguration::new();
+        a.insert("k", negative.get(one).unwrap()).unwrap();
+        let mut b = BuildConfiguration::new();
+        b.insert("k", positive.get(other).unwrap()).unwrap();
+        assert_ne!(a.fingerprint(), b.fingerprint(), "{one}");
+    }
+    // As a key or an element, negative zero is zero.
+    let mut configuration = BuildConfiguration::new();
+    for (text, message) in [
+        ("app/a={0 1 -0.0 2}", "repeats the key 0"),
+        ("app/a=#{-0.0 0}", "repeats the element 0"),
+        ("app/a=#{[-0.0] [0]}", "repeats the element [0]"),
+    ] {
+        let error = configuration.insert_text(text).unwrap_err();
+        assert!(error.contains(message), "{text}: {error}");
+    }
+    configuration.insert("app/a", "#{-0.0 1}").unwrap();
+    assert_eq!(configuration.get("app/a"), Some("#{-0.0 1}"));
+}

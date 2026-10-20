@@ -542,7 +542,9 @@ fn configuration_value(value: &str) -> Result<String, String> {
 /// identity as the EDN reader compares values: the canonical text of a
 /// scalar, lists and vectors alike, and maps and sets in sorted order.
 /// Scalars are canonical, so equal values spelled differently (`1` and
-/// `1.0`, `"a"` and `"a"`) have one text.
+/// `1.0`, `"a"` and `"a"`) have one text. Floating-point negative zero
+/// keeps its own text, `-0.0`, since it is a different JavaScript number,
+/// but its identity is `0`'s, as the reader finds `0` and `-0.0` equal.
 fn canonical_value(
     tree: &crate::parser::SyntaxTree,
     source: &str,
@@ -558,7 +560,13 @@ fn canonical_value(
         NodeKind::Keyword {
             auto_resolve: false,
         } => out.push_str(spelled),
-        NodeKind::Number(_) => out.push_str(&canonical_number(spelled)?),
+        NodeKind::Number(_) => {
+            let text = canonical_number(spelled)?;
+            out.push_str(&text);
+            if text == "-0.0" {
+                return Ok("0".into());
+            }
+        }
         NodeKind::String(value) => canonical_string(&value.to_utf16(source), out),
         NodeKind::Collection { kind, children } if *kind != CollectionKind::AnonymousFn => {
             let (open, close) = match kind {
@@ -624,7 +632,10 @@ fn repeated(source: &str, what: &str, identity: &str) -> String {
 
 /// A decimal integer or floating-point number, which the EDN reader reads
 /// as a JavaScript number, printed as that number: integral values without
-/// a fraction, others as Rust's shortest round-trip decimal.
+/// a fraction, others as Rust's shortest round-trip decimal. A
+/// floating-point zero with a minus sign, such as `-0.0` or the negative
+/// underflow `-1e-400`, is negative zero, printed `-0.0`; the integer `-0` is
+/// zero.
 fn canonical_number(spelled: &str) -> Result<String, String> {
     let bytes = spelled.as_bytes();
     let digits = |from: usize| {
@@ -655,8 +666,15 @@ fn canonical_number(spelled: &str) -> Result<String, String> {
                  floating-point number, such as 3, -2.5 or 1e3"
             )
         })?;
-    // -0 equals 0.
-    let number = if number == 0.0 { 0.0 } else { number };
+    if number == 0.0 {
+        let floating = spelled.contains(['.', 'e', 'E']);
+        return Ok(if floating && number.is_sign_negative() {
+            "-0.0"
+        } else {
+            "0"
+        }
+        .into());
+    }
     Ok(if number.fract() == 0.0 && number.abs() < 1e21 {
         format!("{number:.0}")
     } else {

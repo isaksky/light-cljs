@@ -2534,7 +2534,8 @@ explicit inputs that a compiler cache can key on
   a symbol, a tagged literal, `1N`, `1M` or a radix or ratio number, a map
   key or set element repeated by value, a malformed value or a key given
   twice is a CLI error. The value is kept as canonical text (numbers as the
-  JavaScript number they read as, strings re-escaped, elements single-spaced,
+  JavaScript number they read as, so floating-point `-0.0` stays negative zero
+  while integer `-0` is zero, strings re-escaped, elements single-spaced,
   comments and discards dropped) and read back as data at each call. Embedders pass the same map as a
   `BuildConfiguration` to `MacroHost::set_build_configuration` and
   `EvalOptions::configuration`; `BuildConfiguration::insert` takes a key and
