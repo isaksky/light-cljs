@@ -521,10 +521,28 @@ enum MacroFunction {
 pub(crate) struct MacroCode {
     registration: crate::emitter::NamespaceRegistration,
     unit: String,
+    /// The worker engines' key for the function they evaluate from it.
+    identity: CodeIdentity,
 }
 struct InstalledFunction {
     unit: crate::emitter::DeferredUnit,
     function: Option<MacroValue>,
+    /// The worker engines' key for the function they evaluate from it.
+    identity: CodeIdentity,
+}
+/// A macro's compile-time code, unique in the process and shared by every
+/// clone of its declaration: a worker engine's key for its own function
+/// of it (`EngineBinding::foreign_macros`), which outlives the
+/// declaration. An address would not identify it: the allocation of a
+/// released generation can be reused by a later declaration
+/// (light-cljs-385).
+#[derive(Clone, Copy)]
+struct CodeIdentity(usize);
+impl CodeIdentity {
+    fn next() -> Self {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
 }
 impl CompiledMacro {
     /// A macro of a namespace installed from its artifact
@@ -542,6 +560,7 @@ impl CompiledMacro {
                 InstalledFunction {
                     unit,
                     function: None,
+                    identity: CodeIdentity::next(),
                 },
             ))),
             definition,
@@ -597,10 +616,12 @@ impl CompiledMacro {
         binding: &crate::macro_host::EngineBinding,
     ) -> Result<ValueId, String> {
         let key = match &self.function {
-            MacroFunction::Ready(_, Some(code)) => std::sync::Arc::as_ptr(code) as usize,
+            MacroFunction::Ready(_, Some(code)) => code.identity.0,
             // A bootstrap macro, which the worker's own bootstrap holds.
             MacroFunction::Ready(function, None) => return Ok(function.id),
-            MacroFunction::Installed(installed) => std::sync::Arc::as_ptr(installed) as usize,
+            MacroFunction::Installed(installed) => {
+                installed.lock().expect("installed macro").identity.0
+            }
         };
         if let Some(&function) = binding.foreign_macros.borrow().get(&key) {
             return Ok(function);
@@ -800,7 +821,11 @@ impl MacroHost {
             ))
             .map_err(|e| e.to_string())?;
         let function = std::sync::Arc::new(bootstrap.own(engine, function));
-        let code = std::sync::Arc::new(MacroCode { registration, unit });
+        let code = std::sync::Arc::new(MacroCode {
+            registration,
+            unit,
+            identity: CodeIdentity::next(),
+        });
         self.insert_javascript_macro(
             format!("{namespace}/{name}"),
             CompiledMacro {

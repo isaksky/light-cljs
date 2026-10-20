@@ -1199,7 +1199,10 @@ The one deterministic ID-order change of this stage is made, at every
 - *Per isolate.* A source macro's declaration keeps the JavaScript that
   declared it (`compiler_bootstrap::MacroCode`), and a worker's engine
   evaluates it once into its binding's own table (`EngineBinding::foreign`,
-  `foreign_macros`), as it does an installed artifact's macro; the
+  `foreign_macros`), as it does an installed artifact's macro. The table
+  is keyed by an identity the declaration's clones share, never by an
+  address, which a later declaration can reuse once a released
+  generation is freed (light-cljs-385); the
   bootstrap macros are its own already. A worker installs the catalog's
   registrations before each analysis and evaluates the roots it demands
   through its own `__lightCompileUnit`, so a helper demanded from k

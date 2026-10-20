@@ -362,3 +362,60 @@ fn units_on_workers_keep_the_one_slot_manifest_and_artifacts() {
         }
     }
 }
+
+#[test]
+fn a_persistent_worker_never_takes_a_released_macro_generation_for_a_later_one() {
+    // Every `v` generation is captured by the deferred function after it,
+    // and released once `app.a`'s units complete. `app.b`'s macros are
+    // declared after, in allocations that may reuse the released ones:
+    // one worker, persistent across both namespaces, expands each with its
+    // own function, as one slot and fresh isolates do (light-cljs-385).
+    const GENERATIONS: usize = 32;
+    let mut a = String::from("(ns app.a)\n");
+    let mut b = String::from("(ns app.b (:require [app.a :as a]))\n");
+    let mut main = String::from("(ns app.main (:require [app.a :as a] [app.b :as b]))\n");
+    let mut expected = Vec::new();
+    for k in 0..GENERATIONS {
+        a.push_str(&format!("(defmacro v [] {k})\n(defn f{k} [] (v))\n"));
+        b.push_str(&format!(
+            "(defmacro w{k} [] {})\n(defn g{k} [] (w{k}))\n",
+            1000 + k
+        ));
+        main.push_str(&format!("(js/console.log (a/f{k}) (b/g{k}))\n"));
+        expected.push(format!("{k} {}\n", 1000 + k));
+    }
+    let sources = Sources::new();
+    sources
+        .write("app/a.cljs", &a)
+        .write("app/b.cljs", &b)
+        .write("app/main.cljs", &main);
+    let serial = build(&sources, "app.main", 1, false);
+    assert_eq!(execute(serial.output.as_ref().unwrap()), expected.concat());
+    for _ in 0..3 {
+        let persistent = build(&sources, "app.main", 2, false);
+        assert_eq!(persistent.output, serial.output);
+        if cfg!(feature = "v8-macros") {
+            let units = &persistent.stats.deferred_units;
+            assert_eq!(units.worker_isolates, 1, "{units:?}");
+            assert!(units.pooled >= 2 * GENERATIONS, "{units:?}");
+        }
+    }
+    #[cfg(debug_assertions)]
+    {
+        let fresh = crate::macro_free_units::build_configured(
+            &sources,
+            "app.main",
+            2,
+            false,
+            light_cljs::MacroHost::new(),
+            &[],
+            |recorders| {
+                recorders.perturbation = Some(light_cljs::scheduler::Perturbation {
+                    fresh_isolates: true,
+                    ..Default::default()
+                })
+            },
+        );
+        assert_eq!(fresh.output, serial.output);
+    }
+}
