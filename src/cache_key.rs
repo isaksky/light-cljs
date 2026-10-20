@@ -58,7 +58,7 @@ use crate::dependency_manifest::{
 use crate::macro_host::MacroHost;
 use crate::manifest_prefix::NamespaceRecords;
 use crate::sha256::{Fingerprint, digest};
-use crate::source_provider::{LoadRequest, Reload, SourceProvider};
+use crate::source_provider::{LoadError, LoadRequest, Reload, SourceProvider};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -814,8 +814,13 @@ pub fn inputs_unchanged<'a>(
                         && now.text.len() as u64 == then.bytes
                         && digest(now.text.as_bytes()) == then.sha256
                 }
-                // A failed lookup is recorded as absent, with its candidates.
-                (Err(_), None) => true,
+                // A caught ambiguity is recorded as absent and keyed by its
+                // candidates, so the same candidates are the same failure.
+                // Any other provider failure was never cacheable, and one
+                // that absence turned into (a directory at the path, an
+                // unreadable file) fails where the build that published
+                // read nothing, with the same candidates.
+                (Err(LoadError::AmbiguousSources(_)), None) => true,
                 _ => false,
             };
         if !unchanged {

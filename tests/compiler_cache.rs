@@ -619,6 +619,50 @@ fn persistent_inputs_invalidate_their_readers() {
     assert_eq!(cache_off.js, reconfigured.js);
 }
 
+/// A guarded optional read cached while its resource was absent misses
+/// once a directory takes that path, since the read now fails and the
+/// guard's other branch runs; an ambiguity the read caught and that has not
+/// changed is still a hit.
+#[test]
+fn cached_optional_resource_absence_becoming_directory() {
+    let project = Project::new(&[
+        (
+            "guard.cljs",
+            "(ns guard (:require [light.build :as b])) (defmacro optional [path] (try (or (b/resource? path) \"absent\") (catch :default _ \"failed\")))",
+        ),
+        (
+            "main.cljs",
+            "(ns main (:require [guard :refer [optional]])) (js/console.log (optional \"data.txt\"))",
+        ),
+    ]);
+    assert_eq!(project.cached("main", &[]).run(), "absent\n");
+    assert_eq!(project.cached("main", &[]).stat("cache.hits"), 3);
+    let directory = project.dir.join("src/data.txt");
+    fs::create_dir(&directory).unwrap();
+    let oracle = project.uncached("main");
+    assert_eq!(oracle.run(), "failed\n");
+    // The stored absence is no longer what the lookup finds, and the read
+    // that fails instead cannot be keyed: `main` recompiles unpublished.
+    let warm = project.cached("main", &[]);
+    assert_eq!(warm.stat("cache.hits"), 2, "{}", warm.stats);
+    assert_eq!(warm.rows(), ["main bypass non-cacheable-input main"]);
+    assert_eq!(warm.js, oracle.js);
+    fs::remove_dir(&directory).unwrap();
+    // The same path in a second root: the caught ambiguity is keyed by its
+    // candidates, and a warm build that finds them unchanged reuses it.
+    let other = project.dir.join("other");
+    fs::create_dir_all(&other).unwrap();
+    project.write("data.txt", "one");
+    fs::write(other.join("data.txt"), "two").unwrap();
+    let roots = ["--source-root", other.to_str().unwrap()];
+    let oracle = Project::finish(project.command("main", &roots, false).output().unwrap());
+    assert_eq!(oracle.run(), "failed\n");
+    assert_eq!(project.cached("main", &roots).js, oracle.js);
+    let warm = project.cached("main", &roots);
+    assert_eq!(warm.stat("cache.hits"), 3, "{}", warm.stats);
+    assert_eq!(warm.js, oracle.js);
+}
+
 /// A damaged index is a miss that names it, and the next publish replaces
 /// it; a require removed is reported as the source change it is, before
 /// the dependency it loses.
