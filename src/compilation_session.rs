@@ -127,15 +127,16 @@ impl UnitCharges {
     /// Add the charges to `binding`'s counters and marks, and spend the
     /// unit's polls from `control`, the execution control its analysis on
     /// the charging thread would have polled; the unit was analyzed at
-    /// `depth` of that thread's stack. The first poll or native expansion
-    /// that fails fails the unit, with the message and diagnostic its
-    /// analysis there would have given.
+    /// `depth` of that thread's stack, and with no control, `start` starts
+    /// the engine whose control it is at the first JavaScript expansion.
+    /// The first poll, expansion or start that fails fails the unit, with
+    /// the message and diagnostic its analysis there would have given.
     fn charge(
         &self,
         binding: &EngineBinding,
         depth: usize,
         mut control: Option<crate::evaluator::ExecutionControl>,
-        start: &dyn Fn() -> Option<crate::evaluator::ExecutionControl>,
+        start: &dyn Fn() -> Result<Option<crate::evaluator::ExecutionControl>, String>,
         session: &CompilationSession,
     ) -> Result<(), (String, crate::AnalysisError)> {
         use crate::macro_host::UnitEvent;
@@ -182,15 +183,20 @@ impl UnitCharges {
                     span,
                     site,
                 } => {
-                    if control.is_none() {
-                        control = start();
-                    }
                     let fail = |message: &str| match site {
                         Some((operator, span)) => {
                             fail(span, format!("while expanding {operator}: {message}"))
                         }
                         None => fail(span, message.into()),
                     };
+                    // A start that fails is the expansion's failure, and
+                    // leaves no unspent control to skip later polls with.
+                    if control.is_none() {
+                        control = match start() {
+                            Ok(control) => control,
+                            Err(error) => return fail(&error),
+                        };
+                    }
                     if expansions.get() >= self.limits.0 {
                         return fail("compiler macro expansion limit exceeded");
                     }
@@ -1732,17 +1738,33 @@ impl CompilationSession {
     }
     /// The coordinator's engine, started now if it has none, as the first
     /// JavaScript macro a serial build expands starts it; `binding` is a
-    /// frame of the compilation's, which reaches this session.
-    fn start_main_engine(&self, binding: &EngineBinding) -> Option<Bootstrap> {
+    /// frame of the compilation's, which reaches this session. None without
+    /// a pool or a session; a start that fails, its engine's construction or
+    /// its attachment, gives the error that expansion would have failed with
+    /// (light-cljs-386).
+    fn start_main_engine(&self, binding: &EngineBinding) -> Result<Option<Bootstrap>, String> {
         if let Some(bootstrap) = self.bootstrap() {
-            return Some(bootstrap);
+            return Ok(Some(bootstrap));
         }
-        let environment = self.pool.borrow().as_ref()?.main.clone();
-        let session = binding.session_handle()?;
+        let Some(environment) = self.pool.borrow().as_ref().map(|pool| pool.main.clone()) else {
+            return Ok(None);
+        };
+        let Some(session) = binding.session_handle() else {
+            return Ok(None);
+        };
         let host = MacroHost::from_parts(environment, binding.frame());
-        let bootstrap = crate::compiler_bootstrap::build(&host, true).ok()?;
-        session.attach(&bootstrap, &host).ok()?;
-        Some(bootstrap)
+        let bootstrap = crate::compiler_bootstrap::build(&host, true)?;
+        #[cfg(debug_assertions)]
+        if let Some(delay) = self
+            .shared
+            .perturbation
+            .get()
+            .and_then(|p| p.main_attach_delay)
+        {
+            std::thread::sleep(delay);
+        }
+        session.attach(&bootstrap, &host)?;
+        Ok(Some(bootstrap))
     }
     /// The build failed with an error the coordinator has chosen: what
     /// the pool has not started is not needed, and what its workers run is
@@ -1931,8 +1953,18 @@ impl CompilationSession {
             // started the coordinator's engine with one slot, at that
             // expansion; it starts it there, so later polls are spent.
             let start = || {
+                #[cfg(debug_assertions)]
+                if let Some(delay) = self
+                    .shared
+                    .perturbation
+                    .get()
+                    .and_then(|p| p.main_engine_delay)
+                    && self.bootstrap().is_none()
+                {
+                    std::thread::sleep(delay);
+                }
                 self.start_main_engine(&binding)
-                    .map(|b| b.evaluator.control())
+                    .map(|b| b.map(|b| b.evaluator.control()))
             };
             if let Err((message, diagnostic)) =
                 charges.charge(&binding, depth, control, &start, self)

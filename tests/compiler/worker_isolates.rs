@@ -208,6 +208,59 @@ fn a_worker_isolate_that_runs_out_of_time_fails_its_unit_and_the_build_ends() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
+fn pooled_macro_charging_propagates_main_engine_startup_failure() {
+    // `f`'s unit expands `for`, a JavaScript core macro, on a worker; no
+    // top-level form starts the coordinator's engine, which it starts where
+    // it charges the unit, as a build with one slot would have at that
+    // expansion. Held until the shared deadline has passed, before the
+    // engine is made or after it is made and before it is attached, the
+    // start fails, and so does the unit, with the deadline error at the
+    // expansion, not as if nothing had been spent (light-cljs-386).
+    let sources = Sources::new();
+    sources.write(
+        "app/s.cljs",
+        r#"(ns app.s)
+(defn f [] (vec (for [x [1 2]] (inc x))))
+(js/console.log (pr-str (f)))"#,
+    );
+    let perturbed = |deadline, attach: bool| {
+        let mut host = light_cljs::MacroHost::new();
+        host.evaluator_options.timeout = deadline;
+        let held = Some(deadline * 2);
+        crate::macro_free_units::build_configured(&sources, "app.s", 2, false, host, &[], |r| {
+            r.perturbation = Some(light_cljs::scheduler::Perturbation {
+                main_engine_delay: held.filter(|_| !attach),
+                main_attach_delay: held.filter(|_| attach),
+                ..Default::default()
+            })
+        })
+    };
+    let deadline = crate::macro_free_units::deadline_after(|| {
+        let built = build(&sources, "app.s", 2, false);
+        assert_eq!(execute(&built.output.unwrap()), "[2 3]\n");
+    });
+    for attach in [false, true] {
+        let built = perturbed(deadline, attach);
+        if !cfg!(feature = "v8-macros") {
+            // No worker expands a JavaScript macro: the coordinator does,
+            // and nothing is held.
+            assert_eq!(execute(&built.output.unwrap()), "[2 3]\n");
+            continue;
+        }
+        let Err(error) = built.output else {
+            panic!("attach {attach}: the unit was charged with its engine's start failed");
+        };
+        assert!(
+            error.contains("app/s.cljs:2:")
+                && error.contains("while expanding for")
+                && error.contains("deadline exceeded"),
+            "attach {attach}: {error}"
+        );
+    }
+}
+
+#[test]
 fn a_persistent_worker_sees_each_units_own_macro_inventory() {
     // `seen` reads the macro inventory in `&env`: `before`'s snapshot has
     // no `later`, `after`'s has it, whichever worker analyzes each.

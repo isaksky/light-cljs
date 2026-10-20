@@ -34,6 +34,13 @@ pub struct Perturbation {
     /// callback a running macro's nested demand enters, on whichever
     /// thread's engine runs the macro.
     pub panic_in: Option<String>,
+    /// The coordinator waits this long before it starts its own engine to
+    /// charge a unit a worker analyzed with a JavaScript macro: a build whose
+    /// deadline is shorter starts it with the deadline spent (light-cljs-386).
+    pub main_engine_delay: Option<Duration>,
+    /// As [`Self::main_engine_delay`], but between the engine's construction
+    /// and its attachment to the session: the attachment fails instead.
+    pub main_attach_delay: Option<Duration>,
     /// Every job this pool started (the parse queue gets a log of its own),
     /// in start order: the deque index of the worker
     /// that ran it (0 on the inline path) and its key. A test prints it as
