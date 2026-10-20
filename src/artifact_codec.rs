@@ -4253,7 +4253,7 @@ mod tests {
         };
         let over = |artifact: &NamespaceArtifact, fields: ManifestFields| {
             let bytes = encode(artifact, &fields).unwrap();
-            assert!(bytes.len() < 200_000, "{} bytes", bytes.len());
+            assert!(bytes.len() < 3 << 20, "{} bytes", bytes.len());
             decoded(&bytes).unwrap();
             over_budget(read_manifest(&bytes, &limits).unwrap_err());
             over_budget(decode(&bytes, &limits, &|| false).unwrap_err());
@@ -4279,14 +4279,52 @@ mod tests {
         let mut artifact = sample(0);
         artifact.references.namespaces = empty(60_000);
         over(&artifact, fields());
-        // 30,000 requires fit the budget in the manifest, but not once
-        // decoding copies them into the declarations.
+        // One 2 MiB name in each place the manifest holds one.
+        let long = || "a".repeat(2 << 20);
+        over(
+            &sample(0),
+            ManifestFields {
+                dependencies: vec![Dependency {
+                    namespace: long(),
+                    kinds: 1,
+                }],
+                ..fields()
+            },
+        );
+        let mut artifact = sample(0);
+        artifact.declarations.requires = vec![long()];
+        over(&artifact, fields());
+        let mut artifact = sample(0);
+        artifact.references.namespaces = vec![long()];
+        over(&artifact, fields());
+        let mut artifact = sample(0);
+        artifact.header.namespace = long();
+        over(&artifact, fields());
+        let mut artifact = sample(0);
+        artifact.header.path = long();
+        over(&artifact, fields());
+        // What fits the budget in the manifest but not once decoding copies
+        // it into the artifact: 30,000 requires, as many referenced
+        // namespaces, and a 600 KiB namespace or path.
+        let copied = |artifact: &NamespaceArtifact| {
+            let bytes = encode(artifact, &fields()).unwrap();
+            read_manifest(&bytes, &limits).unwrap();
+            over_budget(decode(&bytes, &limits, &|| false).unwrap_err());
+            decoded(&bytes).unwrap();
+        };
+        let half = || "a".repeat(600 << 10);
         let mut artifact = sample(0);
         artifact.declarations.requires = empty(30_000);
-        let bytes = encode(&artifact, &fields()).unwrap();
-        read_manifest(&bytes, &limits).unwrap();
-        over_budget(decode(&bytes, &limits, &|| false).unwrap_err());
-        decoded(&bytes).unwrap();
+        copied(&artifact);
+        let mut artifact = sample(0);
+        artifact.references.namespaces = empty(30_000);
+        copied(&artifact);
+        let mut artifact = sample(0);
+        artifact.header.namespace = half();
+        copied(&artifact);
+        let mut artifact = sample(0);
+        artifact.header.path = half();
+        copied(&artifact);
     }
 
     #[test]
