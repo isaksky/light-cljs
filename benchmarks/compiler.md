@@ -5635,3 +5635,27 @@ unchanged. `none` and `prepare` embed the whole runtime, which grew by
 1,760 bytes (`record-protocol` at `none` 496,611 to 498,371). Node's first
 execution after the rebase, median of 15: `eight-records` 1.54 to 1.98 ms,
 record-printed 1.45 to 1.52 ms.
+
+## Kind branches' own fallback marker — October 19, 2026
+
+light-cljs-387 gives the kind branches `noBranch`, a private marker, for a
+value they leave to the operation, in place of `missing`, which program code
+can hold (`contains?` passes it to `-lookup`). `foundMissing` and the
+wrappers' second test for it are gone. `cargo bench --locked --bench compiler
+-- --levels --only vector-conj,map-assoc,set-conj,map-get,vector-nth,seq-pipeline`,
+Node v26.12.0 at `advanced`, µs per call, minimum of the baseline run (load
+6 to 4) and of two candidate runs (load 7.6, then 3.5 rising to 12):
+
+| Workload | n | before | after |
+| --- | ---: | ---: | ---: |
+| `vector-conj` | 20,000 | 969 | 1,021 / 971 |
+| `map-assoc` | 20,000 | 5,130 | 5,347 / 5,266 |
+| `set-conj` | 20,000 | 4,726 | 4,826 / 4,775 |
+| `vector-nth` | 20,000 | 165 | 158 / 164 |
+| `map-get` | 20,000 | 1,196 | 1,157 / 1,201 |
+| `seq-pipeline` | 200 | 159 | 166 / 160 |
+
+The second candidate run is within 1 to 3% of the baseline either way,
+which is this machine's noise under other workers' load; the change is not
+measurable. Sizes: `seq-pipeline` at `advanced` 29,491 to 29,462 bytes; the
+whole runtime that `none` and `prepare` embed shrank by 805 bytes.

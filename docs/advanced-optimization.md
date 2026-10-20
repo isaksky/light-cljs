@@ -1747,6 +1747,19 @@ slice keeps only where a program builds a lazy seq or a cell:
   have no holes. `extend-type` of a type with a kind or of `Object`, and
   `specify!` of a value with one, fill the tables with table 0, whose
   branches all give `missing`.
+- **As built (light-cljs-387): a fallback marker of its own.** The branches
+  now give `noBranch`, not `missing`, for a value they leave to the
+  operation, and the wrappers test for it alone. `noBranch` is a private
+  frozen object that no operation returns and no method receives, so every
+  other answer is the branch's. `missing` can reach program code: `contains?`
+  passes it to `-lookup` as the item for an absent key, and a method can keep
+  it, give it back from `-conj`, `-assoc`, `-first` or `-seq`, or store it in
+  a collection. With `missing` as the marker, `conj` and `assoc` of a
+  collection whose method gave it back called the method a second time and
+  returned that second answer. `seq`, `first`, `rest`, `next`, `nth` and `get`
+  had the same collision, wherever a branch's answer was a method's or a
+  stored item. The `foundMissing` encoding that `get` and the collections'
+  `first`, `rest` and `next` used (below) is gone, as no answer needs one.
 - **Views.** `IndexedSeqValue.viewKind` and `ChunkedSeqValue.viewKind` give
   the two view types kind 3, and `first.views` fills in `kindTables[3][1]`.
   The kind numbers are effects of the view types that wait for
@@ -1964,7 +1977,8 @@ in turn.
   passes `-lookup` for a missing key, and a method can keep) comes back from
   the branches of `get` as `foundMissing`, which `get.branches` turns into
   `missing` rather than calling the operation and the method again (Sol
-  review of this change).
+  review of this change). light-cljs-387 replaced that encoding with the
+  branches' own fallback marker, `noBranch` (Phase 2 kind tables, above).
 - **Not done.** `first`, `rest` and `next` of the collections and the
   dispatch cells for `extend-type` are light-cljs-375 (below).
 - **Tests.** `runtime_manifest`: kinds 1 to 8, 33 entries, 314
@@ -2012,7 +2026,8 @@ host types' implementations of a key by its text.
   (which `contains?` hands `-lookup`, and a `-seq` can give back) comes
   back as `foundMissing`, which the wrappers of `first`, `rest` and `next`
   turn back, as for `get`, rather than calling the operation and the
-  method again (Sol review of this change).
+  method again (Sol review of this change; light-cljs-387 replaced the
+  encoding with `noBranch`).
 - **No `next` for maps, sets and queues.** A first version had them (a
   `nextBranch` taking `next` of the seq of the value, or `seq` of `rest`
   where protocol implementations exist): `next` of a two-entry map 0.915

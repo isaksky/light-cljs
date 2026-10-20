@@ -1920,6 +1920,74 @@ for (const make of [() => c.hashSet(1), () => c.set(c.range(20)), () => c.vector
     assert.deepEqual([seqs, tails], [2, 1]);
   }
 }
+// No answer an operation's branch gives is taken for the marker that sends
+// the call to the operation's own path (light-cljs-387): `missing` saved as
+// above, as a method's answer or as an item a collection stores, comes back
+// from one call of each method.
+{
+  const donor = c.hashSet(1);
+  let saved;
+  donor.cljs$core$ILookup$ = c.PROTOCOL_SENTINEL;
+  donor.cljs$core$ILookup$_lookup$arity$3 = (_, k, nf) => (saved = nf);
+  c.contains(donor, 9);
+  for (const [value, slot, op] of [
+    [c.vector(1), 'cljs$core$ICollection$_conj$arity$2', v => c.conj(v, 2)],
+    [c.hashSet(1), 'cljs$core$ICollection$_conj$arity$2', s => c.conj(s, 2)],
+    [c.hashMap('a', 1), 'cljs$core$ICollection$_conj$arity$2', m => c.conj(m, c.vector('b', 2))],
+    [c.into(c.PersistentQueue.EMPTY, c.vector(1)), 'cljs$core$ICollection$_conj$arity$2', q => c.conj(q, 2)],
+    [c.vector(1), 'cljs$core$IAssociative$_assoc$arity$3', v => c.assoc(v, 0, 2)],
+    [c.hashMap('a', 1), 'cljs$core$IAssociative$_assoc$arity$3', m => c.assoc(m, 'a', 2)],
+  ]) {
+    let calls = 0;
+    value[slot] = () => ++calls === 1 ? saved : 42;
+    assert.equal(op(value), saved, slot);
+    assert.equal(calls, 1, slot);
+  }
+  // A lazy seq's branches, of a realized value whose `-first` or `-seq`
+  // gives it, and a cell's `next`, whose rest's `-seq` does.
+  let firsts = 0, seqs = 0;
+  const head = runtime.makeReify([['ISeqable', 0, null], ['ISeqable/-seq', 1, self => self],
+    ['ISeq', 0, null], ['ISeq/-first', 1, () => (firsts++, saved)], ['ISeq/-rest', 1, () => c.List.EMPTY]]);
+  assert.equal(c.first(new c.LazySeq(null, () => head, null, null)), saved);
+  assert.equal(firsts, 1);
+  const empty = runtime.makeReify([['ISeqable', 0, null], ['ISeqable/-seq', 1, () => (seqs++, saved)]]);
+  assert.equal(c.seq(new c.LazySeq(null, () => empty, null, null)), saved);
+  assert.equal(seqs, 1);
+  assert.equal(c.next(new c.Cons(null, 1, empty, null)), saved);
+  assert.equal(seqs, 2);
+  // Stored items, under a key whose `-equiv` counts its calls: as many as
+  // for any other item.
+  let equivs = 0;
+  const key = () => runtime.makeReify([['IEquiv', 0, null], ['IEquiv/-equiv', 2, () => (equivs++, true)],
+    ['IHash', 0, null], ['IHash/-hash', 1, () => 7]]);
+  for (const make of [item => c.arrayMap(key(), item), item => c.hashMap(key(), item)]) {
+    equivs = 0;
+    assert.equal(c.get(make(5), key()), 5);
+    const expected = equivs;
+    equivs = 0;
+    assert.equal(c.get(make(saved), key()), saved);
+    assert.equal(equivs, expected);
+  }
+  const entry = c.first(c.hashMap(saved, saved));
+  for (const [value, read] of [[c.vector(saved), x => c.nth(x, 0)], [c.vector(saved), x => c.get(x, 0)], [c.vector(saved), c.first],
+    [entry, x => c.nth(x, 0)], [entry, x => c.get(x, 1)], [entry, c.first], [c.list(saved), c.first], [c.seq([saved]), c.first],
+    [c.hashSet(saved), x => c.get(x, saved)], [c.hashMap('a', saved), x => c.get(x, 'a')], [c.cons(1, c.list(saved)), x => c.first(c.next(x))]])
+    assert.equal(read(value), saved);
+  // ... and a stored item a getter gives is read once (Sol review of this
+  // change): the getter gives it first, then 42.
+  const once = () => {
+    const items = [], reads = {n: 0};
+    Object.defineProperty(items, 0, {get: () => ++reads.n === 1 ? saved : 42, enumerable: true});
+    return [items, reads];
+  };
+  for (const read of [items => c.first(c.seq(items)),
+    items => c.nth(new c.PersistentVector(null, 1, 5, c.PersistentVector.EMPTY_NODE, items, null), 0),
+    items => c.get(new c.PersistentVector(null, 1, 5, c.PersistentVector.EMPTY_NODE, items, null), 0)]) {
+    const [items, reads] = once();
+    assert.equal(read(items), saved);
+    assert.equal(reads.n, 1);
+  }
+}
 {
   // A subvector of a vector the public constructor built over a caller's
   // array reads the array as its seq does once the array shrinks.
