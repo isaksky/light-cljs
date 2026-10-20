@@ -1645,7 +1645,7 @@ fn array_maps_keep_no_hash_map_trie() {
             "PersistentHashMapValue.brand",
             "hashTrie",
             "trieEntry",
-            "lookup.trie",
+            "get.trie",
             "copyEntries.trie",
             "hashNodeAssoc",
         ],

@@ -402,11 +402,13 @@ pub const FIXTURES: &[Fixture] = &[
     },
     // Since light-cljs-231 a set answers its host-facing methods from its
     // members and a set literal of at most 8 constants builds an array set,
-    // so a set keeps no seq, hash map or hashing.
+    // so a set keeps no seq, hash map or hashing. Since light-cljs-302 its
+    // `lookup` tests for a hash trie in the map and set branches (95 bytes)
+    // even where no hash trie is built, as the tries' hooks need.
     Fixture {
         name: "set-only",
         source: r#"(js/console.log (.has #{1 2 3} 2) (.join (js/Array.from #{1 2 3}) " "))"#,
-        ceilings: [497_000, 497_000, 4_800],
+        ceilings: [497_000, 497_000, 4_900],
         removed: [0, 0, 0],
         printed: "true 1 3 2\nundefined\n",
     },

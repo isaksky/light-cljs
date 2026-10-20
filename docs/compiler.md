@@ -1886,7 +1886,7 @@ variadic arity when that feature loads. A chunk's runtime is a function of
 the bindings its units take from the chunks before it, which it imports,
 `const [rt$a] = ((b, c) => { ... return [a]; })(rt$b, rt$c);`, and returns
 the bindings its code and later chunks read. A unit that assigns another
-unit's binding (`lookup.trie` wraps `lookup`), or reads one a function
+unit's binding (`seq.protocol` wraps `seq`), or reads one a function
 assigns after loading, stays in that unit's chunk, since a chunk receives
 other chunks' bindings as values.
 Analysis and optimization run once over the whole program, so each chunk's

@@ -665,9 +665,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // hooks, the initial values of four core cells, the protocol wrappers of
     // seven operations, the brand readers of `typeFields` and `recordTypes`
     // and the record wrappers of `maps` and `mapKinds` (light-cljs-258), the
-    // hash-map trie wrappers of two operations (light-cljs-235), the hash-set
-    // trie wrapper of `lookup` (light-cljs-236), the upstream fields of 28
-    // types, the deref wrapper of light.lazy's `Loadable` (light-cljs-272),
+    // hash-map trie hook of `copyEntries` (light-cljs-235; the tries' wrappers
+    // of `lookup` are `get.trie`'s and `get.members`' hooks since
+    // light-cljs-302), the upstream fields of 28 types, the deref hook of
+    // light.lazy's `Loadable` (light-cljs-272),
     // and the units filling in the kind tables' entries for lazy seqs and
     // cells that no kind hook unit fills in (9), wrapping five operations
     // behind them, and giving two view types and their `first` a kind
@@ -688,7 +689,7 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // (light-cljs-373), and the 12 branches of `first` and `rest` for vectors,
     // maps, sets, queues and map entries and of `next` for vectors and map
     // entries (light-cljs-375).
-    assert_eq!(checked, 326);
+    assert_eq!(checked, 324);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -843,10 +844,20 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("seqTree", Kind::Units(&["treeMapConstructor"])),
     ("sortedMapSeq", Kind::Units(&["treeMapConstructor"])),
     ("seqSet", Kind::Stores(&["sets"])),
-    // Hash maps' tries, which `get.maps` searches (light-cljs-358).
+    // Hash maps' tries, which `get.maps` (light-cljs-358) and `lookup`
+    // (light-cljs-302) search.
     ("trieValue", Kind::Units(&["PersistentHashMapValue"])),
-    // Hash sets' tries, which `get.sets` searches (light-cljs-373).
+    // Hash sets' tries, which `get.sets` (light-cljs-373) and `lookup.sets`
+    // (light-cljs-302) search.
     ("trieMember", Kind::Units(&["publicHashSet", "putMember"])),
+    // A hash map's trie and a hash set's, which `copyEntries` copies where it
+    // is not an array (light-cljs-302).
+    (
+        "copyTrie",
+        Kind::Units(&["PersistentHashMapValue", "publicHashSet", "putMember"]),
+    ),
+    // light.lazy's loadables, which `deref` asks for (light-cljs-302).
+    ("isLoadable", Kind::Units(&["Loadable"])),
     // Views with a `vec` slot, which the public ChunkedSeq constructor builds.
     ("restChunkedSeq", Kind::Units(&["ChunkedSeqValue"])),
     // Views of queues.
@@ -1599,8 +1610,11 @@ fn conditional_effects_wait_for_a_condition() {
 /// its binding, the readers of a binding a function assigns after the
 /// runtime loads, and the effects that append to a list another unit
 /// enumerates (`recordMethods.*` to `recordMethodTable`), and the two
-/// definitions of `mapEntry` and `MapEntryType` (light-cljs-247). A new one moves no
-/// unit out of its binding's chunk.
+/// definitions of `mapEntry` and `MapEntryType` (light-cljs-247). The hash
+/// tries' and `Loadable`'s wrappers install hooks instead since
+/// light-cljs-302, so that they go with the values they handle; the seven
+/// protocol wrappers stay (light-cljs-355). A new one moves no unit out of
+/// its binding's chunk.
 #[test]
 fn units_assigning_a_binding_share_its_unit() {
     let manifest = manifest();
@@ -1619,7 +1633,6 @@ fn units_assigning_a_binding_share_its_unit() {
             "assoc <- assoc.branches",
             "conj <- conj.branches",
             "contains <- contains.own",
-            "copyEntries <- copyEntries.trie",
             "count <- count.branches",
             "count <- count.protocol",
             "declarationJournal <- MultiFn.tables",
@@ -1642,7 +1655,6 @@ fn units_assigning_a_binding_share_its_unit() {
             "demandProtocol <- resetMulti",
             "demandProtocol <- satisfies",
             "demandProtocol <- setDeclarationDemand",
-            "derefProtocol <- Loadable.deref",
             "first <- first.branches",
             "first <- first.protocol",
             "gensymCounter <- gensym",
@@ -1650,11 +1662,9 @@ fn units_assigning_a_binding_share_its_unit() {
             "get <- get.own",
             "globalHierarchy <- getGlobalHierarchy",
             "identityCounter <- hash",
-            "lookup <- lookup.members",
             "lookup <- lookup.sets",
             "lookup <- lookup.transients",
             "lookup <- lookup.tree",
-            "lookup <- lookup.trie",
             "macroexpandServices <- expansionService",
             "macroexpandServices <- setMacroexpandServices",
             "mapEntry <- mapEntry.lean",

@@ -5486,3 +5486,36 @@ to 36,193, `eight-records` 35,315 to 36,720 (4.0%, the most), `constant-keys`
 `none` and `prepare` embed grows by 5.8 KB (1.2%), and the QuickJS
 evaluator's smallest heap that loads it and evaluates `(first [1 2])` from
 4,224 to 4,256 KiB (16 KiB steps).
+
+## Hash-trie and loadable hooks in chunks — October 19, 2026
+
+light-cljs-302 turns the hash tries' wrappers of `lookup` and `copyEntries`
+and `Loadable`'s wrapper of `derefProtocol` into hook installs, so they no
+longer share their operation's chunk and go with the values they handle
+([code-splitting design](../docs/code-splitting.md), Phase 3, "As built
+(light-cljs-302)"); the seven protocol wrappers stay (light-cljs-355, the
+user's decision of 2026-10-19). Measured with `light-cljs --compile
+--optimize advanced --entry app.main --source-root examples/features
+--out-dir OUT`, raw / `gzip -9 -n` bytes of each file, against master
+`26027d0`. Same machine; one-minute load average 3.1 (sizes do not depend
+on it). examples/features at `advanced`, terse:
+
+| File | Before | After |
+| --- | ---: | ---: |
+| `app.main.js`, startup | 9,504 / 3,485 | 6,731 / 2,497 |
+| `app.editor+app.reports.js` | 59,571 / 18,406 | 62,158 / 19,261 |
+| `app.editor.js` | 5,268 / 2,312 | 5,268 / 2,312 |
+| `app.reports.js` | 5,084 / 2,183 | 5,084 / 2,181 |
+| all four | 79,427 / 26,386 | 79,241 / 26,251 |
+
+Startup's runtime is 50 units and 5,245 bytes (77 and 7,990 before,
+`--size-report`). Loading the editor first costs 67,426 / 21,573 bytes and
+the reports first 67,242 / 21,442 (64,839 / 20,718 and 64,655 / 20,589).
+Single files at `advanced`: a program that keeps `lookup` grows 47 bytes
+(`map-only` 8,053 to 8,100, `keyword-only` 3,351 to 3,398), one that also
+keeps the sets' branch 95 (`set-only` 4,792 to 4,887; its ceiling rises
+from 4,800 to 4,900), one that derefs 38 (`atom-str` 2,927 to 2,965), one
+that copies entries 17 (`mapv-count` 37,013 to 37,030); where the tries are
+kept, 133 smaller (`features` 77,371 to 77,238, `constant-keys` 49,398 to
+49,265). The readable runtime that `none` and `prepare` embed is 266 bytes
+smaller.

@@ -1866,7 +1866,8 @@ wherever a protocol lookup existed, that is in every program with a
   with public constructor slots, which can hold another count, takes the
   operation); vectors of `nth`, `get`, `conj` and `assoc`, maps of `get`,
   `conj` and `assoc`, sets and queues of `conj`. A hash map's `get` searches
-  its trie (`kindHooks.trieValue`, an effect of `PersistentHashMapValue`).
+  its trie (`kindHooks.trieValue`, an effect of `PersistentHashMapValue`,
+  which `lookup` calls too since light-cljs-302).
   Subvectors, values with slots and map entries forged into a vector's
   prototype take the operations.
 - **Wrappers.** `nth.branches`, `get.branches`, `conj.branches` and
@@ -1946,7 +1947,8 @@ in turn.
 - **Branches.** Sets have a branch of `get` (`get.sets`): the protocol
   lookup `get` makes first, then the member equal to the key, from a hash
   set's trie (`kindHooks.trieMember`, an effect of `publicHashSet` and
-  `putMember`, as `lookup.members` searches it) or from members in an array
+  `putMember`, which `lookup.sets` calls too since light-cljs-302) or from
+  members in an array
   (`collectionEntryIndex`, as `lookup.sets`). Map entries have branches of
   `seq`, `count`, `nth` and `get` (`seq.entries`, `count.entries`,
   `nth.entries`, `get.entries`). `nth` reads the items at 0 and 1 first, as
@@ -2122,8 +2124,9 @@ search.
 - **Other kinds' branches.** `lookup` is the map, vector and string
   branches; the set, transient and sorted-map branches are wrappers
   (`lookup.sets`, `lookup.transients`, `lookup.tree`) that their builders'
-  effects install in the order the branches had, before the hash kinds'
-  wrappers (`lookup.trie`, `lookup.members`). The last two call the kind
+  effects install in the order the branches had; the hash tries' branches,
+  wrappers too until light-cljs-302, call the hooks `trieValue` (in
+  `lookup`) and `trieMember` (in `lookup.sets`). The last two call the kind
   hooks `lookupTransient` and `lookupTree`, as before, so that in a chunked
   build the startup chunk, which declares `lookup` and so holds its
   wrappers, keeps only the dispatch. Structural equality's symbol branch is

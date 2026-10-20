@@ -2569,14 +2569,67 @@ fn holding<'a>(chunks: &'a [(String, Vec<&'static str>)], name: &str) -> Vec<&'a
         .collect()
 }
 
+/// Startup keeps `lookup` and the sets' branch for its own small map and
+/// set, and only a feature builds hash tries: the tries' hooks
+/// (`get.trie`, `get.members`, `copyEntries.trie`, light-cljs-302) go to
+/// the feature's chunk, which installs them when it loads, and the
+/// feature's lookups, updates and missing keys through `lookup` then print
+/// what the single file prints at every level.
+#[test]
+fn trie_hooks_work_after_loading_the_builder() {
+    let program = analyze(&[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (def menu {:title \"menu\"})\n\
+             (def editor (lazy/loadable app.editor/start))\n\
+             (defn start []\n\
+               (js/console.log (menu :title) (menu :none \"dflt\") (.has #{:a} :a))\n\
+               (-> (lazy/load editor)\n\
+                   (.then (fn [f] (js/console.log (pr-str (f))) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor)\n\
+             (defn start []\n\
+               (let [m (zipmap (range 20) (range 100 120))\n\
+                     s (set (range 20))\n\
+                     m2 (assoc m 5 :five 30 :thirty)\n\
+                     s2 (conj s 99)\n\
+                     s3 (disj s 7)]\n\
+                 [(m 3) (m 99 :none) (m2 5) (m2 30) (m 5) (m 30 :gone)\n\
+                  (s 7) (s 99) (s2 99) (s3 7) (.has s 19) (.has s 20)\n\
+                  (count m) (count m2) (count s) (count s2) (count s3)]))\n",
+        ),
+    ]);
+    let (record, _) = runs_as_chunks(&program);
+    assert_eq!(
+        record,
+        printed(
+            "app.main.js",
+            r#"menu dflt true\n[103 :none :five :thirty 105 :gone 7 nil 99 nil true false 20 21 20 21 19]\n"#
+        )
+    );
+    let (_, chunks) = chunk_units(&program);
+    for name in ["lookup", "lookup.sets"] {
+        assert_eq!(holding(&chunks, name), ["app.main.js"], "{name}");
+    }
+    for name in ["get.trie", "get.members", "copyEntries.trie", "trieEntry"] {
+        assert_eq!(holding(&chunks, name), ["app.editor.js"], "{name}");
+    }
+}
+
 /// examples/features at `Advanced`: every unit of the single file's slice is
 /// in exactly one chunk; the sorted collections are the editor's, the set
 /// operations the reports' (the sets `app.shared/documents` holds are built
 /// in the shared chunk with it), and startup holds what the application
-/// without its features keeps, the loadables' `Loadable`, and the hooks of
-/// `lookup` for hash tries with what they need: `lookup.trie` and
-/// `lookup.members` assign `lookup`, which the menu's keywords reach, so they
-/// share its chunk (`RuntimeManifest::sharers`).
+/// without its features keeps, the loadables' `Loadable`, and the wrappers
+/// of `lookup`, `get` and structural equality with what they need: they
+/// assign the binding, which the menu's keywords reach, so they share its
+/// chunk (`RuntimeManifest::sharers`). The hash tries' branches of `lookup`
+/// are hooks the features' hash maps and sets install (`get.trie`,
+/// `get.members`, light-cljs-302), which go with them.
 #[test]
 fn the_features_runtime_splits_by_signature() {
     let program = fixture_program("features");
@@ -2664,8 +2717,6 @@ fn the_features_runtime_splits_by_signature() {
     // the binding startup declares.
     let wrappers = [
         ("get", "get.branches"),
-        ("lookup", "lookup.trie"),
-        ("lookup", "lookup.members"),
         ("lookup", "lookup.sets"),
         ("lookup", "lookup.transients"),
         ("lookup", "lookup.tree"),
@@ -2680,6 +2731,18 @@ fn the_features_runtime_splits_by_signature() {
         );
         wrapper
     });
+    assert!(
+        manifest
+            .sharers(manifest.unit_of("derefProtocol").unwrap())
+            .is_empty()
+    );
+    for name in ["get.trie", "get.members", "trieEntry"] {
+        assert_eq!(
+            holding(&chunks, name),
+            ["app.editor+app.reports.js"],
+            "{name}"
+        );
+    }
     let mut expected = lower.units.iter().map(|unit| unit.name).collect::<Vec<_>>();
     expected.push("Loadable");
     for (unit, reached) in manifest.reachable(wrappers).into_iter().enumerate() {

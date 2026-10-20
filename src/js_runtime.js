@@ -1293,9 +1293,10 @@
   function reducedValue(value) { return protocolHooks.deref ? protocolHooks.deref(value) : reducedValues.get(value); }
   //@unit deref requires: derefProtocol
   function deref(value) { return derefProtocol(value); }
-  //@unit derefProtocol requires: atoms, deferredValue, delays, isReduced, methodKeys,
+  //@unit derefProtocol requires: atoms, deferredValue, delays, isReduced, kindHooks, methodKeys,
   //@ protocolHooks, reducedValues, vars, volatiles
   function derefProtocol(value) {
+    if (kindHooks.isLoadable?.(value)) return value.deref();
     const method = protocolHooks.builtin?.(value, methodKeys[12], 1);
     if (method) return method.call(value, value);
     if (delays.has(value)) return deferredValue(delays.get(value));
@@ -1316,9 +1317,9 @@
     }
     load() { return Promise.resolve().then(() => this.deref()); }
   };
-  //@unit Loadable.deref effect: Loadable when: derefProtocol requires: derefProtocol, Loadable
+  //@unit Loadable.deref effect: Loadable when: derefProtocol requires: kindHooks, Loadable
   // `deref` and `-deref` of a loadable, with or without protocol dispatch.
-  derefProtocol = (derefOther => value => value instanceof Loadable ? value.deref() : derefOther(value))(derefProtocol);
+  kindHooks.isLoadable = value => value instanceof Loadable;
   //@unit Loadable.name effect: Loadable when: printHost, typeNames requires: Loadable, typeNames
   // What prints for a loadable and for its type, as for a deftype.
   Loadable.cljs$lang$type = true;
@@ -2356,12 +2357,14 @@
   //@ sets
   // The branches of `lookup` for sets, transients and sorted maps, kept only
   // where a program builds them (light-cljs-247). They wrap it in the order
-  // its branches had, before the hash kinds' wrappers that follow; the last
-  // two call the hooks their kinds' builders install, so that a chunk
-  // building neither keeps no more than these.
+  // its branches had; the hash tries take the hooks of `get.trie` and
+  // `get.members` (light-cljs-302), and the last two wrappers call the hooks
+  // their kinds' builders install, so that a chunk building neither keeps no
+  // more than these.
   lookup = (operation => (value, key, notFound) => {
     const members = sets.get(value);
     if (!members) return operation(value, key, notFound);
+    if (!Array.isArray(members)) return kindHooks.trieMember(members, key, notFound);
     const index = kindHooks.entryIndex(value, members, key);
     return index < 0 ? notFound : members[index].key;
   })(lookup);
@@ -2374,38 +2377,22 @@
     const slots = publicCollectionSlots.get(value);
     return maps.has(value) && slots && "tree" in slots ? kindHooks.lookupTree(value, slots.tree, key, notFound) : operation(value, key, notFound);
   })(lookup);
-  //@unit lookup.trie effect: PersistentHashMapValue when: lookup requires: lookup, maps, trieEntry
-  // The branches of generic operations for a hash map's trie, kept only where
-  // a program builds hash maps.
-  lookup = (operation => (value, key, notFound) => {
-    const trie = maps.get(value);
-    if (!trie || Array.isArray(trie)) return operation(value, key, notFound);
-    const entry = trieEntry(trie, key);
-    return entry ? entry.value : notFound;
-  })(lookup);
-  //@unit get.trie effect: PersistentHashMapValue when: get requires: kindHooks, trieEntry
-  // The item under `key` of a hash map's trie, which `get.maps` reads
-  // (light-cljs-358).
+  //@unit get.trie effect: PersistentHashMapValue when: get, lookup requires: kindHooks, trieEntry
+  // The item under `key` of a hash map's trie, which `get.maps` (light-cljs-358)
+  // and `lookup` read, kept only where a program builds hash maps
+  // (light-cljs-235; a hook rather than a wrapper of `lookup` since
+  // light-cljs-302, so that a chunk places it with the hash maps).
   kindHooks.trieValue = (trie, key, notFound) => { const entry = trieEntry(trie, key); return entry ? entry.value : notFound; };
-  //@unit get.members effect: publicHashSet, putMember when: get requires: kindHooks, trieEntry
-  // Likewise the member of a hash set's trie, which `get.sets` reads
-  // (light-cljs-373).
-  kindHooks.trieMember = (trie, key, notFound) => { const entry = trieEntry(trie, key); return entry ? entry.key : notFound; };
-  //@unit lookup.members effect: publicHashSet, putMember when: lookup requires: lookup, sets,
+  //@unit get.members effect: publicHashSet, putMember when: get, lookup requires: kindHooks,
   //@ trieEntry
-  // Likewise a hash set's, whose members are a trie (`putMember`), kept only
-  // where a program builds hash sets (light-cljs-236).
-  lookup = (operation => (value, key, notFound) => {
-    const members = sets.get(value);
-    if (!members || Array.isArray(members)) return operation(value, key, notFound);
-    const entry = trieEntry(members, key);
-    return entry ? entry.key : notFound;
-  })(lookup);
+  // Likewise the member of a hash set's trie (`putMember`), which `get.sets`
+  // (light-cljs-373) and `lookup.sets` read, kept only where a program builds
+  // hash sets (light-cljs-236).
+  kindHooks.trieMember = (trie, key, notFound) => { const entry = trieEntry(trie, key); return entry ? entry.key : notFound; };
   //@unit copyEntries.trie effect: PersistentHashMapValue, publicHashSet, putMember when: copyEntries
-  //@ requires: copyEntries
+  //@ requires: kindHooks
   // A trie is immutable; its copy is the fields an update replaces.
-  copyEntries = (operation => entries => Array.isArray(entries) ? operation(entries)
-    : {root: entries.root, nil: entries.nil, length: entries.length})(copyEntries);
+  kindHooks.copyTrie = entries => ({root: entries.root, nil: entries.nil, length: entries.length});
   //@unit treeMapConstructor.kind effect: treeMapConstructor requires: mapTypes, treeMapConstructor
   mapTypes["sorted-map"] = treeMapConstructor;
   //@unit mapFromEntries requires: hashTrie, makeMap, PersistentArrayMapValue,
@@ -2421,9 +2408,10 @@
   const hashRoots = new WeakMap();
   //@unit hashTraversals
   const hashTraversals = new WeakMap();
-  //@unit copyEntries requires: hashRoots
+  //@unit copyEntries requires: hashRoots, kindHooks
   function copyEntries(entries) {
-    const copy = entries.slice();
+    // A trie, which is no array, has no `slice` (`copyEntries.trie`).
+    const copy = entries.slice?.() ?? kindHooks.copyTrie(entries);
     if (hashRoots.has(entries)) hashRoots.set(copy, hashRoots.get(entries));
     return copy;
   }
@@ -3864,6 +3852,7 @@
   function lookup(value, key, notFound) {
     const entries = maps.get(value);
     if (entries) {
+      if (!Array.isArray(entries)) return kindHooks.trieValue(entries, key, notFound);
       const index = kindHooks.entryIndex(value, entries, key);
       return index < 0 ? notFound : entries[index].value;
     }
@@ -3949,9 +3938,8 @@
   //@unit get.maps effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor when: get
   //@ requires: collectionEntryIndex, foundMissing, kindHooks, kindTables, lookup, maps, methodKeys,
   //@ missing, protocolHooks, publicCollectionSlots
-  // Likewise of a map: a hash map's trie is searched as `lookup.trie` does,
-  // entries without slots as `lookup` does, and others, as trees, take
-  // `lookup`.
+  // Likewise of a map: a hash map's trie and entries without slots are
+  // searched as `lookup` does, and others, as trees, take `lookup`.
   kindTables[5][6] = (value, key, notFound, arity) => {
     const entries = maps.get(value);
     if (!entries) return missing;
@@ -3965,7 +3953,7 @@
   //@unit get.sets effect: PersistentHashSetValue, treeSetConstructor when: get requires: collectionEntryIndex,
   //@ foundMissing, kindHooks, kindTables, methodKeys, missing, protocolHooks, sets
   // Likewise of a set (light-cljs-373), whose member equal to the key it
-  // gives: from a hash set's trie as `lookup.members` searches it, else as
+  // gives: from a hash set's trie or an array of members, as
   // `lookup.sets` does.
   kindTables[6][6] = (value, key, notFound, arity) => {
     const members = sets.get(value);

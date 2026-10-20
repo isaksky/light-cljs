@@ -46,8 +46,8 @@ Targets, measured in Phase 0 on the example application
 
 | Measurement | Today | Measured bound | Target |
 |---|---|---|---|
-| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646; chunked at namespace granularity (light-cljs-274), `app.main.js` 69,587 / 21,575, with the whole-program runtime slice and every constant still in startup; with definitions moved toward their readers (light-cljs-277), 69,539 / 21,551; with constants placed by their readers (light-cljs-278), 69,000 / 21,242, the whole-program runtime slice and the menu's two keywords; with the runtime sliced per chunk (light-cljs-279), 9,046 / 3,373: the units the menu needs (those of the lower bound, 4,184 bytes here), the `Loadable` type (255) and the `lazy$` helper, and 2,879 bytes of hash-trie units that share state with `lookup` ("Open questions"); with the runtime's units at module level (light-cljs-303), 8,820 / 3,235 | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
-| Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds; with definitions moved (light-cljs-277), 361 / 255 and 874 / 531, each also importing the shared `app.editor+app.reports.js`, 63 / 81; with constants (light-cljs-278) the shared chunk holds `documents` with its table, 632 / 397, and the features 361 / 258 and 874 / 531; a shared chunk that would hold no code is not written (light-cljs-299), so a feature imports one only for code or constants it shares; with the runtime sliced per chunk (light-cljs-279) the shared chunk holds the runtime both features need, 54,195 / 17,412, and `app.editor.js` 5,453 / 2,459 and `app.reports.js` 4,513 / 2,096: the first feature loads 59,648 / 19,871 (editor) or 58,708 / 19,508 (reports), the second only its own file; with the runtime's units at module level (light-cljs-303), 58,780 / 19,278 or 57,937 / 18,966 | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
+| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646; chunked at namespace granularity (light-cljs-274), `app.main.js` 69,587 / 21,575, with the whole-program runtime slice and every constant still in startup; with definitions moved toward their readers (light-cljs-277), 69,539 / 21,551; with constants placed by their readers (light-cljs-278), 69,000 / 21,242, the whole-program runtime slice and the menu's two keywords; with the runtime sliced per chunk (light-cljs-279), 9,046 / 3,373: the units the menu needs (those of the lower bound, 4,184 bytes here), the `Loadable` type (255) and the `lazy$` helper, and 2,879 bytes of hash-trie units that share state with `lookup` ("Open questions"); with the runtime's units at module level (light-cljs-303), 8,820 / 3,235; on master `26027d0`, after the runtime-performance pellets and the wrappers of `lookup`, `get` and structural equality that light-cljs-247 and light-cljs-358 added, 9,504 / 3,485 (77 runtime units, 7,990 bytes); with the hash tries' and `Loadable`'s wrappers as hooks (light-cljs-302), 6,731 / 2,497: the lower bound's units, `Loadable` and those wrappers with what they require, 50 runtime units and 5,245 bytes | lower bound, the application without its features: 4,535 / 1,701 | the same application compiled without its features, plus under 200 bytes per `loadable`: under 4,935 raw |
+| Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds; with definitions moved (light-cljs-277), 361 / 255 and 874 / 531, each also importing the shared `app.editor+app.reports.js`, 63 / 81; with constants (light-cljs-278) the shared chunk holds `documents` with its table, 632 / 397, and the features 361 / 258 and 874 / 531; a shared chunk that would hold no code is not written (light-cljs-299), so a feature imports one only for code or constants it shares; with the runtime sliced per chunk (light-cljs-279) the shared chunk holds the runtime both features need, 54,195 / 17,412, and `app.editor.js` 5,453 / 2,459 and `app.reports.js` 4,513 / 2,096: the first feature loads 59,648 / 19,871 (editor) or 58,708 / 19,508 (reports), the second only its own file; with the runtime's units at module level (light-cljs-303), 58,780 / 19,278 or 57,937 / 18,966; on master `26027d0` 64,839 / 20,718 or 64,655 / 20,589; with the hash-trie lookup in the shared chunk (light-cljs-302), 67,426 / 21,573 or 67,242 / 21,442 | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
 | Observable behavior | n/a; chunked (light-cljs-274), the example and the Phase 2 fixtures print what the single file prints at every level; the fixture matrix (light-cljs-276) through `--out-dir` and `chunks.json` in Node, and the example in Chrome without a bundler and through Vite 8.0.8, at every level | n/a | identical to the single-file program at every level, given the same `load` calls |
 | Compile time of a chunked build | n/a | n/a | within 10% of the single-file build of the same program |
 
@@ -755,8 +755,9 @@ output.
     operation needs once a program type may implement its protocol. The
     runtime owns `Loadable` instead, a class with `deref()` and `load()`
     (254 bytes terse), and effects give it what a deftype implementing
-    IDeref has where a program can observe it: `Loadable.deref` wraps
-    `derefProtocol` (`@l`, `deref`, `-deref`); `Loadable.name` sets
+    IDeref has where a program can observe it: `Loadable.deref` installs
+    the hook `derefProtocol` asks for a loadable (`@l`, `deref`, `-deref`;
+    a wrapper of `derefProtocol` before light-cljs-302); `Loadable.name` sets
     `cljs$lang$ctorStr`, `cljs$lang$type` and the `typeNames` entry where a
     printer reads them; `Loadable.type` calls `defineType` with the IDeref
     marker and method where the program defines types of its own or looks a
@@ -1517,6 +1518,73 @@ runtime units toward their first readers; per-chunk runtime factories.
     generated lazy programs and `--size-report`, which lists every unit
     once, run as before.
 
+- **As built (light-cljs-302): the hash tries' and `Loadable`'s wrappers
+  are hooks.**
+  - Four of the `effect:` units that wrapped an operation by assigning its
+    binding install a `kindHooks` entry the operation reads instead, so
+    they no longer share the operation's chunk (`RuntimeManifest::sharers`)
+    and go with the values they handle. `lookup.trie` and `lookup.members`
+    are gone: `lookup` hands a map's entries that are no array to
+    `kindHooks.trieValue` and `lookup.sets` a set's members that are no
+    array to `kindHooks.trieMember`, the hooks `get.trie` and `get.members`
+    install for `get` (light-cljs-358, light-cljs-373), now also where
+    `lookup` is kept (sorted collections hold arrays behind a Proxy,
+    transients neither store). `copyEntries` copies with
+    `entries.slice?.() ?? kindHooks.copyTrie(entries)`, since a trie has no
+    `slice`, which `copyEntries.trie` installs, and `derefProtocol` asks
+    `kindHooks.isLoadable` first, which `Loadable.deref` installs.
+  - The seven protocol wrappers (`seq.protocol`, `first.protocol`,
+    `rest.protocol`, `next.protocol`, `count.protocol`, `nth.protocol`,
+    `reduce.protocol`) stay wrappers, by the user's decision of 2026-10-19
+    (light-cljs-355): as hooks they made every `advanced` single file that
+    keeps the operations but not `installMethods` 313 to 386 bytes larger,
+    and in a chunk they cost little, since a wrapper requires only
+    `behindProtocol` and `protocolHooks`. The wrappers light-cljs-247 and
+    light-cljs-358 added after this pellet was written (`lookup.sets`,
+    `lookup.transients`, `lookup.tree`, `get.branches`,
+    `structuralEqualPair.symbols`) also stay; they hold dispatch only and
+    call their kinds' hooks (light-cljs-392 measures hooks for them).
+  - Single files at `advanced`, terse, on master `26027d0` and after: a
+    program that keeps `lookup` grows 47 bytes (`map-only` 8,053 to 8,100),
+    one that also keeps `lookup.sets` 95 (`set-only` 4,792 to 4,887, whose
+    ceiling rises to 4,900), one that derefs 38 (`atom-str` 2,927 to 2,965)
+    and one that copies entries 17 (`mapv-count` 37,013 to 37,030);
+    where the tries are kept the wrappers' removal outweighs that
+    (`features` 77,371 to 77,238, `constant-keys` 49,398 to 49,265). All
+    within the 99 bytes the user accepted for this pellet. The readable
+    runtime, which `none` and `prepare` embed, is 266 bytes smaller.
+  - examples/features at `advanced`, terse, raw / `gzip -9 -n` bytes, with
+    `light-cljs --compile --optimize advanced --entry app.main
+    --source-root examples/features --out-dir OUT`, on master `26027d0`
+    and after:
+
+    | File | Before | After |
+    | --- | ---: | ---: |
+    | `app.main.js` | 9,504 / 3,485 | 6,731 / 2,497 |
+    | `app.editor+app.reports.js` | 59,571 / 18,406 | 62,158 / 19,261 |
+    | `app.editor.js` | 5,268 / 2,312 | 5,268 / 2,312 |
+    | `app.reports.js` | 5,084 / 2,183 | 5,084 / 2,181 |
+    | all four | 79,427 / 26,386 | 79,241 / 26,251 |
+
+    Startup's runtime is 50 units and 5,245 bytes (77 and 7,990 before):
+    the lower bound's, `Loadable`, and the five wrappers above with what
+    they require. The hash-trie lookup and hashing moved to the shared
+    chunk, where the features build their maps and sets. Loading the
+    editor first costs 67,426 / 21,573 bytes and the reports first
+    67,242 / 21,442 (64,839 / 20,718 and 64,655 / 20,589 before).
+  - Tests: `chunks::the_features_runtime_splits_by_signature` no longer
+    counts the tries' wrappers among startup's sharers, and requires
+    `get.trie`, `get.members` and `trieEntry` in the shared chunk and no
+    sharer of `derefProtocol`;
+    `runtime_manifest::units_assigning_a_binding_share_its_unit` lists the
+    pairs without the four wrappers'; the `KIND_HOOKS` table has
+    `copyTrie` and `isLoadable`, and
+    `conditional_effects_name_every_unit_that_can_use_them` checks 324
+    units, two fewer. `chunks::trie_hooks_work_after_loading_the_builder`
+    (from the Sol review) builds hash tries only in a lazy feature whose
+    chunk holds their hooks, while startup holds `lookup`, and runs the
+    feature's lookups, updates and missing keys against the single file.
+
 - **Item signatures.** Extend `chunks::plan` with the item reference graph
   over `flatten(program.root)`: per item, the globals it reads (one walk
   with `program_fragment::children`), the globals it defines
@@ -1774,9 +1842,16 @@ minification, against the 69,587 bytes `--out-dir` wrote.
   binding's chunk (`RuntimeManifest::sharers`): in examples/features the
   menu's keywords reach `lookup`, and the two hash-trie wrappers with the
   lookup and hashing they need, 25 units and 2,879 bytes only the features
-  need, stay in startup. Hook installs instead of wrappers
-  (light-cljs-302) would let them move, but grow `lookup` in every single
-  file that keeps it, which the ground rules leave to the user.
+  need, stay in startup. Settled on 2026-10-19 by the user's decision on
+  light-cljs-302 and light-cljs-355: the hash tries' and `Loadable`'s
+  wrappers install hooks the operations read, at up to 95 bytes in a
+  single file, so that they move with the values they handle (Phase 3,
+  "As built (light-cljs-302)"); the protocol wrappers stay, since the user
+  declined their +313 to 386 bytes in every `advanced` single file that
+  keeps the operations without `installMethods`, and in a chunk a wrapper
+  requires only `behindProtocol` and `protocolHooks`. The other units that
+  assign another unit's binding share its chunk; light-cljs-392 measures
+  hooks for the five wrappers light-cljs-247 and light-cljs-358 added.
 - **Multimethods and motion.** Settled by light-cljs-300. A `defmulti`
   stayed pinned at `Advanced` (light-cljs-277): its initializer builds a
   `MultiFn` from the dispatch function, the options and the global
