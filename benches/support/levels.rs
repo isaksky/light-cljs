@@ -84,7 +84,8 @@ macro_rules! built_map {
 /// local-arities fixtures, as workloads over `n`. `local-arities` runs the
 /// functions of `multi-arity` as local and named functions,
 /// `protocol-dispatch` calls protocol methods as values (light-cljs-265), and
-/// `record-keys` compares and hashes records (light-cljs-267), and
+/// `record-keys` compares and hashes records (light-cljs-267), `record-printed`
+/// is record-protocol with brands to read (light-cljs-346), and
 /// `record-lookup` looks up the fields of records whose type the call site does
 /// not know, by keyword, `get` and `contains?`, and calls a `reify` method that
 /// reads two captured locals (light-cljs-266). Then the collection workloads of
@@ -92,7 +93,7 @@ macro_rules! built_map {
 /// at a time, `nth` and `get` over a built one, `assoc` onto a built map, `subvec`
 /// then `reduce`, and `into` a vector and a map, which goes through a transient
 /// (`map-into`, light-cljs-249).
-const STEADY: [Steady; 25] = [
+const STEADY: [Steady; 26] = [
     Steady {
         name: "seq-pipeline",
         source: "(fn [n] (reduce + 0 (->> (map inc (range n)) (filter even?) (partition 2) \
@@ -105,6 +106,21 @@ const STEADY: [Steady; 25] = [
         name: "record-protocol",
         source: "(defprotocol Area (area [shape]))
                  (defrecord Rect [w h] Area (area [_] (* w h)))
+                 (fn [n] (loop [i 0 total 0]
+                           (if (< i n) (recur (inc i) (+ total (area (->Rect i 2)))) total)))",
+        inputs: &[2_000],
+        every_level: true,
+        expected: areas,
+    },
+    // record-protocol where the program prints a record once, outside the loop
+    // (light-cljs-346): its runtime then reads type brands, so `advanced`
+    // brands every record the loop constructs, where record-protocol's has
+    // none (light-cljs-262).
+    Steady {
+        name: "record-printed",
+        source: "(defprotocol Area (area [shape]))
+                 (defrecord Rect [w h] Area (area [_] (* w h)))
+                 (def shown (pr-str (->Rect 1 2)))
                  (fn [n] (loop [i 0 total 0]
                            (if (< i n) (recur (inc i) (+ total (area (->Rect i 2)))) total)))",
         inputs: &[2_000],

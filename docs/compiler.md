@@ -2810,10 +2810,15 @@ monomorphic, where the shared constructor's inline caches go megamorphic as a
 program adds types, and a type costs about its own text (benchmarks/compiler.md,
 "Per-type output"). Where the output keeps no runtime unit that reads a brand
 and reads no type other than in a `new`, that constructor writes none
-and the output has no `TypeBrand` (light-cljs-262). An instance takes the brand
+and the output has no `TypeBrand` (light-cljs-262). Where it reads brands but
+still reads no type other than in a `new`, each type is instead a class whose
+brand is a private field of its own, which its prototype's `ClassBrand`
+checks, cheaper in V8's mid tier and monomorphic per type (light-cljs-346;
+docs/advanced-optimization.md, "Own brands"). An instance takes the brand
 once, so calling a constructor as a plain function on an existing instance
 (`(.call T t 2)`), which upstream and earlier light-cljs allowed, throws a
-`TypeError`. A field named `__proto__` is an own field like any other. A
+`TypeError`; a class constructor throws it before assigning any field, and
+an instance of one moved to another prototype loses its brand. A field named `__proto__` is an own field like any other. A
 saved positional `deftype` factory passes all its arguments to the type's
 current definition, and a record factory its declared fields. An instance
 calls through its type's current `IFn` table, so an extension of `IFn`, even

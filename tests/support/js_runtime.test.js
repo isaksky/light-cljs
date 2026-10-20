@@ -1385,6 +1385,58 @@ console.log('protocol identities, receiver, metadata and fallback assertions pas
 }
 console.log('public core protocol consumers and reduction boundaries passed');
 
+// light-cljs-346: where a program reads brands, `Advanced` writes each type as
+// a class with a private brand of its own, whose check `defineClass` gives the
+// prototype. Neither is exported, so this reads them from a copy of the
+// runtime that exports them too.
+{
+  const source = fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8');
+  const anchor = 'return Object.freeze({setDeclarationDemand, ';
+  assert.equal(source.split(anchor).length, 2);
+  const r = (0, eval)(source.replace(anchor, 'return Object.freeze({defineClass, TypeBrand, ' + anchor.slice(22)));
+  const core = r.core;
+  const Record = r.defineClass(class { #b; constructor(a0, a1, a2, a3) { this.value = a0; this.__meta = a1; this.__extmap = a2; this.__hash = a3; } static c = (a0) => #b in a0; },
+    'sample/C value', [], 1);
+  const Plain = r.defineClass(class { #b; constructor(a0) { this.x = a0; } static c = (a0) => #b in a0; }, 'sample/P x', []);
+  assert.equal(Record.c, undefined);
+  const record = new Record('text', null, null, null), plain = new Plain(1);
+  assert.equal(r.TypeBrand.type(record), Record);
+  assert.equal(r.TypeBrand.type(plain), null);
+  assert.equal(r.inspect(record).kind, 'map');
+  assert.equal(core.prStr(core.assoc(record, core.keyword('b'), 2)), '#sample.C{:value "text", :b 2}');
+  // Neither the prototype, nor an instance's fields, nor an instance as a
+  // prototype forge it; a host's subclass constructs through the class and
+  // keeps it; a makeType instance keeps its own.
+  for (const forged of [Object.create(Record.prototype), Object.create(record), Object.create(Plain.prototype),
+    Object.defineProperties({}, Object.getOwnPropertyDescriptors(record)),
+    Object.defineProperties(Object.create(Record.prototype), Object.getOwnPropertyDescriptors(record)),
+    Record.prototype, Plain.prototype, {}, [], () => 1, Object.create(null)]) {
+    assert.equal(r.TypeBrand.type(forged), undefined);
+  }
+  assert.equal(r.inspect(Object.create(Record.prototype)), null);
+  assert.equal(r.TypeBrand.type(new (class extends Record {})('sub', null, null, null)), Record);
+  const Made = r.makeType(['value'], [], true, null, 'sample/M', null, function (value) { this.value = value; });
+  assert.equal(r.TypeBrand.type(new Made(1)), Made);
+  for (const value of [null, undefined, 1, 'text', true]) assert.equal(r.TypeBrand.type(value), undefined);
+  // An instance takes its brand once: a class constructor cannot be called
+  // without `new`, on an instance or otherwise.
+  assert.throws(() => Record.call(record, 'again', null, null, null), TypeError);
+  assert.throws(() => Plain.apply(plain, [2]), TypeError);
+  assert.equal(record.value, 'text');
+  // An instance moved to another prototype loses its brand.
+  const moved = new Plain(2);
+  Object.setPrototypeOf(moved, Object.prototype);
+  assert.equal(r.TypeBrand.type(moved), undefined);
+  // A proxy has no brand, and one whose trap answers with itself without end
+  // reads at most 64 prototypes.
+  let traps = 0;
+  const cyclic = new Proxy({}, { getPrototypeOf() { traps++; return cyclic; } });
+  assert.equal(r.TypeBrand.type(cyclic), undefined);
+  assert.equal(traps, 65);
+  assert.equal(r.TypeBrand.type(new Proxy(record, {})), undefined);
+}
+console.log('class type brands passed');
+
 // Collection helper checks use literal expectations and private payload inspection,
 // independent of the differential encoder and compiler macro expansion.
 {

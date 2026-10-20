@@ -7457,6 +7457,39 @@
     if (!record) Type.cljs$lang$ctorStr = name;
     return Type;
   }
+  //@unit ClassBrand
+  // The brand of an instance of a type the emitter writes as a class
+  // (light-cljs-346): a private field of the class's own, which V8's mid
+  // tier adds without the two calls `TypeBrand` costs. The class's prototype
+  // holds its check under `#c`; an object made from the prototype or given
+  // an instance's fields fails it, and an instance moved to another
+  // prototype loses its brand. Until a class type exists no prototype is
+  // read, so no proxy's trap runs (the macro host's runtime has none); then
+  // at most 64 are, as a proxy's `getPrototypeOf` trap can answer with
+  // proxies without end. Its own class rather than a `privateStore`, which
+  // a small program would keep only for this.
+  const ClassBrand = class extends (class { constructor(value) { return value; } }) {
+    #c;
+    static #some = false;
+    constructor(prototype, brand) { super(prototype); this.#c = brand; ClassBrand.#some = true; }
+    static type(value) {
+      if (ClassBrand.#some) for (let p = Object.getPrototypeOf(value), n = 64; p !== null && n--; p = Object.getPrototypeOf(p)) if (#c in p) return p.#c(value);
+    }
+  };
+  //@unit ClassBrand.types effect: ClassBrand requires: ClassBrand, TypeBrand
+  TypeBrand.type = (type => value => {
+    const brand = type(value);
+    return brand === undefined && Object(value) === value ? ClassBrand.type(value) : brand;
+  })(TypeBrand.type);
+  //@unit defineClass requires: ClassBrand, defineType
+  // `defineType` of `class { #b; constructor(a0) {...} static c = (a0) => #b
+  // in a0; }`: the prototype's brand answers with the check `c`.
+  function defineClass(Type, names, methods, record, currentConstructor) {
+    const check = Type.c, type = record ? Type : null;
+    delete Type.c;
+    new ClassBrand(Type.prototype, value => check(value) ? type : undefined);
+    return defineType(Type, names, methods, record, currentConstructor);
+  }
   //@unit typeMasks requires: maps
   // What sets the masks of a raw type's mask map, for `makeType`.
   function typeMasks(masks) {

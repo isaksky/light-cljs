@@ -5519,3 +5519,119 @@ that copies entries 17 (`mapv-count` 37,013 to 37,030); where the tries are
 kept, 133 smaller (`features` 77,371 to 77,238, `constant-keys` 49,398 to
 49,265). The readable runtime that `none` and `prepare` embed is 266 bytes
 smaller.
+
+## Own type brands — October 19, 2026
+
+light-cljs-346 makes the brand cheaper where a program reads it. light-cljs-262
+dropped the brand only where nothing reads one; a program that prints or
+updates a record keeps `new TypeBrand(this, Type)` in each constructor, two
+calls that V8's mid tier (Maglev) does not inline. Where such a program reads
+no type other than with `new` and registers no namespace, `advanced` now
+writes each type as a class with a private field of its own, `class { #b;
+constructor(a0, ...) { ... } static c = (a0) => #b in a0; }`, and
+`defineClass` gives the prototype a `ClassBrand` that answers with the
+check (docs/advanced-optimization.md, "Own brands").
+
+Construction alone, Node v24.18.0 (V8 13.6), an escaping instance with two
+fields and a record's three slots, each type its own constructor, factory and
+loop, best ns per construction, TurboFan / `--no-turbofan`:
+
+| Shape | 1 type | 16 types |
+| --- | ---: | ---: |
+| function, no brand | 3.2 / 5.2 | 3.4 / 4.9 |
+| function and `new TypeBrand(this, Type)` (before) | 3.5 / 22.4 | 12.3 / 23.8 |
+| class with its own `#b` (this change) | 3.6 / 9.9 | 3.3 / 9.3 |
+
+Maglev's `DefineKeyedOwnProperty` of a private name is still a generic
+inline-cache call in V8 13.6, which is the 4.5 ns left over the unbranded
+function (on Node 26, below, the gap is mostly gone). Other shapes, timed in
+record-protocol with a `pr-str` outside the loop, Maglev only, µs a call: a
+class field 16, a private method 17, a class extending a branded base 37,
+`TypeBrand` with a function base or a field initializer 39-42, against 8
+without a brand and 43 before.
+
+`record-printed`, a new `--levels` workload (record-protocol with
+`(def shown (pr-str (->Rect 1 2)))`), keeps the brand. Baseline (master
+`9bfe2a5`) and candidate bench binaries alternated, two runs each, one-minute
+load 5 to 9, µs a call `(f 2000)`, median / minimum:
+
+| Build | record-printed Node `advanced` | record-printed QuickJS `advanced` | record-protocol Node `advanced` | record-protocol QuickJS `advanced` |
+| --- | ---: | ---: | ---: | ---: |
+| master | 45.5 / 32.4, 38.3 / 30.3 | 1,019 / 979, 1,007 / 975 | 24.6 / 20.6, 21.7 / 20.4 | 631 / 594, 627 / 595 |
+| light-cljs-346 | 37.2 / 32.3, 32.3 / 29.3 | 707 / 673, 675 / 667 | 26.6 / 22.6, 21.5 / 20.0 | 629 / 596, 606 / 592 |
+
+record-protocol's output is unchanged (it reads no brand). The pellet's
+measure, the record-printed output against the same output hand-edited
+without brands, each in fresh Node processes through
+`benchmarks/support/compiler_levels.js steady` (10 untimed and 20 timed
+calls, the driver's sample), median of 31 samples, load 5.5 to 5.7: no brand
+23.3 µs (the class without `#b` 23.0), this change 32.3 (1.39×), before 38.9
+(1.67×); earlier rounds under load 9 gave 1.33× to 1.44×. The pellet's 1.3×
+(1.37× with the agreed 5%) is not reached on Node 24: most of what is left is
+Maglev's generic private define, and the one young-generation collection
+that falls in the 20 timed calls either way. TurboFan's final loop is 3 µs a
+call in all three, run for 200 calls.
+
+**Node 26.** The same measures again on Node v26.12.0 (V8
+14.6.202.34-node.39), rebased onto master `26027d0`, baseline bench and
+compiler binaries built from master's `src/` with the record-printed
+workload added, one-minute load 3 to 10. In the `--levels` steady-state
+driver, the record-printed output against its hand-edited copies, fresh
+Node processes alternated, median of 31 samples a variant, two rounds,
+µs a call `(f 2000)` and the ratio to no brand:
+
+| record-printed output | Node 24 (above) | Node 26, round 1 | Node 26, round 2 |
+| --- | ---: | ---: | ---: |
+| no brand (`new TypeBrand` deleted) | 23.3 | 25.2 | 24.9 |
+| master, `new TypeBrand(this, Type)` | 38.9 (1.67×) | 35.9 (1.43×) | 37.1 (1.49×) |
+| light-cljs-346, own `#b` | 32.3 (1.39×) | 27.7 (1.10×) | 27.7 (1.11×) |
+| the class without `#b` | 23.0 | 25.7 (1.02×) | 24.8 (1.00×) |
+
+A third round after rebasing onto master `80fb938`, with the prototype
+walk bounded (below), load 5 to 7: no brand 24.0 µs, master 33.3 (1.39×),
+this change 25.7 (1.07×), the class without `#b` 24.5 (1.02×); TurboFan
+2.89, 2.90 and 2.91 µs.
+
+On Node 26 the own brand is 1.10× its unbranded output, inside the
+pellet's 1.3×: V8 14.6's Maglev adds the private field for about the cost
+of an ordinary store. TurboFan's final loop (200 untimed then 50 timed
+calls, median of 11): record-printed 2.95 µs unbranded, 3.03 master, 3.03
+this change; record-protocol, whose output is byte-identical in both
+builds, 3.09 master and 3.06 this change. The `--levels` runs, the
+baseline and candidate bench binaries alternated, two runs each, Node
+`advanced`, median / minimum µs a call:
+
+| Build | record-printed Node | record-printed QuickJS | record-protocol Node | record-protocol QuickJS |
+| --- | ---: | ---: | ---: | ---: |
+| master | 35.9 / 31.8, 42.2 / 31.3 | 999 / 970, 1,027 / 990 | 25.4 / 22.0, 31.4 / 22.4 | 650 / 605, 670 / 633 |
+| light-cljs-346 | 26.7 / 24.9, 26.3 / 24.4 | 674 / 644, 684 / 659 | 24.1 / 21.5, 23.5 / 21.9 | 645 / 617, 655 / 642 |
+
+(master's second run had load up to 10.) The class costs startup instead:
+Node's first execution of `eight-records` at `advanced`, 16 class types,
+1.58 / 1.65 / 1.67 ms on master against 1.93 / 1.98 / 2.23 ms in three
+`--levels` runs (median), and 1.43 against 1.92 ms in fresh processes
+through the driver's `startup` mode; programs with one record type add
+0.07 to 0.14 ms (`callbacks` 1.86 to 2.00, `closed-params` 0.80 to 0.88,
+`protocol-params` 1.83 to 1.90). Hand edits of that output put it in the
+class literals themselves, not in the brand: without `#b`, the static check,
+`delete Type.c` and `ClassBrand` the classes still execute in 1.80 ms. In
+one process, fresh `vm` contexts, the gap is 0.1 ms, so most of it is
+first-use work in a new isolate. QuickJS startup does not move beyond noise
+(`eight-records` 3.55 to 3.57 ms).
+
+Sizes at `advanced`: a record costs 228 bytes in `eight-records` (218
+before; the per-type budget rises from 220 to 230) and a `deftype` 145 (130).
+The prototype walk now reads at most 64 prototypes, since a proxy whose
+trap answers with itself hung it. Keeping the checks in a `privateStore`
+instead of `ClassBrand`'s own class saves about 120 bytes where the slice
+already has a store but adds 370 where it has none (a record and a vector,
+11,394 to 12,024 bytes), so `ClassBrand` stays a class. On master
+`80fb938`, `ClassBrand`, its `TypeBrand.type` extension and `defineClass`
+add about 470 bytes once: `eight-records` 36,805 to 37,472 (ceiling 37,000
+to 37,500), `callbacks` 44,748 to 45,225 (45,000 to 45,300),
+`protocol-params` 49,819 to 50,327 (50,000 to 50,400) and `closed-params`
+15,089 to 15,563 (under its 16,000). Fixtures that read no brand are
+unchanged. `none` and `prepare` embed the whole runtime, which grew by
+1,760 bytes (`record-protocol` at `none` 496,611 to 498,371). Node's first
+execution after the rebase, median of 15: `eight-records` 1.54 to 1.98 ms,
+record-printed 1.45 to 1.52 ms.

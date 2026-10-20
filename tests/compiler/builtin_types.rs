@@ -691,13 +691,15 @@ fn protocol_tests_of_program_types_need_no_protocol_tables() {
     );
     // Protocol tests alone of a program type or a record keep no seqs:
     // 12,375 and 12,576 bytes before; 6,127 and 5,847 before light-cljs-291,
-    // 6,622 and 6,372 after (`privateStore` and `kindedStore`).
+    // 6,622 and 6,372 after (`privateStore` and `kindedStore`). The record
+    // keeps its brand reader, so since light-cljs-346 it is a class with a
+    // brand of its own plus the `ClassBrand` units: 6,549 to 7,018 bytes.
     for source in [
         "(deftype T [] ICounted (-count [_] 7)) (counted? (T.))",
         "(defrecord R [x]) (map? (->R 1))",
     ] {
         assert_keeps_none(source, &EXTENSION_MACHINERY);
-        assert!(advanced(source).emit_js().len() < 7_000, "{source}");
+        assert!(advanced(source).emit_js().len() < 7_500, "{source}");
     }
 }
 

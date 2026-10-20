@@ -53,7 +53,11 @@ pub const REGISTRY_CELLS: &[&str] = &["currentNs"];
 /// The runtime units that read a type instance's brand (`TypeBrand.type`):
 /// every unit that requires `TypeBrand` except `makeType`, which writes one.
 /// The `runtime_manifest` suite checks the list against the manifest.
-pub const BRAND_READERS: &[&str] = &["typeFields.brands", "recordTypes.brands"];
+pub const BRAND_READERS: &[&str] = &[
+    "typeFields.brands",
+    "recordTypes.brands",
+    "ClassBrand.types",
+];
 
 /// The effects installing a record's shared `-equiv` and `-hash`, which a
 /// record type defined at `Advanced` replaces with its own

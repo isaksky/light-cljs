@@ -231,9 +231,11 @@ fn types_program(records: usize, deftypes: usize) -> String {
 }
 
 /// light-cljs-264: at `Advanced` each record of `eight-records` past the
-/// first adds at most 220 bytes, and each deftype at most 200: a type is its
+/// first adds at most 230 bytes, and each deftype at most 200: a type is its
 /// constructor, method entries and factory, around the runtime's
-/// `defineType` (benchmarks/compiler.md, "Per-type output").
+/// `defineType` (benchmarks/compiler.md, "Per-type output"). Since
+/// light-cljs-346 the constructor is a class with a brand of its own and its
+/// check, 10 bytes more than the function a record had (220).
 #[test]
 fn each_type_of_eight_records_costs_at_most_its_budget() {
     let fixture = FIXTURES
@@ -252,7 +254,7 @@ fn each_type_of_eight_records_costs_at_most_its_budget() {
     let records = added((1..=8).map(|records| size(records, 8)).collect());
     let deftypes = added((1..=8).map(|deftypes| size(8, deftypes)).collect());
     println!("bytes per extra record: {records:?}\nbytes per extra deftype: {deftypes:?}");
-    assert!(records.iter().all(|&bytes| bytes <= 220), "{records:?}");
+    assert!(records.iter().all(|&bytes| bytes <= 230), "{records:?}");
     assert!(deftypes.iter().all(|&bytes| bytes <= 200), "{deftypes:?}");
 }
 

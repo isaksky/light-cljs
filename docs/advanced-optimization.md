@@ -2411,8 +2411,8 @@ host-facing methods of the vector and the keyword.
     and nothing assigns, has no `currentConstructor`, and a positional factory nothing reads is not
     defined (`crate::rta` keeps it only where read, as map factories).
     `size_ratchet::each_type_of_eight_records_costs_at_most_its_budget`
-    holds the `eight-records` fixture to 220 bytes per record and 200 per
-    `deftype`.
+    holds the `eight-records` fixture to 220 bytes per record (230 since
+    light-cljs-346) and 200 per `deftype`.
   - **Unread brands (light-cljs-262).** Only `typeFields.brands` and
     `recordTypes.brands` read a brand (`runtime_slice::BRAND_READERS`; the
     `runtime_manifest` suite checks that they are the units requiring
@@ -2433,6 +2433,45 @@ host-facing methods of the vector and the keyword.
     (benchmarks/compiler.md, "Unread type brands"). A program that
     updates or prints a record through the generic operations
     keeps `recordTypes.brands` and the brands.
+  - **Own brands (light-cljs-346).** Where the slice reads brands but the
+    rest of the condition above holds (every constructor runs only through
+    `new`, no namespace registry), the single-file body is emitted again
+    with each type a class whose brand is a private field of its own:
+    `g2 = rt$defineClass(class { #b; constructor(a0, a1, a2, a3, a4) {
+    this["w"] = a0; ...; } static c = (a0) => #b in a0; }, "cljs.user/Rect
+    w h", [...], 1);`. V8's mid tier adds a class's own field with one
+    store where `new TypeBrand(this, Type)` makes two calls (a construction
+    costs about 9 ns against 22, and 5 unbranded), and each type's store
+    stays monomorphic in TurboFan where `TypeBrand`'s one store goes
+    megamorphic past four types (3.3 ns a construction at 16 types against
+    12.3). `defineClass` takes the check `c` off the class and gives the
+    prototype a `ClassBrand` field holding what the check answers (the
+    record type, or `null` for a `deftype`); `ClassBrand.types` extends
+    `TypeBrand.type`, so the readers find a value's brand through the first
+    branded prototype in its chain and the check, never the prototype
+    alone: an object made from the prototype or given an instance's fields
+    has no brand, and a host's subclass constructs through the class and
+    has one. Two things differ from a function constructor, both reachable
+    only through an instance's `constructor`: a call without `new` throws
+    before assigning any field (a second brand threw after), and an
+    instance moved to another prototype loses its brand. The class has no
+    name, and once a class type is defined a brand reader runs a proxy's
+    `getPrototypeOf` trap, at most 64 times (until then none reads a
+    prototype, so the macro host's runtime never does). A chunked build keeps `TypeBrand`. The
+    class costs a record 10 bytes and a `deftype` 15 more than a function,
+    and the three units about 470 bytes once (benchmarks/compiler.md, "Own
+    type brands"). On Node 24 record-printed's timed calls stay 1.39× those
+    of its output without brands, short of the pellet's 1.3×: V8 13.6's
+    Maglev still defines a private field through a generic inline cache. On
+    Node 26 (V8 14.6) they are 1.07× to 1.11× (master's `TypeBrand` 1.39×
+    to 1.49×), which meets it, and TurboFan's final loop stays at 3 µs. The class
+    literals cost startup instead: Node's first execution of
+    `eight-records`, 16 types, takes about 0.4 ms longer (1.6 to 2.0 ms),
+    and a program with one record type 0.07 to 0.14 ms. Three trade-offs
+    are accepted for this (light-cljs-346): a host's call of
+    an instance's constructor without `new` throws before assigning
+    fields, an instance moved to another prototype loses its brand, and a
+    record type's output grows by about 10 bytes.
   - **Per-type record equality and hash (light-cljs-267).** The shared
     `recordMethods.equiv` and `recordMethods.hash` walk `Type.fieldNames`
     and read each field with `field`, which munges its name on every read,

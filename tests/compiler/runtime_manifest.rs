@@ -288,7 +288,9 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 /// `Advanced` program that could see the tables of its multimethods
 /// otherwise roots, and `addMethodDirect` is `-add-method` where only
 /// multimethods implement `IMultiFn`, which only `Advanced` output calls
-/// (light-cljs-239).
+/// (light-cljs-239). `ClassBrand`, its `TypeBrand.type` extension and
+/// `defineClass` brand the types only `Advanced` emission writes as classes
+/// (light-cljs-346).
 const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "entryPrototype",
     "MapEntryType.lean",
@@ -296,6 +298,9 @@ const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "multiTables",
     "addMethodDirect",
     "mapEntry.lean",
+    "ClassBrand",
+    "ClassBrand.types",
+    "defineClass",
     "upstreamMembers",
     "typeStatics",
     "ListValue.statics",

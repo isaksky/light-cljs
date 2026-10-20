@@ -527,7 +527,14 @@ pub(crate) fn emit_chunked(
     // when the forms of all chunks reach reflection.
     let write = |register_namespaces: bool, brand_types: bool| {
         let mut emitter = Emitter::new(program, setup, register_namespaces);
-        emitter.brand_types = brand_types;
+        // A chunked build keeps the shared brand where its forms read
+        // brands: a type with a brand of its own (`TypeBrands::Own`) is for
+        // the single file.
+        emitter.brand_types = if brand_types {
+            TypeBrands::Shared
+        } else {
+            TypeBrands::Unread
+        };
         emitter.chunks = Some(Chunks {
             plan,
             current: STARTUP,
