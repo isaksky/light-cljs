@@ -1839,7 +1839,7 @@ pub fn read_manifest(bytes: &[u8], limits: &DecodeLimits) -> Result<Manifest, De
     )
 }
 
-/// [`read_manifest`], charging what its external inputs allocate to
+/// [`read_manifest`], charging every variable-sized field it allocates to
 /// `budget`, which the sections' decoding then shares.
 fn read_manifest_charged(
     bytes: &[u8],
@@ -1881,7 +1881,7 @@ fn read_manifest_charged(
     if count != Section::ALL.len() {
         return Err(DecodeError::Layout("wrong number of sections"));
     }
-    let mut sections = Vec::with_capacity(count);
+    let mut sections = budget.vec(count)?;
     let mut expected = (MANIFEST_START + manifest_length) as u64;
     for section in Section::ALL {
         let entry = input.take(SECTION_ENTRY)?;
@@ -1907,8 +1907,8 @@ fn read_manifest_charged(
     if expected < bytes.len() as u64 {
         return Err(DecodeError::Trailing("sections"));
     }
-    let namespace = input.utf8()?;
-    let path = input.utf8()?;
+    let namespace = input.utf8_charged(budget)?;
+    let path = input.utf8_charged(budget)?;
     let source_length = input.u32()?;
     let identity = input.byte()?;
     if identity > 3 {
@@ -1926,15 +1926,19 @@ fn read_manifest_charged(
     let core_table = input.hash()?;
     let names = |input: &mut Input<'_>| {
         let count = input.count()?;
-        (0..count).map(|_| input.utf8()).collect::<Result<_, _>>()
+        let mut names = budget.vec(count)?;
+        for _ in 0..count {
+            names.push(input.utf8_charged(budget)?);
+        }
+        Ok::<_, DecodeError>(names)
     };
     let requires = names(&mut input)?;
     let references = names(&mut input)?;
     let count = input.count()?;
-    let mut dependencies = Vec::with_capacity(count);
+    let mut dependencies = budget.vec(count)?;
     for _ in 0..count {
         dependencies.push(Dependency {
-            namespace: input.utf8()?,
+            namespace: input.utf8_charged(budget)?,
             kinds: input.byte()?,
         });
     }
@@ -2053,7 +2057,7 @@ pub fn decode(
         tag => return Err(r.tag("analysis policy", tag)),
     };
     let mut declarations = r.declarations()?;
-    declarations.requires = manifest.requires.clone();
+    declarations.requires = budget.copy(&manifest.requires)?;
     let patches = r.patches()?;
     let globals = r.external_globals()?;
     let mut bodies = if r.present("bodies")? {
@@ -2106,8 +2110,8 @@ pub fn decode(
 
     let artifact = NamespaceArtifact {
         header: Header {
-            namespace: manifest.namespace.clone(),
-            path: manifest.path.clone(),
+            namespace: budget.copy_str(&manifest.namespace)?,
+            path: budget.copy_str(&manifest.path)?,
             source_length: manifest.source_length,
             cljc: manifest.cljc,
             source_name,
@@ -2121,7 +2125,7 @@ pub fn decode(
         units,
         diagnostics,
         references: References {
-            namespaces: manifest.references.clone(),
+            namespaces: budget.copy(&manifest.references)?,
             globals,
         },
         names,
@@ -2176,6 +2180,21 @@ impl Budget {
                 limit: self.0.get(),
             }),
         }
+    }
+
+    /// A copy of `text`, charged first.
+    fn copy_str(&self, text: &str) -> Result<String, DecodeError> {
+        self.charge(text.len() as u64)?;
+        Ok(text.to_owned())
+    }
+
+    /// A copy of `names`, the vector and each string charged first.
+    fn copy(&self, names: &[String]) -> Result<Vec<String>, DecodeError> {
+        let mut copy = self.vec(names.len())?;
+        for name in names {
+            copy.push(self.copy_str(name)?);
+        }
+        Ok(copy)
     }
 
     /// An empty vector with room for `count` entries, charged first.
@@ -4212,6 +4231,62 @@ mod tests {
             found: None,
             stable: true,
         })]);
+    }
+
+    #[test]
+    fn manifest_dependencies_respect_the_decoded_budget() {
+        let limits = DecodeLimits {
+            max_decoded_bytes: 1 << 20,
+            ..DecodeLimits::default()
+        };
+        let over_budget = |error: DecodeError| {
+            assert!(
+                matches!(
+                    error,
+                    DecodeError::Limit {
+                        what: "decoded bytes",
+                        ..
+                    }
+                ),
+                "{error:?}"
+            );
+        };
+        let over = |artifact: &NamespaceArtifact, fields: ManifestFields| {
+            let bytes = encode(artifact, &fields).unwrap();
+            assert!(bytes.len() < 200_000, "{} bytes", bytes.len());
+            decoded(&bytes).unwrap();
+            over_budget(read_manifest(&bytes, &limits).unwrap_err());
+            over_budget(decode(&bytes, &limits, &|| false).unwrap_err());
+        };
+        let empty = |count: usize| vec![String::new(); count];
+        // 60,000 dependencies of two bytes each, 32 bytes each decoded.
+        over(
+            &sample(0),
+            ManifestFields {
+                dependencies: (0..60_000)
+                    .map(|_| Dependency {
+                        namespace: String::new(),
+                        kinds: 1,
+                    })
+                    .collect(),
+                ..fields()
+            },
+        );
+        // 60,000 one-byte requires, and as many referenced namespaces.
+        let mut artifact = sample(0);
+        artifact.declarations.requires = empty(60_000);
+        over(&artifact, fields());
+        let mut artifact = sample(0);
+        artifact.references.namespaces = empty(60_000);
+        over(&artifact, fields());
+        // 30,000 requires fit the budget in the manifest, but not once
+        // decoding copies them into the declarations.
+        let mut artifact = sample(0);
+        artifact.declarations.requires = empty(30_000);
+        let bytes = encode(&artifact, &fields()).unwrap();
+        read_manifest(&bytes, &limits).unwrap();
+        over_budget(decode(&bytes, &limits, &|| false).unwrap_err());
+        decoded(&bytes).unwrap();
     }
 
     #[test]
