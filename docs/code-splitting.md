@@ -1543,7 +1543,8 @@ runtime units toward their first readers; per-chunk runtime factories.
     light-cljs-358 added after this pellet was written (`lookup.sets`,
     `lookup.transients`, `lookup.tree`, `get.branches`,
     `structuralEqualPair.symbols`) also stay; they hold dispatch only and
-    call their kinds' hooks (light-cljs-392 measures hooks for them).
+    call their kinds' hooks (light-cljs-392 measured hooks for them:
+    "Open questions").
   - Single files at `advanced`, terse, on master `26027d0` and after: a
     program that keeps `lookup` grows 47 bytes (`map-only` 8,053 to 8,100),
     one that also keeps `lookup.sets` 95 (`set-only` 4,792 to 4,887, whose
@@ -1850,8 +1851,21 @@ minification, against the 69,587 bytes `--out-dir` wrote.
   declined their +313 to 386 bytes in every `advanced` single file that
   keeps the operations without `installMethods`, and in a chunk a wrapper
   requires only `behindProtocol` and `protocolHooks`. The other units that
-  assign another unit's binding share its chunk; light-cljs-392 measures
-  hooks for the five wrappers light-cljs-247 and light-cljs-358 added.
+  assign another unit's binding share its chunk. Open again, for the
+  user, for the five wrappers light-cljs-247 and light-cljs-358 added:
+  light-cljs-392 measured each as a hook install (benchmarks/compiler.md,
+  "Hooks for the wrappers of `lookup`, `get` and equality, measured") and
+  every form grows some `advanced` single file that keeps the operation,
+  since the operation then tests the kind whether or not the program
+  builds it: `lookup.sets` +38 bytes without sets (+18 with),
+  `lookup.transients` +37, `lookup.tree` +68 to +84, `get.branches` +99
+  in the three fixtures that keep `get` but build none of its kinds (−21
+  in the twelve that keep the branches), `structuralEqualPair.symbols`,
+  chained on `kindHooks.equivNamed`, +22 only where symbols are built.
+  examples/features' startup would fall from 6,714 / 2,488 bytes to
+  6,183 / 2,267 with all five, by 34 to 234 raw bytes for one, and its
+  shared chunk grow about as much. So they stay wrappers; converting any
+  needs the user's go-ahead.
 - **Multimethods and motion.** Settled by light-cljs-300. A `defmulti`
   stayed pinned at `Advanced` (light-cljs-277): its initializer builds a
   `MultiFn` from the dispatch function, the options and the global

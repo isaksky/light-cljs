@@ -5659,3 +5659,45 @@ The second candidate run is within 1 to 3% of the baseline either way,
 which is this machine's noise under other workers' load; the change is not
 measurable. Sizes: `seq-pipeline` at `advanced` 29,491 to 29,462 bytes; the
 whole runtime that `none` and `prepare` embed shrank by 805 bytes.
+
+## Hooks for the wrappers of `lookup`, `get` and equality, measured — October 19, 2026
+
+light-cljs-392 measures turning the five wrappers light-cljs-247 and
+light-cljs-358 added (`lookup.sets`, `lookup.transients`, `lookup.tree`,
+`get.branches`, `structuralEqualPair.symbols`) into hook installs, as
+light-cljs-302 did for the hash tries' ([code-splitting
+design](../docs/code-splitting.md), "Open questions", "Units that assign
+another unit's binding"). Each variant was written against master
+`432301c` with its `requires:` lists recomputed; the five together (the
+first form of each) printed what `none` prints for every ratchet fixture at
+every level and passed `chunks::` and `builtin_types::` but for the two
+tests that name the removed wrappers (the variants alone were measured,
+not run). None is applied: every one grows some `advanced` single file,
+since the operation must read the hook and test the kind whether or not the
+program builds that kind. Single files are `prepare_application(..)
+.emit_js()` at `advanced`, terse, as the size ratchet measures them;
+examples/features is `light-cljs --compile --optimize advanced --entry
+app.main --source-root examples/features --out-dir OUT`, raw / `gzip -9 -n`
+bytes, startup 6,714 / 2,488 and the shared chunk 62,034 / 19,223 before.
+Sizes do not depend on load (one-minute load average 13.5).
+
+| Wrapper and hook form | Single files that keep the operation | `app.main.js` | `app.editor+app.reports.js` |
+| --- | --- | ---: | ---: |
+| `lookup.sets`: `lookup` ends with `if (sets.has(value)) return kindHooks.lookupSet(...)` | +38 in the 12 without sets (`map-only` 8,066 to 8,104, `keyword-only` 3,398 to 3,436), +18 in the 4 with (`set-only` 4,887 to 4,905, `constant-keys`, `features`, `features-direct`) | 6,594 / 2,452 | 62,172 / 19,258 |
+| `lookup.transients`: `lookup` ends with `kindHooks.lookupTransient`, which answers `notFound` for other values, if installed | +37 in the 14 without transients, +2 in `features` and `features-direct` | 6,680 / 2,482 | 62,066 / 19,226 |
+| the same, testing `transients.has(value)` in `lookup` | +323 to +328 in the 7 that do not otherwise keep the `transients` store (`map-only` 8,393), +52 in `map-printed`, +44 or +45 in 6; −18 in `features` and `features-direct` | 6,696 / 2,486 | 62,034 / 19,221 |
+| `lookup.tree`: the map branch tests the `tree` slot (`publicCollectionSlots`) before `kindHooks.lookupTree` | +68 in 11, +84 in `keyword-case`, `constant-lookups` and `keyword-only`; −37 in `features` and `features-direct` | 6,677 / 2,476 | 62,034 / 19,221 |
+| `get.branches`: the kinds install `kindHooks.getBranch`, which `get` calls when present, falling through on `noBranch` | −21 or −22 in the 12 that keep the branches (`map-only` 8,045, `features` 77,078); +99 in `keyword-case` (3,570), `constant-lookups` (3,950) and `keyword-only` (3,497), which keep `get` but build none of its kinds | 6,480 / 2,377 | 62,239 / 19,304 |
+| `structuralEqualPair.symbols`: wraps `kindHooks.equivNamed` instead, as `uuidValue.equiv` then must too; `structuralEqualPair` is unchanged | +22 in the 3 that build symbols (`protocol-params` 50,261, `features`, `features-direct`); no other fixture moves (none keeps `uuidValue.equiv`, about 19 bytes larger where kept) | 6,604 / 2,452 | 62,166 / 19,273 |
+| the same, testing `symbols.has(left)` first in `structuralEqualPair` | +38 or +39 in the 20 without symbols, +10 in the 3 with | 6,642 / 2,462 | 62,116 / 19,256 |
+| all five, the first form of each | +101 to +258 (`keyword-case` 3,729, `map-only` 8,188); −18 in `features` and `features-direct` | 6,183 / 2,267 | 62,537 / 19,397 |
+
+`app.editor.js` and `app.reports.js` move by at most 2 raw and 3 gzip
+bytes. Startup
+saves less than the wrappers weigh (658 of the 5,229 bytes of startup's 50
+runtime units, 759 with what only they require; with all five, startup
+holds 41 units and 4,704 bytes) because the test each hook needs lands in
+the operation, which startup keeps (`lookup` 343 to 487 bytes, `get` 357 to
+439); the units that leave go to the shared chunk, so loading a feature
+first costs about the same (28 raw bytes fewer with all five). The
+wrappers stay pending the user's decision.
