@@ -71,11 +71,19 @@ fn copy_tree(from: &Path, to: &Path) {
 }
 
 /// A listener on a free port of 127.0.0.1, which the test holds so that the
-/// port is in use, and the port.
+/// port is in use, and the port. The port is well below 65535 and the next
+/// one was free when it was picked, so a server that passes over the held
+/// port to the next free one upward finds one even when other processes
+/// take some of the ports after it (light-cljs-412: a server that passed
+/// over a held port found 65535 held by another process, and no port after).
 pub fn held_port() -> (TcpListener, u16) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    (listener, port)
+    loop {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        if port < 65000 && TcpListener::bind(("127.0.0.1", port + 1)).is_ok() {
+            return (listener, port);
+        }
+    }
 }
 
 /// The error binding `127.0.0.1:port`, which the test holds, gives: what a

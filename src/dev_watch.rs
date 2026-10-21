@@ -796,8 +796,8 @@ enum Work {
         deleted: Vec<PathBuf>,
         noticed: Instant,
     },
-    /// The configuration file was saved: a build that a failed restart left
-    /// waiting starts again.
+    /// The configuration file was saved and the save did not restart the
+    /// build: a build that a failed restart left waiting starts again.
     Touched,
     /// The build's settings changed: it starts again with these options.
     Restart(Box<Options>),
@@ -1043,6 +1043,10 @@ pub(crate) fn run_builds(
             let now = stamp(&config.path);
             if config_stamp != Some(now) {
                 config_stamp = Some(now);
+                // The builds this save restarts, which need no touch: a
+                // touch that came after a restart failed would start it
+                // again for the same save.
+                let mut restarted = vec![false; workers.len()];
                 match (config.reread)() {
                     Reread::Unchanged => {}
                     Reread::Invalid(printed, diagnostic) => {
@@ -1068,14 +1072,17 @@ pub(crate) fn run_builds(
                         }
                         for &(index, _) in &restarts {
                             starts.enqueue(index);
+                            restarted[index] = true;
                         }
                         for (index, options) in restarts {
                             send(&mut workers, index, Work::Restart(options))?;
                         }
                     }
                 }
-                for index in 0..workers.len() {
-                    send(&mut workers, index, Work::Touched)?;
+                for (index, restarted) in restarted.into_iter().enumerate() {
+                    if !restarted {
+                        send(&mut workers, index, Work::Touched)?;
+                    }
                 }
             }
         }
