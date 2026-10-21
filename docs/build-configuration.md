@@ -845,6 +845,24 @@ Names are decisions for review; the structure is a sketch.
 
 ## Phases
 
+Queued on 2026-10-20 as the pellets group `build-configuration`, in this
+order (the group's context names which can run in parallel):
+
+| Phase | Pellet | Scope |
+|---|---|---|
+| 1 | light-cljs-398 | `src/config_file.rs`: discovery, the closed schema, `#light-cljs/env`, located errors; `examples/features/light-cljs.edn` |
+| 1 | light-cljs-399 | Layers: `:dev`/`:release`, `LIGHT_CLJS`, `--config-merge`, origins |
+| 1 | light-cljs-400 | The `compile` and `release` commands, flags over the file |
+| 1 | light-cljs-401 | `--print-config` |
+| 1 | light-cljs-402 | File builds equal flag builds, bytes and cache hits; the exit criterion |
+| 2 | light-cljs-403 | `watch ID`: `:http`, `:nrepl`, `:fs-watch`, `:devtools`, `http.port` |
+| 2 | light-cljs-404 | Rereading the file in the watch; the exit criterion |
+| 3 | light-cljs-405 | Dev-server mounts per build (server only) |
+| 3 | light-cljs-406 | Several builds in one watch: a thread each, one poller |
+| 3 | light-cljs-407 | `light.dev/repl`, one nREPL for every build; the exit criterion |
+| 3 | light-cljs-408 | `cljs-repl ID` |
+| 3 | light-cljs-409 | The cache-retention measurement, and `:cache-retention` only if builds evict each other |
+
 ### Phase 1: the file, compile and release
 
 - `src/config_file.rs`, the schema, `#light-cljs/env`, `LIGHT_CLJS`,
