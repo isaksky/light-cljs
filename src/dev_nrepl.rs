@@ -753,22 +753,34 @@ pub fn lookup(session: &DevSession, namespace: &str, symbol: &str) -> Option<Inf
 }
 
 /// The `.nrepl-port` file of a running nREPL server, which editors read to
-/// find it: removed when dropped, and on unix also when the process ends on
-/// SIGINT, SIGTERM or SIGHUP.
+/// find it, or another file holding a server's port (`light-cljs watch`'s
+/// `<:cache-root>/http.port`): removed when dropped, and on unix also when
+/// the process ends on SIGINT, SIGTERM or SIGHUP.
 pub struct PortFile {
     path: PathBuf,
     text: String,
+    /// The file's slot in the signal handler's table, if it got one.
+    #[cfg(unix)]
+    slot: Option<usize>,
 }
 
 impl PortFile {
     /// Write `port` into `.nrepl-port` in `directory`.
     pub fn create(directory: &Path, port: u16) -> io::Result<Self> {
-        let path = std::path::absolute(directory.join(".nrepl-port"))?;
+        Self::write(&directory.join(".nrepl-port"), port)
+    }
+
+    /// Write `port` into the file at `path`.
+    pub fn write(path: &Path, port: u16) -> io::Result<Self> {
+        let path = std::path::absolute(path)?;
         let text = port.to_string();
         std::fs::write(&path, &text)?;
-        #[cfg(unix)]
-        signals::remove_on_exit(&path, &text);
-        Ok(Self { path, text })
+        Ok(Self {
+            #[cfg(unix)]
+            slot: signals::remove_on_exit(&path, &text),
+            path,
+            text,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -779,7 +791,9 @@ impl PortFile {
 impl Drop for PortFile {
     fn drop(&mut self) {
         #[cfg(unix)]
-        signals::forget();
+        if let Some(slot) = self.slot {
+            signals::forget(slot);
+        }
         // Another server may have written the file since.
         if std::fs::read_to_string(&self.path).is_ok_and(|text| text == self.text) {
             let _ = std::fs::remove_file(&self.path);
@@ -789,8 +803,8 @@ impl Drop for PortFile {
 
 #[cfg(unix)]
 mod signals {
-    //! Removing the port file when a signal ends the process: the handler
-    //! reads the file, unlinks it when it still holds this server's port,
+    //! Removing the port files when a signal ends the process: the handler
+    //! reads each file, unlinks it when it still holds this server's port,
     //! and exits, all with async-signal-safe calls on data prepared before.
     use std::ffi::{CString, c_char, c_int, c_void};
     use std::os::unix::ffi::OsStrExt;
@@ -802,7 +816,9 @@ mod signals {
         text: Vec<u8>,
     }
 
-    static OWNED: AtomicPtr<Owned> = AtomicPtr::new(std::ptr::null_mut());
+    /// The port files a signal removes: `.nrepl-port` and `http.port`,
+    /// with room to spare.
+    static OWNED: [AtomicPtr<Owned>; 4] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 4];
 
     unsafe extern "C" {
         fn signal(signum: c_int, handler: usize) -> usize;
@@ -819,38 +835,50 @@ mod signals {
     const READ_ONLY: c_int = 0;
 
     extern "C" fn handle(signum: c_int) {
-        let owned = OWNED.load(Ordering::SeqCst);
-        // SAFETY: `owned` is null or an `Owned` leaked by `remove_on_exit`,
-        // never freed; open, read, close, unlink and _exit are
-        // async-signal-safe, and the buffer is on the stack.
-        unsafe {
-            if let Some(owned) = owned.as_ref() {
-                let mut buffer = [0u8; 16];
-                let fd = open(owned.path.as_ptr(), READ_ONLY);
-                if fd >= 0 {
-                    let count = read(fd, buffer.as_mut_ptr().cast(), buffer.len());
-                    close(fd);
-                    // Another server may have written the file since.
-                    if usize::try_from(count).is_ok_and(|count| buffer[..count] == owned.text[..]) {
-                        unlink(owned.path.as_ptr());
+        for slot in &OWNED {
+            let owned = slot.load(Ordering::SeqCst);
+            // SAFETY: `owned` is null or an `Owned` leaked by
+            // `remove_on_exit`, never freed; open, read, close and unlink are
+            // async-signal-safe, and the buffer is on the stack.
+            unsafe {
+                if let Some(owned) = owned.as_ref() {
+                    let mut buffer = [0u8; 16];
+                    let fd = open(owned.path.as_ptr(), READ_ONLY);
+                    if fd >= 0 {
+                        let count = read(fd, buffer.as_mut_ptr().cast(), buffer.len());
+                        close(fd);
+                        // Another server may have written the file since.
+                        if usize::try_from(count)
+                            .is_ok_and(|count| buffer[..count] == owned.text[..])
+                        {
+                            unlink(owned.path.as_ptr());
+                        }
                     }
                 }
             }
-            _exit(128 + signum)
         }
+        // SAFETY: _exit is async-signal-safe.
+        unsafe { _exit(128 + signum) }
     }
 
-    pub(super) fn remove_on_exit(path: &std::path::Path, text: &str) {
-        let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
-            return;
-        };
-        let owned = Box::new(Owned {
+    /// Remove the file at `path` when a signal ends the process, if it
+    /// still holds `text`: the file's slot, or none when every slot is taken.
+    pub(super) fn remove_on_exit(path: &std::path::Path, text: &str) -> Option<usize> {
+        let path = CString::new(path.as_os_str().as_bytes()).ok()?;
+        // Leaked: a handler running on another thread may still read it.
+        let owned = Box::into_raw(Box::new(Owned {
             path,
             text: text.as_bytes().to_vec(),
-        });
-        // Leaked: a handler running on another thread may still read an
-        // earlier one.
-        OWNED.store(Box::into_raw(owned), Ordering::SeqCst);
+        }));
+        let slot = OWNED.iter().position(|slot| {
+            slot.compare_exchange(
+                std::ptr::null_mut(),
+                owned,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_ok()
+        })?;
         for signum in SIGNALS {
             // SAFETY: `handle` is an `extern "C" fn(c_int)`, a valid
             // sighandler_t.
@@ -858,10 +886,12 @@ mod signals {
                 signal(signum, handle as extern "C" fn(c_int) as usize);
             }
         }
+        Some(slot)
     }
 
-    pub(super) fn forget() {
-        OWNED.store(std::ptr::null_mut(), Ordering::SeqCst);
+    /// Leave the file of `slot` alone when a signal ends the process.
+    pub(super) fn forget(slot: usize) {
+        OWNED[slot].store(std::ptr::null_mut(), Ordering::SeqCst);
     }
 }
 

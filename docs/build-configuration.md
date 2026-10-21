@@ -4,9 +4,10 @@ Status: settled design, October 20, 2026. The user decided its three open
 questions the same day ("Settled questions"). The reader and the schema
 ("As built (light-cljs-398)"), the merging of a build's layers ("As
 built (light-cljs-399)"), the `compile` and `release` commands ("As
-built (light-cljs-400)") and `--print-config` ("As built
-(light-cljs-401)") are implemented; `watch` and `cljs-repl` do not
-read the file yet.
+built (light-cljs-400)"), `--print-config` ("As built
+(light-cljs-401)") and `watch` with one build ("As built
+(light-cljs-403)") are implemented; `cljs-repl` does not read the file
+yet.
 The implementation is queued as the pellets group `build-configuration`,
 one or more pellets per phase ("Phases"). Names that shadow-cljs has no
 word for are listed under "Names for review"; the pellets use them as
@@ -318,6 +319,7 @@ conditional, and no discard that hides a duplicate key.
 | `--poll-ms N` | `:fs-watch {:loop-wait N}` | top level | `watch` |
 | `--serve PORT`, `--serve-host HOST` | `:http {:port PORT :host "HOST"}` | top level | `watch` |
 | `--nrepl PORT` | `:nrepl {:port PORT}` | top level | `watch` |
+| `--no-nrepl` | `:nrepl false` | top level | `watch` |
 | `--reload-dependents` | `:devtools {:reload-strategy :full}` | build | `watch` |
 | `--compile`, `--reloadable`, `--watch` | the command: `compile`, `watch`, `release` | - | - |
 
@@ -1269,6 +1271,109 @@ Names are decisions for review; the structure is a sketch.
   its own origin; and the library's watch rendering. Every process test asserts that the
   project holds the same paths afterwards, with no `out` or `.light-cljs`.
 
+### As built (light-cljs-403): watch ID
+
+- `run` hands a first argument `watch` to `config_cli::run` as `compile` and
+  `release` are handed. The order of light-cljs-400 holds (ids, the file, the
+  ids checked, the flags, each `--config-merge`, the settings in dev mode, the
+  output directories, the translation), with one more check after the ids:
+  more than one distinct id is `light-cljs watch app worker: watch runs one
+  build for now; several builds in one process, with one server and one
+  nREPL, arrive with Phase 3 (docs/build-configuration.md, "Several builds in
+  one process"); start a watch per build`, also with `--print-config`
+  (light-cljs-406 lifts it). A repeated id is one build.
+- **Flags after the id** are `--watch`'s: those `compile` takes but
+  `--jobs` and `--stats-file` (`--jobs is not a flag of watch; see
+  light-cljs --help`), plus `--serve`, `--serve-host`, `--nrepl`,
+  `--no-nrepl`, `--poll-ms` and `--reload-dependents`, read with
+  `--watch`'s own messages (`dev_watch::port_value`, `poll_value`). The
+  release-only flags are refused as `compile` refuses them (`--optimize
+  applies to release builds; watch writes the dev build at none semantics, as
+  --watch does`), and so are `--esm`, the source map flags and
+  `--reloadable`. `compile` and `release` refuse `--no-nrepl` with the other
+  watch flags.
+- **Translation.** `config_cli::watch_options` builds the watch's `Options`
+  (now `pub(crate)` in `src/dev_watch.rs`, whose `run` parses the flags and
+  calls `dev_watch::watch(options)`) from what `translate` makes of the build
+  for `--compile --reloadable` (entry, roots, output directory, `:config`,
+  `:elide-asserts`, macro limits, cache store and blockers, with the flags
+  already over them) and the watch's settings: `:http :port` (default 9630)
+  as `--serve`, `:http :host` as `--serve-host`, `:fs-watch :loop-wait` as
+  `--poll-ms`, `:devtools {:reload-strategy :full}` as `--reload-dependents`,
+  `:nrepl {:port N}` as `--nrepl N` and `:nrepl false` as `--no-nrepl`; each
+  flag after the id wins over its setting, so `--nrepl 0` turns nREPL on over
+  `:nrepl false`, and `--no-nrepl` turns off the listener of `:nrepl {:port
+  N}` with the server port's nREPL. `:compile-threads` prints but the watch runs one slot, as
+  "Flags and keys" says.
+- **The server always starts.** The watch serves the build as one mount named
+  after the build id (`DevServer::start_mounts_with`), so it is served under
+  `/ID/` and at `/` (light-cljs-405); the flag-only `--watch --serve` still
+  serves its one unnamed mount at `/` alone (`DevServer::start_with`, which
+  `DevServer::start` now calls). `dev_server::Listen { host, port,
+  next_free, nrepl }` says how the server binds:
+  - **The port.** A port from the file gives way, when it is in use
+    (`AddrInUse` only, as shadow-cljs retries on a `BindException`), to the
+    next one upward, each one passed over reported as shadow-cljs's
+    `TCP Port N in use.` is: `light-cljs: TCP port 9630 in use, trying
+    9631`; port 0 never retries, and 65535 in use fails. With `:http {:strict
+    true}` the bind's error ends the watch: `light-cljs watch app: cannot
+    serve on 127.0.0.1:9630: Address already in use (os error 48); :http
+    {:strict true} tries no other port`. `--serve PORT` binds that port or
+    fails as `--watch --serve` does (`light-cljs watch app: cannot serve on
+    127.0.0.1:9630: ...`), so `--print-config` prints it as `:strict true` too,
+    with `--serve PORT` as its origin. The bound address is in the
+    `light-cljs: serving DIR at http://ADDRESS/` line, after the
+    `light-cljs - config: PATH` line; the watch's other status lines are
+    `--watch`'s.
+  - **nREPL.** `:nrepl false` needed a flag first (principle 20), so
+    `--watch` gained `--no-nrepl` (it requires `--serve`, and excludes
+    `--nrepl`): the server's port then closes an nREPL client's connection,
+    one whose first byte opens a bencoded dictionary, without answering,
+    and serves HTTP as before. `:nrepl {:port N}` writes `.nrepl-port` in the
+    project directory (`Options::nrepl_port_dir`; the flag-only watch keeps
+    the working directory).
+- **`<:cache-root>/http.port`.** Once the server is bound, and before the
+  `serving` line, the watch writes the port into `http.port` under the
+  file's `:cache-root` (layers 1-5, resolved against the project directory),
+  creating the directory as shadow-cljs's `make-parents` does. `--cache-dir`
+  and `--no-cache` do not move it, since `cljs-repl` finds the file from
+  `light-cljs.edn` alone. `dev_nrepl::PortFile::write` writes it, so it goes
+  on the exit paths `.nrepl-port` goes on: when the watch's state is dropped
+  (a step that cannot write the build), and on SIGINT, SIGTERM and SIGHUP,
+  whose handler now removes every port file of a fixed table of four slots,
+  each only if it still holds this watch's port. The flag-only `--watch`
+  writes none.
+- **`--print-config`** after `watch` prints the top-level `:http`, `:nrepl`
+  (when a layer or flag gives it) and `:fs-watch`, and the build's
+  `:devtools`, with `ConfigFile::print_config(.., true)`. The watch's flags
+  print as origins: `--serve 0, over the default 9630`, `--serve-host`,
+  `--nrepl 0` as `{:port 0}`, `--no-nrepl` as `false`, `--poll-ms 50, over
+  the default 100` and `--reload-dependents` as `:reload-strategy :full`.
+  Since `http.port` stays in the file's `:cache-root`, a `--cache-dir` whose
+  parent is another directory cannot print as `:cache-root`: `light-cljs watch
+  features: --cache-dir state/cache: watch keeps http.port in :cache-root
+  ".light-cljs", which --cache-dir does not move, and a light-cljs.edn names
+  its store as :cache-root's cache directory, so --print-config cannot print
+  both; give --cache-dir .light-cljs/cache or no --cache-dir`.
+- Tests: `tests/dev_watch.rs` (`watch features` from the example's `app/`
+  directory, serving `/index.js` and a unit at `/` and `/features/`, stepping
+  on a save, `.light-cljs/http.port` present while it runs and gone after
+  SIGINT; the watch's flags over the file's `:http`, `:fs-watch` and
+  `:devtools`; `watch app` of the commands fixture, with `:config`,
+  `:elide-asserts`, a macro limit, blockers and a `--config` over the file,
+  writing the same files at startup and after a save as the equivalent
+  `--watch` flags, which then miss no artifact), `tests/dev_server.rs`
+  (`Listen`'s next port, its bind error and
+  its nREPL refusal; a held port giving way, `:strict true` and `--serve PORT`
+  failing with exact messages beside `--watch --serve`'s; a flag-only
+  `--watch --serve` beside an invalid `light-cljs.edn` writing no
+  `http.port`), `tests/dev_nrepl.rs` (`:nrepl {:port 0}`, `:nrepl false` and
+  `--nrepl 0` over it; a held `:nrepl` port failing the watch after
+  `http.port` is written, which the error removes, and `--no-nrepl` over
+  it), `tests/config_file/commands.rs` (`watch`'s exact
+  errors) and `tests/config_file/print_config.rs`, all on temporary copies
+  of examples/features through `tests/support/file_watch.rs`.
+
 ## Phases
 
 Queued on 2026-10-20 as the pellets group `build-configuration`, in this
@@ -1373,6 +1478,7 @@ shadow-cljs's style:
 | Macro limits | `:compiler-options` `:macro-expansions`, `:macro-nodes`, `:macro-timeout-ms`, `:macro-memory-limit`, `:macro-poll-budget` | the same names |
 | Environment values | `#light-cljs/env`, and the variable `LIGHT_CLJS` | - |
 | Printing the merged configuration | `--print-config` | - |
+| No nREPL on the dev server's port | `:nrepl false` (shadow-cljs's) | `--no-nrepl` |
 | Switching an nREPL session's build | `(light.dev/repl :worker)` | - |
 | Artifacts kept per namespace, only if the Phase 3 measurement shows eviction | top-level `:cache-retention N` | `--cache-retention N` |
 | Rust | `light_cljs::config_file`, `FILE_NAME`, `ConfigFile`, `ConfigMerge`, `BuildDefinition`, `BuildSettings`, `BuildMode::{Dev, Release}`, `BuildId`, `Setting`, `SettingOrigin`, `SettingValue`, `ConfigSource`, `deep_merge`, `ConfigFileError`, `config_cli`, `BuildWorker`, `BuildConfiguration::set` | - |

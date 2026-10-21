@@ -12,6 +12,10 @@ mod temp_dir;
 #[allow(dead_code)]
 mod dev_execution;
 
+#[path = "support/file_watch.rs"]
+#[allow(dead_code)]
+mod file_watch;
+
 use dev_execution::run_dev;
 use std::{
     fs,
@@ -2344,4 +2348,217 @@ fn repeated_steps_hold_bounded_engine_state_and_no_artifact() {
     assert!(counts.iter().all(|c| c[4] == counts[0][4]), "{counts:?}");
     let last = &counts[counts.len() - 10..];
     assert!(last.iter().all(|c| c[3] == last[0][3]), "{counts:?}");
+}
+
+/// `light-cljs watch features` (docs/build-configuration.md, "Commands"),
+/// from the example's `app/` subdirectory, with `:http {:port 0}` and
+/// `:fs-watch {:loop-wait 50}` from `LIGHT_CLJS`: it builds `out/dev` in the
+/// project directory, serves it on the port it bound under `/features/` and
+/// at `/`, holds that port in `.light-cljs/http.port`, steps on a save, and
+/// removes the port file when SIGINT ends it. Nothing is written below the
+/// working directory.
+#[cfg(unix)]
+#[test]
+fn watch_features_builds_serves_and_steps_from_light_cljs_edn() {
+    let (_dir, project) = file_watch::features("dev-watch-file");
+    let app = project.join("app");
+    let sources = fs::read_dir(&app).unwrap().count();
+    let mut watch = file_watch::Light::spawn(
+        &app,
+        &["watch", "features"],
+        Some("{:http {:port 0} :fs-watch {:loop-wait 50}}"),
+    );
+    let (address, before, serving) = watch.serving();
+    let out = project.join("out/dev");
+    assert_eq!(
+        before,
+        [format!(
+            "light-cljs - config: {}",
+            project.join("light-cljs.edn").display()
+        )]
+    );
+    assert_eq!(
+        serving,
+        format!("light-cljs: serving {} at http://{address}/", out.display())
+    );
+    let port = address.strip_prefix("127.0.0.1:").unwrap();
+    assert_ne!(port, "0");
+    let port_file = project.join(".light-cljs/http.port");
+    assert_eq!(fs::read_to_string(&port_file).unwrap(), port);
+    let (lines, built) = watch.until("light-cljs: built ");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        built.starts_with("light-cljs: built app.main (")
+            && built.contains(&format!(" namespaces) into {} in ", out.display()))
+            && built.ends_with(" ms; watching every 50 ms"),
+        "{built}"
+    );
+
+    let index = fs::read_to_string(out.join("index.js")).unwrap();
+    let unit = fs::read_to_string(out.join("app.shared.js")).unwrap();
+    for (path, body) in [
+        ("/index.js", &index),
+        ("/features/index.js", &index),
+        ("/app.shared.js", &unit),
+        ("/features/app.shared.js", &unit),
+    ] {
+        assert_eq!(
+            file_watch::get(&address, path),
+            ("HTTP/1.1 200 OK".to_owned(), body.clone()),
+            "{path}"
+        );
+    }
+    assert!(file_watch::replay(&address, "/features/events").ends_with(",\"dependents\":false}"));
+
+    let shared = app.join("shared.cljs");
+    let text = fs::read_to_string(&shared).unwrap();
+    let saving = app.join(".saving");
+    fs::write(
+        &saving,
+        format!("{text}\n(def saved-by-test \"saved by the test\")\n"),
+    )
+    .unwrap();
+    fs::rename(&saving, &shared).unwrap();
+    let (lines, step) = watch.until("light-cljs: recompiled ");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.shared in "),
+        "{step}"
+    );
+    assert!(
+        fs::read_to_string(out.join("app.shared.js"))
+            .unwrap()
+            .contains("saved by the test")
+    );
+
+    assert_eq!(watch.interrupt().code(), Some(130));
+    assert!(!port_file.exists());
+    assert!(project.join(".light-cljs/cache").is_dir());
+    assert_eq!(fs::read_dir(&app).unwrap().count(), sources);
+}
+
+/// The watch's flags after the id write over the file's `:http`, `:fs-watch`
+/// and `:devtools`, as `compile`'s write over its settings: `--serve 0` over
+/// a port the test holds with `:strict true`, and `--poll-ms 30` over
+/// `:loop-wait 50`, while `:devtools {:reload-strategy :full}` reaches the
+/// watch as `--reload-dependents` (the build a runtime catches up with
+/// reloads dependents).
+#[test]
+fn watch_flags_write_over_the_files_watch_settings() {
+    let (_dir, project) = file_watch::features("dev-watch-file-flags");
+    let (_held, held) = file_watch::held_port();
+    let merged = format!(
+        "{{:http {{:port {held} :strict true}} :fs-watch {{:loop-wait 50}} \
+         :builds {{:features {{:devtools {{:reload-strategy :full}}}}}}}}"
+    );
+    let mut watch = file_watch::Light::spawn(
+        &project,
+        &["watch", "features", "--serve", "0", "--poll-ms", "30"],
+        Some(&merged),
+    );
+    let (address, _, _) = watch.serving();
+    let port = address.strip_prefix("127.0.0.1:").unwrap();
+    assert_ne!(port, held.to_string());
+    assert_eq!(
+        fs::read_to_string(project.join(".light-cljs/http.port")).unwrap(),
+        port
+    );
+    let (_, built) = watch.until("light-cljs: built ");
+    assert!(built.ends_with(" ms; watching every 30 ms"), "{built}");
+    assert!(file_watch::replay(&address, "/events").ends_with(",\"dependents\":true}"));
+}
+
+/// `watch app` compiles what its equivalent `--watch` flags compile, at
+/// startup and after a save: the commands fixture's `:config` and top-level
+/// `:cache-blockers`, and from `LIGHT_CLJS` `:elide-asserts`, a macro limit
+/// and a build blocker, with `--config app/size=2` after the id over the
+/// file's value. The flag-only watch, run second against the same store,
+/// writes the same files before and after the save, bypasses the same
+/// namespaces and misses no artifact.
+#[test]
+fn watch_id_compiles_what_its_equivalent_watch_flags_compile() {
+    let (_dir, project) = file_watch::project(
+        "dev-watch-file-equivalent",
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/build-configuration/commands"),
+    );
+    let main = project.join("src/app/main.cljs");
+    let text = fs::read_to_string(&main).unwrap();
+    let out = project.join("out/app");
+    let run = |args: &[&str], merged: Option<&str>| {
+        let _ = fs::remove_dir_all(project.join("out"));
+        fs::write(&main, &text).unwrap();
+        let mut watch = file_watch::Light::spawn(&project, args, merged);
+        let (startup, _) = watch.until("light-cljs: built ");
+        let started = file_watch::tree(&out);
+        let saving = project.join("src/app/.saving");
+        fs::write(&saving, format!("{text}\n(def saved \"saved\")\n")).unwrap();
+        fs::rename(&saving, &main).unwrap();
+        let (_, step) = watch.until("light-cljs: recompiled ");
+        let step = step.split(" in ").next().unwrap().to_owned();
+        let saved = file_watch::tree(&out);
+        let bypasses = startup
+            .iter()
+            .skip_while(|line| *line != "[cache-misses-and-bypasses]")
+            .filter(|line| line.contains(" bypass "))
+            .cloned()
+            .collect::<Vec<_>>();
+        let misses = startup
+            .iter()
+            .find(|line| line.starts_with("cache.misses "))
+            .cloned();
+        (started, step, saved, bypasses, misses, startup)
+    };
+    let file = run(
+        &["watch", "app", "--stats", "--config", "app/size=2"],
+        Some(
+            "{:http {:port 0} :builds {:app {:compiler-options {:elide-asserts true \
+             :macro-timeout-ms 20000} :build-options {:cache-blockers #{app.util}}}}}",
+        ),
+    );
+    let src = project.join("src");
+    let store = project.join(".light-cljs/cache");
+    let flags = run(
+        &[
+            "--watch",
+            "--entry",
+            "app.main",
+            "--source-root",
+            src.to_str().unwrap(),
+            "--out-dir",
+            out.to_str().unwrap(),
+            "--cache-dir",
+            store.to_str().unwrap(),
+            "--config",
+            "app/flavor=:file",
+            "--config",
+            "app/size=2",
+            "--elide-asserts",
+            "--macro-timeout-ms",
+            "20000",
+            "--cache-blocker",
+            "app.macros",
+            "--cache-blocker",
+            "app.util",
+            "--stats",
+            "--serve",
+            "0",
+        ],
+        None,
+    );
+    assert!(
+        file.0
+            .iter()
+            .any(|(path, bytes)| path == Path::new("app.main.js")
+                && String::from_utf8_lossy(bytes).contains("\":file\"")
+                && String::from_utf8_lossy(bytes).contains("\"2\"")),
+        "{:#?}",
+        file.5
+    );
+    assert_eq!(file.0, flags.0, "the startup builds differ");
+    assert_eq!(file.1, flags.1);
+    assert_eq!(file.2, flags.2, "the builds after the save differ");
+    assert_ne!(file.0, file.2);
+    assert_eq!(file.3, flags.3);
+    assert_eq!(file.3.len(), 3, "{:#?}", file.5);
+    assert_eq!(flags.4.as_deref(), Some("cache.misses 0"), "{:#?}", flags.5);
 }

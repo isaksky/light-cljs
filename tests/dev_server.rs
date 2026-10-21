@@ -16,9 +16,13 @@ mod dev_execution;
 #[path = "support/reload_fixtures.rs"]
 mod reload_fixtures;
 
+#[path = "support/file_watch.rs"]
+#[allow(dead_code)]
+mod file_watch;
+
 use dev_execution::run_dev;
 use light_cljs::EvalOptions;
-use light_cljs::dev_server::{Build, DevServer, Json, LoadUnit, Mount, MountId, Step};
+use light_cljs::dev_server::{Build, DevServer, Json, Listen, LoadUnit, Mount, MountId, Step};
 use light_cljs::dev_session::{Action, DevSession, Unit};
 use light_cljs::eval_session::PrintOptions;
 use light_cljs::source_provider::{FileSourceProvider, SourceInput};
@@ -2051,4 +2055,181 @@ fn root_endpoints_survive_matching_mount_names() {
     }
     assert_eq!(server.mount_named("events"), Some(MountId(1)));
     assert_eq!(server.mount(MountId(1)).runtimes(), Vec::<u64>::new());
+}
+
+/// [`Listen`]: with `next_free`, a port the test holds gives way to the next
+/// one upward, reported to the caller, as shadow-cljs's `start-http` does;
+/// without it the port is bound or the start fails with the bind's error; port
+/// 0 picks a free port. Without `nrepl`, the server's port closes an nREPL
+/// client's connection unanswered and still serves HTTP.
+#[test]
+fn a_listen_gives_way_to_the_next_port_and_can_refuse_nrepl() {
+    let dir = TempDir::new("dev-server-listen");
+    let (_held, held) = file_watch::held_port();
+    let mut taken = Vec::new();
+    let next = DevServer::start_mounts_with(
+        Listen {
+            next_free: true,
+            ..Listen::new("127.0.0.1", held)
+        },
+        vec![Mount {
+            name: "app".into(),
+            out_dir: dir.to_path_buf(),
+            build: Build::default(),
+        }],
+        &[],
+        &mut |port| taken.push(port),
+    )
+    .unwrap();
+    let port = next.address().port();
+    assert!(port > held, "{port}");
+    assert_eq!(taken, (held..port).collect::<Vec<_>>());
+
+    let error = DevServer::start_with(
+        Listen::new("127.0.0.1", held),
+        &dir,
+        &[],
+        Build::default(),
+        &mut |port| panic!("{port} gave way"),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.to_string(), file_watch::bind_error(held));
+
+    let refusing = DevServer::start_with(
+        Listen {
+            nrepl: false,
+            next_free: true,
+            ..Listen::new("127.0.0.1", 0)
+        },
+        &dir,
+        &[],
+        Build::default(),
+        &mut |port| panic!("{port} gave way"),
+    )
+    .unwrap();
+    let address = refusing.address().to_string();
+    assert_ne!(refusing.address().port(), 0);
+    assert_eq!(file_watch::nrepl_describe(&address), b"");
+    assert_eq!(get(&address, "/").status, "HTTP/1.1 200 OK");
+    let answering = next.address().to_string();
+    let described = String::from_utf8(file_watch::nrepl_describe(&answering)).unwrap();
+    assert!(
+        described.starts_with('d') && described.contains("3:ops"),
+        "{described}"
+    );
+}
+
+/// `light-cljs watch features` binds `:http`'s port, and when the test holds
+/// it the next free one upward, saying so, unless `:strict true`, which
+/// fails with the bind's error; `--serve PORT` binds that port or fails, as
+/// `--watch --serve PORT` does today. No failed watch leaves an `http.port`.
+#[test]
+fn watch_id_takes_the_next_port_unless_strict_or_given_by_serve() {
+    let (_dir, project) = file_watch::features("dev-server-file-ports");
+    let (_held, held) = file_watch::held_port();
+    let mut watch = file_watch::Light::spawn(
+        &project,
+        &["watch", "features"],
+        Some(&format!("{{:http {{:port {held}}}}}")),
+    );
+    let (address, before, _) = watch.serving();
+    let port: u16 = address.strip_prefix("127.0.0.1:").unwrap().parse().unwrap();
+    assert!(port > held, "{address}");
+    assert_eq!(
+        before[1..],
+        (held..port)
+            .map(|taken| format!("light-cljs: TCP port {taken} in use, trying {}", taken + 1))
+            .collect::<Vec<_>>()
+    );
+    let port_file = project.join(".light-cljs/http.port");
+    assert_eq!(fs::read_to_string(&port_file).unwrap(), port.to_string());
+    drop(watch);
+    fs::remove_file(&port_file).unwrap();
+
+    let error = file_watch::bind_error(held);
+    let held_text = held.to_string();
+    let failures = [
+        (
+            vec!["watch", "features"],
+            Some(format!("{{:http {{:port {held} :strict true}}}}")),
+            format!(
+                "light-cljs watch features: cannot serve on 127.0.0.1:{held}: {error}; :http \
+                 {{:strict true}} tries no other port"
+            ),
+        ),
+        (
+            vec!["watch", "features", "--serve", &held_text],
+            None,
+            format!("light-cljs watch features: cannot serve on 127.0.0.1:{held}: {error}"),
+        ),
+        (
+            vec![
+                "--watch",
+                "--entry",
+                "app.main",
+                "--source-root",
+                ".",
+                "--out-dir",
+                "out/flags",
+                "--serve",
+                &held_text,
+            ],
+            None,
+            format!("light-cljs: cannot serve on 127.0.0.1:{held}: {error}"),
+        ),
+    ];
+    for (args, merged, message) in failures {
+        let mut failed = file_watch::Light::spawn(&project, &args, merged.as_deref());
+        let (lines, status) = failed.exit();
+        assert_eq!(status.code(), Some(1), "{args:?}: {lines:#?}");
+        assert_eq!(lines.last(), Some(&message), "{args:?}: {lines:#?}");
+        assert!(!port_file.exists(), "{args:?}");
+    }
+}
+
+/// A flag-only `--watch --serve` never reads `light-cljs.edn`, even one
+/// that fails to validate, and writes no `http.port`: from such a
+/// directory it serves as it does from one without the file.
+#[test]
+fn a_flag_only_watch_reads_no_configuration_file_and_writes_no_port_file() {
+    let dir = TempDir::new("dev-server-flag-only");
+    let dir = fs::canonicalize(&*dir).unwrap();
+    copy_example(&dir.join("src"));
+    fs::write(
+        dir.join("light-cljs.edn"),
+        "{:builds {:app {:target :browser}}} :extra",
+    )
+    .unwrap();
+    let mut watch = file_watch::Light::spawn(
+        &dir,
+        &[
+            "--watch",
+            "--entry",
+            "app.main",
+            "--source-root",
+            "src",
+            "--out-dir",
+            "dev",
+            "--poll-ms",
+            "20",
+            "--serve",
+            "0",
+            "--no-cache",
+        ],
+        None,
+    );
+    let (address, before, serving) = watch.serving();
+    assert!(before.is_empty(), "{before:#?}");
+    assert_eq!(
+        serving,
+        format!("light-cljs: serving dev at http://{address}/")
+    );
+    watch.until("light-cljs: built ");
+    let mut names = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["dev", "light-cljs.edn", "src"]);
 }

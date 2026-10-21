@@ -2307,8 +2307,8 @@ fn a_build_stopped_at_its_deadline_writes_no_output_at_any_job_count() {
 /// (docs/build-configuration.md, principle 23): from a directory holding one
 /// that would fail to validate, `--compile`, `--watch`'s startup and
 /// `--eval` print, exit and write byte for byte what they do from a
-/// directory without it. The one changed spelling, a FILE named `compile` or
-/// `release`, is still lexed when written `./compile`.
+/// directory without it. The one changed spelling, a FILE named `compile`,
+/// `watch` or `release`, is still lexed when written `./compile`.
 #[test]
 fn flag_only_commands_never_read_the_configuration_file() {
     use std::io::{BufRead, BufReader};
@@ -2324,6 +2324,7 @@ fn flag_only_commands_never_read_the_configuration_file() {
         }
         std::fs::write(dir.join("compile"), "(+ 1 2)").unwrap();
         std::fs::write(dir.join("release"), "[:a]").unwrap();
+        std::fs::write(dir.join("watch"), "#{:w}").unwrap();
     }
     std::fs::write(
         dirs[0].join("light-cljs.edn"),
@@ -2370,7 +2371,7 @@ fn flag_only_commands_never_read_the_configuration_file() {
             .unwrap();
         (output.status.code(), output.stdout, output.stderr)
     };
-    let commands: [&[&str]; 9] = [
+    let commands: [&[&str]; 10] = [
         &["--compile", "--entry", "app.main", "--source-root", "."],
         &[
             "--compile",
@@ -2407,6 +2408,7 @@ fn flag_only_commands_never_read_the_configuration_file() {
         ],
         &["./compile"],
         &["./release"],
+        &["./watch"],
         &["--compile", "./compile"],
     ];
     for args in commands {

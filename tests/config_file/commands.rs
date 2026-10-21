@@ -837,3 +837,116 @@ fn build_configuration_set_replaces_a_value() {
     assert!(configuration.set(":app/flavor", "1").is_err());
     assert_eq!(configuration, before);
 }
+
+/// `watch`'s errors, each exact and before anything compiles: two ids name
+/// Phase 3, and the flags `--watch` does not take are refused as `compile`
+/// refuses them, while the watch's own flags are read as `--watch` reads
+/// them; `compile` and `release` refuse `--no-nrepl` as a watch flag.
+#[test]
+fn watch_errors_have_exact_messages() {
+    let (_dir, project) = copy("config-commands-watch-errors", FIXTURE);
+    let file = project.join("light-cljs.edn");
+    let file = file.display();
+    let writes_watch = "watch writes the dev build into :output-dir, as --watch does, with a \
+                        source map per namespace";
+    let rows: Vec<(&[&str], String)> = vec![
+        (
+            &["watch"],
+            format!(
+                "light-cljs watch: requires one or more build ids; {file} defines :app, \
+                 :broken, :other"
+            ),
+        ),
+        (
+            &["watch", "ap"],
+            format!(
+                "light-cljs watch ap: {file} defines no build :ap; did you mean :app? Its \
+                 builds are :app, :broken, :other"
+            ),
+        ),
+        (
+            &["watch", "app", "other"],
+            "light-cljs watch app other: watch runs one build for now; several builds in one \
+             process, with one server and one nREPL, arrive with Phase 3 \
+             (docs/build-configuration.md, \"Several builds in one process\"); start a watch \
+             per build"
+                .into(),
+        ),
+        (
+            &["watch", "app", ":other", "--print-config"],
+            "light-cljs watch app :other: watch runs one build for now; several builds in one \
+             process, with one server and one nREPL, arrive with Phase 3 \
+             (docs/build-configuration.md, \"Several builds in one process\"); start a watch \
+             per build"
+                .into(),
+        ),
+        (
+            &["watch", "app", "--optimize", "advanced"],
+            "light-cljs watch app --optimize advanced: --optimize applies to release builds; \
+             watch writes the dev build at none semantics, as --watch does"
+                .into(),
+        ),
+        (
+            &["watch", "app", "--define", "app.other/label=x"],
+            "light-cljs watch app --define app.other/label=x: --define applies to release \
+             builds; watch writes the dev build at none semantics, as --watch does"
+                .into(),
+        ),
+        (
+            &["watch", "app", "--esm"],
+            format!("light-cljs watch app --esm: {writes_watch}; it takes no --esm"),
+        ),
+        (
+            &["watch", "app", "--reloadable"],
+            "light-cljs watch app --reloadable: the command chooses the build: compile writes \
+             the dev build, as --reloadable does, and release the optimized chunks; give no \
+             --reloadable"
+                .into(),
+        ),
+        (
+            &["watch", "app", "--jobs", "2"],
+            "light-cljs watch app: --jobs is not a flag of watch; see light-cljs --help".into(),
+        ),
+        (
+            &["watch", "app", "--stats-file", "trace.tsv"],
+            "light-cljs watch app: --stats-file is not a flag of watch; see light-cljs --help"
+                .into(),
+        ),
+        (
+            &["watch", "app", "--serve", "http"],
+            "light-cljs watch app: --serve requires a port number, 0 to 65535".into(),
+        ),
+        (
+            &["watch", "app", "--nrepl", "70000"],
+            "light-cljs watch app: --nrepl requires a port number, 0 to 65535".into(),
+        ),
+        (
+            &["watch", "app", "--poll-ms", "0"],
+            "light-cljs watch app: --poll-ms requires a positive integer".into(),
+        ),
+        (
+            &["watch", "app", "--nrepl", "0", "--no-nrepl"],
+            "light-cljs watch app: --nrepl and --no-nrepl exclude each other".into(),
+        ),
+        (
+            &["watch", "app", "--no-cache", "--cache-dir", "store"],
+            "light-cljs watch app: --no-cache and --cache-dir exclude each other".into(),
+        ),
+        (
+            &["compile", "app", "--no-nrepl"],
+            "light-cljs compile app --no-nrepl: --no-nrepl is a flag of light-cljs watch, \
+             which serves and watches the build; compile builds once"
+                .into(),
+        ),
+        (
+            &["release", "app", "--nrepl", "0"],
+            "light-cljs release app --nrepl 0: --nrepl is a flag of light-cljs watch, which \
+             serves and watches the build; release builds once"
+                .into(),
+        ),
+    ];
+    for (args, message) in rows {
+        assert_eq!(fails(&project, args), format!("{message}\n"), "{args:?}");
+    }
+    assert!(!project.join("out").exists() && !project.join(".light-cljs").exists());
+}

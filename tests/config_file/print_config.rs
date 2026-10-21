@@ -441,8 +441,8 @@ fn code(block: &str) -> Vec<&str> {
 
 /// Read `block`, one build printed by `--print-config`, back as a
 /// `light-cljs.edn`, comments and all, and return its build's settings for
-/// `mode` and how they print.
-fn read_back(block: &str, mode: BuildMode) -> (BuildSettings, String) {
+/// `mode` and how they print, for `watch` with the watch's settings.
+fn read_back(block: &str, mode: BuildMode, watch: bool) -> (BuildSettings, String) {
     let header = block.lines().next().unwrap();
     let id = header
         .strip_prefix(";; build :")
@@ -456,7 +456,7 @@ fn read_back(block: &str, mode: BuildMode) -> (BuildSettings, String) {
     let settings = file
         .settings(build, mode, &[])
         .unwrap_or_else(|error| panic!("{error}\n{block}"));
-    let printed = file.print_config(&settings, &[], false);
+    let printed = file.print_config(&settings, &[], watch);
     (settings, printed)
 }
 
@@ -480,6 +480,31 @@ fn the_printed_configuration_reads_back_as_the_same_settings() {
     let cases: Vec<Case> = vec![
         (&features, vec!["release", "features"], &[], false),
         (&features, vec!["compile", "features"], &[], false),
+        (&features, vec!["watch", "features"], &[], false),
+        (
+            &features,
+            vec![
+                "watch",
+                "features",
+                "--serve",
+                "0",
+                "--serve-host",
+                "localhost",
+                "--nrepl",
+                "0",
+                "--poll-ms",
+                "50",
+                "--reload-dependents",
+            ],
+            &[],
+            true,
+        ),
+        (
+            &features,
+            vec!["watch", "features", "--no-nrepl"],
+            &[],
+            true,
+        ),
         (&fixture, vec!["release", "app", "other"], &[], false),
         (&fixture, vec!["compile", "app", "other"], &[], false),
         (
@@ -552,7 +577,7 @@ fn the_printed_configuration_reads_back_as_the_same_settings() {
         .unwrap();
         for block in stdout.split("\n\n") {
             let block = format!("{}\n", block.trim_end());
-            let (settings, printed) = read_back(&block, mode);
+            let (settings, printed) = read_back(&block, mode, args[0] == "watch");
             assert_eq!(code(&printed), code(&block), "{args:?}");
             if !flagged {
                 let build = original.find_build(settings.name()).unwrap();
@@ -655,6 +680,141 @@ fn a_watch_build_prints_the_dev_server_and_reloading_settings() {
     );
 }
 
+const FEATURES_WATCH: &str = "\
+;; build :features, dev mode, from PROJECT/light-cljs.edn
+{:source-paths [\".\"]                                 ; light-cljs.edn:7:16
+ :cache-root \".light-cljs\"                           ; default
+ :cache-blockers #{}                                 ; default
+ :compile-threads 1                                  ; default
+ :http {:port 9630                                   ; default
+        :host \"127.0.0.1\"}                           ; default
+ :fs-watch {:loop-wait 100}                          ; default
+ :builds
+ {:features
+  {:target :esm                                      ; light-cljs.edn:10:12
+   :output-dir \"out/dev\"                             ; light-cljs.edn:13:22 (:dev)
+   :modules {:main {:entries [app.main]}}            ; light-cljs.edn:12:13
+   :build-options {:cache-level :all}}}}             ; default
+";
+
+const FEATURES_WATCH_FLAGS: &str = "\
+;; build :features, dev mode, from PROJECT/light-cljs.edn
+{:source-paths [\".\"]                                 ; light-cljs.edn:7:16
+ :cache-root \".light-cljs\"                           ; default
+ :cache-blockers #{}                                 ; default
+ :compile-threads 1                                  ; default
+ :http {:port 0                                      ; --serve 0, over the default 9630
+        :host \"localhost\"                            ; --serve-host localhost, over the default \"127.0.0.1\"
+        :strict true}                                ; --serve 0
+ :nrepl {:port 0}                                    ; --nrepl 0
+ :fs-watch {:loop-wait 50}                           ; --poll-ms 50, over the default 100
+ :builds
+ {:features
+  {:target :esm                                      ; light-cljs.edn:10:12
+   :output-dir \"out/dev\"                             ; light-cljs.edn:13:22 (:dev)
+   :modules {:main {:entries [app.main]}}            ; light-cljs.edn:12:13
+   :build-options {:cache-level :all}                ; default
+   :devtools {:reload-strategy :full}}}}             ; --reload-dependents
+";
+
+/// `watch features --print-config` prints the top-level `:http`, `:nrepl`
+/// and `:fs-watch` and the build's `:devtools` beside what `compile
+/// features` prints, from the project directory and below it; the watch's
+/// flags print as their settings' origins, `--serve PORT` also as `:strict
+/// true`, since it binds that port or fails, and `--no-nrepl` as `:nrepl
+/// false` over the file's `:nrepl {:port 0}`.
+#[test]
+fn watch_features_prints_the_dev_server_and_reloading_settings() {
+    let (_dir, project) = copy("print-config-watch", FEATURES);
+    for from in [project.clone(), project.join("app")] {
+        assert_eq!(
+            prints(
+                &project,
+                &from,
+                &["watch", "features", "--print-config"],
+                &[]
+            ),
+            located(FEATURES_WATCH, &project)
+        );
+    }
+    let flags = [
+        "watch",
+        "features",
+        "--serve",
+        "0",
+        "--serve-host",
+        "localhost",
+        "--nrepl",
+        "0",
+        "--poll-ms",
+        "50",
+        "--reload-dependents",
+        "--print-config",
+    ];
+    assert_eq!(
+        prints(&project, &project, &flags, &[]),
+        located(FEATURES_WATCH_FLAGS, &project)
+    );
+    let stdout = prints(
+        &project,
+        &project,
+        &["watch", "features", "--no-nrepl", "--print-config"],
+        &[("LIGHT_CLJS", "{:nrepl {:port 0}}")],
+    );
+    let nrepl = stdout
+        .lines()
+        .find(|line| line.starts_with(" :nrepl "))
+        .unwrap();
+    assert_eq!(
+        nrepl,
+        " :nrepl false                                        ; --no-nrepl, over {:port 0} at LIGHT_CLJS:1:9"
+    );
+}
+
+/// `watch` keeps `http.port` in the file's `:cache-root`, which `--cache-dir`
+/// does not move, so `--print-config` refuses a `--cache-dir` whose
+/// `:cache-root` would be another directory, and prints one in the same
+/// root.
+#[test]
+fn watch_print_config_keeps_the_http_port_root() {
+    let (_dir, project) = copy("print-config-watch-cache", FEATURES);
+    let output = light(
+        &project,
+        &[
+            "watch",
+            "features",
+            "--cache-dir",
+            "state/cache",
+            "--print-config",
+        ],
+        &[],
+    );
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "light-cljs watch features: --cache-dir state/cache: watch keeps http.port in \
+         :cache-root \".light-cljs\", which --cache-dir does not move, and a light-cljs.edn \
+         names its store as :cache-root's cache directory, so --print-config cannot print \
+         both; give --cache-dir .light-cljs/cache or no --cache-dir\n"
+    );
+    let stdout = prints(
+        &project,
+        &project.join("app"),
+        &[
+            "watch",
+            "features",
+            "--cache-dir",
+            "./.light-cljs/cache",
+            "--print-config",
+        ],
+        &[],
+    );
+    assert!(
+        stdout.contains("\n :cache-root \"./.light-cljs\"                         ; --cache-dir ./.light-cljs/cache, over the default \".light-cljs\"\n"),
+        "{stdout}"
+    );
+}
+
 /// A store `--cache-dir` names that is no `:cache-root`'s `cache` directory
 /// cannot print, since the printed file would name another store; a line
 /// break in a flag's value stays inside its comment, so the block reads back.
@@ -694,7 +854,7 @@ fn a_store_no_cache_root_names_is_refused_and_line_breaks_stay_in_comments() {
         "   :release {:closure-defines {app.other/label \"first\\nsecond\"}}}}} ; --define \
          app.other/label=first\\nsecond, over \"label-file\" at light-cljs.edn:17:55 (:release)"
     );
-    let (settings, printed) = read_back(&block, BuildMode::Release);
+    let (settings, printed) = read_back(&block, BuildMode::Release, false);
     assert_eq!(code(&printed), code(&block));
     assert_eq!(
         settings.get(Setting::ClosureDefines).map(Value::to_edn),

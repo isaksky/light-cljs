@@ -267,6 +267,7 @@ directory while it runs. An nREPL session is such a REPL; the server answers
 (which stops waiting for the runtime), `completions`, `lookup` and
 `ls-sessions`, completions and lookups from the definitions and metadata of the
 watch's program without a runtime round trip ([nREPL](docs/evaluation.md#nrepl)).
+With `--no-nrepl`, the server's port answers no nREPL client.
 
 ```sh
 cargo run --quiet -- --watch --entry app.main --source-root examples/dev --out-dir /tmp/light-dev --serve 9630 --nrepl 0
@@ -490,7 +491,7 @@ Compilation errors report line/byte-column and produce no partial output.
 overrides ([docs/build-configuration.md](docs/build-configuration.md)). The
 `compile` and `release` commands find it in the current directory or the
 nearest parent and run the builds named, one after another in that order,
-stopping at the first failure:
+stopping at the first failure; `watch` runs one build, watched and served:
 
 ```sh
 cd examples/features
@@ -499,7 +500,23 @@ cargo run --quiet -- compile features   # the dev build in out/dev, once
 # light-cljs - config: /work/light-cljs/examples/features/light-cljs.edn
 # [:features] Compiling ...
 # [:features] Build completed in 171 ms: /work/light-cljs/examples/features/out/dev
+cargo run --quiet -- watch features     # the dev build in out/dev, watched and served
+# light-cljs - config: /work/light-cljs/examples/features/light-cljs.edn
+# light-cljs: serving /work/light-cljs/examples/features/out/dev at http://127.0.0.1:9630/
+# light-cljs: built app.main (6 namespaces) into /work/light-cljs/examples/features/out/dev in 412 ms; watching every 100 ms
 ```
+
+`watch ID` runs what `--watch --serve` runs, and always starts the dev
+server, as shadow-cljs does: on `:http`'s `:host` and `:port` (127.0.0.1 and
+9630 by default, 0 for any free port), taking the next free port upward when
+that one is in use unless `:http {:strict true}`, serving the build under
+`/ID/` and at `/`. It writes the bound port into `http.port` in `:cache-root`
+(`.light-cljs/http.port` by default) and removes the file when the watch ends.
+nREPL answers on the same port unless `:nrepl false`; `:nrepl {:port N}` adds
+the listener of `--nrepl N` and writes `.nrepl-port` in the project
+directory. `:fs-watch {:loop-wait N}` is `--poll-ms N`, and `:devtools
+{:reload-strategy :full}` is `--reload-dependents`. `watch` takes one id for
+now.
 
 `release ID` writes what `--compile --optimize advanced --out-dir` writes,
 at the build's `:optimizations`; `compile ID` writes what `--compile
@@ -508,16 +525,19 @@ their colon. Every relative path, in the file and in the flags, resolves
 against the file's directory, so a command run from a subdirectory builds
 the same thing into the same place. Flags after the ids override the file
 for every build named: `compile` takes the flags `--compile --reloadable`
-takes and `release` those `--compile` takes (with `--warnings` and, for
+takes, `watch` those `--watch` takes (`--serve PORT` binds that port or
+fails, and `--no-nrepl` is `:nrepl false`), and `release` those `--compile`
+takes (with `--warnings` and, for
 `release`, `--checked-arrays-warn`/`--checked-arrays-error`); `--source-root`
 replaces `:source-paths`, `--config KEY=EDN` sets one key of `:config`,
 `--cache-dir` names the store and turns the cache on, `--no-cache` turns it
 off and `--cache-blocker` adds to the file's blockers. `--config-merge DATA`
 (repeatable) deep-merges EDN text starting with `{`, or a file, over each
 build, as shadow-cljs's does. `--entry` and `--out-dir` take one build id,
-and `--esm`, the source map flags and `--watch`'s flags are refused. A
-command that starts with a flag never reads `light-cljs.edn`; a file named
-`compile` or `release` is tokenized when written `./compile`.
+and `--esm` and the source map flags are refused, as are `--watch`'s flags
+but by `watch`. A command that starts with a flag never reads
+`light-cljs.edn`; a file named `compile`, `watch` or `release` is tokenized
+when written `./compile`.
 
 `--print-config` after the ids prints, for each build, the configuration the
 command would run with instead of building it, and writes nothing: EDN a
@@ -798,8 +818,8 @@ ratchet programs at every `--optimize` level, in Node and QuickJS:
 - [docs/compiler-cache.md](docs/compiler-cache.md) — proposed persistent binary
   cache, explicit dependencies, opt-outs, and development-session reuse.
 - [docs/build-configuration.md](docs/build-configuration.md) — `light-cljs.edn`,
-  the configuration file of named builds, and the `compile` and `release`
-  commands that run them, after shadow-cljs's `shadow-cljs.edn`.
+  the configuration file of named builds, and the `compile`, `watch` and
+  `release` commands that run them, after shadow-cljs's `shadow-cljs.edn`.
 - [docs/parser.md](docs/parser.md) and [docs/lexer.md](docs/lexer.md) — syntax
   layers.
 - [docs/dos-and-donts.md](docs/dos-and-donts.md) — performance guidelines for

@@ -1,4 +1,4 @@
-//! The `compile` and `release` commands, which run named builds of
+//! The `compile`, `watch` and `release` commands, which run named builds of
 //! `light-cljs.edn` (docs/build-configuration.md, "Commands", "Precedence"
 //! and "Several builds in one process").
 //!
@@ -11,6 +11,10 @@
 //! (layer 6). Each build then runs as `--compile --entry` runs: `compile` as
 //! `--reloadable --out-dir`, `release` as `--out-dir` at `:optimizations`,
 //! one after another in the order named, stopping at the first failure.
+//! `watch` translates its one build into the watch's `Options` instead
+//! (`crate::dev_watch`), with the server always started, as shadow-cljs's
+//! is: `:http`, `:nrepl`, `:fs-watch` and `:devtools`, under the watch's own
+//! flags.
 //!
 //! Every relative path, in the file and in the flags after the command,
 //! resolves against the project directory, the file's.
@@ -36,6 +40,8 @@ use crate::{CompileFlags, NamespaceFlags, build_namespace};
 pub(crate) enum Command {
     /// `compile ID...`: the dev build of each, once (`--reloadable`).
     Compile,
+    /// `watch ID`: the dev build, watched and served (`--watch`).
+    Watch,
     /// `release ID...`: the release build of each, at `:optimizations`.
     Release,
 }
@@ -45,6 +51,7 @@ impl Command {
     pub(crate) fn named(arg: &str) -> Option<Self> {
         match arg {
             "compile" => Some(Self::Compile),
+            "watch" => Some(Self::Watch),
             "release" => Some(Self::Release),
             _ => None,
         }
@@ -53,14 +60,24 @@ impl Command {
     fn name(self) -> &'static str {
         match self {
             Self::Compile => "compile",
+            Self::Watch => "watch",
             Self::Release => "release",
         }
     }
 
     fn mode(self) -> BuildMode {
         match self {
-            Self::Compile => BuildMode::Dev,
+            Self::Compile | Self::Watch => BuildMode::Dev,
             Self::Release => BuildMode::Release,
+        }
+    }
+
+    /// The flag-only command it runs as: for a dev build's messages.
+    fn runs_as(self) -> &'static str {
+        match self {
+            Self::Compile => "--compile --reloadable",
+            Self::Watch => "--watch",
+            Self::Release => "--compile",
         }
     }
 
@@ -70,6 +87,10 @@ impl Command {
             Self::Compile => {
                 "compile writes the dev build into :output-dir, as --reloadable does, with a \
                  source map per namespace"
+            }
+            Self::Watch => {
+                "watch writes the dev build into :output-dir, as --watch does, with a source map \
+                 per namespace"
             }
             Self::Release => {
                 "release writes a chunked build into :output-dir, as --out-dir does: ES modules \
@@ -98,13 +119,18 @@ fn failure(words: &str, message: impl fmt::Display) -> Box<dyn Error> {
 }
 
 /// Flags of `--watch` alone, which serve and watch the build.
-const WATCH_FLAGS: [&str; 5] = [
+const WATCH_FLAGS: [&str; 6] = [
     "--serve",
     "--serve-host",
     "--nrepl",
+    "--no-nrepl",
     "--poll-ms",
     "--reload-dependents",
 ];
+
+/// Flags `--compile` takes that `--watch` does not: the watch's session
+/// compiles on one slot and reports no trace file.
+const NOT_WATCH_FLAGS: [&str; 2] = ["--jobs", "--stats-file"];
 
 /// Flags `--compile` takes that `--reloadable` refuses: they shape release
 /// output, or, for the checked-arrays flags, no dev build takes them.
@@ -155,6 +181,18 @@ struct CommandFlags {
     merges: Vec<String>,
     /// `--print-config`: print each build's configuration instead of building.
     print: bool,
+    /// `--serve PORT`, of `watch`.
+    serve: Option<u16>,
+    /// `--serve-host HOST`, of `watch`.
+    serve_host: Option<String>,
+    /// `--nrepl PORT`, of `watch`.
+    nrepl: Option<u16>,
+    /// `--no-nrepl`, of `watch`.
+    no_nrepl: bool,
+    /// `--poll-ms N`, of `watch`.
+    poll_ms: Option<u64>,
+    /// `--reload-dependents`, of `watch`.
+    reload_dependents: bool,
 }
 
 /// Run `command` with the arguments after it.
@@ -218,6 +256,14 @@ pub(crate) fn run(
             builds.push(build);
         }
     }
+    if command == Command::Watch && builds.len() > 1 {
+        return Err(failure(
+            words,
+            "watch runs one build for now; several builds in one process, with one server and \
+             one nREPL, arrive with Phase 3 (docs/build-configuration.md, \"Several builds in one \
+             process\"); start a watch per build",
+        ));
+    }
 
     let flags = command_flags(command, builds.len(), args, words)?;
     let merges = flags
@@ -271,13 +317,21 @@ pub(crate) fn run(
             if index > 0 {
                 out.push('\n');
             }
-            out.push_str(&file.print_config(&settings, &merges, false));
+            out.push_str(&file.print_config(&settings, &merges, command == Command::Watch));
         }
         print!("{out}");
         return Ok(());
     }
 
     eprintln!("light-cljs - config: {}", path.display());
+    if command == Command::Watch {
+        let (settings, (namespace, _, compile)) = settings.iter().zip(translated).next().unwrap();
+        let name = settings.name();
+        let options = watch_options(&file, settings, namespace, compile, &flags)
+            .map_err(|error| failure(words, error))?;
+        return crate::dev_watch::watch(options)
+            .map_err(|error| failure(&format!("watch {name}"), error));
+    }
     for (settings, (namespace, options, compile)) in settings.iter().zip(translated) {
         let name = settings.name();
         let out_dir = namespace.out_dir.clone().unwrap_or_default();
@@ -353,6 +407,41 @@ fn command_flags(
                     format!("{}; it takes no {flag}", command.writes()),
                 ));
             }
+            "--serve" | "--nrepl" if command == Command::Watch => {
+                let text = args.next().ok_or_else(|| {
+                    failure(words, format!("{flag} requires a port number, 0 to 65535"))
+                })?;
+                let port = crate::dev_watch::port_value(flag, &text)
+                    .map_err(|error| failure(words, error))?;
+                match flag {
+                    "--serve" => flags.serve = Some(port),
+                    _ => flags.nrepl = Some(port),
+                }
+            }
+            "--serve-host" if command == Command::Watch => {
+                flags.serve_host = Some(
+                    args.next()
+                        .ok_or_else(|| failure(words, "--serve-host requires a value"))?
+                        .into_string()
+                        .map_err(|_| failure(words, "--serve-host must be valid UTF-8"))?,
+                );
+            }
+            "--poll-ms" if command == Command::Watch => {
+                let text = args
+                    .next()
+                    .ok_or_else(|| failure(words, "--poll-ms requires a value"))?;
+                flags.poll_ms = Some(
+                    crate::dev_watch::poll_value(&text).map_err(|error| failure(words, error))?,
+                );
+            }
+            "--no-nrepl" if command == Command::Watch => flags.no_nrepl = true,
+            "--reload-dependents" if command == Command::Watch => flags.reload_dependents = true,
+            flag if command == Command::Watch && NOT_WATCH_FLAGS.contains(&flag) => {
+                return Err(failure(
+                    words,
+                    format!("{flag} is not a flag of watch; see light-cljs --help"),
+                ));
+            }
             flag if WATCH_FLAGS.contains(&flag) => {
                 return Err(refused(
                     words,
@@ -374,14 +463,16 @@ fn command_flags(
                      --reloadable does, and release the optimized chunks; give no --reloadable",
                 ));
             }
-            flag if command == Command::Compile && RELEASE_FLAGS.contains(&flag) => {
+            flag if command != Command::Release && RELEASE_FLAGS.contains(&flag) => {
                 return Err(refused(
                     words,
                     flag,
                     &mut args,
                     format!(
-                        "{flag} applies to release builds; compile writes the dev build at none \
-                         semantics, as --compile --reloadable does"
+                        "{flag} applies to release builds; {} writes the dev build at none \
+                         semantics, as {} does",
+                        command.name(),
+                        command.runs_as()
                     ),
                 ));
             }
@@ -428,6 +519,9 @@ fn command_flags(
             words,
             "--no-cache and --cache-dir exclude each other",
         ));
+    }
+    if flags.no_nrepl && flags.nrepl.is_some() {
+        return Err(failure(words, "--nrepl and --no-nrepl exclude each other"));
     }
     Ok(flags)
 }
@@ -810,6 +904,21 @@ fn apply_flags(
                     true => ".".to_owned(),
                     false => parent.display().to_string(),
                 };
+                // The watch keeps `http.port` in the file's `:cache-root`,
+                // which `--cache-dir` does not move: a printed `:cache-root`
+                // elsewhere would move it.
+                if command == Command::Watch
+                    && let Some(kept) = settings.get(Setting::CacheRoot).and_then(Value::as_str)
+                    && file.resolve(Path::new(kept)) != file.resolve(Path::new(&root))
+                {
+                    return Err(format!(
+                        "{flag}: watch keeps http.port in :cache-root {kept:?}, which --cache-dir \
+                         does not move, and a light-cljs.edn names its store as :cache-root's \
+                         cache directory, so --print-config cannot print both; give --cache-dir \
+                         {} or no --cache-dir",
+                        Path::new(kept).join("cache").display()
+                    ));
+                }
                 settings.set_by_flag(Setting::CacheRoot, ValueKind::String(root), &flag);
             }
             _ => {
@@ -832,6 +941,44 @@ fn apply_flags(
             .map(|blocker| Value::from(ValueKind::Symbol(blocker.clone())))
             .collect();
         settings.add_by_flag(Setting::BuildCacheBlockers, "--cache-blocker", blockers);
+    }
+    // The watch's own flags. `--serve PORT` binds that port or fails, which
+    // the file says as `:strict true`.
+    if let Some(port) = flags.serve {
+        let flag = format!("--serve {port}");
+        settings.set_by_flag(Setting::HttpPort, integer(port as u128), &flag);
+        settings.set_by_flag(Setting::HttpStrict, ValueKind::Boolean(true), &flag);
+    }
+    if let Some(host) = &flags.serve_host {
+        settings.set_by_flag(
+            Setting::HttpHost,
+            ValueKind::String(host.clone()),
+            &format!("--serve-host {host}"),
+        );
+    }
+    if let Some(port) = flags.nrepl {
+        let map = ValueKind::Map(vec![(
+            Value::from(named("port")),
+            Value::from(integer(port as u128)),
+        )]);
+        settings.set_by_flag(Setting::Nrepl, map, &format!("--nrepl {port}"));
+    }
+    if flags.no_nrepl {
+        settings.set_by_flag(Setting::Nrepl, ValueKind::Boolean(false), "--no-nrepl");
+    }
+    if let Some(millis) = flags.poll_ms {
+        settings.set_by_flag(
+            Setting::FsWatchLoopWait,
+            integer(millis as u128),
+            &format!("--poll-ms {millis}"),
+        );
+    }
+    if flags.reload_dependents {
+        settings.set_by_flag(
+            Setting::ReloadStrategy,
+            named("full"),
+            "--reload-dependents",
+        );
     }
     Ok(())
 }
@@ -857,6 +1004,96 @@ fn define_value(text: &str) -> Value {
         }
         _ => Value::from(ValueKind::String(text.to_owned())),
     }
+}
+
+/// The watch's `Options` for the dev build of `settings`, from what
+/// [`translate`] made of it for `--compile --reloadable` and the watch's own
+/// settings, each under its flag: `:http` as `--serve` and `--serve-host`
+/// (the server always starts; a port in use gives way to the next unless
+/// `:strict true` or `--serve`), `:nrepl {:port N}` as `--nrepl N` with
+/// `.nrepl-port` in the project directory, `:nrepl false` as `--no-nrepl`,
+/// `:fs-watch {:loop-wait N}` as `--poll-ms N` and `:devtools
+/// {:reload-strategy :full}` as `--reload-dependents`. The server's port is
+/// written to `<:cache-root>/http.port`, the file's cache root whatever
+/// `--cache-dir` names, since `cljs-repl` reads it from the file.
+fn watch_options(
+    file: &ConfigFile,
+    settings: &BuildSettings,
+    namespace: NamespaceFlags,
+    compile: CompileFlags,
+    flags: &CommandFlags,
+) -> Result<crate::dev_watch::Options, String> {
+    use crate::dev_watch::PortRule;
+    let integer = |setting: Setting| match settings.get(setting).map(|value| &value.kind) {
+        Some(ValueKind::Number { text, .. }) => text.parse::<u64>().ok(),
+        _ => None,
+    };
+    let (serve, port_rule) = match flags.serve {
+        Some(port) => (port, PortRule::Exact),
+        None => {
+            let port = integer(Setting::HttpPort)
+                .and_then(|port| u16::try_from(port).ok())
+                .unwrap_or(9630);
+            let rule = if boolean(settings, Setting::HttpStrict) {
+                PortRule::Strict
+            } else {
+                PortRule::NextFree
+            };
+            (port, rule)
+        }
+    };
+    let nrepl_setting = settings.get(Setting::Nrepl);
+    // `--no-nrepl` turns off the file's listener too.
+    let nrepl = flags.nrepl.or_else(|| {
+        nrepl_setting
+            .filter(|_| !flags.no_nrepl)
+            .and_then(|value| value.get("port"))
+            .and_then(|port| match &port.kind {
+                ValueKind::Number { text, .. } => text.parse::<u16>().ok(),
+                _ => None,
+            })
+    });
+    let no_nrepl = flags.no_nrepl
+        || (flags.nrepl.is_none()
+            && matches!(
+                nrepl_setting.map(|value| &value.kind),
+                Some(ValueKind::Boolean(false))
+            ));
+    let poll = flags
+        .poll_ms
+        .or_else(|| integer(Setting::FsWatchLoopWait))
+        .unwrap_or(100);
+    let cache_root = string(settings, Setting::CacheRoot).unwrap_or(".light-cljs");
+    Ok(crate::dev_watch::Options {
+        entry: namespace.entry.ok_or("the build has no entry")?,
+        roots: namespace.roots,
+        out_dir: namespace.out_dir.ok_or("the build has no :output-dir")?,
+        poll: std::time::Duration::from_millis(poll),
+        assertions: !compile.elide_asserts,
+        serve: Some(serve),
+        port_rule,
+        serve_host: Some(
+            flags
+                .serve_host
+                .clone()
+                .or_else(|| string(settings, Setting::HttpHost).map(str::to_owned))
+                .unwrap_or_else(|| "127.0.0.1".to_owned()),
+        ),
+        reload_dependents: flags.reload_dependents
+            || keyword(settings, Setting::ReloadStrategy) == Some("full"),
+        nrepl,
+        no_nrepl,
+        nrepl_port_dir: file.project_dir().to_path_buf(),
+        http_port_file: Some(file.resolve(Path::new(cache_root)).join("http.port")),
+        mount: Some(settings.name().to_owned()),
+        stats: compile.stats,
+        cache_dir: (!compile.no_cache)
+            .then(|| compile.cache_dir.clone())
+            .flatten(),
+        blockers: compile.cache_blockers,
+        configuration: compile.configuration,
+        macro_limits: compile.macro_limits,
+    })
 }
 
 /// Translate `settings` into the flags' structures, as the equivalent

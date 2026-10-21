@@ -43,7 +43,7 @@ use light_cljs::dependency_manifest::{
     DependencyManifest, EdgeKinds, ExternalInput, Revision, SourceOrigin,
 };
 use light_cljs::dev_build::{DevFile, DevManifest, DevNamespace, namespace_unit, unit_file};
-use light_cljs::dev_server::{Build, DevServer, Diagnostic, LoadUnit, Step};
+use light_cljs::dev_server::{Build, DevServer, Diagnostic, Listen, LoadUnit, Mount, Step};
 use light_cljs::dev_session::{Action, DevSession, EntryStart, Unit};
 use light_cljs::source_provider::{
     FileSourceProvider, LoadError, LoadRequest, Reload, SourceInput, SourceProvider,
@@ -69,7 +69,7 @@ pub const USAGE: &str = "Watch:
              [--macro-expansions N] [--macro-nodes N] [--macro-timeout-ms N]
              [--macro-memory-limit N] [--macro-poll-budget N]
              [--cache-dir DIR | --no-cache] [--cache-blocker NS ...]
-             [--serve PORT [--serve-host HOST] [--reload-dependents] [--nrepl PORT]]
+             [--serve PORT [--serve-host HOST] [--reload-dependents] [--nrepl PORT | --no-nrepl]]
 
 Write the dev build of --compile --reloadable into DIR, then poll the .cljs
 and .cljc files under the source roots, and every file a light.build
@@ -140,7 +140,8 @@ ls-sessions, completions and lookup answered from the program's definitions.
 With --nrepl PORT (0 for any free port), also answer nREPL on PORT, on the
 host of the server (PORT may be the --serve PORT), and write the port into
 .nrepl-port in the working directory, where editors look for it, removing
-the file when the watch ends.
+the file when the watch ends. With --no-nrepl, answer no nREPL client on
+the server's port either.
 
 A step loads the namespaces it recompiled, which include those that use a
 changed macro and the namespaces marked ^:dev/always, in load order; never
@@ -148,33 +149,77 @@ again a namespace marked ^:dev/once. With
 --reload-dependents, it also loads every namespace that depends on one it
 loads, directly or not, as shadow-cljs's :full reload strategy does.";
 
-/// The options of `--watch`.
-struct Options {
-    entry: String,
-    roots: Vec<PathBuf>,
-    out_dir: PathBuf,
-    poll: Duration,
-    assertions: bool,
+/// How the server binds its port.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PortRule {
+    /// That port or fail: `--serve PORT`.
+    Exact,
+    /// When the port is in use, the next free one upward: `:http {:port N}`
+    /// of `light-cljs watch ID`, as shadow-cljs's server does.
+    NextFree,
+    /// That port or fail, as `:http {:strict true}` says.
+    Strict,
+}
+
+/// The options of `--watch`, and of `light-cljs watch ID`, which
+/// translates a build of `light-cljs.edn` into them (`crate::config_cli`).
+pub(crate) struct Options {
+    pub(crate) entry: String,
+    pub(crate) roots: Vec<PathBuf>,
+    pub(crate) out_dir: PathBuf,
+    pub(crate) poll: Duration,
+    pub(crate) assertions: bool,
     /// `--serve PORT`.
-    serve: Option<u16>,
+    pub(crate) serve: Option<u16>,
+    /// How the server binds `serve`.
+    pub(crate) port_rule: PortRule,
     /// `--serve-host HOST`.
-    serve_host: Option<String>,
+    pub(crate) serve_host: Option<String>,
     /// `--reload-dependents`.
-    reload_dependents: bool,
+    pub(crate) reload_dependents: bool,
     /// `--nrepl PORT`.
-    nrepl: Option<u16>,
+    pub(crate) nrepl: Option<u16>,
+    /// `--no-nrepl`: the server's port answers no nREPL client.
+    pub(crate) no_nrepl: bool,
+    /// Where `.nrepl-port` is written: the working directory, or the
+    /// project directory of `light-cljs watch ID`.
+    pub(crate) nrepl_port_dir: PathBuf,
+    /// `light-cljs watch ID`'s `<:cache-root>/http.port`, which holds the
+    /// server's port while the watch runs; none for `--watch`.
+    pub(crate) http_port_file: Option<PathBuf>,
+    /// The build id of `light-cljs watch ID`, the server's mount name, which
+    /// serves the build under `/ID/` and at `/`; none for `--watch`, whose
+    /// one mount is at `/` alone.
+    pub(crate) mount: Option<String>,
     /// `--stats`: report the startup build (`light_cljs::compile_stats`).
-    stats: bool,
+    pub(crate) stats: bool,
     /// `--config KEY=EDN`: what `light.build/config` answers.
-    configuration: light_cljs::BuildConfiguration,
+    pub(crate) configuration: light_cljs::BuildConfiguration,
     /// `--cache-blocker NS`, for the policy evaluator and the cache.
-    blockers: Vec<String>,
+    pub(crate) blockers: Vec<String>,
     /// Where the persistent compiler cache the watch starts from is: the
     /// default directory or `--cache-dir DIR`, and `None` with `--no-cache`.
-    cache_dir: Option<PathBuf>,
+    pub(crate) cache_dir: Option<PathBuf>,
     /// `--macro-expansions N` and the other macro limit flags, for the
     /// startup build and the session.
-    macro_limits: crate::MacroLimitFlags,
+    pub(crate) macro_limits: crate::MacroLimitFlags,
+}
+
+/// The port of `--serve` or `--nrepl`, 0 to 65535.
+pub(crate) fn port_value(flag: &str, text: &std::ffi::OsStr) -> Result<u16> {
+    text.to_str()
+        .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|text| text.parse::<u16>().ok())
+        .ok_or_else(|| format!("{flag} requires a port number, 0 to 65535").into())
+}
+
+/// The milliseconds of `--poll-ms`, a positive integer.
+pub(crate) fn poll_value(text: &std::ffi::OsStr) -> Result<u64> {
+    text.to_str()
+        .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|text| text.parse::<u64>().ok())
+        .filter(|&millis| millis > 0)
+        .ok_or_else(|| "--poll-ms requires a positive integer".into())
 }
 
 fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> {
@@ -182,7 +227,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
     let mut poll = Duration::from_millis(100);
     let mut assertions = true;
     let (mut serve, mut serve_host, mut reload_dependents) = (None, None, false);
-    let mut nrepl = None;
+    let (mut nrepl, mut no_nrepl) = (None, false);
     let mut stats = false;
     let mut configuration = light_cljs::BuildConfiguration::new();
     let mut blockers = Vec::new();
@@ -210,26 +255,9 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
             "--entry" => return Err("--entry may only be specified once".into()),
             "--source-root" => roots.push(PathBuf::from(value()?)),
             "--out-dir" => out_dir = Some(PathBuf::from(value()?)),
-            "--poll-ms" => {
-                let text = value()?;
-                let millis = text
-                    .to_str()
-                    .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
-                    .and_then(|text| text.parse::<u64>().ok())
-                    .filter(|&millis| millis > 0)
-                    .ok_or("--poll-ms requires a positive integer")?;
-                poll = Duration::from_millis(millis);
-            }
+            "--poll-ms" => poll = Duration::from_millis(poll_value(&value()?)?),
             "--elide-asserts" => assertions = false,
-            "--serve" => {
-                let text = value()?;
-                serve = Some(
-                    text.to_str()
-                        .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
-                        .and_then(|text| text.parse::<u16>().ok())
-                        .ok_or("--serve requires a port number, 0 to 65535")?,
-                );
-            }
+            "--serve" => serve = Some(port_value(flag, &value()?)?),
             "--serve-host" => {
                 serve_host = Some(
                     value()?
@@ -238,15 +266,8 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
                 );
             }
             "--reload-dependents" => reload_dependents = true,
-            "--nrepl" => {
-                let text = value()?;
-                nrepl = Some(
-                    text.to_str()
-                        .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
-                        .and_then(|text| text.parse::<u16>().ok())
-                        .ok_or("--nrepl requires a port number, 0 to 65535")?,
-                );
-            }
+            "--nrepl" => nrepl = Some(port_value(flag, &value()?)?),
+            "--no-nrepl" => no_nrepl = true,
             "--stats" => stats = true,
             "--config" => {
                 let text = value()
@@ -282,6 +303,12 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
     if nrepl.is_some() && serve.is_none() {
         return Err("--nrepl requires --serve PORT".into());
     }
+    if no_nrepl && serve.is_none() {
+        return Err("--no-nrepl requires --serve PORT".into());
+    }
+    if no_nrepl && nrepl.is_some() {
+        return Err("--nrepl and --no-nrepl exclude each other".into());
+    }
     if no_cache && cache_dir.is_some() {
         return Err("--no-cache and --cache-dir exclude each other".into());
     }
@@ -295,9 +322,14 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
         poll,
         assertions,
         serve,
+        port_rule: PortRule::Exact,
         serve_host,
         reload_dependents,
         nrepl,
+        no_nrepl,
+        nrepl_port_dir: PathBuf::from("."),
+        http_port_file: None,
+        mount: None,
         stats,
         configuration,
         blockers,
@@ -444,6 +476,12 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     let Some(options) = options(args)? else {
         return Ok(());
     };
+    watch(options)
+}
+
+/// Build, serve and watch as `options` say, until interrupted or a step
+/// cannot write the build.
+pub(crate) fn watch(options: Options) -> Result<()> {
     let begun = Instant::now();
     // Canonical roots name files as the source provider does. The stamps
     // come first, so a file saved while the build is made is a change.
@@ -646,6 +684,8 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     let mut repl = None;
     // Removes .nrepl-port when the watch ends.
     let mut _port_file = None;
+    // Removes `<:cache-root>/http.port` when the watch ends.
+    let mut _http_port_file = None;
     if let Some(port) = options.serve {
         for namespace in &watch.manifest.namespaces {
             let path = options.out_dir.join(&namespace.file);
@@ -654,8 +694,53 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
             watch.units.insert(namespace.name.clone(), text);
         }
         let host = options.serve_host.as_deref().unwrap_or("127.0.0.1");
-        let server = DevServer::start(host, port, &options.out_dir, &roots, watch.build())
-            .map_err(|error| format!("cannot serve on {host}:{port}: {error}"))?;
+        let listen = Listen {
+            next_free: options.port_rule == PortRule::NextFree,
+            nrepl: !options.no_nrepl,
+            ..Listen::new(host, port)
+        };
+        // As shadow-cljs's server says of each port in use it passes over.
+        let mut taken = |port: u16| {
+            eprintln!(
+                "light-cljs: TCP port {port} in use, trying {}",
+                port as u32 + 1
+            )
+        };
+        let served = match &options.mount {
+            Some(name) => DevServer::start_mounts_with(
+                listen,
+                vec![Mount {
+                    name: name.clone(),
+                    out_dir: options.out_dir.clone(),
+                    build: watch.build(),
+                }],
+                &roots,
+                &mut taken,
+            ),
+            None => {
+                DevServer::start_with(listen, &options.out_dir, &roots, watch.build(), &mut taken)
+            }
+        };
+        let server = served.map_err(|error| match options.port_rule {
+            PortRule::Strict => {
+                format!("cannot serve on {host}:{port}: {error}; :http {{:strict true}} tries no other port")
+            }
+            PortRule::Exact | PortRule::NextFree => {
+                format!("cannot serve on {host}:{port}: {error}")
+            }
+        })?;
+        if let Some(path) = &options.http_port_file {
+            // As shadow-cljs writes `.shadow-cljs/http.port`, creating the
+            // cache root when it is missing.
+            let file = path
+                .parent()
+                .map_or(Ok(()), fs::create_dir_all)
+                .and_then(|()| {
+                    light_cljs::dev_nrepl::PortFile::write(path, server.address().port())
+                })
+                .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+            _http_port_file = Some(file);
+        }
         eprintln!(
             "light-cljs: serving {} at http://{}/",
             options.out_dir.display(),
@@ -680,8 +765,9 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
                     .serve_nrepl(host, nrepl)
                     .map_err(|error| format!("cannot serve nREPL on {host}:{nrepl}: {error}"))?
             };
-            let file = light_cljs::dev_nrepl::PortFile::create(Path::new("."), address.port())
-                .map_err(|error| format!("cannot write .nrepl-port: {error}"))?;
+            let file =
+                light_cljs::dev_nrepl::PortFile::create(&options.nrepl_port_dir, address.port())
+                    .map_err(|error| format!("cannot write .nrepl-port: {error}"))?;
             eprintln!(
                 "light-cljs: nREPL at {address}, its port in {}",
                 file.path().display()

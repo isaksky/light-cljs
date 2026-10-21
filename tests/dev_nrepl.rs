@@ -10,6 +10,10 @@
 #[allow(dead_code)]
 mod temp_dir;
 
+#[path = "support/file_watch.rs"]
+#[allow(dead_code)]
+mod file_watch;
+
 use light_cljs::dev_server::Json;
 use std::{
     fs,
@@ -891,4 +895,106 @@ fn closing_shared_session_finishes_queued_requests_without_running_them() {
     fs::write(&release, "").unwrap();
     let other = first.clone_session();
     assert_eq!(first.value(&other, "@order"), "[]");
+}
+
+/// `light-cljs watch features` with `:nrepl {:port 0}` (docs/build-configuration.md,
+/// "Top-level keys"), from the example's `app/` subdirectory: nREPL answers
+/// on its own port, written to `.nrepl-port` in the project directory, and
+/// on the `:http` port; SIGINT removes `.nrepl-port` and `.light-cljs/http.port`
+/// both. With `:nrepl false` the `:http` port answers no nREPL client and
+/// serves the build still, and `--nrepl 0` after the id turns it on again,
+/// since flags win.
+#[cfg(unix)]
+#[test]
+fn watch_id_answers_nrepl_as_its_nrepl_setting_says() {
+    let (_dir, project) = file_watch::features("dev-nrepl-file");
+    let nrepl_file = project.join(".nrepl-port");
+    let http_file = project.join(".light-cljs/http.port");
+    let mut watch = file_watch::Light::spawn(
+        &project.join("app"),
+        &["watch", "features"],
+        Some("{:http {:port 0} :nrepl {:port 0}}"),
+    );
+    let (address, _, _) = watch.serving();
+    let (_, line) = watch.until("light-cljs: nREPL at ");
+    let nrepl = line
+        .strip_prefix("light-cljs: nREPL at ")
+        .and_then(|rest| rest.strip_suffix(&format!(", its port in {}", nrepl_file.display())))
+        .unwrap_or_else(|| panic!("{line}"))
+        .to_owned();
+    assert_ne!(nrepl, address);
+    assert_eq!(
+        fs::read_to_string(&nrepl_file).unwrap(),
+        nrepl.rsplit_once(':').unwrap().1
+    );
+    watch.until("light-cljs: built ");
+    for answering in [&nrepl, &address] {
+        let described = String::from_utf8(file_watch::nrepl_describe(answering)).unwrap();
+        assert!(
+            described.starts_with('d') && described.contains("3:ops"),
+            "{answering}: {described}"
+        );
+    }
+    assert!(http_file.exists());
+    assert_eq!(watch.interrupt().code(), Some(130));
+    assert!(!nrepl_file.exists() && !http_file.exists());
+
+    let mut refusing = file_watch::Light::spawn(
+        &project,
+        &["watch", "features"],
+        Some("{:http {:port 0} :nrepl false}"),
+    );
+    let (address, _, _) = refusing.serving();
+    let (lines, _) = refusing.until("light-cljs: built ");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert_eq!(file_watch::nrepl_describe(&address), b"");
+    assert_eq!(file_watch::get(&address, "/index.js").0, "HTTP/1.1 200 OK");
+    assert!(!nrepl_file.exists());
+    drop(refusing);
+
+    let mut flagged = file_watch::Light::spawn(
+        &project,
+        &["watch", "features", "--nrepl", "0"],
+        Some("{:http {:port 0} :nrepl false}"),
+    );
+    let (address, _, _) = flagged.serving();
+    flagged.until("light-cljs: nREPL at ");
+    flagged.until("light-cljs: built ");
+    let described = String::from_utf8(file_watch::nrepl_describe(&address)).unwrap();
+    assert!(described.contains("3:ops"), "{described}");
+}
+
+/// With `:nrepl {:port N}` on a port the test holds, `watch features` fails
+/// to listen once `.light-cljs/http.port` is written, and the error removes
+/// the file again; `--no-nrepl` after the id turns that listener off too, so
+/// the watch starts, writes no `.nrepl-port` and answers no nREPL client.
+#[test]
+fn watch_id_removes_its_port_file_on_an_error_and_no_nrepl_drops_the_listener() {
+    let (_dir, project) = file_watch::features("dev-nrepl-file-held");
+    let (_held, held) = file_watch::held_port();
+    let merged = format!("{{:http {{:port 0}} :nrepl {{:port {held}}}}}");
+    let http_file = project.join(".light-cljs/http.port");
+    let mut failing = file_watch::Light::spawn(&project, &["watch", "features"], Some(&merged));
+    let (lines, status) = failing.exit();
+    assert_eq!(status.code(), Some(1), "{lines:#?}");
+    assert_eq!(
+        lines.last().unwrap(),
+        &format!(
+            "light-cljs watch features: cannot serve nREPL on 127.0.0.1:{held}: {}",
+            file_watch::bind_error(held)
+        )
+    );
+    assert!(project.join(".light-cljs").is_dir() && !http_file.exists());
+    assert!(!project.join(".nrepl-port").exists());
+
+    let mut quiet = file_watch::Light::spawn(
+        &project,
+        &["watch", "features", "--no-nrepl"],
+        Some(&merged),
+    );
+    let (address, _, _) = quiet.serving();
+    let (lines, _) = quiet.until("light-cljs: built ");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(http_file.exists() && !project.join(".nrepl-port").exists());
+    assert_eq!(file_watch::nrepl_describe(&address), b"");
 }

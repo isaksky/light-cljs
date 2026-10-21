@@ -35,6 +35,11 @@
 //! resolve to, and an nREPL connection's sessions are the first mount's.
 //! [`DevServer::start`] serves one unnamed mount at `/` alone.
 //!
+//! [`DevServer::start_with`] and [`DevServer::start_mounts_with`] take a
+//! [`Listen`]: with `next_free`, a port in use gives way to the next one
+//! upward, as shadow-cljs's `start-http` does, and without `nrepl` the
+//! server's own port answers no nREPL client.
+//!
 //! JSON is written by hand and read by [`Json::parse`]. The dev client,
 //! `client.js` of a dev build (src/dev_client.js), interprets the messages.
 //! Loopback is the default address, since a connected runtime evaluates what
@@ -146,6 +151,53 @@ pub struct Step {
     pub build: Option<Build>,
 }
 
+/// How a dev server listens ([`DevServer::start_with`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Listen<'a> {
+    pub host: &'a str,
+    /// The port, 0 for any free port.
+    pub port: u16,
+    /// When the port is in use, try the next one upward, and so on, as
+    /// shadow-cljs's `start-http` does unless `:strict`; otherwise fail.
+    pub next_free: bool,
+    /// Whether the server's own port answers nREPL clients.
+    pub nrepl: bool,
+}
+
+impl<'a> Listen<'a> {
+    /// Listen on `host` and `port` alone, answering nREPL there too, as
+    /// [`DevServer::start`] does.
+    pub fn new(host: &'a str, port: u16) -> Self {
+        Self {
+            host,
+            port,
+            next_free: false,
+            nrepl: true,
+        }
+    }
+
+    /// Bind the listener: with `next_free`, a port in use (`taken` is called
+    /// with it) gives way to the next one, up to 65535.
+    fn bind(&self, taken: &mut dyn FnMut(u16)) -> io::Result<TcpListener> {
+        let mut port = self.port;
+        loop {
+            let addresses = (self.host, port).to_socket_addrs()?.collect::<Vec<_>>();
+            match TcpListener::bind(&addresses[..]) {
+                Err(error)
+                    if self.next_free
+                        && port != 0
+                        && port < u16::MAX
+                        && error.kind() == io::ErrorKind::AddrInUse =>
+                {
+                    taken(port);
+                    port += 1;
+                }
+                bound => return bound,
+            }
+        }
+    }
+}
+
 /// A running dev server. Its threads live as long as the process.
 pub struct DevServer {
     site: Arc<Site>,
@@ -190,6 +242,8 @@ struct Site {
     roots: Vec<(PathBuf, Vec<String>)>,
     /// Whether to answer only requests for a loopback `Host`.
     loopback: bool,
+    /// Whether the server's own port answers nREPL clients.
+    nrepl: bool,
     /// Whether the server was dropped: it accepts no more connections.
     stopped: AtomicBool,
     /// The addresses of the server's further listeners, which a drop wakes.
@@ -301,11 +355,23 @@ impl DevServer {
         roots: &[PathBuf],
         build: Build,
     ) -> io::Result<Self> {
+        Self::start_with(Listen::new(host, port), out_dir, roots, build, &mut |_| {})
+    }
+
+    /// [`Self::start`], listening as `listen` says; `taken` is called with
+    /// each port in use that gave way to the next.
+    pub fn start_with(
+        listen: Listen<'_>,
+        out_dir: &Path,
+        roots: &[PathBuf],
+        build: Build,
+        taken: &mut dyn FnMut(u16),
+    ) -> io::Result<Self> {
         Self::listen(
-            host,
-            port,
+            listen,
             vec![(None, out_dir.to_path_buf(), build)],
             roots,
+            taken,
         )
     }
 
@@ -320,6 +386,17 @@ impl DevServer {
         port: u16,
         mounts: Vec<Mount>,
         roots: &[PathBuf],
+    ) -> io::Result<Self> {
+        Self::start_mounts_with(Listen::new(host, port), mounts, roots, &mut |_| {})
+    }
+
+    /// [`Self::start_mounts`], listening as `listen` says; `taken` is called
+    /// with each port in use that gave way to the next.
+    pub fn start_mounts_with(
+        listen: Listen<'_>,
+        mounts: Vec<Mount>,
+        roots: &[PathBuf],
+        taken: &mut dyn FnMut(u16),
     ) -> io::Result<Self> {
         let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
         if mounts.is_empty() {
@@ -340,16 +417,16 @@ impl DevServer {
             .into_iter()
             .map(|mount| (Some(mount.name), mount.out_dir, mount.build))
             .collect();
-        Self::listen(host, port, mounts, roots)
+        Self::listen(listen, mounts, roots, taken)
     }
 
     /// Serve `mounts`, each a name (none for the unnamed mount), a build
     /// directory and a build.
     fn listen(
-        host: &str,
-        port: u16,
+        listen: Listen<'_>,
         mounts: Vec<(Option<String>, PathBuf, Build)>,
         roots: &[PathBuf],
+        taken: &mut dyn FnMut(u16),
     ) -> io::Result<Self> {
         let runtime_ids = Arc::new(AtomicU64::new(1));
         let mut table = Vec::with_capacity(mounts.len());
@@ -398,14 +475,14 @@ impl DevServer {
             .filter_map(|(index, mount)| Some((mount.name.clone()?, MountId(index as u32))))
             .collect::<Vec<_>>();
         names.sort_unstable();
-        let addresses = (host, port).to_socket_addrs()?.collect::<Vec<_>>();
-        let listener = TcpListener::bind(&addresses[..])?;
+        let listener = listen.bind(taken)?;
         let address = listener.local_addr()?;
         let site = Arc::new(Site {
             mounts: table,
             names,
             roots: served,
             loopback: address.ip().is_loopback(),
+            nrepl: listen.nrepl,
             stopped: AtomicBool::new(false),
             listeners: Mutex::new(Vec::new()),
         });
@@ -1181,6 +1258,10 @@ fn connection(stream: TcpStream, site: &Arc<Site>) -> io::Result<()> {
     // in capitals, and the server answers no preflight.
     let mut first = [0; 1];
     if stream.peek(&mut first)? == 1 && first[0] == b'd' {
+        // Without nREPL (`:nrepl false`), the connection closes unanswered.
+        if !site.nrepl {
+            return Ok(());
+        }
         return crate::dev_nrepl::connection(stream, &site.mounts[0]);
     }
     let mut writer = stream.try_clone()?;
