@@ -1340,9 +1340,8 @@ fn config_watch(
         };
         Reread::Invalid(message, diagnostic)
     };
-    let reread = move || {
+    let reread = move |read: std::io::Result<String>| {
         let environment = |name: &str| std::env::var(name).ok();
-        let read = std::fs::read_to_string(&path);
         let text = read.as_ref().ok();
         if text == last.as_ref() {
             return Reread::Unchanged;

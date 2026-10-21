@@ -232,11 +232,11 @@ pub(crate) struct Options {
 pub(crate) struct ConfigWatch {
     /// `light-cljs.edn`, whose stamp the poll compares.
     pub(crate) path: PathBuf,
-    /// Read the file again, once the poll finds its stamp changed, and
-    /// compare each build's settings with those it runs with
-    /// (`crate::config_cli`), reporting on stderr what a restart does not
-    /// apply.
-    pub(crate) reread: Box<dyn FnMut() -> Reread>,
+    /// Take the file's text, read by the poll once it found the stamp
+    /// changed and the same stamp after the read, and compare each build's
+    /// settings with those it runs with (`crate::config_cli`), reporting on
+    /// stderr what a restart does not apply.
+    pub(crate) reread: Box<dyn FnMut(std::io::Result<String>) -> Reread>,
 }
 
 /// What reading the configuration file again found.
@@ -1041,13 +1041,16 @@ pub(crate) fn run_builds(
         ended(&mut workers)?;
         if let Some(config) = &mut config {
             let now = stamp(&config.path);
-            if config_stamp != Some(now) {
+            let read = (config_stamp != Some(now))
+                .then(|| stamped_text(&config.path, now))
+                .flatten();
+            if let Some(read) = read {
                 config_stamp = Some(now);
                 // The builds this save restarts, which need no touch: a
                 // touch that came after a restart failed would start it
                 // again for the same save.
                 let mut restarted = vec![false; workers.len()];
-                match (config.reread)() {
+                match (config.reread)(read) {
                     Reread::Unchanged => {}
                     Reread::Invalid(printed, diagnostic) => {
                         eprintln!("light-cljs: {printed}");
@@ -1451,6 +1454,17 @@ fn built(options: &Options, watch: &Watch, begun: Instant, poll: Duration) -> St
         begun.elapsed().as_millis(),
         poll.as_millis()
     )
+}
+
+/// The text of the file at `path`, read once the poll found its stamp
+/// `now`: none when a save came between that stamp and the read, and the
+/// next poll stamps and reads the file again. A text kept with the stamp
+/// before it is one the next poll, finding the stamp changed, would take
+/// for another save: a touch that starts once more a build the save's
+/// restart failed.
+fn stamped_text(path: &Path, now: Option<Stamp>) -> Option<std::io::Result<String>> {
+    let read = fs::read_to_string(path);
+    (stamp(path) == now).then_some(read)
 }
 
 /// The stamp of the file at `path`, `None` when there is no file there.
@@ -2175,5 +2189,37 @@ impl Watch {
         fs::write(&temporary, &file.text)
             .and_then(|()| fs::rename(&temporary, &path))
             .map_err(|error| format!("cannot write {}: {error}", path.display()).into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A save of light-cljs.edn between the poll's stamp and its read gives
+    /// no text, so the poll keeps its stamp and the next one reads the file
+    /// again with the stamp the text is of. Taken with the older stamp, the
+    /// text made the next poll find the stamp changed and touch a build the
+    /// save's restart failed, which started it once more (light-cljs-414).
+    #[test]
+    fn a_save_between_the_stamp_and_the_read_reads_again_at_the_next_poll() {
+        let directory =
+            std::env::temp_dir().join(format!("light-stamped-text-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("light-cljs.edn");
+        fs::write(&path, "{:builds {:app [app.main]}}").unwrap();
+        let before = stamp(&path);
+        let saving = directory.join(".saving");
+        fs::write(&saving, "{:builds {:app [app.missing]}}").unwrap();
+        fs::rename(&saving, &path).unwrap();
+        assert!(stamped_text(&path, before).is_none());
+        let after = stamp(&path);
+        assert_ne!(after, before);
+        let text = stamped_text(&path, after).unwrap().unwrap();
+        assert_eq!(text, "{:builds {:app [app.missing]}}");
+        fs::remove_file(&path).unwrap();
+        // A file that is gone is read, as an error, with its stamp: none.
+        assert!(stamped_text(&path, None).unwrap().is_err());
+        fs::remove_dir(&directory).unwrap();
     }
 }

@@ -1401,8 +1401,12 @@ Names are decisions for review; the structure is a sketch.
   file's path, and a reread that owns what startup used (the build's name,
   the parsed `--config-merge`s, the flags after the id) and the settings the
   build runs with. Each poll stats `light-cljs.edn` before it scans the
-  source roots; when the stamp changed, the reread reads the text, and only
-  when the text differs from the text read last (valid or not) reads and
+  source roots; when the stamp changed, the poll reads the text and stats
+  the file again (light-cljs-414): a save between the two stats gives the
+  poll no text, and the next poll reads it again under the stamp it is of,
+  where a text kept under the stamp before it made the next poll take the
+  same save for a touch. The reread takes that text, and only when the text
+  differs from the text read last (valid or not) reads and
   validates it again with `ConfigFile::from_source`, against the process's
   environment, then runs startup's checks in startup's order (the build by
   name, its dev settings, `check_outputs`, `check_directories` when a flag
