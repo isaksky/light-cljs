@@ -9,15 +9,23 @@
 //! holds is stored in a slot of an array indexed by [`Setting`]: the top-level
 //! settings in one layer, and each build's settings in three, the build's
 //! own map and its `:dev` and `:release` maps. Builds are kept in a vector
-//! indexed by [`BuildId`], in ascending id order. Merging the layers into
-//! one build's settings for a mode is not done here.
+//! indexed by [`BuildId`], in ascending id order. `LIGHT_CLJS`, read through
+//! the same lookup, is deep-merged over the whole file as it is read.
 //!
-//! Every error is located: `PATH:LINE:COLUMN: message`.
+//! [`ConfigFile::settings`] merges one build's layers for a mode
+//! ("Precedence", layers 1-5): the built-in defaults, the file's top level,
+//! the build, its `:dev` or `:release` map and each [`ConfigMerge`], with
+//! shadow-cljs's `deep-merge` ([`deep_merge`]), into [`BuildSettings`], a
+//! slot per setting with its [`SettingOrigin`].
+//!
+//! Every error is located: `PATH:LINE:COLUMN: message`, where PATH is the
+//! file's, `LIGHT_CLJS` or `--config-merge N`.
 
 use std::{
+    collections::{HashMap, HashSet},
     fmt,
     ops::Range,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use crate::BuildConfiguration;
@@ -32,6 +40,20 @@ pub const FILE_NAME: &str = "light-cljs.edn";
 /// The one tag the file reads, shadow-cljs's `#shadow/env` named after the
 /// tool.
 pub const ENVIRONMENT_TAG: &str = "light-cljs/env";
+
+/// The environment variable whose EDN is deep-merged over the whole file,
+/// as shadow-cljs's `SHADOW_CLJS` is.
+pub const ENVIRONMENT_VARIABLE: &str = "LIGHT_CLJS";
+
+/// Where a value was written: the file, `LIGHT_CLJS`, the Nth
+/// `--config-merge` (from 1), or nowhere, a built-in default.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum ConfigSource {
+    Default,
+    File,
+    LightCljs,
+    ConfigMerge(usize),
+}
 
 /// A build's dense id: its position among the file's builds, which are kept
 /// in ascending order of their keyword ids.
@@ -210,11 +232,14 @@ impl Setting {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Value {
     pub kind: ValueKind,
-    /// The form's bytes in the file; for an environment value, the whole
-    /// `#light-cljs/env` form's.
+    /// The form's bytes in the text of [`Value::source`]; for an environment
+    /// value, the whole `#light-cljs/env` form's. Empty for a default.
     pub span: Range<usize>,
     /// The variable an environment value was read from.
     pub environment: Option<EnvironmentValue>,
+    /// The text the value was written in. A merged collection is its
+    /// highest layer's, and each element keeps its own.
+    pub source: ConfigSource,
 }
 
 /// The EDN data the file holds.
@@ -261,6 +286,16 @@ pub struct EnvironmentValue {
 }
 
 impl Value {
+    /// A built-in default.
+    fn default_of(kind: ValueKind) -> Self {
+        Self {
+            kind,
+            span: 0..0,
+            environment: None,
+            source: ConfigSource::Default,
+        }
+    }
+
     /// The value as EDN text: what a literal in its place would be written.
     pub fn to_edn(&self) -> String {
         let mut out = String::new();
@@ -429,6 +464,9 @@ impl Layer {
 pub struct BuildDefinition {
     name: String,
     span: Range<usize>,
+    /// The text of the id key at `span`: the file, or `LIGHT_CLJS` for a
+    /// build only it defines.
+    source: ConfigSource,
     layers: [Layer; 3],
 }
 
@@ -438,9 +476,14 @@ impl BuildDefinition {
         &self.name
     }
 
-    /// The span of the build's id key.
+    /// The span of the build's id key, in [`BuildDefinition::source`]'s text.
     pub fn span(&self) -> Range<usize> {
         self.span.clone()
+    }
+
+    /// The text that first defines the build.
+    pub fn source(&self) -> ConfigSource {
+        self.source
     }
 
     /// The build's own settings with `None`, or its `:dev` or `:release`
@@ -477,6 +520,10 @@ pub struct ConfigFile {
     source: String,
     lines: LineIndex,
     document: Value,
+    /// `LIGHT_CLJS`'s text and lines, when it was set and held a form.
+    light: Option<(String, LineIndex)>,
+    /// The file's directory, absolute, for comparing directories.
+    project: PathBuf,
     top: Layer,
     builds: Vec<BuildDefinition>,
 }
@@ -512,29 +559,118 @@ impl ConfigFile {
     }
 
     /// As [`Self::read`], for `source` read from `path`, which only names it.
+    ///
+    /// When `environment` gives `LIGHT_CLJS` a value with a form in it, that
+    /// EDN map is validated as strictly as the file and deep-merged over the
+    /// whole file, as shadow-cljs merges `SHADOW_CLJS`; the file may then
+    /// leave out what `LIGHT_CLJS` supplies, and the merged whole is checked.
     pub fn from_source(
         path: &Path,
         source: String,
         environment: &dyn Fn(&str) -> Option<String>,
     ) -> Result<Self, ConfigFileError> {
         let lines = LineIndex::new(&source);
-        let located = |error: Located| ConfigFileError {
-            path: path.to_owned(),
-            location: Some(lines.line_column(error.span.start).unwrap_or((1, 1))),
-            build: error.build,
-            mode: error.mode,
-            message: error.message,
+        let light_text = environment(ENVIRONMENT_VARIABLE).filter(|text| !text.is_empty());
+        let light_lines = light_text.as_deref().map(LineIndex::new);
+        let texts = Texts {
+            path,
+            lines: &lines,
+            light: light_lines.as_ref(),
+            merges: &[],
         };
-        let document = read_document(&source, &lines, environment).map_err(located)?;
-        let (top, builds) = Validator.document(&document).map_err(located)?;
+        let file = |error: Located| texts.error(error, ConfigSource::File);
+        let document = read_document(&source, &lines, environment, ConfigSource::File)
+            .map_err(file)?
+            .ok_or_else(|| {
+                file(at(
+                    &(0..0),
+                    "the configuration file is empty; it holds one map, such as \
+                     {:source-paths [\"src\"] :builds {...}}"
+                        .into(),
+                ))
+            })?;
+        let light = match (&light_text, &light_lines) {
+            (Some(text), Some(light_lines)) => {
+                read_document(text, light_lines, environment, ConfigSource::LightCljs)
+                    .map_err(|error| texts.error(error, ConfigSource::LightCljs))?
+            }
+            _ => None,
+        };
+        let validator = Validator {
+            overlay: light.is_some(),
+            origin: ConfigSource::File,
+        };
+        let mut merged = validator.document(&document).map_err(file)?;
+        if let Some(light) = &light {
+            let overlay = Validator {
+                overlay: true,
+                origin: ConfigSource::LightCljs,
+            }
+            .document(light)
+            .map_err(|error| texts.error(error, ConfigSource::LightCljs))?;
+            merged.overlay(overlay);
+            for build in &merged.builds {
+                required(build).map_err(file)?;
+            }
+            complete(&merged, &document.span).map_err(file)?;
+        }
+        // Each build's own map with each mode map over it, after LIGHT_CLJS:
+        // one module of one entry, whichever build and mode a command runs.
+        for build in &merged.builds {
+            for mode in [BuildMode::Dev, BuildMode::Release] {
+                let mut modules = None;
+                for (layer, from) in [
+                    (build.layer(None), None),
+                    (build.layer(Some(mode)), Some(mode)),
+                ] {
+                    if let Some(entry) = layer.get(Setting::Modules) {
+                        merge_slot(&mut modules, &entry.value, from);
+                    }
+                }
+                check_modules(modules.as_ref().map(|slot| &slot.value), &build.name, mode)
+                    .map_err(file)?;
+            }
+        }
+        let light = match (light, light_text, light_lines) {
+            (Some(_), Some(text), Some(lines)) => Some((text, lines)),
+            _ => None,
+        };
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let project = std::path::absolute(parent).unwrap_or_else(|_| parent.to_owned());
         Ok(Self {
             path: path.to_owned(),
+            project,
             source,
             lines,
             document,
-            top,
-            builds,
+            light,
+            top: merged.top,
+            builds: merged.builds,
         })
+    }
+
+    /// `LIGHT_CLJS`'s text, when it was merged over the file.
+    pub fn light_cljs(&self) -> Option<&str> {
+        self.light.as_ref().map(|(text, _)| text.as_str())
+    }
+
+    /// The texts of the file, `LIGHT_CLJS` and `merges`, for locating values.
+    fn texts<'a>(&'a self, merges: &'a [ConfigMerge]) -> Texts<'a> {
+        Texts {
+            path: &self.path,
+            lines: &self.lines,
+            light: self.light.as_ref().map(|(_, lines)| lines),
+            merges,
+        }
+    }
+
+    /// Where `value`, a value of the file, of `LIGHT_CLJS` or of one of
+    /// `merges`, was written. A merged map's entries each keep their own.
+    pub fn origin(&self, value: &Value, merges: &[ConfigMerge]) -> SettingOrigin {
+        self.texts(merges).origin(value, None)
     }
 
     pub fn path(&self) -> &Path {
@@ -619,6 +755,8 @@ struct Located {
     message: String,
     build: Option<String>,
     mode: Option<BuildMode>,
+    /// The text the span is in, when it is not the one being read.
+    source: Option<ConfigSource>,
 }
 
 fn at(span: &Range<usize>, message: String) -> Located {
@@ -627,17 +765,29 @@ fn at(span: &Range<usize>, message: String) -> Located {
         message,
         build: None,
         mode: None,
+        source: None,
+    }
+}
+
+/// An error at `value`, in whichever text it was written.
+fn at_value(value: &Value, message: String) -> Located {
+    Located {
+        source: Some(value.source),
+        ..at(&value.span, message)
     }
 }
 
 // ---------------------------------------------------------------------------
 // Reading
 
+/// Read the one form of `source`, written in `origin`, with every
+/// environment value resolved: `None` when it holds no form.
 fn read_document(
     source: &str,
     lines: &LineIndex,
     environment: &dyn Fn(&str) -> Option<String>,
-) -> Result<Value, Located> {
+    origin: ConfigSource,
+) -> Result<Option<Value>, Located> {
     let mut parser = Parser::new(source).retaining_discards();
     let mut roots = Vec::new();
     loop {
@@ -662,19 +812,24 @@ fn read_document(
         nodes: parser.nodes(),
         discards,
         environment,
+        origin,
     };
     match roots[..] {
-        [] => Err(at(
-            &(0..0),
-            "the configuration file is empty; it holds one map, such as \
-             {:source-paths [\"src\"] :builds {...}}"
-                .into(),
-        )),
-        [root] => reader.value(root),
+        [] => Ok(None),
+        [root] => reader.value(root).map(Some),
         [_, second, ..] => Err(at(
             &reader.nodes[second.0].span,
-            "the configuration file holds one map; this is a second form".into(),
+            format!("{} holds one map; this is a second form", noun(origin)),
         )),
+    }
+}
+
+/// What a message calls the text of `origin`.
+fn noun(origin: ConfigSource) -> &'static str {
+    match origin {
+        ConfigSource::LightCljs => ENVIRONMENT_VARIABLE,
+        ConfigSource::ConfigMerge(_) => "--config-merge",
+        ConfigSource::File | ConfigSource::Default => "the configuration file",
     }
 }
 
@@ -685,6 +840,8 @@ struct Reader<'a> {
     /// The discarded forms, by span start: each discard's span and form.
     discards: Vec<(Range<usize>, NodeId)>,
     environment: &'a dyn Fn(&str) -> Option<String>,
+    /// The text being read, which every value records.
+    origin: ConfigSource,
 }
 
 impl Reader<'_> {
@@ -824,6 +981,7 @@ impl Reader<'_> {
             kind,
             span,
             environment: None,
+            source: self.origin,
         })
     }
 
@@ -985,6 +1143,7 @@ impl Reader<'_> {
                 kind,
                 span,
                 environment,
+                source: self.origin,
             });
         };
         let refused = |what: &str, as_name: &str| {
@@ -1024,6 +1183,7 @@ impl Reader<'_> {
             kind,
             span,
             environment,
+            source: self.origin,
         })
     }
 }
@@ -1309,6 +1469,8 @@ struct Place {
     build: Option<String>,
     mode: Option<BuildMode>,
     module: Option<String>,
+    /// In a `--config-merge`, whose build is not known when it is read.
+    merge: bool,
 }
 
 impl Place {
@@ -1318,6 +1480,15 @@ impl Place {
             build: None,
             mode: None,
             module: None,
+            merge: false,
+        }
+    }
+
+    /// A `--config-merge`'s map of build keys.
+    fn merge() -> Self {
+        Self {
+            merge: true,
+            ..Self::top(MapKind::Build)
         }
     }
 
@@ -1328,8 +1499,12 @@ impl Place {
         }
     }
 
-    /// `build :app`, or `build :app (dev)` in a mode map.
+    /// `build :app`, or `build :app (dev)` in a mode map; `the merged build`
+    /// in a `--config-merge`.
     fn build_phrase(&self) -> String {
+        if self.merge {
+            return "the merged build".into();
+        }
         let build = self.build.as_deref().unwrap_or_default();
         match self.mode {
             Some(mode) => format!("build :{build} ({})", mode.name()),
@@ -1376,6 +1551,7 @@ impl Place {
             message,
             build: self.build.clone(),
             mode: self.mode,
+            source: None,
         }
     }
 
@@ -1401,7 +1577,7 @@ fn unknown_key(name: &str, place: &Place) -> String {
             _ => format!(":{name} {in_phrase}: {reason}"),
         };
     }
-    let in_build = place.build.is_some();
+    let in_build = place.build.is_some() || place.merge;
     let order: &[MapKind] = if in_build {
         &[
             MapKind::Build,
@@ -1547,49 +1723,90 @@ const CODE_SPLITTING: &str = "chunks are inferred from light.lazy/loadable sites
 /// value.
 type KeyedValue<'v> = (&'v Range<usize>, &'v str, Key, &'v Value);
 
-struct Validator;
+/// Validates one text. An overlay (`LIGHT_CLJS`, or the file under it) may
+/// leave out what the merged whole must hold: `:source-paths`, `:builds` and
+/// a build's required keys, which [`complete`] checks after merging.
+struct Validator {
+    overlay: bool,
+    origin: ConfigSource,
+}
+
+/// The settings a document holds, before the checks of [`complete`].
+struct Document {
+    top: Layer,
+    builds: Vec<BuildDefinition>,
+    /// The `:builds` value's span, when the document has one.
+    builds_span: Option<Range<usize>>,
+}
 
 impl Validator {
-    fn document(&self, document: &Value) -> Result<(Layer, Vec<BuildDefinition>), Located> {
+    fn document(&self, document: &Value) -> Result<Document, Located> {
         let place = Place::top(MapKind::Top);
         let ValueKind::Map(_) = &document.kind else {
-            return Err(at(
-                &document.span,
-                format!(
+            let message = match self.origin {
+                ConfigSource::LightCljs => format!(
+                    "{ENVIRONMENT_VARIABLE} holds one map of the configuration file's shape, \
+                     such as {{:builds {{:app {{:output-dir \"out\"}}}}}}, got {}",
+                    document.to_edn()
+                ),
+                _ => format!(
                     "the configuration file holds one map of :source-paths and :builds, got {}",
                     document.to_edn()
                 ),
-            ));
+            };
+            return Err(at(&document.span, message));
         };
         let mut top = Layer::default();
         let mut builds = Vec::new();
-        let mut has_builds = false;
+        let mut builds_span = None;
         for (key, name, kind, value) in self.entries(document, &place)? {
             match kind {
                 Key::Builds => {
-                    has_builds = true;
+                    builds_span = Some(value.span.clone());
                     builds = self.builds(value)?;
                 }
                 _ => self.key(kind, key, name, value, &place, &mut top)?,
             }
         }
-        if top.get(Setting::SourcePaths).is_none() {
-            return Err(at(
-                &document.span,
-                "the configuration file has no :source-paths, the directories its builds \
-                 read namespaces from; add one, such as :source-paths [\"src\"]"
-                    .into(),
-            ));
+        let document_value = Document {
+            top,
+            builds,
+            builds_span,
+        };
+        if !self.overlay {
+            complete(&document_value, &document.span)?;
         }
-        if !has_builds {
+        Ok(document_value)
+    }
+
+    /// A `--config-merge`'s map of build keys, into one layer.
+    fn merge(&self, value: &Value) -> Result<Layer, Located> {
+        let place = Place::merge();
+        let ValueKind::Map(_) = &value.kind else {
             return Err(at(
-                &document.span,
-                "the configuration file has no :builds; add one, such as :builds {:app \
-                 {:target :esm :output-dir \"out\" :modules {:main {:entries [app.main]}}}}"
-                    .into(),
+                &value.span,
+                format!(
+                    "--config-merge must be a map of build keys, such as \
+                     {{:output-dir \"out/x\"}}, got {}",
+                    value.to_edn()
+                ),
             ));
+        };
+        let mut layer = Layer::default();
+        for (key, name, kind, value) in self.entries(value, &place)? {
+            if let Key::Mode(_) = kind {
+                return Err(at(
+                    key,
+                    format!(
+                        ":{name} in --config-merge: the command chooses the mode (compile and \
+                         watch run :dev, release runs :release), so --config-merge holds the \
+                         build keys themselves"
+                    ),
+                ));
+            }
+            self.key(kind, key, name, value, &place, &mut layer)?;
         }
-        Ok((top, builds))
+        Ok(layer)
     }
 
     /// `map`'s entries, each key checked against `place`'s closed key set:
@@ -1661,13 +1878,8 @@ impl Validator {
                 "a map of build id to build configuration",
             ));
         };
-        if entries.is_empty() {
-            return Err(at(
-                &value.span,
-                ":builds must hold at least one build, such as {:app {:target :esm \
-                 :output-dir \"out\" :modules {:main {:entries [app.main]}}}}"
-                    .into(),
-            ));
+        if entries.is_empty() && !self.overlay {
+            return Err(no_builds(&value.span));
         }
         let mut builds = Vec::with_capacity(entries.len());
         for (key, build) in entries {
@@ -1750,40 +1962,16 @@ impl Validator {
                 )?;
             }
         }
-        for setting in [Setting::Target, Setting::OutputDir, Setting::Modules] {
-            let missing: Vec<BuildMode> = [BuildMode::Dev, BuildMode::Release]
-                .into_iter()
-                .filter(|mode| {
-                    layers[0].get(setting).is_none() && layers[mode.layer()].get(setting).is_none()
-                })
-                .collect();
-            let key = setting.key();
-            match missing[..] {
-                [] => {}
-                [mode] => {
-                    return Err(place.error(
-                        span,
-                        format!(
-                            "build :{name} has no :{key} in {} mode, which every build needs; \
-                             give it in the build or under :{}",
-                            mode.name(),
-                            mode.name()
-                        ),
-                    ));
-                }
-                _ => {
-                    return Err(place.error(
-                        span,
-                        format!("build :{name} has no :{key}, which every build needs"),
-                    ));
-                }
-            }
-        }
-        Ok(BuildDefinition {
+        let build = BuildDefinition {
             name: name.to_owned(),
             span: span.clone(),
+            source: self.origin,
             layers,
-        })
+        };
+        if !self.overlay {
+            required(&build)?;
+        }
+        Ok(build)
     }
 
     /// Check `setting`'s value.
@@ -2118,6 +2306,968 @@ impl Validator {
             }
         }
         Ok(())
+    }
+}
+
+fn no_builds(span: &Range<usize>) -> Located {
+    at(
+        span,
+        ":builds must hold at least one build, such as {:app {:target :esm \
+         :output-dir \"out\" :modules {:main {:entries [app.main]}}}}"
+            .into(),
+    )
+}
+
+/// What a whole configuration must hold, which an overlay may leave to the
+/// text under or over it: `:source-paths` and a build. `span` is the file's
+/// map.
+fn complete(document: &Document, span: &Range<usize>) -> Result<(), Located> {
+    if document.top.get(Setting::SourcePaths).is_none() {
+        return Err(at(
+            span,
+            "the configuration file has no :source-paths, the directories its builds \
+             read namespaces from; add one, such as :source-paths [\"src\"]"
+                .into(),
+        ));
+    }
+    if document.builds.is_empty() {
+        return Err(match &document.builds_span {
+            Some(builds) => no_builds(builds),
+            None => at(
+                span,
+                "the configuration file has no :builds; add one, such as :builds {:app \
+                 {:target :esm :output-dir \"out\" :modules {:main {:entries [app.main]}}}}"
+                    .into(),
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// The keys every build needs in each mode, in the build or in its mode map.
+fn required(build: &BuildDefinition) -> Result<(), Located> {
+    let name = &build.name;
+    let error = |message: String| Located {
+        build: Some(name.clone()),
+        source: Some(build.source),
+        ..at(&build.span, message)
+    };
+    for setting in [Setting::Target, Setting::OutputDir, Setting::Modules] {
+        let missing: Vec<BuildMode> = [BuildMode::Dev, BuildMode::Release]
+            .into_iter()
+            .filter(|mode| {
+                build.layers[0].get(setting).is_none()
+                    && build.layers[mode.layer()].get(setting).is_none()
+            })
+            .collect();
+        let key = setting.key();
+        match missing[..] {
+            [] => {}
+            [mode] => {
+                return Err(error(format!(
+                    "build :{name} has no :{key} in {} mode, which every build needs; \
+                     give it in the build or under :{}",
+                    mode.name(),
+                    mode.name()
+                )));
+            }
+            _ => {
+                return Err(error(format!(
+                    "build :{name} has no :{key}, which every build needs"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Merging
+
+/// Shadow-cljs's `deep-merge` (`shadow/build/api.clj`), `upper` over
+/// `lower`: a nil `lower` gives `upper`, and a nil `upper` keeps `lower`;
+/// maps merge by key, each key's values merged again; vectors are
+/// concatenated keeping each distinct element once, in order; sets are
+/// unioned; anything else is replaced by `upper`. Keys and elements are
+/// equal as [`BuildConfiguration`] finds them (`1` and `1.0`, a list and a
+/// vector). The result is `upper`'s span and source, and each entry and
+/// element keeps its own.
+pub fn deep_merge(lower: Value, upper: Value) -> Value {
+    if matches!(lower.kind, ValueKind::Nil) {
+        return upper;
+    }
+    if matches!(upper.kind, ValueKind::Nil) {
+        return lower;
+    }
+    let Value {
+        kind,
+        span,
+        environment,
+        source,
+    } = upper;
+    let kind = match (lower.kind, kind) {
+        (ValueKind::Map(mut entries), ValueKind::Map(upper_entries)) => {
+            let mut index: HashMap<String, usize> = entries
+                .iter()
+                .enumerate()
+                .map(|(position, (key, _))| (identity(key), position))
+                .collect();
+            for (key, value) in upper_entries {
+                let key_identity = identity(&key);
+                match index.get(&key_identity) {
+                    Some(&position) => {
+                        let slot = &mut entries[position].1;
+                        let below = std::mem::replace(slot, Value::default_of(ValueKind::Nil));
+                        *slot = deep_merge(below, value);
+                    }
+                    None => {
+                        index.insert(key_identity, entries.len());
+                        entries.push((key, value));
+                    }
+                }
+            }
+            ValueKind::Map(entries)
+        }
+        (ValueKind::Vector(items), ValueKind::Vector(upper_items)) => {
+            ValueKind::Vector(distinct(items, upper_items))
+        }
+        (ValueKind::Set(items), ValueKind::Set(upper_items)) => {
+            ValueKind::Set(distinct(items, upper_items))
+        }
+        (_, kind) => kind,
+    };
+    Value {
+        kind,
+        span,
+        environment,
+        source,
+    }
+}
+
+/// `lower` then `upper`, each element once, at its first place.
+fn distinct(lower: Vec<Value>, upper: Vec<Value>) -> Vec<Value> {
+    let mut seen = HashSet::new();
+    lower
+        .into_iter()
+        .chain(upper)
+        .filter(|item| seen.insert(identity(item)))
+        .collect()
+}
+
+impl Layer {
+    /// Deep-merge `upper`'s settings over these, slot by slot: a setting is
+    /// one key path, so this is `deep_merge` of the maps that hold them.
+    fn overlay(&mut self, upper: &Layer) {
+        for (slot, entry) in self.slots.iter_mut().zip(&upper.slots) {
+            let Some(entry) = entry else { continue };
+            *slot = Some(match slot.take() {
+                Some(lower)
+                    if matches!(entry.value.kind, ValueKind::Nil)
+                        && !matches!(lower.value.kind, ValueKind::Nil) =>
+                {
+                    lower
+                }
+                Some(lower) => Entry {
+                    key: entry.key.clone(),
+                    value: deep_merge(lower.value, entry.value.clone()),
+                },
+                None => entry.clone(),
+            });
+        }
+    }
+}
+
+impl Document {
+    /// `LIGHT_CLJS` over the file: the top level, and each build by id, its
+    /// own map and its mode maps; a build only `upper` has is added.
+    fn overlay(&mut self, upper: Document) {
+        self.top.overlay(&upper.top);
+        for build in upper.builds {
+            match self
+                .builds
+                .binary_search_by(|lower| lower.name.as_str().cmp(&build.name))
+            {
+                Ok(position) => {
+                    let lower = &mut self.builds[position];
+                    for (lower, upper) in lower.layers.iter_mut().zip(&build.layers) {
+                        lower.overlay(upper);
+                    }
+                }
+                Err(position) => self.builds.insert(position, build),
+            }
+        }
+    }
+}
+
+impl BuildDefinition {
+    /// The output directory the file gives the build in `mode`.
+    fn output_dir(&self, mode: BuildMode) -> Option<&str> {
+        match self.setting(Some(mode), Setting::OutputDir) {
+            Some(value) if !matches!(value.kind, ValueKind::Nil) => value.as_str(),
+            _ => self.setting(None, Setting::OutputDir)?.as_str(),
+        }
+    }
+}
+
+/// The texts values are written in, to locate them.
+struct Texts<'a> {
+    path: &'a Path,
+    lines: &'a LineIndex,
+    light: Option<&'a LineIndex>,
+    merges: &'a [ConfigMerge],
+}
+
+impl Texts<'_> {
+    fn lines(&self, source: ConfigSource) -> Option<&LineIndex> {
+        match source {
+            ConfigSource::File => Some(self.lines),
+            ConfigSource::LightCljs => self.light,
+            ConfigSource::ConfigMerge(index) => self
+                .merges
+                .iter()
+                .find(|merge| merge.index == index)
+                .map(|merge| &merge.lines),
+            ConfigSource::Default => None,
+        }
+    }
+
+    fn name(&self, source: ConfigSource) -> PathBuf {
+        match source {
+            ConfigSource::LightCljs => PathBuf::from(ENVIRONMENT_VARIABLE),
+            ConfigSource::ConfigMerge(index) => merge_name(index),
+            ConfigSource::File | ConfigSource::Default => self.path.to_owned(),
+        }
+    }
+
+    /// `error`, in its own text or else in `default`'s.
+    fn error(&self, error: Located, default: ConfigSource) -> ConfigFileError {
+        let source = error.source.unwrap_or(default);
+        let location = self
+            .lines(source)
+            .and_then(|lines| lines.line_column(error.span.start))
+            .unwrap_or((1, 1));
+        ConfigFileError {
+            path: self.name(source),
+            location: Some(location),
+            build: error.build,
+            mode: error.mode,
+            message: error.message,
+        }
+    }
+
+    fn origin(&self, value: &Value, mode: Option<BuildMode>) -> SettingOrigin {
+        let location = match value.source {
+            ConfigSource::Default => None,
+            source => Some(
+                self.lines(source)
+                    .and_then(|lines| lines.line_column(value.span.start))
+                    .unwrap_or((1, 1)),
+            ),
+        };
+        SettingOrigin {
+            source: value.source,
+            span: value.span.clone(),
+            location,
+            mode,
+            environment: value.environment.clone(),
+        }
+    }
+}
+
+fn merge_name(index: usize) -> PathBuf {
+    PathBuf::from(format!("--config-merge {index}"))
+}
+
+/// `located`, about build `build` in `mode`.
+fn scoped(located: Located, build: &str, mode: BuildMode) -> Located {
+    Located {
+        build: Some(build.to_owned()),
+        mode: Some(mode),
+        ..located
+    }
+}
+
+/// Where a merged setting's value was written.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettingOrigin {
+    pub source: ConfigSource,
+    /// The value's bytes in its source's text; empty for a default.
+    pub span: Range<usize>,
+    /// The 1-based line and byte column of the span; `None` for a default.
+    pub location: Option<(usize, usize)>,
+    /// The mode map that gave the value, when one did.
+    pub mode: Option<BuildMode>,
+    /// The variable, for a `#light-cljs/env` value.
+    pub environment: Option<EnvironmentValue>,
+}
+
+impl fmt::Display for SettingOrigin {
+    /// `light-cljs.edn:14:49 (:release), from APP_VERSION`,
+    /// `LIGHT_CLJS:1:14`, `--config-merge 2:1:30` or `default`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Some((line, column)) = self.location else {
+            return f.write_str("default");
+        };
+        match self.source {
+            ConfigSource::Default => return f.write_str("default"),
+            ConfigSource::File => write!(f, "{FILE_NAME}:{line}:{column}")?,
+            ConfigSource::LightCljs => write!(f, "{ENVIRONMENT_VARIABLE}:{line}:{column}")?,
+            ConfigSource::ConfigMerge(index) => {
+                write!(f, "--config-merge {index}:{line}:{column}")?
+            }
+        }
+        if let Some(mode) = self.mode {
+            write!(f, " (:{})", mode.name())?;
+        }
+        match &self.environment {
+            Some(environment) if environment.set => write!(f, ", from {}", environment.variable),
+            Some(environment) => write!(f, ", {} unset", environment.variable),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A merged setting: its value and where it was written.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettingValue {
+    pub value: Value,
+    pub origin: SettingOrigin,
+}
+
+/// One build's settings for one mode, layers 1-5 of "Precedence" merged: a
+/// slot per [`Setting`], empty where no layer gives the setting and it has
+/// no default. `:closure-defines` under `:compiler-options` is merged under
+/// the build's own, into [`Setting::ClosureDefines`], leaving
+/// [`Setting::CompilerClosureDefines`] empty; the top-level
+/// `:cache-blockers` are unioned into [`Setting::BuildCacheBlockers`].
+#[derive(Clone, Debug)]
+pub struct BuildSettings {
+    build: BuildId,
+    name: String,
+    mode: BuildMode,
+    slots: [Option<SettingValue>; Setting::COUNT],
+}
+
+impl BuildSettings {
+    pub fn build(&self) -> BuildId {
+        self.build
+    }
+
+    /// The build id, without its colon.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn mode(&self) -> BuildMode {
+        self.mode
+    }
+
+    pub fn slot(&self, setting: Setting) -> Option<&SettingValue> {
+        self.slots[setting.index()].as_ref()
+    }
+
+    pub fn get(&self, setting: Setting) -> Option<&Value> {
+        self.slot(setting).map(|slot| &slot.value)
+    }
+
+    pub fn origin(&self, setting: Setting) -> Option<&SettingOrigin> {
+        self.slot(setting).map(|slot| &slot.origin)
+    }
+}
+
+/// A setting as merged so far, and the mode map that last gave it.
+#[derive(Clone, Debug)]
+struct Slot {
+    value: Value,
+    mode: Option<BuildMode>,
+}
+
+type Slots = [Option<Slot>; Setting::COUNT];
+
+/// Deep-merge `value`, from a layer that is `mode`'s map or not, over `slot`.
+fn merge_slot(slot: &mut Option<Slot>, value: &Value, mode: Option<BuildMode>) {
+    *slot = Some(match slot.take() {
+        Some(lower)
+            if matches!(value.kind, ValueKind::Nil)
+                && !matches!(lower.value.kind, ValueKind::Nil) =>
+        {
+            lower
+        }
+        Some(lower) => Slot {
+            value: deep_merge(lower.value, value.clone()),
+            mode,
+        },
+        None => Slot {
+            value: value.clone(),
+            mode,
+        },
+    });
+}
+
+fn merge_layer(slots: &mut Slots, layer: &Layer, mode: Option<BuildMode>) {
+    for (slot, entry) in slots.iter_mut().zip(&layer.slots) {
+        if let Some(entry) = entry {
+            merge_slot(slot, &entry.value, mode);
+        }
+    }
+}
+
+/// `upper` deep-merged over `lower`, where a default `upper` adds nothing.
+fn combine(lower: Option<Slot>, upper: Option<Slot>) -> Option<Slot> {
+    match (lower, upper) {
+        (lower, None) => lower,
+        (None, upper) => upper,
+        (Some(lower), Some(upper)) if upper.value.source == ConfigSource::Default => Some(lower),
+        (lower, Some(upper)) => {
+            let mut slot = lower;
+            merge_slot(&mut slot, &upper.value, upper.mode);
+            slot
+        }
+    }
+}
+
+/// Layer 1, the built-in defaults: today's flag defaults, with release's
+/// `:optimizations :advanced` and the watch's `:http`, `:fs-watch` and cache
+/// root ("Schema"). Dev builds run at none semantics and with ClojureScript's
+/// warnings, so dev's `:optimizations` is `:none` and `:cljs-warnings` true.
+fn defaults(mode: BuildMode) -> Slots {
+    let limits = crate::MacroLimits::default();
+    let evaluator = crate::evaluator::EvaluatorOptions::default();
+    let cache_root = Path::new(crate::compile_cache::DEFAULT_DIR)
+        .parent()
+        .and_then(Path::to_str)
+        .unwrap_or(".light-cljs");
+    let integer = |number: u128| ValueKind::Number {
+        kind: NumberKind::Integer,
+        text: number.to_string(),
+    };
+    let keyword = |name: &str| ValueKind::Keyword(name.to_owned());
+    let release = mode == BuildMode::Release;
+    let values = [
+        (Setting::CacheRoot, ValueKind::String(cache_root.to_owned())),
+        (Setting::CacheBlockers, ValueKind::Set(Vec::new())),
+        (Setting::CompileThreads, integer(1)),
+        (Setting::HttpPort, integer(9630)),
+        (Setting::HttpHost, ValueKind::String("127.0.0.1".into())),
+        (Setting::FsWatchLoopWait, integer(100)),
+        (
+            Setting::Optimizations,
+            keyword(if release { "advanced" } else { "none" }),
+        ),
+        (Setting::PseudoNames, ValueKind::Boolean(false)),
+        (Setting::ElideAsserts, ValueKind::Boolean(false)),
+        (Setting::CljsWarnings, ValueKind::Boolean(!release)),
+        (Setting::MacroExpansions, integer(limits.expansions as u128)),
+        (Setting::MacroNodes, integer(limits.generated_nodes as u128)),
+        (
+            Setting::MacroTimeoutMs,
+            integer(evaluator.timeout.as_millis()),
+        ),
+        (
+            Setting::MacroMemoryLimit,
+            integer(evaluator.memory_limit as u128),
+        ),
+        (
+            Setting::MacroPollBudget,
+            integer(u128::from(evaluator.poll_budget)),
+        ),
+        (Setting::CacheLevel, keyword("all")),
+        (Setting::BuildCacheBlockers, ValueKind::Set(Vec::new())),
+    ];
+    let mut slots: Slots = std::array::from_fn(|_| None);
+    for (setting, kind) in values {
+        slots[setting.index()] = Some(Slot {
+            value: Value::default_of(kind),
+            mode: None,
+        });
+    }
+    slots
+}
+
+/// Whether `mode` reads `setting`: the dev server, nREPL, the poller and
+/// reloading belong to `watch`, a dev mode command.
+fn applies(setting: Setting, mode: BuildMode) -> bool {
+    match setting {
+        Setting::HttpPort
+        | Setting::HttpHost
+        | Setting::HttpStrict
+        | Setting::Nrepl
+        | Setting::FsWatchImpl
+        | Setting::FsWatchLoopWait
+        | Setting::ReloadStrategy => mode == BuildMode::Dev,
+        _ => true,
+    }
+}
+
+/// `path` under `base`, with `.` and `..` resolved by name.
+fn lexical(base: &Path, path: &str) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in base.join(path).components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else if !out.has_root() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+impl ConfigFile {
+    /// Build `build`'s settings for `mode`: the built-in defaults, the file's
+    /// top level (with `LIGHT_CLJS` merged over the whole file as it was
+    /// read), the build, its `:dev` or `:release` map, then each of `merges`
+    /// in order, deep-merged ([`deep_merge`]) slot by slot, each slot with
+    /// its origin.
+    ///
+    /// The result is validated again: a merge that adds a second module or
+    /// `:entries` namespace, or `:closure-defines` or `:checked-arrays` in
+    /// dev mode; a nil from an unset variable without a default where a
+    /// value is required, in the settings `mode` reads; and an output
+    /// directory that another build writes in `mode` (as the file defines
+    /// that build, without `merges`), that is the cache store or that is a
+    /// source path.
+    pub fn settings(
+        &self,
+        build: BuildId,
+        mode: BuildMode,
+        merges: &[ConfigMerge],
+    ) -> Result<BuildSettings, ConfigFileError> {
+        let texts = self.texts(merges);
+        let fail = |error: Located| texts.error(error, ConfigSource::File);
+        let definition = self.build(build);
+        let name = definition.name();
+        let mut slots = defaults(mode);
+        merge_layer(&mut slots, &self.top, None);
+        merge_layer(&mut slots, definition.layer(None), None);
+        merge_layer(&mut slots, definition.layer(Some(mode)), Some(mode));
+        for merge in merges {
+            if mode == BuildMode::Dev {
+                merge.dev_rule(name).map_err(fail)?;
+            }
+            merge_layer(&mut slots, &merge.layer, None);
+        }
+        let compiler = slots[Setting::CompilerClosureDefines.index()].take();
+        let own = slots[Setting::ClosureDefines.index()].take();
+        slots[Setting::ClosureDefines.index()] = combine(compiler, own);
+        let top_blockers = slots[Setting::CacheBlockers.index()].clone();
+        let own = slots[Setting::BuildCacheBlockers.index()].take();
+        slots[Setting::BuildCacheBlockers.index()] = combine(top_blockers, own);
+
+        check_modules(
+            slots[Setting::Modules.index()]
+                .as_ref()
+                .map(|slot| &slot.value),
+            name,
+            mode,
+        )
+        .map_err(fail)?;
+        check_unset(&mut slots, name, mode).map_err(fail)?;
+        self.check_output(&slots, build, mode).map_err(fail)?;
+
+        let slots = slots.map(|slot| {
+            slot.map(|Slot { value, mode }| SettingValue {
+                origin: texts.origin(&value, mode),
+                value,
+            })
+        });
+        Ok(BuildSettings {
+            build,
+            name: name.to_owned(),
+            mode,
+            slots,
+        })
+    }
+
+    /// Several builds run by one command, each with `merges` applied, must
+    /// not write one directory: `settings` checks each against the others
+    /// as the file defines them, and this checks them against each other.
+    pub fn check_outputs(
+        &self,
+        settings: &[BuildSettings],
+        merges: &[ConfigMerge],
+    ) -> Result<(), ConfigFileError> {
+        let project = self.project_dir();
+        let mut seen: HashMap<PathBuf, &BuildSettings> = HashMap::new();
+        for build in settings {
+            let Some(value) = build.get(Setting::OutputDir) else {
+                continue;
+            };
+            let Some(text) = value.as_str() else { continue };
+            if let Some(other) = seen.insert(lexical(project, text), build) {
+                let (a, b) = ordered(other.name(), build.name());
+                return Err(self.texts(merges).error(
+                    scoped(
+                        at_value(
+                            value,
+                            format!(
+                                "builds :{a} and :{b} both write {text} in {} mode",
+                                build.mode().name()
+                            ),
+                        ),
+                        build.name(),
+                        build.mode(),
+                    ),
+                    ConfigSource::File,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The directory relative paths resolve against: the file's, absolute.
+    fn project_dir(&self) -> &Path {
+        &self.project
+    }
+
+    fn check_output(&self, slots: &Slots, build: BuildId, mode: BuildMode) -> Result<(), Located> {
+        let Some(out) = slots[Setting::OutputDir.index()].as_ref() else {
+            return Ok(());
+        };
+        let Some(text) = out.value.as_str() else {
+            return Ok(());
+        };
+        let project = self.project_dir();
+        let target = lexical(project, text);
+        let name = self.build(build).name();
+        let mode_name = mode.name();
+        let error = |message: String| scoped(at_value(&out.value, message), name, mode);
+        for (index, other) in self.builds.iter().enumerate() {
+            if index == build.0 as usize {
+                continue;
+            }
+            if other
+                .output_dir(mode)
+                .is_some_and(|other_text| lexical(project, other_text) == target)
+            {
+                let (a, b) = ordered(name, other.name());
+                return Err(error(format!(
+                    "builds :{a} and :{b} both write {text} in {mode_name} mode"
+                )));
+            }
+        }
+        let root = slots[Setting::CacheRoot.index()].as_ref();
+        if let Some(root) = root.and_then(|root| root.value.as_str())
+            && lexical(project, root).join("cache") == target
+        {
+            let mut quoted = String::new();
+            print_string(root, &mut quoted);
+            return Err(error(format!(
+                "build :{name} writes {text} in {mode_name} mode, the cache store of \
+                 :cache-root {quoted}; give it a directory of its own"
+            )));
+        }
+        if let Some(Slot {
+            value:
+                Value {
+                    kind: ValueKind::Vector(paths),
+                    ..
+                },
+            ..
+        }) = &slots[Setting::SourcePaths.index()]
+        {
+            for path in paths {
+                if path
+                    .as_str()
+                    .is_some_and(|path| lexical(project, path) == target)
+                {
+                    return Err(error(format!(
+                        "build :{name} writes {text} in {mode_name} mode, the source path {}; \
+                         give it a directory of its own",
+                        path.to_edn()
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn ordered<'a>(a: &'a str, b: &'a str) -> (&'a str, &'a str) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+/// Merged `:modules` with a second module or a second `:entries` namespace.
+fn check_modules(modules: Option<&Value>, build: &str, mode: BuildMode) -> Result<(), Located> {
+    let Some(Value {
+        kind: ValueKind::Map(modules),
+        ..
+    }) = modules
+    else {
+        return Ok(());
+    };
+    let phrase = format!("build :{build} ({})", mode.name());
+    if let [_, (second, _), ..] = &modules[..] {
+        return Err(scoped(
+            at_value(
+                second,
+                format!(
+                    "{phrase} has {} modules; {CODE_SPLITTING}",
+                    count_word(modules.len())
+                ),
+            ),
+            build,
+            mode,
+        ));
+    }
+    let Some((id, module)) = modules.first() else {
+        return Ok(());
+    };
+    // An unset variable's nil is no namespace: check_unset reports it.
+    let entries: Vec<&Value> = match module.get("entries").map(|entries| &entries.kind) {
+        Some(ValueKind::Vector(entries)) => entries
+            .iter()
+            .filter(|entry| !entry.is_unset_environment())
+            .collect(),
+        _ => Vec::new(),
+    };
+    if let [_, second, ..] = &entries[..] {
+        return Err(scoped(
+            at_value(
+                second,
+                format!(
+                    "module {} of {phrase} has {} entries; give one namespace: {CODE_SPLITTING}",
+                    id.to_edn(),
+                    count_word(entries.len())
+                ),
+            ),
+            build,
+            mode,
+        ));
+    }
+    Ok(())
+}
+
+/// The nils of unset variables without a default ("Errors"), checked for
+/// one build and mode, in the settings the mode reads: an error where a
+/// value is required, and otherwise the setting is not given.
+fn check_unset(slots: &mut Slots, build: &str, mode: BuildMode) -> Result<(), Located> {
+    let unset = |value: &Value, subject: String| {
+        let variable = value
+            .environment
+            .as_ref()
+            .map_or("", |environment| environment.variable.as_str());
+        scoped(
+            at_value(
+                value,
+                format!(
+                    "{subject} of build :{build} ({}) is nil: {variable} is unset and the form \
+                     gives no default",
+                    mode.name()
+                ),
+            ),
+            build,
+            mode,
+        )
+    };
+    fn first_unset(items: &[Value]) -> Option<&Value> {
+        items.iter().find(|item| item.is_unset_environment())
+    }
+    for setting in Setting::ALL {
+        let Some(slot) = &slots[setting.index()] else {
+            continue;
+        };
+        if !applies(setting, mode) {
+            continue;
+        }
+        let value = &slot.value;
+        if value.is_unset_environment() {
+            if matches!(
+                setting,
+                Setting::SourcePaths | Setting::Target | Setting::OutputDir | Setting::Modules
+            ) {
+                return Err(unset(value, format!(":{}", setting.key())));
+            }
+            continue;
+        }
+        match (setting, &value.kind) {
+            (Setting::SourcePaths, ValueKind::Vector(paths)) => {
+                if let Some(path) = first_unset(paths) {
+                    return Err(unset(path, "a source path".into()));
+                }
+            }
+            (Setting::CacheBlockers | Setting::BuildCacheBlockers, ValueKind::Set(blockers)) => {
+                if let Some(blocker) = first_unset(blockers) {
+                    return Err(unset(blocker, "a cache blocker".into()));
+                }
+            }
+            (Setting::Modules, ValueKind::Map(modules)) => {
+                for (id, module) in modules {
+                    let id = id.to_edn();
+                    if module.is_unset_environment() {
+                        return Err(unset(module, format!("module {id}")));
+                    }
+                    let Some(entries) = module.get("entries") else {
+                        continue;
+                    };
+                    if entries.is_unset_environment() {
+                        return Err(unset(entries, format!(":entries of module {id}")));
+                    }
+                    if let ValueKind::Vector(namespaces) = &entries.kind
+                        && let Some(namespace) = first_unset(namespaces)
+                    {
+                        return Err(unset(namespace, format!("the entry of module {id}")));
+                    }
+                }
+            }
+            (Setting::ClosureDefines, ValueKind::Map(defines)) => {
+                for (key, define) in defines {
+                    if define.is_unset_environment() {
+                        return Err(unset(define, format!(":closure-defines {}", key.to_edn())));
+                    }
+                }
+            }
+            (Setting::Nrepl, ValueKind::Map(_)) => {
+                if let Some(port) = value.get("port")
+                    && port.is_unset_environment()
+                {
+                    return Err(unset(port, ":nrepl :port".into()));
+                }
+            }
+            _ => {}
+        }
+    }
+    for slot in slots.iter_mut() {
+        if slot
+            .as_ref()
+            .is_some_and(|slot| slot.value.is_unset_environment())
+        {
+            *slot = None;
+        }
+    }
+    Ok(())
+}
+
+/// One `--config-merge DATA`, read and validated: a map of build keys
+/// deep-merged over each build the command names, after its mode map.
+#[derive(Clone, Debug)]
+pub struct ConfigMerge {
+    index: usize,
+    text: String,
+    lines: LineIndex,
+    layer: Layer,
+}
+
+impl ConfigMerge {
+    /// Read the `index`th `--config-merge` (from 1), as shadow-cljs's
+    /// `parse-merge-data`: DATA starting with `{` is EDN text, and anything
+    /// else a file path relative to `project_dir`; `classpath:` is an
+    /// error, since light-cljs has no classpath. The text is read with the
+    /// file's reader, its `#light-cljs/env` resolved against `environment`,
+    /// and validated as strictly as a build's map, with `--config-merge N`
+    /// as its path in messages. `:dev` and `:release` are errors in it: the
+    /// command has chosen the mode.
+    pub fn parse(
+        index: usize,
+        data: &str,
+        project_dir: &Path,
+        environment: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Self, ConfigFileError> {
+        let unlocated = |message: String| ConfigFileError {
+            path: merge_name(index),
+            location: None,
+            build: None,
+            mode: None,
+            message,
+        };
+        if data.starts_with("classpath:") {
+            return Err(unlocated(format!(
+                "{data}: light-cljs has no classpath; give EDN text starting with {{ or a \
+                 file path relative to the project directory"
+            )));
+        }
+        let text = if data.starts_with('{') {
+            data.to_owned()
+        } else {
+            let path = project_dir.join(data);
+            std::fs::read_to_string(&path)
+                .map_err(|error| unlocated(format!("cannot read {}: {error}", path.display())))?
+        };
+        let lines = LineIndex::new(&text);
+        let located = |error: Located| ConfigFileError {
+            path: merge_name(index),
+            location: Some(lines.line_column(error.span.start).unwrap_or((1, 1))),
+            build: error.build,
+            mode: error.mode,
+            message: error.message,
+        };
+        let origin = ConfigSource::ConfigMerge(index);
+        let Some(value) = read_document(&text, &lines, environment, origin).map_err(located)?
+        else {
+            return Err(located(at(
+                &(0..0),
+                "--config-merge must be a map of build keys, such as {:output-dir \"out/x\"}, \
+                 got nothing"
+                    .into(),
+            )));
+        };
+        let layer = Validator {
+            overlay: true,
+            origin,
+        }
+        .merge(&value)
+        .map_err(located)?;
+        Ok(Self {
+            index,
+            text,
+            lines,
+            layer,
+        })
+    }
+
+    /// Which `--config-merge` this is, from 1.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// The EDN text, as given or as read from the file.
+    pub fn source(&self) -> &str {
+        &self.text
+    }
+
+    /// The settings it merges.
+    pub fn layer(&self) -> &Layer {
+        &self.layer
+    }
+
+    /// The mode rule for a merge, which the command applies in dev mode:
+    /// `:closure-defines` and `:checked-arrays` reach no dev build.
+    fn dev_rule(&self, build: &str) -> Result<(), Located> {
+        let refused = [
+            (Setting::ClosureDefines, "takes no defines"),
+            (Setting::CompilerClosureDefines, "takes no defines"),
+            (Setting::CheckedArrays, "checks no array accesses"),
+        ];
+        let first = refused
+            .iter()
+            .filter_map(|&(setting, reason)| {
+                let entry = self.layer.get(setting)?;
+                (!entry.value.is_unset_environment()).then_some((setting, reason, entry))
+            })
+            .min_by_key(|(_, _, entry)| entry.key.start);
+        match first {
+            None => Ok(()),
+            Some((setting, reason, entry)) => Err(scoped(
+                Located {
+                    source: Some(entry.value.source),
+                    ..at(
+                        &entry.key,
+                        format!(
+                            ":{} of build :{build} applies in dev mode, whose dev build \
+                             {reason}; merge it into release builds only",
+                            setting.key()
+                        ),
+                    )
+                },
+                build,
+                BuildMode::Dev,
+            )),
+        }
     }
 }
 

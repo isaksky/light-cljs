@@ -2,8 +2,9 @@
 
 Status: settled design, October 20, 2026. The user decided its three open
 questions the same day ("Settled questions"). The reader and the schema
-are implemented ("As built (light-cljs-398)"); no command reads the file
-yet. The implementation is queued as the pellets group `build-configuration`,
+("As built (light-cljs-398)") and the merging of a build's layers ("As
+built (light-cljs-399)") are implemented; no command reads the file yet.
+The implementation is queued as the pellets group `build-configuration`,
 one or more pellets per phase ("Phases"). Names that shadow-cljs has no
 word for are listed under "Names for review"; the pellets use them as
 written unless the user renames one.
@@ -79,6 +80,7 @@ key, value and behavior.
 | `~/.shadow-cljs/config.edn`; `#env` beside `#shadow/env` | none; `#light-cljs/env` only | The user file exists for per-user dependencies and nREPL middleware, which light-cljs has none of; EDN reserves unqualified tags such as `#env` |
 | `release --source-maps`, `--debug` | refused | Chunked output has no source maps yet (`--out-dir` refuses the source map flags) |
 | Open specs: an unknown key is ignored | Closed key sets: an unknown key is an error at its line and column | A misspelled key must not silently build something else (kept from e05a164) |
+| `deep-merge` throws "failed to merge config value" for a list, or a map, vector or set over a value of another kind | the upper value replaces the lower one | "Precedence": anything else is replaced, so `LIGHT_CLJS` can turn `:nrepl false` into `{:port 0}` and a `:config` list can be changed; the merged value is validated as any other |
 | Defaults: `:fs-watch {:loop-wait 500}`, `:compile-threads` the processor count | 100 ms; 1 | Today's `--poll-ms` default; `--jobs` is experimental and did not meet its gate (compiler-concurrency.md) |
 | A cache per build and mode, `.shadow-cljs/builds/<id>/<mode>` | One content-addressed store, `<:cache-root>/cache`, shared by every build and mode | Artifacts are keyed by their inputs (compiler-cache.md), so sharing is safe and saves work |
 
@@ -673,9 +675,10 @@ that run.
 | A malformed `#light-cljs/env` | `light-cljs.edn:3:15: #light-cljs/env takes "NAME", ["NAME"], ["NAME" DEFAULT] or ["NAME" :as TYPE :default DEFAULT]` |
 | An unset variable where a value is required | `light-cljs.edn:15:51: :closure-defines app.config/VERSION of build :app (release) is nil: APP_VERSION is unset and the form gives no default` |
 | `:as :int` on a non-integer | `light-cljs.edn:3:15: HTTP_PORT is "web", not a decimal integer (:as :int)` |
-| `--config-merge` not a map, `classpath:`, `:dev` inside it | the message, at `--config-merge N` and its line and column |
+| `--config-merge` not a map, `classpath:`, `:dev` inside it | the message, at `--config-merge N` and its line and column: `--config-merge 1:1:1: --config-merge must be a map of build keys, such as {:output-dir "out/x"}, got [1 2]`; `--config-merge 1: classpath:demo.edn: light-cljs has no classpath; give EDN text starting with { or a file path relative to the project directory`; `--config-merge 1:1:2: :dev in --config-merge: the command chooses the mode (compile and watch run :dev, release runs :release), so --config-merge holds the build keys themselves` |
+| `--config-merge` adding a key that is an error in dev mode | `--config-merge 2:1:2: :closure-defines of build :app applies in dev mode, whose dev build takes no defines; merge it into release builds only` |
 | Two builds, one directory | `light-cljs.edn:19:16: builds :app and :worker both write out/app in dev mode` |
-| An output directory equal to the cache store or a source path | an error naming both |
+| An output directory equal to the cache store or a source path | `light-cljs.edn:8:16: build :app writes out/cache in release mode, the cache store of :cache-root "out"; give it a directory of its own`, and `..., the source path "src"; give it a directory of its own` |
 | A duplicate key, a parse error | the reader's message, at its span |
 | An unknown build id | `light-cljs release ap: light-cljs.edn defines no build :ap; did you mean :app? Its builds are :app, :test, :worker` |
 | `--entry` with two ids | `light-cljs watch app worker --entry x: --entry and --out-dir name one build's entry and directory; give one build id` |
@@ -932,6 +935,92 @@ Names are decisions for review; the structure is a sketch.
   build :app must be ..., got VALUE". The error table above gives the
   shapes; `tests/config_file/reader.rs` asserts every message exactly.
 
+### As built (light-cljs-399): layers, LIGHT_CLJS and --config-merge
+
+- `ConfigFile::settings(build, mode, merges) -> Result<BuildSettings,
+  ConfigFileError>` merges layers 1-5 of "Precedence" slot by slot: a
+  setting is one key path and every map on the way is validated as a map,
+  so merging the slots is `deep-merge` of the maps that hold them.
+  `BuildSettings` has a `SettingValue` (value and `SettingOrigin`) per
+  `Setting`, empty where no layer gives one and there is no default.
+  Flags, layer 6, are light-cljs-400's.
+- **Values know their text.** `Value::source` is a `ConfigSource`
+  (`Default`, `File`, `LightCljs`, `ConfigMerge(N)`), so a merged map's
+  entries and a concatenated vector's elements each keep where they were
+  written; `ConfigFile::origin(value, merges)` locates any of them (for
+  light-cljs-401's per-entry comments). A slot's `SettingOrigin` is its
+  value's: the source, span, line and column, the mode map that gave it,
+  and the `#light-cljs/env` variable. It prints as `light-cljs.edn:14:49
+  (:release), from APP_VERSION`, `LIGHT_CLJS:1:14`, `--config-merge
+  2:1:30` or `default`; an unset variable whose default was used prints
+  `, APP_VERSION unset`. A merged collection's origin is its highest
+  layer's.
+- **`deep_merge`** follows `shadow/build/api.clj` but for the deviation
+  above: a nil lower value gives the upper one and a nil upper value keeps
+  the lower one, so an unset variable without a default in a higher layer
+  leaves the value below it, as in shadow-cljs. Keys and elements are equal
+  as `BuildConfiguration` finds them (`1` and `1.0`), not by Clojure's `=`,
+  so a merged `:config` is still a valid one.
+- **Defaults**, layer 1: `:cache-root ".light-cljs"`, `:cache-blockers
+  #{}` at both levels, `:compile-threads 1`, `:http {:port 9630 :host
+  "127.0.0.1"}`, `:fs-watch {:loop-wait 100}`, `:optimizations :advanced`
+  in release and `:none` in dev (which runs at none semantics),
+  `:pseudo-names` and `:elide-asserts` false, `:cljs-warnings` false in
+  release and true in dev (which implies it), the five macro limits from
+  `MacroLimits::default()` and `EvaluatorOptions::default()`, and
+  `:cache-level :all`. `:http :strict`, `:nrepl`, `:fs-watch :impl`,
+  `:config`, `:closure-defines`, `:checked-arrays` and `:devtools` have
+  none.
+- **Derived slots.** `:closure-defines` under `:compiler-options` is merged
+  under the build's own into `Setting::ClosureDefines`, after every layer,
+  and `Setting::CompilerClosureDefines` is left empty; as in shadow-cljs's
+  `build.clj`, a build-level define in the file wins over a merge's
+  `:compiler-options` one. The top-level `:cache-blockers` are unioned
+  into `Setting::BuildCacheBlockers`; `Setting::CacheBlockers` keeps the
+  top level's own.
+- **`LIGHT_CLJS`** is read in `ConfigFile::read` and `from_source` through
+  the same lookup; empty, or holding no form (only a comment), it is not
+  there. It is validated as strictly as the file but may leave anything
+  out, as may the file under it; after the merge the whole is checked
+  (`:source-paths`, a build, each build's `:target`, `:output-dir` and
+  `:modules` per mode). `builds()`, `top()` and `build(id)` are the merged
+  ones; `document()` stays the file's, and `light_cljs()` gives the text. A
+  build only `LIGHT_CLJS` defines is added in id order, and its errors are
+  located in `LIGHT_CLJS`.
+- **`ConfigMerge::parse(index, data, project_dir, environment)`**, with
+  the merge's position on the command line (from 1, for `--config-merge
+  N` in messages) and the environment lookup that its `#light-cljs/env`
+  needs, beside the sketch's two arguments. Text starting with `{` is EDN,
+  anything else a path joined to the project directory; a file with no
+  form is not a map. Inside it, a top-level key says it is one ("is a
+  top-level key"), and messages name "the merged build".
+- **Checks after merging at read**: each build's own map with each mode
+  map over it, after `LIGHT_CLJS`, must hold one module of one `:entries`
+  namespace, whichever build and mode a command runs (an unset
+  variable's nil is not counted; `settings` reports it in the mode that
+  reads it).
+- **Checks after merging**, in `settings`: in dev mode, a merge's
+  `:closure-defines` (at either level) or `:checked-arrays`, at its key; a
+  second module or `:entries` namespace, at the second; a nil from an
+  unset variable without a default where a value is required, at the tag:
+  `:source-paths`, `:target`, `:output-dir` or `:modules` themselves, a
+  source path, a cache blocker, a module, its `:entries` or its entry, a
+  define's value and `:nrepl :port`, each only in a mode that reads the
+  setting (`:http`, `:nrepl`, `:fs-watch` and `:devtools` in dev, for
+  `watch`). A nil in an optional setting leaves it empty, and `:config`
+  takes nil as `--config` does. Output directories are compared as paths
+  joined to the project directory, made absolute when the file is read
+  (so an absolute and a relative spelling of one directory are equal), with
+  `.` and `..` resolved by name:
+  `settings` compares the build's with each other build's as the file
+  defines it in that mode (merges apply only to the builds a command
+  names), with `<:cache-root>/cache` and with each source path;
+  `ConfigFile::check_outputs(settings, merges)` compares the builds of one
+  command with each other, for light-cljs-400 when a merge applies to
+  several. A directory inside a source path, as examples/features' is, is
+  not an error.
+- Tests: `tests/config_file/merge.rs`.
+
 ## Phases
 
 Queued on 2026-10-20 as the pellets group `build-configuration`, in this
@@ -1036,7 +1125,7 @@ shadow-cljs's style:
 | Printing the merged configuration | `--print-config` | - |
 | Switching an nREPL session's build | `(light.dev/repl :worker)` | - |
 | Artifacts kept per namespace, only if the Phase 3 measurement shows eviction | top-level `:cache-retention N` | `--cache-retention N` |
-| Rust | `light_cljs::config_file`, `FILE_NAME`, `ConfigFile`, `ConfigMerge`, `BuildDefinition`, `BuildSettings`, `BuildMode::{Dev, Release}`, `BuildId`, `Setting`, `SettingOrigin`, `ConfigFileError`, `config_cli`, `BuildWorker`, `BuildConfiguration::set` | - |
+| Rust | `light_cljs::config_file`, `FILE_NAME`, `ConfigFile`, `ConfigMerge`, `BuildDefinition`, `BuildSettings`, `BuildMode::{Dev, Release}`, `BuildId`, `Setting`, `SettingOrigin`, `SettingValue`, `ConfigSource`, `deep_merge`, `ConfigFileError`, `config_cli`, `BuildWorker`, `BuildConfiguration::set` | - |
 
 Shadow-cljs's own names this design maps a light-cljs flag to, for
 checking: `:source-paths`, `:modules` `:entries`, `:output-dir`,
