@@ -20,9 +20,20 @@
 ;; `__light<n>_` hygiene prefix, kept only where raw `js*` text puts a hole
 ;; inside one of its strings or comments (src/terse.rs).
 ;;
+;; A second table gives the chunks of the whole application's `--out-dir`
+;; build at `advanced` (light-cljs-280), raw / `gzip -9` bytes of each file,
+;; beside its bound: startup beside the lower bound and the Goal target (the
+;; lower bound plus 200 bytes per `loadable` site), with what the Goal counts
+;; of it: less the runtime units `--size-report` attributes to roots of other
+;; chunks and less the chunk loader, which the Goal does not count (the
+;; user's decision of 2026-10-20); and the first load of each feature (its
+;; chunk and the chunks it imports other than startup) beside the feature as
+;; its own entry.
+;;
 ;;   bb benchmarks/features.bb
 (require '[babashka.fs :as fs]
          '[babashka.process :as process]
+         '[cheshire.core :as json]
          '[clojure.string :as str]
          '[rewrite-clj.node :as n]
          '[rewrite-clj.zip :as z])
@@ -122,7 +133,81 @@
      :runtime (:runtime (last sizes))
      :prefixed (:prefixed (last sizes))}))
 
+(defn- gzip-bytes [file]
+  (count (:out (process/shell {:out :bytes} "gzip" "-9" "-n" "-c" (str file)))))
+
+(def ^:private loader-bytes
+  "Startup's chunk loading, which the Goal does not count: the `Loadable`
+  type, `lazy$`, the sites' calls and import thunks and `light.lazy/Loadable`'s
+  definition, as light-cljs-353 measured it (`FEATURES_STARTUP_LOADER` in
+  tests/compiler/size_ratchet.rs)."
+  612)
+
+(defn- held-bytes
+  "The bytes of the runtime units the `--size-report` text `report` lists for
+  its first chunk, startup, under roots another chunk's code first demanded:
+  the rows of its roots table whose demand names a chunk file."
+  [report]
+  (let [[_ startup] (str/split report #"(?m)^(?=\S+\.js: [\d,]+ bytes)" 3)]
+    (->> (re-seq #"(?m)^\S+\s+\d+\s+([\d,]+)\s+\S+\.js, " startup)
+         (map #(parse-long (str/replace (second %) "," "")))
+         (reduce + 0))))
+
+(defn- chunked
+  "The chunks of the `--out-dir` build of the whole application at
+  `advanced`, in chunks.json order, each with its raw and gzip bytes, and
+  startup with `:held`, the bytes of its units only other chunks' roots
+  need."
+  [binary out]
+  (let [dir (fs/create-dirs (fs/path out "chunks"))
+        report (:err (process/shell {:dir (str root) :err :string}
+                                    binary "--compile" "--optimize" "advanced" "--entry" (str entry)
+                                    "--source-root" (str sources) "--out-dir" (str dir)
+                                    "--size-report"))
+        chunks (for [chunk (:chunks (json/parse-string (slurp (str (fs/path dir "chunks.json"))) true))
+                     :let [file (fs/path dir (:file chunk))]]
+                 (assoc chunk :size {:bytes (fs/size file) :gzip (gzip-bytes file)}))]
+    (cons (assoc (first chunks) :held (held-bytes report)) (rest chunks))))
+
 (defn- grouped [n] (String/format java.util.Locale/ROOT "%,d" (object-array [n])))
+
+(defn- cell [{:keys [bytes gzip]}] (str (grouped bytes) " / " (grouped gzip)))
+
+(defn- advanced [measured] (last (:levels measured)))
+
+(defn- chunk-rows
+  "The Markdown rows of the chunk table: each chunk's size beside its bound,
+  then what loading each feature first costs, its chunk and the chunks it
+  imports other than startup, beside the feature as its own entry."
+  [chunks lower uppers]
+  (let [by-file (into {} (map (juxt :file identity) chunks))
+        startup (first chunks)
+        loadables (count (mapcat :loadables chunks))
+        prerequisites (fn prerequisites [file]
+                        (let [imports (remove #{(:file startup)} (:imports (by-file file)))]
+                          (distinct (concat (mapcat prerequisites imports) imports))))
+        total (fn [files] (apply merge-with + (map (comp :size by-file) files)))]
+    (concat
+     [(str "| `" (:file startup) "`, startup | " (cell (:size startup))
+           "; less " (grouped (:held startup)) " bytes of units for other chunks' roots and "
+           (grouped loader-bytes) " of chunk loading, "
+           (grouped (- (:bytes (:size startup)) (:held startup) loader-bytes)) " raw"
+           " | lower bound, the application without its features: " (cell (advanced lower))
+           "; target under " (grouped (+ (:bytes (advanced lower)) (* 200 loadables)))
+           " raw, 200 bytes per `loadable` |")]
+     (for [chunk (rest chunks)]
+       (str "| `" (:file chunk) "`"
+            (if (seq (:roots chunk))
+              (str ", loaded by " (str/join " and " (map #(str "`" % "`") (:roots chunk))))
+              ", shared")
+            " | " (cell (:size chunk)) " | |"))
+     (for [chunk (rest chunks)
+           root (:roots chunk)
+           :let [files (concat (prerequisites (:file chunk)) [(:file chunk)])]]
+       (str "| first load of `" root "`: " (str/join " + " (map #(str "`" % "`") files))
+            " | " (cell (total files))
+            " | upper bound, `" root "` as its own entry: " (cell (advanced (uppers root)))
+            " |")))))
 
 (defn- row [label {:keys [levels runtime]}]
   (str "| " label " | "
@@ -135,19 +220,23 @@
   (try
     (let [out (fs/create-dirs (fs/path tmp "out"))
           removals (concat (map vector features) [features])
+          variants (vec (for [removed removals
+                              :let [dir (variant (fs/path tmp (str/join "+" removed)) (set removed))
+                                    vout (fs/create-dirs (fs/path out (str/join "+" removed)))]]
+                          [removed (measure binary vout dir entry)]))
+          uppers (into {} (for [feature features]
+                            [(str feature) (measure binary out sources feature)]))
           rows (vec (concat
                      [[(str "`" entry "`, the whole application")
                        (measure binary out sources entry)]]
-                     (for [removed removals
-                           :let [dir (variant (fs/path tmp (str/join "+" removed)) (set removed))
-                                 label (str "`" entry "` without "
-                                            (str/join " and " (map #(str "`" % "`") removed))
-                                            (when (= removed features) ": startup lower bound"))
-                                 vout (fs/create-dirs (fs/path out (str/join "+" removed)))]]
-                       [label (measure binary vout dir entry)])
+                     (for [[removed measured] variants]
+                       [(str "`" entry "` without "
+                             (str/join " and " (map #(str "`" % "`") removed))
+                             (when (= removed features) ": startup lower bound"))
+                        measured])
                      (for [feature features]
                        [(str "`" feature "` as its own entry: chunk upper bound")
-                        (measure binary out sources feature)])))]
+                        (uppers (str feature))])))]
       (println (str "| Program | " (str/join " | " (map #(str "`" % "`") levels))
                     " | `advanced` runtime slice |"))
       (println (str "| --- |" (str/join (repeat (inc (count levels)) " ---: |"))))
@@ -158,5 +247,10 @@
                                             rows))
                                  (str/join "; "))
                         "none")
-                    ".")))
+                    "."))
+      (println)
+      (println "| Chunk, `--out-dir` at `advanced` | Bytes | Bound |")
+      (println "| --- | ---: | --- |")
+      (doseq [row (chunk-rows (chunked binary out) (second (last variants)) uppers)]
+        (println row)))
     (finally (fs/delete-tree tmp))))

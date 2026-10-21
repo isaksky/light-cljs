@@ -144,9 +144,10 @@ imports, namespaces, moved definitions, roots, loadable sites and size.
 Chunks follow namespaces, and at `--optimize advanced` definitions without
 effects move to the chunk of the code that reads them, as do the keywords,
 symbols and constant collections of the constant table and the runtime units
-(each chunk embeds those only the roots that load it need, and
-`--size-report` lists them per chunk), and a chunk left without code is not
-written. It works at every
+(each chunk embeds those only the roots that load it need), and a chunk left
+without code is not written; there `--size-report` prints per chunk its bytes,
+definitions, constants and runtime units, each with what first demanded it.
+It works at every
 `--optimize` level, writes only the files the manifest names, takes no source
 map flags, and leaves a program without loadables one file, its `--esm` output
 ([Chunked builds](docs/compiler.md#chunked-builds),

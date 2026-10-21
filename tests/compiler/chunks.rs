@@ -6,6 +6,7 @@
 //! manifest, `chunks.json`; and the CLI's `--out-dir`, which writes both.
 use crate::chunked_execution::{run_directory, run_modules};
 use crate::json::Json;
+use crate::size_ratchet::thousands;
 use crate::temp_dir::TempDir;
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::chunks::{ChunkId, ChunkPlan, ChunkedOutput, STARTUP, plan};
@@ -3210,12 +3211,29 @@ fn the_size_report_lists_each_chunk_s_units() {
     let program = fixture_program("features");
     let (_, chunks) = chunk_units(&program);
     let total = chunks.iter().map(|(_, units)| units.len()).sum::<usize>();
+    let written = chunks
+        .iter()
+        .map(|(file, _)| fs::read(out.join(file)).unwrap().len())
+        .collect::<Vec<_>>();
     assert!(
         report.starts_with(&format!(
-            "advanced: runtime slices of 4 chunks, {total} of "
+            "advanced: 4 chunks, {} bytes, {total} of ",
+            thousands(written.iter().sum())
         )),
         "{report}"
     );
+    // Each chunk's summary line starts with the bytes of its file.
+    for ((file, units), bytes) in chunks.iter().zip(&written) {
+        let summary = format!(
+            "{file}: {} bytes, {} units, ",
+            thousands(*bytes),
+            units.len()
+        );
+        assert!(
+            report.lines().any(|line| line.starts_with(&summary)),
+            "{summary}\n{report}"
+        );
+    }
     // Each chunk's section lists its units; a unit is listed once.
     let mut section = None;
     let mut listed = Vec::new();
@@ -3250,6 +3268,55 @@ fn the_size_report_lists_each_chunk_s_units() {
     let count = names.len();
     names.dedup();
     assert_eq!(names.len(), count, "a unit listed twice");
+    // Each chunk's summary counts the rows of its constant and definition
+    // tables (a table of none is left out), and the build's line their sums
+    // (from the Sol review).
+    let mut tables = vec![(0, 0); chunks.len()];
+    let mut table = None;
+    let mut chunk = None;
+    for line in report.lines() {
+        if let Some((file, _)) = line
+            .split_once(": ")
+            .filter(|(file, _)| file.ends_with(".js"))
+        {
+            chunk = chunks.iter().position(|(name, _)| name == file);
+            table = None;
+        } else if line.starts_with("constant ") {
+            table = Some(0);
+        } else if line.starts_with("definition ") {
+            table = Some(1);
+        } else if line.is_empty() || !line.starts_with(|c: char| !c.is_whitespace()) {
+            table = None;
+        } else if let (Some(chunk), Some(table)) = (chunk, table) {
+            let counts = &mut tables[chunk];
+            if table == 0 {
+                counts.0 += 1;
+            } else {
+                counts.1 += 1;
+            }
+        }
+    }
+    for ((file, _), (constants, definitions)) in chunks.iter().zip(&tables) {
+        let counts = format!(" runtime bytes, {constants} constants, {definitions} definitions");
+        assert!(
+            report
+                .lines()
+                .any(|line| line.starts_with(&format!("{file}: ")) && line.ends_with(&counts)),
+            "{file}{counts}\n{report}"
+        );
+    }
+    let constants = tables.iter().map(|counts| counts.0).sum::<usize>();
+    let definitions = tables.iter().map(|counts| counts.1).sum::<usize>();
+    assert!(constants > 0 && definitions > 0, "{tables:?}\n{report}");
+    assert!(
+        report
+            .lines()
+            .next()
+            .is_some_and(|line| line.ends_with(&format!(
+                " runtime bytes, {constants} constants, {definitions} definitions"
+            ))),
+        "{report}"
+    );
     // `zipmap`, startup's only through the hash tries' hooks, names the
     // editor's root.
     assert!(
@@ -3258,6 +3325,304 @@ fn the_size_report_lists_each_chunk_s_units() {
             .any(|line| line.starts_with("hash ") && line.contains("app.editor.js, source")),
         "{report}"
     );
+}
+
+/// The size report of examples/features at `Advanced` lists each chunk's
+/// definitions and constant table entries, each with the root and the
+/// expression that first demanded it: for a moved definition the first
+/// reference among the reading forms, for one its namespace holds the
+/// definition itself, and for an entry the expression whose code first read
+/// it (light-cljs-280).
+#[test]
+fn the_size_report_attributes_each_chunk_s_definitions_and_constants() {
+    let program = fixture_program("features");
+    let prepared = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let (output, report) = prepared.emit_chunks_reported();
+    let report = report.unwrap();
+    let file_index = |name: &str| {
+        output
+            .files
+            .iter()
+            .position(|file| file.name == name)
+            .unwrap()
+    };
+    let mut listed = Vec::new();
+    for (file, chunk) in output.files.iter().zip(&report.chunks) {
+        assert_eq!(chunk.bytes, file.source.len());
+        // A definition moved out of its namespace's chunk is the manifest's.
+        for moved in &file.definitions {
+            let definition = chunk
+                .definitions
+                .iter()
+                .find(|definition| &definition.name == moved)
+                .unwrap_or_else(|| panic!("{} lists no {moved}", file.name));
+            assert!(definition.moved, "{moved}");
+        }
+        listed.extend(chunk.definitions.iter().map(|definition| &definition.name));
+    }
+    let count = listed.len();
+    listed.sort_unstable();
+    listed.dedup();
+    assert_eq!(listed.len(), count, "a definition listed twice");
+    // The source text a demand names, and the namespace of its source.
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/features/app");
+    let demanded = |demand: &light_cljs::runtime_slice::Demand| {
+        let light_cljs::runtime_slice::Demand::Expression {
+            source_index, span, ..
+        } = demand
+        else {
+            panic!("{demand:?}")
+        };
+        let namespace = &program.namespaces[*source_index];
+        let file = namespace.strip_prefix("app.").unwrap();
+        let text = fs::read_to_string(example.join(format!("{file}.cljs"))).unwrap();
+        (
+            namespace.clone(),
+            span.start,
+            text[span.clone()].to_owned(),
+            text,
+        )
+    };
+    let chunk = |name: &str| &report.chunks[file_index(name)];
+    let definition = |chunk: &light_cljs::ChunkRetention, name: &str| {
+        chunk
+            .definitions
+            .iter()
+            .find(|definition| definition.name == name)
+            .unwrap_or_else(|| panic!("{} lists no {name}", chunk.file))
+            .clone()
+    };
+    // The documents both features read go to their shared chunk, reached
+    // first by the editor's root, at its first reference there.
+    let documents = definition(chunk("app.editor+app.reports.js"), "app.shared/documents");
+    assert!(documents.moved);
+    assert_eq!(documents.root, "app.editor");
+    assert_eq!(documents.demand.0, file_index("app.editor.js"));
+    let (namespace, start, text, source) = demanded(&documents.demand.1);
+    assert_eq!(namespace, "app.editor");
+    assert_eq!(text, "shared/documents");
+    assert_eq!(Some(start), source.find("shared/documents"));
+    // The menu's `label` is read first by the menu line.
+    let label = definition(chunk("app.main.js"), "app.shared/label");
+    assert_eq!((label.root.as_str(), label.demand.0), ("app.main", 0));
+    let (namespace, start, text, source) = demanded(&label.demand.1);
+    assert_eq!(namespace, "app.main");
+    assert_eq!(text, "shared/label");
+    assert_eq!(Some(start), source.find("shared/label"));
+    // A loadable's Var stays in its namespace, which holds its site: the
+    // definition is its own demand.
+    let editor = definition(chunk("app.main.js"), "app.main/editor");
+    assert!(!editor.moved);
+    assert_eq!((editor.root.as_str(), editor.demand.0), ("app.main", 0));
+    let (_, start, text, source) = demanded(&editor.demand.1);
+    assert_eq!(text, "(def editor (lazy/loadable app.editor/start))");
+    assert_eq!(Some(start), source.find(&text));
+    // Startup declares only the menu's keywords, read first by the menu
+    // line; the documents' keywords and collections are the shared chunk's.
+    fn labels(chunk: &light_cljs::ChunkRetention) -> Vec<&str> {
+        chunk
+            .constants
+            .iter()
+            .map(|constant| constant.label.as_str())
+            .collect()
+    }
+    let startup = chunk("app.main.js");
+    assert_eq!(labels(startup), [":editor", ":reports"]);
+    for constant in &startup.constants {
+        let Some((root, 0, Some(demand))) = &constant.first else {
+            panic!("{constant:?}")
+        };
+        assert_eq!(root, "app.main");
+        let (namespace, start, text, source) = demanded(demand);
+        assert_eq!(namespace, "app.main");
+        assert_eq!(text, constant.label);
+        assert_eq!(Some(start), source.find(&text));
+    }
+    let shared = chunk("app.editor+app.reports.js");
+    for label in [":intro", ":title", "vector of 4", "map of 4"] {
+        assert!(labels(shared).contains(&label), "{:?}", labels(shared));
+    }
+    // `:title`, a key of the documents' maps, which the editor's code also
+    // reads, is demanded first by the documents' literal, in their chunk,
+    // whose first root is the editor's.
+    let title = shared
+        .constants
+        .iter()
+        .find(|constant| constant.label == ":title")
+        .unwrap();
+    let Some((root, reader, Some(demand))) = &title.first else {
+        panic!("{title:?}")
+    };
+    assert_eq!(
+        (root.as_str(), *reader),
+        ("app.editor", file_index("app.editor+app.reports.js"))
+    );
+    let (namespace, start, text, source) = demanded(demand);
+    assert_eq!(namespace, "app.shared");
+    assert!(text.starts_with("[{:id :intro"), "{text}");
+    assert_eq!(Some(start), source.find(&text));
+    // The text lists them with their roots.
+    let text = report.to_string();
+    for (row, root, demand) in [
+        (
+            "app.shared/documents",
+            "app.editor",
+            "app.editor.js, source",
+        ),
+        (":title", "app.editor", "source"),
+        ("app.main/editor", "app.main", "its namespace, source"),
+    ] {
+        assert!(
+            text.lines().any(|line| {
+                let columns = line.split_whitespace().collect::<Vec<_>>();
+                columns.first() == Some(&row)
+                    && columns.get(1) == Some(&root)
+                    && line.contains(demand)
+            }),
+            "{row}\n{text}"
+        );
+    }
+}
+
+/// An entry only composites read takes the earliest read of one of them:
+/// startup's vector of `:token`, not the feature's, which the emitter
+/// declares first in the table (light-cljs-280).
+#[test]
+fn the_size_report_gives_a_part_the_earliest_read_of_its_composites() {
+    let program = analyze(&[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (def feature (lazy/loadable app.feature/start))\n\
+             (js/console.log [:token])\n\
+             (defn start [] (.then (lazy/load feature) (fn [f] (f))))\n\
+             start\n",
+        ),
+        (
+            "app/feature.cljs",
+            "(ns app.feature)\n(defn start [] (js/console.log [:token 1]))\n",
+        ),
+    ]);
+    let prepared = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let report = prepared.emit_chunks_reported().1.unwrap();
+    let token = report
+        .chunks
+        .iter()
+        .flat_map(|chunk| &chunk.constants)
+        .find(|constant| constant.label == ":token")
+        .unwrap();
+    let Some((root, 0, Some(light_cljs::runtime_slice::Demand::Expression { source_index, .. }))) =
+        &token.first
+    else {
+        panic!("{token:?}")
+    };
+    assert_eq!(root, "app.main");
+    assert_eq!(program.namespaces[*source_index], "app.main", "{token:?}");
+}
+
+/// One reading form that reaches many moved definitions names each at its
+/// own first reference (light-cljs-280).
+#[test]
+fn the_size_report_names_each_definition_one_form_reads_at_its_reference() {
+    // The helpers are passed as values, so none is inlined.
+    let helpers = (0..8)
+        .map(|n| format!("(defn h{n} [x] (+ x {n}))"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let reads = (0..8)
+        .map(|n| format!("h{n} h{n}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let feature =
+        format!("(ns app.feature)\n{helpers}\n(defn start [] (js/console.log {reads}))\n");
+    let program = analyze(&[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (def feature (lazy/loadable app.feature/start))\n\
+             (defn start [] (.then (lazy/load feature) (fn [f] (f))))\n\
+             start\n",
+        ),
+        ("app/feature.cljs", &feature),
+    ]);
+    let prepared = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let report = prepared.emit_chunks_reported().1.unwrap();
+    let definitions = report
+        .chunks
+        .iter()
+        .flat_map(|chunk| &chunk.definitions)
+        .filter(|definition| definition.name.starts_with("app.feature/h"))
+        .collect::<Vec<_>>();
+    assert_eq!(definitions.len(), 8, "{definitions:?}");
+    for definition in definitions {
+        let light_cljs::runtime_slice::Demand::Expression { span, .. } = &definition.demand.1
+        else {
+            panic!("{definition:?}")
+        };
+        let name = definition.name.strip_prefix("app.feature/").unwrap();
+        assert_eq!(&feature[span.clone()], name, "{definition:?}");
+        assert_eq!(
+            Some(span.start),
+            feature.find(&format!(" {name} {name}")).map(|at| at + 1),
+            "{definition:?}"
+        );
+    }
+}
+
+/// A definition of several globals, a protocol and its dispatchers, is named
+/// at the earliest reference to any of them in its first reading form, not
+/// at that of the global with the lowest id (light-cljs-280, from the Sol
+/// review).
+#[test]
+fn the_size_report_uses_the_earliest_reference_to_a_multi_global_definition() {
+    let feature = "(ns app.feature (:require [app.shared :as shared]))\n\
+                   (defn start [] (js/console.log shared/b shared/a))\n";
+    let program = analyze(&[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (def feature (lazy/loadable app.feature/start))\n\
+             (defn start [] (.then (lazy/load feature) (fn [f] (f))))\n\
+             start\n",
+        ),
+        (
+            "app/shared.cljs",
+            "(ns app.shared)\n(defprotocol P (a [x]) (b [x]))\n",
+        ),
+        ("app/feature.cljs", feature),
+    ]);
+    let prepared = prepare_application(
+        &program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let report = prepared.emit_chunks_reported().1.unwrap();
+    let definition = report
+        .chunks
+        .iter()
+        .flat_map(|chunk| &chunk.definitions)
+        .find(|definition| definition.name.starts_with("app.shared/"))
+        .unwrap_or_else(|| panic!("{report}"));
+    assert!(definition.moved, "{definition:?}");
+    let light_cljs::runtime_slice::Demand::Expression {
+        source_index, span, ..
+    } = &definition.demand.1
+    else {
+        panic!("{definition:?}")
+    };
+    assert_eq!(
+        program.namespaces[*source_index], "app.feature",
+        "{definition:?}"
+    );
+    assert_eq!(&feature[span.clone()], "shared/b", "{definition:?}");
 }
 
 // ---------------------------------------------------------------------------

@@ -66,6 +66,9 @@ pub(super) struct Chunks<'a> {
     /// Whether a chunk has a loadable whose target may not have evaluated
     /// when the chunk runs, for which startup declares `lazy$`.
     lazy: bool,
+    /// The constant table reads by code so far, which order the entries'
+    /// first reads for the size report.
+    constant_reads: usize,
 }
 
 /// A constant table entry of a chunked build (docs/code-splitting.md,
@@ -86,6 +89,23 @@ struct Constant {
     /// The runtime names its initializer reads, which the chunk declaring
     /// it needs.
     runtime: RuntimeRoots,
+    /// What it holds, for the size report ([`ConstantKey::label`]).
+    label: String,
+    /// The first read by code, for the size report: its place among all
+    /// constant reads by code ([`Chunks::constant_reads`]), the chunk
+    /// written then (a plan chunk, before [`ChunkPlan::place`] renumbers
+    /// them) and the expression being written.
+    first: Option<(usize, ChunkId, Option<ExprId>)>,
+}
+
+/// A constant table entry as the size report lists it: what it holds, and
+/// its first read by code, by a chunk of the placed plan and the expression
+/// being written; an entry only another entry's initializer reads has that
+/// entry's.
+#[derive(Clone, Debug)]
+pub(crate) struct ChunkConstant {
+    pub(crate) label: String,
+    pub(crate) first: Option<(ChunkId, Option<ExprId>)>,
 }
 
 /// What a constant table entry's initializer reads while it is written.
@@ -99,8 +119,8 @@ pub(super) struct Initializer {
 
 impl Chunks<'_> {
     /// Record constant table entry `number`, whose initializer read
-    /// `initializer`. Its readers place it.
-    pub(super) fn constant(&mut self, number: usize, initializer: Initializer) {
+    /// `initializer` and which holds what `label` says. Its readers place it.
+    pub(super) fn constant(&mut self, number: usize, initializer: Initializer, label: String) {
         debug_assert_eq!(
             number,
             self.constants.len(),
@@ -113,14 +133,16 @@ impl Chunks<'_> {
             parts: initializer.parts,
             readers: Signature::empty(roots),
             runtime: initializer.runtime,
+            label,
+            first: None,
         });
     }
 
     /// Record constant table entry `number`, a hoisted method of a function
     /// of the chunk being written, which declares it: its body's runtime
     /// reads are that chunk's.
-    pub(super) fn method(&mut self, number: usize) {
-        self.constant(number, Initializer::default());
+    pub(super) fn method(&mut self, number: usize, label: String) {
+        self.constant(number, Initializer::default(), label);
         self.constants[number].method = Some(self.current);
     }
 
@@ -143,13 +165,18 @@ impl Chunks<'_> {
     }
 
     /// A read of entry `number`: by the initializer being written, or else
-    /// by the code of the chunk being written.
-    pub(super) fn read_constant(&mut self, number: usize) {
+    /// by the code of the chunk being written, at `site`.
+    pub(super) fn read_constant(&mut self, number: usize, site: Option<ExprId>) {
         match &mut self.initializer {
             Some(initializer) => initializer.parts.push(number),
             None => {
                 let signature = &self.plan.chunks[self.current.0].signature;
-                self.constants[number].readers.union(signature);
+                let constant = &mut self.constants[number];
+                constant.readers.union(signature);
+                constant
+                    .first
+                    .get_or_insert((self.constant_reads, self.current, site));
+                self.constant_reads += 1;
             }
         }
     }
@@ -376,6 +403,9 @@ pub(crate) struct EmittedChunk {
     pub(crate) imports: Vec<ChunkId>,
     /// Its runtime at `Advanced`, for the size report.
     pub(crate) runtime: ChunkRuntime,
+    /// The constant table entries it declares, in declaration order, for
+    /// the size report.
+    pub(crate) constants: Vec<ChunkConstant>,
 }
 
 /// One chunk's text as the emitter wrote it, before renaming.
@@ -540,6 +570,7 @@ pub(crate) fn emit_chunked(
             runtime: vec![RuntimeRoots::default(); count],
             targets: Vec::new(),
             lazy: false,
+            constant_reads: 0,
         });
         let mut bodies = Vec::with_capacity(count);
         for chunk in 0..count {
@@ -640,7 +671,29 @@ pub(crate) fn emit_chunked(
     for (chunk, names) in chunks.runtime.iter().enumerate() {
         chunk_roots[renumbered[chunk].0].extend(names);
     }
+    // Each entry's first demand by code, for the size report: its own first
+    // read or an earlier one of an entry containing it, transitively (parts
+    // precede their composites), in the placed plan's chunks.
+    let mut firsts = chunks
+        .constants
+        .iter()
+        .map(|constant| constant.first)
+        .collect::<Vec<_>>();
+    for (entry, constant) in chunks.constants.iter().enumerate().rev() {
+        if let Some(first) = firsts[entry] {
+            for &part in &constant.parts {
+                if firsts[part].is_none_or(|demand| first.0 < demand.0) {
+                    firsts[part] = Some(first);
+                }
+            }
+        }
+    }
+    let firsts = firsts
+        .into_iter()
+        .map(|first| first.map(|(_, chunk, site)| (renumbered[chunk.0], site)))
+        .collect::<Vec<_>>();
     let mut tables = vec![String::new(); count];
+    let mut chunk_constants = vec![Vec::new(); count];
     if let Some(constants) = &emitter.constants {
         let mut order = (0..chunks.constants.len()).collect::<Vec<_>>();
         order.sort_unstable_by_key(|&entry| chunks.constants[entry].declaration.start);
@@ -648,6 +701,10 @@ pub(crate) fn emit_chunked(
             let declaration = chunks.constants[entry].declaration.clone();
             tables[owners[entry].0].push_str(&constants.declarations[declaration]);
             chunk_roots[owners[entry].0].extend(&chunks.constants[entry].runtime);
+            chunk_constants[owners[entry].0].push(ChunkConstant {
+                label: std::mem::take(&mut chunks.constants[entry].label),
+                first: firsts[entry],
+            });
         }
     }
     #[cfg(debug_assertions)]
@@ -1127,6 +1184,7 @@ pub(crate) fn emit_chunked(
                 source,
                 imports: imported.iter().map(|(import, _)| **import).collect(),
                 runtime,
+                constants: std::mem::take(&mut chunk_constants[chunk]),
             }
         })
         .collect();

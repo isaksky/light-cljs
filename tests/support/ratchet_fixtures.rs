@@ -600,6 +600,22 @@ const FEATURES_REPORTS: (&str, &str) = (
     include_str!("../../examples/features/app/reports.cljs"),
 );
 
+/// Byte ceilings of each file of the `features` fixture's chunked build at
+/// `Advanced` (`PreparedApplication::emit_chunks`, the files `--out-dir`
+/// writes; light-cljs-280), in plan order: startup, the chunk both features
+/// share, then each feature's. They move as [`Fixture::ceilings`] do: the
+/// sizes on master `030e618` (6,243, 62,034, 5,268 and 5,087 bytes) rounded
+/// up to the next 100 bytes, or 1,000 from 10,000 up. Startup holds 795
+/// bytes of runtime units the size report attributes to the features' roots
+/// and the 612-byte chunk loader beside what the application without its
+/// features holds (`size_ratchet::FEATURES_STARTUP_SLACK`).
+pub const FEATURES_CHUNK_CEILINGS: &[(&str, usize)] = &[
+    ("app.main.js", 6_300),
+    ("app.editor+app.reports.js", 63_000),
+    ("app.editor.js", 5_300),
+    ("app.reports.js", 5_100),
+];
+
 /// The code-splitting example and the same example calling its features
 /// directly (`features-direct`), and a loadable at its smallest beside the same
 /// program reading its target directly: the difference between the last two

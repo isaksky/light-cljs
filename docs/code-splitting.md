@@ -46,8 +46,8 @@ Targets, measured in Phase 0 on the example application
 
 | Measurement | Today | Measured bound | Target |
 |---|---|---|---|
-| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646; chunked at namespace granularity (light-cljs-274), `app.main.js` 69,587 / 21,575, with the whole-program runtime slice and every constant still in startup; with definitions moved toward their readers (light-cljs-277), 69,539 / 21,551; with constants placed by their readers (light-cljs-278), 69,000 / 21,242, the whole-program runtime slice and the menu's two keywords; with the runtime sliced per chunk (light-cljs-279), 9,046 / 3,373: the units the menu needs (those of the lower bound, 4,184 bytes here), the `Loadable` type (255) and the `lazy$` helper, and 2,879 bytes of hash-trie units that share state with `lookup` ("Open questions"); with the runtime's units at module level (light-cljs-303), 8,820 / 3,235; on master `26027d0`, after the runtime-performance pellets and the wrappers of `lookup`, `get` and structural equality that light-cljs-247 and light-cljs-358 added, 9,504 / 3,485 (77 runtime units, 7,990 bytes); with the hash tries' and `Loadable`'s wrappers as hooks (light-cljs-302), 6,731 / 2,497: the lower bound's units, `Loadable` and those wrappers with what they require, 50 runtime units and 5,245 bytes; with a smaller `lazy$` (light-cljs-353), 6,243 / 2,392 on master `8221e3b` (6,714 / 2,488 before), of which the size report attributes 795 bytes of runtime units to the features' roots and 612 are the chunk loader, which the target does not count: 4,836 against a target of 5,064, met | lower bound, the application without its features: 4,535 / 1,701; 4,664 / 1,730 on master `66003d4` and `8221e3b` | the same application compiled without its features, plus under 200 bytes per `loadable`, not counting the shared chunk-loading code (the `Loadable` type, `lazy$`, the sites' import thunks; the user's decision of 2026-10-20, "Open questions", "Startup's chunk loading"): under 4,935 raw; 5,064 on master `8221e3b` |
-| Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds; with definitions moved (light-cljs-277), 361 / 255 and 874 / 531, each also importing the shared `app.editor+app.reports.js`, 63 / 81; with constants (light-cljs-278) the shared chunk holds `documents` with its table, 632 / 397, and the features 361 / 258 and 874 / 531; a shared chunk that would hold no code is not written (light-cljs-299), so a feature imports one only for code or constants it shares; with the runtime sliced per chunk (light-cljs-279) the shared chunk holds the runtime both features need, 54,195 / 17,412, and `app.editor.js` 5,453 / 2,459 and `app.reports.js` 4,513 / 2,096: the first feature loads 59,648 / 19,871 (editor) or 58,708 / 19,508 (reports), the second only its own file; with the runtime's units at module level (light-cljs-303), 58,780 / 19,278 or 57,937 / 18,966; on master `26027d0` 64,839 / 20,718 or 64,655 / 20,589; with the hash-trie lookup in the shared chunk (light-cljs-302), 67,426 / 21,573 or 67,242 / 21,442 | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
+| Startup bytes, `advanced`, both features lazy | the whole program, 72,486 / 21,732; with resident loadables (light-cljs-271) 80,407 / 24,286; written tersely despite `clojure.string/join`'s `js*` (light-cljs-294) 76,145 / 23,900; with the runtime's `Loadable` (light-cljs-272) 69,500 / 21,646; chunked at namespace granularity (light-cljs-274), `app.main.js` 69,587 / 21,575, with the whole-program runtime slice and every constant still in startup; with definitions moved toward their readers (light-cljs-277), 69,539 / 21,551; with constants placed by their readers (light-cljs-278), 69,000 / 21,242, the whole-program runtime slice and the menu's two keywords; with the runtime sliced per chunk (light-cljs-279), 9,046 / 3,373: the units the menu needs (those of the lower bound, 4,184 bytes here), the `Loadable` type (255) and the `lazy$` helper, and 2,879 bytes of hash-trie units that share state with `lookup` ("Open questions"); with the runtime's units at module level (light-cljs-303), 8,820 / 3,235; on master `26027d0`, after the runtime-performance pellets and the wrappers of `lookup`, `get` and structural equality that light-cljs-247 and light-cljs-358 added, 9,504 / 3,485 (77 runtime units, 7,990 bytes); with the hash tries' and `Loadable`'s wrappers as hooks (light-cljs-302), 6,731 / 2,497: the lower bound's units, `Loadable` and those wrappers with what they require, 50 runtime units and 5,245 bytes; with a smaller `lazy$` (light-cljs-353), 6,243 / 2,392 on master `8221e3b` (6,714 / 2,488 before), of which the size report attributes 795 bytes of runtime units to the features' roots and 612 are the chunk loader, which the target does not count: 4,836 against a target of 5,064, met; reported per chunk and ratcheted at that size (light-cljs-280) on master `030e618`, where `size_ratchet` holds startup under 6,300 bytes and, less those 795 and the loader's 612, within 200 bytes of the lower bound | lower bound, the application without its features: 4,535 / 1,701; 4,664 / 1,730 on master `66003d4` and `8221e3b` | the same application compiled without its features, plus under 200 bytes per `loadable`, not counting the shared chunk-loading code (the `Loadable` type, `lazy$`, the sites' import thunks; the user's decision of 2026-10-20, "Open questions", "Startup's chunk loading"): under 4,935 raw; 5,064 on master `8221e3b` |
+| Bytes loaded for one feature | n/a: both load at startup; chunked (light-cljs-274), `app.editor.js` 276 / 224 and `app.reports.js` 832 / 517, reading the runtime startup holds; with definitions moved (light-cljs-277), 361 / 255 and 874 / 531, each also importing the shared `app.editor+app.reports.js`, 63 / 81; with constants (light-cljs-278) the shared chunk holds `documents` with its table, 632 / 397, and the features 361 / 258 and 874 / 531; a shared chunk that would hold no code is not written (light-cljs-299), so a feature imports one only for code or constants it shares; with the runtime sliced per chunk (light-cljs-279) the shared chunk holds the runtime both features need, 54,195 / 17,412, and `app.editor.js` 5,453 / 2,459 and `app.reports.js` 4,513 / 2,096: the first feature loads 59,648 / 19,871 (editor) or 58,708 / 19,508 (reports), the second only its own file; with the runtime's units at module level (light-cljs-303), 58,780 / 19,278 or 57,937 / 18,966; on master `26027d0` 64,839 / 20,718 or 64,655 / 20,589; with the hash-trie lookup in the shared chunk (light-cljs-302), 67,426 / 21,573 or 67,242 / 21,442; ratcheted (light-cljs-280) on master `030e618`, the shared chunk 62,034 / 19,223, `app.editor.js` 5,268 / 2,314 and `app.reports.js` 5,087 / 2,181: the first feature loads 67,302 / 21,537 (editor) or 67,121 / 21,404 (reports) | upper bound, the feature as its own entry: `app.editor` 64,447 / 20,035, `app.reports` 66,841 / 20,117, terse since light-cljs-294 63,927 / 19,817; on master `030e618` (light-cljs-280) 71,217 / 21,574 and 71,310 / 21,548 | the feature's own code and runtime units, plus a shared chunk only when the other feature shares code with it and startup does not |
 | Observable behavior | n/a; chunked (light-cljs-274), the example and the Phase 2 fixtures print what the single file prints at every level; the fixture matrix (light-cljs-276) through `--out-dir` and `chunks.json` in Node, and the example in Chrome without a bundler and through Vite 8.0.8, at every level | n/a | identical to the single-file program at every level, given the same `load` calls |
 | Compile time of a chunked build | n/a | n/a | within 10% of the single-file build of the same program |
 
@@ -132,6 +132,32 @@ What the bounds say:
   the runtime factory. Startup without the features is 145 bytes over its
   4,535: `start` and the `load` it calls once the sites are `nil`. `none`
   and `prepare` embed a runtime 1,530 bytes longer.
+- **Per chunk (light-cljs-280).** `bb benchmarks/features.bb` also prints
+  the chunks of the whole application's `--out-dir` build at `advanced`
+  beside their bounds, and what the Goal counts of startup: less the
+  runtime units `--size-report` attributes to other chunks' roots and less
+  the chunk loader, which the Goal does not count ("Open questions",
+  "Startup's chunk loading"). On master `030e618`, October 20, 2026,
+  where the first table gives 4,664 / 1,730 for the application without
+  its features and 71,217 / 21,574 and 71,310 / 21,548 for the features as
+  their own entries:
+
+  | Chunk, `--out-dir` at `advanced` | Bytes | Bound |
+  | --- | ---: | --- |
+  | `app.main.js`, startup | 6,243 / 2,392; less 795 bytes of units for other chunks' roots and 612 of chunk loading, 4,836 raw | lower bound, the application without its features: 4,664 / 1,730; target under 5,064 raw, 200 bytes per `loadable` |
+  | `app.editor+app.reports.js`, shared | 62,034 / 19,223 | |
+  | `app.editor.js`, loaded by `app.editor` | 5,268 / 2,314 | |
+  | `app.reports.js`, loaded by `app.reports` | 5,087 / 2,181 | |
+  | first load of `app.editor`: `app.editor+app.reports.js` + `app.editor.js` | 67,302 / 21,537 | upper bound, `app.editor` as its own entry: 71,217 / 21,574 |
+  | first load of `app.reports`: `app.editor+app.reports.js` + `app.reports.js` | 67,121 / 21,404 | upper bound, `app.reports` as its own entry: 71,310 / 21,548 |
+
+  Each feature's first load is 5.5% and 5.9% under its upper bound (3,915
+  and 4,189 bytes), and the second feature loads only its own file. Startup
+  meets its target: less the 795 bytes and the 612 it is 4,836, 172 over
+  the lower bound and 228 under the target. The size ratchet holds each
+  file (`size_ratchet::features_chunk_sizes_stay_under_their_ceilings`)
+  and startup against the lower bound
+  (`size_ratchet::features_startup_is_the_application_without_its_features_within_its_slack`).
 
 Non-goals of this design: a module manager with retries and backoff, bundling
 npm code (the npm seam stays as designed: packages are static imports a bundler
@@ -1641,6 +1667,56 @@ runtime units toward their first readers; per-chunk runtime factories.
     `chunks::terse_chunks_write_their_runtime_units_at_module_level` bounds
     `lazy$` at 250 bytes.
 
+- **As built (light-cljs-280): the size report and the ratchet.**
+  - `--size-report` with `--out-dir` at `Advanced` (`ChunkedRetention`)
+    opens with a line for the build and gives each chunk a summary line,
+    `app.main.js: 6,243 bytes, 50 units, 5,229 unit bytes, 5,229 runtime
+    bytes, 2 constants, 6 definitions`, then a table of its definitions
+    (each top-level `def`, `defprotocol` and `deftype` it holds, with the
+    namespace of the first root, in plan order, that reaches it; one moved
+    toward its readers with the first reference among that root's reading
+    forms, `app.shared/documents  app.editor  app.editor.js, source 3,
+    bytes 418..434`, and one its namespace holds with itself, `its
+    namespace, source 2, bytes 318..363`), a table of its constant table
+    entries, each by what it holds (`:title`, `vector of 4`, `map shape of
+    2 keys`) with the first root of the chunk whose code first read it and
+    the expression being written, an entry that other entries hold taking
+    the earliest read of it or of one of them, and the roots and units
+    tables of light-cljs-279. A demand in another chunk names its file.
+    The plan records each movable item's first reach
+    (`chunks::Item::reached`) and the chunked emitter each entry's label
+    and first read, in read order; the report walks each reading form once
+    for its references. Neither changes a byte of output. The
+    single-file report and the chunked report below `Advanced` (the
+    single file's) are as before.
+  - Ceilings per file of the `features` fixture's chunked build at
+    `advanced` (`FEATURES_CHUNK_CEILINGS` in
+    tests/support/ratchet_fixtures.rs, checked by
+    `size_ratchet::features_chunk_sizes_stay_under_their_ceilings`):
+    startup 6,300, the shared chunk 63,000, the editor 5,300, the reports
+    5,100, the sizes on master `030e618` (6,243, 62,034, 5,268 and 5,087)
+    rounded up as the ratchet rounds; the build must write exactly these
+    four files.
+  - The startup check
+    (`size_ratchet::features_startup_is_the_application_without_its_features_within_its_slack`)
+    writes examples/features into a temporary directory without the files
+    of its lazy targets' namespaces and with each `lazy/loadable` form
+    `nil`, compiles it at `advanced` as one `--esm` file (4,664 bytes),
+    and requires startup, less the runtime units the size report
+    attributes to another chunk's roots (795 bytes: units that share a
+    binding with one startup needs) and less the chunk loader the Goal
+    does not count (`FEATURES_STARTUP_LOADER`, the 612 bytes light-cljs-353
+    measured; "Open questions", "Startup's chunk loading"), to be within
+    200 bytes of it. It measures 172 over (the export lines the features
+    read startup's runtime through and the longer names of a program that
+    holds its features), so the slack is that rounded up to the next 100,
+    under the Goal's 400. The starting slack, the larger of 10% and 1,000
+    bytes, held too, but would let startup grow by up to 828 bytes
+    unnoticed; before light-cljs-302 and light-cljs-353, with the loader
+    counted, it did not hold (1,487 bytes over).
+  - Startup meets the Goal target, and the generated-program property
+    holds (light-cljs-281), so Phase 3 is done.
+
 - **Item signatures.** Extend `chunks::plan` with the item reference graph
   over `flatten(program.root)`: per item, the globals it reads (one walk
   with `program_fragment::children`), the globals it defines
@@ -1763,8 +1839,13 @@ and the membership tables for the fixtures of `tests/fixtures/chunks/`
 (Phase 2, "As built (light-cljs-276)"), with the edge check made again from
 `chunks.json`. Since light-cljs-281 generated programs with lazy edges run
 chunked against the single file at every level, with the same manifest
-checks (Phase 3, "As built (light-cljs-281)"); per-chunk ceilings and the
-rest of the list are still to come.
+checks (Phase 3, "As built (light-cljs-281)"). Since light-cljs-280
+`size_ratchet` holds a ceiling per chunk of the features example at
+`advanced` and the startup check with a fixed slack of 200 bytes, after the
+units for other chunks' roots and the chunk loader the Goal does not count
+(Phase 3, "As built (light-cljs-280)"); the
+retention reports under `benchmarks/results/`, the startup time and the
+compile time are still to come.
 
 The two hosts are checked by hand, at every level, on examples/features. Its
 `index.html` sits beside the chunks, appends each line the program logs to
@@ -1940,8 +2021,9 @@ minification, against the 69,587 bytes `--out-dir` wrote.
   so the 612 bytes are left out of the comparison, and startup less the
   features' units and the loader is 4,836, 172 over the application (the
   export lines and the longer names of a program that holds its
-  features) and under the target. `size_ratchet`'s startup slack and the
-  per-chunk ceilings are light-cljs-280's.
+  features) and under the target. light-cljs-280's startup check
+  compares that with the application without its features, within 200
+  bytes, and its ceilings hold startup under 6,300.
 - **Multimethods and motion.** Settled by light-cljs-300. A `defmulti`
   stayed pinned at `Advanced` (light-cljs-277): its initializer builds a
   `MultiFn` from the dispatch function, the options and the global

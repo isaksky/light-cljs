@@ -144,6 +144,11 @@ pub struct Item {
     /// signatures"); only at `Advanced`. It may still land in its
     /// namespace's chunk.
     pub movable: bool,
+    /// For a movable item, what first reached it: the root whose walk
+    /// reached it first, in root order, the item of that walk whose read
+    /// reached it, and the global it read. The size report names them
+    /// (`--size-report` with `--out-dir`).
+    pub reached: Option<(usize, usize, GlobalId)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -756,7 +761,10 @@ fn plan_with(
     // root reaches, which startup holds) over reads of globals to their
     // definitions. A movable item that no walk reaches, one only an explicit
     // export keeps, is pinned, and the walks run again.
+    // Each movable item also records the first root reaching it and, among
+    // that root's items reading it, the first in program order.
     let mut signatures;
+    let mut reached: Vec<Option<(usize, usize, GlobalId)>>;
     let mut walk = Vec::new();
     loop {
         signatures = forms
@@ -770,16 +778,25 @@ fn plan_with(
                 }
             })
             .collect::<Vec<_>>();
+        reached = vec![None; forms.len()];
         for root in 0..root_count {
             seeds(&forms, &movable, &namespace_signatures, root, &mut walk);
             while let Some(item) = walk.pop() {
                 for global in &graph.reads[item] {
                     if let [definer] = graph.definers[global.0][..]
                         && movable[definer]
-                        && !signatures[definer].contains(root)
                     {
-                        signatures[definer].insert(root);
-                        walk.push(definer);
+                        if !signatures[definer].contains(root) {
+                            signatures[definer].insert(root);
+                            walk.push(definer);
+                        }
+                        match &mut reached[definer] {
+                            first @ None => *first = Some((root, item, *global)),
+                            Some((first, reader, read)) if *first == root && item < *reader => {
+                                (*reader, *read) = (item, *global);
+                            }
+                            Some(_) => {}
+                        }
                     }
                 }
             }
@@ -923,6 +940,7 @@ fn plan_with(
                 namespace,
                 chunk,
                 movable,
+                reached: reached[position],
             }
         })
         .collect::<Vec<_>>();

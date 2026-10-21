@@ -1826,8 +1826,12 @@ earlier build included, stay as they are. It works at `none`, `prepare` and
 `advanced` each chunk embeds the runtime units only the roots that load it
 need, as a function of the bindings it takes from the chunks before it
 (docs/code-splitting.md, "Phase 3", light-cljs-279), and `--size-report`
-prints each chunk's units, every unit of the build once, with the root and
-expression that first demanded it, which may be another chunk's; below
+prints a summary line for the build and per chunk (its bytes, units,
+constants and definitions; light-cljs-280), then the chunk's definitions,
+each moved one with the root and read that first reached it, its constant
+table entries with the read that first demanded each, and its units, every
+unit of the build once, with the root and expression that first demanded
+it; any of these may name another chunk's file; below
 `advanced` startup embeds the whole runtime and `--size-report` prints the
 single file's report. The source map flags are refused, since chunks have no
 source maps yet. Without `--out-dir` the output stays one file in which every

@@ -5736,3 +5736,35 @@ loading, so startup measures 4,836 against it, 172 over the application
 and under the target. With the helper's locals named by single letters, which
 terse output then gives no other name, the other three files were 66 bytes
 longer; its locals are `m` and names starting with `_`.
+
+## Chunk sizes against their bounds — October 20, 2026
+
+light-cljs-280 reports each chunk's bytes, definitions and constants in
+`--size-report` with `--out-dir`, ratchets the four files of examples/features
+at `advanced`, and checks startup against the application without its
+features ([code-splitting design](../docs/code-splitting.md), Phase 3, "As
+built (light-cljs-280)"). No output changes: every chunk, single file and
+`--esm` file of examples/features and of the ten fixture programs under
+tests/fixtures/chunks at every level, and the single-file size report, is
+byte for byte as master `030e618`'s. `bb benchmarks/features.bb` on that
+master, raw / `gzip -9 -n` bytes (sizes do not depend on load):
+
+| Chunk, `--out-dir` at `advanced` | Bytes | Bound |
+| --- | ---: | --- |
+| `app.main.js`, startup | 6,243 / 2,392; less 795 bytes of units for other chunks' roots and 612 of chunk loading, 4,836 raw | lower bound, the application without its features: 4,664 / 1,730; target under 5,064 raw, 200 bytes per `loadable` |
+| `app.editor+app.reports.js`, shared | 62,034 / 19,223 | |
+| `app.editor.js`, loaded by `app.editor` | 5,268 / 2,314 | |
+| `app.reports.js`, loaded by `app.reports` | 5,087 / 2,181 | |
+| first load of `app.editor`: `app.editor+app.reports.js` + `app.editor.js` | 67,302 / 21,537 | upper bound, `app.editor` as its own entry: 71,217 / 21,574 |
+| first load of `app.reports`: `app.editor+app.reports.js` + `app.reports.js` | 67,121 / 21,404 | upper bound, `app.reports` as its own entry: 71,310 / 21,548 |
+
+The ceilings are 6,300, 63,000, 5,300 and 5,100 bytes. Startup meets its
+target: less the runtime units the size report attributes to the features'
+roots (795 bytes) and the chunk loader, which the target does not count by
+the user's decision of 2026-10-20 (612 bytes, light-cljs-353), it is 4,836,
+172 over the application without its features and 228 under the target.
+The startup check's slack is 200 bytes. When this pellet was first measured,
+on master `156a01a` (October 18), startup was 9,046 / 3,373, 4,366 bytes over
+the lower bound (4,680 then): 2,879 of hash-trie units that light-cljs-302
+moved out, and 1,487 of chunk loading, which light-cljs-303 and
+light-cljs-353 shrank.

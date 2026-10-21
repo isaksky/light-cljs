@@ -340,6 +340,7 @@ impl PreparedApplication {
                 source: self.emit_esm(),
                 imports: Vec::new(),
                 runtime: Default::default(),
+                constants: Vec::new(),
             }];
             let output = crate::chunks::ChunkedOutput::new(&self.program, plan, emitted);
             return Some((output, None));
@@ -352,9 +353,14 @@ impl PreparedApplication {
                 .chunks
                 .iter()
                 .zip(&emitted)
-                .map(|(chunk, emitted)| (chunk.name.clone(), &emitted.runtime))
+                .map(|(chunk, emitted)| crate::runtime_slice::ChunkInput {
+                    file: &chunk.name,
+                    bytes: emitted.source.len(),
+                    runtime: &emitted.runtime,
+                    constants: &emitted.constants,
+                })
                 .collect::<Vec<_>>();
-            crate::ChunkedRetention::new(&self.program, self.level, &chunks)
+            crate::ChunkedRetention::new(&self.program, self.level, &plan, &chunks)
         });
         let output = crate::chunks::ChunkedOutput::new(&self.program, &plan, emitted);
         Some((output, report))

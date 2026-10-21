@@ -22,7 +22,7 @@ use crate::source_map::{Mark, Marks, SourceMapping};
 use crate::value_hash::ConstantHashes;
 
 mod chunked;
-pub(crate) use chunked::{EmittedChunk, emit_chunked};
+pub(crate) use chunked::{ChunkConstant, EmittedChunk, emit_chunked};
 
 /// What `rt.core.<name>` holds in the embedded runtime's core table.
 fn core_reference(name: &str) -> CoreReference<'static> {
@@ -1166,6 +1166,44 @@ enum ConstantKey<'a> {
     /// nothing and whose value never escapes, hoisted out of its scope
     /// (light-cljs-228; `crate::call_shapes::Placement::Hoisted`). Never lazy.
     Method { function: ExprId, method: usize },
+}
+
+impl ConstantKey<'_> {
+    /// What the entry holds, as the size report of a chunked build names it:
+    /// `:app.main/editor`, `'sym`, `vector of 3`, `map shape of 2 keys`,
+    /// `method 0 of a function`.
+    fn label(&self) -> String {
+        let named = |namespace: Option<&[u16]>, name: &[u16]| match namespace {
+            Some(namespace) => format!(
+                "{}/{}",
+                String::from_utf16_lossy(namespace),
+                String::from_utf16_lossy(name)
+            ),
+            None => String::from_utf16_lossy(name),
+        };
+        match self {
+            Self::Keyword { namespace, name } => format!(":{}", named(*namespace, name)),
+            Self::Symbol { namespace, name } => format!("'{}", named(*namespace, name)),
+            Self::Composite { constructor, parts } => {
+                let (kind, count) = match constructor {
+                    Composite::Vector => ("vector", parts.len()),
+                    Composite::List => ("list", parts.len()),
+                    Composite::ArrayMap | Composite::HashMap | Composite::LiteralMap => {
+                        ("map", parts.len() / 2)
+                    }
+                    Composite::Set | Composite::CheckedSet | Composite::LiteralSet => {
+                        ("set", parts.len())
+                    }
+                    Composite::WithMeta => return "value with metadata".to_owned(),
+                    Composite::Uuid => return "uuid".to_owned(),
+                };
+                format!("{kind} of {count}")
+            }
+            Self::Shape { set: false, keys } => format!("map shape of {} keys", keys.len()),
+            Self::Shape { set: true, keys } => format!("set shape of {} members", keys.len()),
+            Self::Method { method, .. } => format!("method {method} of a function"),
+        }
+    }
 }
 
 /// How a composite constant is built, which is how its sites build it below
@@ -2331,18 +2369,18 @@ impl<'a> Emitter<'a> {
         let declared = start..constants.declarations.len();
         constants.composites += usize::from(matches!(key, ConstantKey::Composite { .. }));
         constants.lazy.push(lazy);
-        constants.numbers.insert(key, number);
         if let Some(chunks) = &mut self.chunks {
-            chunks.constant(number, initializer);
+            chunks.constant(number, initializer, key.label());
             chunks.declared(number, declared);
         }
+        self.constants.as_mut().unwrap().numbers.insert(key, number);
         number
     }
 
     /// A read of table entry `number`: `k<n>`, or `k<n>()` for a lazy cell.
     fn constant_reference(&mut self, number: usize) {
         if let Some(chunks) = &mut self.chunks {
-            chunks.read_constant(number);
+            chunks.read_constant(number, self.site);
         }
         let lazy = self.constants.as_ref().unwrap().lazy[number];
         write!(self.output, "k{number}{}", if lazy { "()" } else { "" }).unwrap();
@@ -4951,10 +4989,10 @@ impl<'a> Emitter<'a> {
         let number = constants.lazy.len();
         constants.lazy.push(false);
         constants.functions += 1;
-        constants.numbers.insert(key, number);
         if let Some(chunks) = &mut self.chunks {
-            chunks.method(number);
+            chunks.method(number, key.label());
         }
+        self.constants.as_mut().unwrap().numbers.insert(key, number);
         let program = self.program;
         let ExprKind::Fn { methods, .. } = &program.exprs[function.0].kind else {
             unreachable!("a hoisted method of a fn")

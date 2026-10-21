@@ -18,14 +18,21 @@
 pub(super) mod ratchet_fixtures;
 
 use super::optimization::execute;
+use crate::temp_dir::TempDir;
 use light_cljs::analyzer::AnalysisOptions;
-use light_cljs::compiler::analyze_namespace_entry_with_provider;
+use light_cljs::chunks::ChunkedOutput;
+use light_cljs::compiler::{analyze_namespace_entry, analyze_namespace_entry_with_provider};
 use light_cljs::source_provider::{LoadError, LoadRequest, SourceInput};
 use light_cljs::{
-    ApplicationOptions, MacroHost, OptimizationLevel, Program, analyze, parse, prepare_application,
+    ApplicationOptions, ChunkedRetention, MacroHost, OptimizationLevel, Program, analyze, parse,
+    prepare_application,
 };
-use ratchet_fixtures::{FIXTURES, Fixture, NAMESPACE_FIXTURES, NamespaceFixture};
+use ratchet_fixtures::{
+    FEATURES_CHUNK_CEILINGS, FIXTURES, Fixture, NAMESPACE_FIXTURES, NamespaceFixture,
+};
 use std::fmt::Write;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 fn program(fixture: &Fixture) -> Program {
     let source = fixture.source;
@@ -97,7 +104,7 @@ fn printed(js: &str) -> String {
     ))
 }
 
-fn thousands(n: usize) -> String {
+pub(crate) fn thousands(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (index, digit) in digits.chars().enumerate() {
@@ -304,4 +311,208 @@ fn each_two_method_protocol_costs_at_most_its_budget() {
     let added: Vec<usize> = sizes.windows(2).map(|pair| pair[1] - pair[0]).collect();
     println!("bytes per extra two-method protocol: {added:?}");
     assert!(added.iter().all(|&bytes| bytes <= 350), "{added:?}");
+}
+
+/// The chunked build of `program` at `Advanced` and its size report.
+fn advanced_chunks(program: &Program) -> (ChunkedOutput, ChunkedRetention) {
+    let prepared = prepare_application(
+        program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    let (output, report) = prepared.emit_chunks_reported();
+    (
+        output,
+        report.expect("an `Advanced` build of several chunks has a size report"),
+    )
+}
+
+/// light-cljs-280 (docs/code-splitting.md, "Phase 3"): at `advanced` each
+/// file of the `features` fixture's chunked build stays under its ceiling in
+/// [`FEATURES_CHUNK_CEILINGS`], and the build writes exactly those files.
+#[test]
+fn features_chunk_sizes_stay_under_their_ceilings() {
+    let fixture = NAMESPACE_FIXTURES
+        .iter()
+        .find(|fixture| fixture.name == "features")
+        .unwrap();
+    let (output, report) = advanced_chunks(&namespace_program(fixture));
+    let mut table = format!("{:<28} {:>20}\n", "chunk", "bytes / ceiling");
+    let mut exceeded = Vec::new();
+    for (file, chunk) in output.files.iter().zip(&report.chunks) {
+        assert_eq!(chunk.bytes, file.source.len(), "{}", file.name);
+        let ceiling = FEATURES_CHUNK_CEILINGS
+            .iter()
+            .find(|(name, _)| *name == file.name)
+            .map(|&(_, ceiling)| ceiling);
+        let size = file.source.len();
+        let mark = if ceiling.is_none_or(|ceiling| size > ceiling) {
+            exceeded.push(file.name.clone());
+            '!'
+        } else {
+            ' '
+        };
+        let cell = format!(
+            "{} / {}",
+            thousands(size),
+            ceiling.map_or("none".to_owned(), thousands)
+        );
+        writeln!(table, "{:<28} {cell:>19}{mark}", file.name).unwrap();
+    }
+    println!("{table}");
+    assert!(
+        exceeded.is_empty(),
+        "a chunk of the features example grew past its ratchet ceiling or has none: {}; \
+         shrink it or raise the ceiling with a reason (marked !):\n{table}",
+        exceeded.join(", ")
+    );
+    assert_eq!(
+        output
+            .files
+            .iter()
+            .map(|file| file.name.as_str())
+            .collect::<Vec<_>>(),
+        FEATURES_CHUNK_CEILINGS
+            .iter()
+            .map(|&(name, _)| name)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The bytes of startup's chunk loading in examples/features at `advanced`,
+/// which the Goal's startup target does not count by the user's decision of
+/// 2026-10-20 (docs/code-splitting.md, "Open questions", "Startup's chunk
+/// loading"): the runtime's `Loadable` type (255), the `lazy$` helper with
+/// its binding (249; `chunks::terse_chunks_write_their_runtime_units_at_module_level`
+/// bounds it), the two sites' `lazy$` calls and import thunks (97 more than
+/// the `nil`s the application without its features has), and
+/// `light.lazy/Loadable`'s definition (11), measured by light-cljs-353 on
+/// master `8221e3b`. The application without its features cannot need any
+/// of it, so the startup check takes it out before comparing.
+const FEATURES_STARTUP_LOADER: usize = 612;
+
+/// How many bytes the startup chunk of examples/features may exceed the
+/// application without its features by at `advanced`, not counting the
+/// units startup holds only for the features or [`FEATURES_STARTUP_LOADER`].
+/// Measured 172 on master `030e618`: the export lines through which the
+/// features read startup's runtime (96) and the longer names of a program
+/// that holds its features. Rounded up to the next 100 bytes, under the
+/// Goal's 200 bytes per `loadable` (400 here). The starting slack of
+/// light-cljs-280, the larger of 10% and 1,000 bytes, was 1,500 when chunk
+/// loading still counted (1,487 bytes over, before light-cljs-353).
+const FEATURES_STARTUP_SLACK: usize = 200;
+
+/// The analyzed program of entry `app.main` under the source root `root`.
+fn root_program(root: &Path) -> Program {
+    analyze_namespace_entry(
+        "app.main",
+        &[root.to_path_buf()],
+        &mut MacroHost::new(),
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("{}: {error}", root.display()))
+}
+
+/// `text` with each `light.lazy/loadable` form, `(lazy/loadable ...)` or
+/// `(light.lazy/loadable ...)`, replaced by `nil`.
+fn without_loadables(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = ["(lazy/loadable ", "(light.lazy/loadable "]
+        .iter()
+        .filter_map(|form| rest.find(form))
+        .min()
+    {
+        out.push_str(&rest[..start]);
+        let mut depth = 0;
+        let end = rest[start..]
+            .char_indices()
+            .find_map(|(at, c)| {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                (depth == 0).then_some(start + at + 1)
+            })
+            .expect("a closed loadable form");
+        out.push_str("nil");
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Write the sources under `from` into `to` without the files `removed`,
+/// and with each loadable form `nil`, as `bb benchmarks/features.bb`
+/// generates its variants.
+fn copy_without(from: &Path, to: &Path, removed: &[PathBuf]) {
+    for entry in fs::read_dir(from).unwrap() {
+        let path = entry.unwrap().path();
+        let target = to.join(path.file_name().unwrap());
+        if path.is_dir() {
+            fs::create_dir_all(&target).unwrap();
+            copy_without(&path, &target, removed);
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "cljs")
+            && !removed.contains(&path)
+        {
+            let text = fs::read_to_string(&path).unwrap();
+            fs::write(&target, without_loadables(&text)).unwrap();
+        }
+    }
+}
+
+/// light-cljs-280 (docs/code-splitting.md, "Phase 3", tests): the startup
+/// chunk of examples/features at `advanced` is the application without its
+/// features, generated from the sources with its loadables `nil` and the
+/// feature namespaces absent, within [`FEATURES_STARTUP_SLACK`], once the
+/// units startup holds only for the features are taken out, those the size
+/// report attributes to another chunk's roots (runtime units that share a
+/// binding with a unit startup needs), and the chunk loading the Goal does not
+/// count, [`FEATURES_STARTUP_LOADER`].
+#[test]
+fn features_startup_is_the_application_without_its_features_within_its_slack() {
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/features");
+    let program = root_program(&example);
+    let removed = program
+        .lazy_namespaces
+        .iter()
+        .map(|namespace| {
+            example.join(format!(
+                "{}.cljs",
+                namespace.replace('.', "/").replace('-', "_")
+            ))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(removed.len(), 2, "{removed:?}");
+    let dir = TempDir::new("features-without-features");
+    copy_without(&example, &dir, &removed);
+    let lower = root_program(&dir);
+    assert!(lower.lazy_namespaces.is_empty());
+    let lower = prepare_application(&lower, ApplicationOptions::new(OptimizationLevel::Advanced))
+        .emit_esm()
+        .len();
+    let (output, report) = advanced_chunks(&program);
+    let startup = output.startup().source.len();
+    let held = report.chunks[0]
+        .units
+        .iter()
+        .filter(|unit| unit.root.is_some_and(|(chunk, _)| chunk != 0))
+        .map(|unit| unit.bytes)
+        .sum::<usize>();
+    let counted = startup - held - FEATURES_STARTUP_LOADER;
+    println!(
+        "startup {startup} bytes, {held} of them units only the features need and \
+         {FEATURES_STARTUP_LOADER} chunk loading: {counted}; without its features {lower}; \
+         slack {FEATURES_STARTUP_SLACK}"
+    );
+    assert!(
+        counted <= lower + FEATURES_STARTUP_SLACK,
+        "startup is {startup} bytes, {held} of them units only the features need and \
+         {FEATURES_STARTUP_LOADER} chunk loading, so {counted} against {lower} for the \
+         application without its features: {} over, slack {FEATURES_STARTUP_SLACK}",
+        counted.saturating_sub(lower)
+    );
 }

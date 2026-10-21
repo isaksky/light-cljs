@@ -869,10 +869,12 @@ pub(crate) struct ChunkRuntime {
     pub(crate) unit_bytes: Option<Vec<usize>>,
 }
 
-/// Which runtime units each chunk of an `Advanced` chunked build holds and
-/// why (`--size-report` with `--out-dir`; docs/code-splitting.md, "Phase
-/// 3"). Every unit of the build's runtime is in exactly one chunk, the one
-/// whose signature is the roots that need it.
+/// What each chunk of an `Advanced` chunked build holds and why
+/// (`--size-report` with `--out-dir`; docs/code-splitting.md, "Phase 3"):
+/// its bytes, its definitions, its constant table entries and its runtime
+/// units, each with what first demanded it. Every unit of the build's
+/// runtime is in exactly one chunk, the one whose signature is the roots
+/// that need it.
 #[derive(Clone, Debug)]
 pub struct ChunkedRetention {
     pub level: OptimizationLevel,
@@ -887,6 +889,12 @@ pub struct ChunkedRetention {
 pub struct ChunkRetention {
     /// The chunk's file name.
     pub file: String,
+    /// Bytes of the chunk's file.
+    pub bytes: usize,
+    /// The definitions it holds, in program order.
+    pub definitions: Vec<ChunkDefinition>,
+    /// The constant table entries it declares, in declaration order.
+    pub constants: Vec<ChunkConstantReport>,
     /// The runtime names its code and constants read, in first-demand order.
     pub roots: Vec<RuntimeRoot>,
     /// The units its runtime holds, in runtime order.
@@ -911,17 +919,158 @@ pub struct ChunkUnit {
     pub root: Option<(usize, usize)>,
 }
 
+/// A definition of a [`ChunkRetention`]: a top-level `def`, `defprotocol`
+/// or `deftype` the chunk holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChunkDefinition {
+    /// The first global it defines, `app.shared/fmt`.
+    pub name: String,
+    /// The namespace of the first root, in plan order, whose code reaches it
+    /// (the entry for startup's root).
+    pub root: String,
+    /// The chunk, by index in [`ChunkedRetention::chunks`], of the form that
+    /// first demanded it, and that demand. For a definition moved toward its
+    /// readers (docs/code-splitting.md, "Items and signatures") it is the
+    /// first reference among that root's reading forms; for one its
+    /// namespace's chunk holds since it does not move, the definition
+    /// itself, which runs as its namespace loads.
+    pub demand: (usize, Demand),
+    /// Whether its readers placed it rather than its namespace.
+    pub moved: bool,
+}
+
+/// A constant table entry of a [`ChunkRetention`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChunkConstantReport {
+    /// What it holds: `:app.main/editor`, `vector of 3`, `map shape of 2
+    /// keys`.
+    pub label: String,
+    /// The first demand by code: the namespace of the first root, in plan
+    /// order, of the chunk whose code read it, that chunk, by index in
+    /// [`ChunkedRetention::chunks`], and the expression being written, if
+    /// any. An entry other entries' initializers read has the earliest read
+    /// of it or of an entry holding it.
+    pub first: Option<(String, usize, Option<Demand>)>,
+}
+
+/// One chunk as [`ChunkedRetention::new`] reports it.
+pub(crate) struct ChunkInput<'a> {
+    pub(crate) file: &'a str,
+    pub(crate) bytes: usize,
+    pub(crate) runtime: &'a ChunkRuntime,
+    pub(crate) constants: &'a [crate::emitter::ChunkConstant],
+}
+
+/// The demand of expression `expr` of `program`.
+fn expression_demand(program: &Program, expr: ExprId) -> Demand {
+    let data = &program.exprs[expr.0];
+    Demand::Expression {
+        expr,
+        source_index: data.source_index,
+        span: data.span.clone(),
+    }
+}
+
+/// The first reference to each global the top-level form `form` reads, by
+/// source and then position, in one walk of the form.
+fn first_references(program: &Program, form: ExprId) -> HashMap<crate::analyzer::GlobalId, ExprId> {
+    let mut pending = vec![form];
+    let mut visited = std::collections::HashSet::new();
+    let mut first = HashMap::new();
+    let position = |id: ExprId| {
+        let data = &program.exprs[id.0];
+        (data.source_index, data.span.start)
+    };
+    while let Some(id) = pending.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        if let crate::analyzer::ExprKind::Global(read) = program.exprs[id.0].kind {
+            let at = first.entry(read).or_insert(id);
+            if position(id) < position(*at) {
+                *at = id;
+            }
+        }
+        pending.extend(crate::program_fragment::children(program, id));
+    }
+    first
+}
+
 impl ChunkedRetention {
+    /// The report of `chunks`, those of `plan` in order, of the prepared
+    /// `program`.
     pub(crate) fn new(
         program: &Program,
         level: OptimizationLevel,
-        chunks: &[(String, &ChunkRuntime)],
+        plan: &crate::chunks::ChunkPlan,
+        chunks: &[ChunkInput<'_>],
     ) -> Self {
         let manifest = RuntimeManifest::embedded();
         let units = chunks
             .iter()
-            .map(|(_, runtime)| runtime.roots.units(manifest))
+            .map(|chunk| chunk.runtime.roots.units(manifest))
             .collect::<Vec<_>>();
+        let root_name = |root: usize| program.namespaces[plan.roots[root].namespace].clone();
+        // The first root of a chunk's signature; startup's is the entry.
+        let chunk_root = |chunk: usize| {
+            root_name(
+                plan.chunks[chunk]
+                    .signature
+                    .roots()
+                    .next()
+                    .unwrap_or(crate::chunks::STARTUP_ROOT),
+            )
+        };
+        // Each reading form is walked once, however many definitions it
+        // reaches.
+        let mut references = HashMap::new();
+        let mut definition = |item: &crate::chunks::Item| {
+            let kind = &program.exprs[item.expr.0].kind;
+            if !matches!(
+                kind,
+                crate::analyzer::ExprKind::Def { init: Some(_), .. }
+                    | crate::analyzer::ExprKind::DefProtocol { .. }
+                    | crate::analyzer::ExprKind::DefType { .. }
+            ) {
+                return None;
+            }
+            let defined = crate::application::globals(kind);
+            let global = &program.globals[defined[0].0];
+            let (root, demand) = match item.reached {
+                Some((root, reader, _)) => {
+                    let reader = &plan.items[reader];
+                    let first = references
+                        .entry(reader.expr)
+                        .or_insert_with(|| first_references(program, reader.expr));
+                    // The earliest reference to any global the definition
+                    // defines (a protocol and its dispatchers). A method key
+                    // naming a protocol's dispatcher reads it without a
+                    // reference: the form demands it.
+                    let at = defined
+                        .iter()
+                        .filter_map(|defined| first.get(defined).copied())
+                        .min_by_key(|&id| {
+                            let data = &program.exprs[id.0];
+                            (data.source_index, data.span.start)
+                        })
+                        .unwrap_or(reader.expr);
+                    (root, (reader.chunk.0, expression_demand(program, at)))
+                }
+                None => {
+                    let root = plan.namespace_signatures[item.namespace]
+                        .roots()
+                        .next()
+                        .unwrap_or(crate::chunks::STARTUP_ROOT);
+                    (root, (item.chunk.0, expression_demand(program, item.expr)))
+                }
+            };
+            Some(ChunkDefinition {
+                name: format!("{}/{}", global.namespace, global.name),
+                root: root_name(root),
+                demand,
+                moved: item.reached.is_some(),
+            })
+        };
         // The roots of every chunk in plan order, each with its chunk and
         // its index there.
         let positions = units
@@ -932,9 +1081,31 @@ impl ChunkedRetention {
         let first = manifest.reached_by_uses(&units.concat());
         let reports = chunks
             .iter()
+            .zip(&plan.chunks)
             .zip(&units)
-            .map(|((file, runtime), units)| ChunkRetention {
-                file: file.clone(),
+            .map(|((input, chunk), units)| (input, chunk, input.runtime, units))
+            .map(|(input, chunk, runtime, units)| ChunkRetention {
+                file: input.file.to_owned(),
+                bytes: input.bytes,
+                definitions: chunk
+                    .items
+                    .iter()
+                    .filter_map(|&item| definition(&plan.items[item]))
+                    .collect(),
+                constants: input
+                    .constants
+                    .iter()
+                    .map(|constant| ChunkConstantReport {
+                        label: constant.label.clone(),
+                        first: constant.first.map(|(chunk, site)| {
+                            (
+                                chunk_root(chunk.0),
+                                chunk.0,
+                                site.map(|site| expression_demand(program, site)),
+                            )
+                        }),
+                    })
+                    .collect(),
                 roots: report_roots(program, &runtime.roots, units),
                 units: manifest
                     .units
@@ -962,39 +1133,111 @@ impl ChunkedRetention {
     }
 }
 
-/// A summary line, then per chunk a summary line, a table of the roots that
-/// add units to it (its own and, marked with their chunk, other chunks')
-/// and a table of its units with the root and source span that first
-/// reached each.
+/// A summary line of the build, then per chunk a summary line (its bytes,
+/// units, constants and definitions), a table of its definitions with the
+/// root and read that first reached each one moved toward its readers, a
+/// table of its constant table entries with the read that first demanded
+/// each, a table of the roots that add units to it (its own and, marked
+/// with their chunk, other chunks') and a table of its units with the root
+/// and source span that first reached each. A demand in another chunk
+/// names that chunk's file.
 impl fmt::Display for ChunkedRetention {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let units = self
-            .chunks
-            .iter()
-            .map(|chunk| chunk.units.len())
-            .sum::<usize>();
+        let sum = |count: fn(&ChunkRetention) -> usize| self.chunks.iter().map(count).sum();
         let bytes = |chunk: &ChunkRetention| chunk.units.iter().map(|unit| unit.bytes).sum();
         writeln!(
             f,
-            "{}: runtime slices of {} chunks, {} of {} units, {} unit bytes, {} runtime bytes",
+            "{}: {} chunks, {} bytes, {} of {} units, {} unit bytes, {} runtime bytes, \
+             {} constants, {} definitions",
             self.level,
             self.chunks.len(),
-            units,
+            thousands(sum(|chunk| chunk.bytes)),
+            sum(|chunk| chunk.units.len()),
             self.total_units,
             thousands(self.chunks.iter().map(bytes).sum()),
-            thousands(self.chunks.iter().map(|chunk| chunk.runtime_bytes).sum())
+            thousands(sum(|chunk| chunk.runtime_bytes)),
+            thousands(sum(|chunk| chunk.constants.len())),
+            thousands(sum(|chunk| chunk.definitions.len())),
         )?;
         let label = |chunk: usize, root: usize| self.chunks[chunk].roots[root].label();
         for (index, chunk) in self.chunks.iter().enumerate() {
             writeln!(f)?;
             writeln!(
                 f,
-                "{}: {} units, {} unit bytes, {} runtime bytes",
+                "{}: {} bytes, {} units, {} unit bytes, {} runtime bytes, {} constants, \
+                 {} definitions",
                 chunk.file,
+                thousands(chunk.bytes),
                 chunk.units.len(),
                 thousands(bytes(chunk)),
-                thousands(chunk.runtime_bytes)
+                thousands(chunk.runtime_bytes),
+                thousands(chunk.constants.len()),
+                thousands(chunk.definitions.len()),
             )?;
+            let located = |owner: usize, demand: &Demand| {
+                if owner == index {
+                    demand.to_string()
+                } else {
+                    format!("{}, {demand}", self.chunks[owner].file)
+                }
+            };
+            // Name, root and demand columns, the name column at least
+            // `header` wide.
+            let table = |f: &mut fmt::Formatter<'_>,
+                         header: &str,
+                         rows: Vec<(&str, &str, String)>|
+             -> fmt::Result {
+                let name_width = rows.iter().map(|row| row.0.len()).max().unwrap_or(0);
+                let root_width = rows.iter().map(|row| row.1.len()).max().unwrap_or(0);
+                let (name_width, root_width) = (name_width.max(header.len()), root_width.max(4));
+                writeln!(f)?;
+                writeln!(
+                    f,
+                    "{header:<name_width$}  {:<root_width$}  first demanded by",
+                    "root"
+                )?;
+                for (name, root, demand) in rows {
+                    writeln!(f, "{name:<name_width$}  {root:<root_width$}  {demand}")?;
+                }
+                Ok(())
+            };
+            if !chunk.definitions.is_empty() {
+                let rows = chunk
+                    .definitions
+                    .iter()
+                    .map(|definition| {
+                        let (owner, demand) = &definition.demand;
+                        let demand = located(*owner, demand);
+                        let demand = if definition.moved {
+                            demand
+                        } else {
+                            format!("its namespace, {demand}")
+                        };
+                        (definition.name.as_str(), definition.root.as_str(), demand)
+                    })
+                    .collect();
+                table(f, "definition", rows)?;
+            }
+            if !chunk.constants.is_empty() {
+                let rows = chunk
+                    .constants
+                    .iter()
+                    .map(|constant| match &constant.first {
+                        Some((root, owner, Some(demand))) => (
+                            constant.label.as_str(),
+                            root.as_str(),
+                            located(*owner, demand),
+                        ),
+                        Some((root, owner, None)) => (
+                            constant.label.as_str(),
+                            root.as_str(),
+                            self.chunks[*owner].file.clone(),
+                        ),
+                        None => (constant.label.as_str(), "-", "-".to_owned()),
+                    })
+                    .collect();
+                table(f, "constant", rows)?;
+            }
             // Its own roots, then other chunks' that add units here.
             let mut listed = (0..chunk.roots.len())
                 .map(|root| (index, root))
