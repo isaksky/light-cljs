@@ -1,0 +1,30 @@
+;; The Phase 3 test project (docs/build-configuration.md, "A full
+;; illustration" and "Several builds in one process"): a page, a web worker
+;; and a test runner, which all three require app.shared.
+;;   light-cljs watch app worker   both dev builds on one server: the app at
+;;                                 / and /app/, the worker at /worker/
+{:source-paths ["src" "test"]
+ :cache-blockers #{app.build-info}
+ :http {:port #light-cljs/env ["HTTP_PORT" :as :int :default 9630]}
+ :nrepl {:port 0}
+ :builds
+ {:app
+  {:target :esm
+   :output-dir "out/app"
+   :modules {:main {:entries [app.main]}}
+   :config {:app/api-origin "https://api.example.org"}
+   :compiler-options {:macro-timeout-ms 30000}
+   :devtools {:reload-strategy :full}
+   :dev {:config {:app/api-origin "http://127.0.0.1:8080"}}
+   :release {:closure-defines {app.config/DEBUG false
+                               app.config/VERSION #light-cljs/env ["APP_VERSION" "dev"]}
+             :compiler-options {:elide-asserts true}}}
+  :worker
+  {:target :esm
+   :output-dir "out/worker"
+   :modules {:main {:entries [app.worker]}}}
+  :test
+  {:target :esm
+   :output-dir "out/test"
+   :modules {:main {:entries [app.test-runner]}}
+   :compiler-options {:optimizations :none}}}}

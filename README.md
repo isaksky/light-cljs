@@ -503,7 +503,7 @@ cargo run --quiet -- compile features   # the dev build in out/dev, once
 cargo run --quiet -- watch features     # the dev build in out/dev, watched and served
 # light-cljs - config: /work/light-cljs/examples/features/light-cljs.edn
 # light-cljs: serving /work/light-cljs/examples/features/out/dev at http://127.0.0.1:9630/
-# light-cljs: built app.main (6 namespaces) into /work/light-cljs/examples/features/out/dev in 412 ms; watching every 100 ms
+# [:features] built app.main (6 namespaces) into /work/light-cljs/examples/features/out/dev in 412 ms; watching every 100 ms
 ```
 
 `watch ID` runs what `--watch --serve` runs, and always starts the dev
@@ -515,16 +515,28 @@ that one is in use unless `:http {:strict true}`, serving the build under
 nREPL answers on the same port unless `:nrepl false`; `:nrepl {:port N}` adds
 the listener of `--nrepl N` and writes `.nrepl-port` in the project
 directory. `:fs-watch {:loop-wait N}` is `--poll-ms N`, and `:devtools
-{:reload-strategy :full}` is `--reload-dependents`. `watch` takes one id for
-now. The watch reads `light-cljs.edn` again whenever it is saved, as
+{:reload-strategy :full}` is `--reload-dependents`. The build's lines on
+stderr, and its messages in the overlay, begin with its id (`[:features]
+recompiled app.shared in 41.2 ms`), as shadow-cljs's `[:app] Build
+completed.` does; `--watch`'s lines stay `light-cljs: ...`.
+
+`watch ID ID ...` watches several builds in one process, as shadow-cljs's
+`watch app worker` does: each on a thread of its own, their startup builds
+one after another in the order named, then one dev server, the first build
+at `/` and each under `/ID/`, one nREPL listener, and one poll of the shared
+`:source-paths`, whose changes each build steps on its own, concurrently: a
+save of a namespace two builds require recompiles it in both, and a compile
+error in one build is that build's stderr and overlay while the others keep
+stepping. The watch reads `light-cljs.edn` again whenever it is saved, as
 shadow-cljs does: an invalid file is reported on stderr and in the page's
 overlay, and the build keeps running; an edit that changes the build's
-settings (`:config`, say, or a top-level `:source-paths`) restarts the build
-in the same process, from the cache, and connected pages reconnect to it; a
-comment or another build's section changes nothing; and an edit of `:http`,
+settings (`:config`, say) restarts that build in the same process, from the
+cache, and its connected pages reconnect to it, a top-level change such as
+`:source-paths` every build; a comment or the section of a build not
+watched changes nothing; and an edit of `:http`,
 `:nrepl` or `:fs-watch` is reported (`light-cljs: :http changed in
 light-cljs.edn; restart the watch to apply it`) and applies once the watch
-is started again. Flags after the id still win.
+is started again. Flags after the ids still win.
 
 `release ID` writes what `--compile --optimize advanced --out-dir` writes,
 at the build's `:optimizations`; `compile ID` writes what `--compile

@@ -2233,3 +2233,71 @@ fn a_flag_only_watch_reads_no_configuration_file_and_writes_no_port_file() {
     names.sort();
     assert_eq!(names, ["dev", "light-cljs.edn", "src"]);
 }
+
+/// `light-cljs watch features features-b`, on a temporary copy of
+/// examples/features whose light-cljs.edn adds a second build of the same
+/// entry into other directories, serves both from one server
+/// (docs/build-configuration.md, "Several builds in one process"): each
+/// build's directory under `/<id>/`, `features` also at `/`, and each
+/// build's event stream under its prefix, replaying that build.
+#[test]
+fn watch_of_two_builds_serves_each_under_its_id_and_the_first_at_the_root() {
+    let (_dir, project) = file_watch::features("dev-server-two-builds");
+    let config = project.join("light-cljs.edn");
+    let text = fs::read_to_string(&config).unwrap();
+    let second = "   :dev {:output-dir \"out/dev\"}}\n  :features-b\n  {:target :esm\n   \
+                  :output-dir \"out/release-b\"\n   :modules {:main {:entries [app.main]}}\n   \
+                  :dev {:output-dir \"out/dev-b\"}}}}";
+    assert!(text.contains("   :dev {:output-dir \"out/dev\"}}}}"));
+    fs::write(
+        &config,
+        text.replace("   :dev {:output-dir \"out/dev\"}}}}", second),
+    )
+    .unwrap();
+    let mut watch = file_watch::Light::spawn(
+        &project,
+        &["watch", "features", ":features-b"],
+        Some("{:http {:port 0}}"),
+    );
+    let (address, _, serving) = watch.serving();
+    let (dev, dev_b) = (project.join("out/dev"), project.join("out/dev-b"));
+    assert_eq!(
+        serving,
+        format!("light-cljs: serving {} at http://{address}/", dev.display())
+    );
+    let (lines, _) = watch.until("[:features] built app.main (");
+    assert_eq!(
+        lines,
+        [format!(
+            "light-cljs: serving {} at http://{address}/features-b/",
+            dev_b.display()
+        )]
+    );
+    let (lines, _) = watch.until("[:features-b] built app.main (");
+    assert!(lines.is_empty(), "{lines:#?}");
+    let index = fs::read_to_string(dev.join("index.js")).unwrap();
+    let index_b = fs::read_to_string(dev_b.join("index.js")).unwrap();
+    let unit_b = fs::read_to_string(dev_b.join("app.shared.js")).unwrap();
+    for (path, body) in [
+        ("/index.js", &index),
+        ("/features/index.js", &index),
+        ("/features-b/index.js", &index_b),
+        ("/features-b/app.shared.js", &unit_b),
+    ] {
+        assert_eq!(
+            file_watch::get(&address, path),
+            ("HTTP/1.1 200 OK".to_owned(), body.clone()),
+            "{path}"
+        );
+    }
+    let (status, _) = file_watch::get(&address, "/features-b");
+    assert_eq!(status, "HTTP/1.1 301 Moved Permanently");
+    for prefix in ["", "/features", "/features-b"] {
+        let replay = file_watch::replay(&address, &format!("{prefix}/events"));
+        assert!(
+            replay.contains("\"namespace\":\"app.main\""),
+            "{prefix}: {replay}"
+        );
+    }
+    assert!(watch.child.try_wait().unwrap().is_none());
+}

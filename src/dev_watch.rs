@@ -35,6 +35,14 @@
 //! `--serve` pushes the units of its reload set (`Watch::reload_set`: what
 //! it wrote, never a `^:dev/once` one again, and with `--reload-dependents`
 //! those downstream).
+//!
+//! Each build runs on a thread of its own, which owns its session, macro
+//! engine and retained program (a V8 isolate never crosses threads); the
+//! thread that started the watch is the poller, which scans the source roots
+//! (and `light-cljs.edn` for `light-cljs watch ID ...`) and sends every
+//! build the files that changed, each build's manifest deciding which are
+//! its own (docs/build-configuration.md, "Several builds in one process").
+//! `--watch` is one such build, at `/` of its server.
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::cache_policy::{self, CacheSettings};
 use light_cljs::compile_stats::CompileStats;
@@ -43,8 +51,9 @@ use light_cljs::dependency_manifest::{
     DependencyManifest, EdgeKinds, ExternalInput, Revision, SourceOrigin,
 };
 use light_cljs::dev_build::{DevFile, DevManifest, DevNamespace, namespace_unit, unit_file};
+use light_cljs::dev_repl::ReplRequest;
 use light_cljs::dev_server::{
-    Build, DevServer, Diagnostic, Listen, LoadUnit, Mount, MountId, Step,
+    Build, DevMount, DevServer, Diagnostic, Listen, LoadUnit, Mount, MountId, Step,
 };
 use light_cljs::dev_session::{Action, DevSession, EntryStart, Unit};
 use light_cljs::source_provider::{
@@ -53,13 +62,17 @@ use light_cljs::source_provider::{
 use light_cljs::{EvalOptions, LineIndex, MacroHost};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     error::Error,
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::mpsc::RecvTimeoutError,
+    sync::{
+        Arc, Condvar, Mutex, PoisonError,
+        mpsc::{Receiver, RecvTimeoutError, Sender, channel},
+    },
+    thread::JoinHandle,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -205,36 +218,38 @@ pub(crate) struct Options {
     /// `--macro-expansions N` and the other macro limit flags, for the
     /// startup build and the session.
     pub(crate) macro_limits: crate::MacroLimitFlags,
-    /// `light-cljs watch ID`'s configuration file, which the poll reads
-    /// again when it is saved; none for `--watch`. A restart's options have
-    /// none: the watch keeps the one it started with.
-    pub(crate) config: Option<ConfigWatch>,
 }
 
-/// The configuration file of `light-cljs watch ID` in the watch's poll
+/// The configuration file of `light-cljs watch ID ...` in the watch's poll
 /// (docs/build-configuration.md, "Watching the configuration file").
 pub(crate) struct ConfigWatch {
     /// `light-cljs.edn`, whose stamp the poll compares.
     pub(crate) path: PathBuf,
     /// Read the file again, once the poll finds its stamp changed, and
-    /// compare the build's settings with those it runs with
-    /// (`crate::config_cli`), reporting on stderr what the restart does not
+    /// compare each build's settings with those it runs with
+    /// (`crate::config_cli`), reporting on stderr what a restart does not
     /// apply.
     pub(crate) reread: Box<dyn FnMut() -> Reread>,
 }
 
 /// What reading the configuration file again found.
 pub(crate) enum Reread {
-    /// Its text, or the build's settings in it, did not change: a comment,
-    /// another build's section, or only a setting the running server holds.
+    /// Its text, or the builds' settings in it, did not change: a comment,
+    /// a section of a build the watch does not run, or only a setting the
+    /// running server holds.
     Unchanged,
-    /// It is invalid: the error as printed, and located for the overlay. The
-    /// build keeps running with its settings.
+    /// It is invalid: the error as printed, and located for the overlays.
+    /// Every build keeps running with its settings.
     Invalid(String, Diagnostic),
-    /// The build's settings changed: the build starts again with these
-    /// options, of which those of the server and the poll are not used.
-    Restart(Box<Options>),
+    /// The settings of these builds, by their index in the watch's builds,
+    /// changed: each starts again with its options, of which those of the
+    /// server and the poll are not used.
+    Restart(Vec<(usize, Box<Options>)>),
 }
+
+/// An error that ends the watch, with the index of the build whose it is;
+/// none for one of the server or the poll.
+pub(crate) type WatchError = (Option<usize>, Box<dyn Error>);
 
 /// The port of `--serve` or `--nrepl`, 0 to 65535.
 pub(crate) fn port_value(flag: &str, text: &std::ffi::OsStr) -> Result<u16> {
@@ -366,7 +381,6 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
         blockers,
         cache_dir,
         macro_limits,
-        config: None,
     }))
 }
 
@@ -458,8 +472,11 @@ struct Watch {
     /// next change: the one that failed (perhaps over a file that does not
     /// exist yet) and those after it.
     pending: Vec<String>,
-    /// The dev server of `--serve`.
-    server: Option<DevServer>,
+    /// The build's mount of the dev server of `--serve`.
+    server: Option<DevMount>,
+    /// `[:ID] ` for a build of `light-cljs.edn`, which begins its lines on
+    /// stderr and its messages to the overlay; empty for `--watch`.
+    tag: String,
     /// With a server, the text of each namespace's unit as written.
     units: HashMap<String, String>,
     /// The namespaces whose units failed steps wrote but did not push,
@@ -508,7 +525,31 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     let Some(options) = options(args)? else {
         return Ok(());
     };
-    watch(options)
+    run_builds(vec![options], None).map_err(|(_, error)| error)
+}
+
+/// `[:ID] ` for a build of `light-cljs.edn`, which begins its lines on stderr
+/// and its messages to the overlay, as shadow-cljs's `[:app] Build
+/// completed.` names the build; empty for `--watch`.
+fn tag(options: &Options) -> String {
+    options
+        .mount
+        .as_ref()
+        .map_or_else(String::new, |name| format!("[:{name}] "))
+}
+
+/// How a build's status lines begin: its tag, or `light-cljs: ` for
+/// `--watch`.
+fn lead(tag: &str) -> &str {
+    if tag.is_empty() { "light-cljs: " } else { tag }
+}
+
+/// `diagnostic` with its message after `tag`, for the overlay.
+fn tagged(tag: &str, mut diagnostic: Diagnostic) -> Diagnostic {
+    if !tag.is_empty() {
+        diagnostic.message = format!("{tag}{}", diagnostic.message);
+    }
+    diagnostic
 }
 
 /// The source roots of `options`, canonical: they name files as the source
@@ -620,7 +661,8 @@ fn start(
             None,
         ),
     };
-    crate::print_warnings(&warnings);
+    let tag = tag(options);
+    crate::print_tagged_warnings(&tag, &warnings);
     let (program, sources) = program?;
     // The build's warnings, located for the server, which shows them to the
     // runtimes that connect before the first step.
@@ -699,6 +741,7 @@ fn start(
         base,
         pending: Vec::new(),
         server: None,
+        tag,
         units: HashMap::new(),
         unpushed: Vec::new(),
         warnings: Vec::new(),
@@ -732,31 +775,158 @@ fn start(
     Ok((watch, startup))
 }
 
-/// Build, serve and watch as `options` say, until interrupted or a step
-/// cannot write the build. With `options.config`, each poll also reads
+/// What the poller sends a build's thread.
+enum Work {
+    /// The source files that changed (or appeared) and went since the last
+    /// poll, which noticed them at `noticed`. Each build's manifest decides
+    /// which are its own.
+    Changes {
+        changed: Vec<PathBuf>,
+        deleted: Vec<PathBuf>,
+        noticed: Instant,
+    },
+    /// The configuration file was saved: a build that a failed restart left
+    /// waiting starts again.
+    Touched,
+    /// The build's settings changed: it starts again with these options.
+    Restart(Box<Options>),
+    /// The server started: serve the build on mount `MountId` of it.
+    Attach(Arc<DevServer>, MountId),
+    /// A form of a connected REPL, for the session of the build's start
+    /// numbered `u64`: one for a session that ended is dropped unanswered,
+    /// as a session's requests were when it ended.
+    Repl(u64, ReplRequest),
+}
+
+/// What a build's thread tells the poller while the watch starts.
+enum Report {
+    /// The startup build is made: the build a runtime catches up with.
+    Started(Build),
+    /// The build of this index is served, when the watch serves: its
+    /// `built` line.
+    Ready(usize, String),
+}
+
+/// A build's thread, as the poller keeps it.
+struct Worker {
+    work: Sender<Work>,
+    /// Taken once the thread has ended.
+    thread: Option<JoinHandle<std::result::Result<(), String>>>,
+}
+
+/// How deep a build's thread analyzes: as deep as `--compile` on the main
+/// thread, which has 8 MiB.
+const BUILD_STACK: usize = 8 << 20;
+
+/// How often the poller looks for a build's thread that ended while the
+/// watch starts.
+const STARTUP_WAKE: Duration = Duration::from_millis(20);
+
+/// Build, serve and watch each of `builds` (one for `--watch`; those named
+/// for `light-cljs watch ID ...`, docs/build-configuration.md, "Several
+/// builds in one process"), until interrupted, or a startup build fails, or
+/// a step cannot write its build.
+///
+/// Each build runs on a thread of its own, which owns its session, macro
+/// engine and retained program. The startup builds run one after another,
+/// in the order given, so the peak is one analysis beside the programs
+/// already made; then one server serves every build, the first at `/` (and
+/// under `/ID/`, as each build of the file is), and every build steps on
+/// its own. The calling thread is the poller: it scans the source roots,
+/// which every build shares, every `poll` of the first build, and sends
+/// every build the files that changed. With `config`, each poll also reads
 /// `light-cljs.edn` again when it was saved, and a build whose settings
-/// changed starts again in this process, with the same server, port files
-/// and poll interval (docs/build-configuration.md, "Watching the
-/// configuration file").
-pub(crate) fn watch(mut options: Options) -> Result<()> {
+/// changed starts again in this process, on its own thread, with the same
+/// server, port files and poll interval (docs/build-configuration.md,
+/// "Watching the configuration file").
+pub(crate) fn run_builds(
+    builds: Vec<Options>,
+    mut config: Option<ConfigWatch>,
+) -> std::result::Result<(), WatchError> {
     let begun = Instant::now();
-    let mut config = options.config.take();
-    // The stamps come first, so a file saved while the build is made is a
+    let general = |error: Box<dyn Error>| (None, error);
+    let first = builds
+        .first()
+        .ok_or_else(|| general("a watch runs at least one build".into()))?;
+    // The server's and the poll's settings are the first build's: the
+    // file's top level and the flags, the same for every build.
+    let poll = first.poll;
+    let serve = first.serve;
+    let port_rule = first.port_rule;
+    let host = first
+        .serve_host
+        .clone()
+        .unwrap_or_else(|| "127.0.0.1".to_owned());
+    let (nrepl, no_nrepl) = (first.nrepl, first.no_nrepl);
+    let nrepl_port_dir = first.nrepl_port_dir.clone();
+    let http_port_file = first.http_port_file.clone();
+    let named = first.mount.is_some();
+    // The stamps come first, so a file saved while a build is made is a
     // change.
-    let mut roots = canonical_roots(&options)?;
+    let mut roots = canonical_roots(first).map_err(general)?;
     let mut stamps = scan(&roots);
-    let (mut watch, startup) = start(&options, roots.clone(), begun)?;
-    let mut repl = None;
+    // Restarts, too, make one analysis at a time, in the order named.
+    let starts = Arc::new(Starts::default());
+    let (report, reports) = channel();
+    let mut workers = Vec::with_capacity(builds.len());
+    // Each build is ready once it serves, or at once without a server.
+    let mut lines = vec![None; builds.len()];
+    let mut mounts = Vec::with_capacity(builds.len());
+    for (index, options) in builds.into_iter().enumerate() {
+        let (work, received) = channel();
+        let out_dir = options.out_dir.clone();
+        let name = options.mount.clone().unwrap_or_default();
+        let thread = {
+            let (roots, report, work, starts) =
+                (roots.clone(), report.clone(), work.clone(), starts.clone());
+            // The first build's time counts from the process's start, as a
+            // single build's always has.
+            let begun = if index == 0 { begun } else { Instant::now() };
+            std::thread::Builder::new()
+                .name(format!("light-cljs-build-{}", index + 1))
+                .stack_size(BUILD_STACK)
+                .spawn(move || {
+                    let thread = BuildThread {
+                        index,
+                        options,
+                        serving: serve.is_some(),
+                        poll,
+                        work,
+                        report,
+                        starts,
+                    };
+                    thread.run(roots, begun, received)
+                })
+                .map_err(|error| general(error.into()))?
+        };
+        workers.push(Worker {
+            work,
+            thread: Some(thread),
+        });
+        // The next build starts once this one is made.
+        let build = loop {
+            match reports.recv_timeout(STARTUP_WAKE) {
+                Ok(Report::Started(build)) => break build,
+                Ok(Report::Ready(at, line)) => lines[at] = Some(line),
+                Err(_) => ended(&mut workers)?,
+            }
+        };
+        mounts.push(Mount {
+            name,
+            out_dir,
+            build,
+        });
+    }
     // Removes .nrepl-port when the watch ends.
     let mut _port_file = None;
     // Removes `<:cache-root>/http.port` when the watch ends.
     let mut _http_port_file = None;
-    if let Some(port) = options.serve {
-        let host = options.serve_host.as_deref().unwrap_or("127.0.0.1");
+    let mut server = None;
+    if let Some(port) = serve {
         let listen = Listen {
-            next_free: options.port_rule == PortRule::NextFree,
-            nrepl: !options.no_nrepl,
-            ..Listen::new(host, port)
+            next_free: port_rule == PortRule::NextFree,
+            nrepl: !no_nrepl,
+            ..Listen::new(&host, port)
         };
         // As shadow-cljs's server says of each port in use it passes over.
         let mut taken = |port: u16| {
@@ -765,103 +935,99 @@ pub(crate) fn watch(mut options: Options) -> Result<()> {
                 port as u32 + 1
             )
         };
-        let served = match &options.mount {
-            Some(name) => DevServer::start_mounts_with(
-                listen,
-                vec![Mount {
-                    name: name.clone(),
-                    out_dir: options.out_dir.clone(),
-                    build: watch.build(),
-                }],
-                &roots,
-                &mut taken,
-            ),
-            None => {
-                DevServer::start_with(listen, &options.out_dir, &roots, watch.build(), &mut taken)
-            }
+        let directories = mounts
+            .iter()
+            .map(|mount| mount.out_dir.clone())
+            .collect::<Vec<_>>();
+        let served = if named {
+            DevServer::start_mounts_with(listen, mounts, &roots, &mut taken)
+        } else {
+            let mount = mounts.pop().expect("one build");
+            DevServer::start_with(listen, &mount.out_dir, &roots, mount.build, &mut taken)
         };
-        let server = served.map_err(|error| match options.port_rule {
-            PortRule::Strict => {
-                format!("cannot serve on {host}:{port}: {error}; :http {{:strict true}} tries no other port")
-            }
-            PortRule::Exact | PortRule::NextFree => {
-                format!("cannot serve on {host}:{port}: {error}")
-            }
-        })?;
-        if let Some(path) = &options.http_port_file {
+        let served = Arc::new(served.map_err(|error| {
+            general(
+                match port_rule {
+                    PortRule::Strict => format!(
+                        "cannot serve on {host}:{port}: {error}; :http {{:strict true}} tries no \
+                         other port"
+                    ),
+                    PortRule::Exact | PortRule::NextFree => {
+                        format!("cannot serve on {host}:{port}: {error}")
+                    }
+                }
+                .into(),
+            )
+        })?);
+        if let Some(path) = &http_port_file {
             // As shadow-cljs writes `.shadow-cljs/http.port`, creating the
             // cache root when it is missing.
             let file = path
                 .parent()
                 .map_or(Ok(()), fs::create_dir_all)
                 .and_then(|()| {
-                    light_cljs::dev_nrepl::PortFile::write(path, server.address().port())
+                    light_cljs::dev_nrepl::PortFile::write(path, served.address().port())
                 })
-                .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+                .map_err(|error| {
+                    general(format!("cannot write {}: {error}", path.display()).into())
+                })?;
             _http_port_file = Some(file);
         }
-        eprintln!(
-            "light-cljs: serving {} at http://{}/",
-            options.out_dir.display(),
-            server.address()
-        );
-        if !startup.is_empty() {
-            server.publish(Step {
-                warnings: startup,
-                ..Step::default()
-            });
-        }
-        // The connected REPL compiles with the watch's session, in the entry
-        // namespace to begin with, and calls the runtime's `light.dev`
-        // functions.
-        light_cljs::dev_repl::declare(&watch.session)?;
-        repl = Some(server.serve_repl(&options.entry));
-        if let Some(nrepl) = options.nrepl {
-            let address = if nrepl != 0 && nrepl == server.address().port() {
-                server.address()
-            } else {
-                server
-                    .serve_nrepl(host, nrepl)
-                    .map_err(|error| format!("cannot serve nREPL on {host}:{nrepl}: {error}"))?
+        // The first build at `/`, and each other one under its name.
+        for (index, (directory, mount)) in directories.iter().zip(served.mounts()).enumerate() {
+            let under = match mount.name().filter(|_| index > 0) {
+                Some(name) => format!("{name}/"),
+                None => String::new(),
             };
-            let file =
-                light_cljs::dev_nrepl::PortFile::create(&options.nrepl_port_dir, address.port())
-                    .map_err(|error| format!("cannot write .nrepl-port: {error}"))?;
             eprintln!(
-                "light-cljs: nREPL at {address}, its port in {}",
-                file.path().display()
+                "light-cljs: serving {} at http://{}/{under}",
+                directory.display(),
+                served.address()
             );
-            _port_file = Some(file);
         }
-        watch.server = Some(server);
+        for index in 0..workers.len() {
+            send(
+                &mut workers,
+                index,
+                Work::Attach(served.clone(), MountId(index as u32)),
+            )?;
+        }
+        server = Some(served);
     }
-    // The poll interval stays the one the watch started with, as the server
-    // does: a restart changes the build alone.
-    let poll = options.poll;
-    built(&options, &watch, begun, poll);
-    // The build; none after a restart that failed, until one succeeds, while
-    // the server is `idle`'s.
-    let mut current = Some(watch);
-    let mut idle = None;
+    // The nREPL listener comes after the builds' REPLs, and the builds'
+    // lines after both.
+    while lines.iter().any(Option::is_none) {
+        match reports.recv_timeout(STARTUP_WAKE) {
+            Ok(Report::Ready(at, line)) => lines[at] = Some(line),
+            Ok(Report::Started(_)) => unreachable!("every build has started"),
+            Err(_) => ended(&mut workers)?,
+        }
+    }
+    if let (Some(server), Some(nrepl)) = (&server, nrepl) {
+        let address = if nrepl != 0 && nrepl == server.address().port() {
+            server.address()
+        } else {
+            server.serve_nrepl(&host, nrepl).map_err(|error| {
+                general(format!("cannot serve nREPL on {host}:{nrepl}: {error}").into())
+            })?
+        };
+        let file = light_cljs::dev_nrepl::PortFile::create(&nrepl_port_dir, address.port())
+            .map_err(|error| general(format!("cannot write .nrepl-port: {error}").into()))?;
+        eprintln!(
+            "light-cljs: nREPL at {address}, its port in {}",
+            file.path().display()
+        );
+        _port_file = Some(file);
+    }
+    for line in lines.into_iter().flatten() {
+        eprintln!("{line}");
+    }
     // The configuration file's stamp at the last poll; none before the first
     // poll, which reads the file in case it was saved since it was read.
     let mut config_stamp = None;
-    // A restart is due: the build's settings changed, or a restart failed
-    // and a source or the file changed since.
-    let mut restart = false;
     loop {
-        // Between polls, compile the forms of connected REPLs as they come.
-        let polled = Instant::now() + poll;
-        while let Some(wait) = polled.checked_duration_since(Instant::now()) {
-            match (&repl, &current) {
-                (Some(requests), Some(watch)) => match requests.recv_timeout(wait) {
-                    Ok(request) => request.answer(&watch.session),
-                    Err(RecvTimeoutError::Timeout) => break,
-                    Err(RecvTimeoutError::Disconnected) => repl = None,
-                },
-                _ => std::thread::sleep(wait),
-            }
-        }
+        std::thread::sleep(poll);
+        ended(&mut workers)?;
         if let Some(config) = &mut config {
             let now = stamp(&config.path);
             if config_stamp != Some(now) {
@@ -870,86 +1036,40 @@ pub(crate) fn watch(mut options: Options) -> Result<()> {
                     Reread::Unchanged => {}
                     Reread::Invalid(printed, diagnostic) => {
                         eprintln!("light-cljs: {printed}");
-                        let server = current.as_ref().and_then(|watch| watch.server.as_ref());
-                        if let Some(server) = server.or(idle.as_ref()) {
-                            server.publish(Step {
-                                error: Some(diagnostic),
+                        for mount in server.iter().flat_map(|server| server.mounts()) {
+                            mount.publish(Step {
+                                error: Some(diagnostic.clone()),
                                 ..Step::default()
                             });
                         }
                     }
-                    Reread::Restart(next) => {
-                        options = *next;
-                        restart = true;
+                    Reread::Restart(restarts) => {
+                        // A restart that moves the source roots, which every
+                        // build shares, moves the poll, stamped before the
+                        // build reads them.
+                        if let Some(next) = restarts
+                            .first()
+                            .and_then(|(_, options)| canonical_roots(options).ok())
+                            .filter(|next| *next != roots)
+                        {
+                            roots = next;
+                            stamps = scan(&roots);
+                        }
+                        for &(index, _) in &restarts {
+                            starts.enqueue(index);
+                        }
+                        for (index, options) in restarts {
+                            send(&mut workers, index, Work::Restart(options))?;
+                        }
                     }
                 }
-                restart |= current.is_none();
+                for index in 0..workers.len() {
+                    send(&mut workers, index, Work::Touched)?;
+                }
             }
         }
         let now = scan(&roots);
-        restart |= current.is_none() && now != stamps;
-        if restart {
-            restart = false;
-            // The session ends before the next one starts, as when the
-            // process started; the server stays.
-            let server = current
-                .take()
-                .and_then(|mut watch| watch.server.take())
-                .or_else(|| idle.take());
-            repl = None;
-            let begun = Instant::now();
-            let started = canonical_roots(&options).and_then(|next| {
-                roots = next;
-                stamps = scan(&roots);
-                start(&options, roots.clone(), begun)
-            });
-            match started {
-                Ok((mut watch, startup)) => {
-                    if let Some(server) = server {
-                        server
-                            .restart(
-                                MountId(0),
-                                &options.out_dir,
-                                &options.roots,
-                                watch.build(),
-                                startup,
-                            )
-                            .map_err(|error| {
-                                format!("cannot serve {}: {error}", options.out_dir.display())
-                            })?;
-                        light_cljs::dev_repl::declare(&watch.session)?;
-                        repl = Some(server.serve_repl(&options.entry));
-                        watch.server = Some(server);
-                    }
-                    built(&options, &watch, begun, poll);
-                    current = Some(watch);
-                }
-                Err(error) => {
-                    // The server keeps the build that ran last and shows the
-                    // error; the next change tries again.
-                    let message = error.to_string();
-                    eprintln!("light-cljs: {message}; the build starts again at the next change");
-                    if let Some(server) = &server {
-                        server.publish(Step {
-                            error: Some(Diagnostic {
-                                message,
-                                file: None,
-                                line: None,
-                                column: None,
-                            }),
-                            ..Step::default()
-                        });
-                    }
-                    idle = server;
-                }
-            }
-            continue;
-        }
-        let Some(watch) = &mut current else {
-            continue;
-        };
-        let resources = watch.poll_resources();
-        if now == stamps && resources.is_empty() {
+        if now == stamps {
             continue;
         }
         let noticed = Instant::now();
@@ -964,21 +1084,355 @@ pub(crate) fn watch(mut options: Options) -> Result<()> {
             .cloned()
             .collect::<Vec<_>>();
         stamps = now;
-        watch.step(&changed, &deleted, &resources, noticed)?;
+        for index in 0..workers.len() {
+            let changes = Work::Changes {
+                changed: changed.clone(),
+                deleted: deleted.clone(),
+                noticed,
+            };
+            send(&mut workers, index, changes)?;
+        }
+    }
+}
+
+/// The error of the first build whose thread ended, which ends the watch: a
+/// startup build that failed or a step that could not write its build. A
+/// thread that panicked panics the poller with its payload.
+fn ended(workers: &mut [Worker]) -> std::result::Result<(), WatchError> {
+    for (index, worker) in workers.iter_mut().enumerate() {
+        if worker.thread.as_ref().is_some_and(JoinHandle::is_finished) {
+            let thread = worker.thread.take().unwrap();
+            match thread.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => return Err((Some(index), error.into())),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Send build `index` `work`; when its thread has ended, its error.
+fn send(workers: &mut [Worker], index: usize, work: Work) -> std::result::Result<(), WatchError> {
+    if workers[index].work.send(work).is_ok() {
+        return Ok(());
+    }
+    if let Some(thread) = workers[index].thread.take() {
+        match thread.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err((Some(index), error.into())),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+    Err((Some(index), "the build's thread ended".into()))
+}
+
+/// The builds waiting to start, in the order they start: one at a time, so
+/// that the peak is one analysis beside the programs of the others, and in
+/// the order the poller asked for them, the order named.
+#[derive(Default)]
+struct Starts {
+    queue: Mutex<VecDeque<usize>>,
+    turn: Condvar,
+}
+
+impl Starts {
+    /// Put build `index` in the queue, unless it is in it.
+    fn enqueue(&self, index: usize) {
+        let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+        if !queue.contains(&index) {
+            queue.push_back(index);
+        }
+    }
+
+    /// Start build `index` with `start` once the builds ahead of it in the
+    /// queue have started.
+    fn run<T>(&self, index: usize, start: impl FnOnce() -> T) -> T {
+        self.enqueue(index);
+        let queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+        let queue = self
+            .turn
+            .wait_while(queue, |queue| queue.front() != Some(&index))
+            .unwrap_or_else(PoisonError::into_inner);
+        drop(queue);
+        let started = start();
+        self.queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop_front();
+        self.turn.notify_all();
+        started
+    }
+}
+
+/// A build's thread: what it keeps besides its watch.
+struct BuildThread {
+    /// Its index in the watch's builds.
+    index: usize,
+    options: Options,
+    /// Whether the watch serves: the thread waits for its mount once its
+    /// startup build is made.
+    serving: bool,
+    /// The poll interval the watch started with, at which the thread stamps
+    /// its build's resource files.
+    poll: Duration,
+    /// Its own work, for the REPL's forms.
+    work: Sender<Work>,
+    report: Sender<Report>,
+    starts: Arc<Starts>,
+}
+
+impl BuildThread {
+    /// Start the build from the canonical source roots `roots`, then step it
+    /// as `received` says until the poller is gone: the error that ends the
+    /// watch, if any.
+    fn run(
+        mut self,
+        roots: Vec<PathBuf>,
+        begun: Instant,
+        received: Receiver<Work>,
+    ) -> std::result::Result<(), String> {
+        let text = |error: Box<dyn Error>| error.to_string();
+        let tag = tag(&self.options);
+        let (watch, startup) = self
+            .starts
+            .run(self.index, || start(&self.options, roots, begun))
+            .map_err(text)?;
+        let _ = self.report.send(Report::Started(watch.build()));
+        let mut current = Some(watch);
+        // The server and the build's mount on it.
+        let mut mount: Option<(Arc<DevServer>, MountId)> = None;
+        // Which start of the build the REPL's forms are for.
+        let mut generation = 0;
+        if self.serving {
+            let Ok(Work::Attach(server, id)) = received.recv() else {
+                return Ok(());
+            };
+            let watch = current.as_mut().unwrap();
+            let served = server.mount(id);
+            if !startup.is_empty() {
+                served.publish(Step {
+                    warnings: startup
+                        .into_iter()
+                        .map(|warning| tagged(&tag, warning))
+                        .collect(),
+                    ..Step::default()
+                });
+            }
+            self.serve_repl(watch, &served, generation).map_err(text)?;
+            watch.server = Some(served);
+            mount = Some((server, id));
+        }
+        let line = built(&self.options, current.as_ref().unwrap(), begun, self.poll);
+        let _ = self.report.send(Report::Ready(self.index, line));
+        // When the build's resource files are stamped next.
+        let mut resources_due = Instant::now() + self.poll;
+        loop {
+            let mut messages = Vec::new();
+            if current.is_some() {
+                // Until the resource files are due, or work comes.
+                let wait = resources_due.saturating_duration_since(Instant::now());
+                match received.recv_timeout(wait) {
+                    Ok(message) => messages.push(message),
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => return Ok(()),
+                }
+            } else {
+                // A build that a failed restart left waiting has no
+                // resources to stamp: it waits for the next change.
+                match received.recv() {
+                    Ok(message) => messages.push(message),
+                    Err(_) => return Ok(()),
+                }
+            }
+            messages.extend(received.try_iter());
+            // What came since the thread last looked, the changes merged.
+            let mut changes: Option<(Vec<PathBuf>, Vec<PathBuf>, Instant)> = None;
+            let mut touched = false;
+            let mut restart = false;
+            for message in messages {
+                match message {
+                    Work::Repl(of, request) => {
+                        if let Some(watch) = current.as_ref().filter(|_| of == generation) {
+                            request.answer(&watch.session);
+                        }
+                    }
+                    Work::Changes {
+                        changed,
+                        deleted,
+                        noticed,
+                    } => merge(&mut changes, changed, deleted, noticed),
+                    Work::Touched => touched = true,
+                    Work::Restart(options) => {
+                        self.options = *options;
+                        restart = true;
+                    }
+                    Work::Attach(..) => {}
+                }
+            }
+            // A restart is due: the build's settings changed, or a restart
+            // failed and a source or the file changed since.
+            if restart || current.is_none() && (touched || changes.is_some()) {
+                // The session ends before the next one starts, as when the
+                // process started; the server stays.
+                drop(current.take());
+                generation += 1;
+                current = self.restart(mount.as_ref(), &tag, generation)?;
+                resources_due = Instant::now() + self.poll;
+                continue;
+            }
+            let Some(watch) = &mut current else {
+                continue;
+            };
+            let now = Instant::now();
+            let resources = if changes.is_some() || now >= resources_due {
+                if now >= resources_due {
+                    resources_due = now + self.poll;
+                }
+                watch.poll_resources()
+            } else {
+                Vec::new()
+            };
+            let (changed, deleted, noticed) =
+                changes.unwrap_or_else(|| (Vec::new(), Vec::new(), now));
+            if changed.is_empty() && deleted.is_empty() && resources.is_empty() {
+                continue;
+            }
+            watch
+                .step(&changed, &deleted, &resources, noticed)
+                .map_err(text)?;
+        }
+    }
+
+    /// Start the build again with its options, after its session ended: the
+    /// watch, or none when its startup build failed, which the next change
+    /// starts again while the server keeps the build that ran last.
+    fn restart(
+        &self,
+        mount: Option<&(Arc<DevServer>, MountId)>,
+        tag: &str,
+        generation: u64,
+    ) -> std::result::Result<Option<Watch>, String> {
+        let options = &self.options;
+        let started = self.starts.run(self.index, || {
+            let begun = Instant::now();
+            let started = canonical_roots(options).and_then(|roots| start(options, roots, begun));
+            started.map(|started| (started, begun))
+        });
+        let started = started.map(|((watch, startup), begun)| (watch, startup, begun));
+        match started {
+            Ok((mut watch, startup, begun)) => {
+                if let Some((server, id)) = mount {
+                    let startup = startup
+                        .into_iter()
+                        .map(|warning| tagged(tag, warning))
+                        .collect();
+                    server
+                        .restart(
+                            *id,
+                            &options.out_dir,
+                            &options.roots,
+                            watch.build(),
+                            startup,
+                        )
+                        .map_err(|error| {
+                            format!("cannot serve {}: {error}", options.out_dir.display())
+                        })?;
+                    let served = server.mount(*id);
+                    self.serve_repl(&watch, &served, generation)
+                        .map_err(|error| error.to_string())?;
+                    watch.server = Some(served);
+                }
+                eprintln!("{}", built(options, &watch, begun, self.poll));
+                Ok(Some(watch))
+            }
+            Err(error) => {
+                let message = error.to_string();
+                eprintln!(
+                    "{}{message}; the build starts again at the next change",
+                    lead(tag)
+                );
+                if let Some((server, id)) = mount {
+                    server.mount(*id).publish(Step {
+                        error: Some(tagged(
+                            tag,
+                            Diagnostic {
+                                message,
+                                file: None,
+                                line: None,
+                                column: None,
+                            },
+                        )),
+                        ..Step::default()
+                    });
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    /// Answer the connected REPL's forms on `mount` with the session of
+    /// `watch`, the build's start numbered `generation`: the REPL compiles
+    /// in the entry namespace to begin with, and calls the runtime's
+    /// `light.dev` functions. Its forms come to the build's thread with the
+    /// poller's work.
+    fn serve_repl(&self, watch: &Watch, mount: &DevMount, generation: u64) -> Result<()> {
+        light_cljs::dev_repl::declare(&watch.session)?;
+        let requests = mount.serve_repl(&self.options.entry);
+        let work = self.work.clone();
+        std::thread::Builder::new()
+            .name("light-cljs-repl-forms".to_owned())
+            .spawn(move || {
+                for request in requests {
+                    if work.send(Work::Repl(generation, request)).is_err() {
+                        break;
+                    }
+                }
+            })?;
+        Ok(())
+    }
+}
+
+/// Merge the changes of a later poll into those not yet stepped: a file that
+/// changed after it went, or went after it changed, is as the later poll
+/// found it.
+fn merge(
+    into: &mut Option<(Vec<PathBuf>, Vec<PathBuf>, Instant)>,
+    changed: Vec<PathBuf>,
+    deleted: Vec<PathBuf>,
+    noticed: Instant,
+) {
+    let Some((earlier, went, _)) = into else {
+        *into = Some((changed, deleted, noticed));
+        return;
+    };
+    for path in changed {
+        went.retain(|other| *other != path);
+        if !earlier.contains(&path) {
+            earlier.push(path);
+        }
+    }
+    for path in deleted {
+        earlier.retain(|other| *other != path);
+        if !went.contains(&path) {
+            went.push(path);
+        }
     }
 }
 
 /// `light-cljs: built ENTRY (N namespaces) into DIR in N ms; watching every
-/// N ms`, once a build has started.
-fn built(options: &Options, watch: &Watch, begun: Instant, poll: Duration) {
-    eprintln!(
-        "light-cljs: built {} ({} namespaces) into {} in {} ms; watching every {} ms",
+/// N ms`, once a build has started, with `[:ID] ` for `light-cljs: ` for a
+/// build of `light-cljs.edn`.
+fn built(options: &Options, watch: &Watch, begun: Instant, poll: Duration) -> String {
+    format!(
+        "{}built {} ({} namespaces) into {} in {} ms; watching every {} ms",
+        lead(&watch.tag),
         options.entry,
         watch.manifest.namespaces.len(),
         options.out_dir.display(),
         begun.elapsed().as_millis(),
         poll.as_millis()
-    );
+    )
 }
 
 /// The stamp of the file at `path`, `None` when there is no file there.
@@ -1030,7 +1484,8 @@ impl Watch {
         for path in deleted {
             if let Some(namespace) = self.namespace_of(path) {
                 eprintln!(
-                    "light-cljs: {} was deleted; {namespace} keeps its unit",
+                    "{}{} was deleted; {namespace} keeps its unit",
+                    lead(&self.tag),
                     path.display()
                 );
             }
@@ -1078,7 +1533,7 @@ impl Watch {
             match self.compile(&namespace, &mut recompiled, &mut queue) {
                 Ok(()) => {}
                 Err(Failure::Source(error, diagnostic)) => {
-                    eprintln!("light-cljs: {error}");
+                    eprintln!("{}{error}", lead(&self.tag));
                     queue.insert(0, namespace.clone());
                     self.pending = queue;
                     failed = Some((namespace, diagnostic));
@@ -1126,18 +1581,24 @@ impl Watch {
             }
             server.publish(Step {
                 load,
-                warnings,
-                error: failed.as_ref().map(|(_, diagnostic)| diagnostic.clone()),
+                warnings: warnings
+                    .into_iter()
+                    .map(|warning| tagged(&self.tag, warning))
+                    .collect(),
+                error: failed
+                    .as_ref()
+                    .map(|(_, diagnostic)| tagged(&self.tag, diagnostic.clone())),
                 // A runtime that connects after a failed step catches up
                 // with the last step that succeeded, then gets the error.
                 build: (failed.is_none() && !recompiled.is_empty()).then(|| self.build()),
             });
         }
         let millis = noticed.elapsed().as_secs_f64() * 1000.0;
+        let lead = lead(&self.tag);
         match failed {
-            None => eprintln!("light-cljs: recompiled {names} in {millis:.1} ms"),
+            None => eprintln!("{lead}recompiled {names} in {millis:.1} ms"),
             Some((namespace, _)) => eprintln!(
-                "light-cljs: recompiled {names} in {millis:.1} ms; {namespace} failed and keeps its previous unit"
+                "{lead}recompiled {names} in {millis:.1} ms; {namespace} failed and keeps its previous unit"
             ),
         }
         if self.stats {
@@ -1149,7 +1610,7 @@ impl Watch {
                 Ok(roots) => roots.to_string(),
                 Err(error) => crate::eval_cli::diagnostic(&error),
             };
-            eprintln!("light-cljs: live {} value-roots={roots}", live.summary());
+            eprintln!("{lead}live {} value-roots={roots}", live.summary());
         }
         Ok(())
     }
@@ -1174,7 +1635,8 @@ impl Watch {
             Ok(Some(source)) => source,
             Ok(None) => {
                 eprintln!(
-                    "light-cljs: no source of {namespace} under the source roots; it keeps its unit"
+                    "{}no source of {namespace} under the source roots; it keeps its unit",
+                    lead(&self.tag)
                 );
                 return Ok(());
             }
@@ -1230,7 +1692,11 @@ impl Watch {
                 }
                 Action::Warnings(warnings) => {
                     for warning in warnings {
-                        eprintln!("WARNING: {}", crate::eval_cli::diagnostic(warning));
+                        eprintln!(
+                            "{}WARNING: {}",
+                            self.tag,
+                            crate::eval_cli::diagnostic(warning)
+                        );
                         self.warnings.push(Diagnostic::located(warning));
                     }
                 }

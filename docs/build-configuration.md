@@ -6,9 +6,11 @@ questions the same day ("Settled questions"). The reader and the schema
 built (light-cljs-399)"), the `compile` and `release` commands ("As
 built (light-cljs-400)"), `--print-config` ("As built
 (light-cljs-401)"), `watch` with one build ("As built
-(light-cljs-403)") and rereading the file in the watch ("As built
-(light-cljs-404)") are implemented; `cljs-repl` does not read the file
-yet.
+(light-cljs-403)"), rereading the file in the watch ("As built
+(light-cljs-404)"), the dev server's mounts (light-cljs-405, under "Several
+builds in one process") and several builds in one watch ("As built
+(light-cljs-406)") are implemented; `light.dev/repl` and `cljs-repl` are
+not yet.
 The implementation is queued as the pellets group `build-configuration`,
 one or more pellets per phase ("Phases"). Names that shadow-cljs has no
 word for are listed under "Names for review"; the pellets use them as
@@ -1283,7 +1285,7 @@ Names are decisions for review; the structure is a sketch.
   build for now; several builds in one process, with one server and one
   nREPL, arrive with Phase 3 (docs/build-configuration.md, "Several builds in
   one process"); start a watch per build`, also with `--print-config`
-  (light-cljs-406 lifts it). A repeated id is one build.
+  (light-cljs-406 lifted it). A repeated id is one build.
 - **Flags after the id** are `--watch`'s: those `compile` takes but
   `--jobs` and `--stats-file` (`--jobs is not a flag of watch; see
   light-cljs --help`), plus `--serve`, `--serve-host`, `--nrepl`,
@@ -1450,6 +1452,91 @@ restarts the build; the driver's stream ends, it reconnects as runtime 2 and
 reloads `app.main`, logging `greeting: bonjour`, from the same process on the
 same port (`watch_features_carries_a_config_edit_to_a_connected_runtime`).
 Checked by a Node driver, not in a browser.
+
+### As built (light-cljs-406): several builds in one watch
+
+- **`watch ID ID ...`.** `config_cli::run` no longer refuses a second id:
+  each build named (a repeated id is one build) is translated into the
+  watch's `Options` as light-cljs-403 translates one, and
+  `dev_watch::run_builds(Vec<Options>, Option<ConfigWatch>)` runs them, in
+  the order named; the flag-only `--watch` is `run_builds` of its one build,
+  without a file. `--entry` and `--out-dir` are refused with two ids as
+  `compile` refuses them, and `--print-config` prints one block per id. An
+  error that ends the watch names its build (`light-cljs watch worker:
+  cannot write ...`), or every build for the server's (`light-cljs watch app
+  worker: cannot serve on ...`).
+- **A thread per build** (`BuildThread`, the sketch's `BuildWorker`, with an
+  8 MiB stack, as deep as the main thread `--compile` analyzes on) makes the
+  startup build, owns its `Watch` (session, macro engine, retained program
+  and the files of its `light.build` resources, which it stamps every
+  `:loop-wait` itself) and steps it. The poller, the thread that started the
+  watch, spawns the next build's thread only once the one before has made
+  its startup build, so the peak is one analysis beside the programs made.
+  A restart, too, waits its turn in a queue (`Starts`), which the poller
+  fills in the order named before it asks the builds to restart, so a
+  top-level change restarts every build one after another, `:app` first.
+  REPL forms reach a build's thread through its work channel, tagged with
+  the start of the session they were sent to; a form for a session that
+  ended is dropped, as the session's receiver was dropped before.
+- **One poller** scans the shared source roots every `:loop-wait` of the
+  first build (every build has the same, from the top level or the flags)
+  and `light-cljs.edn`, and sends every build the files that changed; each
+  build's manifest decides which are its own (`Watch::namespace_of`), so a
+  save of `app.shared` steps the app and the worker concurrently and a save
+  of `app.jobs` steps the worker alone. A build that a failed step left with
+  a namespace to compile again compiles it at any change, another build's
+  file included, as one build always has: the change may be the file the
+  failed namespace was waiting for.
+- **One server.** The builds are the mounts of
+  `DevServer::start_mounts_with`, `MountId` in the order named, each under
+  `/ID/` and the first also at `/`. A `light-cljs: serving DIR at
+  http://ADDRESS/` line is printed per build, the others' URLs ending in
+  `/ID/`. Each build's thread publishes on its own `DevMount`, serves its
+  REPL there, and restarts through `DevServer::restart` with its mount's id;
+  the nREPL listener and the port files are the poller's, after every
+  build's REPL, and every build's `built` line comes after them, in the
+  order named. nREPL sessions are the first build's until light-cljs-407.
+- **Names.** A build of the file begins its lines on stderr with `[:ID] `
+  where `--watch` writes `light-cljs: ` (`[:worker] built app.worker (4
+  namespaces) into ... in 41 ms; watching every 100 ms`, `[:worker]
+  recompiled app.jobs in 3.1 ms`, the step's errors, `[:worker] WARNING:
+  ...`, the restart's failure), as shadow-cljs's `[:app] Build completed.`
+  does, also when one build is watched; the overlay messages of its steps,
+  warnings and errors begin with `[:ID] ` too. The process's own lines (the
+  file's, `serving`, `nREPL at`, a reread's) stay `light-cljs: ...`, and a
+  flag-only `--watch` prints exactly what it printed before.
+- **Rereads per build.** The reread reads and validates the file once for
+  every build: an invalid file, or one that no longer defines one of the
+  builds, is reported once, on stderr and to every mount's runtimes, and
+  every build keeps its settings; `check_outputs` runs over all the builds'
+  settings, as at startup. Each build's settings are compared with those it
+  runs with: a build whose settings changed restarts on its thread, its
+  runtimes' streams ending while the others' go on, and a top-level change
+  is a change of every build's settings, so every build restarts. `:http`,
+  `:nrepl` and `:fs-watch` changes are reported once, whichever builds they
+  reach.
+- Tests: `tests/dev_watch.rs` on temporary copies of the Phase 3 test
+  project, `tests/fixtures/build-configuration/multi/` (the illustration's
+  file, with `app.main`, `app.worker` and its own `app.jobs`,
+  `app.test-runner` and `app.shared`, which all three require; light-cljs-407
+  and 409 reuse it): both builds starting in order (every file of the app's
+  build written before the worker's first), served at `/`, `/app/` and
+  `/worker/`; a save of `app.shared` stepping both, with a Node runtime on
+  each build's event stream receiving its step; a save of `app.jobs`
+  stepping the worker alone; the worker's compile error on `[:worker]` lines
+  and in its runtime's error event while a save of `app.main` steps the app;
+  an edit of `:worker`'s `:config` restarting the worker alone, the app's
+  stream going on, and a top-level `:cache-blockers` edit restarting both in
+  order; a worker step held three seconds by a spinning macro while a save of
+  `app.main` steps the app first and a second save of `app.jobs`, queued
+  meanwhile, is stepped after it; a worker whose restart failed using no CPU
+  while it waits (it blocks on its channel) and starting again at the next
+  change. `tests/dev_server.rs`: `watch features :features-b` on a copy of
+  examples/features with a second build of the same entry, serving each
+  under its prefix and `features` at `/`. `tests/config_file/print_config.rs`:
+  `watch app :worker --print-config` printing both blocks. The existing
+  file-watch tests expect `[:features]` and `[:app]` lines; the flag-only
+  ones are unchanged. Checked with Node runtimes, not in a browser.
 
 ## Phases
 

@@ -11,9 +11,9 @@
 //! (layer 6). Each build then runs as `--compile --entry` runs: `compile` as
 //! `--reloadable --out-dir`, `release` as `--out-dir` at `:optimizations`,
 //! one after another in the order named, stopping at the first failure.
-//! `watch` translates its one build into the watch's `Options` instead
-//! (`crate::dev_watch`), with the server always started, as shadow-cljs's
-//! is: `:http`, `:nrepl`, `:fs-watch` and `:devtools`, under the watch's own
+//! `watch` translates each build into the watch's `Options` instead
+//! (`crate::dev_watch`), which runs them in one process, a thread each,
+//! with one server always started, as shadow-cljs's is: `:http`, `:nrepl`, `:fs-watch` and `:devtools`, under the watch's own
 //! flags.
 //!
 //! Every relative path, in the file and in the flags after the command,
@@ -40,7 +40,7 @@ use crate::{CompileFlags, NamespaceFlags, build_namespace};
 pub(crate) enum Command {
     /// `compile ID...`: the dev build of each, once (`--reloadable`).
     Compile,
-    /// `watch ID`: the dev build, watched and served (`--watch`).
+    /// `watch ID...`: the dev build of each, watched and served (`--watch`).
     Watch,
     /// `release ID...`: the release build of each, at `:optimizations`.
     Release,
@@ -269,15 +269,6 @@ pub(crate) fn run(
             builds.push(build);
         }
     }
-    if command == Command::Watch && builds.len() > 1 {
-        return Err(failure(
-            words,
-            "watch runs one build for now; several builds in one process, with one server and \
-             one nREPL, arrive with Phase 3 (docs/build-configuration.md, \"Several builds in one \
-             process\"); start a watch per build",
-        ));
-    }
-
     let flags = command_flags(command, builds.len(), args, words)?;
     let merges = flags
         .merges
@@ -332,22 +323,30 @@ pub(crate) fn run(
 
     eprintln!("light-cljs - config: {}", path.display());
     if command == Command::Watch {
-        let (settings, (namespace, _, compile)) = settings.iter().zip(translated).next().unwrap();
-        let name = settings.name().to_owned();
-        let mut options = watch_options(&file, settings, namespace, compile, &flags)
-            .map_err(|error| failure(words, error))?;
-        let running = effective(&file, settings, &merges, &flags);
+        // Every build named, in that order, in one process: one thread
+        // each, one poller, one server (docs/build-configuration.md,
+        // "Several builds in one process").
+        let mut builds = Vec::with_capacity(settings.len());
+        let mut names = Vec::with_capacity(settings.len());
+        let mut running = Vec::with_capacity(settings.len());
+        for (settings, (namespace, _, compile)) in settings.iter().zip(translated) {
+            builds.push(
+                watch_options(&file, settings, namespace, compile, &flags)
+                    .map_err(|error| failure(words, error))?,
+            );
+            names.push(settings.name().to_owned());
+            running.push(effective(&file, settings, &merges, &flags));
+        }
         let text = file.source().to_owned();
-        options.config = Some(config_watch(
-            path,
-            name.clone(),
-            running,
-            text,
-            merges,
-            flags,
-        ));
-        return crate::dev_watch::watch(options)
-            .map_err(|error| failure(&format!("watch {name}"), error));
+        let config = config_watch(path, names.clone(), running, text, merges, flags);
+        // An error names its build, or every build for the server's.
+        return crate::dev_watch::run_builds(builds, Some(config)).map_err(|(build, error)| {
+            let named = match build {
+                Some(build) => names[build].clone(),
+                None => names.join(" "),
+            };
+            failure(&format!("watch {named}"), error)
+        });
     }
     for (settings, (namespace, options, compile)) in settings.iter().zip(translated) {
         let name = settings.name();
@@ -1120,7 +1119,6 @@ fn watch_options(
         blockers: compile.cache_blockers,
         configuration: compile.configuration,
         macro_limits: compile.macro_limits,
-        config: None,
     })
 }
 
@@ -1157,25 +1155,26 @@ fn effective(
     }
 }
 
-/// The watch's reread of `path` for build `name`, which runs with the
-/// settings `running`, read from `text` (docs/build-configuration.md,
-/// "Watching the configuration file"). Once the file's text changed, it is
-/// read and validated again, against the same environment, `merges` and
-/// flags, as at startup, and the build's settings compared slot by slot,
-/// by value alone:
+/// The watch's reread of `path` for the builds `names`, which run with the
+/// settings `running`, in the same order, read from `text`
+/// (docs/build-configuration.md, "Watching the configuration file"). Once
+/// the file's text changed, it is read and validated again, against the same
+/// environment, `merges` and flags, as at startup, and each build's settings
+/// compared slot by slot, by value alone:
 ///
-/// - an invalid file, or one that no longer defines the build, is an error,
-///   and the build keeps running with `running`;
+/// - an invalid file, or one that no longer defines one of the builds, is an
+///   error, and every build keeps running with its settings;
 /// - a change of `:http`, `:nrepl` or `:fs-watch`, which the running server
 ///   and poll hold, is reported once, `light-cljs: :http changed in
 ///   light-cljs.edn; restart the watch to apply it`, and applies to nothing;
-/// - any other change restarts the build with the new settings, under the
-///   same flags;
-/// - otherwise (a comment, another build's section) nothing happens.
+/// - any other change of a build's settings restarts that build with the new
+///   settings, under the same flags: a top-level setting, every build;
+/// - otherwise (a comment, the section of a build not watched) nothing
+///   happens.
 fn config_watch(
     path: PathBuf,
-    name: String,
-    mut running: BuildSettings,
+    names: Vec<String>,
+    mut running: Vec<BuildSettings>,
     text: String,
     merges: Vec<ConfigMerge>,
     flags: CommandFlags,
@@ -1220,55 +1219,83 @@ fn config_watch(
             Ok(file) => file,
             Err(error) => return located(error),
         };
-        let Some(build) = file.find_build(&name) else {
-            return plain(format!(
-                "{} defines no build :{name}; the build keeps its settings until it does, and \
-                 its builds are {}",
-                path.display(),
-                defined(&file)
-            ));
-        };
-        let settings = if flags.replaces_directories() {
-            file.settings_before_flags(build, BuildMode::Dev, &merges)
-        } else {
-            file.settings(build, BuildMode::Dev, &merges)
-        };
-        let settings = match settings {
-            Ok(settings) => settings,
-            Err(error) => return located(error),
-        };
-        if let Err(error) = file.check_outputs(std::slice::from_ref(&settings), &merges) {
+        let mut settings = Vec::with_capacity(names.len());
+        for name in &names {
+            let Some(build) = file.find_build(name) else {
+                return plain(format!(
+                    "{} defines no build :{name}; the build keeps its settings until it does, \
+                     and its builds are {}",
+                    path.display(),
+                    defined(&file)
+                ));
+            };
+            let merged = if flags.replaces_directories() {
+                file.settings_before_flags(build, BuildMode::Dev, &merges)
+            } else {
+                file.settings(build, BuildMode::Dev, &merges)
+            };
+            match merged {
+                Ok(merged) => settings.push(merged),
+                Err(error) => return located(error),
+            }
+        }
+        if let Err(error) = file.check_outputs(&settings, &merges) {
             return located(error);
         }
-        let options = (|| {
-            if flags.replaces_directories() {
-                check_directories(&file, &settings, &merges, &flags)?;
+        let mut options = Vec::with_capacity(settings.len());
+        for settings in &settings {
+            let translated = (|| {
+                if flags.replaces_directories() {
+                    check_directories(&file, settings, &merges, &flags)?;
+                }
+                let (namespace, _, compile) = translate(&file, settings, Command::Watch, &flags)?;
+                watch_options(&file, settings, namespace, compile, &flags)
+            })();
+            match translated {
+                Ok(translated) => options.push(translated),
+                Err(message) => return plain(message),
             }
-            let (namespace, _, compile) = translate(&file, &settings, Command::Watch, &flags)?;
-            watch_options(&file, &settings, namespace, compile, &flags)
-        })();
-        let options = match options {
-            Ok(options) => options,
-            Err(message) => return plain(message),
-        };
-        let next = effective(&file, &settings, &merges, &flags);
-        let changed = running.changed(&next);
+        }
+        let next = settings
+            .iter()
+            .map(|settings| effective(&file, settings, &merges, &flags))
+            .collect::<Vec<_>>();
+        let changed = running
+            .iter()
+            .zip(&next)
+            .map(|(running, next)| running.changed(next))
+            .collect::<Vec<_>>();
         running = next;
+        let held = |setting: &Setting| HELD.iter().any(|(_, slots)| slots.contains(setting));
+        // The held settings are the top level's, the same for every build:
+        // each is reported once.
         for (key, slots) in HELD {
-            if changed.iter().any(|setting| slots.contains(setting)) {
+            if changed
+                .iter()
+                .flatten()
+                .any(|setting| slots.contains(setting))
+            {
                 eprintln!(
                     "light-cljs: :{key} changed in {FILE_NAME}; restart the watch to apply it"
                 );
             }
         }
-        if changed
-            .iter()
-            .all(|setting| HELD.iter().any(|(_, slots)| slots.contains(setting)))
-        {
-            return Reread::Unchanged;
+        let mut restarts = Vec::new();
+        for (index, (changed, options)) in changed.iter().zip(options).enumerate() {
+            if changed.iter().all(held) {
+                continue;
+            }
+            eprintln!(
+                "light-cljs: {FILE_NAME} changed the settings of :{}; restarting the build",
+                names[index]
+            );
+            restarts.push((index, Box::new(options)));
         }
-        eprintln!("light-cljs: {FILE_NAME} changed the settings of :{name}; restarting the build");
-        Reread::Restart(Box::new(options))
+        if restarts.is_empty() {
+            Reread::Unchanged
+        } else {
+            Reread::Restart(restarts)
+        }
     };
     crate::dev_watch::ConfigWatch {
         path: watched,

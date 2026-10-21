@@ -839,10 +839,10 @@ fn build_configuration_set_replaces_a_value() {
     assert_eq!(configuration, before);
 }
 
-/// `watch`'s errors, each exact and before anything compiles: two ids name
-/// Phase 3, and the flags `--watch` does not take are refused as `compile`
-/// refuses them, while the watch's own flags are read as `--watch` reads
-/// them; `compile` and `release` refuse `--no-nrepl` as a watch flag.
+/// `watch`'s errors, each exact and before anything compiles: two ids refuse
+/// `--entry` and `--out-dir`, and the flags `--watch` does not take, as
+/// `compile` refuses them, while the watch's own flags are read as `--watch`
+/// reads them; `compile` and `release` refuse `--no-nrepl` as a watch flag.
 #[test]
 fn watch_errors_have_exact_messages() {
     let (_dir, project) = copy("config-commands-watch-errors", FIXTURE);
@@ -866,19 +866,15 @@ fn watch_errors_have_exact_messages() {
             ),
         ),
         (
-            &["watch", "app", "other"],
-            "light-cljs watch app other: watch runs one build for now; several builds in one \
-             process, with one server and one nREPL, arrive with Phase 3 \
-             (docs/build-configuration.md, \"Several builds in one process\"); start a watch \
-             per build"
+            &["watch", "app", "other", "--entry", "x"],
+            "light-cljs watch app other --entry x: --entry and --out-dir name one build's \
+             entry and directory; give one build id"
                 .into(),
         ),
         (
-            &["watch", "app", ":other", "--print-config"],
-            "light-cljs watch app :other: watch runs one build for now; several builds in one \
-             process, with one server and one nREPL, arrive with Phase 3 \
-             (docs/build-configuration.md, \"Several builds in one process\"); start a watch \
-             per build"
+            &["watch", "app", ":other", "--out-dir", "x", "--print-config"],
+            "light-cljs watch app :other --out-dir x: --entry and --out-dir name one build's \
+             entry and directory; give one build id"
                 .into(),
         ),
         (

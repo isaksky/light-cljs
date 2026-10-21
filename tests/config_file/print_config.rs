@@ -933,3 +933,24 @@ fn each_layer_of_a_merged_map_prints_as_its_entries_origin() {
 "
     );
 }
+
+/// `watch app worker --print-config` of the Phase 3 test project prints
+/// each build's block, in the order named, as `watch` of each id alone
+/// prints it, one blank line between them.
+#[test]
+fn a_watch_of_two_builds_prints_each_block_in_the_order_named() {
+    let multi = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/build-configuration/multi"
+    );
+    let (_dir, project) = copy("print-config-watch-two", multi);
+    let alone = |id: &str| prints(&project, &project, &["watch", id, "--print-config"], &[]);
+    let both = prints(
+        &project,
+        &project,
+        &["watch", "app", ":worker", "--print-config"],
+        &[],
+    );
+    assert!(alone("app").starts_with(";; build :app, dev mode, from "));
+    assert_eq!(both, format!("{}\n{}", alone("app"), alone("worker")));
+}

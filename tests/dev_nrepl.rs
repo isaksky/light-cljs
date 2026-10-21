@@ -927,7 +927,7 @@ fn watch_id_answers_nrepl_as_its_nrepl_setting_says() {
         fs::read_to_string(&nrepl_file).unwrap(),
         nrepl.rsplit_once(':').unwrap().1
     );
-    watch.until("light-cljs: built ");
+    watch.until("[:features] built ");
     for answering in [&nrepl, &address] {
         let described = String::from_utf8(file_watch::nrepl_describe(answering)).unwrap();
         assert!(
@@ -945,7 +945,7 @@ fn watch_id_answers_nrepl_as_its_nrepl_setting_says() {
         Some("{:http {:port 0} :nrepl false}"),
     );
     let (address, _, _) = refusing.serving();
-    let (lines, _) = refusing.until("light-cljs: built ");
+    let (lines, _) = refusing.until("[:features] built ");
     assert!(lines.is_empty(), "{lines:#?}");
     assert_eq!(file_watch::nrepl_describe(&address), b"");
     assert_eq!(file_watch::get(&address, "/index.js").0, "HTTP/1.1 200 OK");
@@ -959,7 +959,7 @@ fn watch_id_answers_nrepl_as_its_nrepl_setting_says() {
     );
     let (address, _, _) = flagged.serving();
     flagged.until("light-cljs: nREPL at ");
-    flagged.until("light-cljs: built ");
+    flagged.until("[:features] built ");
     let described = String::from_utf8(file_watch::nrepl_describe(&address)).unwrap();
     assert!(described.contains("3:ops"), "{described}");
 }
@@ -993,7 +993,7 @@ fn watch_id_removes_its_port_file_on_an_error_and_no_nrepl_drops_the_listener() 
         Some(&merged),
     );
     let (address, _, _) = quiet.serving();
-    let (lines, _) = quiet.until("light-cljs: built ");
+    let (lines, _) = quiet.until("[:features] built ");
     assert!(lines.is_empty(), "{lines:#?}");
     assert!(http_file.exists() && !project.join(".nrepl-port").exists());
     assert_eq!(file_watch::nrepl_describe(&address), b"");
