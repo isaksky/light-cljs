@@ -187,11 +187,31 @@ impl Watch {
     /// an editor that renames its new text over the file does, and return
     /// the step's lines and its summary line.
     fn save(&mut self, file: &str, text: &str) -> (Vec<String>, String) {
-        let path = self.dir.join("src").join(file);
-        let temporary = path.with_file_name(".saving");
-        fs::write(&temporary, text).unwrap();
-        fs::rename(&temporary, &path).unwrap();
+        save_over(&self.dir.join("src").join(file), text);
         self.until("light-cljs: recompiled ")
+    }
+
+    /// [`Self::save`], and whether the file system was quick around it:
+    /// writing the unit and map of `app.view` as a step does, a new file
+    /// renamed over each in a directory beside the build, took under `slow`
+    /// ms just before the save and just after its step.
+    fn timed_save(&mut self, file: &str, text: &str, slow: f64) -> (Vec<String>, String, bool) {
+        let probe = self.dir.join("probe");
+        fs::create_dir_all(&probe).unwrap();
+        let files = ["app.view.js", "app.view.js.map"].map(|name| (name, self.read(name)));
+        let write = || {
+            let begun = std::time::Instant::now();
+            for (name, text) in &files {
+                let temporary = probe.join(format!(".{name}.tmp"));
+                fs::write(&temporary, text).unwrap();
+                fs::rename(&temporary, probe.join(name)).unwrap();
+            }
+            begun.elapsed().as_secs_f64() * 1000.0
+        };
+        let before = write();
+        let (lines, step) = self.save(file, text);
+        let after = write();
+        (lines, step, before.max(after) < slow)
     }
 
     fn source(&self, file: &str) -> String {
@@ -264,6 +284,16 @@ impl Drop for Watch {
     }
 }
 
+/// Write `text` over the file at `path` at once, as an editor that renames
+/// its new text over the file does. A poll that came between the truncation
+/// and the write of `fs::write` would see an empty file and then the text: two
+/// changes, and two steps for one edit.
+fn save_over(path: &Path, text: &str) {
+    let temporary = path.with_file_name(".saving");
+    fs::write(&temporary, text).unwrap();
+    fs::rename(&temporary, path).unwrap();
+}
+
 /// The milliseconds of a summary line `light-cljs: recompiled NAMES in X ms`.
 fn millis(line: &str) -> f64 {
     line.rsplit_once(" in ")
@@ -318,7 +348,15 @@ fn position(text: &str, needle: &str) -> String {
 /// saves, with the release CLI the Goal table measures (`cargo nextest run
 /// --release --test dev_watch`); the debug build is about twice as slow and
 /// runs on slower CI machines, so there the bound is 100 ms, the Goal
-/// table's whole save-to-page budget.
+/// table's whole save-to-page budget. A step takes about 5 ms in the debug
+/// build, but writing its unit and map took 190-370 ms of every step for
+/// seconds at a time with two full suites running alongside, which create
+/// and remove files on the same file system. So the test times the same
+/// writes itself just before and just after each save ([`Watch::timed_save`]).
+/// When none of the five saves meets the bound, a save whose writes took a
+/// fifth of the bound or more says nothing of the watch: the bound holds for
+/// the best of the first five saves whose writes did not, with up to 60 saves
+/// in all to find them.
 #[test]
 fn a_saved_change_rewrites_the_unit_the_running_build_reloads() {
     let mut watch = Watch::start("dev-watch-change");
@@ -336,13 +374,14 @@ fn a_saved_change_rewrites_the_unit_the_running_build_reloads() {
         "(js/console.log \"render:\" (describe card))",
     );
     assert_ne!(edited, view);
-    let (lines, step) = watch.save("app/view.cljs", &edited);
+    let bound = if cfg!(debug_assertions) { 100.0 } else { 20.0 };
+    let (lines, step, clean) = watch.timed_save("app/view.cljs", &edited, bound / 5.0);
     assert!(lines.is_empty(), "{lines:#?}");
     assert!(
         step.starts_with("light-cljs: recompiled app.view in "),
         "{step}"
     );
-    let mut times = vec![millis(&step)];
+    let mut times = vec![(millis(&step), clean)];
     assert_eq!(watch.read("manifest.json"), manifest);
     assert_eq!(
         ["app.state.js", "app.macros.js", "app.main.js", "index.js"].map(|file| watch.read(file)),
@@ -396,13 +435,13 @@ fn a_saved_change_rewrites_the_unit_the_running_build_reloads() {
                 "!".repeat(count)
             ),
         );
-        let (lines, step) = watch.save("app/view.cljs", &text);
+        let (lines, step, clean) = watch.timed_save("app/view.cljs", &text, bound / 5.0);
         assert!(lines.is_empty(), "{lines:#?}");
         assert!(
             step.starts_with("light-cljs: recompiled app.view in "),
             "{step}"
         );
-        times.push(millis(&step));
+        times.push((millis(&step), clean));
     }
     assert_eq!(
         watch.reload(&["app.view.js"]),
@@ -430,9 +469,38 @@ fn a_saved_change_rewrites_the_unit_the_running_build_reloads() {
         rewritten.abs_diff(built) * 10 <= built,
         "app.view.js is {rewritten} bytes, the build's {built}"
     );
-    let best = times.iter().copied().fold(f64::INFINITY, f64::min);
-    let bound = if cfg!(debug_assertions) { 100.0 } else { 20.0 };
-    assert!(best < bound, "steps took {times:?} ms");
+    let best = |times: &[f64]| times.iter().copied().fold(f64::INFINITY, f64::min);
+    if best(&times.iter().map(|(time, _)| *time).collect::<Vec<_>>()) < bound {
+        return;
+    }
+    let clean = |times: &[(f64, bool)]| {
+        times
+            .iter()
+            .filter(|(_, clean)| *clean)
+            .map(|(time, _)| *time)
+            .take(5)
+            .collect::<Vec<_>>()
+    };
+    while clean(&times).len() < 5 && times.len() < 60 {
+        let text = view.replace(
+            "(js/console.log (describe card))",
+            &format!("(js/console.log \"again {}\" (describe card))", times.len()),
+        );
+        let (lines, step, clean) = watch.timed_save("app/view.cljs", &text, bound / 5.0);
+        assert!(lines.is_empty(), "{lines:#?}");
+        assert!(
+            step.starts_with("light-cljs: recompiled app.view in "),
+            "{step}"
+        );
+        times.push((millis(&step), clean));
+    }
+    let clean = clean(&times);
+    assert_eq!(
+        clean.len(),
+        5,
+        "the file system was slow around every save but {clean:?}: {times:?} ms"
+    );
+    assert!(best(&clean) < bound, "steps took {clean:?} ms of {times:?}");
 }
 
 /// A form that fails stops the step with its error, located in its file, and
@@ -1365,7 +1433,7 @@ fn a_replaced_symbolic_link_is_still_its_namespace_source() {
         "(js/console.log (describe card))",
         "(js/console.log \"linked:\" (describe card))",
     );
-    fs::write(watch.dir.join("elsewhere.cljs"), &linked).unwrap();
+    save_over(&watch.dir.join("elsewhere.cljs"), &linked);
     let (_, step) = watch.until("light-cljs: recompiled ");
     assert!(
         step.starts_with("light-cljs: recompiled app.view in "),
@@ -2108,7 +2176,7 @@ fn a_warm_started_session_watches_a_linked_source() {
         "(js/console.log \"linked:\" (describe card))",
     );
     for watch in [&mut pair.cold, &mut pair.warm] {
-        fs::write(watch.dir.join("elsewhere.cljs"), &linked).unwrap();
+        save_over(&watch.dir.join("elsewhere.cljs"), &linked);
         let (_, step) = watch.until("light-cljs: recompiled ");
         assert_eq!(recompiled(&step), "app.view");
     }
