@@ -22,11 +22,12 @@ use light_cljs::{
     TokenKind, Tokenizer, parse, prepare_application,
 };
 
+mod config_cli;
 mod dev_watch;
 mod eval_cli;
 mod repl_connect;
 
-const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --out-dir DIR\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --reloadable --out-dir DIR\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --stats [--stats-file PATH]\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... [--cache-dir DIR | --no-cache] [--cache-blocker NS ...]\n       light-cljs --compile --jobs N [--cache-blocker NS ...] ...\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] [--pseudo-names] [--define NS/NAME=VALUE ...] [--elide-asserts] [--source-map PATH | --source-map-inline] [--source-map-include-sources] ...\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --define NS/NAME=VALUE after --compile, replace the default of the goog-define NS/NAME at every level: true or false for a boolean, a number for a number, and the text as written for a string; at advanced, code only a define's other value runs is removed.\nWith --elide-asserts after --compile, omit every assert and fn :pre/:post check at every level, as upstream's :elide-asserts does; it is the only switch, since --define names only goog-define Vars.\nWith --macro-expansions N, --macro-nodes N, --macro-timeout-ms N, --macro-memory-limit N and --macro-poll-budget N after --compile (and in --watch, for its startup build and its session), raise the macro session limits for a large program: the expansions and generated form nodes allowed per compilation (1024 and 100000), its deadline in milliseconds (10000), its heap in bytes (67108864) and its poll budget (1000000).\nWith --source-map PATH after --compile, also write a Source Map v3 of the output to PATH, at every level, and end the output with a //# sourceMappingURL comment naming the map's file, for JavaScript written next to it; source paths in the map are relative to its directory. With --source-map-inline the comment embeds the map instead, with paths relative to the current directory. With --source-map-include-sources the map also holds the text of every source.\nWith --stats after --compile --entry (with --reloadable too), also print to stderr what the build did: a light-cljs-stats 1 line, then one key value line per counter (the milliseconds of source resolution and parsing, analysis with macro expansion, deferred units, application preparation, emission and writing; the namespaces compiled, the macro calls executed, the peak of generated form nodes and the deferred units registered, analyzed, prepared and executed), then the trace.* lines of the exclusive-stage trace, then the memory.* lines (peak resident set, parsed trees and queued unit IR, and memory.live.* counting what the process still holds once the build is done: artifacts, engines, engine handles and bridge payloads), then [macro-calls-by-namespace] and the 20 namespaces with the most macro calls, one NAMESPACE COUNT line each. With --stats-file PATH (which implies --stats) also write that trace to PATH as tab-separated rows: a light-cljs-trace 2 line, then stage, namespace, unit, execute and read rows (times in microseconds), each kind described by a # header row, for benchmarks/concurrency/dag.bb.\nWith --config KEY=EDN after --compile --entry (with --reloadable too, and in --watch), give light.build/config the value EDN for the keyword KEY, written without its colon: --config app/flavor=:dev --config app/n=3. EDN is keywords, numbers, strings, booleans, nil and collections of them; a malformed value or a key given twice is an error, and an unset key reads as nil.\nWith --compile --entry (with --reloadable, --esm and --out-dir too, at every --optimize level, and in --watch, whose session starts from it), keep a persistent compiler cache in .light-cljs/cache under the current directory, or in DIR with --cache-dir DIR, created when missing: a namespace whose source, resolution, dependencies' keys, light.build inputs, options, configuration and compiler are unchanged is installed from its artifact instead of analyzed, so its macro calls do not run again, and every other namespace is analyzed and stored. Output matches an uncached build for macros that follow the cache contract in docs/compiler-cache.md; with --no-cache nothing reads or writes a cache, a fresh uncached build. The directory is disposable and bounded (three artifacts per namespace, 1 GiB), and not for version control; --stats adds cache.* lines and a [cache-misses-and-bypasses] table. With --cache-blocker NS (repeatable), NS and every namespace whose compilation depends on it neither read nor write the cache, as do namespaces marked ^:light-cljs/no-cache (that namespace only) or ^:dev/always (with its compilation consumers).\nWith --jobs N after --compile (experimental), allow the compilation N CPU work slots, the calling thread's included, so at most N-1 worker threads; the default is 1, since the speedup measured on a large program did not meet the design's gate (docs/compiler-concurrency.md). Sources are read and parsed on that pool, and deferred units are analyzed on it, each worker in a V8 isolate of its own whose compile-time state the others do not see. With --stats the report adds pool.* lines on what the pool did: its workers, time and utilization, jobs, claims, steals, parks, peak queue depth and lock contention. Warnings and errors do not depend on N: a failed build reports the first failing unit's error in source order, cancels the workers' other work and writes nothing, and --macro-expansions and --macro-nodes fail in the unit one job names. --macro-memory-limit is one budget for all the isolates together: as many run as it gives at least 32 MiB each, so fewer isolates run when it is small, and an isolate that cannot take what it needs from what the others left fails the build. --macro-timeout-ms is one deadline for the build and --macro-poll-budget counts per isolate; a timeout or memory failure depends on scheduling, so its message may differ between job counts. Output does not depend on N but for a macro effect in one namespace's definitions observed from another; declare its provider with --cache-blocker NS (repeatable, with or without --cache-dir), and NS and every namespace requiring it, transitively, or naming it in a symbol analyze their definitions on the calling thread's isolate in source order, as with one job. ^:light-cljs/no-cache gives no such affinity, and an undeclared provider is treated as pure. Every other phase still runs on the calling thread (docs/compiler-concurrency.md).\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --pseudo-names after --compile, keep advanced output readable for debugging: the compiler's own names, the runtime with its comments and the emitter's layout, instead of short names and no whitespace.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nWith --out-dir DIR, write a chunked build into DIR (created when missing) instead: ES modules as with --esm, the startup chunk NAMESPACE.js, whose default export is the entry value, and one chunk per group of namespaces only light.lazy/loadable targets reach, which light.lazy/load imports; and chunks.json, which describes them. Other files in DIR are left alone. It works at every --optimize level; at advanced each chunk embeds the runtime units only its roots need, and --size-report lists per chunk its bytes, definitions, constants and runtime units with what first demanded each; the source map flags are refused; a program without loadables is one file, its --esm output.\nWith --reloadable --out-dir DIR, write a dev build into DIR instead: runtime.js (the runtime, once), client.js, one NAMESPACE.js unit with its source map per namespace in dependency order, manifest.json and index.js, which loads them in order. Definitions live in a registry, so a unit evaluated again replaces its namespace for every caller; the build runs at none semantics, with warnings for undeclared Vars and arity conflicts.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
+const USAGE: &str = "Usage: light-cljs [--parse|--analyze|--compile] [FILE|-]\n       light-cljs [--parse|--analyze|--compile] --text SOURCE\n       light-cljs --compile --entry NAMESPACE --source-root DIR [--source-root DIR ...] [--esm]\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --out-dir DIR\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --reloadable --out-dir DIR\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... --stats [--stats-file PATH]\n       light-cljs --compile --entry NAMESPACE --source-root DIR ... [--cache-dir DIR | --no-cache] [--cache-blocker NS ...]\n       light-cljs --compile --jobs N [--cache-blocker NS ...] ...\n       light-cljs --compile --optimize none|prepare|advanced [--size-report] [--pseudo-names] [--define NS/NAME=VALUE ...] [--elide-asserts] [--source-map PATH | --source-map-inline] [--source-map-include-sources] ...\n       light-cljs compile ID [ID ...] [FLAGS]\n       light-cljs release ID [ID ...] [FLAGS]\n\nRead UTF-8 from FILE or stdin. By default print raw tokens and byte spans.\nWith --parse, print syntax nodes, child IDs, spans, and source text.\nWith --analyze, print resolved expressions and binding IDs.\nWith --compile, emit a JavaScript expression evaluating to the last form.\nWith --optimize LEVEL after --compile, choose application optimization: none emits every definition as analyzed, prepare (the default) removes unused inert definitions and specializes calls, and advanced is the release mode, which also embeds only the runtime units the program reaches.\nWith --define NS/NAME=VALUE after --compile, replace the default of the goog-define NS/NAME at every level: true or false for a boolean, a number for a number, and the text as written for a string; at advanced, code only a define's other value runs is removed.\nWith --elide-asserts after --compile, omit every assert and fn :pre/:post check at every level, as upstream's :elide-asserts does; it is the only switch, since --define names only goog-define Vars.\nWith --macro-expansions N, --macro-nodes N, --macro-timeout-ms N, --macro-memory-limit N and --macro-poll-budget N after --compile (and in --watch, for its startup build and its session), raise the macro session limits for a large program: the expansions and generated form nodes allowed per compilation (1024 and 100000), its deadline in milliseconds (10000), its heap in bytes (67108864) and its poll budget (1000000).\nWith --source-map PATH after --compile, also write a Source Map v3 of the output to PATH, at every level, and end the output with a //# sourceMappingURL comment naming the map's file, for JavaScript written next to it; source paths in the map are relative to its directory. With --source-map-inline the comment embeds the map instead, with paths relative to the current directory. With --source-map-include-sources the map also holds the text of every source.\nWith --stats after --compile --entry (with --reloadable too), also print to stderr what the build did: a light-cljs-stats 1 line, then one key value line per counter (the milliseconds of source resolution and parsing, analysis with macro expansion, deferred units, application preparation, emission and writing; the namespaces compiled, the macro calls executed, the peak of generated form nodes and the deferred units registered, analyzed, prepared and executed), then the trace.* lines of the exclusive-stage trace, then the memory.* lines (peak resident set, parsed trees and queued unit IR, and memory.live.* counting what the process still holds once the build is done: artifacts, engines, engine handles and bridge payloads), then [macro-calls-by-namespace] and the 20 namespaces with the most macro calls, one NAMESPACE COUNT line each. With --stats-file PATH (which implies --stats) also write that trace to PATH as tab-separated rows: a light-cljs-trace 2 line, then stage, namespace, unit, execute and read rows (times in microseconds), each kind described by a # header row, for benchmarks/concurrency/dag.bb.\nWith --config KEY=EDN after --compile --entry (with --reloadable too, and in --watch), give light.build/config the value EDN for the keyword KEY, written without its colon: --config app/flavor=:dev --config app/n=3. EDN is keywords, numbers, strings, booleans, nil and collections of them; a malformed value or a key given twice is an error, and an unset key reads as nil.\nWith --compile --entry (with --reloadable, --esm and --out-dir too, at every --optimize level, and in --watch, whose session starts from it), keep a persistent compiler cache in .light-cljs/cache under the current directory, or in DIR with --cache-dir DIR, created when missing: a namespace whose source, resolution, dependencies' keys, light.build inputs, options, configuration and compiler are unchanged is installed from its artifact instead of analyzed, so its macro calls do not run again, and every other namespace is analyzed and stored. Output matches an uncached build for macros that follow the cache contract in docs/compiler-cache.md; with --no-cache nothing reads or writes a cache, a fresh uncached build. The directory is disposable and bounded (three artifacts per namespace, 1 GiB), and not for version control; --stats adds cache.* lines and a [cache-misses-and-bypasses] table. With --cache-blocker NS (repeatable), NS and every namespace whose compilation depends on it neither read nor write the cache, as do namespaces marked ^:light-cljs/no-cache (that namespace only) or ^:dev/always (with its compilation consumers).\nWith --jobs N after --compile (experimental), allow the compilation N CPU work slots, the calling thread's included, so at most N-1 worker threads; the default is 1, since the speedup measured on a large program did not meet the design's gate (docs/compiler-concurrency.md). Sources are read and parsed on that pool, and deferred units are analyzed on it, each worker in a V8 isolate of its own whose compile-time state the others do not see. With --stats the report adds pool.* lines on what the pool did: its workers, time and utilization, jobs, claims, steals, parks, peak queue depth and lock contention. Warnings and errors do not depend on N: a failed build reports the first failing unit's error in source order, cancels the workers' other work and writes nothing, and --macro-expansions and --macro-nodes fail in the unit one job names. --macro-memory-limit is one budget for all the isolates together: as many run as it gives at least 32 MiB each, so fewer isolates run when it is small, and an isolate that cannot take what it needs from what the others left fails the build. --macro-timeout-ms is one deadline for the build and --macro-poll-budget counts per isolate; a timeout or memory failure depends on scheduling, so its message may differ between job counts. Output does not depend on N but for a macro effect in one namespace's definitions observed from another; declare its provider with --cache-blocker NS (repeatable, with or without --cache-dir), and NS and every namespace requiring it, transitively, or naming it in a symbol analyze their definitions on the calling thread's isolate in source order, as with one job. ^:light-cljs/no-cache gives no such affinity, and an undeclared provider is treated as pure. Every other phase still runs on the calling thread (docs/compiler-concurrency.md).\nWith --size-report after --compile, also print to stderr which runtime units the output embeds, with their bytes and the source expression that first demanded each.\nWith --pseudo-names after --compile, keep advanced output readable for debugging: the compiler's own names, the runtime with its comments and the emitter's layout, instead of short names and no whitespace.\nWith --entry, compile the namespace and its dependencies from explicit source roots.\nJavaScript package requires such as [\"react\" :as r] read globalThis.lightCljsPackages[\"react\"], supplied by the host.\nWith --esm, emit one ES module for a bundler instead: packages become static imports and the entry value is the default export.\nWith --out-dir DIR, write a chunked build into DIR (created when missing) instead: ES modules as with --esm, the startup chunk NAMESPACE.js, whose default export is the entry value, and one chunk per group of namespaces only light.lazy/loadable targets reach, which light.lazy/load imports; and chunks.json, which describes them. Other files in DIR are left alone. It works at every --optimize level; at advanced each chunk embeds the runtime units only its roots need, and --size-report lists per chunk its bytes, definitions, constants and runtime units with what first demanded each; the source map flags are refused; a program without loadables is one file, its --esm output.\nWith --reloadable --out-dir DIR, write a dev build into DIR instead: runtime.js (the runtime, once), client.js, one NAMESPACE.js unit with its source map per namespace in dependency order, manifest.json and index.js, which loads them in order. Definitions live in a registry, so a unit evaluated again replaces its namespace for every caller; the build runs at none semantics, with warnings for undeclared Vars and arity conflicts.\nWith compile or release first, run the builds ID ... (each written with or without its colon) of light-cljs.edn, the configuration file in the current directory or the nearest parent, whose directory every relative path in the file and in the flags resolves against (docs/build-configuration.md): compile writes each build's dev build, as --compile --reloadable --out-dir does, and release its chunked release build at its :optimizations, :advanced by default, as --compile --out-dir does, one build after another in the order named, stopping at the first failure. Flags after the ids override the file for every build named: compile takes the flags --compile --reloadable takes, release those --compile takes; --warnings (and for release --checked-arrays-warn and --checked-arrays-error) too; --source-root replaces :source-paths, --config sets its key of :config, --cache-dir names the store and turns the cache on, --no-cache turns it off, and --cache-blocker adds to the file's blockers. With --config-merge DATA (repeatable), EDN text starting with { or a file, its map of build keys is deep-merged over each build after its :dev or :release map. --entry and --out-dir take one build id; --esm, the source map flags and --watch's flags are refused. A command that starts with a flag never reads light-cljs.edn; a FILE named compile or release is read when written ./compile.\nErrors cause a nonzero exit status; diagnostics include line/byte-column.";
 
 fn print_warnings(warnings: &[AnalysisWarning]) {
     for warning in warnings {
@@ -514,43 +515,83 @@ fn write_chunks(output: &light_cljs::ChunkedOutput, out_dir: &Path) -> Result<()
     Ok(())
 }
 
-fn run_namespace(
-    mut args: impl Iterator<Item = std::ffi::OsString>,
-    mut options: AnalysisOptions,
-    mut flags: CompileFlags,
-) -> Result<(), Box<dyn Error>> {
-    let mut entry = None;
-    let mut roots = Vec::new();
-    let mut esm = false;
-    let mut reloadable = false;
-    let mut out_dir = None;
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--esm") => esm = true,
-            Some("--reloadable") => reloadable = true,
-            Some("--out-dir") => {
-                out_dir = Some(PathBuf::from(
+/// The namespace options of `--compile --entry`: `--entry`,
+/// `--source-root`, `--esm`, `--reloadable` and `--out-dir`.
+#[derive(Default)]
+struct NamespaceFlags {
+    entry: Option<String>,
+    roots: Vec<PathBuf>,
+    esm: bool,
+    reloadable: bool,
+    out_dir: Option<PathBuf>,
+}
+
+impl NamespaceFlags {
+    /// Consume `flag` and its value when it is one of these flags.
+    fn accept(
+        &mut self,
+        flag: &str,
+        args: &mut impl Iterator<Item = std::ffi::OsString>,
+    ) -> Result<bool, Box<dyn Error>> {
+        match flag {
+            "--esm" => self.esm = true,
+            "--reloadable" => self.reloadable = true,
+            "--out-dir" => {
+                self.out_dir = Some(PathBuf::from(
                     args.next().ok_or("--out-dir requires a directory")?,
                 ));
             }
-            Some(flag) if flags.accept(flag, &mut args)? => {}
-            Some("--entry") => {
-                if entry.is_some() {
+            "--entry" => {
+                if self.entry.is_some() {
                     return Err("--entry may only be specified once".into());
                 }
-                entry = Some(
+                self.entry = Some(
                     args.next()
                         .ok_or("--entry requires a namespace")?
                         .into_string()
                         .map_err(|_| "entry namespace must be valid UTF-8")?,
                 );
             }
-            Some("--source-root") => roots.push(PathBuf::from(
+            "--source-root" => self.roots.push(PathBuf::from(
                 args.next().ok_or("--source-root requires a directory")?,
             )),
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+}
+
+fn run_namespace(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+    options: AnalysisOptions,
+    mut flags: CompileFlags,
+) -> Result<(), Box<dyn Error>> {
+    let mut namespace = NamespaceFlags::default();
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some(flag)
+                if namespace.accept(flag, &mut args)? || flags.accept(flag, &mut args)? => {}
             _ => return Err(USAGE.into()),
         }
     }
+    build_namespace(namespace, options, flags)
+}
+
+/// Compile the namespace build `namespace` and `flags` describe: what
+/// `--compile --entry` runs once its arguments are read, and what the
+/// `compile` and `release` commands run for each build.
+fn build_namespace(
+    namespace: NamespaceFlags,
+    mut options: AnalysisOptions,
+    flags: CompileFlags,
+) -> Result<(), Box<dyn Error>> {
+    let NamespaceFlags {
+        entry,
+        roots,
+        mut esm,
+        reloadable,
+        out_dir,
+    } = namespace;
     let entry = entry.ok_or("namespace compilation requires --entry NAMESPACE")?;
     if flags.no_cache && flags.cache_dir.is_some() {
         return Err("--no-cache and --cache-dir exclude each other".into());
@@ -946,6 +987,16 @@ fn report_stats(
 fn run() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let mut first = args.next();
+    // `compile` and `release` run builds of light-cljs.edn; a command that
+    // starts with a flag never reads it, and a FILE of that name is read
+    // as `./compile`.
+    if let Some(command) = first
+        .as_deref()
+        .and_then(|arg| arg.to_str())
+        .and_then(config_cli::Command::named)
+    {
+        return config_cli::run(command, args);
+    }
     let mut options = AnalysisOptions::default();
     loop {
         match first.as_deref().and_then(|arg| arg.to_str()) {
@@ -1148,6 +1199,11 @@ fn run() -> Result<(), Box<dyn Error>> {
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
+        // A command's errors name the command themselves.
+        Err(error) if error.is::<config_cli::CommandError>() => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
         Err(error) => {
             eprintln!("light-cljs: {error}");
             ExitCode::FAILURE

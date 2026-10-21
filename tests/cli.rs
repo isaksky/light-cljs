@@ -2302,3 +2302,175 @@ fn a_build_stopped_at_its_deadline_writes_no_output_at_any_job_count() {
         );
     }
 }
+
+/// A command that starts with a flag never reads `light-cljs.edn`
+/// (docs/build-configuration.md, principle 23): from a directory holding one
+/// that would fail to validate, `--compile`, `--watch`'s startup and
+/// `--eval` print, exit and write byte for byte what they do from a
+/// directory without it. The one changed spelling, a FILE named `compile` or
+/// `release`, is still lexed when written `./compile`.
+#[test]
+fn flag_only_commands_never_read_the_configuration_file() {
+    use std::io::{BufRead, BufReader};
+
+    let base = TempDir::new("cli-config-ground-rule");
+    let features = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/features/app");
+    let dirs = [base.join("with"), base.join("without")];
+    for dir in &dirs {
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        for entry in std::fs::read_dir(&features).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(entry.path(), dir.join("app").join(entry.file_name())).unwrap();
+        }
+        std::fs::write(dir.join("compile"), "(+ 1 2)").unwrap();
+        std::fs::write(dir.join("release"), "[:a]").unwrap();
+    }
+    std::fs::write(
+        dirs[0].join("light-cljs.edn"),
+        "{:source-paths [\"app\"] :builds {:app {:target :browser}}} :extra",
+    )
+    .unwrap();
+
+    // Every file under `dir` but light-cljs.edn, with a hash of its bytes;
+    // of the cache store, only the index's names, which are the cache keys:
+    // its records hold times, and its objects are named by artifacts that
+    // quote each directory's own source paths.
+    let files = |dir: &Path| {
+        use std::hash::{Hash, Hasher};
+        let store = Path::new(".light-cljs/cache/v1");
+        let mut files = Vec::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            for entry in std::fs::read_dir(&next).unwrap() {
+                let path = entry.unwrap().path();
+                let name = path.strip_prefix(dir).unwrap().to_path_buf();
+                if path.is_dir() {
+                    if name != store.join("objects") {
+                        pending.push(path);
+                    }
+                } else if name.starts_with(store.join("index")) {
+                    files.push((name, 0));
+                } else if name != Path::new("light-cljs.edn") {
+                    let mut hash = std::hash::DefaultHasher::new();
+                    std::fs::read(&path).unwrap().hash(&mut hash);
+                    files.push((name, hash.finish()));
+                }
+            }
+        }
+        files.sort();
+        files
+    };
+    let run = |dir: &Path, args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .args(args)
+            .current_dir(dir)
+            .env_remove("LIGHT_CLJS")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        (output.status.code(), output.stdout, output.stderr)
+    };
+    let commands: [&[&str]; 9] = [
+        &["--compile", "--entry", "app.main", "--source-root", "."],
+        &[
+            "--compile",
+            "--optimize",
+            "advanced",
+            "--entry",
+            "app.main",
+            "--source-root",
+            ".",
+            "--out-dir",
+            "out/release",
+        ],
+        &[
+            "--compile",
+            "--entry",
+            "app.main",
+            "--source-root",
+            ".",
+            "--reloadable",
+            "--out-dir",
+            "out/dev",
+            "--no-cache",
+        ],
+        &["--compile", "--entry", "app.missing", "--source-root", "."],
+        &["--eval", "(+ 1 2)"],
+        &[
+            "--watch",
+            "--entry",
+            "app.missing",
+            "--source-root",
+            ".",
+            "--out-dir",
+            "out/watch",
+        ],
+        &["./compile"],
+        &["./release"],
+        &["--compile", "./compile"],
+    ];
+    for args in commands {
+        let [with, without] = [&dirs[0], &dirs[1]].map(|dir| run(dir, args));
+        assert_eq!(with, without, "{args:?}");
+        assert_eq!(files(&dirs[0]), files(&dirs[1]), "{args:?}");
+    }
+    let (status, stdout, _) = run(&dirs[0], &["./compile"]);
+    assert_eq!(status, Some(0));
+    assert_eq!(
+        String::from_utf8(stdout).unwrap(),
+        "OpenParen\t0..1\t\"(\"\nAtom\t1..2\t\"+\"\nAtom\t3..4\t\"1\"\nAtom\t5..6\t\"2\"\nCloseParen\t6..7\t\")\"\n"
+    );
+    assert!(dirs[0].join("out/release/chunks.json").is_file());
+    assert!(dirs[0].join(".light-cljs/cache").is_dir());
+
+    // The watch's startup: its status lines, but for the milliseconds, and
+    // the dev build it writes.
+    let startup = |dir: &Path| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .args(["--watch", "--entry", "app.main", "--source-root", "."])
+            .args(["--out-dir", "out/watched", "--poll-ms", "20", "--no-cache"])
+            .current_dir(dir)
+            .env_remove("LIGHT_CLJS")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = Vec::new();
+        for line in BufReader::new(child.stderr.take().unwrap()).lines() {
+            let line = line.unwrap();
+            let done = line.starts_with("light-cljs: built ");
+            // `... in 281 ms; watching every 20 ms`
+            lines.push(match line.rsplit_once(" in ") {
+                Some((head, tail)) if done => {
+                    format!("{head} in _{}", &tail[tail.find(" ms;").unwrap()..])
+                }
+                _ => line,
+            });
+            if done {
+                break;
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        lines
+    };
+    let [with, without] = [&dirs[0], &dirs[1]].map(|dir| startup(dir));
+    assert_eq!(with, without);
+    assert!(
+        with.last()
+            .unwrap()
+            .starts_with("light-cljs: built app.main"),
+        "{with:?}"
+    );
+    assert_eq!(files(&dirs[0]), files(&dirs[1]));
+
+    // A first argument `compile` is now the command, which reads the file.
+    let (status, _, stderr) = run(&dirs[0], &["compile"]);
+    assert_eq!(status, Some(1));
+    let stderr = String::from_utf8(stderr).unwrap();
+    assert!(
+        stderr.starts_with("light-cljs compile: ") && stderr.contains("light-cljs.edn:1:"),
+        "{stderr}"
+    );
+}

@@ -712,6 +712,11 @@ impl ConfigFile {
         &self.builds[id.0 as usize]
     }
 
+    /// The build id closest to `name` by edit distance, for "did you mean".
+    pub fn suggest_build(&self, name: &str) -> Option<&str> {
+        suggestion(name, self.builds.iter().map(|build| build.name.as_str()))
+    }
+
     /// The build with keyword id `name` (without its colon).
     pub fn find_build(&self, name: &str) -> Option<BuildId> {
         self.builds
@@ -2502,9 +2507,15 @@ impl Document {
 impl BuildDefinition {
     /// The output directory the file gives the build in `mode`.
     fn output_dir(&self, mode: BuildMode) -> Option<&str> {
+        self.output_dir_value(mode)?.as_str()
+    }
+
+    /// The value of the output directory the file gives the build in `mode`:
+    /// its mode map's, else its own.
+    pub fn output_dir_value(&self, mode: BuildMode) -> Option<&Value> {
         match self.setting(Some(mode), Setting::OutputDir) {
-            Some(value) if !matches!(value.kind, ValueKind::Nil) => value.as_str(),
-            _ => self.setting(None, Setting::OutputDir)?.as_str(),
+            Some(value) if !matches!(value.kind, ValueKind::Nil) => Some(value),
+            _ => self.setting(None, Setting::OutputDir),
         }
     }
 }
@@ -2838,6 +2849,29 @@ impl ConfigFile {
         mode: BuildMode,
         merges: &[ConfigMerge],
     ) -> Result<BuildSettings, ConfigFileError> {
+        self.merged_settings(build, mode, merges, true)
+    }
+
+    /// As [`Self::settings`], without comparing the build's output directory
+    /// with the other builds', the cache store and the source paths: for a
+    /// command whose flags replace one of them, which compares the
+    /// directories the build will use once the flags are applied.
+    pub fn settings_before_flags(
+        &self,
+        build: BuildId,
+        mode: BuildMode,
+        merges: &[ConfigMerge],
+    ) -> Result<BuildSettings, ConfigFileError> {
+        self.merged_settings(build, mode, merges, false)
+    }
+
+    fn merged_settings(
+        &self,
+        build: BuildId,
+        mode: BuildMode,
+        merges: &[ConfigMerge],
+        outputs: bool,
+    ) -> Result<BuildSettings, ConfigFileError> {
         let texts = self.texts(merges);
         let fail = |error: Located| texts.error(error, ConfigSource::File);
         let definition = self.build(build);
@@ -2868,7 +2902,9 @@ impl ConfigFile {
         )
         .map_err(fail)?;
         check_unset(&mut slots, name, mode).map_err(fail)?;
-        self.check_output(&slots, build, mode).map_err(fail)?;
+        if outputs {
+            self.check_output(&slots, build, mode).map_err(fail)?;
+        }
 
         let slots = slots.map(|slot| {
             slot.map(|Slot { value, mode }| SettingValue {
@@ -2920,9 +2956,21 @@ impl ConfigFile {
         Ok(())
     }
 
-    /// The directory relative paths resolve against: the file's, absolute.
-    fn project_dir(&self) -> &Path {
+    /// The project directory, which relative paths resolve against: the
+    /// file's, absolute.
+    pub fn project_dir(&self) -> &Path {
         &self.project
+    }
+
+    /// `path` as the commands use it: joined to the project directory, with
+    /// `.` and `..` resolved by name, so a command run from a subdirectory
+    /// spells a source path, and so its cache keys, as one run from the
+    /// project directory does ("Cache keys and fingerprints").
+    pub fn resolve(&self, path: &Path) -> PathBuf {
+        match path.to_str() {
+            Some(text) => lexical(&self.project, text),
+            None => self.project.join(path),
+        }
     }
 
     fn check_output(&self, slots: &Slots, build: BuildId, mode: BuildMode) -> Result<(), Located> {

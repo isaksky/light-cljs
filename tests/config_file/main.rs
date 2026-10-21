@@ -7,5 +7,6 @@
 #[allow(dead_code)]
 mod temp_dir;
 
+mod commands;
 mod merge;
 mod reader;

@@ -482,6 +482,43 @@ Vars and arity conflicts become warnings instead of errors), or with
 `--checked-arrays-warn`/`--checked-arrays-error` for array-operand checks.
 Compilation errors report line/byte-column and produce no partial output.
 
+### Build from light-cljs.edn
+
+`light-cljs.edn` names a project's builds, as `shadow-cljs.edn` does: its
+`:source-paths`, cache settings and `:builds`, each with `:target :esm`, an
+`:output-dir`, one module's `:entries` namespace and `:dev` and `:release`
+overrides ([docs/build-configuration.md](docs/build-configuration.md)). The
+`compile` and `release` commands find it in the current directory or the
+nearest parent and run the builds named, one after another in that order,
+stopping at the first failure:
+
+```sh
+cd examples/features
+cargo run --quiet -- release features   # the chunks in out/release, at :advanced
+cargo run --quiet -- compile features   # the dev build in out/dev, once
+# light-cljs - config: /work/light-cljs/examples/features/light-cljs.edn
+# [:features] Compiling ...
+# [:features] Build completed in 171 ms: /work/light-cljs/examples/features/out/dev
+```
+
+`release ID` writes what `--compile --optimize advanced --out-dir` writes,
+at the build's `:optimizations`; `compile ID` writes what `--compile
+--reloadable --out-dir` writes. Build ids are written with or without
+their colon. Every relative path, in the file and in the flags, resolves
+against the file's directory, so a command run from a subdirectory builds
+the same thing into the same place. Flags after the ids override the file
+for every build named: `compile` takes the flags `--compile --reloadable`
+takes and `release` those `--compile` takes (with `--warnings` and, for
+`release`, `--checked-arrays-warn`/`--checked-arrays-error`); `--source-root`
+replaces `:source-paths`, `--config KEY=EDN` sets one key of `:config`,
+`--cache-dir` names the store and turns the cache on, `--no-cache` turns it
+off and `--cache-blocker` adds to the file's blockers. `--config-merge DATA`
+(repeatable) deep-merges EDN text starting with `{`, or a file, over each
+build, as shadow-cljs's does. `--entry` and `--out-dir` take one build id,
+and `--esm`, the source map flags and `--watch`'s flags are refused. A
+command that starts with a flag never reads `light-cljs.edn`; a file named
+`compile` or `release` is tokenized when written `./compile`.
+
 ### Inspect intermediate stages
 
 ```sh

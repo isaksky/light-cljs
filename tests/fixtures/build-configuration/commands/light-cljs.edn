@@ -1,0 +1,17 @@
+;; The fixture of tests/config_file/commands.rs: builds that the compile and
+;; release commands run, with flags over them.
+{:source-paths ["src"]
+ :cache-blockers #{app.macros}
+ :builds
+ {:app {:target :esm
+        :output-dir "out/app"
+        :modules {:main {:entries [app.main]}}
+        :config {:app/flavor :file :app/size 1}}
+  :broken {:target :esm
+           :output-dir "out/broken"
+           :modules {:main {:entries [app.broken]}}}
+  :other {:target :esm
+          :output-dir "out/other"
+          :modules {:main {:entries [app.other]}}
+          :build-options {:cache-level :off}
+          :release {:closure-defines {app.other/label "label-file"}}}}}

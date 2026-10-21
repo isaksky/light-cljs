@@ -2,8 +2,10 @@
 
 Status: settled design, October 20, 2026. The user decided its three open
 questions the same day ("Settled questions"). The reader and the schema
-("As built (light-cljs-398)") and the merging of a build's layers ("As
-built (light-cljs-399)") are implemented; no command reads the file yet.
+("As built (light-cljs-398)"), the merging of a build's layers ("As
+built (light-cljs-399)") and the `compile` and `release` commands ("As
+built (light-cljs-400)") are implemented; `watch` and `cljs-repl` do not
+read the file yet.
 The implementation is queued as the pellets group `build-configuration`,
 one or more pellets per phase ("Phases"). Names that shadow-cljs has no
 word for are listed under "Names for review"; the pellets use them as
@@ -230,8 +232,8 @@ Parsing:
 - Build ids follow the command, up to the first argument that starts with
   `-`. An id is written without its colon, and a leading colon is dropped,
   as shadow-cljs drops it (`release :app`). No id is an error, as in
-  shadow-cljs: `light-cljs release: requires one or more build ids; this
-  configuration defines :app, :test, :worker`.
+  shadow-cljs: `light-cljs release: requires one or more build ids;
+  /work/site/light-cljs.edn defines :app, :test, :worker`.
 - **Flags after the ids** are today's flags for that mode, and override the
   file for every build named: `compile` takes what `--compile --reloadable`
   takes, `watch` what `--watch` takes, `release` what `--compile` takes,
@@ -680,7 +682,7 @@ that run.
 | Two builds, one directory | `light-cljs.edn:19:16: builds :app and :worker both write out/app in dev mode` |
 | An output directory equal to the cache store or a source path | `light-cljs.edn:8:16: build :app writes out/cache in release mode, the cache store of :cache-root "out"; give it a directory of its own`, and `..., the source path "src"; give it a directory of its own` |
 | A duplicate key, a parse error | the reader's message, at its span |
-| An unknown build id | `light-cljs release ap: light-cljs.edn defines no build :ap; did you mean :app? Its builds are :app, :test, :worker` |
+| An unknown build id | `light-cljs release ap: /work/site/light-cljs.edn defines no build :ap; did you mean :app? Its builds are :app, :test, :worker` |
 | `--entry` with two ids | `light-cljs watch app worker --entry x: --entry and --out-dir name one build's entry and directory; give one build id` |
 
 "Did you mean" uses the edit distance against the closed key set of the
@@ -1020,6 +1022,106 @@ Names are decisions for review; the structure is a sketch.
   several. A directory inside a source path, as examples/features' is, is
   not an error.
 - Tests: `tests/config_file/merge.rs`.
+
+### As built (light-cljs-400): the compile and release commands
+
+- `run` in `src/main.rs` hands a first argument `compile` or `release` to
+  `config_cli::run(Command, args)` (`src/config_cli.rs`, a module of the
+  binary). `watch` and `cljs-repl` are still read as FILE until light-cljs-403
+  and light-cljs-408. Only the very first argument is a command:
+  `--warnings release app` still reads a FILE named `release`.
+- **Order.** The ids are taken first, then the file is found from the current
+  directory and read (the whole file validated), the ids are checked, the
+  flags after them are read, each `--config-merge` is read, every named
+  build's `ConfigFile::settings` is computed, `ConfigFile::check_outputs`
+  compares them, and every build is translated, all before anything compiles.
+  When a flag replaces an output directory, the source roots or the cache
+  store (`--out-dir`, `--source-root`, `--cache-dir`, `--no-cache`), the
+  builds' settings come from `ConfigFile::settings_before_flags`, which skips
+  the output comparison, and the command compares the directories each build
+  will use instead: its output directory against the other builds' (as the
+  file defines them in the mode), the cache store when the cache is on, and
+  the source roots, naming both origins (`light-cljs release other: builds
+  :app and :other both write out/app in release mode (:other's from
+  --out-dir, :app's from light-cljs.edn:7:21)`; `build :app writes out/app in
+  release mode (light-cljs.edn:7:21), the source path "out/app"
+  (--source-root); give it a directory of its own`). So a flag can move a
+  build out of a conflict a merge made, and cannot move it into one.
+  Without such a flag, `settings` checks as light-cljs-399 built it.
+  The builds then run in the order named; a repeated id is built once. A
+  failure stops the command with status 1, so a later build's directory is
+  never created.
+- **Translation** (layer 6) builds a `NamespaceFlags` and a `CompileFlags`
+  per build, the structures `--compile --entry` fills (its argument loop is
+  now `NamespaceFlags::accept` and `CompileFlags::accept`, then
+  `build_namespace`, so a flag-only build runs the same code). The flags after
+  the ids are read once with those two parsers into a separate pair, and each
+  build's values are taken from them where given, else from the settings:
+  - Paths go through `ConfigFile::resolve`, the project directory joined with
+    the path and normalized by name: source paths, `--source-root`,
+    `:output-dir`, `--out-dir`, `--cache-dir`, `--stats-file` and the store
+    `<:cache-root>/cache`. So a command from a subdirectory gets the same
+    roots and keys; a flag-only build still spells them as typed.
+  - `release` sets `--optimize` from `:optimizations` unless `--optimize` is
+    given; `:pseudo-names`, `:elide-asserts` and `--pseudo-names`,
+    `--elide-asserts` are or-ed, since the flags can only turn them on (a
+    merge turns one off). Each `:closure-defines` entry becomes `--define
+    NS/NAME=TEXT`, a string by its characters; a `--define` of the same name
+    replaces it, and two `--define`s of one name are an error (`--define
+    app.other/label=b: the define app.other/label is given twice`; a
+    flag-only `--compile` still lets the last one win). `:cljs-warnings` and `:checked-arrays` set the analysis
+    options as `--warnings` and `--checked-arrays-*` do, and those flags after
+    the ids win.
+  - `:config` goes through `BuildConfiguration::insert`, then each `--config`
+    through the new `BuildConfiguration::set`, which replaces a key; the flags
+    are read into their own map first, so one key named twice by flags is
+    still `--config`'s error.
+  - The macro limits and `:compile-threads` are taken only when a layer wrote
+    them (a default is what the flag structures already hold); `--jobs` wins.
+  - Cache: `--no-cache` turns it off, else `--cache-dir` names the store (and
+    turns it on over `:cache-level :off`), else `:cache-level :off` turns it
+    off, else the store is `<:cache-root>/cache`. Blockers are the build's
+    (the top level's already unioned in) followed by each `--cache-blocker`
+    not among them.
+- **Flags after the ids.** `compile` takes what `--compile --reloadable` takes
+  plus `--warnings` (which dev mode implies); `release` takes what
+  `--compile` takes plus `--warnings`, `--checked-arrays-warn` and
+  `--checked-arrays-error`; both take `--config-merge DATA`. Refused, each
+  with the flag (and its value) in the message's prefix:
+  `--esm` and the source map flags (`light-cljs release app --esm: release
+  writes a chunked build into :output-dir, as --out-dir does: ES modules
+  without source maps; it takes no --esm`; `compile` says it writes the dev
+  build, as `--reloadable` does, with a source map per namespace);
+  `--watch`'s flags (`light-cljs release app --serve 0: --serve is a flag of
+  light-cljs watch, which serves and watches the build; release builds
+  once`, where `--compile --serve` prints the usage text); `--reloadable`
+  (the command chooses the build); in `compile`, `--optimize`,
+  `--size-report`, `--pseudo-names`, `--define` and the checked-arrays flags
+  (`--optimize applies to release builds; compile writes the dev build at
+  none semantics, as --compile --reloadable does`), since dev builds take no
+  checked arrays (the user's decision); `--entry` and `--out-dir` with more
+  than one id; and anything else (`--frobnicate is not a flag of release;
+  see light-cljs --help`). `--no-cache --cache-dir` is refused as before.
+- **Messages.** Every error of a command is printed as
+  `light-cljs COMMAND IDS: message`, the ids as typed, not after the
+  `light-cljs: ` prefix of other errors. File errors keep their
+  `PATH:LINE:COLUMN:` after it, PATH the absolute path found. The no-ids and
+  unknown-id messages name the file by that path where the table says
+  "this configuration" and "light-cljs.edn", so the file is named in every
+  error. A build that fails is prefixed with its own id alone: `light-cljs
+  release broken: PATH:3:2: unresolved symbol: ...`.
+- **Status lines**, on stderr, after shadow-cljs's `shadow-cljs - config:
+  PATH` and `[:app] Build completed.`: `light-cljs - config: PATH` once,
+  then `[:ID] Compiling ...` and `[:ID] Build completed in N ms: DIR` per
+  build, DIR the absolute output directory. `--stats`, `--size-report` and
+  warnings print between them as for `--compile`.
+- **Flag-only commands** run no new code before their own: the dispatch
+  looks at the first argument only. Their output, messages, status, written
+  files and cache keys are unchanged, but for `USAGE`, which now lists the
+  two commands, so `--help` and a bad argument's usage text show them.
+- Tests: `tests/config_file/commands.rs`, on copies of examples/features and
+  of `tests/fixtures/build-configuration/commands`; the ground-rule test is
+  `flag_only_commands_never_read_the_configuration_file` in `tests/cli.rs`.
 
 ## Phases
 

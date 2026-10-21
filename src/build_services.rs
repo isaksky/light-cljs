@@ -448,6 +448,17 @@ impl BuildConfiguration {
         Ok(())
     }
 
+    /// Give `key` the EDN text `value`, replacing the value it has: how a
+    /// `--config` flag after a command overrides the configuration file's
+    /// `:config` (docs/build-configuration.md, "Precedence"). A malformed
+    /// key or value is an error, and the map is then unchanged.
+    pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
+        let key = configuration_key(key)?;
+        let value = configuration_value(value)?;
+        self.entries.insert(key, value);
+        Ok(())
+    }
+
     /// Add one `KEY=EDN` text, as `--config` gives it: KEY is everything
     /// before the first `=`.
     pub fn insert_text(&mut self, text: &str) -> Result<(), String> {
