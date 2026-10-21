@@ -6,3 +6,4 @@
 /playground/crate/target
 /site/dist
 .light-cljs/
+/examples/features/out/

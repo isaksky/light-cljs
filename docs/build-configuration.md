@@ -1,8 +1,9 @@
 # Build configuration: light-cljs.edn
 
 Status: settled design, October 20, 2026. The user decided its three open
-questions the same day ("Settled questions"). Nothing here is implemented;
-the implementation is queued as the pellets group `build-configuration`,
+questions the same day ("Settled questions"). The reader and the schema
+are implemented ("As built (light-cljs-398)"); no command reads the file
+yet. The implementation is queued as the pellets group `build-configuration`,
 one or more pellets per phase ("Phases"). Names that shadow-cljs has no
 word for are listed under "Names for review"; the pellets use them as
 written unless the user renames one.
@@ -667,7 +668,7 @@ that run.
 | A key in the wrong place | `light-cljs.edn:12:4: :http in build :app is a top-level key, as in shadow-cljs` |
 | A dev-only or release-only key reaching the other mode, where it is an error | `light-cljs.edn:13:10: :closure-defines of build :app applies in dev mode, whose dev build takes no defines; write it under :release` |
 | A bad value | `light-cljs.edn:11:41: :optimizations of build :app must be :none, :prepare or :advanced, got :simple` |
-| A bad `:config` value | `--config`'s own message, at the value: `light-cljs.edn:10:29: :config :app/n of build :app: 1N is not a JavaScript number` |
+| A bad `:config` value | `--config`'s own message, at the value: `light-cljs.edn:10:29: :config :app/n of build :app: "1N" is not a configuration number: write a decimal integer or floating-point number, such as 3, -2.5 or 1e3` |
 | `#shadow/env`, `#env`, another tag | `light-cljs.edn:3:15: #shadow/env: write #light-cljs/env, which takes the same forms` |
 | A malformed `#light-cljs/env` | `light-cljs.edn:3:15: #light-cljs/env takes "NAME", ["NAME"], ["NAME" DEFAULT] or ["NAME" :as TYPE :default DEFAULT]` |
 | An unset variable where a value is required | `light-cljs.edn:15:51: :closure-defines app.config/VERSION of build :app (release) is nil: APP_VERSION is unset and the form gives no default` |
@@ -869,6 +870,67 @@ Names are decisions for review; the structure is a sketch.
 - **Embedding.** `BuildSettings` is public, so an embedder that keeps its
   builds in a `light-cljs.edn` gets the same validation; nothing in the
   compiler's API depends on it.
+
+### As built (light-cljs-398): the reader and the schema
+
+- `src/config_file.rs` (`light_cljs::config_file`) has `FILE_NAME`,
+  `ConfigFile::discover`, `ConfigFile::read` and `ConfigFile::from_source`
+  (the same for text in hand, which tests and, later, `LIGHT_CLJS` use),
+  `BuildDefinition`, `BuildId`, `BuildMode`, `Setting` and
+  `ConfigFileError`. No command calls it yet; light-cljs-400 adds them.
+- **Reading.** One `parser::Parser` pass with discards retained, then a
+  `Value` tree: each form's kind, its span, and, for a `#light-cljs/env`
+  value, the variable and whether it was set. The value's kind is exactly
+  what a literal in its place would have; its span is the whole tag's.
+  Duplicate map keys and set elements are found on the tree (the syntax
+  parser does not check them), with the first one's line and column in
+  the message; values are equal as `BuildConfiguration` finds them (`1`
+  and `1.0`, a list and a vector, maps and sets in any order). A `#_`
+  directly in a map that discards a value equal to one of its keys is an
+  error: `#_#_ :output-dir "old"` beside a live `:output-dir`. A string
+  holding an unpaired surrogate escape keeps its UTF-16 code units, so
+  `:config` takes it as `--config` does; no path or host does.
+  Auto-resolved keywords, namespaced maps, metadata, quoting forms and
+  `#()` are errors, since EDN has none of them. `ConfigFile::document`
+  keeps the whole resolved tree, so a map-valued key given by an unset
+  variable keeps its origin for light-cljs-399.
+- **`#light-cljs/env`** follows `shadow.cljs.config-env/read-env`: a vector
+  of two is `["NAME" DEFAULT]`, an odd length is `:as`/`:default` pairs, and
+  the default is not converted by `:as`. Unlike shadow-cljs, an unknown
+  `:as` type or option is an error whether or not the variable is set.
+  `:as :int` takes an optional sign and decimal digits within 64 bits,
+  `:as :symbol` and `:as :keyword` a string that reads as exactly one
+  symbol or keyword name.
+- **Layers.** Each map's settings go into an array with one slot per
+  `Setting` (29 settings: every key position of the schema's tables;
+  `:closure-defines` at build level and under `:compiler-options`, and
+  `:cache-blockers` at the top level and under `:build-options`, are
+  separate settings, merged by light-cljs-399). A build has three layers:
+  its own map, `:dev` and `:release`. Each closed map is a static table
+  sorted by key, searched by binary search. Builds are sorted by id and
+  `find_build` is a binary search.
+- **Unknown keys** are looked up, in order, in the table of shadow-cljs keys
+  with no equivalent (in any map), then in the other maps' tables (a
+  misplaced key says where it belongs: "is a top-level key", "is a build
+  key", "belongs under :compiler-options", "belongs in a module under
+  :modules"), then by edit distance against the enclosing map's keys, after
+  spelling the key in kebab case (`outputDir` and `output_dir` are
+  `output-dir`), suggesting the closest key when no more than half of the
+  longer one differs. Without a suggestion the message lists the map's keys.
+- **Static checks at read**, besides the tables' types and ranges: the
+  required build keys `:target`, `:output-dir` and `:modules` must be in the
+  build or in its mode map, for each mode; the mode rule, where the build's
+  own map and its `:dev` map reach dev mode, even with an empty
+  `:closure-defines {}`. A literal nil, or a nil default, is a bad value
+  like any other; the nil of an unset variable without a default is kept,
+  also inside a collection (a source path, a cache blocker, a module's
+  entry), for light-cljs-399 to check in the build and mode that run. Integers are decimal digits, as the flags read them; ports are 0 to
+  65535 and counts positive.
+- **Messages** name the map as "at the top level", "in :http", "in build
+  :app", "in build :app (dev)" for a mode map, "in :compiler-options of
+  build :app" and "in module :main of build :app", and values as ":KEY of
+  build :app must be ..., got VALUE". The error table above gives the
+  shapes; `tests/config_file/reader.rs` asserts every message exactly.
 
 ## Phases
 

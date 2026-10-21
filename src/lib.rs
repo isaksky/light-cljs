@@ -33,6 +33,7 @@ mod compiler_destructuring;
 mod compiler_libraries;
 pub mod compiler_names;
 pub mod compiler_reader;
+pub mod config_file;
 pub mod core_operations;
 pub mod defines;
 pub mod dependency_manifest;

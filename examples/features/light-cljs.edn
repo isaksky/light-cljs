@@ -1,0 +1,13 @@
+;; The code-splitting example's build configuration
+;; (docs/build-configuration.md). From this directory or below it:
+;;   light-cljs release features   optimized chunks in out/release
+;;   light-cljs compile features   the dev build in out/dev, once
+;;   light-cljs watch features     the dev build, rebuilt on save and
+;;                                 served on http://127.0.0.1:9630/
+{:source-paths ["."]
+ :builds
+ {:features
+  {:target :esm
+   :output-dir "out/release"
+   :modules {:main {:entries [app.main]}}
+   :dev {:output-dir "out/dev"}}}}
