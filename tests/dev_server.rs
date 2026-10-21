@@ -18,7 +18,7 @@ mod reload_fixtures;
 
 use dev_execution::run_dev;
 use light_cljs::EvalOptions;
-use light_cljs::dev_server::{Build, DevServer, Json, LoadUnit};
+use light_cljs::dev_server::{Build, DevServer, Json, LoadUnit, Mount, MountId, Step};
 use light_cljs::dev_session::{Action, DevSession, Unit};
 use light_cljs::eval_session::PrintOptions;
 use light_cljs::source_provider::{FileSourceProvider, SourceInput};
@@ -1424,4 +1424,631 @@ fn hooks_keep_their_namespace_order_across_steps() {
              reloading\nstate before\nmain saved\nmain saved again\nstate after\nclicks: [4]\n"
         )
     );
+}
+
+/// A page's dev client in Node: it fetches `runtime.js` and `client.js` of
+/// the build at the URL `BASE` and runs them as a page's scripts would, with
+/// `client.js` as `document.currentScript`, so the client connects to the
+/// `events` beside its own URL. `globalThis.whoami` is `NAME`, which the
+/// units and REPL forms it runs can show. Its console lines go to stdout.
+const PAGE_CLIENT: &str = r#"
+const [base, name] = process.argv.slice(1);
+globalThis.whoami = name;
+for (const file of ["runtime.js", "client.js"]) {
+  const url = new URL(file, base).href;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(url + ": " + response.status);
+  // A script element without a page body: the client draws no overlay.
+  globalThis.document = { currentScript: { src: url } };
+  (0, eval)(await response.text());
+}
+"#;
+
+/// [`PAGE_CLIENT`] running, killed when dropped.
+struct PageClient {
+    child: Child,
+    lines: Receiver<String>,
+}
+
+impl PageClient {
+    /// The client of the build at `http://ADDRESS/BASE`, named `name`.
+    fn load(address: &str, base: &str, name: &str) -> Self {
+        let mut child = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+            .args(["--input-type=module", "-e", PAGE_CLIENT])
+            .arg(format!("http://{address}{base}"))
+            .arg(name)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("the dev server tests require Node");
+        let lines = lines(child.stdout.take().unwrap());
+        Self { child, lines }
+    }
+
+    /// Its lines up to the first that starts with `prefix`.
+    fn until(&self, prefix: &str) -> (Vec<String>, String) {
+        until(&self.lines, prefix, "the page client")
+    }
+}
+
+impl Drop for PageClient {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// `GET path` from the server at `address`.
+fn get(address: &str, path: &str) -> Response {
+    request(
+        address,
+        &format!("GET {path} HTTP/1.1\r\nHost: {address}\r\n\r\n"),
+    )
+}
+
+/// `POST path` of the JSON `body` to the server at `address`: the status
+/// line and the body.
+fn post_json(address: &str, path: &str, body: &str) -> (String, String) {
+    let response = request(
+        address,
+        &format!(
+            "POST {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    );
+    (response.status, response.body)
+}
+
+/// A step that loads one unit, `namespace`, which logs `text` and the name
+/// of the client that runs it.
+fn logging_step(namespace: &str, text: &str) -> Step {
+    Step {
+        load: vec![LoadUnit {
+            namespace: namespace.into(),
+            file: format!("{namespace}.js"),
+            js: format!(
+                "globalThis.__lightDev.define({namespace:?}, [], (rt) => {{\n  console.log({text:?} + \" in \" + globalThis.whoami);\n  return null;\n}});\n"
+            ),
+            requires: Vec::new(),
+        }],
+        ..Step::default()
+    }
+}
+
+/// Two mounts in one server, `/app/` and `/worker/`, each a copy of a dev
+/// build of examples/dev: each serves its own directory, `/` serves the
+/// first, and the sources are served once where both builds' source maps
+/// name them. A page client loaded from `/worker/client.js` connects to
+/// `/worker/events` and receives only the worker's steps, one loaded from
+/// `/app/client.js` only the app's; a REPL session opened at `/worker/repl`
+/// compiles on the worker's compiler and runs on the worker's runtime, and
+/// the app's endpoints do not know it.
+#[test]
+fn two_mounts_serve_their_own_builds_steps_and_repl() {
+    let dir = TempDir::new("dev-server-mounts");
+    copy_example(&dir.join("src"));
+    let compiled = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .args([
+            "--compile",
+            "--no-cache",
+            "--reloadable",
+            "--entry",
+            "app.main",
+        ])
+        .arg("--source-root")
+        .arg(dir.join("src"))
+        .arg("--out-dir")
+        .arg(dir.join("app"))
+        .output()
+        .unwrap();
+    assert!(compiled.status.success(), "{compiled:?}");
+    fs::create_dir(dir.join("worker")).unwrap();
+    for entry in fs::read_dir(dir.join("app")).unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(entry.path(), dir.join("worker").join(entry.file_name())).unwrap();
+    }
+    fs::write(dir.join("app/which.txt"), "app\n").unwrap();
+    fs::write(dir.join("worker/which.txt"), "worker\n").unwrap();
+    fs::write(dir.join("worker/only-worker.txt"), "mine\n").unwrap();
+    let mount = |name: &str| Mount {
+        name: name.into(),
+        out_dir: dir.join(name),
+        build: Build::default(),
+    };
+    let server = DevServer::start_mounts(
+        "127.0.0.1",
+        0,
+        vec![mount("app"), mount("worker")],
+        &[dir.join("src")],
+    )
+    .unwrap();
+    let address = server.address().to_string();
+    let mounts = server.mounts();
+    assert_eq!(
+        mounts
+            .iter()
+            .map(|mount| (mount.id(), mount.name()))
+            .collect::<Vec<_>>(),
+        [(MountId(0), Some("app")), (MountId(1), Some("worker"))]
+    );
+    assert_eq!(server.mount_named("worker"), Some(MountId(1)));
+    assert_eq!(server.mount_named("work"), None);
+    let (app, worker) = (&mounts[0], &mounts[1]);
+
+    for (path, body) in [
+        ("/app/which.txt", "app\n"),
+        ("/worker/which.txt", "worker\n"),
+        ("/which.txt", "app\n"),
+        ("/worker/only-worker.txt", "mine\n"),
+    ] {
+        let response = get(&address, path);
+        assert_eq!(response.status, "HTTP/1.1 200 OK", "{path}");
+        assert_eq!(response.body, body, "{path}");
+    }
+    for path in [
+        "/app/only-worker.txt",
+        "/only-worker.txt",
+        "/worker/../which.txt",
+    ] {
+        assert_eq!(
+            get(&address, path).status,
+            "HTTP/1.1 404 Not Found",
+            "{path}"
+        );
+    }
+    let root = get(&address, "/");
+    assert!(
+        root.body.contains("<script src=\"index.js\"></script>"),
+        "{}",
+        root.body
+    );
+    assert_eq!(get(&address, "/worker/").body, root.body);
+    let moved = get(&address, "/worker?x=1");
+    assert_eq!(moved.status, "HTTP/1.1 301 Moved Permanently");
+    assert_eq!(moved.header("location"), Some("/worker/?x=1"));
+    // Both builds' maps name ../src/app/view.cljs, which resolves from
+    // /worker/ as from / to the one place the sources are served.
+    let map = get(&address, "/worker/app.view.js.map");
+    assert!(
+        map.body.contains("\"../src/app/view.cljs\""),
+        "{}",
+        map.body
+    );
+    let source = get(&address, "/src/app/view.cljs");
+    assert_eq!(source.status, "HTTP/1.1 200 OK");
+    assert_eq!(
+        source.body,
+        fs::read_to_string(dir.join("src/app/view.cljs")).unwrap()
+    );
+
+    let app_client = PageClient::load(&address, "/app/", "app");
+    let (_, connected) = app_client.until("light-cljs: connected to ");
+    assert_eq!(
+        connected,
+        format!("light-cljs: connected to http://{address}/ as runtime 1")
+    );
+    let worker_client = PageClient::load(&address, "/worker/", "worker");
+    let (_, connected) = worker_client.until("light-cljs: connected to ");
+    assert_eq!(
+        connected,
+        format!("light-cljs: connected to http://{address}/ as runtime 2")
+    );
+    // Runtime IDs are the server's; each mount knows its own runtimes.
+    assert_eq!(app.runtimes(), [1]);
+    assert_eq!(worker.runtimes(), [2]);
+    assert_eq!(server.runtimes(), [1]);
+
+    assert_eq!(app.publish(logging_step("app.step", "app step")), 1);
+    assert_eq!(
+        worker.publish(logging_step("worker.step", "worker step")),
+        1
+    );
+    let (before, line) = worker_client.until("worker step");
+    assert_eq!(line, "worker step in worker");
+    assert!(
+        !before.iter().any(|line| line.contains("app step")),
+        "{before:#?}"
+    );
+    let (before, line) = app_client.until("app step");
+    assert_eq!(line, "app step in app");
+    assert!(
+        !before.iter().any(|line| line.contains("worker step")),
+        "{before:#?}"
+    );
+    // A later step of each mount is the next its client runs, after it
+    // reported the reload of the first.
+    assert_eq!(app.publish(logging_step("app.done", "app done")), 2);
+    assert_eq!(
+        worker.publish(logging_step("worker.done", "worker done")),
+        2
+    );
+    for (client, name) in [(&worker_client, "worker"), (&app_client, "app")] {
+        let (before, line) = client.until(&format!("{name} done"));
+        assert_eq!(line, format!("{name} done in {name}"));
+        assert_eq!(before.len(), 1, "{before:#?}");
+        assert!(
+            before[0].starts_with(&format!("light-cljs: reloaded {name}.step in ")),
+            "{before:#?}"
+        );
+    }
+
+    let app_compiler = app.serve_repl("cljs.user");
+    let worker_compiler = worker.serve_repl("cljs.user");
+    let (status, opened) = post_json(&address, "/worker/repl", "{\"op\":\"open\"}");
+    assert_eq!(status, "HTTP/1.1 200 OK", "{opened}");
+    let opened = Json::parse(&opened).unwrap();
+    let session = opened
+        .get("session")
+        .and_then(Json::as_str)
+        .unwrap()
+        .to_owned();
+    let eval =
+        format!("{{\"op\":\"eval\",\"session\":\"{session}\",\"code\":\"js/globalThis.whoami\"}}");
+    let (done, result) = channel();
+    let posting = {
+        let (address, eval) = (address.clone(), eval.clone());
+        std::thread::spawn(move || done.send(post_json(&address, "/worker/repl", &eval)))
+    };
+    let compiler = DevSession::new(&EvalOptions::default()).unwrap();
+    let begun = std::time::Instant::now();
+    let (status, body) = loop {
+        if let Ok(answer) = result.try_recv() {
+            break answer;
+        }
+        assert!(begun.elapsed() < TIMEOUT, "no answer to {eval}");
+        if let Ok(request) = worker_compiler.recv_timeout(Duration::from_millis(10)) {
+            request.answer(&compiler);
+        }
+    };
+    posting.join().unwrap().unwrap();
+    assert_eq!(status, "HTTP/1.1 200 OK", "{body}");
+    assert_eq!(
+        body,
+        "{\"namespace\":\"cljs.user\",\"results\":[{\"warnings\":[],\"value\":\"\\\"worker\\\"\"}]}"
+    );
+    assert!(app_compiler.try_recv().is_err(), "the app compiled a form");
+    // The session is the worker's: the app's endpoint, also at /repl, does
+    // not know it.
+    for path in ["/app/repl", "/repl"] {
+        assert_eq!(
+            post_json(&address, path, &eval),
+            (
+                "HTTP/1.1 404 Not Found".to_owned(),
+                "no such REPL session; open one first\n".to_owned()
+            ),
+            "{path}"
+        );
+    }
+}
+
+/// A mount's name is one URL path segment, and two mounts are not named
+/// alike; a server serves at least one.
+#[test]
+fn mount_names_are_checked() {
+    let dir = TempDir::new("dev-server-mount-names");
+    let mount = |name: &str| Mount {
+        name: name.into(),
+        out_dir: dir.to_path_buf(),
+        build: Build::default(),
+    };
+    for (mounts, message) in [
+        (vec![], "a dev server serves at least one mount"),
+        (
+            vec![mount("")],
+            "a mount's name is one URL path segment, not \"\"",
+        ),
+        (
+            vec![mount("a/b")],
+            "a mount's name is one URL path segment, not \"a/b\"",
+        ),
+        (
+            vec![mount("..")],
+            "a mount's name is one URL path segment, not \"..\"",
+        ),
+        (
+            vec![mount("app"), mount("app")],
+            "two mounts are named \"app\"",
+        ),
+    ] {
+        let error = DevServer::start_mounts("127.0.0.1", 0, mounts, &[])
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), message);
+    }
+}
+
+/// A dev build of examples/features, compiled with today's flags from a
+/// copy, mounted as `features`: every file is served at `/features/` and at
+/// `/` with the same status, headers and bytes, the sources its maps name
+/// are served once, and its client connects from either.
+#[test]
+fn a_features_build_is_served_at_its_prefix_and_at_the_root() {
+    let dir = TempDir::new("dev-server-features");
+    let features = dir.join("features");
+    fs::create_dir_all(features.join("app")).unwrap();
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/features");
+    for entry in fs::read_dir(example.join("app")).unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(entry.path(), features.join("app").join(entry.file_name())).unwrap();
+    }
+    fs::copy(example.join("index.html"), features.join("index.html")).unwrap();
+    let out = features.join("out/dev");
+    let compiled = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .args([
+            "--compile",
+            "--no-cache",
+            "--reloadable",
+            "--entry",
+            "app.main",
+        ])
+        .arg("--source-root")
+        .arg(&features)
+        .arg("--out-dir")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(compiled.status.success(), "{compiled:?}");
+    let server = DevServer::start_mounts(
+        "127.0.0.1",
+        0,
+        vec![Mount {
+            name: "features".into(),
+            out_dir: out.clone(),
+            build: Build::default(),
+        }],
+        std::slice::from_ref(&features),
+    )
+    .unwrap();
+    let address = server.address().to_string();
+    let mut files = fs::read_dir(&out)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    files.sort();
+    assert!(files.contains(&"client.js".to_owned()), "{files:?}");
+    for file in files.iter().map(String::as_str).chain([""]) {
+        let mounted = get(&address, &format!("/features/{file}"));
+        let root = get(&address, &format!("/{file}"));
+        assert_eq!(mounted.status, "HTTP/1.1 200 OK", "{file}");
+        assert_eq!(
+            (&mounted.status, &mounted.headers, &mounted.body),
+            (&root.status, &root.headers, &root.body),
+            "{file}"
+        );
+        if !file.is_empty() {
+            assert_eq!(mounted.body, fs::read_to_string(out.join(file)).unwrap());
+        }
+    }
+    // The maps name ../../app/main.cljs, which resolves from /features/ as
+    // from / to /app/main.cljs.
+    let map = get(&address, "/features/app.main.js.map");
+    assert!(map.body.contains("\"../../app/main.cljs\""), "{}", map.body);
+    let source = get(&address, "/app/main.cljs");
+    assert_eq!(source.status, "HTTP/1.1 200 OK");
+    assert_eq!(
+        source.body,
+        fs::read_to_string(features.join("app/main.cljs")).unwrap()
+    );
+    let mounted = PageClient::load(&address, "/features/", "mounted");
+    let (_, connected) = mounted.until("light-cljs: connected to ");
+    assert_eq!(
+        connected,
+        format!("light-cljs: connected to http://{address}/ as runtime 1")
+    );
+    let root = PageClient::load(&address, "/", "root");
+    let (_, connected) = root.until("light-cljs: connected to ");
+    assert_eq!(
+        connected,
+        format!("light-cljs: connected to http://{address}/ as runtime 2")
+    );
+    assert_eq!(server.mount(MountId(0)).runtimes(), [1, 2]);
+}
+
+/// The status line of `GET path`, an event stream, and its first `count`
+/// messages; the connection then closes.
+fn stream_events(address: &str, path: &str, count: usize) -> (String, Vec<Json>) {
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream.set_read_timeout(Some(TIMEOUT)).unwrap();
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: {address}\r\n\r\n").unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut status = String::new();
+    reader.read_line(&mut status).unwrap();
+    let mut messages = Vec::new();
+    let mut line = String::new();
+    while messages.len() < count {
+        line.clear();
+        assert!(
+            reader.read_line(&mut line).unwrap() > 0,
+            "{path} ended after {messages:?}"
+        );
+        if let Some(data) = line.strip_prefix("data: ") {
+            messages.push(Json::parse(data.trim_end()).unwrap());
+        }
+    }
+    (status.trim_end().to_owned(), messages)
+}
+
+/// A runtime that connects late to one of two mounts catches up with that
+/// mount's build, step and diagnostics alone.
+#[test]
+fn two_mounts_replay_their_own_build_and_diagnostics() {
+    let dir = TempDir::new("dev-server-mount-replay");
+    fs::create_dir(dir.join("app")).unwrap();
+    fs::create_dir(dir.join("worker")).unwrap();
+    let unit = |namespace: &str| LoadUnit {
+        namespace: namespace.into(),
+        file: format!("{namespace}.js"),
+        js: format!("globalThis.__lightDev.define({namespace:?}, [], (rt) => null);\n"),
+        requires: Vec::new(),
+    };
+    let build = |namespaces: &[&str]| Build {
+        units: namespaces.iter().map(|namespace| unit(namespace)).collect(),
+        ..Build::default()
+    };
+    let diagnostic = |message: &str| light_cljs::dev_server::Diagnostic {
+        message: message.into(),
+        ..Default::default()
+    };
+    let server = DevServer::start_mounts(
+        "127.0.0.1",
+        0,
+        vec![
+            Mount {
+                name: "app".into(),
+                out_dir: dir.join("app"),
+                build: build(&["app.a"]),
+            },
+            Mount {
+                name: "worker".into(),
+                out_dir: dir.join("worker"),
+                build: build(&["worker.a"]),
+            },
+        ],
+        &[],
+    )
+    .unwrap();
+    let address = server.address().to_string();
+    let (app, worker) = (server.mount(MountId(0)), server.mount(MountId(1)));
+    assert_eq!(
+        app.publish(Step {
+            error: Some(diagnostic("app broke")),
+            ..Step::default()
+        }),
+        1
+    );
+    for _ in 0..2 {
+        worker.publish(Step::default());
+    }
+    assert_eq!(
+        worker.publish(Step {
+            load: vec![unit("worker.b")],
+            warnings: vec![diagnostic("worker warned")],
+            build: Some(build(&["worker.a", "worker.b"])),
+            ..Step::default()
+        }),
+        3
+    );
+    let summary = |message: &Json| {
+        let text = |key: &str| message.get(key).and_then(Json::as_str).map(str::to_owned);
+        let step = match message.get("step") {
+            Some(Json::Number(step)) => Some(*step as u64),
+            _ => None,
+        };
+        let namespaces = match message.get("units") {
+            Some(Json::Array(units)) => units
+                .iter()
+                .filter_map(|unit| unit.get("namespace").and_then(Json::as_str))
+                .collect::<Vec<_>>()
+                .join(" "),
+            _ => String::new(),
+        };
+        let diagnostic = message
+            .get("error")
+            .or_else(|| match message.get("warnings") {
+                Some(Json::Array(warnings)) => warnings.first(),
+                _ => None,
+            })
+            .and_then(|diagnostic| diagnostic.get("message"))
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        format!(
+            "{} {step:?} {namespaces}{diagnostic}",
+            text("op").unwrap_or_default()
+        )
+    };
+    for (path, runtime, expected) in [
+        (
+            "/worker/events",
+            1,
+            [
+                "load Some(3) worker.a worker.b",
+                "warnings Some(3) worker warned",
+            ],
+        ),
+        (
+            "/app/events",
+            2,
+            ["load Some(1) app.a", "error Some(1) app broke"],
+        ),
+        (
+            "/events",
+            3,
+            ["load Some(1) app.a", "error Some(1) app broke"],
+        ),
+    ] {
+        let (status, messages) = stream_events(&address, path, 3);
+        assert_eq!(status, "HTTP/1.1 200 OK", "{path}");
+        assert_eq!(
+            messages.iter().map(summary).collect::<Vec<_>>(),
+            [
+                "hello None ".to_owned(),
+                expected[0].into(),
+                expected[1].into()
+            ],
+            "{path}"
+        );
+        assert_eq!(
+            messages[0].get("runtime").and_then(Json::as_str),
+            Some(runtime.to_string().as_str()),
+            "{path}"
+        );
+    }
+}
+
+/// A mount named `events`, `reply` or `repl` is served under its prefix,
+/// and the first mount keeps its endpoints of those names at the root.
+#[test]
+fn root_endpoints_survive_matching_mount_names() {
+    let dir = TempDir::new("dev-server-endpoint-names");
+    let mounts = ["app", "events", "reply", "repl"]
+        .into_iter()
+        .map(|name| {
+            fs::create_dir(dir.join(name)).unwrap();
+            fs::write(dir.join(name).join("which.txt"), format!("{name}\n")).unwrap();
+            Mount {
+                name: name.into(),
+                out_dir: dir.join(name),
+                build: Build::default(),
+            }
+        })
+        .collect();
+    let server = DevServer::start_mounts("127.0.0.1", 0, mounts, &[]).unwrap();
+    let address = server.address().to_string();
+    let (status, messages) = stream_events(&address, "/events", 1);
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert_eq!(messages[0].get("op").and_then(Json::as_str), Some("hello"));
+    let (status, _) = stream_events(&address, "/events/events", 1);
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    let reply = "{\"runtime\":\"1\",\"id\":\"1\",\"value\":\"3\"}";
+    for path in ["/reply", "/reply/reply"] {
+        assert_eq!(
+            post_json(&address, path, reply),
+            (
+                "HTTP/1.1 404 Not Found".to_owned(),
+                "no request 1 awaits a reply\n".to_owned()
+            ),
+            "{path}"
+        );
+    }
+    server.serve_repl("cljs.user");
+    let (status, _) = post_json(&address, "/repl", "{\"op\":\"open\"}");
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert_eq!(
+        post_json(&address, "/repl/repl", "{\"op\":\"open\"}"),
+        (
+            "HTTP/1.1 503 Service Unavailable".to_owned(),
+            "this dev server compiles no REPL forms\n".to_owned()
+        )
+    );
+    for name in ["events", "reply", "repl"] {
+        assert_eq!(
+            get(&address, &format!("/{name}/which.txt")).body,
+            format!("{name}\n")
+        );
+    }
+    assert_eq!(server.mount_named("events"), Some(MountId(1)));
+    assert_eq!(server.mount(MountId(1)).runtimes(), Vec::<u64>::new());
 }

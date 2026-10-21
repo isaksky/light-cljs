@@ -718,6 +718,33 @@ named, stopping at the first failure with a nonzero status.
 - **Failures stay in their build.** A compile error in one build is that
   build's overlay and stderr; the other keeps stepping.
 
+As built (light-cljs-405; the server only, tested in `tests/dev_server.rs`):
+`DevServer::start_mounts(host, port, Vec<Mount>, roots)` serves a mount
+table indexed by `MountId(u32)`, dense and in the order given (light-cljs-406
+gives the builds' `BuildId`s the same order). `DevServer::mounts()` and
+`mount(id)` hand out a `DevMount` per build, which a build's thread keeps to
+`publish`, `invoke` and `serve_repl` on its own mount; `DevServer`'s methods of
+the same names act on the first mount. `DevServer::start`, which the
+flag-only `--watch` still calls, is one unnamed mount at `/` alone, so its
+responses are unchanged. Choices the design left open:
+
+- A mount's name is one URL path segment (the build id without its colon);
+  an empty, `.`, `..`, separator-holding or duplicate name is refused.
+- `GET /NAME` answers `301 Moved Permanently` to `/NAME/`, so the built-in
+  page's relative `index.js` resolves inside the mount.
+- A path whose first segment names a mount is that mount's; any other path
+  is the first mount's, and so are `/events`, `/reply` and `/repl` even when
+  a mount has that name (it is served under `/NAME/` alone). Source roots are served once, from the server's
+  root, at the prefix each mount's build directory gives them: a source map
+  under `/NAME/` names its sources with at least one `..`, which resolves
+  past the mount's segment to the same path as from `/`.
+- Runtime IDs are the server's, not the mount's, so an ID names one runtime
+  (for light-cljs-407's `light.dev/runtimes`); each mount counts its own
+  steps, and each has its own REPL sessions, which another mount's
+  `repl` endpoint does not know. nREPL connections, on the `:http` port or
+  `serve_nrepl`'s, have the first mount's sessions until light-cljs-407
+  binds a session to a build.
+
 ## Watching the configuration file
 
 Phase 2 adds `light-cljs.edn` to the watch's poll, as shadow-cljs's

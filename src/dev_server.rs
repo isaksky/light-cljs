@@ -26,6 +26,15 @@
 //!   client's ([`crate::dev_nrepl`]), whose sessions are those of `POST
 //!   /repl`; [`DevServer::serve_nrepl`] adds a port for nREPL alone.
 //!
+//! A server started with [`DevServer::start_mounts`] serves several builds
+//! (docs/build-configuration.md, "Several builds in one process"): each
+//! mount's directory and its `events`, `reply` and `repl` endpoints under
+//! `/NAME/`, and the first mount's also at `/`. Each mount has its own
+//! runtimes, steps and REPL sessions; runtime IDs are the server's. The
+//! source roots are served once, at the paths every mount's source maps
+//! resolve to, and an nREPL connection's sessions are the first mount's.
+//! [`DevServer::start`] serves one unnamed mount at `/` alone.
+//!
 //! JSON is written by hand and read by [`Json::parse`]. The dev client,
 //! `client.js` of a dev build (src/dev_client.js), interprets the messages.
 //! Loopback is the default address, since a connected runtime evaluates what
@@ -45,6 +54,7 @@ use std::fmt::Write as _;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -138,17 +148,63 @@ pub struct Step {
 
 /// A running dev server. Its threads live as long as the process.
 pub struct DevServer {
-    shared: Arc<Shared>,
+    site: Arc<Site>,
     address: SocketAddr,
 }
 
-pub(crate) struct Shared {
-    out_dir: PathBuf,
+/// A mount of a dev server: its index in the server's mount table, which is
+/// dense and in the order the mounts were given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MountId(pub u32);
+
+/// A build for [`DevServer::start_mounts`] to serve under `/NAME/`.
+#[derive(Clone, Debug, Default)]
+pub struct Mount {
+    /// One URL path segment: the build's id.
+    pub name: String,
+    /// The build directory.
+    pub out_dir: PathBuf,
+    /// The build as a runtime that connects first catches up with it.
+    pub build: Build,
+}
+
+/// One mount of a running server, whose steps, invokes and REPL forms reach
+/// only the runtimes connected to its own event stream. It may go to another
+/// thread and outlive the server, after which it reaches no runtime.
+#[derive(Clone)]
+pub struct DevMount {
+    id: MountId,
+    shared: Arc<Shared>,
+}
+
+/// What the mounts of a server share: the mount table, the source roots and
+/// the listeners.
+struct Site {
+    /// The mounts by [`MountId`].
+    mounts: Vec<Arc<Shared>>,
+    /// The names of the named mounts with their IDs, sorted by name.
+    names: Vec<(String, MountId)>,
     /// Each source root with the URL path segments its files are served
-    /// under.
+    /// under, from the server's root, whichever mount's source map names
+    /// them.
     roots: Vec<(PathBuf, Vec<String>)>,
     /// Whether to answer only requests for a loopback `Host`.
     loopback: bool,
+    /// Whether the server was dropped: it accepts no more connections.
+    stopped: AtomicBool,
+    /// The addresses of the server's further listeners, which a drop wakes.
+    listeners: Mutex<Vec<SocketAddr>>,
+}
+
+/// A mount: its build directory, and its build, runtimes and REPL sessions.
+pub(crate) struct Shared {
+    /// The name the mount is served under, `/NAME/`; none for the one mount
+    /// of [`DevServer::start`], served at `/` alone.
+    name: Option<String>,
+    out_dir: PathBuf,
+    /// The next runtime ID, which every mount of the server draws from, so
+    /// that an ID names one runtime of the server.
+    runtime_ids: Arc<AtomicU64>,
     state: Mutex<State>,
 }
 
@@ -159,7 +215,6 @@ struct State {
     /// The last step's `warnings` and `error` messages, which a runtime
     /// receives when it connects.
     diagnostics: Vec<String>,
-    next_runtime: u64,
     /// The connected runtimes, oldest first, with the senders of their
     /// streams.
     runtimes: Vec<(u64, Sender<String>)>,
@@ -169,7 +224,7 @@ struct State {
     /// The requests awaiting a reply, by request ID: the runtime asked and
     /// the requester's sender.
     pending: HashMap<String, (u64, Sender<Json>)>,
-    /// Whether the server was dropped: it accepts no more connections.
+    /// Whether the server was dropped: the mount connects no more runtimes.
     stopped: bool,
     /// Where `POST /repl` sends forms to compile, and the namespace a new
     /// REPL session starts in, once [`DevServer::serve_repl`] was called.
@@ -183,8 +238,6 @@ struct State {
     /// The newest REPL units sent, whose locations error stacks map.
     sent: VecDeque<SentUnit>,
     next_unit: u64,
-    /// The addresses of the server's further listeners, which a drop wakes.
-    listeners: Vec<SocketAddr>,
 }
 
 /// A connected REPL's session: its current namespace, and the runtime it
@@ -240,7 +293,7 @@ const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 impl DevServer {
     /// Listen on `host` and `port` (0 for any free port) and serve the dev
     /// build in `out_dir`, whose units' source maps name sources under
-    /// `roots`, starting from `build`.
+    /// `roots`, starting from `build`: one mount, unnamed, at `/`.
     pub fn start(
         host: &str,
         port: u16,
@@ -248,53 +301,133 @@ impl DevServer {
         roots: &[PathBuf],
         build: Build,
     ) -> io::Result<Self> {
-        let out_dir = std::fs::canonicalize(out_dir)?;
-        let roots = roots
-            .iter()
-            .filter_map(|root| {
-                let root = std::fs::canonicalize(root).ok()?;
-                let prefix = served_prefix(&root, &out_dir)?;
-                Some((root, prefix))
-            })
+        Self::listen(
+            host,
+            port,
+            vec![(None, out_dir.to_path_buf(), build)],
+            roots,
+        )
+    }
+
+    /// Listen on `host` and `port` (0 for any free port) and serve each of
+    /// `mounts`, whose units' source maps name sources under `roots`: its
+    /// build directory and its event, reply and REPL endpoints under
+    /// `/NAME/`, and the first mount's also at `/`. The source roots are
+    /// served once, at the paths every mount's source maps resolve to. The
+    /// mounts' IDs follow their order, from `MountId(0)`.
+    pub fn start_mounts(
+        host: &str,
+        port: u16,
+        mounts: Vec<Mount>,
+        roots: &[PathBuf],
+    ) -> io::Result<Self> {
+        let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+        if mounts.is_empty() {
+            return Err(invalid("a dev server serves at least one mount".into()));
+        }
+        for (index, mount) in mounts.iter().enumerate() {
+            if !plain_segment(&mount.name) {
+                return Err(invalid(format!(
+                    "a mount's name is one URL path segment, not {:?}",
+                    mount.name
+                )));
+            }
+            if mounts[..index].iter().any(|other| other.name == mount.name) {
+                return Err(invalid(format!("two mounts are named {:?}", mount.name)));
+            }
+        }
+        let mounts = mounts
+            .into_iter()
+            .map(|mount| (Some(mount.name), mount.out_dir, mount.build))
             .collect();
+        Self::listen(host, port, mounts, roots)
+    }
+
+    /// Serve `mounts`, each a name (none for the unnamed mount), a build
+    /// directory and a build.
+    fn listen(
+        host: &str,
+        port: u16,
+        mounts: Vec<(Option<String>, PathBuf, Build)>,
+        roots: &[PathBuf],
+    ) -> io::Result<Self> {
+        let runtime_ids = Arc::new(AtomicU64::new(1));
+        let mut table = Vec::with_capacity(mounts.len());
+        for (name, out_dir, build) in mounts {
+            table.push(Arc::new(Shared {
+                name,
+                out_dir: std::fs::canonicalize(out_dir)?,
+                runtime_ids: runtime_ids.clone(),
+                state: Mutex::new(State {
+                    build,
+                    step: 0,
+                    diagnostics: Vec::new(),
+                    runtimes: Vec::new(),
+                    agents: HashMap::new(),
+                    next_request: 1,
+                    pending: HashMap::new(),
+                    stopped: false,
+                    compiler: None,
+                    sessions: HashMap::new(),
+                    next_session: 1,
+                    incarnation: incarnation(),
+                    sent: VecDeque::new(),
+                    next_unit: 1,
+                }),
+            }));
+        }
+        // A root's files are served where a source map of any mount names
+        // them, which differs between build directories at different depths.
+        let mut served = Vec::new();
+        for root in roots {
+            let Ok(root) = std::fs::canonicalize(root) else {
+                continue;
+            };
+            for mount in &table {
+                if let Some(prefix) = served_prefix(&root, &mount.out_dir) {
+                    let entry = (root.clone(), prefix);
+                    if !served.contains(&entry) {
+                        served.push(entry);
+                    }
+                }
+            }
+        }
+        let mut names = table
+            .iter()
+            .enumerate()
+            .filter_map(|(index, mount)| Some((mount.name.clone()?, MountId(index as u32))))
+            .collect::<Vec<_>>();
+        names.sort_unstable();
         let addresses = (host, port).to_socket_addrs()?.collect::<Vec<_>>();
         let listener = TcpListener::bind(&addresses[..])?;
         let address = listener.local_addr()?;
-        let shared = Arc::new(Shared {
-            out_dir,
-            roots,
+        let site = Arc::new(Site {
+            mounts: table,
+            names,
+            roots: served,
             loopback: address.ip().is_loopback(),
-            state: Mutex::new(State {
-                build,
-                step: 0,
-                diagnostics: Vec::new(),
-                next_runtime: 1,
-                runtimes: Vec::new(),
-                agents: HashMap::new(),
-                next_request: 1,
-                pending: HashMap::new(),
-                stopped: false,
-                compiler: None,
-                sessions: HashMap::new(),
-                next_session: 1,
-                incarnation: incarnation(),
-                sent: VecDeque::new(),
-                next_unit: 1,
-                listeners: Vec::new(),
-            }),
+            stopped: AtomicBool::new(false),
+            listeners: Mutex::new(Vec::new()),
         });
-        accept(listener, &shared, connection)?;
-        Ok(Self { shared, address })
+        accept(listener, &site, connection)?;
+        Ok(Self { site, address })
     }
 
     /// Also answer nREPL on `host` and `port` (0 for any free port), as the
-    /// server's own port does: the address it listens on.
+    /// server's own port does: the address it listens on. Its sessions are
+    /// the first mount's.
     pub fn serve_nrepl(&self, host: &str, port: u16) -> io::Result<SocketAddr> {
         let addresses = (host, port).to_socket_addrs()?.collect::<Vec<_>>();
         let listener = TcpListener::bind(&addresses[..])?;
         let address = listener.local_addr()?;
-        self.shared.state().listeners.push(address);
-        accept(listener, &self.shared, crate::dev_nrepl::connection)?;
+        self.site
+            .listeners
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(address);
+        accept(listener, &self.site, |stream, site| {
+            crate::dev_nrepl::connection(stream, &site.mounts[0])
+        })?;
         Ok(address)
     }
 
@@ -303,21 +436,141 @@ impl DevServer {
         self.address
     }
 
-    /// The IDs of the connected runtimes, oldest first.
-    pub fn runtimes(&self) -> Vec<u64> {
-        self.shared
-            .state()
-            .runtimes
-            .iter()
-            .map(|(id, _)| *id)
+    /// The mount table: every mount, in [`MountId`] order.
+    pub fn mounts(&self) -> Vec<DevMount> {
+        (0..self.site.mounts.len())
+            .map(|index| self.mount(MountId(index as u32)))
             .collect()
     }
 
-    /// Send the messages of a step to every connected runtime, in the order
-    /// `warnings`, `error`, `load`, and keep its build and diagnostics for
-    /// runtimes that connect later. Returns the step's number.
+    /// The mount `id`.
+    ///
+    /// # Panics
+    ///
+    /// When the server has no mount `id`.
+    pub fn mount(&self, id: MountId) -> DevMount {
+        DevMount {
+            id,
+            shared: self.site.mounts[id.0 as usize].clone(),
+        }
+    }
+
+    /// The mount served under `/NAME/`.
+    pub fn mount_named(&self, name: &str) -> Option<MountId> {
+        self.site.mount_named(name)
+    }
+
+    /// The IDs of the runtimes connected to the first mount, oldest first.
+    pub fn runtimes(&self) -> Vec<u64> {
+        self.site.mounts[0].runtimes()
+    }
+
+    /// [`DevMount::publish`] on the first mount.
     pub fn publish(&self, step: Step) -> u64 {
-        let mut state = self.shared.state();
+        self.site.mounts[0].publish(step)
+    }
+
+    /// [`DevMount::invoke`] on the first mount.
+    pub fn invoke(
+        &self,
+        runtime: Option<u64>,
+        unit: &crate::dev_session::Unit,
+        print: &PrintOptions,
+    ) -> Result<Invocation, String> {
+        self.site.mounts[0].invoke(runtime, unit, print)
+    }
+
+    /// [`DevMount::serve_repl`] on the first mount.
+    pub fn serve_repl(&self, namespace: &str) -> Receiver<ReplRequest> {
+        self.site.mounts[0].serve_repl(namespace)
+    }
+}
+
+impl DevMount {
+    /// Its index in the server's mount table.
+    pub fn id(&self) -> MountId {
+        self.id
+    }
+
+    /// The name it is served under, `/NAME/`; none for the one mount of
+    /// [`DevServer::start`].
+    pub fn name(&self) -> Option<&str> {
+        self.shared.name.as_deref()
+    }
+
+    /// The IDs of the runtimes connected to its event stream, oldest first.
+    pub fn runtimes(&self) -> Vec<u64> {
+        self.shared.runtimes()
+    }
+
+    /// Send the messages of a step to every runtime connected to it, in the
+    /// order `warnings`, `error`, `load`, and keep its build and diagnostics
+    /// for runtimes that connect later. Returns the step's number, which
+    /// counts the mount's steps.
+    pub fn publish(&self, step: Step) -> u64 {
+        self.shared.publish(step)
+    }
+
+    /// Send `unit`, a REPL form's unit, to the runtime `runtime` of the
+    /// mount, or to its most recently connected one, to evaluate in its
+    /// namespace and reply with the value printed by `pr-str` under `print`,
+    /// or with the error it threw.
+    pub fn invoke(
+        &self,
+        runtime: Option<u64>,
+        unit: &crate::dev_session::Unit,
+        print: &PrintOptions,
+    ) -> Result<Invocation, String> {
+        self.shared.invoke(runtime, unit, print)
+    }
+
+    /// Answer its `POST /repl` (under its prefix) from now on, the connected
+    /// REPL's endpoint (docs/evaluation.md, "Connected REPL"): its sessions
+    /// start in `namespace`, and the forms they send come out of the
+    /// receiver, for the thread that owns the mount's compiler to answer
+    /// with [`ReplRequest::compile`]. Until this is called, the endpoint
+    /// answers `503 Service Unavailable`.
+    pub fn serve_repl(&self, namespace: &str) -> Receiver<ReplRequest> {
+        self.shared.serve_repl(namespace)
+    }
+}
+
+impl Site {
+    /// The mount served under `/NAME/`.
+    fn mount_named(&self, name: &str) -> Option<MountId> {
+        self.names
+            .binary_search_by(|(known, _)| known.as_str().cmp(name))
+            .ok()
+            .map(|index| self.names[index].1)
+    }
+
+    /// The mount a request path names, and the path within it: the named
+    /// mount whose name is the path's first segment, with the rest of the
+    /// path (empty for `/NAME` itself), else the first mount with the whole
+    /// path. The first mount's endpoints at the root, `/events`, `/reply`
+    /// and `/repl`, stay its own when a mount has the same name, which is
+    /// served under `/NAME/` alone.
+    fn route<'p>(&self, path: &'p str) -> (&Arc<Shared>, &'p str) {
+        if !self.names.is_empty()
+            && !matches!(path, "/events" | "/reply" | "/repl")
+            && let Some(rest) = path.strip_prefix('/')
+        {
+            let (segment, rest) = rest.find('/').map_or((rest, ""), |at| rest.split_at(at));
+            if let Some(id) = percent_decode(segment).and_then(|name| self.mount_named(&name)) {
+                return (&self.mounts[id.0 as usize], rest);
+            }
+        }
+        (&self.mounts[0], path)
+    }
+}
+
+impl Shared {
+    fn runtimes(&self) -> Vec<u64> {
+        self.state().runtimes.iter().map(|(id, _)| *id).collect()
+    }
+
+    fn publish(&self, step: Step) -> u64 {
+        let mut state = self.state();
         state.step += 1;
         let number = state.step;
         let mut diagnostics = Vec::new();
@@ -352,17 +605,13 @@ impl DevServer {
         number
     }
 
-    /// Send `unit`, a REPL form's unit, to the runtime `runtime`, or to the
-    /// most recently connected one, to evaluate in its namespace and reply
-    /// with the value printed by `pr-str` under `print`, or with the error
-    /// it threw.
-    pub fn invoke(
+    fn invoke(
         &self,
         runtime: Option<u64>,
         unit: &crate::dev_session::Unit,
         print: &PrintOptions,
     ) -> Result<Invocation, String> {
-        let mut state = self.shared.state();
+        let mut state = self.state();
         let target = state.target(runtime)?;
         state.send_invoke(
             target,
@@ -376,15 +625,9 @@ impl DevServer {
         )
     }
 
-    /// Answer `POST /repl` from now on, the connected REPL's endpoint
-    /// (docs/evaluation.md, "Connected REPL"): its sessions start in
-    /// `namespace`, and the forms they send come out of the receiver, for
-    /// the thread that owns the compiler to answer with
-    /// [`ReplRequest::compile`]. Until this is called, the endpoint answers
-    /// `503 Service Unavailable`.
-    pub fn serve_repl(&self, namespace: &str) -> Receiver<ReplRequest> {
+    fn serve_repl(&self, namespace: &str) -> Receiver<ReplRequest> {
         let (sender, receiver) = channel();
-        self.shared.state().compiler = Some((sender, namespace.to_owned()));
+        self.state().compiler = Some((sender, namespace.to_owned()));
         receiver
     }
 }
@@ -404,14 +647,22 @@ impl Drop for DevServer {
     /// Stop listening and end every runtime's stream, so that a client
     /// connects again (to a server started on the port later, say).
     fn drop(&mut self) {
-        let mut state = self.shared.state();
-        state.stopped = true;
-        for (_, sender) in state.runtimes.drain(..) {
-            let _ = sender.send(String::new());
+        self.site.stopped.store(true, Ordering::SeqCst);
+        for mount in &self.site.mounts {
+            let mut state = mount.state();
+            state.stopped = true;
+            for (_, sender) in state.runtimes.drain(..) {
+                let _ = sender.send(String::new());
+            }
+            state.pending.clear();
         }
-        state.pending.clear();
-        let mut listeners = std::mem::take(&mut state.listeners);
-        drop(state);
+        let mut listeners = std::mem::take(
+            &mut *self
+                .site
+                .listeners
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
         // Wake the accepting threads, which see `stopped` and drop their
         // listeners.
         listeners.push(self.address);
@@ -431,23 +682,23 @@ impl Drop for DevServer {
 /// on a thread of its own, until the server stops.
 fn accept(
     listener: TcpListener,
-    shared: &Arc<Shared>,
-    serve: fn(TcpStream, &Arc<Shared>) -> io::Result<()>,
+    site: &Arc<Site>,
+    serve: fn(TcpStream, &Arc<Site>) -> io::Result<()>,
 ) -> io::Result<()> {
-    let accepting = shared.clone();
+    let accepting = site.clone();
     std::thread::Builder::new()
         .name("light-cljs dev server".into())
         .spawn(move || {
             for stream in listener.incoming() {
-                if accepting.state().stopped {
+                if accepting.stopped.load(Ordering::SeqCst) {
                     break;
                 }
                 let Ok(stream) = stream else { continue };
-                let shared = accepting.clone();
+                let site = accepting.clone();
                 let _ = std::thread::Builder::new()
                     .name("light-cljs dev connection".into())
                     .spawn(move || {
-                        let _ = serve(stream, &shared);
+                        let _ = serve(stream, &site);
                     });
             }
         })?;
@@ -916,7 +1167,7 @@ fn respond_text(stream: &mut TcpStream, status: &str, text: &str) -> io::Result<
 
 /// Serve one connection: one request, then close, except that an event
 /// stream stays open until the runtime goes away.
-fn connection(stream: TcpStream, shared: &Arc<Shared>) -> io::Result<()> {
+fn connection(stream: TcpStream, site: &Arc<Site>) -> io::Result<()> {
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     // A peer that stops reading (a frozen tab) ends its connection rather
     // than holding the thread that writes to it.
@@ -930,7 +1181,7 @@ fn connection(stream: TcpStream, shared: &Arc<Shared>) -> io::Result<()> {
     // in capitals, and the server answers no preflight.
     let mut first = [0; 1];
     if stream.peek(&mut first)? == 1 && first[0] == b'd' {
-        return crate::dev_nrepl::connection(stream, shared);
+        return crate::dev_nrepl::connection(stream, &site.mounts[0]);
     }
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
@@ -939,7 +1190,7 @@ fn connection(stream: TcpStream, shared: &Arc<Shared>) -> io::Result<()> {
         Ok(None) => return Ok(()),
         Err(error) => return respond_text(&mut writer, "400 Bad Request", &error.to_string()),
     };
-    if shared.loopback && !request.header("host").is_some_and(loopback_host) {
+    if site.loopback && !request.header("host").is_some_and(loopback_host) {
         return respond_text(
             &mut writer,
             "403 Forbidden",
@@ -953,11 +1204,37 @@ fn connection(stream: TcpStream, shared: &Arc<Shared>) -> io::Result<()> {
         .unwrap_or_default()
         .to_owned();
     let head_only = request.method == "HEAD";
-    match (request.method.as_str(), path.as_str()) {
+    // A mount's endpoints and files are under its prefix; the first mount's
+    // are also at the root.
+    let (shared, within) = site.route(&path);
+    match (request.method.as_str(), within) {
+        ("GET" | "HEAD", "") if !path.is_empty() => {
+            // `/NAME` is the directory `/NAME/`, against which its page's
+            // relative URLs resolve.
+            let location = format!("{path}/{}", &request.target[path.len()..]);
+            respond(
+                &mut writer,
+                "301 Moved Permanently",
+                &[
+                    ("Location", location.as_str()),
+                    ("Content-Type", "text/plain; charset=utf-8"),
+                ],
+                format!("{location}\n").as_bytes(),
+                head_only,
+            )
+        }
         ("GET", "/events") => events(writer, shared, &request),
         ("POST", "/reply") => reply(&mut writer, shared, &request),
         ("POST", "/repl") => repl(&mut writer, shared, &request),
-        ("GET" | "HEAD", _) => file(&mut writer, shared, &request, &path, head_only),
+        ("GET" | "HEAD", _) => file(
+            &mut writer,
+            site,
+            shared,
+            &request,
+            &path,
+            within,
+            head_only,
+        ),
         (_, "/reply") => respond_text(&mut writer, "405 Method Not Allowed", "POST a reply"),
         (_, "/repl") => respond_text(&mut writer, "405 Method Not Allowed", "POST a REPL request"),
         _ => respond_text(
@@ -1003,8 +1280,7 @@ fn events(mut stream: TcpStream, shared: &Shared, request: &Request) -> io::Resu
             drop(state);
             return respond_text(&mut stream, "503 Service Unavailable", "the server stopped");
         }
-        let runtime = state.next_runtime;
-        state.next_runtime += 1;
+        let runtime = shared.runtime_ids.fetch_add(1, Ordering::Relaxed);
         let mut first = event(&format!("{{\"op\":\"hello\",\"runtime\":\"{runtime}\"}}"));
         if !state.build.units.is_empty() {
             first.push_str(&event(&load_message(
@@ -1699,15 +1975,19 @@ fn invoke_form(
     Ok((value, reference))
 }
 
-/// `GET` of a file of the build directory or a source root, or of `/`.
+/// `GET` of a file of a mount's build directory or of a source root, or of
+/// a mount's `/`: `path` is the request's, `within` the part of it within
+/// the mount.
 fn file(
     stream: &mut TcpStream,
+    site: &Site,
     shared: &Shared,
     request: &Request,
     path: &str,
+    within: &str,
     head_only: bool,
 ) -> io::Result<()> {
-    let found = if path == "/" || path == "/index.html" {
+    let found = if within == "/" || within == "/index.html" {
         let page = shared.out_dir.join("index.html");
         if page.is_file() {
             Some(page)
@@ -1721,7 +2001,7 @@ fn file(
             );
         }
     } else {
-        resolve(shared, path)
+        resolve(site, shared, path, within)
     };
     let Some(found) = found else {
         return respond_text(stream, "404 Not Found", &format!("no file {path}"));
@@ -1766,36 +2046,49 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     })
 }
 
-/// The file a request path names: under the build directory, or else under
-/// a source root at its served prefix. A path with an empty, `.` or `..`
-/// segment, or a segment that is not a plain file name, names nothing.
-fn resolve(shared: &Shared, path: &str) -> Option<PathBuf> {
-    let segments = path
-        .strip_prefix('/')?
-        .split('/')
-        .map(percent_decode)
-        .collect::<Option<Vec<_>>>()?;
-    if segments.iter().any(|segment| {
-        segment.is_empty()
-            || segment == "."
-            || segment == ".."
-            || segment.contains(['/', '\\', '\0', ':'])
-    }) {
-        return None;
-    }
+/// The file a request path names: `within`, the part of `path` within the
+/// mount, under the mount's build directory, or else the whole path under a
+/// source root at its served prefix, where every mount's source maps name
+/// it. A path with an empty, `.` or `..` segment, or a segment that is not a
+/// plain file name, names nothing.
+fn resolve(site: &Site, shared: &Shared, path: &str, within: &str) -> Option<PathBuf> {
     let join = |base: &Path, segments: &[String]| {
         let mut path = base.to_path_buf();
         path.extend(segments);
         path.is_file().then_some(path)
     };
-    join(&shared.out_dir, &segments).or_else(|| {
-        shared.roots.iter().find_map(|(root, prefix)| {
+    join(&shared.out_dir, &segments(within)?).or_else(|| {
+        let segments = segments(path)?;
+        site.roots.iter().find_map(|(root, prefix)| {
             segments
                 .strip_prefix(prefix.as_slice())
                 .filter(|rest| !rest.is_empty())
                 .and_then(|rest| join(root, rest))
         })
     })
+}
+
+/// The percent-decoded segments of a request path, when every one is a
+/// plain file name.
+fn segments(path: &str) -> Option<Vec<String>> {
+    let segments = path
+        .strip_prefix('/')?
+        .split('/')
+        .map(percent_decode)
+        .collect::<Option<Vec<_>>>()?;
+    segments
+        .iter()
+        .all(|segment| plain_segment(segment))
+        .then_some(segments)
+}
+
+/// Whether `segment` names a file in a directory: not empty, `.` or `..`,
+/// and without a separator, a drive's colon or a NUL.
+fn plain_segment(segment: &str) -> bool {
+    !(segment.is_empty()
+        || segment == "."
+        || segment == ".."
+        || segment.contains(['/', '\\', '\0', ':']))
 }
 
 fn percent_decode(segment: &str) -> Option<String> {
