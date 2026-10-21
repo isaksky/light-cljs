@@ -153,6 +153,8 @@ struct CommandFlags {
     checked_arrays: Option<CheckedArrays>,
     /// `--config-merge DATA`, in order.
     merges: Vec<String>,
+    /// `--print-config`: print each build's configuration instead of building.
+    print: bool,
 }
 
 /// Run `command` with the arguments after it.
@@ -257,6 +259,23 @@ pub(crate) fn run(
             translate(&file, settings, command, &flags).map_err(|error| failure(words, error))
         })
         .collect::<Result<Vec<_>, _>>()?;
+
+    // `--print-config`: every check above has passed, and nothing compiles,
+    // writes or opens the cache.
+    if flags.print {
+        let mut out = String::new();
+        for (index, settings) in settings.into_iter().enumerate() {
+            let mut settings = settings;
+            apply_flags(&file, &mut settings, &merges, command, &flags)
+                .map_err(|error| failure(words, error))?;
+            if index > 0 {
+                out.push('\n');
+            }
+            out.push_str(&file.print_config(&settings, &merges, false));
+        }
+        print!("{out}");
+        return Ok(());
+    }
 
     eprintln!("light-cljs - config: {}", path.display());
     for (settings, (namespace, options, compile)) in settings.iter().zip(translated) {
@@ -367,6 +386,7 @@ fn command_flags(
                 ));
             }
             "--warnings" => flags.warnings = true,
+            "--print-config" => flags.print = true,
             "--checked-arrays-warn" => flags.checked_arrays = Some(CheckedArrays::Warn),
             "--checked-arrays-error" => flags.checked_arrays = Some(CheckedArrays::Error),
             flag => {
@@ -616,6 +636,226 @@ fn define_text(value: &Value) -> String {
     match &value.kind {
         ValueKind::String(text) => text.clone(),
         _ => value.to_edn(),
+    }
+}
+
+/// Write the flags after the command over `settings` (layer 6), as
+/// [`translate`] applies them, for `--print-config`: each flag the file can
+/// express replaces its setting, or its entry of `:config` and
+/// `:closure-defines`, with the flag as its origin; `--cache-blocker` adds to
+/// the build's blockers. `--stats`, `--stats-file` and `--size-report`
+/// report on one run and are not in the file ("Not in the file").
+fn apply_flags(
+    file: &ConfigFile,
+    settings: &mut BuildSettings,
+    merges: &[ConfigMerge],
+    command: Command,
+    flags: &CommandFlags,
+) -> Result<(), String> {
+    let user = &flags.compile;
+    let string = |text: String| Value::from(ValueKind::String(text));
+    let integer = |number: u128| ValueKind::Number {
+        kind: light_cljs::parser::NumberKind::Integer,
+        text: number.to_string(),
+    };
+    let named = |name: &str| ValueKind::Keyword(name.to_owned());
+
+    let roots = &flags.namespace.roots;
+    if !roots.is_empty() {
+        let typed = roots
+            .iter()
+            .map(|root| format!("--source-root {}", root.display()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let paths = roots
+            .iter()
+            .map(|root| string(root.display().to_string()))
+            .collect();
+        settings.set_by_flag(Setting::SourcePaths, ValueKind::Vector(paths), &typed);
+    }
+    if let Some(namespace) = &flags.namespace.entry {
+        // The module keeps the file's id; only its entry is the flag's.
+        let module = entries(settings, Setting::Modules)
+            .first()
+            .and_then(|(id, _)| id.as_keyword())
+            .unwrap_or("main")
+            .to_owned();
+        let entries = ValueKind::Vector(vec![Value::from(ValueKind::Symbol(namespace.clone()))]);
+        let module = ValueKind::Map(vec![(
+            Value::from(named(&module)),
+            Value::from(ValueKind::Map(vec![(
+                Value::from(named("entries")),
+                Value::from(entries),
+            )])),
+        )]);
+        settings.set_by_flag(Setting::Modules, module, &format!("--entry {namespace}"));
+    }
+    if let Some(dir) = &flags.namespace.out_dir {
+        settings.set_by_flag(
+            Setting::OutputDir,
+            ValueKind::String(dir.display().to_string()),
+            &format!("--out-dir {}", dir.display()),
+        );
+    }
+    if command == Command::Release {
+        if user.optimize {
+            settings.set_by_flag(
+                Setting::Optimizations,
+                named(user.level.name()),
+                &format!("--optimize {}", user.level),
+            );
+        }
+        if user.pseudo_names {
+            settings.set_by_flag(
+                Setting::PseudoNames,
+                ValueKind::Boolean(true),
+                "--pseudo-names",
+            );
+        }
+        for text in &user.defines {
+            let (name, value) = text.split_once('=').unwrap_or((text, ""));
+            settings.set_entry_by_flag(
+                file,
+                merges,
+                Setting::ClosureDefines,
+                Value::from(ValueKind::Symbol(name.to_owned())),
+                define_value(value),
+                &format!("--define {text}"),
+            );
+        }
+        if flags.warnings {
+            settings.set_by_flag(
+                Setting::CljsWarnings,
+                ValueKind::Boolean(true),
+                "--warnings",
+            );
+        }
+        let checks = match flags.checked_arrays {
+            Some(CheckedArrays::Warn) => Some(("warn", "--checked-arrays-warn")),
+            Some(CheckedArrays::Error) => Some(("error", "--checked-arrays-error")),
+            Some(CheckedArrays::Off) | None => None,
+        };
+        if let Some((name, flag)) = checks {
+            settings.set_by_flag(Setting::CheckedArrays, named(name), flag);
+        }
+    }
+    if user.elide_asserts {
+        settings.set_by_flag(
+            Setting::ElideAsserts,
+            ValueKind::Boolean(true),
+            "--elide-asserts",
+        );
+    }
+    let limits = &user.macro_limits;
+    for (setting, flag, value) in [
+        (
+            Setting::MacroExpansions,
+            "--macro-expansions",
+            limits.expansions.map(|n| n as u128),
+        ),
+        (
+            Setting::MacroNodes,
+            "--macro-nodes",
+            limits.nodes.map(|n| n as u128),
+        ),
+        (
+            Setting::MacroTimeoutMs,
+            "--macro-timeout-ms",
+            limits.timeout_ms.map(u128::from),
+        ),
+        (
+            Setting::MacroMemoryLimit,
+            "--macro-memory-limit",
+            limits.memory_limit.map(|n| n as u128),
+        ),
+        (
+            Setting::MacroPollBudget,
+            "--macro-poll-budget",
+            limits.poll_budget.map(u128::from),
+        ),
+    ] {
+        if let Some(value) = value {
+            settings.set_by_flag(setting, integer(value), &format!("{flag} {value}"));
+        }
+    }
+    if flags.jobs {
+        let jobs = user.jobs.get();
+        settings.set_by_flag(
+            Setting::CompileThreads,
+            integer(jobs as u128),
+            &format!("--jobs {jobs}"),
+        );
+    }
+    for (key, text) in user.configuration.entries() {
+        let value =
+            Value::parse(text).map_err(|error| format!("--config {key}={text}: {error}"))?;
+        settings.set_entry_by_flag(
+            file,
+            merges,
+            Setting::Config,
+            Value::from(named(key)),
+            value,
+            &format!("--config {key}={text}"),
+        );
+    }
+    if user.no_cache {
+        settings.set_by_flag(Setting::CacheLevel, named("off"), "--no-cache");
+    } else if let Some(dir) = &user.cache_dir {
+        let flag = format!("--cache-dir {}", dir.display());
+        // A store named `cache` is `:cache-root`'s, its parent; any other
+        // store the file cannot name, so it cannot print.
+        match (dir.file_name(), dir.parent()) {
+            (Some(name), Some(parent)) if name == "cache" => {
+                let root = match parent.as_os_str().is_empty() {
+                    true => ".".to_owned(),
+                    false => parent.display().to_string(),
+                };
+                settings.set_by_flag(Setting::CacheRoot, ValueKind::String(root), &flag);
+            }
+            _ => {
+                return Err(format!(
+                    "{flag}: a light-cljs.edn names its store as :cache-root's cache \
+                     directory, which {} is not, so --print-config cannot print it; give \
+                     --cache-dir a directory named cache",
+                    dir.display()
+                ));
+            }
+        }
+        if keyword(settings, Setting::CacheLevel) == Some("off") {
+            settings.set_by_flag(Setting::CacheLevel, named("all"), &flag);
+        }
+    }
+    if !user.cache_blockers.is_empty() {
+        let blockers = user
+            .cache_blockers
+            .iter()
+            .map(|blocker| Value::from(ValueKind::Symbol(blocker.clone())))
+            .collect();
+        settings.add_by_flag(Setting::BuildCacheBlockers, "--cache-blocker", blockers);
+    }
+    Ok(())
+}
+
+/// A `--define NS/NAME=VALUE`'s VALUE as the file would write it: a boolean
+/// or a decimal number as itself, anything else as a string. Each gives
+/// [`define_text`] the flag's text back, so the goog-define's own type still
+/// decides.
+fn define_value(text: &str) -> Value {
+    match Value::parse(text) {
+        Ok(value)
+            if matches!(
+                value.kind,
+                ValueKind::Boolean(_)
+                    | ValueKind::Number {
+                        kind: light_cljs::parser::NumberKind::Integer
+                            | light_cljs::parser::NumberKind::Float,
+                        ..
+                    }
+            ) && value.to_edn() == text =>
+        {
+            value
+        }
+        _ => Value::from(ValueKind::String(text.to_owned())),
     }
 }
 

@@ -10,4 +10,5 @@ mod temp_dir;
 mod commands;
 mod equivalence;
 mod merge;
+mod print_config;
 mod reader;

@@ -519,6 +519,22 @@ and `--esm`, the source map flags and `--watch`'s flags are refused. A
 command that starts with a flag never reads `light-cljs.edn`; a file named
 `compile` or `release` is tokenized when written `./compile`.
 
+`--print-config` after the ids prints, for each build, the configuration the
+command would run with instead of building it, and writes nothing: EDN a
+`light-cljs.edn` could hold, the top-level settings the command reads and the
+build with its layers and the flags merged, each value's origin in a comment.
+It is how to check which layer won:
+
+```sh
+cargo run --quiet -- release features --optimize none --print-config
+# ;; build :features, release mode, from /work/light-cljs/examples/features/light-cljs.edn
+# {:source-paths ["."]                                 ; light-cljs.edn:7:16
+#  :cache-root ".light-cljs"                           ; default
+#  ...
+#    :compiler-options {:optimizations :none           ; --optimize none, over the release default :advanced
+#    :build-options {:cache-level :all}}}}             ; default
+```
+
 ### Inspect intermediate stages
 
 ```sh

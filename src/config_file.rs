@@ -28,6 +28,8 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+mod print_config;
+
 use crate::BuildConfiguration;
 use crate::parser::{
     CollectionKind, LineIndex, Node, NodeId, NodeKind, NumberKind, Parser, PrefixKind,
@@ -46,13 +48,16 @@ pub const ENVIRONMENT_TAG: &str = "light-cljs/env";
 pub const ENVIRONMENT_VARIABLE: &str = "LIGHT_CLJS";
 
 /// Where a value was written: the file, `LIGHT_CLJS`, the Nth
-/// `--config-merge` (from 1), or nowhere, a built-in default.
+/// `--config-merge` (from 1), nowhere (a built-in default), or a flag on
+/// the command line, layer 6: the Nth (from 0) a build's
+/// [`BuildSettings`] took ([`BuildSettings::set_by_flag`]).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum ConfigSource {
     Default,
     File,
     LightCljs,
     ConfigMerge(usize),
+    Flag(usize),
 }
 
 /// A build's dense id: its position among the file's builds, which are kept
@@ -338,6 +343,60 @@ impl Value {
                 .environment
                 .as_ref()
                 .is_some_and(|origin| !origin.set && !origin.default)
+    }
+
+    /// The one EDN form of `text`, read as the file is, written nowhere: a
+    /// flag's EDN, such as a `--config` value's canonical text, before
+    /// [`BuildSettings::set_entry_by_flag`] places it.
+    pub fn parse(text: &str) -> Result<Value, String> {
+        let lines = LineIndex::new(text);
+        let mut value = read_document(text, &lines, &|_| None, ConfigSource::Default)
+            .map_err(|error| error.message)?
+            .ok_or_else(|| format!("{text:?} holds no form"))?;
+        value.place(ConfigSource::Default);
+        Ok(value)
+    }
+
+    /// Give this value and everything in it `source`, written nowhere in it.
+    fn place(&mut self, source: ConfigSource) {
+        self.source = source;
+        self.span = 0..0;
+        match &mut self.kind {
+            ValueKind::List(items) | ValueKind::Vector(items) | ValueKind::Set(items) => {
+                items.iter_mut().for_each(|item| item.place(source));
+            }
+            ValueKind::Map(entries) => {
+                for (key, value) in entries {
+                    key.place(source);
+                    value.place(source);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether this value is `target`, or holds it: the same text and span.
+    fn holds(&self, target: &Value) -> bool {
+        if self.source == target.source && self.span == target.span {
+            return true;
+        }
+        match &self.kind {
+            ValueKind::List(items) | ValueKind::Vector(items) | ValueKind::Set(items) => {
+                items.iter().any(|item| item.holds(target))
+            }
+            ValueKind::Map(entries) => entries
+                .iter()
+                .any(|(key, value)| key.holds(target) || value.holds(target)),
+            _ => false,
+        }
+    }
+}
+
+impl From<ValueKind> for Value {
+    /// A value written nowhere, such as a flag's before
+    /// [`BuildSettings::set_by_flag`] places it.
+    fn from(kind: ValueKind) -> Self {
+        Self::default_of(kind)
     }
 }
 
@@ -835,6 +894,7 @@ fn noun(origin: ConfigSource) -> &'static str {
         ConfigSource::LightCljs => ENVIRONMENT_VARIABLE,
         ConfigSource::ConfigMerge(_) => "--config-merge",
         ConfigSource::File | ConfigSource::Default => "the configuration file",
+        ConfigSource::Flag(_) => "the command line",
     }
 }
 
@@ -2538,7 +2598,7 @@ impl Texts<'_> {
                 .iter()
                 .find(|merge| merge.index == index)
                 .map(|merge| &merge.lines),
-            ConfigSource::Default => None,
+            ConfigSource::Default | ConfigSource::Flag(_) => None,
         }
     }
 
@@ -2546,7 +2606,9 @@ impl Texts<'_> {
         match source {
             ConfigSource::LightCljs => PathBuf::from(ENVIRONMENT_VARIABLE),
             ConfigSource::ConfigMerge(index) => merge_name(index),
-            ConfigSource::File | ConfigSource::Default => self.path.to_owned(),
+            ConfigSource::File | ConfigSource::Default | ConfigSource::Flag(_) => {
+                self.path.to_owned()
+            }
         }
     }
 
@@ -2568,7 +2630,7 @@ impl Texts<'_> {
 
     fn origin(&self, value: &Value, mode: Option<BuildMode>) -> SettingOrigin {
         let location = match value.source {
-            ConfigSource::Default => None,
+            ConfigSource::Default | ConfigSource::Flag(_) => None,
             source => Some(
                 self.lines(source)
                     .and_then(|lines| lines.line_column(value.span.start))
@@ -2581,6 +2643,7 @@ impl Texts<'_> {
             location,
             mode,
             environment: value.environment.clone(),
+            flag: None,
         }
     }
 }
@@ -2610,17 +2673,24 @@ pub struct SettingOrigin {
     pub mode: Option<BuildMode>,
     /// The variable, for a `#light-cljs/env` value.
     pub environment: Option<EnvironmentValue>,
+    /// For a flag's value, the flag as typed and what it replaced:
+    /// `--optimize none, over the release default :advanced`.
+    pub flag: Option<String>,
 }
 
 impl fmt::Display for SettingOrigin {
     /// `light-cljs.edn:14:49 (:release), from APP_VERSION`,
-    /// `LIGHT_CLJS:1:14`, `--config-merge 2:1:30` or `default`.
+    /// `LIGHT_CLJS:1:14`, `--config-merge 2:1:30`, `default`, or a flag's
+    /// text.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(flag) = &self.flag {
+            return f.write_str(flag);
+        }
         let Some((line, column)) = self.location else {
             return f.write_str("default");
         };
         match self.source {
-            ConfigSource::Default => return f.write_str("default"),
+            ConfigSource::Default | ConfigSource::Flag(_) => return f.write_str("default"),
             ConfigSource::File => write!(f, "{FILE_NAME}:{line}:{column}")?,
             ConfigSource::LightCljs => write!(f, "{ENVIRONMENT_VARIABLE}:{line}:{column}")?,
             ConfigSource::ConfigMerge(index) => {
@@ -2651,12 +2721,17 @@ pub struct SettingValue {
 /// the build's own, into [`Setting::ClosureDefines`], leaving
 /// [`Setting::CompilerClosureDefines`] empty; the top-level
 /// `:cache-blockers` are unioned into [`Setting::BuildCacheBlockers`].
+///
+/// The command's flags, layer 6, write over them through
+/// [`BuildSettings::set_by_flag`] and its siblings, for `--print-config`.
 #[derive(Clone, Debug)]
 pub struct BuildSettings {
     build: BuildId,
     name: String,
     mode: BuildMode,
     slots: [Option<SettingValue>; Setting::COUNT],
+    /// The origin text of each [`ConfigSource::Flag`], by its index.
+    flags: Vec<String>,
 }
 
 impl BuildSettings {
@@ -2683,6 +2758,169 @@ impl BuildSettings {
 
     pub fn origin(&self, setting: Setting) -> Option<&SettingOrigin> {
         self.slot(setting).map(|slot| &slot.origin)
+    }
+
+    /// Layer 6: `flag`, as typed (`--optimize none`), gives `setting` the
+    /// value `kind`, replacing what layers 1-5 gave it. Its origin prints as
+    /// the flag and what it replaced: `--optimize none, over the release
+    /// default :advanced`, `--out-dir out/x, over "out/app" at
+    /// light-cljs.edn:7:21`.
+    pub fn set_by_flag(&mut self, setting: Setting, kind: ValueKind, flag: &str) {
+        let text = match self.slot(setting) {
+            Some(lower) => format!("{flag}, {}", self.over(setting, lower)),
+            None => flag.to_owned(),
+        };
+        let source = self.flag_source(text);
+        let mut value = Value::from(kind);
+        value.place(source);
+        self.slots[setting.index()] = Some(SettingValue {
+            origin: self.flag_origin_of(source),
+            value,
+        });
+    }
+
+    /// Layer 6 for one entry of a map setting, `:config` or
+    /// `:closure-defines`: `flag` (`--config app/flavor=:dev`) gives key
+    /// `key` the value `value`, replacing an equal key's entry, whose origin
+    /// `file` and `merges` locate (`--define app.x/Y=1, over 2 at
+    /// light-cljs.edn:9:30`), or adding one at the end.
+    pub fn set_entry_by_flag(
+        &mut self,
+        file: &ConfigFile,
+        merges: &[ConfigMerge],
+        setting: Setting,
+        key: Value,
+        value: Value,
+        flag: &str,
+    ) {
+        let below = self.get(setting).and_then(|map| match &map.kind {
+            ValueKind::Map(entries) => entries
+                .iter()
+                .position(|(other, _)| identity(other) == identity(&key))
+                .map(|position| (position, &entries[position].1)),
+            _ => None,
+        });
+        let text = match below {
+            Some((_, lower)) => format!(
+                "{flag}, over {} at {}",
+                lower.to_edn(),
+                file.value_origin(self, lower, merges)
+            ),
+            None => flag.to_owned(),
+        };
+        let position = below.map(|(position, _)| position);
+        let source = self.flag_source(text);
+        let (mut key, mut value) = (key, value);
+        key.place(source);
+        value.place(source);
+        let origin = self.flag_origin_of(source);
+        match &mut self.slots[setting.index()] {
+            Some(SettingValue {
+                value:
+                    Value {
+                        kind: ValueKind::Map(entries),
+                        ..
+                    },
+                ..
+            }) => match position {
+                // Where the entry it replaces was, so the map keeps its order.
+                Some(position) => entries[position] = (key, value),
+                None => entries.push((key, value)),
+            },
+            slot => {
+                let mut map = Value::from(ValueKind::Map(vec![(key, value)]));
+                map.source = source;
+                *slot = Some(SettingValue { origin, value: map });
+            }
+        }
+    }
+
+    /// Layer 6 for a set setting, the build's `:cache-blockers`, which
+    /// accumulate: `flag` (`--cache-blocker`), once per element, adds each
+    /// of `elements` the set does not hold. Its origin then prints as the
+    /// flags that added one and what they added to: `--cache-blocker app.b,
+    /// added to #{app.a} at light-cljs.edn:2:18`.
+    pub fn add_by_flag(&mut self, setting: Setting, flag: &str, elements: Vec<Value>) {
+        let held: Vec<Value> = match self.get(setting).map(|set| &set.kind) {
+            Some(ValueKind::Set(items)) => items.clone(),
+            _ => Vec::new(),
+        };
+        let mut added: Vec<Value> = Vec::new();
+        for element in elements {
+            if !held
+                .iter()
+                .chain(&added)
+                .any(|other| identity(other) == identity(&element))
+            {
+                added.push(element);
+            }
+        }
+        if added.is_empty() {
+            return;
+        }
+        let flag = added
+            .iter()
+            .map(|element| format!("{flag} {}", element.to_edn()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text = match self.slot(setting) {
+            Some(lower) if lower.origin.source != ConfigSource::Default || !held.is_empty() => {
+                format!(
+                    "{flag}, added to {} at {}",
+                    lower.value.to_edn(),
+                    lower.origin
+                )
+            }
+            _ => flag,
+        };
+        let source = self.flag_source(text);
+        for element in &mut added {
+            element.place(source);
+        }
+        let mut set = Value::from(ValueKind::Set(held.into_iter().chain(added).collect()));
+        set.source = source;
+        self.slots[setting.index()] = Some(SettingValue {
+            origin: self.flag_origin_of(source),
+            value: set,
+        });
+    }
+
+    /// What a flag replacing `lower`, `setting`'s value, writes over: `over
+    /// the default 1`, `over the release default :advanced` for a default
+    /// that depends on the mode, `over "out/app" at light-cljs.edn:7:21`.
+    fn over(&self, setting: Setting, lower: &SettingValue) -> String {
+        if lower.origin.source == ConfigSource::Default {
+            let mode = match setting {
+                Setting::Optimizations | Setting::CljsWarnings => {
+                    format!("{} ", self.mode.name())
+                }
+                _ => String::new(),
+            };
+            format!("over the {mode}default {}", lower.value.to_edn())
+        } else {
+            format!("over {} at {}", lower.value.to_edn(), lower.origin)
+        }
+    }
+
+    /// A new flag source, whose origin prints as `text`.
+    fn flag_source(&mut self, text: String) -> ConfigSource {
+        self.flags.push(text);
+        ConfigSource::Flag(self.flags.len() - 1)
+    }
+
+    fn flag_origin_of(&self, source: ConfigSource) -> SettingOrigin {
+        let flag = match source {
+            ConfigSource::Flag(index) => self.flags.get(index).cloned(),
+            _ => None,
+        };
+        SettingOrigin {
+            source,
+            span: 0..0,
+            location: None,
+            mode: None,
+            environment: None,
+            flag,
+        }
     }
 }
 
@@ -2917,6 +3155,7 @@ impl ConfigFile {
             name: name.to_owned(),
             mode,
             slots,
+            flags: Vec::new(),
         })
     }
 

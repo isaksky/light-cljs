@@ -3,8 +3,9 @@
 Status: settled design, October 20, 2026. The user decided its three open
 questions the same day ("Settled questions"). The reader and the schema
 ("As built (light-cljs-398)"), the merging of a build's layers ("As
-built (light-cljs-399)") and the `compile` and `release` commands ("As
-built (light-cljs-400)") are implemented; `watch` and `cljs-repl` do not
+built (light-cljs-399)"), the `compile` and `release` commands ("As
+built (light-cljs-400)") and `--print-config` ("As built
+(light-cljs-401)") are implemented; `watch` and `cljs-repl` do not
 read the file yet.
 The implementation is queued as the pellets group `build-configuration`,
 one or more pellets per phase ("Phases"). Names that shadow-cljs has no
@@ -265,12 +266,16 @@ Parsing:
      :modules {:main {:entries [app.main]}}            ; light-cljs.edn:9:13
      :config {:app/api-origin "https://api.example.org"} ; light-cljs.edn:10:29
      :compiler-options {:optimizations :none           ; --optimize none, over the release default :advanced
-                        :macro-timeout-ms 30000        ; light-cljs.edn:11:41
-                        :elide-asserts true}           ; light-cljs.edn:16:48 (:release)
-     :closure-defines {app.config/DEBUG false          ; light-cljs.edn:14:49 (:release)
-                       app.config/VERSION "2.4.0"}     ; light-cljs.edn:15:51 (:release), from APP_VERSION
-     :build-options {:cache-level :all}}}}             ; default
+                        :elide-asserts true            ; light-cljs.edn:16:48 (:release)
+                        :macro-timeout-ms 30000}       ; light-cljs.edn:11:41
+     :build-options {:cache-level :all}                ; default
+     :release {:closure-defines {app.config/DEBUG false ; light-cljs.edn:14:49 (:release)
+                                 app.config/VERSION "2.4.0"}}}}} ; light-cljs.edn:15:51 (:release), from APP_VERSION
   ```
+
+  The keys that are errors in dev mode, `:closure-defines` and
+  `:checked-arrays`, print under `:release`, so the printed EDN reads back
+  as a valid file ("As built (light-cljs-401)").
 - **`light-cljs cljs-repl ID`** (Phase 3) is shadow-cljs's command for a
   REPL into a running watch's build. It reads the file for `:cache-root`
   and the build ids, reads the port the running watch wrote to
@@ -1188,6 +1193,81 @@ Names are decisions for review; the structure is a sketch.
   examples/features, the documentation list names this document, and
   `examples/features/index.html` says to serve it beside what `light-cljs
   release features` writes into `out/release`.
+
+### As built (light-cljs-401): --print-config
+
+- `compile` and `release` take `--print-config` after the ids. Every check
+  of light-cljs-400 runs first (the file, the ids, the flags, each
+  `--config-merge`, the settings, the output directories and the
+  translation), then each build's `BuildSettings` gets the flags (layer 6)
+  and `ConfigFile::print_config` prints it on stdout, a block per id in the
+  order named, separated by a blank line, and the command exits 0 with
+  nothing on stderr. Nothing compiles, no directory is created and the cache
+  is not opened.
+- **Layer 6 in `BuildSettings`.** `ConfigSource::Flag(N)` is a flag's value;
+  `BuildSettings::set_by_flag` replaces a setting, `set_entry_by_flag` one
+  entry of `:config` or `:closure-defines`, `add_by_flag` adds cache
+  blockers. `SettingOrigin::flag` holds the flag's text and what it
+  replaced: `--optimize none, over the release default :advanced` (a
+  default that depends on the mode names it, as `:optimizations` and
+  `:cljs-warnings` do), `--jobs 2, over the default 1`, `--out-dir out/x,
+  over "out/app" at light-cljs.edn:7:21`, `--cache-blocker app.util, added
+  to #{app.macros} at light-cljs.edn:4:18`, or the flag alone over nothing.
+  `config_cli::apply_flags` maps the flags as `translate` applies them;
+  `translate` is unchanged. The flags: `--source-root` (the list), `--entry`
+  (the file's module id kept), `--out-dir`, `--optimize`, `--pseudo-names`,
+  `--define` (a boolean or decimal number as itself, anything else a string,
+  each giving `--define` its text back), `--warnings`, the checked-arrays
+  flags, `--elide-asserts`, the macro limits, `--jobs`, `--config`,
+  `--no-cache` (`:cache-level :off`), `--cache-dir DIR` (`:cache-root` DIR's
+  parent when DIR is named `cache`, and over `:cache-level :off` it is
+  `:all`; any other store no `:cache-root` names, so `--print-config` refuses
+  it: `light-cljs release other: --cache-dir store: a light-cljs.edn names
+  its store as :cache-root's cache directory, which store is not, so
+  --print-config cannot print it; give --cache-dir a directory named cache`) and
+  `--cache-blocker`. `--stats`, `--stats-file` and `--size-report` are not in
+  the file and do not print.
+- **What prints.** The top-level `:source-paths`, `:cache-root`,
+  `:cache-blockers` and `:compile-threads`, then `:builds` with the one
+  build: `:target`, `:output-dir`, `:modules`, `:config`,
+  `:compiler-options`, `:build-options`, in the schema tables' order. A
+  setting with a default prints at its default (`; default`), but for the
+  compiler options, which print when a layer or a flag gives them, and
+  `:optimizations`, which release always prints. Dev mode prints no setting
+  it ignores (`:optimizations`, `:pseudo-names`, `:cljs-warnings`). The
+  build's `:cache-blockers` prints only those the top level's, unioned into
+  it, do not hold. `ConfigFile::print_config` takes a `watch` argument for
+  light-cljs-403, which adds `:http`, `:nrepl`, `:fs-watch` and `:devtools`;
+  no command passes it yet.
+- **Release-only keys print under `:release`.** `:closure-defines` and
+  `:compiler-options {:checked-arrays ...}` reaching dev mode are errors, so
+  printed at the build level the EDN would not read back as a file. They
+  print in the build's `:release` map, last, as the Build keys table orders
+  `:release`. The example under "Commands" was written with them at the
+  build level and is corrected, as is its `:compiler-options` order, which
+  was the file's rather than the table's (`:elide-asserts` before
+  `:macro-timeout-ms`). Its line and column numbers were right.
+- **Canonical EDN.** `:config` prints one entry per line in key order, each
+  value in the canonical text `BuildConfiguration` fingerprints;
+  `:closure-defines` one entry per line in name order; sets in sorted order;
+  everything else as `Value::to_edn` writes it. A map's entries align after
+  its `{`. Each entry of `:config` and `:closure-defines` has its own origin
+  (`ConfigFile::value_origin`, which finds whether the build's mode map
+  holds the value, for `(:release)`). Comments start after the code padded
+  to 52 columns, or one space after a longer line. A line break in a
+  comment or in the header's path, which a flag's value or a directory name
+  can hold, prints as `\n` (and `\r`), so the comment stays one line.
+- Tests: `tests/config_file/print_config.rs`: the document's illustration
+  and example, read from this document; `release features` and `compile
+  features` from a copy of examples/features and from its `app/`
+  subdirectory; two ids; every flag's origin; the round trip (each printed
+  block read back with `ConfigFile::read` gives a build whose settings equal
+  the original's, or, with flags, prints the same EDN); the build from a
+  printed configuration writing the same files as the flags it printed; the
+  refused store and a line break in a flag's value; each entry of a map
+  kept from the file, a mode map, `LIGHT_CLJS`, two merges and a flag, with
+  its own origin; and the library's watch rendering. Every process test asserts that the
+  project holds the same paths afterwards, with no `out` or `.light-cljs`.
 
 ## Phases
 
