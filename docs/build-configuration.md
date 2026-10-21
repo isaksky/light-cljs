@@ -626,11 +626,14 @@ its place.
 
 ### Consequences
 
-- **A build from the file and the same flags hit the same artifacts**,
-  when the roots are spelled the same. A build from the file spells its
-  roots as the project directory joined with the path, lexically
-  normalized, so it gets the same keys from any subdirectory; a flag-only
-  build spells them as typed. A root spelled two ways gives a "resolution
+- **A build from the file and the same flags hit the same artifacts.** A
+  build from the file spells its roots as the project directory joined with
+  the path, lexically normalized, so it gets the same keys from any
+  subdirectory; a flag-only build spells them as typed. Either way the
+  compiler canonicalizes each root before resolving (`analyze_from_roots`),
+  so a root spelled relative or absolute gets the same resolution key
+  (light-cljs-402 found this; the design said a root spelled two ways would
+  miss). A root that names a different directory gives a "resolution
   changed" miss, never a wrong hit.
 - **Editing the file recompiles only what its new values change.** A
   comment, another build's section, `:http`, `:devtools` or `:output-dir`
@@ -1123,6 +1126,69 @@ Names are decisions for review; the structure is a sketch.
   of `tests/fixtures/build-configuration/commands`; the ground-rule test is
   `flag_only_commands_never_read_the_configuration_file` in `tests/cli.rs`.
 
+### As built (light-cljs-402): file builds are flag builds, and the Phase 1 exit criterion
+
+- **Every row.** `tests/config_file/equivalence.rs` writes a `light-cljs.edn`
+  over a copy of `tests/fixtures/build-configuration/commands` per case and
+  runs `ID --stats` and the equivalent flags, `--compile --reloadable` for
+  `compile` and `--compile --optimize advanced` for `release`, with the
+  project directory joined to every path (`--source-root`, `--out-dir`,
+  `--cache-dir <project>/.light-cljs/cache`). Each pair runs in both orders,
+  each order from an empty store. All four runs write the same bytes into
+  `out/app`, and the second of each order has `cache.misses 0` and
+  `cache.hits` equal to the first's `cache.published`. The rows both
+  commands read: the entry, the output directory and the default store
+  (every case), `:source-paths` of one root and of two, `:elide-asserts`,
+  each of the five macro limits, `:config` (the flags naming its keys in the
+  other order, since the map's canonical text sorts them), `:compile-threads`
+  as `--jobs 2`, `:cache-root` as `--cache-dir <root>/cache`, `:cache-level
+  :off` as `--no-cache` (no `cache.*` lines and no store, the same bytes),
+  and top-level and build `:cache-blockers` as two `--cache-blocker`s (the
+  same bypass rows; every other namespace hits). The rows only `release`
+  reads: `:optimizations` `:none`, `:prepare` and `:advanced`;
+  `:closure-defines` under `:release` and under its `:compiler-options`, as
+  `--define`; `:pseudo-names`; `:checked-arrays` `:warn` and `:error`; and
+  `:cljs-warnings`, as `--warnings` on a namespace that fails without it.
+  `--warnings` and the checked-arrays flags go before `--compile`, where the
+  flag CLI takes them.
+- **Two roots that both hold a required namespace** are `ambiguous
+  namespace app.main: ROOT/alt/app/main.cljs, ROOT/src/app/main.cljs`, from
+  the file as from the flags; the order of `:source-paths` does not pick
+  one. The two-root case therefore builds a namespace only one root holds.
+- **Environment values**, asserted on the `[cache-misses-and-bypasses]`
+  rows: with `APP_FLAVOR=dev`, `#light-cljs/env ["APP_FLAVOR" :as
+  :keyword]`, the literal `:dev` and `--config app/flavor=:dev` hit each
+  other with the same bytes; `#light-cljs/env "APP_FLAVOR"` misses every
+  namespace (`light.build`, `app.macros`, `app.util`, `app.main`) with
+  `miss config: config changed`, as does `APP_FLAVOR=prod`; setting
+  `APP_UNREAD`, which the file does not read, misses nothing, and going back
+  to `APP_FLAVOR=dev` hits the first artifacts. A `:release
+  {:closure-defines {app.other/label #light-cljs/env "APP_LABEL"}}` changes
+  the output's label with the variable and every namespace hits.
+- **From a subdirectory**, `release app` in `src` and in `src/app` hits every
+  artifact the same command stored from the project directory, writes the
+  same bytes into the project's `out/app` and creates no `.light-cljs` or
+  `out` below it.
+- **Edits that change no compiler input** hit every namespace with the same
+  bytes: a comment, another build's `:config` and `:compiler-options`, the
+  top-level `:http`, `:nrepl` and `:fs-watch` and the build's `:devtools`,
+  which `release` does not read, and the build's `:output-dir` (the same
+  files in the new directory).
+- **The exit criterion is met.** In a copy of examples/features, `light-cljs
+  release features --stats` and `light-cljs --compile --optimize advanced
+  --entry app.main --source-root . --out-dir out/release --stats`, run in
+  the same directory with the default `.light-cljs/cache`, write the same
+  five files byte for byte (`app.editor+app.reports.js`, `app.editor.js`,
+  `app.main.js`, `app.reports.js`, `chunks.json`) in either order; the first
+  publishes all 6 namespaces and the second hits all 6
+  (`release_features_equals_its_flags`). The flags' relative `.` hits the
+  artifacts keyed by the file's absolute root, which corrected
+  "Consequences" above.
+- README "Examples" names `light-cljs.edn` and the two commands for
+  examples/features, the documentation list names this document, and
+  `examples/features/index.html` says to serve it beside what `light-cljs
+  release features` writes into `out/release`.
+
 ## Phases
 
 Queued on 2026-10-20 as the pellets group `build-configuration`, in this
@@ -1160,7 +1226,9 @@ order (the group's context names which can run in parallel):
 
 Exit criterion: `light-cljs release features` in examples/features writes
 the same files as the equivalent flags, and the second of the two runs is
-all hits.
+all hits. Met by light-cljs-402: the same five files byte for byte, and 6
+of 6 namespaces hit on the second run, in either order ("As built
+(light-cljs-402)").
 
 ### Phase 2: watch, one build
 

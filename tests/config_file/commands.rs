@@ -22,7 +22,7 @@ const FIXTURE: &str = concat!(
 
 /// A temporary copy of `source`, and its canonical path, which is how the
 /// child process's current directory names it.
-fn copy(label: &str, source: &str) -> (TempDir, PathBuf) {
+pub(crate) fn copy(label: &str, source: &str) -> (TempDir, PathBuf) {
     let dir = TempDir::new(label);
     let project = fs::canonicalize(&*dir).unwrap().join("project");
     copy_tree(Path::new(source), &project);
@@ -82,7 +82,7 @@ fn listing(dir: &Path) -> Vec<String> {
 }
 
 /// Every file under `dir` with its bytes, by path relative to `dir`.
-fn tree(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+pub(crate) fn tree(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut files = Vec::new();
     let mut pending = vec![dir.to_path_buf()];
     while let Some(next) = pending.pop() {

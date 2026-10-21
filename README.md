@@ -586,7 +586,7 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
 | [examples/namespaces](examples/namespaces) | Two runtime namespaces (`--entry demo.main`) |
 | [examples/macros](examples/macros) | A `.cljs` macro namespace required alongside runtime code |
 | [examples/collections](examples/collections) | Several namespaces compiled to an expression returning `batch.main/run` |
-| [examples/features](examples/features) | The code-splitting application: startup `app.main`, shared helpers and two features loaded on demand (`--entry app.main --out-dir DIR`; [docs/code-splitting.md](docs/code-splitting.md)) |
+| [examples/features](examples/features) | The code-splitting application: startup `app.main`, shared helpers and two features loaded on demand; its [`light-cljs.edn`](examples/features/light-cljs.edn) defines build `:features`, so `light-cljs release features` writes the chunks into `out/release` and `compile features` the dev build into `out/dev` (or `--entry app.main --out-dir DIR`; [docs/code-splitting.md](docs/code-splitting.md), [docs/build-configuration.md](docs/build-configuration.md)) |
 | [examples/dev](examples/dev) | The dev-workflow application: `defonce` state, a macro, a record view and reload hooks (`--entry app.main --reloadable --out-dir DIR`; [docs/dev-workflow.md](docs/dev-workflow.md)) |
 | [examples/native](examples/native) | Scripts for `--eval` (data processing, macros, lazy pipelines, state, exceptions) |
 | [examples/embedding.rs](examples/embedding.rs), [examples/evaluator.rs](examples/evaluator.rs) | Rust embedding |
@@ -781,6 +781,9 @@ ratchet programs at every `--optimize` level, in Node and QuickJS:
   phase contract, form bridge, resource controls.
 - [docs/compiler-cache.md](docs/compiler-cache.md) — proposed persistent binary
   cache, explicit dependencies, opt-outs, and development-session reuse.
+- [docs/build-configuration.md](docs/build-configuration.md) — `light-cljs.edn`,
+  the configuration file of named builds, and the `compile` and `release`
+  commands that run them, after shadow-cljs's `shadow-cljs.edn`.
 - [docs/parser.md](docs/parser.md) and [docs/lexer.md](docs/lexer.md) — syntax
   layers.
 - [docs/dos-and-donts.md](docs/dos-and-donts.md) — performance guidelines for

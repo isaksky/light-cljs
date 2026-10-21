@@ -8,9 +8,10 @@
 <!--
   The code-splitting example in a browser without a bundler
   (docs/code-splitting.md, "Verification"). Serve this file beside the files
-  `light-cljs --compile --entry app.main --source-root examples/features
-  --out-dir DIR` writes: it imports app.main.js, which imports each feature's
-  chunk when app.main/start loads it. Each line the program logs is appended
+  `light-cljs release features` writes into out/release (light-cljs.edn,
+  docs/build-configuration.md), or `light-cljs --compile --entry app.main
+  --source-root examples/features --out-dir DIR` into DIR: it imports
+  app.main.js, which imports each feature's chunk when app.main/start loads it. Each line the program logs is appended
   to #log, and #status becomes "done" once start's promise resolves, so
   headless Chrome's --dump-dom shows the run.
 -->

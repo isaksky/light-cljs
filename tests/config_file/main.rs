@@ -8,5 +8,6 @@
 mod temp_dir;
 
 mod commands;
+mod equivalence;
 mod merge;
 mod reader;
