@@ -220,12 +220,29 @@ impl Watch {
 
 /// A terminal client connected to the server at `address`, with `flags`.
 fn connect(address: &str, flags: &[&str]) -> Repl {
+    let mut args = vec!["--repl", "--connect", address];
+    args.extend(flags);
+    client(&args, |_| {})
+}
+
+/// `light-cljs cljs-repl ID` in `dir`, with `LIGHT_CLJS` set to
+/// `light_cljs`.
+fn cljs_repl(dir: &Path, id: &str, light_cljs: &str) -> Repl {
+    client(&["cljs-repl", id], |command| {
+        command.current_dir(dir).env("LIGHT_CLJS", light_cljs);
+    })
+}
+
+/// A terminal client, `light-cljs ARGS`, its command set up by `setup`.
+fn client(args: &[&str], setup: impl FnOnce(&mut Command)) -> Repl {
     // One pipe for stdout and stderr keeps the client's lines in order.
-    let mut child = Command::new("sh")
+    let mut command = Command::new("sh");
+    command
         .args(["-c", "exec \"$0\" \"$@\" 2>&1"])
         .arg(env!("CARGO_BIN_EXE_light-cljs"))
-        .args(["--repl", "--connect", address])
-        .args(flags)
+        .args(args);
+    setup(&mut command);
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -861,4 +878,301 @@ fn connected_repl_switches_between_app_and_worker() {
         ]
     );
     assert_eq!(repl.value("(str *ns*)"), "\"app.main\"");
+}
+
+/// `light-cljs ARGS` in `dir`, with `LIGHT_CLJS` set to `light_cljs` or
+/// unset and `input` on its stdin: its exit code, stdout and stderr.
+fn run_in(
+    dir: &Path,
+    args: &[&str],
+    light_cljs: Option<&str>,
+    input: &str,
+) -> (Option<i32>, String, String) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
+    command
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    match light_cljs {
+        Some(text) => command.env("LIGHT_CLJS", text),
+        None => command.env_remove("LIGHT_CLJS"),
+    };
+    let mut child = command.spawn().unwrap();
+    // A client that exits before reading its input closes the pipe.
+    let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
+    let output = child.wait_with_output().unwrap();
+    (
+        output.status.code(),
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+/// `light-cljs cljs-repl worker` (docs/build-configuration.md, "Commands")
+/// against a running `watch app worker` of a temporary copy of the multi
+/// fixture: it finds the watch by `.light-cljs/http.port`, and its session
+/// starts bound to the worker, in its entry namespace, where a Var only the
+/// worker's build has runs in the worker's runtime; `(light.dev/repl :app)`
+/// still switches it. An id the file defines but the watch does not run is
+/// an exact error naming the ids it does.
+#[test]
+fn cljs_repl_evaluates_in_the_named_build_of_a_running_watch() {
+    let (_dir, project) = file_watch::project("dev-repl-cljs-repl", Path::new(MULTI));
+    let light_cljs = "{:http {:port 0} :nrepl false}";
+    let mut watch =
+        file_watch::Light::spawn(&project, &["watch", "app", "worker"], Some(light_cljs));
+    let (address, _, _) = watch.serving();
+    watch.until("[:app] built ");
+    watch.until("[:worker] built ");
+    assert_eq!(
+        fs::read_to_string(project.join(".light-cljs/http.port")).unwrap(),
+        address.rsplit_once(':').unwrap().1
+    );
+    let runtime = |build: &str| {
+        let mut runtime = file_watch::node_runtime(
+            &project.join("out").join(build),
+            &format!("http://{address}/{build}/events"),
+            1_000_000,
+        );
+        runtime.until("message load replay ");
+        runtime
+    };
+    let (app, worker) = (runtime("app"), runtime("worker"));
+    let (app_pid, worker_pid) = (app.child.id(), worker.child.id());
+    let mut repl = cljs_repl(&project, "worker", light_cljs);
+    assert_eq!(repl.value("(str *ns*)"), "\"app.worker\"");
+    assert_eq!(
+        repl.value("[(jobs/run 2) (.-pid js/process)]"),
+        format!("[42 {worker_pid}]")
+    );
+    assert_eq!(repl.value("(light.dev/repl :app)"), "[:selected :app]");
+    assert_eq!(
+        repl.value("[app.build-info/built-by (.-pid js/process)]"),
+        format!("[\"light-cljs\" {app_pid}]")
+    );
+    repl.close();
+    // The id may carry its colon, as the other commands' ids may, and the
+    // file is found from a subdirectory.
+    let mut repl = cljs_repl(&project.join("src"), ":worker", light_cljs);
+    assert_eq!(repl.value("(.-pid js/process)"), worker_pid.to_string());
+    repl.close();
+    assert_eq!(
+        run_in(&project, &["cljs-repl", "test"], Some(light_cljs), "(+ 1 2)\n"),
+        (
+            Some(1),
+            String::new(),
+            "light-cljs cljs-repl test: the watch runs no build :test; its builds are :app, :worker\n"
+                .to_owned()
+        )
+    );
+}
+
+/// `light-cljs cljs-repl features` from the `app/` subdirectory of a
+/// temporary copy of examples/features with `watch features` running: the
+/// form on its stdin runs in the build's runtime, and only the value is
+/// printed.
+#[test]
+fn cljs_repl_features_evaluates_from_a_subdirectory() {
+    let (_dir, project) = file_watch::features("dev-repl-cljs-repl-features");
+    let light_cljs = "{:http {:port 0}}";
+    let mut watch = file_watch::Light::spawn(&project, &["watch", "features"], Some(light_cljs));
+    let (address, _, _) = watch.serving();
+    watch.until("[:features] built ");
+    let mut runtime = file_watch::node_runtime(
+        &project.join("out/dev"),
+        &format!("http://{address}/events"),
+        1_000_000,
+    );
+    runtime.until("message hello ");
+    assert_eq!(
+        run_in(
+            &project.join("app"),
+            &["cljs-repl", "features"],
+            Some(light_cljs),
+            "(+ 1 2)\n"
+        ),
+        (Some(0), "3\n".to_owned(), String::new())
+    );
+}
+
+/// With a `:cache-root` of the file's own, the watch writes `http.port`
+/// there and `cljs-repl` finds it; `--print-length` and `--print-level`
+/// shape the values it prints.
+#[test]
+fn cljs_repl_reads_the_cache_root_and_takes_the_print_flags() {
+    let (_dir, project) = file_watch::features("dev-repl-cljs-repl-root");
+    let file = project.join("light-cljs.edn");
+    let text = fs::read_to_string(&file).unwrap();
+    let edited = text.replacen(
+        "{:source-paths [\".\"]",
+        "{:source-paths [\".\"]\n :cache-root \"state/light\"",
+        1,
+    );
+    assert_ne!(edited, text);
+    fs::write(&file, edited).unwrap();
+    let light_cljs = "{:http {:port 0}}";
+    let mut watch = file_watch::Light::spawn(&project, &["watch", "features"], Some(light_cljs));
+    let (address, _, _) = watch.serving();
+    watch.until("[:features] built ");
+    assert_eq!(
+        fs::read_to_string(project.join("state/light/http.port")).unwrap(),
+        address.rsplit_once(':').unwrap().1
+    );
+    assert!(!project.join(".light-cljs/http.port").exists());
+    let mut runtime = file_watch::node_runtime(
+        &project.join("out/dev"),
+        &format!("http://{address}/events"),
+        1_000_000,
+    );
+    runtime.until("message hello ");
+    assert_eq!(
+        run_in(
+            &project,
+            &[
+                "cljs-repl",
+                "features",
+                "--print-length",
+                "3",
+                "--print-level",
+                "2"
+            ],
+            Some(light_cljs),
+            "(vec (range 10))\n[1 [2 [3 [4]]]]\n"
+        ),
+        (
+            Some(0),
+            "[0 1 2 ...]\n[1 [2 #]]\n".to_owned(),
+            // A value printed short also comes back as a reference.
+            ";; ref 1\n;; ref 2\n".to_owned()
+        )
+    );
+}
+
+/// A `cljs-repl` session the server forgot, because the watch was started
+/// again on its port, is opened again bound to the same build: the next
+/// form runs in the new watch's worker.
+#[test]
+fn cljs_repl_rebinds_a_forgotten_session() {
+    let (_dir, project) = file_watch::project("dev-repl-cljs-repl-restart", Path::new(MULTI));
+    let start = |port: &str| {
+        let light_cljs = format!("{{:http {{:port {port} :strict true}} :nrepl false}}");
+        let mut watch =
+            file_watch::Light::spawn(&project, &["watch", "app", "worker"], Some(&light_cljs));
+        let (address, _, _) = watch.serving();
+        watch.until("[:app] built ");
+        watch.until("[:worker] built ");
+        let mut worker = file_watch::node_runtime(
+            &project.join("out/worker"),
+            &format!("http://{address}/worker/events"),
+            1_000_000,
+        );
+        worker.until("message load replay ");
+        (watch, worker, address)
+    };
+    let (mut watch, worker, address) = start("0");
+    let mut repl = cljs_repl(&project, "worker", "{}");
+    assert_eq!(
+        repl.value("(.-pid js/process)"),
+        worker.child.id().to_string()
+    );
+    let _ = watch.child.kill();
+    let _ = watch.child.wait();
+    drop(worker);
+    let (_watch, worker, again) = start(address.rsplit_once(':').unwrap().1);
+    assert_eq!(again, address);
+    assert_eq!(
+        repl.eval("[(jobs/run 2) (.-pid js/process)]"),
+        [
+            "light-cljs: the dev server forgot this REPL's session; a new one starts in app.worker"
+                .to_owned(),
+            format!("[42 {}]", worker.child.id())
+        ]
+    );
+    repl.close();
+}
+
+/// `cljs-repl`'s errors, exact, on a temporary copy of examples/features
+/// with no watch running: an id the file does not define, no `http.port`,
+/// an `http.port` naming a port nothing listens on or holding no port, and
+/// the arguments it does not take. None of them writes a file.
+#[test]
+fn cljs_repl_errors() {
+    let (_dir, project) = file_watch::features("dev-repl-cljs-repl-errors");
+    let path = project.join("light-cljs.edn");
+    let file = path.display();
+    let no_watch = |words: &str| {
+        format!(
+            "light-cljs cljs-repl {words}: no watch is running for {file}; start one with light-cljs watch features\n"
+        )
+    };
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let port_file = project.join(".light-cljs/http.port");
+    let cases: [(&[&str], Option<String>, String); 10] = [
+        (
+            &["cljs-repl", "nope"],
+            None,
+            format!(
+                "light-cljs cljs-repl nope: {file} defines no build :nope; its builds are :features\n"
+            ),
+        ),
+        (
+            &["cljs-repl", "feature"],
+            None,
+            format!(
+                "light-cljs cljs-repl feature: {file} defines no build :feature; did you mean :features? Its builds are :features\n"
+            ),
+        ),
+        (&["cljs-repl", "features"], None, no_watch("features")),
+        (&["cljs-repl", ":features"], None, no_watch(":features")),
+        (
+            &["cljs-repl", "features"],
+            Some(closed.to_string()),
+            no_watch("features"),
+        ),
+        (
+            &["cljs-repl", "features"],
+            Some("not a port".to_owned()),
+            no_watch("features"),
+        ),
+        (
+            &["cljs-repl"],
+            None,
+            format!("light-cljs cljs-repl: requires one build id; {file} defines :features\n"),
+        ),
+        (
+            &["cljs-repl", "features", "features"],
+            None,
+            "light-cljs cljs-repl features features: takes one build id, the build the session is bound to; (light.dev/repl :ID) binds it to another\n".to_owned(),
+        ),
+        (
+            &["cljs-repl", "features", "--engine", "quickjs"],
+            None,
+            "light-cljs cljs-repl features: --engine is not a flag of cljs-repl, which connects to a running watch; it takes --print-length and --print-level\n".to_owned(),
+        ),
+        (
+            &["cljs-repl", "features", "--print-level", "x"],
+            None,
+            "light-cljs cljs-repl features: --print-level requires a nonnegative integer\n"
+                .to_owned(),
+        ),
+    ];
+    for (args, held, message) in cases {
+        let _ = fs::remove_file(&port_file);
+        if let Some(text) = &held {
+            fs::create_dir_all(port_file.parent().unwrap()).unwrap();
+            fs::write(&port_file, text).unwrap();
+        }
+        let before = file_watch::tree(&project);
+        assert_eq!(
+            run_in(&project, args, None, "(+ 1 2)\n"),
+            (Some(1), String::new(), message),
+            "{args:?} {held:?}"
+        );
+        assert_eq!(file_watch::tree(&project), before, "{args:?}");
+    }
 }

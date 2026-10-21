@@ -9,9 +9,9 @@ built (light-cljs-400)"), `--print-config` ("As built
 (light-cljs-403)"), rereading the file in the watch ("As built
 (light-cljs-404)"), the dev server's mounts (light-cljs-405, under "Several
 builds in one process"), several builds in one watch ("As built
-(light-cljs-406)") and `light.dev/repl` with the Phase 3 exit criterion's
-server and nREPL parts ("As built (light-cljs-407)") are implemented;
-`cljs-repl` is not yet.
+(light-cljs-406)"), `light.dev/repl` with the Phase 3 exit criterion's
+server and nREPL parts ("As built (light-cljs-407)") and `cljs-repl` ("As
+built (light-cljs-408)") are implemented.
 The implementation is queued as the pellets group `build-configuration`,
 one or more pellets per phase ("Phases"). Names that shadow-cljs has no
 word for are listed under "Names for review"; the pellets use them as
@@ -1619,6 +1619,71 @@ Checked by a Node driver, not in a browser.
   Checked with Node runtimes and the Node nREPL client, not in a browser
   or an editor.
 
+### As built (light-cljs-408): cljs-repl ID
+
+- **Dispatch.** `run` hands a first argument `cljs-repl` to
+  `config_cli::cljs_repl`, which finds and validates the file as the other
+  commands do (`config_cli::discover`), so a FILE named `cljs-repl` is read
+  as `./cljs-repl` like the others. It takes exactly one id, with or
+  without its colon: none is `light-cljs cljs-repl: requires one build id;
+  /work/site/light-cljs.edn defines :app, :test, :worker`, two are
+  `light-cljs cljs-repl app worker: takes one build id, the build the
+  session is bound to; (light.dev/repl :ID) binds it to another`, and an id
+  the file does not define is the unknown-id message of "Errors". After the
+  id it takes `--print-length N` and `--print-level N`, read by the
+  `--repl` client's own parser (`eval_cli::print_flag`, with its messages
+  and defaults); any other flag, `--config-merge` and `--print-config`
+  included, is `light-cljs cljs-repl app: --engine is not a flag of
+  cljs-repl, which connects to a running watch; it takes --print-length and
+  --print-level`. "Commands" lists those two as valid after any command;
+  for `cljs-repl` they would change nothing, since it builds nothing and
+  `:cache-root` is a top-level key no merge reaches, so they are refused
+  rather than ignored.
+- **Finding the watch.** The port file is `http.port` under the build's
+  dev-mode `:cache-root` (layers 1-5, with `LIGHT_CLJS`, resolved against the
+  project directory), the one `watch` writes. Its output directories are not
+  compared (`ConfigFile::settings_before_flags`), since `cljs-repl` writes
+  nothing. No file, a file that does not hold a port number, and a port
+  whose connection is refused are all `light-cljs cljs-repl app: no watch
+  is running for /work/site/light-cljs.edn; start one with light-cljs watch
+  app`, the id without its colon. Any other failure to open the session is
+  `--repl --connect`'s message under the command's words. The host is
+  127.0.0.1, as designed, whatever `:http :host` says: a watch bound to
+  another interface alone is reachable with `--repl --connect HOST:PORT`.
+- **Binding.** The client opens a session on `/repl` (the first build's
+  endpoint, as `--repl --connect` does; the session is the server's and
+  goes to the build it is bound to, light-cljs-407) and posts
+  `(light.dev/repl :ID)` before reading stdin, printing nothing for it; its
+  error is the command's, the server's own text: `light-cljs cljs-repl test:
+  the watch runs no build :test; its builds are :app, :worker` (or, for a
+  port file a flag-only `--watch` could not have written but naming one,
+  the no-named-builds error). The session then starts in the build's entry
+  namespace on its most recently connected runtime, and the input's lines
+  count from 1. A session the server forgot, after the watch restarted, is
+  opened again bound to the same build (`repl_connect::Connection::bind`),
+  which `--repl --connect` sessions, bound to no build by the client, do
+  not need; if the restarted watch no longer runs the build, the client
+  ends with that error.
+- Tests: `tests/dev_repl.rs`, on temporary copies: `cljs-repl worker`
+  against `watch app worker` of the multi fixture, starting in
+  `app.worker` and running `jobs/run`, which only the worker's build has,
+  in the worker's Node runtime (by its process ID), then switching to the
+  app with `(light.dev/repl :app)`; `cljs-repl :worker` from `src/`;
+  `cljs-repl test`, which the file defines and the watch does not run, as an
+  exact error; `cljs-repl features` from the `app/` subdirectory of
+  examples/features with `watch features` running, printing `3` for `(+ 1
+  2)` and nothing else; a `:cache-root "state/light"` holding the port file,
+  with `--print-length 3 --print-level 2` shortening the values printed; a
+  session the server forgot, the watch started again on its port, opened
+  again in the worker, the next form running in the new worker's runtime;
+  and a table of exact errors with no watch running:
+  an unknown id with and without a suggestion, no `http.port` (for `features`
+  and `:features`), an `http.port` naming a closed port, one holding no
+  port, no id, two ids, a foreign flag and a bad `--print-level`, none
+  writing a file. `tests/cli.rs`: the flag-only test also runs
+  `--repl --connect` and `./cljs-repl` beside an invalid `light-cljs.edn`.
+  Checked with Node runtimes, not in a browser or a terminal by hand.
+
 ## Phases
 
 Queued on 2026-10-20 as the pellets group `build-configuration`, in this
@@ -1706,8 +1771,9 @@ Exit criterion: the illustration's `watch app worker` serves the page and
 its worker from one origin, a save reloads both, and one nREPL connection
 evaluates in either; `light-cljs cljs-repl worker` evaluates in the
 worker; and the retention measurement is recorded. The server and nREPL
-parts are met by light-cljs-407 ("As built (light-cljs-407)"); `cljs-repl`
-and the measurement are light-cljs-408's and 409's.
+parts are met by light-cljs-407 ("As built (light-cljs-407)"), and
+`cljs-repl worker` by light-cljs-408, tested against that watch ("As built
+(light-cljs-408)"); the measurement is light-cljs-409's.
 
 ### Deferred
 

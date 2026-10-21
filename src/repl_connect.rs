@@ -7,6 +7,11 @@
 //! stderr. Reader errors are found here; analysis errors come from the
 //! server, runtime errors from the runtime with their stacks mapped to the
 //! sources.
+//!
+//! `light-cljs cljs-repl ID` runs the same client on the port of a running
+//! `light-cljs watch`, with its session bound to build ID before the first
+//! form is read, as if that form were `(light.dev/repl :ID)`
+//! (docs/build-configuration.md, "Commands").
 use light_cljs::dev_server::Json;
 use light_cljs::eval_session::PrintOptions;
 use light_cljs::{ErrorKind, LexError, ParseError, Parser};
@@ -22,10 +27,31 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const FILE: &str = "<stdin>.cljc";
 
 /// The dev server at `address` and the REPL session it gave this client.
-struct Connection {
+pub(crate) struct Connection {
     address: String,
     session: String,
     namespace: String,
+    /// The build `(light.dev/repl :ID)` bound the session to, which a
+    /// session opened again is bound to as well; `None` for the server's
+    /// first build, where `--repl --connect` starts.
+    build: Option<String>,
+}
+
+/// Why a REPL session could not be opened.
+pub(crate) enum OpenError {
+    /// No answer: the connection failed.
+    Io(io::Error),
+    /// The server's answer, which opened no session.
+    Answer(String),
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => error.fmt(f),
+            Self::Answer(text) => f.write_str(text),
+        }
+    }
 }
 
 /// What the text read so far holds next.
@@ -95,8 +121,14 @@ impl Pending {
 }
 
 pub fn run(address: &str, print: &PrintOptions) -> Result<()> {
-    let mut connection = Connection::open(address)
+    let connection = Connection::open(address)
         .map_err(|error| format!("cannot open a REPL session at {address}: {error}"))?;
+    repl(connection, print)
+}
+
+/// Read forms from stdin and evaluate each on `connection`'s session until
+/// the input ends, which closes the session.
+pub(crate) fn repl(mut connection: Connection, print: &PrintOptions) -> Result<()> {
     let prompt = io::stdin().is_terminal();
     let mut input = io::stdin().lock();
     let mut pending = Pending {
@@ -158,24 +190,85 @@ pub fn run(address: &str, print: &PrintOptions) -> Result<()> {
 }
 
 impl Connection {
-    fn open(address: &str) -> std::result::Result<Self, String> {
-        let (status, body) =
-            post(address, r#"{"op":"open"}"#).map_err(|error| error.to_string())?;
-        let json = response(status, &body)?;
+    pub(crate) fn open(address: &str) -> std::result::Result<Self, OpenError> {
+        let (status, body) = post(address, r#"{"op":"open"}"#).map_err(OpenError::Io)?;
+        let json = response(status, &body).map_err(OpenError::Answer)?;
         let field = |key: &str| {
             json.get(key)
                 .and_then(Json::as_str)
                 .map(str::to_owned)
-                .ok_or_else(|| format!("the server's answer has no {key}: {body}"))
+                .ok_or_else(|| {
+                    OpenError::Answer(format!("the server's answer has no {key}: {body}"))
+                })
         };
         Ok(Self {
             address: address.to_owned(),
             session: field("session")?,
             namespace: field("namespace")?,
+            build: None,
         })
     }
 
-    fn close(&self) {
+    /// Bind the session to `build`, as `(light.dev/repl :BUILD)` typed as
+    /// its first form does, printing nothing: the session moves to that
+    /// build's entry namespace and its most recently connected runtime. An
+    /// error is the server's message, such as that of an id the watch does
+    /// not run.
+    pub(crate) fn bind(
+        &mut self,
+        build: &str,
+        print: &PrintOptions,
+    ) -> std::result::Result<(), String> {
+        let code = format!("(light.dev/repl :{build})");
+        let (status, body) = post(&self.address, &self.request(&code, 1, 1, print))
+            .map_err(|error| format!("cannot reach the dev server at {}: {error}", self.address))?;
+        let json = response(status, &body)?;
+        if let Some(Json::Array(results)) = json.get("results")
+            && let Some(error) = results.iter().find_map(|result| result.get("error"))
+        {
+            let diagnostic = error.get("diagnostic").unwrap_or(&Json::Null);
+            return Err(diagnostic
+                .get("message")
+                .and_then(Json::as_str)
+                .unwrap_or_default()
+                .to_owned());
+        }
+        if let Some(namespace) = json.get("namespace").and_then(Json::as_str) {
+            self.namespace = namespace.to_owned();
+        }
+        self.build = Some(build.to_owned());
+        Ok(())
+    }
+
+    /// The body of a request to evaluate `code`, a form at `line` and
+    /// `column` of the input, on the session.
+    fn request(&self, code: &str, line: usize, column: usize, print: &PrintOptions) -> String {
+        let optional = |value: Option<usize>| value.map_or(Json::Null, |n| Json::Number(n as f64));
+        let mut body = String::new();
+        Json::Object(vec![
+            ("op".into(), Json::String("eval".into())),
+            ("session".into(), Json::String(self.session.clone())),
+            ("code".into(), Json::String(code.into())),
+            ("file".into(), Json::String(FILE.into())),
+            ("line".into(), Json::Number(line as f64)),
+            ("column".into(), Json::Number(column as f64)),
+            (
+                "print".into(),
+                Json::Object(vec![
+                    ("readably".into(), Json::Bool(print.readably)),
+                    ("length".into(), optional(print.length)),
+                    ("level".into(), optional(print.level)),
+                    ("meta".into(), Json::Bool(print.meta)),
+                    ("namespace-maps".into(), Json::Bool(print.namespace_maps)),
+                    ("dup".into(), Json::Bool(print.dup)),
+                ]),
+            ),
+        ])
+        .write(&mut body);
+        body
+    }
+
+    pub(crate) fn close(&self) {
         let body = format!(r#"{{"op":"close","session":"{}"}}"#, self.session);
         let _ = post(&self.address, &body);
     }
@@ -190,41 +283,25 @@ impl Connection {
         column: usize,
         print: &PrintOptions,
     ) -> Result<()> {
-        let optional = |value: Option<usize>| value.map_or(Json::Null, |n| Json::Number(n as f64));
-        let request = |session: &str| {
-            let mut body = String::new();
-            Json::Object(vec![
-                ("op".into(), Json::String("eval".into())),
-                ("session".into(), Json::String(session.into())),
-                ("code".into(), Json::String(code.into())),
-                ("file".into(), Json::String(FILE.into())),
-                ("line".into(), Json::Number(line as f64)),
-                ("column".into(), Json::Number(column as f64)),
-                (
-                    "print".into(),
-                    Json::Object(vec![
-                        ("readably".into(), Json::Bool(print.readably)),
-                        ("length".into(), optional(print.length)),
-                        ("level".into(), optional(print.level)),
-                        ("meta".into(), Json::Bool(print.meta)),
-                        ("namespace-maps".into(), Json::Bool(print.namespace_maps)),
-                        ("dup".into(), Json::Bool(print.dup)),
-                    ]),
-                ),
-            ])
-            .write(&mut body);
-            body
-        };
-        let mut answer = post(&self.address, &request(&self.session));
+        let mut answer = post(&self.address, &self.request(code, line, column, print));
         if matches!(answer, Ok((404, _))) {
             match Self::open(&self.address) {
-                Ok(connection) => {
+                Ok(mut connection) => {
+                    if let Some(build) = &self.build
+                        && let Err(error) = connection.bind(build, print)
+                    {
+                        connection.close();
+                        return Err(format!(
+                            "the dev server forgot this REPL's session, and a new one cannot be bound to :{build}: {error}"
+                        )
+                        .into());
+                    }
                     eprintln!(
                         "light-cljs: the dev server forgot this REPL's session; a new one starts in {}",
                         connection.namespace
                     );
                     *self = connection;
-                    answer = post(&self.address, &request(&self.session));
+                    answer = post(&self.address, &self.request(code, line, column, print));
                 }
                 Err(error) => {
                     eprintln!("light-cljs: {error}");

@@ -16,6 +16,11 @@
 //! with one server always started, as shadow-cljs's is: `:http`, `:nrepl`, `:fs-watch` and `:devtools`, under the watch's own
 //! flags.
 //!
+//! `cljs-repl ID` ([`cljs_repl`]) runs no build: it reads the file for its
+//! builds and `:cache-root`, and connects `--repl --connect`'s client to
+//! the running watch whose port is in `<:cache-root>/http.port`, bound to
+//! build ID.
+//!
 //! Every relative path, in the file and in the flags after the command,
 //! resolves against the project directory, the file's.
 
@@ -225,19 +230,8 @@ pub(crate) fn run(
     }
     let words = words.as_str();
 
-    let start = std::env::current_dir().map_err(|error| failure(words, error))?;
-    let path = ConfigFile::discover(&start).ok_or_else(|| {
-        failure(
-            words,
-            format!(
-                "no {FILE_NAME} in {} or any parent directory; create one \
-                 (docs/build-configuration.md)",
-                start.display()
-            ),
-        )
-    })?;
     let environment = |name: &str| std::env::var(name).ok();
-    let file = ConfigFile::read(&path, &environment).map_err(|error| failure(words, error))?;
+    let (path, file) = discover(words, &environment)?;
     let names = defined(&file);
     if typed.is_empty() {
         return Err(failure(
@@ -250,21 +244,7 @@ pub(crate) fn run(
     }
     let mut builds: Vec<BuildId> = Vec::new();
     for id in &typed {
-        let name = id.strip_prefix(':').unwrap_or(id);
-        let Some(build) = file.find_build(name) else {
-            let message = match file.suggest_build(name) {
-                Some(suggestion) => format!(
-                    "{} defines no build :{name}; did you mean :{suggestion}? Its builds are \
-                     {names}",
-                    path.display()
-                ),
-                None => format!(
-                    "{} defines no build :{name}; its builds are {names}",
-                    path.display()
-                ),
-            };
-            return Err(failure(words, message));
-        };
+        let build = find_build(&file, &path, id, words)?;
         if !builds.contains(&build) {
             builds.push(build);
         }
@@ -362,6 +342,155 @@ pub(crate) fn run(
         );
     }
     Ok(())
+}
+
+/// The configuration file, found by walking up from the current directory,
+/// read and validated: its path and contents.
+fn discover(
+    words: &str,
+    environment: &dyn Fn(&str) -> Option<String>,
+) -> Result<(PathBuf, ConfigFile), Box<dyn Error>> {
+    let start = std::env::current_dir().map_err(|error| failure(words, error))?;
+    let path = ConfigFile::discover(&start).ok_or_else(|| {
+        failure(
+            words,
+            format!(
+                "no {FILE_NAME} in {} or any parent directory; create one \
+                 (docs/build-configuration.md)",
+                start.display()
+            ),
+        )
+    })?;
+    let file = ConfigFile::read(&path, environment).map_err(|error| failure(words, error))?;
+    Ok((path, file))
+}
+
+/// The build `id` names, written with or without its colon, or the
+/// unknown-id error ("Errors").
+fn find_build(
+    file: &ConfigFile,
+    path: &Path,
+    id: &str,
+    words: &str,
+) -> Result<BuildId, Box<dyn Error>> {
+    let name = id.strip_prefix(':').unwrap_or(id);
+    file.find_build(name).ok_or_else(|| {
+        let names = defined(file);
+        let message = match file.suggest_build(name) {
+            Some(suggestion) => format!(
+                "{} defines no build :{name}; did you mean :{suggestion}? Its builds are \
+                 {names}",
+                path.display()
+            ),
+            None => format!(
+                "{} defines no build :{name}; its builds are {names}",
+                path.display()
+            ),
+        };
+        failure(words, message)
+    })
+}
+
+/// `light-cljs cljs-repl ID [--print-length N] [--print-level N]`: the
+/// `--repl --connect 127.0.0.1:PORT` client on the port the running watch
+/// wrote to `<:cache-root>/http.port`, its session bound to build ID before
+/// the first form is read, as `(light.dev/repl :ID)` binds it
+/// (docs/build-configuration.md, "Commands"). It never starts a watch.
+pub(crate) fn cljs_repl(args: impl Iterator<Item = OsString>) -> Result<(), Box<dyn Error>> {
+    let mut args = args.peekable();
+    let mut typed = Vec::new();
+    while let Some(arg) = args.next_if(|arg| !arg.to_string_lossy().starts_with('-')) {
+        typed.push(arg.to_string_lossy().into_owned());
+    }
+    let mut words = "cljs-repl".to_owned();
+    for id in &typed {
+        words.push(' ');
+        words.push_str(id);
+    }
+    let words = words.as_str();
+
+    let environment = |name: &str| std::env::var(name).ok();
+    let (path, file) = discover(words, &environment)?;
+    let id = match &typed[..] {
+        [id] => id,
+        [] => {
+            return Err(failure(
+                words,
+                format!(
+                    "requires one build id; {} defines {}",
+                    path.display(),
+                    defined(&file)
+                ),
+            ));
+        }
+        _ => {
+            return Err(failure(
+                words,
+                "takes one build id, the build the session is bound to; (light.dev/repl :ID) \
+                 binds it to another",
+            ));
+        }
+    };
+    let build = find_build(&file, &path, id, words)?;
+    let mut print = crate::eval_cli::print_defaults();
+    while let Some(arg) = args.next() {
+        let flag = arg.to_string_lossy().into_owned();
+        if !crate::eval_cli::print_flag(&flag, &mut args, &mut print)
+            .map_err(|error| failure(words, error))?
+        {
+            return Err(failure(
+                words,
+                format!(
+                    "{flag} is not a flag of cljs-repl, which connects to a running watch; it \
+                     takes --print-length and --print-level"
+                ),
+            ));
+        }
+    }
+
+    // The watch writes `http.port` under the file's `:cache-root` of its
+    // dev settings (layers 1-5), which no flag moves; the build's output
+    // directories do not matter here, so they are not compared.
+    let settings = file
+        .settings_before_flags(build, BuildMode::Dev, &[])
+        .map_err(|error| failure(words, error))?;
+    let name = settings.name().to_owned();
+    let cache_root = string(&settings, Setting::CacheRoot).unwrap_or(".light-cljs");
+    let port_file = file.resolve(Path::new(cache_root)).join("http.port");
+    let not_running = || {
+        failure(
+            words,
+            format!(
+                "no watch is running for {}; start one with light-cljs watch {name}",
+                path.display()
+            ),
+        )
+    };
+    // A file that does not hold a port is one no watch wrote.
+    let port = std::fs::read_to_string(&port_file)
+        .ok()
+        .and_then(|text| text.trim().parse::<u16>().ok())
+        .ok_or_else(not_running)?;
+    let address = format!("127.0.0.1:{port}");
+    let mut connection = match crate::repl_connect::Connection::open(&address) {
+        Ok(connection) => connection,
+        Err(crate::repl_connect::OpenError::Io(error))
+            if error.kind() == std::io::ErrorKind::ConnectionRefused =>
+        {
+            return Err(not_running());
+        }
+        Err(error) => {
+            return Err(failure(
+                words,
+                format!("cannot open a REPL session at {address}: {error}"),
+            ));
+        }
+    };
+    if let Err(error) = connection.bind(&name, &print) {
+        connection.close();
+        return Err(failure(words, error));
+    }
+    crate::repl_connect::repl(connection, &print)
 }
 
 /// The file's build ids, each with its colon: `:app, :test, :worker`.

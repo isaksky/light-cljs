@@ -76,15 +76,33 @@ impl Default for Options {
             connect: None,
             local: None,
             eval: EvalOptions {
-                print: PrintOptions {
-                    length: Some(100),
-                    level: Some(20),
-                    ..Default::default()
-                },
+                print: print_defaults(),
                 ..Default::default()
             },
         }
     }
+}
+/// How results print without `--print-length` and `--print-level`.
+pub(crate) fn print_defaults() -> PrintOptions {
+    PrintOptions {
+        length: Some(100),
+        level: Some(20),
+        ..Default::default()
+    }
+}
+/// Read `--print-length N` or `--print-level N` into `print`, the flags of
+/// the connected client: whether `flag` is one of them.
+pub(crate) fn print_flag(
+    flag: &str,
+    args: &mut impl Iterator<Item = OsString>,
+    print: &mut PrintOptions,
+) -> Result<bool> {
+    match flag {
+        "--print-length" => print.length = Some(size(args, flag)?),
+        "--print-level" => print.level = Some(size(args, flag)?),
+        _ => return Ok(false),
+    }
+    Ok(true)
 }
 fn argument(args: &mut impl Iterator<Item = OsString>, flag: &str) -> Result<OsString> {
     args.next()
@@ -171,12 +189,8 @@ fn options(repl: bool, mut args: impl Iterator<Item = OsString>) -> Result<Optio
                     };
                     return Err(format!("{flag} is retired; use {replacement}; native resource units are not equivalent").into());
                 }
-                "--print-length" => {
-                    options.eval.print.length = Some(size(&mut args, flag)?);
-                    continue;
-                }
-                "--print-level" => {
-                    options.eval.print.level = Some(size(&mut args, flag)?);
+                "--print-length" | "--print-level" => {
+                    print_flag(flag, &mut args, &mut options.eval.print)?;
                     continue;
                 }
                 "--engine" => {

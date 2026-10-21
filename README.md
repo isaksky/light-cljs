@@ -491,7 +491,8 @@ Compilation errors report line/byte-column and produce no partial output.
 overrides ([docs/build-configuration.md](docs/build-configuration.md)). The
 `compile` and `release` commands find it in the current directory or the
 nearest parent and run the builds named, one after another in that order,
-stopping at the first failure; `watch` runs one build, watched and served:
+stopping at the first failure; `watch` runs builds watched and served, and
+`cljs-repl` is a REPL into a running watch's build:
 
 ```sh
 cd examples/features
@@ -557,6 +558,24 @@ light-cljs watch app worker          # in tests/fixtures/build-configuration/mul
 # 42
 ```
 
+`cljs-repl ID` is shadow-cljs's command for a REPL into a running watch's
+build: from the project directory or below it, it finds the watch by the
+port in `<:cache-root>/http.port` and runs the `--repl --connect` client on
+127.0.0.1 at that port, with its session bound to build ID as if its first
+form were `(light.dev/repl :ID)`, in the build's entry namespace. It takes
+the client's `--print-length` and `--print-level`. Unlike shadow-cljs's, it
+never starts a watch: without one running for the file it says so (`light-cljs
+cljs-repl worker: no watch is running for /work/site/light-cljs.edn; start one
+with light-cljs watch worker`), and an id the running watch does not run is
+an error naming those it does.
+
+```sh
+light-cljs watch app worker          # in one terminal
+light-cljs cljs-repl worker          # in another, from the same project
+# app.worker=> (jobs/run 2)
+# 42
+```
+
 `release ID` writes what `--compile --optimize advanced --out-dir` writes,
 at the build's `:optimizations`; `compile ID` writes what `--compile
 --reloadable --out-dir` writes. Build ids are written with or without
@@ -575,8 +594,8 @@ off and `--cache-blocker` adds to the file's blockers. `--config-merge DATA`
 build, as shadow-cljs's does. `--entry` and `--out-dir` take one build id,
 and `--esm` and the source map flags are refused, as are `--watch`'s flags
 but by `watch`. A command that starts with a flag never reads
-`light-cljs.edn`; a file named `compile`, `watch` or `release` is tokenized
-when written `./compile`.
+`light-cljs.edn`; a file named `compile`, `watch`, `release` or `cljs-repl`
+is tokenized when written `./compile`.
 
 `--print-config` after the ids prints, for each build, the configuration the
 command would run with instead of building it, and writes nothing: EDN a
