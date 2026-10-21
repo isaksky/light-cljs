@@ -39,7 +39,7 @@ jobs:
           bb: latest
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.18.0'
+          node-version: '26.12.0'
       # The module compiles no C (light-cljs-357), so no wasm32 clang or llvm-ar.
       - run: bb --version
       - run: bb playground/build.bb build

@@ -446,9 +446,10 @@ globalThis.postMessage = (message) => parentPort.postMessage(message);
 import(workerData.script).then(() => parentPort.on("message", (data) => self.onmessage({ data })));
 `;
 const compilerScript = pathToFileURL(path.join(dist, "compiler-worker.js")).href;
-// Every thread started, terminated when the check ends.
+// Every thread started, terminated when the check ends. `observe`, when
+// given, sees each message the thread posts before the page's handler does.
 const threads = [];
-function spawnWorker() {
+function spawnWorker(observe) {
   const thread = new Worker(ADAPTER, { eval: true, workerData: { script: compilerScript } });
   threads.push(thread);
   const handle = {
@@ -457,7 +458,10 @@ function spawnWorker() {
     postMessage: (message) => thread.postMessage(message),
     terminate: () => void thread.terminate(),
   };
-  thread.on("message", (data) => handle.onmessage?.({ data }));
+  thread.on("message", (data) => {
+    observe?.(data);
+    handle.onmessage?.({ data });
+  });
   thread.on("error", (error) => handle.onerror?.({ message: String(error) }));
   return handle;
 }
@@ -631,11 +635,25 @@ const watched = await Promise.all([
   })(),
   // A macro that leaves a spinning timer behind compiles, but its worker
   // never starts the next compile: that one is sent to a fresh worker.
+  // The timer says when it starts spinning, and the next compile is sent
+  // only then: a worker descheduled between posting "compiled" and going
+  // back to its event loop (as on a loaded CI runner) takes a compile sent
+  // sooner in the same batch of messages, before its timers run, and
+  // compiles it at once.
   (async () => {
-    const left = createCompiler({ spawn: spawnWorker, module: wasmModule });
-    const LATER = ["(ns demo.main)\n(defmacro later [] (js/setTimeout (fn [] (loop [i 0] (if (< i 1e15) (recur (inc i)) i))) 0) 1)\n(later)\n"];
+    let spinning;
+    const leftBehind = new Promise((resolve) => (spinning = resolve));
+    const observe = (data) => data?.type === "left behind" && spinning();
+    const left = createCompiler({ spawn: () => spawnWorker(observe), module: wasmModule });
+    const LATER = [
+      '(ns demo.main)\n(defmacro later [] (js/setTimeout (fn [] (js/postMessage (js-obj "type" "left behind")) (loop [i 0] (if (< i 1e15) (recur (inc i)) i))) 0) 1)\n(later)\n',
+    ];
     const leaving = await left.compile(request(["demo/main.cljs"], LATER, "demo.main", "none"));
     check(leaving.status === "done" && leaving.result.error == null, `watchdog, timer left behind: ${JSON.stringify(leaving).slice(0, 200)}`);
+    let waiting;
+    const spun = await Promise.race([leftBehind.then(() => true), new Promise((resolve) => (waiting = setTimeout(resolve, DEADLINE_MS, false)))]);
+    clearTimeout(waiting);
+    check(spun, "watchdog, timer left behind: the timer never started");
     const begun = performance.now();
     const next = request(examplePaths(first), exampleSources(first), first.entry, "none");
     const outcome = await left.compile(next);
