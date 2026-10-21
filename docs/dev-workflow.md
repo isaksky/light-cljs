@@ -509,6 +509,27 @@ waiting evaluation as interrupted, and runs no further form; the runtime
 finishes the form it was sent. A `load-file` evaluates the file's text as
 `eval` does and leaves the session's namespace as it was.
 
+As built (light-cljs-407; [build-configuration.md](build-configuration.md),
+"Several builds in one process"): a watch of several builds, `light-cljs
+watch app worker`, has one REPL for all of them. A session, of nREPL on
+either port or of `--repl --connect`, starts bound to the first build named;
+`(light.dev/repl :worker)`, as shadow-cljs's `(shadow.cljs.devtools.api/repl
+:worker)`, binds it to the worker: its forms, completions and lookups go to
+the worker's thread as `ReplRequest`s, its units to the worker's runtimes,
+and it starts again in the worker's entry namespace, on the most recently
+connected runtime, answering `[:selected :worker]`. Forms after the command
+in the same evaluation run in the worker. `light.dev/runtimes` lists every
+build's runtimes by ID, each with its `:build` (without one in a flag-only
+`--watch`, whose one build is unnamed); `light.dev/select!` chooses among the
+bound build's, and names the build of another's runtime in its error. An id
+the watch does not run is an error naming the ids it runs (`the watch runs
+no build :nope; its builds are :app, :worker`); in a flag-only `--watch`,
+`the watch runs no named builds: light.dev/repl switches between the builds
+of light-cljs watch ID ...`. The sessions are the server's, not a build's: a
+session belongs to the endpoint that opened it (nREPL and `/repl` the first
+build's, `/ID/repl` that build's), and its history in the runtimes of each
+build it ran in goes when it closes.
+
 ### JavaScript packages in dev
 
 The compiler never resolves packages. A dev page provides them before

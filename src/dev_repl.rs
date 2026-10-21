@@ -8,8 +8,8 @@
 //! connection thread sends the unit and waits for the reply.
 //!
 //! Also here: the REPL commands the server answers itself,
-//! `(light.dev/runtimes)` and `(light.dev/select! ID)`, and the mapping of a
-//! runtime error's stack back to the sources.
+//! `(light.dev/runtimes)`, `(light.dev/select! ID)` and `(light.dev/repl
+//! :ID)`, and the mapping of a runtime error's stack back to the sources.
 
 use crate::CollectionKind;
 use crate::compiler_data::{DatumKind, Form, Name};
@@ -23,9 +23,10 @@ use std::sync::mpsc::Sender;
 
 /// The functions of the `light.dev` namespace, which the dev client defines
 /// in every runtime: `ref` returns the value of a reference number,
-/// `inspect` describes it, and `runtimes` and `select!` are the server's
-/// commands, which throw when called anywhere but as a form of their own.
-pub const LIGHT_DEV: [&str; 4] = ["ref", "inspect", "runtimes", "select!"];
+/// `inspect` describes it, and `runtimes`, `select!` and `repl` are the
+/// server's commands, which throw when called anywhere but as a form of
+/// their own.
+pub const LIGHT_DEV: [&str; 5] = ["ref", "inspect", "runtimes", "select!", "repl"];
 
 /// Declare the functions of `light.dev` in `session`, so that REPL forms
 /// that call them compile without a warning.
@@ -150,6 +151,10 @@ pub(crate) enum Command {
     /// `(light.dev/select! ID)`: send the session's forms to runtime `ID`,
     /// or with nil to the most recently connected one.
     Select(Option<u64>),
+    /// `(light.dev/repl :ID)`: bind the session to build `ID`, as
+    /// shadow-cljs's `(shadow.cljs.devtools.api/repl :ID)` does
+    /// (docs/build-configuration.md, "Several builds in one process").
+    Repl(String),
 }
 
 fn compile(
@@ -260,8 +265,9 @@ fn compile(
 }
 
 /// The command `form` is, if it is a list whose operator is
-/// `light.dev/runtimes` or `light.dev/select!`, or why it is not a valid one.
-fn command(form: &Form) -> Option<Result<Command, String>> {
+/// `light.dev/runtimes`, `light.dev/select!` or `light.dev/repl`, or why it
+/// is not a valid one.
+pub(crate) fn command(form: &Form) -> Option<Result<Command, String>> {
     if !matches!(
         form.data().kind(),
         DatumKind::Collection {
@@ -297,6 +303,16 @@ fn command(form: &Form) -> Option<Result<Command, String>> {
             "light.dev/select! takes a runtime ID, as (light.dev/runtimes) lists them, or nil"
                 .to_owned()
         }));
+    }
+    if name == Name::new(Some("light.dev"), "repl") {
+        return Some(
+            match children.get(1).map(|child| child.data().kind().clone()) {
+                Some(DatumKind::Keyword(id)) if children.len() == 2 && id.namespace().is_none() => {
+                    Ok(Command::Repl(String::from_utf16_lossy(id.name())))
+                }
+                _ => Err("light.dev/repl takes one build id, a keyword such as :app".to_owned()),
+            },
+        );
     }
     None
 }

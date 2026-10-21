@@ -14,7 +14,9 @@
 
 use crate::compiler_data::{DatumKind, Form};
 use crate::dev_repl::ReplRequest;
-use crate::dev_server::{Evaluation, FormError, FormResult, Interrupt, Shared, evaluate, placed};
+use crate::dev_server::{
+    Evaluation, FIRST_MOUNT, FormError, FormResult, Interrupt, Site, evaluate, placed,
+};
 use crate::dev_session::DevSession;
 use crate::eval_session::PrintOptions;
 use crate::source_provider::SourceInput;
@@ -914,7 +916,7 @@ struct Job {
 
 /// One client's connection.
 struct Connection {
-    shared: Arc<Shared>,
+    site: Arc<Site>,
     writer: Arc<Mutex<TcpStream>>,
     /// The sessions this connection opened, which it closes when it ends.
     opened: Vec<u64>,
@@ -948,13 +950,16 @@ fn status(statuses: &[&str]) -> Bencode {
 }
 
 /// Serve one nREPL client until it closes the connection.
-pub(crate) fn connection(stream: TcpStream, shared: &Arc<Shared>) -> io::Result<()> {
+///
+/// Its sessions are the first build's endpoint's, and start bound to the
+/// first build named, until `(light.dev/repl :ID)` binds one to another.
+pub(crate) fn connection(stream: TcpStream, site: &Arc<Site>) -> io::Result<()> {
     // An editor stays connected while idle.
     stream.set_read_timeout(None)?;
     stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut connection = Connection {
-        shared: shared.clone(),
+        site: site.clone(),
         writer: Arc::new(Mutex::new(stream)),
         opened: Vec::new(),
         own: None,
@@ -969,8 +974,8 @@ pub(crate) fn connection(stream: TcpStream, shared: &Arc<Shared>) -> io::Result<
     };
     // The client's sessions end with it: their evaluations stop waiting.
     for session in connection.opened {
-        shared.interrupt(session, None);
-        shared.close_session(session);
+        site.interrupt(session, None);
+        site.close_session(session);
     }
     let _ = connection
         .writer
@@ -988,7 +993,7 @@ impl Connection {
     /// own when it names none; an error was sent when there is none.
     fn session(&mut self, message: &Bencode) -> Option<(u64, String)> {
         match message.get("session").and_then(Bencode::as_str) {
-            Some(id) => match self.shared.session(id) {
+            Some(id) => match self.site.session(FIRST_MOUNT, id) {
                 Some(number) => Some((number, id.to_owned())),
                 None => {
                     self.reply(
@@ -1001,7 +1006,7 @@ impl Connection {
             },
             None => {
                 if self.own.is_none() {
-                    let Some((number, id, _)) = self.shared.open_session(None) else {
+                    let Some((number, id, _)) = self.site.open_session(FIRST_MOUNT, None) else {
                         self.reply(message, None, status(&["error", "no-compiler", "done"]));
                         return None;
                     };
@@ -1023,10 +1028,10 @@ impl Connection {
         let session = message
             .get("session")
             .and_then(Bencode::as_str)
-            .and_then(|id| self.shared.session(id));
+            .and_then(|id| self.site.session(FIRST_MOUNT, id));
         match session.or(self.own.as_ref().map(|(number, _)| *number)) {
-            Some(session) => self.shared.session_namespace(session),
-            None => self.shared.start_namespace(),
+            Some(session) => self.site.session_namespace(session),
+            None => self.site.start_namespace(FIRST_MOUNT),
         }
     }
 
@@ -1077,8 +1082,8 @@ impl Connection {
                 let from = message
                     .get("session")
                     .and_then(Bencode::as_str)
-                    .and_then(|id| self.shared.session(id));
-                match self.shared.open_session(from) {
+                    .and_then(|id| self.site.session(FIRST_MOUNT, id));
+                match self.site.open_session(FIRST_MOUNT, from) {
                     Some((number, id, _)) => {
                         self.opened.push(number);
                         let from = message.get("session").and_then(Bencode::as_str);
@@ -1098,8 +1103,8 @@ impl Connection {
                 let Some((number, id)) = self.session(&message) else {
                     return;
                 };
-                self.shared.interrupt(number, None);
-                self.shared.close_session(number);
+                self.site.interrupt(number, None);
+                self.site.close_session(number);
                 self.opened.retain(|opened| *opened != number);
                 if self.own.as_ref().is_some_and(|(own, _)| *own == number) {
                     self.own = None;
@@ -1107,7 +1112,7 @@ impl Connection {
                 self.reply(&message, Some(&id), status(&["session-closed", "done"]));
             }
             "ls-sessions" => {
-                let ids = self.shared.session_ids();
+                let ids = self.site.session_ids(FIRST_MOUNT);
                 let session = message.get("session").and_then(Bencode::as_str);
                 self.reply(
                     &message,
@@ -1124,7 +1129,7 @@ impl Connection {
                     return;
                 };
                 let asked = message.get("interrupt-id").and_then(Bencode::as_str);
-                let statuses: &[&str] = match self.shared.interrupt(number, asked) {
+                let statuses: &[&str] = match self.site.interrupt(number, asked) {
                     Interrupt::Interrupted => &["done"],
                     Interrupt::Idle => &["session-idle", "done"],
                     Interrupt::Mismatch => &["error", "interrupt-id-mismatch", "done"],
@@ -1195,11 +1200,8 @@ impl Connection {
             last_only: load,
             message,
         };
-        let shared = self.shared.clone();
-        if !self
-            .shared
-            .queue(session, Box::new(move || run(&shared, job)))
-        {
+        let site = self.site.clone();
+        if !self.site.queue(session, Box::new(move || run(&site, job))) {
             let (id, session_id) = closed;
             let message = Bencode::Dict(id.map(|id| (b"id".to_vec(), id)).into_iter().collect());
             let unknown = status(&["error", "unknown-session", "done"]);
@@ -1207,14 +1209,19 @@ impl Connection {
         }
     }
 
-    /// Answer `completions` or `lookup` with the compiler's help.
+    /// Answer `completions` or `lookup` with the help of the compiler of the
+    /// build the session is bound to.
     fn ask_compiler(&self, op: &str, message: Bencode) {
         let session = message
             .get("session")
             .and_then(Bencode::as_str)
             .map(str::to_owned);
+        let number = session
+            .as_deref()
+            .and_then(|id| self.site.session(FIRST_MOUNT, id))
+            .or(self.own.as_ref().map(|(number, _)| *number));
         let session = session.as_deref();
-        let Some(compiler) = self.shared.compiler() else {
+        let Some(compiler) = self.site.compiler(FIRST_MOUNT, number) else {
             self.reply(&message, session, status(&["error", "no-compiler", "done"]));
             return;
         };
@@ -1327,7 +1334,7 @@ impl Connection {
 /// `value` with the `ns` after it per form (the last alone for
 /// `load-file`), an `err` and an `ex` for a form that failed and `err` for
 /// warnings, then `done`, after `interrupted` when an interrupt ended it.
-fn run(shared: &Shared, job: Job) {
+fn run(site: &Site, job: Job) {
     let writer = &*job.writer;
     let session = Some(job.session_id.as_str());
     let message = &job.message;
@@ -1387,7 +1394,7 @@ fn run(shared: &Shared, job: Job) {
         restore: job.last_only,
         message: message.get("id").and_then(Bencode::as_str),
     };
-    let outcome = evaluate(shared, job.session, &evaluation, each);
+    let outcome = evaluate(site, job.session, &evaluation, each);
     match outcome {
         Ok(evaluated) => {
             if let Some((value, _)) = last {

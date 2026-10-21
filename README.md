@@ -538,6 +538,25 @@ watched changes nothing; and an edit of `:http`,
 light-cljs.edn; restart the watch to apply it`) and applies once the watch
 is started again. Flags after the ids still win.
 
+A REPL session of the watch, nREPL on either port or `--repl --connect`,
+starts bound to the first build named, in its entry namespace.
+`(light.dev/repl :worker)`, as shadow-cljs's `(shadow.cljs.devtools.api/repl
+:worker)`, binds the session to another build: its forms compile with that
+build's program and run in its runtimes, from its entry namespace, and the
+value is `[:selected :worker]`. `(light.dev/runtimes)` lists every build's
+runtimes, each with its `:build`, and `(light.dev/select! ID)` chooses among
+the bound build's. An id the watch does not run is an error that names those
+it runs; a flag-only `--watch` runs no named builds, so there it is an error
+too.
+
+```sh
+light-cljs watch app worker          # in tests/fixtures/build-configuration/multi
+# app.main=> (light.dev/repl :worker)
+# [:selected :worker]
+# app.worker=> (jobs/run 2)
+# 42
+```
+
 `release ID` writes what `--compile --optimize advanced --out-dir` writes,
 at the build's `:optimizations`; `compile ID` writes what `--compile
 --reloadable --out-dir` writes. Build ids are written with or without

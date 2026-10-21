@@ -16,6 +16,10 @@ fn no_cache<'a>(mut args: impl Iterator<Item = &'a str>) -> Option<&'static str>
 #[allow(dead_code)]
 mod temp_dir;
 
+#[path = "support/file_watch.rs"]
+#[allow(dead_code)]
+mod file_watch;
+
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -210,24 +214,29 @@ impl Watch {
 
     /// A terminal client connected to the server, with `flags`.
     fn repl(&self, flags: &[&str]) -> Repl {
-        // One pipe for stdout and stderr keeps the client's lines in order.
-        let mut child = Command::new("sh")
-            .args(["-c", "exec \"$0\" \"$@\" 2>&1"])
-            .arg(env!("CARGO_BIN_EXE_light-cljs"))
-            .args(["--repl", "--connect", &self.address])
-            .args(flags)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let stdin = child.stdin.take().unwrap();
-        let lines = lines(child.stdout.take().unwrap());
-        Repl {
-            _process: Process(child),
-            stdin,
-            lines,
-            line: 1,
-        }
+        connect(&self.address, flags)
+    }
+}
+
+/// A terminal client connected to the server at `address`, with `flags`.
+fn connect(address: &str, flags: &[&str]) -> Repl {
+    // One pipe for stdout and stderr keeps the client's lines in order.
+    let mut child = Command::new("sh")
+        .args(["-c", "exec \"$0\" \"$@\" 2>&1"])
+        .arg(env!("CARGO_BIN_EXE_light-cljs"))
+        .args(["--repl", "--connect", address])
+        .args(flags)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdin = child.stdin.take().unwrap();
+    let lines = lines(child.stdout.take().unwrap());
+    Repl {
+        _process: Process(child),
+        stdin,
+        lines,
+        line: 1,
     }
 }
 
@@ -702,4 +711,154 @@ fn pages_cannot_evaluate() {
         post("Content-Type: application/json\r\n"),
         "HTTP/1.1 200 OK"
     );
+}
+
+/// `light-cljs watch features` on a temporary copy of examples/features
+/// (docs/build-configuration.md, "Several builds in one process"): a
+/// `--repl --connect` session starts bound to `:features`, in its entry,
+/// `(light.dev/repl :features)` binds it there again, and an id the watch
+/// does not run, or an argument that is not one keyword, is an exact error
+/// that leaves the session as it was. A runtime of the build is listed with
+/// it.
+#[test]
+fn watch_features_binds_its_sessions_with_light_dev_repl() {
+    let (_dir, project) = file_watch::features("dev-repl-features");
+    let mut watch =
+        file_watch::Light::spawn(&project, &["watch", "features"], Some("{:http {:port 0}}"));
+    let (address, _, _) = watch.serving();
+    watch.until("[:features] built ");
+    let mut runtime = file_watch::node_runtime(
+        &project.join("out/dev"),
+        &format!("http://{address}/events"),
+        1_000_000,
+    );
+    let (_, hello) = runtime.until("message hello ");
+    let id = &hello["message hello ".len()..];
+    let mut repl = connect(&address, &[]);
+    assert_eq!(
+        repl.value("(light.dev/runtimes)"),
+        format!("[{{:id {id}, :build :features, :agent \"node\", :selected true}}]")
+    );
+    assert_eq!(repl.value("(str *ns*)"), "\"app.main\"");
+    assert_eq!(repl.value("(in-ns 'app.shared)"), "nil");
+    assert_eq!(
+        repl.value("(light.dev/repl :features)"),
+        "[:selected :features]"
+    );
+    assert_eq!(repl.value("(str *ns*)"), "\"app.main\"");
+    for (form, message) in [
+        (
+            "(light.dev/repl :nope)",
+            "the watch runs no build :nope; its builds are :features",
+        ),
+        (
+            "(light.dev/repl \"features\")",
+            "light.dev/repl takes one build id, a keyword such as :app",
+        ),
+        (
+            "(light.dev/repl)",
+            "light.dev/repl takes one build id, a keyword such as :app",
+        ),
+        (
+            "(light.dev/repl :features :features)",
+            "light.dev/repl takes one build id, a keyword such as :app",
+        ),
+        (
+            "(light.dev/repl :app/features)",
+            "light.dev/repl takes one build id, a keyword such as :app",
+        ),
+    ] {
+        let line = repl.line;
+        assert_eq!(
+            repl.eval(form),
+            [format!("light-cljs: <stdin>.cljc:{line}:1: {message}")],
+            "{form}"
+        );
+    }
+    assert_eq!(repl.value("(str *ns*)"), "\"app.main\"");
+}
+
+/// A flag-only `--watch` runs one unnamed build: `(light.dev/repl ...)` is
+/// an exact error saying so, and `light.dev/runtimes` names no build.
+#[test]
+fn a_flag_only_watch_runs_no_named_builds() {
+    let watch = Watch::start("dev-repl-unnamed");
+    let runtime = watch.runtime();
+    let mut repl = watch.repl(&[]);
+    let line = repl.line;
+    assert_eq!(
+        repl.eval("(light.dev/repl :app)"),
+        [format!(
+            "light-cljs: <stdin>.cljc:{line}:1: the watch runs no named builds: light.dev/repl switches between the builds of light-cljs watch ID ..."
+        )]
+    );
+    assert_eq!(
+        repl.value("(light.dev/runtimes)"),
+        format!("[{{:id {}, :agent \"node\", :selected true}}]", runtime.id)
+    );
+    // Called anywhere but as a form of its own, it throws in the runtime.
+    let thrown = repl.eval("(do (light.dev/repl :app))");
+    assert!(
+        thrown[0].contains(
+            "light.dev/repl is a command of the connected REPL: evaluate it as a form of its own"
+        ),
+        "{thrown:#?}"
+    );
+}
+
+/// The Phase 3 test project, tests/fixtures/build-configuration/multi.
+const MULTI: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/build-configuration/multi"
+);
+
+/// `light-cljs watch app worker` on a temporary copy of the multi fixture:
+/// a `--repl --connect` session evaluates in the app's runtime, then after
+/// `(light.dev/repl :worker)` in the worker's, in its entry namespace, then
+/// back in the app's, with a form after the command in the same input,
+/// each reading a Var only its build defines and its runtime's process ID.
+#[test]
+fn connected_repl_switches_between_app_and_worker() {
+    let (_dir, project) = file_watch::project("dev-repl-multi", Path::new(MULTI));
+    let mut watch = file_watch::Light::spawn(
+        &project,
+        &["watch", "app", "worker"],
+        Some("{:http {:port 0} :nrepl false}"),
+    );
+    let (address, _, _) = watch.serving();
+    watch.until("[:app] built ");
+    watch.until("[:worker] built ");
+    let runtime = |build: &str| {
+        let mut runtime = file_watch::node_runtime(
+            &project.join("out").join(build),
+            &format!("http://{address}/{build}/events"),
+            1_000_000,
+        );
+        runtime.until("message load replay ");
+        runtime
+    };
+    let (app, worker) = (runtime("app"), runtime("worker"));
+    let (app_pid, worker_pid) = (app.child.id(), worker.child.id());
+    let mut repl = connect(&address, &[]);
+    assert_eq!(
+        repl.value("[app.build-info/built-by (.-pid js/process)]"),
+        format!("[\"light-cljs\" {app_pid}]")
+    );
+    assert_eq!(
+        repl.value("(light.dev/repl :worker)"),
+        "[:selected :worker]"
+    );
+    assert_eq!(repl.value("(str *ns*)"), "\"app.worker\"");
+    assert_eq!(
+        repl.value("[(jobs/run 2) (.-pid js/process)]"),
+        format!("[42 {worker_pid}]")
+    );
+    assert_eq!(
+        repl.eval("(light.dev/repl :app) [app.build-info/built-by (.-pid js/process)]"),
+        [
+            "[:selected :app]".to_owned(),
+            format!("[\"light-cljs\" {app_pid}]")
+        ]
+    );
+    assert_eq!(repl.value("(str *ns*)"), "\"app.main\"");
 }

@@ -183,6 +183,7 @@ globalThis.__lightDev = (() => {
   roots["light.dev/inspect"] = inspect;
   roots["light.dev/runtimes"] = command("runtimes");
   roots["light.dev/select!"] = command("select!");
+  roots["light.dev/repl"] = command("repl");
 
   function connect(url, options = {}) {
     const log = options.log ?? ((level, text) => console[level](text));

@@ -8,9 +8,10 @@ built (light-cljs-400)"), `--print-config` ("As built
 (light-cljs-401)"), `watch` with one build ("As built
 (light-cljs-403)"), rereading the file in the watch ("As built
 (light-cljs-404)"), the dev server's mounts (light-cljs-405, under "Several
-builds in one process") and several builds in one watch ("As built
-(light-cljs-406)") are implemented; `light.dev/repl` and `cljs-repl` are
-not yet.
+builds in one process"), several builds in one watch ("As built
+(light-cljs-406)") and `light.dev/repl` with the Phase 3 exit criterion's
+server and nREPL parts ("As built (light-cljs-407)") are implemented;
+`cljs-repl` is not yet.
 The implementation is queued as the pellets group `build-configuration`,
 one or more pellets per phase ("Phases"). Names that shadow-cljs has no
 word for are listed under "Names for review"; the pellets use them as
@@ -1538,6 +1539,86 @@ Checked by a Node driver, not in a browser.
   file-watch tests expect `[:features]` and `[:app]` lines; the flag-only
   ones are unchanged. Checked with Node runtimes, not in a browser.
 
+### As built (light-cljs-407): one REPL for every build, light.dev/repl
+
+- **Sessions are the server's.** The REPL sessions moved from each mount's
+  state to the server's (`dev_server::Site`, one table with one
+  incarnation), each with the mount whose endpoint opened it (its *home*:
+  the first build's for nREPL on either port and for `/repl`, which
+  `--repl --connect` uses; the build's for `/ID/repl`) and the build it is
+  bound to, its home's to begin with. An endpoint knows only the sessions it
+  opened, as light-cljs-405 had it, while their forms go wherever they are
+  bound. The session table's lock is taken before a mount's, never after.
+- **A REPL request goes to its session's build's thread.** Each form of an
+  evaluation, and each `completions` and `lookup`, is a `ReplRequest` for
+  the compiler of the build the session is bound to, read again before
+  every form; its unit goes to that build's runtimes, its interrupt to that
+  build's pending request, and its error stack is mapped through that
+  build's units and source maps. `close` makes every build's runtimes
+  forget the session.
+- **`(light.dev/repl :ID)`** is a fifth `light.dev` function, a command the
+  server answers, declared in every dev session and defined by the client
+  to throw when called inside another form, as `runtimes` and `select!`
+  are. Its argument is one unqualified keyword (`light.dev/repl takes one
+  build id, a keyword such as :app` otherwise). It binds the session to the
+  build and, as shadow-cljs's `nrepl-select` starts the build's REPL
+  afresh, moves it to the namespace that build's sessions start in (its
+  entry, where shadow-cljs has `:repl-init-ns` or `cljs.user`) and to its
+  most recently connected runtime; the value is shadow-cljs's,
+  `[:selected :worker]`. Rebinding to the bound build starts it afresh in
+  the same way. shadow-cljs's "To quit, type: :cljs/quit" has no
+  counterpart: there is no Clojure REPL to return to (the nREPL row of
+  "Deviations from shadow-cljs"). The errors, exact:
+  - an id the watch does not run: `the watch runs no build :nope; its
+    builds are :app, :worker`, the ids in the order named;
+  - a flag-only `--watch`, whose one build is unnamed (`DevServer::start`):
+    `the watch runs no named builds: light.dev/repl switches between the
+    builds of light-cljs watch ID ...`.
+
+  A build that cannot compile, because its restart failed or its thread
+  ended, would otherwise trap its sessions: when the bound build's
+  compiler does not answer, the server reads the form itself (with the
+  compiler's reader, `compiler_reader::read_form`, in no namespace's
+  context) and runs it if it is `(light.dev/repl :ID)`; any other form is
+  the compiler's error as before (`the compiler stopped`).
+- **`light.dev/runtimes`** lists every build's runtimes, by ID (the order
+  they connected in, since IDs are the server's), each as `{:id 2, :build
+  :worker, :agent "node", :selected false}`; `:selected` marks the runtime
+  the session's forms go to. A flag-only watch prints no `:build`, so its
+  output is unchanged. **`light.dev/select! ID`** chooses among the bound
+  build's runtimes; another build's is `runtime 1 runs :app, and the
+  session is bound to :worker; (light.dev/repl :app) binds it to :app`.
+- `src/dev_watch.rs` needed no change: each build's thread already served
+  its mount's REPL (light-cljs-406), and the connect client needed none
+  either, since it shows the namespace each answer gives.
+- Tests: `tests/dev_nrepl.rs`, the Phase 3 exit criterion on a copy of the
+  multi fixture: `watch app worker` serves `/app/index.js` and
+  `/worker/index.js` from one host and port, and the page's unit names the
+  worker by the absolute path `/worker/index.js`, which resolves on the
+  page's origin; a save of `app.shared` reloads a Node runtime of each
+  build; one nREPL connection evaluates in the app (`app.build-info`, which
+  only the app has, and the runtime's process ID), then after
+  `(light.dev/repl :worker)` in the worker (`app.jobs`, the worker's alone),
+  with completions from the bound build, `light.dev/runtimes` listing both
+  runtimes, `select!` of the other build's runtime refused, an unknown id's
+  exact error, an interrupt of the worker's form, a second session still
+  the app's, and `(light.dev/repl :app)` followed by a form in the same
+  evaluation running in the app; a session cloned from one bound to the
+  worker bound there too, with its runtime choice, and the close of a
+  session that ran in both builds reaching both runtimes as `forget`; and
+  a session of an app whose restart failed, and one opened after it,
+  switching to the worker. `tests/dev_repl.rs`: `--repl --connect` on
+  `watch app worker` switching to the worker and back, a form after the
+  command in the same input running in the app; `watch features` on a
+  copy of examples/features with `--repl --connect`, where
+  `(light.dev/repl :features)` succeeds, `:nope` and four malformed calls
+  are exact errors, and the runtime is listed with `:build :features`; and
+  a flag-only `--watch`, where the call is the no-named-builds error, the
+  runtimes carry no `:build`, and the call inside a form throws in the
+  runtime. The existing REPL, nREPL and server tests pass unchanged.
+  Checked with Node runtimes and the Node nREPL client, not in a browser
+  or an editor.
+
 ## Phases
 
 Queued on 2026-10-20 as the pellets group `build-configuration`, in this
@@ -1624,7 +1705,9 @@ process on the same port ("As built (light-cljs-404)").
 Exit criterion: the illustration's `watch app worker` serves the page and
 its worker from one origin, a save reloads both, and one nREPL connection
 evaluates in either; `light-cljs cljs-repl worker` evaluates in the
-worker; and the retention measurement is recorded.
+worker; and the retention measurement is recorded. The server and nREPL
+parts are met by light-cljs-407 ("As built (light-cljs-407)"); `cljs-repl`
+and the measurement are light-cljs-408's and 409's.
 
 ### Deferred
 

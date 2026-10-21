@@ -18,7 +18,7 @@ use light_cljs::dev_server::Json;
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc::{Receiver, RecvTimeoutError, channel},
     time::{Duration, Instant},
@@ -194,23 +194,28 @@ impl Watch {
 
     /// An nREPL client connected to `address`.
     fn client(&self, address: &str) -> Client {
-        let (host, port) = address.rsplit_once(':').unwrap();
-        let mut child = Command::new(node())
-            .arg(CLIENT)
-            .args([host, port])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("the nREPL tests require Node");
-        let stdin = child.stdin.take().unwrap();
-        let lines = lines(child.stdout.take().unwrap());
-        Client {
-            _process: Process(child),
-            stdin: Some(stdin),
-            lines,
-            next: 1,
-        }
+        client(address)
+    }
+}
+
+/// An nREPL client connected to `address`.
+fn client(address: &str) -> Client {
+    let (host, port) = address.rsplit_once(':').unwrap();
+    let mut child = Command::new(node())
+        .arg(CLIENT)
+        .args([host, port])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("the nREPL tests require Node");
+    let stdin = child.stdin.take().unwrap();
+    let lines = lines(child.stdout.take().unwrap());
+    Client {
+        _process: Process(child),
+        stdin: Some(stdin),
+        lines,
+        next: 1,
     }
 }
 
@@ -997,4 +1002,345 @@ fn watch_id_removes_its_port_file_on_an_error_and_no_nrepl_drops_the_listener() 
     assert!(lines.is_empty(), "{lines:#?}");
     assert!(http_file.exists() && !project.join(".nrepl-port").exists());
     assert_eq!(file_watch::nrepl_describe(&address), b"");
+}
+
+/// The Phase 3 test project, tests/fixtures/build-configuration/multi: a
+/// page (`:app`) and its web worker (`:worker`), which both require
+/// `app.shared`; only the app requires `app.build-info`, only the worker
+/// `app.jobs`.
+const MULTI: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/build-configuration/multi"
+);
+
+/// A Node runtime of the dev build in `build`, connected to the event
+/// stream at `url`: the process, its process ID, the ID the server gave it
+/// and its stderr lines.
+fn runtime_of(build: &Path, url: &str) -> (Process, u32, String, Receiver<String>) {
+    let mut child = Command::new(node())
+        .arg(DRIVER)
+        .arg(build)
+        .arg("--connect")
+        .arg(url)
+        .arg("--messages")
+        .arg("1000000")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the nREPL tests require Node");
+    let lines = lines(child.stderr.take().unwrap());
+    let pid = child.id();
+    let process = Process(child);
+    let (_, hello) = until(&lines, "message hello ", "the runtime");
+    let id = hello["message hello ".len()..].to_owned();
+    until(&lines, "message load replay ", "the runtime");
+    (process, pid, id, lines)
+}
+
+/// The Phase 3 exit criterion (docs/build-configuration.md, "Phase 3" and
+/// "Several builds in one process"), on a temporary copy of the multi
+/// fixture: `light-cljs watch app worker` serves the page and its worker
+/// from one origin; a save of `app.shared` reloads both; and one nREPL
+/// connection evaluates in the app's runtime, then, after `(light.dev/repl
+/// :worker)`, in the worker's, each evaluation reading a Var only its build
+/// defines and the process ID of the runtime that ran it. Its session's
+/// completions come from the build it is bound to, `light.dev/runtimes`
+/// lists both builds' runtimes, `light.dev/select!` chooses among the bound
+/// build's, and an unknown build id is an exact error.
+#[test]
+fn one_nrepl_connection_evaluates_in_the_app_and_after_light_dev_repl_in_the_worker() {
+    let (_dir, project) = file_watch::project("dev-nrepl-multi", Path::new(MULTI));
+    let mut watch = file_watch::Light::spawn(
+        &project,
+        &["watch", "app", "worker"],
+        Some("{:http {:port 0} :fs-watch {:loop-wait 20}}"),
+    );
+    let (address, _, _) = watch.serving();
+    let (_, line) = watch.until("light-cljs: nREPL at ");
+    let nrepl = line["light-cljs: nREPL at ".len()..]
+        .split_once(',')
+        .unwrap_or_else(|| panic!("no address in {line:?}"))
+        .0
+        .to_owned();
+    watch.until("[:app] built ");
+    watch.until("[:worker] built ");
+
+    // One origin: the page's `new Worker("/worker/index.js", ...)` names a
+    // path of the server that serves the page, at `/` and `/app/`.
+    let (app_out, worker_out) = (project.join("out/app"), project.join("out/worker"));
+    for (path, file) in [
+        ("/app/index.js", app_out.join("index.js")),
+        ("/worker/index.js", worker_out.join("index.js")),
+    ] {
+        assert_eq!(
+            file_watch::get(&address, path),
+            (
+                "HTTP/1.1 200 OK".to_owned(),
+                fs::read_to_string(&file).unwrap()
+            ),
+            "{path}"
+        );
+    }
+    let page = fs::read_to_string(app_out.join("app.main.js")).unwrap();
+    assert!(
+        page.contains(
+            "new (host(\"Worker\"))(\"/worker/index.js\", rt.jsObject([\"type\", \"module\"]))"
+        ),
+        "{page}"
+    );
+
+    let (_app, app_pid, app_id, app_lines) =
+        runtime_of(&app_out, &format!("http://{address}/app/events"));
+    let (_worker, worker_pid, worker_id, worker_lines) =
+        runtime_of(&worker_out, &format!("http://{address}/worker/events"));
+
+    // A save of the shared namespace reloads both.
+    let shared = project.join("src/app/shared.cljs");
+    let text = fs::read_to_string(&shared).unwrap();
+    file_watch::save(&shared, &text.replace("\"hello, \"", "\"hi, \""));
+    let (_, step) = until(&app_lines, "message load ", "the app's runtime");
+    assert_eq!(step, "message load app.shared app.main");
+    let (_, step) = until(&worker_lines, "message load ", "the worker's runtime");
+    assert_eq!(step, "message load app.shared");
+
+    // The session starts bound to the first build named, in its entry.
+    let mut client = client(&nrepl);
+    let session = client.clone_session();
+    assert_eq!(
+        client.eval(
+            &session,
+            "[app.build-info/built-by (shared/greeting \"app\") (.-pid js/process)]",
+            ""
+        ),
+        [
+            format!("[\"light-cljs\" \"hi, app\" {app_pid}] @ app.main"),
+            "status: done".to_owned()
+        ]
+    );
+    let complete = |client: &mut Client, session: &str| {
+        candidates(&client.one(&format!(
+            "\"op\":\"completions\",\"session\":\"{session}\",\"prefix\":\"jobs/r\""
+        )))
+    };
+    assert_eq!(complete(&mut client, &session), Vec::<String>::new());
+    assert_eq!(
+        client.value(&session, "(light.dev/runtimes)"),
+        format!(
+            "[{{:id {app_id}, :build :app, :agent \"node\", :selected true}} {{:id {worker_id}, :build :worker, :agent \"node\", :selected false}}]"
+        )
+    );
+
+    // Bound to the worker: its entry namespace, compiler and runtime.
+    assert_eq!(
+        client.eval(&session, "(light.dev/repl :worker)", ""),
+        ["[:selected :worker] @ app.worker", "status: done"]
+    );
+    assert_eq!(
+        client.eval(
+            &session,
+            "[(jobs/run 2) (shared/greeting \"worker\") (.-pid js/process)]",
+            ""
+        ),
+        [
+            format!("[42 \"hi, worker\" {worker_pid}] @ app.worker"),
+            "status: done".to_owned()
+        ]
+    );
+    assert_eq!(
+        complete(&mut client, &session),
+        ["jobs/run function app.jobs"]
+    );
+    assert_eq!(
+        client.value(&session, "(light.dev/runtimes)"),
+        format!(
+            "[{{:id {app_id}, :build :app, :agent \"node\", :selected false}} {{:id {worker_id}, :build :worker, :agent \"node\", :selected true}}]"
+        )
+    );
+    assert_eq!(
+        client.value(&session, &format!("(light.dev/select! {worker_id})")),
+        worker_id
+    );
+    assert_eq!(
+        client.eval(&session, &format!("(light.dev/select! {app_id})"), ""),
+        [
+            format!(
+                "err: <nrepl>:1:1: runtime {app_id} runs :app, and the session is bound to :worker; (light.dev/repl :app) binds it to :app"
+            ),
+            "ex: light-cljs/command-error".to_owned(),
+            "status: done".to_owned()
+        ]
+    );
+    assert_eq!(
+        client.eval(&session, "(light.dev/repl :nope)", ""),
+        [
+            "err: <nrepl>:1:1: the watch runs no build :nope; its builds are :app, :worker",
+            "ex: light-cljs/command-error",
+            "status: done"
+        ]
+    );
+    // An interrupt ends the wait for the worker's runtime.
+    let busy = client.send(&format!(
+        "\"op\":\"eval\",\"session\":\"{session}\",\"code\":{}",
+        json(
+            "(do (.writeSync (.getBuiltinModule js/process \"fs\") 2 \"busy\\n\")
+                 (let [end (+ (js/Date.now) 2000)]
+                   (loop [] (when (< (js/Date.now) end) (recur)))))"
+        )
+    ));
+    until(&worker_lines, "busy", "the worker's runtime");
+    let interrupt = client.send(&format!(
+        "\"op\":\"interrupt\",\"session\":\"{session}\",\"interrupt-id\":\"{busy}\""
+    ));
+    let mut answers = collect(&mut client, &[&busy, &interrupt]);
+    assert_eq!(summary(&answers.pop().unwrap()), ["status: done"]);
+    assert_eq!(
+        summary(&answers.pop().unwrap()),
+        ["status: interrupted", "status: done"]
+    );
+
+    // Another session of the connection is still the app's.
+    let other = client.clone_session();
+    assert_eq!(
+        client.value(&other, "(.-pid js/process)"),
+        app_pid.to_string()
+    );
+
+    // Back to the app, and the forms after it in the same evaluation run
+    // there.
+    assert_eq!(
+        client.eval(
+            &session,
+            "(light.dev/repl :app) [app.build-info/built-by (.-pid js/process)]",
+            ""
+        ),
+        [
+            "[:selected :app] @ app.main".to_owned(),
+            format!("[\"light-cljs\" {app_pid}] @ app.main"),
+            "status: done".to_owned()
+        ]
+    );
+}
+
+/// `light-cljs watch app worker` on a temporary copy of the multi fixture,
+/// both builds made: the directory, the project, the watch and its nREPL
+/// address.
+fn watch_multi(label: &str) -> (temp_dir::TempDir, PathBuf, file_watch::Light, String) {
+    let (dir, project) = file_watch::project(label, Path::new(MULTI));
+    let mut watch = file_watch::Light::spawn(
+        &project,
+        &["watch", "app", "worker"],
+        Some("{:http {:port 0} :fs-watch {:loop-wait 20}}"),
+    );
+    let (_, line) = watch.until("light-cljs: nREPL at ");
+    let nrepl = line["light-cljs: nREPL at ".len()..]
+        .split_once(',')
+        .unwrap_or_else(|| panic!("no address in {line:?}"))
+        .0
+        .to_owned();
+    watch.until("[:app] built ");
+    watch.until("[:worker] built ");
+    (dir, project, watch, nrepl)
+}
+
+/// The address of the server of `watch_multi`'s watch, from the port file.
+fn http_address(project: &Path) -> String {
+    let port = fs::read_to_string(project.join(".light-cljs/http.port")).unwrap();
+    format!("127.0.0.1:{}", port.trim())
+}
+
+/// A session cloned from one bound to the worker is bound to the worker
+/// too, in its namespace and with its runtime choice; a session that ran in
+/// both builds, when it closes, leaves the history of each build's runtime,
+/// and its clone goes on.
+#[test]
+fn switched_sessions_clone_and_close_across_builds() {
+    let (_dir, project, _watch, nrepl) = watch_multi("dev-nrepl-multi-clone");
+    let address = http_address(&project);
+    let (_app, app_pid, _, app_lines) = runtime_of(
+        &project.join("out/app"),
+        &format!("http://{address}/app/events"),
+    );
+    let (_worker, worker_pid, worker_id, worker_lines) = runtime_of(
+        &project.join("out/worker"),
+        &format!("http://{address}/worker/events"),
+    );
+    let mut client = client(&nrepl);
+    let session = client.clone_session();
+    assert_eq!(
+        client.value(&session, "(.-pid js/process)"),
+        app_pid.to_string()
+    );
+    assert_eq!(
+        client.value(&session, "(light.dev/repl :worker)"),
+        "[:selected :worker]"
+    );
+    assert_eq!(
+        client.value(&session, &format!("(light.dev/select! {worker_id})")),
+        worker_id
+    );
+    let clone = client.one(&format!("\"op\":\"clone\",\"session\":\"{session}\""));
+    let clone = text(&clone, "new-session").to_owned();
+    assert_eq!(
+        client.eval(&clone, "[(jobs/run 1) (.-pid js/process)]", ""),
+        [
+            format!("[21 {worker_pid}] @ app.worker"),
+            "status: done".to_owned()
+        ]
+    );
+    assert_eq!(
+        client.value(&clone, "(light.dev/runtimes)"),
+        format!(
+            "[{{:id {}, :build :app, :agent \"node\", :selected false}} {{:id {worker_id}, :build :worker, :agent \"node\", :selected true}}]",
+            worker_id.parse::<u64>().unwrap() - 1
+        )
+    );
+    for _ in app_lines.try_iter() {}
+    for _ in worker_lines.try_iter() {}
+    let closed = client.one(&format!("\"op\":\"close\",\"session\":\"{session}\""));
+    assert_eq!(statuses(&closed), ["session-closed", "done"]);
+    until(&app_lines, "message forget", "the app's runtime");
+    until(&worker_lines, "message forget", "the worker's runtime");
+    assert_eq!(client.value(&clone, "(jobs/run 2)"), "42");
+}
+
+/// A build whose restart failed answers no form, but its sessions still
+/// switch to another build, and a session opened after the failure too.
+#[test]
+fn can_switch_away_from_a_build_whose_restart_failed() {
+    let (_dir, project, mut watch, nrepl) = watch_multi("dev-nrepl-multi-failed");
+    let address = http_address(&project);
+    let (_worker, worker_pid, _, _worker_lines) = runtime_of(
+        &project.join("out/worker"),
+        &format!("http://{address}/worker/events"),
+    );
+    let mut client = client(&nrepl);
+    let before = client.clone_session();
+    let path = project.join("light-cljs.edn");
+    let config = fs::read_to_string(&path).unwrap();
+    file_watch::save(&path, &config.replacen("[app.main]", "[app.missing]", 1));
+    let (_, failed) = watch.until("[:app] ");
+    assert!(
+        failed.ends_with("; the build starts again at the next change"),
+        "{failed}"
+    );
+    assert_eq!(
+        client.eval(&before, "(+ 1 2)", ""),
+        ["err: the compiler stopped", "status: error done"]
+    );
+    let after = client.clone_session();
+    for session in [&before, &after] {
+        assert_eq!(
+            client.eval(
+                session,
+                "(light.dev/repl :worker) [(jobs/run 2) (.-pid js/process)]",
+                ""
+            ),
+            [
+                "[:selected :worker] @ app.worker".to_owned(),
+                format!("[42 {worker_pid}] @ app.worker"),
+                "status: done".to_owned()
+            ]
+        );
+    }
 }

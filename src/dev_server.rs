@@ -30,9 +30,12 @@
 //! (docs/build-configuration.md, "Several builds in one process"): each
 //! mount's directory and its `events`, `reply` and `repl` endpoints under
 //! `/NAME/`, and the first mount's also at `/`. Each mount has its own
-//! runtimes, steps and REPL sessions; runtime IDs are the server's. The
-//! source roots are served once, at the paths every mount's source maps
-//! resolve to, and an nREPL connection's sessions are the first mount's.
+//! runtimes and steps; runtime IDs are the server's. The source roots are
+//! served once, at the paths every mount's source maps resolve to. REPL
+//! sessions are the server's: each belongs to the endpoint that opened it
+//! (nREPL's and `/repl`'s are the first mount's) and is bound to one
+//! mount, whose compiler and runtimes run its forms, its home to begin with,
+//! another after `(light.dev/repl :NAME)`.
 //! [`DevServer::start`] serves one unnamed mount at `/` alone.
 //!
 //! [`DevServer::start_with`] and [`DevServer::start_mounts_with`] take a
@@ -229,9 +232,9 @@ pub struct DevMount {
     shared: Arc<Shared>,
 }
 
-/// What the mounts of a server share: the mount table, the source roots and
-/// the listeners.
-struct Site {
+/// What the mounts of a server share: the mount table, the source roots,
+/// the listeners and the REPL sessions.
+pub(crate) struct Site {
     /// The mounts by [`MountId`].
     mounts: Vec<Arc<Shared>>,
     /// The names of the named mounts with their IDs, sorted by name.
@@ -248,9 +251,25 @@ struct Site {
     stopped: AtomicBool,
     /// The addresses of the server's further listeners, which a drop wakes.
     listeners: Mutex<Vec<SocketAddr>>,
+    /// The REPL sessions of every mount. Its lock is taken before a mount's
+    /// state, never after.
+    sessions: Mutex<Sessions>,
 }
 
-/// A mount: its build directory, and its build, runtimes and REPL sessions.
+/// The REPL sessions of a server, by number. A session's ID is its number
+/// after `incarnation`, which differs for each server, so a client or a
+/// runtime that outlives a server never takes another session for its own.
+struct Sessions {
+    table: HashMap<u64, ReplSession>,
+    next: u64,
+    incarnation: String,
+}
+
+/// The mount whose endpoints the server's nREPL connections and `/repl` use:
+/// the first build named.
+pub(crate) const FIRST_MOUNT: MountId = MountId(0);
+
+/// A mount: its build directory, and its build, runtimes and REPL compiler.
 pub(crate) struct Shared {
     /// The name the mount is served under, `/NAME/`; none for the one mount
     /// of [`DevServer::start`], served at `/` alone.
@@ -281,32 +300,36 @@ struct State {
     pending: HashMap<String, (u64, Sender<Json>)>,
     /// Whether the server was dropped: the mount connects no more runtimes.
     stopped: bool,
-    /// Where `POST /repl` sends forms to compile, and the namespace a new
-    /// REPL session starts in, once [`DevServer::serve_repl`] was called.
+    /// Where the forms of the REPL sessions bound to the mount go to be
+    /// compiled, and the namespace a session starts in, once
+    /// [`DevServer::serve_repl`] was called.
     compiler: Option<(Sender<ReplRequest>, String)>,
-    /// The REPL sessions by number. A session's ID is its number after
-    /// `incarnation`, which differs for each server, so a client or a runtime
-    /// that outlives a server never takes another session for its own.
-    sessions: HashMap<u64, ReplSession>,
-    next_session: u64,
-    incarnation: String,
     /// The newest REPL units sent, whose locations error stacks map.
     sent: VecDeque<SentUnit>,
     next_unit: u64,
 }
 
-/// A connected REPL's session: its current namespace, and the runtime it
-/// chose with `light.dev/select!`, if any.
-#[derive(Default)]
+/// A connected REPL's session: the build it is bound to, its current
+/// namespace, and the runtime it chose with `light.dev/select!`, if any.
 struct ReplSession {
+    /// The mount whose endpoint opened it, the only one that knows it: the
+    /// first mount's for nREPL and `/repl`, the mount's for `/NAME/repl`.
+    home: MountId,
+    /// The build it is bound to, whose compiler compiles its forms and
+    /// whose runtimes run them: its home's until `(light.dev/repl :ID)`
+    /// binds it to another (docs/build-configuration.md, "Several builds in
+    /// one process").
+    build: MountId,
     namespace: String,
+    /// A runtime of `build`.
     runtime: Option<u64>,
     /// Whether an evaluation of the session is running.
     evaluating: bool,
     /// Whether [`Shared::interrupt`] ended that evaluation: it runs no
     /// further form.
     interrupted: bool,
-    /// The request ID of the `invoke` whose reply it waits for, if any.
+    /// The request ID of the `invoke` whose reply it waits for, if any, a
+    /// request of `build`.
     pending: Option<String>,
     /// The ID of the nREPL message the running evaluation answers, if any.
     message: Option<String>,
@@ -327,8 +350,9 @@ const SENT_UNITS: usize = 256;
 
 /// What an `invoke` message carries besides its request ID.
 struct InvokeMessage<'a> {
-    /// The REPL session, whose `*1`, `*2`, `*3` and `*e` the runtime keeps.
-    session: Option<u64>,
+    /// The REPL session's ID, whose `*1`, `*2`, `*3` and `*e` the runtime
+    /// keeps.
+    session: Option<&'a str>,
     namespace: &'a str,
     /// A script to run first: what the form loaded.
     setup: &'a str,
@@ -446,9 +470,6 @@ impl DevServer {
                     pending: HashMap::new(),
                     stopped: false,
                     compiler: None,
-                    sessions: HashMap::new(),
-                    next_session: 1,
-                    incarnation: incarnation(),
                     sent: VecDeque::new(),
                     next_unit: 1,
                 }),
@@ -471,14 +492,19 @@ impl DevServer {
             nrepl: listen.nrepl,
             stopped: AtomicBool::new(false),
             listeners: Mutex::new(Vec::new()),
+            sessions: Mutex::new(Sessions {
+                table: HashMap::new(),
+                next: 1,
+                incarnation: incarnation(),
+            }),
         });
         accept(listener, &site, connection)?;
         Ok(Self { site, address })
     }
 
     /// Also answer nREPL on `host` and `port` (0 for any free port), as the
-    /// server's own port does: the address it listens on. Its sessions are
-    /// the first mount's.
+    /// server's own port does: the address it listens on. Its sessions
+    /// start bound to the first mount.
     pub fn serve_nrepl(&self, host: &str, port: u16) -> io::Result<SocketAddr> {
         let addresses = (host, port).to_socket_addrs()?.collect::<Vec<_>>();
         let listener = TcpListener::bind(&addresses[..])?;
@@ -488,9 +514,7 @@ impl DevServer {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(address);
-        accept(listener, &self.site, |stream, site| {
-            crate::dev_nrepl::connection(stream, &site.mounts[0])
-        })?;
+        accept(listener, &self.site, crate::dev_nrepl::connection)?;
         Ok(address)
     }
 
@@ -633,9 +657,9 @@ impl DevMount {
 
     /// Answer its `POST /repl` (under its prefix) from now on, the connected
     /// REPL's endpoint (docs/evaluation.md, "Connected REPL"): its sessions
-    /// start in `namespace`, and the forms they send come out of the
-    /// receiver, for the thread that owns the mount's compiler to answer
-    /// with [`ReplRequest::compile`]. Until this is called, the endpoint
+    /// start in `namespace`, and the forms of every session bound to the
+    /// mount come out of the receiver, for the thread that owns the mount's
+    /// compiler to answer with [`ReplRequest::answer`]. Until this is called, the endpoint
     /// answers `503 Service Unavailable`.
     pub fn serve_repl(&self, namespace: &str) -> Receiver<ReplRequest> {
         self.shared.serve_repl(namespace)
@@ -657,17 +681,196 @@ impl Site {
     /// path. The first mount's endpoints at the root, `/events`, `/reply`
     /// and `/repl`, stay its own when a mount has the same name, which is
     /// served under `/NAME/` alone.
-    fn route<'p>(&self, path: &'p str) -> (&Arc<Shared>, &'p str) {
+    fn route<'p>(&self, path: &'p str) -> (MountId, &'p str) {
         if !self.names.is_empty()
             && !matches!(path, "/events" | "/reply" | "/repl")
             && let Some(rest) = path.strip_prefix('/')
         {
             let (segment, rest) = rest.find('/').map_or((rest, ""), |at| rest.split_at(at));
             if let Some(id) = percent_decode(segment).and_then(|name| self.mount_named(&name)) {
-                return (&self.mounts[id.0 as usize], rest);
+                return (id, rest);
             }
         }
-        (&self.mounts[0], path)
+        (FIRST_MOUNT, path)
+    }
+
+    /// The mount `id`.
+    pub(crate) fn mount_of(&self, id: MountId) -> &Arc<Shared> {
+        &self.mounts[id.0 as usize]
+    }
+
+    fn sessions(&self) -> MutexGuard<'_, Sessions> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The namespace REPL sessions that `home`'s endpoint opens start in,
+    /// once [`DevServer::serve_repl`] was called on it.
+    pub(crate) fn start_namespace(&self, home: MountId) -> Option<String> {
+        self.mount_of(home).start_namespace()
+    }
+
+    /// Open a REPL session at `home`'s endpoint: with the build, namespace
+    /// and runtime choice of session `from` when it is one, else bound to
+    /// `home` in the namespace its sessions start in. Its number, ID and
+    /// namespace; none until [`DevServer::serve_repl`] was called on `home`.
+    pub(crate) fn open_session(
+        &self,
+        home: MountId,
+        from: Option<u64>,
+    ) -> Option<(u64, String, String)> {
+        let mut sessions = self.sessions();
+        let start = self.start_namespace(home)?;
+        let (build, namespace, runtime) = match from.and_then(|from| sessions.table.get(&from)) {
+            Some(from) => (from.build, from.namespace.clone(), from.runtime),
+            None => (home, start, None),
+        };
+        let number = sessions.next;
+        sessions.next += 1;
+        sessions.table.insert(
+            number,
+            ReplSession {
+                home,
+                build,
+                namespace: namespace.clone(),
+                runtime,
+                evaluating: false,
+                interrupted: false,
+                pending: None,
+                message: None,
+                lock: Arc::default(),
+                queue: None,
+            },
+        );
+        let id = format!("{}-{number}", sessions.incarnation);
+        Some((number, id, namespace))
+    }
+
+    /// The number of the open session of `home`'s endpoint whose ID is
+    /// `id`.
+    pub(crate) fn session(&self, home: MountId, id: &str) -> Option<u64> {
+        let sessions = self.sessions();
+        let number = id
+            .strip_prefix(sessions.incarnation.as_str())?
+            .strip_prefix('-')?
+            .parse::<u64>()
+            .ok()?;
+        let entry = sessions.table.get(&number)?;
+        (entry.home == home).then_some(number)
+    }
+
+    /// The IDs of the open sessions of `home`'s endpoint, oldest first.
+    pub(crate) fn session_ids(&self, home: MountId) -> Vec<String> {
+        let sessions = self.sessions();
+        let mut numbers = sessions
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.home == home)
+            .map(|(number, _)| *number)
+            .collect::<Vec<_>>();
+        numbers.sort_unstable();
+        numbers
+            .into_iter()
+            .map(|number| format!("{}-{number}", sessions.incarnation))
+            .collect()
+    }
+
+    /// The current namespace of session `session`.
+    pub(crate) fn session_namespace(&self, session: u64) -> Option<String> {
+        let sessions = self.sessions();
+        sessions.table.get(&session).map(|s| s.namespace.clone())
+    }
+
+    /// Make `namespace` the current namespace of session `session`.
+    fn set_session_namespace(&self, session: u64, namespace: &str) {
+        if let Some(entry) = self.sessions().table.get_mut(&session) {
+            entry.namespace = namespace.to_owned();
+        }
+    }
+
+    /// Where the forms of session `session`, or of a session `home`'s
+    /// endpoint would open, go to be compiled: its build's compiler, once
+    /// [`DevServer::serve_repl`] was called on that build.
+    pub(crate) fn compiler(
+        &self,
+        home: MountId,
+        session: Option<u64>,
+    ) -> Option<Sender<ReplRequest>> {
+        let build = session
+            .and_then(|session| self.sessions().table.get(&session).map(|s| s.build))
+            .unwrap_or(home);
+        self.mount_of(build).compiler()
+    }
+
+    /// Close session `session`, which the runtimes of every build forget
+    /// too, since it may have run in each: whether it was open.
+    pub(crate) fn close_session(&self, session: u64) -> bool {
+        let id = {
+            let mut sessions = self.sessions();
+            if sessions.table.remove(&session).is_none() {
+                return false;
+            }
+            format!("{}-{session}", sessions.incarnation)
+        };
+        let message = format!("{{\"op\":\"forget\",\"session\":\"{id}\"}}");
+        for mount in &self.mounts {
+            mount.state().broadcast(&message);
+        }
+        true
+    }
+
+    /// End the running evaluation of session `session`, when `message` is
+    /// none or the ID of the nREPL message it answers: it stops waiting for
+    /// the reply of the runtime, which keeps running what it was sent, and
+    /// runs no further form.
+    pub(crate) fn interrupt(&self, session: u64, message: Option<&str>) -> Interrupt {
+        let mut sessions = self.sessions();
+        let Some(entry) = sessions.table.get_mut(&session) else {
+            return Interrupt::Idle;
+        };
+        if !entry.evaluating {
+            return Interrupt::Idle;
+        }
+        if message.is_some_and(|message| entry.message.as_deref() != Some(message)) {
+            return Interrupt::Mismatch;
+        }
+        entry.interrupted = true;
+        if let Some(id) = entry.pending.take()
+            && let Some((_, sender)) = self.mount_of(entry.build).state().pending.remove(&id)
+        {
+            let _ = sender.send(Json::Object(vec![("interrupted".into(), Json::Bool(true))]));
+        }
+        Interrupt::Interrupted
+    }
+
+    /// Queue `job` on session `session`, to run on the session's worker
+    /// thread after every job queued there before it, from any connection:
+    /// whether the session was open to take it.
+    pub(crate) fn queue(&self, session: u64, job: QueuedJob) -> bool {
+        let mut sessions = self.sessions();
+        let Some(entry) = sessions.table.get_mut(&session) else {
+            return false;
+        };
+        let queue = match &mut entry.queue {
+            Some(queue) => queue,
+            empty => {
+                let (sender, jobs) = channel::<QueuedJob>();
+                let worker = std::thread::Builder::new()
+                    .name("light-cljs REPL session".into())
+                    .spawn(move || {
+                        // A job that panics leaves the queue to the next.
+                        for job in jobs {
+                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                        }
+                    });
+                if worker.is_err() {
+                    return false;
+                }
+                empty.insert(sender)
+            }
+        };
+        queue.send(job).is_ok()
     }
 }
 
@@ -836,136 +1039,9 @@ impl Shared {
             .as_ref()
             .map(|(_, namespace)| namespace.clone())
     }
-
-    /// Open a REPL session, in the namespace and with the runtime choice of
-    /// session `from` when it is one, else in the namespace REPL sessions
-    /// start in: its number, ID and namespace.
-    pub(crate) fn open_session(&self, from: Option<u64>) -> Option<(u64, String, String)> {
-        let mut state = self.state();
-        let (_, start) = state.compiler.as_ref()?;
-        let (namespace, runtime) = match from.and_then(|from| state.sessions.get(&from)) {
-            Some(from) => (from.namespace.clone(), from.runtime),
-            None => (start.clone(), None),
-        };
-        let number = state.next_session;
-        state.next_session += 1;
-        state.sessions.insert(
-            number,
-            ReplSession {
-                namespace: namespace.clone(),
-                runtime,
-                ..ReplSession::default()
-            },
-        );
-        let id = format!("{}-{number}", state.incarnation);
-        Some((number, id, namespace))
-    }
-
-    /// The number of the open session whose ID is `id`.
-    pub(crate) fn session(&self, id: &str) -> Option<u64> {
-        let state = self.state();
-        let number = id
-            .strip_prefix(state.incarnation.as_str())?
-            .strip_prefix('-')?
-            .parse::<u64>()
-            .ok()?;
-        state.sessions.contains_key(&number).then_some(number)
-    }
-
-    /// The IDs of the open sessions, oldest first.
-    pub(crate) fn session_ids(&self) -> Vec<String> {
-        let state = self.state();
-        let mut numbers = state.sessions.keys().copied().collect::<Vec<_>>();
-        numbers.sort_unstable();
-        numbers
-            .into_iter()
-            .map(|number| format!("{}-{number}", state.incarnation))
-            .collect()
-    }
-
-    /// The current namespace of session `session`.
-    pub(crate) fn session_namespace(&self, session: u64) -> Option<String> {
-        let state = self.state();
-        state.sessions.get(&session).map(|s| s.namespace.clone())
-    }
-
-    /// Make `namespace` the current namespace of session `session`.
-    pub(crate) fn set_session_namespace(&self, session: u64, namespace: &str) {
-        if let Some(entry) = self.state().sessions.get_mut(&session) {
-            entry.namespace = namespace.to_owned();
-        }
-    }
-
-    /// Close session `session`, which the runtimes forget too: whether it
-    /// was open.
-    pub(crate) fn close_session(&self, session: u64) -> bool {
-        let mut state = self.state();
-        if state.sessions.remove(&session).is_none() {
-            return false;
-        }
-        let message = format!(
-            "{{\"op\":\"forget\",\"session\":\"{}-{session}\"}}",
-            state.incarnation
-        );
-        state.broadcast(&message);
-        true
-    }
-
-    /// End the running evaluation of session `session`, when `message` is
-    /// none or the ID of the nREPL message it answers: it stops waiting for
-    /// the reply of the runtime, which keeps running what it was sent, and
-    /// runs no further form.
-    pub(crate) fn interrupt(&self, session: u64, message: Option<&str>) -> Interrupt {
-        let mut state = self.state();
-        let Some(entry) = state.sessions.get_mut(&session) else {
-            return Interrupt::Idle;
-        };
-        if !entry.evaluating {
-            return Interrupt::Idle;
-        }
-        if message.is_some_and(|message| entry.message.as_deref() != Some(message)) {
-            return Interrupt::Mismatch;
-        }
-        entry.interrupted = true;
-        if let Some(id) = entry.pending.take()
-            && let Some((_, sender)) = state.pending.remove(&id)
-        {
-            let _ = sender.send(Json::Object(vec![("interrupted".into(), Json::Bool(true))]));
-        }
-        Interrupt::Interrupted
-    }
-
-    /// Queue `job` on session `session`, to run on the session's worker
-    /// thread after every job queued there before it, from any connection:
-    /// whether the session was open to take it.
-    pub(crate) fn queue(&self, session: u64, job: QueuedJob) -> bool {
-        let mut state = self.state();
-        let Some(entry) = state.sessions.get_mut(&session) else {
-            return false;
-        };
-        let queue = match &mut entry.queue {
-            Some(queue) => queue,
-            empty => {
-                let (sender, jobs) = channel::<QueuedJob>();
-                let worker = std::thread::Builder::new()
-                    .name("light-cljs REPL session".into())
-                    .spawn(move || {
-                        // A job that panics leaves the queue to the next.
-                        for job in jobs {
-                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
-                        }
-                    });
-                if worker.is_err() {
-                    return false;
-                }
-                empty.insert(sender)
-            }
-        };
-        queue.send(job).is_ok()
-    }
 }
 
-/// What [`Shared::interrupt`] did.
+/// What [`Site::interrupt`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Interrupt {
     Interrupted,
@@ -1007,7 +1083,7 @@ impl State {
         let mut message = String::from("{\"op\":\"invoke\",\"id\":");
         json_string(&mut message, &id);
         if let Some(session) = invoke.session {
-            write!(message, ",\"session\":\"{}-{session}\"", self.incarnation).unwrap();
+            write!(message, ",\"session\":\"{session}\"").unwrap();
         }
         message.push_str(",\"namespace\":");
         json_string(&mut message, invoke.namespace);
@@ -1326,7 +1402,7 @@ fn connection(stream: TcpStream, site: &Arc<Site>) -> io::Result<()> {
         if !site.nrepl {
             return Ok(());
         }
-        return crate::dev_nrepl::connection(stream, &site.mounts[0]);
+        return crate::dev_nrepl::connection(stream, site);
     }
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
@@ -1351,7 +1427,8 @@ fn connection(stream: TcpStream, site: &Arc<Site>) -> io::Result<()> {
     let head_only = request.method == "HEAD";
     // A mount's endpoints and files are under its prefix; the first mount's
     // are also at the root.
-    let (shared, within) = site.route(&path);
+    let (mount, within) = site.route(&path);
+    let shared = site.mount_of(mount);
     match (request.method.as_str(), within) {
         ("GET" | "HEAD", "") if !path.is_empty() => {
             // `/NAME` is the directory `/NAME/`, against which its page's
@@ -1370,7 +1447,7 @@ fn connection(stream: TcpStream, site: &Arc<Site>) -> io::Result<()> {
         }
         ("GET", "/events") => events(writer, shared, &request),
         ("POST", "/reply") => reply(&mut writer, shared, &request),
-        ("POST", "/repl") => repl(&mut writer, shared, &request),
+        ("POST", "/repl") => repl(&mut writer, site, mount, &request),
         ("GET" | "HEAD", _) => file(
             &mut writer,
             site,
@@ -1574,7 +1651,7 @@ fn respond_json(stream: &mut TcpStream, status: &str, json: &str) -> io::Result<
 /// A page cannot send one: a request with an `Origin` or another content
 /// type than JSON (which a page cannot send to another origin without the
 /// server's consent) is refused.
-fn repl(stream: &mut TcpStream, shared: &Shared, request: &Request) -> io::Result<()> {
+fn repl(stream: &mut TcpStream, site: &Site, home: MountId, request: &Request) -> io::Result<()> {
     if request.header("origin").is_some() {
         return respond_text(
             stream,
@@ -1603,10 +1680,10 @@ fn repl(stream: &mut TcpStream, shared: &Shared, request: &Request) -> io::Resul
     let session = json
         .get("session")
         .and_then(Json::as_str)
-        .and_then(|id| shared.session(id));
+        .and_then(|id| site.session(home, id));
     match json.get("op").and_then(Json::as_str) {
         Some("open") => {
-            let Some((_, id, namespace)) = shared.open_session(None) else {
+            let Some((_, id, namespace)) = site.open_session(home, None) else {
                 return respond_text(
                     stream,
                     "503 Service Unavailable",
@@ -1623,7 +1700,7 @@ fn repl(stream: &mut TcpStream, shared: &Shared, request: &Request) -> io::Resul
         Some("close") => {
             // The runtimes forget the session's history too.
             if let Some(id) = session {
-                shared.close_session(id);
+                site.close_session(id);
             }
             respond(stream, "204 No Content", &[], &[], false)
         }
@@ -1659,7 +1736,7 @@ fn repl(stream: &mut TcpStream, shared: &Shared, request: &Request) -> io::Resul
                 restore: false,
                 message: None,
             };
-            match evaluate(shared, session, &evaluation, each) {
+            match evaluate(site, session, &evaluation, each) {
                 Ok(evaluated) => {
                     let mut body = String::from("{\"namespace\":");
                     json_string(&mut body, &evaluated.namespace);
@@ -1755,19 +1832,20 @@ pub(crate) struct Evaluation<'a> {
 
 /// Evaluate the forms of `evaluation` one at a time for REPL session
 /// `session`, after the session's earlier evaluations: each is compiled on
-/// the compiler's thread in the session's namespace, then runs on the
-/// session's runtime, before the next is read, and `each` receives its
-/// result and the namespace after it. How it ended, or why the server could
-/// not answer.
+/// the thread of the build the session is bound to, in the session's
+/// namespace, then runs on the session's runtime of that build, before the
+/// next is read, and `each` receives its result and the namespace after it.
+/// A form `(light.dev/repl :ID)` binds the session to another build for the
+/// forms after it. How it ended, or why the server could not answer.
 pub(crate) fn evaluate(
-    shared: &Shared,
+    site: &Site,
     session: u64,
     evaluation: &Evaluation,
     each: &mut dyn FnMut(&FormResult, &str),
 ) -> Result<Evaluated, String> {
-    let Some(lock) = shared
-        .state()
-        .sessions
+    let Some(lock) = site
+        .sessions()
+        .table
         .get(&session)
         .map(|entry| entry.lock.clone())
     else {
@@ -1782,62 +1860,70 @@ pub(crate) fn evaluate(
     let result = (|| {
         let mut cursor = 0;
         loop {
-            let (compiler, namespace) = {
-                let mut state = shared.state();
-                let compiler = state.compiler.as_ref().map(|(sender, _)| sender.clone());
-                let entry = state.sessions.get_mut(&session);
+            let (build, namespace) = {
+                let mut sessions = site.sessions();
+                let entry = sessions.table.get_mut(&session);
                 if started && entry.as_ref().is_some_and(|entry| entry.interrupted) {
                     return Ok(true);
                 }
-                let namespace = entry.map(|entry| {
-                    if !started {
-                        // An interrupt from before the evaluation ends
-                        // nothing.
-                        (entry.evaluating, entry.interrupted) = (true, false);
-                        entry.message = evaluation.message.map(str::to_owned);
-                        if evaluation.restore {
-                            restore = Some(entry.namespace.clone());
-                        }
-                        if let Some(namespace) = evaluation.namespace {
-                            entry.namespace = namespace.to_owned();
-                        }
+                let Some(entry) = entry else {
+                    return Err(format!("REPL session {session} was closed"));
+                };
+                if !started {
+                    // An interrupt from before the evaluation ends nothing.
+                    (entry.evaluating, entry.interrupted) = (true, false);
+                    entry.message = evaluation.message.map(str::to_owned);
+                    if evaluation.restore {
+                        restore = Some(entry.namespace.clone());
                     }
-                    entry.namespace.clone()
-                });
-                match (compiler, namespace) {
-                    (Some(compiler), Some(namespace)) => (compiler, namespace),
-                    (None, _) => return Err("this dev server compiles no REPL forms".into()),
-                    (_, None) => return Err(format!("REPL session {session} was closed")),
+                    if let Some(namespace) = evaluation.namespace {
+                        entry.namespace = namespace.to_owned();
+                    }
                 }
+                (entry.build, entry.namespace.clone())
             };
             started = true;
-            let (respond, compiled) = channel();
-            let request = ReplRequest::Compile {
-                namespace,
-                file: file.to_owned(),
-                text: text.to_owned(),
-                cursor,
-                respond,
-            };
-            let stopped = || "the compiler stopped".to_owned();
-            compiler.send(request).map_err(|_| stopped())?;
-            let form = match compiled.recv().map_err(|_| stopped())? {
-                ReplForm::End => return Ok(false),
-                ReplForm::Form(form) => form,
+            let asked = site
+                .mount_of(build)
+                .compiler()
+                .ok_or_else(|| "this dev server compiles no REPL forms".to_owned())
+                .and_then(|compiler| {
+                    let (respond, compiled) = channel();
+                    let request = ReplRequest::Compile {
+                        namespace: namespace.clone(),
+                        file: file.to_owned(),
+                        text: text.to_owned(),
+                        cursor,
+                        respond,
+                    };
+                    let stopped = || "the compiler stopped".to_owned();
+                    compiler.send(request).map_err(|_| stopped())?;
+                    compiled.recv().map_err(|_| stopped())
+                });
+            let form = match asked {
+                Ok(ReplForm::End) => return Ok(false),
+                Ok(ReplForm::Form(form)) => form,
+                // A build that cannot compile (its restart failed, say)
+                // still lets the session switch to another.
+                Err(why) => repl_command_at(file, text, cursor, &namespace).ok_or(why)?,
             };
             cursor = form.cursor;
-            shared.set_session_namespace(session, &form.namespace);
+            site.set_session_namespace(session, &form.namespace);
             // A form that fails leaves the next to run, as under `--repl`;
             // one that does not read moves the cursor to the end.
-            let result = run(shared, session, &form, file, text, print);
+            let result = run(site, build, session, &form, file, text, print);
             if matches!(&result.outcome, Err(error) if error.phase == "interrupted") {
                 return Ok(true);
             }
-            each(&result, &form.namespace);
+            // `light.dev/repl` moved the session to its build's namespace.
+            let namespace = site
+                .session_namespace(session)
+                .unwrap_or_else(|| form.namespace.clone());
+            each(&result, &namespace);
         }
     })();
-    let mut state = shared.state();
-    let entry = state.sessions.get_mut(&session);
+    let mut sessions = site.sessions();
+    let entry = sessions.table.get_mut(&session);
     let namespace = entry.map(|entry| {
         if started {
             (entry.evaluating, entry.interrupted, entry.pending) = (false, false, None);
@@ -1852,6 +1938,36 @@ pub(crate) fn evaluate(
         namespace: namespace.unwrap_or_default(),
         interrupted,
     })
+}
+
+/// The form at `cursor` of `text`, read by the server alone, when it is a
+/// `(light.dev/repl :ID)` command, as the compiler would have compiled it in
+/// `namespace`: for a session whose build has no compiler to answer.
+fn repl_command_at(
+    file: &str,
+    text: &str,
+    cursor: usize,
+    namespace: &str,
+) -> Option<Box<CompiledForm>> {
+    let rest = text.get(cursor..)?;
+    let source = crate::compiler_data::Source::new(file, rest);
+    let view = crate::compiler_reader::NamespaceView::new(namespace, &source);
+    let form = crate::compiler_reader::read_form(&source, &view).ok()??;
+    let Some(Ok(command @ Command::Repl(_))) = crate::dev_repl::command(&form) else {
+        return None;
+    };
+    let bytes = form.span().bytes();
+    let start = cursor + bytes.start;
+    let (line, column) = crate::LineIndex::new(text).line_column(start)?;
+    Some(Box::new(CompiledForm {
+        namespace: namespace.to_owned(),
+        cursor: cursor + bytes.end,
+        start,
+        line,
+        column,
+        warnings: Vec::new(),
+        outcome: Outcome::Command(command),
+    }))
 }
 
 /// A form's result as `POST /repl` answers it: `{"value"}` with a `ref` for
@@ -1894,9 +2010,11 @@ fn result_json(form: &FormResult) -> String {
     result
 }
 
-/// Run one compiled REPL form.
+/// Run one compiled REPL form of session `session`, which build `build`
+/// compiled.
 fn run(
-    shared: &Shared,
+    site: &Site,
+    build: MountId,
     session: u64,
     form: &CompiledForm,
     file: &str,
@@ -1910,18 +2028,19 @@ fn run(
                 let mut message = String::from("{\"op\":\"run\",\"js\":");
                 json_string(&mut message, loads);
                 message.push('}');
-                shared.state().broadcast(&message);
+                site.mount_of(build).state().broadcast(&message);
             }
             Err(("compile", error.clone(), None, None))
         }
-        Outcome::Command(command) => command_value(shared, session, command)
+        Outcome::Command(command) => command_value(site, session, command)
             .map(|value| (value, None))
             .map_err(|message| ("command", Diagnostic::at(message, &location), None, None)),
         Outcome::Run {
             setup, unit: None, ..
         } if setup.is_empty() => Ok(("nil".to_owned(), None)),
         Outcome::Run { setup, loads, unit } => invoke_form(
-            shared,
+            site,
+            build,
             session,
             form,
             setup,
@@ -1961,34 +2080,100 @@ impl Diagnostic {
 }
 
 /// The value of a REPL command, printed, or why it failed.
-fn command_value(shared: &Shared, session: u64, command: &Command) -> Result<String, String> {
-    let mut state = shared.state();
-    let selected = state.sessions.get(&session).and_then(|s| s.runtime);
+fn command_value(site: &Site, session: u64, command: &Command) -> Result<String, String> {
+    let mut sessions = site.sessions();
+    let Some(entry) = sessions.table.get_mut(&session) else {
+        return Err(format!("REPL session {session} was closed"));
+    };
+    let build = entry.build;
+    let bound = site.mount_of(build);
+    // The build of a named mount, as the watch names it.
+    let named = |mount: &Shared| mount.name.as_deref().map(|name| format!(":{name}"));
     match command {
         Command::Runtimes => {
-            let current = selected.or_else(|| state.runtimes.last().map(|(id, _)| *id));
+            let current = entry
+                .runtime
+                .or_else(|| bound.state().runtimes.last().map(|(id, _)| *id));
+            drop(sessions);
+            // Every build's runtimes, by ID, which is their order of
+            // connection; each named with its build when the watch names its
+            // builds.
+            let mut runtimes = Vec::new();
+            for mount in &site.mounts {
+                let state = mount.state();
+                for (id, _) in &state.runtimes {
+                    let agent = state.agents.get(id).cloned().unwrap_or_default();
+                    runtimes.push((*id, named(mount), agent));
+                }
+            }
+            runtimes.sort_unstable_by_key(|(id, _, _)| *id);
             let mut value = String::from("[");
-            for (index, (id, _)) in state.runtimes.iter().enumerate() {
+            for (index, (id, build, agent)) in runtimes.iter().enumerate() {
                 if index > 0 {
                     value.push(' ');
                 }
-                write!(value, "{{:id {id}, :agent ").unwrap();
-                edn_string(&mut value, state.agents.get(id).map_or("", String::as_str));
+                write!(value, "{{:id {id}, ").unwrap();
+                if let Some(build) = build {
+                    write!(value, ":build {build}, ").unwrap();
+                }
+                value.push_str(":agent ");
+                edn_string(&mut value, agent);
                 write!(value, ", :selected {}}}", current == Some(*id)).unwrap();
             }
             value.push(']');
             Ok(value)
         }
         Command::Select(runtime) => {
-            if let Some(id) = runtime {
-                state.target(Some(*id)).map_err(|message| {
-                    format!("{message}; (light.dev/runtimes) lists those that are")
-                })?;
+            let unknown = runtime.and_then(|id| {
+                let target = bound.state().target(Some(id));
+                target.err().map(|message| (id, message))
+            });
+            if let Some((id, message)) = unknown {
+                let id = &id;
+                // A runtime of another build is that build's to choose.
+                let other = site
+                    .mounts
+                    .iter()
+                    .find(|mount| mount.state().runtimes.iter().any(|(known, _)| known == id));
+                return Err(match (other.and_then(|mount| named(mount)), named(bound)) {
+                    (Some(other), Some(current)) => format!(
+                        "runtime {id} runs {other}, and the session is bound to {current}; (light.dev/repl {other}) binds it to {other}"
+                    ),
+                    _ => format!("{message}; (light.dev/runtimes) lists those that are"),
+                });
             }
-            if let Some(entry) = state.sessions.get_mut(&session) {
-                entry.runtime = *runtime;
-            }
+            entry.runtime = *runtime;
             Ok(runtime.map_or("nil".to_owned(), |id| id.to_string()))
+        }
+        Command::Repl(name) => {
+            // The ids of the builds the watch runs, in the order named.
+            let ids = site
+                .mounts
+                .iter()
+                .filter_map(|mount| named(mount))
+                .collect::<Vec<_>>();
+            if ids.is_empty() {
+                return Err(
+                    "the watch runs no named builds: light.dev/repl switches between the builds of light-cljs watch ID ..."
+                        .to_owned(),
+                );
+            }
+            let Some(id) = site.mount_named(name) else {
+                return Err(format!(
+                    "the watch runs no build :{name}; its builds are {}",
+                    ids.join(", ")
+                ));
+            };
+            // As shadow-cljs's `repl` starts the build's REPL afresh: in the
+            // namespace its sessions start in, on its most recently
+            // connected runtime.
+            let mount = site.mount_of(id);
+            entry.build = id;
+            entry.runtime = None;
+            if let Some(namespace) = mount.start_namespace() {
+                entry.namespace = namespace;
+            }
+            Ok(format!("[:selected :{name}]"))
         }
     }
 }
@@ -2004,7 +2189,8 @@ type Thrown = (&'static str, String, Option<String>, Option<String>);
 /// interrupt of the session ends the wait.
 #[allow(clippy::too_many_arguments)]
 fn invoke_form(
-    shared: &Shared,
+    site: &Site,
+    build: MountId,
     session: u64,
     form: &CompiledForm,
     setup: &str,
@@ -2022,12 +2208,16 @@ fn invoke_form(
             None,
         )
     };
+    let shared = site.mount_of(build);
     let invocation = {
-        let mut state = shared.state();
-        if state.sessions.get(&session).is_some_and(|s| s.interrupted) {
+        // The session, then the mount: as an interrupt takes them.
+        let mut sessions = site.sessions();
+        let id = format!("{}-{session}", sessions.incarnation);
+        if sessions.table.get(&session).is_some_and(|s| s.interrupted) {
             return Err(interrupted());
         }
-        let selected = state.sessions.get(&session).and_then(|s| s.runtime);
+        let selected = sessions.table.get(&session).and_then(|s| s.runtime);
+        let mut state = shared.state();
         let target = state.target(selected).map_err(|message| {
             let message = match selected {
                 Some(id) => format!(
@@ -2070,7 +2260,7 @@ fn invoke_form(
             .send_invoke(
                 target,
                 &InvokeMessage {
-                    session: Some(session),
+                    session: Some(&id),
                     namespace,
                     setup,
                     js: js.as_deref(),
@@ -2078,14 +2268,14 @@ fn invoke_form(
                 },
             )
             .map_err(|message| ("runtime", message, None, None))?;
-        if let Some(entry) = state.sessions.get_mut(&session) {
+        if let Some(entry) = sessions.table.get_mut(&session) {
             entry.pending = Some(invocation.id.clone());
         }
         invocation
     };
     let runtime = invocation.runtime;
     let reply = invocation.reply.recv();
-    if let Some(entry) = shared.state().sessions.get_mut(&session) {
+    if let Some(entry) = site.sessions().table.get_mut(&session) {
         entry.pending = None;
     }
     let reply = reply.map_err(|_| {
