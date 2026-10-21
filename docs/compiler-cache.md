@@ -1288,7 +1288,9 @@ build is a supported debugging and comparison path.
   store held stays readable, and the compilation does not depend on it.
 - **Retention.** Publishing never evicts. `Store::trim`, after a successful
   build, with the artifacts the build used or published as in use, keeps
-  three artifacts per namespace (those in use first), then evicts the
+  three artifacts per namespace (those in use first; N with
+  `--cache-retention N` or a `light-cljs.edn`'s `:cache-retention N`,
+  build-configuration.md "As built (light-cljs-409)"), then evicts the
   oldest by publication time, those not in use first, until the store's
   artifacts total at most 1 GiB. Penpot's 922 artifacts encode to 94 MB, so
   the cap is about ten builds. It removes every unindexed artifact (one a

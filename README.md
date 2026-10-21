@@ -430,7 +430,11 @@ consumers and `^:light-cljs/no-cache` for that namespace alone. With
 `--no-cache` nothing reads or writes a cache: the build is a fresh uncached
 one, and `--no-cache` with `--cache-dir` is an error. The directory is
 disposable derived data, bounded to three artifacts per namespace and 1 GiB;
-never commit it (add `.light-cljs/` to `.gitignore`). On Penpot a warm build
+`--cache-retention N` (on `--compile` and `--watch`, a positive integer)
+keeps N per namespace instead, for several builds of different
+configurations sharing one store, which evict each other's artifacts at
+three ([docs/build-configuration.md](docs/build-configuration.md), "As built
+(light-cljs-409)"); never commit it (add `.light-cljs/` to `.gitignore`). On Penpot a warm build
 with nothing edited takes 7% of an uncached one's time and filling the cache
 costs about 10% more
 ([benchmarks/compiler-cache.md](benchmarks/compiler-cache.md)). With
@@ -589,7 +593,8 @@ takes (with `--warnings` and, for
 `release`, `--checked-arrays-warn`/`--checked-arrays-error`); `--source-root`
 replaces `:source-paths`, `--config KEY=EDN` sets one key of `:config`,
 `--cache-dir` names the store and turns the cache on, `--no-cache` turns it
-off and `--cache-blocker` adds to the file's blockers. `--config-merge DATA`
+off, `--cache-blocker` adds to the file's blockers and `--cache-retention N`
+replaces the top-level `:cache-retention N`. `--config-merge DATA`
 (repeatable) deep-merges EDN text starting with `{`, or a file, over each
 build, as shadow-cljs's does. `--entry` and `--out-dir` take one build id,
 and `--esm` and the source map flags are refused, as are `--watch`'s flags

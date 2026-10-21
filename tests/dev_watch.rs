@@ -3466,3 +3466,87 @@ fn a_failed_restart_waits_for_work() {
     );
     assert!(built.starts_with("[:worker] built app.worker ("), "{built}");
 }
+
+/// A copy of examples/features whose file adds `top` at the top level, with
+/// `:http {:port 0}` and `:fs-watch {:loop-wait 20}`, and whose store holds
+/// four `compile features` artifacts per namespace, one per `--config`
+/// value, kept by `--cache-retention 9`.
+fn retention_project(label: &str, top: &str) -> (TempDir, PathBuf) {
+    let (dir, project) = file_watch::features(label);
+    let config = project.join("light-cljs.edn");
+    let text = fs::read_to_string(&config).unwrap();
+    let marker = "{:source-paths [\".\"]\n";
+    assert_eq!(text.matches(marker).count(), 1, "{text}");
+    let added = format!("{marker} {top}\n :http {{:port 0}}\n :fs-watch {{:loop-wait 20}}\n");
+    fs::write(&config, text.replacen(marker, &added, 1)).unwrap();
+    for n in 1..=4 {
+        let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .args(["compile", "features", "--cache-retention", "9", "--config"])
+            .arg(format!("app/n={n}"))
+            .current_dir(&project)
+            .env_remove("LIGHT_CLJS")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    (dir, project)
+}
+
+/// The candidates the project's store keeps for `app.shared`.
+fn shared_candidates(project: &Path) -> usize {
+    light_cljs::artifact_store::Store::open(project.join(".light-cljs/cache"))
+        .candidates("app.shared")
+        .len()
+}
+
+/// The top-level `:cache-retention` reaches the watch's startup build, which
+/// trims the store with it, and a reread that changes it restarts the build,
+/// whose startup build trims with the new value; `--cache-retention` after
+/// the ids wins over the key at startup and across a reread
+/// (light-cljs-409).
+#[test]
+fn cache_retention_applies_at_startup_and_after_a_reread() {
+    let (_dir, project) = retention_project("dev-watch-retention-key", ":cache-retention 9");
+    let mut watch = file_watch::Light::spawn(&project, &["watch", "features"], None);
+    watch.until("[:features] built ");
+    // The four compiles' artifacts and the watch's own (its startup build
+    // runs its macros in the session's engine, another compiler key).
+    assert_eq!(shared_candidates(&project), 5);
+    edit_config(&project, ":cache-retention 9", ":cache-retention 2");
+    let (lines, built) = watch.until("[:features] built ");
+    assert_eq!(
+        lines,
+        ["light-cljs: light-cljs.edn changed the settings of :features; restarting the build"]
+    );
+    assert!(built.starts_with("[:features] built app.main ("), "{built}");
+    assert_eq!(shared_candidates(&project), 2);
+    drop(watch);
+
+    let (_dir, project) = retention_project("dev-watch-retention-flag", ":cache-retention 1");
+    let mut watch = file_watch::Light::spawn(
+        &project,
+        &["watch", "features", "--cache-retention", "4"],
+        None,
+    );
+    watch.until("[:features] built ");
+    assert_eq!(shared_candidates(&project), 4);
+    // A new :config restarts the build with a fifth front-end key; the key
+    // changes too, and the flag still decides.
+    edit_config(&project, ":cache-retention 1", ":cache-retention 2");
+    edit_config(
+        &project,
+        ":dev {:output-dir \"out/dev\"}",
+        ":dev {:output-dir \"out/dev\" :config {:app/edited true}}",
+    );
+    let (lines, built) = watch.until("[:features] built ");
+    assert_eq!(
+        lines,
+        ["light-cljs: light-cljs.edn changed the settings of :features; restarting the build"]
+    );
+    assert!(built.starts_with("[:features] built app.main ("), "{built}");
+    assert_eq!(shared_candidates(&project), 4);
+}

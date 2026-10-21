@@ -12,3 +12,4 @@ mod equivalence;
 mod merge;
 mod print_config;
 mod reader;
+mod retention;

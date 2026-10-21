@@ -53,6 +53,9 @@ pub struct CacheOptions {
     /// `--cache-blocker NS`: these namespaces and every compilation consumer
     /// of them neither read nor write the cache.
     pub blockers: Vec<String>,
+    /// What trimming keeps after the build: `--cache-retention N` sets
+    /// [`Retention::per_namespace`], three by default.
+    pub retention: Retention,
 }
 
 /// Why the current namespace was not installed, until it completes.
@@ -86,6 +89,7 @@ pub struct CompileCache {
     in_use: Vec<Digest>,
     limits: DecodeLimits,
     counts: CacheCounts,
+    retention: Retention,
 }
 
 impl CompileCache {
@@ -115,6 +119,7 @@ impl CompileCache {
             in_use: Vec::new(),
             limits: DecodeLimits::default(),
             counts,
+            retention: options.retention,
         }
     }
 
@@ -148,7 +153,7 @@ impl CompileCache {
         if self.store.write_failure().is_some() {
             return;
         }
-        if let Err(error) = self.store.trim(&Retention::default(), &self.in_use) {
+        if let Err(error) = self.store.trim(&self.retention, &self.in_use) {
             eprintln!(
                 "warning: cannot trim the compiler cache in {}: {error}",
                 self.store.root().display()

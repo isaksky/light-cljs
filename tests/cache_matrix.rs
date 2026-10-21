@@ -583,6 +583,7 @@ fn child() {
                 &light_cljs::compile_cache::CacheOptions {
                     dir: dir.into(),
                     blockers: Vec::new(),
+                    retention: Default::default(),
                 },
                 Some(&mut stats),
                 light_cljs::scheduler::Slots::ONE,
@@ -1046,6 +1047,7 @@ fn repeated_builds_and_teardown() {
     let cache = light_cljs::compile_cache::CacheOptions {
         dir: project.cache(),
         blockers: Vec::new(),
+        retention: Default::default(),
     };
     assert_eq!(live_counts(), LiveCounts::default());
     let mut tables = None;

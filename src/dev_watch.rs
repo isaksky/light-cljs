@@ -83,7 +83,7 @@ pub const USAGE: &str = "Watch:
              [--poll-ms N] [--elide-asserts] [--stats] [--config KEY=EDN ...]
              [--macro-expansions N] [--macro-nodes N] [--macro-timeout-ms N]
              [--macro-memory-limit N] [--macro-poll-budget N]
-             [--cache-dir DIR | --no-cache] [--cache-blocker NS ...]
+             [--cache-dir DIR | --no-cache] [--cache-blocker NS ...] [--cache-retention N]
              [--serve PORT [--serve-host HOST] [--reload-dependents] [--nrepl PORT | --no-nrepl]]
 
 Write the dev build of --compile --reloadable into DIR, then poll the .cljs
@@ -137,6 +137,10 @@ With --cache-blocker NS, repeatable, keep NS and every namespace whose
 compilation depends on it out of the persistent compiler cache, as --compile
 does. A blocker never makes a step compile a namespace whose retained unit
 is still valid.
+
+With --cache-retention N, a positive integer, keep N artifacts per namespace
+(three by default) when the startup build trims the cache, as --compile
+does.
 
 With --serve PORT (0 for any free port), also serve the build over HTTP on
 127.0.0.1, or on HOST with --serve-host (0.0.0.0 opens it to the network;
@@ -215,6 +219,9 @@ pub(crate) struct Options {
     /// Where the persistent compiler cache the watch starts from is: the
     /// default directory or `--cache-dir DIR`, and `None` with `--no-cache`.
     pub(crate) cache_dir: Option<PathBuf>,
+    /// `--cache-retention N`: the artifacts the startup build's trim keeps
+    /// per namespace; three when `None`.
+    pub(crate) cache_retention: Option<usize>,
     /// `--macro-expansions N` and the other macro limit flags, for the
     /// startup build and the session.
     pub(crate) macro_limits: crate::MacroLimitFlags,
@@ -279,6 +286,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
     let mut blockers = Vec::new();
     let mut cache_dir = None;
     let mut no_cache = false;
+    let mut cache_retention = None;
     let mut macro_limits = crate::MacroLimitFlags::default();
     while let Some(arg) = args.next() {
         let flag = arg.to_str().unwrap_or("");
@@ -331,6 +339,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
             ),
             "--cache-dir" => cache_dir = Some(PathBuf::from(value()?)),
             "--no-cache" => no_cache = true,
+            "--cache-retention" => cache_retention = Some(crate::cache_retention(&mut args)?),
             _ if macro_limits.accept(flag, &mut args)? => {}
             _ => return Err(format!("unexpected watch option: {flag}\n{USAGE}").into()),
         }
@@ -380,6 +389,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
         configuration,
         blockers,
         cache_dir,
+        cache_retention,
         macro_limits,
     }))
 }
@@ -618,6 +628,7 @@ fn start(
         .map(|dir| light_cljs::compile_cache::CacheOptions {
             dir,
             blockers: options.blockers.clone(),
+            retention: crate::retention(options.cache_retention),
         });
     // With --cache-dir, the startup build runs once, in the session's own
     // host and engine, with the persistent cache, and the session starts

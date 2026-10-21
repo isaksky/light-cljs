@@ -2018,6 +2018,7 @@ fn overlap_run(
             &light_cljs::compile_cache::CacheOptions {
                 dir: dir.to_path_buf(),
                 blockers: Vec::new(),
+                retention: Default::default(),
             },
             None,
             slots,

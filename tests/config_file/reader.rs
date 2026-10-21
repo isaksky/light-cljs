@@ -293,6 +293,11 @@ fn error_rows() -> Vec<(String, String)> {
         "light-cljs.edn:7:4: :http in build :app is a top-level key, as in shadow-cljs",
     );
     row(
+        app(":cache-retention 4"),
+        "light-cljs.edn:7:4: :cache-retention in build :app is a top-level key, as in \
+         shadow-cljs",
+    );
+    row(
         app(":optimizations :advanced"),
         "light-cljs.edn:7:4: :optimizations in build :app belongs under :compiler-options, as \
          in shadow-cljs",
@@ -551,6 +556,22 @@ fn type_rows() -> Vec<(String, String)> {
     row(
         top(":compile-threads 0"),
         "light-cljs.edn:2:19: :compile-threads must be a positive integer, got 0",
+    );
+    row(
+        top(":cache-retention 0"),
+        "light-cljs.edn:2:19: :cache-retention must be a positive integer, got 0",
+    );
+    row(
+        top(":cache-retention \"3\""),
+        "light-cljs.edn:2:19: :cache-retention must be a positive integer, got \"3\"",
+    );
+    row(
+        top(":cache-retention -2"),
+        "light-cljs.edn:2:19: :cache-retention must be a positive integer, got -2",
+    );
+    row(
+        top(":cache-retention 2.5"),
+        "light-cljs.edn:2:19: :cache-retention must be a positive integer, got 2.5",
     );
     row(
         top(":http 9630"),

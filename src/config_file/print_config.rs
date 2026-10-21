@@ -154,7 +154,8 @@ impl ConfigFile {
     /// build, merged, as one map, each value with its origin.
     ///
     /// A setting with a default prints at its default, but for the compiler
-    /// options, which print when a layer or a flag gives them, and
+    /// options and `:cache-retention`, which print when a layer or a flag
+    /// gives them (so a file without `:cache-retention` prints as before), and
     /// `:optimizations`, which always prints in release mode. In release
     /// mode `:closure-defines` and `:checked-arrays` print under `:release`,
     /// since either reaching dev mode is an error and the printed EDN reads
@@ -200,6 +201,7 @@ impl ConfigFile {
         .into_iter()
         .filter_map(leaf)
         .collect();
+        top.extend(given(Setting::CacheRetention));
         if watch {
             top.extend(map(
                 "http",

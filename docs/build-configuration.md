@@ -92,6 +92,7 @@ key, value and behavior.
 | Defaults: `:fs-watch {:loop-wait 500}`, `:compile-threads` the processor count | 100 ms; 1 | Today's `--poll-ms` default; `--jobs` is experimental and did not meet its gate (compiler-concurrency.md) |
 | The config watch compares a build's old and new configuration with `=` | Slot by slot by EDN text: a list for a vector, `1.0` for `1`, `-0.0` for `0` or a reordered map restarts the build | Each is visible to a macro through `light.build/config`, which shadow-cljs has no counterpart of, so treating them as equal would keep a stale compiler input ("As built (light-cljs-404)") |
 | A cache per build and mode, `.shadow-cljs/builds/<id>/<mode>` | One content-addressed store, `<:cache-root>/cache`, shared by every build and mode | Artifacts are keyed by their inputs (compiler-cache.md), so sharing is safe and saves work |
+| No retention count: each build's cache holds its one configuration | Top-level `:cache-retention N`, as `--cache-retention N`, three by default | The shared store keeps N artifacts per namespace; the Phase 3 test project's five builds give its shared namespace five keys and evict each other at three ("As built (light-cljs-409)") |
 
 ## Goal
 
@@ -319,6 +320,7 @@ conditional, and no discard that hides a duplicate key.
 | `--config KEY=EDN` | `:config {KEY EDN}` | build | both |
 | `--jobs N` | `:compile-threads N` | top level | both (the watch runs one slot) |
 | `--cache-dir DIR` | `:cache-root "ROOT"`, the store in `ROOT/cache` | top level | both |
+| `--cache-retention N` | `:cache-retention N` | top level | both |
 | `--no-cache` | `:build-options {:cache-level :off}` | build | both |
 | `--cache-blocker NS` | `:cache-blockers #{NS}`, and `:build-options {:cache-blockers #{NS}}` | top level, build | both |
 | `--poll-ms N` | `:fs-watch {:loop-wait N}` | top level | `watch` |
@@ -329,8 +331,9 @@ conditional, and no discard that hides a duplicate key.
 | `--compile`, `--reloadable`, `--watch` | the command: `compile`, `watch`, `release` | - | - |
 
 Keys light-cljs adds, because shadow-cljs has no word for them:
-`:compiler-options` `:cljs-warnings` and the five `:macro-*` limits, and
-the build's `:config`. They are listed under "Names for review".
+`:compiler-options` `:cljs-warnings` and the five `:macro-*` limits, the
+build's `:config`, and the top-level `:cache-retention` (light-cljs-409).
+They are listed under "Names for review".
 
 ### Top-level keys
 
@@ -341,6 +344,7 @@ the build's `:config`. They are listed under "Names for review".
 | `:cache-root` | directory string | `".light-cljs"`; the store is `.light-cljs/cache`, today's default |
 | `:cache-blockers` | set of namespace symbols | `#{}` |
 | `:compile-threads` | positive integer (experimental) | 1 |
+| `:cache-retention` | positive integer: the artifacts the store keeps per namespace | 3 |
 | `:http` | `{:port N :host "HOST" :strict BOOL}` | `{:port 9630 :host "127.0.0.1"}` |
 | `:nrepl` | `{:port N}` or `false` | nREPL on the `:http` port only |
 | `:fs-watch` | `{:loop-wait N}`, milliseconds, positive; `:impl :polling` is accepted, the only one | `{:loop-wait 100}` |
@@ -355,6 +359,13 @@ the build's `:config`. They are listed under "Names for review".
   It is safe for concurrent processes (compiler-cache, "Loading,
   diagnostics, and storage"). `--cache-dir DIR` names the store itself.
 - `:cache-blockers` is unioned into every build's, as shadow-cljs unions it.
+- `:cache-retention N` is how many artifacts the shared store keeps per
+  namespace after each build, `--cache-retention N`'s value, three by
+  default. Builds of one file with different front-end inputs (a `:config`
+  per build, dev and release, another entry requiring a shared namespace)
+  each need one, and a store holding fewer evicts what the next build of
+  another needs ("As built (light-cljs-409)"). It is a top-level key, not a
+  build key, because the store is one: the last build to trim it decides.
 - `:http` is the dev server of `watch`, which always starts it, as
   shadow-cljs's server always runs: port 9630 by default and, when the port
   is taken, the next free one upward unless `:strict true`, as shadow-cljs
@@ -567,7 +578,7 @@ setting each:
 
 | Flag | Effect |
 |---|---|
-| Scalar flags (`--entry`, `--out-dir`, `--optimize`, `--jobs`, `--poll-ms`, `--serve`, the macro limits, ...) | Replace the value |
+| Scalar flags (`--entry`, `--out-dir`, `--optimize`, `--jobs`, `--cache-retention`, `--poll-ms`, `--serve`, the macro limits, ...) | Replace the value |
 | `--source-root` (repeated) | The list replaces `:source-paths` |
 | `--config K=V`, `--define NS/NAME=V` | Set that key; the flag naming one key twice is still an error |
 | `--cache-dir DIR` | Names the store, and turns the cache on over `:cache-level :off`; `--no-cache` turns it off |
@@ -601,6 +612,7 @@ for any flag-only build:
 | `:source-paths` | `FileSourceProvider` roots | Resolution: every candidate path and the file found |
 | `:optimizations`, `:closure-defines`, `:pseudo-names`, `:output-dir`, `:modules` | `ApplicationOptions`, `OutputLayout`, the entry | Emission key only (recorded as zeros today; compiler-cache "As built (light-cljs-324)"); the entry is the build's root, not a key |
 | `:cache-root`, `:cache-blockers`, `:cache-level` | `CacheOptions`, the policy evaluator | Policy: what may read or write, never a key |
+| `:cache-retention` | `CacheOptions::retention`, `Store::trim` | None: what the store keeps after a build, never a key |
 | `:compile-threads` | `scheduler::Slots` | None: output does not depend on it |
 | `:http`, `:nrepl`, `:fs-watch`, `:devtools` | the watch's `Options` | None |
 | Build id, mode, file path, file text, `LIGHT_CLJS` text | nowhere | None |
@@ -652,11 +664,15 @@ its place.
   changes no front-end key.
 - **Builds do not partition the cache.** Two builds with equal front-end
   inputs share artifacts; dev and release of one build differ in warning
-  mode, so each namespace has two front-end keys. The store keeps three
+  mode, so each namespace has two front-end keys, and three once the
+  build is also watched (light-cljs-409 found that the watch's startup
+  build runs its macros in the session's engine, which the compiler
+  component covers, so `watch` and `compile` of one build do not share).
+  The store keeps three
   artifacts per namespace (compiler-cache, "Loading, diagnostics, and
   storage"), which a several-build watch makes easier to exceed. Phase 3
-  measures whether builds evict each other, and only then adds a retention
-  setting ("Settled questions").
+  measured that the builds of the test project do evict each other, and
+  added `:cache-retention N` ("As built (light-cljs-409)").
 - **The compiler key already covers the reader.** The file's reader and
   translation live under `src/`, which `build.rs` hashes.
 
@@ -1684,6 +1700,139 @@ Checked by a Node driver, not in a browser.
   `--repl --connect` and `./cljs-repl` beside an invalid `light-cljs.edn`.
   Checked with Node runtimes, not in a browser or a terminal by hand.
 
+### As built (light-cljs-409): cache retention, measured
+
+The driver is `bb benchmarks/build-configuration-retention.bb [FLAG ...]`
+(each FLAG is added to every run; `LIGHT_CLJS_BINARY` picks the binary,
+`target/release/light-cljs` by default). On a temporary copy of
+`tests/fixtures/build-configuration/multi/`, with its one store
+`.light-cljs/cache`, it runs each with `--stats`: `watch app worker` until
+both builds print their built line, then stops it; `release app`; `release
+worker`; `compile test`; `watch app worker` again. Then, as the single-build
+baseline, `watch features`, `release features` and `watch features` on a
+copy of examples/features. It prints each build's hits, misses, bypasses
+and misses with their reasons, the store's artifacts per namespace (read
+from its index files) and whether the last run missed; it exits 1 if it
+did. No source changes between runs, so a miss in the last run is an
+artifact `Store::trim` removed.
+
+Measured on 2026-10-21 with the release binary, at the default three
+(`app.build-info` and `app.main` bypass in every app build, blocked by the
+file's `:cache-blockers`):
+
+| Run | Build | Hits | Misses | Misses' reasons |
+|---|---|---|---|---|
+| 1 `watch app worker` | `:app` | 0 | 4 | `light.build`, `app.api`, `app.config`, `app.shared`: no artifact |
+| 1 | `:worker` | 0 | 3 | `app.jobs`, `app.worker`: no artifact; `app.shared`: config changed |
+| 2 `release app` | `:app` | 0 | 4 | compiler changed (the macro engine, below) |
+| 3 `release worker` | `:worker` | 0 | 3 | `app.jobs`, `app.worker`: compiler changed; `app.shared`: analysis options changed |
+| 4 `compile test` | `:test` | 0 | 2 | `app.shared`: analysis options changed; `app.test-runner`: no artifact |
+| 5 `watch app worker` | `:app` | 3 | **1** | **`app.shared`: compiler changed** |
+| 5 | `:worker` | 2 | **1** | **`app.shared`: config changed** |
+
+Store afterwards: `app.shared` 3 artifacts, `app.api`, `app.config`,
+`app.jobs`, `app.worker` and `light.build` 2 each, `app.test-runner` 1.
+`cljs.core` and the runtime are not stored (the runtime is not a
+namespace artifact), so `app.shared` is the one shared namespace;
+`light.build` is the app's alone (`app.api`'s macro reads it).
+
+**The builds evict each other.** `app.shared` has five front-end keys in
+the sequence, one per build and command: the app's and the worker's
+watches (they differ in `:config`, the app's `:dev :config`), the two
+release builds, and the test build. A watch's startup build runs its
+macros in the engine of the watch's session, and `compile` and `release`
+in the native one; the macro engine is part of the compiler component
+(`cache_key::compiler_identity`), so a watch never shares artifacts with
+`compile` or `release`, even of the same build in the same mode (`compile
+worker` then `watch worker` misses all three namespaces, "compiler
+changed"). The release builds differ from `compile test` in analysis
+options (release's warning mode; the app's also in `:elide-asserts` and
+`:config`), and `compile test` from a `compile worker` in its resolution
+component: a namespace's lookup records the namespace that required it
+(`cache_key::lookup`, `app.test-runner` rather than `app.worker`). The miss
+reason names the first component that differs from the newest candidate
+kept, so the last run reports "compiler changed" and "config changed" for
+artifacts that were evicted, not for changed inputs. Trimming keeps the
+newest three by publish time, the build's own first: `release worker`
+evicts the app watch's artifact and `compile test` the worker watch's,
+which the last watch then misses.
+
+The single-build baseline does not evict: its watch and release give each
+namespace two keys, and every namespace keeps 2 (`app.editor`, `app.main`,
+`app.reports`, `app.shared`, `clojure.string`, `light.lazy`). Adding
+`compile features` to it would make three, the default's limit.
+
+| Run | Build | Hits | Misses | Misses' reasons |
+|---|---|---|---|---|
+| 1 `watch features` | `:features` | 0 | 6 | no artifact |
+| 2 `release features` | `:features` | 0 | 6 | compiler changed (the macro engine) |
+| 3 `watch features` | `:features` | **6** | **0** | - |
+
+Again with a larger retention, the driver's FLAG (the same with
+`:cache-retention N` in the file). Runs 1 to 4 and the baseline are the
+same as at three, hits, misses and reasons, since every artifact they could
+use is still kept; the last run and the store differ:
+
+| `--cache-retention` | Run 5 `:app` hits/misses (bypasses 2) | Run 5 `:worker` hits/misses | `app.shared` artifacts kept | Eviction |
+|---|---|---|---|---|
+| 3 (default) | 3 / 1 | 2 / 1 | 3 | yes |
+| 4 | 3 / 1 | 2 / 1 | 4 | yes: `compile test` evicts the app watch's |
+| 5 | **4 / 0** | **3 / 0** | 5 | no |
+
+Five is the smallest value that removes the misses here, one per build and
+command that requires the namespace; the baseline at five is the table
+above. The default stays three: the flag-only commands are unchanged, and
+a single build's watch, `compile` and `release` need three. The driver
+runs every command without `LIGHT_CLJS`, so an ambient
+`LIGHT_CLJS='{:cache-retention 5}'` does not change what it measures (run
+so, it still reports the eviction at three). The numbers were the same
+before and after rebasing onto light-cljs-408.
+
+What was added, a flag first (principle 20):
+
+- **`--cache-retention N`** on `--compile` (with `--entry`) and `--watch`, a
+  positive integer, read by `count_flag` as `--jobs` is: `--cache-retention
+  requires a number`, `--cache-retention requires a positive integer, got
+  0`; without `--entry`, `--cache-retention bounds the cache of namespaces;
+  it requires --entry NAMESPACE`, checked after the existing cache-flag
+  message so its text is unchanged. It sets `Retention::per_namespace` in
+  `CacheOptions::retention`, which `CompileCache::finish` passes to
+  `Store::trim` in place of `Retention::default()`; the byte cap and the
+  temporary files' grace are unchanged. With `--no-cache` it does nothing.
+  The watch's startup build trims with it; steps never touch the cache.
+- **`:cache-retention N`**, top level (`Setting::CacheRetention`), validated
+  as `:compile-threads` is (`:cache-retention must be a positive integer,
+  got 0`, at the value), with a built-in default of 3. `compile`, `release`
+  and `watch` translate it into `--cache-retention`; the flag after the
+  command wins (`--cache-retention 2, over 1 at light-cljs.edn:8:19`).
+  `--print-config` prints it only when a layer or a flag gives it, as the
+  compiler options print, so a file without it prints exactly as before. It
+  enters no cache key ("Cache keys and fingerprints"). A watch whose reread
+  finds it changed restarts every build, as for any top-level key; the
+  restart's startup build trims with the new value.
+- In a build map, the key gets the misplaced-key message of every top-level
+  key (`:cache-retention in build :app is a top-level key, as in
+  shadow-cljs`), whose "as in shadow-cljs" is about where top-level keys
+  go; shadow-cljs has no such key (the "Deviations from shadow-cljs" row).
+
+Tests: `tests/cli.rs` (`--cache-retention` parsing for `--compile` and
+`--watch`, exact; five configurations leaving three candidates per namespace
+without the flag, so the first misses again, and five with
+`--cache-retention 5`, so it hits, with the same output; a flag-only
+`--compile --cache-retention 1` from a directory holding an invalid
+`light-cljs.edn`); `tests/config_file/reader.rs` (zero, a string, a negative
+and a float); `tests/config_file/retention.rs` on copies of
+examples/features (`:cache-retention 1` keeping one candidate, so `compile`
+after `release` misses all six; `--cache-retention 2` over it keeping both,
+so the next `compile` and `release` hit all six; the plain file keeping
+three after four configurations; `--print-config` with no key, a flag, the
+key, and the flag over the key; a bad key located, with nothing written);
+`tests/dev_watch.rs` (`watch features` over a store seeded with four
+`compile` artifacts per namespace: `:cache-retention 9` keeps all five at
+startup, an edit to 2 restarts the build and trims to two, and
+`--cache-retention 4` over `:cache-retention 1` keeps four at startup and
+after a reread that changes the key and restarts the build).
+
 ## Phases
 
 Queued on 2026-10-20 as the pellets group `build-configuration`, in this
@@ -1773,7 +1922,9 @@ evaluates in either; `light-cljs cljs-repl worker` evaluates in the
 worker; and the retention measurement is recorded. The server and nREPL
 parts are met by light-cljs-407 ("As built (light-cljs-407)"), and
 `cljs-repl worker` by light-cljs-408, tested against that watch ("As built
-(light-cljs-408)"); the measurement is light-cljs-409's.
+(light-cljs-408)"); the measurement is recorded by light-cljs-409 ("As
+built (light-cljs-409)"): the builds evict each other at three, and
+`:cache-retention 5` removes the misses.
 
 ### Deferred
 
@@ -1795,7 +1946,7 @@ shadow-cljs's style:
 | Printing the merged configuration | `--print-config` | - |
 | No nREPL on the dev server's port | `:nrepl false` (shadow-cljs's) | `--no-nrepl` |
 | Switching an nREPL session's build | `(light.dev/repl :worker)` | - |
-| Artifacts kept per namespace, only if the Phase 3 measurement shows eviction | top-level `:cache-retention N` | `--cache-retention N` |
+| Artifacts kept per namespace, added because the Phase 3 measurement showed eviction (light-cljs-409) | top-level `:cache-retention N` | `--cache-retention N` |
 | Rust | `light_cljs::config_file`, `FILE_NAME`, `ConfigFile`, `ConfigMerge`, `BuildDefinition`, `BuildSettings`, `BuildMode::{Dev, Release}`, `BuildId`, `Setting`, `SettingOrigin`, `SettingValue`, `ConfigSource`, `deep_merge`, `ConfigFileError`, `config_cli`, `BuildWorker`, `BuildConfiguration::set` | - |
 
 Shadow-cljs's own names this design maps a light-cljs flag to, for
@@ -1837,6 +1988,12 @@ section, and the pellet still closes.
   other ("Phase 3"); a retention flag and its top-level key,
   `--cache-retention N` and `:cache-retention N`, are added only if they
   do. Per-build stores are not an option: they would lose the sharing.
+  **Measured (light-cljs-409): they do.** The test project's sequence gives
+  `app.shared` five front-end keys, one per build and command, so at three the
+  last `watch app worker` misses it in both builds with unchanged sources;
+  `--cache-retention 5` (or `:cache-retention 5`) removes the misses, and 4
+  does not. The flag and key were added; the default stays three ("As
+  built (light-cljs-409)").
 - **`light-cljs cljs-repl ID`: yes, in Phase 3**, as designed under
   "Commands": the running watch's port from `<:cache-root>/http.port`, then
   today's `--repl --connect` client bound to the build.

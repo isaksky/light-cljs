@@ -1030,6 +1030,13 @@ fn apply_flags(
             &format!("--jobs {jobs}"),
         );
     }
+    if let Some(retention) = user.cache_retention {
+        settings.set_by_flag(
+            Setting::CacheRetention,
+            integer(retention as u128),
+            &format!("--cache-retention {retention}"),
+        );
+    }
     for (key, text) in user.configuration.entries() {
         let value =
             Value::parse(text).map_err(|error| format!("--config {key}={text}: {error}"))?;
@@ -1245,6 +1252,7 @@ fn watch_options(
         cache_dir: (!compile.no_cache)
             .then(|| compile.cache_dir.clone())
             .flatten(),
+        cache_retention: compile.cache_retention,
         blockers: compile.cache_blockers,
         configuration: compile.configuration,
         macro_limits: compile.macro_limits,
@@ -1583,5 +1591,10 @@ fn translate(
             .and_then(light_cljs::scheduler::Slots::new)
             .unwrap_or(user.jobs)
     };
+    // `--cache-retention N` over the top-level `:cache-retention N`; neither
+    // leaves the store's three.
+    compile.cache_retention = user
+        .cache_retention
+        .or_else(|| count(settings, Setting::CacheRetention).and_then(|n| usize::try_from(n).ok()));
     Ok((namespace, options, compile))
 }

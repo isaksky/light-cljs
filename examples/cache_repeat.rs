@@ -69,6 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cache = CacheOptions {
         dir,
         blockers: Vec::new(),
+        retention: Default::default(),
     };
     println!(
         "build ms hits misses exprs globals strings rss-bytes relieved-rss-bytes footprint live"

@@ -104,6 +104,9 @@ pub enum Setting {
     CacheBlockers,
     /// `:compile-threads`, top level.
     CompileThreads,
+    /// `:cache-retention`, top level: the artifacts the store keeps per
+    /// namespace, as `--cache-retention N`.
+    CacheRetention,
     /// `:http :port`.
     HttpPort,
     /// `:http :host`.
@@ -160,11 +163,12 @@ impl Setting {
     pub const COUNT: usize = Self::ALL.len();
 
     /// Every setting, in discriminant order.
-    pub const ALL: [Setting; 29] = [
+    pub const ALL: [Setting; 30] = [
         Self::SourcePaths,
         Self::CacheRoot,
         Self::CacheBlockers,
         Self::CompileThreads,
+        Self::CacheRetention,
         Self::HttpPort,
         Self::HttpHost,
         Self::HttpStrict,
@@ -204,6 +208,7 @@ impl Setting {
             Self::CacheRoot => "cache-root",
             Self::CacheBlockers | Self::BuildCacheBlockers => "cache-blockers",
             Self::CompileThreads => "compile-threads",
+            Self::CacheRetention => "cache-retention",
             Self::HttpPort => "port",
             Self::HttpHost => "host",
             Self::HttpStrict => "strict",
@@ -1339,6 +1344,7 @@ type Table = &'static [(&'static str, Key)];
 const TOP: Table = &[
     ("builds", Key::Builds),
     ("cache-blockers", Key::Setting(Setting::CacheBlockers)),
+    ("cache-retention", Key::Setting(Setting::CacheRetention)),
     ("cache-root", Key::Setting(Setting::CacheRoot)),
     ("compile-threads", Key::Setting(Setting::CompileThreads)),
     ("fs-watch", Key::Map(MapKind::FsWatch)),
@@ -2106,6 +2112,7 @@ impl Validator {
                 Ok(())
             }
             Setting::CompileThreads
+            | Setting::CacheRetention
             | Setting::FsWatchLoopWait
             | Setting::MacroExpansions
             | Setting::MacroNodes
@@ -3015,6 +3022,10 @@ fn defaults(mode: BuildMode) -> Slots {
         (Setting::CacheRoot, ValueKind::String(cache_root.to_owned())),
         (Setting::CacheBlockers, ValueKind::Set(Vec::new())),
         (Setting::CompileThreads, integer(1)),
+        (
+            Setting::CacheRetention,
+            integer(crate::artifact_store::Retention::default().per_namespace as u128),
+        ),
         (Setting::HttpPort, integer(9630)),
         (Setting::HttpHost, ValueKind::String("127.0.0.1".into())),
         (Setting::FsWatchLoopWait, integer(100)),

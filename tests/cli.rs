@@ -2373,8 +2373,17 @@ fn flag_only_commands_never_read_the_configuration_file() {
             .unwrap();
         (output.status.code(), output.stdout, output.stderr)
     };
-    let commands: [&[&str]; 12] = [
+    let commands: [&[&str]; 13] = [
         &["--compile", "--entry", "app.main", "--source-root", "."],
+        &[
+            "--compile",
+            "--cache-retention",
+            "1",
+            "--entry",
+            "app.main",
+            "--source-root",
+            ".",
+        ],
         &[
             "--compile",
             "--optimize",
@@ -2480,4 +2489,159 @@ fn flag_only_commands_never_read_the_configuration_file() {
         stderr.starts_with("light-cljs compile: ") && stderr.contains("light-cljs.edn:1:"),
         "{stderr}"
     );
+}
+
+/// `--cache-retention N` (light-cljs-409) bounds the artifacts the store
+/// keeps per namespace after a build: three without it, as before, and N
+/// with it. Five configurations of one program, each a new front-end key for
+/// every namespace, leave three candidates per namespace without the flag,
+/// so the first misses again, and five with `--cache-retention 5`, so it
+/// hits. Output does not depend on the flag.
+#[test]
+fn cache_retention_keeps_n_artifacts_per_namespace() {
+    let root = "examples/namespaces";
+    let entry = ["--compile", "--entry", "demo.main", "--source-root", root];
+    let namespaces = ["demo.main", "demo.math"];
+    let configs = ["app/n=1", "app/n=2", "app/n=3", "app/n=4", "app/n=5"];
+    let build = |dir: &str, config: &str, extra: &[&str]| {
+        let args = [
+            &entry[..],
+            &["--cache-dir", dir, "--stats", "--config", config],
+            extra,
+        ]
+        .concat();
+        let output = light_cljs(&args);
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "{args:?}: {stderr}");
+        let stat = |key: &str| {
+            stderr
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix(key)?
+                        .strip_prefix(' ')?
+                        .parse::<u64>()
+                        .ok()
+                })
+                .unwrap_or_else(|| panic!("no {key} in {stderr}"))
+        };
+        (
+            String::from_utf8(output.stdout).unwrap(),
+            stat("cache.hits"),
+            stat("cache.misses"),
+        )
+    };
+    let candidates = |dir: &Path| {
+        let store = light_cljs::artifact_store::Store::open(dir);
+        namespaces.map(|namespace| store.candidates(namespace).len())
+    };
+
+    let plain = TempDir::new("cli-retention-default");
+    let plain_dir = plain.to_str().unwrap();
+    let mut outputs = Vec::new();
+    for config in configs {
+        let (js, hits, misses) = build(plain_dir, config, &[]);
+        assert_eq!((hits, misses), (0, 2), "{config}");
+        outputs.push(js);
+    }
+    assert_eq!(candidates(&plain), [3, 3]);
+    let (js, hits, misses) = build(plain_dir, configs[0], &[]);
+    assert_eq!(
+        (hits, misses),
+        (0, 2),
+        "the first configuration was evicted"
+    );
+    assert_eq!(js, outputs[0]);
+
+    let kept = TempDir::new("cli-retention-five");
+    let kept_dir = kept.to_str().unwrap();
+    for (config, expected) in configs.iter().zip(&outputs) {
+        let (js, _, misses) = build(kept_dir, config, &["--cache-retention", "5"]);
+        assert_eq!(misses, 2, "{config}");
+        assert_eq!(&js, expected, "{config}");
+    }
+    assert_eq!(candidates(&kept), [5, 5]);
+    let (js, hits, misses) = build(kept_dir, configs[0], &["--cache-retention", "5"]);
+    assert_eq!((hits, misses), (2, 0));
+    assert_eq!(js, outputs[0]);
+    // A later build without the flag trims back to three.
+    build(kept_dir, configs[1], &[]);
+    assert_eq!(candidates(&kept), [3, 3]);
+}
+
+/// `--cache-retention`'s errors, exact, after `--compile` and `--watch`.
+#[test]
+fn cache_retention_requires_a_positive_integer() {
+    let out = TempDir::new("cli-retention-errors");
+    let out = out.to_str().unwrap();
+    let watch = [
+        "--watch",
+        "--entry",
+        "demo.main",
+        "--source-root",
+        "examples/namespaces",
+        "--out-dir",
+        out,
+    ];
+    let watching = |extra: &[&'static str]| [&watch[..], extra].concat();
+    let cases: Vec<(Vec<&str>, &str)> = vec![
+        (
+            vec!["--compile", "--text", "1", "--cache-retention"],
+            "light-cljs: --cache-retention requires a number\n",
+        ),
+        (
+            vec!["--compile", "--cache-retention", "0", "--text", "1"],
+            "light-cljs: --cache-retention requires a positive integer, got 0\n",
+        ),
+        (
+            vec!["--compile", "--text", "1", "--cache-retention", "many"],
+            "light-cljs: --cache-retention requires a positive integer, got many\n",
+        ),
+        (
+            vec!["--compile", "--text", "1", "--cache-retention", "-1"],
+            "light-cljs: --cache-retention requires a positive integer, got -1\n",
+        ),
+        (
+            vec!["--compile", "--text", "1", "--cache-retention", "2"],
+            "light-cljs: --cache-retention bounds the cache of namespaces; it requires \
+             --entry NAMESPACE\n",
+        ),
+        (
+            vec!["--parse", "--cache-retention", "2", "--text", "1"],
+            "light-cljs: --cache-retention requires --compile\n",
+        ),
+        (
+            vec![
+                "--compile",
+                "--entry",
+                "demo.main",
+                "--source-root",
+                "examples/namespaces",
+                "--cache-retention",
+                "0",
+            ],
+            "light-cljs: --cache-retention requires a positive integer, got 0\n",
+        ),
+        (
+            watching(&["--cache-retention"]),
+            "light-cljs: --cache-retention requires a number\n",
+        ),
+        (
+            watching(&["--cache-retention", "0"]),
+            "light-cljs: --cache-retention requires a positive integer, got 0\n",
+        ),
+        (
+            watching(&["--cache-retention", "three"]),
+            "light-cljs: --cache-retention requires a positive integer, got three\n",
+        ),
+    ];
+    for (args, message) in cases {
+        let output = light_cljs(&args);
+        assert!(!output.status.success(), "{args:?}");
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            message,
+            "{args:?}"
+        );
+        assert!(output.stdout.is_empty(), "{args:?}");
+    }
 }
