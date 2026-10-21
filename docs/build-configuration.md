@@ -1,8 +1,11 @@
 # Build configuration: light-cljs.edn
 
-Status: proposed design, October 20, 2026. Nothing here is implemented, and
-no pellets are queued for it. Names that shadow-cljs has no word for are
-listed for review under "Names for review".
+Status: settled design, October 20, 2026. The user decided its three open
+questions the same day ("Settled questions"). Nothing here is implemented;
+the implementation is queued as the pellets group `build-configuration`,
+one or more pellets per phase ("Phases"). Names that shadow-cljs has no
+word for are listed under "Names for review"; the pellets use them as
+written unless the user renames one.
 
 The user asked on 2026-10-20 for "something like shadow-cljs.edn, where you
 can define the build", named after the tool, and then decided, the same
@@ -68,9 +71,10 @@ key, value and behavior.
 | `:dependencies`, `:deps`, `:js-options`, `classpath:` | none | The compiler resolves no dependencies and has no classpath: library sources are source paths, and JavaScript packages are host- or bundler-supplied (compiler.md, "JavaScript packages") |
 | `:dev-http`, `:asset-path` | none: the `:http` dev server serves each build's `:output-dir` | One server serves builds, events and REPL on one port (dev-workflow.md, "The server and the client"); chunks import one another by relative URL |
 | `:build-hooks`, `:devtools` `:before-load`/`:after-load` symbols | none; `^:dev/before-load` and `^:dev/after-load` metadata, which shadow-cljs also reads | No user code runs outside macros, whose inputs the cache contract governs |
-| `:closure-defines` and `:checked-arrays` apply in dev | an error when they reach dev mode | The dev build takes no `--define` (`--reloadable` refuses it) and the watch no checked-arrays flag; an error, not a dev build that silently differs. See the open questions |
+| `:closure-defines` and `:checked-arrays` apply in dev | an error when they reach dev mode, permanently | The dev build takes no `--define` (`--reloadable` refuses it) and the watch no checked-arrays flag; an error, not a dev build that silently differs. The user decided on 2026-10-20 that dev builds do not gain either, so this is a lasting deviation, not a gap to close ("Settled questions") |
 | nREPL on its own port, starting in a Clojure REPL, `.shadow-cljs/nrepl.port` | nREPL always on the `:http` port, sessions in ClojureScript from the start; `:nrepl {:port N}` adds a listener and writes `.nrepl-port` | There is no JVM or Clojure runtime to start in (dev-workflow.md, "The connected REPL") |
-| `server`, `start`, `stop`, commands that connect to a running server; about twenty actions | `compile`, `watch`, `release` | No JVM startup to amortize, so no server mode; `--repl` and `--eval` are flags already, and `classpath`, `pom`, `npm-deps` and `clj-*` have no counterpart |
+| `server`, `start`, `stop`, commands that connect to a running server; about twenty actions | `compile`, `watch`, `release` and `cljs-repl` | No JVM startup to amortize, so no server mode; `--repl` and `--eval` are flags already, and `classpath`, `pom`, `npm-deps` and `clj-*` have no counterpart |
+| `cljs-repl ID` starts a server and the build when none is running | `cljs-repl ID` connects to a running `watch` and is an error without one | There is no server mode to start in the background; the watch is the server |
 | `~/.shadow-cljs/config.edn`; `#env` beside `#shadow/env` | none; `#light-cljs/env` only | The user file exists for per-user dependencies and nREPL middleware, which light-cljs has none of; EDN reserves unqualified tags such as `#env` |
 | `release --source-maps`, `--debug` | refused | Chunked output has no source maps yet (`--out-dir` refuses the source map flags) |
 | Open specs: an unknown key is ignored | Closed key sets: an unknown key is an error at its line and column | A misspelled key must not silently build something else (kept from e05a164) |
@@ -201,6 +205,7 @@ Shadow-cljs's shape, subcommands with build ids:
 | `light-cljs compile ID [ID ...] [FLAGS]` | dev | `--compile --reloadable --entry NS --source-root ... --out-dir DIR` |
 | `light-cljs watch ID [ID ...] [FLAGS]` | dev | `--watch --entry NS --source-root ... --out-dir DIR --serve PORT` |
 | `light-cljs release ID [ID ...] [FLAGS]` | release | `--compile --optimize advanced --entry NS --source-root ... --out-dir DIR` |
+| `light-cljs cljs-repl ID [FLAGS]` (Phase 3) | - | `--repl --connect 127.0.0.1:PORT`, PORT the running watch's, then `(light.dev/repl :ID)` |
 
 **Why subcommands, not flags.** e05a164 chose `--watch --build app` to fit
 the flag CLI. Shadow-cljs's shape wins here because nothing compelling
@@ -213,8 +218,8 @@ it is, as the scripting and test interface.
 
 The one spelling that changes: today a first argument that is not a flag
 is a FILE to tokenize, so `light-cljs compile` lexes a file named
-`compile`. The words `compile`, `watch` and `release` become commands in
-that position; such a file is still read as `./compile`. No test or script
+`compile`. The words `compile`, `watch`, `release` and `cljs-repl` become
+commands in that position; such a file is still read as `./compile`. No test or script
 in the repository does this.
 
 Parsing:
@@ -261,6 +266,18 @@ Parsing:
                        app.config/VERSION "2.4.0"}     ; light-cljs.edn:15:51 (:release), from APP_VERSION
      :build-options {:cache-level :all}}}}             ; default
   ```
+- **`light-cljs cljs-repl ID`** (Phase 3) is shadow-cljs's command for a
+  REPL into a running watch's build. It reads the file for `:cache-root`
+  and the build ids, reads the port the running watch wrote to
+  `<:cache-root>/http.port` (see `:http`), and runs today's `--repl
+  --connect 127.0.0.1:PORT` client with its session bound to build ID, as
+  if its first form were `(light.dev/repl :ID)`. It takes the `--repl`
+  client's flags (`--print-length`, `--print-level`). Errors: an id the
+  file does not define (the unknown-id message of "Errors"); no port file
+  or a refused connection, `light-cljs cljs-repl app: no watch is running
+  for /work/site/light-cljs.edn; start one with light-cljs watch app`; and
+  an id the running watch does not run, naming the ids it does. Unlike
+  shadow-cljs, it never starts a watch itself (see "Deviations").
 
 ## Schema
 
@@ -328,7 +345,10 @@ the build's `:config`. They are listed under "Names for review".
   binds that port or fails, as today. The server serves each build's
   `:output-dir` and the source paths (for source maps), events, REPL
   requests and nREPL on the same port (see "Several builds in one
-  process").
+  process"). Once bound, `watch` writes the port to
+  `<:cache-root>/http.port` and removes the file when it exits, as
+  shadow-cljs writes `.shadow-cljs/http.port` (`cljs/devtools/server.clj:148`);
+  `cljs-repl` reads it. A flag-only `--watch` writes no such file.
 - `:nrepl {:port N}` adds the separate nREPL listener of `--nrepl` and
   writes `.nrepl-port`; `false` turns nREPL off on the `:http` port too.
 
@@ -415,7 +435,8 @@ the file is read. A key applies in the modes the table gives. A key that
 reaches a mode that does not use it is ignored where shadow-cljs ignores it
 (`:optimizations` and `:pseudo-names` in dev, `:devtools` in `compile` and
 `release`) and an error where shadow-cljs would apply it but light-cljs
-cannot (`:closure-defines` and `:checked-arrays` in dev, see "Deviations").
+cannot (`:closure-defines` and `:checked-arrays` in dev, a permanent
+deviation, see "Deviations").
 Dev mode means the same for `compile` and `watch`: the settings both
 commands' flags accept.
 
@@ -613,8 +634,9 @@ its place.
   inputs share artifacts; dev and release of one build differ in warning
   mode, so each namespace has two front-end keys. The store keeps three
   artifacts per namespace (compiler-cache, "Loading, diagnostics, and
-  storage"), which a several-build watch makes easier to exceed; see the
-  open questions.
+  storage"), which a several-build watch makes easier to exceed. Phase 3
+  measures whether builds evict each other, and only then adds a retention
+  setting ("Settled questions").
 - **The compiler key already covers the reader.** The file's reader and
   translation live under `src/`, which `build.rs` hashes.
 
@@ -830,7 +852,7 @@ Names are decisions for review; the structure is a sketch.
   `release` commands, one or several ids, with `--print-config`.
 - `examples/features/light-cljs.edn` and its `.gitignore` entry; README
   "Command-line usage" and the documentation list; this document's "As
-  built" notes; dev-workflow.md and code-splitting.md point here.
+  built" notes. dev-workflow.md and code-splitting.md already point here.
 - Tests in a `tests/config_file.rs` binary: a table of bad files and their
   exact messages, one row per case and per key; the precedence layers,
   each overriding the one below; the byte-identical and all-hits comparison
@@ -845,7 +867,8 @@ all hits.
 ### Phase 2: watch, one build
 
 - `light-cljs watch ID` with `:http`, `:nrepl`, `:fs-watch` and
-  `:devtools`, the server always started, the port fallback and `:strict`.
+  `:devtools`, the server always started, the port fallback and `:strict`,
+  and `<:cache-root>/http.port` written once the port is bound.
 - The configuration file in the watch's poll, with the restarts of
   "Watching the configuration file", tested in `tests/dev_watch.rs`: an
   edit of another build does nothing, an invalid edit keeps the build, a
@@ -863,10 +886,28 @@ Exit criterion: `light-cljs watch features` serves the example, and a
   page and a worker, both reloading on a save of a shared namespace; one
   build's compile error leaving the other stepping; an nREPL session
   switching builds with `light.dev/repl`.
+- `light-cljs cljs-repl ID` (see "Commands"), tested against a running
+  two-build watch: a session bound to the named build, and the three
+  errors.
+- **Cache retention, measured.** On the Phase 3 test project (the
+  illustration's `:app`, `:worker` and `:test` with a shared namespace),
+  run with one cache directory: `watch app worker` until both are built,
+  stop it, `release app`, `release worker`, `compile test`, then `watch app
+  worker` again, each run with `--stats`. Builds evict each other when the
+  last run reports a miss for a namespace whose inputs did not change,
+  because `Store::trim` (`src/artifact_store.rs`, `Retention::per_namespace`,
+  three) removed its artifact. Record the per-run hit and miss counts and
+  the store's artifacts per shared namespace in "As built". **Only if builds
+  evict each other**, add a flag, `--cache-retention N` (artifacts kept per
+  namespace, positive, default 3), then its top-level key,
+  `:cache-retention N`, under principle 20, and repeat the measurement with
+  a value that removes the misses; one store stays shared, never a store
+  per build. If they do not, record the numbers and add neither.
 
 Exit criterion: the illustration's `watch app worker` serves the page and
 its worker from one origin, a save reloads both, and one nREPL connection
-evaluates in either.
+evaluates in either; `light-cljs cljs-repl worker` evaluates in the
+worker; and the retention measurement is recorded.
 
 ### Deferred
 
@@ -887,6 +928,7 @@ shadow-cljs's style:
 | Environment values | `#light-cljs/env`, and the variable `LIGHT_CLJS` | - |
 | Printing the merged configuration | `--print-config` | - |
 | Switching an nREPL session's build | `(light.dev/repl :worker)` | - |
+| Artifacts kept per namespace, only if the Phase 3 measurement shows eviction | top-level `:cache-retention N` | `--cache-retention N` |
 | Rust | `light_cljs::config_file`, `FILE_NAME`, `ConfigFile`, `ConfigMerge`, `BuildDefinition`, `BuildSettings`, `BuildMode::{Dev, Release}`, `BuildId`, `Setting`, `SettingOrigin`, `ConfigFileError`, `config_cli`, `BuildWorker`, `BuildConfiguration::set` | - |
 
 Shadow-cljs's own names this design maps a light-cljs flag to, for
@@ -897,23 +939,41 @@ checking: `:source-paths`, `:modules` `:entries`, `:output-dir`,
 `:host` `:strict`, `:nrepl` `:port`, `:devtools` `:reload-strategy :full`,
 `:dev`, `:release`, `--config-merge`, `--pseudo-names`.
 
+## Settled questions
+
+Decided by the user on 2026-10-20. A pellet does not reopen these; a
+finding that contradicts one is recorded under a new "Open questions"
+section, and the pellet still closes.
+
+- **Follow shadow-cljs everywhere**, with its names verbatim (keys, values,
+  commands, `--config-merge`, `:dev`/`:release`), and deviate only for a
+  real reason, listed under "Deviations from shadow-cljs".
+- **Subcommands**: `compile`, `watch`, `release` (and `cljs-repl`), taking
+  build ids. A command that starts with a flag never reads the file and
+  behaves exactly as today.
+- **Several builds in one process** (Phase 3).
+- **`#light-cljs/env` and `--config-merge`**, as shadow-cljs's
+  `#shadow/env` and `--config-merge`, with `LIGHT_CLJS` as `SHADOW_CLJS`.
+- **Discovery** walks up parent directories to the first `light-cljs.edn`;
+  no flag names the file.
+- **Flags always win** over every layer of the file (cache blockers
+  accumulate, "Precedence").
+- **Defines and checked arrays in dev mode: no.** Dev builds do not gain
+  `:closure-defines` or `:checked-arrays` support. Either key reaching dev
+  mode stays a located error, a permanent deviation from shadow-cljs, not
+  a gap a later pellet closes. Shadow-cljs files that put
+  `:closure-defines` at the build level move them under `:release`.
+- **Cache retention across several builds: measure first.** Three
+  artifacts per namespace hold dev and release of one build plus one more
+  configuration; a watch of two builds with different `:config` already
+  uses two. Phase 3 measures on its test project whether builds evict each
+  other ("Phase 3"); a retention flag and its top-level key,
+  `--cache-retention N` and `:cache-retention N`, are added only if they
+  do. Per-build stores are not an option: they would lose the sharing.
+- **`light-cljs cljs-repl ID`: yes, in Phase 3**, as designed under
+  "Commands": the running watch's port from `<:cache-root>/http.port`, then
+  today's `--repl --connect` client bound to the build.
+
 ## Open questions
 
-Each has a recommendation; none blocks Phase 1.
-
-- **Defines and checked arrays in dev mode.** Shadow-cljs files often put
-  `:closure-defines` at the build level for both modes, which this design
-  refuses in dev because the dev build takes no `--define`.
-  *Recommendation:* teach the dev build goog-define overrides (and the
-  watch the checked-arrays setting) in a follow-up, then accept both keys
-  in dev and drop that deviation; until then, the located error.
-- **Cache retention across several builds.** Three artifacts per namespace
-  hold dev and release of one build plus one more configuration; a watch of
-  two builds with different `:config` already uses two.
-  *Recommendation:* measure on the Phase 3 test project; if builds evict
-  each other, make the retention count a flag and a top-level key rather
-  than per-build stores, which would lose the sharing.
-- **`light-cljs cljs-repl ID`**, shadow-cljs's command for a REPL into a
-  running watch's build. *Recommendation:* add it in Phase 3 as `--repl
-  --connect 127.0.0.1:<:http :port>` followed by `(light.dev/repl :ID)`;
-  it is small, and it is what shadow-cljs users type.
+None. Further `:modules` wait for code-splitting.md's Phase 4 ("Deferred").

@@ -10,6 +10,9 @@ document maps that feature onto light-cljs, whose architecture differs in the
 ways that matter most: it compiles one program from a semantic IR with
 whole-program knowledge, emits one JavaScript expression or ES module, has no
 build configuration file, and already treats its runtime as a graph of units.
+(A configuration file, `light-cljs.edn`, has since been designed in
+[build-configuration.md](build-configuration.md); a build there names one
+entry and leaves its chunks inferred, as this document does.)
 It is the design that "Phase 4: deferred" of
 [advanced-optimization.md](advanced-optimization.md) names as "chunk splitting
 with cross-chunk motion".
@@ -1767,7 +1770,10 @@ independent step.
 
 - `--chunk NAME:ns,ns`: merge the lazy roots of the named namespaces into one
   root with the given name, so their features load together. A namespace that
-  is not a lazy root is an error. This is the only place an explicit chunk
+  is not a lazy root is an error. In `light-cljs.edn`, such named groups
+  become further `:modules` with `:entries` and `:depends-on`, as in
+  shadow-cljs (build-configuration.md, "Build keys"). This is the only
+  place an explicit chunk
   graph enters, and it is an overlay on inferred roots.
 - `--chunk-min-bytes N`: after placement, merge a chunk smaller than `N` bytes
   into the smallest chunk whose signature strictly contains it (startup when

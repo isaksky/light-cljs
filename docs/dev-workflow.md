@@ -975,8 +975,12 @@ form, `(app.view/explode)` added by a save to `src/app/view.cljs:25:10`, a
 - **Asset reload** (CSS) and a HUD with build progress.
 - **Reloading a changed `js_runtime.js`** during runtime development: a
   page reload is fine for that.
-- **Multiple watch builds** in one process, and a configuration file: the
-  CLI flags stay the only configuration until a second build is needed.
+- **Multiple watch builds** in one process, and a configuration file: no
+  longer deferred. Both are designed in
+  [build-configuration.md](build-configuration.md): `light-cljs.edn` with
+  named builds, and `light-cljs watch app worker` running them in one
+  process behind one server and one nREPL (its Phase 3), queued as the
+  pellets group `build-configuration`.
 
 ## Dev-mode contract
 
@@ -1052,7 +1056,12 @@ these; a finding that contradicts one goes under "Open questions".
   `--serve PORT` with `--serve-host`, `--reload-dependents`, `--repl
   --connect HOST:PORT` and `--nrepl PORT`. No `dev` subcommand and no
   configuration file; flags are the only configuration until a second
-  build in one process is needed.
+  build in one process is needed. *Superseded in part on 2026-10-20* by
+  [build-configuration.md](build-configuration.md): the configuration file
+  `light-cljs.edn` and shadow-cljs's `compile`, `watch`, `release` and
+  `cljs-repl` subcommands, which take build ids and read it. These flags
+  stay as they are, each one also an override after a subcommand, and a
+  command that starts with a flag never reads the file.
 - **Registry shape.** The flat `"ns/name"` registry the session uses. It
   is tested and needs no migration. Nested namespace objects
   (`$light.app.view.render`) would read better in devtools but would be a
