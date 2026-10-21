@@ -1289,3 +1289,96 @@ fn the_features_example_merges_its_modes_and_a_config_merge() {
         );
     }
 }
+
+/// `BuildSettings::changed`, which a watch's reread compares with
+/// (docs/build-configuration.md, "Watching the configuration file"): slot by
+/// slot, by value alone. Comments, layout, where a value was written and
+/// whether a variable gave it change nothing, and neither does another
+/// build's section; what a build can observe does, the number as written, a
+/// list for a vector and the order of a map's entries among it. Each changed
+/// setting is listed once, in slot order, either way round.
+#[test]
+fn changed_compares_the_build_settings_slot_by_slot_by_value() {
+    let base = "{:source-paths [\"src\"] :http {:port 9630}\n\
+                :builds {:app {:target :esm :output-dir \"out/app\"\n\
+                :modules {:main {:entries [app.main]}}\n\
+                :config {:app/a 1 :app/b \"x\" :app/c [1 2]}}\n\
+                :other {:target :esm :output-dir \"out/other\" \
+                :modules {:main {:entries [app.other]}}}}}";
+    let running = ok(&file(base, &[]), "app", DEV, &[]);
+    /// A case's name, the edited file, its environment and what changed.
+    type Case<'a> = (&'a str, String, &'a [(&'a str, &'a str)], &'a [Setting]);
+    let cases: Vec<Case> = vec![
+        ("a comment", format!(";; a comment\n{base}"), &[], &[]),
+        (
+            "layout",
+            base.replace(":app/a 1 :app/b", ":app/a 1\n   :app/b")
+                .replace("{:port 9630}", "{ :port   9630 }"),
+            &[],
+            &[],
+        ),
+        (
+            "the order of a map",
+            base.replace(":app/a 1 :app/b \"x\"", ":app/b \"x\" :app/a 1"),
+            &[],
+            &[Setting::Config],
+        ),
+        (
+            "a float for an integer",
+            base.replace(":app/a 1", ":app/a 1.0"),
+            &[],
+            &[Setting::Config],
+        ),
+        (
+            "a list for a vector",
+            base.replace("[1 2]", "(1 2)"),
+            &[],
+            &[Setting::Config],
+        ),
+        (
+            "a variable",
+            base.replace("\"x\" :app/c", "#light-cljs/env \"B\" :app/c"),
+            &[("B", "x")],
+            &[],
+        ),
+        (
+            "another build",
+            base.replace("\"out/other\"", "\"out/other2\""),
+            &[],
+            &[],
+        ),
+        (
+            "the config",
+            base.replace(":app/a 1", ":app/a 2"),
+            &[],
+            &[Setting::Config],
+        ),
+        (
+            "the port",
+            base.replace("9630", "9631"),
+            &[],
+            &[Setting::HttpPort],
+        ),
+        (
+            "the source paths and the output",
+            base.replace("[\"src\"]", "[\"src\" \"lib\"]")
+                .replace("\"out/app\"", "\"out/app2\""),
+            &[],
+            &[Setting::SourcePaths, Setting::OutputDir],
+        ),
+        (
+            "the dev mode",
+            base.replace(
+                ":config {",
+                ":dev {:compiler-options {:elide-asserts true}} :config {",
+            ),
+            &[],
+            &[Setting::ElideAsserts],
+        ),
+    ];
+    for (name, edited, environment, expected) in cases {
+        let next = ok(&file(&edited, environment), "app", DEV, &[]);
+        assert_eq!(running.changed(&next), expected, "{name}");
+        assert_eq!(next.changed(&running), expected, "{name}, the other way");
+    }
+}

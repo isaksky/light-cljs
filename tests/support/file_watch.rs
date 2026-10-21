@@ -237,3 +237,76 @@ pub fn replay(address: &str, path: &str) -> String {
         }
     }
 }
+
+/// Replace the file at `path` with `text` at once, as an editor saves it: a
+/// poll reads the old text or the new, never a part.
+pub fn save(path: &Path, text: &str) {
+    let saving = path.with_file_name(".saving");
+    fs::write(&saving, text).unwrap();
+    fs::rename(&saving, path).unwrap();
+}
+
+/// A runtime's event stream at `path` of the server at `address`, read one
+/// message at a time.
+pub struct Events {
+    reader: BufReader<TcpStream>,
+}
+
+impl Events {
+    pub fn connect(address: &str, path: &str) -> Self {
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream.set_read_timeout(Some(TIMEOUT)).unwrap();
+        write!(stream, "GET {path} HTTP/1.1\r\nHost: {address}\r\n\r\n").unwrap();
+        Self {
+            reader: BufReader::new(stream),
+        }
+    }
+
+    /// The next message's JSON, or `None` once the server ends the stream.
+    pub fn next(&mut self) -> Option<String> {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if self.reader.read_line(&mut line).unwrap() == 0 {
+                return None;
+            }
+            if let Some(data) = line.strip_prefix("data: ") {
+                return Some(data.trim_end().to_owned());
+            }
+        }
+    }
+}
+
+/// The Node driver of a dev build, tests/support/dev_execution.mjs, which
+/// loads the build in `build` and reads the event stream at `url` with the
+/// build's client until it has handled `messages` messages after `hello`,
+/// with its stdout piped for the record it prints at the end.
+pub fn node_runtime(build: &Path, url: &str, messages: usize) -> Light {
+    let driver = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/dev_execution.mjs"
+    );
+    let mut child = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+        .arg(driver)
+        .arg(build)
+        .arg("--connect")
+        .arg(url)
+        .arg("--messages")
+        .arg(messages.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the watch tests require Node");
+    let stderr = child.stderr.take().unwrap();
+    let (send, lines) = channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            if send.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    Light { child, lines }
+}

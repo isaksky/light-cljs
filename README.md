@@ -516,7 +516,15 @@ nREPL answers on the same port unless `:nrepl false`; `:nrepl {:port N}` adds
 the listener of `--nrepl N` and writes `.nrepl-port` in the project
 directory. `:fs-watch {:loop-wait N}` is `--poll-ms N`, and `:devtools
 {:reload-strategy :full}` is `--reload-dependents`. `watch` takes one id for
-now.
+now. The watch reads `light-cljs.edn` again whenever it is saved, as
+shadow-cljs does: an invalid file is reported on stderr and in the page's
+overlay, and the build keeps running; an edit that changes the build's
+settings (`:config`, say, or a top-level `:source-paths`) restarts the build
+in the same process, from the cache, and connected pages reconnect to it; a
+comment or another build's section changes nothing; and an edit of `:http`,
+`:nrepl` or `:fs-watch` is reported (`light-cljs: :http changed in
+light-cljs.edn; restart the watch to apply it`) and applies once the watch
+is started again. Flags after the id still win.
 
 `release ID` writes what `--compile --optimize advanced --out-dir` writes,
 at the build's `:optimizations`; `compile ID` writes what `--compile

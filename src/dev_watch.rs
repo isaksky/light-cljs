@@ -43,7 +43,9 @@ use light_cljs::dependency_manifest::{
     DependencyManifest, EdgeKinds, ExternalInput, Revision, SourceOrigin,
 };
 use light_cljs::dev_build::{DevFile, DevManifest, DevNamespace, namespace_unit, unit_file};
-use light_cljs::dev_server::{Build, DevServer, Diagnostic, Listen, LoadUnit, Mount, Step};
+use light_cljs::dev_server::{
+    Build, DevServer, Diagnostic, Listen, LoadUnit, Mount, MountId, Step,
+};
 use light_cljs::dev_session::{Action, DevSession, EntryStart, Unit};
 use light_cljs::source_provider::{
     FileSourceProvider, LoadError, LoadRequest, Reload, SourceInput, SourceProvider,
@@ -203,6 +205,35 @@ pub(crate) struct Options {
     /// `--macro-expansions N` and the other macro limit flags, for the
     /// startup build and the session.
     pub(crate) macro_limits: crate::MacroLimitFlags,
+    /// `light-cljs watch ID`'s configuration file, which the poll reads
+    /// again when it is saved; none for `--watch`. A restart's options have
+    /// none: the watch keeps the one it started with.
+    pub(crate) config: Option<ConfigWatch>,
+}
+
+/// The configuration file of `light-cljs watch ID` in the watch's poll
+/// (docs/build-configuration.md, "Watching the configuration file").
+pub(crate) struct ConfigWatch {
+    /// `light-cljs.edn`, whose stamp the poll compares.
+    pub(crate) path: PathBuf,
+    /// Read the file again, once the poll finds its stamp changed, and
+    /// compare the build's settings with those it runs with
+    /// (`crate::config_cli`), reporting on stderr what the restart does not
+    /// apply.
+    pub(crate) reread: Box<dyn FnMut() -> Reread>,
+}
+
+/// What reading the configuration file again found.
+pub(crate) enum Reread {
+    /// Its text, or the build's settings in it, did not change: a comment,
+    /// another build's section, or only a setting the running server holds.
+    Unchanged,
+    /// It is invalid: the error as printed, and located for the overlay. The
+    /// build keeps running with its settings.
+    Invalid(String, Diagnostic),
+    /// The build's settings changed: the build starts again with these
+    /// options, of which those of the server and the poll are not used.
+    Restart(Box<Options>),
 }
 
 /// The port of `--serve` or `--nrepl`, 0 to 65535.
@@ -335,6 +366,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
         blockers,
         cache_dir,
         macro_limits,
+        config: None,
     }))
 }
 
@@ -479,12 +511,9 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     watch(options)
 }
 
-/// Build, serve and watch as `options` say, until interrupted or a step
-/// cannot write the build.
-pub(crate) fn watch(options: Options) -> Result<()> {
-    let begun = Instant::now();
-    // Canonical roots name files as the source provider does. The stamps
-    // come first, so a file saved while the build is made is a change.
+/// The source roots of `options`, canonical: they name files as the source
+/// provider does.
+fn canonical_roots(options: &Options) -> Result<Vec<PathBuf>> {
     let roots = options
         .roots
         .iter()
@@ -493,7 +522,18 @@ pub(crate) fn watch(options: Options) -> Result<()> {
                 .map_err(|error| format!("cannot read source root {}: {error}", root.display()))
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let mut stamps = scan(&roots);
+    Ok(roots)
+}
+
+/// Make the startup build `options` say, from the canonical source roots
+/// `roots`, and the session that starts from it: the watch's state, with the
+/// text of each unit when the watch serves, and the build's warnings located
+/// for the server.
+fn start(
+    options: &Options,
+    roots: Vec<PathBuf>,
+    begun: Instant,
+) -> Result<(Watch, Vec<Diagnostic>)> {
     let mut host = MacroHost::new();
     host.set_assertions(options.assertions);
     host.set_build_configuration(options.configuration.clone());
@@ -681,18 +721,37 @@ pub(crate) fn watch(options: Options) -> Result<()> {
     // the build lists already; each step that succeeds finds them again.
     watch.refresh_hooks();
     watch.write_manifest()?;
-    let mut repl = None;
-    // Removes .nrepl-port when the watch ends.
-    let mut _port_file = None;
-    // Removes `<:cache-root>/http.port` when the watch ends.
-    let mut _http_port_file = None;
-    if let Some(port) = options.serve {
+    if options.serve.is_some() {
         for namespace in &watch.manifest.namespaces {
             let path = options.out_dir.join(&namespace.file);
             let text = fs::read_to_string(&path)
                 .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
             watch.units.insert(namespace.name.clone(), text);
         }
+    }
+    Ok((watch, startup))
+}
+
+/// Build, serve and watch as `options` say, until interrupted or a step
+/// cannot write the build. With `options.config`, each poll also reads
+/// `light-cljs.edn` again when it was saved, and a build whose settings
+/// changed starts again in this process, with the same server, port files
+/// and poll interval (docs/build-configuration.md, "Watching the
+/// configuration file").
+pub(crate) fn watch(mut options: Options) -> Result<()> {
+    let begun = Instant::now();
+    let mut config = options.config.take();
+    // The stamps come first, so a file saved while the build is made is a
+    // change.
+    let mut roots = canonical_roots(&options)?;
+    let mut stamps = scan(&roots);
+    let (mut watch, startup) = start(&options, roots.clone(), begun)?;
+    let mut repl = None;
+    // Removes .nrepl-port when the watch ends.
+    let mut _port_file = None;
+    // Removes `<:cache-root>/http.port` when the watch ends.
+    let mut _http_port_file = None;
+    if let Some(port) = options.serve {
         let host = options.serve_host.as_deref().unwrap_or("127.0.0.1");
         let listen = Listen {
             next_free: options.port_rule == PortRule::NextFree,
@@ -776,28 +835,119 @@ pub(crate) fn watch(options: Options) -> Result<()> {
         }
         watch.server = Some(server);
     }
-    eprintln!(
-        "light-cljs: built {} ({} namespaces) into {} in {} ms; watching every {} ms",
-        options.entry,
-        watch.manifest.namespaces.len(),
-        options.out_dir.display(),
-        begun.elapsed().as_millis(),
-        options.poll.as_millis()
-    );
+    // The poll interval stays the one the watch started with, as the server
+    // does: a restart changes the build alone.
+    let poll = options.poll;
+    built(&options, &watch, begun, poll);
+    // The build; none after a restart that failed, until one succeeds, while
+    // the server is `idle`'s.
+    let mut current = Some(watch);
+    let mut idle = None;
+    // The configuration file's stamp at the last poll; none before the first
+    // poll, which reads the file in case it was saved since it was read.
+    let mut config_stamp = None;
+    // A restart is due: the build's settings changed, or a restart failed
+    // and a source or the file changed since.
+    let mut restart = false;
     loop {
         // Between polls, compile the forms of connected REPLs as they come.
-        let poll = Instant::now() + options.poll;
-        while let Some(wait) = poll.checked_duration_since(Instant::now()) {
-            match &repl {
-                Some(requests) => match requests.recv_timeout(wait) {
+        let polled = Instant::now() + poll;
+        while let Some(wait) = polled.checked_duration_since(Instant::now()) {
+            match (&repl, &current) {
+                (Some(requests), Some(watch)) => match requests.recv_timeout(wait) {
                     Ok(request) => request.answer(&watch.session),
                     Err(RecvTimeoutError::Timeout) => break,
                     Err(RecvTimeoutError::Disconnected) => repl = None,
                 },
-                None => std::thread::sleep(wait),
+                _ => std::thread::sleep(wait),
+            }
+        }
+        if let Some(config) = &mut config {
+            let now = stamp(&config.path);
+            if config_stamp != Some(now) {
+                config_stamp = Some(now);
+                match (config.reread)() {
+                    Reread::Unchanged => {}
+                    Reread::Invalid(printed, diagnostic) => {
+                        eprintln!("light-cljs: {printed}");
+                        let server = current.as_ref().and_then(|watch| watch.server.as_ref());
+                        if let Some(server) = server.or(idle.as_ref()) {
+                            server.publish(Step {
+                                error: Some(diagnostic),
+                                ..Step::default()
+                            });
+                        }
+                    }
+                    Reread::Restart(next) => {
+                        options = *next;
+                        restart = true;
+                    }
+                }
+                restart |= current.is_none();
             }
         }
         let now = scan(&roots);
+        restart |= current.is_none() && now != stamps;
+        if restart {
+            restart = false;
+            // The session ends before the next one starts, as when the
+            // process started; the server stays.
+            let server = current
+                .take()
+                .and_then(|mut watch| watch.server.take())
+                .or_else(|| idle.take());
+            repl = None;
+            let begun = Instant::now();
+            let started = canonical_roots(&options).and_then(|next| {
+                roots = next;
+                stamps = scan(&roots);
+                start(&options, roots.clone(), begun)
+            });
+            match started {
+                Ok((mut watch, startup)) => {
+                    if let Some(server) = server {
+                        server
+                            .restart(
+                                MountId(0),
+                                &options.out_dir,
+                                &options.roots,
+                                watch.build(),
+                                startup,
+                            )
+                            .map_err(|error| {
+                                format!("cannot serve {}: {error}", options.out_dir.display())
+                            })?;
+                        light_cljs::dev_repl::declare(&watch.session)?;
+                        repl = Some(server.serve_repl(&options.entry));
+                        watch.server = Some(server);
+                    }
+                    built(&options, &watch, begun, poll);
+                    current = Some(watch);
+                }
+                Err(error) => {
+                    // The server keeps the build that ran last and shows the
+                    // error; the next change tries again.
+                    let message = error.to_string();
+                    eprintln!("light-cljs: {message}; the build starts again at the next change");
+                    if let Some(server) = &server {
+                        server.publish(Step {
+                            error: Some(Diagnostic {
+                                message,
+                                file: None,
+                                line: None,
+                                column: None,
+                            }),
+                            ..Step::default()
+                        });
+                    }
+                    idle = server;
+                }
+            }
+            continue;
+        }
+        let Some(watch) = &mut current else {
+            continue;
+        };
         let resources = watch.poll_resources();
         if now == stamps && resources.is_empty() {
             continue;
@@ -816,6 +966,19 @@ pub(crate) fn watch(options: Options) -> Result<()> {
         stamps = now;
         watch.step(&changed, &deleted, &resources, noticed)?;
     }
+}
+
+/// `light-cljs: built ENTRY (N namespaces) into DIR in N ms; watching every
+/// N ms`, once a build has started.
+fn built(options: &Options, watch: &Watch, begun: Instant, poll: Duration) {
+    eprintln!(
+        "light-cljs: built {} ({} namespaces) into {} in {} ms; watching every {} ms",
+        options.entry,
+        watch.manifest.namespaces.len(),
+        options.out_dir.display(),
+        begun.elapsed().as_millis(),
+        poll.as_millis()
+    );
 }
 
 /// The stamp of the file at `path`, `None` when there is no file there.

@@ -5,8 +5,9 @@ questions the same day ("Settled questions"). The reader and the schema
 ("As built (light-cljs-398)"), the merging of a build's layers ("As
 built (light-cljs-399)"), the `compile` and `release` commands ("As
 built (light-cljs-400)"), `--print-config` ("As built
-(light-cljs-401)") and `watch` with one build ("As built
-(light-cljs-403)") are implemented; `cljs-repl` does not read the file
+(light-cljs-401)"), `watch` with one build ("As built
+(light-cljs-403)") and rereading the file in the watch ("As built
+(light-cljs-404)") are implemented; `cljs-repl` does not read the file
 yet.
 The implementation is queued as the pellets group `build-configuration`,
 one or more pellets per phase ("Phases"). Names that shadow-cljs has no
@@ -86,6 +87,7 @@ key, value and behavior.
 | Open specs: an unknown key is ignored | Closed key sets: an unknown key is an error at its line and column | A misspelled key must not silently build something else (kept from e05a164) |
 | `deep-merge` throws "failed to merge config value" for a list, or a map, vector or set over a value of another kind | the upper value replaces the lower one | "Precedence": anything else is replaced, so `LIGHT_CLJS` can turn `:nrepl false` into `{:port 0}` and a `:config` list can be changed; the merged value is validated as any other |
 | Defaults: `:fs-watch {:loop-wait 500}`, `:compile-threads` the processor count | 100 ms; 1 | Today's `--poll-ms` default; `--jobs` is experimental and did not meet its gate (compiler-concurrency.md) |
+| The config watch compares a build's old and new configuration with `=` | Slot by slot by EDN text: a list for a vector, `1.0` for `1`, `-0.0` for `0` or a reordered map restarts the build | Each is visible to a macro through `light.build/config`, which shadow-cljs has no counterpart of, so treating them as equal would keep a stale compiler input ("As built (light-cljs-404)") |
 | A cache per build and mode, `.shadow-cljs/builds/<id>/<mode>` | One content-addressed store, `<:cache-root>/cache`, shared by every build and mode | Artifacts are keyed by their inputs (compiler-cache.md), so sharing is safe and saves work |
 
 ## Goal
@@ -1374,6 +1376,81 @@ Names are decisions for review; the structure is a sketch.
   errors) and `tests/config_file/print_config.rs`, all on temporary copies
   of examples/features through `tests/support/file_watch.rs`.
 
+### As built (light-cljs-404): rereading the file in the watch
+
+- **The poll.** `config_cli` hands the watch a `dev_watch::ConfigWatch`: the
+  file's path, and a reread that owns what startup used (the build's name,
+  the parsed `--config-merge`s, the flags after the id) and the settings the
+  build runs with. Each poll stats `light-cljs.edn` before it scans the
+  source roots; when the stamp changed, the reread reads the text, and only
+  when the text differs from the text read last (valid or not) reads and
+  validates it again with `ConfigFile::from_source`, against the process's
+  environment, then runs startup's checks in startup's order (the build by
+  name, its dev settings, `check_outputs`, `check_directories` when a flag
+  replaces a directory, `translate`, `watch_options`). The first poll reads
+  the file once, in case it was saved after startup read it.
+- **The comparison** is `BuildSettings::changed`: slot by slot over the
+  settings array, by value alone (origins, spans, layout, comments and
+  `#light-cljs/env` provenance left out), each value by its EDN text
+  (`Value::to_edn`). That is stricter than shadow-cljs's `=`, on purpose: a
+  list and a vector, `1` and `1.0`, `0` and `-0.0`, and a map's entry order
+  (which an array map's keys follow) are each visible to a macro through
+  `light.build/config`, so each restarts the build. Both sides have the
+  flags after the id written over them (`apply_flags`, layer 6, with a
+  `--cache-dir` the file cannot name written as `:cache-root`'s text), so a
+  setting a flag gives does not change when the file's does, and a restart
+  translates the new file under the same flags: flags still win.
+- **Outcomes.**
+  - Invalid (a validation error, a build the file no longer defines, a
+    failed check): `light-cljs: PATH:LINE:COLUMN: message` on stderr, and a
+    step with that error, located when the error is, for the overlay; the
+    build keeps running with its settings, which the next reread compares
+    with.
+  - Only `:http`, `:nrepl` or `:fs-watch` slots changed: one line per key,
+    `light-cljs: :http changed in light-cljs.edn; restart the watch to apply
+    it`, and nothing else: the server, its port, the port files and the poll
+    interval stay those the watch started with, also across restarts.
+  - Any other slot changed (top-level `:source-paths`, `:cache-root`,
+    `:cache-blockers` and `:compile-threads` among them): `light-cljs:
+    light-cljs.edn changed the settings of :ID; restarting the build`. The
+    session ends, then the build starts as at startup (`dev_watch::start`,
+    from the cache), and `light-cljs: built ...` is printed again.
+    `DevServer::restart` then points the mount at the new `:output-dir` and
+    source roots, makes the new build the one a runtime catches up with, its
+    startup warnings the diagnostics it receives, and ends every runtime's
+    event stream: the client reconnects, as after a server restart, gets
+    `hello` and the replay of the new build, and loads the units whose text
+    changed. REPL sessions stay; pending invokes end as a disconnect ends
+    them.
+  - A comment, layout or another build's section: nothing.
+- **A restart whose build fails** (a missing entry namespace, say) keeps the
+  process and the server: `light-cljs: ERROR; the build starts again at the
+  next change` and an error step for the overlay; the server keeps serving
+  the last build, the REPL is closed, and the next change of a source or of
+  the file starts the build again.
+- Tests: `tests/dev_watch.rs` on temporary copies of the commands fixture
+  (another build's section and a comment edit doing nothing; an invalid edit
+  on stderr and as an `error` event, the next save stepping with the old
+  `:config`; a `:config` edit restarting the build, its startup build and
+  the next step reading the new value, the event stream ending and a new one
+  replaying the new build on the same port; an `:http` edit reported once
+  and the old port serving; `--cache-dir`, `--config` and `--serve` over a
+  reread; a moved `:output-dir` and `:source-paths`, served from the new
+  directory and roots; `:cache-blockers`, `:compile-threads` and
+  `:cache-root` restarting; `:http`, `:nrepl` and `:fs-watch` edits each
+  reported once and none applied by a later restart; a restart that fails
+  and one that recovers) and of examples/features (the exit criterion,
+  below); `tests/config_file/merge.rs` (`changed`, a table of edits).
+
+Phase 2's exit criterion is met: in a temporary copy of examples/features
+with `:config {:app/greeting "hello"}` and `app.greeting`, whose macro reads
+it, `light-cljs watch features` serves the example to the Node dev driver
+(tests/support/dev_execution.mjs `--connect`), and an edit to `"bonjour"`
+restarts the build; the driver's stream ends, it reconnects as runtime 2 and
+reloads `app.main`, logging `greeting: bonjour`, from the same process on the
+same port (`watch_features_carries_a_config_edit_to_a_connected_runtime`).
+Checked by a Node driver, not in a browser.
+
 ## Phases
 
 Queued on 2026-10-20 as the pellets group `build-configuration`, in this
@@ -1426,7 +1503,9 @@ of 6 namespaces hit on the second run, in either order ("As built
   changed `:config` restarts it and the next step sees the new value.
 
 Exit criterion: `light-cljs watch features` serves the example, and a
-`:config` edit reaches the page without restarting the process.
+`:config` edit reaches the page without restarting the process. Met by
+light-cljs-404: the edit reaches a connected Node runtime from the same
+process on the same port ("As built (light-cljs-404)").
 
 ### Phase 3: several builds in one process
 

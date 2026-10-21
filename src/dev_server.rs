@@ -61,7 +61,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
 /// One namespace's unit in a `load` message: the text of its file in the
@@ -238,8 +238,8 @@ struct Site {
     names: Vec<(String, MountId)>,
     /// Each source root with the URL path segments its files are served
     /// under, from the server's root, whichever mount's source map names
-    /// them.
-    roots: Vec<(PathBuf, Vec<String>)>,
+    /// them; [`DevServer::restart`] replaces them.
+    roots: RwLock<Vec<(PathBuf, Vec<String>)>>,
     /// Whether to answer only requests for a loopback `Host`.
     loopback: bool,
     /// Whether the server's own port answers nREPL clients.
@@ -255,7 +255,8 @@ pub(crate) struct Shared {
     /// The name the mount is served under, `/NAME/`; none for the one mount
     /// of [`DevServer::start`], served at `/` alone.
     name: Option<String>,
-    out_dir: PathBuf,
+    /// The build directory, canonical, which [`DevServer::restart`] replaces.
+    out_dir: RwLock<PathBuf>,
     /// The next runtime ID, which every mount of the server draws from, so
     /// that an ID names one runtime of the server.
     runtime_ids: Arc<AtomicU64>,
@@ -433,7 +434,7 @@ impl DevServer {
         for (name, out_dir, build) in mounts {
             table.push(Arc::new(Shared {
                 name,
-                out_dir: std::fs::canonicalize(out_dir)?,
+                out_dir: RwLock::new(std::fs::canonicalize(out_dir)?),
                 runtime_ids: runtime_ids.clone(),
                 state: Mutex::new(State {
                     build,
@@ -453,22 +454,7 @@ impl DevServer {
                 }),
             }));
         }
-        // A root's files are served where a source map of any mount names
-        // them, which differs between build directories at different depths.
-        let mut served = Vec::new();
-        for root in roots {
-            let Ok(root) = std::fs::canonicalize(root) else {
-                continue;
-            };
-            for mount in &table {
-                if let Some(prefix) = served_prefix(&root, &mount.out_dir) {
-                    let entry = (root.clone(), prefix);
-                    if !served.contains(&entry) {
-                        served.push(entry);
-                    }
-                }
-            }
-        }
+        let served = served_roots(roots, &table);
         let mut names = table
             .iter()
             .enumerate()
@@ -480,7 +466,7 @@ impl DevServer {
         let site = Arc::new(Site {
             mounts: table,
             names,
-            roots: served,
+            roots: RwLock::new(served),
             loopback: address.ip().is_loopback(),
             nrepl: listen.nrepl,
             stopped: AtomicBool::new(false),
@@ -535,6 +521,50 @@ impl DevServer {
     /// The mount served under `/NAME/`.
     pub fn mount_named(&self, name: &str) -> Option<MountId> {
         self.site.mount_named(name)
+    }
+
+    /// Mount `id`'s build started again, in a session of its own, after its
+    /// settings changed (docs/build-configuration.md, "Watching the
+    /// configuration file"): serve it from `out_dir`, with the source roots
+    /// `roots` for every mount, make `build` the build a runtime catches up
+    /// with and `warnings` the diagnostics it then receives, and end the
+    /// stream of every runtime of the mount, which connects again, as after
+    /// a server restart, and catches up with the new build. Its pending
+    /// invokes end as a disconnect ends them; its REPL sessions stay.
+    pub fn restart(
+        &self,
+        id: MountId,
+        out_dir: &Path,
+        roots: &[PathBuf],
+        build: Build,
+        warnings: Vec<Diagnostic>,
+    ) -> io::Result<()> {
+        let shared = &self.site.mounts[id.0 as usize];
+        let out_dir = std::fs::canonicalize(out_dir)?;
+        *shared
+            .out_dir
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = out_dir;
+        let served = served_roots(roots, &self.site.mounts);
+        *self
+            .site
+            .roots
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = served;
+        let mut state = shared.state();
+        state.step += 1;
+        state.build = build;
+        state.diagnostics.clear();
+        if !warnings.is_empty() {
+            let message = warnings_message(state.step, &warnings);
+            state.diagnostics.push(message);
+        }
+        for (_, sender) in state.runtimes.drain(..) {
+            let _ = sender.send(String::new());
+        }
+        state.agents.clear();
+        state.pending.clear();
+        Ok(())
     }
 
     /// The IDs of the runtimes connected to the first mount, oldest first.
@@ -652,15 +682,7 @@ impl Shared {
         let number = state.step;
         let mut diagnostics = Vec::new();
         if !step.warnings.is_empty() {
-            let mut message = format!("{{\"op\":\"warnings\",\"step\":{number},\"warnings\":[");
-            for (index, warning) in step.warnings.iter().enumerate() {
-                if index > 0 {
-                    message.push(',');
-                }
-                write_diagnostic(&mut message, warning);
-            }
-            message.push_str("]}");
-            diagnostics.push(message);
+            diagnostics.push(warnings_message(number, &step.warnings));
         }
         if let Some(error) = &step.error {
             let mut message = format!("{{\"op\":\"error\",\"step\":{number},\"error\":");
@@ -783,6 +805,14 @@ fn accept(
 }
 
 impl Shared {
+    /// The build directory, canonical.
+    fn out_dir(&self) -> PathBuf {
+        self.out_dir
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     fn state(&self) -> MutexGuard<'_, State> {
         self.state
             .lock()
@@ -1090,6 +1120,40 @@ fn json_names(out: &mut String, names: &[String]) {
         json_string(out, name);
     }
     out.push(']');
+}
+
+/// The `warnings` message of step `step`.
+fn warnings_message(step: u64, warnings: &[Diagnostic]) -> String {
+    let mut message = format!("{{\"op\":\"warnings\",\"step\":{step},\"warnings\":[");
+    for (index, warning) in warnings.iter().enumerate() {
+        if index > 0 {
+            message.push(',');
+        }
+        write_diagnostic(&mut message, warning);
+    }
+    message.push_str("]}");
+    message
+}
+
+/// Each of `roots` with the URL path segments its files are served under: a
+/// root's files are served where a source map of any of `mounts` names them,
+/// which differs between build directories at different depths.
+fn served_roots(roots: &[PathBuf], mounts: &[Arc<Shared>]) -> Vec<(PathBuf, Vec<String>)> {
+    let mut served = Vec::new();
+    for root in roots {
+        let Ok(root) = std::fs::canonicalize(root) else {
+            continue;
+        };
+        for mount in mounts {
+            if let Some(prefix) = served_prefix(&root, &mount.out_dir()) {
+                let entry = (root.clone(), prefix);
+                if !served.contains(&entry) {
+                    served.push(entry);
+                }
+            }
+        }
+    }
+    served
 }
 
 /// The URL path segments under which the files of `root` are served: where
@@ -2040,7 +2104,7 @@ fn invoke_form(
         let message = text("message").unwrap_or_else(|| "the form threw".to_owned());
         let stack = text("stack").map(|stack| {
             let mut state = shared.state();
-            map_stack(&stack, state.sent.make_contiguous(), &shared.out_dir)
+            map_stack(&stack, state.sent.make_contiguous(), &shared.out_dir())
         });
         return Err(("runtime", message, stack, text("data")));
     }
@@ -2069,7 +2133,7 @@ fn file(
     head_only: bool,
 ) -> io::Result<()> {
     let found = if within == "/" || within == "/index.html" {
-        let page = shared.out_dir.join("index.html");
+        let page = shared.out_dir().join("index.html");
         if page.is_file() {
             Some(page)
         } else {
@@ -2138,9 +2202,13 @@ fn resolve(site: &Site, shared: &Shared, path: &str, within: &str) -> Option<Pat
         path.extend(segments);
         path.is_file().then_some(path)
     };
-    join(&shared.out_dir, &segments(within)?).or_else(|| {
+    join(&shared.out_dir(), &segments(within)?).or_else(|| {
         let segments = segments(path)?;
-        site.roots.iter().find_map(|(root, prefix)| {
+        let roots = site
+            .roots
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        roots.iter().find_map(|(root, prefix)| {
             segments
                 .strip_prefix(prefix.as_slice())
                 .filter(|rest| !rest.is_empty())

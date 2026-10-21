@@ -2562,3 +2562,522 @@ fn watch_id_compiles_what_its_equivalent_watch_flags_compile() {
     assert_eq!(file.3.len(), 3, "{:#?}", file.5);
     assert_eq!(flags.4.as_deref(), Some("cache.misses 0"), "{:#?}", flags.5);
 }
+
+/// A `watch app` of a temporary copy of the commands fixture, whose file
+/// also gives `:http {:port 0}` and `:fs-watch {:loop-wait 20}`, once it has
+/// built: the directory, the project, the watch and the server's address.
+fn rereading(label: &str, flags: &[&str]) -> (TempDir, PathBuf, file_watch::Light, String) {
+    let (dir, project) = file_watch::project(
+        label,
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/build-configuration/commands"),
+    );
+    let config = project.join("light-cljs.edn");
+    let text = fs::read_to_string(&config).unwrap().replace(
+        "{:source-paths [\"src\"]",
+        "{:source-paths [\"src\"]\n :http {:port 0}\n :fs-watch {:loop-wait 20}",
+    );
+    fs::write(&config, text).unwrap();
+    let args = [&["watch", "app"][..], flags].concat();
+    let mut watch = file_watch::Light::spawn(&project, &args, None);
+    let (address, _, _) = watch.serving();
+    let (lines, _) = watch.until("light-cljs: built ");
+    assert!(lines.is_empty(), "{lines:#?}");
+    (dir, project, watch, address)
+}
+
+/// Edit light-cljs.edn of `project`, replacing `from` with `to`.
+fn edit_config(project: &Path, from: &str, to: &str) {
+    let path = project.join("light-cljs.edn");
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains(from), "{from:?} is not in {text}");
+    file_watch::save(&path, &text.replacen(from, to, 1));
+}
+
+/// Wait for many polls of the watch, then save a definition into
+/// app/main.cljs: the step's line, and every line the watch printed since the
+/// last one read.
+fn step_after_polls(
+    project: &Path,
+    watch: &mut file_watch::Light,
+    def: &str,
+) -> (Vec<String>, String) {
+    std::thread::sleep(Duration::from_millis(400));
+    let main = project.join("src/app/main.cljs");
+    let text = fs::read_to_string(&main).unwrap();
+    file_watch::save(&main, &format!("{text}\n(def {def} \"{def}\")\n"));
+    watch.until("light-cljs: recompiled ")
+}
+
+/// An edit of another build's section, or of a comment alone, changes
+/// nothing of the running build's settings: the watch does nothing, prints
+/// nothing, and its next step compiles as before (docs/build-configuration.md,
+/// "Watching the configuration file").
+#[test]
+fn a_reread_that_changes_nothing_of_the_build_does_nothing() {
+    let (_dir, project, mut watch, _) = rereading("dev-watch-reread-other", &[]);
+    edit_config(&project, "\"out/other\"", "\"out/other-edited\"");
+    edit_config(
+        &project,
+        ";; release commands run, with flags over them.",
+        ";; release commands run, with flags over them, edited.",
+    );
+    let (lines, step) = step_after_polls(&project, &mut watch, "first");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.main in "),
+        "{step}"
+    );
+    let unit = fs::read_to_string(project.join("out/app/app.main.js")).unwrap();
+    assert!(
+        unit.contains("\":file\"") && unit.contains("first"),
+        "{unit}"
+    );
+}
+
+/// An invalid edit is reported, located, on stderr and to every connected
+/// runtime as an error event, and the build keeps running with its settings:
+/// the next save steps with the `:config` it started with.
+#[test]
+fn an_invalid_reread_is_reported_and_the_build_keeps_its_settings() {
+    let (_dir, project, mut watch, address) = rereading("dev-watch-reread-invalid", &[]);
+    let mut events = file_watch::Events::connect(&address, "/events");
+    assert!(events.next().unwrap().starts_with("{\"op\":\"hello\","));
+    assert!(events.next().unwrap().starts_with("{\"op\":\"load\","));
+    edit_config(
+        &project,
+        ":config {:app/flavor :file :app/size 1}}",
+        ":config {:app/flavor :edited :app/size 1}\n        :bogus 1}",
+    );
+    let config = project.join("light-cljs.edn");
+    let (lines, error) = watch.until("light-cljs: ");
+    assert!(lines.is_empty(), "{lines:#?}");
+    let message = "unknown key :bogus in build :app; the keys here are :build-options, \
+                   :closure-defines, :compiler-options, :config, :dev, :devtools, :modules, \
+                   :output-dir, :release, :target";
+    assert_eq!(
+        error,
+        format!("light-cljs: {}:12:9: {message}", config.display())
+    );
+    assert_eq!(
+        events.next().unwrap(),
+        format!(
+            "{{\"op\":\"error\",\"step\":1,\"error\":{{\"message\":\"{message}\",\"file\":\"{}\",\"line\":12,\"column\":9}}}}",
+            config.display()
+        )
+    );
+    let (lines, step) = step_after_polls(&project, &mut watch, "after-invalid");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.main in "),
+        "{step}"
+    );
+    let unit = fs::read_to_string(project.join("out/app/app.main.js")).unwrap();
+    assert!(
+        unit.contains("\":file\"") && !unit.contains("edited") && unit.contains("after-invalid"),
+        "{unit}"
+    );
+    let load = events.next().unwrap();
+    assert!(
+        load.starts_with("{\"op\":\"load\",\"step\":2,\"replay\":false,"),
+        "{load}"
+    );
+}
+
+/// A changed `:config` restarts the build in the same process and on the
+/// same server: the startup build and the next step see the new value
+/// through `light.build/config`, and a connected runtime's stream ends, so
+/// that it connects again and catches up with the new build.
+#[test]
+fn a_changed_config_restarts_the_build() {
+    let (_dir, project, mut watch, address) = rereading("dev-watch-reread-config", &[]);
+    let port_file = project.join(".light-cljs/http.port");
+    let port = fs::read_to_string(&port_file).unwrap();
+    let mut events = file_watch::Events::connect(&address, "/events");
+    assert!(events.next().unwrap().starts_with("{\"op\":\"hello\","));
+    assert!(events.next().unwrap().contains("\\\":file\\\""));
+    edit_config(&project, ":app/flavor :file", ":app/flavor :edited");
+    let (lines, built) = watch.until("light-cljs: built ");
+    assert_eq!(
+        lines,
+        ["light-cljs: light-cljs.edn changed the settings of :app; restarting the build"]
+    );
+    assert!(
+        built.starts_with("light-cljs: built app.main (")
+            && built.ends_with(" ms; watching every 20 ms"),
+        "{built}"
+    );
+    let unit = fs::read_to_string(project.join("out/app/app.main.js")).unwrap();
+    assert!(unit.contains("\":edited\""), "{unit}");
+    // The runtime's stream ended; connecting again catches up with the
+    // restarted build, on the same port.
+    assert_eq!(events.next(), None);
+    let replay = file_watch::replay(&address, "/events");
+    assert!(replay.contains("\\\":edited\\\""), "{replay}");
+    assert_eq!(fs::read_to_string(&port_file).unwrap(), port);
+
+    let (lines, step) = step_after_polls(&project, &mut watch, "after-restart");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.main in "),
+        "{step}"
+    );
+    let unit = fs::read_to_string(project.join("out/app/app.main.js")).unwrap();
+    assert!(
+        unit.contains("\":edited\"") && unit.contains("after-restart"),
+        "{unit}"
+    );
+    assert!(watch.child.try_wait().unwrap().is_none());
+}
+
+/// The flags after the id still win after a reread: an edit of the
+/// `:config` entry `--config` gives changes nothing the build runs with, and
+/// restarts nothing; an edit of another entry restarts the build, with the
+/// flag's value over the file's still.
+#[test]
+fn flags_still_win_after_a_reread() {
+    // A store the file cannot name, `--config` over one `:config` entry and
+    // `--serve` over `:http`.
+    let (_dir, project, mut watch, _) = rereading(
+        "dev-watch-reread-flags",
+        &[
+            "--cache-dir",
+            "state/store",
+            "--config",
+            "app/flavor=:flag",
+            "--serve",
+            "0",
+        ],
+    );
+    edit_config(&project, ":app/flavor :file", ":app/flavor :edited");
+    edit_config(&project, ":http {:port 0}", ":http {:port 9}");
+    std::thread::sleep(Duration::from_millis(400));
+    edit_config(&project, ":app/size 1", ":app/size 3");
+    let (lines, _) = watch.until("light-cljs: built ");
+    assert_eq!(
+        lines,
+        ["light-cljs: light-cljs.edn changed the settings of :app; restarting the build"]
+    );
+    let unit = fs::read_to_string(project.join("out/app/app.main.js")).unwrap();
+    assert!(
+        unit.contains("\":flag\"") && unit.contains("\"3\"") && !unit.contains("edited"),
+        "{unit}"
+    );
+    assert!(project.join("state/store").is_dir());
+}
+
+/// A reread that moves `:output-dir` and the top-level `:source-paths`
+/// restarts the build into the new directory from the new roots, and the
+/// server, on its port, serves the new directory and the new roots' sources
+/// (where the units' source maps name them), while a save under the new
+/// roots steps.
+#[test]
+fn a_reread_moves_the_output_and_the_source_roots() {
+    let (_dir, project, mut watch, address) = rereading("dev-watch-reread-moved", &[]);
+    fs::create_dir_all(project.join("lib/app")).unwrap();
+    for entry in fs::read_dir(project.join("src/app")).unwrap() {
+        let path = entry.unwrap().path();
+        fs::copy(
+            &path,
+            project.join("lib/app").join(path.file_name().unwrap()),
+        )
+        .unwrap();
+    }
+    let config = project.join("light-cljs.edn");
+    let text = fs::read_to_string(&config).unwrap();
+    file_watch::save(
+        &config,
+        &text
+            .replacen("[\"src\"]", "[\"lib\"]", 1)
+            .replacen("\"out/app\"", "\"out/moved\"", 1),
+    );
+    let (lines, built) = watch.until("light-cljs: built ");
+    assert_eq!(
+        lines,
+        ["light-cljs: light-cljs.edn changed the settings of :app; restarting the build"]
+    );
+    let moved = project.join("out/moved");
+    assert!(
+        built.contains(&format!(" into {} in ", moved.display())),
+        "{built}"
+    );
+    let unit = fs::read_to_string(moved.join("app.main.js")).unwrap();
+    for path in ["/app.main.js", "/app/app.main.js"] {
+        assert_eq!(
+            file_watch::get(&address, path),
+            ("HTTP/1.1 200 OK".to_owned(), unit.clone()),
+            "{path}"
+        );
+    }
+    let map = fs::read_to_string(moved.join("app.main.js.map")).unwrap();
+    assert!(map.contains("\"../../lib/app/main.cljs\""), "{map}");
+    // The old directory still holds the old map, which names ../src.
+    assert_eq!(
+        file_watch::get(&address, "/app.main.js.map"),
+        ("HTTP/1.1 200 OK".to_owned(), map.clone())
+    );
+    let main = project.join("lib/app/main.cljs");
+    let source = fs::read_to_string(&main).unwrap();
+    assert_eq!(
+        file_watch::get(&address, "/lib/app/main.cljs"),
+        ("HTTP/1.1 200 OK".to_owned(), source.clone())
+    );
+    file_watch::save(&main, &format!("{source}\n(def moved \"moved\")\n"));
+    let (lines, step) = watch.until("light-cljs: recompiled ");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.main in "),
+        "{step}"
+    );
+    assert!(
+        fs::read_to_string(moved.join("app.main.js"))
+            .unwrap()
+            .contains("\"moved\"")
+    );
+}
+
+/// A reread that changes a top-level `:cache-blockers`, `:compile-threads` or
+/// `:cache-root` restarts the build; the new `:cache-root` holds the store
+/// the restarted build writes, and `http.port` stays where the watch wrote it.
+#[test]
+fn top_level_settings_restart_the_build() {
+    let (_dir, project, mut watch, _) = rereading("dev-watch-reread-top", &[]);
+    for (from, to) in [
+        (
+            ":cache-blockers #{app.macros}",
+            ":cache-blockers #{app.macros app.util}",
+        ),
+        (
+            ":fs-watch {:loop-wait 20}",
+            ":fs-watch {:loop-wait 20}\n :compile-threads 2",
+        ),
+        (
+            ":fs-watch {:loop-wait 20}",
+            ":fs-watch {:loop-wait 20}\n :cache-root \".other\"",
+        ),
+    ] {
+        edit_config(&project, from, to);
+        let (lines, _) = watch.until("light-cljs: built ");
+        assert_eq!(
+            lines,
+            ["light-cljs: light-cljs.edn changed the settings of :app; restarting the build"],
+            "{to}"
+        );
+    }
+    assert!(project.join(".other/cache").is_dir());
+    assert!(project.join(".light-cljs/http.port").is_file());
+}
+
+/// `:http`, `:nrepl` and `:fs-watch` edits are each reported once, and a
+/// later restart of the build applies none of them: the server keeps its
+/// port and answers nREPL, and the poll interval stays the one the watch
+/// started with.
+#[test]
+fn held_settings_stay_across_a_restart() {
+    let (_dir, project, mut watch, address) = rereading("dev-watch-reread-held", &[]);
+    let port_file = project.join(".light-cljs/http.port");
+    let port = fs::read_to_string(&port_file).unwrap();
+    for (from, to, key) in [
+        (
+            ":fs-watch {:loop-wait 20}",
+            ":fs-watch {:loop-wait 20}\n :nrepl false",
+            "nrepl",
+        ),
+        (":loop-wait 20", ":loop-wait 50", "fs-watch"),
+        (":http {:port 0}", ":http {:port 9}", "http"),
+    ] {
+        edit_config(&project, from, to);
+        let (lines, line) = watch.until("light-cljs: ");
+        assert!(lines.is_empty(), "{lines:#?}");
+        assert_eq!(
+            line,
+            format!("light-cljs: :{key} changed in light-cljs.edn; restart the watch to apply it")
+        );
+    }
+    edit_config(&project, ":app/flavor :file", ":app/flavor :edited");
+    let (lines, built) = watch.until("light-cljs: built ");
+    assert_eq!(
+        lines,
+        ["light-cljs: light-cljs.edn changed the settings of :app; restarting the build"]
+    );
+    assert!(built.ends_with(" ms; watching every 20 ms"), "{built}");
+    assert_eq!(fs::read_to_string(&port_file).unwrap(), port);
+    assert!(!file_watch::nrepl_describe(&address).is_empty());
+    let (status, _) = file_watch::get(&address, "/app.main.js");
+    assert_eq!(status, "HTTP/1.1 200 OK");
+}
+
+/// A restart whose build fails keeps the watch, and the server, running: the
+/// error is reported, and the next change starts the build again.
+#[test]
+fn a_restart_that_fails_starts_again_at_the_next_change() {
+    let (_dir, project, mut watch, address) = rereading("dev-watch-reread-failed", &[]);
+    let mut events = file_watch::Events::connect(&address, "/events");
+    assert!(events.next().unwrap().starts_with("{\"op\":\"hello\","));
+    assert!(events.next().unwrap().starts_with("{\"op\":\"load\","));
+    edit_config(&project, "[app.main]", "[app.missing]");
+    let (lines, failed) = watch.until("light-cljs: ");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert_eq!(
+        failed,
+        "light-cljs: light-cljs.edn changed the settings of :app; restarting the build"
+    );
+    let (lines, failed) = watch.until("light-cljs: ");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        failed.contains("app.missing")
+            && failed.ends_with("; the build starts again at the next change"),
+        "{failed}"
+    );
+    let error = events.next().unwrap();
+    assert!(
+        error.starts_with("{\"op\":\"error\",\"step\":1,"),
+        "{error}"
+    );
+    assert!(watch.child.try_wait().unwrap().is_none());
+    edit_config(&project, "[app.missing]", "[app.main]");
+    let (lines, built) = watch.until("light-cljs: built ");
+    assert_eq!(
+        lines,
+        ["light-cljs: light-cljs.edn changed the settings of :app; restarting the build"]
+    );
+    assert!(built.starts_with("light-cljs: built app.main ("), "{built}");
+    assert_eq!(events.next(), None);
+    let (lines, step) = step_after_polls(&project, &mut watch, "after-failure");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.main in "),
+        "{step}"
+    );
+}
+
+/// An edit of `:http` is reported once, with the exact message, and changes
+/// nothing: the server keeps its port, a comment edit after it reports
+/// nothing again, and the next step compiles as before.
+#[test]
+fn an_http_edit_is_reported_once_and_keeps_the_server() {
+    let (_dir, project, mut watch, address) = rereading("dev-watch-reread-http", &[]);
+    let port_file = project.join(".light-cljs/http.port");
+    let port = fs::read_to_string(&port_file).unwrap();
+    edit_config(&project, ":http {:port 0}", ":http {:port 9}");
+    let (lines, line) = watch.until("light-cljs: ");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert_eq!(
+        line,
+        "light-cljs: :http changed in light-cljs.edn; restart the watch to apply it"
+    );
+    edit_config(
+        &project,
+        ";; release commands run, with flags over them.",
+        ";; release commands run, with flags over them, edited.",
+    );
+    let (lines, step) = step_after_polls(&project, &mut watch, "after-http");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.main in "),
+        "{step}"
+    );
+    assert_eq!(fs::read_to_string(&port_file).unwrap(), port);
+    let (status, body) = file_watch::get(&address, "/app.main.js");
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert!(body.contains("after-http"), "{body}");
+}
+
+/// The Phase 2 exit criterion: in a copy of examples/features with a
+/// `:config` key and a namespace that reads it, `light-cljs watch features`
+/// serves the example, and an edit of the `:config` value in light-cljs.edn
+/// reaches a connected runtime without restarting the process: the same
+/// process and port, the runtime connected again and running the new value.
+#[test]
+fn watch_features_carries_a_config_edit_to_a_connected_runtime() {
+    let (_dir, project) = file_watch::features("dev-watch-reread-features");
+    let config = project.join("light-cljs.edn");
+    let text = fs::read_to_string(&config).unwrap();
+    let text = text
+        .replace(
+            "{:source-paths [\".\"]",
+            "{:source-paths [\".\"]\n :http {:port 0}\n :fs-watch {:loop-wait 20}",
+        )
+        .replace(
+            "   :dev {:output-dir \"out/dev\"}}}}",
+            "   :dev {:output-dir \"out/dev\"}\n   :config {:app/greeting \"hello\"}}}}",
+        );
+    fs::write(&config, &text).unwrap();
+    fs::write(
+        project.join("app/greeting.cljs"),
+        "(ns app.greeting (:require [light.build :as b]))\n\n\
+         (defmacro greeting [] (b/config :app/greeting))\n",
+    )
+    .unwrap();
+    let main = project.join("app/main.cljs");
+    let source = fs::read_to_string(&main).unwrap();
+    fs::write(
+        &main,
+        source
+            .replace(
+                "[light.lazy :as lazy]))",
+                "[light.lazy :as lazy]\n            [app.greeting :refer [greeting]]))",
+            )
+            .replace(
+                "(js/console.log \"menu:\"",
+                "(js/console.log \"greeting:\" (greeting))\n\n(js/console.log \"menu:\"",
+            ),
+    )
+    .unwrap();
+
+    let mut watch = file_watch::Light::spawn(&project, &["watch", "features"], None);
+    let pid = watch.child.id();
+    let (address, _, _) = watch.serving();
+    let port_file = project.join(".light-cljs/http.port");
+    let port = fs::read_to_string(&port_file).unwrap();
+    let (lines, _) = watch.until("light-cljs: built ");
+    assert!(lines.is_empty(), "{lines:#?}");
+    let out = project.join("out/dev");
+    let mut runtime =
+        file_watch::node_runtime(&out, &format!("http://{address}/features/events"), 2);
+    // The runtime ran the build it loaded, which the replay leaves as it is.
+    let (lines, replay) = runtime.until("message load replay ");
+    assert_eq!(lines.last().map(String::as_str), Some("message hello 1"));
+    assert!(
+        replay.ends_with(" app.greeting app.main app.editor clojure.string app.reports"),
+        "{replay}"
+    );
+
+    file_watch::save(
+        &config,
+        &text.replace(":app/greeting \"hello\"", ":app/greeting \"bonjour\""),
+    );
+    let (lines, _) = watch.until("light-cljs: built ");
+    assert_eq!(
+        lines,
+        ["light-cljs: light-cljs.edn changed the settings of :features; restarting the build"]
+    );
+    // Its stream ended; it connected again, and the replay of the restarted
+    // build reloaded the namespace whose unit the new value changed.
+    let (lines, reloaded) = runtime.until("light-cljs: reloaded ");
+    assert_eq!(
+        lines[0],
+        "light-cljs: disconnected from the dev server (ended); reconnecting"
+    );
+    assert_eq!(lines.last().map(String::as_str), Some("message hello 2"));
+    assert!(
+        reloaded.starts_with("light-cljs: reloaded app.main in "),
+        "{reloaded}"
+    );
+    let mut stdout = String::new();
+    std::io::Read::read_to_string(runtime.child.stdout.as_mut().unwrap(), &mut stdout).unwrap();
+    assert!(runtime.child.wait().unwrap().success(), "{stdout}");
+    let record = stdout
+        .lines()
+        .find(|line| line.starts_with("{\"id\":\"program\""))
+        .unwrap_or_else(|| panic!("no record in {stdout}"));
+    assert!(
+        record.contains("greeting: hello\\n") && record.contains("greeting: bonjour\\n"),
+        "{record}"
+    );
+    assert_eq!(watch.child.id(), pid);
+    assert!(watch.child.try_wait().unwrap().is_none());
+    assert_eq!(fs::read_to_string(&port_file).unwrap(), port);
+    let (status, body) = file_watch::get(&address, "/features/app.main.js");
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert!(body.contains("bonjour"), "{body}");
+}

@@ -195,6 +195,19 @@ struct CommandFlags {
     reload_dependents: bool,
 }
 
+impl CommandFlags {
+    /// Whether a flag replaces an output directory, the source roots or the
+    /// cache store, which moves the output check after it ("Exclusions are
+    /// checked after merging"): the directories compared are those the
+    /// build will use.
+    fn replaces_directories(&self) -> bool {
+        self.namespace.out_dir.is_some()
+            || !self.namespace.roots.is_empty()
+            || self.compile.cache_dir.is_some()
+            || self.compile.no_cache
+    }
+}
+
 /// Run `command` with the arguments after it.
 pub(crate) fn run(
     command: Command,
@@ -275,13 +288,7 @@ pub(crate) fn run(
                 .map_err(|error| failure(words, error))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    // A flag that replaces an output directory, the source roots or the cache
-    // store moves the output check after it ("Exclusions are checked after
-    // merging"): the directories compared are those the build will use.
-    let replaced = flags.namespace.out_dir.is_some()
-        || !flags.namespace.roots.is_empty()
-        || flags.compile.cache_dir.is_some()
-        || flags.compile.no_cache;
+    let replaced = flags.replaces_directories();
     let settings = builds
         .iter()
         .map(|&build| {
@@ -312,7 +319,7 @@ pub(crate) fn run(
         let mut out = String::new();
         for (index, settings) in settings.into_iter().enumerate() {
             let mut settings = settings;
-            apply_flags(&file, &mut settings, &merges, command, &flags)
+            apply_flags(&file, &mut settings, &merges, command, &flags, true)
                 .map_err(|error| failure(words, error))?;
             if index > 0 {
                 out.push('\n');
@@ -326,9 +333,19 @@ pub(crate) fn run(
     eprintln!("light-cljs - config: {}", path.display());
     if command == Command::Watch {
         let (settings, (namespace, _, compile)) = settings.iter().zip(translated).next().unwrap();
-        let name = settings.name();
-        let options = watch_options(&file, settings, namespace, compile, &flags)
+        let name = settings.name().to_owned();
+        let mut options = watch_options(&file, settings, namespace, compile, &flags)
             .map_err(|error| failure(words, error))?;
+        let running = effective(&file, settings, &merges, &flags);
+        let text = file.source().to_owned();
+        options.config = Some(config_watch(
+            path,
+            name.clone(),
+            running,
+            text,
+            merges,
+            flags,
+        ));
         return crate::dev_watch::watch(options)
             .map_err(|error| failure(&format!("watch {name}"), error));
     }
@@ -739,12 +756,17 @@ fn define_text(value: &Value) -> String {
 /// `:closure-defines`, with the flag as its origin; `--cache-blocker` adds to
 /// the build's blockers. `--stats`, `--stats-file` and `--size-report`
 /// report on one run and are not in the file ("Not in the file").
+///
+/// With `printing` false, for a watch's reread to compare with, a
+/// `--cache-dir` the file cannot name is no error: it gives `:cache-root` its
+/// own text, which the file's `:cache-root` then cannot change.
 fn apply_flags(
     file: &ConfigFile,
     settings: &mut BuildSettings,
     merges: &[ConfigMerge],
     command: Command,
     flags: &CommandFlags,
+    printing: bool,
 ) -> Result<(), String> {
     let user = &flags.compile;
     let string = |text: String| Value::from(ValueKind::String(text));
@@ -899,6 +921,11 @@ fn apply_flags(
         // A store named `cache` is `:cache-root`'s, its parent; any other
         // store the file cannot name, so it cannot print.
         match (dir.file_name(), dir.parent()) {
+            _ if !printing => settings.set_by_flag(
+                Setting::CacheRoot,
+                ValueKind::String(dir.display().to_string()),
+                &flag,
+            ),
             (Some(name), Some(parent)) if name == "cache" => {
                 let root = match parent.as_os_str().is_empty() {
                     true => ".".to_owned(),
@@ -1093,7 +1120,160 @@ fn watch_options(
         blockers: compile.cache_blockers,
         configuration: compile.configuration,
         macro_limits: compile.macro_limits,
+        config: None,
     })
+}
+
+/// The settings of the top level the running server and poll hold, by the
+/// key a change of them names: a reread reports them, and applies none.
+const HELD: [(&str, &[Setting]); 3] = [
+    (
+        "http",
+        &[Setting::HttpPort, Setting::HttpHost, Setting::HttpStrict],
+    ),
+    ("nrepl", &[Setting::Nrepl]),
+    (
+        "fs-watch",
+        &[Setting::FsWatchImpl, Setting::FsWatchLoopWait],
+    ),
+];
+
+/// `settings` with the flags after the command over them, as the build runs
+/// with them, so that a reread compares what the flags leave to the file:
+/// a setting a flag gives does not change when the file's does. A
+/// `--cache-dir` the file cannot name is written too, as `:cache-root`'s
+/// text; only a `--config` value the flag's own parser refused, which never
+/// reaches a watch, would leave the file's settings alone.
+fn effective(
+    file: &ConfigFile,
+    settings: &BuildSettings,
+    merges: &[ConfigMerge],
+    flags: &CommandFlags,
+) -> BuildSettings {
+    let mut over = settings.clone();
+    match apply_flags(file, &mut over, merges, Command::Watch, flags, false) {
+        Ok(()) => over,
+        Err(_) => settings.clone(),
+    }
+}
+
+/// The watch's reread of `path` for build `name`, which runs with the
+/// settings `running`, read from `text` (docs/build-configuration.md,
+/// "Watching the configuration file"). Once the file's text changed, it is
+/// read and validated again, against the same environment, `merges` and
+/// flags, as at startup, and the build's settings compared slot by slot,
+/// by value alone:
+///
+/// - an invalid file, or one that no longer defines the build, is an error,
+///   and the build keeps running with `running`;
+/// - a change of `:http`, `:nrepl` or `:fs-watch`, which the running server
+///   and poll hold, is reported once, `light-cljs: :http changed in
+///   light-cljs.edn; restart the watch to apply it`, and applies to nothing;
+/// - any other change restarts the build with the new settings, under the
+///   same flags;
+/// - otherwise (a comment, another build's section) nothing happens.
+fn config_watch(
+    path: PathBuf,
+    name: String,
+    mut running: BuildSettings,
+    text: String,
+    merges: Vec<ConfigMerge>,
+    flags: CommandFlags,
+) -> crate::dev_watch::ConfigWatch {
+    use crate::dev_watch::Reread;
+    use light_cljs::dev_server::Diagnostic;
+    let watched = path.clone();
+    // The text last read, valid or not, so that a save that leaves it as it
+    // was reads nothing again.
+    let mut last = Some(text);
+    let located = |error: light_cljs::config_file::ConfigFileError| {
+        let diagnostic = Diagnostic {
+            message: error.message.clone(),
+            file: Some(error.path.display().to_string()),
+            line: error.location.map(|(line, _)| line),
+            column: error.location.map(|(_, column)| column),
+        };
+        Reread::Invalid(error.to_string(), diagnostic)
+    };
+    let plain = |message: String| {
+        let diagnostic = Diagnostic {
+            message: message.clone(),
+            file: None,
+            line: None,
+            column: None,
+        };
+        Reread::Invalid(message, diagnostic)
+    };
+    let reread = move || {
+        let environment = |name: &str| std::env::var(name).ok();
+        let read = std::fs::read_to_string(&path);
+        let text = read.as_ref().ok();
+        if text == last.as_ref() {
+            return Reread::Unchanged;
+        }
+        last = text.cloned();
+        let file = match read {
+            Ok(text) => ConfigFile::from_source(&path, text, &environment),
+            Err(_) => ConfigFile::read(&path, &environment),
+        };
+        let file = match file {
+            Ok(file) => file,
+            Err(error) => return located(error),
+        };
+        let Some(build) = file.find_build(&name) else {
+            return plain(format!(
+                "{} defines no build :{name}; the build keeps its settings until it does, and \
+                 its builds are {}",
+                path.display(),
+                defined(&file)
+            ));
+        };
+        let settings = if flags.replaces_directories() {
+            file.settings_before_flags(build, BuildMode::Dev, &merges)
+        } else {
+            file.settings(build, BuildMode::Dev, &merges)
+        };
+        let settings = match settings {
+            Ok(settings) => settings,
+            Err(error) => return located(error),
+        };
+        if let Err(error) = file.check_outputs(std::slice::from_ref(&settings), &merges) {
+            return located(error);
+        }
+        let options = (|| {
+            if flags.replaces_directories() {
+                check_directories(&file, &settings, &merges, &flags)?;
+            }
+            let (namespace, _, compile) = translate(&file, &settings, Command::Watch, &flags)?;
+            watch_options(&file, &settings, namespace, compile, &flags)
+        })();
+        let options = match options {
+            Ok(options) => options,
+            Err(message) => return plain(message),
+        };
+        let next = effective(&file, &settings, &merges, &flags);
+        let changed = running.changed(&next);
+        running = next;
+        for (key, slots) in HELD {
+            if changed.iter().any(|setting| slots.contains(setting)) {
+                eprintln!(
+                    "light-cljs: :{key} changed in {FILE_NAME}; restart the watch to apply it"
+                );
+            }
+        }
+        if changed
+            .iter()
+            .all(|setting| HELD.iter().any(|(_, slots)| slots.contains(setting)))
+        {
+            return Reread::Unchanged;
+        }
+        eprintln!("light-cljs: {FILE_NAME} changed the settings of :{name}; restarting the build");
+        Reread::Restart(Box::new(options))
+    };
+    crate::dev_watch::ConfigWatch {
+        path: watched,
+        reread: Box::new(reread),
+    }
 }
 
 /// Translate `settings` into the flags' structures, as the equivalent

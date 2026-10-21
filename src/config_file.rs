@@ -2760,6 +2760,25 @@ impl BuildSettings {
         self.slot(setting).map(|slot| &slot.origin)
     }
 
+    /// The settings whose values differ from `other`'s, slot by slot in
+    /// [`Setting`] order, by value alone: origins, spans, layout, comments
+    /// and environment variables are left out, and values compare by their
+    /// EDN text ([`Value::to_edn`]), which keeps all a build can observe: a
+    /// list from a vector, `1.0` from `1` and `-0.0` from `0`, and the order
+    /// of a map's entries, which an array map's keys follow. A watch that
+    /// reads the file again compares a build's settings with this
+    /// (docs/build-configuration.md, "Watching the configuration file").
+    pub fn changed(&self, other: &BuildSettings) -> Vec<Setting> {
+        Setting::ALL
+            .into_iter()
+            .filter(|&setting| match (self.get(setting), other.get(setting)) {
+                (None, None) => false,
+                (Some(left), Some(right)) => left.to_edn() != right.to_edn(),
+                _ => true,
+            })
+            .collect()
+    }
+
     /// Layer 6: `flag`, as typed (`--optimize none`), gives `setting` the
     /// value `kind`, replacing what layers 1-5 gave it. Its origin prints as
     /// the flag and what it replaced: `--optimize none, over the release
