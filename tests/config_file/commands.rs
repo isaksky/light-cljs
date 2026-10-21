@@ -704,7 +704,8 @@ fn compiler_settings_reach_the_build_as_their_flags_do() {
         ],
     );
 
-    // :compile-threads, and --jobs over it.
+    // :compile-threads, and --jobs over it. QuickJS-only builds have one
+    // slot whatever the setting says (`parse_slots`), so no pool.
     let pool = |args: &[&str]| {
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
             .args(["release", "app", "--stats", "--no-cache"])
@@ -717,7 +718,7 @@ fn compiler_settings_reach_the_build_as_their_flags_do() {
         assert!(output.status.success(), "{stderr}");
         stderr.lines().any(|line| line.starts_with("pool.workers "))
     };
-    assert!(pool(&[]));
+    assert_eq!(pool(&[]), cfg!(feature = "v8-macros"));
     assert!(!pool(&["--jobs", "1"]));
 }
 
