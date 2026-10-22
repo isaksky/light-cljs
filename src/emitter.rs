@@ -449,7 +449,7 @@ fn emit_js_mode(
             }
             writeln!(emitter.output, "  let g{global};").unwrap();
         }
-        emitter.operand_scope(|emitter| emitter.emit(root, ExprContext::Return));
+        emitter.operand_scope(false, |emitter| emitter.emit(root, ExprContext::Return));
         emitter.record_application_roots(application);
         emitter.allow_js_local_assignment();
         // `Advanced` output that tests no value with `truth` does not declare it.
@@ -1489,6 +1489,33 @@ struct Wrapper {
     /// The method whose receiver is `this` around it, which a `function`
     /// wrapper rebinds ([`Emitter::this_target`]).
     outer_this: Option<RecurTargetId>,
+    /// The lifted expression ([`Operands::lift`]) the function is in.
+    outer_lift: Option<Lift>,
+}
+
+/// The first operand of a statement written as statements ahead of it
+/// ([`Emitter::lift_head`]).
+struct HeadLift {
+    operand: usize,
+    outer: Option<(ExprId, usize)>,
+    outer_written: bool,
+}
+
+/// Where a lifted expression ([`Emitter::lifted`]) puts its value.
+#[derive(Clone, Copy)]
+enum Lifted {
+    /// The local a statement-position `let` or `loop` binds to it.
+    Local(LocalId),
+    /// An operand local ([`Operands`]).
+    Operand(usize),
+}
+
+/// A lifted expression being written ([`Emitter::lifted`]): its value goes
+/// to `target`, and the labeled block `recur_<label>` around it ends there.
+#[derive(Clone, Copy)]
+struct Lift {
+    target: Lifted,
+    label: usize,
 }
 
 /// The locals `operand0`, `operand1`, ... of the function being written,
@@ -1503,6 +1530,20 @@ struct Operands {
     live: usize,
     /// How many the function declares.
     declared: usize,
+    /// Whether value-position `let`s may bind their locals in the blocks of
+    /// this function ([`Emitter::hoists`]): in a function's body, not at the
+    /// top level.
+    hoists: bool,
+    /// The locals of value-position `let`s that the statement being written
+    /// declares ahead of it ([`Emitter::emit`]), `let l5, l6_0;`, with the
+    /// method index of a local function's entry.
+    hoisted: Vec<(LocalId, Option<usize>)>,
+    /// Whether a statement of this function is being written, which
+    /// declares [`Operands::hoisted`].
+    statement: bool,
+    /// The lifted expression being written whose value the statements in
+    /// return position assign rather than return ([`Emitter::lifted`]).
+    lift: Option<Lift>,
 }
 
 /// How a type's own constructor ([`Emitter::defined_type`]) brands its
@@ -1642,6 +1683,24 @@ struct Emitter<'a> {
     /// In a chunked build, the chunk being written and what the chunks
     /// share ([`chunked`]).
     chunks: Option<chunked::Chunks<'a>>,
+    /// At `Advanced`: what each expression's evaluation reads or creates,
+    /// by `ExprId`, as [`Emitter::scope_flags`] computes it on first use.
+    scope_flags: Vec<u8>,
+    /// The operand local that holds each local of a value-position `let`
+    /// being written ([`Emitter::hoisted_let`]), by `LocalId`, else
+    /// [`NO_OPERAND`].
+    operand_locals: Vec<u32>,
+    /// The number of blocks of lifted expressions being written
+    /// ([`Emitter::lifted`]), which numbers their labels.
+    lifts: usize,
+    /// The lifted first operand of the statement being written and the
+    /// operand local that holds its value ([`Emitter::lift_head`]).
+    substitute: Option<(ExprId, usize)>,
+    /// Whether the statement being written has read [`Emitter::substitute`].
+    substituted: bool,
+    /// By `LocalId`, then one more entry: whether something may assign the
+    /// local once bound ([`Emitter::stable_local`]), built on first use.
+    assignable_locals: Vec<bool>,
 }
 
 /// What a fresh [`Emitter`] writes for ([`Emitter::new`]).
@@ -1764,6 +1823,13 @@ impl<'a> Emitter<'a> {
             boxed_return: false,
             operands: None,
             this_target: None,
+            scope_flags: Vec::new(),
+            operand_locals: Vec::new(),
+            lifts: 0,
+            substitute: None,
+            substituted: false,
+            assignable_locals: Vec::new(),
+
             self_aliases: Vec::new(),
             receivers: Vec::new(),
             dispatchers: None,
@@ -2815,6 +2881,12 @@ impl<'a> Emitter<'a> {
     }
 
     fn local(&mut self, id: LocalId) {
+        if let Some(&operand) = self.operand_locals.get(id.0)
+            && operand != NO_OPERAND
+        {
+            write!(self.output, "operand{operand}").unwrap();
+            return;
+        }
         for (receiver, named) in &mut self.receivers {
             *named |= *receiver == id;
         }
@@ -3757,10 +3829,54 @@ impl<'a> Emitter<'a> {
 
     fn emit(&mut self, id: ExprId, context: ExprContext) {
         let site = self.site.replace(id);
+        // The statements of `id` declare the locals of the value-position
+        // `let`s in them that the block around them binds ([`Emitter::hoists`]).
+        let start = (self.output.len(), self.marks_len(), self.raw_segments.len());
+        let outer = match &mut self.operands {
+            Some(operands) if operands.hoists && context != ExprContext::Value => Some((
+                std::mem::take(&mut operands.hoisted),
+                std::mem::replace(&mut operands.statement, true),
+            )),
+            _ => None,
+        };
         self.mark(Some(id));
         self.emit_expr(id, context);
+        if let Some((hoisted, statement)) = outer {
+            let operands = self.operands.as_mut().expect("the statement's function");
+            operands.statement = statement;
+            let hoisted = std::mem::replace(&mut operands.hoisted, hoisted);
+            self.declare_hoisted(start, hoisted);
+        }
         self.site = site;
         self.mark(site);
+    }
+
+    /// Declare `hoisted` ([`Operands::hoisted`]) at `start` of the
+    /// statements that bind them: `let l5, l6_0;`.
+    fn declare_hoisted(
+        &mut self,
+        start: (usize, usize, usize),
+        mut hoisted: Vec<(LocalId, Option<usize>)>,
+    ) {
+        if hoisted.is_empty() {
+            return;
+        }
+        // A `let` written twice binds its locals once.
+        hoisted.sort_unstable_by_key(|&(local, entry)| (local.0, entry));
+        hoisted.dedup();
+        let mut declaration = "  ".repeat(self.indent);
+        declaration.push_str("let ");
+        for (index, (local, entry)) in hoisted.into_iter().enumerate() {
+            if index > 0 {
+                declaration.push_str(", ");
+            }
+            write!(declaration, "l{}", local.0).unwrap();
+            if let Some(entry) = entry {
+                write!(declaration, "_{entry}").unwrap();
+            }
+        }
+        declaration.push_str(";\n");
+        self.insert(start, &declaration);
     }
 
     /// With a source map, the output from here on is the text of `id`: of
@@ -3999,12 +4115,22 @@ impl<'a> Emitter<'a> {
                 // Initializers see preceding lexical bindings, before the fresh
                 // per-iteration copies come into scope.
                 for &(local, init) in bindings {
+                    if self.lifts(init) {
+                        self.indentation();
+                        self.output.push_str("let ");
+                        self.local(local);
+                        self.output.push_str(";\n");
+                        self.lifted(init, Lifted::Local(local));
+                        continue;
+                    }
+                    let head = self.lift_head(init);
                     self.indentation();
                     self.output.push_str("const ");
                     self.local(local);
                     self.output.push_str(" = ");
                     self.value(init);
                     self.output.push_str(";\n");
+                    self.head_written(head);
                 }
                 self.iteration(*target, *body, context);
                 self.indent -= 1;
@@ -4221,11 +4347,38 @@ impl<'a> Emitter<'a> {
                 let membership = self.membership(*test).unwrap();
                 self.membership_switch(&membership, *yes, *no, context);
             }
+            ExprKind::If { test, yes, no } if self.lifts(*test) => {
+                let operand = self.lifted_operand(*test);
+                self.indentation();
+                self.output.push_str("if (");
+                let js = self
+                    .inference
+                    .is_some_and(|inference| inference.value(*test).truth_is_js());
+                if js {
+                    write!(self.output, "operand{operand}").unwrap();
+                } else {
+                    self.truth_used = true;
+                    write!(self.output, "truth(operand{operand})").unwrap();
+                }
+                self.output.push_str(") {\n");
+                self.indent += 1;
+                self.emit(*yes, context);
+                self.indent -= 1;
+                self.indentation();
+                self.output.push_str("} else {\n");
+                self.indent += 1;
+                self.emit(*no, context);
+                self.indent -= 1;
+                self.indentation();
+                self.output.push_str("}\n");
+            }
             ExprKind::If { test, yes, no } => {
+                let head = self.lift_head(*test);
                 self.indentation();
                 self.output.push_str("if (");
                 self.condition(*test);
                 self.output.push_str(") {\n");
+                self.head_written(head);
                 self.indent += 1;
                 self.emit(*yes, context);
                 self.indent -= 1;
@@ -4274,15 +4427,25 @@ impl<'a> Emitter<'a> {
                 self.indent += 1;
                 for &(local, init) in bindings {
                     if let Some(function) = self.local_function(local) {
-                        self.local_entries(init, function);
+                        self.local_entries(init, function, false);
                         continue;
                     }
+                    if self.lifts(init) {
+                        self.indentation();
+                        self.output.push_str("let ");
+                        self.local(local);
+                        self.output.push_str(";\n");
+                        self.lifted(init, Lifted::Local(local));
+                        continue;
+                    }
+                    let head = self.lift_head(init);
                     self.indentation();
                     self.output.push_str("const ");
                     self.local(local);
                     self.output.push_str(" = ");
                     self.value(init);
                     self.output.push_str(";\n");
+                    self.head_written(head);
                 }
                 self.emit(*body, context);
                 self.indent -= 1;
@@ -4309,7 +4472,7 @@ impl<'a> Emitter<'a> {
                 }
                 for &(local, init) in bindings {
                     if let Some(function) = self.local_function(local) {
-                        self.local_entries(init, function);
+                        self.local_entries(init, function, false);
                         continue;
                     }
                     self.indentation();
@@ -4345,6 +4508,7 @@ impl<'a> Emitter<'a> {
                 self.output.push('\n');
             }
             _ => {
+                let head = self.lift_head(id);
                 self.indentation();
                 if context == ExprContext::Return {
                     self.return_open();
@@ -4357,6 +4521,7 @@ impl<'a> Emitter<'a> {
                     self.return_close();
                 }
                 self.output.push_str(";\n");
+                self.head_written(head);
             }
         }
     }
@@ -4463,7 +4628,9 @@ impl<'a> Emitter<'a> {
         if let Some(receiver) = receiver {
             self.receivers.push((receiver, false));
         }
-        self.operand_scope(|emitter| emitter.method_body(method, ifn_call, through_this));
+        self.operand_scope(true, |emitter| {
+            emitter.method_body(method, ifn_call, through_this)
+        });
         if let Some(receiver) = receiver
             && self.receivers.pop().is_some_and(|(_, named)| named)
         {
@@ -4609,10 +4776,14 @@ impl<'a> Emitter<'a> {
     }
 
     /// Write the statements of a function's body with `body`, declaring the
-    /// operand locals ([`Operands`]) they use ahead of them.
-    fn operand_scope(&mut self, body: impl FnOnce(&mut Self)) {
+    /// operand locals ([`Operands`]) they use ahead of them. Value-position
+    /// `let`s bind their locals in its blocks where `hoists`.
+    fn operand_scope(&mut self, hoists: bool, body: impl FnOnce(&mut Self)) {
         let start = (self.output.len(), self.marks_len(), self.raw_segments.len());
-        let outer = self.operands.replace(Operands::default());
+        let outer = self.operands.replace(Operands {
+            hoists,
+            ..Operands::default()
+        });
         body(self);
         let declared = std::mem::replace(&mut self.operands, outer).map_or(0, |o| o.declared);
         if declared == 0 {
@@ -4659,6 +4830,10 @@ impl<'a> Emitter<'a> {
         Wrapper {
             asynchronous,
             outer_boxed: std::mem::replace(&mut self.boxed_return, asynchronous),
+            outer_lift: self
+                .operands
+                .as_mut()
+                .and_then(|operands| operands.lift.take()),
             outer_this: if arrow {
                 self.this_target
             } else {
@@ -4675,11 +4850,22 @@ impl<'a> Emitter<'a> {
         }
         self.boxed_return = wrapper.outer_boxed;
         self.this_target = wrapper.outer_this;
+        if let Some(operands) = &mut self.operands {
+            operands.lift = wrapper.outer_lift;
+        }
     }
 
     /// Begin returning a value from the function being written: `return `,
     /// or `return [` in an awaited wrapper ([`Emitter::iife_open`]).
     fn return_open(&mut self) {
+        if let Some(lift) = self.operands.as_ref().and_then(|operands| operands.lift) {
+            match lift.target {
+                Lifted::Local(local) => self.local(local),
+                Lifted::Operand(operand) => write!(self.output, "operand{operand}").unwrap(),
+            }
+            self.output.push_str(" = ");
+            return;
+        }
         self.output.push_str(if self.boxed_return {
             "return ["
         } else {
@@ -4689,6 +4875,10 @@ impl<'a> Emitter<'a> {
 
     /// End a value [`Emitter::return_open`] began.
     fn return_close(&mut self) {
+        if let Some(lift) = self.operands.as_ref().and_then(|operands| operands.lift) {
+            write!(self.output, "; break recur_{}", lift.label).unwrap();
+            return;
+        }
         if self.boxed_return {
             self.output.push(']');
         }
@@ -4958,8 +5148,10 @@ impl<'a> Emitter<'a> {
     /// local's: `const l5_0 = function(l6) {...};` for each method that a call
     /// selects and that reads the scope ([`Placement::Scoped`]). Hoisted
     /// methods are constant table entries, declared at their first call
-    /// ([`Emitter::hoisted_method`]).
-    fn local_entries(&mut self, init: ExprId, function: &LocalFunction) {
+    /// ([`Emitter::hoisted_method`]). In a value-position `let` that
+    /// [`Emitter::hoists`] (`hoisted`), each is an assignment, `l5_0 =
+    /// function(l6) {...}, `, to a local of the function being written.
+    fn local_entries(&mut self, init: ExprId, function: &LocalFunction, hoisted: bool) {
         let program = self.program;
         let mut wrapper = init;
         while wrapper != function.function {
@@ -4975,7 +5167,15 @@ impl<'a> Emitter<'a> {
         };
         let site = self.site.replace(function.function);
         for (index, (method, placement)) in methods.iter().zip(&function.placements).enumerate() {
-            if *placement == Placement::Scoped {
+            if *placement != Placement::Scoped {
+                continue;
+            }
+            if hoisted {
+                self.hoist(function.local, Some(index));
+                write!(self.output, "l{}_{index} = ", function.local.0).unwrap();
+                self.method_with_ifn_captures(None, method, false);
+                self.output.push_str(", ");
+            } else {
                 self.indentation();
                 write!(self.output, "const l{}_{index} = ", function.local.0).unwrap();
                 self.method_with_ifn_captures(None, method, false);
@@ -5126,6 +5326,442 @@ impl<'a> Emitter<'a> {
     /// `this` from raw JavaScript), which a function around them would
     /// replace, or holds a definition with `:test` metadata, which skips its
     /// test when it is the value a function returns, or enters a namespace.
+    /// The [`SCOPE_READ`], [`SCOPE_CLOSURE`] and [`SCOPE_STATEMENT`] flags of
+    /// `id`, computed for it and the expressions in it once per emission,
+    /// each from its children's. A function's body has a scope of its own,
+    /// so it adds none.
+    fn scope_flags(&mut self, id: ExprId) -> u8 {
+        let program = self.program;
+        if self.scope_flags.is_empty() {
+            self.scope_flags = vec![0; program.exprs.len()];
+        }
+        if self.scope_flags[id.0] & SCOPE_DONE != 0 {
+            return self.scope_flags[id.0];
+        }
+        let mut pending = vec![(id, false)];
+        while let Some((id, expanded)) = pending.pop() {
+            if self.scope_flags[id.0] & SCOPE_DONE != 0 {
+                continue;
+            }
+            let own = match program.exprs[id.0].kind {
+                ExprKind::JsArguments
+                | ExprKind::CopyArguments(_)
+                | ExprKind::JsTemplate { .. }
+                // A statement-position `this-as` reads the `this` of the
+                // function around it, which a wrapper gives its own.
+                | ExprKind::ThisAs { .. }
+                | ExprKind::Def { test: Some(_), .. } => Some(SCOPE_READ),
+                ExprKind::Fn { .. } | ExprKind::Reify { .. } => Some(SCOPE_CLOSURE),
+                // A type's methods may read the scope's locals.
+                ExprKind::DefType { .. } | ExprKind::ExtendType { .. } => {
+                    Some(SCOPE_READ | SCOPE_CLOSURE)
+                }
+                _ if program.namespace_entries.contains_key(&id) => Some(SCOPE_READ),
+                _ => None,
+            };
+            if let Some(own) = own {
+                self.scope_flags[id.0] = own | SCOPE_DONE;
+                continue;
+            }
+            let children = crate::program_fragment::children(program, id);
+            if expanded {
+                let statement = match program.exprs[id.0].kind {
+                    ExprKind::Loop { .. }
+                    | ExprKind::Case { default: None, .. }
+                    | ExprKind::Throw(_)
+                    | ExprKind::Binding { .. }
+                    | ExprKind::WithOutStr(_)
+                    | ExprKind::Try { .. } => SCOPE_STATEMENT,
+                    _ => 0,
+                };
+                let flags = children
+                    .iter()
+                    .fold(SCOPE_DONE | statement, |flags, child| {
+                        flags | self.scope_flags[child.0]
+                    });
+                self.scope_flags[id.0] = flags;
+            } else {
+                pending.push((id, true));
+                pending.extend(
+                    children
+                        .into_iter()
+                        .filter(|child| self.scope_flags[child.0] & SCOPE_DONE == 0)
+                        .map(|child| (child, false)),
+                );
+            }
+        }
+        self.scope_flags[id.0]
+    }
+
+    /// Whether the value-position `let` or `letfn` `id` is the comma
+    /// expression `(l5 = init, body)` rather than a function called where it
+    /// is written (light-cljs-420), its locals declared ahead of the statement
+    /// it is in ([`Emitter::emit`]): at `Advanced` in a function's body, where
+    /// no form in it reads the function scope that a wrapper would replace
+    /// ([`Emitter::sequence_keeps_scope`]). The statement runs once for each
+    /// evaluation of the `let`, so the block around it gives each evaluation,
+    /// such as one per loop iteration, fresh locals for functions to capture.
+    fn hoists(&mut self, id: ExprId) -> bool {
+        self.shapes.is_some()
+            && self
+                .operands
+                .as_ref()
+                .is_some_and(|operands| operands.hoists && operands.statement)
+            && self.scope_flags(id) & SCOPE_READ == 0
+    }
+
+    /// The value-position `let` or `letfn` that [`Emitter::hoists`]:
+    /// `(l5 = init, l6_0 = function () {...}, body)`, declaring its locals
+    /// ahead of the statement it is in.
+    /// Where no function in it may capture its locals, they are operand
+    /// locals of the function being written instead ([`Operands`]), each
+    /// taken from `live` up until its body is written, `(operand0 = init,
+    /// body)`: a few names, each read throughout the program, compress
+    /// better than a fresh name per `let`.
+    fn hoisted_let(&mut self, id: ExprId, bindings: &[(LocalId, ExprId)], body: ExprId) {
+        self.output.push('(');
+        if self.scope_flags(id) & SCOPE_CLOSURE == 0 {
+            if self.operand_locals.is_empty() {
+                self.operand_locals = vec![NO_OPERAND; self.program.locals.len()];
+            }
+            let operands = self.operands.as_ref().expect("a function body hoists");
+            let base = operands.live;
+            for &(local, init) in bindings {
+                let operand = self.operands.as_ref().unwrap().live;
+                write!(self.output, "operand{operand} = ").unwrap();
+                self.value(init);
+                self.output.push_str(", ");
+                let operands = self.operands.as_mut().unwrap();
+                operands.live = operand + 1;
+                operands.declared = operands.declared.max(operand + 1);
+                self.operand_locals[local.0] = operand as u32;
+            }
+            self.value(body);
+            for &(local, _) in bindings {
+                self.operand_locals[local.0] = NO_OPERAND;
+            }
+            self.operands.as_mut().unwrap().live = base;
+            self.output.push(')');
+            return;
+        }
+        for &(local, init) in bindings {
+            if let Some(function) = self.local_function(local) {
+                self.local_entries(init, function, true);
+                continue;
+            }
+            self.hoist(local, None);
+            self.local(local);
+            self.output.push_str(" = ");
+            self.value(init);
+            self.output.push_str(", ");
+        }
+        self.value(body);
+        self.output.push(')');
+    }
+
+    /// Whether the value-position expression `id`, the first that a
+    /// statement evaluates (a `let` or `loop` binding's initializer, or an
+    /// `if`'s test), is statements ahead of it ([`Emitter::lifted`]) rather
+    /// than a function called where it is written (light-cljs-420): at
+    /// `Advanced` in a function's body, where it reads no function scope that
+    /// a wrapper would replace, for an expression that only a wrapper writes
+    /// in value position, and a `let` or `if` with one in it.
+    fn lifts(&mut self, id: ExprId) -> bool {
+        if self.shapes.is_none()
+            || !self
+                .operands
+                .as_ref()
+                .is_some_and(|operands| operands.hoists && operands.statement)
+        {
+            return false;
+        }
+        let flags = self.scope_flags(id);
+        if flags & SCOPE_READ != 0 {
+            return false;
+        }
+        match &self.program.exprs[id.0].kind {
+            ExprKind::Loop { .. }
+            | ExprKind::Case { default: None, .. }
+            | ExprKind::Throw(_)
+            | ExprKind::Binding { .. }
+            | ExprKind::WithOutStr(_) => true,
+            ExprKind::Try {
+                catches, finally, ..
+            } => !catches.is_empty() || finally.is_some(),
+            ExprKind::Let { .. } => {
+                flags & SCOPE_STATEMENT != 0 && self.short_circuit(id, true).is_none()
+            }
+            ExprKind::LetFn { .. } => flags & SCOPE_STATEMENT != 0,
+            ExprKind::If { .. } => flags & SCOPE_STATEMENT != 0,
+            _ => false,
+        }
+    }
+
+    /// The expression `id` that [`Emitter::lifts`] as statements in a
+    /// labeled block, `recur_0: { ... }`, in which each value it returns is
+    /// assigned to `target` instead, `l5 = value; break recur_0;`. A label
+    /// need differ only from those of the blocks around it, so it numbers
+    /// the lifted blocks around it: the same few labels, as the same few
+    /// names, compress better than a label per block.
+    fn lifted(&mut self, id: ExprId, target: Lifted) {
+        let label = self.lifts;
+        self.lifts += 1;
+        self.indentation();
+        writeln!(self.output, "recur_{label}: {{").unwrap();
+        self.indent += 1;
+        let operands = self.operands.as_mut().expect("a function body lifts");
+        let outer = operands.lift.replace(Lift { target, label });
+        self.emit(id, ExprContext::Return);
+        self.operands.as_mut().unwrap().lift = outer;
+        self.lifts -= 1;
+        self.indent -= 1;
+        self.indentation();
+        self.output.push_str("}\n");
+    }
+
+    /// Where the value-position expression `id` is the first a statement
+    /// evaluates, and its [`Emitter::head`] is an expression in it, write
+    /// that expression as statements into an operand local, which `id` reads
+    /// in its place until [`Emitter::head_written`]: `boolean(operand0)`
+    /// rather than `boolean((function () {...})())`.
+    fn lift_head(&mut self, id: ExprId) -> Option<HeadLift> {
+        let head = self.head(id)?;
+        if head == id {
+            return None;
+        }
+        let operand = self.lifted_operand(head);
+        // The statement's other operands take operand locals after it.
+        self.operands.as_mut().unwrap().live = operand + 1;
+        let outer = self.substitute.replace((head, operand));
+        let outer_written = std::mem::replace(&mut self.substituted, false);
+        Some(HeadLift {
+            operand,
+            outer,
+            outer_written,
+        })
+    }
+
+    /// The expression in the value-position expression `id` that
+    /// [`Emitter::lifts`] and that `id` evaluates before anything else with
+    /// an effect, or whose evaluation could change, does: `id` itself, or
+    /// the head of the first argument that is no [`Emitter::pure_operand`]
+    /// of a call whose callee nothing assigns (a core function the program
+    /// does not replace, a [`Emitter::stable_local`], or a global defined
+    /// once by a top-level `def`, `crate::call_shapes`), of an `if`'s test,
+    /// or of the first initializer or form of a `let` or `do` written as a
+    /// comma expression. No evaluation inside a function runs a top-level
+    /// `def`, so such a global reads the same before and after the head.
+    fn head(&mut self, id: ExprId) -> Option<ExprId> {
+        let program = self.program;
+        let mut node = id;
+        loop {
+            if self.lifts(node) {
+                return Some(node);
+            }
+            node = match &program.exprs[node.0].kind {
+                ExprKind::Call { callee, args } => {
+                    let pure = match program.exprs[callee.0].kind {
+                        ExprKind::CoreFn(core) => !self.replaced(core.runtime_name()),
+                        ExprKind::Local(local) => self.stable_local(local),
+                        // Nothing assigns the global after its definition.
+                        ExprKind::Global(global) => self
+                            .shapes
+                            .is_some_and(|shapes| shapes.defined_once(global)),
+                        _ => false,
+                    };
+                    if !pure || self.short_circuit(node, true).is_some() {
+                        return None;
+                    }
+                    args.iter().copied().find(|&arg| !self.pure_operand(arg))?
+                }
+                ExprKind::If { test, .. } => {
+                    if self.membership(*test).is_some() {
+                        return None;
+                    }
+                    match program.exprs[test.0].kind {
+                        ExprKind::BooleanHint(value) => value,
+                        _ => *test,
+                    }
+                }
+                ExprKind::Let { bindings, .. }
+                    if self.short_circuit(node, true).is_none() && self.hoists(node) =>
+                {
+                    match self.local_function(bindings.first()?.0) {
+                        Some(_) => return None,
+                        None => bindings[0].1,
+                    }
+                }
+                ExprKind::Do(items) if self.sequence_keeps_scope(node) => items
+                    .iter()
+                    .copied()
+                    .find(|&item| !self.pure_operand(item))?,
+                _ => return None,
+            };
+        }
+    }
+
+    /// Whether evaluating `id` has no effect, and gives the same value
+    /// whatever is evaluated before it: a literal, a
+    /// [`Emitter::stable_local`], or a global defined once by a top-level
+    /// `def` ([`Emitter::head`]).
+    fn pure_operand(&mut self, id: ExprId) -> bool {
+        match self.program.exprs[id.0].kind {
+            ExprKind::Nil
+            | ExprKind::Bool(_)
+            | ExprKind::Number(_)
+            | ExprKind::String(_)
+            | ExprKind::Keyword(_) => true,
+            ExprKind::Local(local) => self.stable_local(local),
+            // Nothing assigns the global after its definition.
+            ExprKind::Global(global) => self
+                .shapes
+                .is_some_and(|shapes| shapes.defined_once(global)),
+            _ => false,
+        }
+    }
+
+    /// Whether nothing assigns the local `local` once bound, so that its
+    /// read can follow another expression's evaluation: it is written as an
+    /// identifier, is no function's parameter (which an escaped `arguments`
+    /// object aliases) and no raw `js*` hole (which may assign it).
+    fn stable_local(&mut self, local: LocalId) -> bool {
+        if !self.plain_local(local) {
+            return false;
+        }
+        if self.assignable_locals.is_empty() {
+            let program = self.program;
+            let mut assignable = vec![false; program.locals.len()];
+            let mut parameters = |method: &FnMethod| {
+                for param in method.params.iter().chain(&method.rest) {
+                    assignable[param.0] = true;
+                }
+            };
+            let mut holes = Vec::new();
+            for expr in program.exprs.iter() {
+                match &expr.kind {
+                    ExprKind::Fn { methods, .. } => methods.iter().for_each(&mut parameters),
+                    ExprKind::Reify { methods, .. }
+                    | ExprKind::DefType { methods, .. }
+                    | ExprKind::ExtendType { methods, .. } => {
+                        methods.iter().for_each(|(_, method)| parameters(method));
+                    }
+                    ExprKind::JsTemplate { args, .. } => holes.extend(args.iter().copied()),
+                    _ => (),
+                }
+            }
+            for hole in holes {
+                if let ExprKind::Local(local) = program.exprs[hole.0].kind {
+                    assignable[local.0] = true;
+                }
+            }
+            // Never empty once computed: a program has a local or this is
+            // computed again, which finds none.
+            assignable.push(false);
+            self.assignable_locals = assignable;
+        }
+        !self.assignable_locals[local.0]
+    }
+
+    /// The statement that [`Emitter::lift_head`] lifted the head of is
+    /// written: its operand local is free again.
+    fn head_written(&mut self, lift: Option<HeadLift>) {
+        if let Some(HeadLift {
+            operand,
+            outer,
+            outer_written,
+        }) = lift
+        {
+            debug_assert!(self.substituted, "a statement reads its lifted head");
+            self.substitute = outer;
+            self.substituted = outer_written;
+            self.operands.as_mut().unwrap().live = operand;
+        }
+    }
+
+    /// The expression `id` that [`Emitter::lifts`], into the operand local
+    /// it returns, which the statements after them read.
+    fn lifted_operand(&mut self, id: ExprId) -> usize {
+        let operands = self.operands.as_mut().expect("a function body lifts");
+        let operand = operands.live;
+        // Nothing in it may take the operand local, as a `finally` clause
+        // runs after the assignment.
+        operands.live = operand + 1;
+        operands.declared = operands.declared.max(operand + 1);
+        self.lifted(id, Lifted::Operand(operand));
+        self.operands.as_mut().unwrap().live = operand;
+        operand
+    }
+
+    /// At `Advanced`, a value-position `case` with a default as a chain of
+    /// conditional expressions on an operand local holding its test's value
+    /// (light-cljs-420), where its statement form tests it with `switch` or
+    /// `equal`: `(operand0 = x, operand0 === 1 ? a : operand0 === 2 ? b : c)`,
+    /// a keyword's fully qualified name for keyword tests. No function scope
+    /// that a wrapper would replace is read in it.
+    fn case_value(
+        &mut self,
+        strict: bool,
+        keyword_tests: bool,
+        test: ExprId,
+        branches: &[(ExprId, ExprId)],
+        default: ExprId,
+    ) {
+        let operands = self.operands.as_mut().expect("case operands");
+        let operand = operands.live;
+        operands.live = operand + 1;
+        operands.declared = operands.declared.max(operand + 1);
+        write!(self.output, "(operand{operand} = ").unwrap();
+        if keyword_tests {
+            self.rt(RuntimeName::export("keywordFqn"));
+            self.output.push('(');
+            self.value(test);
+            self.output.push(')');
+        } else {
+            self.value(test);
+        }
+        self.output.push_str(", ");
+        for &(constant, branch) in branches {
+            if keyword_tests {
+                let ExprKind::Keyword(name) = self.program.exprs[constant.0].kind else {
+                    unreachable!("keyword tests")
+                };
+                let name = &self.program.named_literals[name.0];
+                let mut spelling = Vec::new();
+                if let Some(namespace) = name.namespace {
+                    spelling.extend_from_slice(&self.program.strings[namespace.0]);
+                    spelling.push('/' as u16);
+                }
+                spelling.extend_from_slice(&self.program.strings[name.name.0]);
+                write!(self.output, "operand{operand} === ").unwrap();
+                self.string_units(&spelling);
+            } else if strict {
+                write!(self.output, "operand{operand} === ").unwrap();
+                self.value(constant);
+            } else {
+                self.rt(RuntimeName::core("equal"));
+                write!(self.output, "(operand{operand}, ").unwrap();
+                self.value(constant);
+                self.output.push(')');
+            }
+            self.output.push_str(" ? ");
+            self.value(branch);
+            self.output.push_str(" : ");
+        }
+        self.value(default);
+        self.output.push(')');
+        self.operands.as_mut().unwrap().live = operand;
+    }
+
+    /// Declare `l5` (or entry `l5_0`) ahead of the statement being written
+    /// ([`Emitter::hoists`]).
+    fn hoist(&mut self, local: LocalId, entry: Option<usize>) {
+        self.operands
+            .as_mut()
+            .expect("a function body hoists")
+            .hoisted
+            .push((local, entry));
+    }
+
     fn sequence_keeps_scope(&self, id: ExprId) -> bool {
         let program = self.program;
         let ExprKind::Do(items) = &program.exprs[id.0].kind else {
@@ -5768,6 +6404,13 @@ impl<'a> Emitter<'a> {
 
     fn value_expr(&mut self, id: ExprId) {
         self.used.insert(id);
+        if let Some((head, operand)) = self.substitute
+            && head == id
+        {
+            self.substituted = true;
+            write!(self.output, "operand{operand}").unwrap();
+            return;
+        }
         if let Some(parts) = self.short_circuit(id, true) {
             self.short_circuit_value(parts);
             return;
@@ -6056,7 +6699,11 @@ impl<'a> Emitter<'a> {
                 methods,
                 via_metadata,
             } => {
-                self.output.push_str("(() => { ");
+                // At `Advanced` the assignments are a comma expression
+                // (light-cljs-420); they read no function scope.
+                let comma = self.shapes.is_some();
+                let separator = if comma { ", " } else { "; " };
+                self.output.push_str(if comma { "(" } else { "(() => { " });
                 // At `Advanced` the protocol value exists only when something
                 // reads it (`crate::rta`), and so do the dispatchers, which
                 // rapid type analysis leaves in `methods`.
@@ -6071,7 +6718,8 @@ impl<'a> Emitter<'a> {
                             .encode_utf16()
                             .collect::<Vec<_>>(),
                     );
-                    self.output.push_str("); ");
+                    self.output.push(')');
+                    self.output.push_str(separator);
                 }
                 for method in methods {
                     self.product(method.global);
@@ -6107,9 +6755,14 @@ impl<'a> Emitter<'a> {
                     if self.inference.is_some() && !*via_metadata && method.variadic.is_none() {
                         self.protocol_fast_path(&method.arities);
                     }
-                    self.output.push_str("); ");
+                    self.output.push(')');
+                    self.output.push_str(separator);
                 }
-                self.output.push_str("return undefined; })()");
+                self.output.push_str(if comma {
+                    "undefined)"
+                } else {
+                    "return undefined; })()"
+                });
             }
             ExprKind::ProtocolPredicate {
                 protocol,
@@ -6581,6 +7234,23 @@ impl<'a> Emitter<'a> {
             ExprKind::Do(items) if self.shapes.is_some() && self.sequence_keeps_scope(id) => {
                 self.sequence(items);
             }
+            ExprKind::Let { bindings, body } | ExprKind::LetFn { bindings, body }
+                if self.hoists(id) =>
+            {
+                self.hoisted_let(id, bindings, *body);
+            }
+            ExprKind::Case {
+                strict,
+                keyword_tests,
+                test,
+                branches,
+                default: Some(default),
+            } if self.shapes.is_some()
+                && self.operands.is_some()
+                && self.scope_flags(id) & SCOPE_READ == 0 =>
+            {
+                self.case_value(*strict, *keyword_tests, *test, branches, *default);
+            }
             ExprKind::WithOutStr(_)
             | ExprKind::Binding { .. }
             | ExprKind::Do(_)
@@ -6728,6 +7398,23 @@ impl<'a> Emitter<'a> {
 /// Whether the value of `id` may read the `arguments` of the function it is
 /// emitted in, or holds raw JavaScript (which may read `this`), outside
 /// nested functions.
+/// [`Emitter::operand_locals`]: the local is no operand local.
+const NO_OPERAND: u32 = u32::MAX;
+/// [`Emitter::scope_flags`]: computed.
+const SCOPE_DONE: u8 = 1;
+/// [`Emitter::scope_flags`]: the evaluation reads the function scope
+/// (`arguments`, or `this` from raw JavaScript), holds a definition with
+/// `:test` metadata or enters a namespace, which a function around it would
+/// change ([`Emitter::sequence_keeps_scope`]), or defines or extends a type.
+const SCOPE_READ: u8 = 2;
+/// [`Emitter::scope_flags`]: the evaluation creates a function, which may
+/// capture the locals around it.
+const SCOPE_CLOSURE: u8 = 4;
+/// [`Emitter::scope_flags`]: the evaluation has an expression that only a
+/// function called where it is written evaluates in value position, such as
+/// a `loop` ([`Emitter::lifts`]).
+const SCOPE_STATEMENT: u8 = 8;
+
 fn reads_function_scope(program: &Program, id: ExprId) -> bool {
     let mut pending = vec![id];
     while let Some(id) = pending.pop() {

@@ -5855,3 +5855,56 @@ little, since their locals had one-character names already. `features`
 with startup shift a place or two now that locals are out of the table
 (`bL` is `bJ`). The four chunks together go from 26,177 to 26,118 gzipped.
 The `features` ceiling moves down to 77,000 and `app.reports.js`'s to 5,000.
+
+## Value-position statements without wrappers — October 22, 2026
+
+light-cljs-420 writes a value-position `let`, `case`, `loop`, `try` and
+`binding` at `advanced` without the function called where it is written
+([advanced optimization design](../docs/advanced-optimization.md), Phase 3,
+"Value-position statements without wrappers"): `let`s as comma expressions
+over operand locals or locals declared ahead of their statement, `case`s
+with a default as conditional chains, `defprotocol` values as comma
+expressions, and the rest, where a statement evaluates it first, as
+statements ahead of it in a labeled block. Generated projects
+(`benchmarks/generated-project/`, seed 42, `release bench --no-cache`),
+master `53cdb94` against this change, raw / `gzip -9 -n` bytes and the
+wrappers (`(function(){...})()` and `(()=>{...})()`, matched braces); sizes
+do not depend on load, and every output prints the oracle's result:
+
+| Lines | Before | After | Wrappers before / after |
+| --- | ---: | ---: | ---: |
+| 5k | 207,315 / 58,028 | 202,393 / 58,589 | 174 / 29 |
+| 200k | 3,663,745 / 863,496 | 3,437,203 / 898,739 | 8,451 / 992 |
+| 800k | 14,248,731 / 3,294,705 | 13,333,061 / 3,444,007 | 33,850 / 3,904 |
+
+Raw output shrinks 6.2% at 200k and 6.4% at 800k, but the gzipped output
+grows 4.1% and 4.5% (still 10% and 12% under shadow-cljs's 1,002,909 and
+3,894,315). Since light-cljs-419 names locals per scope, a wrapper's fresh
+scope gives the same short names at every like site, which deflate matches;
+the function's operand locals and the lifted blocks take names that vary
+with what else the function binds. Turning each part off in turn at 200k (before the review fixes below):
+the comma `let`s save 171,837 raw and cost 19,200 gzipped, lifting costs
+5,277 raw and 12,541 gzipped, of which the heads inside calls 4,738 and
+9,539, `case` chains save 55,121 and 1,038, and `defprotocol` commas 3,525
+and 543. Without lifting 2,365 wrappers stay. The 992 left: wrappers after an
+effect in their statement (`(+ (f) (let ...))`), at the top level, around a
+`case` without a default or a `throw`, and 112 dispatchers of multi-arity
+`fn` values.
+
+Node run time of `node run-light.mjs 42 1000` at 200k (prints 60045),
+before and after alternated, one-minute load 1.8 to 3.6: 114.2, 113.3 and
+112.7 s before; 112.2, 112.7 and 110.1 s after. The `--levels` steady state
+(the two bench binaries one after the other, load 2.6 to 8.6) moves within
+±6% at `advanced` in either engine, mostly within 2%; the ratchet fixtures'
+outputs are the same but `eight-records`'s (37,384 to 37,369), whose
+ceiling stays. Penpot `app.main` (`bb benchmarks/penpot.bb DIR
+main-advanced`, alternated, two runs each, load 2.5 to 9.5): output
+25,647,115 to 24,649,385 bytes, wall 26.0 and 30.4 s before, 26.6 and 29.8 s
+after, peak RSS 1.05 and 1.07 GB before, 1.05 and 1.10 GB after.
+
+The review fixes then kept a statement-position `this-as` in its wrapper,
+stopped moving a parameter's read after a lifted expression (an escaped
+`arguments` object aliases it), and counted as stable only globals whose
+one `def` is a top-level form: 4 more wrappers at 200k (992) and 22 at 800k
+(3,904), sizes as in the table. The run times, `--levels` and Penpot
+numbers above were measured before them.

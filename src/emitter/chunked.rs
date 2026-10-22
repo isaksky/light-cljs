@@ -576,7 +576,7 @@ pub(crate) fn emit_chunked(
         for chunk in 0..count {
             emitter.chunks.as_mut().unwrap().current = ChunkId(chunk);
             emitter.imports = Some(Vec::new());
-            emitter.operand_scope(|emitter| {
+            emitter.operand_scope(false, |emitter| {
                 emitter.chunk_forms(program.root, ExprContext::Return, entry, &sources, &forms)
             });
             emitter.allow_js_local_assignment();

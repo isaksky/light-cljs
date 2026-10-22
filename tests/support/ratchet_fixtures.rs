@@ -153,6 +153,10 @@
 //! them. `features` 77,053 to 76,997 and the features chunk `app.reports.js`
 //! 5,040 to 4,995, whose ceilings move down to 77,000 and 5,000; no other
 //! advanced size crosses its rounding.
+//!
+//! Value-position statements without wrappers (light-cljs-420, 2026-10-22):
+//! only `eight-records` changes, 37,384 to 37,369, under the same ceiling;
+//! the fixtures have few value-position `let`, `case` or `loop` forms.
 
 pub struct Fixture {
     pub name: &'static str,

@@ -802,3 +802,107 @@ console.log(value);"#
         );
     }
 }
+
+/// light-cljs-420: at `Advanced` a value-position `let`, `case`, `loop`,
+/// `try` or `binding` is a comma expression, a conditional chain, or
+/// statements ahead of the statement that evaluates it first, not a function
+/// called where it is written. Each program prints the oracle's value at
+/// every level: closures made in a loop capture each iteration's locals,
+/// effects keep their order, and the program writes the given number of
+/// wrappers, which it needs where an effect precedes the expression.
+#[test]
+fn value_position_statements_keep_values_and_order_without_wrappers() {
+    for (source, expected, wrappers) in [
+        // A value-position `let` whose function captures its local, once per
+        // iteration of the loop around it.
+        (
+            r#"(defn captured [n]
+                 (loop [i 0 acc []]
+                   (if (< i n)
+                     (recur (inc i) (conj acc (let [j (* i 10)] (fn [] (+ j i)))))
+                     acc)))
+               (pr-str (mapv (fn [g] (g)) (captured 3)))"#,
+            r#""[0 11 22]""#,
+            0,
+        ),
+        // `case` in value position, on numbers, strings and keywords.
+        (
+            r#"(defn kind [x] (+ 1 (case x 1 10 "s" 20 30)))
+               (defn word [x] (str "w" (case x :a "A" :b/c "C" "D")))
+               (pr-str [(kind 1) (kind "s") (kind nil) (word :a) (word :b/c) (word :z)])"#,
+            r#""[11 21 31 \"wA\" \"wC\" \"wD\"]""#,
+            0,
+        ),
+        // A loop that an `if`'s test calls, and `try` and `binding` as the
+        // first operands of their statements.
+        (
+            r#"(def ^:dynamic *depth* 1)
+               (defn all-pos [xs]
+                 (if (boolean (loop [s xs] (if (seq s) (if (neg? (first s)) false (recur (rest s))) true)))
+                   :ok :bad))
+               (defn safe [x]
+                 (str "r" (try (if (pos? x) x (throw (ex-info "neg" {}))) (catch :default _ -1))))
+               (defn deeper [] (+ 1 (binding [*depth* 5] *depth*)))
+               (pr-str [(all-pos [1 2]) (all-pos [1 -2]) (safe 3) (safe -3) (deeper) *depth*])"#,
+            r#""[:ok :bad \"r3\" \"r-1\" 6 1]""#,
+            0,
+        ),
+        // An effect before the loop stays before it: the `let` around the
+        // loop keeps its wrapper, a comma expression's.
+        (
+            r#"(def trace (atom []))
+               (defn t [x] (swap! trace conj x) x)
+               (defn ordered []
+                 (+ (t 1) (let [y (t 2)] (loop [i 0] (if (< i 2) (recur (inc i)) (t (+ y i)))))))
+               (pr-str [(ordered) @trace])"#,
+            r#""[5 [1 2 4]]""#,
+            1,
+        ),
+    ] {
+        assert_eq!(
+            json_at_every_level(source),
+            format!("{expected}\n"),
+            "{source}"
+        );
+        let program = program(source);
+        let js = prepare_application(&program, readable(OptimizationLevel::Advanced)).emit_js();
+        // The program after the runtime's factory, in the function that
+        // returns its value.
+        let start = js.find("\n})();\n").unwrap_or_else(|| panic!("{js}"));
+        let body = &js[start + "\n})();\n".len()..];
+        assert!(
+            body.matches("(function () {").count() == wrappers
+                && body.matches("})()").count() == wrappers + 1,
+            "{source}\n{body}"
+        );
+    }
+}
+
+/// light-cljs-420: a lifted expression keeps what its wrapper gave it and
+/// what the statement read before it: a `this-as` in it sees the wrapper's
+/// receiver, a global that a `def` in a function assigns is read before the
+/// expression, and so is a parameter that the escaped `arguments` object
+/// aliases.
+#[test]
+fn lifted_heads_keep_receivers_and_reads_their_evaluation_could_change() {
+    for (source, expected) in [
+        (
+            "(deftype T [] Object (check [this] (let [x (loop [] (this-as t (identical? t this)))] x)))
+             (.check (T.))",
+            "false",
+        ),
+        (
+            "(declare x)
+             (defn f [n] (vector x (loop [] (def x n) 0)))
+             (pr-str [(f 1) (f 2)])",
+            r#""[[nil 0] [1 0]]""#,
+        ),
+        (
+            "(defn f [x] (let [a (js-arguments) change (fn [] (aset a 0 2))] (+ x (loop [] (change) 0))))
+             (f 1)",
+            "1",
+        ),
+    ] {
+        assert_eq!(json_at_every_level(source), format!("{expected}\n"), "{source}");
+    }
+}

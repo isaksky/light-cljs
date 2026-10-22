@@ -324,6 +324,9 @@ pub struct CallShapes {
     entry_offsets: Vec<u32>,
     /// By method of such a function: whether a direct call selects it.
     selected: Vec<bool>,
+    /// By global: the program defines it once, with a top-level `def`, and
+    /// never assigns it otherwise ([`Scan::sole_definitions`]).
+    once: Vec<bool>,
 }
 
 impl CallShapes {
@@ -333,6 +336,15 @@ impl CallShapes {
             .get(global.0)
             .copied()
             .unwrap_or(FunctionShape::Generic)
+    }
+
+    /// Whether the program defines `global` once, with a top-level `def` of
+    /// a value, which runs once, and never assigns it otherwise: no second
+    /// `def`, `defonce`, `set!`, `binding`, `with-redefs` or `js*` hole, nor
+    /// `:dynamic` or `:test` metadata. Code in functions reads one value of
+    /// it throughout an evaluation, as no top-level form runs inside one.
+    pub fn defined_once(&self, global: GlobalId) -> bool {
+        self.once.get(global.0).copied().unwrap_or(false)
     }
 
     /// The direct shape of the call `call`, if it has one.
@@ -422,6 +434,7 @@ pub fn analyze(
         resolved,
         name_resolved,
         inferred_sites,
+        top_definitions,
         ..
     } = scan;
     let count = program.exprs.len();
@@ -447,6 +460,7 @@ pub fn analyze(
         local_functions: local.functions,
         entry_offsets,
         selected,
+        once: top_definitions,
     };
     let mut this = ReceiverCache {
         methods: vec![None; count],
@@ -1105,6 +1119,8 @@ struct Scan {
     /// metadata, `set!`, `binding`, `with-redefs` or `js*` hole), without
     /// `:dynamic` metadata or a dot in its name (a host path).
     sole_definitions: Vec<Option<ExprId>>,
+    /// By global: its sole definition is a top-level form, which runs once.
+    top_definitions: Vec<bool>,
 }
 
 impl Scan {
@@ -1276,7 +1292,13 @@ impl Scan {
                     definition[global].filter(|_| sole)
                 })
                 .collect(),
+            top_definitions: Vec::new(),
         };
+        scan.top_definitions = scan
+            .sole_definitions
+            .iter()
+            .map(|def| def.is_some_and(|def| top[def.0]))
+            .collect();
         let mut known = vec![None; globals];
         for global in 0..globals {
             let Some(def) = scan.sole_definitions[global] else {

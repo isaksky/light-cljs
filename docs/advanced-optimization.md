@@ -4107,6 +4107,47 @@ run the terse output.
   0.9% gzipped. `[1 2 3]` (`vector-only`) is 5,883 bytes (2,321 gzipped)
   instead of 13,940 (4,487). See "Terse emission" in
   `benchmarks/compiler.md`.
+- **Value-position statements without wrappers. As built
+  (light-cljs-420).** Below `Advanced` a value-position `let`, `loop`,
+  `case`, `try`, `binding` or non-comma `do` is a function called where it
+  is written, as upstream's `iife-open` writes it. At `Advanced` in a
+  function's body (not at the top level), where nothing in the expression
+  reads the function scope a wrapper would replace (`arguments`, raw
+  `js*`, a statement-position `this-as`, a `:test` definition, a namespace
+  entry, a type definition or extension):
+  - a `let` or `letfn` is a comma expression, `(operand0 = init, body)`.
+    Where no function in it can capture its locals they are the function's
+    operand locals, taken from `live` up while the body is written; else
+    they are `let` locals declared ahead of the statement that evaluates
+    the `let`, so the block around that statement gives each evaluation
+    (each loop iteration) fresh bindings for its closures.
+  - a `case` with a default is a conditional chain on an operand local,
+    `(operand0 = x, operand0 === 1 ? a : ...)`, `===` where the statement
+    form switches and `equal` where it tests, a keyword's fully qualified
+    name for keyword tests. A `defprotocol`'s value is a comma expression.
+  - an expression only statements can write, or a `let` or `if` with one in
+    it, that a statement evaluates before anything with an effect is lifted
+    ahead of the statement: a labeled block, `recur_0: {...}`, whose return
+    positions assign an operand local (or the `let` or `loop` local it
+    initializes) and break, which the statement then reads in its place.
+    The path to it goes through the first operand that is no literal,
+    stable local or stable global, of calls whose callee nothing assigns (a
+    core function the program does not replace, a stable local or a stable
+    global), an `if`'s test, and the first initializer or form of a comma
+    `let` or `do`. A stable local is no function's parameter (which an
+    escaped `arguments` object aliases) and no `js*` hole; a stable global
+    is defined once by a top-level `def` and never assigned otherwise
+    (`CallShapes::defined_once`), which no evaluation inside a function
+    runs, so it reads the same before and after the lifted expression.
+  At 200k lines of the generated project 8,451 wrappers become 992 and the
+  output 6.2% smaller raw, but 4.1% larger gzipped: since light-cljs-419
+  names locals per scope, a wrapper's fresh scope repeats the same short
+  names at every like site, where the function's operand locals and lifted
+  blocks do not. Node run time is within noise ("Value-position statements
+  without wrappers" in `benchmarks/compiler.md`). The wrappers left are
+  those after an effect (`(+ (f) (let ...))`), at the top level, around a
+  `case` without a default or a `throw`, and the 112 dispatchers of
+  multi-arity `fn` values.
 - **Not done.**
   - ABI property mangling: no property is mangled. The arity ABI
     (`cljs$core$IFn$_invoke$arity$N`, `$variadic`,
