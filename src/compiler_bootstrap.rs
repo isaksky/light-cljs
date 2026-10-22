@@ -643,7 +643,8 @@ enum MacroFunction {
 /// worker's engine evaluates this once for itself (docs/compiler-concurrency.md,
 /// "As built (light-cljs-339)").
 pub(crate) struct MacroCode {
-    registration: crate::emitter::NamespaceRegistration,
+    /// The tables its namespace registration reads.
+    tables: crate::reader_registration::ReaderTables,
     unit: String,
     /// The worker engines' key for the function they evaluate from it.
     identity: CodeIdentity,
@@ -653,6 +654,13 @@ struct InstalledFunction {
     function: Option<MacroValue>,
     /// The worker engines' key for the function they evaluate from it.
     identity: CodeIdentity,
+}
+impl InstalledFunction {
+    /// The tables its registration reads and its JavaScript, which an
+    /// engine evaluates without holding the lock.
+    fn parts(&self) -> (crate::reader_registration::ReaderTables, String) {
+        (self.unit.tables().clone(), self.unit.code().to_owned())
+    }
 }
 /// A macro's compile-time code, unique in the process and shared by every
 /// clone of its declaration: a worker engine's key for its own function
@@ -712,10 +720,8 @@ impl CompiledMacro {
         if let Some(function) = &installed.lock().expect("installed macro").function {
             return Ok(function.id);
         }
-        let (registration, unit) = installed.lock().expect("installed macro").unit.emit();
-        engine
-            .evaluate_registration(&registration.source, &registration.chunks)
-            .map_err(|e| e.to_string())?;
+        let (tables, unit) = installed.lock().expect("installed macro").parts();
+        crate::reader_registration::register(engine, &tables).map_err(|e| e.to_string())?;
         let function = engine
             .evaluate_unit(&format!(
                 "rt => rt.core.macroReaderFunction(({})(rt))",
@@ -750,18 +756,16 @@ impl CompiledMacro {
         if let Some(&function) = binding.foreign_macros.borrow().get(&key) {
             return Ok(function);
         }
-        let emitted;
-        let (registration, unit) = match &self.function {
-            MacroFunction::Ready(_, Some(code)) => (&code.registration, &code.unit),
+        let parts;
+        let (tables, unit) = match &self.function {
+            MacroFunction::Ready(_, Some(code)) => (&code.tables, &code.unit),
             MacroFunction::Installed(installed) => {
-                emitted = installed.lock().expect("installed macro").unit.emit();
-                (&emitted.0, &emitted.1)
+                parts = installed.lock().expect("installed macro").parts();
+                (&parts.0, &parts.1)
             }
             MacroFunction::Ready(_, None) => unreachable!("bootstrap macros returned above"),
         };
-        engine
-            .evaluate_registration(&registration.source, &registration.chunks)
-            .map_err(|e| e.to_string())?;
+        crate::reader_registration::register(engine, tables).map_err(|e| e.to_string())?;
         let function = engine
             .evaluate_unit(&format!(
                 "rt => rt.core.macroReaderFunction(({})(rt))",
@@ -917,11 +921,11 @@ impl MacroHost {
             session.attach(&bootstrap, self)?;
         }
         let mut frame = self.macro_analysis_frame();
-        let (program, _) =
+        let (mut program, _) =
             crate::analyzer::analyze_deferred_form(&function, &mut frame, &snapshot, engine)
                 .map_err(|e| e.to_string())?;
         let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
-        let (registration, unit) = crate::emitter::emit_deferred_unit(&program);
+        let unit = crate::emitter::emit_deferred_unit(&program);
         if let Some(session) = self.session_handle()
             && session.capturing()
         {
@@ -935,9 +939,8 @@ impl MacroHost {
                     .map(|c| (**c).clone()),
             );
         }
-        engine
-            .evaluate_registration(&registration.source, &registration.chunks)
-            .map_err(|e| e.to_string())?;
+        let tables = crate::reader_registration::ReaderTables::take(&mut program);
+        crate::reader_registration::register(engine, &tables).map_err(|e| e.to_string())?;
         let function = engine
             .evaluate_unit(&format!(
                 "rt => rt.core.macroReaderFunction(({})(rt))",
@@ -946,7 +949,7 @@ impl MacroHost {
             .map_err(|e| e.to_string())?;
         let function = std::sync::Arc::new(bootstrap.own(engine, function));
         let code = std::sync::Arc::new(MacroCode {
-            registration,
+            tables,
             unit,
             identity: CodeIdentity::next(),
         });

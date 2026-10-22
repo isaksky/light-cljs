@@ -108,6 +108,9 @@ struct State {
     callbacks: RefCell<Vec<UnitService>>,
     strings: RefCell<Vec<StringService>>,
     pending_error: RefCell<Option<EvalError>>,
+    /// What the session has registered of the compilation's namespaces
+    /// ([`crate::reader_registration`]).
+    reader_namespaces: Rc<RefCell<crate::reader_registration::ReaderNamespaces>>,
 }
 impl State {
     fn remember_error(&self, error: &EvalError) {
@@ -147,6 +150,7 @@ impl HostEvaluator {
             callbacks: RefCell::new(Vec::new()),
             strings: RefCell::new(Vec::new()),
             pending_error: RefCell::new(None),
+            reader_namespaces: Rc::default(),
         });
         SESSIONS.with(|sessions| {
             sessions
@@ -249,6 +253,11 @@ impl HostEvaluator {
 impl MacroEvaluator for HostEvaluator {
     fn control(&self) -> ExecutionControl {
         self.0.control.clone()
+    }
+    fn reader_namespaces(
+        &self,
+    ) -> Option<Rc<RefCell<crate::reader_registration::ReaderNamespaces>>> {
+        Some(self.0.reader_namespaces.clone())
     }
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
         let mut arguments = String::from("[");
@@ -965,6 +974,61 @@ impl Parser<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A host that records the units it is asked to evaluate.
+    #[derive(Default)]
+    struct Recording(RefCell<Vec<String>>);
+    impl ScriptHost for Recording {
+        fn engine(&self) -> String {
+            "recording".into()
+        }
+        fn open(&self, _: u64, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn call(&self, _: u64, name: &str, arguments: &str) -> Result<String, String> {
+            if name == "evaluate" {
+                self.0.borrow_mut().push(arguments.to_owned());
+                return Ok("1".into());
+            }
+            Ok("null".into())
+        }
+        fn install(&self, _: u64, _: &str, _: usize, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn close(&self, _: u64) {}
+    }
+
+    #[test]
+    fn hosted_reader_registration_names_only_what_changed() {
+        let host = Rc::new(Recording::default());
+        let evaluator = HostEvaluator::new(host.clone(), &EvaluatorOptions::default()).unwrap();
+        let source = "(def x 1)";
+        let program = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
+        let mut tables = crate::reader_registration::ReaderTables::of(&program);
+        let registrations = |host: &Recording| {
+            host.0
+                .borrow()
+                .iter()
+                .filter(|unit| unit.contains("registerReaderNamespace"))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        crate::reader_registration::register(&evaluator, &tables).unwrap();
+        crate::reader_registration::register(&evaluator, &tables).unwrap();
+        assert_eq!(registrations(&host).len(), 1);
+        let mut later = tables.globals[0].clone();
+        later.name = "later".into();
+        tables.globals.push(later);
+        crate::reader_registration::register(&evaluator, &tables).unwrap();
+        let units = registrations(&host);
+        assert_eq!(units.len(), 2);
+        assert!(units[0].contains("\\\"x\\\""), "{}", units[0]);
+        assert!(
+            units[1].contains("later") && !units[1].contains("\\\"x\\\""),
+            "{}",
+            units[1]
+        );
+    }
 
     #[test]
     fn json_answers_keep_code_units_and_special_numbers() {

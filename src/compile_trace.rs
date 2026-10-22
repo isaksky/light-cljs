@@ -241,6 +241,8 @@ pub struct Trace {
     /// included, and the number of such entries.
     pub engine_outer: Duration,
     pub engine_entries: u64,
+    /// This thread's namespace registrations in compile-time engines.
+    pub registrations: RegistrationCounts,
     /// By source index.
     pub namespaces: Vec<NamespaceTrace>,
     /// In the order analyses finished on one thread; with pool workers, in
@@ -354,6 +356,12 @@ impl Trace {
         line("trace.unit.engine-ms", &ms(self.stage(Stage::Unit).engine));
         line("trace.engine.outer-ms", &ms(self.engine_outer));
         line("trace.engine.entries", &self.engine_entries);
+        let registrations = &self.registrations;
+        line("trace.registrations", &registrations.registrations);
+        line("trace.registrations.empty", &registrations.empty);
+        line("trace.registrations.restarts", &registrations.restarts);
+        line("trace.registrations.full-namespaces", &registrations.full);
+        line("trace.registrations.added-namespaces", &registrations.added);
         let wait: Duration = self.namespaces.iter().map(|ns| ns.top_level_wait).sum();
         line("trace.top-level.wait-ms", &ms(wait));
         let bookkeeping = [Stage::Drain, Stage::Append, Stage::Index, Stage::Release]
@@ -956,6 +964,24 @@ pub(crate) fn namespace(index: usize, name: &str, bytes: usize, requires: &[Stri
         namespace.bytes = bytes;
         namespace.requires = requires.to_vec();
     });
+}
+
+/// What a thread's registrations of namespaces in compile-time engines
+/// named ([`crate::reader_registration`]): how many there were, how many
+/// named nothing new, how many started over from an empty engine record,
+/// and how many namespace statements replaced a namespace or added to it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RegistrationCounts {
+    pub registrations: u64,
+    pub empty: u64,
+    pub restarts: u64,
+    pub full: u64,
+    pub added: u64,
+}
+
+/// Count a registration in this thread's recording.
+pub(crate) fn registered(count: impl FnOnce(&mut RegistrationCounts)) {
+    with_recorder(|recorder| count(&mut recorder.trace.registrations));
 }
 
 /// The engine evaluates `unit`'s compile-time root for the first time;

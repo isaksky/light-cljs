@@ -1289,6 +1289,15 @@ pub trait MacroEvaluator {
     fn heap(&self) -> usize {
         0
     }
+    /// What this engine has registered of the compilation's namespaces, for
+    /// an engine that keeps it, so that a registration names only what it
+    /// lacks ([`crate::reader_registration`]); without, every registration
+    /// names every namespace of its program.
+    fn reader_namespaces(
+        &self,
+    ) -> Option<std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>> {
+        None
+    }
     /// Make the compile-time runtime's `gensym` number in the scope of
     /// generated names `serial`, appending `prefix` and the scope's own
     /// count, or with its counter for serial 0
@@ -1364,6 +1373,11 @@ impl MacroEvaluator for Evaluator {
     }
     fn heap(&self) -> usize {
         Rc::as_ptr(&self.bridge) as usize
+    }
+    fn reader_namespaces(
+        &self,
+    ) -> Option<std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>> {
+        Some(self.bridge.borrow().reader_namespaces.clone())
     }
     fn gensym_scope(&self, serial: u64, prefix: &str, retired: &str) -> Result<(), EvalError> {
         self.with_active(|active| active.gensym_scope(serial, prefix, retired))
@@ -1470,6 +1484,11 @@ impl MacroEvaluator for ActiveEvaluator<'_, '_> {
     }
     fn heap(&self) -> usize {
         Rc::as_ptr(self.bridge) as usize
+    }
+    fn reader_namespaces(
+        &self,
+    ) -> Option<std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>> {
+        Some(self.bridge.borrow().reader_namespaces.clone())
     }
     fn gensym_scope(&self, serial: u64, prefix: &str, retired: &str) -> Result<(), EvalError> {
         self.enter(|_| {

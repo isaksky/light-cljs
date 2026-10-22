@@ -151,27 +151,14 @@ pub(crate) struct NamespaceRegistration {
 /// and only the immutable tables that lazy namespace registration reads.
 pub(crate) struct DeferredUnit {
     source: String,
-    namespaces: crate::arena::Arena<String>,
-    globals: crate::arena::Arena<crate::analyzer::GlobalBinding>,
-    reader_contexts: crate::shared::Shared<
-        crate::layered::Layered<
-            String,
-            crate::shared::Shared<crate::analyzer::RuntimeReaderNamespace>,
-        >,
-    >,
+    tables: crate::reader_registration::ReaderTables,
 }
 
 impl DeferredUnit {
     pub(crate) fn prepare(program: &Program) -> Self {
-        let mut registration = NamespaceRegistration {
-            deferred: true,
-            ..Default::default()
-        };
         Self {
-            source: emit_unit_parts(program, true, Some(&mut registration)),
-            namespaces: program.namespaces.clone(),
-            globals: program.globals.clone(),
-            reader_contexts: program.reader_contexts.clone(),
+            source: emit_deferred_unit(program),
+            tables: crate::reader_registration::ReaderTables::of(program),
         }
     }
 
@@ -182,73 +169,87 @@ impl DeferredUnit {
         source: String,
         namespaces: crate::arena::Arena<String>,
         globals: crate::arena::Arena<crate::analyzer::GlobalBinding>,
-        reader_contexts: crate::shared::Shared<
-            crate::layered::Layered<
-                String,
-                crate::shared::Shared<crate::analyzer::RuntimeReaderNamespace>,
-            >,
-        >,
+        reader_contexts: crate::reader_registration::ReaderContexts,
     ) -> Self {
         Self {
             source,
-            namespaces,
-            globals,
-            reader_contexts,
+            tables: crate::reader_registration::ReaderTables {
+                namespaces,
+                globals,
+                reader_contexts,
+            },
         }
     }
 
     /// The reader contexts its registration names.
-    pub(crate) fn reader_contexts(
-        &self,
-    ) -> &crate::shared::Shared<
-        crate::layered::Layered<
-            String,
-            crate::shared::Shared<crate::analyzer::RuntimeReaderNamespace>,
-        >,
-    > {
-        &self.reader_contexts
+    pub(crate) fn reader_contexts(&self) -> &crate::reader_registration::ReaderContexts {
+        &self.tables.reader_contexts
     }
 
-    /// The prepared compile-time JavaScript, as [`Self::emit`] returns it.
+    /// The tables its registration reads ([`crate::reader_registration`]).
+    pub(crate) fn tables(&self) -> &crate::reader_registration::ReaderTables {
+        &self.tables
+    }
+
+    /// The prepared compile-time JavaScript, as [`emit_deferred_unit`]
+    /// returns it.
     pub(crate) fn code(&self) -> &str {
         &self.source
     }
-
-    pub(crate) fn emit(&self) -> (NamespaceRegistration, String) {
-        // Registration reads names and reader context only. Global metadata
-        // expression IDs are deliberately never followed by this operation.
-        let mut program = crate::analyzer::empty_program();
-        program.namespaces = self.namespaces.clone();
-        program.globals = self.globals.clone();
-        program.reader_contexts = self.reader_contexts.clone();
-        let mut emitter = Emitter::new(
-            &program,
-            Setup {
-                demand_roots: true,
-                application_roots: false,
-                module: false,
-                mapped: false,
-                application: None,
-                direct: None,
-                function_names: None,
-            },
-            true,
-        );
-        let source = emitter.registration(None, &[], false, |_| true, None);
-        (
-            NamespaceRegistration {
-                source,
-                chunks: emitter.registration_chunks,
-                deferred: false,
-            },
-            self.source.clone(),
-        )
-    }
 }
-pub(crate) fn emit_deferred_unit(program: &Program) -> (NamespaceRegistration, String) {
-    let mut registration = NamespaceRegistration::default();
-    let unit = emit_unit_parts(program, true, Some(&mut registration));
-    (registration, unit)
+
+/// The compile-time JavaScript of `program`'s unit, whose namespaces the
+/// engine registers first ([`crate::reader_registration::register`]).
+pub(crate) fn emit_deferred_unit(program: &Program) -> String {
+    let mut registration = NamespaceRegistration {
+        deferred: true,
+        ..Default::default()
+    };
+    emit_unit_parts(program, true, Some(&mut registration))
+}
+
+/// The statements registering the namespaces of `tables` that `plan`
+/// names, in its order, with the range of each namespace's statement
+/// ([`crate::reader_registration`]).
+pub(crate) fn emit_reader_registration(
+    tables: &crate::reader_registration::ReaderTables,
+    plan: &[crate::reader_registration::Planned<'_>],
+) -> NamespaceRegistration {
+    // The statements read names and reader contexts only, which the plan
+    // and the tables give.
+    let program = crate::analyzer::empty_program();
+    let mut emitter = Emitter::new(
+        &program,
+        Setup {
+            demand_roots: true,
+            application_roots: false,
+            module: false,
+            mapped: false,
+            application: None,
+            direct: None,
+            function_names: None,
+        },
+        true,
+    );
+    let mut source = String::new();
+    for planned in plan {
+        let names = planned
+            .ids
+            .iter()
+            .map(|id| tables.globals[id.0].name.as_str());
+        let context = planned.full.then(|| {
+            tables
+                .reader_contexts
+                .get(planned.namespace)
+                .map(|context| &**context)
+        });
+        emitter.namespace_registration(&mut source, planned.namespace, names, context);
+    }
+    NamespaceRegistration {
+        source,
+        chunks: emitter.registration_chunks,
+        deferred: false,
+    }
 }
 
 #[cfg(test)]
@@ -266,14 +267,24 @@ mod deferred_storage_tests {
             "(js* \"((x) => x + 1)(~{})\" 41)",
         ] {
             let mut program = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
-            let (expected_registration, expected_code) = emit_deferred_unit(&program);
+            let expected_code = emit_deferred_unit(&program);
+            let expected_registration = crate::reader_registration::emit_every_namespace(
+                &crate::reader_registration::ReaderTables::of(&program),
+            );
             let prepared = DeferredUnit::prepare(&program);
             program.namespaces.push("later.namespace".into());
             if let Some(global) = program.globals.get_mut(0) {
                 global.name = "later-name".into();
             }
-            let (registration, code) = prepared.emit();
-            assert_eq!(code, expected_code, "{source}");
+            let registration = crate::reader_registration::emit_every_namespace(prepared.tables());
+            assert_eq!(prepared.code(), expected_code, "{source}");
+            assert!(
+                expected_registration
+                    .source
+                    .contains("registerReaderNamespace(\"cljs.user\""),
+                "{}",
+                expected_registration.source
+            );
             assert_eq!(
                 registration.source, expected_registration.source,
                 "{source}"
@@ -1952,94 +1963,22 @@ impl<'a> Emitter<'a> {
                 .collect(),
         };
         for namespace in selected {
-            let registration_start = registration.len();
-            let previous = std::mem::take(&mut self.output);
-            self.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
-            let literal = std::mem::replace(&mut self.output, previous);
-            let register = self.runtime_read(
-                RuntimeName::core("registerReaderNamespace"),
-                None,
-                NameUse::Value,
-            );
+            let names = bindings
+                .get(namespace.as_str())
+                .into_iter()
+                .flatten()
+                .copied();
             if added_from(added, namespace).is_some() {
-                writeln!(
-                    registration,
-                    "  {register}({literal}, {{bindings: [{}]}}, true);",
-                    bindings
-                        .get(namespace.as_str())
-                        .into_iter()
-                        .flatten()
-                        .map(|name| js_string(name))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                )
-                .unwrap();
-                if demand_roots {
-                    self.registration_chunks
-                        .push((namespace.clone(), registration_start..registration.len()));
-                }
+                self.namespace_registration(&mut registration, namespace, names, None);
                 continue;
             }
-            writeln!(registration, "  {register}({literal}, {{aliases: [").unwrap();
-            if let Some(context) = program.reader_contexts.get(namespace) {
-                for (alias, target) in &context.aliases {
-                    writeln!(
-                        registration,
-                        "    [{}, {}],",
-                        js_string(alias),
-                        js_string(target)
-                    )
-                    .unwrap();
-                }
-                registration.push_str("  ], refers: [\n");
-                for (local, ns, original) in &context.refers {
-                    writeln!(
-                        registration,
-                        "    [{}, {}, {}],",
-                        js_string(local),
-                        js_string(ns),
-                        js_string(original)
-                    )
-                    .unwrap();
-                }
-                writeln!(
-                    registration,
-                    "  ], excludes: [{}],",
-                    context
-                        .excludes
-                        .iter()
-                        .map(|s| js_string(s))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                )
-                .unwrap();
-            } else {
-                registration.push_str("  ],\n");
-            }
-            writeln!(
-                registration,
-                "  bindings: [{}]}});",
-                bindings
-                    .get(namespace.as_str())
-                    .into_iter()
-                    .flatten()
-                    .map(|name| js_string(name))
-                    .chain(
-                        program
-                            .reader_contexts
-                            .get(namespace)
-                            .into_iter()
-                            .flat_map(|c| &c.macros)
-                            .map(|name| js_string(name))
-                    )
-                    .collect::<Vec<_>>()
-                    .join(",")
-            )
-            .unwrap();
-            if demand_roots {
-                self.registration_chunks
-                    .push((namespace.clone(), registration_start..registration.len()));
-            }
+            let context = program.reader_contexts.get(namespace);
+            self.namespace_registration(
+                &mut registration,
+                namespace,
+                names,
+                Some(context.map(|context| &**context)),
+            );
         }
         if current
             && register_namespaces
@@ -2059,6 +1998,105 @@ impl<'a> Emitter<'a> {
             .unwrap();
         }
         registration
+    }
+
+    /// The statement of `namespace` in a registration: with `context`, its
+    /// reader context (`None` for a namespace without one), the definitions
+    /// `bindings` and its macros, which replace what the runtime has of the
+    /// namespace; without, only the definitions `bindings`, which the
+    /// runtime adds to the reader context it has.
+    fn namespace_registration<'b>(
+        &mut self,
+        registration: &mut String,
+        namespace: &str,
+        bindings: impl Iterator<Item = &'b str>,
+        context: Option<Option<&crate::analyzer::RuntimeReaderNamespace>>,
+    ) {
+        let demand_roots = self.demand_roots;
+        let js_string = |text: &str| {
+            if demand_roots {
+                quoted(text)
+            } else {
+                js_string(text)
+            }
+        };
+        let registration_start = registration.len();
+        let previous = std::mem::take(&mut self.output);
+        self.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
+        let literal = std::mem::replace(&mut self.output, previous);
+        let register = self.runtime_read(
+            RuntimeName::core("registerReaderNamespace"),
+            None,
+            NameUse::Value,
+        );
+        let Some(context) = context else {
+            writeln!(
+                registration,
+                "  {register}({literal}, {{bindings: [{}]}}, true);",
+                bindings.map(js_string).collect::<Vec<_>>().join(",")
+            )
+            .unwrap();
+            if demand_roots {
+                self.registration_chunks
+                    .push((namespace.to_owned(), registration_start..registration.len()));
+            }
+            return;
+        };
+        writeln!(registration, "  {register}({literal}, {{aliases: [").unwrap();
+        if let Some(context) = context {
+            for (alias, target) in &context.aliases {
+                writeln!(
+                    registration,
+                    "    [{}, {}],",
+                    js_string(alias),
+                    js_string(target)
+                )
+                .unwrap();
+            }
+            registration.push_str("  ], refers: [\n");
+            for (local, ns, original) in &context.refers {
+                writeln!(
+                    registration,
+                    "    [{}, {}, {}],",
+                    js_string(local),
+                    js_string(ns),
+                    js_string(original)
+                )
+                .unwrap();
+            }
+            writeln!(
+                registration,
+                "  ], excludes: [{}],",
+                context
+                    .excludes
+                    .iter()
+                    .map(|s| js_string(s))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+            .unwrap();
+        } else {
+            registration.push_str("  ],\n");
+        }
+        writeln!(
+            registration,
+            "  bindings: [{}]}});",
+            bindings
+                .map(js_string)
+                .chain(
+                    context
+                        .into_iter()
+                        .flat_map(|c| &c.macros)
+                        .map(|name| js_string(name))
+                )
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+        .unwrap();
+        if demand_roots {
+            self.registration_chunks
+                .push((namespace.to_owned(), registration_start..registration.len()));
+        }
     }
 
     /// After the body is written, the runtime units an `Advanced` slice

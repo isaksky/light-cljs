@@ -75,6 +75,7 @@ pub mod manifest_prefix;
 pub mod namespace_artifact;
 pub mod parser;
 mod reader_literals;
+mod reader_registration;
 pub mod runtime_manifest;
 pub mod runtime_slice;
 pub mod source_map;

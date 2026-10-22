@@ -219,3 +219,73 @@ most of an uncached one.
 Penpot `app.main --optimize none`, cold (`--no-cache`), 3 rounds alternating
 `53cdb94` and light-cljs-418: 21.73 s and 0.912 GB against 21.51 s and
 0.901 GB (medians), within the +3% wall and +5% RSS gate.
+
+### Macro registration (light-cljs-423)
+
+Declaring a source macro, and every compile-time unit an engine evaluated,
+first registered every namespace of its program with the engine: every
+reader context and every global's name, emitted (`Emitter::registration`
+walked all globals) and then evaluated, so 1,469 macros over about 100k
+globals cost O(macros x globals) at 400k. Each compile-time engine now keeps
+what it has registered (`src/reader_registration.rs`): a registration names
+only the namespaces whose reader context changed since, fully, and of the
+others only the definitions added since; a program that adds nothing
+registers nothing. A macro's `MacroCode` keeps the tables its registration
+reads instead of the emitted text of every namespace, which is most of the
+400 MB drop in peak memory. A unit compiled while a macro runs registers the
+namespaces it names in full, and the next registration names them again,
+since the macro's reader view restores the earlier context when it returns.
+
+`release bench --no-cache --stats`, seed 42, 3 rounds alternating the parent
+`0b40519` and light-cljs-423 at 100k and 400k, load average 2.1-12.8 (another
+worker was building), medians:
+
+| Counter | parent 100k | parent 400k | growth | 423 100k | 423 400k | growth |
+|---|---|---|---|---|---|---|
+| time.wall-ms | 8,674 | 49,476 | 5.7x | 8,114 | 38,782 | 4.8x |
+| time.analysis-ms | 1,867 | 19,701 | 10.6x | 1,328 | 8,950 | 6.7x |
+| trace.top-level-ms | 1,733 | 18,703 | 10.8x | 1,196 | 7,973 | 6.7x |
+| trace.top-level.engine-ms | 613 | 6,099 | 9.9x | 457 | 3,030 | 6.6x |
+| peak RSS | 0.66 GB | 2.42 GB | | 0.65 GB | 2.03 GB | |
+
+At 400k, 1,582 registrations named 2,705 namespaces, none restarting. In a
+`sample` profile of the 400k build, registration
+(`reader_registration::register`) is 1.5% of the top-level samples, and the
+whole macro declaration (`register_javascript_macro`, which also analyzes and
+evaluates the macro) 3.8%, against about 9-10 s of 20-25 s before. Output at
+100k is byte-identical to the parent's at `none` and advanced, and
+`benchmarks/generated-project/test.bb` passes.
+
+The 5x target for top-level growth is missed (6.7x). What grows faster than
+the program in the 400k top-level profile is outside registration: macro
+expansion is 62% of the top-level samples (55% at 100k), most of it importing
+the `&env` of each call into the engine, whose engine time grows 6.6x for 4x
+calls, with more V8 garbage collection of a larger heap; and copying the own
+layer of the macro host's layered tables on a definition while frames share
+it (`register_runtime_var`, 5.1% at 400k, 3.2% at 100k), with copying the
+shared protocol table on write (3.6% at 400k, 1.5% at 100k).
+
+Penpot `app.main --optimize none`, cold, 3 rounds alternating `0b40519` and
+light-cljs-423: 20.87 s and 0.893 GB against 19.83 s and 0.865 GB (medians),
+within the +3% wall and +5% RSS gate; the output is the same size.
+
+Rebased onto `26451ea` (light-cljs-420) and measured again the same way
+against it, load average 2.6-4.4:
+
+| Counter | parent 100k | parent 400k | growth | 423 100k | 423 400k | growth |
+|---|---|---|---|---|---|---|
+| time.wall-ms | 18,157 | 259,324 | 14.3x | 17,423 | 265,416 | 15.2x |
+| trace.top-level-ms | 2,217 | 26,600 | 12.0x | 1,627 | 15,760 | 9.7x |
+| trace.top-level.engine-ms | 670 | 6,238 | 9.3x | 473 | 3,167 | 6.7x |
+| peak RSS | 0.65 GB | 2.37 GB | | 0.63 GB | 1.90 GB | |
+
+Both binaries are slower here for a reason outside this pellet:
+`Emitter::stable_local` (light-cljs-420) scans every expression of the
+program on the first use in each emitter, and a compile-time unit's program
+holds every expression before it, so emitting units is O(units x
+expressions), light-cljs-425. In a `sample` of the 100k build it is 6.9 s of 11.2 s
+(`emit_deferred_unit`), and it also falls in top-level, where each macro
+declaration emits its unit. Penpot shows it too: `app.main --optimize none`
+3 rounds alternating `26451ea` and light-cljs-423, 62.41 s and 0.881 GB
+against 61.20 s and 0.867 GB (medians), within the gate. Output at 100k is
+byte-identical to `26451ea`'s at `none` and advanced.

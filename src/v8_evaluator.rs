@@ -34,6 +34,9 @@ struct State {
     buffers: Arc<buffers::Budget>,
     memory_sample: Cell<Instant>,
     namespaces: RefCell<NamespaceCache>,
+    /// What the heap has registered of the compilation's namespaces
+    /// ([`crate::reader_registration`]).
+    reader_namespaces: Rc<RefCell<crate::reader_registration::ReaderNamespaces>>,
     control: ExecutionControl,
     generation: u64,
     bridge: RefCell<BridgeState>,
@@ -362,6 +365,7 @@ impl V8Evaluator {
             buffers,
             memory_sample: Cell::new(Instant::now()),
             namespaces: RefCell::new(NamespaceCache::default()),
+            reader_namespaces: Rc::default(),
             control: control.clone(),
             generation: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
             bridge: RefCell::new(BridgeState::default()),
@@ -757,6 +761,11 @@ impl MacroEvaluator for Active<'_, '_, '_> {
     fn heap(&self) -> usize {
         std::ptr::from_ref(self.state) as usize
     }
+    fn reader_namespaces(
+        &self,
+    ) -> Option<std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>> {
+        Some(self.state.reader_namespaces.clone())
+    }
     fn gensym_scope(&self, serial: u64, prefix: &str, retired: &str) -> Result<(), EvalError> {
         self.enter(|scope| {
             let serial = v8::Number::new(scope, serial as f64).into();
@@ -976,6 +985,11 @@ impl MacroEvaluator for V8Evaluator {
     }
     fn heap(&self) -> usize {
         Rc::as_ptr(&self.state) as usize
+    }
+    fn reader_namespaces(
+        &self,
+    ) -> Option<std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>> {
+        Some(self.state.reader_namespaces.clone())
     }
     fn gensym_scope(&self, serial: u64, prefix: &str, retired: &str) -> Result<(), EvalError> {
         self.with_active(|e| e.gensym_scope(serial, prefix, retired))

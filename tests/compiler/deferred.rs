@@ -95,6 +95,40 @@ fn namespace_aliases_compiled_macro_output_and_captured_bindings_are_deferred() 
     assert_eq!(output.stdout, b"false 9 7 9\n");
 }
 
+/// A macro that compiles a unit (`twice`) before it reads code in the
+/// namespace that calls it: the engine's reader contexts are registered once
+/// and then only as they change, also inside the unit's callback, and the
+/// read still sees each namespace's aliases, refers and definitions so far
+/// (light-cljs-423).
+#[test]
+fn macro_reads_reader_contexts_registered_as_they_change() {
+    let root = TempDir::new("cljs-reader-registration");
+    fs::write(
+        root.join("a.cljs"),
+        "(ns a) (defn twice [x] (* 2 x)) (defmacro resolved [text] (twice 1) (list 'quote (second (read-string (str \"`\" text)))))",
+    )
+    .unwrap();
+    fs::write(
+        root.join("b.cljs"),
+        "(ns b (:require [a :as al] [clojure.string :refer [join]])) (def local 1) (js/console.log (pr-str [(al/resolved \"local\") (al/resolved \"al/twice\") (al/resolved \"join\")])) (defmacro mine [] 1) (def later (mine)) (js/console.log (pr-str [(al/resolved \"later\") (al/resolved \"mine\") later]))",
+    )
+    .unwrap();
+    let javascript = compile_namespace("b", std::slice::from_ref(root.path())).unwrap();
+    let output = Command::new("node")
+        .args(["-e", &javascript])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "[b/local a/twice clojure.string/join]\n[b/later b/mine 1]\n"
+    );
+}
+
 /// Complete sources in both compiler phases and both host lifecycles, each run in
 /// QuickJS and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {

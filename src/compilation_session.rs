@@ -2535,6 +2535,10 @@ fn prepare_engine(
         .evaluate_js(include_str!("compiler_roots.js"))
         .map_err(|e| e.to_string())?;
     evaluator.release(value).map_err(|e| e.to_string())?;
+    // A new compilation, whose first registration names every namespace.
+    if let Some(registered) = evaluator.reader_namespaces() {
+        registered.borrow_mut().forget();
+    }
     // A recording trace also takes the reads of ready roots, which the
     // registry notes and batches per engine entry (light-cljs-359).
     if crate::compile_trace::recording() {
@@ -2603,24 +2607,35 @@ fn compile_unit_in(
     }
     let prepared = shared.prepared(id)?;
     crate::compile_trace::executed(id, prepared.is_some());
-    let (registration, code) = if let Some(prepared) = prepared {
-        prepared.emit()
-    } else {
+    let register = |tables: &crate::reader_registration::ReaderTables| {
+        crate::reader_registration::register(active, tables).map_err(|e| e.to_string())
+    };
+    // JavaScript is running: a macro's reader view may be active.
+    crate::reader_registration::in_callback(active, || {
+        if let Some(prepared) = prepared {
+            shared.set_emitted(id);
+            register(prepared.tables())?;
+            return Ok(prepared.code().to_owned());
+        }
         match analyze() {
-            Ok((program, _)) => crate::emitter::emit_deferred_unit(&program),
+            Ok((program, _)) => {
+                let code = crate::emitter::emit_deferred_unit(&program);
+                shared.set_emitted(id);
+                register(&crate::reader_registration::ReaderTables::of(&program))?;
+                Ok(code)
+            }
             // Another thread analyzed it and its application took the
             // program after this one looked; its JavaScript is prepared.
             Err(error) => match shared.prepared(id)? {
-                Some(prepared) => prepared.emit(),
-                None => return Err(error),
+                Some(prepared) => {
+                    shared.set_emitted(id);
+                    register(prepared.tables())?;
+                    Ok(prepared.code().to_owned())
+                }
+                None => Err(error),
             },
         }
-    };
-    shared.set_emitted(id);
-    active
-        .evaluate_registration(&registration.source, &registration.chunks)
-        .map_err(|e| e.to_string())?;
-    Ok(code)
+    })
 }
 impl CatalogView for CompilationSession {
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
@@ -3328,7 +3343,7 @@ mod retention_tests {
         for unit in &catalog.units {
             if let AnalysisState::Prepared(program, _, code) = &unit.state {
                 assert!(program.upgrade().is_none());
-                assert!(!code.emit().1.is_empty());
+                assert!(!code.code().is_empty());
                 released += 1;
             }
         }

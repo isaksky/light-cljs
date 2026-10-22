@@ -76,6 +76,10 @@ impl Default for ConversionLimits {
 pub(crate) struct BridgeState {
     pub(crate) forms: HashMap<usize, Form>,
     pub(crate) importing_environment: bool,
+    /// What the runtime has registered of the compilation's namespaces
+    /// ([`crate::reader_registration`]).
+    pub(crate) reader_namespaces:
+        std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>,
     // A bounded cache of immutable environment components. Holding the Datum
     // prevents allocator address reuse from masquerading as an identity hit.
     environments: Vec<EnvironmentEntry>,

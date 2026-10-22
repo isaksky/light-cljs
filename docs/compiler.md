@@ -150,7 +150,15 @@ session identities. Emitted units register their source namespaces, including
 namespaces without definitions; an `--optimize advanced` application does so
 only when it reaches this reflection (see "Application preparation"), and a
 session's unit registers those whose reader context or definitions changed
-since its last unit ([Actions](evaluation.md#actions)).
+since its last unit ([Actions](evaluation.md#actions)). A compile-time engine
+does the same for each macro declaration and compile-time unit it evaluates:
+it registers the namespaces whose reader context changed since its last
+registration, and of the others only the definitions added since, so that a
+declaration costs what it adds rather than the program (light-cljs-423,
+`src/reader_registration.rs`). A unit compiled while a macro runs registers
+each namespace it names in full, as a macro's reader view may restore the
+earlier context when the macro returns, and the next registration names
+those namespaces in full again.
 Creating an existing named namespace reuses its identity. `create-ns` accepts
 an optional host object for `.findInternedVar`; no browser global namespace
 traversal is assumed. On source symbols retained in

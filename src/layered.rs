@@ -150,6 +150,26 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
         self.iter().map(|(key, _)| key)
     }
 
+    /// The keys whose entries may differ between this map and `before`,
+    /// with repeats: when the two share their base, only the keys of their
+    /// own layers, which are bounded; otherwise every key of both. A base
+    /// shared with another map is copied before it is written, so a shared
+    /// base has the same entries in both.
+    pub fn changed_keys<'a>(&'a self, before: &'a Self) -> Vec<&'a K> {
+        if Arc::ptr_eq(&self.own, &before.own) && Arc::ptr_eq(&self.base, &before.base) {
+            return Vec::new();
+        }
+        if Arc::ptr_eq(&self.base, &before.base) {
+            return self.own.keys().chain(before.own.keys()).collect();
+        }
+        self.base
+            .keys()
+            .chain(self.own.keys())
+            .chain(before.base.keys())
+            .chain(before.own.keys())
+            .collect()
+    }
+
     /// Merge the own layer into the base once it is large next to the base,
     /// so a frame copies at most that many entries. A base no frame shares
     /// takes the entries in place; only a shared one is copied, since
@@ -243,6 +263,33 @@ mod tests {
             assert_eq!(frame.iter().count(), expected.len());
             for (key, value) in expected {
                 assert_eq!(frame.get(&key), Some(&value));
+            }
+        }
+    }
+
+    #[test]
+    fn changed_keys_cover_every_difference_from_an_earlier_frame() {
+        let mut map: Layered<String, usize> = (0..100).map(|i| (format!("k{i}"), i)).collect();
+        for step in 0..300 {
+            let before = map.clone();
+            assert!(map.changed_keys(&before).is_empty());
+            match step % 3 {
+                0 => {
+                    map.insert(format!("n{step}"), step);
+                }
+                1 => {
+                    map.insert(format!("k{}", step % 100), step);
+                }
+                _ => {
+                    map.remove(&format!("k{}", step % 100));
+                }
+            }
+            let changed: std::collections::HashSet<&String> =
+                map.changed_keys(&before).into_iter().collect();
+            for key in map.keys().chain(before.keys()) {
+                if map.get(key) != before.get(key) {
+                    assert!(changed.contains(key), "{key} at step {step}");
+                }
             }
         }
     }
