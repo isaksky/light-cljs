@@ -5908,3 +5908,33 @@ stopped moving a parameter's read after a lifted expression (an escaped
 one `def` is a top-level form: 4 more wrappers at 200k (992) and 22 at 800k
 (3,904), sizes as in the table. The run times, `--levels` and Penpot
 numbers above were measured before them.
+
+## Names that repeat across functions — October 22, 2026
+
+light-cljs-424 wins back the gzip that light-cljs-420's lowering cost
+([advanced optimization design](../docs/advanced-optimization.md), Phase 3,
+"Names that repeat across functions"). Operand locals take the table's
+short names, so `operand0` is one name in every function, and at `advanced`
+loop labels number the labeled statements around them per function
+(`recur_0`) instead of one label per loop in the program. Generated
+projects, seed 42, `release bench --no-cache`, parent `26451ea` against this
+change, raw / `gzip -9 -n` bytes and wrappers; every output prints the
+oracle's result:
+
+| Lines | Before | After | Wrappers | `53cdb94` (wrappers) |
+| --- | ---: | ---: | ---: | ---: |
+| 5k | 202,393 / 58,589 | 202,642 / 57,955 | 29 | 207,315 / 58,028 |
+| 200k | 3,437,203 / 898,739 | 3,456,905 / 860,671 | 992 | 3,663,745 / 863,496 |
+| 800k | 13,333,061 / 3,444,007 | 13,396,492 / 3,302,076 | 3,904 | 14,248,731 / 3,294,705 |
+
+Each part alone at 200k: table-named operand locals give 885,223 gzipped
+(raw grows 19k, since the less frequent ones get two-character names), and
+numbered loop labels 879,074; together 860,671, 0.3% under the wrappers'
+gzip and 5.6% under their raw size. At 800k gzip stays 0.2% over
+`53cdb94`'s. The labels also help without the lowering: with 420's
+lowering off and labels numbered (without the restart per function),
+200k gzips to 845,047. The ratchet fixtures' sizes do not change. Penpot
+`app.main` (`bb benchmarks/penpot.bb DIR main-advanced`, parent `1311360`
+and this change alternated, two runs each, load 2.7 to 3.9): output
+24,649,297 to 24,646,495 bytes, wall 62.6 and 62.8 s before, 60.1 and
+62.6 s after, peak RSS 1.05 and 1.03 GB before, 1.05 and 1.05 GB after.

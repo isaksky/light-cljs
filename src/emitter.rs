@@ -1701,9 +1701,15 @@ struct Emitter<'a> {
     /// being written ([`Emitter::hoisted_let`]), by `LocalId`, else
     /// [`NO_OPERAND`].
     operand_locals: Vec<u32>,
-    /// The number of blocks of lifted expressions being written
-    /// ([`Emitter::lifted`]), which numbers their labels.
+    /// The number of labeled statements being written in the function
+    /// being written, which numbers their labels: blocks of lifted
+    /// expressions ([`Emitter::lifted`]) and, at `Advanced`, loops
+    /// ([`Emitter::iteration`]).
     lifts: usize,
+    /// At `Advanced`, by `RecurTargetId`, the number of the label of the
+    /// loop being written ([`Emitter::iteration`]), which its `recur`s
+    /// continue.
+    loop_labels: Vec<u32>,
     /// The lifted first operand of the statement being written and the
     /// operand local that holds its value ([`Emitter::lift_head`]).
     substitute: Option<(ExprId, usize)>,
@@ -1837,6 +1843,7 @@ impl<'a> Emitter<'a> {
             scope_flags: Vec::new(),
             operand_locals: Vec::new(),
             lifts: 0,
+            loop_labels: Vec::new(),
             substitute: None,
             substituted: false,
             assignable_locals: Vec::new(),
@@ -4215,7 +4222,12 @@ impl<'a> Emitter<'a> {
                     writeln!(self.output, "captures{} = null;", target.0).unwrap();
                 }
                 self.indentation();
-                writeln!(self.output, "continue recur{};", target.0).unwrap();
+                match self.loop_labels.get(target.0) {
+                    Some(label) if self.shapes.is_some() => {
+                        writeln!(self.output, "continue recur_{label};").unwrap();
+                    }
+                    _ => writeln!(self.output, "continue recur{};", target.0).unwrap(),
+                }
                 self.indent -= 1;
                 self.indentation();
                 self.output.push_str("}\n");
@@ -4564,6 +4576,12 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// The loop of `target`, `recur5: while (true) { ... }`. At `Advanced`
+    /// its label numbers it among the labeled statements around it in the
+    /// function being written, `recur_0`, as a lifted block's does
+    /// ([`Emitter::lifted`]): the same few labels in every function, as the
+    /// same few names, compress better than a label per loop
+    /// (light-cljs-424).
     fn iteration(&mut self, target: RecurTargetId, body: ExprId, context: ExprContext) {
         let frame = &self.program.recur_targets[target.0];
         for (index, &param) in frame.params.iter().enumerate() {
@@ -4573,7 +4591,18 @@ impl<'a> Emitter<'a> {
             self.output.push_str(";\n");
         }
         self.indentation();
-        writeln!(self.output, "recur{}: while (true) {{", target.0).unwrap();
+        let numbered = self.shapes.is_some();
+        if numbered {
+            if self.loop_labels.is_empty() {
+                self.loop_labels = vec![0; self.program.recur_targets.len()];
+            }
+            let label = self.lifts;
+            self.lifts += 1;
+            self.loop_labels[target.0] = label as u32;
+            writeln!(self.output, "recur_{label}: while (true) {{").unwrap();
+        } else {
+            writeln!(self.output, "recur{}: while (true) {{", target.0).unwrap();
+        }
         self.indent += 1;
         for (index, &param) in frame.params.iter().enumerate() {
             self.indentation();
@@ -4589,6 +4618,9 @@ impl<'a> Emitter<'a> {
         if context == ExprContext::Discard {
             self.indentation();
             self.output.push_str("break;\n");
+        }
+        if numbered {
+            self.lifts -= 1;
         }
         self.indent -= 1;
         self.indentation();
@@ -4815,14 +4847,18 @@ impl<'a> Emitter<'a> {
 
     /// Write the statements of a function's body with `body`, declaring the
     /// operand locals ([`Operands`]) they use ahead of them. Value-position
-    /// `let`s bind their locals in its blocks where `hoists`.
+    /// `let`s bind their locals in its blocks where `hoists`. Labels do not
+    /// reach into a function, so its labeled statements number theirs from
+    /// 0 ([`Emitter::lifts`]).
     fn operand_scope(&mut self, hoists: bool, body: impl FnOnce(&mut Self)) {
         let start = (self.output.len(), self.marks_len(), self.raw_segments.len());
         let outer = self.operands.replace(Operands {
             hoists,
             ..Operands::default()
         });
+        let lifts = std::mem::replace(&mut self.lifts, 0);
         body(self);
+        self.lifts = lifts;
         let declared = std::mem::replace(&mut self.operands, outer).map_or(0, |o| o.declared);
         if declared == 0 {
             return;

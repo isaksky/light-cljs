@@ -906,3 +906,43 @@ fn lifted_heads_keep_receivers_and_reads_their_evaluation_could_change() {
         assert_eq!(json_at_every_level(source), format!("{expected}\n"), "{source}");
     }
 }
+
+/// light-cljs-424: at `Advanced` a loop's label numbers it among the
+/// labeled statements around it in its function, as a lifted block's does,
+/// so every function's outermost loop is `recur_0`; a function inside a loop
+/// numbers its own from 0 again. Each `recur` still continues its own loop.
+#[test]
+fn loop_labels_number_the_labeled_statements_around_them_per_function() {
+    let source = "(defn total [n] (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc i)) acc)))
+         (defn grid [n]
+           (loop [i 0 acc []]
+             (if (< i n)
+               (recur (inc i)
+                      (conj acc (loop [j 0 row []] (if (< j i) (recur (inc j) (conj row j)) row))))
+               acc)))
+         (defn makers [n]
+           (loop [i 0 acc []]
+             (if (< i n)
+               (recur (inc i) (conj acc (fn [] (loop [k i s 0] (if (pos? k) (recur (dec k) (+ s k)) s)))))
+               acc)))
+         (pr-str [(total 4) (grid 3) (mapv (fn [f] (f)) (makers 4))])";
+    assert_eq!(
+        json_at_every_level(source),
+        "\"[6 [[] [0] [0 1]] [0 1 3 6]]\"\n"
+    );
+    let js = prepare_application(&program(source), readable(OptimizationLevel::Advanced)).emit_js();
+    let start = js.find("\n})();\n").unwrap_or_else(|| panic!("{js}"));
+    let body = &js[start..];
+    let labels = body
+        .match_indices(": while (true) {")
+        .map(|(at, _)| {
+            let name = &body[..at];
+            &name[name.rfind(char::is_whitespace).unwrap() + 1..]
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        labels,
+        ["recur_0", "recur_0", "recur_1", "recur_0", "recur_0"],
+        "{body}"
+    );
+}

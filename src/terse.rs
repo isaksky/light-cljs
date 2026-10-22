@@ -595,7 +595,8 @@ const NO_LOCAL: u32 = u32::MAX;
 /// `RenameVars` and other minifiers name locals, so that sibling functions
 /// reuse the same short names: a local below the top level whose every
 /// occurrence is a compiler name outside raw `js*` text and not a shorthand
-/// property, and that the caller admits.
+/// property, no operand local ([`operand_local`]), and that the caller
+/// admits.
 ///
 /// Each scope with such locals records what occurs in it or in a scope
 /// inside it and resolves outside it, which its locals' names must not be:
@@ -618,6 +619,17 @@ struct Locals<'s> {
     crossing: Vec<Vec<u32>>,
     /// The compiler names that some scope's locals avoid.
     words: Vec<&'s str>,
+}
+
+/// Whether `name` is an operand local, `operand0`, which the emitter
+/// declares in every function that evaluates an operand into one, and which
+/// is a name of the table rather than one per scope ([`Locals`]): so each
+/// takes the same short name in every function, where its many reads
+/// (`(operand0 = init, truth(operand0) ? operand0 : 3)`) compress better
+/// than names that vary with what else the function binds (light-cljs-424).
+fn operand_local(name: &str) -> bool {
+    name.strip_prefix("operand")
+        .is_some_and(|tail| !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()))
 }
 
 impl<'s> Locals<'s> {
@@ -648,6 +660,7 @@ impl<'s> Locals<'s> {
                     && declaration.token.is_some()
                     && compiler_name(declaration.name)
                     && eligible(declaration.name)
+                    && !operand_local(declaration.name)
             })
             .collect::<Vec<_>>();
         for (index, occurrence) in resolution.occurrences.iter().enumerate() {
@@ -2280,6 +2293,29 @@ console.log(g2(1, 2), g3(1, 2)(3), g4(2).length, g5(3), g6(1));
         assert_eq!(
             output,
             "let c=function(c,d){return a+b+l2+c};console.log(c(1,2));\n"
+        );
+    }
+
+    /// light-cljs-424: an operand local takes the table's name, the same in
+    /// every function whatever else it binds, and the locals named per scope
+    /// avoid it where it occurs, an inner function's own included.
+    #[test]
+    fn operand_locals_take_one_name_in_every_function() {
+        const OPERANDS: &str = "let g1 = function (l1) { let operand0; return operand0 = l1.x, operand0 ? operand0 : 1; };
+let g2 = function (l2, l3, l4) { let operand0; return l4 + (operand0 = l2.x, operand0 ? operand0 : l3); };
+let g3 = function (l5) {
+  let operand0, operand1;
+  return operand1 = function (l6) { let operand0; return operand0 = l6 + l5, operand0 ? operand0 : 2; }, operand0 = l5, operand1(operand0);
+};
+console.log(g1({}), g2({x: 2}, 3, 4), g3(5));
+";
+        let output = terse_program(OPERANDS, &[], None, None);
+        same_bindings(OPERANDS, &output).unwrap();
+        assert_eq!(
+            output,
+            "let a=function(a){let b;return b=a.x,b?b:1};let c=function(a,c,d){let b;return d+(b=a.x,b?b:c)};\
+             let d=function(a){let b,e;return e=function(c){let b;return b=c+a,b?b:2},b=a,e(b)};\
+             console.log(a({}),c({x:2},3,4),d(5));\n"
         );
     }
 

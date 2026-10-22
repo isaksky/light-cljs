@@ -4148,6 +4148,20 @@ run the terse output.
   those after an effect (`(+ (f) (let ...))`), at the top level, around a
   `case` without a default or a `throw`, and the 112 dispatchers of
   multi-arity `fn` values.
+- **Names that repeat across functions. As built (light-cljs-424).** Two
+  changes win back the gzip that the lowering above cost. Operand locals
+  (`operand0`, ...) take the table's short names rather than names per
+  scope (`terse::operand_local`): `operand0` is the same name in every
+  function, and the locals named per scope avoid it where it occurs, as
+  they avoid a global. And at `Advanced` a loop's label numbers it among
+  the labeled statements around it in its function, `recur_0`, as a lifted
+  block's does, starting again from 0 in each function body (labels do not
+  reach into a function), instead of `recur<target>`, one label per loop
+  in the whole program. Below `Advanced` loop labels are unchanged. At 200k
+  lines the gzipped output goes from 898,739 to 860,671 bytes, under the
+  863,496 the wrappers gave (`53cdb94`); raw grows 0.6%, since less
+  frequent operand locals get two-character table names ("Names that
+  repeat across functions" in `benchmarks/compiler.md`).
 - **Not done.**
   - ABI property mangling: no property is mangled. The arity ABI
     (`cljs$core$IFn$_invoke$arity$N`, `$variadic`,

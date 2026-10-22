@@ -76,6 +76,10 @@ At 800k: unused arities 329 / 779 (light) and 215 / 779 (shadow).
    to 898,739 (10% under shadow) and 3,444,007 (12% under): with locals
    named per scope the wrappers' fresh scopes compressed well
    ("Value-position statements without wrappers" in `benchmarks/compiler.md`).
+   Since light-cljs-424 operand locals take one name in every function and
+   loop labels number per function: gzip 860,671 at 200k (14% under shadow)
+   and 3,302,076 at 800k (15% under), raw 3,456,905 and 13,396,492 ("Names
+   that repeat across functions" in `benchmarks/compiler.md`).
 4. **Light keeps more unused arities** (86 vs 51 at 200k).
    Since light-cljs-421 light keeps 49 at 200k and 202 of 779 at 800k (shadow
    51 and 215): methods that no call selects of functions without a
