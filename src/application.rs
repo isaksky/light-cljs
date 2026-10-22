@@ -441,18 +441,35 @@ impl PreparedApplication {
 /// Only discarded top-level definitions with provably inert initializers are
 /// candidates for removal. Unknown calls, throws, metadata tests, declaration
 /// bundles and standalone expressions stay in their original execution order.
-pub fn prepare_application(
-    program: &Program,
+pub fn prepare_application(program: &Program, options: ApplicationOptions) -> PreparedApplication {
+    prepare_owned_application(program.clone(), options)
+}
+
+/// [`prepare_application`] of a program the caller no longer needs. At
+/// `Advanced` the passes and emission read its tables by ID many times over,
+/// so the shared chunk trees analysis left are first flattened into one run of
+/// entries each ([`Program::unfreeze`]), and a lookup is an array index rather
+/// than a walk whose depth and cache misses grow with the program
+/// (light-cljs-417). Entries no other program shares are moved, not copied.
+/// The trees' freed leaves stay resident for a while and raise the peak
+/// resident size by about the expression table, so below `Advanced`, where
+/// preparation does far less, the tables stay as they are.
+pub fn prepare_owned_application(
+    mut program: Program,
     mut options: ApplicationOptions,
 ) -> PreparedApplication {
     #[cfg(test)]
     PREPARATIONS.with(|count| count.set(count.get() + 1));
     let level = options.optimize;
+    if level.advanced() {
+        program.unfreeze();
+    }
+    let globals = program.globals.len();
     let mut prepared = PreparedApplication {
         level,
         terse: level.advanced() && !options.pseudo_names,
-        program: program.clone(),
-        globals: vec![false; program.globals.len()],
+        program,
+        globals: vec![false; globals],
         calls: HashMap::new(),
         replaced_core: Vec::new(),
         inference: None,
@@ -477,7 +494,8 @@ pub fn prepare_application(
     // A loadable reads its target only once loaded, so a lazy Var target is a
     // root like an export: kept, with a dispatcher, its arguments unknown.
     options.exports.extend(
-        program
+        prepared
+            .program
             .lazy_targets
             .iter()
             .filter_map(|target| target.global),
@@ -1443,6 +1461,28 @@ mod tests {
                 usize::from(level.prepares())
             );
         }
+    }
+    #[test]
+    fn advanced_preparation_flattens_shared_tables_and_emits_the_same() {
+        let source = "(defprotocol P (m [x])) (deftype T [] P (m [_] 1)) (defn f [x] (inc x)) (def unused (vector 1)) [(f 41) (m (T.))]";
+        let mut p = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
+        p.freeze();
+        let mut flat = p.clone();
+        flat.unfreeze();
+        assert_eq!((flat.exprs.frozen(), flat.exprs.len()), (0, p.exprs.len()));
+        for level in OptimizationLevel::ALL {
+            let expected = prepare_application(&flat, ApplicationOptions::new(level)).emit_js();
+            // A clone shares the frozen chunks, as an analyzed program does.
+            let prepared = prepare_owned_application(p.clone(), ApplicationOptions::new(level));
+            assert_eq!(
+                prepared.program().exprs.frozen() == 0,
+                level.advanced(),
+                "{level}"
+            );
+            assert_eq!(prepared.emit_js(), expected, "{level}");
+        }
+        // Preparing a clone leaves the shared tables of the original alone.
+        assert!(p.exprs.frozen() > 0);
     }
     #[test]
     fn macro_calls_do_not_prepare_applications_or_recompile_unchanged_units() {

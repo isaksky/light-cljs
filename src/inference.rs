@@ -148,7 +148,7 @@
 //! implementation that no call reaches is typed `never`, as is the body of a
 //! closed function nothing calls: only a slot read by name could run it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::analyzer::{
     CoreFnId, ExprId, ExprKind, FnMethod, GlobalId, LocalId, MethodDispatch, Program,
@@ -458,8 +458,9 @@ impl ProgramFacts {
         let mut extended = Vec::new();
         let mut lookup_targets = Vec::new();
         // Extensions name core protocols and their methods by `Builtin` keys,
-        // and also mark the program's own protocols with arity-0 `ns/Name` ones.
-        let markers: Vec<String> = program
+        // and also mark the program's own protocols with arity-0 `ns/Name` ones,
+        // looked up for every method of every type, so by hash (light-cljs-417).
+        let markers: HashSet<String> = program
             .protocols
             .keys()
             .map(|protocol| {
@@ -468,7 +469,7 @@ impl ProgramFacts {
             })
             .collect();
         fn marker_key<'m>(
-            markers: &[String],
+            markers: &HashSet<String>,
             (dispatch, method): &'m (MethodDispatch, FnMethod),
         ) -> Option<&'m str> {
             match dispatch {

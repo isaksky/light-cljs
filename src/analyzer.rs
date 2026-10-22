@@ -2642,6 +2642,20 @@ impl Program {
         self.named_literals.freeze();
     }
 
+    /// Copy every table into one contiguous run of entries, so a lookup is
+    /// an array index instead of a walk down the shared chunk trees; see
+    /// [`crate::arena::Arena::unfreeze`]. Entries and IDs are unchanged.
+    pub fn unfreeze(&mut self) {
+        self.namespaces.unfreeze();
+        self.exprs.unfreeze();
+        self.locals.unfreeze();
+        self.recur_targets.unfreeze();
+        self.globals.unfreeze();
+        self.js_globals.unfreeze();
+        self.strings.unfreeze();
+        self.named_literals.unfreeze();
+    }
+
     pub(crate) fn shrink_to_fit(&mut self) {
         self.namespaces.shrink_to_fit();
         self.exprs.shrink_to_fit();

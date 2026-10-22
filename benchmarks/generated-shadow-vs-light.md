@@ -322,3 +322,61 @@ cold, 3 rounds alternating `0b40519` and this change, load 2.6-3.4: 21.44 s
 and 0.868 GB against 22.41 s and 0.899 GB (medians); `1311360` once, 51.53 s.
 The Penpot output is byte-identical to both, and the 100k output to master's
 (`1311360`, and after rebasing `2bd106f`) at `none` and advanced.
+
+### Advanced preparation and emission (light-cljs-417)
+
+At `cf3d93a` the 6.7x emission growth this pellet was filed for was gone
+(4.4x, after light-cljs-418, 420 and 425), and preparation grew 4.7x. A
+`sample` profile of the 400k build showed no one superlinear pass: every
+preparation pass grew 4.6-5x for 3.96x expressions (2.57 million at 400k,
+96 bytes each), and the hottest frame in each was `Arena::index`. Analysis
+leaves the program's tables as trees of shared 64-entry leaves
+(`src/arena.rs`), so each lookup by ID walked about 16 levels at 400k,
+two more than at 100k, with a cache miss at most of them. Two costs went:
+
+- `prepare_owned_application` takes the program the CLI no longer needs and,
+  at `Advanced`, flattens its tables into one run of entries each
+  (`Program::unfreeze`) before any pass, moving the leaves rather than
+  copying them. A lookup is then an array index, for preparation and
+  emission alike. Below `Advanced` nothing changes.
+- `ProgramFacts::new` (src/inference.rs) looked up every method of every type
+  among the program's protocol markers by a linear scan, O(methods x
+  protocols) (575 protocols at 100k, 2,324 at 400k); it is a hash set now.
+
+`release bench --no-cache --stats`, seed 42, 3 rounds alternating the parent
+`cf3d93a` and light-cljs-417, load average 1.8-2.3, medians (peak RSS from
+`/usr/bin/time -l`):
+
+| Counter | parent 100k | parent 400k | growth | 417 100k | 417 400k | growth |
+|---|---|---|---|---|---|---|
+| time.wall-ms | 7,240 | 34,466 | 4.8x | 5,799 | 27,666 | 4.8x |
+| time.prepare-application-ms | 1,909 | 8,970 | 4.7x | 661 | 3,186 | 4.8x |
+| time.emission-ms | 575 | 2,522 | 4.4x | 392 | 1,569 | 4.0x |
+| peak RSS | 0.60 GB | 1.93 GB | | 0.69 GB | 2.10 GB | |
+
+One run each at 800k: preparation 19.9 s and 7.7 s, emission 5.5 s and
+3.3 s, wall 83.8 s and 67.9 s, peak RSS 3.66 GB and 4.13 GB. Advanced output
+at 100k and 400k is byte-identical to the parent's, and
+`benchmarks/generated-project/test.bb` passes.
+
+The peak resident size rises by about the expression table (62 MB at 100k,
+246 MB at 400k): the freed leaves stay resident in mimalloc's size-class
+pages after the move, while the peak footprint macOS reports does not grow
+(about 535 MB against 552 MB at 100k, single runs). That is why `none` and
+`prepare` keep their tables as they are. Penpot `app.main --optimize none`, cold, 3 rounds
+alternating `cf3d93a` and light-cljs-417, load 1.8-3.0: 19.08 s and
+0.869 GB against 19.00 s and 0.865 GB (medians), byte-identical output.
+
+The 4.5x target for preparation is missed (4.8x; emission, 4.0x, meets it).
+What remains is no single pass. In the 400k profile against the 100k one,
+folding grew 5.4x, removal (`retain`) 5.6x, inlining 5.1x, inference 5.6x
+and call shapes 5.7x in samples, with the same three simplification rounds
+at both sizes, while rapid type analysis grew 3.7x and emission's
+`Emitter::emit` 4.0x and renaming (`terse::rewritten`) 3.3x. Probably each
+pass that walks expressions in tree order rather than ID order slows per
+expression as the table outgrows the caches (62 MB at 100k, 246 MB at
+400k); it holds from 400k to 800k too (2.4x for 2x). The largest linear terms that would
+shrink it: `ProgramFacts::new` runs again in the removal, folding and inlining
+of every round (24% of preparation samples at 400k), and
+`program_fragment::kind_children` clones each expression's kind to list
+its children (about 14%).

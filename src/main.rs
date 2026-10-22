@@ -19,7 +19,7 @@ use light_cljs::compile_stats::{CompileStats, PhaseTimes};
 use light_cljs::source_map::{SourceFile, data_url};
 use light_cljs::{
     ApplicationOptions, Define, LineIndex, MacroHost, OptimizationLevel, PreparedApplication,
-    TokenKind, Tokenizer, parse, prepare_application,
+    TokenKind, Tokenizer, parse, prepare_application, prepare_owned_application,
 };
 
 mod config_cli;
@@ -762,7 +762,7 @@ fn build_namespace(
         }
     }
     let started = timer(&stats);
-    let prepared = prepare_application(&program, application);
+    let prepared = prepare_owned_application(program, application);
     let prepare_time = elapsed(started);
     let mut chunk_report = None;
     let (emission, write) = if let Some(out_dir) = out_dir {
