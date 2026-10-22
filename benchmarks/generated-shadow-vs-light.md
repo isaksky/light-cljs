@@ -121,3 +121,37 @@ is what keeps top-level growth near 11x. It is light-cljs-423. Smaller
 remaining terms: copying the shared protocol table on each write while
 snapshots share it (about 0.2 s at 400k), and the macro-environment map
 rebuilt and re-measured after each new macro.
+
+### Deferred-unit host time (light-cljs-416)
+
+light-cljs-416 asked that host time per deferred unit
+(`trace.units.host-ms / trace.units`) grow at most 1.2x from 100k to 400k, and
+`trace.drain.bookkeeping-ms` at most 5x. Both were met by light-cljs-415's
+changes, so 416 changed no code. The record constructor search that 415
+removed was the size-dependent per-unit cost: each `(R. ...)` in a unit
+scanned every expression of the program so far.
+
+Measured at `fc79659` (415), `release bench --no-cache --stats`, 3 rounds
+alternating 100k and 400k, load average 4-6, medians:
+
+| Counter | 100k | 400k | growth |
+|---|---|---|---|
+| trace.units | 6,769 | 26,918 | 4.0x |
+| trace.units.host-ms | 3,522 | 15,000 | 4.3x |
+| host ms per unit | 0.520 | 0.557 | 1.07x |
+| trace.drain.bookkeeping-ms | 270 | 1,176 | 4.4x |
+| trace.drain-ms | 128 | 438 | 3.4x |
+| trace.append-ms | 38 | 315 | 8.3x |
+| trace.index-ms | 5 | 21 | 4.5x |
+| trace.release-ms | 98 | 402 | 4.1x |
+| trace.top-level-ms | 1,637 | 17,865 | 10.9x |
+| time.wall-ms | 8,535 | 50,261 | 5.9x |
+| peak RSS | 0.65 GB | 2.36 GB | 3.6x |
+
+The rounds ranged from 3,433 to 3,637 ms (100k) and from 14,395 to 15,593 ms
+(400k) of units host time, so the 1.07x per unit is close to the noise
+between rounds. Append is the only bookkeeping stage that still grows faster
+than the unit count (8.3x). It is 0.3 s at 400k, and its likely cause is the
+one 415 named: units that define types or protocols still walk the keyed
+tables they copied. Most of the wall time beyond linear growth is now
+top-level analysis (10.9x, light-cljs-423), not deferred units.
