@@ -206,6 +206,111 @@ fn elidable_environment(
         _ => true,
     }
 }
+/// The node count and height of `data` when it is elidable at all, as
+/// [`elidable_environment`] would visit it: `None` when it holds a compiler
+/// literal, or has more than `nodes` nodes or a greater height than `depth`,
+/// or when `control` stops the walk, which it is polled for every 1024
+/// nodes `visited` counts.
+fn elidable_size(
+    data: &Datum,
+    nodes: usize,
+    depth: usize,
+    control: &crate::evaluator::ExecutionControl,
+    visited: &mut usize,
+) -> Option<(usize, usize)> {
+    if depth == 0 || nodes == 0 {
+        return None;
+    }
+    *visited += 1;
+    if *visited & 1023 == 0 && control.poll().is_err() {
+        return None;
+    }
+    if let crate::compiler_data::DatumKind::CompilerLiteral { .. } = data.kind() {
+        return None;
+    }
+    let (mut count, mut height) = (1, 1);
+    let mut include = |child: &Datum, count: &mut usize| {
+        let (n, h) = elidable_size(child, nodes - *count, depth - 1, control, visited)?;
+        *count += n;
+        height = height.max(h + 1);
+        Some(())
+    };
+    if let Some(metadata) = data.metadata() {
+        include(&metadata, &mut count)?;
+    }
+    if let crate::compiler_data::DatumKind::Collection { children, .. } = data.kind() {
+        for child in children.iter() {
+            include(child, &mut count)?;
+        }
+    }
+    Some((count, height))
+}
+/// How many environments' collections [`elidable_map_environment`] keeps the
+/// sizes of.
+const ELIDABLE_SIZES: usize = 8;
+/// The node counts and heights [`elidable_map_environment`] keeps, by the
+/// collection measured, most recently used last.
+pub(crate) type ElidableSizes = std::cell::RefCell<Vec<(Datum, (usize, usize))>>;
+/// [`elidable_environment`] for a macro's environment, the same answer with
+/// the same budget left: the size of each collection the map holds is kept
+/// by its identity in `sizes`, most recently used last, so that one shared
+/// by every expansion, such as the map of every macro the compilation
+/// declared, is walked once rather than at each expansion.
+fn elidable_map_environment(
+    data: &Datum,
+    remaining: &mut usize,
+    depth: usize,
+    control: &crate::evaluator::ExecutionControl,
+    sizes: &ElidableSizes,
+) -> bool {
+    let crate::compiler_data::DatumKind::Collection { children, .. } = data.kind() else {
+        return elidable_environment(data, remaining, depth, control);
+    };
+    if data.metadata().is_some() || depth < 2 || *remaining == 0 {
+        return elidable_environment(data, remaining, depth, control);
+    }
+    if *remaining & 1023 == 0 && control.poll().is_err() {
+        return false;
+    }
+    *remaining -= 1;
+    children.iter().all(|child| {
+        if !matches!(
+            child.kind(),
+            crate::compiler_data::DatumKind::Collection { .. }
+        ) {
+            return elidable_environment(child, remaining, depth - 1, control);
+        }
+        let identity = child.identity();
+        let known = {
+            let mut sizes = sizes.borrow_mut();
+            let position = sizes
+                .iter()
+                .position(|(data, _)| data.identity() == identity);
+            position.map(|position| {
+                let entry = sizes.remove(position);
+                let size = entry.1;
+                sizes.push(entry);
+                size
+            })
+        };
+        let size = known.or_else(|| {
+            let size = elidable_size(child, *remaining, depth - 1, control, &mut 0)?;
+            let mut sizes = sizes.borrow_mut();
+            if sizes.len() == ELIDABLE_SIZES {
+                sizes.remove(0);
+            }
+            sizes.push((child.clone(), size));
+            Some(size)
+        });
+        match size {
+            Some((nodes, height)) if nodes <= *remaining && height < depth => {
+                *remaining -= nodes;
+                true
+            }
+            _ => false,
+        }
+    })
+}
 
 // Generated in memory from these exact include_str! inputs by this binary,
 // once per process for every thread: they are read and analyzed in the
@@ -478,8 +583,13 @@ impl MacroHost {
         let mut remaining = self.limits.generated_nodes / 2;
         let budget = remaining;
         let env = if !declaration.reads_environment
-            && elidable_environment(env, &mut remaining, 128, &engine.control())
-        {
+            && elidable_map_environment(
+                env,
+                &mut remaining,
+                128,
+                &engine.control(),
+                &self.engine.elidable_sizes,
+            ) {
             // With less budget the environment is converted instead, which
             // can cost more, so a namespace needs the budget that elision
             // needed: twice the environment's nodes
@@ -955,6 +1065,116 @@ impl MacroHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn collection(kind: crate::parser::CollectionKind, children: Vec<Datum>) -> Datum {
+        Datum::new(crate::compiler_data::DatumKind::Collection {
+            kind,
+            children: children.into(),
+        })
+    }
+
+    fn vector(children: Vec<Datum>) -> Datum {
+        collection(crate::parser::CollectionKind::Vector, children)
+    }
+
+    fn integers(count: usize) -> Datum {
+        vector(
+            (0..count)
+                .map(|i| Datum::new(crate::compiler_data::DatumKind::Integer(i as i64)))
+                .collect(),
+        )
+    }
+
+    fn environment(values: &[Datum]) -> Datum {
+        let c = DataBuilder;
+        collection(
+            crate::parser::CollectionKind::Map,
+            values
+                .iter()
+                .enumerate()
+                .flat_map(|(i, value)| {
+                    [c.keyword(Name::new(None, &format!("k{i}"))), value.clone()]
+                })
+                .collect(),
+        )
+    }
+
+    fn control() -> crate::evaluator::ExecutionControl {
+        crate::evaluator::ExecutionControl::new(&crate::evaluator::EvaluatorOptions {
+            poll_budget: u64::MAX,
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    /// The elision check with kept collection sizes gives the complete
+    /// walk's answer and leaves it the same budget, cold or warm, across
+    /// node budgets, depths, metadata and compiler literals (light-cljs-415).
+    #[test]
+    fn cached_elision_matches_the_complete_walk() {
+        let nested = (0..6).fold(integers(3), |inner, _| vector(vec![inner, integers(2)]));
+        let literal = vector(vec![
+            integers(2),
+            Datum::new(crate::compiler_data::DatumKind::CompilerLiteral {
+                kind: crate::compiler_data::CompilerLiteralKind::Regex,
+                payload: DataBuilder.nil(),
+            }),
+        ]);
+        let shared = integers(40).with_metadata(environment(&[integers(5)]));
+        let environments = [
+            environment(&[shared.clone(), integers(3)]),
+            environment(&[shared.clone(), nested.clone(), DataBuilder.nil()]),
+            environment(&[integers(10), shared.clone(), literal.clone()]),
+            environment(&[nested.clone(), integers(2000)]),
+            environment(&[]),
+            vector(vec![shared.clone()]).with_metadata(environment(&[])),
+        ];
+        let control = control();
+        let sizes = std::cell::RefCell::new(Vec::new());
+        for _ in 0..2 {
+            for env in &environments {
+                for budget in [0, 1, 2, 5, 9, 40, 47, 48, 49, 60, 80, 2003, 2050, 4000] {
+                    for depth in [0, 1, 2, 3, 7, 8, 9, 128] {
+                        let (mut old, mut new) = (budget, budget);
+                        let expected = elidable_environment(env, &mut old, depth, &control);
+                        let actual =
+                            elidable_map_environment(env, &mut new, depth, &control, &sizes);
+                        assert_eq!(actual, expected, "budget {budget} depth {depth}");
+                        if expected {
+                            assert_eq!(new, old, "budget {budget} depth {depth}");
+                        }
+                    }
+                }
+            }
+        }
+        // A shared collection stays known while other ones come and go.
+        let shared_identity = shared.identity();
+        for i in 0..20 {
+            let env = environment(&[shared.clone(), integers(i)]);
+            elidable_map_environment(&env, &mut 1000, 128, &control, &sizes);
+            assert!(
+                sizes
+                    .borrow()
+                    .iter()
+                    .any(|(data, _)| data.identity() == shared_identity)
+            );
+        }
+    }
+
+    /// Measuring a collection the sizes do not know yet stops when the
+    /// compilation is cancelled, as the complete walk does.
+    #[test]
+    fn elision_size_misses_observe_cancellation() {
+        let env = environment(&[integers(2048)]);
+        let control = control();
+        control.cancel();
+        let sizes = std::cell::RefCell::new(Vec::new());
+        assert!(!elidable_environment(&env, &mut 2051, 128, &control));
+        assert!(!elidable_map_environment(
+            &env, &mut 2051, 128, &control, &sizes
+        ));
+        assert!(sizes.borrow().is_empty());
+    }
 
     /// Compiling the bootstrap units, as a process's first build does,
     /// spends none of the build engine's poll budget (or deadline): the

@@ -17,6 +17,43 @@ pub(crate) struct SharedPrefix {
     globals: usize,
     js_globals: usize,
     namespaces: usize,
+    /// How many reader contexts the snapshot had, every one of which the
+    /// target still has: a program never drops one.
+    reader_contexts: usize,
+    tables: SharedTables,
+}
+
+/// The snapshot's keyed tables, held so that they cannot change in place: a
+/// fragment that still shares one has not changed it, and [`append`] then
+/// adds nothing from it rather than looking through every entry the program
+/// had for the few the fragment added.
+#[derive(Clone, Default)]
+struct SharedTables {
+    namespace_entries: crate::shared::Shared<crate::layered::Layered<ExprId, String>>,
+    protocols: crate::shared::Shared<HashMap<GlobalId, Vec<ProtocolMethod>>>,
+    record_constructors: crate::shared::Shared<std::collections::HashSet<GlobalId>>,
+    field_bindings: crate::shared::Shared<HashMap<LocalId, (RecurTargetId, bool)>>,
+    type_methods: crate::shared::Shared<std::collections::HashSet<RecurTargetId>>,
+    macro_functions: crate::shared::Shared<std::collections::HashSet<ExprId>>,
+}
+
+impl SharedTables {
+    fn of(program: &Program) -> Self {
+        Self {
+            namespace_entries: program.namespace_entries.clone(),
+            protocols: program.protocols.clone(),
+            record_constructors: program.record_constructors.clone(),
+            field_bindings: program.field_bindings.clone(),
+            type_methods: program.type_methods.clone(),
+            macro_functions: program.macro_functions.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for SharedTables {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SharedTables")
+    }
 }
 
 impl SharedPrefix {
@@ -118,6 +155,8 @@ impl SharedPrefix {
             globals: snapshot.globals.len(),
             js_globals: snapshot.js_globals.len(),
             namespaces: snapshot.namespaces.len(),
+            reader_contexts: snapshot.reader_contexts.len(),
+            tables: SharedTables::of(snapshot),
         }
     }
 
@@ -199,13 +238,17 @@ impl Ids {
 /// With `own_namespace`, the fragment's reader context of that namespace is
 /// the only one it may change (one absent from the target is still added):
 /// a unit appended after later namespaces' analyses has a snapshot's view of
-/// the others, which they may have refreshed since.
+/// the others, which they may have refreshed since. `names`, when given, is
+/// the target's index of its globals by name: the fragment's own globals are
+/// found in it rather than by a scan of the target's, and the ones appended
+/// are added to it.
 pub(crate) fn append(
     target: &mut Program,
     fragment: &Program,
     shared: &SharedPrefix,
     update_shared_globals: bool,
     own_namespace: Option<&str>,
+    mut names: Option<&mut crate::name_index::NameIndex>,
 ) -> ExprId {
     shared.check(target, fragment);
     let exprs = Ids::new(shared.exprs, target.exprs.len());
@@ -249,29 +292,62 @@ pub(crate) fn append(
             target.namespaces.push(namespace.clone());
         }
     }
-    for (namespace, context) in fragment.reader_contexts.iter() {
-        let current = target.reader_contexts.get(namespace);
-        let owned = own_namespace.is_none_or(|own| own == namespace) || current.is_none();
-        if owned && current != Some(context) {
-            target
-                .reader_contexts
-                .insert(namespace.clone(), context.clone());
+    match own_namespace {
+        // The fragment has only its snapshot's reader contexts, which the
+        // target has too, so only the owned one can change: the others are
+        // not visited (each append would otherwise cost every namespace).
+        Some(own) if fragment.reader_contexts.len() == shared.reader_contexts => {
+            if let Some(context) = fragment.reader_contexts.get(own)
+                && target.reader_contexts.get(own) != Some(context)
+            {
+                target
+                    .reader_contexts
+                    .insert(own.to_owned(), context.clone());
+            }
+        }
+        _ => {
+            for (namespace, context) in fragment.reader_contexts.iter() {
+                let current = target.reader_contexts.get(namespace);
+                let owned = own_namespace.is_none_or(|own| own == namespace) || current.is_none();
+                if owned && current != Some(context) {
+                    target
+                        .reader_contexts
+                        .insert(namespace.clone(), context.clone());
+                }
+            }
         }
     }
-    target.namespace_entries.extend(
-        fragment
-            .namespace_entries
-            .iter()
-            .filter(|(id, _)| id.0 >= shared.exprs)
-            .map(|(id, ns)| ((remap.map_expr)(*id), ns.clone())),
-    );
+    // Of each keyed table, only entries the fragment added are appended:
+    // none from one it still shares with its snapshot, whose keys are all
+    // shared. When the caller takes the fragment's view of the shared
+    // globals, their protocols and record constructors are taken whole.
+    use crate::shared::Shared;
+    let tables = &shared.tables;
+    if !Shared::ptr_eq(&fragment.namespace_entries, &tables.namespace_entries) {
+        target.namespace_entries.extend(
+            fragment
+                .namespace_entries
+                .iter()
+                .filter(|(id, _)| id.0 >= shared.exprs)
+                .map(|(id, ns)| ((remap.map_expr)(*id), ns.clone())),
+        );
+    }
     for (index, global) in fragment.globals.iter().enumerate().skip(first_global) {
-        let existing = if index < shared.globals {
-            Some(index)
-        } else {
+        let scan = || {
             target.globals.iter().position(|existing| {
                 existing.namespace == global.namespace && existing.name == global.name
             })
+        };
+        let existing = if index < shared.globals {
+            Some(index)
+        } else if let Some(names) = names.as_deref() {
+            let found = names
+                .get(&(global.namespace.clone(), global.name.clone()))
+                .map(|id| id.0);
+            debug_assert_eq!(found, scan(), "the name index is the target's");
+            found
+        } else {
+            scan()
         };
         let id = if let Some(index) = existing {
             let existing = &mut target.globals[index];
@@ -290,6 +366,9 @@ pub(crate) fn append(
             let id = GlobalId(target.globals.len());
             let mut global = global.clone();
             remap.optional(&mut global.metadata);
+            if let Some(names) = names.as_deref_mut() {
+                names.insert((global.namespace.clone(), global.name.clone()), id);
+            }
             target.globals.push(global);
             id
         };
@@ -360,7 +439,13 @@ pub(crate) fn append(
                 t
             }),
     );
-    for (global, methods) in &fragment.protocols {
+    let protocols =
+        if !update_shared_globals && Shared::ptr_eq(&fragment.protocols, &tables.protocols) {
+            None
+        } else {
+            Some(&*fragment.protocols)
+        };
+    for (global, methods) in protocols.into_iter().flatten() {
         if global.0 < first_global {
             continue;
         }
@@ -372,43 +457,53 @@ pub(crate) fn append(
             .protocols
             .insert(remap.mapped_global(*global), methods);
     }
-    target.record_constructors.extend(
-        fragment
-            .record_constructors
-            .iter()
-            .filter(|g| g.0 >= first_global)
-            .map(|g| remap.mapped_global(*g)),
-    );
-    target.field_bindings.extend(
-        fragment
-            .field_bindings
-            .iter()
-            .filter(|(local, _)| local.0 >= shared.locals)
-            .map(|(local, (target, b))| {
-                let (mut local, mut target) = (*local, *target);
-                remap.local(&mut local);
-                remap.recur(&mut target);
-                (local, (target, *b))
-            }),
-    );
-    target.type_methods.extend(
-        fragment
-            .type_methods
-            .iter()
-            .filter(|target| target.0 >= shared.recur_targets)
-            .map(|target| {
-                let mut target = *target;
-                remap.recur(&mut target);
-                target
-            }),
-    );
-    target.macro_functions.extend(
-        fragment
-            .macro_functions
-            .iter()
-            .filter(|e| e.0 >= shared.exprs)
-            .map(|e| (remap.map_expr)(*e)),
-    );
+    if update_shared_globals
+        || !Shared::ptr_eq(&fragment.record_constructors, &tables.record_constructors)
+    {
+        target.record_constructors.extend(
+            fragment
+                .record_constructors
+                .iter()
+                .filter(|g| g.0 >= first_global)
+                .map(|g| remap.mapped_global(*g)),
+        );
+    }
+    if !Shared::ptr_eq(&fragment.field_bindings, &tables.field_bindings) {
+        target.field_bindings.extend(
+            fragment
+                .field_bindings
+                .iter()
+                .filter(|(local, _)| local.0 >= shared.locals)
+                .map(|(local, (target, b))| {
+                    let (mut local, mut target) = (*local, *target);
+                    remap.local(&mut local);
+                    remap.recur(&mut target);
+                    (local, (target, *b))
+                }),
+        );
+    }
+    if !Shared::ptr_eq(&fragment.type_methods, &tables.type_methods) {
+        target.type_methods.extend(
+            fragment
+                .type_methods
+                .iter()
+                .filter(|target| target.0 >= shared.recur_targets)
+                .map(|target| {
+                    let mut target = *target;
+                    remap.recur(&mut target);
+                    target
+                }),
+        );
+    }
+    if !Shared::ptr_eq(&fragment.macro_functions, &tables.macro_functions) {
+        target.macro_functions.extend(
+            fragment
+                .macro_functions
+                .iter()
+                .filter(|e| e.0 >= shared.exprs)
+                .map(|e| (remap.map_expr)(*e)),
+        );
+    }
     target.exprs.extend(
         fragment
             .exprs
@@ -1266,7 +1361,14 @@ mod tests {
             .iter()
             .position(|g| g.name == "shared")
             .unwrap();
-        let root = append(&mut target, &fragment, &SharedPrefix::default(), true, None);
+        let root = append(
+            &mut target,
+            &fragment,
+            &SharedPrefix::default(),
+            true,
+            None,
+            None,
+        );
         assert_eq!(target.root, original_root);
         assert_eq!(
             target.globals.iter().filter(|g| g.name == "shared").count(),
@@ -1315,6 +1417,7 @@ mod tests {
             &SharedPrefix::default(),
             true,
             None,
+            None,
         );
         // The later namespace declares the same Var, adds its own entries
         // to every table, and drops the shared global's metadata.
@@ -1324,6 +1427,7 @@ mod tests {
             &SharedPrefix::default(),
             true,
             None,
+            None,
         );
         target.globals[0].metadata = None;
         let (globals, strings, locals) = (
@@ -1331,7 +1435,7 @@ mod tests {
             target.strings.len(),
             target.locals.len(),
         );
-        let root = append(&mut target, &fragment, &shared, false, None);
+        let root = append(&mut target, &fragment, &shared, false, None, None);
         assert_eq!(target.globals.len(), globals, "`later` merges");
         assert_eq!(
             target.globals[0].metadata, None,
@@ -1353,12 +1457,87 @@ mod tests {
         });
     }
 
+    /// What [`append`] skips (the keyed tables a fragment still shares, the
+    /// reader contexts it cannot have changed, the scan for its globals
+    /// that the name index answers) changes nothing: the program is the one
+    /// the complete walk makes, and the index names every global after.
+    #[test]
+    fn indexed_appends_of_shared_and_changed_tables_match_the_complete_walk() {
+        for body in [
+            "(do (def later 1) (str later \"-body\"))",
+            "(defprotocol P (m [x])) (defrecord R [a] P (m [_] a)) (def later (->R 1))",
+        ] {
+            let mut target = analyze("(def ^{:doc \"x\"} x 1) (defprotocol Q (q [x]))");
+            let (snapshot, shared) = resolution_snapshot(&mut target);
+            let mut fragment = snapshot;
+            fragment.root = append(
+                &mut fragment,
+                &analyze(body),
+                &SharedPrefix::default(),
+                true,
+                None,
+                None,
+            );
+            append(
+                &mut target,
+                &analyze("(def later 2) (defrecord S [b])"),
+                &SharedPrefix::default(),
+                true,
+                None,
+                None,
+            );
+            let names = |program: &Program| {
+                let mut names = crate::name_index::NameIndex::default();
+                for (index, global) in program.globals.iter().enumerate() {
+                    names.insert(
+                        (global.namespace.clone(), global.name.clone()),
+                        GlobalId(index),
+                    );
+                }
+                names
+            };
+            let complete = SharedPrefix {
+                tables: SharedTables::default(),
+                reader_contexts: usize::MAX,
+                ..shared.clone()
+            };
+            let mut expected = target.clone();
+            let expected_root = append(
+                &mut expected,
+                &fragment,
+                &complete,
+                false,
+                Some("cljs.user"),
+                None,
+            );
+            let mut indexed = target.clone();
+            let mut index = names(&target);
+            let root = append(
+                &mut indexed,
+                &fragment,
+                &shared,
+                false,
+                Some("cljs.user"),
+                Some(&mut index),
+            );
+            assert_eq!(root, expected_root, "{body}");
+            assert!(indexed == expected, "{body}");
+            for (index_of, global) in indexed.globals.iter().enumerate() {
+                assert_eq!(
+                    index.get(&(global.namespace.clone(), global.name.clone())),
+                    Some(&GlobalId(index_of)),
+                    "{body}"
+                );
+            }
+        }
+    }
+
     #[test]
     #[should_panic(expected = "was not analyzed from a prefix of that program")]
     fn a_fragment_of_another_program_is_refused() {
         let mut target = analyze("(def x 1) (def y 2) (def z 3)");
         let (snapshot, shared) = resolution_snapshot(&mut target);
-        append(&mut analyze("1"), &snapshot, &shared, false, None);
+        append(&mut analyze("1"), &snapshot, &shared, false, None, None);
     }
 
     #[test]
@@ -1367,7 +1546,14 @@ mod tests {
         let fragment = analyze("(def ^{:doc \"new\"} shared 2)");
         let offset = target.exprs.len();
         let metadata = fragment.globals[0].metadata.unwrap();
-        append(&mut target, &fragment, &SharedPrefix::default(), true, None);
+        append(
+            &mut target,
+            &fragment,
+            &SharedPrefix::default(),
+            true,
+            None,
+            None,
+        );
         assert_eq!(
             target.globals[0].metadata,
             Some(ExprId(metadata.0 + offset))
@@ -1375,7 +1561,14 @@ mod tests {
         let preserved = target.globals[0].metadata;
         let mut fragment = analyze("(def shared 3)");
         fragment.globals[0].metadata = None;
-        append(&mut target, &fragment, &SharedPrefix::default(), true, None);
+        append(
+            &mut target,
+            &fragment,
+            &SharedPrefix::default(),
+            true,
+            None,
+            None,
+        );
         assert_eq!(target.globals[0].metadata, preserved);
     }
     #[test]

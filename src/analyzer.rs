@@ -3179,6 +3179,46 @@ struct DeferredUnit {
     may_enter_engine: bool,
 }
 
+/// The field count of each record type, from the first [`ExprKind::DefType`]
+/// declaring it among a program's first `scanned` expressions, extended over
+/// the later ones when a lookup misses and before each top-level form, when
+/// the earlier forms' expressions are final. A namespace's analysis keeps it
+/// for the next (as [`NamespaceAnalysis`]'s program only grows), and a
+/// deferred unit's snapshot carries the one its analysis starts from, so
+/// that a record constructor call no longer searches every expression the
+/// program holds.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RecordLayouts {
+    scanned: usize,
+    fields: crate::layered::Layered<GlobalId, usize>,
+}
+
+impl RecordLayouts {
+    fn fields(&mut self, exprs: &crate::arena::Arena<Expr>, global: GlobalId) -> Option<usize> {
+        // An entry is from the first declaration, which later ones do not
+        // replace.
+        if let Some(&fields) = self.fields.get(&global) {
+            return Some(fields);
+        }
+        self.extend(exprs);
+        self.fields.get(&global).copied()
+    }
+
+    fn extend(&mut self, exprs: &crate::arena::Arena<Expr>) {
+        if exprs.len() < self.scanned {
+            *self = Self::default();
+        }
+        for expr in exprs.range(self.scanned..exprs.len()) {
+            if let ExprKind::DefType { global, layout, .. } = &expr.kind
+                && !self.fields.contains_key(global)
+            {
+                self.fields.insert(*global, layout.fields.len());
+            }
+        }
+        self.scanned = exprs.len();
+    }
+}
+
 /// A deferred unit analyzed by a drain, whose fragment [`merge_unit`]
 /// appends.
 struct DrainedUnit {
@@ -3292,9 +3332,16 @@ fn merge_unit(
         program: fragment,
         shared,
     } = drained;
-    let defined = program.globals.len();
+    // The append indexes the globals it adds as it adds them.
     let traced = enter(Stage::Append, source_index, None);
-    let root = crate::program_fragment::append(program, &fragment, &shared, false, own_namespace);
+    let root = crate::program_fragment::append(
+        program,
+        &fragment,
+        &shared,
+        false,
+        own_namespace,
+        Some(globals),
+    );
     drop(traced);
     session.merged_ir(unit);
     if release {
@@ -3302,12 +3349,6 @@ fn merge_unit(
         session.release_application_ir(unit);
     }
     let _traced = enter(Stage::Index, source_index, None);
-    for (index, global) in program.globals.iter().enumerate().skip(defined) {
-        globals.insert(
-            (global.namespace.clone(), global.name.clone()),
-            GlobalId(index),
-        );
-    }
     if session.capturing() {
         let added = fragment
             .globals
@@ -3398,6 +3439,9 @@ struct Analyzer<'a> {
     /// declared in a deferred unit, for constructor arity warnings before
     /// the unit drains.
     record_fields: HashMap<GlobalId, usize>,
+    /// The field count of each record type the program declares, for the
+    /// same warnings: what the program's first declaration of it says.
+    record_layouts: RecordLayouts,
     /// The reader's view of the namespace for compiler forms, once built.
     reader_view: Option<ReaderView>,
     /// How many of the shared globals seen so far are this namespace's own:
@@ -3748,11 +3792,13 @@ fn analyze_input(
         resolution: NamespaceResolution::default(),
     });
     // Whether the program analyzed from has the namespace, from the
-    // session's index when there is one.
+    // session's index when there is one; a definition snapshot's program has
+    // it, as the analysis it was taken from added it before any form.
     let known_namespace = indexes
         .as_ref()
         .filter(|_| previous.is_some())
-        .map(|indexes| indexes.namespace_positions.contains_key(namespace));
+        .map(|indexes| indexes.namespace_positions.contains_key(namespace))
+        .or(snapshot.map(|_| true));
     let mut analyzer = Analyzer {
         source,
         syntax,
@@ -3795,6 +3841,7 @@ fn analyze_input(
         defines_macros: ahead,
         registers_ahead: ahead,
         record_fields: HashMap::new(),
+        record_layouts: snapshot.map_or_else(Default::default, |s| s.record_layouts.clone()),
         reader_view: None,
         namespace_globals: snapshot.map_or_else(Default::default, |s| s.namespace_globals.clone()),
         session_namespaces: Default::default(),
@@ -3830,6 +3877,10 @@ fn analyze_input(
     }
     analyzer.first_expr = analyzer.program.exprs.len();
     analyzer.deferred_unit = snapshot.is_some();
+    debug_assert!(
+        snapshot.is_none() || analyzer.program.namespaces.iter().any(|ns| ns == namespace),
+        "a definition snapshot has its namespace"
+    );
     if !known_namespace
         .unwrap_or_else(|| analyzer.program.namespaces.iter().any(|ns| ns == namespace))
     {
@@ -3876,6 +3927,7 @@ fn analyze_input(
             &program,
             &crate::program_fragment::SharedPrefix::same(&snapshot.resolution_program),
             true,
+            None,
             None,
         );
         crate::compilation_session::release_definition_test(analyzer.macro_host, unit);
@@ -4063,6 +4115,48 @@ pub(crate) struct NamespaceAnalysis {
     /// The namespaces the last namespace's lazy references name, in site
     /// order ([`Self::lazy_namespaces`]).
     last_lazy: Vec<(String, Span)>,
+    /// The program's globals by namespace, which each top-level pass
+    /// starts from.
+    members: NamespaceMembers,
+    /// The program's record layouts, which each top-level pass extends.
+    record_layouts: RecordLayouts,
+}
+
+/// The globals of each namespace, in ID order, among the namespace program's
+/// globals so far, extended as the program grows. A namespace's top-level
+/// pass starts from its own ([`Analyzer::count_namespace_globals`]) instead
+/// of finding them among every global the namespaces before it declared.
+#[derive(Default)]
+struct NamespaceMembers {
+    indexed: usize,
+    members: HashMap<String, crate::arena::Arena<GlobalId>>,
+}
+
+impl NamespaceMembers {
+    /// How many globals `globals` holds, and which of them are `namespace`'s.
+    fn of(
+        &mut self,
+        globals: &crate::arena::Arena<GlobalBinding>,
+        namespace: &str,
+    ) -> (usize, crate::arena::Arena<GlobalId>) {
+        for (index, global) in globals
+            .range(self.indexed..globals.len())
+            .enumerate()
+            .map(|(offset, global)| (self.indexed + offset, global))
+        {
+            match self.members.get_mut(&global.namespace) {
+                Some(ids) => ids.push(GlobalId(index)),
+                None => {
+                    let mut ids = crate::arena::Arena::default();
+                    ids.push(GlobalId(index));
+                    self.members.insert(global.namespace.clone(), ids);
+                }
+            }
+        }
+        self.indexed = globals.len();
+        let own = self.members.get(namespace).cloned().unwrap_or_default();
+        (self.indexed, own)
+    }
 }
 
 /// A namespace whose units merge after the next namespace's top-level pass.
@@ -4173,6 +4267,8 @@ impl NamespaceAnalysis {
             install_index: Default::default(),
             pending: Default::default(),
             last_lazy: Vec::new(),
+            members: Default::default(),
+            record_layouts: Default::default(),
         }
     }
 
@@ -4612,6 +4708,7 @@ impl NamespaceAnalysis {
             crate::compiler_reader::select_cljs(input.source, syntax.to_mut(), &mut discards)?;
         }
         let source_roots = syntax.roots.clone();
+        let namespace_globals = self.members.of(&self.program.globals, input.name);
         let mut analyzer = Analyzer {
             source: input.source,
             syntax,
@@ -4654,8 +4751,9 @@ impl NamespaceAnalysis {
             defines_macros: false,
             registers_ahead: false,
             record_fields: HashMap::new(),
+            record_layouts: std::mem::take(&mut self.record_layouts),
             reader_view: None,
-            namespace_globals: Default::default(),
+            namespace_globals,
             session_namespaces: Default::default(),
             pending_reader_registration: None,
             // A blocker's consumer registers and drains its units as one
@@ -4690,6 +4788,7 @@ impl NamespaceAnalysis {
         }
         self.program = analyzer.program;
         self.globals = analyzer.globals;
+        self.record_layouts = std::mem::take(&mut analyzer.record_layouts);
         let (dispatched, pooled) = analyzer.dispatched.take().unwrap_or_default();
         let root = outcome?;
         // The namespaces its top-level pass's lazy references name, in site
@@ -7544,6 +7643,7 @@ impl Analyzer<'_> {
             resolution_program,
             global_names: self.globals.clone(),
             namespace_globals: self.namespace_globals.clone(),
+            record_layouts: self.record_layouts.clone(),
             session_namespaces: self.session_namespaces.clone(),
             options: self.options,
             unchecked_arrays: self.unchecked_arrays,
@@ -10446,14 +10546,20 @@ impl Analyzer<'_> {
             && self.metadata_entry(node, "internal-ctor").is_none()
         {
             if let Some(fields) = self.record_fields.get(&global).copied().or_else(|| {
-                self.program.exprs.iter().find_map(|expr| match &expr.kind {
-                    ExprKind::DefType {
-                        global: target,
-                        layout,
-                        ..
-                    } if *target == global => Some(layout.fields.len()),
-                    _ => None,
-                })
+                let fields = self.record_layouts.fields(&self.program.exprs, global);
+                debug_assert_eq!(
+                    fields,
+                    self.program.exprs.iter().find_map(|expr| match &expr.kind {
+                        ExprKind::DefType {
+                            global: target,
+                            layout,
+                            ..
+                        } if *target == global => Some(layout.fields.len()),
+                        _ => None,
+                    }),
+                    "the first declaration's fields"
+                );
+                fields
             }) && args.len() != fields
                 && args.len() != fields + 2
             {
@@ -11611,6 +11717,12 @@ impl Analyzer<'_> {
     ) -> Result<ExprId, AnalysisError> {
         let mut exprs = Vec::with_capacity(forms.len());
         for (index, &form) in forms.iter().enumerate() {
+            if self.top_level {
+                // The earlier forms' expressions are final (a bundle's
+                // placeholder is cleared within its own form), so a unit
+                // the form registers starts from their record layouts.
+                self.record_layouts.extend(&self.program.exprs);
+            }
             exprs.push(if index + 1 == forms.len() {
                 self.form(form, context)?
             } else {

@@ -563,3 +563,21 @@ fn namespace_arity_index_retains_overloads_redefinitions_and_namespace_identity(
         ]
     );
 }
+
+/// A record constructor call finds the fields of a record declared before
+/// it or after the last call that looked, in any form (light-cljs-415).
+#[test]
+fn record_constructor_arities_find_each_record_declared_so_far() {
+    assert_eq!(
+        messages(
+            "(do (defrecord Foo [a]) (Foo. 1 2) (defrecord Bar [a b]) (Bar. 1)
+                 (Foo. 1) (fn [] (Bar. 1 2 3)) (defrecord Baz []) (Baz. 1) (Bar. 1 2))"
+        ),
+        [
+            "Wrong number of args (2) passed to Foo",
+            "Wrong number of args (1) passed to Bar",
+            "Wrong number of args (3) passed to Bar",
+            "Wrong number of args (1) passed to Baz"
+        ]
+    );
+}

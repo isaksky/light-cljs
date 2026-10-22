@@ -610,6 +610,9 @@ pub(crate) struct EngineBinding {
     // Shared by analysis frames, but bounded to one complete lexical view.
     local_environment: std::rc::Rc<std::cell::RefCell<Option<LocalEnvironment>>>,
     reader_environment: std::rc::Rc<std::cell::RefCell<Option<ReaderEnvironment>>>,
+    /// The sizes of the environment collections core macro expansions
+    /// last checked for elision, by identity (`crate::compiler_bootstrap`).
+    pub(crate) elidable_sizes: std::rc::Rc<crate::compiler_bootstrap::ElidableSizes>,
     pub(crate) session: Option<std::rc::Rc<crate::compilation_session::CompilationSession>>,
     pub(crate) session_ref: std::rc::Weak<crate::compilation_session::CompilationSession>,
     pub(crate) expansions: std::rc::Rc<std::cell::Cell<usize>>,
@@ -688,6 +691,7 @@ impl EngineBinding {
             namespace_environment: self.namespace_environment.clone(),
             local_environment: self.local_environment.clone(),
             reader_environment: self.reader_environment.clone(),
+            elidable_sizes: self.elidable_sizes.clone(),
             session: None,
             session_ref: self
                 .session_handle()
@@ -1795,6 +1799,7 @@ impl MacroHost {
             self.engine.namespace_environment = Default::default();
             self.engine.local_environment = Default::default();
             self.engine.reader_environment = Default::default();
+            self.engine.elidable_sizes = Default::default();
             self.tables.source_bindings.clear();
             self.engine.session = Some(crate::compilation_session::CompilationSession::new());
             self.engine.session_ref = std::rc::Weak::new();

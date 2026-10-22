@@ -69,3 +69,55 @@ At 800k: unused arities 329 / 779 (light) and 215 / 779 (shadow).
    51 and 215): methods that no call selects of functions without a
    dispatcher, and dispatchers kept only for an unread alias, are gone
    ([details](compiler.md#unused-arities-without-a-dispatcher-and-unread-aliases--october-22-2026)).
+
+## Follow-up findings
+
+### Top-level analysis and append (light-cljs-415)
+
+A `sample` profile of the 400k project (seed 42: 903 worker namespaces, 30,878
+top-level forms, about 100k globals, 1,469 macros, 2,484 records and types)
+found these per-form costs that grow with the program so far, now removed:
+
+- Merging a unit (`program_fragment::append`) found each of its new globals
+  by scanning every global, visited every namespace's reader context, and
+  walked six keyed tables whole (protocols, record constructors, field
+  bindings, type methods, macro functions, namespace entries) to skip their
+  shared entries. It now uses the program's name index, takes only the owned
+  reader context, and skips a table the unit did not write.
+- A record constructor call (`(R. ...)`) searched every expression for R's
+  declaration to check its argument count; record layouts are now indexed.
+- A namespace's top-level pass found its own globals among all globals; a
+  unit scanned the namespace list for its own namespace.
+- Every core macro expansion walked its whole `&env`, including the map of
+  all declared macros, to decide whether it can skip converting it; the sizes
+  of shared environment collections are now kept.
+
+Back to back with the parent commit (`6a42488`), `release bench --no-cache
+--stats`, 3 alternating rounds per size, load average 3-6, medians:
+
+| Counter | parent 100k | parent 400k | growth | 415 100k | 415 400k | growth |
+|---|---|---|---|---|---|---|
+| time.wall-ms | 10,740 | 79,453 | 7.7x | 9,163 | 52,755 | 5.7x |
+| trace.top-level-ms | 1,991 | 21,151 | 11.1x | 1,775 | 18,875 | 10.6x |
+| trace.append-ms | 126 | 1,811 | 14.4x | 44 | 342 | 7.8x |
+| trace.top-level.engine-ms | 634 | 6,138 | 9.7x | 613 | 6,063 | 9.9x |
+| trace.units.host-ms | 4,817 | 35,684 | 7.6x | 3,709 | 15,392 | 4.1x |
+| trace.drain.bookkeeping-ms | 379 | 2,787 | 7.5x | 286 | 1,235 | 4.2x |
+| peak RSS | 0.7 GB | 2.5 GB | | 0.7 GB | 2.5 GB | |
+
+Most of the wall-time gain is the record constructor search, which units paid
+(units host time at 400k fell from 35.7 s to 15.4 s). Output at 100k is
+byte-identical to the parent's at `none` and advanced. The targets of at most
+5x for top-level and append are missed: append is now 0.34 s at 400k; what is
+left is probably the units that define types or protocols, which still walk
+the keyed tables they copied (not profiled further).
+
+The largest remaining top-level term is outside this pellet's files:
+declaring a source macro emits and evaluates a namespace registration of
+every namespace with every global's name (`emit_deferred_unit` in
+`register_javascript_macro`, src/emitter.rs), O(macros x globals). In the
+400k profile it was about 9-10 s of 20-25 s of `trace.top-level-ms`, and it
+is what keeps top-level growth near 11x. It is light-cljs-423. Smaller
+remaining terms: copying the shared protocol table on each write while
+snapshots share it (about 0.2 s at 400k), and the macro-environment map
+rebuilt and re-measured after each new macro.
