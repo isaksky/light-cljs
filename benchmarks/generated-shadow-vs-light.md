@@ -4,7 +4,10 @@ Projects from [the generator](generated-project/README.md), seed 42, at 5k, 200k
 and 800k nonblank lines. Both compilers build at advanced: `light-cljs release
 bench` (default `:advanced`) and `clojure -M:shadow release bench` (Closure
 advanced). Every output printed the oracle's checksum for input 42 and 3
-iterations, and `check-waste.bb --strict` passed for both.
+iterations, and `check-waste.bb --strict` passed for both. The tables up to
+Findings are the baseline at `ac88cb2`; [the re-measurement at
+`76c6366`](#re-measured-after-the-scaling-pellets-october-22-2026-at-76c6366)
+follows them.
 
 Reproduce, one project at a time and with no other heavy work running:
 
@@ -85,6 +88,88 @@ At 800k: unused arities 329 / 779 (light) and 215 / 779 (shadow).
    51 and 215): methods that no call selects of functions without a
    dispatcher, and dispatchers kept only for an unread alias, are gone
    ([details](compiler.md#unused-arities-without-a-dispatcher-and-unread-aliases--october-22-2026)).
+
+## Re-measured after the scaling pellets (October 22, 2026, at `76c6366`)
+
+The same comparison again, after light-cljs-415 to 421 and 423 to 425, with
+light-cljs built from `76c6366` (light-cljs-417). The baseline above is at
+`ac88cb2`. Same machine, generator, seed and shadow-cljs 3.5.3 with
+`-Xmx8g`; the Clojure CLI reused the baseline's resolved classpath, so
+nothing was downloaded. `compare.bb` with `--runs 5 --warm-jvm 4` at 5k,
+`--runs 3 --warm-jvm 4` at 200k and `--runs 3` at 800k, one project at a
+time and nothing else running; the 1-minute load average was 2.3-5.3 (other
+idle sessions). Every output matched the oracle and `check-waste.bb
+--strict` passed for both compilers. Medians, with the baseline in
+parentheses.
+
+| Size | light uncached | light cached | shadow uncached | shadow cached | shadow in one JVM (1st / steady) |
+|---|---|---|---|---|---|
+| 5k | 0.33 s, 0.14 GB (0.43 s) | 0.03 s, 0.03 GB (0.09 s) | 9.5 s, 1.46 GB (10.2 s) | 7.5 s, 0.97 GB (8.1 s) | 4.5 s / 1.7 s |
+| 200k | 12.4 s, 1.18 GB (29.9 s) | 1.09 s, 0.54 GB (4.8 s) | 40.4 s, 4.09 GB (43.6 s) | 32.9 s, 4.54 GB (35.4 s) | 29.2 s / 24.0 s |
+| 800k | 67.9 s, 4.10 GB (310 s) | 4.86 s, 1.98 GB (30.2 s) | 170 s, 7.72 GB (181 s) | 146 s, 8.21 GB (162 s) | not run |
+
+Ranges: light uncached 12.40-12.87 s (200k) and 67.5-68.5 s (800k), cached
+1.05-1.09 s and 4.85-5.17 s; shadow uncached 39.6-41.0 s and 170-173 s.
+Shadow's first 800k build was an ordinary one this time (170 s, not 422 s).
+Shadow is 6-10% faster than in the baseline, so the machine was a little
+quieter; light's gains below are far larger than that.
+
+| Size | light bytes / gzip -9 | shadow bytes / gzip -9 | light gzip vs shadow |
+|---|---|---|---|
+| 5k | 202,642 / 57,955 | 263,193 / 57,701 | +0.4% (+15%) |
+| 200k | 3,456,905 / 860,671 | 4,067,637 / 1,002,909 | -14.2% (+26%) |
+| 800k | 13,396,492 / 3,302,076 | 15,710,764 / 3,894,315 | -15.2% (+27%) |
+
+Unused arities kept: 1 / 5, 49 / 204 and 202 / 779 (light) against 2 / 5,
+51 / 204 and 215 / 779 (shadow). Both keep every unreachable `defmethod`
+(406 at 200k, 1,627 at 800k) and remove every `:removable` marker.
+
+The targets of this group, at `76c6366`:
+
+| Target | Result | Met |
+|---|---|---|
+| uncached 800k / 200k wall at most 5x | 67.9 / 12.4 s = 5.5x (10.4x at `ac88cb2`; shadow 4.2x) | no |
+| 800k uncached faster than shadow | 67.9 s against 170 s, 2.5x faster | yes |
+| cached no-change 800k at most 10 s | 4.86 s, 1.98 GB | yes |
+| 200k and 800k gzip within 5% of shadow | 14% and 15% smaller | yes |
+
+Findings:
+
+1. **Uncached builds are 2.4x faster at 200k and 4.6x at 800k**, and light
+   now beats shadow at every size (3.3x at 200k, 2.5x at 800k). Growth from
+   200k to 800k fell from 10.4x to 5.5x but is still above 4x and above
+   shadow's 4.2x; top-level analysis is most of what remains
+   ([below](#remaining-superlinear-growth-light-cljs-422)). Peak memory at
+   800k fell from 6.37 to 4.10 GB, under shadow's 7.72 GB.
+2. **A cached build with no change is 4.4x faster at 200k and 6.2x at 800k**
+   (light-cljs-418 reuses the whole stored output), and grows 4.5x from 200k
+   to 800k. It holds 1.98 GB at 800k, 48% of an uncached build.
+3. **gzip went from 26-27% worse than shadow's to 14-15% better** at 200k
+   and 800k (per-scope local names, light-cljs-419 and 424, and value
+   position without wrappers, 420); raw output is 15% smaller too. At 5k
+   gzip is level with shadow's.
+4. **Unused arities are now on par**: light keeps fewer than shadow at every
+   size (light-cljs-421).
+
+`release bench --no-cache --stats` at `76c6366`, seed 42, 3 rounds of 100k,
+200k and 400k (one run at 800k), load average 1.8-2.5, medians; the
+baseline growth column is the group's table at `ac88cb2`:
+
+| Counter | 100k | 400k | growth | `ac88cb2` growth |
+|---|---|---|---|---|
+| time.wall-ms | 5,711 | 27,410 | 4.8x | 7.3x |
+| time.analysis-ms | 1,141 | 7,708 | 6.8x | 10.6x |
+| trace.top-level-ms | 1,029 | 6,889 | 6.7x | 10.6x |
+| trace.append-ms | 34 | 277 | 8.3x | 14.3x |
+| trace.top-level.engine-ms | 387 | 2,632 | 6.8x | 9.6x |
+| trace.units.host-ms | 3,191 | 13,416 | 4.2x (per unit 1.06x) | 7.1x (per unit 1.8x) |
+| trace.drain.bookkeeping-ms | 237 | 1,030 | 4.3x | 7.4x |
+| time.emission-ms | 387 | 1,569 | 4.1x | 6.7x |
+| time.prepare-application-ms | 645 | 3,133 | 4.9x | 4.4x |
+| memory.peak-rss-bytes | 0.69 GB | 2.16 GB | 3.1x | 3.8x |
+
+Rounds differed by under 3% for most counters and by 7.5% at most
+(`trace.top-level.engine-ms` at 400k).
 
 ## Follow-up findings
 
@@ -380,3 +465,51 @@ shrink it: `ProgramFacts::new` runs again in the removal, folding and inlining
 of every round (24% of preparation samples at 400k), and
 `program_fragment::kind_children` clones each expression's kind to list
 its children (about 14%).
+
+### Remaining superlinear growth (light-cljs-422)
+
+The 5x target for uncached 800k / 200k wall is missed at `76c6366` (5.5x).
+The same `--stats` runs as in the re-measurement above, 200k (median of 3)
+against 800k (one run):
+
+| Counter | 200k | 800k | growth |
+|---|---|---|---|
+| time.wall-ms | 12,275 | 67,149 | 5.5x |
+| time.analysis-ms | 2,804 | 25,037 | 8.9x |
+| trace.top-level-ms | 2,511 | 22,399 | 8.9x |
+| trace.top-level.engine-ms | 918 | 9,106 | 9.9x |
+| trace.append-ms | 95 | 895 | 9.4x |
+| time.deferred-units-ms | 7,212 | 31,693 | 4.4x |
+| trace.units.host-ms | 6,600 | 28,249 | 4.3x |
+| time.prepare-application-ms | 1,437 | 6,894 | 4.8x |
+| time.emission-ms | 770 | 3,197 | 4.2x |
+| peak RSS | 1.20 GB | 4.15 GB | 3.5x |
+
+Macro calls (94,592 to 378,359), deferred units and namespaces all grow 4.0x.
+At 4x growth throughout, the 800k build would take 49 s; of the 18 s more it
+takes, top-level analysis is 12.4 s, deferred units 2.9 s, preparation
+1.1 s. Meeting 5x (62 s at 800k) needs top-level growth under about 6.5x
+with the rest as it is.
+
+A `sample` profile of whole uncached builds at 100k and 400k, inclusive
+samples over all threads (macro calls grow 4.0x):
+
+| Frame | 100k | 400k | growth |
+|---|---|---|---|
+| `Analyzer::expand_macro` | 3,982 | 18,404 | 4.6x |
+| `MacroEvaluator::import_environment` | 590 | 3,918 | 6.6x |
+| `MacroEvaluator::import_macro_form` | 1,459 | 5,527 | 3.8x |
+| `MacroEvaluator::macro_arguments` | 605 | 2,342 | 3.9x |
+| `MacroHost::register_runtime_var` | 31 | 308 | 9.9x |
+| V8 `Heap::CollectGarbage` | 314 | 2,380 | 7.6x |
+| V8 `ConcurrentMarking` (background threads) | 102 | 1,936 | 19x |
+| `prepare_owned_application` | 530 | 2,562 | 4.8x |
+
+This is what light-cljs-423 named: importing each macro call's `&env` into
+the engine grows faster than the calls, the V8 heap of the compile-time
+engine grows and its garbage collection with it, and copying the macro
+host's own layer on each definition (`register_runtime_var`) grows much
+faster than the calls, though it is still small (about 0.3 s at 400k).
+Preparation (4.8x) is the cache-size effect light-cljs-417 recorded. This
+measurement pellet files no follow-up; each term needs its own look at the
+macro environment import and the engine heap.
