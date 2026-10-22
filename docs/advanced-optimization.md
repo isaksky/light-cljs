@@ -4139,6 +4139,9 @@ run the terse output.
     is defined once by a top-level `def` and never assigned otherwise
     (`CallShapes::defined_once`), which no evaluation inside a function
     runs, so it reads the same before and after the lifted expression.
+    Below `Advanced`, and so in every compile-time, interactive and dev-build
+    unit, nothing is lifted, so no head is looked for and no program is
+    scanned for stable locals (light-cljs-425).
   At 200k lines of the generated project 8,451 wrappers become 992 and the
   output 6.2% smaller raw, but 4.1% larger gzipped: since light-cljs-419
   names locals per scope, a wrapper's fresh scope repeats the same short

@@ -1716,7 +1716,8 @@ struct Emitter<'a> {
     /// Whether the statement being written has read [`Emitter::substitute`].
     substituted: bool,
     /// By `LocalId`, then one more entry: whether something may assign the
-    /// local once bound ([`Emitter::stable_local`]), built on first use.
+    /// local once bound ([`Emitter::stable_local`]), built on first use by
+    /// an application's emission.
     assignable_locals: Vec<bool>,
 }
 
@@ -5476,12 +5477,21 @@ impl<'a> Emitter<'a> {
     /// evaluation of the `let`, so the block around it gives each evaluation,
     /// such as one per loop iteration, fresh locals for functions to capture.
     fn hoists(&mut self, id: ExprId) -> bool {
+        self.lowers_statements() && self.scope_flags(id) & SCOPE_READ == 0
+    }
+
+    /// Whether a value-position statement being written may be lowered
+    /// without a wrapper ([`Emitter::hoists`], [`Emitter::lifts`]): at
+    /// `Advanced`, which only an application's emission is, in a function's
+    /// body. Below it, as in every compile-time and interactive unit, nothing
+    /// is lifted, so [`Emitter::head`] asks nothing of the program
+    /// (light-cljs-425).
+    fn lowers_statements(&self) -> bool {
         self.shapes.is_some()
             && self
                 .operands
                 .as_ref()
                 .is_some_and(|operands| operands.hoists && operands.statement)
-            && self.scope_flags(id) & SCOPE_READ == 0
     }
 
     /// The value-position `let` or `letfn` that [`Emitter::hoists`]:
@@ -5541,12 +5551,7 @@ impl<'a> Emitter<'a> {
     /// a wrapper would replace, for an expression that only a wrapper writes
     /// in value position, and a `let` or `if` with one in it.
     fn lifts(&mut self, id: ExprId) -> bool {
-        if self.shapes.is_none()
-            || !self
-                .operands
-                .as_ref()
-                .is_some_and(|operands| operands.hoists && operands.statement)
-        {
+        if !self.lowers_statements() {
             return false;
         }
         let flags = self.scope_flags(id);
@@ -5625,7 +5630,14 @@ impl<'a> Emitter<'a> {
     /// or of the first initializer or form of a `let` or `do` written as a
     /// comma expression. No evaluation inside a function runs a top-level
     /// `def`, so such a global reads the same before and after the head.
+    ///
+    /// Only [`Emitter::lifts`] gives a head, so where it lifts nothing
+    /// ([`Emitter::lowers_statements`]) there is none, and no
+    /// [`Emitter::stable_local`] is asked for.
     fn head(&mut self, id: ExprId) -> Option<ExprId> {
+        if !self.lowers_statements() {
+            return None;
+        }
         let program = self.program;
         let mut node = id;
         loop {
@@ -5698,6 +5710,10 @@ impl<'a> Emitter<'a> {
     /// read can follow another expression's evaluation: it is written as an
     /// identifier, is no function's parameter (which an escaped `arguments`
     /// object aliases) and no raw `js*` hole (which may assign it).
+    /// Only an application's emission asks ([`Emitter::head`]), whose
+    /// program is the unit it writes, so the one scan of the program per
+    /// emission costs what writing it does: a compile-time unit's program,
+    /// which holds every expression before it, is never scanned.
     fn stable_local(&mut self, local: LocalId) -> bool {
         if !self.plain_local(local) {
             return false;

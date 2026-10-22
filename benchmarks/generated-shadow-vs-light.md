@@ -293,3 +293,32 @@ declaration emits its unit. Penpot shows it too: `app.main --optimize none`
 3 rounds alternating `26451ea` and light-cljs-423, 62.41 s and 0.881 GB
 against 61.20 s and 0.867 GB (medians), within the gate. Output at 100k is
 byte-identical to `26451ea`'s at `none` and advanced.
+
+### Stable locals asked for only where statements are lowered (light-cljs-425)
+
+Only `Emitter::lifts` gives `Emitter::head` a head, and it lifts only at
+`Advanced` in a function's body, which only an application's emission is.
+`head` now returns at once elsewhere, so a compile-time, interactive or
+dev-build unit never asks `Emitter::stable_local`, and never scans its
+program; an application's emission scans its own program once, as writing it
+reads it. The answers are unchanged where they are asked, so output is too.
+
+`release bench --no-cache --stats`, seed 42, advanced, 3 rounds alternating
+`0b40519` (before light-cljs-420) and light-cljs-425 on `1311360`, with
+`1311360` itself in the 100k rotation and once at 400k, medians:
+
+| Counter | `0b40519` 100k | 425 100k | `1311360` 100k | `0b40519` 400k | 425 400k | `1311360` 400k |
+|---|---|---|---|---|---|---|
+| time.wall-ms | 7,723 | 8,024 | 17,655 | 50,472 | 40,456 | 234,645 |
+| time.deferred-units-ms | 3,664 | 3,575 | 13,122 | 17,546 | 17,895 | 206,031 |
+| peak RSS | 0.64 GB | 0.62 GB | 0.63 GB | 2.50 GB | 2.02 GB | 1.91 GB |
+
+Load average 2.7-3.6 at 100k and 6.3-14.3 at 400k (another worker was
+testing). The 100k wall is 3.9% over `0b40519`'s with deferred units level;
+in a further pair at load 3-5 it was 8,408 against 8,557 ms, the 0.4 s that
+light-cljs-423 saves in top-level set against 0.12 s more emission at
+advanced from light-cljs-420's lowering. Penpot `app.main --optimize none`,
+cold, 3 rounds alternating `0b40519` and this change, load 2.6-3.4: 21.44 s
+and 0.868 GB against 22.41 s and 0.899 GB (medians); `1311360` once, 51.53 s.
+The Penpot output is byte-identical to both, and the 100k output to master's
+(`1311360`, and after rebasing `2bd106f`) at `none` and advanced.
