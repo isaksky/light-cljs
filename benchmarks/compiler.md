@@ -5805,3 +5805,53 @@ RSS stay within noise: advanced 32.6 and 32.7 s, 1.05 and 1.08 GB before;
 50.5 s (a run with 10 s of system time under load) and 33.2 s, 1.04 and
 1.09 GB after; `none`, which neither change reaches, 31.8 and 25.7 s before,
 26.8 and 26.1 s after.
+
+## Locals named per scope — October 22, 2026
+
+light-cljs-419 names the program's locals per scope at `advanced` instead of
+giving each its own name in the one frequency table
+([advanced-optimization design](../docs/advanced-optimization.md), Phase 3,
+"Locals per scope"). Generated projects (`benchmarks/generated-project/`,
+seed 42, `release bench --no-cache`), parent `b3f8edf` against this change,
+raw / `gzip -9` bytes and distinct identifiers
+(`grep -oE '[A-Za-z_$][A-Za-z0-9_$]*' | sort -u | wc -l`); sizes do not
+depend on load, and every build prints the oracle's result:
+
+| Lines | Parent | This change | Distinct identifiers | shadow-cljs (`generated-shadow-vs-light.md`) |
+| --- | ---: | ---: | ---: | ---: |
+| 5k | 212,059 / 65,812 | 207,315 / 58,045 | 3,098 to 1,629 | 263,193 / 57,701 |
+| 100k | 2,107,652 / 649,761 | 1,918,953 / 455,600 | 49,506 to 15,579 | |
+| 200k | 4,040,250 / 1,244,393 | 3,663,745 / 863,513 | 96,555 to 30,173 | 4,067,637 / 1,002,909 (26,279) |
+| 400k | 7,947,083 / 2,439,197 | 7,197,793 / 1,688,121 | 190,779 to 59,583 | |
+| 800k | 15,908,267 / 4,856,983 | 14,248,731 / 3,294,722 | 381,537 to 117,821 | 15,710,764 / 3,894,315 |
+
+At 200k the output is 9.3% smaller raw and 30.6% smaller gzipped, 14%
+under shadow-cljs gzipped (24% over before); at 800k 32.2% smaller gzipped
+and 15% under shadow-cljs. `time.emission-ms` (`--stats`, the two binaries
+back to back, one-minute load 4 to 6): 784 to 534 ms at 100k and 5,494 to
+2,187 ms at 400k, so emission grows 4.1x for 4x the code where it grew 7.0x;
+19.4 s to 5.9 s at 800k. Most of the time that went was `js_syntax::resolve`
+looking names up by a scan of each scope's names, quadratic in the 17,000
+bindings of the program's wrapper at 200k. Peak RSS 2.40 to 2.34 GB at 400k
+and 6.58 to 6.20 GB at 800k (within this machine's run-to-run noise of a few
+percent); the names a scope's locals avoid are kept as numbers.
+
+Closure's own scheme, a local's name by its nesting slot with the slots in
+the globals' table, measured first (on parent `6a42488`): 952,823 gzipped
+bytes and 33,863 identifiers at 200k against this change's 890,885 and
+30,869 there, and examples/features' startup and shared chunks 6 bytes
+larger, as slots outbid a runtime binding for a one-character name.
+
+Ratchet fixtures at `advanced` (35 programs): 613,904 to 613,794 bytes raw
+and 196,931 to 196,558 gzipped; none grows raw, and the small ones change
+little, since their locals had one-character names already. `features`
+77,053 to 76,997 (23,418 to 23,332 gzipped), `features-direct` 76,661 to
+76,607 (23,245 to 23,166), `callbacks` gzipped 14,079 to 14,047,
+`protocol-params` 15,683 to 15,635. The features chunks: `app.main.js` 6,243
+(2,412 to 2,409 gzipped), `app.editor.js` 5,268 to 5,256 (2,332 to 2,319),
+`app.reports.js` 5,040 to 4,995 (2,185 to 2,135), and
+`app.editor+app.reports.js` 62,034, the one output that grows gzipped,
+19,248 to 19,255: its raw size is the same, but the global names it shares
+with startup shift a place or two now that locals are out of the table
+(`bL` is `bJ`). The four chunks together go from 26,177 to 26,118 gzipped.
+The `features` ceiling moves down to 77,000 and `app.reports.js`'s to 5,000.

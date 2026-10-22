@@ -148,6 +148,12 @@
 //! new size rounded up as before, and every none/prepare ceiling, for the
 //! 5.8 KB of readable runtime, to the next 1,000 above the size.
 
+//! Locals named per scope (light-cljs-419, 2026-10-22): at advanced the
+//! program's locals take short names per scope, so sibling functions repeat
+//! them. `features` 77,053 to 76,997 and the features chunk `app.reports.js`
+//! 5,040 to 4,995, whose ceilings move down to 77,000 and 5,000; no other
+//! advanced size crosses its rounding.
+
 pub struct Fixture {
     pub name: &'static str,
     pub source: &'static str,
@@ -613,7 +619,7 @@ pub const FEATURES_CHUNK_CEILINGS: &[(&str, usize)] = &[
     ("app.main.js", 6_300),
     ("app.editor+app.reports.js", 63_000),
     ("app.editor.js", 5_300),
-    ("app.reports.js", 5_100),
+    ("app.reports.js", 5_000),
 ];
 
 /// The code-splitting example and the same example calling its features
@@ -634,7 +640,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             FEATURES_EDITOR,
             FEATURES_REPORTS,
         ],
-        ceilings: [519_000, 519_000, 78_000],
+        ceilings: [519_000, 519_000, 77_000],
         removed: [0, 0, 21],
         printed: "menu: Editor | Reports\n#function\n",
     },

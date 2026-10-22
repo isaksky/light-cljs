@@ -3934,8 +3934,9 @@ runs in its rounds.
 
 ### Phase 3: terse emission
 
-- One frequency-ordered renamer for globals, locals and runtime unit
-  bindings, using Closure's same-length-batch trick for globals.
+- One frequency-ordered renamer for globals and runtime unit bindings,
+  using Closure's same-length-batch trick for globals, and locals named per
+  scope (light-cljs-419).
 - Mangle compiler-owned ABI property names. Record field names stay as
   written by default because host code may read them; `^:export` and an
   option control the rest.
@@ -4008,7 +4009,8 @@ run the terse output.
   prefixes too. Each gets a short name by frequency, the way Closure's
   `RenameVars` names globals (`RenameVars.java:466-498`): the most
   frequent first and, among the names of one length, in order of first
-  occurrence. The names avoid every other identifier of the output (host
+  occurrence; a local below the program's top level is named per scope
+  instead (light-cljs-419, below). The names avoid every other identifier of the output (host
   globals, helper parameters, property names) and the ECMAScript globals
   the runtime reads. Then `x["name"]` with an identifier key that is no
   compiler name is `x.name`; the parentheses go around a member chain
@@ -4019,6 +4021,48 @@ run the terse output.
   tokens join as above. The runtime factory, already terse, is one token.
   A new emitter construct that binds a name must add it to
   `compiler_name`.
+- **Locals per scope.** As built (light-cljs-419). Before, every local had
+  a name of its own in the one table, so at 200k lines of the generated
+  project (`benchmarks/generated-project/`) the output had 98,232 distinct
+  identifiers against shadow-cljs's 26,279 and gzipped 26% worse at the
+  same raw size. Now `terse::Locals` takes the program's `resolve` (which
+  `joined_declarations` needed already) and names per scope every local
+  below the text's top level whose occurrences are all compiler names
+  outside raw text and none a shorthand property: each scope with such
+  locals records, once each, the names occurring in it or in a scope
+  inside it that resolve outside it (the table's names: globals, runtime
+  reads, locals that keep a table name; and the enclosing scopes'
+  locals), climbing from each occurrence to its declaration's scope and
+  stopping at the first scope that has the name already. Scopes are named
+  parents first; a scope's locals, the most frequent first, take the first
+  names of the table's own sequence (`NameGenerator` without the excluded
+  identifiers) that none of the recorded names is, and among the names of
+  one length go in order of first occurrence. So sibling functions repeat
+  `a`, `b`, `c`, a local may reuse a global's name where the global is not
+  read inside it, and the table names only the rest, which no longer
+  compete with locals for the short names. Closure's own `RenameVars`
+  numbers locals by nesting slot instead and names the slots from the
+  globals' table; that was measured first and gave 33,863 identifiers and
+  952,823 gzipped bytes at 200k on master `6a42488`, against 30,869 and
+  890,885 for per-scope names, and moved six bytes of examples/features
+  from one-character names to two in two chunks. (Per-scope names leave
+  the raw size of every features chunk the same or smaller; the shared
+  chunk gzips 7 bytes larger, as its global names shift.) Two bindings
+  `resolve` does not tell as an engine does, both reachable only through
+  raw text that binds a hole again, keep the table's name for every
+  declaration of the spelling: names declared in a function whose
+  parameter list holds a default or a pattern (its expressions see the
+  scopes around the function, not the body's `var`), and a `var` inside a
+  `catch` whose parameter has its name (which assigns the parameter).
+  `optimization::raw_js_holes_that_shadow_their_local_keep_their_bindings`
+  runs both at every level. A chunked build names each text's locals from
+  the same
+  sequence; the names chunks import and export are module-level, so the
+  table still names them. Scope lookup in `resolve` is an index by scope
+  and name now instead of a scan of the scope's names, which made the
+  wrapper function's 17,000 bindings at 200k quadratic (about 1 s of the
+  2.1 s emission). Numbers: "Locals named per scope" in
+  `benchmarks/compiler.md`.
 - **Raw `js*`.** Since light-cljs-294 raw text is lexed with the rest of
   the program, and each of its tokens is written as it is: no rule dots,
   unwraps, drops or joins one, and its identifiers, compiler-shaped ones

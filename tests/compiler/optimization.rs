@@ -68,6 +68,40 @@ fn both(source: &str, expected: &str) {
     }
 }
 
+/// light-cljs-419: where raw text binds a local's hole again in a scope
+/// inside the local's, the same compiler name has two declarations one of
+/// which shadows the other, and the scope analysis cannot tell every
+/// occurrence's binding (a parameter initializer sees the outer one, not
+/// the body's `var`; a `var` in a `catch` of the same name assigns the
+/// catch parameter). Such locals keep one name for the spelling, as before
+/// locals were named per scope.
+#[test]
+fn raw_js_holes_that_shadow_their_local_keep_their_bindings() {
+    for (source, expected) in [
+        (
+            r#"(let [x (js* "10") y (js* "0")]
+                 (js* "(function(~{} = ~{}) { var ~{} = 20; return ~{}; })()" y x x y))"#,
+            "10\n",
+        ),
+        (
+            r#"(let [x (js* "10") y (js* "0")]
+                 (js* "(({a: ~{} = ~{}}) => { var ~{} = 20; return ~{}; })({})" y x x y))"#,
+            "10\n",
+        ),
+        (
+            r#"(let [x 5]
+                 (pr-str [(js* "(function() { try { throw 1; } catch (~{}) { var ~{} = 2; } return ~{}; })()" x x x) x]))"#,
+            "[nil 5]\n",
+        ),
+        (
+            r#"(fn? (let [x 3] (js* "(function(~{}) { return ~{}; })" x x)))"#,
+            "true\n",
+        ),
+    ] {
+        both(source, expected);
+    }
+}
+
 #[test]
 fn raw_js_var_holes_assign_lexical_locals_without_losing_iteration_captures() {
     for (source, expected) in [

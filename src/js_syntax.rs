@@ -13,6 +13,7 @@
 // check its output; the crate itself uses the rest.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 // ---------------------------------------------------------------------------
@@ -452,6 +453,9 @@ struct Parser<'t, 'a> {
     partners: Vec<usize>,
     pos: usize,
     scopes: Vec<Scope<'a>>,
+    /// Each scope's names by scope and name: the name's position in
+    /// [`Scope::names`].
+    declared: HashMap<(usize, &'a str), usize>,
     references: Vec<Reference<'a>>,
     /// Each token that declares a name: the token, the scope it declares the
     /// name in, the scope it appears in (a `var` in a block declares in the
@@ -461,6 +465,9 @@ struct Parser<'t, 'a> {
     /// Each `var`, `let` or `const` statement ended by a `;`: the keyword's
     /// token and the `;`'s.
     statements: Vec<(usize, usize)>,
+    /// The function scopes whose parameter list holds more than names
+    /// (defaults, patterns).
+    parameter_expressions: Vec<usize>,
     variable_statements: Option<Vec<VariableStatement>>,
     directive_end: usize,
     error: Option<(usize, String)>,
@@ -561,9 +568,11 @@ fn parse_with_variables<'t, 'a>(
             function: true,
             names: Vec::new(),
         }],
+        declared: HashMap::new(),
         references: Vec::new(),
         declarations: Vec::new(),
         statements: Vec::new(),
+        parameter_expressions: Vec::new(),
         variable_statements: record_variables.then(Vec::new),
         directive_end: 0,
         error: None,
@@ -690,9 +699,9 @@ pub fn analyze<'a>(source: &'a str, tokens: &[Token]) -> Result<Facts<'a>, (usiz
         let mut load_time = true;
         let local = loop {
             if current == 0 {
-                break parser.scopes[0].names.contains(&name);
+                break parser.declared.contains_key(&(0, name));
             }
-            if parser.scopes[current].names.contains(&name) {
+            if parser.declared.contains_key(&(current, name)) {
                 break true;
             }
             load_time &= !parser.scopes[current].function;
@@ -838,9 +847,11 @@ impl<'a> Parser<'_, 'a> {
     }
 
     fn declare(&mut self, scope: usize, name: &'a str) {
-        if !self.scopes[scope].names.contains(&name) {
-            self.scopes[scope].names.push(name);
-        }
+        let names = &mut self.scopes[scope].names;
+        self.declared.entry((scope, name)).or_insert_with(|| {
+            names.push(name);
+            names.len() - 1
+        });
     }
 
     /// Declares the name of the token at `token`, which appears in `lexical`,
@@ -1243,6 +1254,7 @@ impl<'a> Parser<'_, 'a> {
     }
 
     fn parameters(&mut self, function: usize) {
+        let open = self.pos;
         self.expect("(");
         while self.pos < self.tokens.len() && !self.at_punct(")") {
             self.eat("...");
@@ -1253,6 +1265,14 @@ impl<'a> Parser<'_, 'a> {
             if !self.at_punct(")") {
                 self.expect(",");
             }
+        }
+        let names_only = self.tokens[(open + 1).min(self.pos)..self.pos]
+            .iter()
+            .all(|token| {
+                token.kind == Kind::Name || matches!(token.text(self.source), "," | "...")
+            });
+        if !names_only {
+            self.parameter_expressions.push(function);
         }
         self.expect(")");
     }
@@ -1642,6 +1662,11 @@ pub struct Resolution<'a> {
     /// Each `var`, `let` or `const` statement ended by a `;`: the keyword's
     /// token and the `;`'s.
     pub statements: Vec<(usize, usize)>,
+    /// The function scopes whose parameter list holds more than names: a
+    /// default or a pattern, whose expressions see the parameters and the
+    /// scopes around the function but, unlike this resolution says, none
+    /// of the body's declarations.
+    pub parameter_expressions: Vec<usize>,
 }
 
 /// Resolves every identifier of a body to its declaration. Property names,
@@ -1658,11 +1683,10 @@ pub fn resolve<'a>(source: &'a str, tokens: &[Token]) -> Result<Resolution<'a>, 
             token: None,
         }));
     }
-    let lookup = |scope: usize, name: &str| {
-        parser.scopes[scope]
-            .names
-            .iter()
-            .position(|&declared| declared == name)
+    let lookup = |scope: usize, name: &'a str| {
+        parser
+            .declared
+            .get(&(scope, name))
             .map(|position| by_scope[scope] + position)
     };
     let mut occurrences = vec![None; tokens.len()];
@@ -1697,6 +1721,7 @@ pub fn resolve<'a>(source: &'a str, tokens: &[Token]) -> Result<Resolution<'a>, 
         declarations,
         occurrences,
         statements: parser.statements,
+        parameter_expressions: parser.parameter_expressions,
     })
 }
 

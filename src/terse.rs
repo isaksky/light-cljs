@@ -6,8 +6,9 @@
 //!   names, and each top-level binding a placeholder that [`terse_slice`]
 //!   names by its frequency in the slice.
 //! - The program is renamed and rewritten by [`terse_program`], which
-//!   replaces the hygiene pass: every compiler-bound name gets a short name
-//!   by frequency, members read with a constant identifier key become dotted,
+//!   replaces the hygiene pass: every compiler-bound name gets a short name,
+//!   a local per scope ([`Locals`], light-cljs-419) and every other one by
+//!   frequency, members read with a constant identifier key become dotted,
 //!   redundant parentheses go and tokens are joined without whitespace.
 //! - A chunked build's texts share one such table ([`terse_texts`]), which
 //!   also names each chunk's runtime units written at module level
@@ -19,8 +20,9 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::js_syntax::{
-    Join, Kind, NameGenerator, Shape, TerseWriter, Token, closes_control_head, joined_declarations,
-    lex_section, partners, redundant_semicolons, reserved, resolve,
+    Declaration, Join, Kind, NO_SCOPE, NameGenerator, Resolution, Shape, TerseWriter, Token,
+    closes_control_head, joined_declarations, lex_section, partners, redundant_semicolons,
+    reserved, resolve,
 };
 
 /// One runtime unit as `build.rs` writes it.
@@ -579,12 +581,313 @@ fn constrained_short_names<'s>(
     names
 }
 
+/// What an occurrence in a scope names, for [`Locals::crossing`]: a local of
+/// the text named per scope, by its number, or with this bit a compiler name
+/// written by its own short name (a global, a runtime read, a local that
+/// keeps its name), by its number in [`Locals::words`].
+const WORD: u32 = 1 << 31;
+
+/// The local of a token that names none of [`Locals`].
+const NO_LOCAL: u32 = u32::MAX;
+
+/// The locals of a text that get their short names per scope rather than
+/// from the one table of compiler names (light-cljs-419), as Closure's
+/// `RenameVars` and other minifiers name locals, so that sibling functions
+/// reuse the same short names: a local below the top level whose every
+/// occurrence is a compiler name outside raw `js*` text and not a shorthand
+/// property, and that the caller admits.
+///
+/// Each scope with such locals records what occurs in it or in a scope
+/// inside it and resolves outside it, which its locals' names must not be:
+/// the compiler names of the table (globals, runtime reads, every other
+/// compiler name, wherever it is declared) and the locals of enclosing
+/// scopes. Recording climbs from each occurrence to its declaration's scope
+/// and stops at the first scope that has the name already, so the work is
+/// the occurrences plus the recorded names.
+struct Locals<'s> {
+    /// Per token, the local it names, or [`NO_LOCAL`].
+    of_token: Vec<u32>,
+    /// Per local, its occurrences and its first token.
+    count: Vec<u32>,
+    first: Vec<u32>,
+    /// Per scope with locals, parents first, its first local (a scope's
+    /// locals are consecutive), and one more entry, the number of locals.
+    starts: Vec<u32>,
+    /// Per scope with locals, the names its locals avoid, each once: a
+    /// local or, with [`WORD`], one of `words`.
+    crossing: Vec<Vec<u32>>,
+    /// The compiler names that some scope's locals avoid.
+    words: Vec<&'s str>,
+}
+
+impl<'s> Locals<'s> {
+    /// No locals named per scope: every compiler name is the table's.
+    fn none(tokens: usize) -> Self {
+        Self {
+            of_token: vec![NO_LOCAL; tokens],
+            count: Vec::new(),
+            first: Vec::new(),
+            starts: vec![0],
+            crossing: Vec::new(),
+            words: Vec::new(),
+        }
+    }
+
+    fn new(
+        source: &'s str,
+        tokens: &[Token],
+        in_raw: &[bool],
+        resolution: &Resolution,
+        eligible: impl Fn(&str) -> bool,
+    ) -> Self {
+        let declarations = &resolution.declarations;
+        let mut named = declarations
+            .iter()
+            .map(|declaration| {
+                declaration.scope != 0
+                    && declaration.token.is_some()
+                    && compiler_name(declaration.name)
+                    && eligible(declaration.name)
+            })
+            .collect::<Vec<_>>();
+        for (index, occurrence) in resolution.occurrences.iter().enumerate() {
+            if let Some(occurrence) = occurrence
+                && let Some(declaration) = occurrence.declaration
+                && (in_raw[index] || occurrence.shorthand)
+            {
+                named[declaration] = false;
+            }
+        }
+        // Two places where `resolve` does not tell an occurrence's binding
+        // as an engine does, which raw text that binds a hole again reaches:
+        // a parameter default or pattern sees the scopes around its function
+        // and not the body's declarations, and a `var` inside a `catch` whose
+        // parameter has its name assigns the parameter. Every declaration of
+        // such a spelling keeps one name for it, the table's, which is what
+        // the analysis cannot get wrong.
+        let mut spelled: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (index, declaration) in declarations.iter().enumerate() {
+            if compiler_name(declaration.name) {
+                spelled.entry(declaration.name).or_default().push(index);
+            }
+        }
+        let mut misread = HashSet::new();
+        let initialized = resolution
+            .parameter_expressions
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let mut shadowed = HashSet::new();
+        for declaration in declarations {
+            if spelled
+                .get(declaration.name)
+                .is_some_and(|same| same.len() > 1)
+            {
+                shadowed.insert((declaration.scope, declaration.name));
+            }
+            if initialized.contains(&declaration.scope) && compiler_name(declaration.name) {
+                misread.insert(declaration.name);
+            }
+        }
+        for occurrence in resolution.occurrences.iter().flatten() {
+            let Some(declaration) = occurrence.declaration else {
+                continue;
+            };
+            let Declaration {
+                name,
+                scope: target,
+                ..
+            } = declarations[declaration];
+            if target == occurrence.scope || !spelled.get(name).is_some_and(|same| same.len() > 1) {
+                continue;
+            }
+            // Only a hoisted `var` resolves past a scope of its own name.
+            let mut scope = occurrence.scope;
+            while scope != target && scope != NO_SCOPE {
+                if shadowed.contains(&(scope, name)) {
+                    misread.insert(name);
+                    break;
+                }
+                scope = resolution.parents[scope];
+            }
+        }
+        for name in misread {
+            for &declaration in &spelled[name] {
+                named[declaration] = false;
+            }
+        }
+        // `resolve` lists declarations by scope, and a parent scope
+        // precedes its children.
+        debug_assert!(declarations.is_sorted_by_key(|declaration| declaration.scope));
+        let scopes = resolution.parents.len();
+        let mut declaring = vec![NO_LOCAL; scopes];
+        let mut local_of = vec![NO_LOCAL; declarations.len()];
+        let mut starts = Vec::new();
+        let mut locals = 0u32;
+        for (index, declaration) in declarations.iter().enumerate() {
+            if named[index] {
+                if declaring[declaration.scope] == NO_LOCAL {
+                    declaring[declaration.scope] = starts.len() as u32;
+                    starts.push(locals);
+                }
+                local_of[index] = locals;
+                locals += 1;
+            }
+        }
+        starts.push(locals);
+        // The nearest scope with locals at or around each scope.
+        let mut up = vec![NO_SCOPE; scopes];
+        for scope in 0..scopes {
+            up[scope] = match (declaring[scope], resolution.parents[scope]) {
+                (NO_LOCAL, NO_SCOPE) => NO_SCOPE,
+                (NO_LOCAL, parent) => up[parent],
+                _ => scope,
+            };
+        }
+        let around = |scope: usize| match resolution.parents[scope] {
+            NO_SCOPE => NO_SCOPE,
+            parent => up[parent],
+        };
+        let mut crossing = vec![Vec::new(); starts.len() - 1];
+        let mut recorded = HashSet::<u64>::new();
+        let mut words = Vec::new();
+        let mut numbers = HashMap::new();
+        let mut of_token = vec![NO_LOCAL; tokens.len()];
+        let mut count = vec![0u32; locals as usize];
+        let mut first = vec![u32::MAX; locals as usize];
+        for (index, occurrence) in resolution.occurrences.iter().enumerate() {
+            let Some(occurrence) = occurrence else {
+                continue;
+            };
+            let word = tokens[index].text(source);
+            if in_raw[index] || !compiler_name(word) {
+                continue;
+            }
+            let local = occurrence
+                .declaration
+                .map_or(NO_LOCAL, |declaration| local_of[declaration]);
+            let (key, target) = match local {
+                NO_LOCAL => {
+                    let number = *numbers.entry(word).or_insert_with(|| {
+                        words.push(word);
+                        words.len() as u32 - 1
+                    });
+                    (WORD | number, NO_SCOPE)
+                }
+                local => {
+                    of_token[index] = local;
+                    count[local as usize] += 1;
+                    first[local as usize] = first[local as usize].min(index as u32);
+                    let declaration = occurrence.declaration.expect("a local's declaration");
+                    (local, declarations[declaration].scope)
+                }
+            };
+            let mut scope = up[occurrence.scope];
+            while scope != target
+                && scope != NO_SCOPE
+                && recorded.insert((scope as u64) << 32 | u64::from(key))
+            {
+                crossing[declaring[scope] as usize].push(key);
+                scope = around(scope);
+            }
+        }
+        Self {
+            of_token,
+            count,
+            first,
+            starts,
+            crossing,
+            words,
+        }
+    }
+
+    /// The short names of the locals, by local, given the table's `words`:
+    /// scope by scope, parents first, the scope's locals, the most frequent
+    /// first, take the first `candidates` that no name it avoids is.
+    fn names<F: Fn(&str) -> bool>(
+        &self,
+        words: &HashMap<&str, String>,
+        candidates: &mut Candidates<F>,
+    ) -> Vec<String> {
+        let mut names = vec![String::new(); self.count.len()];
+        let mut order = Vec::new();
+        let mut chosen = Vec::new();
+        for (scope, crossing) in self.crossing.iter().enumerate() {
+            order.clear();
+            order.extend(self.starts[scope] as usize..self.starts[scope + 1] as usize);
+            order.sort_by_key(|&local| (std::cmp::Reverse(self.count[local]), self.first[local]));
+            let avoided = crossing
+                .iter()
+                .map(|&key| match key & WORD {
+                    0 => names[key as usize].as_str(),
+                    _ => words[self.words[(key & !WORD) as usize]].as_str(),
+                })
+                .collect::<HashSet<_>>();
+            chosen.clear();
+            let mut at = 0;
+            for _ in &order {
+                while avoided.contains(candidates.get(at)) {
+                    at += 1;
+                }
+                chosen.push(candidates.get(at).to_owned());
+                at += 1;
+            }
+            // Among the names of one length, in order of first occurrence,
+            // as the table assigns them (`constrained_short_names`).
+            let mut batch = 0;
+            while batch < chosen.len() {
+                let length = chosen[batch].len();
+                let end = batch + chosen[batch..].partition_point(|name| name.len() == length);
+                order[batch..end].sort_by_key(|&local| self.first[local]);
+                batch = end;
+            }
+            for (&local, name) in order.iter().zip(chosen.drain(..)) {
+                names[local] = name;
+            }
+        }
+        names
+    }
+}
+
+/// The [`NameGenerator`] sequence without `excluded` names, generated as far
+/// as it is read.
+struct Candidates<F> {
+    names: Vec<String>,
+    generator: NameGenerator,
+    excluded: F,
+}
+
+impl<F: Fn(&str) -> bool> Candidates<F> {
+    fn new(excluded: F) -> Self {
+        Self {
+            names: Vec::new(),
+            generator: NameGenerator::default(),
+            excluded,
+        }
+    }
+
+    fn get(&mut self, at: usize) -> &str {
+        while self.names.len() <= at {
+            let excluded = &self.excluded;
+            let name = self
+                .generator
+                .find(|name| !excluded(name))
+                .expect("names never run out");
+            self.names.push(name);
+        }
+        &self.names[at]
+    }
+}
+
 /// The terse output of an `Advanced` program, `source` as the emitter wrote
 /// it: `segments` are its raw `js*` ranges and `runtime` the embedded runtime
 /// factory, already terse ([`terse_slice`]).
 ///
-/// Every compiler name ([`compiler_name`]) gets a short name, the most
-/// frequent first. The new names avoid every other identifier of the output
+/// Every compiler name ([`compiler_name`]) gets a short name: a local below
+/// the top level per scope ([`Locals`]), the first that nothing occurring in
+/// its scope and resolving outside it has, so sibling functions repeat the
+/// same names; every other one from one table, the most frequent first.
+/// The new names avoid every other identifier of the output
 /// (host globals, helper parameters, properties, and each identifier of raw
 /// `js*` text, whatever it spells) and the ECMAScript globals the runtime
 /// reads, so raw text still names only its holes and host globals. The
@@ -708,6 +1011,8 @@ fn kept_read(word: &str) -> Option<&'static str> {
 /// one frequency table over all of them: a compiler name has the same short
 /// name in every text, so a name one chunk exports is the name another
 /// imports, and the short names avoid every other identifier of every text.
+/// Each text's locals are named per scope from the same sequence ([`Locals`]);
+/// none is a name another text imports, which are at module level.
 /// Also returns that table, by compiler name, from which the import and
 /// export lines are written.
 ///
@@ -727,6 +1032,10 @@ pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s s
     let fixed = |word: &str| if module { kept_read(word) } else { None };
     let module_level =
         |name: &str| module && (keeps_name(name) || TERSE_GLOBALS.binary_search(&name).is_ok());
+    let avoid = module_avoid(texts);
+    // A runtime read is no local; the constrained and fixed ones keep the
+    // table's name.
+    let eligible = |word: &str| fixed(word).is_none() && !avoid.contains_key(word);
     let raws = texts
         .iter()
         .map(|text| {
@@ -743,7 +1052,7 @@ pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s s
     let lexed = texts
         .iter()
         .zip(&raws)
-        .map(|(text, raw)| Lexed::new(text.source, text.runtime.clone(), raw))
+        .map(|(text, raw)| Lexed::new(text.source, text.runtime.clone(), raw, eligible))
         .collect::<Option<Vec<_>>>();
     if let Some(lexed) = lexed {
         let mut words: Vec<&'s str> = Vec::new();
@@ -758,12 +1067,19 @@ pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s s
         let names = constrained_short_names(
             words,
             |name| excluded.contains(name) || module_level(name),
-            &module_avoid(texts),
+            &avoid,
             fixed,
         );
+        let mut candidates =
+            Candidates::new(|name: &str| excluded.contains(name) || module_level(name));
+        let locals = lexed
+            .iter()
+            .map(|text| text.locals.names(&names, &mut candidates))
+            .collect::<Vec<_>>();
         let outputs = lexed
             .into_iter()
-            .map(|text| text.rewrite(&names).0)
+            .zip(&locals)
+            .map(|(text, locals)| text.rewrite(&names, locals).0)
             .collect();
         return (outputs, names);
     }
@@ -949,16 +1265,20 @@ fn rewritten(
     runtime: Option<Range<usize>>,
     raw: &[Range<usize>],
 ) -> Option<(String, Vec<(usize, usize)>)> {
-    let lexed = Lexed::new(source, runtime, raw)?;
+    let lexed = Lexed::new(source, runtime, raw, |_| true)?;
     let mut words = Vec::new();
     let mut excluded = HashSet::new();
     lexed.words(&mut words, &mut excluded);
     let names = short_names(words, |name| excluded.contains(name));
-    Some(lexed.rewrite(&names))
+    let locals = lexed
+        .locals
+        .names(&names, &mut Candidates::new(|name| excluded.contains(name)));
+    Some(lexed.rewrite(&names, &locals))
 }
 
-/// The tokens of a text [`rewritten`] writes: which are raw `js*` text, and
-/// the comments of raw text it keeps.
+/// The tokens of a text [`rewritten`] writes: which are raw `js*` text, the
+/// comments of raw text it keeps, its locals named per scope ([`Locals`])
+/// and the declarations that join.
 struct Lexed<'s> {
     source: &'s str,
     runtime: Option<Range<usize>>,
@@ -966,12 +1286,20 @@ struct Lexed<'s> {
     partners: Vec<usize>,
     in_raw: Vec<bool>,
     comments: Vec<(usize, &'s str, bool)>,
+    locals: Locals<'s>,
+    joins: Vec<Join>,
 }
 
 impl<'s> Lexed<'s> {
     /// `source` lexed, with its `runtime` factory one token; `None` where
-    /// [`rewritten`] cannot follow it.
-    fn new(source: &'s str, runtime: Option<Range<usize>>, raw: &[Range<usize>]) -> Option<Self> {
+    /// [`rewritten`] cannot follow it. The locals that `eligible` admits are
+    /// named per scope ([`Locals`]), unless the text does not parse.
+    fn new(
+        source: &'s str,
+        runtime: Option<Range<usize>>,
+        raw: &[Range<usize>],
+        eligible: impl Fn(&str) -> bool,
+    ) -> Option<Self> {
         // The runtime factory is one token, an atom like a template literal.
         let mut tokens = Vec::new();
         match &runtime {
@@ -990,6 +1318,21 @@ impl<'s> Lexed<'s> {
         let partners = partners(source, &tokens);
         let in_raw = raw_tokens(source, &tokens, &partners, raw, runtime.as_ref())?;
         let comments = raw_comments(source, &tokens, raw);
+        // Adjacent `let` and `const` statements join: `let a,b;`, unless the
+        // `;` or the keyword is raw text.
+        let (locals, mut joins) = match resolve(source, &tokens) {
+            Ok(resolution) => (
+                Locals::new(source, &tokens, &in_raw, &resolution, eligible),
+                joined_declarations(source, &tokens, &resolution.statements),
+            ),
+            Err(_) => (Locals::none(tokens.len()), vec![Join::Keep; tokens.len()]),
+        };
+        for semicolon in 0..tokens.len() {
+            if joins[semicolon] == Join::Comma && (in_raw[semicolon] || in_raw[semicolon + 1]) {
+                joins[semicolon] = Join::Keep;
+                joins[semicolon + 1] = Join::Keep;
+            }
+        }
         Some(Self {
             source,
             runtime,
@@ -997,17 +1340,23 @@ impl<'s> Lexed<'s> {
             partners,
             in_raw,
             comments,
+            locals,
+            joins,
         })
     }
 
-    /// Add the compiler names of the text, in order, to `words`, and its
-    /// other identifiers, which short names avoid, to `excluded`.
+    /// Add the compiler names of the text the table names, in order, to
+    /// `words` (not its locals named per scope), and its other identifiers,
+    /// which short names avoid, to `excluded`.
     fn words(&self, words: &mut Vec<&'s str>, excluded: &mut HashSet<&'s str>) {
-        for (token, &in_raw) in self.tokens.iter().zip(&self.in_raw) {
+        let tokens = self.tokens.iter().zip(&self.in_raw);
+        for ((token, &in_raw), &local) in tokens.zip(&self.locals.of_token) {
             if token.kind == Kind::Name {
                 let word = token.text(self.source);
                 if compiler_name(word) && !in_raw {
-                    words.push(word);
+                    if local == NO_LOCAL {
+                        words.push(word);
+                    }
                 } else {
                     excluded.insert(word);
                 }
@@ -1015,9 +1364,14 @@ impl<'s> Lexed<'s> {
         }
     }
 
-    /// The text rewritten with the short `names` of its compiler names, with
-    /// the start of each written token in the source and in the output.
-    fn rewrite(self, names: &HashMap<&str, String>) -> (String, Vec<(usize, usize)>) {
+    /// The text rewritten with the short `names` of its compiler names and
+    /// the names of its `locals` ([`Locals::names`]), with the start of each
+    /// written token in the source and in the output.
+    fn rewrite(
+        self,
+        names: &HashMap<&str, String>,
+        locals: &[String],
+    ) -> (String, Vec<(usize, usize)>) {
         let Lexed {
             source,
             runtime,
@@ -1025,19 +1379,31 @@ impl<'s> Lexed<'s> {
             partners,
             in_raw,
             comments,
+            locals: Locals { of_token, .. },
+            joins,
         } = self;
-        rewrite_tokens(source, runtime, tokens, partners, in_raw, comments, names)
+        let name = |index: usize, word: &str| -> &str {
+            match of_token[index] {
+                NO_LOCAL => &names[word],
+                local => &locals[local as usize],
+            }
+        };
+        rewrite_tokens(
+            source, runtime, tokens, partners, in_raw, comments, joins, name,
+        )
     }
 }
 
-fn rewrite_tokens(
+#[allow(clippy::too_many_arguments)]
+fn rewrite_tokens<'n>(
     source: &str,
     runtime: Option<Range<usize>>,
     tokens: Vec<Token>,
     partners: Vec<usize>,
     in_raw: Vec<bool>,
     comments: Vec<(usize, &str, bool)>,
-    names: &HashMap<&str, String>,
+    joins: Vec<Join>,
+    name: impl Fn(usize, &str) -> &'n str,
 ) -> (String, Vec<(usize, usize)>) {
     let is_runtime = |token: &Token| runtime.as_ref().is_some_and(|r| r.start == token.start);
     let mut commented = vec![false; tokens.len() + 1];
@@ -1066,19 +1432,6 @@ fn rewrite_tokens(
         dotted,
         ..
     } = rewrite;
-    // Adjacent `let` and `const` statements join: `let a,b;`, unless the
-    // `;` or the keyword is raw text.
-    let mut joins = match resolve(source, &tokens) {
-        Ok(resolution) => joined_declarations(source, &tokens, &resolution.statements),
-        Err(_) => vec![Join::Keep; tokens.len()],
-    };
-    for semicolon in 0..tokens.len() {
-        if joins[semicolon] == Join::Comma && (in_raw[semicolon] || in_raw[semicolon + 1]) {
-            joins[semicolon] = Join::Keep;
-            joins[semicolon + 1] = Join::Keep;
-        }
-    }
-
     let mut writer = TerseWriter::default();
     let mut written = Vec::new();
     let mut comments = comments.into_iter().peekable();
@@ -1141,7 +1494,7 @@ fn rewrite_tokens(
                 kind: Kind::Name,
                 text: word,
             };
-            writer.write(shape, &names[word], newline);
+            writer.write(shape, name(index, word), newline);
         } else {
             let shape = Shape {
                 kind: token.kind,
@@ -1873,6 +2226,60 @@ mod tests {
         assert_eq!(
             output,
             "let __light1_a = 1;\n/* __light0_ __light1_a */console.log(__light1_a);\n"
+        );
+    }
+
+    /// An emitted program whose functions declare locals in turn: siblings,
+    /// closures over outer locals, a loop whose closures capture its
+    /// variable, mutually recursive locals (`letfn`), a named function
+    /// expression, and a raw `js*` local.
+    const SCOPED: &str = "let g1 = 1;
+let g2 = function (l1, l2) { return l1 + l2 + g1; };
+let g3 = function (l3, l4) { return l5 => l3 + l4 + l5 + g2(g1, l5); };
+let g4 = function (l6) {
+  const l7 = [];
+  for (let l8 = 0; l8 < l6; l8++) { l7.push(() => l8 + l6) }
+  return l7;
+};
+let g5 = function self1(l9) {
+  const l10 = l11 => l11 > 0 ? l12(l11 - 1) : l9;
+  const l12 = l13 => l10(l13);
+  return l10(l9) + self1.length;
+};
+let g6 = function (l14) { let l15 = l14 + 1; return [l15, g5(l15)]; };
+console.log(g2(1, 2), g3(1, 2)(3), g4(2).length, g5(3), g6(1));
+";
+
+    /// light-cljs-419: locals get their names per scope, so sibling
+    /// functions reuse the same short names, and a local avoids exactly the
+    /// names that occur inside its scope and resolve outside it: the globals
+    /// a function reads (`g1` in `g2`'s body) and the outer locals its inner
+    /// functions read (`l3` in the arrow of `g3`). Globals take the table's
+    /// names, which no longer compete with locals.
+    #[test]
+    fn locals_are_named_per_scope_without_capture() {
+        let output = terse_program(SCOPED, &[], None, None);
+        same_bindings(SCOPED, &output).unwrap();
+        assert_eq!(
+            output,
+            "let a=1,b=function(b,c){return b+c+a},c=function(c,d){return e=>c+d+e+b(a,e)},\
+             d=function(a){const b=[];for(let c=0;c<a;c++){b.push(()=>c+a)}\nreturn b};\
+             let e=function a(b){const c=a=>a>0?d(a-1):b,d=a=>c(a);return c(b)+a.length};\
+             let f=function(a){let b=a+1;return[b,e(b)]};\
+             console.log(b(1,2),c(1,2)(3),d(2).length,e(3),f(1));\n"
+        );
+        // A local of a function with raw text takes none of its identifiers,
+        // and one that raw text spells keeps the table's name.
+        let output = terse_with_raw(&[
+            (false, "let g1 = function (l1, l2) { return "),
+            (true, "a + b + l2 + "),
+            (false, "l1"),
+            (true, ""),
+            (false, "; };\nconsole.log(g1(1, 2));\n"),
+        ]);
+        assert_eq!(
+            output,
+            "let c=function(c,d){return a+b+l2+c};console.log(c(1,2));\n"
         );
     }
 

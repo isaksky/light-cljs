@@ -63,7 +63,10 @@ At 800k: unused arities 329 / 779 (light) and 215 / 779 (shadow).
    output has 98,232 distinct identifiers against shadow's 26,279: locals get
    program-unique names (`tVY`, `tVZ`, ...) where Closure reuses short names in
    each function scope. Light also emits 9,410 `(function(){...})()` expression
-   wrappers and 3,177 calls to the truthiness helper.
+   wrappers and 3,177 calls to the truthiness helper. Since light-cljs-419
+   locals are named per scope: 30,173 distinct identifiers at 200k, and gzip
+   863,513 (14% under shadow) at 200k and 3,294,722 (15% under) at 800k
+   ("Locals named per scope" in `benchmarks/compiler.md`).
 4. **Light keeps more unused arities** (86 vs 51 at 200k).
    Since light-cljs-421 light keeps 49 at 200k and 202 of 779 at 800k (shadow
    51 and 215): methods that no call selects of functions without a
