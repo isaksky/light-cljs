@@ -1,5 +1,10 @@
 # Expanded lexer measurements
 
+[Seeded large projects](generated-project/README.md) generate reproducible 5k,
+200k, or 800k-line applications in Babashka for light-cljs/shadow-cljs comparisons,
+with an independent model interpreter and mandatory, classified unused code for
+elimination checks.
+
 [Compiler collection measurements](compiler.md) separate parse/analyze/emit/total
 compilation, output bytes, fresh CLI/Node costs, and validated resident immutable
 operations. The standard-library `run_compiler.py` driver retains nine-sample

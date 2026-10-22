@@ -870,6 +870,11 @@ ratchet programs at every `--optimize` level, in Node and QuickJS:
 `cargo bench --locked --bench compiler -- --levels --output DIR` (see
 [benchmarks/compiler.md](benchmarks/compiler.md#startup-and-steady-state-by-optimization-level--october-13-2026)).
 
+For large synthetic applications shared with shadow-cljs,
+`bb benchmarks/generated-project/generate.bb /tmp/cljs-200k --seed 42 --lines 200k`
+generates a reproducible project, an independent checksum oracle, and marked
+unused code for optimizer checks. See [the generator guide](benchmarks/generated-project/README.md).
+
 ## Documentation
 
 - [docs/compiler.md](docs/compiler.md) — compiler reference: pipeline, supported
