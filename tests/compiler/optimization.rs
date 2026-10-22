@@ -467,6 +467,14 @@ fn advanced_keeps_initializers_that_may_throw_run_code_or_see_replaced_operation
             (def unused (->R "KEPT_FACTORY")) 42"#,
             "42\n[\"KEPT_FACTORY\"]\n",
         ),
+        // An alias of a function is inert (light-cljs-421), but not of one
+        // with a host path name: its read is of a property, whose object may
+        // have changed.
+        (
+            r#"(set! js/hostDefs (js-obj)) (def hostDefs.f (fn [] "KEPT_DOTTED"))
+            (set! js/hostDefs nil) (def unused hostDefs.f) 42"#,
+            "threw Cannot read properties of null (reading 'f')\n[]\n",
+        ),
     ] {
         let p = program(source);
         for level in OptimizationLevel::ALL {

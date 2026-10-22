@@ -783,7 +783,9 @@ struct Constructor {
 /// `Prepare` accepts primitive literals, functions, core values, lists and
 /// vectors of inert values, and maps and sets with scalar keys. `Advanced`
 /// (Phase 2 step 6 of docs/advanced-optimization.md) also accepts local reads,
-/// `let`, `if` and `do` over inert parts, metadata on inert values through the
+/// reads of a global that an earlier top-level `def` of a `fn` literal
+/// defines once and nothing assigns, whose name is no host path (an alias,
+/// `(def f other/g)`, since light-cljs-421), `let`, `if` and `do` over inert parts, metadata on inert values through the
 /// `with-meta` row, calls of core operations whose row in
 /// `src/core_operations.tsv` is `pure` or `allocates` for the argument types
 /// and whose arguments run no code (`-` calls, or `dispatch` over plain data),
@@ -953,6 +955,17 @@ impl<'p> Inert<'p> {
             // Non-scalar hashing, reader literals, metadata and unknown operations
             // may throw or dispatch user code and are deliberately not pure here.
             _ if !self.advanced => return None,
+            // An alias of a function defined once, by an earlier top-level
+            // `def` of a `fn` literal that nothing assigns (light-cljs-421):
+            // the read sees that function wherever the definition runs. A
+            // name with a dot is a host path, a property of an object that
+            // may have changed.
+            Global(global)
+                if self.functions[global.0].is_some_and(|at| at < self.position)
+                    && !program.globals[global.0].name.contains('.') =>
+            {
+                Shape::opaque(Type::FN)
+            }
             Local(local) => self.locals[local.0].unwrap_or(Shape::opaque(Type::ANY)),
             Let { bindings, body } => {
                 for (local, init) in bindings {

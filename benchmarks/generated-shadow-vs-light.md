@@ -65,3 +65,7 @@ At 800k: unused arities 329 / 779 (light) and 215 / 779 (shadow).
    each function scope. Light also emits 9,410 `(function(){...})()` expression
    wrappers and 3,177 calls to the truthiness helper.
 4. **Light keeps more unused arities** (86 vs 51 at 200k).
+   Since light-cljs-421 light keeps 49 at 200k and 202 of 779 at 800k (shadow
+   51 and 215): methods that no call selects of functions without a
+   dispatcher, and dispatchers kept only for an unread alias, are gone
+   ([details](compiler.md#unused-arities-without-a-dispatcher-and-unread-aliases--october-22-2026)).

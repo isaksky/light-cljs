@@ -5768,3 +5768,40 @@ on master `156a01a` (October 18), startup was 9,046 / 3,373, 4,366 bytes over
 the lower bound (4,680 then): 2,879 of hash-trie units that light-cljs-302
 moved out, and 1,487 of chunk loading, which light-cljs-303 and
 light-cljs-353 shrank.
+
+## Unused arities without a dispatcher, and unread aliases — October 22, 2026
+
+light-cljs-421 binds no entry for a method that no direct call selects when a
+function has no dispatcher, and lets the `Inert` removal drop an unread alias
+of a function defined once by an earlier `def`, `(def f other/g)`, so the
+function no longer escapes through it ([advanced optimization
+design](../docs/advanced-optimization.md), "Phase 2 call shape extension
+points", "As built (light-cljs-421)"). Generated projects of
+`benchmarks/generated-project`, seed 42, `light-cljs release bench --no-cache`
+(advanced), raw / `gzip -9 -n` bytes and `check-waste.bb` survivors of the
+`arity` category. Before is master `6a42488`, whose output is byte for byte
+that of `ac88cb2` in [the generated-project comparison](generated-shadow-vs-light.md);
+sizes do not depend on load:
+
+| Project | Before | After | Unused arities before / after | shadow-cljs |
+| --- | ---: | ---: | --- | --- |
+| 200k lines | 4,097,518 / 1,261,793 | 4,040,250 / 1,244,376 | 86 / 49 of 204 | 51 |
+| 800k lines | 16,149,220 / 4,930,779 | 15,908,267 / 4,856,966 | 329 / 202 of 779 | 215 |
+
+Every output prints the oracle's checksum for input 42 and 3 iterations, and
+`check-waste.bb --strict` passes. At 200k, 25 of the 37 arities removed were
+methods of functions that never escaped, which had no dispatcher already but
+kept every entry; 12 were dispatchers kept only for an alias nothing reads.
+The arities light still keeps at 200k are those of functions whose value is
+used: a read alias, or `partial`, `comp`, `juxt` and the other value uses of
+the kernels. Shadow keeps 47 of the same arities and 4 that light drops. The
+2 that only light keeps belong to functions whose one value use is an unread
+`(partial f x)` local, a call Closure finds side-effect free and removes.
+
+Penpot `app.main` (`bb benchmarks/penpot.bb DIR main-advanced main-none`,
+`--pseudo-names`, two alternated runs each, one-minute load 7 to 11): the
+advanced output drops from 25,761,965 to 25,647,115 bytes. Wall time and peak
+RSS stay within noise: advanced 32.6 and 32.7 s, 1.05 and 1.08 GB before;
+50.5 s (a run with 10 s of system time under load) and 33.2 s, 1.04 and
+1.09 GB after; `none`, which neither change reaches, 31.8 and 25.7 s before,
+26.8 and 26.1 s after.

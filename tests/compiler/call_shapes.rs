@@ -512,6 +512,40 @@ fn exports_keep_their_dispatcher() {
     assert_eq!(execute(&format!("console.log({text});")), "2\n");
 }
 
+/// A global function without a dispatcher binds only the methods its calls
+/// select (light-cljs-421), as Closure drops the arity properties nothing
+/// reads. An alias that nothing reads, `(def unread-alias aliased)`, is
+/// removed, so its function loses its dispatcher too; a read alias, and an
+/// alias of a function defined after it, keep the dispatcher and every
+/// method.
+#[test]
+fn unselected_methods_and_unread_aliases_leave_no_entries() {
+    // The host calls keep the methods from being inlined (light-cljs-214).
+    let source = r#"
+        (defn unused-arity ([x] (unused-arity x 1)) ([x y] (js/Math.abs (+ x y)))
+          ([x y z w] (str "UNSELECTED" x y z w)))
+        (defn aliased ([x] (aliased x 2)) ([x y] (js/Math.abs (* x y)))
+          ([x y z] (str "UNREAD-ALIAS" x y z)))
+        (def unread-alias aliased)
+        (defn read-target ([x] (js/Math.abs x)) ([x y] (str "READ-ALIAS" x y)))
+        (def read-alias read-target)
+        (declare later)
+        (def early-alias later)
+        (defn later ([x] (js/Math.abs x)) ([x y] (str "EARLY-ALIAS" x y)))
+        (pr-str [(unused-arity 1) (unused-arity 2 3) (aliased 4) (read-alias 5) (later 6)])"#;
+    let program = program(source);
+    let (text, stats) = every_level(&program, source, "[2 5 8 5 6]");
+    let unused_arity = global(&program, "unused-arity");
+    for gone in ["UNSELECTED", "UNREAD-ALIAS", &format!("{unused_arity}_2")] {
+        assert!(!text.contains(gone), "{gone}: {text}");
+    }
+    for kept in ["READ-ALIAS", "EARLY-ALIAS"] {
+        assert!(text.contains(kept), "{kept}: {text}");
+    }
+    assert!(text.contains(&format!("let {unused_arity}_1;")), "{text}");
+    assert_eq!(stats.dispatchers_removed, 2, "{stats:?}");
+}
+
 /// Local functions with several methods or rest arguments (light-cljs-228)
 /// whose local and name are read only as the callee of calls that select a
 /// method have no dispatcher, and their calls name their methods' entries. A

@@ -652,6 +652,9 @@ fn parameters_of_closed_functions_join_the_arguments_of_their_calls() {
     // a local), a `loop` local, assignable parameters, a call that underfills a
     // variadic method or selects no method, and `with-redefs`.
     assert_eq!(local("(defn f [x] x) (f 1)", "x"), number);
+    // Since light-cljs-421 an alias that nothing reads is removed, so the
+    // function no longer escapes through it.
+    assert_eq!(local("(defn f [x] x) (def g f) (f 1)", "x"), number);
     // Since light-cljs-243 a core operation that calls its function argument
     // as its callback shape says is one more caller (see
     // `callback_parameters_join_what_core_operations_pass` below).
@@ -664,7 +667,7 @@ fn parameters_of_closed_functions_join_the_arguments_of_their_calls() {
     }
     for source in [
         "(defn f [x] x) (apply f [1]) (f 1)",
-        "(defn f [x] x) (def g f) (f 1)",
+        "(defn f [x] x) (def g f) (g \"a\") (f 1)",
         "(declare f) (def h (defn f [x] x)) (f 1)",
         "(def f (fn self [x] (js/Array.of self) x)) (f 1)",
         "(let [g (fn [x] x) h g] (h \"a\") (g 1))",

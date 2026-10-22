@@ -439,8 +439,11 @@ fn emit_js_mode(
                 let ExprKind::Fn { methods, .. } = &program.exprs[function.0].kind else {
                     unreachable!("method entries of a fn")
                 };
+                let shapes = shapes.expect("entries come from call shapes");
                 for index in 0..methods.len() {
-                    writeln!(emitter.output, "  let g{global}_{index};").unwrap();
+                    if shapes.entry_used(GlobalId(global), index) {
+                        writeln!(emitter.output, "  let g{global}_{index};").unwrap();
+                    }
                 }
                 continue;
             }
@@ -4895,12 +4898,23 @@ impl<'a> Emitter<'a> {
             .map(|index| format!("g{}_{index}", global.0))
             .collect();
         self.output.push('(');
+        // Without a dispatcher, only the methods a direct call selects
+        // (light-cljs-421).
+        let shapes = self.shapes.expect("entries come from call shapes");
+        let mut bound = 0;
         for (index, (entry, method)) in entries.iter().zip(methods).enumerate() {
-            if index > 0 {
+            if !shapes.entry_used(global, index) {
+                continue;
+            }
+            if bound > 0 {
                 self.output.push_str(", ");
             }
+            bound += 1;
             write!(self.output, "{entry} = ").unwrap();
             self.method_with_ifn_captures(None, method, false);
+        }
+        if bound == 0 {
+            self.output.push_str("null");
         }
         match dispatcher {
             Some(false) => {

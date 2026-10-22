@@ -2180,6 +2180,63 @@ fn a_shared_namespace_whose_definitions_all_move_is_no_file() {
     }
 }
 
+/// An alias of a function, `(def saved wrap)`, is inert at `Advanced`
+/// (light-cljs-421), so it may move toward its readers like the function:
+/// one feature reaches every arity through the alias with `apply`, the other
+/// calls the function directly, and the chunks print what the single file
+/// prints at every level.
+#[test]
+fn a_function_alias_moves_with_the_function_it_reads() {
+    let program = analyze(&[
+        ("app/main.cljs", LOADS_BOTH),
+        (
+            "app/text.cljs",
+            "(ns app.text)\n\
+             (defn wrap ([s] (wrap s \"!\")) ([s t] (str \"<\" s t \">\")) ([s t u] (str s t u)))\n\
+             (def saved wrap)\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor (:require [app.text :as text]))\n\
+             (defn start [] [(apply text/saved [\"a\" \"b\"]) (apply text/saved [\"a\" \"b\" \"c\"])])\n",
+        ),
+        (
+            "app/reports.cljs",
+            "(ns app.reports (:require [app.text :as text]))\n\
+             (defn start [] (text/wrap \"x\"))\n",
+        ),
+    ]);
+    let (record, outputs) = runs_as_chunks(&program);
+    assert_eq!(
+        record,
+        printed("app.main.js", r#"[\"<ab>\" \"abc\"]\n\"<x!>\"\n"#)
+    );
+    // The alias moves to its one reader; the function, which both read,
+    // stays in the shared chunk, which the editor's chunk imports.
+    for (level, output) in &outputs {
+        if level.advanced() {
+            assert_eq!(
+                definitions(output),
+                [
+                    "app.main.js: ",
+                    "app.editor+app.reports.js: ",
+                    "app.editor.js: app.text/saved",
+                    "app.reports.js: ",
+                ]
+            );
+            assert_eq!(
+                files(output),
+                [
+                    "app.main.js: light.lazy app.main | roots app.main | imports ",
+                    "app.editor+app.reports.js: app.text | roots  | imports app.main.js",
+                    "app.editor.js: app.editor | roots app.editor | imports app.main.js app.editor+app.reports.js",
+                    "app.reports.js: app.reports | roots app.reports | imports app.editor+app.reports.js",
+                ]
+            );
+        }
+    }
+}
+
 /// The plan drops a chunk of no code before the constants are placed, so a
 /// keyword both features read, whose roots are the dropped chunk's, gets a
 /// chunk of constants alone of that name (light-cljs-278), which holds no

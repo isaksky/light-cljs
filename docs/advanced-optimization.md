@@ -2765,6 +2765,19 @@ shapes below.
     global, as calls of the global did. One that does not escape may be
     defined anywhere, since its entries are rebound together and every call
     reads them.
+
+    As built (light-cljs-421). Without a dispatcher the direct calls are
+    every call, so a method that none of them selects gets no entry and no
+    `let` (`CallShapes::entry_used`); Closure drops such an arity because
+    nothing reads its collapsed property. And the `Inert` removal treats an
+    alias, `(def f other/g)` where an earlier top-level `def` of a `fn`
+    literal defines `other/g` once and nothing assigns it, as inert: nothing
+    can tell whether it ran, so an unread alias goes, and its function no
+    longer escapes through it. On the generated project (seed 42, 200k
+    lines) unused arities kept at advanced drop from 86 to 49 of 204
+    (shadow-cljs keeps 51) and the output from 4,097,518 to 4,040,250
+    bytes. A read alias, `apply`, `partial` or any other value use keeps
+    the dispatcher, which reads every method.
   - `Generic`: as below `Advanced`.
 
   The entry names need no new hygiene rule: `hygienic_js` renames `g` followed

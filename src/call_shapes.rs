@@ -43,7 +43,9 @@
 //!   (`null` without rest arguments), exactly the values its dispatcher would
 //!   pass. Calls through the name of a named function are calls of the same
 //!   entries. The global itself, its dispatcher and its arity properties exist
-//!   only when the function escapes. The dispatcher of a top-level `def`, which
+//!   only when the function escapes; without them a method that no call
+//!   selects has no entry ([`CallShapes::entry_used`], light-cljs-421), as
+//!   Closure drops an arity property nothing reads. The dispatcher of a top-level `def`, which
 //!   runs once, calls the shared entries; one of a `def` that may run again
 //!   holds the entries of its own evaluation (`rerun`), since the next
 //!   evaluation rebinds them along with the global, and direct calls read the
@@ -316,6 +318,12 @@ pub struct CallShapes {
     /// binds, or `u32::MAX`.
     locals: Vec<u32>,
     local_functions: Vec<LocalFunction>,
+    /// By global: for a function of [`FunctionShape::Entries`] without a
+    /// dispatcher, the index in `selected` of its first method, else
+    /// `u32::MAX`.
+    entry_offsets: Vec<u32>,
+    /// By method of such a function: whether a direct call selects it.
+    selected: Vec<bool>,
 }
 
 impl CallShapes {
@@ -358,6 +366,18 @@ impl CallShapes {
             .iter()
             .filter(move |(_, direct)| direct.function == function)
             .map(|(call, direct)| (*call, direct.method))
+    }
+
+    /// Whether the definition of `global`, of [`FunctionShape::Entries`],
+    /// binds the entry of method `method`: always with a dispatcher, which
+    /// reads every entry, and otherwise when a direct call selects the
+    /// method (light-cljs-421). The direct calls of a function without a
+    /// dispatcher are all its calls, so no code runs a method none selects.
+    pub fn entry_used(&self, global: GlobalId, method: usize) -> bool {
+        match self.entry_offsets.get(global.0) {
+            Some(&offset) if offset != u32::MAX => self.selected[offset as usize + method],
+            _ => true,
+        }
     }
 
     /// The function that the `let` or `letfn` local `local` binds, when its
@@ -405,6 +425,19 @@ pub fn analyze(
         ..
     } = scan;
     let count = program.exprs.len();
+    let mut entry_offsets = vec![u32::MAX; functions.len()];
+    let mut selected = Vec::new();
+    for (global, shape) in functions.iter().enumerate() {
+        if let FunctionShape::Entries {
+            function,
+            dispatcher: false,
+            ..
+        } = *shape
+        {
+            entry_offsets[global] = u32::try_from(selected.len()).expect("fewer than 2^32 methods");
+            selected.resize(selected.len() + methods_of(program, function).len(), false);
+        }
+    }
     let mut shapes = CallShapes {
         functions,
         closed,
@@ -412,6 +445,8 @@ pub fn analyze(
         direct: Vec::new(),
         locals: local.locals,
         local_functions: local.functions,
+        entry_offsets,
+        selected,
     };
     let mut this = ReceiverCache {
         methods: vec![None; count],
@@ -421,6 +456,10 @@ pub fn analyze(
             FunctionShape::Generic => continue,
             FunctionShape::Single { function, .. } => (function, None),
             FunctionShape::Entries { function, .. } => {
+                let offset = shapes.entry_offsets[global.0];
+                if offset != u32::MAX {
+                    shapes.selected[offset as usize + method] = true;
+                }
                 (function, Some(Entry::Global { global, method }))
             }
         };
