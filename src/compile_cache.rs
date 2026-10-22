@@ -28,10 +28,10 @@
 //! leaves the build's output alone.
 
 use crate::artifact_codec::{self, DecodeLimits, ManifestFields};
-use crate::artifact_store::{Inputs, Publish, Retention, Snapshot, Store};
+use crate::artifact_store::{Inputs, MAX_OUTPUT_BYTES, Publish, Retention, Snapshot, Store};
 use crate::cache_key::{Digest, FrontEndKey, KeyEnvironment, Mismatch, NamespaceKeys};
 use crate::cache_policy::{Bypass, NamespaceMetadata};
-use crate::compile_stats::CacheCounts;
+use crate::compile_stats::{CacheCounts, OutputCounts};
 use crate::dependency_manifest::{BroadView, EdgeKinds, ExternalInput, LoaderRecord, NamespaceId};
 use crate::macro_host::MacroHost;
 use crate::manifest_prefix::{ManifestPrefix, NamespaceRecords};
@@ -87,6 +87,9 @@ pub struct CompileCache {
     /// The artifacts this build installed or published, which trimming
     /// keeps.
     in_use: Vec<Digest>,
+    /// Per namespace, the artifact it was installed from or published as;
+    /// `None` for one bypassed or not published.
+    artifacts: Vec<Option<Digest>>,
     limits: DecodeLimits,
     counts: CacheCounts,
     retention: Retention,
@@ -117,6 +120,7 @@ impl CompileCache {
             propagated: Vec::new(),
             pending: None,
             in_use: Vec::new(),
+            artifacts: Vec::new(),
             limits: DecodeLimits::default(),
             counts,
             retention: options.retention,
@@ -158,6 +162,35 @@ impl CompileCache {
                 "warning: cannot trim the compiler cache in {}: {error}",
                 self.store.root().display()
             );
+        }
+    }
+
+    /// What reusing the output of this compilation needs, once it has
+    /// ended: the store, and the digest of the assembled program when every
+    /// namespace was installed from or published as an artifact.
+    pub fn into_output(self) -> OutputCache {
+        let complete =
+            self.artifacts.len() == self.prefix.len() && self.keys.len() == self.prefix.len();
+        let program = complete
+            .then(|| {
+                let mut fingerprint = crate::sha256::Fingerprint::new("light-cljs program");
+                fingerprint.text(&self.entry).count(self.artifacts.len());
+                for (at, artifact) in self.artifacts.iter().enumerate() {
+                    let id = NamespaceId(at as u32);
+                    fingerprint
+                        .text(&self.prefix.record(id).name)
+                        .digest(&self.keys.key(id).digest)
+                        .digest(artifact.as_ref()?);
+                }
+                Some(fingerprint.finish())
+            })
+            .flatten();
+        OutputCache {
+            store: self.store,
+            environment: self.environment,
+            program,
+            retention: self.retention,
+            counts: OutputCounts::default(),
         }
     }
 
@@ -310,6 +343,7 @@ impl CompileCache {
         self.keys.append(&name, *key);
         self.propagated.push(None);
         self.in_use.push(artifact);
+        self.artifacts.push(Some(artifact));
         self.counts.hits += 1;
     }
 
@@ -357,6 +391,7 @@ impl CompileCache {
             .map(|reason| (reason, id.0))
             .or_else(|| self.reaching(id));
         self.propagated.push(propagated);
+        self.artifacts.push(None);
         let pending = self.pending.take();
         if metadata.no_cache {
             self.bypass(&name, Bypass::NoCache, String::new());
@@ -432,6 +467,7 @@ impl CompileCache {
                 self.counts.published += 1;
                 self.counts.bytes_written += entry.bytes;
                 self.in_use.push(entry.artifact);
+                self.artifacts[id.0 as usize] = Some(entry.artifact);
             }
             Publish::Refused(mismatch) => self.counts.unpublished.push((
                 name,
@@ -504,12 +540,10 @@ impl CompileCache {
 }
 
 /// Whether `namespace` declares macros in `macros`' inventory, which makes a
-/// require of it a macro-provider edge.
+/// require of it a macro-provider edge. A lookup of its names, not a scan
+/// of every macro, so keying stays linear in the namespaces.
 fn declares_macros(macros: &MacroHost, namespace: &str) -> bool {
-    macros.tables.javascript_macros.keys().any(|key| {
-        key.split_once('/')
-            .is_some_and(|(owner, _)| owner == namespace)
-    })
+    macros.declares_source_macros(namespace)
 }
 
 /// The `--stats` kind of a key mismatch: its component.
@@ -543,4 +577,59 @@ pub(crate) struct Publication {
     name: String,
     id: NamespaceId,
     key: FrontEndKey,
+}
+
+/// The output store of a compilation that has ended
+/// ([`CompileCache::into_output`], light-cljs-418). A build whose every
+/// namespace has an artifact keys its output by them and by its emission
+/// options ([`crate::cache_key::output_key`]). When a stored output has
+/// that key, the build writes it instead of preparing and emitting the
+/// application, so a rebuild with no change costs its lookups and installs
+/// alone; otherwise it stores what it emits.
+pub struct OutputCache {
+    store: Store,
+    environment: KeyEnvironment,
+    program: Option<Digest>,
+    retention: Retention,
+    counts: OutputCounts,
+}
+
+impl OutputCache {
+    /// The key of this build's output with `options`, or `None` when some
+    /// namespace has no artifact, so its output is neither read nor stored.
+    pub fn key(&self, options: &crate::cache_key::EmissionOptions<'_>) -> Option<Digest> {
+        self.program
+            .as_ref()
+            .map(|program| crate::cache_key::output_key(&self.environment, program, options))
+    }
+
+    /// The files stored as the output of `key`, each a name and its text.
+    pub fn load(&mut self, key: &Digest) -> Option<Vec<(String, String)>> {
+        let started = Instant::now();
+        let files = self.store.read_output(key, MAX_OUTPUT_BYTES);
+        self.counts.time += started.elapsed();
+        if let Some(files) = &files {
+            self.counts.reused = true;
+            self.counts.bytes_read = files.iter().map(|(_, text)| text.len() as u64).sum();
+        }
+        files
+    }
+
+    /// Store `files`, each a name and its text, as the output of `key`.
+    pub fn save(&mut self, key: &Digest, files: &[(&str, &str)]) {
+        let started = Instant::now();
+        if let Some(bytes) = self
+            .store
+            .write_output(key, files, &self.retention, MAX_OUTPUT_BYTES)
+        {
+            self.counts.stored = true;
+            self.counts.bytes_written = bytes;
+        }
+        self.counts.time += started.elapsed();
+    }
+
+    /// What this build did with outputs, for `--stats`.
+    pub fn counts(&self) -> OutputCounts {
+        self.counts.clone()
+    }
 }

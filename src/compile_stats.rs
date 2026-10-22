@@ -329,6 +329,22 @@ pub struct CacheCounts {
     pub decode_time: Duration,
     /// Encoding and writing artifacts and indexes.
     pub write_time: Duration,
+    /// What a `--compile --entry` build did with whole outputs, when it
+    /// consulted them ([`crate::compile_cache::OutputCache`]).
+    pub output: Option<OutputCounts>,
+}
+
+/// What one build did with whole outputs (light-cljs-418).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OutputCounts {
+    /// It wrote a stored output instead of preparing and emitting.
+    pub reused: bool,
+    /// It stored the output it emitted.
+    pub stored: bool,
+    pub bytes_read: u64,
+    pub bytes_written: u64,
+    /// Reading, checking and writing stored outputs.
+    pub time: Duration,
 }
 
 impl CacheCounts {
@@ -355,6 +371,13 @@ impl CacheCounts {
         line("cache.validate-ms", &ms(self.validate_time));
         line("cache.decode-ms", &ms(self.decode_time));
         line("cache.write-ms", &ms(self.write_time));
+        if let Some(output) = &self.output {
+            line("cache.output.reused", &u8::from(output.reused));
+            line("cache.output.stored", &u8::from(output.stored));
+            line("cache.output.bytes-read", &output.bytes_read);
+            line("cache.output.bytes-written", &output.bytes_written);
+            line("cache.output-ms", &ms(output.time));
+        }
     }
 
     /// The `[cache-misses-and-bypasses]` rows: up to `limit` misses, then up

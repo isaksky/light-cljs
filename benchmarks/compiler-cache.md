@@ -887,3 +887,16 @@ about:
 
 +0.1% wall and +1.8% RSS, within the +2% and +3% the pellet named, with
 the same output (`8cd7a929`).
+
+## Whole outputs (light-cljs-418, October 22, 2026)
+
+A build whose every namespace has an artifact now stores its output, and a
+warm build of the same artifacts and emission options writes it instead of
+preparing and emitting the application. On the generated projects (seed 42,
+`release bench`, warm, no edit, medians of 3 alternating rounds) a warm
+build takes 575 ms at 100k and 2,488 ms at 400k (4.3x), against 1,707 ms and
+7,475 ms at the parent `53cdb94`, and peaks at 1.05 GB at 400k against
+2.01 GB. Details, the edit rebuild and the Penpot cold gate are in
+[generated-shadow-vs-light.md](generated-shadow-vs-light.md#cached-rebuild-with-no-change-light-cljs-418).
+A stored output is the build's files, 7.2 MB at 400k; the store keeps the
+three most recently used.

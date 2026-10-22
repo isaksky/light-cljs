@@ -678,6 +678,33 @@ pub fn emission_key(
     front_end: &FrontEndKey,
     options: &EmissionOptions<'_>,
 ) -> Digest {
+    let mut fingerprint = Fingerprint::new("light-cljs emission key");
+    fingerprint
+        .digest(&front_end.digest)
+        .digest(&environment.compiler);
+    emission_fields(&mut fingerprint, options);
+    fingerprint.finish()
+}
+
+/// The key of a whole build's output (light-cljs-418): `program`, the
+/// digest of every namespace the compilation assembled, each with the
+/// artifact it was installed from or published as
+/// ([`crate::compile_cache::OutputCache`]), the compiler, and every
+/// emission option, as [`emission_key`] takes them. Those artifacts are the
+/// assembled program, so equal keys emit equal output.
+pub fn output_key(
+    environment: &KeyEnvironment,
+    program: &Digest,
+    options: &EmissionOptions<'_>,
+) -> Digest {
+    let mut fingerprint = Fingerprint::new("light-cljs output key");
+    fingerprint.digest(program).digest(&environment.compiler);
+    emission_fields(&mut fingerprint, options);
+    fingerprint.finish()
+}
+
+/// Every emission option of `options`, into `fingerprint`.
+fn emission_fields(fingerprint: &mut Fingerprint, options: &EmissionOptions<'_>) {
     let ApplicationOptions {
         optimize,
         exports,
@@ -686,10 +713,7 @@ pub fn emission_key(
         no_folding,
         pseudo_names,
     } = options.application;
-    let mut fingerprint = Fingerprint::new("light-cljs emission key");
     fingerprint
-        .digest(&front_end.digest)
-        .digest(&environment.compiler)
         .number(match optimize {
             OptimizationLevel::None => 0,
             OptimizationLevel::Prepare => 1,
@@ -730,7 +754,6 @@ pub fn emission_key(
         Some(modules) => fingerprint.present().digest(modules),
         None => fingerprint.absent(),
     };
-    fingerprint.finish()
 }
 
 /// Re-read the inputs of namespace `id` from `sources` after it compiled,

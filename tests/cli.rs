@@ -2337,7 +2337,8 @@ fn flag_only_commands_never_read_the_configuration_file() {
     // Every file under `dir` but light-cljs.edn, with a hash of its bytes;
     // of the cache store, only the index's names, which are the cache keys:
     // its records hold times, and its objects are named by artifacts that
-    // quote each directory's own source paths.
+    // quote each directory's own source paths. Its outputs are keyed by
+    // those artifacts, so they count but their names and bytes do not.
     let files = |dir: &Path| {
         use std::hash::{Hash, Hasher};
         let store = Path::new(".light-cljs/cache/v1");
@@ -2353,6 +2354,8 @@ fn flag_only_commands_never_read_the_configuration_file() {
                     }
                 } else if name.starts_with(store.join("index")) {
                     files.push((name, 0));
+                } else if name.starts_with(store.join("outputs")) {
+                    files.push((store.join("outputs/*"), 0));
                 } else if name != Path::new("light-cljs.edn") {
                     let mut hash = std::hash::DefaultHasher::new();
                     std::fs::read(&path).unwrap().hash(&mut hash);

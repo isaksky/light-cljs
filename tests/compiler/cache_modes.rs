@@ -732,3 +732,162 @@ fn emission_modes_leave_the_published_artifacts_alone() {
         );
     }
 }
+
+/// The stored outputs of the cache, by path.
+fn stored_outputs(project: &Project) -> Vec<PathBuf> {
+    let Ok(files) = fs::read_dir(project.cache().join("v1/outputs")) else {
+        return Vec::new();
+    };
+    let mut outputs = files
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| !path.file_name().unwrap().to_string_lossy().starts_with('.'))
+        .collect::<Vec<_>>();
+    outputs.sort();
+    outputs
+}
+
+/// light-cljs-418: a build whose every namespace was installed or
+/// published stores its output, and the next build of the same artifacts
+/// and emission options writes that output instead of preparing and
+/// emitting: byte for byte the uncached build's, as a script, an ES module
+/// and chunks, and run as it runs. Another emission option, an edit, a
+/// bypassed namespace or a damaged stored output emits again, and what it
+/// emits is still the uncached build's.
+#[test]
+fn unchanged_builds_reuse_the_stored_output() {
+    let project = Project::new();
+    let populating = project.populate();
+    assert_eq!(
+        populating.stat("cache.output.stored"),
+        1,
+        "{}",
+        populating.stderr
+    );
+    assert_eq!(populating.stat("cache.output.reused"), 0);
+    let modes: &[(&str, &[&str], Layout)] = &[
+        ("none", NONE, Layout::Script),
+        (
+            "esm advanced",
+            &["--esm", "--optimize", "advanced"],
+            Layout::Module,
+        ),
+        (
+            "chunks advanced",
+            &["--optimize", "advanced", "--out-dir", "out"],
+            Layout::Chunks,
+        ),
+    ];
+    for (mode, flags, layout) in modes {
+        let oracle = project.build(flags, false);
+        // The populating build stored the script at none; the others store
+        // their output on their first build.
+        let first = project.build(flags, true);
+        first.assert_same(&oracle, mode);
+        let warm = project.build(flags, true);
+        warm.assert_same(&oracle, mode);
+        warm.assert_all_hits(mode);
+        assert_eq!(
+            warm.stat("cache.output.reused"),
+            1,
+            "{mode}: {}",
+            warm.stderr
+        );
+        assert_eq!(warm.stat("cache.output.stored"), 0, "{mode}");
+        assert!(
+            warm.stderr.contains("\ntime.prepare-application-ms 0.0\n")
+                && warm.stderr.contains("\ntime.emission-ms 0.0\n"),
+            "{mode}: a reused output is neither prepared nor emitted: {}",
+            warm.stderr
+        );
+        let record = warm.run(&project, *layout);
+        assert_eq!(record, oracle.run(&project, *layout), "{mode}");
+        assert_eq!(printed(&record), PRINTED, "{mode}: {record}");
+    }
+    // Another define is another output.
+    let defined = ["--define", "app.config/DEBUG=true"];
+    let first = project.build(&defined, true);
+    assert_eq!(first.stat("cache.output.reused"), 0, "{}", first.stderr);
+    assert_eq!(first.stat("cache.output.stored"), 1);
+    first.assert_same(&project.build(&defined, false), "define");
+    // A damaged stored output is a miss and is stored again.
+    for path in stored_outputs(&project) {
+        let mut bytes = fs::read(&path).unwrap();
+        let middle = bytes.len() / 2;
+        bytes[middle] ^= 0x20;
+        fs::write(&path, bytes).unwrap();
+    }
+    let damaged = project.build(NONE, true);
+    assert_eq!(damaged.stat("cache.output.reused"), 0, "{}", damaged.stderr);
+    assert_eq!(damaged.stat("cache.output.stored"), 1);
+    damaged.assert_same(&project.build(NONE, false), "damaged output");
+    assert_eq!(project.build(NONE, true).stat("cache.output.reused"), 1);
+    // A bypassed namespace has no artifact, so its build neither reads nor
+    // stores an output.
+    let blocked = ["--optimize", "none", "--cache-blocker", "app.config"];
+    for _ in 0..2 {
+        let build = project.build(&blocked, true);
+        assert_eq!(build.stat("cache.output.reused"), 0, "{}", build.stderr);
+        assert_eq!(build.stat("cache.output.stored"), 0);
+        build.assert_same(&project.build(&blocked, false), "blocked");
+    }
+    // An edit to the lazy target emits, stores, and is reused next.
+    project.write(
+        "app/editor.cljs",
+        &FIXTURE[5].1.replace("\" \" (.-label", "\"  \" (.-label"),
+    );
+    let oracle = project.build(NONE, false);
+    let edited = project.build(NONE, true);
+    assert_eq!(edited.stat("cache.miss.source"), 1, "{}", edited.stderr);
+    assert_eq!(edited.stat("cache.output.reused"), 0);
+    assert_eq!(edited.stat("cache.output.stored"), 1);
+    edited.assert_same(&oracle, "edited");
+    let warm = project.build(NONE, true);
+    assert_eq!(warm.stat("cache.output.reused"), 1, "{}", warm.stderr);
+    warm.assert_same(&oracle, "edited, warm");
+    // Retention keeps three outputs.
+    assert!(stored_outputs(&project).len() <= 3);
+}
+
+/// A size report needs the prepared application, so after an advanced
+/// script and a chunked build stored their outputs, the same builds with
+/// `--size-report` emit again and report what the uncached build reports.
+#[test]
+fn stored_outputs_do_not_suppress_size_reports() {
+    let project = Project::new();
+    project.populate();
+    // The report comes before the `--stats` lines.
+    let report = |build: &Build| {
+        build
+            .stderr
+            .split("light-cljs-stats")
+            .next()
+            .unwrap()
+            .to_owned()
+    };
+    for flags in [
+        &["--optimize", "advanced"][..],
+        &["--optimize", "advanced", "--out-dir", "out"],
+    ] {
+        project.build(flags, true);
+        let warm = project.build(flags, true);
+        assert_eq!(
+            warm.stat("cache.output.reused"),
+            1,
+            "{flags:?}: {}",
+            warm.stderr
+        );
+        let reported = [flags, &["--size-report"]].concat();
+        let oracle = project.build(&reported, false);
+        let cached = project.build(&reported, true);
+        cached.assert_same(&oracle, &format!("{reported:?}"));
+        assert_eq!(cached.stat("cache.output.reused"), 0, "{reported:?}");
+        assert_eq!(cached.stat("cache.output.stored"), 0, "{reported:?}");
+        assert!(
+            !report(&oracle).trim().is_empty(),
+            "{reported:?}: {}",
+            oracle.stderr
+        );
+        assert_eq!(report(&cached), report(&oracle), "{reported:?}");
+    }
+}

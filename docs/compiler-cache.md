@@ -667,6 +667,33 @@ and none had to move:
 - **Front-end key, a miss:** `--elide-asserts` (assertions) and
   `--reloadable`, which turns on the warning mode (`AnalysisOptions`).
 
+*As built (light-cljs-418), whole outputs:* per-namespace emitted
+sections cannot serve advanced output, which is optimized over the whole
+program, so the store keeps whole outputs instead. When every namespace of
+a build was installed from an artifact or published as one, the build's
+program digest is its entry and, per namespace in source order, its name,
+front-end key and artifact digest (`CompileCache::into_output`), and
+`cache_key::output_key` hashes that digest with the compiler and every
+emission option, as `emission_key` takes them, with no module plan, since
+the plan is a function of the program. A chunked build, or one file without
+a source map flag or `--size-report`, looks its key up in `v1/outputs/`; on
+a hit it writes the stored files and skips application preparation and
+emission, and otherwise it stores what it emitted. The artifact digests
+make the key exact: equal artifacts install the same program, whatever
+build published them, so a stored output is the output of every build with
+its key. A bypassed or unpublished namespace has no artifact, so its build
+neither reads nor stores an output. Defines are parsed against the program
+before the lookup, so a define that names no `goog-define` still fails, and
+lazy-target validation runs during analysis, hits included. The source map
+flags stay out because a map names the sources relative to a directory,
+and the dev build because its maps name them relative to its output
+directory. Writing an output keeps the `--cache-retention` (three) most
+recently written or used outputs; a read refreshes the file's modification
+time. Outputs do not count toward the 1 GiB artifact cap: at 800k lines one
+is 16 MB. An output over 1 GiB (`MAX_OUTPUT_BYTES`, the artifact decode limit) is neither stored nor read; a larger file in its place is a miss before it is read. On the generated projects this makes a warm build with no edit
+cost only lookups, decoding and installs, which grow linearly
+([benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md)).
+
 `cache_key::revalidate` re-reads a namespace's inputs after it compiles: it
 repeats every lookup of its resolution through the source provider and
 compares the candidates and file found, asking as the loader asked (the same

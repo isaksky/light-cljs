@@ -8,8 +8,19 @@
 //! DIR/v1/lock                  advisory lock for index updates and trimming
 //! DIR/v1/objects/<sha256>      an encoded artifact, named by the SHA-256 of its bytes
 //! DIR/v1/index/<sha256>        a namespace's index, named by the SHA-256 of its name
+//! DIR/v1/outputs/<sha256>      a whole build's output, named by its output key
 //! DIR/v1/*/.tmp-<pid>-<n>-<t>  a file being written, never read
 //! ```
+//!
+//! **Outputs** (light-cljs-418). A build whose every namespace was
+//! installed from or published as an artifact stores the files it wrote
+//! under [`crate::cache_key::output_key`] of those artifacts and its
+//! emission options, and a later build with the same key writes them again
+//! instead of preparing and emitting the application
+//! ([`Store::read_output`], [`Store::write_output`]). An output file is
+//! written as an artifact is and checks its own SHA-256 when read; a file
+//! that fails is a miss. Writing one keeps the [`Retention::per_namespace`]
+//! most recently written or used outputs and removes the others.
 //!
 //! **Publication.** Artifacts are immutable and content-addressed. Each is
 //! written in full to a temporary file in the directory it is published in,
@@ -81,6 +92,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// to the layout or the index format.
 pub const STORE_VERSION: u32 = 1;
 const INDEX_MAGIC: [u8; 8] = *b"LCLJSIDX";
+/// No stored output is read or written past this size, as no artifact is
+/// decoded past [`DecodeLimits::max_bytes`].
+pub const MAX_OUTPUT_BYTES: u64 = 1 << 30;
 const TEMP_PREFIX: &str = ".tmp-";
 /// No index is read past this size.
 const MAX_INDEX_BYTES: u64 = 64 << 20;
@@ -314,6 +328,97 @@ impl Store {
 
     fn index_path(&self, namespace: &str) -> PathBuf {
         self.indexes().join(hex(&digest(namespace.as_bytes())))
+    }
+
+    fn outputs(&self) -> PathBuf {
+        self.root.join("outputs")
+    }
+
+    // -- Outputs ------------------------------------------------------------
+
+    /// The files of the output stored under `key`, each a name and its
+    /// text, or `None` when there is none or it fails its checks. A use
+    /// counts as recent for [`Store::write_output`]'s retention.
+    /// A file larger than `limit` bytes is a miss and is not read.
+    pub fn read_output(&self, key: &Digest, limit: u64) -> Option<Vec<(String, String)>> {
+        let path = self.outputs().join(hex(key));
+        let file = fs::File::open(&path).ok()?;
+        if file.metadata().ok()?.len() > limit {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        io::Read::read_to_end(&mut io::Read::take(file, limit + 1), &mut bytes).ok()?;
+        if bytes.len() as u64 > limit {
+            return None;
+        }
+        let files = decode_output(&bytes, key)?;
+        if let Ok(file) = fs::File::options().write(true).open(&path) {
+            let _ = file.set_modified(SystemTime::now());
+        }
+        Some(files)
+    }
+
+    /// Store `files`, each a name and its text, as the output of `key`,
+    /// then keep the `retention.per_namespace` most recent outputs. Returns
+    /// the bytes written, or `None` when the store cannot be written (the
+    /// first failure prints a warning) or the output would exceed `limit`
+    /// bytes, which [`Store::read_output`] would refuse.
+    pub fn write_output(
+        &self,
+        key: &Digest,
+        files: &[(&str, &str)],
+        retention: &Retention,
+        limit: u64,
+    ) -> Option<u64> {
+        if self.failure.get().is_some() {
+            return None;
+        }
+        let bytes = encode_output(key, files);
+        if bytes.len() as u64 > limit {
+            return None;
+        }
+        let written = (|| -> io::Result<()> {
+            fs::create_dir_all(self.outputs())?;
+            let temporary = Temporary::write(&self.outputs(), &bytes)?;
+            let _lock = self.lock()?;
+            temporary.publish(&self.outputs().join(hex(key)), |existing| existing == bytes)?;
+            self.trim_outputs(retention, key)
+        })();
+        match written {
+            Ok(()) => Some(bytes.len() as u64),
+            Err(error) => {
+                self.fail(&error);
+                None
+            }
+        }
+    }
+
+    /// Keep the `retention.per_namespace` most recently written or used
+    /// outputs, `key`'s among them, and temporary files younger than
+    /// `retention.grace`. Holds the lock.
+    fn trim_outputs(&self, retention: &Retention, key: &Digest) -> io::Result<()> {
+        let mut outputs = Vec::new();
+        for file in fs::read_dir(self.outputs())?.flatten() {
+            let name = file.file_name().into_string().unwrap_or_default();
+            let modified = file.metadata().and_then(|metadata| metadata.modified());
+            if name.starts_with(TEMP_PREFIX) {
+                let old = modified
+                    .ok()
+                    .and_then(|time| time.elapsed().ok())
+                    .is_some_and(|age| age >= retention.grace);
+                if old {
+                    let _ = fs::remove_file(file.path());
+                }
+            } else if let Some(output) = parse_hex(&name) {
+                let current = output == *key;
+                outputs.push((current, modified.unwrap_or(UNIX_EPOCH), file.path()));
+            }
+        }
+        outputs.sort_by(|a, b| b.cmp(a));
+        for (_, _, path) in outputs.iter().skip(retention.per_namespace.max(1)) {
+            let _ = fs::remove_file(path);
+        }
+        Ok(())
     }
 
     // -- Reading ------------------------------------------------------------
@@ -864,6 +969,62 @@ fn decode_index(bytes: &[u8]) -> Option<Index> {
         .then_some(Index { namespace, entries })
 }
 
+// -- The output format ------------------------------------------------------
+//
+// magic "LCLJSOUT", STORE_VERSION u32, the output key, the file count u32,
+// then per file its name (u32 length, UTF-8) and its text (u64 length,
+// UTF-8), and last the SHA-256 of everything before it. Numbers are
+// little-endian.
+
+const OUTPUT_MAGIC: [u8; 8] = *b"LCLJSOUT";
+
+fn encode_output(key: &Digest, files: &[(&str, &str)]) -> Vec<u8> {
+    let length = files
+        .iter()
+        .map(|(name, text)| 12 + name.len() + text.len())
+        .sum::<usize>();
+    let mut out = Vec::with_capacity(80 + length);
+    out.extend_from_slice(&OUTPUT_MAGIC);
+    out.extend_from_slice(&STORE_VERSION.to_le_bytes());
+    out.extend_from_slice(key);
+    out.extend_from_slice(&(files.len() as u32).to_le_bytes());
+    for (name, text) in files {
+        out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(&(text.len() as u64).to_le_bytes());
+        out.extend_from_slice(text.as_bytes());
+    }
+    let hash = digest(&out);
+    out.extend_from_slice(&hash);
+    out
+}
+
+/// The files `bytes` hold, or `None` if they are not exactly one output of
+/// this version for `key` whose hash checks.
+fn decode_output(bytes: &[u8], key: &Digest) -> Option<Vec<(String, String)>> {
+    let (body, hash) = bytes.split_at_checked(bytes.len().checked_sub(32)?)?;
+    if digest(body) != hash {
+        return None;
+    }
+    let mut input = IndexReader { bytes: body };
+    if input.take(8)? != OUTPUT_MAGIC || input.u32()? != STORE_VERSION || input.digest()? != *key {
+        return None;
+    }
+    let count = input.u32()? as usize;
+    if count > input.bytes.len() / 12 {
+        return None;
+    }
+    let mut files = Vec::with_capacity(count);
+    for _ in 0..count {
+        let length = input.u32()? as usize;
+        let name = String::from_utf8(input.take(length)?.to_vec()).ok()?;
+        let length = usize::try_from(input.u64()?).ok()?;
+        let text = String::from_utf8(input.take(length)?.to_vec()).ok()?;
+        files.push((name, text));
+    }
+    input.bytes.is_empty().then_some(files)
+}
+
 struct IndexReader<'a> {
     bytes: &'a [u8],
 }
@@ -940,6 +1101,113 @@ mod tests {
         for length in 0..bytes.len() {
             assert_eq!(decode_index(&bytes[..length]), None, "length {length}");
         }
+    }
+
+    #[test]
+    fn an_output_round_trips_and_any_damage_is_rejected() {
+        let key = digest(b"output");
+        let files = [
+            ("app.main.js", "export default 1;\n"),
+            ("chunks.json", "{}"),
+        ];
+        let bytes = encode_output(&key, &files);
+        let owned = files
+            .iter()
+            .map(|(name, text)| (name.to_string(), text.to_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(decode_output(&bytes, &key), Some(owned));
+        assert_eq!(decode_output(&bytes, &digest(b"other")), None);
+        for at in 0..bytes.len() {
+            let mut damaged = bytes.clone();
+            damaged[at] ^= 0x40;
+            assert_eq!(decode_output(&damaged, &key), None, "byte {at}");
+        }
+        for length in 0..bytes.len() {
+            assert_eq!(
+                decode_output(&bytes[..length], &key),
+                None,
+                "length {length}"
+            );
+        }
+    }
+
+    #[test]
+    fn writing_an_output_keeps_the_most_recent_ones() {
+        let dir = std::env::temp_dir().join(format!(
+            "light-cljs-outputs-{}-{}",
+            std::process::id(),
+            now()
+        ));
+        let store = Store::open(&dir);
+        let retention = Retention {
+            per_namespace: 2,
+            ..Retention::default()
+        };
+        let keys = [b"a", b"b", b"c"].map(|seed| digest(seed));
+        for (at, key) in keys.iter().enumerate() {
+            let text = format!("output {at}");
+            assert!(
+                store
+                    .write_output(key, &[("-", &text)], &retention, MAX_OUTPUT_BYTES)
+                    .is_some()
+            );
+            // Modification times order the outputs.
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            store.read_output(&keys[0], MAX_OUTPUT_BYTES),
+            None,
+            "the oldest went"
+        );
+        assert_eq!(
+            store.read_output(&keys[1], MAX_OUTPUT_BYTES),
+            Some(vec![("-".to_owned(), "output 1".to_owned())])
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        // Reading `b` made it recent, so writing `a` again removes `c`.
+        assert!(
+            store
+                .write_output(&keys[0], &[("-", "again")], &retention, MAX_OUTPUT_BYTES)
+                .is_some()
+        );
+        assert_eq!(store.read_output(&keys[2], MAX_OUTPUT_BYTES), None);
+        assert!(store.read_output(&keys[1], MAX_OUTPUT_BYTES).is_some());
+        assert_eq!(
+            store.read_output(&keys[0], MAX_OUTPUT_BYTES),
+            Some(vec![("-".to_owned(), "again".to_owned())])
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn outputs_past_the_limit_are_neither_written_nor_read() {
+        let dir = std::env::temp_dir().join(format!(
+            "light-cljs-outputs-limit-{}-{}",
+            std::process::id(),
+            now()
+        ));
+        let store = Store::open(&dir);
+        let retention = Retention::default();
+        let key = digest(b"large");
+        let text = "x".repeat(1000);
+        assert_eq!(
+            store.write_output(&key, &[("-", &text)], &retention, 1000),
+            None,
+            "too large to store"
+        );
+        assert!(!store.outputs().join(hex(&key)).exists());
+        let written = store.write_output(&key, &[("-", &text)], &retention, 2000);
+        assert!(written.is_some());
+        assert!(store.read_output(&key, 2000).is_some());
+        assert_eq!(store.read_output(&key, 1000), None, "too large to read");
+        // A file extended past the limit, sparse, is refused unread.
+        let file = fs::File::options()
+            .write(true)
+            .open(store.outputs().join(hex(&key)))
+            .unwrap();
+        file.set_len(MAX_OUTPUT_BYTES + 1).unwrap();
+        assert_eq!(store.read_output(&key, MAX_OUTPUT_BYTES), None);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

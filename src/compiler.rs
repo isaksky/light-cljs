@@ -2166,6 +2166,40 @@ pub fn analyze_namespace_entry_cached(
     stats: Option<&mut CompileStats>,
     slots: crate::scheduler::Slots,
 ) -> Result<(crate::Program, SourceFiles), NamespaceCompileError> {
+    analyze_namespace_entry_cached_output(
+        entry,
+        source_roots,
+        macros,
+        options,
+        warnings,
+        cache,
+        stats,
+        slots,
+    )
+    .map(|(program, files, _)| (program, files))
+}
+
+/// [`analyze_namespace_entry_cached`], also returning the store of whole
+/// outputs ([`crate::compile_cache::OutputCache`], light-cljs-418), with
+/// which the caller reuses or stores the output it emits from the program.
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_namespace_entry_cached_output(
+    entry: &str,
+    source_roots: &[PathBuf],
+    macros: &mut MacroHost,
+    options: AnalysisOptions,
+    warnings: &mut Vec<AnalysisWarning>,
+    cache: &crate::compile_cache::CacheOptions,
+    stats: Option<&mut CompileStats>,
+    slots: crate::scheduler::Slots,
+) -> Result<
+    (
+        crate::Program,
+        SourceFiles,
+        crate::compile_cache::OutputCache,
+    ),
+    NamespaceCompileError,
+> {
     let mut store = crate::compile_cache::CompileCache::open(cache, macros, options, entry);
     let mut stats = stats;
     if let Some(stats) = stats.as_deref_mut() {
@@ -2191,7 +2225,8 @@ pub fn analyze_namespace_entry_cached(
     if let Some(stats) = stats {
         stats.cache = Some(store.take_counts());
     }
-    analyzed
+    let (program, files) = analyzed?;
+    Ok((program, files, store.into_output()))
 }
 
 /// [`analyze_namespace_entry_with_sources`], also capturing each namespace

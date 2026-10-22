@@ -150,24 +150,31 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
         self.iter().map(|(key, _)| key)
     }
 
-    /// Merge the own layer into a new base once it is large next to the base,
-    /// so a frame copies at most that many entries.
+    /// Merge the own layer into the base once it is large next to the base,
+    /// so a frame copies at most that many entries. A base no frame shares
+    /// takes the entries in place; only a shared one is copied, since
+    /// copying it on every merge makes a run of inserts cost the square
+    /// root of the map per insert (light-cljs-418).
     fn compact(&mut self) {
         if self.own.len() <= 64 + self.base.len().isqrt() {
             return;
         }
-        let mut merged = (*self.base).clone();
-        for (key, value) in Arc::make_mut(&mut self.own).drain() {
-            match value {
-                Some(value) => {
-                    merged.insert(key, value);
-                }
-                None => {
-                    merged.remove(&key);
-                }
+        let own = std::mem::take(&mut self.own);
+        let merged = Arc::make_mut(&mut self.base);
+        let mut merge = |key: K, value: Option<V>| match value {
+            Some(value) => {
+                merged.insert(key, value);
             }
+            None => {
+                merged.remove(&key);
+            }
+        };
+        match Arc::try_unwrap(own) {
+            Ok(own) => own.into_iter().for_each(|(key, value)| merge(key, value)),
+            Err(own) => own
+                .iter()
+                .for_each(|(key, value)| merge(key.clone(), value.clone())),
         }
-        self.base = Arc::new(merged);
     }
 }
 

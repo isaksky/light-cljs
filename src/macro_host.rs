@@ -2311,6 +2311,15 @@ impl MacroHost {
             .cloned()
             .unwrap_or_default()
     }
+    /// Whether `namespace` declares a source macro, by its entry in
+    /// `macro_names` rather than a scan of every macro.
+    pub(crate) fn declares_source_macros(&self, namespace: &str) -> bool {
+        self.tables
+            .macro_names
+            .get(namespace)
+            .is_some_and(|names| !names.is_empty())
+    }
+
     /// Declare the source macro `key` (`namespace/name`).
     pub(crate) fn insert_javascript_macro(
         &mut self,

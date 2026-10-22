@@ -59,6 +59,10 @@ At 800k: unused arities 329 / 779 (light) and 215 / 779 (shadow).
    200k and loses at 800k.
 2. **A cached rebuild with no change also grows superlinearly**: 0.09 s, 4.8 s,
    30.2 s (6.3x from 200k to 800k) and 4 GB at 800k, though nothing is compiled.
+   Since light-cljs-418 such a build writes its stored output instead of
+   preparing and emitting the application: 0.58 s at 100k and 2.49 s at 400k
+   (4.3x), at 1.05 GB, 44% of an uncached build's peak
+   ([below](#cached-rebuild-with-no-change-light-cljs-418)).
 3. **gzip is 26-27% worse than shadow at the same raw size.** At 200k light's
    output has 98,232 distinct identifiers against shadow's 26,279: locals get
    program-unique names (`tVY`, `tVZ`, ...) where Closure reuses short names in
@@ -158,3 +162,55 @@ than the unit count (8.3x). It is 0.3 s at 400k, and its likely cause is the
 one 415 named: units that define types or protocols still walk the keyed
 tables they copied. Most of the wall time beyond linear growth is now
 top-level analysis (10.9x, light-cljs-423), not deferred units.
+
+### Cached rebuild with no change (light-cljs-418)
+
+A warm `light-cljs release bench --cache-dir DIR` with no edit installed every
+namespace from its artifact and then prepared and emitted the whole
+application again, which grew faster than the program. A `--stats` run at
+`89e2b30` spent at 400k 3.6 s preparing and 4.7 s emitting of 10.9 s, and
+emission grew 7.2x from 100k. Now a build whose every namespace has an
+artifact stores its output under a key of those artifacts and its emission
+options, and the next build with that key writes the stored files instead
+(docs/compiler-cache.md, "As built (light-cljs-418), whole outputs").
+Copying the shared base of the macro host's layered tables on every merge
+also went: installs were 5x from 100k to 400k, now 3.9x.
+
+Seed 42, warm cache, no change, 3 rounds alternating the parent and the
+candidate binary, each with its own cache, load average 2.9-3.1, medians
+(peak RSS from `/usr/bin/time -l`):
+
+| Commit | 100k | 400k | growth | 400k peak RSS |
+|---|---|---|---|---|
+| parent `89e2b30` | 2,104 ms | 11,421 ms | 5.4x | 2.01 GB |
+| parent `53cdb94` (rebased) | 1,707 ms | 7,475 ms | 4.4x | 2.01 GB |
+| light-cljs-418 | 575 ms | 2,488 ms | 4.3x | 1.05 GB |
+
+The uncached 400k build peaks at 2.41 GB, so the warm one holds 44% of it.
+What remains at 400k (100k to 400k growth): validating 0.86 s (4.3x), most of
+it the SHA-256 of 199 MB of artifacts; decoding 0.90 s (4.1x); installing
+0.20 s (3.9x); reading and parsing sources 0.13 s (4.0x); reusing the output
+25 ms. The peak memory is the installed program.
+
+A one-line edit to one leaf worker namespace (a `defn` appended to
+`workload.baklestei` at 100k and `workload.babomhol` at 400k, required only
+by a `workload.gN` namespace), the same edit on both commits and a different
+one per round, then a warm build, 2 rounds alternating the parent `53cdb94`
+and light-cljs-418, load average 3.1-3.8:
+
+| Size | parent | light-cljs-418 | uncached | misses |
+|---|---|---|---|---|
+| 100k | 6.59, 6.63 s, 0.64 GB | 6.67, 6.70 s, 0.63 GB | 8.0 s | 130 of 288 |
+| 400k | 39.2, 39.1 s, 1.92 GB | 39.5, 39.2 s, 2.02 GB | 45.0 s | 587 of 1,134 |
+
+The edited build is 0.3-1% slower here, the cost of storing its output.
+
+Every edited build's output equalled an uncached build of the edited project
+by the same binary. Output reuse does not apply to them: half the namespaces
+miss because every namespace that runs a source macro depends on every
+earlier one (the coarse fallback, light-cljs-347), so the edit rebuild costs
+most of an uncached one.
+
+Penpot `app.main --optimize none`, cold (`--no-cache`), 3 rounds alternating
+`53cdb94` and light-cljs-418: 21.73 s and 0.912 GB against 21.51 s and
+0.901 GB (medians), within the +3% wall and +5% RSS gate.

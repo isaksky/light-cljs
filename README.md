@@ -420,7 +420,10 @@ directory, or in DIR with `--cache-dir DIR`, created when missing. A
 namespace whose source, resolution, dependencies, `light.build` inputs,
 options, `--config` map and compiler are unchanged is installed from its stored artifact instead of being analyzed,
 so its macro calls do not run again; every other namespace is analyzed and
-stored. For macros that follow the cache contract
+stored. A build whose every namespace has an artifact also stores its
+output, and a build of the same artifacts and emission options (a chunked
+build, or one file without a source map or `--size-report`) writes that
+output instead of preparing and emitting the application again. For macros that follow the cache contract
 ([docs/compiler-cache.md](docs/compiler-cache.md#cache-contract)), the output
 is byte for byte the uncached build's; a macro with side effects across
 namespaces does not repeat them on a hit. `--cache-blocker NS` (repeatable)
@@ -429,9 +432,10 @@ writing the cache, as `^:dev/always` on a namespace does for it and its
 consumers and `^:light-cljs/no-cache` for that namespace alone. With
 `--no-cache` nothing reads or writes a cache: the build is a fresh uncached
 one, and `--no-cache` with `--cache-dir` is an error. The directory is
-disposable derived data, bounded to three artifacts per namespace and 1 GiB;
+disposable derived data, bounded to three artifacts per namespace and 1 GiB,
+and to the three most recently used outputs;
 `--cache-retention N` (on `--compile` and `--watch`, a positive integer)
-keeps N per namespace instead, for several builds of different
+keeps N per namespace and N outputs instead, for several builds of different
 configurations sharing one store, which evict each other's artifacts at
 three ([docs/build-configuration.md](docs/build-configuration.md), "As built
 (light-cljs-409)"); never commit it (add `.light-cljs/` to `.gitignore`). On Penpot a warm build
@@ -442,7 +446,9 @@ costs about 10% more
 `cache.miss.KIND` per first differing key component (`source`,
 `dependencies`, ...) or failure (`no-artifact`, `unreadable`, ...),
 `cache.bypasses` with `cache.bypass.REASON`, bytes read and written and the
-validation, decode and write times, then a `[cache-misses-and-bypasses]`
+validation, decode and write times, whether the output was reused
+(`cache.output.reused`) or stored (`cache.output.stored`) with its bytes and
+time, then a `[cache-misses-and-bypasses]`
 table of up to 20 rows each, such as `app.main miss source: source changed`
 or `app.view bypass blocked app.macros > app.view`. Embedders call
 `light_cljs::compiler::analyze_namespace_entry_cached`, or
