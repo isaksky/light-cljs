@@ -1813,10 +1813,11 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
         assert_eq!(value("trace.units.without-macro-calls"), 1.0);
         assert!(value("trace.engine-ms") > 0.0, "{stderr}");
         assert!(value("trace.engine.entries") > 0.0, "{stderr}");
-        // The units that run a macro spend engine time, which is part of
-        // the whole.
+        // The units that run a macro and the top levels that expand
+        // `bump` spend engine time, each part of the whole.
         let parts = value("trace.top-level.engine-ms") + value("trace.unit.engine-ms");
         assert!(value("trace.unit.engine-ms") > 0.0, "{stderr}");
+        assert!(value("trace.top-level.engine-ms") > 0.0, "{stderr}");
         assert!(parts <= value("trace.engine-ms") + 0.01, "{stderr}");
     }
     // `--stats-file` needs a path, and a namespace compilation.
