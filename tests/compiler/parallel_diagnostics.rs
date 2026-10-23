@@ -303,9 +303,9 @@ fn hogs(sources: &Sources, mb: usize) {
 
 #[test]
 fn the_memory_limit_is_one_budget_across_the_isolates() {
-    // With 256 MiB and four slots, four isolates share the limit: each
-    // worker's is allowed 32 MiB (a QuickJS runtime 64 MiB, of 352) and
-    // takes more from the 96 MiB the others leave. A unit that needs 96 MiB
+    // With 352 MiB and four slots, four isolates share the limit: each
+    // worker's is allowed 64 MiB and takes more from the 96 MiB the others
+    // leave. A unit that needs 96 MiB
     // fits, as with one slot, which an even split of 64 MiB each would not
     // admit.
     let sources = Sources::new();

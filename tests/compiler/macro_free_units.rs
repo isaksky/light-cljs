@@ -151,18 +151,13 @@ pub(crate) fn execute(js: &str) -> String {
 }
 
 /// What a build's memory budget needs beyond the main engine's 64 MiB for
-/// each worker engine: 32 MiB for a V8 isolate, 64 MiB for a QuickJS
-/// runtime in QuickJS-only builds (light-cljs-436).
-pub(crate) const WORKER_SHARE: usize = if cfg!(feature = "v8-macros") {
-    32 << 20
-} else {
-    64 << 20
-};
+/// each worker engine: 64 MiB for a V8 isolate or a QuickJS runtime in
+/// QuickJS-only builds (light-cljs-436, light-cljs-441).
+pub(crate) const WORKER_SHARE: usize = 64 << 20;
 
 /// A host whose memory budget gives the main isolate its default 64 MiB
-/// and one worker isolate its share, as the default budget did before
-/// light-cljs-437 in V8 builds: with more slots, the other workers have no
-/// engine and take only macro-free units. The default budget gives no
+/// and one worker isolate its share: with more slots, the other workers
+/// have no engine and take only macro-free units. The default budget gives no
 /// worker an isolate.
 pub(crate) fn one_worker_isolate() -> MacroHost {
     let mut host = MacroHost::new();

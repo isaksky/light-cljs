@@ -69,12 +69,15 @@ pub(crate) static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 pub(crate) const DEFAULT_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 /// What a build's macro memory limit must leave beyond the main engine's
 /// reservation for each worker engine, and the least base a worker engine
-/// is allowed ([`MemoryPool`]): 32 MiB for a V8 isolate (light-cljs-339),
-/// 64 MiB for a QuickJS runtime in a QuickJS-only build, whose workers hold
-/// 33 to 48 MiB once they have the build's macros on Penpot and the 200k
-/// generated project, so that at 32 MiB they took headroom at their first
-/// units and failed the build where no headroom was left (light-cljs-436).
-pub(crate) const WORKER_SHARE: usize = if cfg!(light_v8) { 32 << 20 } else { 64 << 20 };
+/// is allowed ([`MemoryPool`]): 64 MiB for a V8 isolate and a QuickJS
+/// runtime alike. A worker's QuickJS runtime holds 33 to 48 MiB once it has
+/// the build's macros on Penpot and the 200k generated project, so that at
+/// 32 MiB it took headroom at its first units and failed the build where
+/// none was left (light-cljs-436); a V8 isolate's heap holds 27 to 29 MiB
+/// on the 200k project, so at 32 MiB (light-cljs-339) its collections ran
+/// at the limit and its build took 1.6x as long with twice the isolates
+/// (light-cljs-441).
+pub(crate) const WORKER_SHARE: usize = 64 << 20;
 
 #[derive(Clone, Debug)]
 pub struct EvaluatorOptions {

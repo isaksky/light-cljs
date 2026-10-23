@@ -3005,8 +3005,8 @@ pub(crate) fn release_definition_test(host: &MacroHost, unit: usize) {
 /// How many compile-time isolates, the main one included, `slots` work
 /// slots may run under the macro memory limit `limit`: the main one, and
 /// as many workers' as what the limit leaves beyond the main one's
-/// reservation gives [`crate::evaluator::WORKER_SHARE`] each (32 MiB for a
-/// V8 isolate, 64 MiB for a QuickJS runtime). The main isolate reserves what
+/// reservation gives [`crate::evaluator::WORKER_SHARE`] each (64 MiB for a
+/// V8 isolate or a QuickJS runtime). The main isolate reserves what
 /// a serial build with the default limit has, or the whole limit when it
 /// is lower, so that a build the default limit fits at `--jobs 1` fits
 /// at every `--jobs` (light-cljs-437): the default 64 MiB leaves no room
@@ -3052,23 +3052,15 @@ mod share_tests {
         // (light-cljs-437): the other slots run workers without an engine.
         assert_eq!(super::isolate_count(64 << 20, slots(8)), 1);
         assert_eq!(super::isolate_count(64 << 20, slots(2)), 1);
-        // Beyond the main isolate's 64 MiB, a worker isolate per 32 MiB, or
-        // a QuickJS runtime per 64 MiB in QuickJS-only builds
-        // (light-cljs-436).
+        // Beyond the main isolate's 64 MiB, a worker isolate, or a QuickJS
+        // runtime in QuickJS-only builds, per 64 MiB (light-cljs-436 and
+        // light-cljs-441).
         let share = crate::evaluator::WORKER_SHARE;
-        if cfg!(light_v8) {
-            assert_eq!(share, 32 << 20);
-            assert_eq!(super::isolate_count(96 << 20, slots(8)), 2);
-            assert_eq!(super::isolate_count(128 << 20, slots(8)), 3);
-            assert_eq!(super::isolate_count(256 << 20, slots(4)), 4);
-            assert_eq!(super::isolate_count(256 << 20, slots(8)), 7);
-        } else {
-            assert_eq!(share, 64 << 20);
-            assert_eq!(super::isolate_count(96 << 20, slots(8)), 1);
-            assert_eq!(super::isolate_count(128 << 20, slots(8)), 2);
-            assert_eq!(super::isolate_count(256 << 20, slots(4)), 4);
-            assert_eq!(super::isolate_count(256 << 20, slots(8)), 4);
-        }
+        assert_eq!(share, 64 << 20);
+        assert_eq!(super::isolate_count(96 << 20, slots(8)), 1);
+        assert_eq!(super::isolate_count(128 << 20, slots(8)), 2);
+        assert_eq!(super::isolate_count(256 << 20, slots(4)), 4);
+        assert_eq!(super::isolate_count(256 << 20, slots(8)), 4);
         assert_eq!(super::isolate_count(4_000_000_000, slots(8)), 8);
         // Less than the reservation: one isolate with the whole limit.
         assert_eq!(super::isolate_count(40 << 20, slots(4)), 1);

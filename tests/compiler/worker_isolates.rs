@@ -305,8 +305,8 @@ fn recorded(sources: &Sources, entry: &str, slots: usize) -> Recorded {
         artifacts.push((capture.namespace, capture.artifact));
     };
     let mut stats = light_cljs::CompileStats::new();
-    // Room for seven isolates at eight slots: the default limit gives no
-    // worker one (light-cljs-437).
+    // Room for an isolate per slot at two and four slots, and for four at
+    // eight: the default limit gives no worker one (light-cljs-437).
     let mut host = light_cljs::MacroHost::new();
     host.evaluator_options.memory_limit = 256 << 20;
     let output = light_cljs::compiler::analyze_namespace_entry_recorded(

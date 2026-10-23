@@ -215,13 +215,9 @@ fn vector_keyword_acceptance_compiles_and_executes_from_cli() {
 }
 
 /// A `--macro-memory-limit` that gives one worker an engine beyond the
-/// main one's 64 MiB, which the default does not (light-cljs-437): 32 MiB
-/// for a V8 isolate, 64 MiB for a QuickJS runtime (light-cljs-436).
-const ONE_WORKER_ENGINE: &str = if cfg!(feature = "v8-macros") {
-    "100663296"
-} else {
-    "134217728"
-};
+/// main one's 64 MiB, which the default does not (light-cljs-437): 64 MiB
+/// for a V8 isolate or a QuickJS runtime (light-cljs-436, light-cljs-441).
+const ONE_WORKER_ENGINE: &str = "134217728";
 
 fn light_cljs(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_light-cljs"))

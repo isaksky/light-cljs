@@ -1840,6 +1840,50 @@ of a V8 build, with a QuickJS runtime where a V8 build has an isolate:
   on the coordinator is the floor, which light-cljs-439 and -440 address.
   Peak RSS stays below V8's at every N.
 
+*As built (light-cljs-441), an isolate at its heap limit when it is torn
+down, and a V8 worker's share of 64 MiB.* The V8 build of the 200k project
+at `--jobs 16 --macro-memory-limit 536870912` once aborted the process with
+V8's "Fatal JavaScript out of memory: Reached heap limit" from a worker
+isolate, in `CppHeap::StartDetachingIsolate`:
+
+- *Why.* `V8Evaluator::drop` removed the near-heap-limit callback before
+  the isolate was disposed. A disposal that finds incremental marking
+  running finishes it with a full collection, which promotes the young
+  generation into the old one; when that leaves the old generation past its
+  limit, V8 asks the callbacks for room and, with none installed, aborts.
+  A worker isolate with no headroom left runs close to its limit (the 200k
+  project's hold 27 to 29 MiB of heap at a 32 MiB base), so whether its
+  last collection fell in its teardown was a matter of timing.
+- *The fix.* The callback stays installed through the disposal (the guard
+  it reads, `MemoryGuard`, is dropped after the isolate), and once the
+  evaluator is being dropped (`MemoryGuard::disposing`) it doubles the
+  limit without reporting anything: the isolate runs no more JavaScript and
+  its whole heap is freed right after, so this is no unit's failure, and a
+  unit that ran out of memory has already failed with "JavaScript session
+  memory limit exhausted". The collections a running isolate makes were
+  never at risk: their heap-limit checks find the callback, which grows the
+  heap or fails the unit with the memory limit.
+- *The worker's share.* `evaluator::WORKER_SHARE` is now 64 MiB for a V8
+  isolate as for a QuickJS runtime, so a limit gives as many worker
+  isolates as worker runtimes. At 32 MiB a worker isolate with no headroom
+  ran its collections at its limit, and one that took headroom was retired
+  after its unit and replaced: on the 200k project, 16 jobs at 512 MiB took
+  1.6x as long with fourteen worker isolates as with seven, and at 1 GiB
+  1.2x, with 15 to 20 isolates made against 15; at 8 jobs and 192 MiB (four
+  against two) and at 16 jobs and 2 GiB (fifteen each) the two are even
+  (benchmarks/compiler-concurrency.md). The default 64 MiB still starts no
+  worker isolate, and the projects' own limits give one per worker up to 24
+  jobs either way.
+- *Tests.*
+  `v8_evaluator::tests::an_isolate_torn_down_at_its_heap_limit_does_not_abort_the_process`
+  runs a child process with `LIGHT_V8_FLAGS=--stress-compaction`, which
+  makes every teardown collect, and drops build worker isolates with no
+  headroom filled from three quarters of their share to past it: some
+  build, the others fail with the memory limit, and with the callback
+  removed the child aborted at 57 MiB. `isolate_count`'s test and the
+  suites' `WORKER_SHARE` and `ONE_WORKER_ENGINE` now have one value for
+  both engines.
+
 ### Stage C: parallel namespaces
 
 This stage removes the serial top-level chain.

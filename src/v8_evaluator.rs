@@ -142,6 +142,10 @@ struct MemoryGuard {
     buffers: Arc<buffers::Budget>,
     maximum: usize,
     adaptive: bool,
+    /// Set when the evaluator is dropped: the isolate's teardown may still
+    /// collect garbage, and that collection's heap-limit check must find
+    /// this guard's callback (light-cljs-441).
+    disposing: Cell<bool>,
     #[cfg(test)]
     growths: Cell<usize>,
 }
@@ -191,6 +195,15 @@ unsafe extern "C" fn after_gc(
 }
 extern "C" fn near_heap_limit(data: *mut std::ffi::c_void, current: usize, _: usize) -> usize {
     let state = unsafe { &*data.cast::<MemoryGuard>() };
+    if state.disposing.get() {
+        // The isolate is being torn down and runs no more JavaScript. The
+        // collection that finishes its incremental marking promotes the
+        // young generation, which can leave the old one past its limit:
+        // V8 aborts the process at a limit no callback raises, and the
+        // teardown frees the whole heap right after. That is no unit's
+        // failure, so report none (light-cljs-441).
+        return current.saturating_add(current.max(16 * 1024 * 1024));
+    }
     let used = state.buffers.used();
     let mut available = state.buffers.allowance().saturating_sub(used);
     // A build's isolate grows past its allowance only by taking from the
@@ -395,6 +408,7 @@ impl V8Evaluator {
             buffers: state.buffers.clone(),
             maximum: options.memory_limit,
             adaptive: heap_limit < options.memory_limit,
+            disposing: Cell::new(false),
             #[cfg(test)]
             growths: Cell::new(0),
         });
@@ -527,9 +541,10 @@ impl Drop for V8Evaluator {
                 .get_mut()
                 .take_heap_snapshot(|chunk| output.write_all(chunk).is_ok());
         }
-        self.isolate
-            .get_mut()
-            .remove_near_heap_limit_callback(near_heap_limit, 0);
+        // The near-heap-limit callback stays installed through the
+        // isolate's disposal, whose collection can reach the heap limit
+        // (light-cljs-441).
+        self.memory.disposing.set(true);
         self.isolate
             .get_mut()
             .remove_gc_epilogue_callback(after_gc, std::ptr::null_mut());
@@ -537,7 +552,8 @@ impl Drop for V8Evaluator {
         self.state.namespaces.borrow_mut().entries.clear();
         self.state.bridge.borrow_mut().clear_engine_roots();
         self.context.take();
-        // memory callback data stays alive until after removal.
+        // The memory callback's data outlives the isolate's disposal:
+        // `memory` is dropped after `isolate`, in field order.
         let _ = &self.memory;
     }
 }
@@ -1345,6 +1361,81 @@ mod tests {
         let result = next.evaluate_js("42").unwrap();
         assert_eq!(next.number(result).unwrap(), 42.0);
         next.release(result).unwrap();
+    }
+
+    /// The child of
+    /// [`an_isolate_torn_down_at_its_heap_limit_does_not_abort_the_process`]:
+    /// a build's worker isolates, with no headroom to grow into, dropped
+    /// with their heaps filled to just under, at and past their limit.
+    #[test]
+    #[ignore = "run as a child process with V8 flags"]
+    fn teardown_at_the_heap_limit_child() {
+        let options = EvaluatorOptions {
+            memory_limit: (64 << 20) + 2 * crate::evaluator::WORKER_SHARE,
+            ..Default::default()
+        };
+        let (mut built, mut exhausted) = (0, 0);
+        // From three quarters of the worker's share to 2 MiB past it, old
+        // arrays of 256 KiB (64,000 compressed small integers) in steps of
+        // 512 KiB, then young ones the teardown's collection promotes.
+        // Without the callback, the teardown at 57 MiB aborted.
+        let share = crate::evaluator::WORKER_SHARE >> 18;
+        for old in (share * 3 / 4..=share + 8).step_by(2) {
+            let resources = crate::evaluator::BuildResources::new(&options, 3).unwrap();
+            let worker = V8Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
+            let result = worker.evaluate_js(&format!(
+                "(() => {{ globalThis.kept = []; for (let i = 0; i < {old}; i++) kept.push(new Array(64000).fill(1)); globalThis.young = []; for (let i = 0; i < 2000; i++) young.push(new Array(64).fill(i)); return kept.length; }})()"
+            ));
+            match result {
+                Ok(id) => {
+                    worker.release(id).unwrap();
+                    built += 1;
+                }
+                Err(error) => {
+                    assert!(error.0.contains("memory limit exhausted"), "{error}");
+                    exhausted += 1;
+                }
+            }
+            eprintln!("old={old} built={built} exhausted={exhausted}");
+            drop(worker);
+        }
+        println!("built={built} exhausted={exhausted}");
+    }
+
+    /// A worker isolate torn down with its heap at its limit, as a build's
+    /// is after its last unit, fails no more than its units did, and never
+    /// with V8's fatal "Reached heap limit" abort (light-cljs-441): the
+    /// collection a teardown makes, here forced by `--stress-compaction`,
+    /// finds the near-heap-limit callback still installed.
+    #[test]
+    fn an_isolate_torn_down_at_its_heap_limit_does_not_abort_the_process() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "v8_evaluator::tests::teardown_at_the_heap_limit_child",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("LIGHT_V8_FLAGS", "--stress-compaction")
+            .output()
+            .unwrap();
+        let (stdout, stderr) = (
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert!(
+            output.status.success(),
+            "{:?}\n{stdout}\n{stderr}",
+            output.status
+        );
+        // Both outcomes were exercised: heaps that fit and heaps that
+        // exhausted the worker's share.
+        let counts = stdout.lines().find(|line| line.contains("built=")).unwrap();
+        assert!(
+            !counts.contains("built=0 ") && !counts.ends_with("exhausted=0"),
+            "{counts}"
+        );
     }
 
     #[test]

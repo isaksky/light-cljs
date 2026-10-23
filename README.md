@@ -408,9 +408,9 @@ gives. `--macro-memory-limit` is one budget for the calling thread's isolate
 and every worker's together: the calling thread's isolate keeps what one job
 has at the default limit (64 MiB, or the whole limit when it is lower), so a
 build that fits the default at one job fits it at every N, and a worker gets
-an isolate for each 32 MiB beyond that (in a QuickJS-only build a QuickJS
-runtime for each 64 MiB, since a worker's runtime holds 33 to 48 MiB on
-large programs); the default gives none, so its
+an isolate (in a QuickJS-only build a QuickJS runtime) for each 64 MiB
+beyond that, since a worker's engine holds 27 to 48 MiB on large programs;
+the default gives none, so its
 workers have no engine. Each isolate is allowed a base share and takes more
 from what the others have not taken, and one that cannot get what it needs
 fails the build.

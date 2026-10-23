@@ -11,6 +11,45 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## A V8 worker's share of 64 MiB (light-cljs-441, October 23, 2026)
+
+The seed-42 200k generated project, `release bench --no-cache --stats`
+(advanced), V8 builds of master `b1d9451` with the teardown fix: the
+worker share at 32 MiB (`evaluator::WORKER_SHARE` before this change)
+against 64 MiB (this change), alternating, medians (range), peak RSS in
+MiB. "Isolates" is `pool.worker-isolates`, the worker isolates made,
+retired ones included. 1-minute load 6-8 (192 MiB: 13-27), with
+light-cljs-439's worker on the machine. Every build's output is one
+SHA-256 (`1a75bc87b26f3121`, the first 16 hex digits over the output's
+JavaScript):
+
+| `--jobs`, limit | 32 MiB: wall, RSS, isolates | 64 MiB: wall, RSS, isolates |
+| --- | --- | --- |
+| 16, 512 MiB (4 rounds) | 9.10 s (7.31-11.43), 1591, 14 | 5.60 s (5.55-5.65), 1542, 7 |
+| 16, 1 GiB (4) | 7.32 s (6.51-9.71), 1558, 15-20 | 5.98 s (5.80-6.72), 1806, 15 |
+| 16, 2 GiB (3) | 5.69 s (5.51-5.96), 1809, 15 | 5.72 s (5.54-5.89), 1799, 15 |
+| 8, 192 MiB (5) | 5.41 s (5.25-5.55), 1266, 4 | 5.41 s (5.25-5.63), 1243, 2 |
+
+Twelve more rounds at 16 jobs and 512 MiB under a load of 28 to 62 gave
+24.1 s (9.4-34.8) against 17.2 s (5.5-20.2). A V8 worker isolate holds
+21 MiB live and 27 to 29 MiB of heap at its teardown on this project
+(`LIGHT_V8_STATS`), against its 32 MiB base: with no headroom it collects
+at its limit, and one that took headroom is retired after its unit and
+made again. At 64 MiB the 1 GiB build's peak RSS is 16% higher (its
+fifteen isolates have twice the base); elsewhere it is lower or even.
+
+*The abort.* Before the fix (master `b1d9451`), 20 builds at `--jobs 16
+--macro-memory-limit 536870912` with the 32 MiB share all built (6.6 to
+11.9 s, load 6-10); the abort light-cljs-436 saw once in two runs did not
+recur, but `v8_evaluator::tests::an_isolate_torn_down_at_its_heap_limit_does_not_abort_the_process`
+reproduces it every time without the fix. With the fix, 16 more builds at
+the 32 MiB share and 12 at 64 MiB (5.48 to 6.00 s, median 5.56 s, seven
+worker isolates) all built; at 24 MiB, below the main isolate's
+reservation, 4 of 4 builds at 16 jobs failed with "JavaScript session
+memory limit exhausted" and none aborted. Which unit runs out first varies
+from run to run, at one job as at sixteen and before the fix as after: it
+depends on when the collector runs.
+
 ## QuickJS runtimes on the pool (light-cljs-436, October 23, 2026)
 
 QuickJS-only builds (`--no-default-features`, `target/quickjs`) now run the
