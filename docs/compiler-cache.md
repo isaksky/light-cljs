@@ -1156,6 +1156,23 @@ miss across processes; both fail without the scoping, where the miss's
 reader counted from zero and returned the hit's symbol, and the first fails
 without the definition scope as well.
 
+*As built (light-cljs-432):* the record is unchanged in form: an artifact
+still records the runtime's unscoped `gensym` counter and every spelling
+`gensym` returned. What changed is where scoped names come from and where
+they are logged. A scope's count is kept by the compiler, and a core macro
+expanded natively takes its names from it without an engine, as the
+runtime does through `__lightGensym` (docs/compiler-concurrency.md, "As
+built (light-cljs-432)"); while capture logs, both log on the analyzing
+thread in the order the names were returned, so the spellings and their
+order are what the engine logged before. A namespace whose analysis now
+never starts the coordinator's engine records the counter the build would
+have raised the engine to, the reserved floor, rather than what a started
+engine reported, which differs only by unscoped names that engine's start
+would have allocated: a mark at or above every name the namespace retains,
+as before. `cache_contract`'s mixes of hits and misses and
+`worker_isolates::units_on_workers_keep_the_one_slot_manifest_and_artifacts`
+(artifacts at one, two, four and eight slots) pass unchanged.
+
 ## Loading, diagnostics, and storage
 
 ```mermaid

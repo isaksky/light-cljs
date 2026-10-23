@@ -410,6 +410,13 @@ impl V8Evaluator {
             _live: crate::compile_stats::Live::new(&crate::compile_stats::LIVE_ENGINES),
         };
         evaluator.initialize(source)?;
+        // In a scope of generated names, `gensym` numbers from the
+        // compiler's count of the scope (light-cljs-432).
+        CompilerEvaluator::install_string_service(
+            &evaluator,
+            "__lightGensym",
+            Rc::new(crate::generated_names::serve_gensym),
+        )?;
         Ok(evaluator)
     }
 
@@ -766,12 +773,24 @@ impl MacroEvaluator for Active<'_, '_, '_> {
     ) -> Option<std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>> {
         Some(self.state.reader_namespaces.clone())
     }
-    fn gensym_scope(&self, serial: u64, prefix: &str, retired: &str) -> Result<(), EvalError> {
+    fn gensym_scope(
+        &self,
+        serial: u64,
+        prefix: &str,
+        retired: &str,
+        native: bool,
+    ) -> Result<(), EvalError> {
         self.enter(|scope| {
             let serial = v8::Number::new(scope, serial as f64).into();
             let prefix = bridge::string(scope, prefix)?.into();
             let retired = bridge::string(scope, retired)?.into();
-            invoke(scope, self.state, "gensymScope", &[serial, prefix, retired])?;
+            let native = v8::Boolean::new(scope, native).into();
+            invoke(
+                scope,
+                self.state,
+                "gensymScope",
+                &[serial, prefix, retired, native],
+            )?;
             Ok(())
         })
     }
@@ -991,8 +1010,14 @@ impl MacroEvaluator for V8Evaluator {
     ) -> Option<std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>> {
         Some(self.state.reader_namespaces.clone())
     }
-    fn gensym_scope(&self, serial: u64, prefix: &str, retired: &str) -> Result<(), EvalError> {
-        self.with_active(|e| e.gensym_scope(serial, prefix, retired))
+    fn gensym_scope(
+        &self,
+        serial: u64,
+        prefix: &str,
+        retired: &str,
+        native: bool,
+    ) -> Result<(), EvalError> {
+        self.with_active(|e| e.gensym_scope(serial, prefix, retired, native))
     }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
         self.with_active(|e| e.call(function, arguments))

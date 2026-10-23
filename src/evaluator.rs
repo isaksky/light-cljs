@@ -595,7 +595,7 @@ impl Evaluator {
                     hostDiagnostic = null;
                   }} catch (error) {{ lastError = error; const message = exceptionMessage(error); if (message !== undefined) throw new Error(message); throw error; }}
                 }},
-                gensymScope: (serial, prefix, retired) => bridge.gensymScope(serial, prefix, retired),
+                gensymScope: (serial, prefix, retired, native) => bridge.gensymScope(serial, prefix, retired, native),
                 call: (id, ids) => {{
                   try {{ const result = save(Reflect.apply(get(id), null, ids.map(get))); hostDiagnostic = null; return result; }}
                   catch (error) {{
@@ -648,6 +648,11 @@ impl Evaluator {
               }});
             }})();
         "#)))?;
+        // In a scope of generated names, `gensym` numbers from the
+        // compiler's count of the scope (light-cljs-432).
+        session.install_callback("__lightGensym", |_, request| {
+            Ok(crate::generated_names::serve_gensym(&request))
+        })?;
         Ok(session)
     }
     pub fn control(&self) -> ExecutionControl {
@@ -1299,13 +1304,20 @@ pub trait MacroEvaluator {
         None
     }
     /// Make the compile-time runtime's `gensym` number in the scope of
-    /// generated names `serial`, appending `prefix` and the scope's own
-    /// count, or with its counter for serial 0
-    /// ([`crate::generated_names::Scope`]).
-    fn gensym_scope(&self, serial: u64, prefix: &str, retired: &str) -> Result<(), EvalError> {
+    /// generated names `serial`, appending `prefix` and the scope's count,
+    /// or with its counter for serial 0; with `native`, it takes each
+    /// number of that count from the compiler (`__lightGensym`) rather than
+    /// counting it itself ([`crate::generated_names::Scope`]).
+    fn gensym_scope(
+        &self,
+        serial: u64,
+        prefix: &str,
+        retired: &str,
+        native: bool,
+    ) -> Result<(), EvalError> {
         debug_assert!(prefix.bytes().all(|b| b.is_ascii_digit() || b == b'_'));
         let value = self.evaluate_unit(&format!(
-            "rt => {{ rt.compilerForms.gensymScope({serial}, \"{prefix}\", \"{retired}\"); return null; }}"
+            "rt => {{ rt.compilerForms.gensymScope({serial}, \"{prefix}\", \"{retired}\", {native}); return null; }}"
         ))?;
         self.release(value)
     }
@@ -1379,8 +1391,14 @@ impl MacroEvaluator for Evaluator {
     ) -> Option<std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>> {
         Some(self.bridge.borrow().reader_namespaces.clone())
     }
-    fn gensym_scope(&self, serial: u64, prefix: &str, retired: &str) -> Result<(), EvalError> {
-        self.with_active(|active| active.gensym_scope(serial, prefix, retired))
+    fn gensym_scope(
+        &self,
+        serial: u64,
+        prefix: &str,
+        retired: &str,
+        native: bool,
+    ) -> Result<(), EvalError> {
+        self.with_active(|active| active.gensym_scope(serial, prefix, retired, native))
     }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
         Evaluator::call(self, function, arguments)
@@ -1490,10 +1508,16 @@ impl MacroEvaluator for ActiveEvaluator<'_, '_> {
     ) -> Option<std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>> {
         Some(self.bridge.borrow().reader_namespaces.clone())
     }
-    fn gensym_scope(&self, serial: u64, prefix: &str, retired: &str) -> Result<(), EvalError> {
+    fn gensym_scope(
+        &self,
+        serial: u64,
+        prefix: &str,
+        retired: &str,
+        native: bool,
+    ) -> Result<(), EvalError> {
         self.enter(|_| {
             let f: Function = self.services.get("gensymScope")?;
-            f.call::<_, ()>((serial as f64, prefix, retired))
+            f.call::<_, ()>((serial as f64, prefix, retired, native))
         })
     }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {

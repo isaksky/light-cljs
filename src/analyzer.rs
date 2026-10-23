@@ -3173,6 +3173,17 @@ fn extend_arities(
     }
 }
 
+/// How the check of macro-free units takes a symbol
+/// ([`Analyzer::macro_free_form`]).
+enum SymbolUse {
+    /// It resolves without an engine or an observation.
+    Free,
+    Ineligible,
+    /// As an operator, a call of this core macro, which expands natively
+    /// unless the call is one [`crate::native_core_macros`] declines.
+    NativeCore(String),
+}
+
 /// A definition whose analysis waits for the end of its source's top-level
 /// forms, or in warning mode of its own form (see [`Analyzer::drain_deferred`]).
 struct DeferredUnit {
@@ -7414,18 +7425,48 @@ impl Analyzer<'_> {
     /// reference, every symbol naming a macro, and every qualified or dotted
     /// symbol whose namespace analysis would record as an observation makes
     /// the unit ineligible. Whether the file defines macros does not enter.
+    ///
+    /// A call of a core macro the analyzer expands natively
+    /// ([`crate::native_core_macros`]) is judged by what it expands to there
+    /// (light-cljs-432): the walk expands it as analysis will, with stand-ins
+    /// for the names it allocates, which come from the unit's scope without
+    /// an engine, and goes on in the expansion instead of the call. A call
+    /// the native expansion would leave to the engine, a definition's error
+    /// among them, makes the unit ineligible, so a macro-free unit's
+    /// analysis never declines one.
     fn macro_free_form(&self, form: &Form) -> bool {
-        self.macro_free_datum(&form.data(), 0)
+        self.macro_free_datum(&form.data(), 0, false)
     }
 
-    fn macro_free_datum(&self, datum: &crate::compiler_data::Datum, depth: usize) -> bool {
+    /// Whether `datum` is macro-free ([`Self::macro_free_form`]); with
+    /// `expansion`, as part of a native core macro's expansion, whose
+    /// generated `compiler-case*` and `cljs.core/lazy-seq` the analyzer
+    /// lowers itself.
+    fn macro_free_datum(
+        &self,
+        datum: &crate::compiler_data::Datum,
+        depth: usize,
+        expansion: bool,
+    ) -> bool {
         use crate::compiler_data::DatumKind;
         // Deep forms take the serial path rather than a deep walk here.
         if depth > 256 {
             return false;
         }
-        if let Some(metadata) = datum.metadata()
-            && !self.macro_free_datum(&metadata, depth + 1)
+        let walk = |datum: &crate::compiler_data::Datum| {
+            self.macro_free_datum(datum, depth + 1, expansion)
+        };
+        // A generated `compiler-case*` reads its call from its metadata as
+        // data (`:light-cljs/case-source`), which analysis does not analyze.
+        let case = expansion
+            && matches!(datum.kind(), DatumKind::Collection {
+                kind: CollectionKind::List,
+                children,
+            } if children.first().is_some_and(|head| matches!(head.kind(),
+                DatumKind::Symbol(name) if *name == crate::compiler_data::Name::new(None, "compiler-case*"))));
+        if !case
+            && let Some(metadata) = datum.metadata()
+            && !walk(&metadata)
         {
             return false;
         }
@@ -7439,13 +7480,11 @@ impl Analyzer<'_> {
             | DatumKind::String(_)
             | DatumKind::Keyword(_) => true,
             DatumKind::Symbol(name) => self.macro_free_symbol(name, false),
-            DatumKind::CompilerLiteral { payload, .. } => self.macro_free_datum(payload, depth + 1),
+            DatumKind::CompilerLiteral { payload, .. } => walk(payload),
             DatumKind::Collection {
                 kind: CollectionKind::Vector | CollectionKind::Map | CollectionKind::Set,
                 children,
-            } => children
-                .iter()
-                .all(|child| self.macro_free_datum(child, depth + 1)),
+            } => children.iter().all(walk),
             DatumKind::Collection {
                 kind: CollectionKind::List,
                 children,
@@ -7461,6 +7500,15 @@ impl Analyzer<'_> {
                     if spelled.as_deref() == Some("quote") {
                         return true;
                     }
+                    // What a native expansion generates of these the
+                    // analyzer lowers as it lowers `case*` and `fn*`.
+                    if expansion
+                        && (spelled.as_deref() == Some("compiler-case*")
+                            || *name
+                                == crate::compiler_data::Name::new(Some("cljs.core"), "lazy-seq"))
+                    {
+                        return args.iter().all(walk);
+                    }
                     // A template's named placeholders resolve symbols the
                     // walk does not see.
                     if spelled.as_deref() == Some("js*")
@@ -7474,21 +7522,120 @@ impl Analyzer<'_> {
                     {
                         return false;
                     }
-                    if !self.macro_free_symbol(name, true) {
-                        return false;
+                    match self.symbol_use(name, true) {
+                        SymbolUse::Free => {}
+                        SymbolUse::Ineligible => return false,
+                        // Analysis goes on in its expansion, which holds
+                        // what of the call it analyzes.
+                        SymbolUse::NativeCore(core) => {
+                            return crate::native_core_macros::native_expansion(
+                                &core,
+                                datum,
+                                self.namespace,
+                                self.macro_host.limits.generated_nodes,
+                            )
+                            .is_some_and(|expanded| {
+                                self.macro_free_datum(&expanded, depth + 1, true)
+                                    && self.dropped_arguments_free(args, &expanded)
+                            });
+                        }
                     }
-                } else if !self.macro_free_datum(operator, depth + 1) {
+                } else if !walk(operator) {
                     return false;
                 }
-                args.iter().all(|arg| self.macro_free_datum(arg, depth + 1))
+                args.iter().all(walk)
             }
             DatumKind::Collection { .. } => false,
         }
     }
 
+    /// Whether what of the arguments `args` of a native core macro's call its
+    /// expansion `expanded` leaves out, such as a `js-obj` value whose key
+    /// comes again, is free taken as values: a call analysis does not take
+    /// as the macro's, its operator a local, analyzes them all. What the
+    /// expansion holds, by identity, it walks itself.
+    fn dropped_arguments_free(
+        &self,
+        args: &[crate::compiler_data::Datum],
+        expanded: &crate::compiler_data::Datum,
+    ) -> bool {
+        use crate::compiler_data::{Datum, DatumKind};
+        use std::collections::HashSet;
+        fn parts(datum: &Datum) -> impl Iterator<Item = Datum> + '_ {
+            let children = match datum.kind() {
+                DatumKind::Collection { children, .. } => children.to_vec(),
+                DatumKind::CompilerLiteral { payload, .. } => vec![payload.clone()],
+                _ => Vec::new(),
+            };
+            children.into_iter().chain(datum.metadata())
+        }
+        fn record(datum: &Datum, into: &mut HashSet<usize>) {
+            into.insert(datum.identity());
+            for part in parts(datum) {
+                record(&part, into);
+            }
+        }
+        // The argument datums the expansion holds, found without walking
+        // into them.
+        fn find(datum: &Datum, arguments: &HashSet<usize>, held: &mut HashSet<usize>) {
+            if arguments.contains(&datum.identity()) {
+                held.insert(datum.identity());
+                return;
+            }
+            for part in parts(datum) {
+                find(&part, arguments, held);
+            }
+        }
+        let mut arguments = HashSet::new();
+        for arg in args {
+            record(arg, &mut arguments);
+        }
+        let mut held = HashSet::new();
+        find(expanded, &arguments, &mut held);
+        fn free(analyzer: &Analyzer<'_>, datum: &Datum, held: &HashSet<usize>) -> bool {
+            if held.contains(&datum.identity()) {
+                return true;
+            }
+            match datum.kind() {
+                // A template's placeholders resolve what the walk does not see.
+                DatumKind::Symbol(name) => {
+                    *name != crate::compiler_data::Name::new(None, "js*")
+                        && analyzer.macro_free_symbol(name, false)
+                }
+                DatumKind::Collection {
+                    kind:
+                        CollectionKind::List
+                        | CollectionKind::Vector
+                        | CollectionKind::Map
+                        | CollectionKind::Set,
+                    ..
+                }
+                | DatumKind::CompilerLiteral { .. } => {
+                    parts(datum).all(|part| free(analyzer, &part, held))
+                }
+                DatumKind::Collection { .. } => false,
+                _ => parts(datum).all(|part| free(analyzer, &part, held)),
+            }
+        }
+        args.iter().all(|arg| free(self, arg, &held))
+    }
+
     /// Whether symbol `name`, as an operator or a value, resolves without the
     /// macro host's engine or an observation ([`Self::macro_free_form`]).
     fn macro_free_symbol(&self, name: &crate::compiler_data::Name, operator: bool) -> bool {
+        matches!(self.symbol_use(name, operator), SymbolUse::Free)
+    }
+
+    /// How analysis takes symbol `name` as an operator or a value, for
+    /// [`Self::macro_free_form`].
+    fn symbol_use(&self, name: &crate::compiler_data::Name, operator: bool) -> SymbolUse {
+        let free = |free: bool| {
+            if free {
+                SymbolUse::Free
+            } else {
+                SymbolUse::Ineligible
+            }
+        };
         let member = String::from_utf16_lossy(name.name());
         let qualifier = name.namespace().map(String::from_utf16_lossy);
         let spelled = match &qualifier {
@@ -7504,7 +7651,7 @@ impl Analyzer<'_> {
                 || self.requires.contains(&target))
                 || target == LAZY_NAMESPACE
             {
-                return false;
+                return SymbolUse::Ineligible;
             }
         } else if member.contains('.') {
             // Interop methods and fields, and constructors of undotted names.
@@ -7516,10 +7663,10 @@ impl Analyzer<'_> {
                 .or(constructor)
                 .is_some_and(|rest| !rest.is_empty() && !rest.contains('.'))
             {
-                return false;
+                return SymbolUse::Ineligible;
             }
             if method.is_some() {
-                return operator;
+                return free(operator);
             }
         }
         if operator
@@ -7544,7 +7691,7 @@ impl Analyzer<'_> {
                     | "&"
             )
         {
-            return true;
+            return SymbolUse::Free;
         }
         if matches!(
             member.as_str(),
@@ -7557,7 +7704,7 @@ impl Analyzer<'_> {
                 | "macroexpand"
                 | "macroexpand-1"
         ) {
-            return false;
+            return SymbolUse::Ineligible;
         }
         // Any intrinsic the analyzer lowers itself, shadowed or not.
         if self
@@ -7606,7 +7753,7 @@ impl Analyzer<'_> {
                     | "loadable-type"
             )
         {
-            return false;
+            return SymbolUse::Ineligible;
         }
         // A core-aliased name resolves as the core one.
         let core = match &qualifier {
@@ -7623,17 +7770,44 @@ impl Analyzer<'_> {
                 .macro_host
                 .has_javascript_macro(self.namespace, &spelled)
         {
-            return false;
+            return SymbolUse::Ineligible;
         }
         // Only core macros expand besides source ones; of those, these four
-        // expand natively, with no engine.
+        // expand natively, with no engine, and so do the calls of those
+        // `native_core_macros` expands that it would not leave to one.
         match self.macro_host.macro_name(self.namespace, &core, false) {
             Some((namespace, name))
                 if matches!(namespace.as_str(), "cljs.core" | "clojure.core") =>
             {
-                operator && matches!(name.as_str(), "let" | "loop" | "fn" | "letfn")
+                if !operator {
+                    SymbolUse::Ineligible
+                } else if matches!(name.as_str(), "let" | "loop" | "fn" | "letfn") {
+                    SymbolUse::Free
+                } else if crate::native_core_macros::native(&name) {
+                    // A name the namespace shadows is no core macro to
+                    // analysis (`Analyzer::expand_macro`): nothing to judge
+                    // by expanding it.
+                    let shadowed = self.macro_host.has_source_value(self.namespace, &spelled)
+                        || self
+                            .globals
+                            .get(&(self.namespace.into(), spelled.clone()))
+                            .is_some_and(|g| self.program.globals[g.0].declared)
+                        || self.resolution.excludes.contains(&spelled)
+                        || self
+                            .resolution
+                            .refers
+                            .iter()
+                            .any(|(local, _, _)| *local == spelled);
+                    if shadowed {
+                        SymbolUse::Ineligible
+                    } else {
+                        SymbolUse::NativeCore(name)
+                    }
+                } else {
+                    SymbolUse::Ineligible
+                }
             }
-            _ => true,
+            _ => SymbolUse::Free,
         }
     }
 
@@ -11038,13 +11212,7 @@ impl Analyzer<'_> {
                 .map_err(|e| error(e.to_string()))?;
             if let Some(expanded) = self
                 .macro_host
-                .expand_core_native(
-                    core_name,
-                    &form,
-                    self.namespace,
-                    (&name, &call_span),
-                    self.engine,
-                )
+                .expand_core_native(core_name, &form, self.namespace, (&name, &call_span))
                 .map_err(error)?
             {
                 return self.import_form(&expanded).map(Some);

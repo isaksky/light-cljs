@@ -1046,6 +1046,14 @@ impl Default for CompilationSession {
         }
     }
 }
+impl Drop for CompilationSession {
+    fn drop(&mut self) {
+        // What this thread logged for the session is not read again.
+        if self.gensyms_logged.get() {
+            crate::generated_names::stop_log();
+        }
+    }
+}
 impl CompilationSession {
     /// The catalog this view shares with the views of other threads.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -1386,6 +1394,9 @@ impl CompilationSession {
     /// [`Self::take_gensyms`].
     pub fn log_gensyms(&self) -> Result<(), String> {
         self.gensyms_logged.set(true);
+        // Names a core macro expanded natively allocates are logged on this
+        // thread, as are those the runtime returns (light-cljs-432).
+        crate::generated_names::start_log();
         match self.bootstrap() {
             Some(bootstrap) => Self::take_gensyms_from(bootstrap.evaluator.as_ref()).map(drop),
             None => Ok(()),
@@ -1399,6 +1410,9 @@ impl CompilationSession {
             Some(bootstrap) => Self::take_gensyms_from(bootstrap.evaluator.as_ref())?,
             None => (self.gensym_floor.get(), Vec::new()),
         };
+        let mut logged = crate::generated_names::take_log();
+        logged.extend(names);
+        let names = logged;
         // With a pool, a worker's unit may give these names again.
         if self.pool.borrow().is_some() {
             self.gensyms_seen.borrow_mut().extend(names.iter().cloned());
@@ -1441,15 +1455,14 @@ impl CompilationSession {
         }
         Ok(())
     }
-    /// What this engine's `gensym` has given since it was last read, while
-    /// they are logged.
+    /// What `gensym` has given on this thread since it was last read, while
+    /// they are logged: its runtime logs what it returns here, as natively
+    /// expanded core macros do ([`crate::generated_names::take_log`]).
     fn engine_gensyms(&self) -> Result<Option<Vec<Vec<u16>>>, String> {
-        match self.bootstrap() {
-            Some(bootstrap) if self.gensyms_logged.get() => Ok(Some(
-                Self::take_gensyms_from(bootstrap.evaluator.as_ref())?.1,
-            )),
-            _ => Ok(None),
-        }
+        Ok(self
+            .gensyms_logged
+            .get()
+            .then(crate::generated_names::take_log))
     }
     /// The runtime's `gensym` skips every unqualified symbol name the form
     /// bridge decodes, so importing the names as symbols reserves them.
@@ -2409,24 +2422,30 @@ fn analyze_unit(
             // `gensym` gives from here on, which the unit's analysis hands
             // the coordinator; what the engine gave before, setting itself
             // up or installing the catalog's registrations, is its own.
+            // The log is this thread's: the engine logs into it, and so do
+            // the core macros the unit expands natively, with or without an
+            // engine (light-cljs-432).
             let logs_gensyms = on_worker && recording.capture;
-            let started_log = match engine {
-                Some(engine) if logs_gensyms => {
-                    CompilationSession::take_gensyms_from(engine).map(drop)
+            let started_log = if logs_gensyms {
+                crate::generated_names::start_log();
+                match engine {
+                    Some(engine) => CompilationSession::take_gensyms_from(engine).map(drop),
+                    None => Ok(()),
                 }
-                _ => Ok(()),
+            } else {
+                Ok(())
             };
             let free = crate::macro_host::MacroFreeUnit::enter(name, macro_free, recording, !held);
             let analysis =
                 crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
             let recorded = free.finish();
-            // What `gensym` gave in this worker's engine, for the artifact
+            // What `gensym` gave on this worker, for the artifact
             // ([`CompilationSession::take_gensyms`]).
-            let gensyms = match engine {
-                Some(engine) if logs_gensyms => started_log
-                    .and_then(|()| CompilationSession::take_gensyms_from(engine))
-                    .map(|(_, names)| names),
-                _ => Ok(Vec::new()),
+            let gensyms = if logs_gensyms {
+                let logged = crate::generated_names::stop_log();
+                started_log.map(|()| logged)
+            } else {
+                Ok(Vec::new())
             };
             let mut events = recorded.events;
             // Names it cannot account for keep its namespace's artifact from

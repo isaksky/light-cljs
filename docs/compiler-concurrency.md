@@ -1552,6 +1552,64 @@ top-level pass:
 - *Trace.* The drain point is the `drain` stage; `trace.wait-ms` is now
   the coordinator's time blocked at drain points and on demands.
 
+*As built (light-cljs-432), natively expanded units need no engine.* The
+core macros light-cljs-426 expands in Rust (`src/native_core_macros.rs`)
+used to take the names they allocate from the compile-time runtime's
+`gensym`, in one engine call per expansion, so a unit using `or`, `case`,
+`when-let`, `for`, `doseq`, `cond->` and the like entered V8 and was never
+macro-free. Now each scope of generated names keeps its `gensym` count in
+Rust (`generated_names::Scope::gensym`): a native expansion takes its
+numbers there (`generated_names::gensym`), and a runtime put in the scope
+(`gensymScope` with `native`) takes each of its numbers there too, through
+the string service `__lightGensym` every compile-time engine installs at
+construction (`generated_names::serve_gensym`). The two interleave on one
+counter, so names are byte-identical to before whichever side allocates
+them; what the installed scope is, and when, is unchanged, and a scope
+the thread no longer knows, which only a stale installed one could be,
+falls back to the runtime's own count. While a capturing compilation logs
+`gensym`'s results, both sides log on the analyzing thread, in order
+(`generated_names::start_log`, `take_log`): the coordinator's log, a
+worker unit's log (taken without an engine call, with or without an
+engine) and a held unit's names are what they were, minus the engine
+calls that read them. The bootstrap's own expansions log nothing
+(`generated_names::unlogged`), as its engine, which did not log, logged
+nothing before.
+
+`Analyzer::macro_free_form` now admits calls of those macros: at a call
+it expands the call as analysis will (`native_core_macros::native_expansion`,
+with stand-ins for the names, `generated_names::stand_in`, each equal to
+nothing but itself as an allocated name is, so an expansion comparing
+symbols, as `js-obj` compares keys, decides alike) and walks the expansion
+instead of the call; an argument the expansion leaves out, by identity, is
+checked as a value (`Analyzer::dropped_arguments_free`), since a call
+whose operator analysis finds a local analyzes it, and a name the
+namespace shadows (a source value, a declared global, an exclusion or a
+referral, as `expand_macro` judges) makes the unit ineligible; with what a
+native expansion generates
+(`compiler-case*`, `cljs.core/lazy-seq`, without `compiler-case*`'s
+`:light-cljs/case-source` metadata, which is read as data) lowered as the
+analyzer lowers it. `native_expansion` declines exactly where
+`expand_core_native` leaves a call to the engine (outside every scope, a
+call or expansion the conversion would refuse, a call the definition
+rejects, a `js-obj` of more than eight entries), and the unit is then not
+macro-free, so a macro-free unit's analysis never reaches the engine and
+needs no fallback; the differential tests of `native_core_macros` assert
+that parity on every edge case they cover, and
+`macro_free_units::units_whose_only_macros_expand_natively_need_no_engine`
+builds such units at two, four and eight slots on workers without an
+engine (one isolate's memory), where `MacroFreeUnit` panics at any engine
+entry, against the one-slot build;
+`macro_free_units::trial_expansions_admit_no_call_the_engine_expands`
+covers a threaded stand-in next to a same-spelled source key, a shadowed
+`if-let` and a local `js-obj` with a repeated key, and
+`generated_names::tests::native_and_runtime_gensyms_share_count_and_log`
+the shared count and log. Accounting is unchanged in kind: such an
+expansion is always a `UnitEvent::Expansion`, never a `Script` event, so
+its charge no longer starts the coordinator's engine, and neither does a
+one-slot build's expansion, which no longer allocates in an engine; the
+engine starts at a drain only when a unit may enter one (`judged` false),
+at every `--jobs`. `MacroHost::core_gensyms` is gone.
+
 ### Stage C: parallel namespaces
 
 This stage removes the serial top-level chain.

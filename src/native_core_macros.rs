@@ -13,9 +13,13 @@
 //! failing with its own message and position. So is a call the engine's
 //! conversion refuses, and every call outside a scope of generated names
 //! ([`crate::MacroHost::expand_core_native`]). The names a definition
-//! allocates come from the compile-time runtime's `gensym`, in the same
-//! order and with the same prefixes ([`Gensym`]), so generated names, their
-//! scopes and what a capture records of them stay what the engine gives.
+//! allocates are those the compile-time runtime's `gensym` gives, in the
+//! same order and with the same prefixes ([`Gensym`]), taken from the
+//! scope's count without entering an engine (light-cljs-432,
+//! [`crate::generated_names::gensym`]), so generated names, their scopes
+//! and what a capture records of them stay what the engine gives, and a
+//! unit whose only macros expand here needs no engine
+//! ([`native_expansion`], which the check of macro-free units walks).
 use crate::CollectionKind;
 use crate::compiler_data::{DataBuilder, Datum, DatumKind, Name};
 
@@ -1350,18 +1354,64 @@ fn within(datum: &Datum, room: usize) -> Option<usize> {
     Some(nodes)
 }
 
+/// The names the compile-time runtime's `gensym` gives, one for each of
+/// `prefixes` in order, in this thread's innermost scope of generated
+/// names, allocated from the scope's count without a runtime
+/// ([`crate::generated_names::gensym`], light-cljs-432).
+fn scope_gensyms(prefixes: &[&str]) -> Result<Vec<Datum>, String> {
+    prefixes
+        .iter()
+        .map(|prefix| {
+            debug_assert!(prefix.bytes().all(|b| b.is_ascii_alphabetic() || b == b'_'));
+            crate::generated_names::gensym(prefix)
+                .map(|name| symbol(&name))
+                .ok_or_else(|| "gensym outside every scope of generated names".to_owned())
+        })
+        .collect()
+}
+
+/// What the call `call` of the core macro `name` in `namespace` expands to
+/// here, with stand-ins for the names it would allocate, if
+/// [`crate::MacroHost::expand_core_native`] expands it rather than leaving
+/// it to the engine under the node limit `nodes`: `None` exactly where it
+/// would decline the call. The analyzer's check of macro-free units walks
+/// it in the call's place (light-cljs-432), so that a unit it admits never
+/// leaves a call to the engine. Its shape does not depend on the names: a
+/// stand-in equals nothing but itself, as an allocated name equals nothing
+/// a source spells ([`crate::generated_names::stand_in`]), so an expansion
+/// that compares symbols, as `js-obj` does its keys, decides alike.
+pub(crate) fn native_expansion(
+    name: &str,
+    call: &Datum,
+    namespace: &str,
+    nodes: usize,
+) -> Option<Datum> {
+    if !crate::generated_names::scoped() || within(call, DEPTH).is_none_or(|count| count > nodes) {
+        return None;
+    }
+    let mut stand_ins = |prefixes: &[&str]| -> Result<Vec<Datum>, String> {
+        Ok(prefixes
+            .iter()
+            .map(|prefix| symbol(&crate::generated_names::stand_in(prefix)))
+            .collect())
+    };
+    let expanded = expand(name, call, namespace, &mut stand_ins).ok()??;
+    within(&expanded, DEPTH)?;
+    Some(expanded)
+}
+
 impl crate::MacroHost {
     /// Expand the call `form` of the core macro `name`, spelled as `site`
     /// gives it at its span, natively ([`expand`]), charged as the engine
-    /// charges an expansion; `None` if the engine expands it instead.
-    /// `engine` is the analyzer's, in which a nested analysis expands.
+    /// charges an expansion; `None` if the engine expands it instead. It
+    /// never enters an engine: the names it allocates come from the scope's
+    /// count ([`scope_gensyms`]).
     pub(crate) fn expand_core_native(
         &mut self,
         name: &str,
         form: &crate::compiler_data::Form,
         namespace: &str,
         site: (&str, &std::ops::Range<usize>),
-        engine: Option<&dyn crate::evaluator::MacroEvaluator>,
     ) -> Result<Option<crate::compiler_data::Form>, String> {
         // Outside every scope of generated names, `gensym` skips the names
         // the heap decoded, which the engine's conversion of the call adds.
@@ -1385,12 +1435,7 @@ impl crate::MacroHost {
         if self.measures_work() {
             self.note_node_room(crate::macro_host::WorkMarks::nodes(&call));
         }
-        let mut entered = false;
-        let mut gensym = |prefixes: &[&str]| {
-            entered = true;
-            self.core_gensyms(name, prefixes, engine)
-        };
-        let Some(expanded) = expand(name, &call, namespace, &mut gensym)? else {
+        let Some(expanded) = expand(name, &call, namespace, &mut scope_gensyms)? else {
             return Ok(None);
         };
         // Its names are allocated: the engine allocates others before it
@@ -1407,18 +1452,11 @@ impl crate::MacroHost {
             Name::new(Some("cljs.core"), name),
         );
         let (operator, span) = site;
-        if entered {
-            // A recorded unit charges it as an engine expansion, which starts
-            // the coordinator's engine as the expansion did its own.
-            let _site = crate::macro_host::ExpansionSite::enter(operator, span);
-            crate::macro_host::record_script_expansion(expanded.nodes().len(), || span.clone());
-        } else {
-            crate::macro_host::record_native_expansion(|| crate::macro_host::NativeExpansion {
-                nodes: expanded.nodes().len(),
-                operator: operator.to_owned(),
-                span: span.clone(),
-            });
-        }
+        crate::macro_host::record_native_expansion(|| crate::macro_host::NativeExpansion {
+            nodes: expanded.nodes().len(),
+            operator: operator.to_owned(),
+            span: span.clone(),
+        });
         self.engine.expansions.set(self.engine.expansions.get() + 1);
         self.engine.generated_nodes.set(
             self.engine
@@ -1528,9 +1566,19 @@ mod tests {
         let expanded = {
             let _names = crate::generated_names::enter_namespace(7);
             let before = host.engine.expansions.get();
+            let shape = native_expansion(&name, &call.data(), "user", host.limits.generated_nodes);
             let expanded = host
-                .expand_core_native(&name, &call, "user", (&name, &(0..source.len())), None)
+                .expand_core_native(&name, &call, "user", (&name, &(0..source.len())))
                 .unwrap();
+            // The macro-free check declines exactly where expansion does,
+            // and walks the same shape.
+            assert_eq!(
+                shape.as_ref().map(|shape| within(shape, usize::MAX)),
+                expanded
+                    .as_ref()
+                    .map(|form| within(&form.data(), usize::MAX)),
+                "{source}: the macro-free check's expansion"
+            );
             assert_eq!(
                 host.engine.expansions.get() - before,
                 usize::from(expanded.is_some()),
@@ -1767,9 +1815,13 @@ mod tests {
                 "doseq"
             };
             let _names = crate::generated_names::enter_namespace(7);
-            host.expand_core_native(name, &call, "user", (name, &(0..1)), None)
+            let shape = native_expansion(name, &call.data(), "user", host.limits.generated_nodes);
+            let expanded = host
+                .expand_core_native(name, &call, "user", (name, &(0..1)))
                 .unwrap()
-                .is_some()
+                .is_some();
+            assert_eq!(shape.is_some(), expanded, "{source}");
+            expanded
         };
         let modifiers = ":let [] ".repeat(20_000);
         assert!(!native(&format!("(doseq [x xs {modifiers}] x)")));
@@ -1794,7 +1846,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(
-            host.expand_core_native("or", &call, "user", ("or", &(0..8)), None)
+            host.expand_core_native("or", &call, "user", ("or", &(0..8)))
                 .unwrap()
                 .is_none()
         );

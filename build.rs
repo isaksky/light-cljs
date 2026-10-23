@@ -175,12 +175,19 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   the counter past an installed artifact's (`src/generated_names.rs`).
 /// - `gensymScope` makes `gensym` number in the compiler's scope of
 ///   generated names that the macro being expanded runs in: its prefix and a
-///   count of the scope's own, which starts at zero the first time the
-///   runtime sees the scope, so that two runtimes expanding one unit give
-///   the same names and two units never give the same one. In a scope it
-///   skips no `generatedNames`, so its names do not depend on what the heap
-///   decoded before; it still logs them. Scope 0 is none, where `gensym`
-///   uses its counter (`src/generated_names.rs`, `Scope`).
+///   count of the scope's own, so that two runtimes expanding one unit give
+///   the same names and two units never give the same one. A native scope
+///   (the compile-time runtime's) takes each number from the compiler's
+///   count of the scope through `__lightGensym`, which core macros expanded
+///   natively count from too (light-cljs-432); another (a data reader's)
+///   counts in the runtime from zero the first time the runtime sees it, as
+///   does a native one the compiler no longer knows. In a scope it skips no
+///   `generatedNames`, so its names do not depend on what the heap decoded
+///   before; it still logs them. Scope 0 is none, where `gensym` uses its
+///   counter (`src/generated_names.rs`, `Scope`). Once `takeGensyms` has
+///   been called in a runtime with `__lightGensym`, it logs each name there,
+///   so that the compiler's log keeps them in order with the names native
+///   expansions allocate; a name with a surrogate goes as its code units.
 /// - `encode` records what each encoding charged its node limit when it
 ///   ends, and `takeEncodePeak` hands over the most that any encoding which
 ///   ended since the last call charged and starts again, so that a
@@ -217,25 +224,28 @@ fn compiler_runtime(runtime: &str) -> String {
         (
             "  const generatedNames = new Set();\n",
             "",
-            "  let gensymLog = null;\n  let gensymScope = null; const gensymScopes = new Map();\n",
+            concat!(
+                "  let gensymLog = null;\n  let gensymScope = null; const gensymScopes = new Map();\n",
+                "  const gensymLogName = name => { if (gensymLog === true) globalThis.__lightGensym(/[\\ud800-\\udfff]/.test(name) ? \"U\" + Array.from({length: name.length}, (_, i) => name.charCodeAt(i)).join(\",\") : \"L\" + name); else gensymLog.push(name); };\n",
+            ),
         ),
         (
             "    let name; do { name = base + ++gensymCounter; } while (generatedNames.has(name));\n",
             "    let name",
-            "    if (gensymScope !== null) { const name = base + gensymScope.prefix + ++gensymScope.count; if (gensymLog !== null) gensymLog.push(name); return symbolCore(name); }\n",
+            "    if (gensymScope !== null) { const suffix = gensymScope.native ? globalThis.__lightGensym(\"g\" + gensymScope.serial) : \"\"; const name = base + (suffix || gensymScope.prefix + ++gensymScope.count); if (gensymLog !== null) gensymLogName(name); return symbolCore(name); }\n",
         ),
         (
             "    generatedNames.add(name);\n    return symbolCore(name);\n",
             "    return",
-            "    if (gensymLog !== null) gensymLog.push(name);\n",
+            "    if (gensymLog !== null) gensymLogName(name);\n",
         ),
         (
             "      check: () => { if (terminal != null) throw new Error(terminal); },\n",
             "",
             concat!(
-                "      takeGensyms: () => { const names = gensymLog ?? []; gensymLog = []; return vectorFromArray([gensymCounter, ...names]); }, raiseGensyms: floor => { if (floor > gensymCounter) gensymCounter = floor; },\n",
+                "      takeGensyms: () => { const names = Array.isArray(gensymLog) ? gensymLog : []; gensymLog = typeof globalThis.__lightGensym === \"function\" ? true : []; return vectorFromArray([gensymCounter, ...names]); }, raiseGensyms: floor => { if (floor > gensymCounter) gensymCounter = floor; },\n",
                 "      takeEncodePeak: () => { const peak = encode.peak ?? 0; encode.peak = 0; return peak; },\n",
-                "      gensymScope: (serial, prefix, retired) => { if (retired) for (const ended of retired.split(\",\")) gensymScopes.delete(+ended); if (serial === 0) { gensymScope = null; return null; } let scope = gensymScopes.get(serial); if (scope === undefined) gensymScopes.set(serial, scope = {prefix, count: 0}); gensymScope = scope; return null; }, gensymScopeCount: () => gensymScopes.size,\n",
+                "      gensymScope: (serial, prefix, retired, native) => { if (retired) for (const ended of retired.split(\",\")) gensymScopes.delete(+ended); if (serial === 0) { gensymScope = null; return null; } let scope = gensymScopes.get(serial); if (scope === undefined) gensymScopes.set(serial, scope = {serial, prefix, count: 0, native: native === true && typeof globalThis.__lightGensym === \"function\"}); gensymScope = scope; return null; }, gensymScopeCount: () => gensymScopes.size,\n",
             ),
         ),
         (

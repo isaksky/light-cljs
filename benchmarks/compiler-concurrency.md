@@ -11,6 +11,51 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Natively expanded units without an engine (light-cljs-432, October 22, 2026)
+
+Parent `af938d6` against the change, 3 alternating rounds, medians, load
+average 2.8-6.1 (other workers on the machine). Penpot `main-none` and the
+seed-42 200k generated project at `release bench --no-cache --optimize none`
+(its `light-cljs.edn` gives 2 GiB of macro memory, so `--jobs 8` runs seven
+worker isolates); `8m` is `--jobs 8 --macro-memory-limit 67108864`, the
+default budget, which gives two isolates, the coordinator's and one worker's.
+
+| Build | Parent wall, RSS | Change wall, RSS |
+| --- | --- | --- |
+| 200k `--jobs 1` | 7.39 s, 800 MB | 7.46 s, 818 MB |
+| 200k `--jobs 8` | 6.18 s, 1,432 MB | 6.11 s, 1,430 MB |
+| 200k `--jobs 8m` | fails: JavaScript session memory limit exhausted | 6.17 s, 865 MB |
+| Penpot `--jobs 1` | 14.25 s, 837 MB | 13.84 s, 832 MB |
+| Penpot `--jobs 8` | 8.95 s, 1,571 MB | 8.77 s, 1,567 MB |
+| Penpot `--jobs 8m` | 10.71 s, 690 MB | 11.25 s, 678 MB |
+
+A second set of 200k `--jobs 1` runs, 2 rounds each with `--stats`, gave
+8.57 s against 8.13 s and 792 against 823 MB peak RSS; the wall difference at
+one job is within the noise of this machine, the RSS one (+2 to +4%, absent
+from Penpot and from `--jobs 8`) is most likely the registration-time
+expansions the macro-free check makes, which were not profiled. Counters
+(single `--stats` runs):
+
+| Counter | 200k parent | 200k change | Penpot parent | Penpot change |
+| --- | --- | --- | --- | --- |
+| `deferred-units.macro-free` (`--jobs 8`) | 3,924 | 6,051 | 5,304 | 8,586 |
+| `deferred-units.pooled` (`--jobs 8`) | 8,222 | 8,222 | 12,817 | 12,817 |
+| `trace.units.host` (`--jobs 8`) | | | 5,557 | 3,438 |
+| `trace.units.host-ms` (`--jobs 8`) | 10,584 | 8,788 | 11,885 | 10,491 |
+| `trace.units.host` (`--jobs 1`) | 5,182 | 2,493 | 5,831 | 3,758 |
+| `trace.units.host-ms` (`--jobs 1`) | 3,250 | 2,080 | 8,307 | 7,877 |
+| `trace.engine.entries` (`--jobs 1`) | 332,824 | 255,183 | 612,703 | 548,210 |
+
+`deferred-units.macro-free` of 13,477 units at 200k and 13,367 on Penpot:
+2,127 and 3,282 units move. No native expansion enters V8 any more: the
+change removes the engine call (`MacroHost::core_gensyms`) whose evaluation,
+export and release made the 77,641 and 64,493 engine entries that are gone at
+one job. With the default budget the parent's 200k build fails with the
+engine's memory error and the change's succeeds, its one worker isolate
+holding what is left to it. Output is byte-identical to the parent's, source
+maps included, for Penpot `main-none` and `main-advanced` and the 100k
+project at `none` and `advanced`, each at `--jobs 1`, 4 and 8.
+
 ## Installed warnings held for the drain point (light-cljs-395, October 20, 2026)
 
 An installed namespace's warnings wait for its drain point, and every

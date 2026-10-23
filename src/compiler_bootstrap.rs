@@ -564,6 +564,7 @@ fn build_in(
     // no engine or setting.
     let control = evaluator.control();
     let _names = crate::generated_names::enter_namespace(crate::generated_names::BOOTSTRAP_SCOPE);
+    let _unlogged = crate::generated_names::unlogged();
     let mut bootstrap = Bootstrap {
         evaluator,
         functions: HashMap::new(),
@@ -707,80 +708,6 @@ impl MacroHost {
             self.engine.bootstrap = None;
         }
         result
-    }
-    /// The names the compile-time runtime's `gensym` gives, one for each
-    /// of `prefixes` in order, in the engine and scope of generated names
-    /// that [`Self::expand_core_javascript`] would expand the core macro
-    /// `name` in: the names a core macro expanded natively allocates
-    /// ([`crate::native_core_macros`]), so that they, and what a capture
-    /// records of them, are those its definition allocates there.
-    pub(crate) fn core_gensyms(
-        &mut self,
-        name: &str,
-        prefixes: &[&str],
-        engine: Option<&dyn crate::evaluator::MacroEvaluator>,
-    ) -> Result<Vec<Datum>, String> {
-        crate::macro_host::forbid_engine_entry(name);
-        if self.engine.bootstrap.is_none() {
-            if self.tables.bootstrap_seed && self.session_handle().is_none() {
-                return Err(format!("bootstrap primitive seed cannot expand {name}"));
-            }
-            self.engine.bootstrap = self
-                .session_handle()
-                .and_then(|session| session.bootstrap());
-            if self.engine.bootstrap.is_none() {
-                self.engine.bootstrap = Some(build(self, true)?);
-            }
-        }
-        let bootstrap = self.engine.bootstrap.as_ref().unwrap().clone();
-        if engine.is_none()
-            && let Some(session) = self.session_handle()
-        {
-            session.attach(&bootstrap, self)?;
-        }
-        let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
-        let result = (|| -> Result<Vec<Datum>, crate::evaluator::EvalError> {
-            crate::generated_names::sync_gensym_scope(engine)?;
-            let calls = prefixes
-                .iter()
-                .map(|prefix| {
-                    debug_assert!(prefix.bytes().all(|b| b.is_ascii_alphabetic() || b == b'_'));
-                    format!("rt.core.str(rt.core.gensym(\"{prefix}\"))")
-                })
-                .collect::<Vec<_>>();
-            let value =
-                engine.evaluate_unit(&format!("rt => [{}].join(\" \")", calls.join(",")))?;
-            let source = Source::new("<core gensym>", "");
-            let span = source.span(0..0).expect("an empty span");
-            let call = Form::from_data(
-                DataBuilder.nil(),
-                span.clone(),
-                crate::compiler_data::Origin::SuppliedData,
-            );
-            let origin = ExpansionOrigin {
-                macro_name: Name::new(Some("cljs.core"), name),
-                call: span,
-                definition: None,
-                helpers: vec![],
-            };
-            let limits = ConversionLimits { nodes: 1, depth: 1 };
-            let exported = engine.export_form(value, &call, origin, limits);
-            let _ = engine.release(value);
-            let crate::compiler_data::DatumKind::String(names) = exported?.data().kind().clone()
-            else {
-                return Err(crate::evaluator::EvalError(
-                    "gensym names are not a string".into(),
-                ));
-            };
-            Ok(String::from_utf16_lossy(&names)
-                .split(' ')
-                .map(|name| DataBuilder.symbol(Name::new(None, name)))
-                .collect())
-        })();
-        if result.is_err() {
-            self.engine.bootstrap = None;
-        }
-        result.map_err(|e| e.to_string())
     }
 }
 

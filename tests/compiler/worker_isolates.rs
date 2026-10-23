@@ -210,7 +210,7 @@ fn a_worker_isolate_that_runs_out_of_time_fails_its_unit_and_the_build_ends() {
 #[test]
 #[cfg(debug_assertions)]
 fn pooled_macro_charging_propagates_main_engine_startup_failure() {
-    // `f`'s unit expands `for`, a JavaScript core macro, on a worker; no
+    // `f`'s unit expands `dotimes`, a JavaScript core macro, on a worker; no
     // top-level form starts the coordinator's engine, which it starts where
     // it charges the unit, as a build with one slot would have at that
     // expansion. Held until the shared deadline has passed, before the
@@ -221,7 +221,7 @@ fn pooled_macro_charging_propagates_main_engine_startup_failure() {
     sources.write(
         "app/s.cljs",
         r#"(ns app.s)
-(defn f [] (vec (for [x [1 2]] (inc x))))
+(defn f [] (let [a (array)] (dotimes [i 2] (.push a (+ i 2))) (vec a)))
 (js/console.log (pr-str (f)))"#,
     );
     let perturbed = |deadline, attach: bool| {
@@ -253,7 +253,7 @@ fn pooled_macro_charging_propagates_main_engine_startup_failure() {
         };
         assert!(
             error.contains("app/s.cljs:2:")
-                && error.contains("while expanding for")
+                && error.contains("while expanding dotimes")
                 && error.contains("deadline exceeded"),
             "attach {attach}: {error}"
         );

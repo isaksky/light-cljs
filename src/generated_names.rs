@@ -12,10 +12,13 @@
 //! the thread, on what the process compiled before or on the order in which
 //! units run, and no two scopes spell a name alike. The compile-time
 //! runtime's `gensym` numbers in the scope whose macro it expands
-//! ([`sync_gensym_scope`]), with its count in that runtime, and a custom
-//! data reader's runtime in the scope of the namespace it reads
-//! ([`sync_reader_gensym_scope`]). The compiler's bootstrap macros read in
-//! a scope of their own ([`BOOTSTRAP_SCOPE`]).
+//! ([`sync_gensym_scope`]), with the scope's count kept here, which a core
+//! macro expanded natively numbers from too ([`gensym`]), so that units
+//! whose only macros expand natively need no runtime (light-cljs-432); a
+//! custom data reader's runtime numbers in the scope of the namespace it
+//! reads ([`sync_reader_gensym_scope`]), with its count in that runtime.
+//! The compiler's bootstrap macros read in a scope of their own
+//! ([`BOOTSTRAP_SCOPE`]).
 //! Since a namespace keeps its names wherever it loads and whatever the
 //! cache holds, a namespace installed from its artifact retains exactly the
 //! names a fresh analysis of its source gives, and a fresh namespace next to
@@ -52,7 +55,7 @@
 //! | [`next_anonymous`] | `pK__D_N#` | `pK__N#` | per scope; window reserved |
 //! | [`next_binding`] | `binding__D_0_N__auto__` | `binding__N__auto__` | per scope; window reserved |
 //! | [`next_destructure`] | `compiler_destructure__D_0_N__auto__` | `compiler_destructure__N__auto__` | per scope; window reserved |
-//! | the compile-time runtime's `gensym` | `G__D_N`, `prefixD_N` | `G__N` | per scope; counter and spellings reserved |
+//! | the compile-time runtime's `gensym` | `G__D_N`, `prefixD_N` | `G__N` | per scope, counted here; counter and spellings reserved |
 //! | a custom data reader evaluator's `gensym` | `G__D_0_N` | `G__N` | per scope (light-cljs-350); not reserved |
 //! | `READER_GENERATION` (macro_host.rs) | a compilation's reader generation | | never spelled in output, never retained |
 //! | `NEXT_SOURCE` (compiler_data.rs) | [`crate::compiler_data::SourceId`] | | never spelled, never retained |
@@ -68,7 +71,13 @@
 //! bridge decoded. In a scope it does not, so a scope's names do not depend
 //! on what the heap decoded before; its spellings carry a 64-bit digest that
 //! source does not spell by chance. Reserving spellings imports them as
-//! symbols, which adds them there. The reader
+//! symbols, which adds them there. In a scope a runtime takes each number
+//! from the scope's count here (`__lightGensym`, [`serve_gensym`]), as a
+//! core macro expanded natively does without a runtime ([`gensym`]): the
+//! two interleave on one counter, so a name is the same whichever side
+//! allocates it, and while a capturing compilation logs what `gensym`
+//! returns, both log here, on the analyzing thread, in the order they
+//! returned the names ([`start_log`]). The reader
 //! generation names the compilation whose declarations a macro environment's
 //! reader sees; artifacts record reader contexts without it, and an
 //! installed namespace's macros read in the installing compilation's
@@ -151,6 +160,14 @@ pub(crate) struct Scope {
     /// The next number of the scope's expansion allocations and of the
     /// units it registers, which share it.
     expanded: Cell<u64>,
+    /// The next number the compile-time runtime's `gensym` appends in the
+    /// scope, whichever side allocates it: a core macro expanded natively
+    /// ([`gensym`]) or a runtime put in the scope ([`serve_gensym`]), so
+    /// that the two interleave as one counter (light-cljs-432).
+    gensym: Cell<u64>,
+    /// Whether a compile-time runtime was put in the scope, whose `gensym`
+    /// may still number in it after it ends ([`ENDED`]).
+    installed: Cell<bool>,
 }
 
 impl Scope {
@@ -171,6 +188,12 @@ impl Scope {
         format!("{}_", self.prefix)
     }
 
+    /// What the scope's `gensym` appends to its prefix argument, `D_N`,
+    /// taking the next number of the scope's count.
+    fn gensym_suffix(&self) -> String {
+        format!("{}{}", self.gensym_prefix(), Self::next(&self.gensym))
+    }
+
     /// What a custom data reader's `gensym` appends in the scope: `D_0_`,
     /// which no unit's prefix `D_K` begins, K being from 1, so its names,
     /// `G__D_0_N`, are never the compile-time runtime's.
@@ -189,10 +212,8 @@ pub(crate) struct ScopeGuard(u64);
 
 impl Drop for ScopeGuard {
     fn drop(&mut self) {
-        SCOPES.with(|scopes| {
-            let popped = scopes.borrow_mut().pop();
-            debug_assert_eq!(popped.map(|scope| scope.serial), Some(self.0));
-        });
+        let popped = SCOPES.with(|scopes| scopes.borrow_mut().pop());
+        debug_assert_eq!(popped.as_ref().map(|scope| scope.serial), Some(self.0));
         // No entry resumes it: the next runtime put in a scope forgets its
         // count. Past the bound, runtimes keep the counts, which costs only
         // their memory.
@@ -203,6 +224,17 @@ impl Drop for ScopeGuard {
             }
             retired.push(self.0);
         });
+        // A runtime put in it keeps it until the next runtime put in a
+        // scope: its `gensym` goes on with the scope's count meanwhile.
+        if let Some(scope) = popped.filter(|scope| scope.installed.get()) {
+            ENDED.with(|ended| {
+                let mut ended = ended.borrow_mut();
+                if ended.len() >= ENDED_BOUND {
+                    ended.remove(0);
+                }
+                ended.push(scope);
+            });
+        }
         READER_RETIRED.with(|retired| {
             if let Some(retired) = retired.borrow_mut().as_mut() {
                 if retired.len() >= RETIRED_BOUND {
@@ -224,6 +256,153 @@ thread_local! {
     /// The same for the custom data readers' runtimes, kept once one was
     /// put in a scope on this thread ([`sync_reader_gensym_scope`]).
     static READER_RETIRED: RefCell<Option<Vec<u64>>> = const { RefCell::new(None) };
+    /// The latest scopes that ended on this thread after a compile-time
+    /// runtime was put in them, whose `gensym` numbers in such a scope
+    /// until it is put in another one ([`serve_gensym`]).
+    static ENDED: RefCell<Vec<Rc<Scope>>> = const { RefCell::new(Vec::new()) };
+    /// While the compilation on this thread logs them, what the compile-time
+    /// runtime's `gensym` returned, in the order it returned them, whichever
+    /// side allocated them ([`start_log`]).
+    static LOG: RefCell<Option<Vec<Vec<u16>>>> = const { RefCell::new(None) };
+}
+
+/// How many ended scopes [`ENDED`] keeps.
+const ENDED_BOUND: usize = 64;
+
+/// The scope with `serial` that a compile-time runtime of this thread was
+/// put in: an entered one, innermost first, or one that ended since.
+fn installed_scope(serial: u64) -> Option<Rc<Scope>> {
+    SCOPES
+        .with(|scopes| {
+            scopes
+                .borrow()
+                .iter()
+                .rev()
+                .find(|scope| scope.serial == serial)
+                .cloned()
+        })
+        .or_else(|| {
+            ENDED.with(|ended| {
+                ended
+                    .borrow()
+                    .iter()
+                    .rev()
+                    .find(|scope| scope.serial == serial)
+                    .cloned()
+            })
+        })
+}
+
+/// The name the compile-time runtime's `gensym` returns for the prefix
+/// argument `base` in this thread's innermost scope, allocated here rather
+/// than in a runtime, so that a core macro expanded natively needs none
+/// ([`crate::native_core_macros`]); `None` outside every scope, where the
+/// runtime's own counter numbers. It is the name a runtime put in the
+/// scope would return there, the next in the scope's count, and is logged
+/// as it would be ([`start_log`]).
+pub(crate) fn gensym(base: &str) -> Option<String> {
+    let name = format!("{base}{}", innermost()?.gensym_suffix());
+    log(|| name.encode_utf16().collect());
+    Some(name)
+}
+
+thread_local! {
+    /// The count of [`stand_in`]'s names on this thread.
+    static STAND_INS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// A name that stands in for one [`gensym`] would allocate for `base`,
+/// without taking a number of the scope's count: distinct from every other
+/// stand-in and, carrying the innermost scope's digest and an `s` no
+/// allocated name spells, from every symbol a source spells but by a digest
+/// collision and from every allocated name, so that an expansion built with
+/// stand-ins has the shape of the one built with names
+/// ([`crate::native_core_macros::native_expansion`]).
+pub(crate) fn stand_in(base: &str) -> String {
+    let number = STAND_INS.get() + 1;
+    STAND_INS.set(number);
+    let prefix = innermost().map_or_else(|| "0".into(), |scope| scope.prefix.clone());
+    format!("{base}{prefix}_s{number}")
+}
+
+/// Answer a compile-time runtime's `gensym` (`__lightGensym`, build.rs
+/// `compiler_runtime`): `g` and a scope's serial take the next number of
+/// that scope's count, and answer what the name appends to the prefix
+/// argument, or nothing for a scope this thread no longer knows, which the
+/// runtime then counts itself, from one, as it counted every scope before
+/// light-cljs-432; `L` and a name, or `U` and its UTF-16 code units, log a
+/// name the runtime returned, while the compilation logs them.
+pub(crate) fn serve_gensym(request: &str) -> String {
+    match request.split_at_checked(1) {
+        Some(("g", serial)) => serial
+            .parse()
+            .ok()
+            .and_then(installed_scope)
+            .map(|scope| scope.gensym_suffix())
+            .unwrap_or_default(),
+        Some(("L", name)) => {
+            log(|| name.encode_utf16().collect());
+            String::new()
+        }
+        Some(("U", units)) => {
+            log(|| {
+                units
+                    .split(',')
+                    .filter_map(|unit| unit.parse::<u16>().ok())
+                    .collect()
+            });
+            String::new()
+        }
+        _ => String::new(),
+    }
+}
+
+/// Add a name to this thread's log, if the compilation logs them.
+fn log(name: impl FnOnce() -> Vec<u16>) {
+    LOG.with(|log| {
+        if let Some(log) = log.borrow_mut().as_mut() {
+            log.push(name());
+        }
+    });
+}
+
+/// Log, from now on and on this thread, what the compile-time runtime's
+/// `gensym` returns, whichever side allocates it, forgetting what was
+/// logged before: a capturing compilation records the names its
+/// namespaces' analyses generated ([`GeneratedNames`]). A runtime logs its
+/// own once the session has read its log (`takeGensyms`).
+pub(crate) fn start_log() {
+    LOG.with(|log| *log.borrow_mut() = Some(Vec::new()));
+}
+
+/// What was logged on this thread since the log started or was last
+/// taken, in order.
+pub(crate) fn take_log() -> Vec<Vec<u16>> {
+    LOG.with(|log| log.borrow_mut().as_mut().map(std::mem::take))
+        .unwrap_or_default()
+}
+
+/// While alive, this thread logs nothing ([`unlogged`]).
+pub(crate) struct Unlogged(Option<Vec<Vec<u16>>>);
+
+impl Drop for Unlogged {
+    fn drop(&mut self) {
+        let log = self.0.take();
+        LOG.with(|current| *current.borrow_mut() = log);
+    }
+}
+
+/// Log nothing on this thread until the guard is dropped, then go on with
+/// the log as it was: the compiler's bootstrap allocates names that are
+/// its own, as its engine, which does not log, did before light-cljs-432.
+pub(crate) fn unlogged() -> Unlogged {
+    Unlogged(LOG.with(|log| log.borrow_mut().take()))
+}
+
+/// Stop logging on this thread, and what was logged since the log started
+/// or was last taken.
+pub(crate) fn stop_log() -> Vec<Vec<u16>> {
+    LOG.with(|log| log.borrow_mut().take()).unwrap_or_default()
 }
 
 /// Enter the scope `prefix`, counting from one, until the guard is dropped.
@@ -237,6 +416,8 @@ pub(crate) fn enter(prefix: Arc<str>) -> ScopeGuard {
             prefix,
             read: Cell::new(1),
             expanded: Cell::new(1),
+            gensym: Cell::new(1),
+            installed: Cell::new(false),
         }))
     });
     ScopeGuard(serial)
@@ -307,15 +488,21 @@ thread_local! {
 
 /// Put `engine`'s `gensym` in this thread's innermost scope, or in none, as
 /// a macro is about to expand there: the names it generates are then the
-/// unit's, whichever runtime expands it.
+/// unit's, whichever runtime expands it. In a scope it takes each number
+/// from the scope's count here ([`serve_gensym`]), which a core macro
+/// expanded natively takes from as well ([`gensym`]).
 pub(crate) fn sync_gensym_scope(
     engine: &dyn crate::evaluator::MacroEvaluator,
 ) -> Result<(), crate::evaluator::EvalError> {
     let scope = innermost();
+    if let Some(scope) = &scope {
+        scope.installed.set(true);
+    }
     sync(
         engine,
         scope.as_deref(),
         Scope::gensym_prefix,
+        true,
         &RETIRED,
         |retired| retired.borrow_mut().drain(..).collect(),
     )
@@ -336,17 +523,20 @@ pub(crate) fn sync_reader_gensym_scope(
         engine,
         scope.as_deref(),
         Scope::reader_gensym_prefix,
+        false,
         &READER_RETIRED,
         |retired| std::mem::take(retired.borrow_mut().get_or_insert_default()),
     )
 }
 
 /// Put `engine`'s `gensym` in `scope`, spelled with `prefix`, retiring in
-/// it the scopes that `take` hands over from `retired`.
+/// it the scopes that `take` hands over from `retired`; `native` if it takes
+/// the scope's numbers from here rather than counting them itself.
 fn sync<T: 'static>(
     engine: &dyn crate::evaluator::MacroEvaluator,
     scope: Option<&Scope>,
     prefix: fn(&Scope) -> String,
+    native: bool,
     retired: &'static std::thread::LocalKey<RefCell<T>>,
     take: fn(&RefCell<T>) -> Vec<u64>,
 ) -> Result<(), crate::evaluator::EvalError> {
@@ -363,7 +553,7 @@ fn sync<T: 'static>(
             .collect::<Vec<_>>()
             .join(",")
     });
-    engine.gensym_scope(serial, &prefix, &retired)?;
+    engine.gensym_scope(serial, &prefix, &retired, native)?;
     INSTALLED.set((heap, serial));
     Ok(())
 }
@@ -606,6 +796,46 @@ mod tests {
                 "0"
             );
         }
+    }
+
+    /// A core macro expanded natively and a runtime put in the scope take
+    /// their numbers from one count, a unit's apart from its namespace's,
+    /// and while the compilation logs, both log here, in the order the
+    /// names were returned, once (light-cljs-432).
+    #[test]
+    fn native_and_runtime_gensyms_share_count_and_log() {
+        let engine = Evaluator::new(Default::default()).unwrap();
+        start_log();
+        // The runtime logs once its log was read.
+        evaluate(&engine, "rt => rt.compilerForms.takeGensyms()");
+        let native = |base| super::gensym(base);
+        let namespace = enter_namespace(7);
+        assert_eq!(native("g").as_deref(), Some("g7_1"));
+        assert_eq!(gensym(&engine), "g7_2");
+        {
+            let _unit = enter(child().unwrap());
+            assert_eq!(gensym(&engine), "g7_1_1");
+            assert_eq!(native("g").as_deref(), Some("g7_1_2"));
+        }
+        assert_eq!(gensym(&engine), "g7_3");
+        assert_eq!(native("g").as_deref(), Some("g7_4"));
+        let logged = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| name.encode_utf16().collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            take_log(),
+            logged(&["g7_1", "g7_2", "g7_1_1", "g7_1_2", "g7_3", "g7_4"])
+        );
+        assert!(take_log().is_empty());
+        // A stand-in takes no number.
+        assert!(stand_in("g").starts_with("g7_s"));
+        assert_eq!(native("g").as_deref(), Some("g7_5"));
+        drop(namespace);
+        assert_eq!(native("g"), None);
+        assert_eq!(stop_log().len(), 1);
     }
 
     /// The reader's names and expansion's count apart in one scope, and a

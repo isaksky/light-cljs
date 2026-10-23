@@ -167,6 +167,13 @@ impl HostEvaluator {
                     .map_err(EvalError)
             })
         })?;
+        // In a scope of generated names, `gensym` numbers from the
+        // compiler's count of the scope (light-cljs-432).
+        CompilerEvaluator::install_string_service(
+            &evaluator,
+            "__lightGensym",
+            Rc::new(crate::generated_names::serve_gensym),
+        )?;
         Ok(evaluator)
     }
     fn enter<T>(&self, f: impl FnOnce() -> Result<T, EvalError>) -> Result<T, EvalError> {

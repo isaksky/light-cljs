@@ -227,14 +227,107 @@ fn units_are_macro_free_only_when_no_form_can_reach_the_macro_host() {
     // One slot dispatches nothing, so it judges nothing.
     assert_eq!(serial.stats.deferred_units.macro_free, 0);
     let pooled = build(&sources, "app.a", 4, false);
-    // `a`, `b`, `c` (native `defn`, `let` and `loop`), `g` (a function of a
-    // required alias), `twice`, `h`, `l` (quoted), `helper` and `m`, which calls it
-    // before the file defines a macro; not `d` (a core macro), `e` (an
-    // imported macro), `i` (a nested definition), `k` (an intrinsic),
-    // `n` (a source macro) or `o` (a `:test` unit).
-    assert_eq!(pooled.stats.deferred_units.macro_free, pooled_count(9));
+    // `a`, `b`, `c` (native `defn`, `let` and `loop`), `d` (`when`, a core
+    // macro expanded natively, light-cljs-432), `g` (a function of a
+    // required alias), `twice`, `h`, `l` (quoted), `helper` and `m`, which
+    // calls it before the file defines a macro; not `e` (an imported
+    // macro), `i` (a nested definition), `k` (an intrinsic), `n` (a source
+    // macro) or `o` (a `:test` unit).
+    assert_eq!(pooled.stats.deferred_units.macro_free, pooled_count(10));
     assert_eq!(pooled.output, serial.output);
     assert_eq!(execute(&serial.output.unwrap()), "1 2 3 1 1 2 5 when 2\n");
+}
+
+/// Units whose only macros are core macros the analyzer expands natively,
+/// names allocated in their scopes included, are macro-free: workers with
+/// no engine analyze them, each under `MacroFreeUnit`, which panics at any
+/// entry into an engine, and the build is the one-slot build
+/// (light-cljs-432). A unit with a call the native expansion would leave to
+/// the engine is not.
+#[test]
+fn units_whose_only_macros_expand_natively_need_no_engine() {
+    let sources = Sources::new();
+    sources.write(
+        "app/a.cljs",
+        r#"(ns app.a)
+(defn f1 [x] (or (seq x) (and (pos? (count x)) :empty)))
+(defn f2 [m] (when-let [v (:k m)] (if-let [w (:w m)] [v w] v)))
+(defn f3 [x] (case x 1 :one (2 3) :few "s" :str :other))
+(defn f4 [xs] (vec (for [x xs :let [y (* x 2)] :when (odd? x)] y)))
+(defn f5 [xs] (let [a (atom 0)] (doseq [x xs] (swap! a + x)) @a))
+(defn f6 [m] (cond-> m (:a m) (assoc :b 1) true (update :c (fnil inc 0))))
+(defn f7 [m] (some-> m :a inc))
+(defn f8 [x] (cond (nil? x) :nil (number? x) :n :else (-> x str count)))
+(defn f9 [] (js-obj "a" 1 "b" (inc 1)))
+(defn f10 [v] (vswap! v inc))
+(defn f11 [x] (if-some [y x] (when-some [z y] (when-first [w [z]] w)) (if-not x :no :yes)))
+(defn f12 [x] (condp = x 1 :one 2 :two :other))
+(defn f13 [x] (->> x (map inc) (filter odd?) (when-not (nil? x)) vec))
+(defn f14 [x] (-> [y x] (if-let y :no)))
+(defn wide [] (js-obj "a" 1 "b" 2 "c" 3 "d" 4 "e" 5 "f" 6 "g" 7 "h" 8 "i" 9))
+(js/console.log (pr-str [(f1 [1]) (f2 {:k 1 :w 2}) (f3 2) (f4 [1 2 3]) (f5 [1 2]) (f6 {:a 1}) (f7 {:a 1}) (f8 "ab") (.-b (f9)) (f10 (volatile! 1)) (f11 3) (f12 2) (f13 [1 2]) (f14 5)]))"#,
+    );
+    let serial = same_at_every_slot_count(&sources, "app.a", false);
+    assert_eq!(
+        execute(serial.output.as_ref().unwrap()),
+        "[(1) [1 2] :few [2 6] 3 {:a 1, :b 1, :c 1} 2 2 2 2 3 :two [3] 5]\n"
+    );
+    // One isolate's memory: the workers have no engine.
+    for slots in [2, 4, 8] {
+        let mut host = MacroHost::new();
+        host.evaluator_options.memory_limit = 32 << 20;
+        let pooled = build_with(&sources, "app.a", slots, false, host);
+        assert_eq!(pooled.output, serial.output, "{slots} slots");
+        assert_eq!(pooled.spans, serial.spans, "{slots} slots");
+        assert_eq!(pooled.mapped, serial.mapped, "{slots} slots");
+        assert_eq!(
+            pooled.stats.macro_calls, serial.stats.macro_calls,
+            "{slots} slots"
+        );
+        assert_eq!(pooled.stats.deferred_units.worker_isolates, 0);
+        // All but `wide`, whose `js-obj` of nine entries the engine
+        // expands; `f14`'s `if-let` is judged as `->` threads it.
+        assert_eq!(
+            pooled.stats.deferred_units.macro_free,
+            pooled_count(14),
+            "{slots} slots"
+        );
+    }
+}
+
+/// The check's trial expansion admits no unit whose analysis expands a
+/// call in the engine: its stand-in names equal no source symbol (a key
+/// `some->` threads into `js-obj` stays apart from `thread0`), a name the
+/// namespace shadows is a function call (`if-let`, excluded and defined),
+/// and what an expansion leaves out a call of a local analyzes anyway (the
+/// first value of a repeated `js-obj` key) (light-cljs-432).
+#[test]
+fn trial_expansions_admit_no_call_the_engine_expands() {
+    let sources = Sources::new();
+    sources.write(
+        "app/b.cljs",
+        r#"(ns app.b (:refer-clojure :exclude [if-let]))
+(def if-let (fn* [& xs] xs))
+(defn f [x thread0] (some-> x (js-obj (doto 1) thread0 2)))
+(defn g [x] (if-let [x 1] 2 3 (doto 1)))
+(defn h [] (let [js-obj (fn [& xs] xs)] (js-obj "a" (doto 1) "a" 2)))
+(defn ok [x] (when x 1))
+(js/console.log (count (js-keys (f "k" "t"))) (count (g 0)) (count (h)) (ok true))"#,
+    );
+    let serial = build(&sources, "app.b", 1, false);
+    assert_eq!(execute(serial.output.as_ref().unwrap()), "2 4 4 1\n");
+    for slots in [2, 4, 8] {
+        let mut host = MacroHost::new();
+        host.evaluator_options.memory_limit = 32 << 20;
+        let pooled = build_with(&sources, "app.b", slots, false, host);
+        assert_eq!(pooled.output, serial.output, "{slots} slots");
+        // `if-let`'s definition and `ok`.
+        assert_eq!(
+            pooled.stats.deferred_units.macro_free,
+            pooled_count(2),
+            "{slots} slots"
+        );
+    }
 }
 
 #[test]
@@ -369,14 +462,14 @@ fn a_limit_crossed_in_a_macro_free_unit_fails_as_with_one_slot() {
 
 #[test]
 fn a_poll_budget_spent_in_macro_free_units_fails_as_with_one_slot() {
-    // `start`'s `when` begins an engine operation, which renews the poll
+    // `start`'s `doto` begins an engine operation, which renews the poll
     // budget; every form the later units analyze polls it, and their polls
     // alone exceed the small budget. A worker analyzing them polls nothing,
     // so their polls are spent where they are charged. V8's interrupts poll
     // on a timer too, so where the budget runs out is not deterministic,
     // even with one slot; that it runs out is.
     let sources = Sources::new();
-    let mut body = String::from("(ns app.p) (def start (when true 1))\n");
+    let mut body = String::from("(ns app.p) (def start (doto 1))\n");
     for k in 0..40 {
         let terms = (0..50)
             .map(|n| format!("(+ x {n})"))
