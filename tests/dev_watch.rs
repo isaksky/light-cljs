@@ -2349,7 +2349,9 @@ fn a_watch_starts_from_the_default_cache_directory() {
 /// replaced macro's function (light-cljs-381). The payloads grow
 /// by those of the macro environments each step imports until the bridge's
 /// bounded cache of environments (64 slots and 128 child slots) is full,
-/// after about 33 steps here, so the last ten of 45 steps are flat. The
+/// after about 64 steps here, since each step's macro is given only the
+/// entries of its environment it reads (light-cljs-433) and so fills one
+/// slot, so the last ten of 75 steps are flat. The
 /// startup report, made once the start has dropped the artifacts it
 /// installed, counts nothing live.
 #[test]
@@ -2376,7 +2378,7 @@ fn repeated_steps_hold_bounded_engine_state_and_no_artifact() {
     // Per step: artifacts, engines, engine handles, bridge payloads and the
     // values the session engine's registry roots.
     let mut counts = Vec::new();
-    for step in 1..=45 {
+    for step in 1..=75 {
         let edited = macros.replace("~label \": \"", &format!("~label \" {step}: \""));
         assert_ne!(edited, macros);
         let (lines, summary) = watch.save("app/macros.cljs", &edited);

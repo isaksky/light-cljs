@@ -37,6 +37,8 @@ struct State {
     /// What the heap has registered of the compilation's namespaces
     /// ([`crate::reader_registration`]).
     reader_namespaces: Rc<RefCell<crate::reader_registration::ReaderNamespaces>>,
+    /// [`crate::evaluator::EnvironmentExtensions`] of the heap.
+    environment_extensions: crate::evaluator::EnvironmentTracking,
     control: ExecutionControl,
     generation: u64,
     bridge: RefCell<BridgeState>,
@@ -366,6 +368,7 @@ impl V8Evaluator {
             memory_sample: Cell::new(Instant::now()),
             namespaces: RefCell::new(NamespaceCache::default()),
             reader_namespaces: Rc::default(),
+            environment_extensions: Rc::default(),
             control: control.clone(),
             generation: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
             bridge: RefCell::new(BridgeState::default()),
@@ -773,6 +776,9 @@ impl MacroEvaluator for Active<'_, '_, '_> {
     ) -> Option<std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>> {
         Some(self.state.reader_namespaces.clone())
     }
+    fn environment_extensions(&self) -> Option<crate::evaluator::EnvironmentTracking> {
+        Some(self.state.environment_extensions.clone())
+    }
     fn gensym_scope(
         &self,
         serial: u64,
@@ -1009,6 +1015,9 @@ impl MacroEvaluator for V8Evaluator {
         &self,
     ) -> Option<std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>> {
         Some(self.state.reader_namespaces.clone())
+    }
+    fn environment_extensions(&self) -> Option<crate::evaluator::EnvironmentTracking> {
+        Some(self.state.environment_extensions.clone())
     }
     fn gensym_scope(
         &self,

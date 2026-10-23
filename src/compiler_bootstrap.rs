@@ -1185,7 +1185,10 @@ impl MacroHost {
     /// ([`elidable_map_environment`]), or while the compilation measures
     /// each expansion's conversions for the cache
     /// ([`MacroHost::measures_work`]), whose work marks count what the whole
-    /// environment's conversion charged.
+    /// environment's conversion charged, or once the compilation registered
+    /// an extension bundle that converting the rest could demand or call
+    /// ([`crate::compilation_session::reaches_environment_data`],
+    /// light-cljs-433).
     fn reader_view(
         &self,
         declaration: &CompiledMacro,
@@ -1195,8 +1198,15 @@ impl MacroHost {
         let keys = declaration.environment_keys.as_ref()?;
         // Converting the entries left out constructs maps, which can demand
         // and call a user protocol extension at the source declaration
-        // frontier; with none registered, nothing it does is observable.
-        if self.measures_work() || self.engine.extension_frontier() != 0 {
+        // frontier, or one compile-time code installed outside a
+        // declaration; while environment data can reach neither, nothing it
+        // does is observable.
+        if self.measures_work()
+            || self.engine.environment_bundles() != 0
+            || engine.environment_extensions().is_none_or(|tracking| {
+                tracking.get() != crate::evaluator::EnvironmentExtensions::None
+            })
+        {
             return None;
         }
         // Half the node limit, as each conversion takes at most the limit

@@ -502,6 +502,119 @@ fn source_macros_see_the_same_environment_and_reader_context_whatever_they_read(
     );
 }
 
+/// Converting the environment entries a blind source macro is not given
+/// calls an extension that environment data reaches, here Symbol's `IEquiv`
+/// on the locals map's keys, so once one is registered the macro gets the
+/// whole environment again (light-cljs-433). The count the macro returns is
+/// the same uncached as when the cache, which always converts the whole
+/// environment, installs any mix of the namespaces (`Sources::compile`).
+#[test]
+fn an_extension_that_environment_data_reaches_keeps_the_whole_environment() {
+    let s = Sources::new();
+    s.write(
+        "app/protocols.cljs",
+        "(ns app.protocols) (defprotocol Named (label [x])) (deftype Box [v])
+(extend-protocol Named string (label [x] x) default (label [_] :other))
+(extend-type Box IEquiv (-equiv [a b] (= (.-v a) (.-v b))))",
+    );
+    s.write(
+        "app/main.cljs",
+        r#"(ns app.main (:require [app.protocols :as p]))
+(def calls (atom 0))
+(defmacro blind [] @calls)
+(defn before [a b] (let [c (+ a b)] [(blind) c]))
+(extend-type Symbol
+  IEquiv (-equiv [a b] (swap! calls inc) (and (symbol? b) (= (str a) (str b)))))
+(defn after [a b] (let [c (+ a b) d c] [(blind) (blind) d]))
+(js/console.log (pr-str [(before 1 2) (after 1 2) (blind) (p/label "x")]))
+"#,
+    );
+    let output = execute(&s.compile("app.main").unwrap());
+    assert!(output.ends_with(" 3] 1 \"x\"]\n"), "{output}");
+}
+
+/// A source macro that does not read its `&env` still fails, at its call,
+/// when the environment holds a macro's metadata that cannot be converted,
+/// as the whole environment's conversion would; and the host compiles the
+/// corrected source afterwards (light-cljs-433).
+#[test]
+fn a_blind_source_macro_still_reports_an_unconvertible_environment() {
+    let s = Sources::new();
+    s.write(
+        "app/main.cljs",
+        "(ns app.main)\n(defmacro ignored {:probe #\"[\"} [] nil)\n(defmacro blind [] 42)\n(js/console.log (blind))\n",
+    );
+    let mut host = MacroHost::new();
+    let error = s
+        .compile_host("app.main", &mut host)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("main.cljs:4:17"), "{error}");
+    assert!(error.contains("macro app.main/blind"), "{error}");
+    // V8 and QuickJS word the regular expression's failure differently.
+    assert!(
+        error.contains("Invalid regular expression") || error.contains("at RegExp"),
+        "{error}"
+    );
+    s.write(
+        "app/main.cljs",
+        "(ns app.main)\n(defmacro ignored {:probe #\"\\[\"} [] nil)\n(defmacro blind [] 42)\n(js/console.log (blind))\n",
+    );
+    assert_eq!(
+        execute(&s.compile_host("app.main", &mut host).unwrap()),
+        "42\n"
+    );
+}
+
+/// Compile-time code can extend a core type outside any declaration, from
+/// a function a macro calls or a `defonce` initializer, which no registered
+/// bundle shows; the runtime reports it, and later blind source macros get
+/// the whole environment again (light-cljs-433), as the cache gives them.
+#[test]
+fn an_extension_compile_time_code_installs_keeps_the_whole_environment() {
+    for setup in [
+        "(defmacro setup [] (install) nil) (setup)",
+        "(defonce installed (install)) (defmacro setup [] installed nil) (setup)",
+    ] {
+        let s = Sources::new();
+        s.write(
+            "app/main.cljs",
+            &format!(
+                r#"(ns app.main)
+(def calls (atom 0))
+(defn install [] (extend-type Symbol
+  IEquiv (-equiv [a b] (swap! calls inc) (and (symbol? b) (= (str a) (str b))))))
+{setup}
+(defmacro blind [] @calls)
+(defn after [a b] (let [c (+ a b) d c] [(blind) (blind) d]))
+(js/console.log (pr-str [(after 1 2) (blind)]))
+"#
+            ),
+        );
+        let output = execute(&s.compile("app.main").unwrap());
+        assert!(output.starts_with("[["), "{setup}: {output}");
+    }
+}
+
+/// Noting an instance extension (light-cljs-433) reads nothing of the
+/// instance, whose `constructor` may be a getter that throws.
+#[test]
+fn specify_tracking_does_not_invoke_constructor_getters() {
+    let s = Sources::new();
+    s.write(
+        "app/main.cljs",
+        r#"(ns app.main)
+(defmacro m []
+  (let [o #js {}]
+    (js/Object.defineProperty o "constructor" #js {:get (fn [] (throw (js/Error. "constructor-read")))})
+    (specify! o ICounted (-count [_] 1))
+    (count o)))
+(js/console.log (m))
+"#,
+    );
+    assert_eq!(execute(&s.compile("app.main").unwrap()), "1\n");
+}
+
 #[test]
 fn macro_namespaces_select_cljs_and_refresh_on_each_compilation() {
     let s = Sources::new();

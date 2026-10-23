@@ -111,6 +111,8 @@ struct State {
     /// What the session has registered of the compilation's namespaces
     /// ([`crate::reader_registration`]).
     reader_namespaces: Rc<RefCell<crate::reader_registration::ReaderNamespaces>>,
+    /// [`crate::evaluator::EnvironmentExtensions`] of the session.
+    environment_extensions: crate::evaluator::EnvironmentTracking,
 }
 impl State {
     fn remember_error(&self, error: &EvalError) {
@@ -151,6 +153,7 @@ impl HostEvaluator {
             strings: RefCell::new(Vec::new()),
             pending_error: RefCell::new(None),
             reader_namespaces: Rc::default(),
+            environment_extensions: Rc::default(),
         });
         SESSIONS.with(|sessions| {
             sessions
@@ -265,6 +268,9 @@ impl MacroEvaluator for HostEvaluator {
         &self,
     ) -> Option<Rc<RefCell<crate::reader_registration::ReaderNamespaces>>> {
         Some(self.0.reader_namespaces.clone())
+    }
+    fn environment_extensions(&self) -> Option<crate::evaluator::EnvironmentTracking> {
+        Some(self.0.environment_extensions.clone())
     }
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
         let mut arguments = String::from("[");

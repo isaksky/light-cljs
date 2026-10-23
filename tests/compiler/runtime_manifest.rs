@@ -182,6 +182,7 @@ fn units_concatenate_back_to_the_annotated_file_and_the_embedded_runtime() {
             "encode.peak",
             "encode.active",
             "readerViews",
+            "environmentExtensions",
         ]
         .iter()
         .any(|hook| line.contains(hook))
@@ -192,6 +193,7 @@ fn units_concatenate_back_to_the_annotated_file_and_the_embedded_runtime() {
         "encode.peak",
         "encode.active",
         "readerViews",
+        "environmentExtensions",
     ] {
         assert!(
             RUNTIME_SOURCE.contains(name) && !RUNTIME.contains(name),

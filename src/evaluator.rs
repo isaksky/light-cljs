@@ -1253,6 +1253,23 @@ pub(crate) fn compiler_root_source(
         test.map_or("null".into(), |n| n.to_string())
     )
 }
+/// Whether an engine's compile-time code has installed an extension that
+/// environment data could reach: one of a core runtime protocol on a type,
+/// or an instance of one, other than a source `deftype` or `defrecord`
+/// (light-cljs-433; `noteEnvironmentExtension` in build.rs). Converting
+/// environment data could call such an extension, so a source macro is
+/// given only the entries it reads while it is [`Self::None`]: unknown
+/// until a compilation prepares the engine to report it, and once noted it
+/// stays so for the engine's life, as the extension does.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EnvironmentExtensions {
+    #[default]
+    Untracked,
+    None,
+    Noted,
+}
+/// An engine's [`EnvironmentExtensions`], which its report service sets.
+pub type EnvironmentTracking = std::rc::Rc<std::cell::Cell<EnvironmentExtensions>>;
 /// Common macro operations at either an outer boundary or an active callback.
 pub trait MacroEvaluator {
     fn control(&self) -> ExecutionControl;
@@ -1301,6 +1318,13 @@ pub trait MacroEvaluator {
     fn reader_namespaces(
         &self,
     ) -> Option<std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>> {
+        None
+    }
+    /// Whether this engine's compile-time code has installed an extension
+    /// that environment data could reach ([`EnvironmentExtensions`]), for
+    /// an engine that keeps it; without, source macros always get their
+    /// whole environment.
+    fn environment_extensions(&self) -> Option<EnvironmentTracking> {
         None
     }
     /// Make the compile-time runtime's `gensym` number in the scope of
@@ -1390,6 +1414,9 @@ impl MacroEvaluator for Evaluator {
         &self,
     ) -> Option<std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>> {
         Some(self.bridge.borrow().reader_namespaces.clone())
+    }
+    fn environment_extensions(&self) -> Option<EnvironmentTracking> {
+        Some(self.bridge.borrow().environment_extensions.clone())
     }
     fn gensym_scope(
         &self,
@@ -1507,6 +1534,9 @@ impl MacroEvaluator for ActiveEvaluator<'_, '_> {
         &self,
     ) -> Option<std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>> {
         Some(self.bridge.borrow().reader_namespaces.clone())
+    }
+    fn environment_extensions(&self) -> Option<EnvironmentTracking> {
+        Some(self.bridge.borrow().environment_extensions.clone())
     }
     fn gensym_scope(
         &self,

@@ -729,6 +729,17 @@ impl EngineBinding {
             (None, None) => 0,
         }
     }
+    /// How many of those bundles converting environment data could reach
+    /// ([`crate::compilation_session::reaches_environment_data`]), from the
+    /// same catalog, so every `--jobs` worker gets the answer the
+    /// compilation thread gets.
+    pub(crate) fn environment_bundles(&self) -> usize {
+        match (&self.catalog, self.session_handle()) {
+            (_, Some(session)) => session.environment_bundles(),
+            (Some(catalog), None) => catalog.environment_bundles(),
+            (None, None) => 0,
+        }
+    }
 }
 /// A namespace's entries in the macro host's tables, borrowed.
 pub(crate) struct NamespaceDeclarations<'a> {

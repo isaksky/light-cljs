@@ -270,6 +270,45 @@ pub(crate) struct BundleRecord {
     pub once: bool,
     pub group: bool,
 }
+/// Whether converting canonical environment data into the compile-time
+/// engine, or hashing, comparing and looking up the values it builds, could
+/// demand (initialize) the bundle that registers `extensions` or call one of
+/// its methods (light-cljs-433). The compile-time runtime demands a bundle
+/// only for a protocol it dispatches on a value whose native kind or core
+/// type an index's selector names, or for any value when the selector is
+/// `null` (a computed or instance target) or `_` (`default`)
+/// (`setDeclarationDemand` in compiler_roots.js), and a ready bundle's
+/// methods run only through those dispatches. Environment data holds only
+/// nil, booleans, numbers, strings, characters, symbols, keywords, lists,
+/// vectors, maps, sets, metadata maps and the compiler literals (regex,
+/// instant, uuid, queue, JavaScript arrays and objects), and building or
+/// hashing them dispatches only core protocols on those and on other core
+/// types (seqs, map entries, nodes). So an index cannot be reached when it
+/// is a multimethod's (core data operations call no multimethod), when its
+/// protocol is a source `defprotocol` outside `cljs.core` (core code knows
+/// no such protocol), or when its selector names a type outside `cljs.core`,
+/// a user `deftype` or `defrecord`, of which environment data holds no
+/// instance. Every other index counts: a `null`, `_`, `object` or other
+/// native selector, or any `cljs.core` type.
+pub(crate) fn reaches_environment_data(extensions: &[(String, Option<String>, String)]) -> bool {
+    extensions.iter().any(|(protocol, selector, _)| {
+        if protocol.starts_with("multifn:") {
+            return false;
+        }
+        // Builtin protocols are keyed without a namespace (`IEquiv`,
+        // `Object`); a source protocol by its `ns/Name`.
+        if protocol
+            .split_once('/')
+            .is_some_and(|(namespace, _)| namespace != "cljs.core")
+        {
+            return false;
+        }
+        match selector.as_deref().map(|s| s.strip_prefix('@')) {
+            None | Some(None) => true,
+            Some(Some(name)) => name.starts_with("cljs.core/"),
+        }
+    })
+}
 impl BundleRecord {
     /// The unit that registers the bundle in the compile-time session.
     pub fn source(&self) -> String {
@@ -323,6 +362,9 @@ struct Catalog {
     /// and records how far it got in its own view.
     registrations: Vec<Registration>,
     bundle_count: usize,
+    /// How many of those bundles could be demanded or called by converting
+    /// or looking up environment data ([`reaches_environment_data`]).
+    environment_bundles: usize,
     /// By the slot each view joined with ([`SharedCatalog::join`]).
     threads: Vec<AnalysisThread>,
     /// How many threads wait for a unit another thread analyzes.
@@ -802,6 +844,10 @@ impl SharedCatalog {
     /// How many extension bundles the compilation registered.
     pub(crate) fn extension_frontier(&self) -> usize {
         self.lock().bundle_count
+    }
+    /// How many of them [`reaches_environment_data`].
+    pub(crate) fn environment_bundles(&self) -> usize {
+        self.lock().environment_bundles
     }
     /// The unit `id`'s initializer, prepared, unless it is not yet.
     fn prepared(&self, id: usize) -> Result<Option<Arc<crate::emitter::DeferredUnit>>, String> {
@@ -1313,6 +1359,8 @@ impl CompilationSession {
                     InstalledRegistration::Bundle(bundle) => {
                         c.registrations.push(Registration::Bundle(bundle.clone()));
                         c.bundle_count += 1;
+                        c.environment_bundles +=
+                            usize::from(reaches_environment_data(&bundle.extensions));
                         for name in &bundle.products {
                             if bundle.once && c.active.get(name) == Some(&true) {
                                 continue;
@@ -1622,6 +1670,10 @@ impl CompilationSession {
     pub fn extension_frontier(&self) -> usize {
         self.shared.lock().bundle_count
     }
+    /// How many registered bundles [`reaches_environment_data`].
+    pub fn environment_bundles(&self) -> usize {
+        self.shared.lock().environment_bundles
+    }
     pub fn multifn_target(&self, name: &str) -> Option<String> {
         self.shared.lock().multifn_targets.get(name).cloned()
     }
@@ -1664,6 +1716,7 @@ impl CompilationSession {
             let binding = self.take_unit_binding(unit);
             drop((inputs, binding));
         }
+        let reaches = reaches_environment_data(extensions);
         let bundle = Arc::new(BundleRecord {
             products: names,
             unit,
@@ -1676,6 +1729,7 @@ impl CompilationSession {
             let mut c = self.shared.lock();
             c.registrations.push(Registration::Bundle(bundle));
             c.bundle_count += 1;
+            c.environment_bundles += usize::from(reaches);
             for g in products {
                 let b = &program.globals[g.0];
                 let name = format!("{}/{}", b.namespace, b.name);
@@ -2549,6 +2603,14 @@ fn prepare_engine(
         binding.build.clone(),
         binding.dependency_log.clone(),
     )?;
+    // From now on the runtime reports the first extension environment data
+    // could reach through the build service (light-cljs-433), including one
+    // it noted before, which the registry reports when it loads.
+    if let Some(tracking) = evaluator.environment_extensions()
+        && tracking.get() == crate::evaluator::EnvironmentExtensions::Untracked
+    {
+        tracking.set(crate::evaluator::EnvironmentExtensions::None);
+    }
     // Registry and root states stay in JS, so ready reads never cross Rust.
     let value = evaluator
         .evaluate_js(include_str!("compiler_roots.js"))
@@ -3211,6 +3273,10 @@ impl CatalogView for WorkerView {
 /// compilation: `__lightCompileUnit`, which demands units from `view`, and
 /// `light.build`'s requests, which `build` serves and `log` records. The
 /// view is weak: the catalog may own the engine.
+/// What the runtime sends `__lightBuildService` to report an extension
+/// environment data could reach; a `light.build` request has five
+/// NUL-separated parts ([`crate::build_services::serve_request`]).
+const ENVIRONMENT_EXTENSION_REPORT: &str = "environment-extension";
 pub(crate) fn install_catalog_services(
     evaluator: &Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
     view: std::rc::Weak<dyn CatalogView>,
@@ -3218,12 +3284,22 @@ pub(crate) fn install_catalog_services(
     log: Rc<RefCell<Option<crate::dependency_manifest::ObservationLog>>>,
 ) -> Result<(), String> {
     // `light.build`: a request names the units whose initializers run; the
-    // catalog knows the units being analyzed.
+    // catalog knows the units being analyzed. The runtime also reports on it
+    // the first extension environment data could reach, which is this
+    // engine's own (light-cljs-433, `noteEnvironmentExtension` in build.rs):
+    // a service of its own would cost every compilation an engine entry.
     let requests = view.clone();
+    let extensions = evaluator.environment_extensions();
     evaluator
         .install_string_service(
             "__lightBuildService",
             Rc::new(move |request| {
+                if request == ENVIRONMENT_EXTENSION_REPORT {
+                    if let Some(tracking) = &extensions {
+                        tracking.set(crate::evaluator::EnvironmentExtensions::Noted);
+                    }
+                    return String::new();
+                }
                 let view = requests.upgrade();
                 if let Some(answer) = view.as_ref().and_then(|view| view.forward_build(request)) {
                     return answer;
@@ -3322,6 +3398,90 @@ impl Drop for FrontierGuard<'_> {
     fn drop(&mut self) {
         // Terminal cancellation makes this heap unusable; no later demand runs.
         let _ = self.engine.compiler_frontier(None);
+    }
+}
+
+#[cfg(test)]
+mod environment_bundle_tests {
+    use super::*;
+
+    /// The extension bundles and how many of them environment data reaches.
+    fn counts(source: &str) -> (usize, usize) {
+        let mut host = MacroHost::new();
+        crate::compile_with_macros(&format!("(defmacro m [] 1) {source} (m)"), &mut host).unwrap();
+        let session = host.session_handle().unwrap();
+        (session.extension_frontier(), session.environment_bundles())
+    }
+
+    /// Extensions of source protocols, of user types and of multimethods
+    /// are out of environment data's reach; those of core protocols with a
+    /// native, `default`, computed or core type selector are not
+    /// (light-cljs-433).
+    #[test]
+    fn only_core_protocol_extensions_of_core_or_unknown_types_reach_environment_data() {
+        let unreachable = "(defprotocol P (f [x])) (deftype T [v]) (defrecord R [v])
+            (extend-protocol P string (f [x] x) nil (f [x] x) default (f [x] x) object (f [x] x))
+            (extend-type T IEquiv (-equiv [a b] true) IHash (-hash [_] 1))
+            (defmulti g identity) (defmethod g :a [x] x) (defonce h 1)";
+        let (bundles, reaching) = counts(unreachable);
+        assert!(bundles >= 5, "{bundles}");
+        assert_eq!(reaching, 0);
+        for reachable in [
+            "(extend-type Symbol IEquiv (-equiv [a b] true))",
+            "(extend-type Keyword IHash (-hash [_] 1))",
+            "(extend-type string IHash (-hash [_] 1))",
+            "(extend-type number IEquiv (-equiv [a b] true))",
+            "(extend-type default ILookup (-lookup [x k] k))",
+            "(extend-type object IEquiv (-equiv [a b] true))",
+            "(extend-type nil ISeqable (-seq [_] nil))",
+            "(def C (.-constructor (js-obj))) (extend-type C IEquiv (-equiv [a b] true))",
+            "(extend-type PersistentArrayMap ICounted (-count [_] 0))",
+        ] {
+            let (_, reaching) = counts(&format!("{unreachable} {reachable}"));
+            assert_eq!(reaching, 1, "{reachable}");
+        }
+    }
+
+    /// What the compile-time engine noted of extensions its code installed.
+    fn noted(source: &str) -> crate::evaluator::EnvironmentExtensions {
+        let mut host = MacroHost::new();
+        crate::compile_with_macros(source, &mut host).unwrap();
+        let bootstrap = host.session_handle().unwrap().bootstrap().unwrap();
+        bootstrap.evaluator.environment_extensions().unwrap().get()
+    }
+
+    /// An extension compile-time code installs outside a declaration is
+    /// noted when environment data could reach it: of a core protocol on a
+    /// native, core or unknown type or on any instance, whose type is not
+    /// asked for, but not of a source protocol or on a user type
+    /// (light-cljs-433).
+    #[test]
+    fn compile_time_extensions_that_environment_data_could_reach_are_noted() {
+        use crate::evaluator::EnvironmentExtensions;
+        let installed = |body: &str| {
+            noted(&format!(
+                "(defprotocol P (f [x])) (deftype T [v]) (defrecord R [v])
+                 (defn install [] {body}) (defmacro setup [] (install) nil) (setup)"
+            ))
+        };
+        assert_eq!(noted("(defmacro m [] 1) (m)"), EnvironmentExtensions::None);
+        for body in [
+            "(extend-type T IEquiv (-equiv [a b] true))",
+            "(extend-type R IHash (-hash [_] 1))",
+            "(extend-protocol P string (f [x] x) default (f [x] x) nil (f [x] x))",
+            "(specify! (js-obj) P (f [x] x))",
+        ] {
+            assert_eq!(installed(body), EnvironmentExtensions::None, "{body}");
+        }
+        for body in [
+            "(extend-type Symbol IEquiv (-equiv [a b] (identical? (str a) (str b))))",
+            "(extend-type string IHash (-hash [_] 1))",
+            "(specify! (js-obj) ICounted (-count [_] 0))",
+            "(specify! (T. 1) IEquiv (-equiv [a b] true))",
+            "(extend-type T Object (toString [_] \"t\")) (extend-type number IPrintWithWriter (-pr-writer [_ w _] nil))",
+        ] {
+            assert_eq!(installed(body), EnvironmentExtensions::Noted, "{body}");
+        }
     }
 }
 

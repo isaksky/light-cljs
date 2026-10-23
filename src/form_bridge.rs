@@ -80,6 +80,8 @@ pub(crate) struct BridgeState {
     /// ([`crate::reader_registration`]).
     pub(crate) reader_namespaces:
         std::rc::Rc<std::cell::RefCell<crate::reader_registration::ReaderNamespaces>>,
+    /// [`crate::evaluator::EnvironmentExtensions`] of the runtime.
+    pub(crate) environment_extensions: crate::evaluator::EnvironmentTracking,
     // A bounded cache of immutable environment components. Holding the Datum
     // prevents allocator address reuse from masquerading as an identity hit.
     environments: Vec<EnvironmentEntry>,

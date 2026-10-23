@@ -247,6 +247,31 @@ once, as before. A reader context reuses its `:refers`, `:excludes` and
 `:bindings` vectors while they are unchanged, so the child cache refers to
 them when only its declarations change.
 
+As built (light-cljs-433): the gate is now narrower than "no extension
+bundle", and it also covers extensions installed outside declarations. The
+narrowed map is given while (1) the compilation catalog counts no registered
+bundle that converting environment data could reach
+(`reaches_environment_data`, kept next to `bundle_count` so that every
+`--jobs` worker gets the same answer): one with an index of a core protocol
+whose selector is `null` (a computed or instance target), `_`, a native kind
+or a `cljs.core` type. Extensions of source protocols, of user `deftype`s and
+`defrecord`s, and multimethods are out of reach, since core data operations
+dispatch none of them and environment data holds no user type. And (2) the
+engine has not noted an extension that environment data could reach,
+installed by compile-time code outside a declaration, such as `extend-type` in
+a function a macro calls, a `defonce` initializer or `specify!` on a host
+object. The compile-time runtime's `extendType` and `extendInstance` check
+each extension (`noteEnvironmentExtension`, a `compiler_runtime` hook in
+`build.rs`) and report the first through `__lightBuildService`. The engine
+keeps it as `EnvironmentExtensions` (`MacroEvaluator::environment_extensions`),
+which stays noted for the engine's life and is unknown, so the whole
+environment is given, until a compilation prepares the engine. Raw
+JavaScript that changes a core prototype is outside both gates, as it is for
+the core macros' unread-`&env` fast path. On Penpot neither gate opens:
+transit, rumext, promesa and beicon extend core protocols on computed
+targets early in the build (benchmarks/generated-shadow-vs-light.md, "The
+narrowed environment's gate").
+
 Finite canonical lists, sequences, vectors, maps and sets are readable results.
 Lazy sequences may realize under the same engine control and conversion bounds;
 functions, Vars, atoms, type/protocol objects, promises, arbitrary objects,

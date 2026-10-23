@@ -616,3 +616,61 @@ version. With the gate, 2 alternating rounds: 14.85 s and 820 MB before,
 13.43 s (-9.6%) and 803 MB after, output byte-identical. Narrowing the gate to
 the extensions that can reach canonical environment data (default, object and
 core collection, symbol and keyword selectors) is left for a follow-up.
+
+### The narrowed environment's gate (light-cljs-433)
+
+light-cljs-433 replaced the blanket gate with two narrower ones. The
+compilation catalog counts, next to `bundle_count`, the registered bundles
+that converting environment data could demand or call
+(`reaches_environment_data` in `src/compilation_session.rs`): those with an
+index whose protocol is a core one and whose selector is `null` (a computed
+or instance target), `_`, a native kind or a `cljs.core` type. Extensions of
+source protocols, of user `deftype`s and `defrecord`s, and multimethods do not
+count. And each compile-time engine notes the first extension its code
+installs outside the declarations, from a function a macro calls or a
+`defonce` initializer, that environment data could reach
+(`noteEnvironmentExtension`, a `compiler_runtime` hook in `build.rs`): the
+review's gate did not cover that case either, and a new test shows the cached
+and uncached outputs differ without it.
+
+Neither gate opens on Penpot. Its port registers 12 counted bundles, the first
+at `app/common/time.cljc:497` (`IEncodeJS` on a computed target), before
+nearly every macro call. All 12 have `null` selectors, because their targets
+are values rather than type declarations: transit's `IEquiv`, `IHash` and
+`IComparable` on `Long`, `TransitUUID` and `TaggedValue`, which are `def`s of
+goog constructors, its `IEquiv` on `UUID`, rumext's `INamed` on
+`cljs.core.UUID`, promesa's `IPrintWithWriter` and `IDeref` on `js/Promise`,
+and beicon's `IFn` and `IDeref` on RxJS classes. The runtime demands a
+`null`-selector bundle for any value that the protocol is dispatched on, and
+building maps dispatches `IEquiv` and `IHash`, so converting the locals map
+can initialize transit's bundles, and initializing them runs user code (the
+`Long` root). Of the 14,171 calls to source macros that read only keyword
+entries, 37 get the narrowed environment (none did at the parent). A sound
+gate that opens there needs three more proofs: which core protocols converting
+environment data dispatches, which constructors a ready computed-target bundle
+patched, and that the left-out entries hold no UUID literal. That is a larger
+design than a gate, so it is not attempted here.
+
+Per call with the probe (`--jobs 1`, `--no-cache`, one run each, load 4.8 to
+5.2): `cd4d0bb` is light-cljs-427's parent, `ff491d9` this change's parent.
+
+| Macro | calls | `cd4d0bb` | `ff491d9` | 433 |
+|---|---|---|---|---|
+| `stl/css` | 5,131 | 196.5 us | 124.2 us | 118.5 us |
+| `app.main.style/css*` | 5,131 | 129.0 us | 63.5 us | 60.9 us |
+| `dm/str` | 885 | 368.5 us | 268.3 us | 279.4 us |
+| `dm/get-prop` | 844 | 285.7 us | 218.4 us | 222.3 us |
+| all source macros | 20,126 | 11.29 s | 9.88 s | 9.56 s |
+
+Penpot `app.main --optimize none`, the three alternating in 3 rounds, load 4.3
+to 2.6, medians: 15.49 s and 859 MB at `cd4d0bb`, 13.63 s and 833 MB at
+`ff491d9`, 14.04 s and 836 MB with this change (-9.4% from `cd4d0bb`; the
+rounds against `ff491d9` were -1.3%, +3.0% and -0.1%). light-cljs-427's
+targets are still missed on Penpot: -9.4% against -10%, and of the four
+macros only `css*`, which the lazy reader view cut, is halved. Penpot
+`main-none` and `main-advanced` and the seed-42 100k project at `none` and
+advanced are byte-identical to `ff491d9`'s and `cd4d0bb`'s. The 54
+non-timing `--stats` counters, `trace.reads` (73,777) among them, equal
+`ff491d9`'s. The extension report reuses the `light.build` service, since a
+service of its own adds an engine entry to every compilation.
+`bb benchmarks/generated-project/test.bb --light` passes.

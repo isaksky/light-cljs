@@ -202,6 +202,13 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   of at every expansion: only a read in the code profile consults them
 ///   (light-cljs-427). It registers the view's declarations at once, as
 ///   before, since later views build on them.
+/// - `extendType` and `extendInstance` note the first extension that
+///   environment data could reach, one of a core runtime protocol on a
+///   type other than a source `deftype` or `defrecord`, or on any instance,
+///   whose properties it does not read (a getter could run), and tell the compiler once through
+///   `__lightBuildService`, which then keeps giving source
+///   macros their whole environment (light-cljs-433,
+///   `crate::evaluator::EnvironmentExtensions`).
 fn compiler_runtime(runtime: &str) -> String {
     const ENCODE_END: &str = "      return visit(value, \"$\", 0);\n    }\n    return Object.freeze({version: 5, decode, encode,";
     // Every line holds `readerViews`, which tells the hook's lines from the
@@ -215,7 +222,15 @@ fn compiler_runtime(runtime: &str) -> String {
         "      ns.readerContext = {get aliases() { return readerViewsBuild().aliases; }, get refers() { return readerViewsBuild().refers; }, get excludes() { return readerViewsBuild().excludes; }, get bindings() { return readerViewsBuild().bindings; }, declared: readerViewsDeclared, visible: readerViewsVisible}; coreCells.currentNs = ns;\n",
         "      try { return Reflect.apply(fn, null, args); } finally { ns.readerContext = previous; coreCells.currentNs = saved; } } // readerViews\n",
     );
-    const HOOKS: [(&str, &str, &str); 7] = [
+    // Every line holds `environmentExtensions`, as above.
+    const ENVIRONMENT_EXTENSIONS: &str = concat!(
+        "  function noteEnvironmentExtension(type, methods) { if (globalThis.__lightEnvironmentExtended) return; const name = typeof type === \"function\" ? typeNames.get(type) : undefined; // environmentExtensions\n",
+        "    if (name?.includes(\"/\") && !name.startsWith(\"cljs.core/\")) return; // environmentExtensions\n",
+        "    if (!methods.some(([dispatch, arity]) => { const key = typeof dispatch === \"string\" ? dispatch : protocolKeys.get(dispatch); if (typeof key !== \"string\") return true; const protocol = arity === 0 ? key : key.slice(0, key.lastIndexOf(\"/\")); return !protocol.includes(\"/\") || protocol.startsWith(\"cljs.core/\"); })) return; // environmentExtensions\n",
+        "    globalThis.__lightEnvironmentExtended = true; globalThis.__lightBuildService?.(\"environment-extension\"); } // environmentExtensions\n",
+    );
+    const EXTEND_TYPE: &str = "  function extendType(target, methods) {\n    let result = null;\n";
+    const HOOKS: [(&str, &str, &str); 10] = [
         (
             "    const ns = createNs(name);\n    const context = ns.readerContext ?? {aliases: new Map(), refers: new Map(), excludes: new Set(), bindings: new Set()};\n",
             "    const context",
@@ -257,6 +272,17 @@ fn compiler_runtime(runtime: &str) -> String {
             ENCODE_END,
             "    }\n    return Object.freeze",
             "      } finally { encode.peak = Math.max(encode.peak ?? 0, encode.active.pop()()); }\n",
+        ),
+        (EXTEND_TYPE, "  function extendType", ENVIRONMENT_EXTENSIONS),
+        (
+            EXTEND_TYPE,
+            "    let result",
+            "    noteEnvironmentExtension(target, methods); // environmentExtensions\n",
+        ),
+        (
+            "  function extendInstance(target, methods, returnTarget) {\n",
+            "",
+            "    noteEnvironmentExtension(undefined, methods); // environmentExtensions\n",
         ),
     ];
     let mut runtime = runtime.to_owned();

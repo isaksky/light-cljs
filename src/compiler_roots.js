@@ -1,6 +1,9 @@
 // A compilation owns this registry. Canonical emitted functions and collections
 // retain their normal runtime brands; only global storage differs by phase.
 (() => {
+  // An extension environment data could reach that the runtime noted before
+  // the compiler installed its report service (light-cljs-433).
+  if (globalThis.__lightEnvironmentExtended) globalThis.__lightBuildService?.('environment-extension');
   const units = new Map(), slots = new Map(), overlays = new Map(), path = [], extensions = new Map(), installing = [], bundles = [], frontiers = [];
   let frontier = Infinity, declarationFrontier = Infinity;
   // light.build records a read on every deferred unit whose initializer is
