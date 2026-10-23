@@ -55,6 +55,9 @@ impl CompilerEvaluator for Evaluator {
     fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError> {
         Evaluator::evaluate_js(self, expression)
     }
+    fn holds_headroom(&self) -> bool {
+        Evaluator::holds_headroom(self)
+    }
     fn collect_garbage(&self) {
         Evaluator::collect_garbage(self);
     }

@@ -19,25 +19,14 @@
 //! runs a longer stress.
 //!
 //! The hook exists in debug builds only (`main.rs` leaves this suite out
-//! of release test builds), and QuickJS-only builds, which have no pool,
-//! skip each test with a note.
+//! of release test builds). QuickJS-only builds run it on their pool of
+//! QuickJS runtimes (light-cljs-436).
 use crate::macro_free_units::{Built, Sources, build_configured, execute};
 use light_cljs::MacroHost;
 use light_cljs::scheduler::{Limits, Perturbation};
 use std::time::{Duration, Instant};
 
 const SLOTS: [usize; 4] = [1, 2, 4, 8];
-
-/// Whether this build has no pool to perturb, saying so.
-fn skipped() -> bool {
-    if cfg!(feature = "v8-macros") {
-        return false;
-    }
-    eprintln!(
-        "skipped: QuickJS-only builds analyze every unit on the calling thread, with no pool to perturb"
-    );
-    true
-}
 
 /// The seeds the stress runs: 1 to 3, or to `LIGHT_CLJS_STRESS_SEEDS`.
 fn seeds() -> Vec<u64> {
@@ -340,9 +329,6 @@ fn value(built: &Built) -> String {
 
 #[test]
 fn single_namespace_macro_fixtures_are_the_same_under_any_schedule() {
-    if skipped() {
-        return;
-    }
     use crate::macros::*;
     for (name, source, expected) in [
         ("source order", SOURCE_ORDER_GENERATIONS, Some("true")),
@@ -380,9 +366,6 @@ fn single_namespace_macro_fixtures_are_the_same_under_any_schedule() {
 /// fresh isolates alike.
 #[test]
 fn pooled_declaration_methods_restore_extension_frontiers() {
-    if skipped() {
-        return;
-    }
     let fixture = Fixture::main(
         r#"(defprotocol P (p [x])) (defprotocol Q (q [x]))
 (extend-type string P (p [_] 1))
@@ -414,9 +397,6 @@ fn pooled_declaration_methods_restore_extension_frontiers() {
 
 #[test]
 fn namespace_macro_fixtures_keep_initialization_order_under_any_schedule() {
-    if skipped() {
-        return;
-    }
     let helpers = Fixture::new("app", crate::macros::TRANSITIVE_HELPERS);
     let oracle = stress("transitive helpers", &helpers);
     assert_eq!(
@@ -430,9 +410,6 @@ fn namespace_macro_fixtures_keep_initialization_order_under_any_schedule() {
 
 #[test]
 fn compile_time_unit_and_deferred_value_fixtures_are_the_same_under_any_schedule() {
-    if skipped() {
-        return;
-    }
     let mut body = String::new();
     let cases = crate::compile_time_units::REFLECTION_PROGRAMS
         .iter()
@@ -488,9 +465,6 @@ fn safe_units(name: &str, requires: &str, count: usize) -> String {
 
 #[test]
 fn safe_units_around_an_affinity_namespace_are_the_same_under_any_schedule() {
-    if skipped() {
-        return;
-    }
     let mut files = crate::macros::COUNTER.to_vec();
     let first = safe_units("app.first", "", 12);
     let second = safe_units("app.second", " [app.first]", 12);
@@ -521,9 +495,6 @@ fn safe_units_around_an_affinity_namespace_are_the_same_under_any_schedule() {
 /// the others wait for that analysis and share it.
 #[test]
 fn duplicate_demands_for_one_unit_from_several_workers_share_one_analysis() {
-    if skipped() {
-        return;
-    }
     let mut body = String::from(
         "(defn shared-helper [x] (loop [i 0 acc x] (if (< i 2000) (recur (inc i) acc) (* 2 acc))))\n\
          (defmacro twice [x] (shared-helper x))\n",
@@ -543,9 +514,6 @@ fn duplicate_demands_for_one_unit_from_several_workers_share_one_analysis() {
 /// their order and the earlier unit's error under any schedule.
 #[test]
 fn warnings_and_ordinary_errors_are_the_same_under_any_schedule() {
-    if skipped() {
-        return;
-    }
     let macros = "(ns app.m) (defmacro call-missing [n] (list (symbol (str \"missing-\" n)) n)) (defn two [a b] [a b])";
     let mut files = vec![("app/m.cljs".to_owned(), macros.to_owned())];
     let mut requires = String::new();
@@ -607,9 +575,6 @@ fn warnings_and_ordinary_errors_are_the_same_under_any_schedule() {
 /// question (docs/compiler-concurrency.md, "Open questions").
 #[test]
 fn a_cross_worker_cycle_fails_the_build_at_the_same_unit_under_any_schedule() {
-    if skipped() {
-        return;
-    }
     let fixture = Fixture::main(
         "(declare a b)\n\
          (defmacro ma [] (a))\n\
@@ -627,7 +592,9 @@ fn a_cross_worker_cycle_fails_the_build_at_the_same_unit_under_any_schedule() {
             .unwrap_or((error, ""));
         let path = rest
             .split_once("compile dependency cycle: ")
-            .map_or("", |(_, path)| path.split(';').next().unwrap_or(""));
+            // QuickJS follows a message with the JavaScript stack, on the
+            // next lines.
+            .map_or("", |(_, path)| path.split([';', '\n']).next().unwrap_or(""));
         // A cycle met on one thread's stack is printed with the demands
         // that led to it; the cycle starts where its last unit first is.
         let path: Vec<_> = path.split(" -> ").collect();
@@ -654,9 +621,6 @@ fn a_cross_worker_cycle_fails_the_build_at_the_same_unit_under_any_schedule() {
 /// every slot count and schedule, and the isolate is retired, not reused.
 #[test]
 fn a_panic_in_a_nested_demand_callback_fails_the_build_the_same_way_and_retires_the_isolate() {
-    if skipped() {
-        return;
-    }
     let mut body = String::from(
         "(defn helper [x] (inc x))\n\
          (defmacro bumped [x] (helper x))\n",
@@ -710,9 +674,6 @@ const HOG: &str = "(ns app.m) (defmacro hog [mb] (let [keep #js []] (dotimes [_ 
 /// one slot, and a unit after it gets a new isolate.
 #[test]
 fn an_isolate_out_of_memory_is_retired_and_the_build_fails_the_same_way() {
-    if skipped() {
-        return;
-    }
     let mut body = String::from("(ns app.h (:require [app.m :refer [hog]]))\n");
     for k in 0..12 {
         let size = if k == 8 { 320 } else { 1 };
@@ -741,9 +702,6 @@ fn an_isolate_out_of_memory_is_retired_and_the_build_fails_the_same_way() {
 /// one may start after the deadline and fail with it first.
 #[test]
 fn an_isolate_past_the_deadline_fails_the_build_under_any_schedule() {
-    if skipped() {
-        return;
-    }
     let program = |a: &str| {
         Fixture::main(&format!(
             "(defmacro spin [] (loop [n 0] (recur (inc n))))\n\
@@ -821,9 +779,6 @@ impl light_cljs::source_provider::SourceProvider for PanickingRoots {
 /// schedule; nothing waits for the job it stopped.
 #[test]
 fn a_panic_during_discovery_fails_the_build_the_same_way_under_any_schedule() {
-    if skipped() {
-        return;
-    }
     let sources = Sources::new();
     sources
         .write("app/a.cljs", "(ns app.a (:require [app.c] [app.boom]))")
@@ -884,9 +839,6 @@ fn a_panic_during_discovery_fails_the_build_the_same_way_under_any_schedule() {
 /// assignments.
 #[test]
 fn persistent_worker_isolates_match_a_fresh_isolate_per_unit_after_any_history() {
-    if skipped() {
-        return;
-    }
     use crate::macros::*;
     let mut fixtures: Vec<(&str, Fixture)> = vec![
         ("nested demands", Fixture::main(NESTED_DEMANDS)),

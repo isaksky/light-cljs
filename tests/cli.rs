@@ -214,6 +214,15 @@ fn vector_keyword_acceptance_compiles_and_executes_from_cli() {
     assert_eq!(result.stdout, b"2\n");
 }
 
+/// A `--macro-memory-limit` that gives one worker an engine beyond the
+/// main one's 64 MiB, which the default does not (light-cljs-437): 32 MiB
+/// for a V8 isolate, 64 MiB for a QuickJS runtime (light-cljs-436).
+const ONE_WORKER_ENGINE: &str = if cfg!(feature = "v8-macros") {
+    "100663296"
+} else {
+    "134217728"
+};
+
 fn light_cljs(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_light-cljs"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -1401,8 +1410,13 @@ fn stats_reports_peak_rss_parsed_trees_and_queued_unit_ir_at_any_job_count() {
     let plain = light_cljs(&args);
     assert!(plain.status.success());
     // The default memory limit gives no worker an isolate; 96 MiB gives one,
-    // which `pushed`'s `dotimes`, a JavaScript macro, needs (light-cljs-437).
-    for (jobs, limit) in [("1", "67108864"), ("4", "67108864"), ("4", "100663296")] {
+    // which `pushed`'s `dotimes`, a JavaScript macro, needs (light-cljs-437),
+    // and 128 MiB one QuickJS runtime.
+    for (jobs, limit) in [
+        ("1", "67108864"),
+        ("4", "67108864"),
+        ("4", ONE_WORKER_ENGINE),
+    ] {
         let flags = ["--stats", "--jobs", jobs, "--macro-memory-limit", limit];
         let output = light_cljs(&[&args[..], &flags[..]].concat());
         let stderr = String::from_utf8(output.stderr).unwrap();
@@ -1464,7 +1478,7 @@ fn stats_reports_peak_rss_parsed_trees_and_queued_unit_ir_at_any_job_count() {
             value("memory.queued-ir.peak-bytes") > 100.0 * value("memory.queued-ir.peak-units"),
             "{stderr}"
         );
-        if jobs == "4" && cfg!(feature = "v8-macros") {
+        if jobs == "4" {
             assert!(value("deferred-units.pooled") > 0.0, "{stderr}");
             let isolates = value("pool.worker-isolates");
             if limit == "67108864" {
@@ -1619,9 +1633,8 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
         let mut traced = args.to_vec();
         traced.extend(["--jobs", jobs, "--stats-file", file.to_str().unwrap()]);
         // A worker isolate, which the default memory limit does not give
-        // (light-cljs-437): 64 MiB for the main isolate and 32 MiB for one
-        // worker's.
-        traced.extend(["--macro-memory-limit", "100663296"]);
+        // (light-cljs-437).
+        traced.extend(["--macro-memory-limit", ONE_WORKER_ENGINE]);
         let output = light_cljs(&traced);
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(output.status.success(), "{stderr}");
@@ -1772,8 +1785,7 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
             |unit: &str, kind: &str, demander: String| vec![ids(unit), kind.to_owned(), demander];
         let bumped = read("app.macros/outer", "unit", ids("app.macros/bumped"));
         let main = read("app.macros/outer", "top-level", "1".into());
-        // QuickJS-only builds have one slot, so every unit is kept.
-        let (third, fourth) = if jobs == "1" || !cfg!(feature = "v8-macros") {
+        let (third, fourth) = if jobs == "1" {
             (bumped, main)
         } else {
             (main, bumped)
@@ -1818,7 +1830,9 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
         let parts = value("trace.top-level.engine-ms") + value("trace.unit.engine-ms");
         assert!(value("trace.unit.engine-ms") > 0.0, "{stderr}");
         assert!(value("trace.top-level.engine-ms") > 0.0, "{stderr}");
-        assert!(parts <= value("trace.engine-ms") + 0.01, "{stderr}");
+        // Each is printed rounded to 0.1 ms, so the parts' sum can exceed
+        // the printed whole by up to 0.15.
+        assert!(parts <= value("trace.engine-ms") + 0.16, "{stderr}");
     }
     // `--stats-file` needs a path, and a namespace compilation.
     let output = light_cljs(&["--compile", "--text", "1", "--stats-file"]);
@@ -2155,8 +2169,7 @@ fn worker_isolates_match_a_fresh_isolate_per_unit() {
     .unwrap();
     let root_arg = root.to_str().unwrap();
     // A worker isolate, which the default memory limit does not give
-    // (light-cljs-437): 64 MiB for the main isolate and 32 MiB for one
-    // worker's.
+    // (light-cljs-437).
     let entry = [
         "--compile",
         "--entry",
@@ -2164,7 +2177,7 @@ fn worker_isolates_match_a_fresh_isolate_per_unit() {
         "--source-root",
         root_arg,
         "--macro-memory-limit",
-        "100663296",
+        ONE_WORKER_ENGINE,
     ];
     let run = |jobs: &[&str], env: &[(&str, &str)]| {
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
@@ -2189,11 +2202,7 @@ fn worker_isolates_match_a_fresh_isolate_per_unit() {
     };
     let serial = run(&["1"], &[]);
     assert_eq!(node(&serial), "1 2 3 [2 3 4]\n");
-    let several = if cfg!(feature = "v8-macros") {
-        "1 1 3 [2 3 4]\n"
-    } else {
-        "1 2 3 [2 3 4]\n"
-    };
+    let several = "1 1 3 [2 3 4]\n";
     for jobs in ["2", "4", "8"] {
         let persistent = run(&[jobs], &[]);
         assert_eq!(node(&persistent), several, "{jobs} jobs");
@@ -2211,9 +2220,6 @@ fn worker_isolates_match_a_fresh_isolate_per_unit() {
 /// catalog's were found held.
 #[test]
 fn jobs_stats_report_the_unit_pool_scheduler() {
-    if !cfg!(feature = "v8-macros") {
-        return; // QuickJS-only builds have one slot, so no pool.
-    }
     let root = TempDir::new("cljs-cli-pool-stats");
     std::fs::write(
         root.join("macros.cljs"),

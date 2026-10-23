@@ -1544,12 +1544,12 @@ fn run_parse_job(
     }
 }
 
-/// The slots the parse queue may use: `slots` in a native V8 build, the
-/// first delivery of parallel compilation; one, which runs every parse job
-/// inline on the calling thread, in QuickJS-only builds and in WebAssembly
-/// (docs/compiler-concurrency.md, after "Engineering inventory").
+/// The slots the parse queue and the unit pool may use: `slots` in a
+/// native build, with V8 or QuickJS-only (light-cljs-436); one, which runs
+/// every job inline on the calling thread, in WebAssembly, which has no
+/// threads (docs/compiler-concurrency.md, after "Engineering inventory").
 fn parse_slots(slots: crate::scheduler::Slots) -> crate::scheduler::Slots {
-    if cfg!(all(feature = "v8-macros", not(target_arch = "wasm32"))) {
+    if cfg!(not(target_arch = "wasm32")) {
         slots
     } else {
         crate::scheduler::Slots::ONE
@@ -1678,7 +1678,7 @@ struct Loader<'a> {
     /// Lookups and requires for a dependency manifest, when one is asked for.
     record: Option<crate::dependency_manifest::LoaderRecord>,
     /// The CPU work slots of the parse queue (`--jobs N`): one, inline,
-    /// outside native V8 builds ([`parse_slots`]).
+    /// in WebAssembly ([`parse_slots`]).
     slots: crate::scheduler::Slots,
     /// The parses of the current pooled load phase, which the walk takes.
     parses: ParseRecords,
@@ -2762,7 +2762,8 @@ fn analyze_entry(
     let mut index = 0;
     // With `--jobs N` the build's deferred units are analyzed on one pool
     // for the whole build of N-1 workers, as many as the macro memory limit
-    // allows each in a V8 isolate of its own, which share the build's
+    // allows each in a V8 isolate of its own (a QuickJS runtime in
+    // QuickJS-only builds, light-cljs-436), which share the build's
     // deadline and macro memory limit, one budget for them all
     // (light-cljs-341), and the others without an engine, which take only
     // macro-free units (light-cljs-437). While artifacts are captured or a
@@ -2775,7 +2776,9 @@ fn analyze_entry(
         && let Some(session) = macros.session_handle()
     {
         use crate::compilation_session::PoolEngines;
-        let engines = if cfg!(light_v8)
+        // V8 isolates, or in QuickJS-only builds QuickJS runtimes
+        // (light-cljs-436).
+        let engines = if cfg!(any(light_v8, light_quickjs))
             && macros.engine.script_host.is_none()
             && !macros.tables.interactive
         {
@@ -2788,7 +2791,7 @@ fn analyze_entry(
             PoolEngines::None
         };
         // The main isolate's reservation and as many workers' as the rest
-        // of the limit gives 32 MiB each; with none, no worker has an
+        // of the limit gives `WORKER_SHARE` each; with none, no worker has an
         // engine.
         let isolates = crate::compilation_session::isolate_count(memory_limit, analysis.unit_slots);
         let engines = if isolates < 2 {

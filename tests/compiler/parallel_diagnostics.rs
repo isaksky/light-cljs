@@ -6,6 +6,10 @@
 use crate::macro_free_units::{Built, Sources, build_with};
 use light_cljs::MacroHost;
 
+/// The memory limit of [`limited`]: 64 MiB for the main isolate, a share
+/// for each of three workers' and 96 MiB of headroom; 256 MiB with V8.
+const LIMIT: usize = (64 << 20) + 3 * crate::macro_free_units::WORKER_SHARE + (96 << 20);
+
 /// A host with these expansion and node limits, and a memory limit that
 /// gives four isolates.
 fn limited(expansions: usize, generated_nodes: usize) -> MacroHost {
@@ -15,7 +19,7 @@ fn limited(expansions: usize, generated_nodes: usize) -> MacroHost {
         generated_nodes,
         ..Default::default()
     };
-    host.evaluator_options.memory_limit = 256 << 20;
+    host.evaluator_options.memory_limit = LIMIT;
     host
 }
 
@@ -53,10 +57,8 @@ fn exact_boundary_expansion_and_node_limits_name_the_same_unit_at_one_and_four_s
     let unlimited = build_with(&sources, "app.l", 1, false, limited(100_000, 1_000_000));
     assert!(unlimited.output.is_ok(), "{:?}", unlimited.output);
     let pooled = build_with(&sources, "app.l", 4, false, limited(100_000, 1_000_000));
-    if cfg!(feature = "v8-macros") {
-        assert_eq!(pooled.stats.deferred_units.pooled, 16);
-        assert_eq!(pooled.stats.deferred_units.worker_isolates, 3);
-    }
+    assert_eq!(pooled.stats.deferred_units.pooled, 16);
+    assert_eq!(pooled.stats.deferred_units.worker_isolates, 3);
     let calls = unlimited.stats.macro_calls;
     let nodes = unlimited.stats.peak_macro_nodes;
     let mut failures = 0;
@@ -274,11 +276,22 @@ fn warnings_are_in_the_same_order_at_every_slot_count() {
     }
 }
 
-/// A macro that holds `mb` MiB of JavaScript heap while it runs.
-const HOG: &str = "(ns app.m) (defmacro hog [mb] (let [keep #js []] (dotimes [_ mb] (.push keep (.fill (js/Array. 131072) 1.5))) (.-length keep)))";
+/// A macro that holds `mb` MiB of JavaScript heap while it runs: an array
+/// of 131,072 doubles is 1 MiB in V8, and one of 48,000, as `fill` grows
+/// it, about 1 MiB in QuickJS (measured with a probe of its allocator).
+fn hog() -> String {
+    let length = if cfg!(feature = "v8-macros") {
+        131072
+    } else {
+        48000
+    };
+    format!(
+        "(ns app.m) (defmacro hog [mb] (let [keep #js []] (dotimes [_ mb] (.push keep (.fill (js/Array. {length}) 1.5))) (.-length keep)))"
+    )
+}
 
 fn hogs(sources: &Sources, mb: usize) {
-    sources.write("app/m.cljs", HOG);
+    sources.write("app/m.cljs", &hog());
     let mut body = String::from("(ns app.h (:require [app.m :refer [hog]]))\n");
     for k in 0..6 {
         let size = if k == 3 { mb } else { 1 };
@@ -290,22 +303,23 @@ fn hogs(sources: &Sources, mb: usize) {
 
 #[test]
 fn the_memory_limit_is_one_budget_across_the_isolates() {
-    // With 256 MiB and four slots, four isolates share the limit: each is
-    // allowed 32 MiB and takes more from the 128 MiB the others leave.
-    // A unit that needs 96 MiB fits, as with one slot, which an even
-    // split of 64 MiB each would not admit.
+    // With 256 MiB and four slots, four isolates share the limit: each
+    // worker's is allowed 32 MiB (a QuickJS runtime 64 MiB, of 352) and
+    // takes more from the 96 MiB the others leave. A unit that needs 96 MiB
+    // fits, as with one slot, which an even split of 64 MiB each would not
+    // admit.
     let sources = Sources::new();
     hogs(&sources, 96);
     for slots in [1, 4] {
         let built = build_with(&sources, "app.h", slots, false, limited(1024, 100_000));
         assert!(built.output.is_ok(), "{slots} slots: {:?}", built.output);
-        if slots == 4 && cfg!(feature = "v8-macros") {
+        if slots == 4 {
             assert_eq!(built.stats.deferred_units.worker_isolates, 3);
         }
     }
     // One that needs more than the whole limit fails at every slot count,
     // in the same unit.
-    hogs(&sources, 320);
+    hogs(&sources, (LIMIT >> 20) + 64);
     let failure = |slots| {
         let built = build_with(&sources, "app.h", slots, false, limited(1024, 100_000));
         built.output.unwrap_err()
@@ -364,13 +378,9 @@ fn headroom_a_worker_took_returns_for_the_main_isolate() {
     // the main isolate needs as much, as with one slot: `DRAIN_LAG`
     // namespaces between them put that pass after `app.h`'s drain point,
     // which waits for the worker (light-cljs-391); within the lag, the two
-    // would need the headroom at once. QuickJS-only builds have no pool,
-    // and QuickJS's values are twice as large.
-    if !cfg!(feature = "v8-macros") {
-        return;
-    }
+    // would need the headroom at once.
     let sources = Sources::new();
-    sources.write("app/m.cljs", HOG);
+    sources.write("app/m.cljs", &hog());
     sources.write(
         "app/h.cljs",
         "(ns app.h (:require [app.m :refer [hog]])) (defn h0 [] (hog 150)) (defn h1 [] 1)",
@@ -392,7 +402,7 @@ fn headroom_a_worker_took_returns_for_the_main_isolate() {
     for slots in [1, 2] {
         let built = build_with(&sources, "app.t", slots, false, limited(1024, 100_000));
         assert!(built.output.is_ok(), "{slots} slots: {:?}", built.output);
-        if slots == 2 && cfg!(feature = "v8-macros") {
+        if slots == 2 {
             assert!(built.stats.deferred_units.worker_isolates >= 1);
         }
     }
@@ -405,11 +415,6 @@ fn a_build_the_default_memory_limit_fits_at_one_slot_fits_at_every_slot_count() 
     // the build failed at every slot count above one; the main isolate now
     // keeps what a serial build has, and the other slots run workers
     // without an engine, which take only macro-free units (light-cljs-437).
-    // QuickJS-only builds have no pool, and QuickJS's values are twice as
-    // large.
-    if !cfg!(feature = "v8-macros") {
-        return;
-    }
     let sources = Sources::new();
     hogs(&sources, 40);
     let serial = build_with(&sources, "app.h", 1, false, MacroHost::new());
@@ -419,11 +424,9 @@ fn a_build_the_default_memory_limit_fits_at_one_slot_fits_at_every_slot_count() 
             let built = build_with(&sources, "app.h", slots, false, MacroHost::new());
             assert_eq!(built.output, serial.output, "{slots} slots");
             let units = &built.stats.deferred_units;
-            if cfg!(feature = "v8-macros") {
-                assert_eq!(units.pool_workers, slots - 1, "{units:?}");
-                assert_eq!(units.pool_engine_workers, 0, "{units:?}");
-                assert_eq!(units.worker_isolates, 0, "{units:?}");
-            }
+            assert_eq!(units.pool_workers, slots - 1, "{units:?}");
+            assert_eq!(units.pool_engine_workers, 0, "{units:?}");
+            assert_eq!(units.worker_isolates, 0, "{units:?}");
         }
     }
 }

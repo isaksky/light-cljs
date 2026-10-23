@@ -4,8 +4,7 @@
 //! transitively, analyze their deferred units on the coordinator's isolate
 //! at their drains, as one slot does, with the persistent cache off; every
 //! other namespace's units still go to the pool. `^:light-cljs/no-cache` is
-//! a cache policy only and gives no affinity. QuickJS-only builds are
-//! serial, so every slot count behaves as one there.
+//! a cache policy only and gives no affinity.
 use crate::macro_free_units::{Built, Sources, build_blocked, execute, one_worker_isolate};
 
 /// `entry` built at `slots` with `blockers`, with a worker isolate: the
@@ -63,11 +62,7 @@ fn counter<'a>(sources: &'a Sources, provider: &str) -> &'a Sources {
 /// `1 1` where several slots run `dep`'s unit in a worker's isolate: the
 /// documented behavior of an undeclared provider.
 fn undeclared() -> &'static str {
-    if cfg!(feature = "v8-macros") {
-        "1 1\n"
-    } else {
-        "1 2\n"
-    }
+    "1 1\n"
 }
 
 #[test]
@@ -156,14 +151,10 @@ fn a_sibling_of_a_blockers_consumer_still_runs_on_workers() {
     let blocked_too = blocked(&sources, "main", 4, &["macros", "plain"]);
     assert_eq!(blocked_too.output, built.output);
     assert_eq!(blocked_too.stats.deferred_units.pooled, 0);
-    if cfg!(feature = "v8-macros") {
-        assert_eq!(built.stats.deferred_units.pooled, 3);
-        // The pool's workers ran them, with an engine or without: they are
-        // macro-free.
-        assert_eq!(built.stats.deferred_units.pool.started, 3);
-    } else {
-        assert_eq!(built.stats.deferred_units.pooled, 0);
-    }
+    assert_eq!(built.stats.deferred_units.pooled, 3);
+    // The pool's workers ran them, with an engine or without: they are
+    // macro-free.
+    assert_eq!(built.stats.deferred_units.pool.started, 3);
 }
 
 #[test]

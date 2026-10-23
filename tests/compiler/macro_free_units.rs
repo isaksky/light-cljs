@@ -137,16 +137,6 @@ pub(crate) fn build_configured(
     }
 }
 
-/// `count` macro-free units where several slots dispatch them: in native V8
-/// builds; QuickJS-only builds analyze every unit on the calling thread.
-fn pooled_count(count: usize) -> usize {
-    if cfg!(feature = "v8-macros") {
-        count
-    } else {
-        0
-    }
-}
-
 pub(crate) fn execute(js: &str) -> String {
     let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .args(["--eval", js])
@@ -160,14 +150,23 @@ pub(crate) fn execute(js: &str) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+/// What a build's memory budget needs beyond the main engine's 64 MiB for
+/// each worker engine: 32 MiB for a V8 isolate, 64 MiB for a QuickJS
+/// runtime in QuickJS-only builds (light-cljs-436).
+pub(crate) const WORKER_SHARE: usize = if cfg!(feature = "v8-macros") {
+    32 << 20
+} else {
+    64 << 20
+};
+
 /// A host whose memory budget gives the main isolate its default 64 MiB
-/// and one worker isolate 32 MiB, as the default budget did before
-/// light-cljs-437: with more slots, the other workers have no engine and
-/// take only macro-free units. The default budget gives no worker an
-/// isolate.
+/// and one worker isolate its share, as the default budget did before
+/// light-cljs-437 in V8 builds: with more slots, the other workers have no
+/// engine and take only macro-free units. The default budget gives no
+/// worker an isolate.
 pub(crate) fn one_worker_isolate() -> MacroHost {
     let mut host = MacroHost::new();
-    host.evaluator_options.memory_limit = 96 << 20;
+    host.evaluator_options.memory_limit = (64 << 20) + WORKER_SHARE;
     host
 }
 
@@ -244,7 +243,7 @@ fn units_are_macro_free_only_when_no_form_can_reach_the_macro_host() {
     // calls it before the file defines a macro; not `e` (an imported
     // macro), `i` (a nested definition), `k` (an intrinsic), `n` (a source
     // macro) or `o` (a `:test` unit).
-    assert_eq!(pooled.stats.deferred_units.macro_free, pooled_count(10));
+    assert_eq!(pooled.stats.deferred_units.macro_free, 10);
     assert_eq!(pooled.output, serial.output);
     assert_eq!(execute(&serial.output.unwrap()), "1 2 3 1 1 2 5 when 2\n");
 }
@@ -298,11 +297,7 @@ fn units_whose_only_macros_expand_natively_need_no_engine() {
         assert_eq!(pooled.stats.deferred_units.worker_isolates, 0);
         // All but `wide`, whose `js-obj` of nine entries the engine
         // expands; `f14`'s `if-let` is judged as `->` threads it.
-        assert_eq!(
-            pooled.stats.deferred_units.macro_free,
-            pooled_count(14),
-            "{slots} slots"
-        );
+        assert_eq!(pooled.stats.deferred_units.macro_free, 14, "{slots} slots");
     }
 }
 
@@ -333,11 +328,7 @@ fn trial_expansions_admit_no_call_the_engine_expands() {
         let pooled = build_with(&sources, "app.b", slots, false, host);
         assert_eq!(pooled.output, serial.output, "{slots} slots");
         // `if-let`'s definition and `ok`.
-        assert_eq!(
-            pooled.stats.deferred_units.macro_free,
-            pooled_count(2),
-            "{slots} slots"
-        );
+        assert_eq!(pooled.stats.deferred_units.macro_free, 2, "{slots} slots");
     }
 }
 
@@ -390,8 +381,7 @@ fn declaration_bundles_are_pooled_and_macro_free_ones_need_no_engine() {
     assert_eq!(pooled.output, serial.output);
     // Every unit: none is a `:test` one or a cache blocker's.
     assert_eq!(
-        pooled.stats.deferred_units.pooled,
-        pooled_count(registered),
+        pooled.stats.deferred_units.pooled, registered,
         "{registered} registered"
     );
     // One isolate's memory: the workers have no engine.
@@ -411,16 +401,12 @@ fn declaration_bundles_are_pooled_and_macro_free_ones_need_no_engine() {
         // and `total`; not `kind`, `Measured`, `sq-area`, `nine` or
         // `Guarded`, whose field a macro's name spells, as a parameter's
         // would make a function ineligible.
-        assert_eq!(
-            pooled.stats.deferred_units.macro_free,
-            pooled_count(8),
-            "{slots} slots"
-        );
+        assert_eq!(pooled.stats.deferred_units.macro_free, 8, "{slots} slots");
         // A pool of one worker leaves the bundles to the coordinator
         // (`CompilationSession::pools_bundle`): it takes only `total`.
         assert_eq!(
             pooled.stats.deferred_units.pooled,
-            pooled_count(if slots == 2 { 1 } else { 8 }),
+            if slots == 2 { 1 } else { 8 },
             "{slots} slots"
         );
     }
@@ -466,10 +452,7 @@ fn several_slots_emit_the_one_slot_program_warnings_and_errors() {
         assert!(serial.output.is_ok(), "{:?}", serial.output.as_ref().err());
         assert_eq!(serial.warnings.is_empty(), !warning_mode);
         let pooled = build(&sources, "app.main", 8, warning_mode);
-        assert_eq!(
-            pooled.stats.deferred_units.macro_free,
-            pooled_count(1 + 6 * 13)
-        );
+        assert_eq!(pooled.stats.deferred_units.macro_free, 1 + 6 * 13);
     }
     write(false);
     let serial = build(&sources, "app.main", 1, false);
@@ -610,7 +593,7 @@ fn a_template_naming_a_var_by_placeholder_is_not_macro_free() {
     assert_eq!(execute(&serial.output.unwrap()), "42 2\n");
     // `plain`, `x`, and nothing else of the three namespaces.
     let pooled = build(&sources, "app.main", 8, false);
-    assert_eq!(pooled.stats.deferred_units.macro_free, pooled_count(2));
+    assert_eq!(pooled.stats.deferred_units.macro_free, 2);
 }
 
 /// A namespace's units merge after the next namespace's top-level pass, the

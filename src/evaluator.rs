@@ -67,6 +67,14 @@ pub(crate) static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 /// what a build's main isolate is allowed at least when several slots share
 /// a larger limit ([`MemoryPool`]).
 pub(crate) const DEFAULT_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
+/// What a build's macro memory limit must leave beyond the main engine's
+/// reservation for each worker engine, and the least base a worker engine
+/// is allowed ([`MemoryPool`]): 32 MiB for a V8 isolate (light-cljs-339),
+/// 64 MiB for a QuickJS runtime in a QuickJS-only build, whose workers hold
+/// 33 to 48 MiB once they have the build's macros on Penpot and the 200k
+/// generated project, so that at 32 MiB they took headroom at their first
+/// units and failed the build where no headroom was left (light-cljs-436).
+pub(crate) const WORKER_SHARE: usize = if cfg!(light_v8) { 32 << 20 } else { 64 << 20 };
 
 #[derive(Clone, Debug)]
 pub struct EvaluatorOptions {
@@ -316,17 +324,17 @@ impl ExecutionControl {
 /// together. An isolate that cannot take what it needs fails; none takes
 /// more silently.
 #[derive(Debug)]
-#[cfg_attr(not(light_v8), allow(dead_code))]
+#[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
 pub(crate) struct MemoryPool {
     base: usize,
     main: usize,
     headroom: std::sync::atomic::AtomicUsize,
 }
-#[cfg_attr(not(light_v8), allow(dead_code))]
+#[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
 impl MemoryPool {
     /// The pool of `limit` bytes for `isolates` isolates. Each worker's is
-    /// allowed a base of half the even share, at least 32 MiB and at most
-    /// 256 MiB, but never more than the even share; the main isolate the
+    /// allowed a base of half the even share, at least [`WORKER_SHARE`] and
+    /// at most 256 MiB, but never more than the even share; the main isolate the
     /// same, but never less than a serial build with the default limit
     /// has, or the whole limit when it is lower (light-cljs-437), as far
     /// as the workers' bases leave it. What is left of the limit is
@@ -334,7 +342,7 @@ impl MemoryPool {
     pub(crate) fn new(limit: usize, isolates: usize) -> Arc<Self> {
         let isolates = isolates.max(1);
         let base = (limit / (2 * isolates))
-            .clamp(32 << 20, 256 << 20)
+            .clamp(WORKER_SHARE, 256 << 20)
             .min(limit / isolates);
         let workers = base * (isolates - 1);
         let main = base
@@ -382,7 +390,7 @@ impl MemoryPool {
 /// isolate's own control follows; the workers' control, linked to it, which
 /// the coordinator cancels when the build fails; and the memory pool.
 #[derive(Clone)]
-#[cfg_attr(not(light_v8), allow(dead_code))]
+#[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
 pub(crate) struct BuildResources {
     pub(crate) control: ExecutionControl,
     pub(crate) workers: ExecutionControl,
@@ -498,27 +506,86 @@ pub struct Evaluator {
     /// Whether a promise was rejected with no handler since the last
     /// `unhandled_rejections`, which then has a record to take.
     rejected: Rc<Cell<bool>>,
+    /// In a build's [`MemoryPool`], the headroom its allocator took, which
+    /// it gives back when the runtime is freed.
+    headroom: Option<Arc<std::sync::atomic::AtomicUsize>>,
     /// Counts the runtime in `LiveCounts::engines` until it is dropped.
     _live: crate::compile_stats::Live,
 }
+// A QuickJS runtime stays on the thread that made it: a pool worker makes
+// its own and frees it there (light-cljs-436), as V8 isolates are.
+#[cfg(light_quickjs)]
+const _: fn() = || {
+    // Ambiguous, and so an error, if the evaluator were `Send`, or `Sync`.
+    trait AmbiguousIfSend<A> {
+        fn check() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+    struct IsSend;
+    impl<T: ?Sized + Send> AmbiguousIfSend<IsSend> for T {}
+    let _ = <Evaluator as AmbiguousIfSend<_>>::check;
+    trait AmbiguousIfSync<A> {
+        fn check() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+    struct IsSync;
+    impl<T: ?Sized + Sync> AmbiguousIfSync<IsSync> for T {}
+    let _ = <Evaluator as AmbiguousIfSync<_>>::check;
+};
 #[cfg(light_quickjs)]
 impl Evaluator {
     pub fn new(options: EvaluatorOptions) -> Result<Self, EvalError> {
-        Self::create(options, false, None)
+        Self::create(options, false, None, None)
+    }
+    /// A compile-time runtime of a build with several unit slots, the main
+    /// one or a pool worker's, as a V8 isolate of such a build is: its
+    /// control follows the build's deadline and cancellation, with a poll
+    /// budget of its own, and its memory is a base in the build's
+    /// [`MemoryPool`] and what it takes of the shared headroom, given back
+    /// when it is freed (docs/compiler-concurrency.md, "As built
+    /// (light-cljs-436)"). V8 builds make V8 isolates instead.
+    #[cfg_attr(light_v8, allow(dead_code))]
+    pub(crate) fn new_for_build(
+        options: EvaluatorOptions,
+        resources: &BuildResources,
+        main: bool,
+    ) -> Result<Self, EvalError> {
+        let control = match main {
+            true => ExecutionControl::linked(&options, &resources.control)?,
+            false => ExecutionControl::linked(&options, &resources.workers)?,
+        };
+        control.poll()?;
+        let share = PoolShare {
+            pool: resources.memory.clone(),
+            base: match main {
+                true => resources.memory.main_base(),
+                false => resources.memory.base(),
+            },
+            taken: Arc::default(),
+        };
+        Self::create(options, false, Some(control), Some(share))
     }
     pub(crate) fn interactive(options: EvaluatorOptions) -> Result<Self, EvalError> {
-        Self::create(options, true, None)
+        Self::create(options, true, None, None)
     }
     pub(crate) fn interactive_with_control(
         options: EvaluatorOptions,
         control: ExecutionControl,
     ) -> Result<Self, EvalError> {
-        Self::create(options, true, Some(control))
+        Self::create(options, true, Some(control), None)
+    }
+    /// Whether the runtime took headroom from its build's [`MemoryPool`]
+    /// beyond its base, which it gives back only when it is freed.
+    pub(crate) fn holds_headroom(&self) -> bool {
+        self.headroom
+            .as_ref()
+            .is_some_and(|taken| taken.load(Ordering::Relaxed) > 0)
     }
     fn create(
         options: EvaluatorOptions,
         preserve_language_errors: bool,
         shared: Option<ExecutionControl>,
+        share: Option<PoolShare>,
     ) -> Result<Self, EvalError> {
         if options.memory_limit < 1024 * 1024 {
             return Err(EvalError(
@@ -527,10 +594,14 @@ impl Evaluator {
         }
         crate::generated_names::forget_installed_scopes();
         let control = shared.unwrap_or(ExecutionControl::new(&options)?);
+        let headroom = share.as_ref().map(|share| share.taken.clone());
         let runtime = Runtime::new_with_alloc(LimitedAllocator {
             used: 0,
-            limit: options.memory_limit,
+            limit: share
+                .as_ref()
+                .map_or(options.memory_limit, |share| share.base),
             control: Arc::downgrade(&control.0),
+            share,
         })
         .map_err(|e| EvalError(e.to_string()))?;
         runtime.set_max_stack_size(options.stack_limit);
@@ -548,6 +619,7 @@ impl Evaluator {
             bridge: Rc::new(RefCell::new(BridgeState::default())),
             preserve_language_errors,
             rejected: Rc::new(Cell::new(false)),
+            headroom,
             _live: crate::compile_stats::Live::new(&crate::compile_stats::LIVE_ENGINES),
         };
         // QuickJS frees short-lived values by reference counting, so a WeakMap
@@ -1937,9 +2009,26 @@ impl Drop for Evaluator {
 #[cfg(light_quickjs)]
 struct LimitedAllocator {
     used: usize,
+    /// What the runtime may hold: the whole memory limit, or in a build's
+    /// pool its base and the headroom it took.
     limit: usize,
     control: Weak<ControlState>,
+    share: Option<PoolShare>,
 }
+/// A compile-time QuickJS runtime's place in its build's [`MemoryPool`].
+#[cfg(light_quickjs)]
+struct PoolShare {
+    pool: Arc<MemoryPool>,
+    /// What it may hold before it takes headroom.
+    base: usize,
+    /// The headroom it took ([`Evaluator::holds_headroom`]).
+    taken: Arc<std::sync::atomic::AtomicUsize>,
+}
+/// What a runtime past its base takes of the shared headroom at least, so
+/// that it does not take a few bytes per allocation; less when less is left
+/// and that is enough.
+#[cfg(light_quickjs)]
+const HEADROOM_STEP: usize = 1 << 20;
 #[cfg(light_quickjs)]
 impl LimitedAllocator {
     fn reject(&self) -> *mut u8 {
@@ -1950,11 +2039,28 @@ impl LimitedAllocator {
         }
         std::ptr::null_mut()
     }
-    fn fits(&self, old: usize, size: usize) -> bool {
-        size.checked_add(7)
+    /// Whether an allocation of `size` bytes in place of one of `old` fits,
+    /// past the base with what it takes of the build's headroom.
+    fn fits(&mut self, old: usize, size: usize) -> bool {
+        let Some(held) = size
+            .checked_add(7)
             .map(|n| n & !7)
             .and_then(|n| self.used.checked_sub(old)?.checked_add(n))
-            .is_some_and(|n| n <= self.limit && n < isize::MAX as usize - 16)
+            .filter(|n| *n < isize::MAX as usize - 16)
+        else {
+            return false;
+        };
+        if held <= self.limit {
+            return true;
+        }
+        let Some(share) = &self.share else {
+            return false;
+        };
+        let needed = held - self.limit;
+        let taken = share.pool.take(needed.max(HEADROOM_STEP), needed);
+        share.taken.fetch_add(taken, Ordering::Relaxed);
+        self.limit += taken;
+        held <= self.limit
     }
 }
 // SAFETY: every allocation and its usable size use the same upstream allocator;
@@ -2026,6 +2132,9 @@ impl Drop for LimitedAllocator {
             self.used, 0,
             "QuickJS runtime retained live allocations at teardown"
         );
+        if let Some(share) = &self.share {
+            share.pool.give(share.taken.swap(0, Ordering::Relaxed));
+        }
     }
 }
 
@@ -2063,6 +2172,89 @@ impl<'js> rquickjs::IntoJs<'js> for BridgeOutput {
 mod active_tests {
     use super::*;
     use crate::compiler_data::DatumKind;
+
+    /// A compile-time QuickJS runtime of a build with several slots is
+    /// allowed its base in the build's memory pool, grows into the headroom
+    /// the others leave, gives it back when it is freed, and follows the
+    /// build's cancellation (light-cljs-436).
+    #[test]
+    fn a_build_runtime_grows_into_the_shared_headroom_and_gives_it_back() {
+        // Four runtimes: 64 MiB for the main one, a worker's share for each
+        // worker's and 96 MiB of headroom.
+        let options = EvaluatorOptions {
+            memory_limit: (64 << 20) + 3 * WORKER_SHARE + (96 << 20),
+            ..Default::default()
+        };
+        let resources = BuildResources::new(&options, 4).unwrap();
+        let headroom = resources.memory.headroom();
+        assert_eq!(headroom, 96 << 20);
+        let base = resources.memory.base() >> 20;
+        assert_eq!(base << 20, WORKER_SHARE);
+        // A QuickJS array of 48,000 doubles, as `fill` grows it, about 1 MiB.
+        let keep = |mb: usize| {
+            format!(
+                "(() => {{ globalThis.kept = []; for (let i = 0; i < {mb}; i++) kept.push(new Array(48000).fill(1.5)); return kept.length; }})()"
+            )
+        };
+        let worker = Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
+        assert!(!worker.holds_headroom());
+        let kept = worker.evaluate_js(&keep(base + 32)).unwrap();
+        assert_eq!(worker.number(kept).unwrap(), (base + 32) as f64);
+        worker.release(kept).unwrap();
+        assert!(worker.holds_headroom());
+        let taken = headroom - resources.memory.headroom();
+        assert!((16 << 20..48 << 20).contains(&taken), "{taken}");
+        // Another worker cannot take more than what is left.
+        let other = Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
+        let error = other.evaluate_js(&keep(base + 100)).unwrap_err();
+        assert!(error.0.contains("memory limit"), "{error}");
+        drop(other);
+        assert_eq!(resources.memory.headroom(), headroom - taken);
+        drop(worker);
+        assert_eq!(resources.memory.headroom(), headroom);
+        // The workers' control is the build's: cancelling it stops them.
+        let worker = Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
+        let main = Evaluator::new_for_build(options, &resources, true).unwrap();
+        resources.workers.cancel();
+        let error = worker.evaluate_js("1").unwrap_err();
+        assert!(error.0.contains("cancelled"), "{error}");
+        let one = main.evaluate_js("1").unwrap();
+        assert_eq!(main.number(one).unwrap(), 1.0);
+    }
+
+    /// The runtimes of a build count their polls each on their own control:
+    /// a worker whose budget runs out in its interrupt handler fails, and
+    /// stays failed, while a sibling worker, the main runtime and the build's
+    /// control go on (light-cljs-436).
+    #[test]
+    fn build_runtimes_enforce_independent_poll_budgets() {
+        let options = EvaluatorOptions {
+            memory_limit: (64 << 20) + 2 * WORKER_SHARE,
+            ..Default::default()
+        };
+        let resources = BuildResources::new(&options, 3).unwrap();
+        let spinning = Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
+        let sibling = Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
+        let main = Evaluator::new_for_build(options.clone(), &resources, true).unwrap();
+        spinning
+            .begin_operation(&EvaluatorOptions {
+                poll_budget: 5,
+                ..options.clone()
+            })
+            .unwrap();
+        let error = spinning
+            .evaluate_js("(() => { for (;;) {} })()")
+            .unwrap_err();
+        assert!(error.0.contains("poll budget exhausted"), "{error}");
+        let error = spinning.evaluate_js("1").unwrap_err();
+        assert!(error.0.contains("poll budget exhausted"), "{error}");
+        for evaluator in [&sibling, &main] {
+            let one = evaluator.evaluate_js("1").unwrap();
+            assert_eq!(evaluator.number(one).unwrap(), 1.0);
+        }
+        resources.control.poll().unwrap();
+        resources.workers.poll().unwrap();
+    }
 
     #[test]
     fn protocol_arity_cache_does_not_inherit_array_properties() {

@@ -2894,12 +2894,13 @@ impl crate::scheduler::Job for UnitJob {
 pub(crate) enum PoolEngines {
     /// Workers have no compile-time engine and take only macro-free units
     /// (light-cljs-338): when the macro memory limit leaves room for no
-    /// worker isolate ([`isolate_count`]), an engine is not V8, or the
+    /// worker isolate ([`isolate_count`]), macros run in a script host, or the
     /// compilation is interactive.
     None,
-    /// Each worker with an engine owns one V8 isolate for the whole build;
-    /// the workers beyond the isolates the limit allows have none and take
-    /// only macro-free units (light-cljs-437).
+    /// Each worker with an engine owns one V8 isolate, or in a QuickJS-only
+    /// build one QuickJS runtime (light-cljs-436), for the whole build; the
+    /// workers beyond the isolates the limit allows have none and take only
+    /// macro-free units (light-cljs-437).
     Persistent,
     /// Each unit is analyzed in a fresh isolate, the correctness reference
     /// of persistent ones (`LIGHT_CLJS_FRESH_UNIT_ISOLATES=1`).
@@ -2907,7 +2908,7 @@ pub(crate) enum PoolEngines {
 }
 /// The pool that analyzes a build's deferred units with `--jobs N`, kept
 /// for the whole build: N-1 worker threads, the first ones each owning one
-/// compile-time engine made on it after the V8 platform, and destroyed on
+/// compile-time engine made on it (after the V8 platform), and destroyed on
 /// it when the pool finishes, the others none, which take only macro-free
 /// units: the scheduler gives the units that may enter an engine to the
 /// workers with one alone ([`ENGINE_PHASE`]). Nothing engine-related
@@ -3004,7 +3005,8 @@ pub(crate) fn release_definition_test(host: &MacroHost, unit: usize) {
 /// How many compile-time isolates, the main one included, `slots` work
 /// slots may run under the macro memory limit `limit`: the main one, and
 /// as many workers' as what the limit leaves beyond the main one's
-/// reservation gives at least 32 MiB each. The main isolate reserves what
+/// reservation gives [`crate::evaluator::WORKER_SHARE`] each (32 MiB for a
+/// V8 isolate, 64 MiB for a QuickJS runtime). The main isolate reserves what
 /// a serial build with the default limit has, or the whole limit when it
 /// is lower, so that a build the default limit fits at `--jobs 1` fits
 /// at every `--jobs` (light-cljs-437): the default 64 MiB leaves no room
@@ -3014,7 +3016,7 @@ pub(crate) fn release_definition_test(host: &MacroHost, unit: usize) {
 /// engine.
 pub(crate) fn isolate_count(limit: usize, slots: crate::scheduler::Slots) -> usize {
     let reserved = limit.min(crate::evaluator::DEFAULT_MEMORY_LIMIT);
-    1 + ((limit - reserved) / (32 << 20)).min(slots.workers())
+    1 + ((limit - reserved) / crate::evaluator::WORKER_SHARE).min(slots.workers())
 }
 
 #[cfg(test)]
@@ -3050,11 +3052,23 @@ mod share_tests {
         // (light-cljs-437): the other slots run workers without an engine.
         assert_eq!(super::isolate_count(64 << 20, slots(8)), 1);
         assert_eq!(super::isolate_count(64 << 20, slots(2)), 1);
-        // Beyond the main isolate's 64 MiB, a worker isolate per 32 MiB.
-        assert_eq!(super::isolate_count(96 << 20, slots(8)), 2);
-        assert_eq!(super::isolate_count(128 << 20, slots(8)), 3);
-        assert_eq!(super::isolate_count(256 << 20, slots(4)), 4);
-        assert_eq!(super::isolate_count(256 << 20, slots(8)), 7);
+        // Beyond the main isolate's 64 MiB, a worker isolate per 32 MiB, or
+        // a QuickJS runtime per 64 MiB in QuickJS-only builds
+        // (light-cljs-436).
+        let share = crate::evaluator::WORKER_SHARE;
+        if cfg!(light_v8) {
+            assert_eq!(share, 32 << 20);
+            assert_eq!(super::isolate_count(96 << 20, slots(8)), 2);
+            assert_eq!(super::isolate_count(128 << 20, slots(8)), 3);
+            assert_eq!(super::isolate_count(256 << 20, slots(4)), 4);
+            assert_eq!(super::isolate_count(256 << 20, slots(8)), 7);
+        } else {
+            assert_eq!(share, 64 << 20);
+            assert_eq!(super::isolate_count(96 << 20, slots(8)), 1);
+            assert_eq!(super::isolate_count(128 << 20, slots(8)), 2);
+            assert_eq!(super::isolate_count(256 << 20, slots(4)), 4);
+            assert_eq!(super::isolate_count(256 << 20, slots(8)), 4);
+        }
         assert_eq!(super::isolate_count(4_000_000_000, slots(8)), 8);
         // Less than the reservation: one isolate with the whole limit.
         assert_eq!(super::isolate_count(40 << 20, slots(4)), 1);
@@ -3075,7 +3089,7 @@ mod share_tests {
             for n in 2..=12 {
                 let isolates = super::isolate_count(limit, slots(n));
                 let pool = MemoryPool::new(limit, isolates);
-                assert!(pool.base() >= 32 << 20, "{limit} {n}");
+                assert!(pool.base() >= share.min(limit / isolates), "{limit} {n}");
                 assert!(pool.main_base() >= 64 << 20, "{limit} {n}");
                 assert_eq!(
                     pool.main_base() + (isolates - 1) * pool.base() + pool.headroom(),
@@ -3084,19 +3098,20 @@ mod share_tests {
                 );
             }
         }
-        // 96 MiB for two: the main isolate's 64 MiB and a worker's 32.
-        let pool = MemoryPool::new(96 << 20, 2);
+        // 64 MiB and a share for two: the main isolate's 64 MiB and a
+        // worker's share.
+        let pool = MemoryPool::new((64 << 20) + share, 2);
         assert_eq!(
             (pool.main_base(), pool.base(), pool.headroom()),
-            (64 << 20, 32 << 20, 0)
+            (64 << 20, share, 0)
         );
-        // 256 MiB for four: 64 MiB for the main isolate, 32 MiB for each
-        // worker's and 96 MiB to grow into, taken whole or in part and
-        // given back.
-        let pool = MemoryPool::new(256 << 20, 4);
+        // 64 MiB, three shares and 96 MiB for four: 64 MiB for the main
+        // isolate, a share for each worker's and 96 MiB to grow into, taken
+        // whole or in part and given back.
+        let pool = MemoryPool::new((64 << 20) + 3 * share + (96 << 20), 4);
         assert_eq!(
             (pool.main_base(), pool.base(), pool.headroom()),
-            (64 << 20, 32 << 20, 96 << 20)
+            (64 << 20, share, 96 << 20)
         );
         assert_eq!(pool.take(68 << 20, 1), 68 << 20);
         assert_eq!(pool.take(100 << 20, 1), 28 << 20);
@@ -3217,9 +3232,24 @@ fn worker_view(
             }
             .map_err(|e| e.to_string())?,
         )),
-        #[cfg(not(light_v8))]
+        // QuickJS-only builds: one QuickJS runtime per worker, made here on
+        // the worker's thread and freed on it, which no runtime leaves (the
+        // evaluator is neither `Send` nor `Sync`; light-cljs-436).
+        #[cfg(all(light_quickjs, not(light_v8)))]
+        PoolEngines::Persistent | PoolEngines::Fresh => Some(Rc::new(
+            match shared.resources() {
+                Some(resources) => crate::evaluator::Evaluator::new_for_build(
+                    environment.evaluator_options().clone(),
+                    resources,
+                    false,
+                ),
+                None => crate::evaluator::Evaluator::new(environment.evaluator_options().clone()),
+            }
+            .map_err(|e| e.to_string())?,
+        )),
+        #[cfg(not(any(light_v8, light_quickjs)))]
         PoolEngines::Persistent | PoolEngines::Fresh => {
-            return Err("compiler workers need V8".into());
+            return Err("compiler workers need an embedded engine".into());
         }
     };
     let counted = engine.is_some();

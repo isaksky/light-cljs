@@ -528,8 +528,7 @@ fn a_concurrent_provider_is_asked_once_per_namespace_on_the_workers() {
         assert_eq!(names.len(), threads.len(), "each asked once: {threads:?}");
         let caller = std::thread::current().name().map(str::to_owned);
         for (name, thread) in &threads {
-            // QuickJS-only builds keep every parse on the calling thread.
-            if slots == 1 || !cfg!(feature = "v8-macros") {
+            if slots == 1 {
                 assert_eq!(thread, &caller, "{name}");
             } else {
                 let thread = thread.as_deref().unwrap_or_default();

@@ -64,13 +64,9 @@ fn units_expanding_source_and_core_macros_emit_the_one_slot_program() {
         crate::macro_free_units::isolate_per_slot(),
     );
     let units = built.stats.deferred_units;
-    if cfg!(feature = "v8-macros") {
-        assert!(units.pooled > 10, "{units:?}");
-        assert!((1..=3).contains(&units.worker_isolates), "{units:?}");
-        assert!(units.worker_initializations > 0, "{units:?}");
-    } else {
-        assert_eq!(units.pooled, 0, "{units:?}");
-    }
+    assert!(units.pooled > 10, "{units:?}");
+    assert!((1..=3).contains(&units.worker_isolates), "{units:?}");
+    assert!(units.worker_initializations > 0, "{units:?}");
 }
 
 #[test]
@@ -176,10 +172,8 @@ fn a_first_pooled_build_compiles_the_bootstrap_before_its_deadline_starts() {
     // With a worker isolate, which the default memory limit does not give
     // (light-cljs-437).
     let built = build_with(&sources, "app.s", 4, false, one_worker_isolate());
-    if cfg!(feature = "v8-macros") {
-        let units = &built.stats.deferred_units;
-        assert!(units.worker_isolates > 0, "{units:?}");
-    }
+    let units = &built.stats.deferred_units;
+    assert!(units.worker_isolates > 0, "{units:?}");
     assert_eq!(execute(&built.output.unwrap()), "[3 [3 4]]\n");
 }
 
@@ -261,12 +255,6 @@ fn pooled_macro_charging_propagates_main_engine_startup_failure() {
     });
     for attach in [false, true] {
         let built = perturbed(deadline, attach);
-        if !cfg!(feature = "v8-macros") {
-            // No worker expands a JavaScript macro: the coordinator does,
-            // and nothing is held.
-            assert_eq!(execute(&built.output.unwrap()), "[2 3]\n");
-            continue;
-        }
         let Err(error) = built.output else {
             panic!("attach {attach}: the unit was charged with its engine's start failed");
         };
@@ -429,15 +417,11 @@ fn units_on_workers_keep_the_one_slot_manifest_and_artifacts() {
             );
             // The units that expand macros were the pool's too.
             let units = &pooled.stats.deferred_units;
-            if cfg!(feature = "v8-macros") {
-                assert!(units.pooled > units.macro_free, "{units:?}");
-                assert!(units.worker_isolates > 0, "{units:?}");
-            } else {
-                assert_eq!(units.pooled, 0, "{units:?}");
-            }
+            assert!(units.pooled > units.macro_free, "{units:?}");
+            assert!(units.worker_isolates > 0, "{units:?}");
         }
         // Several workers recorded at once.
-        if cfg!(feature = "v8-macros") && slots > 2 {
+        if slots > 2 {
             assert!(isolates > 1, "{slots} slots: {isolates} worker isolates");
         }
     }
@@ -476,11 +460,9 @@ fn a_persistent_worker_never_takes_a_released_macro_generation_for_a_later_one()
     for _ in 0..3 {
         let persistent = build_with(&sources, "app.main", 2, false, one_worker_isolate());
         assert_eq!(persistent.output, serial.output);
-        if cfg!(feature = "v8-macros") {
-            let units = &persistent.stats.deferred_units;
-            assert_eq!(units.worker_isolates, 1, "{units:?}");
-            assert!(units.pooled >= 2 * GENERATIONS, "{units:?}");
-        }
+        let units = &persistent.stats.deferred_units;
+        assert_eq!(units.worker_isolates, 1, "{units:?}");
+        assert!(units.pooled >= 2 * GENERATIONS, "{units:?}");
     }
     #[cfg(debug_assertions)]
     {
@@ -517,8 +499,8 @@ fn mixed_units(sources: &Sources) {
 
 #[test]
 fn workers_beyond_the_isolates_take_only_macro_free_units() {
-    // 128 MiB at eight slots: the main isolate's 64 MiB and two worker
-    // isolates of 32 MiB; the other five workers have no engine and take
+    // 64 MiB and two shares at eight slots: the main isolate's 64 MiB and
+    // two worker isolates; the other five workers have no engine and take
     // only macro-free units, the units that expand `twice` only the two
     // with isolates (light-cljs-437). The default 64 MiB gives no worker an
     // isolate: the seven take the macro-free units, the coordinator the
@@ -530,18 +512,15 @@ fn workers_beyond_the_isolates_take_only_macro_free_units() {
         host.evaluator_options.memory_limit = limit;
         host
     };
-    let serial = build_with(&sources, "app.u", 1, false, host(128 << 20));
+    let two = (64 << 20) + 2 * crate::macro_free_units::WORKER_SHARE;
+    let serial = build_with(&sources, "app.u", 1, false, host(two));
     assert_eq!(execute(serial.output.as_ref().unwrap()), "13 22\n");
-    for (limit, engine_workers) in [(128 << 20, 2), (64 << 20, 0)] {
+    for (limit, engine_workers) in [(two, 2), (64 << 20, 0)] {
         for _ in 0..3 {
             let built = build_with(&sources, "app.u", 8, false, host(limit));
             assert_eq!(built.output, serial.output, "{limit}");
             assert_eq!(built.warnings, serial.warnings, "{limit}");
             let units = &built.stats.deferred_units;
-            if !cfg!(feature = "v8-macros") {
-                assert_eq!(units.pooled, 0, "{units:?}");
-                continue;
-            }
             assert_eq!(units.pool_workers, 7, "{units:?}");
             assert_eq!(units.pool_engine_workers, engine_workers, "{units:?}");
             assert!(units.worker_isolates <= engine_workers, "{units:?}");
@@ -561,7 +540,7 @@ fn workers_beyond_the_isolates_take_only_macro_free_units() {
     // with an isolate: the five without an engine take some, and only
     // macro-free ones.
     #[cfg(debug_assertions)]
-    if cfg!(feature = "v8-macros") {
+    {
         for seed in 1..=4 {
             for fixed in [true, false] {
                 let built = crate::macro_free_units::build_configured(
@@ -569,7 +548,7 @@ fn workers_beyond_the_isolates_take_only_macro_free_units() {
                     "app.u",
                     8,
                     false,
-                    host(128 << 20),
+                    host(two),
                     &[],
                     |recorders| {
                         recorders.perturbation = Some(light_cljs::scheduler::Perturbation {

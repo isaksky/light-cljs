@@ -914,6 +914,23 @@ impl MacroHost {
             self.prepare_compiler_evaluator(&evaluator)?;
             return Ok(std::rc::Rc::new(evaluator));
         }
+        // QuickJS-only builds: the main runtime of a build with worker
+        // runtimes shares the build's deadline and memory with them, as a
+        // main V8 isolate does (light-cljs-436).
+        #[cfg(all(light_quickjs, not(light_v8)))]
+        if !self.tables.interactive
+            && self.engine.interactive_control.is_none()
+            && let Some(session) = self.session_handle()
+            && let Some(resources) = session.shared().resources()
+        {
+            let evaluator = crate::evaluator::Evaluator::new_for_build(
+                self.evaluator_options.clone(),
+                resources,
+                true,
+            )?;
+            self.prepare_compiler_evaluator(&evaluator)?;
+            return Ok(std::rc::Rc::new(evaluator));
+        }
         Ok(std::rc::Rc::new(self.new_evaluator()?))
     }
     /// Give a fresh compile-time engine this host's settings: its

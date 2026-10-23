@@ -381,7 +381,8 @@ while programs whose namespaces have hundreds of definitions reach about
 0.45x. Sources are read and parsed on that pool, the source
 order coming from the require edges and not from which file finished first;
 and each namespace's deferred units (its definitions' bodies) are analyzed on
-it, by workers in V8 isolates of their own as far as the macro memory limit
+it, by workers in V8 isolates of their own (in a QuickJS-only build, QuickJS
+runtimes of their own) as far as the macro memory limit
 allows and by workers without an engine, which take only the units that
 expand no JavaScript macro, while the calling thread drains them in order. Every other phase still runs on the calling thread. Output
 does not depend on N, except where a macro's compile-time effect in one
@@ -407,7 +408,9 @@ gives. `--macro-memory-limit` is one budget for the calling thread's isolate
 and every worker's together: the calling thread's isolate keeps what one job
 has at the default limit (64 MiB, or the whole limit when it is lower), so a
 build that fits the default at one job fits it at every N, and a worker gets
-an isolate for each 32 MiB beyond that; the default gives none, so its
+an isolate for each 32 MiB beyond that (in a QuickJS-only build a QuickJS
+runtime for each 64 MiB, since a worker's runtime holds 33 to 48 MiB on
+large programs); the default gives none, so its
 workers have no engine. Each isolate is allowed a base share and takes more
 from what the others have not taken, and one that cannot get what it needs
 fails the build.

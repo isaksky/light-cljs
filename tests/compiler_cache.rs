@@ -256,13 +256,8 @@ fn a_warm_hit_and_a_parallel_miss_match_one_job() {
     assert_eq!(parallel.js, serial.js);
     assert_eq!(serial.js, oracle.js);
     assert_eq!(parallel.run(), "h1 9 84 h2\n");
-    // QuickJS-only builds have one slot, so no pool.
     let pooled = parallel.stat("deferred-units.pooled");
-    if cfg!(feature = "v8-macros") {
-        assert!(pooled > 0, "{}", parallel.stats);
-    } else {
-        assert_eq!(pooled, 0);
-    }
+    assert!(pooled > 0, "{}", parallel.stats);
 }
 
 /// Definitions whose units expand source macros, one of which runs a helper
@@ -324,25 +319,19 @@ fn a_cold_parallel_build_expands_units_on_workers_and_publishes_the_one_job_arti
         assert_eq!(parallel.stat("cache.published"), 4, "round {round}");
         assert_eq!(objects(&cache), objects(&serial_cache), "round {round}");
         // Units that expand macros went to the pool too, analyzed in the
-        // workers' isolates; QuickJS-only builds have one slot, so no pool.
+        // workers' isolates (QuickJS runtimes in QuickJS-only builds).
         let (pooled, macro_free) = (
             parallel.stat("deferred-units.pooled"),
             parallel.stat("deferred-units.macro-free"),
         );
-        if cfg!(feature = "v8-macros") {
-            assert!(pooled > macro_free, "{}", parallel.stats);
-            isolates = isolates.max(parallel.stat("pool.worker-isolates"));
-        } else {
-            assert_eq!(pooled, 0);
-        }
+        assert!(pooled > macro_free, "{}", parallel.stats);
+        isolates = isolates.max(parallel.stat("pool.worker-isolates"));
         let warm = build(&cache, "4");
         assert_eq!(warm.stat("cache.hits"), 4, "{}", warm.stats);
         assert_eq!(warm.js, oracle.js);
     }
     // Several workers recorded at once.
-    if cfg!(feature = "v8-macros") {
-        assert!(isolates > 1, "{isolates} worker isolates");
-    }
+    assert!(isolates > 1, "{isolates} worker isolates");
 }
 
 #[test]

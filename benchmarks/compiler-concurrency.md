@@ -11,6 +11,89 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## QuickJS runtimes on the pool (light-cljs-436, October 23, 2026)
+
+QuickJS-only builds (`--no-default-features`, `target/quickjs`) now run the
+parse queue and the unit pool, one QuickJS runtime per worker with an
+engine. Both binaries are this change on master `63bd0b0` (the V8 build's
+code paths are unchanged), cold builds with `--no-cache --stats`, Penpot
+`app.main --optimize none` with `benchmarks/penpot.bb`'s flags (4 GB macro
+memory) and a source map, and the seed-42 200k generated project at
+`release bench` (its 2 GiB), so the memory budget gives every worker a
+runtime at every N. Three alternating rounds (QuickJS then V8 at each N,
+then the other order), medians; at 12, 16 and 24 jobs four runs, since the
+third round's ran at a 1-minute load of 32 to 55 while another process
+ran (every other run at 2.5 to 15). Peak RSS in MiB. `engine` is the
+coordinator's `trace.engine-ms`.
+
+| Build | QuickJS | V8 | QuickJS / V8 | QuickJS vs its `--jobs 1` | QuickJS vs V8 `--jobs 1` |
+| --- | --- | --- | ---: | ---: | ---: |
+| 200k `--jobs 1` | 10.73 s, 953, engine 4,295 ms | 7.31 s, 1,040, 968 ms | 1.47x | 1 | 1.47x |
+| 200k `--jobs 2` | 8.42 s, 1,004 | 6.39 s, 1,148 | 1.32x | 0.78x | 1.15x |
+| 200k `--jobs 4` | 6.80 s, 1,105 | 5.24 s, 1,343 | 1.30x | 0.63x | 0.93x |
+| 200k `--jobs 8` | 6.64 s, 1,267, engine 1,844 ms | 5.24 s, 1,536, 535 ms | 1.27x | 0.62x | 0.91x |
+| 200k `--jobs 12` | 6.70 s, 1,433 | 5.31 s, 1,718 | 1.26x | 0.62x | 0.92x |
+| 200k `--jobs 16` | 7.46 s, 1,582 | 6.66 s, 1,799 | 1.12x | 0.70x | 1.02x |
+| 200k `--jobs 24` | 7.47 s, 1,939 | 5.89 s, 1,977 | 1.27x | 0.70x | 1.02x |
+| Penpot `--jobs 1` | 58.38 s, 984, engine 51,363 ms | 13.76 s, 1,021, 7,251 ms | 4.24x | 1 | 4.24x |
+| Penpot `--jobs 2` | 49.12 s, 985 | 11.27 s, 1,172 | 4.36x | 0.84x | 3.57x |
+| Penpot `--jobs 4` | 39.16 s, 1,164 | 8.70 s, 1,350 | 4.50x | 0.67x | 2.85x |
+| Penpot `--jobs 8` | 38.38 s, 1,380, engine 21,259 ms | 8.45 s, 1,720, 3,103 ms | 4.54x | 0.66x | 2.79x |
+| Penpot `--jobs 12` | 38.53 s, 1,533 | 8.65 s, 2,042 | 4.46x | 0.66x | 2.80x |
+| Penpot `--jobs 16` | 39.26 s, 1,699 | 9.08 s, 2,156 | 4.33x | 0.67x | 2.85x |
+| Penpot `--jobs 24` | 43.51 s, 2,001 | 9.77 s, 2,639 | 4.45x | 0.75x | 3.16x |
+
+How close QuickJS gets, plainly: on the 200k project parallel QuickJS is
+0.62x of its own `--jobs 1` from four jobs on, 1.27x parallel V8 at the
+same N, and 0.91x of serial V8, so a QuickJS-only build with four or more
+jobs beats a serial V8 build there. On Penpot it stops at 0.66x of its own
+`--jobs 1` from four jobs on, 4.5x parallel V8 and 2.8x serial V8. The
+floor is the coordinator: its engine time at four jobs and more, 21.3 s,
+is the top-level passes' QuickJS time light-cljs-435 measured (21.1 s),
+which stays serial; the units' 30 s of engine time is what the pool
+spreads. Faster macro bodies (light-cljs-439) and form bridge
+(light-cljs-440) lower that floor; more jobs do not. QuickJS's peak RSS is
+below V8's at every N (0.80x at eight jobs on Penpot), and each worker's
+runtime starts in about 37 ms (`time.worker-isolate-startup-ms` 254 for
+seven).
+
+Output is byte-identical at every N and across engines: Penpot `none`
+JavaScript and source map (`47b9a5fa06fa3fc8`, all 48 builds), Penpot
+`--optimize advanced --pseudo-names --elide-asserts` with its source map
+(`bf504c60b16982a4`, QuickJS and V8 at 1, 2, 4, 8, 12, 16 and 24 jobs),
+the 200k project (`4bd33b1357787fdc`, all 48), and the seed-42 100k
+generated project, both `release bench` (`a8e3cdd29b9915e3`) and
+`compile bench`, its dev build with 290 source maps (`28e1e3667a353a0e`),
+at every N in both engines (the first 16 hex digits of a SHA-256 over
+every output file's).
+
+*How many runtimes the budget allows.* A worker's QuickJS runtime, measured
+with a temporary probe of its allocator's peak (not committed), holds 33 to
+48 MiB once it has the build's macros (200k at eight jobs: 36 MiB each;
+Penpot at 24 jobs: 26 to 46 MiB, and one 135 to 155 MiB runtime for its
+largest unit); the main runtime 42 MiB (200k) and 46 MiB (Penpot). With
+V8's 32 MiB per worker every runtime took headroom at its first units, and
+a budget with none left failed: the 200k project at `--jobs 8
+--macro-memory-limit 192 MiB` and at `--jobs 16` with 512 MiB failed with
+the memory limit in QuickJS, where V8 at 192 MiB built in 5.77 s. So a
+worker's QuickJS runtime needs 64 MiB of the budget beyond the main
+runtime's 64 MiB (`evaluator::WORKER_SHARE`), and its base is at least
+that. Then both builds succeed, with the same output: 6.55 s at 192 MiB
+(two worker runtimes and five workers without an engine) and 6.74 s at
+512 MiB and 16 jobs (seven runtimes). The cost is half as many worker
+runtimes as V8 isolates for a given limit above 64 MiB (192 MiB: two
+against four; 512 MiB: seven against fourteen); the two projects' own
+limits still give a runtime per worker up to 24 jobs. The default 64 MiB
+allows the main runtime only, as for V8: the 200k project at `--jobs 8
+--macro-memory-limit 67108864` takes 10.13 s in QuickJS, its seven workers
+without an engine analyzing the 9,938 macro-free units, against 11.37 s at
+one job.
+
+The V8 build at `--jobs 16 --macro-memory-limit 536870912` on the 200k
+project once aborted the process with V8's "Fatal JavaScript out of memory:
+Reached heap limit" in a worker isolate (exit 133) instead of failing the
+build with the memory limit (once in two runs); light-cljs-441.
+
 ## The default macro memory at every `--jobs` (light-cljs-437, October 23, 2026)
 
 Parent `3ab55c7` against the change, every build at the default macro

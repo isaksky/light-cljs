@@ -525,7 +525,9 @@ The engines are ready for concurrent use.
 
 QuickJS remains for interactive sessions, and WebAssembly (whose embedder runs
 the macros since light-cljs-357) has no engine of its own; both stay serial.
-Parsing and IR work must not come to require V8.
+Parsing and IR work must not come to require V8. (Since light-cljs-436 a
+QuickJS-only build has the pool too, with one QuickJS runtime per worker;
+see "As built (light-cljs-436)" under "Stage A".)
 
 The built-in file provider can be parallelized directly. A caller-supplied
 provider keeps today's invocation context and order unless the embedding
@@ -944,9 +946,10 @@ pool, in `src/compiler.rs` (`Loader::load`, `discover`, `parse_source`):
 - *Slots.* At `--jobs 1` (the default) the pool runs every parse job inline
   on the calling thread, so every build with source roots goes through the
   same discovery and replay. With N slots, N-1 workers parse and the
-  coordinator only consumes outcomes. QuickJS-only and WebAssembly builds keep one slot
-  whatever `--jobs` says (`parse_slots`), as the first delivery's scope
-  requires: their parse jobs all run inline. Each lazy target's phase is its own
+  coordinator only consumes outcomes. QuickJS-only and WebAssembly builds kept one slot
+  whatever `--jobs` said (`parse_slots`), as the first delivery's scope
+  required: their parse jobs all ran inline. Since light-cljs-436 only
+  WebAssembly does. Each lazy target's phase is its own
   `scheduler::run`.
 - *Generation.* Each phase takes a fresh generation from a process-wide
   counter, its jobs and outcomes carry it, and an outcome of another
@@ -1188,7 +1191,8 @@ The one deterministic ID-order change of this stage is made, at every
   artifacts are captured or a dependency manifest is recorded
   (`--cache-dir`), the workers had no engine and took only macro-free
   units, as light-cljs-338's did; light-cljs-374 lifted that (below).
-  QuickJS-only builds and WebAssembly have one slot, so no pool.
+  QuickJS-only builds and WebAssembly had one slot, so no pool (until
+  light-cljs-436 for QuickJS-only builds; WebAssembly still has one).
 - *The drain.* A namespace's drain gives the pool its units still
   unstarted, as one batch in unit order, and then takes every unit in
   order as before; for a pooled one it waits in the catalog even while it
@@ -1405,7 +1409,8 @@ top-level pass:
   drain point; the JavaScript is the parent's but for numbered local
   names. With `--warnings` the parent and the candidate at one job report
   the same 18 warnings, byte for byte, so the lag adds none.
-- *`--jobs 1`, QuickJS-only and affinity.* With one slot, and for a cache
+- *`--jobs 1`, QuickJS-only and affinity.* With one slot (as QuickJS-only
+  builds had until light-cljs-436), and for a cache
   blocker's consumers, every unit is kept: analyzed on the main isolate at
   the dispatch, today's point, so compile-time effects keep their serial
   order (the counter fixture still prints `1 2` with a blocker), but
@@ -1754,6 +1759,87 @@ one worker however many slots it was given.
   not promised byte-identical across job counts ("Semantics and determinism", Limits),
   and the test now runs with a worker isolate, which it is about.
 
+*As built (light-cljs-436), a pool of QuickJS runtimes in QuickJS-only
+builds.* A build without V8 (`--no-default-features`) used to keep one
+slot whatever `--jobs` said. It now has the parse queue and the unit pool
+of a V8 build, with a QuickJS runtime where a V8 build has an isolate:
+
+- *Slots.* `parse_slots` gives the parse queue and the unit pool the
+  build's slots in every native build; WebAssembly, which has no threads,
+  keeps one. A QuickJS-only build at `--jobs 1` does what it did.
+- *Worker runtimes.* `PoolEngines::Persistent` (and `Fresh`, with
+  `LIGHT_CLJS_FRESH_UNIT_ISOLATES=1`) is chosen in QuickJS-only builds as
+  in V8 builds, and a worker with an engine makes its own QuickJS
+  `Evaluator` on its thread at its first job (`worker_view`), binds it with
+  `MacroHost::bind` and joins the catalog with a `WorkerView`, exactly as a
+  V8 worker does with its isolate; everything after that (the drain lag,
+  the charge order, recording on workers, cache capture, `--cache-blocker`
+  affinity, retiring an engine that failed for good, the panic path, the
+  engine-less workers beyond the runtimes and the scheduler's engine phase)
+  is the engine-independent code V8 builds run. The runtime is freed on its
+  thread when the pool finishes. `Evaluator` is neither `Send` nor `Sync`
+  (an assertion in `evaluator.rs`, as for `EngineBinding`), so no runtime
+  can cross threads; quickjs-ng keeps its state (class IDs, atoms) per
+  runtime, and rquickjs refreshes the stack top at each entry, on the
+  8 MiB pool threads.
+- *Limits per runtime.* `Evaluator::new_for_build` is the QuickJS
+  counterpart of `V8Evaluator::new_for_build`: the main runtime's control
+  is linked to the build's control and a worker's to the workers' control
+  (`BuildResources`), so each runtime counts its own polls in its
+  interrupt handler and all follow one deadline and the coordinator's
+  cancellation. Its allocator (`LimitedAllocator`) holds the runtime to its
+  base in the build's `MemoryPool` (`main_base` or `base`) and, past it,
+  takes what it needs from the shared headroom, at least 1 MiB at a time
+  (`HEADROOM_STEP`), which it gives back when the runtime is freed; a
+  worker whose runtime took headroom is retired after its unit
+  (`holds_headroom`), as an isolate is. A build with no worker runtime
+  (fewer than two isolates by `isolate_count`) gives the main runtime the
+  whole limit, as before.
+- *The budget.* QuickJS runtimes share V8's budget: one aggregate
+  `--macro-memory-limit`, the main runtime's reservation of 64 MiB (or the
+  whole limit when lower), the rest as worker bases and shared headroom,
+  so the default 64 MiB starts no worker runtime (its workers have no
+  engine, as in a V8 build) and a build that fits the default at one job
+  fits it at every `--jobs`. One thing differs: a worker's share
+  (`evaluator::WORKER_SHARE`), what the limit must leave beyond the
+  reservation per worker engine and the least base one is allowed, is
+  64 MiB for a QuickJS runtime against 32 MiB for a V8 isolate. A worker's
+  runtime holds 33 to 48 MiB once it has the build's macros (a probe of the
+  allocator's peak on Penpot and the 200k project; the main runtime 42 to
+  46 MiB, and Penpot's largest unit 135 to 155 MiB), so at 32 MiB every
+  runtime would take headroom at its first units, and a budget with no
+  headroom left failed the 200k project with the memory limit at `--jobs 8` and 192 MiB and at `--jobs 16` and 512 MiB,
+  which both build at 64 MiB per runtime. The cost is half as many worker
+  runtimes as V8 isolates for a limit above the default; the projects'
+  own limits (2 GiB, 4 GB) give one per worker up to 24 jobs either way.
+  Making the limit per runtime instead would let the default start
+  runtimes, but would break "a build the default fits at one job fits at
+  every N" and multiply the bound by N; that policy, with the `--jobs`
+  default, is the user's (light-cljs-434).
+- *Tests.* `schedule_stress`, `macro_free_units`, `worker_isolates`,
+  `blocker_affinity`, `parallel_diagnostics`, `cache_contract` and the
+  pool tests of `tests/cli.rs`, `tests/compiler_cache.rs` and
+  `tests/config_file` run in QuickJS-only builds with the V8 builds'
+  expectations (the counter fixture prints `1 1` with several slots there
+  too); the memory tests' hog keeps about 1 MiB per step in either engine,
+  and tests that ask for worker engines size the limit by the share
+  (`macro_free_units::WORKER_SHARE`).
+  `evaluator::active_tests::a_build_runtime_grows_into_the_shared_headroom_and_gives_it_back`
+  checks the base, the headroom and the shared cancellation of a
+  runtime of a build, and
+  `build_runtimes_enforce_independent_poll_budgets` that each runtime
+  counts its own polls.
+- *Measured* (benchmarks/compiler-concurrency.md, "QuickJS runtimes on the
+  pool"): output is byte-identical to QuickJS `--jobs 1` and to V8 at
+  1, 2, 4, 8, 12, 16 and 24 jobs on Penpot `none` and `advanced` (with
+  source maps), the 200k project and the 100k project's release and dev
+  builds. The 200k project takes 6.64 s at eight jobs against 10.73 s at
+  one, 0.62x, which is 1.27x V8 at eight jobs and 0.91x V8 at one; Penpot
+  38.4 s against 58.4 s, 0.66x, 4.5x V8 at eight and 2.8x V8 at one, and
+  no faster beyond four jobs: the top-level passes' 21 s of QuickJS time
+  on the coordinator is the floor, which light-cljs-439 and -440 address.
+  Peak RSS stays below V8's at every N.
+
 ### Stage C: parallel namespaces
 
 This stage removes the serial top-level chain.
@@ -1998,7 +2084,8 @@ output changes once, when stage A lands.
     to 20 s each, 20 s of wall time together under nextest at load 4 to
     9; twelve seeds took 76 s for the longest
     ([benchmarks](../benchmarks/compiler-concurrency.md)). QuickJS-only
-    builds skip each test with a note. Synthetic tests next to the
+    builds skipped each test with a note until light-cljs-436, and run
+    them on their QuickJS runtimes since. Synthetic tests next to the
     scheduler check that a perturbed pool runs every job once in each
     mode, that a fixed assignment holds, and that one-job batches with as
     many admitted jobs as workers finish while every worker waits on a
@@ -2291,8 +2378,8 @@ output changes once, when stage A lands.
 | Driver | `std::thread::scope` pool, one mutex, two condvars, phase and per-worker deques, batch claims and stealing, critical-path priority, in-order merge, completion accounting, panic and shutdown handling; `--jobs N`, default 1 until the gates below pass |
 | Stage C | Program view over prefix and overlays, fragment relocation and interned-table canonicalization at commit, closure-based visibility (shared with cache Phase 2) |
 
-QuickJS, interactive sessions, `--eval`/`--repl` and the WebAssembly
-playground stay single-threaded. `DevSession` reloads are a later consumer.
+Interactive sessions, `--eval`/`--repl` and the WebAssembly playground stay
+single-threaded; QuickJS-only builds have the pool since light-cljs-436. `DevSession` reloads are a later consumer.
 
 ## Risks and unknowns
 
