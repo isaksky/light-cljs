@@ -209,6 +209,22 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   `__lightBuildService`, which then keeps giving source
 ///   macros their whole environment (light-cljs-433,
 ///   `crate::evaluator::EnvironmentExtensions`).
+/// - `interpreterDispatch` makes the protocol lookups that every generic
+///   operation makes on every call cheaper for an interpreter, which pays
+///   for each call and lookup that V8 inlines (light-cljs-439). Each answers
+///   as before and reads the value, runs a demand and tests a store in the
+///   same order. `setDeclarationDemand` takes the registry's `extensions`
+///   and demands only a protocol some bundle extends, since no other can
+///   force one (compiler_roots.js); a resolved key (`methodKey`) keeps the
+///   protocol its method demands; and `keyMethod`, `builtin`,
+///   `externalMethod` and `publicMethod` run with the calls between them
+///   (`demandMethod`, `keySlot`, `nativeType`, `publicDeclared` and
+///   `externalMethod` where it is still the hook) inlined. Where the stores
+///   are WeakMaps (`weakMapStores`), a `storesPredicate` answers false for
+///   a primitive, which no store holds, tests the stores whose test is a
+///   WeakMap's first, and `maps` and `mapKinds`, whose record test walks
+///   the prototype chain and can reach a proxy's trap, last and in order,
+///   with the first eight tests unrolled.
 fn compiler_runtime(runtime: &str) -> String {
     const ENCODE_END: &str = "      return visit(value, \"$\", 0);\n    }\n    return Object.freeze({version: 5, decode, encode,";
     // Every line holds `readerViews`, which tells the hook's lines from the
@@ -230,7 +246,75 @@ fn compiler_runtime(runtime: &str) -> String {
         "    globalThis.__lightEnvironmentExtended = true; globalThis.__lightBuildService?.(\"environment-extension\"); } // environmentExtensions\n",
     );
     const EXTEND_TYPE: &str = "  function extendType(target, methods) {\n    let result = null;\n";
-    const HOOKS: [(&str, &str, &str); 10] = [
+    // Every line holds `interpreterDispatch`, as above.
+    const DISPATCH_KEYS: &str = "  methodKey = (resolve => key => { const resolved = resolve(key); resolved.demand = key.slice(0, key.lastIndexOf(\"/\")); return resolved; })(methodKey); // interpreterDispatch\n";
+    const DISPATCH_DEMAND: &str = concat!(
+        "    const extended = arguments[1]; demandGate = demand && extended ? extended : null; demandHost = demand; // interpreterDispatch\n",
+        "    if (demandGate !== null) demandProtocol = (key, value) => { if (extended.has(key)) demand(key, value, typeNames.get(value?.constructor)); }; // interpreterDispatch\n",
+    );
+    // `externalMethod`, inlined where the hook is still this runtime's: it
+    // sets `method`.
+    macro_rules! external_inline {
+        ($indent:literal) => {
+            concat!(
+                $indent,
+                "const hook = protocolHooks.externalMethod; if (hook !== externalMethod) method = hook?.(value, key, arity); else { // interpreterDispatch\n",
+                $indent,
+                "  const cell = key.cell ?? (key.cell = dispatchCell(key.key)), external = cell.dispatcher, type = value == null ? \"null\" : Array.isArray(value) ? \"array\" : typeof value; // interpreterDispatch\n",
+                $indent,
+                "  const dispatch = external?.[type] ?? external?._; // interpreterDispatch\n",
+                $indent,
+                "  if (!nativeMethods.size && !dispatch) method = undefined; else { const protocol = cell.protocol ?? (cell.protocol = coreProtocolsByName.get(key.name) ?? null); // interpreterDispatch\n",
+                $indent,
+                "    method = protocol && nativeImplementations.get(protocol)?.(value) ? undefined : dispatch ?? cell.natives?.get(type)?.get(arity) ?? cell.natives?.get(\"_\")?.get(arity); } } // interpreterDispatch\n",
+            )
+        };
+    }
+    const DISPATCH: &str = concat!(
+        "  keyMethod = function (value, key, arity) { const protocol = arity === 0 ? key.key : key.demand; // interpreterDispatch\n",
+        "    if (demandGate === null) demandProtocol(protocol, value); else if (demandGate.has(protocol)) demandHost(protocol, value, typeNames.get(value?.constructor)); // interpreterDispatch\n",
+        "    return value == null ? undefined : value[key.slots[arity] ?? (key.slots[arity] = protocolSlot(key.key, arity))]; }; // interpreterDispatch\n",
+        "  builtin = function (value, key, arity) { const protocol = arity === 0 ? key.key : key.demand; // interpreterDispatch\n",
+        "    if (demandGate === null) demandProtocol(protocol, value); else if (demandGate.has(protocol)) demandHost(protocol, value, typeNames.get(value?.constructor)); // interpreterDispatch\n",
+        "    let method = value == null ? undefined : value[key.slots[arity] ?? (key.slots[arity] = protocolSlot(key.key, arity))]; // interpreterDispatch\n",
+        "    if (method != null) return method; // interpreterDispatch\n",
+        external_inline!("    "),
+        "    return method; }; // interpreterDispatch\n",
+        "  externalMethod = function (value, key, arity) { // interpreterDispatch\n",
+        "    const cell = key.cell ?? (key.cell = dispatchCell(key.key)), external = cell.dispatcher, type = value == null ? \"null\" : Array.isArray(value) ? \"array\" : typeof value; // interpreterDispatch\n",
+        "    const dispatch = external?.[type] ?? external?._; if (!nativeMethods.size && !dispatch) return undefined; // interpreterDispatch\n",
+        "    const protocol = cell.protocol ?? (cell.protocol = coreProtocolsByName.get(key.name) ?? null); if (protocol && nativeImplementations.get(protocol)?.(value)) return undefined; // interpreterDispatch\n",
+        "    return dispatch ?? cell.natives?.get(type)?.get(arity) ?? cell.natives?.get(\"_\")?.get(arity); }; // interpreterDispatch\n",
+        "  publicMethod = function (value, key, arity, fast = false, directOnly = false) { // interpreterDispatch\n",
+        "    const info = key.info || (key.info = publicMethodInfo(key.key)), protocol = info.protocol, mask = info.mask, native = info.native, name = info.name; // interpreterDispatch\n",
+        "    let direct = !!(mask && (value?.[mask[0]] & mask[1])); // interpreterDispatch\n",
+        "    if (!direct && name) { // interpreterDispatch\n",
+        "      if (demandGate === null) demandProtocol(name, value); else if (demandGate.has(name)) demandHost(name, value, typeNames.get(value?.constructor)); // interpreterDispatch\n",
+        "      direct = value != null && value[info.marker] === protocolSentinel; } // interpreterDispatch\n",
+        "    if (!direct) direct = !!native?.(value); // interpreterDispatch\n",
+        "    if (!direct && (directOnly || (fast && (Array.isArray(value) || typeof value === \"string\")))) return undefined; // interpreterDispatch\n",
+        "    if (!direct && !satisfies(protocol, value)) return undefined; // interpreterDispatch\n",
+        "    const demanded = arity === 0 ? key.key : key.demand; // interpreterDispatch\n",
+        "    if (demandGate === null) demandProtocol(demanded, value); else if (demandGate.has(demanded)) demandHost(demanded, value, typeNames.get(value?.constructor)); // interpreterDispatch\n",
+        "    let method = value == null ? undefined : value[key.slots[arity] ?? (key.slots[arity] = protocolSlot(key.key, arity))]; // interpreterDispatch\n",
+        "    if (method == null) { // interpreterDispatch\n",
+        external_inline!("      "),
+        "    } // interpreterDispatch\n",
+        "    if (method) return method; // interpreterDispatch\n",
+        "    const declared = key.info || (key.info = publicMethodInfo(key.key)); // interpreterDispatch\n",
+        "    if (declared.protocol === IMeta && typeof value === \"function\") return undefined; // interpreterDispatch\n",
+        "    if (!declared.native?.(value)) throw new Error(\"No protocol method \" + key.key + \" defined for this value\"); // interpreterDispatch\n",
+        "    return undefined; }; // interpreterDispatch\n",
+    );
+    const DISPATCH_STORES: &str = concat!(
+        "  if (weakMapStores) storesPredicate = (...stores) => { const late = [maps, mapKinds, recordTypes, typeFields], weak = WeakMap.prototype.has; // interpreterDispatch\n",
+        "    const ordered = [...stores.filter(store => !late.includes(store) && store.has === weak), ...stores.filter(store => !late.includes(store) && store.has !== weak), ...stores.filter(store => late.includes(store))], n = ordered.length, [a, b, c, d, e, f, g, h] = ordered; // interpreterDispatch\n",
+        "    return value => { if (typeof value === \"object\" ? value === null : typeof value !== \"function\") return false; // interpreterDispatch\n",
+        "      if (n > 0 && (a.has(value) || n > 1 && (b.has(value) || n > 2 && (c.has(value) || n > 3 && (d.has(value) || n > 4 && (e.has(value) || n > 5 && (f.has(value) || n > 6 && (g.has(value) || n > 7 && h.has(value))))))))) return true; // interpreterDispatch\n",
+        "      for (let i = 8; i < n; i++) if (ordered[i].has(value)) return true; // interpreterDispatch\n",
+        "      return false; }; }; // interpreterDispatch\n",
+    );
+    const HOOKS: [(&str, &str, &str); 15] = [
         (
             "    const ns = createNs(name);\n    const context = ns.readerContext ?? {aliases: new Map(), refers: new Map(), excludes: new Set(), bindings: new Set()};\n",
             "    const context",
@@ -283,6 +367,31 @@ fn compiler_runtime(runtime: &str) -> String {
             "  function extendInstance(target, methods, returnTarget) {\n",
             "",
             "    noteEnvironmentExtension(undefined, methods); // environmentExtensions\n",
+        ),
+        (
+            "  function keySlot(key, arity) { return key.slots[arity] ?? (key.slots[arity] = protocolSlot(key.key, arity)); }\n",
+            "  function keySlot",
+            DISPATCH_KEYS,
+        ),
+        (
+            "  function setDeclarationDemand(demand) {\n",
+            "  function",
+            "  let demandGate = null, demandHost = null; // interpreterDispatch\n",
+        ),
+        (
+            "    demandMulti = mf => { if (demand) demand(\"multifn:\" + print(mf.name, false), mf); };\n",
+            "",
+            DISPATCH_DEMAND,
+        ),
+        (
+            "  protocolHooks.builtin = builtin;\n",
+            "  protocolHooks",
+            DISPATCH,
+        ),
+        (
+            "      for (let i = 0; i < stores.length; i++) if (stores[i].has(value)) return true;\n      return false;\n    };\n  }\n",
+            "",
+            DISPATCH_STORES,
         ),
     ];
     let mut runtime = runtime.to_owned();

@@ -90,6 +90,10 @@
   const demanded = new Map();
   let demandEpoch = 0;
   function invalidateDemands() { demanded.clear(); demandEpoch++; }
+  // The last demand found or recorded in `demanded`, which the operations
+  // repeat for one protocol and type in a row: comparing it costs an
+  // interpreter less than the lookups (light-cljs-439).
+  let lastProtocol, lastNative, lastType, lastEpoch = -1;
   // Initializers retain the declaration products visible at their source site.
   // This is a dynamic execution view, not a closure capture: an escaped factory
   // or record assoc method still reads the current constructor Var when called.
@@ -209,10 +213,14 @@
       for (const entry of entries) if (entry.identity === identity && entry.bundle.state === 'failed') entry.superseded = bundle.order;
       entries.push({bundle, selector, identity});
     }
+    // A protocol no bundle extends has no entries to force, so the
+    // compile-time runtime calls this only for the protocols in `extensions`
+    // (build.rs, `interpreterDispatch`).
     __lightRuntimeForCompiler.setDeclarationDemand((protocol, value, typeName) => {
       if (frontier === 0) return;
       const native = value == null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
-      if (demanded.get(protocol)?.get(native)?.has(typeName)) return;
+      if (lastEpoch === demandEpoch && protocol === lastProtocol && typeName === lastType && native === lastNative) return;
+      if (demanded.get(protocol)?.get(native)?.has(typeName)) { lastProtocol = protocol; lastNative = native; lastType = typeName; lastEpoch = demandEpoch; return; }
       const epoch = demandEpoch;
       const entries = typeof protocol === 'string' && protocol.startsWith('multifn:') && protocol !== 'multifn:*'
         ? [...(extensions.get(protocol) ?? []), ...(extensions.get('multifn:*') ?? [])]
@@ -228,8 +236,9 @@
         let types = selectors.get(native);
         if (!types) selectors.set(native, types = new Set());
         types.add(typeName);
+        lastProtocol = protocol; lastNative = native; lastType = typeName; lastEpoch = demandEpoch;
       }
-    });
+    }, extensions);
   };
   function selectFrontier(next) {
     if (frontier === next) return;

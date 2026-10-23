@@ -6099,3 +6099,70 @@ compiles them.
    or per worker runtime once light-cljs-436 starts several. More native
    core macros can save at most the 231 ms that core macros still spend in
    JavaScript on Penpot. These three are small.
+
+### Protocol lookups for the interpreter (light-cljs-439)
+
+A temporary sampling profiler (the interrupt poll of QuickJS reading the
+current JavaScript frames on each 1 ms `ITIMER_PROF` tick, not committed)
+showed where Penpot's macro bodies spend their QuickJS time: 52% of the
+samples inside a body were under `publicMethod`, the protocol lookup that
+every generic operation (`seq`, `first`, `next`, `get`, `reduce`, ...)
+makes before its own branch, and 8% more under `builtin`, which `=` makes
+for each key of an array map it compares. Each lookup made about fifteen
+calls: two declaration demands, each through `demandMethod`,
+`demandProtocol`, `typeNames` and the registry's three-level memo; up to
+three tests of the same store predicate, each of which tried `maps` (five
+calls and a prototype walk for the record test) before `cells`; and
+`keyMethod`, `keySlot`, `publicDeclared`, `externalMethod` and
+`nativeType`. V8 inlines all of that; QuickJS pays for every call.
+
+The compile-time runtime (build.rs `compiler_runtime`, hooks marked
+`interpreterDispatch`; output never embeds them) now:
+
+- demands only a protocol some bundle extends, from the registry's
+  `extensions` (no other can force a bundle), and the registry checks its
+  last recorded demand before its memo;
+- runs `keyMethod`, `builtin`, `externalMethod` and `publicMethod` with
+  the calls between them inlined, a resolved key keeping the protocol its
+  method demands;
+- in QuickJS (`weakMapStores`), tests a `storesPredicate`'s WeakMap
+  stores first and `maps` and `mapKinds` last, unrolled, and answers false
+  for a primitive at once.
+
+Every lookup reads the value, demands and tests in the same order as
+before, so a getter, a proxy or an extension sees what it saw; the
+regression test `core_extension_demand::interpreter_dispatch_keeps_protocol_answers_for_runtime_and_host_values`
+pins answers for runtime, record, type and host values.
+
+Setup: master `046e36f` against it with the change, release binaries as in
+the section above, cold, `--jobs 1`, `--no-cache --stats`, alternating
+parent and candidate. Macro-body time is the exclusive time of the `call`
+service under `MacroHost::expand_javascript` (thread CPU time, Rust
+callbacks from a body excluded), from a temporary timer as in
+light-cljs-435, in separate instrumented runs. Load averages at each run's
+start were 4.7 to 19.3 for the instrumented runs and 5.9 to 12.7 for the
+others; another worker's builds and tests shared the machine. Medians of
+three rounds:
+
+| Build | Parent | Candidate | Change |
+| --- | ---: | ---: | ---: |
+| Penpot QuickJS macro bodies | 39.37 s | 30.98 s | -21.3% |
+| Penpot QuickJS `none` wall | 62.72 s | 53.88 s | -8.84 s |
+| Penpot QuickJS `trace.engine-ms` | 55,139 | 46,194 | -16.2% |
+| Penpot QuickJS peak RSS | 0.81 GB | 0.72 GB | |
+| Penpot V8 `none` wall | 14.96 s | 13.83 s | -1.13 s |
+| Penpot V8 `trace.engine-ms` | 8,022 | 7,000 | -12.7% |
+| 200k V8 wall | 8.54 s | 8.43 s | |
+| 200k QuickJS wall | 11.80 s | 11.37 s | |
+| 200k QuickJS `trace.engine-ms` | 4,646 | 4,112 | -11.5% |
+
+Each candidate round cut body time by 20.6% to 22.8% against the parent
+round next to it. One Penpot `advanced` run per engine and binary took
+62.78 s (parent) and 53.67 s (candidate) in QuickJS, and 17.20 s and
+16.17 s in V8. Output is byte-identical between parent and candidate and
+between the engines: Penpot `none` sha256 `dbf5cfcf91e48aaa…`, Penpot
+`advanced` `fe303824959337ac…` and 200k `1a75bc87b26f3121…`.
+
+In the candidate's profile the protocol lookups still hold about 40% of a
+body's samples, now mostly the store tests themselves and the reads of the
+value's mask, marker and slot, which a lookup must make in order.

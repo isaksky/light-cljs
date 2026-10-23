@@ -129,3 +129,37 @@ fn failed_extension_demand_recovers_without_hiding_real_cycles() {
         );
     }
 }
+
+/// The compile-time runtime's protocol lookups, which build.rs inlines for an
+/// interpreter (`interpreterDispatch`, light-cljs-439): demands only for
+/// extended protocols, store tests in another order and none for a
+/// primitive. A macro body sees what the parent compiler gave it, for
+/// runtime values with and without their own methods, records, types and
+/// host values with `extend-type` implementations, and so does the program.
+#[test]
+fn interpreter_dispatch_keeps_protocol_answers_for_runtime_and_host_values() {
+    let source = r#"
+      (defrecord R [a])
+      (deftype Box [v] ISeqable (-seq [_] (list v v)))
+      (extend-type string ICounted (-count [_] 42))
+      (extend-protocol ILookup object (-lookup ([_ k] [:object k]) ([_ k nf] [:object k nf])))
+      (defmacro probe []
+        (let [m {:a 1 :b 2 :c 3} r (->R 5)
+              own (specify! [1 2] ISeqable (-seq [_] (list :own)))]
+          (pr-str [(get m :c) (get m :z :none) (seq "ab") (count "abc") (count r) (get r :a) (seq (Box. 7))
+                   (seq own) (seq (specify! (js-obj) ISeqable (-seq [_] (list 1 2)))) (get (js-obj) :k) (get (js-obj) :k 0)
+                   (= [1 2] '(1 2)) (= :a :b) (= {:a 1} r) (satisfies? ISeqable "s") (satisfies? ICounted "s")
+                   (satisfies? ILookup (js-obj)) (satisfies? ISeqable (Box. 1)) (hash "x") (count (seq (range 3))) (first (lazy-seq [9]))
+                   (meta (with-meta [1] {:k 1})) (vector? own) (map? r) (coll? r) (seq? (list 1))])))
+      (probe)"#;
+    let expected = format!(
+        "{:?}",
+        r#"[3 :none ("a" "b") 3 1 5 (7 7) (:own) (1 2) [:object :k] [:object :k 0] true false false false true true true -2120728247 3 9 {:k 1} true true true true]"#
+    );
+    let mut reused = MacroHost::new();
+    for _ in 0..2 {
+        for host in [&mut reused, &mut MacroHost::new()] {
+            both(host, source, &expected);
+        }
+    }
+}
