@@ -97,6 +97,10 @@ struct MacroFreeAnalysis {
     /// Whether the unit was found macro-free, so that entering an engine
     /// is a bug; a unit a worker analyzes in its own engine records only.
     forbid: bool,
+    /// Whether the analysis declares a declaration bundle's own products,
+    /// which the top-level pass registered in the unit's frame already
+    /// ([`OwnDeclaration`]).
+    declaring: bool,
     events: Vec<UnitEvent>,
     /// The macro call the analyzer expands ([`ExpansionSite`]).
     site: Option<(String, std::ops::Range<usize>)>,
@@ -133,6 +137,7 @@ impl MacroFreeUnit {
             unit.replace(Some(MacroFreeAnalysis {
                 name,
                 forbid,
+                declaring: false,
                 polls,
                 events: Vec::new(),
                 site: None,
@@ -223,6 +228,40 @@ pub(crate) fn forbid_engine_entry(what: &str) {
             );
         }
     });
+}
+/// While alive, the analysis on this thread declares the products of the
+/// declaration bundle it analyzes (a type's or a protocol's names), which
+/// the bundle's registration put in the unit's frame already: registering
+/// them again there changes only that frame, so a macro-free bundle may
+/// (light-cljs-428). Any other definition still panics in a macro-free
+/// unit ([`forbid_engine_entry`]).
+pub(crate) struct OwnDeclaration(bool);
+impl OwnDeclaration {
+    pub(crate) fn enter() -> Self {
+        Self(MACRO_FREE_UNIT.with(|unit| {
+            unit.borrow_mut()
+                .as_mut()
+                .is_some_and(|analysis| !std::mem::replace(&mut analysis.declaring, true))
+        }))
+    }
+}
+impl Drop for OwnDeclaration {
+    fn drop(&mut self) {
+        if self.0 {
+            MACRO_FREE_UNIT.with(|unit| {
+                if let Some(analysis) = &mut *unit.borrow_mut() {
+                    analysis.declaring = false;
+                }
+            });
+        }
+    }
+}
+/// [`forbid_engine_entry`] for registering a Var, unless the analysis
+/// declares its bundle's own products ([`OwnDeclaration`]).
+fn forbid_definition() {
+    if !MACRO_FREE_UNIT.with(|unit| unit.borrow().as_ref().is_some_and(|a| a.declaring)) {
+        forbid_engine_entry("a nested definition");
+    }
 }
 /// Record a native expansion if this thread analyzes a macro-free unit.
 pub(crate) fn record_native_expansion(expansion: impl FnOnce() -> NativeExpansion) {
@@ -1855,7 +1894,7 @@ impl MacroHost {
         name: &str,
         private: bool,
     ) -> Result<(), String> {
-        forbid_engine_entry("a nested definition");
+        forbid_definition();
         self.register_source_binding(namespace, name, SourceBindingKind::Value)?;
         self.tables
             .runtime_vars

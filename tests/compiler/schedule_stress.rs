@@ -370,6 +370,47 @@ fn single_namespace_macro_fixtures_are_the_same_under_any_schedule() {
     }
 }
 
+/// A pooled declaration bundle's methods expand macros at the extension
+/// frontier of its registration, in whichever isolate analyzes it
+/// (light-cljs-428): a type, an extension and a record whose methods call a
+/// macro that dispatches on a string see the string extension registered
+/// before them, not the one that replaces it later, which the top-level
+/// pass and the runtime see. Those three go to the pool, persistent and
+/// fresh isolates alike.
+#[test]
+fn pooled_declaration_methods_restore_extension_frontiers() {
+    if skipped() {
+        return;
+    }
+    let fixture = Fixture::main(
+        r#"(defprotocol P (p [x])) (defprotocol Q (q [x]))
+(extend-type string P (p [_] 1))
+(defmacro probe [] (p "s"))
+(deftype U [] Q (q [_] (probe)))
+(extend-protocol Q number (q [_] (probe)))
+(defrecord R [] Q (q [_] (probe)))
+(extend-type string P (p [_] 2))
+(pr-str [(q (U.)) (q 5) (q (R.)) (probe) (p "s")])"#,
+    );
+    // Seven bundles; the last top-level `probe` demands `P` and both string
+    // extensions before the dispatch, so the pool gets the other four: `Q`,
+    // `U`, the number extension and `R`.
+    let pooled = fixture.build(4, None);
+    assert_eq!(pooled.stats.deferred_units.registered, 7);
+    assert_eq!(pooled.stats.deferred_units.pooled, 4);
+    let oracle = stress("bundle frontiers", &fixture);
+    assert_eq!(value(&oracle), "[1 1 1 2 2]\n");
+    let fresh = stress_with(
+        "bundle frontiers, fresh isolates",
+        &fixture,
+        Perturbation {
+            fresh_isolates: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(value(&fresh), "[1 1 1 2 2]\n");
+}
+
 #[test]
 fn namespace_macro_fixtures_keep_initialization_order_under_any_schedule() {
     if skipped() {

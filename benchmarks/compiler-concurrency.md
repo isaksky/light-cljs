@@ -11,6 +11,58 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Declaration bundles on the pool (light-cljs-428, October 22, 2026)
+
+Parent `ade9a21` against the change, 3 alternating rounds, medians (range),
+peak RSS in MiB, 1-minute load average 3.6-5.3 (another worker's builds on the
+machine). The seed-42 200k generated project at `release bench --no-cache`
+(its `light-cljs.edn` gives 2 GiB of macro memory, so `--jobs 8` runs seven
+worker isolates) and Penpot `main-none` (4 GB, seven worker isolates); `8m`
+is `--jobs 8 --macro-memory-limit 67108864`, the default budget, which gives
+two isolates, the coordinator's and one worker's:
+
+| Build | Parent wall, RSS | Change wall, RSS |
+| --- | --- | --- |
+| 200k `--jobs 1` | 8.13 s (7.94-8.20), 1,066 | 7.98 s (7.46-8.03), 1,047 |
+| 200k `--jobs 8` | 6.84 s (6.52-6.97), 1,510 | 5.58 s (5.34-5.62), 1,532 |
+| 200k `--jobs 8m` | 6.59 s (6.37-8.55), 1,107 | 6.57 s (6.27-6.68), 1,099 |
+| Penpot `--jobs 1` | 14.09 s (13.21-14.18), 808 | 13.66 s (13.20-14.10), 808 |
+| Penpot `--jobs 8` | 8.82 s (8.77-8.89), 1,506 | 8.30 s (8.19-8.51), 1,484 |
+| Penpot `--jobs 8m` | fails | fails |
+
+`--jobs 8` against `--jobs 1` of the same binary: 200k 0.84x before, 0.70x
+after; Penpot 0.63x before, 0.61x after. At `--jobs 1` the change does no
+new work (bundles are judged only with several slots) and the differences
+are noise. With one worker (`8m`) the coordinator keeps its bundles, as
+before: a first candidate that gave the one worker the bundles too took
+8.79 s (5.95-9.49) on the 200k project against the parent's 6.62 s, since
+the coordinator then waited for it at the drain points
+(`CompilationSession::pools_bundle`). Penpot at `8m` fails in every round,
+for the parent and the change alike, with "JavaScript session memory limit
+exhausted" in `instaparse.abnf`'s `precompile-cljs-grammar`, where `--jobs
+1` at 64 MiB succeeds (15.2 s); `--jobs 2` fails too. Under a load of 12-20
+the 200k project failed the same way at `8m` in 5 of 5 runs of each binary
+and succeeded in 6 of 6 at load 4-7, so its failure depends on timing. Both
+are filed as light-cljs-437.
+
+Counters (`--stats`, `--jobs 8` and, for the 200k project, `8m`):
+
+| Counter | 200k parent | 200k change | 200k `8m` parent | 200k `8m` change | Penpot parent | Penpot change |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `deferred-units.pooled` | 8,222 | 13,477 | 8,222 | 8,222 | 12,817 | 13,360 |
+| `deferred-units.macro-free` | 6,051 | 9,938 | 6,051 | 9,938 | 8,586 | 8,975 |
+| `time.deferred-units-ms` | 1,708 | 358 | 1,471 | 1,424 | 2,601 | 2,098 |
+
+Of 13,477 units the 200k project's coordinator keeps none at `--jobs 8`
+(5,255 before, every one a bundle); of Penpot's 13,367 it keeps 7, units its
+top-level passes registered already analyzed. 3,887 of the 200k project's
+bundles are judged macro-free, which only engine-less workers need (a budget
+under 64 MiB, or the slots beyond the isolates that light-cljs-437
+proposes). JavaScript is byte-identical to the parent's in every round
+above, and the change's is identical across `--jobs 1`, 4 and 8 for Penpot
+`main-none` and `main-advanced`, source maps included, and for the 200k
+project.
+
 ## Natively expanded units without an engine (light-cljs-432, October 22, 2026)
 
 Parent `af938d6` against the change, 3 alternating rounds, medians, load

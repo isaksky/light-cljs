@@ -330,6 +330,91 @@ fn trial_expansions_admit_no_call_the_engine_expands() {
     }
 }
 
+/// Declaration bundles go to the pool as definitions do (light-cljs-428):
+/// with an isolate per slot every unit is pooled, and with one isolate's
+/// memory the workers, which have no engine, take the types, records,
+/// protocols, extensions and methods whose only macros expand natively,
+/// each under `MacroFreeUnit`, which panics at any engine entry, as well as
+/// at a definition other than the bundle's own products. A record whose
+/// method calls a source macro, the multimethod and the macro's own unit
+/// are not macro-free; the macro demands the record's and the protocol's
+/// bundles from the main isolate at compile time, and a later namespace's
+/// top-level pass demands them again, so those are claimed, waited for or
+/// reused through the catalog. Every build is the one-slot build.
+#[test]
+fn declaration_bundles_are_pooled_and_macro_free_ones_need_no_engine() {
+    let sources = Sources::new();
+    sources
+        .write(
+            "app/p.cljs",
+            r#"(ns app.p)
+(defprotocol Shape "Shapes." (area [s]) (label [s] [s prefix] "A label."))
+(defrecord Square [n] Shape (area [_] (* n n)) (label [_] (str "sq" (when (pos? n) n))) (label [_ p] (str p n)))
+(deftype Circle [r] Shape (area [_] (* 3 r r)) (label [_] (or nil "circle")) (label [_ p] p))
+(extend-type number Shape (area [n] n) (label ([n] (cond (neg? n) "neg" :else "num")) ([n p] p)))
+(extend-protocol Shape
+  nil (area [_] 0) (label [_] "nil")
+  string (area [s] (count s)) (label [s] (if-let [x (seq s)] (str (first x)) "")))
+(defmulti kind (fn [x] (cond (number? x) :n :else :other)))
+(defmethod kind :n [x] (when x :number))
+(defmethod kind :other [x] (case x "a" :a :other))
+(defmacro sq-area [n] (area (->Square n)))
+(defrecord Measured [x] Shape (area [_] (sq-area 3)) (label [_] "m"))
+(defrecord Guarded [when] Shape (area [_] (when 2)) (label [_] "g"))"#,
+        )
+        .write(
+            "app/main.cljs",
+            r#"(ns app.main (:require [app.p :as p :refer [area label kind]]))
+(defn total [xs] (reduce + (map area xs)))
+(def nine (p/sq-area 3))
+(js/console.log (total [(p/->Square 2) (p/->Circle 1) 5 nil "abc"]) (label (p/->Square 2)) (label (p/->Circle 1)) (label -1) (label nil) (label "xy") (label (p/->Square 2) "n") (str (kind 1)) (str (kind "a")) (area (p/->Measured 0)) nine (p/sq-area 2) (area (p/->Guarded (fn [x] (* 2 x)))))"#,
+        );
+    let serial = same_at_every_slot_count(&sources, "app.main", false);
+    assert_eq!(
+        execute(serial.output.as_ref().unwrap()),
+        "15 sq2 circle neg nil x n2 :number :a 9 9 4 4\n"
+    );
+    let registered = serial.stats.deferred_units.registered;
+    let pooled = build_with(&sources, "app.main", 4, false, isolate_per_slot());
+    assert_eq!(pooled.output, serial.output);
+    // Every unit: none is a `:test` one or a cache blocker's.
+    assert_eq!(
+        pooled.stats.deferred_units.pooled,
+        pooled_count(registered),
+        "{registered} registered"
+    );
+    // One isolate's memory: the workers have no engine.
+    for slots in [2, 4, 8] {
+        let mut host = MacroHost::new();
+        host.evaluator_options.memory_limit = 32 << 20;
+        let pooled = build_with(&sources, "app.main", slots, false, host);
+        assert_eq!(pooled.output, serial.output, "{slots} slots");
+        assert_eq!(pooled.spans, serial.spans, "{slots} slots");
+        assert_eq!(pooled.mapped, serial.mapped, "{slots} slots");
+        assert_eq!(
+            pooled.stats.macro_calls, serial.stats.macro_calls,
+            "{slots} slots"
+        );
+        assert_eq!(pooled.stats.deferred_units.worker_isolates, 0);
+        // `Shape`, `Square`, `Circle`, the two extensions, both methods
+        // and `total`; not `kind`, `Measured`, `sq-area`, `nine` or
+        // `Guarded`, whose field a macro's name spells, as a parameter's
+        // would make a function ineligible.
+        assert_eq!(
+            pooled.stats.deferred_units.macro_free,
+            pooled_count(8),
+            "{slots} slots"
+        );
+        // A pool of one worker leaves the bundles to the coordinator
+        // (`CompilationSession::pools_bundle`): it takes only `total`.
+        assert_eq!(
+            pooled.stats.deferred_units.pooled,
+            pooled_count(if slots == 2 { 1 } else { 8 }),
+            "{slots} slots"
+        );
+    }
+}
+
 #[test]
 fn several_slots_emit_the_one_slot_program_warnings_and_errors() {
     let sources = Sources::new();

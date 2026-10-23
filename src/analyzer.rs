@@ -6121,21 +6121,21 @@ impl Analyzer<'_> {
                     self.macro_depth -= 1;
                     self.top_level = top_level;
                     let expr = result?;
-                    return self.catalog_bundle(id, expr).map(Some);
+                    return self.catalog_bundle(id, expr, intrinsic).map(Some);
                 }
                 Ok(None)
             }
             "defprotocol" => {
                 let expr = self.defprotocol_form(id, args, context)?;
-                self.catalog_bundle(id, expr).map(Some)
+                self.catalog_bundle(id, expr, intrinsic).map(Some)
             }
             "extend-type" => {
                 let expr = self.extend_type_form(id, args, context)?;
-                self.catalog_bundle(id, expr).map(Some)
+                self.catalog_bundle(id, expr, intrinsic).map(Some)
             }
             "extend-protocol" => {
                 let expr = self.extend_protocol_form(id, args, context)?;
-                self.catalog_bundle(id, expr).map(Some)
+                self.catalog_bundle(id, expr, intrinsic).map(Some)
             }
             "specify!" | "specify" => {
                 self
@@ -6144,7 +6144,7 @@ impl Analyzer<'_> {
             }
             "deftype" | "defrecord" => {
                 let expr = self.type_form(id, args, context, intrinsic == "defrecord")?;
-                self.catalog_bundle(id, expr).map(Some)
+                self.catalog_bundle(id, expr, intrinsic).map(Some)
             }
             "assert" => self.assert_form(id, args, context).map(Some),
             _ => Ok(None),
@@ -7438,6 +7438,86 @@ impl Analyzer<'_> {
         self.macro_free_datum(&form.data(), 0, false)
     }
 
+    /// Whether the declaration bundle `form`, which the top-level pass took
+    /// as the intrinsic `intrinsic` with the resolver its unit's snapshot
+    /// freezes, is macro-free ([`Self::macro_free_form`], light-cljs-428).
+    /// A type, record, protocol or extension is walked as code but for its
+    /// methods' names, which name no call: its name, fields, protocols,
+    /// targets, signatures, options, method parameters and bodies, so a
+    /// method body is judged as a function's. Its analysis registers only
+    /// the bundle's own products besides that
+    /// ([`crate::macro_host::OwnDeclaration`]). A `defmethod` is judged by
+    /// its native expansion, a `-add-method` call of a `fn`, as a call of a
+    /// native core macro is. A `defmulti` defines a Var in its expansion
+    /// and is never macro-free.
+    fn macro_free_bundle(&self, intrinsic: &str, form: &Form) -> bool {
+        use crate::compiler_data::DatumKind;
+        let datum = form.data();
+        let walk = |datum: &crate::compiler_data::Datum| self.macro_free_datum(datum, 1, false);
+        if datum.metadata().is_some_and(|metadata| !walk(&metadata)) {
+            return false;
+        }
+        let DatumKind::Collection {
+            kind: CollectionKind::List,
+            children,
+        } = datum.kind()
+        else {
+            return false;
+        };
+        let Some((_, args)) = children.split_first() else {
+            return false;
+        };
+        // A method's name is not analyzed as a symbol; the rest of it is.
+        let part = |part: &crate::compiler_data::Datum| match part.kind() {
+            DatumKind::Collection {
+                kind: CollectionKind::List,
+                children,
+            } => {
+                part.metadata().is_none_or(|metadata| walk(&metadata))
+                    && children.split_first().is_some_and(|(name, rest)| {
+                        matches!(name.kind(), DatumKind::Symbol(_))
+                            && name.metadata().is_none_or(|metadata| walk(&metadata))
+                            && rest.iter().all(walk)
+                    })
+            }
+            _ => walk(part),
+        };
+        match intrinsic {
+            "deftype" | "defrecord" | "defprotocol" | "extend-type" | "extend-protocol" => {
+                args.iter().all(part)
+            }
+            // Its operator must be the core macro `expand_macro` expands
+            // natively, as `symbol_use` judges one beyond the intrinsics.
+            "defmethod" => {
+                let DatumKind::Symbol(head) = children[0].kind() else {
+                    return false;
+                };
+                let member = String::from_utf16_lossy(head.name());
+                let qualifier = head.namespace().map(String::from_utf16_lossy);
+                let spelled = match &qualifier {
+                    Some(qualifier) => format!("{qualifier}/{member}"),
+                    None => member.clone(),
+                };
+                if !matches!(self.macro_use(&member, qualifier.as_deref(), &spelled, true),
+                    SymbolUse::NativeCore(name) if name == "defmethod")
+                {
+                    return false;
+                }
+                crate::native_core_macros::native_expansion(
+                    "defmethod",
+                    &datum,
+                    self.namespace,
+                    self.macro_host.limits.generated_nodes,
+                )
+                .is_some_and(|expanded| {
+                    self.macro_free_datum(&expanded, 1, true)
+                        && self.dropped_arguments_free(args, &expanded)
+                })
+            }
+            _ => false,
+        }
+    }
+
     /// Whether `datum` is macro-free ([`Self::macro_free_form`]); with
     /// `expansion`, as part of a native core macro's expansion, whose
     /// generated `compiler-case*` and `cljs.core/lazy-seq` the analyzer
@@ -7755,8 +7835,22 @@ impl Analyzer<'_> {
         {
             return SymbolUse::Ineligible;
         }
+        self.macro_use(&member, qualifier.as_deref(), &spelled, operator)
+    }
+
+    /// How analysis takes symbol `spelled` (`qualifier`/`member`), which is
+    /// no special form or intrinsic it lowers itself, as an operator or a
+    /// value, for [`Self::symbol_use`]: whether it names a macro, and which.
+    fn macro_use(
+        &self,
+        member: &str,
+        qualifier: Option<&str>,
+        spelled: &str,
+        operator: bool,
+    ) -> SymbolUse {
+        let spelled = spelled.to_owned();
         // A core-aliased name resolves as the core one.
-        let core = match &qualifier {
+        let core = match qualifier {
             Some(qualifier)
                 if self.alias_target(qualifier) == "cljs.core"
                     || self.alias_target(qualifier) == "clojure.core" =>
@@ -9377,7 +9471,13 @@ impl Analyzer<'_> {
 
     /// Only supported source-level top-level declarations are replayable bundles.
     /// Nested declarations, reify and specify! keep ordinary expression semantics.
-    fn catalog_bundle(&mut self, id: NodeId, expr: ExprId) -> Result<ExprId, AnalysisError> {
+    /// `intrinsic` is the form's operator as analysis took it.
+    fn catalog_bundle(
+        &mut self,
+        id: NodeId,
+        expr: ExprId,
+        intrinsic: &str,
+    ) -> Result<ExprId, AnalysisError> {
         if !self.top_level || !self.macro_host.defers_source_units() {
             return Ok(expr);
         }
@@ -9494,6 +9594,10 @@ impl Analyzer<'_> {
             .compiler_read_form(id)
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e.to_string())))?;
         let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
+        // Judged only where several slots dispatch it, so one slot does no
+        // new work; the dispatch starts the coordinator's engine for a
+        // bundle at every slot count, as before.
+        let macro_free = self.unit_slots.get() > 1 && self.macro_free_bundle(intrinsic, &form);
         let (snapshot, shared) = self.definition_snapshot();
         let unit = session
             .register_bundle(
@@ -9510,6 +9614,18 @@ impl Analyzer<'_> {
                 },
             )
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
+        // The build pool takes a bundle under a definition's rule: its
+        // workers' isolates install the catalog's bundles and restore the
+        // unit's extension frontier as the main isolate does
+        // (`analyze_unit`), and a namespace kept on the main isolate has
+        // one slot here; with a single worker the coordinator keeps it
+        // (`CompilationSession::pools_bundle`).
+        if macro_free {
+            session.set_macro_free(unit);
+        }
+        if self.unit_slots.get() > 1 && session.pools_bundle(macro_free) {
+            session.set_pooled(unit);
+        }
         self.program.exprs[expr.0].kind = ExprKind::Nil;
         self.deferred.push(DeferredUnit {
             placeholder: expr,
@@ -9533,6 +9649,9 @@ impl Analyzer<'_> {
                 AnalysisErrorKind::InvalidForm("defprotocol requires a name"),
             ));
         };
+        // The protocol and its methods are the bundle's own products: no
+        // code is analyzed here, so a macro-free unit may declare them.
+        let _declaring = crate::macro_host::OwnDeclaration::enter();
         let global = self.declare_global(name)?;
         self.program.globals[global.0].type_descriptor = false;
         self.definition(id, &[name], ExprContext::Discard, false)?;
@@ -10379,7 +10498,10 @@ impl Analyzer<'_> {
                 AnalysisErrorKind::InvalidForm("type requires a name and field vector"),
             ));
         }
-        let global = self.declare_global(args[0])?;
+        let global = {
+            let _declaring = crate::macro_host::OwnDeclaration::enter();
+            self.declare_global(args[0])?
+        };
         self.program.globals[global.0].type_descriptor = true;
         if record {
             self.program.record_constructors.insert(global);

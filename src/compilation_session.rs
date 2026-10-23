@@ -1909,6 +1909,22 @@ impl CompilationSession {
             Some(_) => macro_free || !test,
         }
     }
+    /// Whether the build's unit pool takes a declaration bundle
+    /// (light-cljs-428): one [`Self::pools`] takes, when the pool has more
+    /// than one worker. With one, as the default macro memory gives at
+    /// any `--jobs` above one, the coordinator keeps its bundles, as before:
+    /// it never analyzes a queued unit, so giving the one worker the
+    /// bundles as well as the definitions would leave the coordinator
+    /// waiting for it at the drain points (200k generated project at
+    /// `--jobs 8` and 64 MiB: 8.79 s against 6.62 s).
+    pub(crate) fn pools_bundle(&self, macro_free: bool) -> bool {
+        self.pools(macro_free, false)
+            && self
+                .pool
+                .borrow()
+                .as_ref()
+                .is_some_and(|pool| pool.workers > 1)
+    }
     /// Give `units` to the build's pool: whether it has one.
     /// The compilation has charged `charged` expansions and generated
     /// nodes before them ([`SharedCatalog::raise_charged`]).
@@ -2871,6 +2887,8 @@ pub(crate) struct UnitPool {
     shared: Arc<SharedCatalog>,
     thread: Option<std::thread::JoinHandle<Result<(), String>>>,
     pub(crate) engines: PoolEngines,
+    /// Its worker threads: the slots but the coordinator's.
+    workers: usize,
     /// The coordinator's settings, from which it starts its own engine
     /// where a serial build would have ([`CompilationSession::start_main_engine`]).
     main: MacroEnvironment,
@@ -3041,6 +3059,7 @@ impl UnitPool {
             shared,
             thread: Some(thread),
             engines,
+            workers: slots.workers(),
             main: environment,
         })
     }

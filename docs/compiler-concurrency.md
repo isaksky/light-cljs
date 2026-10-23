@@ -1610,6 +1610,82 @@ one-slot build's expansion, which no longer allocates in an engine; the
 engine starts at a drain only when a unit may enter one (`judged` false),
 at every `--jobs`. `MacroHost::core_gensyms` is gone.
 
+*As built (light-cljs-428), declaration bundles on the pool.* A top-level
+type, record, protocol, extension, `defmulti` or `defmethod` is one unit
+of several products (`CompilationSession::register_bundle`, from
+`Analyzer::catalog_bundle`), and until now none went to the pool: the
+coordinator analyzed every one at its namespace's dispatch, 5,255 of the
+200k generated project's 13,477 units, as much of its analysis as the
+top-level passes. Bundles now follow the definitions' rule:
+
+- *Which bundles.* With several slots and more than one worker every
+  bundle the top-level pass registers to be analyzed later is the pool's
+  (`CompilationSession::pools_bundle`: `pools(macro_free, false)`, as a
+  bundle has no `:test` unit), but a cache blocker's and its consumers',
+  whose namespaces have one slot. With a single worker, as the default
+  64 MiB gives at every `--jobs` above one, the coordinator keeps its
+  bundles at the dispatch, as before: it never analyzes a queued unit
+  (light-cljs-339), so a pool of one worker that took the bundles as well
+  as the definitions would leave it waiting at the drain points (the 200k
+  project at `--jobs 8` and 64 MiB, 8.79 s against 6.62 s). A
+  value-position group
+  (`catalog_definition_group`) is registered already analyzed, so no thread
+  analyzes it again. A bundle a top-level macro or another unit demands is
+  claimed, waited for or reused through the catalog as a definition's unit
+  is.
+- *Why a worker's isolate sees what the main one would.* A bundle's
+  analysis depends on the engine only through the macros it expands and
+  the extension frontier those see. A worker installs the catalog's
+  registrations, bundles included, before each analysis, and
+  `analyze_unit` sets the unit's frontier (`compiler_frontier` with the
+  snapshot's `extension_frontier`, the bundles registered before this one)
+  on whichever engine analyzes it, as it does for a definition. Staging
+  products and journaling dispatch patches happen when a bundle's root is
+  initialized, which is per isolate for every unit already. A source
+  macro's effect in a bundle's method body is the documented per-isolate
+  behavior, and a blocker restores the serial order as for definitions.
+  No kind was found that has to stay on the coordinator.
+  `schedule_stress::pooled_declaration_methods_restore_extension_frontiers`
+  builds a type, an extension and a record whose methods expand a macro
+  that dispatches on a string between two string extensions, under every
+  schedule, with persistent and fresh isolates: they see the first, the
+  top-level pass and the runtime the second.
+- *Macro-free bundles.* With several slots a bundle is also judged
+  (`Analyzer::macro_free_bundle`), so that workers without an engine take
+  the ones that need none: a type, record, protocol, `extend-type` or
+  `extend-protocol` is walked as code but for its methods' names (its
+  name, fields, protocols, targets, signatures, options, parameters and
+  bodies), so a method body is judged as a function's; a `defmethod` by
+  its native expansion, a `-add-method` call of a `fn`, when its operator
+  is the core macro `expand_macro` expands natively (`Analyzer::macro_use`,
+  the part of `symbol_use` after the intrinsics); a `defmulti` defines a
+  Var in its expansion and is never macro-free. The analysis of a type or
+  protocol registers its own products again in the unit's frame, which the
+  bundle's registration filled already; that changes only the frame, so
+  `MacroFreeUnit` allows it inside `macro_host::OwnDeclaration` (around
+  `type_form`'s `declare_global` and `defprotocol_form`, which analyzes no
+  code) and still panics at any other definition. One slot judges no
+  bundle, and the dispatch still starts the coordinator's engine for a
+  bundle at every slot count, so `--jobs 1` does no new work and its
+  engine starts where it did.
+  `macro_free_units::declaration_bundles_are_pooled_and_macro_free_ones_need_no_engine`
+  builds every kind at one, two, four and eight slots, with an isolate per
+  slot (every unit pooled) and with one isolate's memory (eight
+  macro-free units, analyzed with no engine from four slots on), with a macro that demands a
+  record at compile time from the record's namespace and from a later
+  top-level pass. With every build forced to four slots and no worker
+  engine (not committed), no unit of the compiler, CLI and execution
+  suites tripped `MacroFreeUnit`.
+- *Measured* (benchmarks/compiler-concurrency.md, against `ade9a21`): at
+  `--jobs 8` with an isolate per slot the 200k project's pool takes all
+  13,477 units (8,222 before) and its wall falls from 6.84 s to 5.58 s,
+  0.70x of `--jobs 1`; Penpot's takes 13,360 of 13,367 (12,817), 8.82 s to
+  8.30 s. Output is unchanged at every N.
+- *Open question.* At the default 64 MiB, `--jobs 2` and above already
+  failed on both projects with the session memory limit where `--jobs 1`
+  succeeds, and the pool's slots stop at the isolate count, so one worker
+  runs; light-cljs-437.
+
 ### Stage C: parallel namespaces
 
 This stage removes the serial top-level chain.
