@@ -399,6 +399,30 @@ pub(crate) fn unlogged() -> Unlogged {
     Unlogged(LOG.with(|log| log.borrow_mut().take()))
 }
 
+/// While alive, this thread logs into a log of its own if it logged, and
+/// the log as it was goes on after it ([`NestedLog::finish`]): a unit
+/// recorded on its own inside another unit's recording keeps its own names
+/// (light-cljs-442).
+pub(crate) struct NestedLog(Unlogged);
+
+impl NestedLog {
+    /// What this thread logged since [`nest_log`], or `None` if it did not
+    /// log then; the outer log goes on.
+    pub(crate) fn finish(self) -> Option<Vec<Vec<u16>>> {
+        self.0.0.is_some().then(stop_log)
+    }
+}
+
+/// Set this thread's log aside until the guard finishes or drops, logging
+/// meanwhile into a new one if it logged.
+pub(crate) fn nest_log() -> NestedLog {
+    let outer = unlogged();
+    if outer.0.is_some() {
+        start_log();
+    }
+    NestedLog(outer)
+}
+
 /// Stop logging on this thread, and what was logged since the log started
 /// or was last taken.
 pub(crate) fn stop_log() -> Vec<Vec<u16>> {

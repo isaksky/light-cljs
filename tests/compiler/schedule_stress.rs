@@ -890,3 +890,59 @@ fn persistent_worker_isolates_match_a_fresh_isolate_per_unit_after_any_history()
     }
     assert_several_workers("worker history");
 }
+
+/// Every generated-node limit up to what the build of the cache contract's
+/// overlap fixture needs fails at the same unit, with the same message, at
+/// two and four slots as at one, when every worker starts each job late:
+/// a unit kept on the coordinator then demands, from inside its recorded
+/// analysis, a pooled unit that no worker has started (`lib.a/f`'s
+/// expansion of `twice` needs `lib.macros/wrap`), which is still charged at
+/// its own drain point, never as part of the demanding unit's charges
+/// (light-cljs-442). With the default macro memory limit the workers have
+/// no engine; with four isolates' worth they have one.
+#[test]
+fn a_limit_crossed_after_a_demand_of_an_unstarted_pooled_unit_fails_at_the_same_unit() {
+    let sources = Sources::new();
+    for (path, source) in crate::cache_contract::OVERLAP {
+        sources.write(path, source);
+    }
+    let build = |memory: Option<usize>, nodes: usize, slots: usize, late: bool| {
+        let mut host = MacroHost::new();
+        host.limits.generated_nodes = nodes;
+        if let Some(memory) = memory {
+            host.evaluator_options.memory_limit = memory;
+        }
+        build_configured(&sources, "app.main", slots, false, host, &[], |r| {
+            r.perturbation = late.then(|| Perturbation {
+                start_delay: Some(Duration::from_millis(5)),
+                ..Default::default()
+            });
+        })
+    };
+    let peak = build(None, 100_000, 1, false).stats.peak_macro_nodes;
+    assert!(peak > 100, "{peak}");
+    // The late builds are compared on both sides of each limit where the
+    // one-slot outcome changes.
+    let (mut failed, mut compared) = (0, 0);
+    for memory in [None, Some(256 << 20)] {
+        let limits = (peak.saturating_sub(40)..=peak + 1).collect::<Vec<_>>();
+        let oracles = (limits.iter())
+            .map(|&nodes| build(memory, nodes, 1, false))
+            .collect::<Vec<_>>();
+        let changes = |at: usize| at > 0 && oracles[at].output != oracles[at - 1].output;
+        for (at, (&nodes, oracle)) in limits.iter().zip(&oracles).enumerate() {
+            failed += usize::from(oracle.output.is_err());
+            if !changes(at) && !(at + 1 < limits.len() && changes(at + 1)) {
+                continue;
+            }
+            compared += 1;
+            for slots in [2, 4] {
+                let built = build(memory, nodes, slots, true);
+                check(oracle, &built, &|| {
+                    format!("{nodes} nodes at {slots} slots, memory limit {memory:?}")
+                });
+            }
+        }
+    }
+    assert!(failed > 20 && compared > 6, "{failed} {compared}");
+}

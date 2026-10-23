@@ -96,6 +96,11 @@ struct Unit {
     /// charges it: until then a demand takes its analysis and leaves its
     /// charges (light-cljs-394, [`CompilationSession::hold_units`]).
     held: bool,
+    /// Whether its namespace's dispatch took it, so that its drain point
+    /// charges it: a demand while another unit is recorded, on any thread,
+    /// records it on its own, as a worker that started it first would have,
+    /// rather than in that recording (light-cljs-442).
+    dispatched: bool,
     /// What its macro-free analysis counted, until the coordinator
     /// charges it ([`UnitCharges`]), and how long the analysis took.
     charges: Option<Box<UnitCharges>>,
@@ -906,6 +911,15 @@ impl SharedCatalog {
     fn held(&self, id: usize) -> bool {
         self.lock().units.get(id).is_some_and(|unit| unit.held)
     }
+    /// Whether unit `id`'s namespace's dispatch took it
+    /// ([`CompilationSession::hold_units`]), even if its drain point has
+    /// begun.
+    fn dispatched(&self, id: usize) -> bool {
+        self.lock()
+            .units
+            .get(id)
+            .is_some_and(|unit| unit.dispatched)
+    }
     fn release_hold(&self, id: usize) {
         if let Some(unit) = self.lock().units.get_mut(id) {
             unit.held = false;
@@ -1357,6 +1371,7 @@ impl CompilationSession {
                                 macro_free: false,
                                 pooled: false,
                                 held: false,
+                                dispatched: false,
                                 charges: None,
                                 time: Default::default(),
                             });
@@ -1842,6 +1857,7 @@ impl CompilationSession {
                     macro_free: false,
                     pooled: false,
                     held: false,
+                    dispatched: false,
                     charges: None,
                     time: Default::default(),
                 });
@@ -2180,6 +2196,7 @@ impl CompilationSession {
         for id in units {
             if let Some(unit) = c.units.get_mut(id) {
                 unit.held = true;
+                unit.dispatched = true;
             }
         }
     }
@@ -2195,12 +2212,11 @@ impl CompilationSession {
         // namespace's units are charged at one point in every build, with
         // or without the cache (light-cljs-394); one no thread has
         // analyzed is recorded for it, as the dispatch records a kept
-        // unit. A demand while another unit is recorded counts in that
-        // recording, as before.
+        // unit. So is one demanded while another unit is recorded, rather
+        // than in that recording, which it joined only when no worker had
+        // started it first (light-cljs-442).
         let take = match take {
-            Take::Charge if !crate::macro_host::MacroFreeUnit::active() && self.shared.held(id) => {
-                Take::Defer
-            }
+            Take::Charge if self.shared.held(id) => Take::Defer,
             Take::Drain => {
                 self.shared.release_hold(id);
                 Take::Drain
@@ -2464,8 +2480,12 @@ fn analyze_unit(
     // serial build charged it.
     // So does a unit the coordinator keeps at its namespace's dispatch,
     // whose drain point charges it (light-cljs-391).
+    // A unit a dispatch took is recorded on its own even inside another's
+    // recording, on any thread: its drain point charges it, as it charges
+    // it when a worker started it before the demand (light-cljs-442).
     let nested = crate::macro_host::MacroFreeUnit::active();
-    let records = !nested && (macro_free || on_worker || held);
+    let own = nested && (held || (on_worker && shared.dispatched(id)));
+    let records = own || (!nested && (macro_free || on_worker || held));
     if records || (nested && !on_worker) {
         // Counted where the unit is charged ([`UnitCharges`]), from what
         // the coordinator charged before it; the unit's trace frame counts
@@ -2522,7 +2542,7 @@ fn analyze_unit(
             // The log is this thread's: the engine logs into it, and so do
             // the core macros the unit expands natively, with or without an
             // engine (light-cljs-432).
-            let logs_gensyms = on_worker && recording.capture;
+            let logs_gensyms = on_worker && recording.capture && !nested;
             let started_log = if logs_gensyms {
                 crate::generated_names::start_log();
                 match engine {
@@ -2532,13 +2552,21 @@ fn analyze_unit(
             } else {
                 Ok(())
             };
+            // A unit recorded on its own inside another's recording, on any
+            // thread, logs into a log of its own, if the thread logs, and
+            // the other's goes on after it, so that its names are its own
+            // charges' wherever it is analyzed; the engine logs into this
+            // thread's log already (light-cljs-442).
+            let nested_log = own.then(crate::generated_names::nest_log);
             let free = crate::macro_host::MacroFreeUnit::enter(name, macro_free, recording, !held);
             let analysis =
                 crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
             let recorded = free.finish();
             // What `gensym` gave on this worker, for the artifact
             // ([`CompilationSession::take_gensyms`]).
-            let gensyms = if logs_gensyms {
+            let gensyms = if let Some(log) = nested_log {
+                Ok(log.finish().unwrap_or_default())
+            } else if logs_gensyms {
                 let logged = crate::generated_names::stop_log();
                 started_log.map(|()| logged)
             } else {
@@ -2572,8 +2600,11 @@ fn analyze_unit(
     if let Some((mut charges, time)) = charges {
         // On a worker, the trace of the unit, whose frame has closed, and
         // of those it demanded, which the coordinator records where it
-        // charges the unit.
-        charges.trace = crate::compile_trace::take_worker_rows();
+        // charges the unit. A unit recorded inside another's recording
+        // leaves its rows in that unit's, whose frame it is in.
+        if !nested {
+            charges.trace = crate::compile_trace::take_worker_rows();
+        }
         shared.record_charges(id, charges, time);
     }
     let diagnostic = analysis.as_ref().err().cloned();

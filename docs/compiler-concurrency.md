@@ -1222,7 +1222,9 @@ The one deterministic ID-order change of this stage is made, at every
 - *Accounting.* A unit a worker analyzes records its form polls, native
   expansions and JavaScript macro expansions (`UnitEvent::Script`) with
   counters of its own, as a macro-free unit's do, and a unit it demands
-  is recorded with it, in its place; the coordinator charges them in unit
+  is recorded with it, in its place (since light-cljs-442, unless a
+  dispatch took that unit, which is recorded on its own and charged at its
+  drain point; see "Stage A"); the coordinator charges them in unit
   order when it takes the analysis, so `--stats`' macro calls and nodes do
   not depend on N. A unit that expanded a JavaScript macro starts the
   coordinator's engine where a serial build's first expansion would have,
@@ -1479,6 +1481,42 @@ top-level pass:
   still differs between N is the documented case below: where a unit's own
   analysis crosses a limit, one slot stops at its dispatch and several
   reach its drain point after later top-level passes, which charge first.
+- *A dispatched unit demanded inside a recording (light-cljs-442).* That
+  test once failed under load at four slots in a QuickJS-only build: at a
+  node limit of 133 the plain build reported `lib.a`'s error at the span of
+  `lib.macros/wrap` (bytes 16..45) where every other build reported
+  `lib.a/f`'s (55..85). `wrap` is macro-free and pooled; `f`, kept at
+  `lib.a`'s dispatch, expands `twice`, whose engine compiles `wrap`. When
+  no worker had started `wrap` yet, the coordinator claimed it inside
+  `f`'s recording, and a demand while a unit is recorded was recorded in
+  that recording, in its place, so `wrap`'s expansions were charged at
+  `lib.a`'s drain point, inside `f`'s, rather than at `lib.macros`'s,
+  where a worker's analysis of it (or the kept analysis with one slot) is
+  charged. A settling build waits for `lib.macros`' pooled units before
+  `lib.a`'s top-level pass, so it never raced. Now a unit its namespace's
+  dispatch took (`CompilationSession::hold_units`) is recorded on its own
+  wherever it is demanded first: the coordinator records it as it records
+  a held unit outside a recording (`Take::Defer`), and a worker inside its
+  unit's recording records it on cells and events of its own; on either
+  thread it logs its `gensym` names in a log of its own
+  (`generated_names::nest_log`) and the demanding unit's log goes on after
+  it (a worker's `--stats-file` rows stay in its unit's). Its drain point
+  charges it, names included, so which thread started it never moves its
+  charges or the captured artifact's names
+  (`worker_isolates::a_dispatched_helper_demanded_inside_a_recording_keeps_its_own_generated_names`).
+  One mark still differs: the unit nesting a worker's nested demand
+  needed (`Accounting::unit_depth`) is not carried in its unit's charges,
+  so a worker's artifact records the drain point's depth, as before
+  (light-cljs-443).
+  `MacroFreeUnit` restores the recording it
+  interrupted (its drop used to clear it, which no nesting reached
+  before). A unit no dispatch took yet, such as one of the namespace in
+  its top-level pass, is still recorded in the demanding unit's
+  recording. `schedule_stress::a_limit_crossed_after_a_demand_of_an_unstarted_pooled_unit_fails_at_the_same_unit`
+  delays every pooled job's start (`Perturbation::start_delay`) and
+  compares each node limit where the one-slot outcome changes, at two and
+  four slots, with workers without and with engines; before the change it
+  failed at once.
 - *Warning mode (light-cljs-393).* With `--warnings`, `Analyzer::body`
   drains a namespace's units after each top-level form until the namespace
   defines a macro, so that its later forms see what earlier units define
@@ -2291,9 +2329,15 @@ output changes once, when stage A lands.
     builds source-macro units at every expansion limit from 1 to the
     build's count and at forty node limits, and
     `exact_boundary_depth_failures_name_the_same_unit_at_one_and_four_slots`
-    at every expansion depth, at one and four slots. One case stays
-    inexact: a limit crossed inside a helper unit that a worker's macro
-    demanded and analyzed inline is charged as the outer unit's event, so
+    at every expansion depth, at one and four slots. Which unit's charges
+    an expansion counts in does not depend on which thread started a
+    unit first: a unit its namespace's dispatch took is recorded on its
+    own even when another unit's analysis demands it first, on any thread,
+    and charged at its own drain point (light-cljs-442, "As built
+    (light-cljs-394)" under "Stage A"). One case stays
+    inexact: a limit crossed inside a helper unit that no dispatch took
+    yet, which a worker's macro
+    demanded and analyzed inline, is charged as the outer unit's event, so
     the error names the same outer unit and the inner call, but its text
     may lack the nested failure's wrapping that the serial build's message
     has (not tested; light-cljs-377).

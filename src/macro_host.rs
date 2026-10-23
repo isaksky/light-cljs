@@ -126,14 +126,17 @@ pub(crate) struct RecordedUnit {
 /// eligibility check and panics with the unit named
 /// ([`forbid_engine_entry`]); and its polls and native expansions are
 /// recorded instead of charged ([`record_poll`], [`record_native_expansion`]),
-/// which [`Self::finish`] returns.
-pub(crate) struct MacroFreeUnit(Option<MacroFreeAnalysis>);
+/// which [`Self::finish`] returns. It holds the recording it interrupts,
+/// if any, which it restores when it finishes or drops: a held unit
+/// demanded while another unit is recorded is recorded on its own
+/// (light-cljs-442).
+pub(crate) struct MacroFreeUnit(Option<Option<MacroFreeAnalysis>>);
 impl MacroFreeUnit {
     /// Record the analysis of unit `name` on this thread; with `forbid`, it
     /// was found macro-free and must not enter an engine. `recording` is
     /// what the compilation records of it beyond its charges.
     pub(crate) fn enter(name: String, forbid: bool, recording: UnitRecording, polls: bool) -> Self {
-        Self(MACRO_FREE_UNIT.with(|unit| {
+        Self(Some(MACRO_FREE_UNIT.with(|unit| {
             unit.replace(Some(MacroFreeAnalysis {
                 name,
                 forbid,
@@ -144,7 +147,7 @@ impl MacroFreeUnit {
                 capture: recording.capture,
                 observations: recording.observe.then(Default::default),
             }))
-        }))
+        })))
     }
     /// Whether this thread records a unit's analysis, whose nested demands
     /// it then records too, in their place.
@@ -153,7 +156,7 @@ impl MacroFreeUnit {
     }
     /// What the analysis recorded, in order.
     pub(crate) fn finish(mut self) -> RecordedUnit {
-        let previous = self.0.take();
+        let previous = self.0.take().flatten();
         let analysis = MACRO_FREE_UNIT.with(|unit| unit.replace(previous));
         let (events, observations) =
             analysis.map_or_else(Default::default, |a| (a.events, a.observations));
@@ -211,8 +214,9 @@ fn record_capture(event: impl FnOnce() -> UnitEvent) -> bool {
 }
 impl Drop for MacroFreeUnit {
     fn drop(&mut self) {
-        let previous = self.0.take();
-        MACRO_FREE_UNIT.with(|unit| *unit.borrow_mut() = previous);
+        if let Some(previous) = self.0.take() {
+            MACRO_FREE_UNIT.with(|unit| *unit.borrow_mut() = previous);
+        }
     }
 }
 /// Panic if this thread analyzes a macro-free unit: `what` reached the

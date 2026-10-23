@@ -428,6 +428,55 @@ fn units_on_workers_keep_the_one_slot_manifest_and_artifacts() {
 }
 
 #[test]
+fn a_dispatched_helper_demanded_inside_a_recording_keeps_its_own_generated_names() {
+    // `user` expands `mk`, which names one symbol, calls `helper`, defined
+    // after `user` and so not analyzed yet, and names another; `helper`'s
+    // `and` names one natively. Recorded on its own wherever it is demanded
+    // (light-cljs-442), `helper` keeps its name in its own charges on the
+    // coordinator as on a worker, so the captured artifact is the one-slot
+    // build's, but for the unit nesting a worker's nested demand needed,
+    // which its charge does not carry (as before light-cljs-442;
+    // light-cljs-443).
+    let unnested = |recorded: &Recorded| {
+        let mut artifacts = recorded.artifacts.clone();
+        for (_, artifact) in &mut artifacts {
+            if let Ok(artifact) = artifact
+                && let Some(accounting) = &mut artifact.accounting
+            {
+                accounting.unit_depth = 0;
+            }
+        }
+        artifacts
+    };
+    let sources = Sources::new();
+    sources
+        .write(
+            "app/a.cljs",
+            r#"(ns app.a)
+(declare helper)
+(defmacro mk [] (let [a (gensym "a")] (helper) (let [b (gensym "b")] `(str '~a '~b))))
+(defn user [] (mk))
+(defn helper [] (and true true))"#,
+        )
+        .write(
+            "app/main.cljs",
+            r#"(ns app.main (:require [app.a :as a]))
+(js/console.log (count (a/user)))"#,
+        );
+    let serial = recorded(&sources, "app.main", 1);
+    assert!(serial.output.is_ok(), "{:?}", serial.output);
+    assert!(serial.artifacts.iter().all(|(_, a)| a.is_ok()));
+    for slots in [2, 4] {
+        for _ in 0..3 {
+            let pooled = recorded(&sources, "app.main", slots);
+            assert_eq!(pooled.output, serial.output, "{slots} slots");
+            assert_eq!(pooled.manifest, serial.manifest, "{slots} slots");
+            assert_eq!(unnested(&pooled), unnested(&serial), "{slots} slots");
+        }
+    }
+}
+
+#[test]
 fn a_persistent_worker_never_takes_a_released_macro_generation_for_a_later_one() {
     // Every `v` generation is captured by the deferred function after it,
     // and released once `app.a`'s units complete. `app.b`'s macros are

@@ -41,6 +41,10 @@ pub struct Perturbation {
     /// As [`Self::main_engine_delay`], but between the engine's construction
     /// and its attachment to the session: the attachment fails instead.
     pub main_attach_delay: Option<Duration>,
+    /// A worker waits this long before each job it claimed, so that the
+    /// coordinator demands a pooled unit before any worker starts it, as on
+    /// a loaded machine (light-cljs-442).
+    pub start_delay: Option<Duration>,
     /// Every job this pool started (the parse queue gets a log of its own),
     /// in start order: the deque index of the worker
     /// that ran it (0 on the inline path) and its key. A test prints it as
@@ -103,6 +107,9 @@ impl Perturbation {
     /// boundary: most boundaries pass, some yield, a few sleep up to a
     /// millisecond, long enough for a peer to claim, steal or finish.
     pub(super) fn pause(&self, key: u64, worker: usize, boundary: Boundary) {
+        if let (Boundary::Start, Some(delay)) = (boundary, self.start_delay) {
+            thread::sleep(delay);
+        }
         let hash = mix(self.seed ^ mix(key ^ ((worker as u64) << 40) ^ ((boundary as u64) << 56)));
         match hash % 32 {
             0..=1 => thread::sleep(Duration::from_micros(200 + (hash >> 8) % 800)),

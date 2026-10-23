@@ -1929,7 +1929,7 @@ fn check_lowered_limits(input: Input<'_>, printed: &str) -> Captured {
 /// top-level pass expands macros and demands a helper unit of the first
 /// (`wrap`, through `twice`) before that namespace's drain point, and an
 /// entry that expands one more.
-const OVERLAP: [(&str, &str); 4] = [
+pub(crate) const OVERLAP: [(&str, &str); 4] = [
     (
         "lib/macros.cljs",
         "(ns lib.macros) (defn wrap [x] (list 'inc x)) (defmacro twice [x] (list '* 2 (wrap x))) (defmacro wide [n] (cons 'do (repeat n 1)))",
