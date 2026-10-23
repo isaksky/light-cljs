@@ -513,3 +513,41 @@ faster than the calls, though it is still small (about 0.3 s at 400k).
 Preparation (4.8x) is the cache-size effect light-cljs-417 recorded. This
 measurement pellet files no follow-up; each term needs its own look at the
 macro environment import and the engine heap.
+
+### Core macros expanded in Rust (light-cljs-426)
+
+At `dd1c1be`, a probe around each branch of `Analyzer::expand_macro`
+(`--jobs 1`, `--no-cache`) found 28,090 core macro calls expanded in the
+compile-time engine on Penpot `app.main --optimize none` (6.27 s, 223 us per
+call) and 25,466 on the 200k project (5.76 s), almost all of it the round
+trip: building and importing `&env`, converting the call and its arguments,
+and converting the result back. `and`, `or`, `when`, `when-not`, `if-not`,
+`cond`, `condp`, `->`, `->>`, `cond->`, `cond->>`, `some->`, `some->>`,
+`case`, `if-let`, `when-let`, `if-some`, `when-some`, `when-first`, `js-obj`,
+`defmethod`, `defmulti`, `vswap!`, `for` and `doseq` now expand in Rust
+(`src/native_core_macros.rs`); a macro that allocates names asks the engine's
+`gensym` for all of them in one call. With the same probe afterwards, 300
+core calls (0.06 s) still reach the engine on Penpot (`..`, `as->`,
+`hash-map`, `doto`, three `js-obj` of more than eight entries) and none on the
+200k project.
+
+Parent (`dd1c1be`) and this change alternated, 3 rounds, load average 3.1 to
+5.8, medians (`bb benchmarks/penpot.bb DIR main-none`; `release bench
+--no-cache --stats` in the 200k project):
+
+| Build | parent | 426 | change | parent peak RSS | 426 peak RSS |
+|---|---|---|---|---|---|
+| Penpot `app.main --optimize none` | 21.09 s | 15.09 s | -28.4% | 868 MB | 855 MB |
+| 200k advanced | 14.07 s | 8.98 s | -36.2% | 1.17 GB | 1.07 GB |
+| Penpot `app.main` advanced (one run each) | 22.75 s | 17.55 s | -22.9% | 1.11 GB | 1.11 GB |
+| 100k `none` (one run each) | 5.84 s | 3.35 s | -42.6% | 544 MB | 466 MB |
+| 100k advanced (one run each) | 6.60 s | 4.14 s | -37.3% | 708 MB | 641 MB |
+
+On the 200k project `trace.units.host-ms` fell from 7,454 to 2,787 and
+`time.analysis-ms` from 3,265 to 2,641; `macro-calls` (94,592) and the
+per-namespace macro-call table are unchanged. Penpot `main-none` and
+`main-advanced` and the 100k project at `none` and advanced are
+byte-identical to the parent's, and `bb benchmarks/generated-project/test.bb
+--light` passes. Most of what is left of macro time is user `defmacro`s
+(20,126 calls, 10.7 s on Penpot with the probe), which light-cljs-427 takes
+up.

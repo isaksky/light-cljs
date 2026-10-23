@@ -47,7 +47,9 @@ source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─
   heap: V8 for native clean compilations, QuickJS for interactive sessions and
   WebAssembly (`macro_host.rs`, `compiler_evaluator.rs`). Core macros
   are bootstrapped from `src/compiler_core_macros.cljs` and
-  `src/compiler_sequence_macros.cljs`; user macros are ordinary `defmacro`s in
+  `src/compiler_sequence_macros.cljs`; the most used ones (`cond`, `when`,
+  `and`, `->`, `case`, `for`, `doseq` and others) expand in Rust to the same
+  forms (`native_core_macros.rs`). User macros are ordinary `defmacro`s in
   `.cljs`/`.cljc` files. Ordinary helpers that macros call are compiled on demand
   (`compilation_session.rs`).
 - **Application preparation** (`src/application.rs`) conservatively removes

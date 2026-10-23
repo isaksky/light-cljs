@@ -293,6 +293,12 @@ fn innermost() -> Option<Rc<Scope>> {
     SCOPES.with(|scopes| scopes.borrow().last().cloned())
 }
 
+/// Whether this thread is in a scope, where the compile-time runtime's
+/// `gensym` numbers in the scope and skips no name the heap decoded.
+pub(crate) fn scoped() -> bool {
+    SCOPES.with(|scopes| !scopes.borrow().is_empty())
+}
+
 thread_local! {
     /// The heap whose `gensym` was last put in a scope on this thread, and
     /// that scope's serial, so expanding again in the same one costs nothing.

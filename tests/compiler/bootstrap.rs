@@ -205,10 +205,11 @@ fn source_declarations_are_compile_time_only_and_can_use_ecmascript() {
 #[test]
 fn bootstrap_failure_and_expansion_limits_leave_reused_host_clean() {
     let mut host = MacroHost::new();
+    // `while` expands in the engine, which a poll budget of zero fails.
     host.evaluator_options.poll_budget = 0;
-    assert!(compile_with_macros("(when true 7)", &mut host).is_err());
+    assert!(compile_with_macros("(while false 7)", &mut host).is_err());
     host.evaluator_options = EvaluatorOptions::default();
-    assert!(compile_with_macros("(when true 7)", &mut host).is_ok());
+    assert!(compile_with_macros("(while false 7)", &mut host).is_ok());
     host.limits.expansions = 1;
     let error = compile_with_macros("(when true (when true 7))", &mut host)
         .unwrap_err()

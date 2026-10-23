@@ -11021,6 +11021,35 @@ impl Analyzer<'_> {
                 return self.import_form(&expanded).map(Some);
             }
         }
+        // The hottest core macros expand natively, as their definitions
+        // would (light-cljs-426); a call one would reject is left to it.
+        if let Some(core_name) = core_name
+            .as_deref()
+            .filter(|name| crate::native_core_macros::native(name))
+        {
+            if self.expansion_depth_exceeded(self.macro_depth) {
+                return Err(error(
+                    "compiler macro expansion depth limit exceeded".into(),
+                ));
+            }
+            self.check_compiler_sets(call)?;
+            let form = self
+                .compiler_read_form(call)
+                .map_err(|e| error(e.to_string()))?;
+            if let Some(expanded) = self
+                .macro_host
+                .expand_core_native(
+                    core_name,
+                    &form,
+                    self.namespace,
+                    (&name, &call_span),
+                    self.engine,
+                )
+                .map_err(error)?
+            {
+                return self.import_form(&expanded).map(Some);
+            }
+        }
         if let Some(core_name) = core_name {
             if self.expansion_depth_exceeded(self.macro_depth) {
                 return Err(error(

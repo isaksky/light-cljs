@@ -421,3 +421,4 @@ impl FusedIterator for Tokenizer<'_> {}
 
 mod compiler_bootstrap;
 mod compiler_evaluator;
+mod native_core_macros;

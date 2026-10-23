@@ -1720,7 +1720,7 @@ const WIDE_LAZY: [(&str, &str); 4] = [
 #[test]
 fn elided_list_environments_preserve_node_limits() {
     let zeros = vec!["0"; 1000].join(" ");
-    let a = format!("(ns lib.a {{:padding ({zeros})}}) (def a (when true 1))");
+    let a = format!("(ns lib.a {{:padding ({zeros})}}) (def a (doto 1))");
     let files = [
         ("lib/b.cljs", "(ns lib.b) (def b 2)"),
         ("lib/a.cljs", a.as_str()),

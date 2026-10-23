@@ -2371,7 +2371,24 @@ Core expansion supports `let`, `fn`, `defn`, `defn-`, `defmacro`, `if-not`,
 and more. Binding and declaration forms such as `let`, `fn` and `defn` expand in
 Rust (`compiler_binding_macros`, `compiler_destructuring`); control macros live in
 `src/compiler_core_macros.cljs` and `for`/`doseq` in
-`src/compiler_sequence_macros.cljs`. Destructuring evaluates each
+`src/compiler_sequence_macros.cljs`. The most used of these (`and`, `or`, `when`,
+`when-not`, `if-not`, `cond`, `condp`, `->`, `->>`, `cond->`, `cond->>`, `some->`,
+`some->>`, `case`, `if-let`, `when-let`, `if-some`, `when-some`, `when-first`,
+`js-obj`, `defmethod`, `defmulti`, `vswap!`, `for` and `doseq`) expand in Rust
+instead (`native_core_macros`, light-cljs-426), to the forms their definitions
+give: the same data and metadata, the same spans (a primitive value the engine
+returns takes the span of the last argument of that value, as its conversion
+gives), names from the compile-time runtime's `gensym` in the same order, and the
+same expansion and node charges, and the call's conversion room noted in a
+namespace's accounting. A call a definition rejects, one the engine's conversion
+refuses (nested past its depth, or larger than the node limit), one whose result
+the Rust side cannot be sure of (a `js-obj` of more than eight entries, keys whose
+equality is the engine's, a very wide `for` or `doseq`), and every call outside
+a scope of generated names, where `gensym` skips the names the engine decoded, is
+left to the definition, which fails or expands as before. The environment is not
+converted for a native expansion, so under a lowered node limit a call whose
+`&env` the engine could not convert now expands. Differential tests compare both
+expansions. Destructuring evaluates each
 initializer once, preserves indexed-access versus sequence traversal, and supplies
 `seq-to-map-for-destructuring` for keyword argument lists, singleton maps and
 trailing maps. `:or` is an eager `get` argument: missing keys use defaults, while
