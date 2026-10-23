@@ -5938,3 +5938,164 @@ lowering off and labels numbered (without the restart per function),
 and this change alternated, two runs each, load 2.7 to 3.9): output
 24,649,297 to 24,646,495 bytes, wall 62.6 and 62.8 s before, 60.1 and
 62.6 s after, peak RSS 1.05 and 1.03 GB before, 1.05 and 1.05 GB after.
+
+## QuickJS path — October 23, 2026
+
+light-cljs-435 measures where a QuickJS-only build (`--no-default-features`)
+spends its JavaScript time, so that the QuickJS path's optimizations can be
+chosen from data. QuickJS `--stats` now reports engine time as V8 builds do.
+`trace.engine-ms`, `trace.top-level.engine-ms`, `trace.unit.engine-ms` and
+`trace.engine.entries` time each JavaScript service call
+(`evaluator::traced`, which does what `v8_evaluator::invoke` does). The
+Rust-side descriptor encoding and decoding around a call is not counted, for
+either engine.
+
+Setup: master `6c8d49f` plus the counter commit, on an Apple M3 Ultra
+(Virtual) with 24 vCPUs. The V8 binary is `cargo build --release`, and the
+QuickJS binary is the same with `--no-default-features --target-dir
+target/quickjs`. Builds are cold, `--jobs 1`, `--no-cache --stats`. The 200k
+project is the seed-42 generated project (`release bench`). Penpot is
+`app.main --optimize none` with `benchmarks/penpot.bb`'s flags.
+
+### Whole builds
+
+Three alternating rounds of V8 at the parent (`6c8d49f`), V8 with the counter,
+and QuickJS with the counter. The table gives medians, with the load average
+at each run's start:
+
+| Build | V8 parent | V8 | QuickJS | QuickJS / V8 |
+| --- | ---: | ---: | ---: | ---: |
+| 200k wall | 7.69 s | 7.68 s | 11.03 s | 1.44x |
+| 200k `trace.engine-ms` | 1,009 | 1,004 | 4,402 | 4.4x |
+| 200k peak RSS | 1.04 GB | 1.04 GB | 0.95 GB | |
+| Penpot wall | 13.51 s | 13.29 s | 65.95 s | 5.0x |
+| Penpot `trace.engine-ms` | 7,310 | 7,301 | 57,665 | 7.9x |
+| Penpot peak RSS | 0.79 GB | 0.79 GB | 0.70 GB | |
+
+The 200k rounds ran at load 3.7 to 4.5. Penpot's first two rounds ran at
+3.0 to 3.9, and its third at 7.4 to 16.8, because another process started.
+The two instrumented rounds below ran at load 2.8 to 3.5, where QuickJS
+Penpot took 57.9 s twice and its engine time was 51.1 s. The V8 parent and
+V8 with the counter make the same 255,183 (200k) and 548,210 (Penpot) engine
+entries and produce byte-identical output. Penpot's output is also
+byte-identical across engines (sha256 `dbf5cfcf91e48aaa…`, and 200k
+`1a75bc87b26f3121…`). Time outside the engine is about equal: 200k 6.7 s V8
+against 6.6 s QuickJS, and Penpot 6.0 s against 6.8 s in the instrumented
+runs.
+
+### Where the JavaScript time goes
+
+These numbers come from temporary exclusive timers, which were not
+committed. Each Rust-side step of a JavaScript macro expansion
+(`MacroHost::expand_javascript`) got a context timer. Each JavaScript service
+call got a leaf timer under the innermost context. The registry's root
+parsing and initializers (`compiler_roots.js`) were timed through a string
+service, and so were the unit-demand, build and gensym callbacks. Times are
+exclusive: a unit demanded inside a macro body is not counted as the body.
+The table gives the mean of two runs per engine, in ms. With the timers on,
+wall time was within 2% of the uninstrumented runs.
+
+| Part | 200k V8 | 200k QuickJS | ratio | Penpot V8 | Penpot QuickJS | ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Macro bodies (`call`) | 168 | 863 | 5.1x | 4,559 | 37,182 | 8.2x |
+| Bridge, call-form import (`importMacroForm`) | 125 | 422 | 3.4x | 315 | 1,240 | 3.9x |
+| Bridge, snapshot walk of the imported form (`exportForm`) | 76 | 427 | 5.6x | 241 | 1,288 | 5.3x |
+| Bridge, `&env` import (`importEnvironment`) | 147 | 654 | 4.4x | 1,001 | 5,433 | 5.4x |
+| Bridge, argument preparation (`macroArguments`) | 80 | 563 | 7.0x | 307 | 1,598 | 5.2x |
+| Bridge, result export (`exportForm`) | 150 | 955 | 6.4x | 544 | 3,708 | 6.8x |
+| Bridge, Rust-side encode and decode (all four) | 384 | 448 | 1.2x | 1,539 | 2,182 | 1.4x |
+| Reader registration and frontier | 59 | 75 | 1.3x | 75 | 146 | 1.9x |
+| Compile-time units and helper roots | 178 | 238 | 1.3x | 67 | 141 | 2.1x |
+| Runtime boot (engine, core runtime, bootstrap macros) | 24 | 42 | 1.8x | 23 | 47 | 2.0x |
+| Other engine calls (release, gensym, bridge checks) | 54 | 126 | 2.3x | 116 | 330 | 2.8x |
+| Garbage collection | 54 | about 140 | 2.6x | 456 | about 800 | 1.8x |
+
+Some rows need a note:
+
+- Bodies: there are 5,226 JavaScript macro calls at 200k and 20,426 on
+  Penpot. A Penpot body costs 223 us in V8 and 1,820 us in QuickJS.
+- Bridge: the JavaScript side of the bridge (the five bridge rows above
+  the Rust row) costs 578 against 3,022 ms at 200k, and 2,407 against
+  13,267 ms on Penpot.
+- Compile-time units: this row is bundle and root evaluation. QuickJS has
+  no `registerRoot` fast path: it evaluates each of the 16,633 (200k) and
+  13,984 (Penpot) root registrations as source, at 6 us each against
+  V8's 1 us.
+- Runtime boot: the main engine's creation took 28 to 30 ms in QuickJS and
+  9 to 10 ms in V8.
+- GC: for V8 this is the main-thread pause that `LIGHT_V8_FLAGS=--trace-gc`
+  reports. For QuickJS it is the cycle collector's share of a `sample`
+  profile: 1.3% at 200k and 1.8% on Penpot. Collection happens inside the
+  other rows and is part of their times.
+
+A `sample` profile (1 ms) of the QuickJS Penpot build has these
+top-of-stack shares:
+
+| Where | Share |
+| --- | ---: |
+| The interpreter loop and builtins (`JS_CallInternal` alone 56%) | 61% |
+| Objects and properties (`JS_GetPropertyInternal`, shapes, `JS_DefineProperty`) | 7.3% |
+| Allocation, frees and memcpy | 7.0% |
+| `Map` and `WeakMap` (`js_map_has`, `js_map_get`, `map_hash_key`) | 5.8% |
+| Rust | 5.1% |
+| Strings and equality (`js_strict_eq2`, `js_eq_slow`) | 4.8% |
+| Atoms and string hashing (`hash_string`, `__JS_NewAtom`) | 3.8% |
+| The cycle collector | 1.8% |
+| The parser and bytecode compiler | 0.2% |
+
+At 200k, Rust is 34% of the samples and the interpreter 28%.
+
+### Macro calls by kind
+
+The macro probe times each outermost `Analyzer::expand_macro` branch,
+including the units it demands. It was temporary and not committed. Each
+cell gives calls, total time and the time per call:
+
+| Kind | Penpot V8 | Penpot QuickJS | 200k V8 | 200k QuickJS |
+| --- | ---: | ---: | ---: | ---: |
+| User `defmacro` | 20,126; 8.92 s; 443 us | 20,126; 53.22 s; 2,645 us | 5,226; 1.28 s; 246 us | 5,226; 4.55 s; 871 us |
+| Core macros in JavaScript | 300; 63 ms; 211 us | 300; 231 ms; 770 us | none | none |
+| Native core macros | 45,968; 0.62 s; 13.5 us | 45,968; 0.62 s; 13.5 us | 64,087; 0.63 s; 9.8 us | 64,087; 0.61 s; 9.4 us |
+
+Penpot's largest macros in QuickJS (and V8):
+
+- `mf/defc`: 1,033 calls, 21.4 s (3.4 s).
+- `precompile-cljs-grammar`: 1 call, 9.2 s (0.91 s).
+- `mf/html`: 105 calls, 4.2 s (0.57 s).
+- `stl/css`: 5,131 calls, 2.8 s (0.59 s).
+- `app.util.object/add-properties!`: 44 calls, 2.4 s (0.38 s).
+
+These are compute-heavy macro bodies, which QuickJS interprets where V8
+compiles them.
+
+### Levers for QuickJS, largest first
+
+1. Parallel QuickJS runtimes (light-cljs-436). Penpot spends 30.0 s of
+   QuickJS engine time in deferred units against 21.1 s in top levels, and
+   200k spends 2.5 s against 1.8 s. At V8's measured scaling, a pool should
+   remove most of the unit share from the wall time: about 20 to 25 s of
+   Penpot's 58 s, and 2 to 3 s of 200k's 11 s.
+2. Faster macro bodies in QuickJS's interpreter: the runtime's hot paths,
+   the `Map`/`WeakMap` payload stores and property-heavy code. Bodies take
+   37.2 s on Penpot (8.2x V8) and 0.86 s at 200k. The profile has 21% of the
+   samples outside the bytecode loop proper, in maps, properties, atoms and
+   equality. A 20% cut of body time saves about 7 s on Penpot (filed as
+   light-cljs-439).
+3. A QuickJS-specific form bridge: a compact or typed-array transfer,
+   fewer property reads, and no snapshot walk of a form the compiler has
+   just encoded. The JavaScript side costs 13.3 s on Penpot (5.5x V8) and
+   3.0 s at 200k (5.2x). Without `&env`, which light-cljs-427 covers, the
+   form, snapshot, argument and export rows take 7.8 s on Penpot and 2.4 s
+   at 200k. Bringing them to 2x V8 saves about 5.0 s and 1.5 s (filed as
+   light-cljs-440).
+4. A lazy or elided `&env` (light-cljs-427 already proposes it for both
+   engines). `importEnvironment` takes 5.4 s on Penpot and 0.65 s at 200k
+   in QuickJS, plus 0.8 s and 0.1 s of Rust-side encoding. Skipping it for
+   macros that cannot read it saves up to that much.
+5. Root registration without source evaluation (a QuickJS `registerRoot`
+   fast path, as V8 has) and cached namespace-registration functions:
+   about 0.1 s on each project. A QuickJS bytecode cache for the runtime
+   and the bootstrap macros saves less than boot's 42 to 47 ms per build,
+   or per worker runtime once light-cljs-436 starts several. More native
+   core macros can save at most the 231 ms that core macros still spend in
+   JavaScript on Penpot. These three are small.
