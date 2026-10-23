@@ -1794,23 +1794,30 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
         assert_eq!(unit("app.macros/outer")[8], unit("app.macros/inner")[5]);
         // Positions are the forms' lines.
         assert_eq!(unit("app.macros/plain")[3], "9");
-        // Only the units that run a JavaScript macro enter the host.
-        if cfg!(feature = "v8-macros") {
-            let host: Vec<_> = units.iter().map(|row| (row[2], row[11])).collect();
-            assert_eq!(
-                host,
-                [
-                    ("app.macros/inner", "0"),
-                    ("app.macros/outer", "1"),
-                    ("app.macros/bumped", "1"),
-                    ("app.macros/native", "0"),
-                    ("app.macros/plain", "0"),
-                ]
-            );
-            assert_eq!(value("trace.units.host"), 2.0);
-            assert_eq!(value("trace.units.without-macro-calls"), 1.0);
-            assert!(value("trace.engine-ms") > 0.0);
-        }
+        // Only the units that run a JavaScript macro enter the host, with
+        // either engine: QuickJS's service calls are timed as V8's are
+        // (light-cljs-435).
+        let host: Vec<_> = units.iter().map(|row| (row[2], row[11])).collect();
+        assert_eq!(
+            host,
+            [
+                ("app.macros/inner", "0"),
+                ("app.macros/outer", "1"),
+                ("app.macros/bumped", "1"),
+                ("app.macros/native", "0"),
+                ("app.macros/plain", "0"),
+            ],
+            "--jobs {jobs}: {trace}"
+        );
+        assert_eq!(value("trace.units.host"), 2.0);
+        assert_eq!(value("trace.units.without-macro-calls"), 1.0);
+        assert!(value("trace.engine-ms") > 0.0, "{stderr}");
+        assert!(value("trace.engine.entries") > 0.0, "{stderr}");
+        // The units that run a macro spend engine time, which is part of
+        // the whole.
+        let parts = value("trace.top-level.engine-ms") + value("trace.unit.engine-ms");
+        assert!(value("trace.unit.engine-ms") > 0.0, "{stderr}");
+        assert!(parts <= value("trace.engine-ms") + 0.01, "{stderr}");
     }
     // `--stats-file` needs a path, and a namespace compilation.
     let output = light_cljs(&["--compile", "--text", "1", "--stats-file"]);

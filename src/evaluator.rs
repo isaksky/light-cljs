@@ -702,11 +702,15 @@ impl Evaluator {
                 // While a trace records, the check names the frame the
                 // entry ran in for its root reads (`compile_trace::frame`).
                 match crate::compile_trace::frame() {
-                    Some(frame) => ctx
-                        .eval::<Object, _>("__lightEvaluator")?
-                        .get::<_, Function>("checkBridge")?
-                        .call::<_, ()>((frame,))?,
-                    None => ctx.eval::<(), _>("__lightEvaluator.checkBridge()")?,
+                    Some(frame) => {
+                        let check = ctx
+                            .eval::<Object, _>("__lightEvaluator")?
+                            .get::<_, Function>("checkBridge")?;
+                        traced("checkBridge", || check.call::<_, ()>((frame,)))?
+                    }
+                    None => traced("checkBridge", || {
+                        ctx.eval::<(), _>("__lightEvaluator.checkBridge()")
+                    })?,
                 }
                 Ok(value)
             });
@@ -777,7 +781,7 @@ impl Evaluator {
         self.with_active(|active| {
             let index = active.enter(|ctx| {
                 let f: Function = ctx.eval("__lightEvaluator.errorData")?;
-                f.call(())
+                traced("errorData", || f.call(()))
             })?;
             let id = ValueId {
                 session: self.generation,
@@ -795,7 +799,7 @@ impl Evaluator {
             let id = active.check(id)?;
             active.enter(|ctx| {
                 let f: Function = ctx.eval("__lightEvaluator.validate")?;
-                f.call((id,))
+                traced("validate", || f.call((id,)))
             })
         })
     }
@@ -901,7 +905,9 @@ impl Evaluator {
             let one = create(false)?;
             let all = create(true)?;
             let install: Function = ctx.eval("__lightEvaluator.formServices")?;
-            install.call((one, all, limits.nodes, limits.depth))
+            traced("formServices", || {
+                install.call((one, all, limits.nodes, limits.depth))
+            })
         })
     }
     /// Install a compiler service that returns emitted source for a plain request ID.
@@ -1490,7 +1496,9 @@ impl MacroEvaluator for Evaluator {
                     .borrow_mut()
                     .encode_environment(&ctx, data, &self.control, limits)?;
             let import: Function = ctx.eval("__lightEvaluator.importEnvironment")?;
-            let result: Array = import.call((descriptor, limits.nodes, limits.depth))?;
+            let result: Array = traced("importEnvironment", || {
+                import.call((descriptor, limits.nodes, limits.depth))
+            })?;
             let index = result.get(0)?;
             let snapshot = (|| {
                 let snapshots: Array = result.get(1)?;
@@ -1540,10 +1548,7 @@ impl MacroEvaluator for ActiveEvaluator<'_, '_> {
     fn compiler_frontier(&self, next: Option<usize>) -> Result<(), EvalError> {
         // A frontier transition has no result to retain and no source to parse.
         // Keep the normal control/error boundary, including compiler reentry.
-        self.enter(|_| {
-            let f: Function = self.services.get("compilerFrontier")?;
-            f.call((next,))
-        })
+        self.enter(|_| self.service("compilerFrontier", (next,)))
     }
     fn heap(&self) -> usize {
         Rc::as_ptr(self.bridge) as usize
@@ -1564,8 +1569,7 @@ impl MacroEvaluator for ActiveEvaluator<'_, '_> {
         native: bool,
     ) -> Result<(), EvalError> {
         self.enter(|_| {
-            let f: Function = self.services.get("gensymScope")?;
-            f.call::<_, ()>((serial as f64, prefix, retired, native))
+            self.service::<_, ()>("gensymScope", (serial as f64, prefix, retired, native))
         })
     }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
@@ -1610,8 +1614,10 @@ impl MacroEvaluator for ActiveEvaluator<'_, '_> {
                 self.bridge
                     .borrow_mut()
                     .encode_environment(&ctx, data, self.control, limits)?;
-            let import: Function = self.services.get("importEnvironment")?;
-            let result: Array = import.call((descriptor, limits.nodes, limits.depth))?;
+            let result: Array = self.service(
+                "importEnvironment",
+                (descriptor, limits.nodes, limits.depth),
+            )?;
             let index = result.get(0)?;
             let snapshot = (|| {
                 let snapshots: Array = result.get(1)?;
@@ -1673,6 +1679,18 @@ pub struct ActiveEvaluator<'a, 'js> {
 fn release_failed_import(ctx: &Ctx<'_>, index: u64, error: rquickjs::Error) -> rquickjs::Error {
     release_failed_imports(ctx, &[index], error)
 }
+/// Run `call`, one JavaScript service call, as engine time of the
+/// compile trace, as `v8_evaluator::invoke` does for V8: its time goes to
+/// the innermost frame, and Rust called back from it counts unless it opens
+/// a frame of its own.
+#[cfg(light_quickjs)]
+#[inline]
+fn traced<T>(service: &str, call: impl FnOnce() -> rquickjs::Result<T>) -> rquickjs::Result<T> {
+    let entered = crate::compile_trace::engine_enter();
+    let result = call();
+    crate::compile_trace::engine_exit(entered, service);
+    result
+}
 #[cfg(light_quickjs)]
 fn release_failed_imports(
     ctx: &Ctx<'_>,
@@ -1699,14 +1717,23 @@ impl<'js> ActiveEvaluator<'_, 'js> {
     pub fn control(&self) -> ExecutionControl {
         self.control.clone()
     }
+    /// Call the evaluator service `name`, its time counted as engine time.
+    fn service<A, R>(&self, name: &str, args: A) -> rquickjs::Result<R>
+    where
+        A: rquickjs::function::IntoArgs<'js>,
+        R: rquickjs::FromJs<'js>,
+    {
+        let f: Function = self.services.get(name)?;
+        traced(name, || f.call(args))
+    }
     fn enter<T>(&self, f: impl FnOnce(Ctx<'js>) -> rquickjs::Result<T>) -> Result<T, EvalError> {
         self.control.poll()?;
         let result = f(self.ctx.clone())
             .and_then(|value| {
                 let check = self.services.get::<_, Function>("checkBridge")?;
                 match crate::compile_trace::frame() {
-                    Some(frame) => check.call::<_, ()>((frame,))?,
-                    None => check.call::<_, ()>(())?,
+                    Some(frame) => traced("checkBridge", || check.call::<_, ()>((frame,)))?,
+                    None => traced("checkBridge", || check.call::<_, ()>(()))?,
                 }
                 Ok(value)
             })
@@ -1735,10 +1762,7 @@ impl<'js> ActiveEvaluator<'_, 'js> {
     }
     /// Execute a compiler unit produced by emit_js_unit against this heap's runtime.
     pub fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
-        let index = self.enter(|_| {
-            let f: Function = self.services.get("evaluate")?;
-            f.call((source,))
-        })?;
+        let index = self.enter(|_| self.service("evaluate", (source,)))?;
         Ok(ValueId {
             session: self.generation,
             index,
@@ -1760,10 +1784,7 @@ impl<'js> ActiveEvaluator<'_, 'js> {
             .iter()
             .map(|id| self.check(*id))
             .collect::<Result<Vec<_>, _>>()?;
-        let index = self.enter(|_| {
-            let f: Function = self.services.get("call")?;
-            f.call((function, arguments))
-        })?;
+        let index = self.enter(|_| self.service("call", (function, arguments)))?;
         Ok(ValueId {
             session: self.generation,
             index,
@@ -1771,20 +1792,11 @@ impl<'js> ActiveEvaluator<'_, 'js> {
     }
     pub(crate) fn bind(&self, name: &str, id: ValueId, core: bool) -> Result<(), EvalError> {
         let id = self.check(id)?;
-        self.enter(|_| {
-            let f: Function = self
-                .services
-                .get(if core { "coreBinding" } else { "bind" })?;
-            f.call((name, id))
-        })
+        self.enter(|_| self.service(if core { "coreBinding" } else { "bind" }, (name, id)))
     }
     pub(crate) fn lookup(&self, name: &str, core: bool) -> Result<ValueId, EvalError> {
-        let index = self.enter(|_| {
-            let f: Function = self
-                .services
-                .get(if core { "coreLookup" } else { "lookup" })?;
-            f.call((name,))
-        })?;
+        let index =
+            self.enter(|_| self.service(if core { "coreLookup" } else { "lookup" }, (name,)))?;
         Ok(ValueId {
             session: self.generation,
             index,
@@ -1792,31 +1804,19 @@ impl<'js> ActiveEvaluator<'_, 'js> {
     }
     pub fn number(&self, id: ValueId) -> Result<f64, EvalError> {
         let id = self.check(id)?;
-        self.enter(|_| {
-            let f: Function = self.services.get("number")?;
-            f.call((id,))
-        })
+        self.enter(|_| self.service("number", (id,)))
     }
     pub fn string(&self, id: ValueId) -> Result<String, EvalError> {
         let id = self.check(id)?;
-        self.enter(|_| {
-            let f: Function = self.services.get("string")?;
-            f.call((id,))
-        })
+        self.enter(|_| self.service("string", (id,)))
     }
     pub fn print(&self, id: ValueId) -> Result<String, EvalError> {
         let id = self.check(id)?;
-        self.enter(|_| {
-            let f: Function = self.services.get("print")?;
-            f.call((id,))
-        })
+        self.enter(|_| self.service("print", (id,)))
     }
     pub fn release(&self, id: ValueId) -> Result<(), EvalError> {
         let id = self.check(id)?;
-        self.enter(|_| {
-            let f: Function = self.services.get("release")?;
-            f.call((id,))
-        })
+        self.enter(|_| self.service("release", (id,)))
     }
     /// Convert owned compiler forms directly into canonical values in this heap.
     pub fn import_form(&self, form: &Form, limits: ConversionLimits) -> Result<ValueId, EvalError> {
@@ -1837,8 +1837,8 @@ impl<'js> ActiveEvaluator<'_, 'js> {
     ) -> Result<Vec<ValueId>, EvalError> {
         let form = self.check(form)?;
         let indices: Vec<u64> = self.enter(|ctx| {
-            let import: Function = self.services.get("macroArguments")?;
-            let result: Array = import.call((form, limits.nodes, limits.depth))?;
+            let result: Array =
+                self.service("macroArguments", (form, limits.nodes, limits.depth))?;
             let indices: Vec<u64> = result.get(0)?;
             let snapshot: rquickjs::Result<()> = (|| {
                 let snapshots: Array = result.get(1)?;
@@ -1871,13 +1871,12 @@ impl<'js> ActiveEvaluator<'_, 'js> {
                 .bridge
                 .borrow_mut()
                 .encode(&ctx, data, self.control, limits)?;
-            let f: Function = self.services.get(service)?;
-            let index: u64 = f.call((descriptor,))?;
+            let index: u64 = self.service(service, (descriptor,))?;
             // Snapshot canonical payloads so mutable host literals are never reused
             // after modification. Reader lexical distinctions remain in originals.
             let snapshot = (|| {
-                let export: Function = self.services.get("exportForm")?;
-                let snapshot: Array = export.call((index, limits.nodes, limits.depth))?;
+                let snapshot: Array =
+                    self.service("exportForm", (index, limits.nodes, limits.depth))?;
                 self.bridge
                     .borrow_mut()
                     .decode(snapshot, self.control, limits, true)?;
@@ -1894,8 +1893,7 @@ impl<'js> ActiveEvaluator<'_, 'js> {
     pub fn export_data(&self, id: ValueId, limits: ConversionLimits) -> Result<Datum, EvalError> {
         let id = self.check(id)?;
         self.enter(|_| {
-            let f: Function = self.services.get("exportForm")?;
-            let descriptor: Array = f.call((id, limits.nodes, limits.depth))?;
+            let descriptor: Array = self.service("exportForm", (id, limits.nodes, limits.depth))?;
             self.bridge
                 .borrow_mut()
                 .decode(descriptor, self.control, limits, false)

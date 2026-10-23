@@ -9,7 +9,8 @@
 //! so nested work counts once: a unit a macro demands while a namespace's top
 //! level is analyzed counts as that unit, not as the top-level pass, and the
 //! pass records it as a demand edge and as time it waited. Engine time is
-//! taken at the outermost V8 service call (`v8_evaluator::invoke`) and
+//! taken at the outermost engine service call (`v8_evaluator::invoke` for
+//! V8, `evaluator::traced` for QuickJS) and
 //! charged to the innermost frame; a unit demanded from inside JavaScript
 //! pauses its demander's engine time while it runs, so engine time is
 //! exclusive too. The time at depth 0, which counts Rust called back from
@@ -620,9 +621,9 @@ struct Recorder {
     depth: u32,
     engine_started: Option<Instant>,
     /// Engine depth across frames, for [`Trace::engine_outer`].
-    #[cfg_attr(not(feature = "v8-macros"), allow(dead_code))]
+    #[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
     outer_depth: u32,
-    #[cfg_attr(not(feature = "v8-macros"), allow(dead_code))]
+    #[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
     outer_started: Option<Instant>,
     trace: Trace,
     /// Exclusive load times, in the order sources were appended.
@@ -1233,7 +1234,7 @@ pub(crate) fn charged(counter: &Rc<Cell<usize>>, expansions: usize, nodes: usize
 
 /// An engine service call begins; the result goes to [`engine_exit`].
 #[inline]
-#[cfg_attr(not(feature = "v8-macros"), allow(dead_code))]
+#[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
 pub(crate) fn engine_enter() -> bool {
     with_recorder(|recorder| {
         let now = Instant::now();
@@ -1254,7 +1255,7 @@ pub(crate) fn engine_enter() -> bool {
 /// entry unless it is bookkeeping every unit makes: the compiler frontier's
 /// transitions and the bridge check that follows each engine entry.
 #[inline]
-#[cfg_attr(not(feature = "v8-macros"), allow(dead_code))]
+#[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
 pub(crate) fn engine_exit(entered: bool, service: &str) {
     if !entered {
         return;
