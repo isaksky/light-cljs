@@ -227,12 +227,14 @@ normally, with nil in the unused slot.
 
 As built (light-cljs-427): source macros get a narrower proof over the same
 resolved locals. A read of the hidden `&env` as the map of a keyword
-invocation or of core `get` with a keyword, `(:ns &env)` or
-`(get &env :line)`, reads that key alone; any other read, a capture by a
+invocation, `(:ns &env)` or `(:line &env 0)`, reads that key alone (not core
+`get`, which `with-redefs` can replace); any other read, a capture by a
 nested function, raw JavaScript or argument reflection may read all of it
 (`source_environment_keys`). Such a macro is given a map of only the keys it
 reads and `:ns` and `:light-cljs/reader-context`, the same data, from which
-its reader wrapper binds `*ns*` and the reader context, unless the whole
+its reader wrapper binds `*ns*` and the reader context, but only while the
+compilation has registered no extension bundle (map construction can call a
+user protocol extension at the declaration frontier), and unless the whole
 environment would not fit the conversion budget or the cache measures the
 expansion's conversions, whose work marks count the whole environment's.
 Converting fewer entries constructs fewer maps, so a user protocol extension

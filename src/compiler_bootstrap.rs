@@ -178,11 +178,11 @@ fn reads_macro_environment(program: &crate::Program, root: crate::ExprId) -> boo
 /// its deferred program, can read, or `None` when it may read the whole
 /// environment (light-cljs-427). As [`reads_macro_environment`], over
 /// resolved locals, but a read of the hidden `&env` as the map of a keyword
-/// invocation, `(:ns &env)`, or of core `get` with a keyword,
-/// `(get &env :ns)`, defaults allowed, reads that key alone. Every other
-/// read, a capture by a nested function among them, may see all of it.
+/// invocation, `(:ns &env)` or `(:ns &env default)`, reads that key alone.
+/// Every other read, a capture by a nested function among them, may see
+/// all of it.
 fn source_environment_keys(program: &crate::Program) -> Option<Vec<Datum>> {
-    use crate::{CoreFnId, ExprKind};
+    use crate::ExprKind;
     let mut root = program.root;
     while let ExprKind::Do(items) = &program.exprs[root.0].kind
         && let [item] = items.as_slice()
@@ -224,11 +224,10 @@ fn source_environment_keys(program: &crate::Program) -> Option<Vec<Datum>> {
             && let [map, rest @ ..] = args.as_slice()
             && environment(*map)
         {
+            // Not core `get`, whose binding a program can replace for the
+            // call (`with-redefs`) with one that reads the whole map.
             let key = match (&program.exprs[callee.0].kind, rest) {
                 (ExprKind::Keyword(_), [] | [_]) => keyword(*callee).map(|key| (key, rest)),
-                (ExprKind::CoreFn(CoreFnId::Get), [key, default @ ..]) if default.len() <= 1 => {
-                    keyword(*key).map(|key| (key, default))
-                }
                 _ => None,
             };
             if let Some((key, rest)) = key {
@@ -1267,7 +1266,10 @@ impl MacroHost {
         engine: &dyn crate::evaluator::MacroEvaluator,
     ) -> Option<Datum> {
         let keys = declaration.environment_keys.as_ref()?;
-        if self.measures_work() {
+        // Converting the entries left out constructs maps, which can demand
+        // and call a user protocol extension at the source declaration
+        // frontier; with none registered, nothing it does is observable.
+        if self.measures_work() || self.engine.extension_frontier() != 0 {
             return None;
         }
         // Half the node limit, as each conversion takes at most the limit
@@ -1489,11 +1491,12 @@ mod tests {
                 "(:light-cljs/reader-context &env :none)",
                 Some(vec![":light-cljs/reader-context"]),
             ),
-            ("(get &env :line 0)", Some(vec![":line"])),
+            ("(get &env :line 0)", None),
             (
-                "[(:ns &env) (get &env :ns) (:locals &env)]",
+                "[(:ns &env) (:ns &env) (:locals &env)]",
                 Some(vec![":locals", ":ns"]),
             ),
+            ("[(:ns &env) (get &env :ns)]", None),
             ("(:name (:ns &env))", Some(vec![":ns"])),
             ("(:ns &env (keys &env))", None),
             ("&env", None),

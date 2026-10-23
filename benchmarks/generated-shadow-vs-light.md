@@ -605,3 +605,14 @@ engine decoding the fresh locals and reader context), the macro's own work
 37 and the call form 9. Following `&env` into a helper function needs a
 proof that holds while the helper can be redefined, which this change does
 not attempt.
+
+After review, the narrowed environment is given only while the compilation
+has registered no protocol extension bundle (converting the entries left out
+constructs maps, whose hashing and equality can call a user extension at the
+declaration frontier) and only for keyword invocations, not core `get`,
+which `with-redefs` can replace. Penpot registers extensions early, so its
+macros now keep the whole environment; the table above measured the ungated
+version. With the gate, 2 alternating rounds: 14.85 s and 820 MB before,
+13.43 s (-9.6%) and 803 MB after, output byte-identical. Narrowing the gate to
+the extensions that can reach canonical environment data (default, object and
+core collection, symbol and keyword selectors) is left for a follow-up.
