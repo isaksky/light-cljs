@@ -453,6 +453,55 @@ fn cljs_env_has_binding_records_context_namespace_and_unevaluated_form() {
     );
 }
 
+/// A source macro that hands its `&env` to a function gets the whole
+/// environment; one that reads only keyword entries of it, as `(:ns &env)`
+/// and `(get &env :line)`, only those; and one that never reads it only
+/// what its reader wrapper binds `*ns*` and the reader context from
+/// (light-cljs-427). Each sees what the whole environment holds, and the
+/// reader resolves aliases, refers, excludes and declarations alike, in the
+/// order the reader context registers declarations. `compile` also builds
+/// with the cache, whose measured conversions keep the whole environment.
+#[test]
+fn source_macros_see_the_same_environment_and_reader_context_whatever_they_read() {
+    let s = Sources::new();
+    s.write("app/dep.cljs", "(ns app.dep) (def value 9)");
+    s.write(
+        "app/main.cljs",
+        r#"(ns app.main (:require [app.dep :as d :refer [value]]) (:refer-clojure :exclude [map]))
+(defn- seen [env]
+  [(:name (:ns env)) (get-in env [:ns :requires 'd]) (sort (keys (:locals env)))
+   (get-in env [:locals 'b :local]) (:context env) (:line env)
+   (:visible (:light-cljs/reader-context env))
+   (:names (:declared (:light-cljs/reader-context env)))
+   (:refers (:light-cljs/reader-context env)) (:excludes (:light-cljs/reader-context env))])
+(defmacro whole [] (pr-str (seen &env)))
+(defmacro keyed []
+  (pr-str [(:name (:ns &env)) (get-in (get &env :ns) [:requires 'd]) (sort (keys (:locals &env)))
+           (get-in (:locals &env) ['b :local]) (:context &env :none) (get &env :line)
+           (:visible (:light-cljs/reader-context &env))
+           (:names (:declared (get &env :light-cljs/reader-context)))
+           (:refers (:light-cljs/reader-context &env)) (:excludes (:light-cljs/reader-context &env))]))
+(defmacro blind []
+  (pr-str [(ns-name *ns*) (read-string "::d/x") (read-string "::y")
+           (second (read-string "`value")) (second (read-string "`local"))
+           (second (read-string "`map")) (second (read-string "`seen"))]))
+(def local 1)
+(defn f [a] (let [b 2] [(keyed) (whole) (blind) (keyed) (blind) (whole)]))
+(def g [(blind) (whole) (keyed)])
+(defn ^:export main [] (js/console.log (pr-str [(f 1) g])))
+(main)
+"#,
+    );
+    let first = r#""[app.main app.dep (a b) :let :expr 20 3 [\"seen\" \"local\" \"f\"] [[\"value\" \"app.dep\" \"value\"]] [\"map\"]]""#;
+    let local = r#""[app.main app.dep (a b) :let :expr 20 3 [] [[\"value\" \"app.dep\" \"value\"]] [\"map\"]]""#;
+    let read = r#""[app.main :app.dep/x :app.main/y app.dep/value app.main/local app.main/map app.main/seen]""#;
+    let top = r#""[app.main app.dep () nil :expr 21 4 [] [[\"value\" \"app.dep\" \"value\"]] [\"map\"]]""#;
+    assert_eq!(
+        execute(&s.compile("app.main").unwrap()),
+        format!("[[{first} {local} {read} {local} {read} {local}] [{read} {top} {top}]]\n")
+    );
+}
+
 #[test]
 fn macro_namespaces_select_cljs_and_refresh_on_each_compilation() {
     let s = Sources::new();

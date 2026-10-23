@@ -133,9 +133,13 @@ struct EnvironmentEntry {
     nodes: usize,
     depth: usize,
 }
+/// The child collections one environment import adds to the cache, in the
+/// order it met them. They join the cache once the whole environment is
+/// encoded, so that its references name the cache as the engine holds it
+/// before the import, without a copy of the cache for each import.
 struct ChildImport<'s> {
-    previous: HashMap<usize, EnvironmentEntry>,
-    updates: Vec<(usize, Local<'s, v8::Array>)>,
+    added: Vec<(Datum, Local<'s, v8::Array>)>,
+    identities: std::collections::HashSet<usize>,
 }
 #[derive(Default)]
 pub(crate) struct BridgeState {
@@ -241,8 +245,8 @@ impl BridgeState {
         let constructor = self.constructor(scope)?;
         let mut remaining = limits.nodes - 1;
         let mut sharing = ChildImport {
-            previous: self.environment_children.clone(),
-            updates: Vec::new(),
+            added: Vec::new(),
+            identities: Default::default(),
         };
         let items = v8::Array::new(scope, 0);
         for (i, child) in children.iter().enumerate() {
@@ -305,7 +309,24 @@ impl BridgeState {
         put(scope, result, 2, nil.into())?;
         put(scope, result, 3, items.into())?;
         let updates = v8::Array::new(scope, 0);
-        for (i, (slot, descriptor)) in sharing.updates.into_iter().enumerate() {
+        for (i, (data, descriptor)) in sharing.added.into_iter().enumerate() {
+            let slot = if self.environment_children.len() < ENVIRONMENT_CHILD_SLOTS {
+                ENVIRONMENT_SLOTS + self.environment_children.len()
+            } else {
+                let old = self.environment_child_order.pop_front().unwrap();
+                self.environment_children.remove(&old).unwrap().slot
+            };
+            let (nodes, depth) = dimensions(&data);
+            self.environment_child_order.push_back(data.identity());
+            self.environment_children.insert(
+                data.identity(),
+                EnvironmentEntry {
+                    data,
+                    slot,
+                    nodes,
+                    depth,
+                },
+            );
             let pair = v8::Array::new(scope, 0);
             let slot = v8::Number::new(scope, slot as f64);
             put(scope, pair, 0, slot.into())?;
@@ -333,8 +354,9 @@ impl BridgeState {
             return Err(error("compiler input conversion limit"));
         }
         if let Some(entry) = sharing
-            .as_ref()
-            .and_then(|sharing| sharing.previous.get(&data.identity()))
+            .is_some()
+            .then(|| self.environment_children.get(&data.identity()))
+            .flatten()
         {
             if entry.nodes > *remaining || entry.depth > depth {
                 control.invalidate();
@@ -510,25 +532,9 @@ impl BridgeState {
             && matches!(data.kind(), D::Collection { .. })
             && immutable(data)
             && !self.environment_children.contains_key(&data.identity())
+            && sharing.identities.insert(data.identity())
         {
-            let slot = if self.environment_children.len() < ENVIRONMENT_CHILD_SLOTS {
-                ENVIRONMENT_SLOTS + self.environment_children.len()
-            } else {
-                let old = self.environment_child_order.pop_front().unwrap();
-                self.environment_children.remove(&old).unwrap().slot
-            };
-            let (nodes, depth) = dimensions(data);
-            self.environment_children.insert(
-                data.identity(),
-                EnvironmentEntry {
-                    data: data.clone(),
-                    slot,
-                    nodes,
-                    depth,
-                },
-            );
-            self.environment_child_order.push_back(data.identity());
-            sharing.updates.push((slot, result));
+            sharing.added.push((data.clone(), result));
         }
         Ok(result)
     }

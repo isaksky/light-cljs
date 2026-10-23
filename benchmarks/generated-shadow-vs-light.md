@@ -551,3 +551,57 @@ byte-identical to the parent's, and `bb benchmarks/generated-project/test.bb
 --light` passes. Most of what is left of macro time is user `defmacro`s
 (20,126 calls, 10.7 s on Penpot with the probe), which light-cljs-427 takes
 up.
+
+### Source macros' fixed cost per call (light-cljs-427)
+
+With the probe of light-cljs-426 extended to the parts of each call
+(`--jobs 1`, `--no-cache`), user `defmacro`s on Penpot `app.main --optimize
+none` at `cd4d0bb` took 10.4 s over 20,126 calls. For a trivial macro most of
+it was not its own logic: building `withMacroReaderContext`'s reader view
+(an alias map from every `:requires` entry and sets of every refer, exclude
+and binding) cost about 70 us per call, and importing `&env` 20 to 270 us,
+most of it the locals map and the reader context, which change at every new
+binding and every new definition.
+
+Three changes cut that. The compile-time runtime builds the reader view when
+the reader first reads it (a hook of `compiler_runtime` in `build.rs`, so
+output is unchanged). A source macro whose function reads `&env` only as
+`(:k &env)` or `(get &env :k)`, or not at all, is given only those entries
+and the `:ns` and `:light-cljs/reader-context` ones its reader wrapper needs
+(`source_environment_keys` in `src/compiler_bootstrap.rs`), unless the cache
+measures the expansion's conversions. The reader context reuses its
+`:refers`, `:excludes` and `:bindings` vectors while they are unchanged, so
+that a new definition converts only the declarations part, and an import
+adds its environment children to the cache after encoding instead of
+copying the cache each time.
+
+Per call with the probe (parent `cd4d0bb`, then this change, one run each):
+
+| Macro | calls | parent | 427 | reads `&env` |
+|---|---|---|---|---|
+| `stl/css` | 5,131 | 173.5 us | 129.8 us | passes it to a function |
+| `app.main.style/css*` | 5,131 | 124.0 us | 49.9 us | no |
+| `dm/str` | 885 | 318.9 us | 80.0 us | no |
+| `dm/get-prop` | 844 | 264.4 us | 112.9 us | `(:ns &env)` |
+| all source macros | 20,126 | 10.37 s | 8.06 s | |
+
+Parent and this change alternated, 3 rounds, load average 4.6 to 7.0,
+medians: Penpot `app.main --optimize none` 15.45 s and 856 MB before, 13.08 s
+(-15.3%) and 850 MB after. One run each: Penpot `main-advanced` 18.05 s to
+15.24 s, the seed-42 100k project 3.19 s to 2.80 s at `none` and 4.10 s to
+3.63 s advanced. Penpot `main-none` and `main-advanced` and the 100k project
+at `none` and advanced are byte-identical to the parent's, `bb
+benchmarks/generated-project/test.bb --light` passes, and the `--stats`
+counters are the same but `trace.reads` on Penpot (73,777 to 73,437, -0.5%):
+converting a locals map is one of the map constructions that can demand a
+user protocol extension and so touch its unit; a macro given fewer entries
+demands it later, at the next construction that needs it.
+
+`stl/css` misses the halving the pellet aimed at: it hands `&env` to
+`caller-prefix`, so it receives the whole environment, and since the macros
+around it no longer convert the locals map, its own conversions find the
+locals fresh more often. Of its 130 us, importing `&env` takes 65 (40 in the
+engine decoding the fresh locals and reader context), the macro's own work
+37 and the call form 9. Following `&env` into a helper function needs a
+proof that holds while the helper can be redefined, which this change does
+not attempt.

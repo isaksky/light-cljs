@@ -225,6 +225,26 @@ the original transport so omitting an unused value cannot hide conversion
 failures or literal-constructor behavior. The macro function still executes
 normally, with nil in the unused slot.
 
+As built (light-cljs-427): source macros get a narrower proof over the same
+resolved locals. A read of the hidden `&env` as the map of a keyword
+invocation or of core `get` with a keyword, `(:ns &env)` or
+`(get &env :line)`, reads that key alone; any other read, a capture by a
+nested function, raw JavaScript or argument reflection may read all of it
+(`source_environment_keys`). Such a macro is given a map of only the keys it
+reads and `:ns` and `:light-cljs/reader-context`, the same data, from which
+its reader wrapper binds `*ns*` and the reader context, unless the whole
+environment would not fit the conversion budget or the cache measures the
+expansion's conversions, whose work marks count the whole environment's.
+Converting fewer entries constructs fewer maps, so a user protocol extension
+that such a construction would have demanded is initialized at the next
+demand instead (Penpot's `trace.reads` falls by 0.5%). The compile-time
+runtime's `withMacroReaderContext` builds the reader view's aliases,
+refers, excludes and bindings when the reader first reads them
+(`compiler_runtime` in `build.rs`); it registers the view's declarations at
+once, as before. A reader context reuses its `:refers`, `:excludes` and
+`:bindings` vectors while they are unchanged, so the child cache refers to
+them when only its declarations change.
+
 Finite canonical lists, sequences, vectors, maps and sets are readable results.
 Lazy sequences may realize under the same engine control and conversion bounds;
 functions, Vars, atoms, type/protocol objects, promises, arbitrary objects,

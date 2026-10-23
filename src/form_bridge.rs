@@ -101,10 +101,12 @@ struct EnvironmentEntry {
 #[cfg(light_quickjs)]
 struct ChildImport<'js> {
     // Only previous imports are eligible references. A new descriptor may
-    // decode after another reference to it, particularly through metadata.
-    previous: HashMap<usize, EnvironmentEntry>,
+    // decode after another reference to it, particularly through metadata,
+    // so the collections an import adds join the cache once it is encoded,
+    // in the order it met them.
     // Scoped engine arrays, never stored in BridgeState or a persistent root.
-    updates: Vec<(usize, Array<'js>)>,
+    added: Vec<(Datum, Array<'js>)>,
+    identities: std::collections::HashSet<usize>,
 }
 
 /// The engine owns object provenance through its weak map of imported objects;
@@ -233,8 +235,8 @@ impl BridgeState {
         }
         let mut remaining = limits.nodes - 1;
         let mut child_import = ChildImport {
-            previous: self.environment_children.clone(),
-            updates: Vec::new(),
+            added: Vec::new(),
+            identities: Default::default(),
         };
         let items = Array::new(ctx.clone())?;
         for (i, child) in children.iter().enumerate() {
@@ -306,7 +308,24 @@ impl BridgeState {
         // replacements only after every descriptor was decoded, in encoding
         // order: metadata and children need not decode in that same order.
         let updates = Array::new(ctx.clone())?;
-        for (i, (slot, descriptor)) in child_import.updates.into_iter().enumerate() {
+        for (i, (data, descriptor)) in child_import.added.into_iter().enumerate() {
+            let slot = if self.environment_children.len() < ENVIRONMENT_CHILD_SLOTS {
+                ENVIRONMENT_SLOTS + self.environment_children.len()
+            } else {
+                let old = self.environment_child_order.pop_front().unwrap();
+                self.environment_children.remove(&old).unwrap().slot
+            };
+            let (nodes, depth) = dimensions(&data);
+            self.environment_child_order.push_back(data.identity());
+            self.environment_children.insert(
+                data.identity(),
+                EnvironmentEntry {
+                    data,
+                    slot,
+                    nodes,
+                    depth,
+                },
+            );
             let pair = Array::new(ctx.clone())?;
             pair.set(0, slot)?;
             pair.set(1, descriptor)?;
@@ -330,8 +349,9 @@ impl BridgeState {
             return Err(error("compiler input conversion limit"));
         }
         if let Some(entry) = sharing
-            .as_ref()
-            .and_then(|sharing| sharing.previous.get(&data.identity()))
+            .is_some()
+            .then(|| self.environment_children.get(&data.identity()))
+            .flatten()
         {
             if entry.nodes > *remaining || entry.depth > depth {
                 control.invalidate();
@@ -485,25 +505,9 @@ impl BridgeState {
             && matches!(data.kind(), D::Collection { .. })
             && immutable(data)
             && !self.environment_children.contains_key(&data.identity())
+            && sharing.identities.insert(data.identity())
         {
-            let slot = if self.environment_children.len() < ENVIRONMENT_CHILD_SLOTS {
-                ENVIRONMENT_SLOTS + self.environment_children.len()
-            } else {
-                let old = self.environment_child_order.pop_front().unwrap();
-                self.environment_children.remove(&old).unwrap().slot
-            };
-            let (nodes, depth) = dimensions(data);
-            self.environment_children.insert(
-                data.identity(),
-                EnvironmentEntry {
-                    data: data.clone(),
-                    slot,
-                    nodes,
-                    depth,
-                },
-            );
-            self.environment_child_order.push_back(data.identity());
-            sharing.updates.push((slot, result.clone()));
+            sharing.added.push((data.clone(), result.clone()));
         }
         Ok(result)
     }

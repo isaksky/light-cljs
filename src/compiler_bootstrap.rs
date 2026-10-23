@@ -174,6 +174,100 @@ fn reads_macro_environment(program: &crate::Program, root: crate::ExprId) -> boo
     }
     false
 }
+/// The keys of its `&env` a source macro's analyzed function, the root of
+/// its deferred program, can read, or `None` when it may read the whole
+/// environment (light-cljs-427). As [`reads_macro_environment`], over
+/// resolved locals, but a read of the hidden `&env` as the map of a keyword
+/// invocation, `(:ns &env)`, or of core `get` with a keyword,
+/// `(get &env :ns)`, defaults allowed, reads that key alone. Every other
+/// read, a capture by a nested function among them, may see all of it.
+fn source_environment_keys(program: &crate::Program) -> Option<Vec<Datum>> {
+    use crate::{CoreFnId, ExprKind};
+    let mut root = program.root;
+    while let ExprKind::Do(items) = &program.exprs[root.0].kind
+        && let [item] = items.as_slice()
+    {
+        root = *item;
+    }
+    if program.macro_functions.contains(&root) {
+        return None;
+    }
+    let ExprKind::Fn { methods, .. } = &program.exprs[root.0].kind else {
+        return None;
+    };
+    let environments = methods
+        .iter()
+        .map(|method| method.params.get(1).copied())
+        .collect::<Option<Vec<_>>>()?;
+    let environment = |id: crate::ExprId| {
+        matches!(&program.exprs[id.0].kind,
+            ExprKind::Local(local) if environments.contains(local))
+    };
+    let keyword = |id: crate::ExprId| match &program.exprs[id.0].kind {
+        ExprKind::Keyword(literal) => {
+            let literal = &program.named_literals[literal.0];
+            let namespace = literal.namespace.map(|s| program.strings[s.0].clone());
+            let name = &program.strings[literal.name.0];
+            Some(DataBuilder.keyword(Name::from_utf16(namespace.as_deref(), name)))
+        }
+        _ => None,
+    };
+    let mut keys: Vec<Datum> = Vec::new();
+    let mut pending: Vec<_> = methods.iter().map(|method| method.body).collect();
+    let mut seen = std::collections::HashSet::new();
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let kind = &program.exprs[id.0].kind;
+        if let ExprKind::Call { callee, args } = kind
+            && let [map, rest @ ..] = args.as_slice()
+            && environment(*map)
+        {
+            let key = match (&program.exprs[callee.0].kind, rest) {
+                (ExprKind::Keyword(_), [] | [_]) => keyword(*callee).map(|key| (key, rest)),
+                (ExprKind::CoreFn(CoreFnId::Get), [key, default @ ..]) if default.len() <= 1 => {
+                    keyword(*key).map(|key| (key, default))
+                }
+                _ => None,
+            };
+            if let Some((key, rest)) = key {
+                if !keys
+                    .iter()
+                    .any(|known| crate::form_bridge::exact(known, &key))
+                {
+                    keys.push(key);
+                }
+                pending.extend(rest.iter().copied());
+                continue;
+            }
+        }
+        match kind {
+            ExprKind::Local(local) if environments.contains(local) => return None,
+            // Raw JavaScript and argument reflection can observe otherwise
+            // unused formals. Stay conservative about type/method captures.
+            ExprKind::JsArguments
+            | ExprKind::CopyArguments(_)
+            | ExprKind::JsTemplate { .. }
+            | ExprKind::Reify { .. }
+            | ExprKind::DefType { .. }
+            | ExprKind::ExtendType { .. } => return None,
+            ExprKind::JsGlobal(global) if program.js_globals[global.0].path[0] == "arguments" => {
+                return None;
+            }
+            ExprKind::Fn { methods, .. }
+                if methods
+                    .iter()
+                    .any(|m| m.captures.iter().any(|local| environments.contains(local))) =>
+            {
+                return None;
+            }
+            _ => {}
+        }
+        pending.extend(crate::program_fragment::children(program, id));
+    }
+    Some(keys)
+}
 // Skipping an unread formal must not hide a conversion-limit failure or a
 // literal constructor's behavior. For plain immutable data, the canonical JS
 // snapshot visits at most twice the input nodes (list traversal adds a step
@@ -423,6 +517,7 @@ fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> R
                     .get(&declared)
                     .copied()
                     .unwrap_or(true),
+                environment_keys: None,
             },
         );
     }
@@ -697,6 +792,9 @@ pub(crate) struct CompiledMacro {
     pub(crate) metadata: Option<Datum>,
     generation: usize,
     reads_environment: bool,
+    /// For a source macro, the keys of its `&env` it can read, or `None`
+    /// when it may read all of it ([`source_environment_keys`]).
+    environment_keys: Option<std::sync::Arc<[Datum]>>,
 }
 /// A macro's compile-time function: evaluated where it was declared, or, for
 /// a macro installed from its namespace's artifact, on its first expansion.
@@ -773,6 +871,7 @@ impl CompiledMacro {
             metadata: Some(metadata),
             generation,
             reads_environment: true,
+            environment_keys: None,
         }
     }
     /// The function to call, evaluating an installed macro's on `engine` the
@@ -999,6 +1098,7 @@ impl MacroHost {
             crate::analyzer::analyze_deferred_form(&function, &mut frame, &snapshot, engine)
                 .map_err(|e| e.to_string())?;
         let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
+        let environment_keys = source_environment_keys(&program).map(std::sync::Arc::from);
         let unit = crate::emitter::emit_deferred_unit(&program);
         if let Some(session) = self.session_handle()
             && session.capturing()
@@ -1034,7 +1134,8 @@ impl MacroHost {
                 definition: form.span(),
                 metadata: Some(metadata),
                 generation,
-                reads_environment: true,
+                reads_environment: environment_keys.is_none(),
+                environment_keys,
             },
         );
         self.engine.macro_environment = Default::default();
@@ -1124,6 +1225,14 @@ impl MacroHost {
         let (ns, name) = key.split_once('/').unwrap();
         let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
         let function = declaration.function(engine, &self.engine)?;
+        let reader_view;
+        let env = match self.reader_view(&declaration, env, engine) {
+            Some(view) => {
+                reader_view = view;
+                &reader_view
+            }
+            None => env,
+        };
         self.expand_javascript(
             engine,
             function,
@@ -1136,6 +1245,61 @@ impl MacroHost {
                 helpers: vec![],
             },
         )
+    }
+    /// The environment a source macro that reads only some keys of its
+    /// `&env`, or none, is given instead of `env` (light-cljs-427): only
+    /// those entries and the `:ns` and `:light-cljs/reader-context` ones,
+    /// the same data, from which the macro's reader wrapper
+    /// (`withMacroReaderContext` in the runtime) binds `*ns*` and the reader
+    /// context, so nothing it can observe changes, while the locals, the
+    /// macro inventory and the rest are not converted
+    /// ([`source_environment_keys`]). `None` keeps `env`: when the macro may
+    /// read all of it, when it would not fit the conversion budget whole, so
+    /// that leaving the rest out cannot hide a conversion failure
+    /// ([`elidable_map_environment`]), or while the compilation measures
+    /// each expansion's conversions for the cache
+    /// ([`MacroHost::measures_work`]), whose work marks count what the whole
+    /// environment's conversion charged.
+    fn reader_view(
+        &self,
+        declaration: &CompiledMacro,
+        env: &Datum,
+        engine: &dyn crate::evaluator::MacroEvaluator,
+    ) -> Option<Datum> {
+        let keys = declaration.environment_keys.as_ref()?;
+        if self.measures_work() {
+            return None;
+        }
+        // Half the node limit, as each conversion takes at most the limit
+        // ([`MacroHost::expand_javascript`]).
+        let mut remaining = self.limits.generated_nodes / 2;
+        if !elidable_map_environment(
+            env,
+            &mut remaining,
+            128,
+            &engine.control(),
+            &self.engine.elidable_sizes,
+        ) {
+            return None;
+        }
+        let c = DataBuilder;
+        let mut entries: Vec<(Datum, Datum)> = Vec::with_capacity(keys.len() + 2);
+        let wrapper = [
+            c.keyword(Name::new(None, "ns")),
+            c.keyword(Name::new(Some("light-cljs"), "reader-context")),
+        ];
+        for key in wrapper.into_iter().chain(keys.iter().cloned()) {
+            if entries
+                .iter()
+                .any(|(k, _)| crate::form_bridge::exact(k, &key))
+            {
+                continue;
+            }
+            if let Some(value) = env.get(&key).ok()? {
+                entries.push((key, value));
+            }
+        }
+        c.map(&entries).ok()
     }
 }
 
@@ -1312,6 +1476,58 @@ mod tests {
         let syntax = crate::parse(source).unwrap();
         let wrapped = crate::analyze_with_macros(source, &syntax, &mut host).unwrap();
         assert!(!wrapped.macro_functions.is_empty());
+    }
+
+    #[test]
+    fn source_environment_keys_follow_keyword_reads_of_resolved_locals() {
+        for (body, expected) in [
+            ("42", Some(vec![])),
+            ("'&env", Some(vec![])),
+            ("(let* [&env {}] (:ns &env))", Some(vec![])),
+            ("(:ns &env)", Some(vec![":ns"])),
+            (
+                "(:light-cljs/reader-context &env :none)",
+                Some(vec![":light-cljs/reader-context"]),
+            ),
+            ("(get &env :line 0)", Some(vec![":line"])),
+            (
+                "[(:ns &env) (get &env :ns) (:locals &env)]",
+                Some(vec![":locals", ":ns"]),
+            ),
+            ("(:name (:ns &env))", Some(vec![":ns"])),
+            ("(:ns &env (keys &env))", None),
+            ("&env", None),
+            ("(keys &env)", None),
+            ("(get &env 'locals)", None),
+            ("(get &env (:k &env))", None),
+            ("(fn* [] (:ns &env))", None),
+            ("(js* \"arguments[1]\")", None),
+            ("(js-arguments)", None),
+        ] {
+            let mut host = MacroHost::new();
+            host.tables.bootstrap_seed = true;
+            let source = format!("(fn* [&form &env] {body})");
+            let syntax = crate::parse(&source).unwrap();
+            let program = crate::analyze_with_macros(&source, &syntax, &mut host).unwrap();
+            let keys = source_environment_keys(&program).map(|keys| {
+                keys.iter()
+                    .map(|key| match key.kind() {
+                        crate::compiler_data::DatumKind::Keyword(name) => {
+                            let name_text = String::from_utf16_lossy(name.name());
+                            match name.namespace() {
+                                Some(ns) => {
+                                    format!(":{}/{name_text}", String::from_utf16_lossy(ns))
+                                }
+                                None => format!(":{name_text}"),
+                            }
+                        }
+                        _ => panic!("a key is a keyword"),
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let expected = expected.map(|keys| keys.into_iter().map(String::from).collect());
+            assert_eq!(keys, expected, "{body}");
+        }
     }
 
     #[test]

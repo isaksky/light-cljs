@@ -189,9 +189,31 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   can run another one, such as a macro expansion that a lazy sequence's
 ///   realization demands; the active ones are a stack, so each records its
 ///   own cost, and a nested `takeEncodePeak` leaves the outer ones running.
+/// - `withMacroReaderContext` builds the aliases, refers, excludes and
+///   bindings of the reader context it gives a source macro when the reader
+///   first reads them, from the expansion's immutable environment, instead
+///   of at every expansion: only a read in the code profile consults them
+///   (light-cljs-427). It registers the view's declarations at once, as
+///   before, since later views build on them.
 fn compiler_runtime(runtime: &str) -> String {
     const ENCODE_END: &str = "      return visit(value, \"$\", 0);\n    }\n    return Object.freeze({version: 5, decode, encode,";
-    const HOOKS: [(&str, &str, &str); 6] = [
+    // Every line holds `readerViews`, which tells the hook's lines from the
+    // embedded runtime's (tests/compiler/runtime_manifest.rs).
+    const READER_CONTEXT: &str = concat!(
+        "    { const previous = ns.readerContext, view = get(args[1], keyword(\"light-cljs\", \"reader-context\")); let readerViews = null;\n",
+        "      let readerViewsDeclared = previous?.declared, readerViewsVisible = previous?.visible ?? 0; const added = view == null ? null : get(view, keyword(null, \"declared\"));\n",
+        "      if (added != null) { const generation = get(added, keyword(null, \"generation\")); if (ns.readerDeclared?.generation !== generation) ns.readerDeclared = {generation, index: new Map()}; let position = get(added, keyword(null, \"from\")); for (const name of toArray(get(added, keyword(null, \"names\")))) ns.readerDeclared.index.set(name, position++); readerViewsDeclared = ns.readerDeclared.index; readerViewsVisible = get(view, keyword(null, \"visible\")); }\n",
+        "      const readerViewsBuild = () => { if (readerViews !== null) return readerViews; const context = previous ?? {aliases: new Map(), refers: new Map(), excludes: new Set(), bindings: new Set()}; const aliases = new Map(), refers = new Map(), excludes = new Set(), bindings = new Set();\n",
+        "        for (const pair of toArray(get(env, keyword(null, \"requires\")))) aliases.set(str(nth(pair, 0)), str(nth(pair, 1))); if (view != null) { for (const entry of toArray(get(view, keyword(null, \"refers\")))) refers.set(nth(entry, 0), [nth(entry, 1), nth(entry, 2)]); for (const name of toArray(get(view, keyword(null, \"excludes\")))) excludes.add(name); for (const name of toArray(get(view, keyword(null, \"bindings\")))) bindings.add(name); } return readerViews = {aliases: readerOverlay(context.aliases, aliases), refers: readerOverlay(context.refers, refers), excludes: readerOverlay(context.excludes, excludes), bindings: readerOverlay(context.bindings, bindings)}; };\n",
+        "      ns.readerContext = {get aliases() { return readerViewsBuild().aliases; }, get refers() { return readerViewsBuild().refers; }, get excludes() { return readerViewsBuild().excludes; }, get bindings() { return readerViewsBuild().bindings; }, declared: readerViewsDeclared, visible: readerViewsVisible}; coreCells.currentNs = ns;\n",
+        "      try { return Reflect.apply(fn, null, args); } finally { ns.readerContext = previous; coreCells.currentNs = saved; } } // readerViews\n",
+    );
+    const HOOKS: [(&str, &str, &str); 7] = [
+        (
+            "    const ns = createNs(name);\n    const context = ns.readerContext ?? {aliases: new Map(), refers: new Map(), excludes: new Set(), bindings: new Set()};\n",
+            "    const context",
+            READER_CONTEXT,
+        ),
         (
             "  const generatedNames = new Set();\n",
             "",

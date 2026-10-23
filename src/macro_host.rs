@@ -507,6 +507,11 @@ struct ReaderEnvironmentKey {
 struct ReaderEnvironment {
     key: ReaderEnvironmentKey,
     data: crate::compiler_data::Datum,
+    /// Its `:refers`, `:excludes` and `:bindings` vectors, which the next
+    /// context reuses while they are unchanged, so that the conversion of
+    /// a context whose declarations alone changed refers to the vectors
+    /// the engine already holds (light-cljs-427).
+    parts: [crate::compiler_data::Datum; 3],
 }
 
 /// Macro configuration and compiler metadata. Each clean compilation owns a fresh
@@ -2412,27 +2417,38 @@ impl MacroHost {
                     (key("from"), c.integer(context_key.from as i64)),
                     (key("names"), strings(&context_key.names)?),
                 ])?;
+                let previous = cache.as_ref();
+                let refers = match previous.filter(|p| p.key.refers == context_key.refers) {
+                    Some(previous) => previous.parts[0].clone(),
+                    None => c.vector(
+                        &context_key
+                            .refers
+                            .iter()
+                            .map(|(local, ns, name)| {
+                                c.vector(&[string(local), string(ns), string(name)])
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                    )?,
+                };
+                let excludes = match previous.filter(|p| p.key.excludes == context_key.excludes) {
+                    Some(previous) => previous.parts[1].clone(),
+                    None => strings(&context_key.excludes)?,
+                };
+                let bindings = match previous.filter(|p| p.key.bindings == context_key.bindings) {
+                    Some(previous) => previous.parts[2].clone(),
+                    None => strings(&context_key.bindings)?,
+                };
                 let context = c.map(&[
-                    (
-                        key("refers"),
-                        c.vector(
-                            &context_key
-                                .refers
-                                .iter()
-                                .map(|(local, ns, name)| {
-                                    c.vector(&[string(local), string(ns), string(name)])
-                                })
-                                .collect::<Result<Vec<_>, _>>()?,
-                        )?,
-                    ),
-                    (key("excludes"), strings(&context_key.excludes)?),
+                    (key("refers"), refers.clone()),
+                    (key("excludes"), excludes.clone()),
                     (key("declared"), declared),
                     (key("visible"), c.integer(context_key.visible as i64)),
-                    (key("bindings"), strings(&context_key.bindings)?),
+                    (key("bindings"), bindings.clone()),
                 ])?;
                 *cache = Some(ReaderEnvironment {
                     key: context_key,
                     data: context.clone(),
+                    parts: [refers, excludes, bindings],
                 });
                 context
             }
