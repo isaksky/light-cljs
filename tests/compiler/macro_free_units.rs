@@ -160,9 +160,20 @@ pub(crate) fn execute(js: &str) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+/// A host whose memory budget gives the main isolate its default 64 MiB
+/// and one worker isolate 32 MiB, as the default budget did before
+/// light-cljs-437: with more slots, the other workers have no engine and
+/// take only macro-free units. The default budget gives no worker an
+/// isolate.
+pub(crate) fn one_worker_isolate() -> MacroHost {
+    let mut host = MacroHost::new();
+    host.evaluator_options.memory_limit = 96 << 20;
+    host
+}
+
 /// A host whose memory budget gives each of eight slots an isolate of the
-/// default size, where the default budget runs only one worker isolate.
-fn isolate_per_slot() -> MacroHost {
+/// default size, where the default budget gives no worker an isolate.
+pub(crate) fn isolate_per_slot() -> MacroHost {
     let mut host = MacroHost::new();
     host.evaluator_options.memory_limit *= 8;
     host

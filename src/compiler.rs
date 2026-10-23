@@ -2761,15 +2761,16 @@ fn analyze_entry(
     let mut captures: std::collections::VecDeque<Option<PendingCapture>> = Default::default();
     let mut index = 0;
     // With `--jobs N` the build's deferred units are analyzed on one pool
-    // for the whole build, each worker in a V8 isolate of its own, which
-    // share the build's deadline and macro memory limit, one budget for
-    // them all (light-cljs-341). While artifacts are captured or a
+    // for the whole build of N-1 workers, as many as the macro memory limit
+    // allows each in a V8 isolate of its own, which share the build's
+    // deadline and macro memory limit, one budget for them all
+    // (light-cljs-341), and the others without an engine, which take only
+    // macro-free units (light-cljs-437). While artifacts are captured or a
     // manifest is recorded, a worker's unit hands what its analysis
     // observed and what capture records of it to the coordinator, which
     // adds them where it charges the unit, in unit order
     // (docs/compiler-concurrency.md, "As built (light-cljs-374)").
     let memory_limit = macros.evaluator_options.memory_limit;
-    let mut pool_slots = analysis.unit_slots;
     if analysis.unit_slots.get() > 1
         && let Some(session) = macros.session_handle()
     {
@@ -2786,8 +2787,9 @@ fn analyze_entry(
         } else {
             PoolEngines::None
         };
-        // As many isolates as the limit gives each a share of at least
-        // 32 MiB; with fewer than two, the workers have no engine.
+        // The main isolate's reservation and as many workers' as the rest
+        // of the limit gives 32 MiB each; with none, no worker has an
+        // engine.
         let isolates = crate::compilation_session::isolate_count(memory_limit, analysis.unit_slots);
         let engines = if isolates < 2 {
             PoolEngines::None
@@ -2799,7 +2801,6 @@ fn analyze_entry(
             // Every isolate installs the bootstrap units: they are compiled
             // before the build's deadline starts (light-cljs-378).
             crate::compiler_bootstrap::prepare(macros).map_err(NamespaceCompileError::new)?;
-            pool_slots = crate::scheduler::Slots::new(isolates).unwrap_or(pool_slots);
             resources = Some(
                 crate::evaluator::BuildResources::new(&macros.evaluator_options, isolates)
                     .map_err(|e| NamespaceCompileError::new(e.0))?,
@@ -2810,8 +2811,9 @@ fn analyze_entry(
             capture: capturing,
         };
         let started = session.start_pool(
-            pool_slots,
+            analysis.unit_slots,
             engines,
+            isolates,
             macros.environment(),
             resources,
             recording,

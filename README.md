@@ -381,8 +381,9 @@ while programs whose namespaces have hundreds of definitions reach about
 0.45x. Sources are read and parsed on that pool, the source
 order coming from the require edges and not from which file finished first;
 and each namespace's deferred units (its definitions' bodies) are analyzed on
-it, each worker in a V8 isolate of its own, while the calling thread drains
-them in order. Every other phase still runs on the calling thread. Output
+it, by workers in V8 isolates of their own as far as the macro memory limit
+allows and by workers without an engine, which take only the units that
+expand no JavaScript macro, while the calling thread drains them in order. Every other phase still runs on the calling thread. Output
 does not depend on N, except where a macro's compile-time effect in one
 namespace's definition bodies is observed from another: each isolate has its
 own compile-time state, so such an effect is invisible in the others (the
@@ -403,14 +404,18 @@ work is cancelled and nothing is written. `--macro-expansions` and
 `--macro-nodes` count each unit's expansions where the units are charged in
 source order, so a limit fails in the unit and with the message one job
 gives. `--macro-memory-limit` is one budget for the calling thread's isolate
-and every worker's together: as many isolates run as the limit gives at
-least 32 MiB each (a limit of less than 64 MiB leaves the workers without
-engines), each is allowed a base share and takes more from what the others
-have not taken, and one that cannot get what it needs fails the build.
+and every worker's together: the calling thread's isolate keeps what one job
+has at the default limit (64 MiB, or the whole limit when it is lower), so a
+build that fits the default at one job fits it at every N, and a worker gets
+an isolate for each 32 MiB beyond that; the default gives none, so its
+workers have no engine. Each isolate is allowed a base share and takes more
+from what the others have not taken, and one that cannot get what it needs
+fails the build.
 `--macro-timeout-ms` is one deadline for the build, from the pool's start;
 `--macro-poll-budget` is per isolate. A timeout or memory failure depends on
 scheduling, so its message is not promised to be the same at every N. With
-`--stats` the report adds `pool.*` lines: the workers, the pool's time and
+`--stats` the report adds `pool.*` lines: the workers, those with an engine
+and the units the others analyzed, the pool's time and
 utilization, the jobs, claims, steals and parks, the peak queue depth and the
 lock contention. The pool is described in
 [docs/compiler-concurrency.md](docs/compiler-concurrency.md#the-scheduler).

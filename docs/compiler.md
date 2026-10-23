@@ -105,7 +105,10 @@ for the coordinator waiting for outcomes. It claims batches, steals the far
 half of a peer's deque, ages phases so that none starves, bounds admission by
 job count and estimated bytes, and stops the build on a worker panic. It is
 generic over a job's phase, cost, bytes and priority, and knows nothing about
-the compiler. The calling thread coordinates: it submits ready jobs, consumes
+the compiler. A phase may be served by only the first workers
+(`Config::servers`): the others never claim, steal or are assigned its jobs,
+a worker serves the runnable phase with the fewest servers it is one of
+first, and every wakeup then wakes all parked workers. The calling thread coordinates: it submits ready jobs, consumes
 outcomes and alone declares the build done. With one slot it runs every job
 inline without spawning. `--jobs N` (experimental, default 1) counts these
 slots, the coordinator's included, and reaches the compile entry as
@@ -115,7 +118,10 @@ queue, then replays its depth-first walk over the results, so source order,
 diagnostics and the dependency manifest do not depend on completion order
 (a `SourceProvider` is called on the pool only when its `concurrent` method
 opts in, as source roots do). The second is the unit pool: with `--jobs N`, a namespace's
-deferred units go to worker isolates when its top-level pass ends, and the
+deferred units go to the pool's workers when its top-level pass ends (those
+with an isolate, as many as the macro memory limit allows beyond the main
+isolate's reservation, take every unit; the others only macro-free ones,
+light-cljs-437), and the
 coordinator goes on with the next namespaces; their outcomes are taken,
 charged, published and merged at the namespace's drain point, after the
 top-level passes of the next `analyzer::DRAIN_LAG` (six) namespaces, so the

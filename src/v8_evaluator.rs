@@ -294,18 +294,20 @@ impl V8Evaluator {
     }
 
     /// An isolate of a build with several unit slots: its control follows
-    /// `resources`' deadline and cancellation, `parent` being the build's
-    /// or its workers' control, and its memory comes from the build's pool.
+    /// `resources`' deadline and cancellation, through the build's control
+    /// for the `main` isolate and the workers' for a worker's, and its
+    /// memory comes from the build's pool, with the main isolate's base or
+    /// a worker's.
     pub(crate) fn new_for_build(
         options: EvaluatorOptions,
         resources: &crate::evaluator::BuildResources,
-        parent: &ExecutionControl,
+        main: bool,
     ) -> Result<Self, EvalError> {
         Self::new_with_initial_heap_limit(
             options,
             256 * 1024 * 1024,
             || include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", RUNTIME_SOURCE),
-            Some((resources, parent)),
+            Some((resources, main)),
         )
     }
 
@@ -313,7 +315,7 @@ impl V8Evaluator {
         options: EvaluatorOptions,
         initial_heap_limit: usize,
         source: impl FnOnce() -> String,
-        build: Option<(&crate::evaluator::BuildResources, &ExecutionControl)>,
+        build: Option<(&crate::evaluator::BuildResources, bool)>,
     ) -> Result<Self, EvalError> {
         if options.memory_limit < 1024 * 1024 {
             return Err(bridge::error(
@@ -330,7 +332,8 @@ impl V8Evaluator {
             ));
         }
         let control = match build {
-            Some((_, parent)) => ExecutionControl::linked(&options, parent)?,
+            Some((resources, true)) => ExecutionControl::linked(&options, &resources.control)?,
+            Some((resources, false)) => ExecutionControl::linked(&options, &resources.workers)?,
             None => ExecutionControl::new(&options)?,
         };
         control.poll()?;
@@ -345,7 +348,7 @@ impl V8Evaluator {
         let buffers = buffers::Budget::new(
             options.memory_limit,
             control.clone(),
-            build.map(|(resources, _)| resources.memory.clone()),
+            build.map(|(resources, main)| (resources.memory.clone(), main)),
         );
         // V8 reserves its code range from the heap limit, which must be
         // page aligned: a build's share of the memory limit need not be.

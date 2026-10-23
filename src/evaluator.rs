@@ -63,6 +63,10 @@ mod host_clock {
 /// compiler uses ([`crate::runtime_manifest::COMPILER_RUNTIME`]).
 pub const RUNTIME_SOURCE: &str = crate::runtime_manifest::COMPILER_RUNTIME;
 pub(crate) static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+/// The default macro memory limit (`--macro-memory-limit`), which is also
+/// what a build's main isolate is allowed at least when several slots share
+/// a larger limit ([`MemoryPool`]).
+pub(crate) const DEFAULT_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct EvaluatorOptions {
@@ -75,7 +79,7 @@ pub struct EvaluatorOptions {
 impl Default for EvaluatorOptions {
     fn default() -> Self {
         Self {
-            memory_limit: 64 * 1024 * 1024,
+            memory_limit: DEFAULT_MEMORY_LIMIT,
             stack_limit: 1024 * 1024,
             poll_budget: 1_000_000,
             timeout: Duration::from_secs(10),
@@ -305,36 +309,50 @@ impl ExecutionControl {
 
 /// The macro memory limit of one build, which all its compile-time
 /// isolates share (docs/compiler-concurrency.md, "As built
-/// (light-cljs-341)"): each isolate is allowed [`Self::base`] bytes, and
-/// grows past that only by taking from the headroom the others have not
-/// taken, which it gives back when it is destroyed, so the isolates never
-/// hold more than the limit together. An isolate that cannot take what it
-/// needs fails; none takes more silently.
+/// (light-cljs-341)"): each worker isolate is allowed [`Self::base`] bytes
+/// and the main one [`Self::main_base`], and each grows past that only by
+/// taking from the headroom the others have not taken, which it gives back
+/// when it is destroyed, so the isolates never hold more than the limit
+/// together. An isolate that cannot take what it needs fails; none takes
+/// more silently.
 #[derive(Debug)]
 #[cfg_attr(not(light_v8), allow(dead_code))]
 pub(crate) struct MemoryPool {
     base: usize,
+    main: usize,
     headroom: std::sync::atomic::AtomicUsize,
 }
 #[cfg_attr(not(light_v8), allow(dead_code))]
 impl MemoryPool {
-    /// The pool of `limit` bytes for `isolates` isolates, each allowed a
-    /// base of half its even share, at least 32 MiB and at most 256 MiB,
-    /// but never more than the even share, so that what is left of the
-    /// limit is headroom to grow into.
+    /// The pool of `limit` bytes for `isolates` isolates. Each worker's is
+    /// allowed a base of half the even share, at least 32 MiB and at most
+    /// 256 MiB, but never more than the even share; the main isolate the
+    /// same, but never less than a serial build with the default limit
+    /// has, or the whole limit when it is lower (light-cljs-437), as far
+    /// as the workers' bases leave it. What is left of the limit is
+    /// headroom to grow into.
     pub(crate) fn new(limit: usize, isolates: usize) -> Arc<Self> {
         let isolates = isolates.max(1);
         let base = (limit / (2 * isolates))
             .clamp(32 << 20, 256 << 20)
             .min(limit / isolates);
+        let workers = base * (isolates - 1);
+        let main = base
+            .max(limit.min(DEFAULT_MEMORY_LIMIT))
+            .min(limit - workers);
         Arc::new(Self {
             base,
-            headroom: std::sync::atomic::AtomicUsize::new(limit - base * isolates),
+            main,
+            headroom: std::sync::atomic::AtomicUsize::new(limit - workers - main),
         })
     }
-    /// The bytes each isolate is allowed before it takes headroom.
+    /// The bytes each worker isolate is allowed before it takes headroom.
     pub(crate) fn base(&self) -> usize {
         self.base
+    }
+    /// The bytes the main isolate is allowed before it takes headroom.
+    pub(crate) fn main_base(&self) -> usize {
+        self.main
     }
     /// Take up to `wanted` bytes of headroom, but nothing unless at least
     /// `needed` are left: what was taken.

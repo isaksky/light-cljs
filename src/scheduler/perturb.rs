@@ -140,17 +140,15 @@ impl<J: Job, O> State<J, O> {
     /// or none; otherwise a random-sized batch from a random place in the
     /// shared queue, or from a random peer's deque.
     pub(super) fn claim_perturbed(&mut self, w: usize, limits: &Limits) -> Option<super::Claim<J>> {
-        if let Some(entry) = self.urgent.pop_front() {
-            self.runnable_total -= 1;
-            self.counts.urgent += 1;
+        if let Some(entry) = self.take_urgent(w) {
             return Some(self.start_logged(w, entry, 0));
-        }
-        if self.runnable_total == 0 {
-            return None;
         }
         let fixed = self.perturbed.as_ref().is_some_and(|p| p.config.fixed);
         if fixed {
             return self.claim_assigned(w);
+        }
+        if !self.has_runnable(w) {
+            return None;
         }
         let phase = self.choose_phase(w, limits);
         if !self.local[w][phase].is_empty() {
@@ -193,14 +191,18 @@ impl<J: Job, O> State<J, O> {
     }
 
     /// A random one of the runnable jobs assigned to worker `w`, from any
-    /// phase, or none: nobody else may run them. Under a fixed assignment
-    /// every job waits in the shared queues, local pushes included
+    /// phase, or none: nobody else may run them. A job is assigned among
+    /// the workers that serve its phase. Under a fixed assignment every job
+    /// waits in the shared queues, local pushes included
     /// ([`super::Worker::push_local`]).
     fn claim_assigned(&mut self, w: usize) -> Option<super::Claim<J>> {
-        let workers = self.local.len();
+        if self.runnable_total == 0 {
+            return None;
+        }
         let config = &self.perturbed.as_ref().expect("perturbed").config;
         let mut mine: Vec<(usize, usize)> = Vec::new();
         for phase in 0..self.phases() {
+            let workers = self.servers[phase];
             for (i, entry) in self.ready[phase].iter().enumerate() {
                 if config.owner(entry.key, workers) == w {
                     mine.push((phase, i));

@@ -99,6 +99,10 @@ pub struct DeferredUnitCounts {
     /// often the unit catalog's lock was found held, on any thread
     /// (light-cljs-343).
     pub pool_workers: usize,
+    /// Of the pool's worker threads, those with a compile-time engine, and
+    /// the units the others analyzed, macro-free ones (light-cljs-437).
+    pub pool_engine_workers: usize,
+    pub engine_less_units: usize,
     pub pool_time: std::time::Duration,
     pub pool: crate::scheduler::PoolCounts,
     pub catalog_contended: u64,
@@ -533,6 +537,8 @@ impl CompileStats {
             line("pool.worker-initializations", &units.worker_initializations);
             let pool = &units.pool;
             line("pool.workers", &units.pool_workers);
+            line("pool.engine-workers", &units.pool_engine_workers);
+            line("pool.engine-less-units", &units.engine_less_units);
             line("time.pool-ms", &ms(units.pool_time));
             // The share of the workers' time spent analyzing units.
             let capacity = units.pool_time.as_secs_f64() * units.pool_workers as f64;

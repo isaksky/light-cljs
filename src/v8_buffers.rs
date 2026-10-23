@@ -15,7 +15,9 @@ pub(super) struct Budget {
     /// plus the headroom taken from the pool, which is given back when the
     /// budget is dropped.
     allowance: AtomicUsize,
-    pool: Option<Arc<MemoryPool>>,
+    /// The build's pool and the isolate's base in it: the main isolate's
+    /// or a worker's.
+    pool: Option<(Arc<MemoryPool>, usize)>,
     control: ExecutionControl,
 }
 
@@ -35,15 +37,21 @@ unsafe extern "C" {
 }
 
 impl Budget {
+    /// The budget of `limit` bytes, or with a build's pool, of the main
+    /// isolate's base in it when `main`, else a worker's.
     pub(super) fn new(
         limit: usize,
         control: ExecutionControl,
-        pool: Option<Arc<MemoryPool>>,
+        pool: Option<(Arc<MemoryPool>, bool)>,
     ) -> Arc<Self> {
+        let pool = pool.map(|(pool, main)| {
+            let base = if main { pool.main_base() } else { pool.base() };
+            (pool, base)
+        });
         Arc::new(Self {
             used: AtomicUsize::new(0),
             heap: AtomicUsize::new(0),
-            allowance: AtomicUsize::new(pool.as_ref().map_or(limit, |pool| pool.base())),
+            allowance: AtomicUsize::new(pool.as_ref().map_or(limit, |(_, base)| *base)),
             pool,
             control,
         })
@@ -57,7 +65,7 @@ impl Budget {
     /// Take up to `wanted` more bytes from the build's pool, but none
     /// unless `needed` are left: whether any were taken.
     pub(super) fn grow(&self, wanted: usize, needed: usize) -> bool {
-        let Some(pool) = &self.pool else {
+        let Some((pool, _)) = &self.pool else {
             return false;
         };
         let taken = pool.take(wanted, needed.max(1));
@@ -69,7 +77,7 @@ impl Budget {
     pub(super) fn holds_headroom(&self) -> bool {
         self.pool
             .as_ref()
-            .is_some_and(|pool| self.allowance() > pool.base())
+            .is_some_and(|(_, base)| self.allowance() > *base)
     }
 
     pub(super) fn used(&self) -> usize {
@@ -160,8 +168,8 @@ unsafe extern "C" fn drop_budget(state: *const c_void) {
 
 impl Drop for Budget {
     fn drop(&mut self) {
-        if let Some(pool) = &self.pool {
-            pool.give(self.allowance().saturating_sub(pool.base()));
+        if let Some((pool, base)) = &self.pool {
+            pool.give(self.allowance().saturating_sub(*base));
         }
     }
 }

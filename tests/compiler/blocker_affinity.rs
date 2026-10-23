@@ -6,12 +6,21 @@
 //! other namespace's units still go to the pool. `^:light-cljs/no-cache` is
 //! a cache policy only and gives no affinity. QuickJS-only builds are
 //! serial, so every slot count behaves as one there.
-use crate::macro_free_units::{Built, Sources, build_blocked, execute};
-use light_cljs::MacroHost;
+use crate::macro_free_units::{Built, Sources, build_blocked, execute, one_worker_isolate};
 
+/// `entry` built at `slots` with `blockers`, with a worker isolate: the
+/// default memory limit gives none, so every unit would stay on the main
+/// isolate (light-cljs-437).
 fn blocked(sources: &Sources, entry: &str, slots: usize, blockers: &[&str]) -> Built {
     let blockers: Vec<String> = blockers.iter().map(|b| (*b).to_owned()).collect();
-    build_blocked(sources, entry, slots, false, MacroHost::new(), &blockers)
+    build_blocked(
+        sources,
+        entry,
+        slots,
+        false,
+        one_worker_isolate(),
+        &blockers,
+    )
 }
 
 /// The output of `entry` with `blockers` at one slot, after checking that
@@ -149,7 +158,9 @@ fn a_sibling_of_a_blockers_consumer_still_runs_on_workers() {
     assert_eq!(blocked_too.stats.deferred_units.pooled, 0);
     if cfg!(feature = "v8-macros") {
         assert_eq!(built.stats.deferred_units.pooled, 3);
-        assert!(built.stats.deferred_units.worker_isolates > 0);
+        // The pool's workers ran them, with an engine or without: they are
+        // macro-free.
+        assert_eq!(built.stats.deferred_units.pool.started, 3);
     } else {
         assert_eq!(built.stats.deferred_units.pooled, 0);
     }

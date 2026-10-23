@@ -1385,7 +1385,8 @@ fn stats_reports_peak_rss_parsed_trees_and_queued_unit_ir_at_any_job_count() {
                  (defn scale [x] (* x {index}))
                  (defn label [x] (str \"{name}-\" (scale x)))
                  (defn total [xs] (reduce + (map scale xs)))
-                 (def answer (total [1 2 3]))"
+                 (def answer (total [1 2 3]))
+                 (defn pushed [] (let [v (array)] (dotimes [i 2] (.push v i)) (vec v)))"
             ),
         );
     }
@@ -1399,8 +1400,11 @@ fn stats_reports_peak_rss_parsed_trees_and_queued_unit_ir_at_any_job_count() {
     let args = ["--compile", "--entry", "app.main", "--source-root", root];
     let plain = light_cljs(&args);
     assert!(plain.status.success());
-    for jobs in ["1", "4"] {
-        let output = light_cljs(&[&args[..], &["--stats", "--jobs", jobs]].concat());
+    // The default memory limit gives no worker an isolate; 96 MiB gives one,
+    // which `pushed`'s `dotimes`, a JavaScript macro, needs (light-cljs-437).
+    for (jobs, limit) in [("1", "67108864"), ("4", "67108864"), ("4", "100663296")] {
+        let flags = ["--stats", "--jobs", jobs, "--macro-memory-limit", limit];
+        let output = light_cljs(&[&args[..], &flags[..]].concat());
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(output.status.success(), "{stderr}");
         assert_eq!(output.stdout, plain.stdout, "--jobs {jobs}");
@@ -1462,6 +1466,12 @@ fn stats_reports_peak_rss_parsed_trees_and_queued_unit_ir_at_any_job_count() {
         );
         if jobs == "4" && cfg!(feature = "v8-macros") {
             assert!(value("deferred-units.pooled") > 0.0, "{stderr}");
+            let isolates = value("pool.worker-isolates");
+            if limit == "67108864" {
+                assert_eq!(isolates, 0.0, "{stderr}");
+            } else {
+                assert!(isolates > 0.0, "{stderr}");
+            }
         }
     }
 }
@@ -1608,6 +1618,10 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
     for jobs in ["1", "2", "8"] {
         let mut traced = args.to_vec();
         traced.extend(["--jobs", jobs, "--stats-file", file.to_str().unwrap()]);
+        // A worker isolate, which the default memory limit does not give
+        // (light-cljs-437): 64 MiB for the main isolate and 32 MiB for one
+        // worker's.
+        traced.extend(["--macro-memory-limit", "100663296"]);
         let output = light_cljs(&traced);
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(output.status.success(), "{stderr}");
@@ -2132,7 +2146,18 @@ fn worker_isolates_match_a_fresh_isolate_per_unit() {
     )
     .unwrap();
     let root_arg = root.to_str().unwrap();
-    let entry = ["--compile", "--entry", "main", "--source-root", root_arg];
+    // A worker isolate, which the default memory limit does not give
+    // (light-cljs-437): 64 MiB for the main isolate and 32 MiB for one
+    // worker's.
+    let entry = [
+        "--compile",
+        "--entry",
+        "main",
+        "--source-root",
+        root_arg,
+        "--macro-memory-limit",
+        "100663296",
+    ];
     let run = |jobs: &[&str], env: &[(&str, &str)]| {
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
             .current_dir(env!("CARGO_MANIFEST_DIR"))

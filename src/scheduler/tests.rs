@@ -1190,3 +1190,134 @@ fn a_started_job_adds_its_queue_wait() {
     let second = state.counts.queue_wait - first;
     assert_eq!(state.counts.queue_wait_max, first.max(second));
 }
+
+/// A phase served by fewer workers ([`Config::servers`], light-cljs-437):
+/// its jobs, whether submitted, pushed locally by any worker or stolen,
+/// run only on the workers that serve it, and every job still runs once,
+/// unperturbed and, in debug builds, under random claims and a fixed
+/// assignment among each phase's servers.
+#[test]
+fn a_phase_with_fewer_servers_runs_only_on_them() {
+    within(300, || {
+        for (slots, servers) in [(2, 1), (3, 1), (8, 1), (8, 3)] {
+            for seed in 1..=4u64 {
+                let graph = Graph {
+                    total: 400,
+                    fanout: 3,
+                    phases: 2,
+                    seed,
+                    bytes: 0,
+                };
+                let mut modes = vec![(None, "plain")];
+                #[cfg(debug_assertions)]
+                for fixed in [false, true] {
+                    let perturbation = Perturbation {
+                        seed,
+                        fixed,
+                        ..Default::default()
+                    };
+                    modes.push((Some(perturbation), if fixed { "fixed" } else { "random" }));
+                }
+                for (perturbation, mode) in modes {
+                    let mut config = config(slots, 2);
+                    config.servers = vec![slots - 1, servers];
+                    #[cfg(debug_assertions)]
+                    {
+                        config.perturbation = perturbation;
+                    }
+                    #[cfg(not(debug_assertions))]
+                    let _ = perturbation;
+                    let (runs, outcomes, _) = graph.run(&config);
+                    let case = format!("slots {slots} servers {servers} seed {seed} {mode}");
+                    assert!(runs.iter().all(|&n| n == 1), "{case}");
+                    for ran in &outcomes {
+                        if graph.node(ran.id).phase == 1 {
+                            assert!((1..=servers).contains(&ran.slot), "{case}: {ran:?}");
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// One job at a time of a phase only the first worker serves, submitted
+/// alone, as urgent work and in a batch, while the other workers park:
+/// each wakes a worker that may run it, never only one that may not.
+#[test]
+fn a_job_only_some_workers_serve_is_never_left_to_a_parked_one() {
+    within(60, || {
+        let mut config = config(6, 2);
+        config.servers = vec![5, 1];
+        let restricted = |id| Task {
+            phase: 1,
+            ..task(id)
+        };
+        run(
+            &config,
+            |_slot| (),
+            |(), task: Task, worker| (task.id, worker.slot()),
+            |coordinator| {
+                for id in 0..300u64 {
+                    // Let every worker park first, now and then.
+                    if id % 50 == 0 {
+                        while coordinator.parked_workers() < 5 {
+                            thread::yield_now();
+                        }
+                    }
+                    match id % 3 {
+                        0 => coordinator.submit(restricted(id)),
+                        1 => coordinator.submit_urgent(restricted(id)),
+                        _ => coordinator.submit_batch([restricted(id)]),
+                    }
+                    match coordinator.next_outcome().expect("no job panics") {
+                        Next::Outcome((ran, slot)) => {
+                            assert_eq!((ran, slot), (id, 1));
+                        }
+                        other => panic!("unexpected {other:?}"),
+                    }
+                }
+                assert!(matches!(
+                    coordinator.next_outcome().expect("no job panics"),
+                    Next::Quiescent
+                ));
+            },
+        )
+        .expect("the pool runs");
+    });
+}
+
+/// A worker that serves a phase with fewer servers takes its runnable work
+/// before work every worker may take.
+#[test]
+fn a_worker_serves_its_scarcest_phase_first() {
+    let mut config = config(4, 2);
+    config.servers = vec![3, 1];
+    let mut state: State<Task, u64> = State::new(&config, 3);
+    let limits = config.limits.clone();
+    for id in 0..4 {
+        state.submit_job(&limits, task(id));
+    }
+    state.submit_job(
+        &limits,
+        Task {
+            phase: 1,
+            ..task(9)
+        },
+    );
+    // Workers 1 and 2 serve only phase 0; worker 0 takes the phase 1 job.
+    assert_eq!(state.claim(1, &limits).unwrap().entry.phase, 0);
+    assert_eq!(state.claim(0, &limits).unwrap().entry.job.id, 9);
+    // With only phase 1 work left, worker 2 finds nothing it may run.
+    let mut state: State<Task, u64> = State::new(&config, 3);
+    state.submit_job(
+        &limits,
+        Task {
+            phase: 1,
+            ..task(10)
+        },
+    );
+    assert!(!state.has_runnable(2));
+    assert!(state.claim(2, &limits).is_none());
+    assert_eq!(state.claim(0, &limits).unwrap().entry.job.id, 10);
+}

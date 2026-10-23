@@ -907,7 +907,7 @@ impl MacroHost {
                 Some(resources) => crate::v8_evaluator::V8Evaluator::new_for_build(
                     self.evaluator_options.clone(),
                     resources,
-                    &resources.control,
+                    true,
                 )?,
                 None => crate::v8_evaluator::V8Evaluator::new(self.evaluator_options.clone())?,
             };

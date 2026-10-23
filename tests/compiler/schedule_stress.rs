@@ -118,9 +118,10 @@ fn perturbation(base: &Perturbation, seed: u64, mode: Mode) -> Perturbation {
     }
 }
 
-/// A host whose macro memory limit gives eight slots eight isolates of
-/// 32 MiB (`isolate_count`): the default 64 MiB gives two, so every slot
-/// count above two would run one worker.
+/// A host whose macro memory limit gives four slots an isolate each and
+/// eight slots seven, the main one's 64 MiB and six workers' of 32 MiB, and
+/// one worker without an engine (`isolate_count`, light-cljs-437): the
+/// default 64 MiB gives no worker an isolate.
 fn stress_host() -> MacroHost {
     let mut host = MacroHost::new();
     host.evaluator_options.memory_limit = 256 << 20;

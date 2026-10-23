@@ -147,6 +147,11 @@ pub struct Config {
     pub limits: Limits,
     /// The stack size of each worker thread, or the platform default.
     pub stack_size: Option<usize>,
+    /// For each phase, how many workers may run its jobs: those whose
+    /// deque index is below the count, so the first workers serve the most
+    /// phases. Empty means every worker serves every phase; with one slot
+    /// the coordinator runs every job. Every count is at least one.
+    pub servers: Vec<usize>,
     /// The test-only scheduling perturbation, debug builds only.
     #[cfg(debug_assertions)]
     pub perturbation: Option<Perturbation>,
@@ -159,6 +164,7 @@ impl Config {
             phases,
             limits: Limits::default(),
             stack_size: None,
+            servers: Vec::new(),
             #[cfg(debug_assertions)]
             perturbation: None,
         }
@@ -384,6 +390,10 @@ struct State<J, O> {
     /// Workers waiting for runnable work.
     parked: usize,
     cursors: Vec<Cursor>,
+    /// How many workers serve each phase ([`Config::servers`]).
+    servers: Vec<usize>,
+    /// Whether some phase is not served by every worker.
+    restricted: bool,
     /// The claim clock when each phase last started a job, for aging.
     served: Vec<u64>,
     clock: u64,
@@ -405,6 +415,7 @@ impl<J: Job, O> State<J, O> {
     fn new(config: &Config, deques: usize) -> State<J, O> {
         let phases = config.phases;
         assert!(phases > 0, "a pool needs at least one phase");
+        let servers = servers(config, deques);
         State {
             shutdown: false,
             cancelled: false,
@@ -428,6 +439,8 @@ impl<J: Job, O> State<J, O> {
             publications: 0,
             parked: 0,
             cursors: vec![Cursor::default(); deques],
+            restricted: servers.iter().any(|&count| count < deques),
+            servers,
             served: vec![0; phases],
             clock: 0,
             panic: None,
@@ -523,26 +536,71 @@ impl<J: Job, O> State<J, O> {
         entry
     }
 
+    /// Whether worker `w` may run jobs of `phase`.
+    fn serves(&self, w: usize, phase: usize) -> bool {
+        w < self.servers[phase]
+    }
+
+    /// Whether worker `w` may run some runnable job.
+    fn has_runnable(&self, w: usize) -> bool {
+        if !self.restricted {
+            return self.runnable_total > 0;
+        }
+        (0..self.phases()).any(|phase| self.runnable[phase] > 0 && self.serves(w, phase))
+            || self.urgent.iter().any(|entry| self.serves(w, entry.phase))
+    }
+
+    /// The oldest urgent job worker `w` may run.
+    fn take_urgent(&mut self, w: usize) -> Option<Entry<J>> {
+        let at = if self.restricted {
+            self.urgent
+                .iter()
+                .position(|entry| self.serves(w, entry.phase))?
+        } else if self.urgent.is_empty() {
+            return None;
+        } else {
+            0
+        };
+        let entry = self.urgent.remove(at).expect("a listed job");
+        self.runnable_total -= 1;
+        self.counts.urgent += 1;
+        Some(entry)
+    }
+
     fn take_runnable(&mut self, phase: usize) {
         self.runnable[phase] -= 1;
         self.runnable_total -= 1;
     }
 
-    /// The phase worker `w` serves next, which has runnable work: its
-    /// current one until the quantum is spent, then the runnable phase
-    /// served longest ago, ties going to the phases after the current one.
+    /// The phase worker `w` serves next, which has runnable work it may
+    /// run: its current one until the quantum is spent, then the runnable
+    /// phase served longest ago, ties going to the phases after the current
+    /// one. When some phase has fewer servers, a worker serves the runnable
+    /// phase with the fewest servers it is one of first, since the other
+    /// workers cannot take that work from it.
     fn choose_phase(&mut self, w: usize, limits: &Limits) -> usize {
         let phases = self.phases();
         let cursor = self.cursors[w];
-        if self.runnable[cursor.phase] > 0 && cursor.streak < limits.phase_quantum.max(1) {
+        let open = |state: &Self, phase: usize| state.runnable[phase] > 0 && state.serves(w, phase);
+        if self.restricted {
+            let phase = (0..phases)
+                .filter(|&phase| open(self, phase))
+                .min_by_key(|&phase| (self.servers[phase], self.served[phase]))
+                .expect("a runnable phase this worker serves exists");
+            if phase != cursor.phase {
+                self.counts.phase_switches += 1;
+            }
+            self.cursors[w].phase = phase;
+            return phase;
+        }
+        if open(self, cursor.phase) && cursor.streak < limits.phase_quantum.max(1) {
             self.cursors[w].streak += 1;
             return cursor.phase;
         }
         let mut best: Option<usize> = None;
         for step in 1..=phases {
             let phase = (cursor.phase + step) % phases;
-            if self.runnable[phase] > 0 && best.is_none_or(|b| self.served[phase] < self.served[b])
-            {
+            if open(self, phase) && best.is_none_or(|b| self.served[phase] < self.served[b]) {
                 best = Some(phase);
             }
         }
@@ -567,15 +625,13 @@ impl<J: Job, O> State<J, O> {
         if self.perturbed.is_some() {
             return self.claim_perturbed(w, limits);
         }
-        if let Some(entry) = self.urgent.pop_front() {
-            self.runnable_total -= 1;
-            self.counts.urgent += 1;
+        if let Some(entry) = self.take_urgent(w) {
             return Some(Claim {
                 entry: self.start(entry),
                 left: 0,
             });
         }
-        if self.runnable_total == 0 {
+        if !self.has_runnable(w) {
             return None;
         }
         let phase = self.choose_phase(w, limits);
@@ -711,6 +767,8 @@ struct Shared<J, O> {
     contended: AtomicU64,
     limits: Limits,
     phases: usize,
+    /// [`State::restricted`], read without the lock.
+    restricted: bool,
     #[cfg(debug_assertions)]
     perturbation: Option<Perturbation>,
 }
@@ -732,7 +790,8 @@ impl<J: Job, O> Shared<J, O> {
     }
 
     /// Wake workers for `count` newly runnable jobs: one for one, all for
-    /// several.
+    /// several, and all whenever some phase has fewer servers, since the
+    /// one woken might not serve the job's phase.
     fn wake(&self, count: usize) {
         // Under a fixed assignment only the job's owner may run it.
         #[cfg(debug_assertions)]
@@ -742,7 +801,7 @@ impl<J: Job, O> Shared<J, O> {
         }
         match count {
             0 => {}
-            1 => self.work.notify_one(),
+            1 if !self.restricted => self.work.notify_one(),
             _ => self.work.notify_all(),
         }
     }
@@ -813,7 +872,7 @@ impl<J: Job, O> Worker<'_, J, O> {
             let parked = state.parked;
             drop(state);
             if parked > 0 {
-                self.shared.work.notify_one();
+                self.shared.wake(1);
             }
         } else {
             let admitted = state.submit(&self.shared.limits, entry);
@@ -917,8 +976,12 @@ fn work<J: Job, O, W>(
         };
         let wake = left.min(state.parked);
         drop(state);
-        for _ in 0..wake {
-            shared.work.notify_one();
+        if shared.restricted {
+            shared.wake(wake);
+        } else {
+            for _ in 0..wake {
+                shared.work.notify_one();
+            }
         }
         let bytes = entry.bytes;
         #[cfg(debug_assertions)]
@@ -1028,7 +1091,7 @@ impl<J: Job, O, W> Coordinator<'_, J, O, W> {
         let room = state.admitted_jobs.saturating_sub(state.completed.len());
         state.completed.reserve(room);
         drop(state);
-        self.shared.work.notify_one();
+        self.shared.wake(1);
     }
 
     /// Register work that may create more jobs although none is admitted.
@@ -1180,8 +1243,10 @@ where
     O: Send,
 {
     let workers = config.slots.workers();
+    let state = State::new(config, workers.max(1));
     let shared = Shared {
-        state: Mutex::new(State::new(config, workers.max(1))),
+        restricted: state.restricted,
+        state: Mutex::new(state),
         work: Condvar::new(),
         outcomes: Condvar::new(),
         cancelled: AtomicBool::new(false),
@@ -1236,6 +1301,26 @@ where
         Some(panic) => Err(PoolError::Panic(panic)),
         None => Ok(result),
     }
+}
+
+/// How many of `deques` workers serve each phase ([`Config::servers`]):
+/// all of them on the inline path or when none are configured.
+fn servers(config: &Config, deques: usize) -> Vec<usize> {
+    if config.servers.is_empty() || config.slots.workers() == 0 {
+        return vec![deques; config.phases];
+    }
+    assert_eq!(
+        config.servers.len(),
+        config.phases,
+        "one server count per phase"
+    );
+    assert!(
+        config.servers.iter().all(|&count| count > 0),
+        "every phase has a worker to serve it"
+    );
+    (config.servers.iter())
+        .map(|&count| count.min(deques))
+        .collect()
 }
 
 /// The pool's bounds: a perturbation's in place of the configured ones.

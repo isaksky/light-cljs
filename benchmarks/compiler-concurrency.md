@@ -11,6 +11,53 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## The default macro memory at every `--jobs` (light-cljs-437, October 23, 2026)
+
+Parent `3ab55c7` against the change, every build at the default macro
+memory limit (`--jobs N --macro-memory-limit 67108864`, overriding the
+projects' own 2 GiB and 4 GB), 5 alternating rounds, medians (range), peak
+RSS in MiB, 1-minute load average 2.6-22 (other work on the machine; the
+slow ends of the ranges are the loaded rounds). The seed-42 200k generated
+project at `release bench --no-cache --optimize none` and Penpot
+`main-none`. Output is one SHA-256 per project in every successful build of
+both binaries at every N (200k `2f11252c8ffbc221`, Penpot
+`dbf5cfcf91e48aaa`, the first 16 hex digits):
+
+| Build | Parent wall, RSS | Change wall, RSS | Change vs its `--jobs 1` |
+| --- | --- | --- | --- |
+| 200k `--jobs 1` | 6.20 s (5.83-10.22), 717 | 6.43 s (5.84-9.82), 724 | 1 |
+| 200k `--jobs 2` | 5.03 s (4.77-8.03), 789 | 5.49 s (5.45-9.74), 758 | 0.85x wall, 1.05x RSS |
+| 200k `--jobs 4` | 5.31 s (4.70-7.67), 799 | 5.16 s (5.12-8.79), 756 | 0.80x, 1.04x |
+| 200k `--jobs 8` | 5.04 s (4.68-8.69), 807 | 5.74 s (5.35-8.76), 792 | 0.89x, 1.09x |
+| Penpot `--jobs 1` | 13.66 s (13.36-21.94), 773 | 14.46 s (13.61-21.12), 787 | 1 |
+| Penpot `--jobs 2` | fails 5 of 5 | 13.87 s (13.05-18.52), 771 | 0.96x, 0.98x |
+| Penpot `--jobs 4` | fails 5 of 5 | 13.41 s (12.69-24.30), 795 | 0.93x, 1.01x |
+| Penpot `--jobs 8` | fails 5 of 5 | 13.65 s (12.85-21.00), 839 | 0.94x, 1.07x |
+
+The change succeeds in 40 of 40 builds. The parent's Penpot builds above one
+job fail with the session memory limit (`instaparse.abnf`, as in
+light-cljs-428); its 200k builds all succeeded in this set, at loads of 3 to
+22, where light-cljs-428 saw 5 of 5 fail under a load of 12-20.
+
+The pool, from `--stats`: at 64 MiB the change starts no worker isolate
+(`pool.engine-workers 0`, `pool.worker-isolates 0`), and its workers are the
+N-1 slots (`pool.workers` 1, 3 and 7), which analyze every macro-free unit
+(`pool.engine-less-units` = `deferred-units.pooled`: 200k 6,051 at two jobs
+and 9,938 at four and eight, Penpot 8,585 and 8,974). At two jobs one
+worker takes no declaration bundles (`pools_bundle`), as before. The
+parent's pool at 64 MiB was one worker with an isolate (200k: 8,222 units
+pooled). So on the 200k project the change's eight jobs are slower than the
+parent's (5.74 s against 5.04 s): the coordinator analyzes every unit that
+expands a JavaScript macro itself, where the parent's one worker isolate
+took them, at the risk of the memory failure. Faster parallel builds at the
+default need a larger default limit; that policy is light-cljs-434's.
+
+Serial gate, `--jobs 1` only, two more sets of 6 alternating rounds (load
+2.3-21), medians of the 12 runs: Penpot 13.92 s (13.18-21.63) against the
+parent's 13.73 s (13.15-22.83), +1.4%, RSS 777 against 774 MiB; 200k 6.09 s
+(5.84-10.46) against 6.26 s (5.87-12.90), -2.7%, RSS 722 against 736 MiB.
+One slot starts no pool, so the serial path does nothing new.
+
 ## Declaration bundles on the pool (light-cljs-428, October 22, 2026)
 
 Parent `ade9a21` against the change, 3 alternating rounds, medians (range),

@@ -4,7 +4,9 @@
 //! installs the source macros, helpers and extensions it needs from the
 //! shared catalog, and the build emits the program, warnings and errors of
 //! a build with one slot.
-use crate::macro_free_units::{Sources, build, execute, same_at_every_slot_count};
+use crate::macro_free_units::{
+    Sources, build, build_with, execute, one_worker_isolate, same_at_every_slot_count,
+};
 
 const MACROS: &str = r#"(ns app.m)
 (defn helper [x] (list 'inc x))
@@ -54,7 +56,14 @@ fn units_expanding_source_and_core_macros_emit_the_one_slot_program() {
     );
     // The workers took the units, in isolates of their own, and initialized
     // the helper roots the macros call there.
-    let units = build(&sources, "app.main", 4, false).stats.deferred_units;
+    let built = build_with(
+        &sources,
+        "app.main",
+        4,
+        false,
+        crate::macro_free_units::isolate_per_slot(),
+    );
+    let units = built.stats.deferred_units;
     if cfg!(feature = "v8-macros") {
         assert!(units.pooled > 10, "{units:?}");
         assert!((1..=3).contains(&units.worker_isolates), "{units:?}");
@@ -164,7 +173,13 @@ fn a_first_pooled_build_compiles_the_bootstrap_before_its_deadline_starts() {
 (def b (for [x [1 2]] (twice x)))
 (js/console.log (pr-str [a (vec b)]))"#,
     );
-    let built = crate::macro_free_units::build(&sources, "app.s", 4, false);
+    // With a worker isolate, which the default memory limit does not give
+    // (light-cljs-437).
+    let built = build_with(&sources, "app.s", 4, false, one_worker_isolate());
+    if cfg!(feature = "v8-macros") {
+        let units = &built.stats.deferred_units;
+        assert!(units.worker_isolates > 0, "{units:?}");
+    }
     assert_eq!(execute(&built.output.unwrap()), "[3 [3 4]]\n");
 }
 
@@ -189,10 +204,12 @@ fn a_worker_isolate_that_runs_out_of_time_fails_its_unit_and_the_build_ends() {
         sources
     };
     let (sources, without_spin) = (program("(spin)"), program("0"));
+    // A worker isolate takes `a`: the default memory limit gives none
+    // (light-cljs-437).
     for slots in [1, 2, 4] {
-        let mut host = light_cljs::MacroHost::new();
+        let mut host = one_worker_isolate();
         host.evaluator_options.timeout = crate::macro_free_units::deadline_after(|| {
-            let built = crate::macro_free_units::build(&without_spin, "app.s", slots, false);
+            let built = build_with(&without_spin, "app.s", slots, false, one_worker_isolate());
             built.output.unwrap();
         });
         let built = crate::macro_free_units::build_with(&sources, "app.s", slots, false, host);
@@ -224,8 +241,10 @@ fn pooled_macro_charging_propagates_main_engine_startup_failure() {
 (defn f [] (let [a (array)] (dotimes [i 2] (.push a (+ i 2))) (vec a)))
 (js/console.log (pr-str (f)))"#,
     );
+    // A worker isolate takes `f`: the default memory limit gives none
+    // (light-cljs-437).
     let perturbed = |deadline, attach: bool| {
-        let mut host = light_cljs::MacroHost::new();
+        let mut host = one_worker_isolate();
         host.evaluator_options.timeout = deadline;
         let held = Some(deadline * 2);
         crate::macro_free_units::build_configured(&sources, "app.s", 2, false, host, &[], |r| {
@@ -237,7 +256,7 @@ fn pooled_macro_charging_propagates_main_engine_startup_failure() {
         })
     };
     let deadline = crate::macro_free_units::deadline_after(|| {
-        let built = build(&sources, "app.s", 2, false);
+        let built = build_with(&sources, "app.s", 2, false, one_worker_isolate());
         assert_eq!(execute(&built.output.unwrap()), "[2 3]\n");
     });
     for attach in [false, true] {
@@ -298,8 +317,8 @@ fn recorded(sources: &Sources, entry: &str, slots: usize) -> Recorded {
         artifacts.push((capture.namespace, capture.artifact));
     };
     let mut stats = light_cljs::CompileStats::new();
-    // Room for eight isolates: the default limit gives two shares, one
-    // worker's and the coordinator's.
+    // Room for seven isolates at eight slots: the default limit gives no
+    // worker one (light-cljs-437).
     let mut host = light_cljs::MacroHost::new();
     host.evaluator_options.memory_limit = 256 << 20;
     let output = light_cljs::compiler::analyze_namespace_entry_recorded(
@@ -452,8 +471,10 @@ fn a_persistent_worker_never_takes_a_released_macro_generation_for_a_later_one()
         .write("app/main.cljs", &main);
     let serial = build(&sources, "app.main", 1, false);
     assert_eq!(execute(serial.output.as_ref().unwrap()), expected.concat());
+    // One worker isolate: the default memory limit gives none
+    // (light-cljs-437).
     for _ in 0..3 {
-        let persistent = build(&sources, "app.main", 2, false);
+        let persistent = build_with(&sources, "app.main", 2, false, one_worker_isolate());
         assert_eq!(persistent.output, serial.output);
         if cfg!(feature = "v8-macros") {
             let units = &persistent.stats.deferred_units;
@@ -468,7 +489,7 @@ fn a_persistent_worker_never_takes_a_released_macro_generation_for_a_later_one()
             "app.main",
             2,
             false,
-            light_cljs::MacroHost::new(),
+            one_worker_isolate(),
             &[],
             |recorders| {
                 recorders.perturbation = Some(light_cljs::scheduler::Perturbation {
@@ -478,5 +499,93 @@ fn a_persistent_worker_never_takes_a_released_macro_generation_for_a_later_one()
             },
         );
         assert_eq!(fresh.output, serial.output);
+    }
+}
+
+/// Units of which half expand a source macro and half are macro-free.
+fn mixed_units(sources: &Sources) {
+    let mut body = String::from("(ns app.u (:require [app.m :refer [twice]]))\n");
+    for k in 0..12 {
+        body.push_str(&format!("(defn e{k} [] (twice {k}))\n"));
+        body.push_str(&format!("(defn p{k} [n] (when (pos? n) (* n {k})))\n"));
+    }
+    body.push_str("(js/console.log (e11) (p11 2))");
+    sources
+        .write("app/m.cljc", MACROS)
+        .write("app/u.cljs", &body);
+}
+
+#[test]
+fn workers_beyond_the_isolates_take_only_macro_free_units() {
+    // 128 MiB at eight slots: the main isolate's 64 MiB and two worker
+    // isolates of 32 MiB; the other five workers have no engine and take
+    // only macro-free units, the units that expand `twice` only the two
+    // with isolates (light-cljs-437). The default 64 MiB gives no worker an
+    // isolate: the seven take the macro-free units, the coordinator the
+    // others.
+    let sources = Sources::new();
+    mixed_units(&sources);
+    let host = |limit: usize| {
+        let mut host = light_cljs::MacroHost::new();
+        host.evaluator_options.memory_limit = limit;
+        host
+    };
+    let serial = build_with(&sources, "app.u", 1, false, host(128 << 20));
+    assert_eq!(execute(serial.output.as_ref().unwrap()), "13 22\n");
+    for (limit, engine_workers) in [(128 << 20, 2), (64 << 20, 0)] {
+        for _ in 0..3 {
+            let built = build_with(&sources, "app.u", 8, false, host(limit));
+            assert_eq!(built.output, serial.output, "{limit}");
+            assert_eq!(built.warnings, serial.warnings, "{limit}");
+            let units = &built.stats.deferred_units;
+            if !cfg!(feature = "v8-macros") {
+                assert_eq!(units.pooled, 0, "{units:?}");
+                continue;
+            }
+            assert_eq!(units.pool_workers, 7, "{units:?}");
+            assert_eq!(units.pool_engine_workers, engine_workers, "{units:?}");
+            assert!(units.worker_isolates <= engine_workers, "{units:?}");
+            assert!(units.engine_less_units <= units.macro_free, "{units:?}");
+            if engine_workers == 0 {
+                // Only the macro-free units were pooled, all on workers
+                // without an engine.
+                assert_eq!(units.pooled, units.macro_free, "{units:?}");
+                assert_eq!(units.engine_less_units, units.pooled, "{units:?}");
+            } else {
+                assert!(units.pooled > units.macro_free, "{units:?}");
+            }
+        }
+    }
+    // Under a fixed assignment each macro-free unit runs on the worker the
+    // seed picks among all seven, and each other unit on one of the two
+    // with an isolate: the five without an engine take some, and only
+    // macro-free ones.
+    #[cfg(debug_assertions)]
+    if cfg!(feature = "v8-macros") {
+        for seed in 1..=4 {
+            for fixed in [true, false] {
+                let built = crate::macro_free_units::build_configured(
+                    &sources,
+                    "app.u",
+                    8,
+                    false,
+                    host(128 << 20),
+                    &[],
+                    |recorders| {
+                        recorders.perturbation = Some(light_cljs::scheduler::Perturbation {
+                            seed,
+                            fixed,
+                            ..Default::default()
+                        })
+                    },
+                );
+                assert_eq!(built.output, serial.output, "seed {seed} fixed {fixed}");
+                let units = &built.stats.deferred_units;
+                assert!(units.engine_less_units <= units.macro_free, "{units:?}");
+                if fixed {
+                    assert!(units.engine_less_units > 0, "seed {seed}: {units:?}");
+                }
+            }
+        }
     }
 }

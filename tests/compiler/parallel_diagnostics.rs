@@ -397,3 +397,33 @@ fn headroom_a_worker_took_returns_for_the_main_isolate() {
         }
     }
 }
+
+#[test]
+fn a_build_the_default_memory_limit_fits_at_one_slot_fits_at_every_slot_count() {
+    // A unit that needs 40 MiB fits the default 64 MiB at one slot. Split
+    // evenly, the main isolate and one worker were allowed 32 MiB each, and
+    // the build failed at every slot count above one; the main isolate now
+    // keeps what a serial build has, and the other slots run workers
+    // without an engine, which take only macro-free units (light-cljs-437).
+    // QuickJS-only builds have no pool, and QuickJS's values are twice as
+    // large.
+    if !cfg!(feature = "v8-macros") {
+        return;
+    }
+    let sources = Sources::new();
+    hogs(&sources, 40);
+    let serial = build_with(&sources, "app.h", 1, false, MacroHost::new());
+    assert!(serial.output.is_ok(), "{:?}", serial.output);
+    for slots in [2, 4, 8] {
+        for _ in 0..2 {
+            let built = build_with(&sources, "app.h", slots, false, MacroHost::new());
+            assert_eq!(built.output, serial.output, "{slots} slots");
+            let units = &built.stats.deferred_units;
+            if cfg!(feature = "v8-macros") {
+                assert_eq!(units.pool_workers, slots - 1, "{units:?}");
+                assert_eq!(units.pool_engine_workers, 0, "{units:?}");
+                assert_eq!(units.worker_isolates, 0, "{units:?}");
+            }
+        }
+    }
+}

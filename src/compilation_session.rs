@@ -526,6 +526,10 @@ struct PoolCounters {
     initializations: std::sync::atomic::AtomicUsize,
     /// The pool's worker threads and how long it ran.
     workers: std::sync::atomic::AtomicUsize,
+    /// Its workers with a compile-time engine, and the units the ones
+    /// without analyzed (light-cljs-437).
+    engine_workers: std::sync::atomic::AtomicUsize,
+    engine_less_units: std::sync::atomic::AtomicUsize,
     pool_ns: std::sync::atomic::AtomicU64,
     /// What the pool's scheduler did, once it has stopped.
     scheduler: Mutex<crate::scheduler::PoolCounts>,
@@ -586,6 +590,21 @@ impl SharedCatalog {
     fn skipped(&self) {
         let _c = self.lock();
         self.settled.notify_all();
+    }
+    /// The pool jobs of `units`: with `mixed`, in a pool whose workers
+    /// past the first ones have no engine, a unit not found macro-free
+    /// is for the ones with an engine only ([`ENGINE_PHASE`]).
+    fn unit_jobs(&self, units: Vec<usize>, mixed: bool) -> Vec<UnitJob> {
+        if !mixed {
+            return units.into_iter().map(|id| UnitJob(id, 0)).collect();
+        }
+        let catalog = self.lock();
+        (units.into_iter())
+            .map(|id| match catalog.units[id].macro_free {
+                true => UnitJob(id, 0),
+                false => UnitJob(id, ENGINE_PHASE),
+            })
+            .collect()
     }
     /// Note that pool job `id` ended with its unit failed, if it did.
     #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
@@ -1659,6 +1678,8 @@ impl CompilationSession {
         counts.worker_unit_time = std::time::Duration::from_nanos(pool.unit_ns.load(Relaxed));
         counts.worker_initializations = pool.initializations.load(Relaxed);
         counts.pool_workers = pool.workers.load(Relaxed);
+        counts.pool_engine_workers = pool.engine_workers.load(Relaxed);
+        counts.engine_less_units = pool.engine_less_units.load(Relaxed);
         counts.pool_time = std::time::Duration::from_nanos(pool.pool_ns.load(Relaxed));
         counts.pool = *pool
             .scheduler
@@ -1880,11 +1901,13 @@ impl CompilationSession {
         let _ = self.shared.recording.set(recording);
     }
     /// Start the build's unit pool of `slots`, whose workers are bound to
-    /// `environment` ([`UnitPool::start`]).
+    /// `environment` and of which `isolates`, the coordinator's included,
+    /// have `engines` ([`UnitPool::start`]).
     pub(crate) fn start_pool(
         &self,
         slots: crate::scheduler::Slots,
         engines: PoolEngines,
+        isolates: usize,
         environment: MacroEnvironment,
         resources: Option<crate::evaluator::BuildResources>,
         recording: crate::macro_host::UnitRecording,
@@ -1893,7 +1916,7 @@ impl CompilationSession {
             let _ = self.shared.resources.set(resources);
         }
         let _ = self.shared.recording.set(recording);
-        let pool = UnitPool::start(self.shared.clone(), slots, engines, environment)?;
+        let pool = UnitPool::start(self.shared.clone(), slots, engines, isolates, environment)?;
         *self.pool.borrow_mut() = Some(pool);
         Ok(())
     }
@@ -1910,20 +1933,24 @@ impl CompilationSession {
         }
     }
     /// Whether the build's unit pool takes a declaration bundle
-    /// (light-cljs-428): one [`Self::pools`] takes, when the pool has more
-    /// than one worker. With one, as the default macro memory gives at
-    /// any `--jobs` above one, the coordinator keeps its bundles, as before:
-    /// it never analyzes a queued unit, so giving the one worker the
-    /// bundles as well as the definitions would leave the coordinator
-    /// waiting for it at the drain points (200k generated project at
-    /// `--jobs 8` and 64 MiB: 8.79 s against 6.62 s).
+    /// (light-cljs-428): one [`Self::pools`] takes, when more than one of
+    /// the pool's workers may analyze it, any worker for a macro-free one
+    /// and one with an engine for another (light-cljs-437). With one, the
+    /// coordinator keeps its bundles, as before: it never analyzes a
+    /// queued unit, so giving the one worker the bundles as well as the
+    /// definitions would leave the coordinator waiting for it at the drain
+    /// points (200k generated project at `--jobs 8` with one worker
+    /// isolate: 8.79 s against 6.62 s).
     pub(crate) fn pools_bundle(&self, macro_free: bool) -> bool {
         self.pools(macro_free, false)
             && self
                 .pool
                 .borrow()
                 .as_ref()
-                .is_some_and(|pool| pool.workers > 1)
+                .is_some_and(|pool| match macro_free {
+                    true => pool.workers > 1,
+                    false => pool.engine_workers > 1,
+                })
     }
     /// Give `units` to the build's pool: whether it has one.
     /// The compilation has charged `charged` expansions and generated
@@ -2845,11 +2872,16 @@ impl WorkerView {
         )
     }
 }
-/// A deferred unit for a pool worker to analyze.
-struct UnitJob(usize);
+/// A deferred unit for a pool worker to analyze, in its phase: 0 for one
+/// any worker takes, 1 for one only the workers with an engine take, in a
+/// pool that has workers of both kinds ([`ENGINE_PHASE`]).
+struct UnitJob(usize, usize);
+/// The phase of a unit that may enter a compile-time engine, in a pool
+/// whose first workers have engines and the rest none (light-cljs-437).
+const ENGINE_PHASE: usize = 1;
 impl crate::scheduler::Job for UnitJob {
     fn phase(&self) -> usize {
-        0
+        self.1
     }
     #[cfg(debug_assertions)]
     fn key(&self) -> u64 {
@@ -2861,22 +2893,27 @@ impl crate::scheduler::Job for UnitJob {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PoolEngines {
     /// Workers have no compile-time engine and take only macro-free units
-    /// (light-cljs-338): when the macro memory limit gives the isolates
-    /// fewer than two shares, an engine is not V8, or the compilation is
-    /// interactive.
+    /// (light-cljs-338): when the macro memory limit leaves room for no
+    /// worker isolate ([`isolate_count`]), an engine is not V8, or the
+    /// compilation is interactive.
     None,
-    /// Each worker owns one V8 isolate for the whole build.
+    /// Each worker with an engine owns one V8 isolate for the whole build;
+    /// the workers beyond the isolates the limit allows have none and take
+    /// only macro-free units (light-cljs-437).
     Persistent,
     /// Each unit is analyzed in a fresh isolate, the correctness reference
     /// of persistent ones (`LIGHT_CLJS_FRESH_UNIT_ISOLATES=1`).
     Fresh,
 }
 /// The pool that analyzes a build's deferred units with `--jobs N`, kept
-/// for the whole build: N-1 worker threads, each owning one compile-time
-/// engine made on it after the V8 platform, and destroyed on it when the
-/// pool finishes. Nothing engine-related enters a queue: a job is a unit
-/// ID, and a worker analyzes the unit from the catalog's sendable inputs
-/// in a host bound to its own engine ([`WorkerView`]).
+/// for the whole build: N-1 worker threads, the first ones each owning one
+/// compile-time engine made on it after the V8 platform, and destroyed on
+/// it when the pool finishes, the others none, which take only macro-free
+/// units: the scheduler gives the units that may enter an engine to the
+/// workers with one alone ([`ENGINE_PHASE`]). Nothing engine-related
+/// enters a queue: a job is a unit ID, and a worker analyzes the unit from
+/// the catalog's sendable inputs in a host bound to its own engine
+/// ([`WorkerView`]).
 ///
 /// The scheduler is driven from a thread of its own, which only submits
 /// the batches the drains hand it and consumes outcomes, so that the
@@ -2889,6 +2926,10 @@ pub(crate) struct UnitPool {
     pub(crate) engines: PoolEngines,
     /// Its worker threads: the slots but the coordinator's.
     workers: usize,
+    /// Those of them with an engine: all of them, or with
+    /// [`PoolEngines::None`] none, or as many as the macro memory limit
+    /// leaves isolates for ([`isolate_count`]).
+    engine_workers: usize,
     /// The coordinator's settings, from which it starts its own engine
     /// where a serial build would have ([`CompilationSession::start_main_engine`]).
     main: MacroEnvironment,
@@ -2961,12 +3002,19 @@ pub(crate) fn release_definition_test(host: &MacroHost, unit: usize) {
     }
 }
 /// How many compile-time isolates, the main one included, `slots` work
-/// slots may run under the macro memory limit `limit`: as many as give
-/// each at least 32 MiB of it. They share the limit as one budget
+/// slots may run under the macro memory limit `limit`: the main one, and
+/// as many workers' as what the limit leaves beyond the main one's
+/// reservation gives at least 32 MiB each. The main isolate reserves what
+/// a serial build with the default limit has, or the whole limit when it
+/// is lower, so that a build the default limit fits at `--jobs 1` fits
+/// at every `--jobs` (light-cljs-437): the default 64 MiB leaves no room
+/// for a worker isolate. They share the limit as one budget
 /// ([`crate::evaluator::MemoryPool`], docs/compiler-concurrency.md, "As
-/// built (light-cljs-341)").
+/// built (light-cljs-341)"); the slots beyond them run workers without an
+/// engine.
 pub(crate) fn isolate_count(limit: usize, slots: crate::scheduler::Slots) -> usize {
-    (limit / (32 << 20)).clamp(1, slots.get())
+    let reserved = limit.min(crate::evaluator::DEFAULT_MEMORY_LIMIT);
+    1 + ((limit - reserved) / (32 << 20)).min(slots.workers())
 }
 
 #[cfg(test)]
@@ -2998,33 +3046,59 @@ mod share_tests {
     #[test]
     fn isolates_share_the_memory_limit_without_exceeding_it() {
         let slots = |n| Slots::new(n).unwrap();
-        // The default 64 MiB gives two isolates, whatever N.
-        assert_eq!(super::isolate_count(64 << 20, slots(8)), 2);
+        // The default 64 MiB is the main isolate's alone, whatever N
+        // (light-cljs-437): the other slots run workers without an engine.
+        assert_eq!(super::isolate_count(64 << 20, slots(8)), 1);
+        assert_eq!(super::isolate_count(64 << 20, slots(2)), 1);
+        // Beyond the main isolate's 64 MiB, a worker isolate per 32 MiB.
+        assert_eq!(super::isolate_count(96 << 20, slots(8)), 2);
+        assert_eq!(super::isolate_count(128 << 20, slots(8)), 3);
+        assert_eq!(super::isolate_count(256 << 20, slots(4)), 4);
+        assert_eq!(super::isolate_count(256 << 20, slots(8)), 7);
         assert_eq!(super::isolate_count(4_000_000_000, slots(8)), 8);
-        // Less than two shares: one isolate with the whole limit.
+        // Less than the reservation: one isolate with the whole limit.
         assert_eq!(super::isolate_count(40 << 20, slots(4)), 1);
         assert_eq!(super::isolate_count(16 << 20, slots(4)), 1);
-        // Each isolate's base, and the headroom they share, never sum to
-        // more than the limit.
-        for limit in [64 << 20, 100 << 20, 256 << 20, 1 << 30, 4_000_000_000] {
-            for n in 2..=8 {
+        // Each worker isolate's base, the main one's and the headroom they
+        // share never sum to more than the limit, and the main one has at
+        // least what a serial build with the default limit has.
+        for limit in [
+            64 << 20,
+            96 << 20,
+            100 << 20,
+            128 << 20,
+            160 << 20,
+            256 << 20,
+            1 << 30,
+            4_000_000_000,
+        ] {
+            for n in 2..=12 {
                 let isolates = super::isolate_count(limit, slots(n));
                 let pool = MemoryPool::new(limit, isolates);
                 assert!(pool.base() >= 32 << 20, "{limit} {n}");
-                assert!(
-                    isolates * pool.base() + pool.headroom() == limit,
+                assert!(pool.main_base() >= 64 << 20, "{limit} {n}");
+                assert_eq!(
+                    pool.main_base() + (isolates - 1) * pool.base() + pool.headroom(),
+                    limit,
                     "{limit} {n}"
                 );
             }
         }
-        // The default limit leaves no headroom: two isolates of 32 MiB.
-        let pool = MemoryPool::new(64 << 20, 2);
-        assert_eq!((pool.base(), pool.headroom()), (32 << 20, 0));
-        // 256 MiB for four: 32 MiB each and 128 MiB to grow into, taken
-        // whole or in part and given back.
+        // 96 MiB for two: the main isolate's 64 MiB and a worker's 32.
+        let pool = MemoryPool::new(96 << 20, 2);
+        assert_eq!(
+            (pool.main_base(), pool.base(), pool.headroom()),
+            (64 << 20, 32 << 20, 0)
+        );
+        // 256 MiB for four: 64 MiB for the main isolate, 32 MiB for each
+        // worker's and 96 MiB to grow into, taken whole or in part and
+        // given back.
         let pool = MemoryPool::new(256 << 20, 4);
-        assert_eq!((pool.base(), pool.headroom()), (32 << 20, 128 << 20));
-        assert_eq!(pool.take(100 << 20, 1), 100 << 20);
+        assert_eq!(
+            (pool.main_base(), pool.base(), pool.headroom()),
+            (64 << 20, 32 << 20, 96 << 20)
+        );
+        assert_eq!(pool.take(68 << 20, 1), 68 << 20);
         assert_eq!(pool.take(100 << 20, 1), 28 << 20);
         assert_eq!(pool.take(1, 1), 0);
         pool.give(50 << 20);
@@ -3033,14 +3107,25 @@ mod share_tests {
     }
 }
 impl UnitPool {
-    /// Start the pool of `slots` for the units of `shared`. A worker's host
-    /// is bound to `environment`, the compilation host's settings.
+    /// Start the pool of `slots` for the units of `shared`, of which
+    /// `isolates`, the coordinator's included, have `engines`, the others
+    /// none. A worker's host is bound to `environment`, the compilation
+    /// host's settings.
     pub(crate) fn start(
         shared: Arc<SharedCatalog>,
         slots: crate::scheduler::Slots,
         engines: PoolEngines,
+        isolates: usize,
         environment: MacroEnvironment,
     ) -> Result<Self, String> {
+        let engine_workers = match engines {
+            PoolEngines::None => 0,
+            _ => isolates.saturating_sub(1).min(slots.workers()),
+        };
+        let engines = match engine_workers {
+            0 => PoolEngines::None,
+            _ => engines,
+        };
         let inbox = Arc::new(Inbox::default());
         // Started on the coordinator: its workers record their units'
         // traces while it records its own.
@@ -3051,7 +3136,10 @@ impl UnitPool {
             let environment = environment.clone();
             std::thread::Builder::new()
                 .name("light-cljs-units".into())
-                .spawn(move || serve_pool(&inbox, &shared, slots, engines, &environment, traced))
+                .spawn(move || {
+                    let engines = (engines, engine_workers);
+                    serve_pool(&inbox, &shared, slots, engines, &environment, traced)
+                })
                 .map_err(|e| format!("cannot start the compiler's unit pool: {e}"))?
         };
         Ok(Self {
@@ -3060,6 +3148,7 @@ impl UnitPool {
             thread: Some(thread),
             engines,
             workers: slots.workers(),
+            engine_workers,
             main: environment,
         })
     }
@@ -3120,7 +3209,7 @@ fn worker_view(
                 Some(resources) => crate::v8_evaluator::V8Evaluator::new_for_build(
                     environment.evaluator_options().clone(),
                     resources,
-                    &resources.workers,
+                    false,
                 ),
                 None => {
                     crate::v8_evaluator::V8Evaluator::new(environment.evaluator_options().clone())
@@ -3157,6 +3246,9 @@ fn worker_view(
 /// reports root reads.
 struct WorkerSlot {
     view: Option<Rc<WorkerView>>,
+    /// The slot's engines: the pool's for the first workers, none for the
+    /// ones beyond the isolates the macro memory limit allows.
+    engines: PoolEngines,
     _trace: Option<crate::compile_trace::Recording>,
 }
 /// The pool's thread: run the scheduler, submitting each batch the inbox
@@ -3166,15 +3258,24 @@ fn serve_pool(
     inbox: &Inbox,
     shared: &Arc<SharedCatalog>,
     slots: crate::scheduler::Slots,
-    engines: PoolEngines,
+    (engines, engine_workers): (PoolEngines, usize),
     environment: &MacroEnvironment,
     traced: bool,
 ) -> Result<(), String> {
     use crate::scheduler::{Config, Next};
     let started = std::time::Instant::now();
     let counters = &shared.counters;
-    (counters.workers).store(slots.workers(), std::sync::atomic::Ordering::Relaxed);
-    let mut config = Config::new(slots, 1);
+    let relaxed = std::sync::atomic::Ordering::Relaxed;
+    (counters.workers).store(slots.workers(), relaxed);
+    (counters.engine_workers).store(engine_workers, relaxed);
+    // With workers of both kinds, the units that may enter an engine are a
+    // phase of their own, which only the first workers, those with an
+    // engine, serve; any worker serves the macro-free ones.
+    let mixed = engine_workers > 0 && engine_workers < slots.workers();
+    let mut config = Config::new(slots, if mixed { 2 } else { 1 });
+    if mixed {
+        config.servers = vec![slots.workers(), engine_workers];
+    }
     // A worker analyzes as deep as the coordinator, whose main thread has
     // 8 MiB; V8's stack limit is set from where each engine entry starts.
     config.stack_size = Some(8 << 20);
@@ -3190,9 +3291,13 @@ fn serve_pool(
         // the slot's thread records its units' for it (light-cljs-369).
         |slot| WorkerSlot {
             view: None,
+            engines: match slot <= engine_workers {
+                true => engines,
+                false => PoolEngines::None,
+            },
             _trace: traced.then(|| crate::compile_trace::record_worker(slot)),
         },
-        |slot, UnitJob(id), _worker| {
+        |slot, UnitJob(id, _), _worker| {
             // The outcome is in the catalog; a failed unit is reported by
             // the coordinator when it reaches it, as a serial drain would,
             // and no job after it starts.
@@ -3201,7 +3306,7 @@ fn serve_pool(
             }
             let view = match slot.view.take() {
                 Some(view) => view,
-                None => match worker_view(shared, engines, environment) {
+                None => match worker_view(shared, slot.engines, environment) {
                     Ok(view) => view,
                     Err(error) => {
                         shared.fail_unstarted(id, error);
@@ -3217,7 +3322,10 @@ fn serve_pool(
             }
             shared.note_job(id);
             PoolCounters::add(&shared.counters.unit_ns, started);
-            if engines != PoolEngines::Fresh && !view.terminal() && !view.holds_headroom() {
+            if slot.engines == PoolEngines::None {
+                (shared.counters.engine_less_units).fetch_add(1, relaxed);
+            }
+            if slot.engines != PoolEngines::Fresh && !view.terminal() && !view.holds_headroom() {
                 slot.view = Some(view);
             }
         },
@@ -3230,11 +3338,11 @@ fn serve_pool(
                             pool.cancel();
                         }
                         if let Some(batch) = inbox.try_next() {
-                            pool.submit_batch(batch.into_iter().map(UnitJob));
+                            pool.submit_batch(shared.unit_jobs(batch, mixed));
                         }
                     }
                     Ok(Next::Quiescent) => match inbox.next() {
-                        Some(batch) => pool.submit_batch(batch.into_iter().map(UnitJob)),
+                        Some(batch) => pool.submit_batch(shared.unit_jobs(batch, mixed)),
                         None => break Ok(()),
                     },
                     Ok(Next::Stalled { .. }) => unreachable!("unit jobs hold no demands"),

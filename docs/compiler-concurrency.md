@@ -1684,7 +1684,75 @@ top-level passes. Bundles now follow the definitions' rule:
 - *Open question.* At the default 64 MiB, `--jobs 2` and above already
   failed on both projects with the session memory limit where `--jobs 1`
   succeeds, and the pool's slots stop at the isolate count, so one worker
-  runs; light-cljs-437.
+  runs; light-cljs-437. *Settled (light-cljs-437)*, below.
+
+*As built (light-cljs-437), the default memory at every `--jobs` and
+workers without an engine beyond the isolates.* At the default 64 MiB,
+`--jobs 2` and above split the budget into the coordinator's isolate and
+one worker's, 32 MiB each, so a build that fits 64 MiB at one job could
+fail at two (Penpot always, the 200k project under load), and the pool had
+one worker however many slots it was given.
+
+- *The main isolate's reservation.* `compilation_session::isolate_count`
+  reserves for the main isolate what a serial build with the default limit
+  has, `evaluator::DEFAULT_MEMORY_LIMIT` (64 MiB) or the whole limit when it
+  is lower, and gives a worker an isolate for each 32 MiB of the rest, up
+  to N-1: 64 MiB gives none at any N, 96 MiB one, 128 MiB two, 256 MiB
+  four at four slots and seven at eight, 4 GB eight. `MemoryPool` gives the
+  main isolate a base of its own (`main_base`: the workers' base, but at
+  least the reservation, as far as the workers' bases leave it), and the
+  rest of the limit is headroom as before; `V8Evaluator::new_for_build`
+  takes which base an isolate has, `v8_buffers::Budget` gives back what it
+  took beyond its own. The limit stays one budget for all the isolates
+  ("Decisions"), and a build the default limit fits at `--jobs 1` fits it
+  at every `--jobs`: with no worker isolate the coordinator's engine is the
+  serial one, with the whole limit, and it analyzes no more than a serial
+  build does. Above the default, a coordinator that needs more than its
+  reservation still competes with the workers for the headroom, as since
+  light-cljs-341. The policy for the default limit and `--jobs` is
+  light-cljs-434's.
+- *Workers without an engine beyond the isolates.* The pool now always has
+  N-1 workers. The first `isolates - 1` own an isolate, the others none
+  (`UnitPool::engine_workers`, `WorkerSlot::engines`), which take only
+  macro-free units, as `PoolEngines::None` workers did. In a pool with both
+  kinds, a unit not judged macro-free is a job of its own phase
+  (`ENGINE_PHASE`) that only the workers with an engine serve: the
+  scheduler's `Config::servers` gives each phase how many of the first
+  workers may run its jobs, so the others never claim, steal or, under a
+  fixed perturbation, get assigned them; a worker serves the runnable phase
+  with the fewest servers first, so the workers with an engine take the
+  units only they can before macro-free ones, and every wakeup wakes all
+  parked workers, since the one woken might not serve the job's phase.
+  With all workers of one kind the pool has one phase, as before, and its
+  schedule is unchanged. A declaration bundle is pooled when more than one
+  worker may analyze it (any worker for a macro-free one, one with an
+  engine for another). `--stats` adds `pool.engine-workers` and
+  `pool.engine-less-units` (units the workers without an engine analyzed).
+- *Tests.* `scheduler::tests::a_phase_with_fewer_servers_runs_only_on_them`
+  (a job graph whose jobs are pushed locally and stolen, plain, randomly
+  perturbed and under a fixed assignment),
+  `a_job_only_some_workers_serve_is_never_left_to_a_parked_one` and
+  `a_worker_serves_its_scarcest_phase_first`;
+  `worker_isolates::workers_beyond_the_isolates_take_only_macro_free_units`
+  (eight slots at 128 MiB, two worker isolates and five workers without an
+  engine, and at 64 MiB, against the one-slot build, with perturbed
+  schedules); `parallel_diagnostics::a_build_the_default_memory_limit_fits_at_one_slot_fits_at_every_slot_count`
+  (a unit that needs 40 MiB, which the even split refused at two slots).
+  Tests that need a worker isolate now ask for one with 96 MiB
+  (`macro_free_units::one_worker_isolate`), what the default used to give.
+- *Measured* (benchmarks/compiler-concurrency.md, against `3ab55c7`): at
+  64 MiB both projects succeed at `--jobs` 1, 2, 4 and 8 in 5 of 5 rounds
+  with one output per project; Penpot `--jobs 8` is 0.94x of `--jobs 1`
+  and 1.07x its peak RSS, the 200k project 0.89x and 1.09x, with seven
+  workers and no worker isolate. The parent's Penpot builds failed at
+  every N above one.
+- *Open question.* With an engine-less pool, a wall-clock deadline can be
+  reported at an earlier unit than with worker isolates:
+  `a_worker_isolate_that_runs_out_of_time_fails_its_unit_and_the_build_ends`
+  at two slots and 64 MiB reported `app/m.cljc:2:1` (the helper unit the
+  macro calls) instead of the spinning unit `app/s.cljs:4:8`. Timeouts are
+  not promised byte-identical across job counts ("Semantics and determinism", Limits),
+  and the test now runs with a worker isolate, which it is about.
 
 ### Stage C: parallel namespaces
 
@@ -2125,7 +2193,10 @@ output changes once, when stage A lands.
     default 64 MiB still gives two isolates of 32 MiB and no headroom;
     256 MiB at four slots gives four isolates of 32 MiB and 128 MiB to grow
     into, and Penpot's 4 GB at eight gives eight of 250 MB and 2 GB. Builds
-    with one slot have no pool and keep today's single cap.
+    with one slot have no pool and keep today's single cap. (Changed by
+    light-cljs-437: the main isolate now reserves 64 MiB, so the default
+    gives no worker an isolate and 256 MiB at four slots leaves 96 MiB of
+    headroom; see "As built (light-cljs-437)" under "Stage A".)
     `the_memory_limit_is_one_budget_across_the_isolates`: a unit that needs
     96 MiB of a 256 MiB limit builds at four slots, which the even split's
     64 MiB caps refused, and one that needs 320 MiB fails in the same unit
@@ -2377,7 +2448,9 @@ in detail.
    about 50 ms and 80 MB for the isolates, and `instaparse.abnf`, one 1.6 s
    unit, gains nothing. Two slots are always slower than one. The default
    macro memory limit (64 MiB) stays: it gives two isolates, so a flipped
-   default would have run as `--jobs 2` unless that limit rose too.
+   default would have run as `--jobs 2` unless that limit rose too. (Since
+   light-cljs-437 the default gives the main isolate the whole 64 MiB and
+   the other slots workers without an engine.)
 
    *What the trace says about the next investment.* At eight slots the
    coordinator spends 9.5 s of a 19.6 s build waiting at drains
