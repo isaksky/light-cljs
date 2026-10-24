@@ -489,8 +489,9 @@ checks left to later stages:
   lexical goal at operand positions; `a` newline `/ b / g` remains division.
   Pattern early errors remain clj-quickjs-56. RegExp objects and methods
   execute with bounded matching, including u mode (clj-quickjs-188/-190).
-  String replacement and iu folding execute (clj-quickjs-189/-191); property
-  escapes, indices and Unicode sets remain clj-quickjs-192–194.
+  String replacement and iu folding execute (clj-quickjs-189/-191).
+  Property escapes and match indices execute (clj-quickjs-192/-193);
+  Unicode sets remain deferred (clj-quickjs-194).
 - **JSON.parse** (clj-quickjs-159) recognizes the JSON grammar with
   resumable ToString and budgeted parsing. Open-container depth is capped
   at 512 and decoded member names at 4096 UTF-16 units, with catchable
