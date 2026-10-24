@@ -1,6 +1,7 @@
 # Generated QuickJS data experiment
 
-This experiment converts the three checked-in QuickJS datasets into immutable,
+This experiment converts three checked-in QuickJS datasets and NumberFormat
+digit mappings into immutable,
 safe Rust using a repeatable Bash/Perl/C pipeline. It does not integrate them with
 the runtime or alter the reference checkout. All build and generated artifacts
 go into a caller-selected new directory.
@@ -32,7 +33,7 @@ nix develop --command bash scripts/quickjs-data/verify.sh \
 ## Conversion
 
 Inputs are pinned to QuickJS revision
-`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. `inputs.sha256` pins all seven local
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. `inputs.sha256` pins all eight local
 data/header files read by the exporter. Hashes are checked before and after
 conversion; an upstream change needs an explicit manifest and converter review.
 
