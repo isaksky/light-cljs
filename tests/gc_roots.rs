@@ -884,7 +884,8 @@ fn object_property_reclaims() {
     // seven NativeError prototypes (clj-quickjs-229), JSON (clj-quickjs-159),
     // Map.prototype (clj-quickjs-169), ArrayBuffer.prototype (clj-quickjs-165),
     // Intl (clj-quickjs-209) and Intl.Locale.prototype (clj-quickjs-210),
-    // Date.prototype (clj-quickjs-179), RegExp.prototype (clj-quickjs-188) and
+    // Date.prototype (clj-quickjs-179), RegExp.prototype (clj-quickjs-188),
+    // Intl.NumberFormat.prototype (clj-quickjs-213) and
     // the typed-array prototypes (clj-quickjs-166, clj-quickjs-167),
     // which the realm keeps for the
     // runtime's lifetime.
@@ -893,7 +894,7 @@ fn object_property_reclaims() {
         release,
         keep,
     } = held;
-    assert_eq!(rt.heap_usage().objects.plain, 3 + 34);
+    assert_eq!(rt.heap_usage().objects.plain, 3 + 35);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     assert_eq!(rt.heap_usage().objects.plain, 35);
@@ -1263,18 +1264,18 @@ fn function_properties_reclaim() {
     let held = function_properties(&rt);
     assert_retained(&rt, &held);
     // The argument, the record, the object in `x` and the prototype object
-    // go with the function; the realm's thirty-four ordinary objects stay.
+    // go with the function; the realm's thirty-five ordinary objects stay.
     let Held {
         weak,
         release,
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (4 + 34, 1));
+    assert_eq!((usage.plain, usage.function), (4 + 35, 1));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (34, 0));
+    assert_eq!((usage.plain, usage.function), (35, 0));
 }
 
 #[test]
@@ -1284,7 +1285,8 @@ fn array_element_reclaims() {
     assert_retained(&rt, &held);
     // The argument and the three arrays go together; the realm's
     // prototypes (`Object`, `Array`, `Number`, `String`, `Error`, seven
-    // NativeErrors, `Map`, `ArrayBuffer`, `Intl.Locale`, `Date`, `RegExp`, `BigInt` and the eleven
+    // NativeErrors, `Map`, `ArrayBuffer`, `Intl.Locale`, `Intl.NumberFormat`,
+    // `Date`, `RegExp`, `BigInt` and the eleven
     // typed-array prototypes), `Reflect`, `Math`, `JSON` and `Intl` stay.
     let Held {
         weak,
@@ -1292,11 +1294,11 @@ fn array_element_reclaims() {
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (1 + 34, 3));
+    assert_eq!((usage.plain, usage.array), (1 + 35, 3));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (34, 0));
+    assert_eq!((usage.plain, usage.array), (35, 0));
 }
 
 #[test]
