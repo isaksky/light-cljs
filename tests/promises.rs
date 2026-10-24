@@ -600,3 +600,28 @@ fn promise_objects_expose_their_intrinsic_prototype() {
         ValueView::Bool(true),
     );
 }
+
+#[test]
+fn promise_inherited_setters_follow_the_prototype_chain() {
+    for prototype in ["p", "Object.create(p)"] {
+        for assignment in ["o.__proto__ = target", "o[key] = target"] {
+            assert_eq!(
+                run(&format!(
+                    r#"
+                        const p = Promise.resolve();
+                        const o = Object.create({prototype});
+                        const target = {{}};
+                        const key = '__proto__';
+                        {assignment};
+                        Object.getPrototypeOf(o) === target &&
+                        Object.getOwnPropertyDescriptor(o, '__proto__') === undefined &&
+                        Object.getPrototypeOf(p) === Promise.prototype;
+                    "#
+                ))
+                .0,
+                ValueView::Bool(true),
+                "prototype: {prototype}, assignment: {assignment}",
+            );
+        }
+    }
+}

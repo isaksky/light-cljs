@@ -1155,6 +1155,7 @@ fn check_inherited(
                 Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
                     Ok(Walk::Function)
                 }
+                Visit::Other(HeapObject::Promise(p)) => Ok(Walk::Next(Some(p.prototype))),
                 // Another kind as a prototype: one without JavaScript
                 // properties ends the walk.
                 Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
