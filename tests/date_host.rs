@@ -227,3 +227,78 @@ fn date_time_host_calls_are_leaf_and_unrecorded() {
         ValueView::Number(3.0)
     );
 }
+
+#[test]
+fn date_host_clock_time_clip() {
+    for (input, expected) in [
+        (1.9, 1.0),
+        (-1.9, -1.0),
+        (-0.9, 0.0),
+        (-0.0, 0.0),
+        (8.64e15, 8.64e15),
+        (-8.64e15, -8.64e15),
+        (8.64e15 + 1.0, f64::NAN),
+        (-8.64e15 - 1.0, f64::NAN),
+        (f64::NAN, f64::NAN),
+        (f64::INFINITY, f64::NAN),
+        (f64::NEG_INFINITY, f64::NAN),
+    ] {
+        let runtime = Runtime::new();
+        let mut host = SimTimeHost::new(input, TimeZone::UTC);
+        for source in ["Date.now()", "new Date().getTime()"] {
+            let ValueView::Number(actual) = evaluate(&runtime, &mut host, source) else {
+                panic!("{source}: expected number");
+            };
+            if expected.is_nan() {
+                assert!(actual.is_nan(), "{source} for {input}: {actual}");
+            } else {
+                assert_eq!(actual.to_bits(), expected.to_bits(), "{source} for {input}");
+            }
+        }
+        assert_eq!(host.clock_reads(), 2);
+    }
+}
+
+#[test]
+fn date_zone_transition_boundaries() {
+    let runtime = Runtime::new();
+    let mut host = SimTimeHost::new(0.0, TimeZone::named("Europe/Paris").unwrap());
+    // Each transition instant belongs to the new offset interval.
+    for (transition, before, after) in [
+        (1585443600000_i64, -60.0, -120.0),
+        (1603587600000_i64, -120.0, -60.0),
+    ] {
+        for (delta, expected) in [(-1, before), (0, after), (1, after)] {
+            let source = format!("new Date({}).getTimezoneOffset()", transition + delta);
+            assert_eq!(
+                evaluate(&runtime, &mut host, &source),
+                ValueView::Number(expected),
+                "{source}"
+            );
+        }
+    }
+    // Gap [02:00,03:00): use the earlier offset inside the gap, and the new
+    // offset at its excluded upper endpoint. Overlap [02:00,03:00): choose
+    // the earlier UTC instant; 03:00 belongs only to the later interval.
+    for (fields, expected) in [
+        ("2020, 2, 29, 1, 59, 59, 999", 1585443599999_i64),
+        ("2020, 2, 29, 2, 0, 0, 0", 1585443600000),
+        ("2020, 2, 29, 2, 0, 0, 1", 1585443600001),
+        ("2020, 2, 29, 2, 59, 59, 999", 1585447199999),
+        ("2020, 2, 29, 3, 0, 0, 0", 1585443600000),
+        ("2020, 2, 29, 3, 0, 0, 1", 1585443600001),
+        ("2020, 9, 25, 1, 59, 59, 999", 1603583999999),
+        ("2020, 9, 25, 2, 0, 0, 0", 1603584000000),
+        ("2020, 9, 25, 2, 0, 0, 1", 1603584000001),
+        ("2020, 9, 25, 2, 59, 59, 999", 1603587599999),
+        ("2020, 9, 25, 3, 0, 0, 0", 1603591200000),
+        ("2020, 9, 25, 3, 0, 0, 1", 1603591200001),
+    ] {
+        let source = format!("new Date({fields}).getTime()");
+        assert_eq!(
+            evaluate(&runtime, &mut host, &source),
+            ValueView::Number(expected as f64),
+            "{source}"
+        );
+    }
+}
