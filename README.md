@@ -463,8 +463,8 @@ Supported (VM level; early VM tests use hand-assembled bytecode,
 Deferred:
 
 - (Compiling functions and calls from source: clj-quickjs-21, below.)
-- `arguments`, rest parameters (defaults: clj-quickjs-100, below), function properties
-  (`length`, `name`), and native or host-function callees. (`this`:
+- `arguments`, rest parameters (defaults: clj-quickjs-100, below), and native
+  or host-function callees. (Function metadata: clj-quickjs-101, below; `this`:
   clj-quickjs-116, below.)
   (Catching `StackOverflow` and `TypeError`: clj-quickjs-11, below.)
 
@@ -1783,8 +1783,7 @@ Deferred:
 - The `arguments` object and `eval` in defaults (clj-quickjs-97,
   -106/-109; rejected as everywhere), `this` in an arrow's default
   (clj-quickjs-98; a non-arrow function's default sees its `this` since
-  clj-quickjs-116, below); function `length`/`name`
-  (clj-quickjs-101).
+  clj-quickjs-116, below). Function metadata is supported by clj-quickjs-101, below.
 
 ### Legacy octal number literals in sloppy code (clj-quickjs-51)
 
@@ -1941,8 +1940,9 @@ Deferred:
 
 - Accessor descriptors (`get`/`set`) fail with `UnsupportedOperand` (clj-quickjs-120); so do
   primitive targets of `getOwnPropertyDescriptor` (wrapper objects, clj-quickjs-72), object keys
-  (ToPrimitive, clj-quickjs-70) and functions' `length`/`name` (clj-quickjs-101; other function
-  properties: clj-quickjs-125). An inherited read-only property can be set up from source with
+  (ToPrimitive, clj-quickjs-70). Function descriptors work for `length`/`name`
+  (clj-quickjs-101) and other own properties (clj-quickjs-125).
+  An inherited read-only property can be set up from source with
   `Object.create` since clj-quickjs-121.
   `length` changes on arrays fail explicitly (ArraySetLength, clj-quickjs-39). Built-in objects stay immutable: `defineProperty` on one
   is a `TypeError`.
@@ -1969,11 +1969,9 @@ Supported (`cargo test --test js_source function_own_properties`,
 
 Deferred:
 
-- Ordinary function `length`/`name` (clj-quickjs-101) and `Function.prototype`'s
-  `toString`: those names fail
-  with `UnsupportedOperand`, also in `Object.defineProperty` /
-  `getOwnPropertyDescriptor` (which otherwise work on functions, through
-  the record). `Object.setPrototypeOf(f, p)` with a `p` other than
+- `Function.prototype`'s `toString` fails with `UnsupportedOperand`.
+  Function metadata and descriptors are supported (clj-quickjs-101, below).
+  `Object.setPrototypeOf(f, p)` with a `p` other than
   `Function.prototype` fails with `UnsupportedOperand`. Creating the `prototype` of a
   published function fails with `UnsupportedOperand`.
 
@@ -2076,7 +2074,7 @@ decision record in `docs/architecture.md`, "Own-property keys"):
   a fresh array in ECMAScript order: array indices (`0 ..= 2^32 - 2`) ascending, then the other
   names in creation order (an array's `length` first among them); holes and inherited properties
   are not listed. Works on the running task's objects and arrays, embedder objects, built-in
-  objects and functions, and (`keys` only) function objects; values without JavaScript
+  objects and functions, including ordinary function objects; values without JavaScript
   properties list nothing. `undefined`/`null` throw a catchable `TypeError`.
 - The order is one helper (`vm::keys::own_property_keys`) for `for`-`in` (clj-quickjs-85) and
   spread/rest copies to reuse.
@@ -2084,8 +2082,8 @@ decision record in `docs/architecture.md`, "Own-property keys"):
 Deferred:
 
 - Primitive arguments (wrapper objects, clj-quickjs-72), error objects (clj-quickjs-230), and
-  `getOwnPropertyNames` of a function (own `length`/`name`, clj-quickjs-101) or of
-  `Object.prototype` (unstored `__proto__`, clj-quickjs-261) fail with `UnsupportedOperand`.
+  `getOwnPropertyNames` of `Object.prototype` (unstored `__proto__`, clj-quickjs-261)
+  fail with `UnsupportedOperand`.
   Symbol keys (clj-quickjs-127), `Object.getOwnPropertySymbols`, `Reflect.ownKeys`,
   `Object.entries`/`values`.
 
@@ -2128,7 +2126,7 @@ Deferred:
 
 - `delete x` in sloppy code (implicit globals, clj-quickjs-105) is `Unsupported`;
   `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for those forms;
-  `delete f.length`/`f.name` of a function (clj-quickjs-101) and properties of error objects
+  properties of error objects
   (clj-quickjs-230) fail with `UnsupportedOperand`. Built-in objects are immutable: deleting a
   property they have is a `TypeError` in both modes.
 
@@ -2313,10 +2311,31 @@ have `length` and `name`, ordinary own-property operations, and no initial own
 are shareable and no mutable property record has been added. Bound arguments
 and forwarding hops obey the VM's stack and depth limits.
 
-Deferred to clj-quickjs-101: general ordinary-function metadata (binding uses
-code's parameter count and diagnostic name until then, including the existing
-gaps for default arity and inferred/anonymous names). `new.target` syntax
-remains clj-quickjs-99.
+Binding snapshots the target's current own numeric length, subtracting bound
+arguments and clamping at zero, and prefixes its current string name with
+`bound ` (clj-quickjs-101). `new.target` syntax remains clj-quickjs-99.
+
+### Function `length` and `name` (clj-quickjs-101)
+
+Supported (`cargo test --test js_functions function_length_and_name`,
+`cargo test --test js_functions function_metadata_property_operations`):
+
+- Every function owns non-writable, non-enumerable, configurable `length`
+  and `name`. Length counts parameters before the first default. Names are
+  declared names, inferred names for anonymous functions/arrows directly in
+  binding initializers, identifier assignments, parameter defaults and object
+  literal property values, or the empty string otherwise.
+- Reads, descriptors, `in` and own-key enumeration preserve a record-free
+  function's publication eligibility. Constructors initially list `length`,
+  `name`, `prototype`; arrows and bound functions list `length`, `name`.
+- The first property change copies metadata and materializes a constructor's
+  prototype into its task-owned record. Deletion, redefinition and freezing
+  use ordinary descriptors. Deleted metadata exposes `Function.prototype`'s
+  0/empty-string fallback. Published functions are immutable and report
+  non-configurable metadata descriptors without attaching a record.
+
+Deferred: rest and destructuring parameters, method shorthand, and accessors;
+their syntax remains rejected. See `docs/architecture.md`, "Function own properties".
 
 ### `Array.prototype.push` (clj-quickjs-155)
 
