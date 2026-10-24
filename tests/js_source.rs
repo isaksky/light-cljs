@@ -13440,6 +13440,7 @@ fn maps_reject_access_from_another_task() {
         "Object.getPrototypeOf(m)",
         "Object.isFrozen(m)",
         "Object.freeze(m)",
+        "Object.prototype.toString.call(m)",
     ] {
         let code = compile_function(&format!("function read(m) {{ return {body}; }}")).unwrap();
         let task = rt.spawn(&code, &[&map]).unwrap();
@@ -13468,6 +13469,7 @@ fn map_symbol_keys_and_tag() {
         );
     }
     for src in [
+        "let m = new Map(); Object.setPrototypeOf(m, null); Object.prototype.toString.call(m) === '[object Object]'",
         "let m = new Map(); let a = Symbol('key'); let b = Symbol('key'); m.set(a, 1); m.set(b, 2); m.set('Symbol(key)', 3); m.size === 3 && m.get(a) === 1 && m.get(b) === 2 && m.get('Symbol(key)') === 3 && !m.has(Symbol('key'))",
         "let m = new Map(); let s = Symbol(); m.set(s, 1); m.set(s, 2); m.size === 1 && m.get(s) === 2 && m.delete(s) && !m.delete(s) && !m.has(s)",
         "let m = new Map(); m.set(Symbol.iterator, 1); m.set(Symbol.toStringTag, 2); m.get(Symbol.iterator) === 1 && m.get(Symbol.toStringTag) === 2 && m.size === 2",
@@ -13497,5 +13499,33 @@ fn object_to_string_rejects_deferred_tags() {
                 "{src}"
             );
         }
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Tag probing follows the
+/// same task ownership boundary as other property reads.
+#[test]
+fn object_to_string_rejects_foreign_receivers() {
+    let rt = Runtime::new();
+    let code =
+        compile_function("function tag(value) { return Object.prototype.toString.call(value); }")
+            .unwrap();
+    for receiver in ["({})", "[]"] {
+        let owner = rt.spawn(&exe(receiver), &[]).unwrap();
+        let RunOutcome::Complete(value) = owner.run().unwrap() else {
+            panic!("expected {receiver}")
+        };
+        let caller = rt.spawn(&code, &[&value]).unwrap();
+        let RunOutcome::Failed(error) = caller.run().unwrap() else {
+            panic!("expected foreign receiver failure for {receiver}")
+        };
+        assert_eq!(
+            error.kind(),
+            VmErrorKind::ForeignObject {
+                owner: Some(owner.id()),
+                caller: caller.id(),
+            },
+            "{receiver}"
+        );
     }
 }
