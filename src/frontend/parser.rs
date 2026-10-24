@@ -82,6 +82,11 @@ pub(super) struct Parser<'a> {
     /// ([`Self::set_strict`]).
     strict: bool,
     in_function: bool,
+    /// `this` is an expression here (clj-quickjs-116): inside the parameters
+    /// or body of a non-arrow function and not inside an arrow function
+    /// (an arrow's lexical `this` is clj-quickjs-98, the script top
+    /// level's is clj-quickjs-104), so both still reject it.
+    this_allowed: bool,
     /// Inside the body of a loop of the current function (`break` and
     /// `continue` are allowed).
     in_loop: bool,
@@ -123,6 +128,7 @@ impl<'a> Parser<'a> {
             depth: 0,
             strict,
             in_function: false,
+            this_allowed: false,
             in_loop: false,
             in_switch: false,
             labels: Vec::new(),
@@ -1105,6 +1111,7 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let start = self.tok.span.start;
+        let outer_this = std::mem::replace(&mut self.this_allowed, true);
         let (name, (params, defaults)) = self.parse_function_head(declaration)?;
         let outer = std::mem::replace(&mut self.in_function, true);
         let outer_loop = std::mem::replace(&mut self.in_loop, false);
@@ -1113,6 +1120,7 @@ impl<'a> Parser<'a> {
         let simple = defaults.iter().all(Option::is_none);
         let (body, strict) = self.parse_function_body(name.as_ref(), &params, simple)?;
         self.in_function = outer;
+        self.this_allowed = outer_this;
         self.in_loop = outer_loop;
         self.in_switch = outer_switch;
         self.labels = outer_labels;
@@ -1252,6 +1260,7 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let start = self.tok.span.start;
+        let outer_this = std::mem::replace(&mut self.this_allowed, false);
         let (params, defaults) = if self.is_punct(Punct::LParen) {
             self.parse_formal_parameters()?
         } else {
@@ -1289,6 +1298,7 @@ impl<'a> Parser<'a> {
             (FunctionKind::ConciseArrow, vec![body], self.strict)
         };
         self.depth = saved;
+        self.this_allowed = outer_this;
         let function = Function::new(
             kind,
             None,
@@ -1995,6 +2005,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::True) => ExprKind::Bool(true),
             TokenKind::Keyword(Keyword::False) => ExprKind::Bool(false),
             TokenKind::Keyword(Keyword::Null) => ExprKind::Null,
+            TokenKind::Keyword(Keyword::This) if self.this_allowed => ExprKind::This,
             TokenKind::Keyword(Keyword::Function) => {
                 let function = self.parse_function(false)?;
                 let span = function.span;

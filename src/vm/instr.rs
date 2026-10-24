@@ -87,6 +87,7 @@
 //! | `CallMethod`    | 0x53 | u16 argument count | this f a1 … an → r     | call `f` with receiver `this` (a method call) |
 //! | `NewObjectLiteral` | 0x54 | –               | → obj                  | allocate a fresh ordinary object inheriting from `Object.prototype` (an object literal) |
 //! | `ToString`      | 0x55 | –                  | v → s                  | JavaScript ToString on primitives (clj-quickjs-57) |
+//! | `GetThis`       | 0x56 | –                  | → this                 | push the running frame's `this` value (the receiver it was called with) |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -275,9 +276,9 @@
 //! below the callee: the compiler emits it for a call whose callee is a
 //! property reference `o.m(…)`, evaluating `o` once. A built-in function
 //! callee (`crate::vm::builtin`) receives `this`; a JavaScript function
-//! callee does not observe it yet (`this` expressions are clj-quickjs-116),
-//! so the receiver is dropped when its frame is entered. Plain `Call`
-//! passes `undefined` as the receiver of a built-in. Both are poll points.
+//! callee is entered with it as its frame's `this` (clj-quickjs-116). Plain
+//! `Call` passes `undefined` as the receiver, to a built-in or a frame
+//! alike (strict-mode semantics). Both are poll points.
 //!
 //! Opcode `0x54`, `NewObjectLiteral` (clj-quickjs-117), is `NewObject` with
 //! the realm's `Object.prototype` as the new object's prototype (QuickJS
@@ -294,6 +295,16 @@
 //! before the `Plus` that appends it, so the conversion is ToString rather
 //! than the default-hint ToPrimitive of `+`. The string lives outside the
 //! heap, so it is not a poll point.
+//! Opcode `0x56`, `GetThis` (clj-quickjs-116), pushes the running frame's
+//! `this` (`crate::vm::frames`): the receiver of the `CallMethod` that
+//! entered it, otherwise `undefined` (a plain `Call`, a native's callback,
+//! a task's entry frame). The compiler emits it for `this` inside a
+//! non-arrow function. In strict code the value is pushed as is; in sloppy
+//! code an `undefined`, `null` or primitive `this` would be replaced by the
+//! global object or wrapped (ToObject), neither of which exists yet
+//! (clj-quickjs-104, clj-quickjs-73), so it fails the task with
+//! `UnsupportedOperand` instead of pushing a wrong value. It never
+//! allocates and is not a poll point.
 //!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
@@ -405,6 +416,7 @@ pub enum Opcode {
     CallMethod = 0x53,
     NewObjectLiteral = 0x54,
     ToString = 0x55,
+    GetThis = 0x56,
 }
 
 /// Operand encoding of an opcode.
@@ -545,6 +557,7 @@ impl Opcode {
             0x53 => CallMethod,
             0x54 => NewObjectLiteral,
             0x55 => ToString,
+            0x56 => GetThis,
             _ => return None,
         })
     }
@@ -638,6 +651,7 @@ impl Opcode {
             CallMethod => "call_method",
             NewObjectLiteral => "new_object_literal",
             ToString => "to_string",
+            GetThis => "get_this",
         }
     }
 
@@ -662,7 +676,9 @@ impl Opcode {
             | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PopCatch
             | PopFinally | EndFinally | Reduce | NeedAll | BitAnd | BitOr | BitXor | Shl | Sar
             | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt | CompareGt
-            | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString => OperandKind::None,
+            | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString | GetThis => {
+                OperandKind::None
+            }
         }
     }
 }
@@ -797,6 +813,7 @@ pub(crate) enum Instr {
     CallMethod(u16),
     NewObjectLiteral,
     ToString,
+    GetThis,
 }
 
 impl Instr {
@@ -887,6 +904,7 @@ impl Instr {
             Instr::CallMethod(_) => Opcode::CallMethod,
             Instr::NewObjectLiteral => Opcode::NewObjectLiteral,
             Instr::ToString => Opcode::ToString,
+            Instr::GetThis => Opcode::GetThis,
         }
     }
 
@@ -897,7 +915,7 @@ impl Instr {
         match self {
             Const(_) | Undefined | GetLocal(_) | NewObject | NewVectorBuilder | NewMapBuilder
             | ThrowError(_) | CurrentFunction | GetCapture(_) | NewCell | GetBuiltinGlobal(_)
-            | NewObjectLiteral => (0, 1),
+            | NewObjectLiteral | GetThis => (0, 1),
             SetLocal(_) | Pop | JumpIfFalse(_) | Return | Throw => (1, 0),
             CellInit | CellSet => (2, 0),
             Dup => (1, 2),
@@ -936,6 +954,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 85);
+        assert_eq!(assigned, 86);
     }
 }

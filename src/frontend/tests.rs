@@ -29,6 +29,7 @@ fn render_expr(e: &Expr) -> String {
         ExprKind::String(s) => format!("{s:?}"),
         ExprKind::Bool(b) => b.to_string(),
         ExprKind::Null => "null".into(),
+        ExprKind::This => "this".into(),
         ExprKind::Undefined => "undefined".into(),
         ExprKind::Identifier(name) => name.clone(),
         ExprKind::Unary { op, operand } => {
@@ -1443,6 +1444,63 @@ fn functions() {
 }
 
 #[test]
+fn this_expressions() {
+    use SyntaxErrorKind::{Invalid, Unsupported};
+    // clj-quickjs-116: `this` is a primary expression inside non-arrow
+    // functions, declarations and expressions alike, nested blocks,
+    // default parameters and functions nested in arrows included.
+    assert_eq!(
+        ast("function f() { return this; }"),
+        "(function f () (return this))"
+    );
+    assert_eq!(
+        ast("let g = function () { return this.x; };"),
+        "(let (g (function - () (return (. this x)))))"
+    );
+    assert_eq!(
+        ast("function f() { if (this) { return this.m(this); } }"),
+        "(function f () (if this (block (return (call (. this m) this)))))"
+    );
+    assert_eq!(
+        ast("function f(a = this) { return a; }"),
+        "(function f (a=this) (return a))"
+    );
+    assert_eq!(
+        ast("() => function () { return this; }"),
+        "(arrow () => (function - () (return this)))"
+    );
+    // Still rejected with the existing kind and message at the script top
+    // level (clj-quickjs-104) and inside arrows (lexical `this`,
+    // clj-quickjs-98), even an arrow nested in a function.
+    rejects_with("this;", Unsupported, 1, 1, "`this`");
+    rejects_with("x = this.y;", Unsupported, 1, 5, "`this`");
+    rejects_with("() => this", Unsupported, 1, 7, "`this`");
+    rejects_with("(a = this) => a", Unsupported, 1, 6, "`this`");
+    rejects_with(
+        "function f() { return () => this; }",
+        Unsupported,
+        1,
+        29,
+        "`this`",
+    );
+    rejects_with(
+        "function f() { let g = (a) => { return this; }; }",
+        Unsupported,
+        1,
+        40,
+        "`this`",
+    );
+    // After an arrow or function ends, the enclosing context applies again.
+    rejects_with("function f() {} this;", Unsupported, 1, 17, "`this`");
+    assert_eq!(
+        ast("function f() { let g = () => 1; return this; }"),
+        "(function f () (let (g (arrow () => 1))) (return this))"
+    );
+    // `this` is not an assignment target.
+    rejects("function f() { this = 1; }", Invalid, 1, 16);
+}
+
+#[test]
 fn default_parameters() {
     use SyntaxErrorKind::{Invalid, UnexpectedToken};
     // clj-quickjs-100: `name = AssignmentExpression`, in function
@@ -1757,7 +1815,8 @@ fn arrow_functions_and_asi() {
     rejects("arguments => 1", ReservedWord, 1, 1);
     rejects("undefined => 1", ReservedWord, 1, 1);
     rejects("yield => 1", ReservedWord, 1, 1);
-    // No own `this`/`arguments` in the subset, inside arrows too.
+    // No `arguments` in the subset, inside arrows too; an arrow's lexical
+    // `this` is not supported yet (clj-quickjs-98).
     rejects_with("() => this", Unsupported, 1, 7, "`this`");
     rejects_with(
         "() => { return arguments; }",

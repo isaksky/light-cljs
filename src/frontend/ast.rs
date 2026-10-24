@@ -342,6 +342,7 @@ impl Expr {
             | ExprKind::String(_)
             | ExprKind::Bool(_)
             | ExprKind::Null
+            | ExprKind::This
             | ExprKind::Undefined
             | ExprKind::Identifier(_)
             | ExprKind::Update { .. } => 0,
@@ -384,6 +385,9 @@ pub enum ExprKind {
     String(JsString),
     Bool(bool),
     Null,
+    /// `this` inside a non-arrow function (clj-quickjs-116): the receiver
+    /// the running function was called with.
+    This,
     /// `undefined` (which the subset reserves).
     Undefined,
     /// A reference to a binding.

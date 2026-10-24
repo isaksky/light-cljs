@@ -35,8 +35,8 @@
 //! between any two instructions with several frames live.
 //!
 //! **Tracing.** A task's root source traces the whole value stack (every
-//! frame's locals and operands) and each frame's function object, which
-//! reports its code's constants and its captured values (the closure
+//! frame's locals and operands), each frame's `this` and each frame's
+//! function object, which reports its code's constants and its captured values (the closure
 //! environment, including binding cells shared with other closures); the
 //! entry frame's constants are the task's executable constants (`Trace for VmState`).
 //!
@@ -113,6 +113,11 @@ pub(crate) struct Frame {
     /// frame's closure environment). `None` for the entry frame until
     /// `CurrentFunction` first allocates one.
     pub(crate) callee: Option<ObjectId>,
+    /// The frame's `this` (clj-quickjs-116): the receiver of the
+    /// `CallMethod` that entered it, `undefined` for a plain `Call`, a
+    /// native's callback and the entry frame. Task-owned and traced with the
+    /// frame; `GetThis` reads it.
+    pub(crate) this: Value,
     /// Index of the next instruction to execute in `code`.
     pub(crate) pc: usize,
     /// Index of this frame's local 0 in [`VmState::stack`].
@@ -228,6 +233,7 @@ impl VmState {
             entry: Frame {
                 code: Arc::clone(code),
                 callee: None,
+                this: Value::Undefined,
                 pc: 0,
                 base: 0,
             },
@@ -345,12 +351,14 @@ impl VmState {
     /// Enter `code`, called through the function object `callee`: its
     /// arguments are the top `argc` operands of the running frame, and the
     /// operand below them is the callee value, which the new frame's locals
-    /// replace. Fails, changing nothing, if the operands are missing or the
-    /// new frame would exceed the task's limits.
+    /// replace, and `this` is its `this` (clj-quickjs-116). Fails, changing
+    /// nothing, if the operands are missing or the new frame would exceed
+    /// the task's limits.
     pub(crate) fn enter(
         &mut self,
         code: Arc<Code>,
         callee: ObjectId,
+        this: Value,
         argc: usize,
     ) -> Result<(), Fault> {
         native::assert_no_borrow("entering a call frame (reentering JavaScript)");
@@ -382,6 +390,7 @@ impl VmState {
         self.calls.push(Frame {
             code,
             callee: Some(callee),
+            this,
             pc: 0,
             base,
         });
@@ -745,7 +754,7 @@ impl VmState {
     }
 }
 
-/// Every frame's locals, operands and function object, and the values held
+/// Every frame's locals, operands, function object and `this`, and the values held
 /// by pending completions (saved return values and exceptions). A frame's code
 /// constants are reached through its function object (whose `Trace` reports
 /// them) or, for the entry frame, through the task's executable
@@ -759,6 +768,7 @@ impl Trace for VmState {
             if let Some(id) = frame.callee {
                 visit(id);
             }
+            frame.this.trace(visit);
         }
         self.handlers.iter().for_each(|h| h.trace(visit));
         self.natives.iter().for_each(|n| n.trace(visit));

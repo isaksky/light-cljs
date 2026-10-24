@@ -455,6 +455,7 @@ impl Executable {
                 Opcode::CallMethod => Instr::CallMethod(operand as u16),
                 Opcode::NewObjectLiteral => Instr::NewObjectLiteral,
                 Opcode::ToString => Instr::ToString,
+                Opcode::GetThis => Instr::GetThis,
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,

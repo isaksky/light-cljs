@@ -452,7 +452,7 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
 ```
  VmState (task-owned)
    entry: Frame ─┐   calls: [Frame, Frame, …]      each Frame = { code: Arc<Code>,
-                 │                                   callee, pc, base }
+                 │                                   callee, this, pc, base }
    stack: [ entry locals | entry operands | f1 locals | f1 operands | f2 … ]
                                            ▲ f1.base     (callee slot reused)
 ```
@@ -488,11 +488,24 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   maximum operand depth). A `call` that would exceed either fails the task
   with `VmErrorKind::StackOverflow` before anything changes; Rust stack use is
   independent of JavaScript call depth (tested on a 64 KiB worker stack).
-- **Tracing.** The task root source traces the whole value stack and each
-  frame's function object; a function object's `Trace` reports its code's
+- **Tracing.** The task root source traces the whole value stack, each
+  frame's `this` (clj-quickjs-116, below) and each frame's function object; a function object's `Trace` reports its code's
   constants and captured values, and the entry frame's constants are the task's executable
   constants. A callee that is no longer on any operand stack stays alive
   through its frame.
+- **`this` (clj-quickjs-116).** Each frame has a task-owned `this` slot,
+  set when the frame is entered: the receiver of the `call_method` that
+  called it, `undefined` for a plain `call`, a resumable native's callback
+  and the entry frame (QuickJS keeps `this_obj` as an argument of
+  `JS_CallInternal` on the C stack; here it is frame state). `get_this`
+  (`0x56`) pushes it, allocating nothing. The slot is traced with the frame,
+  so a receiver that only a suspended method frame holds survives
+  collections, waits and migration to another worker (`tests/need.rs`).
+  Strict code reads the slot as is; sloppy code fails with
+  `UnsupportedOperand` for a non-object receiver (the global object is
+  clj-quickjs-104, primitive wrappers clj-quickjs-73). The compiler emits
+  `get_this` for `this` in a non-arrow function; the parser still rejects
+  it at the script top level and in arrows (clj-quickjs-104, -98).
 - **Context and diagnostics.** Task identity and world are task-wide, so a
   call never changes world. A failure reports the failing frame's executable,
   instruction and source location plus `Diagnostic::call_chain`: each
@@ -628,7 +641,7 @@ Code: `src/vm/function.rs` (contract), `src/vm/dispatch.rs`; tests:
   JavaScript source executed by this VM; no C engine is involved.
 - **Deferred.** Method calls and function properties (so no `f.call`;
   string values run since clj-quickjs-65, object literals and named
-  properties since clj-quickjs-114); `this`, `arguments`, `new`, rest
+  properties since clj-quickjs-114, `this` since clj-quickjs-116); `arguments`, `new`, rest
   parameters (defaults: clj-quickjs-100) (var-scoped redeclaration by function declarations runs since
   clj-quickjs-94); an initialize-once immutable cell, which would let a
   hoisted declaration capture a `const` of its own scope by value.
@@ -1589,9 +1602,8 @@ moment (a leaf lock, never taken by the collector).
   wait or migrate; the `Builtin` dispatch is where that choice is made.
 - **Method calls.** A call whose callee is `o.m` evaluates `o` once and
   emits `CallMethod`, which passes `o` as the receiver: built-ins see it
-  as `this`; a JavaScript function callee does not observe it yet (the
-  receiver is dropped when its frame is entered; `this` expressions and
-  the frame's `this` slot are clj-quickjs-116). A plain call passes
+  as `this`, and a JavaScript function callee gets it as its frame's
+  `this` (clj-quickjs-116, "Calls and frames"). A plain call passes
   `undefined` (strict mode), so `let f = o.toString; f()` is
   `"[object Undefined]"`.
 - **Literals.** Object literals compile to `NewObjectLiteral`, which

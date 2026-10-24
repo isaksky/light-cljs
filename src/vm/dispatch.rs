@@ -419,9 +419,9 @@ pub(crate) fn callee(heap: &Heap, callee: &Value) -> Result<Callee, Fault> {
 
 /// `Call argc` (`method`: false) or `CallMethod argc` (true): the receiver
 /// (method calls only), the callee and the arguments are the top operands.
-/// A function object enters a new frame (the receiver is dropped: no
-/// JavaScript code observes `this` yet, clj-quickjs-116); a built-in runs
-/// to completion and its result replaces the operands.
+/// A function object enters a new frame whose `this` is the receiver
+/// (`undefined` for a plain call, clj-quickjs-116); a built-in runs to
+/// completion and its result replaces the operands.
 fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flow, Fault> {
     let argc = usize::from(argc);
     let task = state.diag.task;
@@ -438,7 +438,7 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
             if method {
                 state.remove_operand(argc + 1)?;
             }
-            state.enter(code, id, argc)?;
+            state.enter(code, id, this, argc)?;
             Ok(Flow::FrameChanged)
         }
         Callee::Builtin(which) => {
@@ -446,6 +446,23 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
             state.replace(argc + 1 + usize::from(method), result)?;
             Ok(Flow::Next)
         }
+    }
+}
+
+/// The running frame's `this` for `GetThis`. Strict code sees the receiver
+/// as passed. Sloppy code would see the global object for an `undefined` or
+/// `null` receiver and ToObject of a primitive one; neither exists in this
+/// runtime yet, so anything but an object fails the task explicitly rather
+/// than producing a wrong `this`.
+fn this_value(state: &VmState) -> Result<Value, Fault> {
+    let frame = state.top();
+    match &frame.this {
+        this @ Value::Object(_) => Ok(this.clone()),
+        this if frame.code.strict => Ok(this.clone()),
+        this => Err(Fault::Unsupported(format!(
+            "`this` of sloppy-mode code called with {} as its receiver is not supported (it needs the global object or a primitive wrapper)",
+            describe(this)
+        ))),
     }
 }
 
@@ -1041,6 +1058,10 @@ fn step(
         }
         Instr::Call(argc) => return call(state, heap, argc, false),
         Instr::CallMethod(argc) => return call(state, heap, argc, true),
+        Instr::GetThis => {
+            let this = this_value(state)?;
+            state.push(this);
+        }
         Instr::GetBuiltinGlobal(i) => {
             // Validation checked the operand. Builds the realm on first use
             // (a poll point); its objects are roots from then on.
@@ -1087,6 +1108,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::AtomCas => true,
         Instr::Const(_)
         | Instr::Undefined
+        | Instr::GetThis
         | Instr::GetLocal(_)
         | Instr::SetLocal(_)
         | Instr::Pop

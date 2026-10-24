@@ -4103,6 +4103,132 @@ fn object_literals_and_named_properties() {
     );
 }
 
+/// A call whose callee is a property reference passes its base as `this`
+/// (clj-quickjs-116); every other call passes `undefined` (strict code).
+#[test]
+fn method_calls_bind_this() {
+    let o = "let o = {x: 1, m: function () { return this.x; }};";
+    assert_eq!(num(&format!("{o} o.m()")), 1.0);
+    // A parenthesized member callee keeps its receiver.
+    assert_eq!(num(&format!("{o} (o.m)()")), 1.0);
+    assert_eq!(num(&format!("{o} ((o.m))()")), 1.0);
+    // `o["m"]()` needs computed member access (clj-quickjs-115), which is
+    // still an explicit compile-time error.
+    let e = compile_script("t", &format!("{o} o[\"m\"]()")).unwrap_err();
+    assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{e}");
+    assert!(e.message.contains("computed member access"), "{e}");
+    // A comma or assignment result, or a plain reference, is not a member
+    // callee: `this` is undefined, so `this.x` throws a catchable TypeError.
+    for call in ["(0, o.m)()", "let f = o.m; f()", "let f; (f = o.m)()"] {
+        assert_eq!(
+            string(&format!(
+                "{o} let r = 'none'; try {{ {call}; }} catch (e) {{ r = 'caught'; }} r"
+            )),
+            "caught",
+            "{call}"
+        );
+        let (kind, message, ..) = failure_at(&format!("{o}\n{call};"));
+        assert_eq!(kind, VmErrorKind::TypeError, "{call}");
+        assert_eq!(message, "cannot read property 'x' of undefined", "{call}");
+    }
+    assert_eq!(
+        eval("function g() { return this; } g()"),
+        ValueView::Undefined
+    );
+    assert_eq!(num(&format!("{o} ({{inner: o}}).inner.m()")), 1.0);
+    // The base is evaluated once.
+    assert_eq!(
+        num(&format!(
+            "{o} let n = 0; function getO() {{ n = n + 1; return o; }} getO().m() * 10 + n"
+        )),
+        11.0
+    );
+    // `this` is the receiver itself, not a copy.
+    assert_eq!(
+        eval("let p = {me: function () { return this; }}; p.me() === p"),
+        ValueView::Bool(true)
+    );
+    // Writes through `this` (as QuickJS tests/test_closure.js `obj.set(10)`).
+    assert_eq!(
+        num("let p = {v: 0, set: function (v) { this.v = v; }}; p.set(10); p.v"),
+        10.0
+    );
+    // Methods calling methods on `this`; a nested plain call sees
+    // `undefined` and the caller's `this` is intact after it returns.
+    assert_eq!(
+        num("let c = {v: 2, get: function () { return this.v; }, \
+             twice: function () { return this.get() * 2; }}; c.twice()"),
+        4.0
+    );
+    assert_eq!(
+        num(
+            "let c = {v: 3, m: function () { function inner() { return this; } \
+             return inner() === undefined ? this.v : -1; }}; c.m()"
+        ),
+        3.0
+    );
+    // A default parameter sees the function's `this`.
+    assert_eq!(
+        num("let c = {v: 5, m: function (a = this) { return a.v; }}; c.m()"),
+        5.0
+    );
+    // The same function as a method of two objects.
+    assert_eq!(
+        num(
+            "function get() { return this.v; } let a = {v: 1, get}; let b = {v: 2, get}; \
+             a.get() * 10 + b.get()"
+        ),
+        12.0
+    );
+    // Through `throw`/`catch` and `finally` in the method.
+    assert_eq!(
+        num(
+            "let c = {v: 7, m: function () { try { throw 1; } catch (e) { return this.v; } \
+             finally { this.v = 8; } }}; c.m() * 10 + c.v"
+        ),
+        78.0
+    );
+    // A task's entry function and a native's callback are plain calls.
+    let entry = compile_function("function f() { return this; }").unwrap();
+    match run(&entry, &[]) {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Undefined),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        eval("__rt.reduce(function (acc, x) { return this; }, 0, __rt.vector(1))"),
+        ValueView::Undefined
+    );
+    // `this` compiles to `get_this`.
+    let script = exe(&format!("{o} o.m()"));
+    let ops = opcodes(&script.function(0).unwrap());
+    assert!(ops.contains(&Opcode::GetThis), "{ops:?}");
+
+    // Sloppy code: an object receiver is `this` as is; an `undefined` one
+    // would be replaced by the global object (clj-quickjs-104), so it fails
+    // explicitly instead of giving a wrong value.
+    let sloppy = |src: &str| {
+        let exe = compile_script_with("sloppy", src, ScriptOptions::SLOPPY)
+            .unwrap_or_else(|e| panic!("{e}"));
+        run(&exe, &[])
+    };
+    match sloppy("let p = {me: function () { return this; }}; p.me() === p") {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Bool(true)),
+        other => panic!("{other:?}"),
+    }
+    match sloppy("function g() { return this; } g()") {
+        RunOutcome::Failed(e) => {
+            assert_eq!(e.kind(), VmErrorKind::UnsupportedOperand, "{e}");
+            assert!(e.message().contains("sloppy-mode"), "{e}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // A strict function in a sloppy script sees `undefined`.
+    match sloppy("function g() { 'use strict'; return this; } g()") {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Undefined),
+        other => panic!("{other:?}"),
+    }
+}
+
 /// The values of the runtime that are not ordinary objects
 /// (clj-quickjs-114, `crate::vm::property`): persistent collections and
 /// builders have no JavaScript properties (reads give `undefined`, writes
@@ -4308,8 +4434,8 @@ fn object_intrinsics() {
         string("let o = {f: Object.prototype.toString}; o.f()"),
         "[object Object]"
     );
-    // A method that is a JavaScript function gets its arguments (it cannot
-    // observe `this` until clj-quickjs-116).
+    // A method that is a JavaScript function gets its arguments (and its
+    // receiver as `this`: `method_calls_bind_this`).
     assert_eq!(
         num("let o = {m: function (a, b) { return a - b; }}; o.m(5, 2)"),
         3.0

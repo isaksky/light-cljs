@@ -1059,15 +1059,25 @@ fn default_parameters() {
         RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(6.0)),
         other => panic!("{other:?}"),
     }
-    // `arguments` (clj-quickjs-97) and `this`/`new` (clj-quickjs-71) are
-    // not in the subset yet, in defaults as elsewhere.
+    // `arguments` (clj-quickjs-97) is not in the subset yet, in defaults as
+    // elsewhere. A default sees its function's `this` (clj-quickjs-116; the
+    // receiver of a method call, `undefined` for a plain call); an arrow's
+    // default still rejects it (lexical `this`, clj-quickjs-98).
     assert_eq!(
         compile_err("function f(a, b = arguments[0]) { return b; }"),
         (SyntaxErrorKind::Unsupported, 1, 19)
     );
     assert_eq!(
-        compile_err("function F(a = this) {}"),
-        (SyntaxErrorKind::Unsupported, 1, 16)
+        num("let o = {v: 4, F: function (a = this) { return a.v; }}; o.F()"),
+        4.0
+    );
+    assert_eq!(
+        eval("function F(a = this) { return a; } F()"),
+        ValueView::Undefined
+    );
+    assert_eq!(
+        compile_err("let F = (a = this) => a;"),
+        (SyntaxErrorKind::Unsupported, 1, 14)
     );
     // An object literal default with an escaped reserved-word key.
     assert_eq!(

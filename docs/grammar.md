@@ -148,7 +148,7 @@ Update                = ( "++" | "--" ) Unary
 Call                  = Primary { Arguments | "." IdentifierName }
 Arguments             = "(" [ AssignmentExpression { "," AssignmentExpression } [ "," ] ] ")"
 Primary               = Identifier | Literal | FunctionExpression | ObjectLiteral
-                      | TemplateLiteral | "(" Expression ")"
+                      | TemplateLiteral | "this" | "(" Expression ")"
 TemplateLiteral       = NoSubstitutionTemplate
                       | TemplateHead Expression { TemplateMiddle Expression } TemplateTail
 ObjectLiteral         = "{" [ PropertyDefinition { "," PropertyDefinition } [ "," ] ] "}"
@@ -316,7 +316,8 @@ Every form below is rejected where it starts. Error kinds:
 | Form | Kind |
 |------|------|
 | `var` as a `for` head, for-in and for-of loops, `debugger`, `with` | Unsupported |
-| classes, `new`, `this`, `super`, `import`/`export`, dynamic `import` | Unsupported |
+| classes, `new`, `super`, `import`/`export`, dynamic `import` | Unsupported |
+| `this` at the script top level (clj-quickjs-104) and inside an arrow function, its parameters included (lexical `this`, clj-quickjs-98) | Unsupported |
 | `async` functions and arrows, `await`, generators (`function*`) | Unsupported |
 | rest parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
 | array literals, computed member access `a[b]`, optional chaining `?.`, spread `...` (also in an object literal) | Unsupported |
@@ -391,10 +392,15 @@ checks left to later stages:
   (clj-quickjs-104): `Object = x` (also compound and `++`/`--`) is a
   compile-time `Unsupported` error. A lexical binding named `Object`
   shadows the built-in as usual.
-- **`this` is not observable in JavaScript functions** (clj-quickjs-116):
-  a method call `o.m()` passes `o` only to built-in functions; a
-  JavaScript method gets its arguments and cannot refer to `this` (the
-  `this` keyword is still rejected).
+- **`this` is only a non-arrow function's receiver** (clj-quickjs-116):
+  `this` at the script top level (the global object, clj-quickjs-104) and
+  an arrow's lexical `this` (clj-quickjs-98) are rejected; there is no
+  `new` (clj-quickjs-71), `call`/`apply`/`bind` (clj-quickjs-102), and a
+  method call `o[k]()` waits on computed member access (clj-quickjs-115).
+  In sloppy code `this` of a call without an object receiver (a plain
+  call `f()`, which would see the global object, or a primitive one,
+  which would be wrapped, clj-quickjs-73) fails with `UnsupportedOperand`
+  when evaluated instead of giving a wrong value.
 - **Built-in functions have no `Function.prototype` yet**
   (clj-quickjs-102): their own `length`, `name` (and for `Object`,
   `prototype` and `is`) read normally, any other property read
@@ -434,15 +440,18 @@ checks left to later stages:
   errors (`Unsupported`, see "Directive prologues and strictness"); silently
   ignored stores to a function expression's own name (clj-quickjs-96);
   implicit globals and `delete` of identifiers (clj-quickjs-105); `with`
-  (clj-quickjs-110); `this` substitution and the mapped `arguments` object
-  (not filed). Strict reserved words (`let`, `static`, `yield`,
+  (clj-quickjs-110); `this` substitution (a sloppy function's `this` fails
+  explicitly unless its receiver is an object, see above) and the mapped
+  `arguments` object (not filed). Strict reserved words (`let`, `static`, `yield`,
   `implements`, `interface`, `package`, `private`, `protected`, `public`)
   stay reserved, duplicate parameter names stay `Invalid`, a function
   declaration as a labelled or `if` body stays `Invalid`, and function
   declarations in blocks stay lexical (no Annex B hoisting).
 - **Default parameter values lack what the subset lacks elsewhere**
-  (clj-quickjs-100): `this` and a function's own `arguments` object are
-  rejected in a default as anywhere (clj-quickjs-71, -97), and so is
+  (clj-quickjs-100): a function's own `arguments` object is rejected in a
+  default as anywhere (clj-quickjs-97), and so is `this` in an arrow's
+  default (clj-quickjs-98; a non-arrow function's default sees its
+  `this`, clj-quickjs-116), and
   `eval` (clj-quickjs-106, -109); an anonymous function as a default gets
   no inferred `name`, and a function's `length` (the parameters before the
   first default) does not exist yet (clj-quickjs-101).
@@ -648,10 +657,11 @@ Executed, with JavaScript semantics:
 | `switch (e) { case a: ... default: ... }` (clj-quickjs-83) | evaluates `e` once, then the `case` tests in source order, comparing each with IsStrictlyEqual (`===`: `-0` matches `0`, `NaN` matches nothing, `"1"` does not match `1`) and evaluating none after the first match; runs from the matching clause, or from `default` (wherever it is) if none matches, through the following clauses (fall-through); an unlabelled `break` leaves the switch, `continue` the switch and the iteration of its enclosing loop; the clauses form one block scope whose function declarations are created on entry, before the tests |
 | function declarations | hoisted: entering a script, function body or block creates the closures of the declarations directly in it, in source order, before its first statement runs. At the top level of a script or function body they are var-scoped (clj-quickjs-94): one may repeat a parameter, a `var` or another function declaration there, which all share one binding, and the last declaration wins (`function g() { return 1; } function g() { return 2; } g()` is 2; `var h; function h() {}` leaves `h` the function). In a block they are lexical (strict mode) |
 | function expressions | each evaluation creates a new function object (`===` compares identity); a named expression's name is visible only inside it, is the running function, and assigning it is a TypeError |
-| arrow functions | lowered exactly as an anonymous function expression whose concise body is `{ return body; }`: same closures, captures, cells and temporal dead zone; the subset has no `this`, `arguments`, `new.target` or `super`, so an arrow's lexical versions of them do not arise (they stay rejected inside arrows) |
-| `f(a, b)` | evaluates the callee, then the arguments left to right, then calls in a new task-owned frame; missing arguments are `undefined`, extra ones are ignored; falling off the end returns `undefined`; no `this`, `arguments` or `new` |
+| arrow functions | lowered exactly as an anonymous function expression whose concise body is `{ return body; }`: same closures, captures, cells and temporal dead zone; the subset has no `arguments`, `new.target` or `super`, so an arrow's lexical versions of them do not arise (they stay rejected inside arrows); `this` exists in non-arrow functions (clj-quickjs-116) but an arrow's lexical `this` is clj-quickjs-98, so it is rejected inside arrows, their parameters included |
+| `f(a, b)` | evaluates the callee, then the arguments left to right, then calls in a new task-owned frame; missing arguments are `undefined`, extra ones are ignored; falling off the end returns `undefined`; the callee's `this` is `undefined` (strict-mode semantics; see `this` below); no `arguments` or `new` |
 | `function f(a, b = expr) { ... }`, `(a = expr) => ...` (clj-quickjs-100) | on entry, the parameters are initialized left to right; a parameter's default is evaluated only when its argument is `undefined` (missing or passed: `f(1)` and `f(1, undefined)` run it, `f(1, null)` does not) and becomes its value. Parameters are bindings with a temporal dead zone: a default sees the parameters before it, the enclosing scopes and the function's own name, but reading itself or a later parameter is a ReferenceError (`function f(a = b, b) {} f()`). The parameters have a scope of their own around the body's: the body's `let`/`const`/`var`/function declarations are invisible to the defaults (`const x = 1; function f(a = () => x) { var x = 2; return a(); }` gives 1); a body `var` that repeats a parameter is a separate binding starting with the parameter's value, and a body function declaration may repeat one (a `let`/`const` may not). Closures created in a default capture the parameter bindings under the usual value/cell rule, so they see the body's later assignments to a parameter, and one run before its parameter is initialized fails with the run-time ReferenceError. QuickJS: `js_parse_function_decl2` (`has_parameter_expressions`) |
-| `o.m(a, b)` (clj-quickjs-117) | a method call: evaluates `o` once, reads `m` (the checks of `o.name`), evaluates the arguments, then calls with `o` as the receiver (`call_method`); a parenthesized callee `(o.m)()` is the same call, `(0, o.m)()` is a plain call. A built-in function sees the receiver as `this`; a JavaScript function cannot refer to `this` yet (clj-quickjs-116). A plain call passes `undefined` as a built-in's receiver |
+| `o.m(a, b)` (clj-quickjs-117) | a method call: evaluates `o` once, reads `m` (the checks of `o.name`), evaluates the arguments, then calls with `o` as the receiver (`call_method`); a parenthesized callee `(o.m)()` is the same call, `(0, o.m)()` is a plain call. A built-in function sees the receiver as `this`, and so does a JavaScript function (clj-quickjs-116). `(f = o.m)()` and `let f = o.m; f()` are plain calls too. A plain call passes `undefined` as the receiver |
+| `this` (clj-quickjs-116) | inside a non-arrow function (its body and its parameters' defaults, and blocks, `try` and nested statements in it): the receiver the running call was made with, the very object (`get_this`, which reads the frame's `this` slot and allocates nothing): `o` for a method call `o.m()`, `undefined` for a plain call `f()`, for a task's entry function and for a callback of a resumable native (`__rt.reduce`). A function nested in it has its own `this`. In strict code the receiver is used as is, so `this.x` in a plain call throws a catchable TypeError. In sloppy code an object receiver is used as is, and evaluating `this` with any other receiver fails the task with `UnsupportedOperand` (it would be the global object, clj-quickjs-104, or a wrapper, clj-quickjs-73). The frame's `this` is task-owned and traced with the frame, so it survives waits, collections and migration |
 | `Object` and other built-in globals (clj-quickjs-117) | a name with no lexical binding that is a built-in global (today only `Object`) is the runtime's shared, immutable intrinsic (`get_builtin_global`), the same object in every task; a `let`/`const`/`var`/parameter of that name shadows it |
 | `Object(v)`, `Object()` (clj-quickjs-117) | `undefined`, `null` or no argument: a new ordinary object inheriting from `Object.prototype`; an object (any heap value): `v` itself; a number, string or boolean: `UnsupportedOperand` (wrapper objects, clj-quickjs-72). `Object.length` is 1, `Object.prototype.constructor === Object` |
 | `Object.is(a, b)` (clj-quickjs-117) | SameValue: like `===` except `Object.is(NaN, NaN)` and `!Object.is(0, -0)` |
@@ -896,8 +906,9 @@ Gaps specific to execution:
   captures its own or a later parameter (`function f(g = () => b, b)`)
   holds a cell (clj-quickjs-100).
 - **Functions have no properties.** No `length`, `name`, `prototype`,
-  `call`/`apply`/`bind`, `this`, `arguments`, `new`, rest parameters,
-  getters or generators.
+  `call`/`apply`/`bind`, `arguments`, `new`, rest parameters, getters or
+  generators; `this` is only a non-arrow function's receiver (see
+  "Explicit gaps").
 
 ## Reserved intrinsic binding
 
@@ -1169,7 +1180,26 @@ Object.is(NaN, NaN) && !Object.is(0, -0) && Object() !== Object() && typeof Obje
 let o = {toString: () => "own"}; o.toString() === "own" && Object(o) === o && o.valueOf() === o;
 ```
 
+```js accept
+// A method call passes its base as `this` (clj-quickjs-116); a plain
+// call, `(0, o.m)()` included, passes `undefined`.
+let counter = {n: 0, add: function (k = 1) { this.n = this.n + k; return this; }};
+counter.add().add(2).n === 3 && (counter.add)() === counter;
+function who() { return this; }
+who() === undefined && (0, counter.add) !== undefined;
+```
+
 Rejected (`kind line:column` of the reported position):
+
+```js reject Unsupported 2:12
+// `this` at the script top level (clj-quickjs-104).
+let self = this;
+```
+
+```js reject Unsupported 2:29
+// An arrow's lexical `this` (clj-quickjs-98).
+function f() { return () => this; }
+```
 
 ```js reject ReservedWord 1:3
 ({if});

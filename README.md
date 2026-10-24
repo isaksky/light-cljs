@@ -464,8 +464,9 @@ Supported (VM level; early VM tests use hand-assembled bytecode,
 Deferred:
 
 - (Compiling functions and calls from source: clj-quickjs-21, below.)
-- `this`, `arguments`, `new`, rest parameters (defaults: clj-quickjs-100, below), function properties
-  (`length`, `name`), and native or host-function callees.
+- `arguments`, `new`, rest parameters (defaults: clj-quickjs-100, below), function properties
+  (`length`, `name`), and native or host-function callees. (`this`:
+  clj-quickjs-116, below.)
   (Catching `StackOverflow` and `TypeError`: clj-quickjs-11, below.)
 
 ### Lexical closures and captured bindings (clj-quickjs-20)
@@ -630,8 +631,8 @@ and `examples/`):
 
 Deferred:
 
-- Property access (`f.call`, methods, objects), `this`, (string values:
-  clj-quickjs-65 below)
+- Property access (`f.call`, methods, objects), `this` (clj-quickjs-116
+  below), (string values: clj-quickjs-65 below)
   `arguments`, `new`, rest parameters (defaults: clj-quickjs-100, below), generators. (Arrow
   functions: clj-quickjs-53 below.)
 - (A function declaration repeating a parameter or another declaration at
@@ -1187,9 +1188,10 @@ Supported (`cargo test --lib frontend::tests::arrow_functions_and_asi`,
 
 Deferred:
 
-- `async` arrows; rest and destructuring parameters (defaults: clj-quickjs-100, below); `this`,
-  `arguments`, `new.target` and `super` (rejected inside arrows as
-  everywhere else).
+- `async` arrows; rest and destructuring parameters (defaults: clj-quickjs-100, below); `this`
+  (lexical `this`, clj-quickjs-98; non-arrow functions have `this` since
+  clj-quickjs-116, below), `arguments`, `new.target` and `super` (rejected
+  inside arrows).
 - QuickJS's `var h = x => x + 1` newline `yield 2` (needs `var` and
   generators) and `() => eval('0.a')` (needs `eval`).
 
@@ -1708,8 +1710,10 @@ Supported (`cargo test --lib frontend::tests::default_parameters`,
 
 Deferred:
 
-- `this`, the `arguments` object and `eval` in defaults (clj-quickjs-71,
-  -97, -106/-109; rejected as everywhere); function `length`/`name`
+- The `arguments` object and `eval` in defaults (clj-quickjs-97,
+  -106/-109; rejected as everywhere), `this` in an arrow's default
+  (clj-quickjs-98; a non-arrow function's default sees its `this` since
+  clj-quickjs-116, below); function `length`/`name`
   (clj-quickjs-101).
 
 ### Legacy octal number literals in sloppy code (clj-quickjs-51)
@@ -1766,7 +1770,7 @@ Deferred:
   `TypeError` (built-ins are shared and immutable; listed in
   `docs/grammar.md`, "Explicit gaps"); assigning `Object` is a compile-time
   `Unsupported` error until the global object (clj-quickjs-104).
-- `this` inside JavaScript functions (clj-quickjs-116), `new Object()`
+- (`this` inside JavaScript functions: clj-quickjs-116, below.) `new Object()`
   (clj-quickjs-71), `Function.prototype` (built-in functions' inherited
   properties fail with `UnsupportedOperand`, clj-quickjs-102), wrapper
   objects for `Object(1)` and primitive receivers (clj-quickjs-72/-73),
@@ -1788,3 +1792,29 @@ Deferred:
 
 - Tagged templates and `String.raw` (clj-quickjs-58; `` f`x` `` is `Unsupported`); an object
   substitution fails with `UnsupportedOperand` until ToPrimitive (clj-quickjs-70).
+
+### `this` in method calls (clj-quickjs-116)
+
+Supported (`cargo test --test js_source method_calls_bind_this`,
+`cargo test --lib frontend::tests::this_expressions`,
+`cargo test --test need a_method_resumes_with_the_same_this_after_a_wait_and_migration`):
+
+- `this` inside non-arrow functions (bodies and default parameters): a
+  method call `o.m()`, `(o.m)()` or `a.b.m()` evaluates its base once and
+  passes it as `this`; a plain call `f()`, `(0, o.m)()`, `(f = o.m)()`, a
+  task's entry function and a resumable native's callback get `undefined`
+  (strict mode), so `this.x` there throws a catchable `TypeError`.
+- Each frame keeps a task-owned, traced `this` slot that survives yields,
+  `__rt.need` waits, collections and migration between workers.
+- New opcode `get_this` (`0x56`).
+
+Deferred:
+
+- `this` at the script top level (the global object, clj-quickjs-104) and
+  an arrow's lexical `this` (clj-quickjs-98): `Unsupported` compile errors.
+- `o[k]()` (computed member access, clj-quickjs-115), `new`
+  (clj-quickjs-71), `call`/`apply` (clj-quickjs-102).
+- Sloppy-mode `this` substitution: in sloppy code `this` with an
+  `undefined`, `null` or primitive receiver fails with
+  `UnsupportedOperand` (the global object is clj-quickjs-104, wrappers
+  clj-quickjs-73); an object receiver works as in strict code.

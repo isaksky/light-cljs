@@ -337,9 +337,8 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | PushFinally(_) | PopCatch | PopFinally | EndFinally | BitAnd | BitOr | BitXor | Shl
         | Sar | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt
         | CompareGt | CompareLe | CompareGe | Typeof | GetField(_) | PutField(_)
-        | DefineField(_) | GetBuiltinGlobal(_) | CallMethod(_) | NewObjectLiteral | ToString => {
-            false
-        }
+        | DefineField(_) | GetBuiltinGlobal(_) | CallMethod(_) | NewObjectLiteral | ToString
+        | GetThis => false,
     }
 }
 
@@ -514,7 +513,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
             state.push(callee);
             let argc = args.len();
             args.into_iter().for_each(|a| state.push(a));
-            state.enter(code, id, argc)?;
+            state.enter(code, id, Value::Undefined, argc)?;
             Ok(Flow::FrameChanged)
         }
         Action::Need { dependency, kind } => {
@@ -848,7 +847,7 @@ mod tests {
         expect(
             violation(|| {
                 let _b = scoped_borrow();
-                let _ = s.enter(std::sync::Arc::clone(&code.0), id, 0);
+                let _ = s.enter(std::sync::Arc::clone(&code.0), id, Value::Undefined, 0);
             }),
             "entering a call frame",
         );

@@ -11,8 +11,13 @@
 //! Rust frame stands for a waiting task: a suspended task is plain VM state,
 //! and the run that resumes it may be on another thread.
 
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
+use clj_quickjs::exec::{
+    EnqueueReason, Event, EventKind, Executor, ExecutorConfig, OutcomeKind, Placement, WorkerId,
+};
 use clj_quickjs::frontend::{SyntaxErrorKind, compile_function, compile_script};
 use clj_quickjs::{
     Budget, Cancel, CellStatus, Completion, DependencyId, DependencyKey, Executable, Host,
@@ -585,7 +590,8 @@ fn a_published_object_keeps_its_identity_through_need() {
 /// suspended frame holds, it survives a collection during the wait, and
 /// after publication the run on another thread passes the very object to
 /// the built-in `valueOf`. A JavaScript method gets its argument the same
-/// way (its receiver is dropped at frame entry). Each `make` ran once.
+/// way (its receiver becomes the frame's `this`, clj-quickjs-116). Each
+/// `make` ran once.
 #[test]
 fn method_calls_preserve_receiver_across_wait_and_collection() {
     let rt = Runtime::new();
@@ -616,4 +622,107 @@ fn method_calls_preserve_receiver_across_wait_and_collection() {
     .unwrap();
     assert_eq!(number(outcome), 5.0 * 100.0 + 14.0);
     assert_eq!(host.effects, [1.0, 2.0], "each make ran once");
+}
+
+/// Effects of every worker of [`migrating_executor`]: (worker, argument),
+/// in execution order.
+type WorkerEffects = Arc<Mutex<Vec<(WorkerId, f64)>>>;
+
+/// Logs host operation 1 with its worker and returns its argument.
+struct WorkerLog {
+    worker: WorkerId,
+    effects: WorkerEffects,
+}
+
+impl Host for WorkerLog {
+    fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+        match (call.op, &call.arg) {
+            (1, &Primitive::Number(n)) => {
+                self.effects.lock().unwrap().push((self.worker, n));
+                Ok(call.arg)
+            }
+            other => Err(format!("unexpected host effect {other:?}")),
+        }
+    }
+}
+
+/// The two-worker executor, with woken tasks resuming on the worker after
+/// the one they parked on.
+fn migrating_executor(rt: &Runtime, effects: &WorkerEffects) -> Executor {
+    let effects = Arc::clone(effects);
+    ExecutorConfig::new()
+        .workers(2)
+        .host(move |worker| {
+            Box::new(WorkerLog {
+                worker,
+                effects: Arc::clone(&effects),
+            })
+        })
+        .placement(|r| match (r.reason, r.last_worker) {
+            (EnqueueReason::Woken, Some(last)) => {
+                Placement::Worker(WorkerId::new((last.index() + 1) % r.workers))
+            }
+            (_, Some(last)) => Placement::Worker(last),
+            _ => Placement::Any,
+        })
+        .start(rt)
+        .unwrap()
+}
+
+/// Request a collection on `worker` and wait until it is recorded.
+fn collect_on_worker(exec: &Executor, worker: WorkerId) {
+    let collections = |ev: &[Event]| {
+        ev.iter()
+            .filter(|e| matches!(e.kind, EventKind::Collected(_)))
+            .count()
+    };
+    let before = collections(&exec.events());
+    exec.schedule_collection(Placement::Worker(worker));
+    assert!(exec.wait_for(TIMEOUT, |ev| collections(ev) > before));
+}
+
+const TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A method's `this` (clj-quickjs-116) is a traced slot of its task-owned
+/// frame: the method writes a property through `this`, suspends at
+/// `__rt.need` on a pending cell, and is collected around on both workers
+/// while only that slot holds the receiver (a temporary object). After
+/// publication the task resumes on the other worker and reads `this.x` and
+/// the property it wrote from the same object. Each effect ran once.
+#[test]
+fn a_method_resumes_with_the_same_this_after_a_wait_and_migration() {
+    let rt = Runtime::new();
+    let effects = WorkerEffects::default();
+    let exec = migrating_executor(&rt, &effects);
+    let exe = compile_script(
+        "this_need",
+        "function make() {
+           return {x: 5, m: function (a) {
+             this.y = __rt.effect(1, a);
+             let v = __rt.need(5, 3);
+             return this.x * 1000 + this.y * 10 + v + __rt.effect(1, 2);
+           }};
+         }
+         make().m(1)",
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    exec.submit_with(task.clone(), Placement::Worker(WorkerId::new(0)))
+        .unwrap();
+    let parked = OutcomeKind::Waiting(key(&rt, NUMBER));
+    assert!(exec.wait_for(TIMEOUT, |ev| {
+        ev.iter()
+            .any(|e| e.task == Some(task.id()) && e.kind == EventKind::Released(parked))
+    }));
+    collect_on_worker(&exec, WorkerId::new(0));
+    collect_on_worker(&exec, WorkerId::new(1));
+    assert_eq!(task.status(), TaskStatus::Waiting);
+
+    let request = one_request(&task, key(&rt, NUMBER));
+    assert_eq!(exec.wake(publish_number(&rt, &request, 7.0)).unwrap(), 1);
+    let outcome = exec.take_outcome(task.id(), TIMEOUT).expect("an outcome");
+    assert_eq!(number(outcome), 5.0 * 1000.0 + 10.0 + 7.0 + 2.0);
+    let (w0, w1) = (WorkerId::new(0), WorkerId::new(1));
+    assert_eq!(*effects.lock().unwrap(), [(w0, 1.0), (w1, 2.0)]);
+    exec.shutdown(TIMEOUT).unwrap();
 }

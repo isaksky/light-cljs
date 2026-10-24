@@ -2226,6 +2226,7 @@ impl<'s> Lowerer<'s> {
             ExprKind::Number(n) => self.constant(Primitive::Number(*n), span)?,
             ExprKind::Bool(b) => self.constant(Primitive::Bool(*b), span)?,
             ExprKind::Null => self.constant(Primitive::Null, span)?,
+            ExprKind::This => self.out().op(Opcode::GetThis, span),
             ExprKind::Undefined => self.out().op(Opcode::Undefined, span),
             ExprKind::String(s) => self.constant(Primitive::String(s.clone()), span)?,
             ExprKind::Identifier(name) => {
