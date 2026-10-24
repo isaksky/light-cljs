@@ -78,7 +78,11 @@
 //! iteration (a loop body is a single statement, so it declares nothing
 //! there). A `for` head's bindings are all initialized before its first
 //! test, and its test, body, update and `continue` target all lie after
-//! them in its scope (`Lowerer::for_statement`). A labelled `break` only
+//! them in its scope (`Lowerer::for_statement`). A `for`-`in` head's binding
+//! (clj-quickjs-85) is in its temporal dead zone in the object expression
+//! and initialized at the start of every iteration, before the body;
+//! `continue` lands before that initialization
+//! (`Lowerer::for_in_statement`). A labelled `break` only
 //! leaves scopes, to the end of its labelled statement (never a
 //! declaration), and a labelled `continue` lands where an unlabelled one
 //! in its loop would (clj-quickjs-82). So a reference before the
@@ -134,7 +138,8 @@
 //! from the exception value.
 //!
 //! **`break` and `continue`** (clj-quickjs-78) jump to the end
-//! or the `continue` target (the test, or a `for` loop's update) of the
+//! or the `continue` target (the test, a `for` loop's update, or a
+//! `for`-`in` loop's next key) of the
 //! innermost loop of the running function (an unlabelled `break` to the end
 //! of an inner `switch`, clj-quickjs-83), or with a label (clj-quickjs-82)
 //! to the end of the innermost statement with that label or the `continue`
@@ -151,9 +156,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::ast::{
-    BinaryOp, CatchClause, Expr, ExprKind, ForInit, Function, FunctionKind, Ident, LexicalDecl,
-    LexicalKind, LogicalOp, PropertyDef, PropertyName, Script, Stmt, StmtKind, SwitchCase,
-    TemplateElement, UnaryOp, UpdateOp,
+    BinaryOp, CatchClause, Expr, ExprKind, ForInHead, ForInit, Function, FunctionKind, Ident,
+    LexicalDecl, LexicalKind, LogicalOp, PropertyDef, PropertyName, Script, Stmt, StmtKind,
+    SwitchCase, TemplateElement, UnaryOp, UpdateOp,
 };
 use super::intrinsics::{self, Arity, Lowering, RESERVED_BINDING};
 use super::lexer::{Lexer, TokenKind};
@@ -1618,6 +1623,9 @@ impl<'s> Lowerer<'s> {
                 update,
                 body,
             } => self.for_statement(init.as_ref(), test.as_ref(), update.as_ref(), body, span)?,
+            StmtKind::ForIn { head, object, body } => {
+                self.for_in_statement(head, object, body, span)?
+            }
             StmtKind::Throw(e) => {
                 self.expr(e)?;
                 self.out().op(Opcode::Throw, span);
@@ -1753,6 +1761,113 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
+    /// Lower `for (head in object) body` (clj-quickjs-85):
+    ///
+    /// ```text
+    ///        <object>; for_in_start; set_local it
+    /// start: new_cell; dup; set_local k      (a lexical binding kept in a cell)
+    ///        get_local it; for_in_next; jump_if_false done
+    ///        <assign the key to the head>
+    ///        <body>
+    ///        jump start
+    /// done:  pop                             (the key; and the fresh cell)
+    /// end:   undefined; set_local it
+    /// ```
+    ///
+    /// The enumerator (`crate::vm::keys::ForInIterator`) lives in the
+    /// scratch local `it` of the running frame, so it is traced with the
+    /// frame and survives any yield, wait or migration inside the loop, and
+    /// the operand stack is empty at `start` and in the body: `continue`
+    /// jumps to `start` and `break` to `end` with nothing to pop
+    /// ([`Self::jump`]). `end` drops the enumerator.
+    ///
+    /// A lexical head's binding is declared in a scope around the whole
+    /// loop. `object` is evaluated in that scope with the binding in its
+    /// temporal dead zone (ECMAScript ForIn/OfHeadEvaluation's TDZ
+    /// environment), so `for (let k in k)` throws statically, and a closure
+    /// created there captures a cell that stays uninitialized. Each
+    /// iteration initializes a fresh binding (ForIn/OfBodyEvaluation): a
+    /// binding kept in a cell gets a new cell each time, so closures created
+    /// in an iteration keep that iteration's key, and a binding kept in a
+    /// local is re-initialized (closures copy it by value only when it is
+    /// never assigned). The body follows the initialization, and `continue`
+    /// re-enters before it, so the static TDZ decision holds. An identifier
+    /// head is assigned each key exactly as `k = key` would be.
+    #[inline(never)]
+    fn for_in_statement(
+        &mut self,
+        head: &ForInHead,
+        object: &Expr,
+        body: &Stmt,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        self.reset_completion(span);
+        let saved_slot = self.cur().next_slot;
+        self.cur_mut().scopes.push(Scope::new());
+        let mut cell = None;
+        if let ForInHead::Lexical(kind, name) = head {
+            let kind = match kind {
+                LexicalKind::Let => BindingKind::Let,
+                LexicalKind::Const => BindingKind::Const,
+            };
+            self.declare(name, kind, false, false)?;
+            let b = self.local(name)?;
+            if b.repr == Repr::Cell {
+                self.out().op(Opcode::NewCell, name.span);
+                self.out().op_u16(Opcode::SetLocal, b.slot, name.span);
+                cell = Some(b.slot);
+            }
+        }
+        self.expr(object)?;
+        let it = self.temp(object.span)?;
+        self.out().op(Opcode::ForInStart, object.span);
+        self.out().op_u16(Opcode::SetLocal, it, object.span);
+        let start = self.out().label();
+        let done = self.out().label();
+        let end = self.out().label();
+        self.out().bind(start);
+        if let Some(slot) = cell {
+            let out = self.out();
+            out.op(Opcode::NewCell, span);
+            out.op(Opcode::Dup, span);
+            out.op_u16(Opcode::SetLocal, slot, span);
+        }
+        self.out().op_u16(Opcode::GetLocal, it, span);
+        self.out().op(Opcode::ForInNext, span);
+        self.out().branch(Opcode::JumpIfFalse, done, span);
+        match head {
+            ForInHead::Lexical(_, name) => {
+                let b = self.initialize(name)?;
+                match b.repr {
+                    Repr::Cell => self.out().op(Opcode::CellInit, name.span),
+                    Repr::Value => self.out().op_u16(Opcode::SetLocal, b.slot, name.span),
+                }
+            }
+            ForInHead::Binding(name) => {
+                let at = self.name_span(&name.name, name.span);
+                let access = self.resolve_reference(&name.name);
+                self.store(access, at)?;
+                self.out().op(Opcode::Pop, name.span);
+            }
+        }
+        self.push_loop(end, start);
+        self.statement(body)?;
+        self.cur_mut().exits.pop();
+        self.out().branch(Opcode::Jump, start, span);
+        self.out().bind(done);
+        self.out().op(Opcode::Pop, span);
+        if cell.is_some() {
+            self.out().op(Opcode::Pop, span);
+        }
+        self.out().bind(end);
+        self.out().op(Opcode::Undefined, span);
+        self.out().op_u16(Opcode::SetLocal, it, span);
+        let ctx = self.cur_mut();
+        ctx.scopes.pop();
+        ctx.next_slot = saved_slot;
+        Ok(())
+    }
+
     /// Replace each cell local in `copies` with a new cell initialized to
     /// the old cell's value (always initialized here).
     fn copy_cells(&mut self, copies: &[(u16, Span)]) {
@@ -1873,7 +1988,10 @@ impl<'s> Lowerer<'s> {
         }
         if matches!(
             body.kind,
-            StmtKind::While { .. } | StmtKind::DoWhile { .. } | StmtKind::For { .. }
+            StmtKind::While { .. }
+                | StmtKind::DoWhile { .. }
+                | StmtKind::For { .. }
+                | StmtKind::ForIn { .. }
         ) {
             self.cur_mut().loop_labels = labels;
             return self.statement(body);
@@ -3111,6 +3229,7 @@ fn var_names_in<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Ident>) {
         StmtKind::While { body, .. }
         | StmtKind::DoWhile { body, .. }
         | StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. }
         | StmtKind::Labelled { body, .. } => var_names_in(body, out),
         StmtKind::Try {
             block,

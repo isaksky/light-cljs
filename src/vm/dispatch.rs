@@ -95,6 +95,7 @@ use crate::vm::frames::{Raised, Returned, VmState};
 use crate::vm::function::{BindingCell, FunctionObject};
 use crate::vm::instr::{Instr, Opcode, ThrowKind};
 use crate::vm::intrinsics;
+use crate::vm::keys;
 use crate::vm::native;
 use crate::vm::property;
 use crate::vm::prototype;
@@ -993,6 +994,26 @@ fn step(
             let result = property::in_operator(heap, state.diag.task, key, base)?;
             state.replace(2, Value::Bool(result))?;
         }
+        Instr::ForInStart => {
+            // The enumerator is pushed in the same instruction that
+            // allocates it, like `NewObject`.
+            let v = state.pop()?;
+            let iterator = keys::for_in_start(heap, state.diag.task, &v)?;
+            state.push(iterator);
+        }
+        Instr::ForInNext => {
+            let iterator = state.pop()?;
+            match keys::for_in_next(heap, state.diag.task, &iterator)? {
+                Some(key) => {
+                    state.push(Value::String(key));
+                    state.push(Value::Bool(true));
+                }
+                None => {
+                    state.push(Value::Undefined);
+                    state.push(Value::Bool(false));
+                }
+            }
+        }
         Instr::StrictEq => {
             let b = state.pop()?;
             let a = state.pop()?;
@@ -1257,6 +1278,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         Instr::NewObject
         | Instr::NewObjectLiteral
         | Instr::NewArray
+        | Instr::ForInStart
         | Instr::NewVector(_)
         | Instr::NewMap(_)
         | Instr::Assoc
@@ -1325,6 +1347,9 @@ fn polls(instr: Instr, pc: usize) -> bool {
         // Copy or convert operands only (clj-quickjs-76).
         | Instr::Dup2
         | Instr::ToPropertyKey
+        // Re-checks keys only; the key string lives outside the heap
+        // (clj-quickjs-85).
+        | Instr::ForInNext
         | Instr::SetProto
         // Removes a property: allocates nothing (clj-quickjs-124).
         | Instr::Delete

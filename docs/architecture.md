@@ -2421,8 +2421,44 @@ while the init of a `for` head is parsed, cleared by every bracketing
 construct that the grammar parses with `[+In]` (parentheses, brackets,
 braces, template substitutions, arguments, the middle of `? :`, function
 parameters and bodies), and consulted only by the binary-operator loop.
-An `in` after any init then reaches the existing for-in rejection, which
-the for-in pellet (clj-quickjs-85) turns into the loop.
+An `in` after any init then starts a for-in head (clj-quickjs-85, "`for`-`in`"
+below).
+
+## `for`-`in` (clj-quickjs-85)
+
+Contract: `src/vm/keys.rs` (`ForInIterator`, `for_in_start`,
+`for_in_next`; module docs, "`for`-`in`"), `src/vm/instr.rs`
+(`for_in_start`, `for_in_next`, `0x63`–`0x64`), `src/frontend/lower.rs`
+(`Lowerer::for_in_statement`), `src/frontend/parser.rs`
+(`parse_for_head`, `Parser::no_in`). Semantics: `docs/grammar.md`,
+"Execution".
+
+**Decision.** The enumerator is a `HeapObject::Native` payload, not a new
+heap kind: a snapshot of the own enumerable string keys (as
+`Object.keys` lists them, `own_property_keys`), a position, and the
+object, whose only heap edge its `Trace` reports. It is task-owned
+(`Shareability::TaskOwned`) and held only in a scratch local of the loop's
+frame, never on the operand stack across the body, so the frame's tracing
+covers it, yields, dependency waits and migration carry it with the frame,
+no Rust state survives between iterations, and `break`, `continue`,
+`return` and exceptions leave the loop without popping anything (the
+validator's operand-stack invariant for jumps holds unchanged). JavaScript
+can never reach it, so it is never published. `for_in_next` re-checks
+each key with `[[GetOwnProperty]]` before returning it and skips one that
+is gone or no longer enumerable (ECMAScript's informative
+EnumerateObjectProperties; QuickJS `js_for_in_next` checks existence only),
+taking the key under the object lock and looking it up after releasing
+it. A `let`/`const` head's binding gets a fresh binding cell each
+iteration when it is kept in a cell (captured and assigned, or captured in
+the object expression while in its temporal dead zone), otherwise its
+local is re-initialized; the object expression sees it uninitialized, so
+the static temporal-dead-zone decision still holds. The parser tells the
+heads apart with the `[~In]` flag of clj-quickjs-74 (`no_in`), set for an
+expression head and for each initializer of a declaration head; a
+`let`/`const` head is a for-in head when `in` follows its first name.
+Deferred: the prototype-chain walk
+(clj-quickjs-86), property targets (clj-quickjs-87), `var` heads
+(clj-quickjs-89, -90), Proxy traps (clj-quickjs-91).
 
 ## QuickJS references and provenance
 
@@ -2669,6 +2705,16 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `research/quickjs/quickjs.c` (the head's scope, `continue` targeting the
   update, the loop variables closed before the first iteration and before
   each update) was consulted only. No code was copied.
+- `tests/js_source.rs` `for_in_over_own_properties` (clj-quickjs-85): the
+  first group of `test_for_in` (line 77) and `test_for_in2` (line 150) of
+  `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8, as
+  JavaScript source compiled by this frontend. Modified: `let` for `var`,
+  the keys collected with string `+` instead of `tab.push` and
+  `tab.toString()`, and the asserted condition is the script's completion
+  value; the other groups of `test_for_in` are left to clj-quickjs-86 to
+  -90. The test carries the full notice. `js_parse_for_in_of`,
+  `build_for_in_iterator`, `js_for_in_start` and `js_for_in_next` in
+  `research/quickjs/quickjs.c` were consulted only. No code was copied.
 - String values (clj-quickjs-65): `research/quickjs/quickjs.c`, revision
   7d1c13c5d8f8: `JSString` (8- and 16-bit code-unit storage),
   `JS_STRING_LEN_MAX`, `js_strict_eq2` (string branch), `js_add_slow`

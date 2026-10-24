@@ -74,6 +74,7 @@ impl Stmt {
                     .max(update.as_ref().map_or(0, |e| e.height))
                     .max(body.height)
             }
+            StmtKind::ForIn { object, body, .. } => object.height.max(body.height),
             StmtKind::Try {
                 block,
                 handler,
@@ -148,6 +149,17 @@ pub enum StmtKind {
         update: Option<Expr>,
         body: Box<Stmt>,
     },
+    /// `for (head in object) body` (clj-quickjs-85): the body runs once per
+    /// own enumerable string key of the object (none for `null`,
+    /// `undefined`, numbers and booleans), with the key assigned to the
+    /// head. A lexical head's binding is scoped to the loop, in its
+    /// temporal dead zone while `object` is evaluated, and fresh in each
+    /// iteration.
+    ForIn {
+        head: ForInHead,
+        object: Expr,
+        body: Box<Stmt>,
+    },
     /// `throw expr;`
     Throw(Expr),
     /// `try { ... }` with a `catch` clause, a `finally` block, or both (at
@@ -205,6 +217,16 @@ pub enum ForInit {
     Expr(Expr),
     /// `for (let i = 0, j; ...)` or `for (const k = 1; ...)`
     Lexical(LexicalDecl),
+}
+
+/// The left side of a `for`-`in` head (clj-quickjs-85).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ForInHead {
+    /// `for (k in o)`: each key is assigned to the binding `k`.
+    Binding(Ident),
+    /// `for (let k in o)` or `for (const k in o)`: a new binding per
+    /// iteration, initialized to its key.
+    Lexical(LexicalKind, Ident),
 }
 
 /// `catch (param) { body }` or `catch { body }`.

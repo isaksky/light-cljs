@@ -1414,8 +1414,8 @@ Supported (`cargo test --lib frontend::tests::for_statements`,
 
 Deferred:
 
-- `var` heads (clj-quickjs-89), for-in (clj-quickjs-85 to -88) and for-of
-  (`Unsupported`). (Labelled `for`: clj-quickjs-82, below.)
+- `var` heads (clj-quickjs-89) and for-of (`Unsupported`). (Labelled
+  `for`: clj-quickjs-82; for-in: clj-quickjs-85, below.)
 
 ### String values (clj-quickjs-65)
 
@@ -2155,7 +2155,7 @@ Supported (`cargo test --test js_source in_operator`,
   properties of objects, arrays, functions and `Object.prototype`; `'__proto__' in {}` is true).
   Persistent collections, builders and other `__rt` values have no JavaScript properties.
 - The init of a `for` head takes no top-level `in` (`[~In]`): `for (a.b in o)` and
-  `for (let x = a in b; ;)` are for-in heads (still `Unsupported`, clj-quickjs-85), while
+  `for (let x = a in b; ;)` are for-in heads (clj-quickjs-85: a property target is `Unsupported`, an initializer `Invalid`), while
   `for (x = (a in b); ;)` and an `in` in the test or update parse as the operator.
 
 Deferred:
@@ -2163,3 +2163,34 @@ Deferred:
 - An object key needs ToPrimitive (clj-quickjs-70); names a function would inherit from
   `Function.prototype` (clj-quickjs-102) and error objects' properties (clj-quickjs-230) fail
   with `UnsupportedOperand`; symbol keys (clj-quickjs-127) do not exist.
+
+### `for`-`in` over own properties (clj-quickjs-85)
+
+Supported (`cargo test --lib frontend::tests::for_in_heads`,
+`cargo test --test js_source for_in_over_own_properties`,
+`cargo test --test gc_roots for_in`; decision record in
+`docs/architecture.md`, "`for`-`in`"):
+
+- `for (k in o)`, `for (let k in o)`, `for (const k in o)`: the body runs
+  once per own enumerable string key of `o`, snapshotted at the start in
+  `Object.keys` order (array indices ascending, then creation order); a key
+  deleted or made non-enumerable before it is reached is skipped, keys added
+  during the loop are not visited. `null`, `undefined`, numbers and booleans
+  run zero iterations; a string visits its indices.
+- A `let`/`const` head is in its temporal dead zone in the object expression
+  (`for (let k in k)` is a ReferenceError) and a fresh binding per iteration
+  (closures keep their key). `break`, `continue`, labels, `return`, exceptions
+  and finally blocks work as in other loops; completion values follow
+  `UpdateEmpty`. The upstream `test_for_in` first group and `test_for_in2` run
+  from source (adapted, with notice).
+- The enumerator (appended opcodes `for_in_start` `0x63`, `for_in_next` `0x64`)
+  is task-owned frame state: a yield, wait, collection or migration inside the
+  loop resumes it exactly.
+- The head is parsed with `[~In]`: `for (let k = 1 in o)`, `for (let a, b in o)`
+  and `for (1 in o)` are early errors (`Invalid`).
+
+Deferred:
+
+- Inherited properties (clj-quickjs-86), property targets `for (a.b in o)`
+  (clj-quickjs-87, `Unsupported`), array regression tests (clj-quickjs-88),
+  `var` heads (clj-quickjs-89, -90), Proxy traps (clj-quickjs-91).

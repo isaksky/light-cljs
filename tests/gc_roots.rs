@@ -1408,3 +1408,79 @@ fn replaced_prototypes_are_reclaimed() {
         assert_eq!(s.view(v), ValueView::Bool(true));
     });
 }
+
+/// A `for`-`in` enumerator (clj-quickjs-85) is task-owned frame state: the
+/// enumerated object, an object literal holding the argument, is reachable
+/// only from the enumerator in the loop's scratch local (the argument's
+/// local is cleared in the body). Run in small budget slices with a
+/// collection after each, the loop keeps the object (and through it the
+/// argument) alive and visits the remaining keys in order.
+#[test]
+fn for_in_enumerator_survives_budget_yields_and_collections() {
+    let rt = Runtime::new();
+    let (task, weak) = spawn_holding(
+        &rt,
+        "function f(o) { let s = ''; \
+         for (const k in {b: o, a: 1, 2: 1, c: 1}) { o = 0; \
+           let j = 0; while (j < 100) { j = j + 1; } s = s + k; } \
+         return s === '2bac'; }",
+    );
+    let mut yields = 0;
+    let result = loop {
+        match task
+            .run_with(Budget::instructions(50), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                yields += 1;
+                assert!(yields < 1000, "the loop did not finish");
+                rt.request_collection().unwrap();
+                // Each key's spin alone takes more than 600 instructions,
+                // so these slices end inside the loop.
+                if yields < 12 {
+                    assert_live(std::slice::from_ref(&weak));
+                }
+            }
+            other => break complete(other),
+        }
+    };
+    assert!(yields > 20, "{yields} yields");
+    rt.scope(|s| {
+        let v = s.local(&result).unwrap();
+        assert_eq!(s.view(v), ValueView::Bool(true));
+    });
+    // The loop is over: nothing holds the argument any more.
+    drop(task);
+    rt.request_collection().unwrap();
+    assert_stale(&rt, std::slice::from_ref(&weak));
+}
+
+/// A `for`-`in` body (clj-quickjs-85) waiting on `__rt.need` with the
+/// enumerated object reachable only from the enumerator, and closures over
+/// two iterations' bindings live: the task survives collections, resumes
+/// on another thread, visits the remaining keys in order, and each closure
+/// returns its own key.
+#[test]
+fn for_in_wait_survives_collection_and_migration() {
+    let rt = Runtime::new();
+    let (task, weak) = spawn_holding(
+        &rt,
+        "function f(o) { let s = ''; const b = __rt.vectorBuilder(); \
+         for (let k in {x: o, y: 1, z: 1}) { o = 0; __rt.builderConj(b, () => k); \
+           if (k === 'y') __rt.need(9, 1); s = s + k; } \
+         const v = __rt.freeze(b); \
+         return s === 'xyz' && __rt.nth(v, 0)() + __rt.nth(v, 1)() + __rt.nth(v, 2)() === 'xyz'; }",
+    );
+    let outcome = task.run().unwrap();
+    assert!(matches!(outcome, RunOutcome::Waiting(k) if k == key(&rt, 9)));
+    for _ in 0..2 {
+        rt.request_collection().unwrap();
+        assert_live(std::slice::from_ref(&weak));
+    }
+    complete_requests(&rt, &task);
+    let result = thread::spawn(move || run_to_end(&task)).join().unwrap();
+    rt.scope(|s| {
+        let v = s.local(&result).unwrap();
+        assert_eq!(s.view(v), ValueView::Bool(true));
+    });
+}

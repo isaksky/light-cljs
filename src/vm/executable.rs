@@ -477,6 +477,8 @@ impl Executable {
                 Opcode::Instanceof => Instr::Instanceof,
                 Opcode::Delete => Instr::Delete,
                 Opcode::In => Instr::In,
+                Opcode::ForInStart => Instr::ForInStart,
+                Opcode::ForInNext => Instr::ForInNext,
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,

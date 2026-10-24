@@ -322,6 +322,25 @@
 //! `Object.prototype` may build the realm, so it is a poll point; it runs
 //! no JavaScript.
 //!
+//! Opcodes `0x63`–`0x64` run `for`-`in` loops (clj-quickjs-85; QuickJS
+//! `OP_for_in_start`, `OP_for_in_next`, `build_for_in_iterator`,
+//! `js_for_in_next`), over a task-owned enumerator (`crate::vm::keys`,
+//! `ForInIterator`):
+//!
+//! | Opcode          | Byte | Operand            | Stack (before → after) | Meaning |
+//! |-----------------|------|--------------------|------------------------|---------|
+//! | `ForInStart`    | 0x63 | –                  | v → it                 | a new enumerator of v's own enumerable string keys (none for `null`, `undefined`, numbers, booleans; a string's indices) |
+//! | `ForInNext`     | 0x64 | –                  | it → key more          | the next key still an own enumerable property, and `true`; or `undefined` and `false` when done |
+//!
+//! `ForInStart` snapshots the keys in OrdinaryOwnPropertyKeys order and
+//! allocates the enumerator, so it is a poll point; another task's object
+//! is `ForeignObject`. `ForInNext` re-checks each key before returning it,
+//! skipping keys deleted (or made non-enumerable) since the snapshot; it
+//! allocates no heap object (the key string lives outside the heap) and is
+//! not a poll point. The compiler keeps the enumerator in a scratch local,
+//! never on the operand stack across the loop body, so `break`,
+//! `continue`, `return` and exceptions leave the loop with nothing to pop.
+//!
 //! Opcode `0x52`, `GetBuiltinGlobal` (clj-quickjs-117), pushes the value of
 //! a built-in global name of the runtime's realm (`crate::realm`), building
 //! the realm on first use, so it may allocate and is a poll point. Its
@@ -502,6 +521,8 @@ pub enum Opcode {
     Instanceof = 0x60,
     Delete = 0x61,
     In = 0x62,
+    ForInStart = 0x63,
+    ForInNext = 0x64,
 }
 
 /// Operand encoding of an opcode.
@@ -655,6 +676,8 @@ impl Opcode {
             0x60 => Instanceof,
             0x61 => Delete,
             0x62 => In,
+            0x63 => ForInStart,
+            0x64 => ForInNext,
             _ => return None,
         })
     }
@@ -761,6 +784,8 @@ impl Opcode {
             Instanceof => "instanceof",
             Delete => "delete",
             In => "in",
+            ForInStart => "for_in_start",
+            ForInNext => "for_in_next",
         }
     }
 
@@ -787,7 +812,7 @@ impl Opcode {
             | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt | CompareGt
             | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString | GetThis | NewArray
             | AppendElement | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | SetProto
-            | Instanceof | Delete | In => OperandKind::None,
+            | Instanceof | Delete | In | ForInStart | ForInNext => OperandKind::None,
         }
     }
 }
@@ -936,6 +961,8 @@ pub(crate) enum Instr {
     Instanceof,
     Delete,
     In,
+    ForInStart,
+    ForInNext,
 }
 
 impl Instr {
@@ -1039,6 +1066,8 @@ impl Instr {
             Instr::Instanceof => Opcode::Instanceof,
             Instr::Delete => Opcode::Delete,
             Instr::In => Opcode::In,
+            Instr::ForInStart => Opcode::ForInStart,
+            Instr::ForInNext => Opcode::ForInNext,
         }
     }
 
@@ -1057,6 +1086,8 @@ impl Instr {
             | Rem | Gt | Le | Ge | LooseEq | Need | NeedAll | BitAnd | BitOr | BitXor | Shl
             | Sar | UShr | Pow | Plus | CompareLt | CompareGt | CompareLe | CompareGe
             | Instanceof | In => (2, 1),
+            ForInStart => (1, 1),
+            ForInNext => (1, 2),
             ToNumberPair => (2, 2),
             AtomNew | AtomLoad => (1, 1),
             AtomCas => (3, 2),
@@ -1093,6 +1124,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 98);
+        assert_eq!(assigned, 100);
     }
 }

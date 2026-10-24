@@ -55,17 +55,44 @@
 //! lock is released (the key table's lock is a leaf, `crate::object`). No
 //! JavaScript runs and nothing is allocated before the result array, which
 //! the built-ins allocate last.
+//!
+//! # `for`-`in`
+//!
+//! A `for`-`in` loop (clj-quickjs-85) enumerates through a
+//! [`ForInIterator`], after QuickJS's `build_for_in_iterator` and
+//! `js_for_in_next` (`research/quickjs/quickjs.c`, revision 7d1c13c5d8f8),
+//! own properties only (the prototype walk is clj-quickjs-86).
+//! `ForInStart` snapshots the operand's own enumerable string keys with
+//! [`own_property_keys`] (an object's, including a function's property
+//! record), or a string's indices; `null`, `undefined`, numbers and
+//! booleans (whose wrappers have no enumerable own keys) give none. Each
+//! `ForInNext` re-checks the next key with
+//! [`property::get_own_property`] and skips it unless it is still an own
+//! enumerable property (ECMAScript's informative EnumerateObjectProperties
+//! re-reads the descriptor before each key; QuickJS checks existence only),
+//! so a key deleted before it is reached is not visited; keys added during
+//! the loop are not visited. Scanning past skipped keys is bounded by the
+//! snapshot and allocates nothing.
+//!
+//! The enumerator is a [`HeapObject::Native`] payload: task-owned
+//! (`Shareability::TaskOwned`), traced (its only edge is the enumerated
+//! object), and held only by a scratch local of the loop's frame
+//! (`crate::frontend` lowers the loop), so it lives exactly as long as the
+//! frame needs it, survives yields, waits, collections and migration with
+//! the frame, and is never reachable from JavaScript or published.
 
-use crate::heap::{Heap, HeapObject, ObjectId};
+use crate::heap::gc::Trace;
+use crate::heap::{Heap, HeapObject, NativePayload, ObjectId};
 use crate::ids::TaskId;
 use crate::object::PropertyKey;
 use crate::object::array::{ArrayObject, array_index};
 use crate::realm;
+use crate::value::share::Shareability;
 use crate::value::{JsString, Value};
 use crate::vm::dispatch::Fault;
 use crate::vm::exception::ErrorObject;
 use crate::vm::function;
-use crate::vm::property::Key;
+use crate::vm::property::{self, Key};
 
 /// Which own keys [`own_property_keys`] lists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -290,6 +317,112 @@ pub(crate) fn object_keys(
         .ok_or_else(exhausted)
 }
 
+/// The task-owned enumerator of a `for`-`in` loop (clj-quickjs-85; QuickJS
+/// `JSForInIterator`, `build_for_in_iterator`, `js_for_in_next`): a
+/// snapshot of the object's own enumerable string keys taken when the loop
+/// starts, the position of the next one, and the object. It lives in a
+/// heap object ([`HeapObject::Native`]) held only by a scratch local of the
+/// loop's frame, so it is traced through that frame, survives yields,
+/// waits, collections and migration with it, and is never reachable from
+/// JavaScript (module docs, "`for`-`in`").
+#[derive(Debug)]
+pub(crate) struct ForInIterator {
+    /// The enumerated object; `None` for a primitive operand, whose keys
+    /// never change.
+    object: Option<ObjectId>,
+    keys: Vec<Key>,
+    next: usize,
+}
+
+impl Trace for ForInIterator {
+    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        if let Some(object) = self.object {
+            visit(object);
+        }
+    }
+}
+
+impl NativePayload for ForInIterator {
+    fn shareability(&self) -> Shareability {
+        Shareability::TaskOwned
+    }
+}
+
+/// `ForInStart`: the enumerator of `value` for the running task `task`, a
+/// new heap object (module docs, "`for`-`in`").
+pub(crate) fn for_in_start(heap: &Heap, task: TaskId, value: &Value) -> Result<Value, Fault> {
+    let (object, keys) = match value {
+        Value::Object(id) => {
+            let keys = own_property_keys(heap, task, *id, KeyFilter::Enumerable)?;
+            (Some(*id), keys.into_iter().map(|k| k.key).collect())
+        }
+        // A String wrapper's own enumerable keys are its indices.
+        Value::String(s) => {
+            let len = u32::try_from(s.len())
+                .map_err(|_| Fault::Internal("a string longer than 2^32 - 1 code units"))?;
+            (None, (0..len).map(Key::Index).collect())
+        }
+        // `null` and `undefined` run no iteration; a Number or Boolean
+        // wrapper has no own enumerable keys.
+        Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) => (None, Vec::new()),
+    };
+    let iterator = ForInIterator {
+        object,
+        keys,
+        next: 0,
+    };
+    heap.alloc(HeapObject::Native(Box::new(iterator)))
+        .map(Value::Object)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+}
+
+/// `ForInNext`: the next key of the enumerator `iterator` that is still an
+/// own enumerable property of its object (a key deleted, or made
+/// non-enumerable, before it is reached is skipped), as a string; `None`
+/// when the keys are exhausted.
+pub(crate) fn for_in_next(
+    heap: &Heap,
+    task: TaskId,
+    iterator: &Value,
+) -> Result<Option<JsString>, Fault> {
+    let Value::Object(id) = *iterator else {
+        return Err(Fault::Internal("for-in enumerator is not an object"));
+    };
+    loop {
+        // Take the next key under the object lock, then look it up without
+        // it (the lookup takes the lock again).
+        let next = heap
+            .with_object_mut(id, |o| match o {
+                HeapObject::Native(payload) => {
+                    let any: &mut dyn std::any::Any = &mut **payload;
+                    let it = any.downcast_mut::<ForInIterator>()?;
+                    let Some(key) = it.keys.get(it.next).cloned() else {
+                        return Some(None);
+                    };
+                    it.next += 1;
+                    Some(Some((it.object, key)))
+                }
+                _ => None,
+            })
+            .flatten()
+            .ok_or(Fault::Internal("for-in enumerator is not an enumerator"))?;
+        let Some((object, key)) = next else {
+            return Ok(None);
+        };
+        let present = match object {
+            Some(object) => property::get_own_property(heap, task, object, &key)?
+                .is_some_and(|p| p.flags.enumerable),
+            None => true,
+        };
+        if present {
+            return Ok(Some(match key {
+                Key::Index(index) => JsString::from(index.to_string().as_str()),
+                Key::Name(name) => name,
+            }));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +462,64 @@ mod tests {
             own_property_keys(&heap, TaskId::from_raw(2), id, KeyFilter::Enumerable),
             Err(Fault::ForeignObject { .. })
         ));
+    }
+
+    /// A `for`-`in` enumerator (clj-quickjs-85) snapshots the enumerable
+    /// keys, reports its object as its only edge, skips a key that is no
+    /// longer an own enumerable property, and stays exhausted; another
+    /// task's object cannot be enumerated.
+    #[test]
+    fn for_in_enumerator_rechecks_keys_and_traces_its_object() {
+        let heap = Heap::default();
+        let task = TaskId::from_raw(1);
+        let mut o = OrdinaryObject::new(Some(task));
+        for name in ["b", "1", "a"] {
+            let key = heap.keys().intern(&JsString::from(name)).unwrap();
+            assert!(o.define(key, Value::Null));
+        }
+        let id = heap.alloc(HeapObject::Plain(o)).unwrap();
+        let it = ok(for_in_start(&heap, task, &Value::Object(id)));
+        let Value::Object(it_id) = it else {
+            panic!("not an object")
+        };
+        let mut edges = Vec::new();
+        heap.read(it_id, |o| o.trace(&mut |e| edges.push(e)))
+            .unwrap();
+        assert_eq!(edges, [id]);
+        let next = |heap: &Heap| ok(for_in_next(heap, task, &it)).map(|s| s.to_string());
+        assert_eq!(next(&heap).as_deref(), Some("1"));
+        // `b` becomes non-enumerable before it is reached.
+        let b = heap.keys().intern(&JsString::from("b")).unwrap();
+        heap.with_object_mut(id, |o| match o {
+            HeapObject::Plain(o) => {
+                let flags = crate::object::PropertyFlags {
+                    writable: true,
+                    enumerable: false,
+                    configurable: true,
+                };
+                assert!(o.define_with(b, Value::Null, flags));
+            }
+            _ => unreachable!(),
+        })
+        .unwrap();
+        assert_eq!(next(&heap).as_deref(), Some("a"));
+        assert_eq!(next(&heap), None);
+        assert_eq!(next(&heap), None);
+        assert!(matches!(
+            for_in_start(&heap, TaskId::from_raw(2), &Value::Object(id)),
+            Err(Fault::ForeignObject { .. })
+        ));
+        // A string's indices; no keys for other primitives.
+        let s = ok(for_in_start(
+            &heap,
+            task,
+            &Value::String(JsString::from("xy")),
+        ));
+        assert_eq!(ok(for_in_next(&heap, task, &s)).unwrap().to_string(), "0");
+        assert_eq!(ok(for_in_next(&heap, task, &s)).unwrap().to_string(), "1");
+        assert!(ok(for_in_next(&heap, task, &s)).is_none());
+        let n = ok(for_in_start(&heap, task, &Value::Number(5.0)));
+        assert!(ok(for_in_next(&heap, task, &n)).is_none());
     }
 
     /// Array elements (dense, then sparse) precede `length` and the named

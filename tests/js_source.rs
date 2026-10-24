@@ -412,6 +412,16 @@ fn script_completion_value_follows_javascript() {
     assert_eq!(num("5; do { 6; } while (false)"), 6.0);
     assert_eq!(eval("5; do { } while (false)"), ValueView::Undefined);
     assert_eq!(eval("5; do ; while (false)"), ValueView::Undefined);
+    // `for`-`in` (clj-quickjs-85): reset to undefined, then UpdateEmpty.
+    assert_eq!(eval("5; for (let k in {}) {}"), ValueView::Undefined);
+    assert_eq!(eval("5; for (let k in null) 6;"), ValueView::Undefined);
+    assert_eq!(eval("5; for (let k in {a: 1}) {}"), ValueView::Undefined);
+    assert_eq!(num("5; for (let k in {a: 1, b: 2}) 6;"), 6.0);
+    assert_eq!(num("5; for (let k in {a: 1, b: 2}) { 6; break; }"), 6.0);
+    assert_eq!(
+        eval("5; for (let k in {a: 1, b: 2}) { if (k === 'b') continue; 6; }"),
+        ValueView::Undefined
+    );
     assert_eq!(num("let i = 0; do { i = i + 1; } while (i < 3)"), 3.0);
     assert_eq!(num("let i = 0; do i = i + 1; while (i < 3) 4"), 4.0);
     assert_eq!(
@@ -1093,6 +1103,225 @@ fn for_loops() {
         .spawn(move || compile_script("nested", &nested).map(|_| ()))
         .unwrap();
     handle.join().unwrap().unwrap();
+}
+
+/// `for`-`in` over own enumerable properties (clj-quickjs-85). `TEST_FOR_IN`
+/// is adapted from the first group of `test_for_in`, and `TEST_FOR_IN2`
+/// from `test_for_in2`, in `research/quickjs/tests/test_loop.js` (QuickJS,
+/// revision 7d1c13c5d8f8; see `docs/architecture.md` for the attribution):
+/// `let` for `var`, the keys collected with string `+` instead of
+/// `tab.push` and `tab.toString()`, and the asserted condition is the
+/// completion value. The other scripts are written for this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn for_in_over_own_properties() {
+    const TEST_FOR_IN: &str = r#"
+        let i, tab;
+        tab = "";
+        for(i in {x:1, y: 2}) {
+            tab = tab + i + ",";
+        }
+        tab === "x,y,""#;
+    assert_eq!(eval(TEST_FOR_IN), ValueView::Bool(true));
+    const TEST_FOR_IN2: &str = r#"
+        let i, tab, ok;
+        tab = "";
+        for(i in {x:1, y: 2, z:3}) {
+            if (i === "y")
+                continue;
+            tab = tab + i;
+        }
+        ok = tab === "xz";
+
+        tab = "";
+        for(i in {x:1, y: 2, z:3}) {
+            if (i === "z")
+                break;
+            tab = tab + i;
+        }
+        ok && tab === "xy""#;
+    assert_eq!(eval(TEST_FOR_IN2), ValueView::Bool(true));
+
+    // Integer-index keys ascending, then the other keys in creation order;
+    // keys are strings. `let` and `const` heads; an identifier head keeps
+    // the last key.
+    assert_eq!(
+        string(r#"let s = ""; for (let k in {b:1, "2":1, a:1, "1":1}) s = s + k + ";"; s"#),
+        "1;2;b;a;"
+    );
+    assert_eq!(
+        string(r#"let s = ""; for (const k in {b:1, 10:1, 9:1}) s = s + typeof k + k; s"#),
+        "string9string10stringb"
+    );
+    assert_eq!(string("let k; for (k in {p: 1, q: 2}) {} k"), "q");
+    assert_eq!(string("let k = 'z'; for ((k) in {}) {} k"), "z");
+    // `null`, `undefined`, numbers and booleans run zero iterations; a
+    // string visits its indices.
+    for src in ["null", "undefined", "0", "42", "true", "false", "''"] {
+        assert_eq!(
+            num(&format!("let n = 0; for (let k in {src}) n = n + 1; n")),
+            0.0,
+            "{src}"
+        );
+    }
+    assert_eq!(
+        string(r#"let s = ""; for (let k in "ab") s = s + k + typeof k; s"#),
+        "0string1string"
+    );
+    // Non-enumerable properties are skipped; a key made non-enumerable
+    // before it is reached is skipped; a key added during the loop is not
+    // visited.
+    assert_eq!(
+        string(
+            r#"let o = {a: 1};
+               Object.defineProperty(o, "h", {value: 1, enumerable: false});
+               o.b = 2; o.c = 3;
+               let s = "";
+               for (let k in o) {
+                   if (k === "a") Object.defineProperty(o, "c", {enumerable: false});
+                   o.d = 4;
+                   s = s + k;
+               }
+               s"#
+        ),
+        "ab"
+    );
+    // A property deleted (clj-quickjs-124) before it is reached is not
+    // visited; one deleted after its visit changes nothing.
+    assert_eq!(
+        string(
+            r#"let o = {a: 1, b: 2, c: 3, d: 4};
+               let s = "";
+               for (let k in o) { if (k === "a") delete o.c; if (k === "b") delete o.a; s = s + k; }
+               s + Object.keys(o).length"#
+        ),
+        "abd2"
+    );
+    // A function's own enumerable properties; an object's inherited
+    // properties are not visited (the prototype walk is clj-quickjs-86).
+    assert_eq!(
+        string(r#"function f() {} f.x = 1; let s = ""; for (let k in f) s = s + k; s"#),
+        "x"
+    );
+    assert_eq!(
+        string(r#"let s = ""; for (let k in Object.create({p: 1})) s = s + k; s + "-""#),
+        "-"
+    );
+
+    // Each iteration has its own `let`/`const` binding: closures created
+    // per iteration return their own key, also when the body assigns it.
+    assert_eq!(
+        string(
+            r#"const b = __rt.vectorBuilder();
+               for (let k in {x: 1, y: 2, z: 3}) { __rt.builderConj(b, () => k); }
+               const v = __rt.freeze(b);
+               __rt.nth(v, 0)() + __rt.nth(v, 1)() + __rt.nth(v, 2)()"#
+        ),
+        "xyz"
+    );
+    assert_eq!(
+        string(
+            r#"const b = __rt.vectorBuilder();
+               for (let k in {x: 1, y: 2}) { __rt.builderConj(b, () => k); k = k + "!"; }
+               const v = __rt.freeze(b);
+               __rt.nth(v, 0)() + __rt.nth(v, 1)()"#
+        ),
+        "x!y!"
+    );
+    assert_eq!(
+        string(
+            r#"const b = __rt.vectorBuilder();
+               for (const k in {x: 1, y: 2}) __rt.builderConj(b, function () { return k; });
+               const v = __rt.freeze(b);
+               __rt.nth(v, 0)() + __rt.nth(v, 1)()"#
+        ),
+        "xy"
+    );
+    // The head's binding is scoped to the loop.
+    assert_eq!(string("let k = 'out'; for (let k in {a: 1}) {} k"), "out");
+
+    // The object expression sees the head's binding in its temporal dead
+    // zone, statically and through a closure created there.
+    let (kind, _, line, column) = failure_at("for (let k in k) {}");
+    assert_eq!((kind, line, column), (VmErrorKind::ReferenceError, 1, 15));
+    let (kind, ..) =
+        failure_at("let f; for (let k in (f = () => k, {a: 1})) { if (k !== 'a') throw 1; } f()");
+    assert_eq!(kind, VmErrorKind::ReferenceError);
+    // Assigning a `const` head is a TypeError; an undeclared target a
+    // ReferenceError (strict code).
+    let (kind, ..) = failure_at("for (const k in {a: 1}) k = 1;");
+    assert_eq!(kind, VmErrorKind::TypeError);
+    let (kind, ..) = failure_at("for (nope in {a: 1}) {}");
+    assert_eq!(kind, VmErrorKind::ReferenceError);
+    // An undeclared target with nothing to enumerate is never assigned.
+    assert_eq!(eval("for (nope in {}) {} 1"), ValueView::Number(1.0));
+
+    // Labels, nested loops, `try`/`finally`, `return` and exceptions.
+    assert_eq!(
+        string(
+            r#"let s = "";
+               outer: for (let i in {a: 1, b: 1, c: 1}) {
+                   for (let j in {x: 1, y: 1}) {
+                       if (i === "b") continue outer;
+                       if (i === "c" && j === "y") break outer;
+                       s = s + i + j;
+                   }
+               }
+               s"#
+        ),
+        "axaycx"
+    );
+    assert_eq!(
+        string(
+            r#"let s = "";
+               for (let k in {a: 1, b: 1, c: 1}) {
+                   try { if (k === "b") continue; if (k === "c") break; s = s + k; }
+                   finally { s = s + "f"; }
+               }
+               s"#
+        ),
+        "afff"
+    );
+    assert_eq!(
+        string(
+            r#"function first(o) { for (let k in o) { try { return k; } finally { o.seen = 1; } } }
+               const o = {q: 1, r: 2};
+               first(o) + o.seen"#
+        ),
+        "q1"
+    );
+    assert_eq!(
+        string(
+            r#"let s = "";
+               try { for (let k in {a: 1, b: 1}) { s = s + k; throw s; } } catch (e) { s = s + "!" + e; }
+               for (let k in {c: 1}) s = s + k;
+               s"#
+        ),
+        "a!ac"
+    );
+    // A for-in loop inside a loop body runs afresh each time.
+    assert_eq!(
+        num(
+            "let n = 0; for (let i = 0; i < 3; i = i + 1) for (let k in {a: 1, b: 2}) n = n + 1; n"
+        ),
+        6.0
+    );
 }
 
 /// Labelled statements and labelled `break`/`continue` (clj-quickjs-82).

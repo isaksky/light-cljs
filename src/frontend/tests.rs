@@ -368,6 +368,22 @@ fn render_stmt(s: &Stmt) -> String {
                 render_stmt(body)
             )
         }
+        StmtKind::ForIn { head, object, body } => {
+            let head = match head {
+                super::ast::ForInHead::Binding(name) => name.name.clone(),
+                super::ast::ForInHead::Lexical(super::ast::LexicalKind::Let, name) => {
+                    format!("(let {})", name.name)
+                }
+                super::ast::ForInHead::Lexical(super::ast::LexicalKind::Const, name) => {
+                    format!("(const {})", name.name)
+                }
+            };
+            format!(
+                "(for-in {head} {} {})",
+                render_expr(object),
+                render_stmt(body)
+            )
+        }
         StmtKind::Break(None) => "(break)".into(),
         StmtKind::Break(Some(l)) => format!("(break {})", l.name),
         StmtKind::Continue(None) => "(continue)".into(),
@@ -870,45 +886,58 @@ fn for_statements() {
     rejects_with("for (const k; ;) {}", Invalid, 1, 12, "missing initializer");
     rejects_with("for (;;) let x;", Invalid, 1, 10, "cannot be the body");
     rejects("for (;;) function f() {}", Invalid, 1, 10);
-    // For-in, for-of and `var` heads are separate features.
+    // For-of and `var` heads are separate features (for-in heads:
+    // `for_in_heads`).
     rejects_with("for (x of y) {}", Unsupported, 1, 1, "`for`-`of`");
-    rejects_with("for (x in y) {}", Unsupported, 1, 1, "`for`-`in`");
     rejects_with("for (let x of y) {}", Unsupported, 1, 1, "`for`-`of`");
-    rejects_with("for (const x in y) {}", Unsupported, 1, 1, "`for`-`in`");
     rejects_with("for (a.b of y) {}", Unsupported, 1, 1, "`for`-`of`");
     rejects_with("for (var i = 0; ;) {}", Unsupported, 1, 6, "`var`");
     rejects("for (let [a] = b; ;) {}", Unsupported, 1, 10);
     // `[~In]` (clj-quickjs-74): the `in` operator is not taken at the top
-    // level of the init, so an `in` after any init starts a for-in head.
-    rejects_with("for (a.b in y) {}", Unsupported, 1, 1, "`for`-`in`");
-    rejects_with("for (x = a in b; ;) {}", Unsupported, 1, 1, "`for`-`in`");
+    // level of the init, so an `in` after any init starts a for-in head
+    // (clj-quickjs-85), where these left sides are early errors or
+    // unsupported property targets (`for_in_heads`).
     rejects_with(
-        "for (let x = a in b; ;) {}",
+        "for (a.b in y) {}",
         Unsupported,
         1,
+        6,
+        "property references",
+    );
+    rejects_with(
+        "for (x = a in b; ;) {}",
+        Invalid,
         1,
-        "`for`-`in`",
+        6,
+        "invalid assignment target",
+    );
+    rejects_with(
+        "for (let x = a in b; ;) {}",
+        Invalid,
+        1,
+        16,
+        "without an initializer",
     );
     rejects_with(
         "for (let x = 1, y = a in b) {}",
-        Unsupported,
+        Invalid,
         1,
-        1,
-        "`for`-`in`",
+        23,
+        "without an initializer",
     );
     rejects_with(
         "for (x = c ? d : a in b;;) {}",
-        Unsupported,
+        Invalid,
         1,
-        1,
-        "`for`-`in`",
+        6,
+        "invalid assignment target",
     );
     rejects_with(
         "for (x = () => a in b;;) {}",
-        Unsupported,
+        Invalid,
         1,
-        1,
-        "`for`-`in`",
+        6,
+        "invalid assignment target",
     );
     // Nested parentheses, brackets, braces, templates, arguments, a
     // conditional's middle operand and function bodies take it again, as
@@ -953,6 +982,92 @@ fn for_statements() {
     // No semicolon is inserted inside the head.
     rejects("for (a\nb;;) {}", UnexpectedToken, 2, 1);
     rejects("for (;\n) {}", UnexpectedToken, 2, 1);
+}
+
+/// `for`-`in` heads (clj-quickjs-85): an identifier target or a single
+/// `let`/`const` binding without an initializer, told apart from the
+/// three-part form by the `in` after the head's first element, which is
+/// parsed with `[~In]`.
+#[test]
+fn for_in_heads() {
+    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken, Unsupported};
+    assert_eq!(ast("for (k in o) ;"), "(for-in k o (empty))");
+    assert_eq!(ast("for (let k in o) {}"), "(for-in (let k) o (block))");
+    assert_eq!(ast("for (const k in o) {}"), "(for-in (const k) o (block))");
+    // A parenthesized identifier is a target; the object is an Expression.
+    assert_eq!(ast("for ((k) in a, b) x;"), "(for-in k (, a b) x)");
+    assert_eq!(
+        ast("for (let k in o) { if (a) break; continue; }"),
+        "(for-in (let k) o (block (if a (break)) (continue)))"
+    );
+    assert_eq!(
+        ast("L: for (k in o) for (const j in k) continue L;"),
+        "(label L (for-in k o (for-in (const j) k (continue L))))"
+    );
+    // The object is an Expression with the `in` operator (clj-quickjs-74);
+    // nested `in` in a three-part head stays the operator.
+    assert_eq!(ast("for (k in a in b) ;"), "(for-in k (in a b) (empty))");
+    assert_eq!(
+        ast("for (let k in (a in b), c) ;"),
+        "(for-in (let k) (, (in a b) c) (empty))"
+    );
+    assert_eq!(
+        ast("for (let x = (a in b); ;) ;"),
+        "(for (let (x (in a b))) _ _ (empty))"
+    );
+    // Early errors: an initializer, more than one binding, a target that
+    // is not a reference.
+    rejects_with(
+        "for (let k = 1 in o) {}",
+        Invalid,
+        1,
+        16,
+        "without an initializer",
+    );
+    rejects_with(
+        "for (const k = 1 in o) {}",
+        Invalid,
+        1,
+        18,
+        "without an initializer",
+    );
+    rejects_with("for (let a, b in o) {}", Invalid, 1, 15, "single binding");
+    rejects_with(
+        "for (1 in o) {}",
+        Invalid,
+        1,
+        6,
+        "invalid assignment target",
+    );
+    rejects("for (a + b in o) {}", Invalid, 1, 6);
+    rejects("for (k = 1 in o) {}", Invalid, 1, 6);
+    rejects("for (f() in o) {}", Invalid, 1, 6);
+    rejects("for (undefined in o) {}", ReservedWord, 1, 6);
+    rejects("for (let let in o) {}", ReservedWord, 1, 10);
+    // Property targets (clj-quickjs-87) and `var` heads (clj-quickjs-89)
+    // are separate features.
+    rejects_with(
+        "for (a.b in o) {}",
+        Unsupported,
+        1,
+        6,
+        "property references",
+    );
+    rejects_with(
+        "for (a[0] in o) {}",
+        Unsupported,
+        1,
+        6,
+        "property references",
+    );
+    rejects("for (__rt.count in o) {}", ReservedWord, 1, 6);
+    rejects_with("for (var k in o) {}", Unsupported, 1, 6, "`var`");
+    // The head is parenthesized; a declaration cannot be the body.
+    rejects("for (k in o {}", UnexpectedToken, 1, 13);
+    rejects("for (let k in) {}", UnexpectedToken, 1, 14);
+    rejects_with("for (k in o) let x;", Invalid, 1, 14, "cannot be the body");
+    // `break`/`continue` belong to the loop, not to a function in it.
+    rejects("for (k in o) (function () { break; });", Invalid, 1, 29);
 }
 
 /// `do`-`while` (clj-quickjs-80), including its ASI rule: the `;` after
@@ -3188,6 +3303,8 @@ fn deep_nesting_is_rejected_without_overflowing_the_stack() {
         format!("{}x;", "for (;;) ".repeat(n)),
         format!("{}x;{}", "switch (1) { case 1: ".repeat(n), "}".repeat(n)),
         format!("{}x;", "for (let i = 0; i < 1; i = i + 1) ".repeat(n)),
+        format!("{}x;", "for (let k in o) ".repeat(n)),
+        format!("{}x;", "for (k in (o)) ".repeat(n)),
         format!("{}{}", "function f() {".repeat(n), "}".repeat(n)),
         format!(
             "x = {}1{};",
@@ -3272,6 +3389,18 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         ("labelled loops", |n| {
             let loops: String = (0..n).map(|i| format!("l{i}: while (1) ")).collect();
             format!("{loops}break l0;")
+        }),
+        // For-in heads (clj-quickjs-85).
+        ("for-in", |n| format!("{}x;", "for (let k in o) ".repeat(n))),
+        ("for-in with targets", |n| {
+            format!("{}x;", "for ((k) in (a, b)) ".repeat(n))
+        }),
+        ("for-in objects", |n| {
+            format!(
+                "for (const k in {}1{}) ;",
+                "{ a: ".repeat(n),
+                " }".repeat(n)
+            )
         }),
         ("for with heads", |n| {
             format!("{}x;", "for (let i = (a, b); (i); i = i + 1) ".repeat(n))

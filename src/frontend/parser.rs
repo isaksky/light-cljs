@@ -9,8 +9,8 @@
 //! no QuickJS code is adapted.
 
 use super::ast::{
-    BinaryOp, CatchClause, Declarator, Expr, ExprKind, ForInit, Function, FunctionKind, Ident,
-    LexicalDecl, LexicalKind, LogicalOp, PropertyDef, PropertyName, Script, Stmt, StmtKind,
+    BinaryOp, CatchClause, Declarator, Expr, ExprKind, ForInHead, ForInit, Function, FunctionKind,
+    Ident, LexicalDecl, LexicalKind, LogicalOp, PropertyDef, PropertyName, Script, Stmt, StmtKind,
     SwitchCase, TemplateElement, UnaryOp, UpdateOp,
 };
 use super::intrinsics::RESERVED_BINDING;
@@ -685,23 +685,30 @@ impl<'a> Parser<'a> {
     /// ForStatement (clj-quickjs-81): `for` `(` ForInit? `;` Expression? `;`
     /// Expression? `)` Statement, where ForInit is an Expression or a
     /// `let`/`const` declaration list (QuickJS `TOK_FOR` in
-    /// `js_parse_statement_or_decl`). For-in, for-of and `var` heads are
-    /// rejected as unsupported, at the `for` keyword. The init is parsed
-    /// without a top-level `in` operator (`[~In]`, [`Self::no_in`]), so an
-    /// `in` after it starts a for-in head (clj-quickjs-74).
+    /// `js_parse_statement_or_decl`). Or ForInStatement (clj-quickjs-85):
+    /// `for` `(` (LeftHandSideExpression | (`let` | `const`)
+    /// BindingIdentifier) `in` Expression `)` Statement (QuickJS
+    /// `js_parse_for_in_of`), told apart from the three-part form after the
+    /// head's first element, which is parsed without a top-level `in`
+    /// operator (`[~In]`, [`Self::no_in`], clj-quickjs-74). For-of heads are
+    /// rejected as unsupported at the `for` keyword, `var` heads at the
+    /// `var`.
     fn parse_for(&mut self) -> PResult<StmtKind> {
         let saved = self.depth;
         self.deeper(cost::BODY)?;
-        let (init, test, update) = self.parse_for_head()?;
+        let head = self.parse_for_head()?;
         let outer = std::mem::replace(&mut self.in_loop, true);
         let body = Box::new(self.parse_statement()?);
         self.in_loop = outer;
         self.depth = saved;
-        Ok(StmtKind::For {
-            init,
-            test,
-            update,
-            body,
+        Ok(match head {
+            ForHead::Classic(init, test, update) => StmtKind::For {
+                init,
+                test,
+                update,
+                body,
+            },
+            ForHead::In(head, object) => StmtKind::ForIn { head, object, body },
         })
     }
 
@@ -771,43 +778,49 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `for` `(` ForInit? `;` Expression? `;` Expression? `)`. Out of line,
-    /// so the frame of [`Self::parse_for`], which recurses through the
-    /// body, stays small.
+    /// `for` `(` ForInit? `;` Expression? `;` Expression? `)`, or `for` `(`
+    /// ForInHead `in` Expression `)` (clj-quickjs-85). Out of line, so the
+    /// frame of [`Self::parse_for`], which recurses through the body, stays
+    /// small. An expression head and the initializers of a declaration head
+    /// are parsed with `[~In]` ([`Self::no_in`]), so an `in` after the
+    /// head's first element starts a for-in head; a `let`/`const` head is a
+    /// for-in head when `in` follows its first name.
     #[inline(never)]
-    fn parse_for_head(&mut self) -> PResult<(Option<ForInit>, Option<Expr>, Option<Expr>)> {
+    fn parse_for_head(&mut self) -> PResult<ForHead> {
         let keyword = self.advance()?.span;
         self.expect_punct(Punct::LParen)?;
-        // `[~In]`: an `in` at the top level of the init ends it.
-        let outer_no_in = std::mem::replace(&mut self.no_in, true);
         let init = match &self.tok.kind {
             TokenKind::Punct(Punct::Semicolon) => None,
-            TokenKind::Keyword(Keyword::Let | Keyword::Const) => Some(ForInit::Lexical(
-                self.parse_lexical_declarators(Some(keyword))?,
-            )),
+            TokenKind::Keyword(k @ (Keyword::Let | Keyword::Const)) => {
+                let kind = match k {
+                    Keyword::Let => LexicalKind::Let,
+                    _ => LexicalKind::Const,
+                };
+                self.advance()?;
+                let name = self.parse_binding_identifier("a variable name")?;
+                if self.is_keyword(Keyword::In) {
+                    return self.parse_for_in_rest(ForInHead::Lexical(kind, name));
+                }
+                let declarators = self.parse_declarators(Some(kind), Some(keyword), Some(name))?;
+                Some(ForInit::Lexical(LexicalDecl { kind, declarators }))
+            }
             TokenKind::Keyword(Keyword::Var) => {
                 return Err(self.unsupported(self.tok.span, "`var` in a `for` head is"));
             }
             _ => {
-                // `for (k of o)`: `of` would end the expression `k` with an
-                // unexpected token.
-                if matches!(self.tok.kind, TokenKind::Identifier(_))
-                    && let Some(next) = self.peek_next()
-                    && let Some(error) = self.for_in_of_error(&next.kind, keyword)
-                {
+                let outer = std::mem::replace(&mut self.no_in, true);
+                let init = self.parse_expression()?;
+                self.no_in = outer;
+                if self.is_keyword(Keyword::In) {
+                    let target = self.for_in_target(&init)?;
+                    return self.parse_for_in_rest(ForInHead::Binding(target));
+                }
+                if let Some(error) = self.for_of_error(keyword) {
                     return Err(error);
                 }
-                Some(ForInit::Expr(self.parse_expression()?))
+                Some(ForInit::Expr(init))
             }
         };
-        self.no_in = outer_no_in;
-        // An `in` (or `of`) after any init, including a declaration with an
-        // initializer (`for (let k = 1 in o)`), is a for-in (for-of) head.
-        if init.is_some()
-            && let Some(error) = self.for_in_of_error(&self.tok.kind, keyword)
-        {
-            return Err(error);
-        }
         self.expect_punct(Punct::Semicolon)?;
         let test = if self.is_punct(Punct::Semicolon) {
             None
@@ -821,19 +834,56 @@ impl<'a> Parser<'a> {
             Some(self.parse_expression()?)
         };
         self.expect_punct(Punct::RParen)?;
-        Ok((init, test, update))
+        Ok(ForHead::Classic(init, test, update))
     }
 
-    /// `token` is the `in` or `of` after the left side of a for-in or for-of
-    /// head: reject the loop as unsupported at the `for` keyword.
+    /// `in` Expression `)` after the left side `head` of a for-in head
+    /// (clj-quickjs-85). The object is an Expression with `in` allowed.
     #[inline(never)]
-    fn for_in_of_error(&self, token: &TokenKind, keyword: Span) -> Option<SyntaxError> {
-        let what = match token {
-            TokenKind::Keyword(Keyword::In) => "`for`-`in` loops are",
-            TokenKind::Identifier(name) if name == "of" => "`for`-`of` loops are",
-            _ => return None,
-        };
-        Some(self.unsupported(keyword, what))
+    fn parse_for_in_rest(&mut self, head: ForInHead) -> PResult<ForHead> {
+        self.advance()?;
+        let object = self.parse_expression()?;
+        self.expect_punct(Punct::RParen)?;
+        Ok(ForHead::In(head, object))
+    }
+
+    /// The binding that the left-hand side `left` of a for-in head assigns:
+    /// an identifier, possibly parenthesized. A property reference is
+    /// unsupported (clj-quickjs-87); anything else is rejected as the
+    /// target of `=` is (`for (1 in o)` is `Invalid`).
+    #[inline(never)]
+    fn for_in_target(&self, left: &Expr) -> PResult<Ident> {
+        if is_property_target(left) {
+            return Err(
+                self.unsupported(left.span, "property references as `for`-`in` targets are")
+            );
+        }
+        self.simple_target(left, TargetUse::Assign)
+    }
+
+    /// The current token is the `of` after the left side of a for-of head:
+    /// reject the loop as unsupported at the `for` keyword.
+    #[inline(never)]
+    fn for_of_error(&self, keyword: Span) -> Option<SyntaxError> {
+        match &self.tok.kind {
+            TokenKind::Identifier(name) if name == "of" => {
+                Some(self.unsupported(keyword, "`for`-`of` loops are"))
+            }
+            _ => None,
+        }
+    }
+
+    /// The current token is an `in` after a later declarator or an
+    /// initializer of a `for` head's declaration list: a for-in head
+    /// declares exactly one binding, without an initializer (an early
+    /// error; QuickJS `js_parse_for_in_of`).
+    #[inline(never)]
+    fn for_in_declaration_error(&self) -> SyntaxError {
+        self.error(
+            SyntaxErrorKind::Invalid,
+            self.tok.span,
+            "the declaration in a `for`-`in` head must be a single binding without an initializer",
+        )
     }
 
     fn parse_return(&mut self) -> PResult<StmtKind> {
@@ -1019,7 +1069,7 @@ impl<'a> Parser<'a> {
     /// LexicalDeclaration: (`let` | `const`) Declarator (`,` Declarator)* `;`
     fn parse_lexical_decl(&mut self) -> PResult<Stmt> {
         let start = self.tok.span.start;
-        let decl = self.parse_lexical_declarators(None)?;
+        let decl = self.parse_lexical_declarators()?;
         self.expect_semi()?;
         self.bounded(Stmt::new(StmtKind::Lexical(decl), self.span_from(start)))
     }
@@ -1030,43 +1080,57 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn parse_var(&mut self) -> PResult<StmtKind> {
         self.advance()?;
-        let declarators = self.parse_declarators(None, None)?;
+        let declarators = self.parse_declarators(None, None, None)?;
         self.expect_semi()?;
         Ok(StmtKind::Var(declarators))
     }
 
     /// (`let` | `const`) Declarator (`,` Declarator)*, without the `;`.
-    /// `for_keyword`: in the head of the `for` statement at that span, where
-    /// `in` or `of` after a name starts an unsupported for-in or for-of head.
-    fn parse_lexical_declarators(&mut self, for_keyword: Option<Span>) -> PResult<LexicalDecl> {
+    fn parse_lexical_declarators(&mut self) -> PResult<LexicalDecl> {
         let kind = if self.advance()?.kind == TokenKind::Keyword(Keyword::Let) {
             LexicalKind::Let
         } else {
             LexicalKind::Const
         };
-        let declarators = self.parse_declarators(Some(kind), for_keyword)?;
+        let declarators = self.parse_declarators(Some(kind), None, None)?;
         Ok(LexicalDecl { kind, declarators })
     }
 
     /// Declarator (`,` Declarator)* after the declaration keyword: a binding
     /// identifier with an optional `= AssignmentExpression` initializer,
-    /// required for `const`. `lexical`: `None` for `var`. `for_keyword`: as
-    /// for [`Self::parse_lexical_declarators`].
+    /// required for `const`. `lexical`: `None` for `var`. `for_keyword`: in
+    /// the head of the `for` statement at that span, whose initializers are
+    /// parsed with `[~In]`; there `of` after a name starts an unsupported
+    /// for-of head, and `in` after a later name or after an initializer is
+    /// an invalid for-in head. `first`: the first name, already parsed.
     fn parse_declarators(
         &mut self,
         lexical: Option<LexicalKind>,
         for_keyword: Option<Span>,
+        mut first: Option<Ident>,
     ) -> PResult<Vec<Declarator>> {
         let mut declarators = Vec::new();
         loop {
-            let name = self.parse_binding_identifier("a variable name")?;
-            if let Some(keyword) = for_keyword
-                && let Some(error) = self.for_in_of_error(&self.tok.kind, keyword)
-            {
-                return Err(error);
+            let name = match first.take() {
+                Some(name) => name,
+                None => self.parse_binding_identifier("a variable name")?,
+            };
+            if let Some(keyword) = for_keyword {
+                if let Some(error) = self.for_of_error(keyword) {
+                    return Err(error);
+                }
+                if self.is_keyword(Keyword::In) {
+                    return Err(self.for_in_declaration_error());
+                }
             }
             let init = if self.eat_punct(Punct::Assign)? {
-                Some(self.parse_assignment()?)
+                let outer = std::mem::replace(&mut self.no_in, for_keyword.is_some());
+                let init = self.parse_assignment()?;
+                self.no_in = outer;
+                if for_keyword.is_some() && self.is_keyword(Keyword::In) {
+                    return Err(self.for_in_declaration_error());
+                }
+                Some(init)
             } else {
                 if lexical == Some(LexicalKind::Const) {
                     return Err(self.error(
@@ -2428,6 +2492,14 @@ enum Prefix {
     Update(UpdateOp),
     /// `delete` (clj-quickjs-124), whose node keeps its token.
     Delete,
+}
+
+/// A parsed `for` head (clj-quickjs-85).
+enum ForHead {
+    /// `(init; test; update)`
+    Classic(Option<ForInit>, Option<Expr>, Option<Expr>),
+    /// `(head in object)`
+    In(ForInHead, Expr),
 }
 
 /// What an identifier target is used for (it selects the diagnostics).
