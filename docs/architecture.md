@@ -6671,7 +6671,7 @@ name fields use the original month, weekday and era pools, including the
 Russian genitive month forms and all long/short/narrow widths. No importer or
 emitted table representation changes are needed. Component layouts are stored
 as literal/field pattern items; the existing locale date/time/combined pattern
-pools remain available for -217, and time component formatting belongs to -216.
+pools remain available for -217; time components extend these pattern items in -216.
 
 The service TimeClips the argument before using Date's existing local calendar
 conversion, including offsets across TimeClip endpoints. UTC, ±HH, ±HHMM and
@@ -6687,9 +6687,32 @@ are guarded, unrecorded host leaf effects; a missing host clock throws RangeErro
 
 Compatibility follows the recorded QuickJS-output policy: manual date fields
 use weekday, month, day, year, era ordering with QuickJS separators even where
-CLDR style patterns differ. Unsupported calendars, time fields, time zone names
-and styles fail with explicit RangeError. Formatting beyond Gregorian date
-components, formatToParts and range methods remain deferred.
+CLDR style patterns differ. Unsupported calendars, time zone names
+and styles fail with explicit RangeError. Non-Gregorian components,
+formatToParts and range methods remain deferred.
+
+### Intl.DateTimeFormat time fields (clj-quickjs-216)
+
+The existing immutable payload adds time widths, fraction precision, day-period
+width and a resolved hour cycle; the pattern appends literal/field items for
+hour, minute, second, fraction and day period. There are no additional GC edges
+or publication categories. Option access and conversion use the existing saved
+native stages, including ToBoolean for hour12 and resumable ToNumber for
+fractionalSecondDigits. Formatting shares Date's zoned calendar conversion,
+NumberFormat's digit mapper and the generated `ampm_tab`, `dayperiod_tab` and
+`dayperiod_narrow_tab` pools. Existing short time patterns select locale default
+cycles, as required by this pellet; this avoids the reference component
+formatter's hardcoded h12 fallback for locales such as en-GB/fr. No generated
+representation or importer changes are needed: all pools were already repacked
+and verified through `scripts/quickjs-data/`.
+
+Explicit hour12 overrides hourCycle and removes the hc extension from the
+resolved tag; matching explicit hourCycle retains hc. Manual component output
+keeps the reference's colon layout, two-digit neighboring fields, Japanese
+trailing period, Spanish U+202F inside am/pm, en-US U+202F before the period,
+and five shared day-period hour buckets. Fraction precision truncates
+milliseconds and also formats without a second field (the reference's manual
+formatter omits that case). Styles and time zone names remain explicit gaps.
 
 ### Async activations and task completion (clj-quickjs-248)
 

@@ -21759,18 +21759,21 @@ fn intl_date_time_format_options_and_brands() {
         "{calendar:'buddhist'}",
         "{numberingSystem:'a!'}",
         "{hourCycle:'bad'}",
+        "{hourCycle:'h25',hour12:true}",
         "{weekday:'numeric'}",
         "{era:'bad'}",
         "{year:'long'}",
         "{month:'bad'}",
         "{day:'short'}",
         "{formatMatcher:'bad'}",
-        "{hour:'numeric'}",
-        "{minute:'2-digit'}",
-        "{second:'numeric'}",
-        "{dayPeriod:'long'}",
-        "{fractionalSecondDigits:2}",
+        "{hour:'long'}",
+        "{minute:'short'}",
+        "{second:'narrow'}",
+        "{dayPeriod:'numeric'}",
+        "{fractionalSecondDigits:4}",
         "{fractionalSecondDigits:0}",
+        "{fractionalSecondDigits:NaN}",
+        "{fractionalSecondDigits:Infinity}",
         "{timeZoneName:'short'}",
         "{dateStyle:'short'}",
         "{timeStyle:'long'}",
@@ -21808,11 +21811,15 @@ fn intl_date_time_format_callbacks_wait_collect_and_migrate() {
     let source = r#"
         let log='';
         let d=new Intl.DateTimeFormat({get length(){log+='l';__rt.need(1,1);return 1;},get 0(){log+='t';__rt.need(2,1);return 'EN';}},
-            {get timeZone(){log+='z';__rt.need(3,1);return {toString(){log+='x';__rt.need(4,1);return '+01';}};},
-             get month(){log+='m';__rt.need(5,1);return {toString(){log+='s';__rt.need(6,1);return 'long';}};},day:'numeric',year:'numeric'});
+            {get hour12(){log+='b';__rt.need(8,1);return true;},
+             hourCycle:{toString(){log+='c';__rt.need(9,1);return 'h23';}},
+             get timeZone(){log+='z';__rt.need(3,1);return {toString(){log+='x';__rt.need(4,1);return '+01';}};},
+             get month(){log+='m';__rt.need(5,1);return {toString(){log+='s';__rt.need(6,1);return 'long';}};},day:'numeric',year:'numeric',
+             get hour(){log+='h';__rt.need(10,1);return {toString(){log+='u';__rt.need(11,1);return 'numeric';}};},
+             minute:'numeric',second:'numeric',fractionalSecondDigits:{valueOf(){log+='f';__rt.need(12,1);return 3;}}});
         let f=d.format; let same=f === d.format; d=null;
         let result=f({valueOf(){log+='n';__rt.need(7,1);return Date.UTC(2017,11,11,23);}});
-        same && result === 'December 12, 2017' && log === 'ltzxmsn'
+        same && result === 'December 12, 2017, 12:00:00.000 AM' && log === 'ltbczxmshufn'
     "#;
     let mut task = rt.spawn(&exe(source), &[]).unwrap();
     let mut waited = 0;
@@ -21832,7 +21839,7 @@ fn intl_date_time_format_callbacks_wait_collect_and_migrate() {
             }
             RunOutcome::Waiting(_) => {
                 waited += 1;
-                assert!(waited <= 7);
+                assert!(waited <= 12);
                 rt.collect().unwrap();
                 let request = task.take_producer_requests().pop().unwrap();
                 let value = rt.root(Primitive::Number(0.0));
@@ -21845,7 +21852,7 @@ fn intl_date_time_format_callbacks_wait_collect_and_migrate() {
             }
             RunOutcome::Complete(value) => {
                 assert_eq!(value.view(), ValueView::Bool(true));
-                assert_eq!(waited, 7);
+                assert_eq!(waited, 12);
                 return;
             }
             other => panic!("{other:?}"),
@@ -21990,4 +21997,78 @@ fn async_functions_are_not_constructors() {
         RunOutcome::Complete(_)
     ));
     assert_eq!(host.0, [Primitive::Bool(true)]);
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn intl_date_time_format_time_options() {
+    for (cycle, midnight, noon, late) in [
+        ("h11", "0 AM", "0 PM", "11 PM"),
+        ("h12", "12 AM", "12 PM", "11 PM"),
+        ("h23", "0", "12", "23"),
+        ("h24", "24", "12", "23"),
+    ] {
+        assert_eq!(
+            eval(&format!(
+                "let f=new Intl.DateTimeFormat('en',{{hour:'numeric',hourCycle:'{cycle}'}}); f.format(Date.UTC(2017,0,1,0)) === '{midnight}' && f.format(Date.UTC(2017,0,1,12)) === '{noon}' && f.format(Date.UTC(2017,0,1,23)) === '{late}' && f.resolvedOptions().hourCycle === '{cycle}'"
+            )),
+            ValueView::Bool(true),
+            "{cycle}"
+        );
+    }
+    for source in [
+        "new Intl.DateTimeFormat('en',{hour:'2-digit',minute:'numeric',second:'numeric',hourCycle:'h12'}).format(Date.UTC(2017,0,1,6,5,3)) === '06:05:03 AM'",
+        "new Intl.DateTimeFormat('en',{hour:'numeric',minute:'numeric',second:'numeric',hourCycle:'h23'}).format(Date.UTC(2017,0,1,6,5,3)) === '06:05:03'",
+        "new Intl.DateTimeFormat('en',{minute:'numeric'}).format(Date.UTC(2017,0,1,6,5,3)) === '5'",
+        "new Intl.DateTimeFormat('en',{minute:'2-digit'}).format(Date.UTC(2017,0,1,6,5,3)) === '05'",
+        "new Intl.DateTimeFormat('en',{second:'numeric'}).format(Date.UTC(2017,0,1,6,5,3)) === '3'",
+        "new Intl.DateTimeFormat('en',{second:'2-digit'}).format(Date.UTC(2017,0,1,6,5,3)) === '03'",
+        "new Intl.DateTimeFormat('en',{hour:'numeric',second:'numeric',hourCycle:'h23'}).format(Date.UTC(2017,0,1,6,5,3)) === '06:3'",
+        "new Intl.DateTimeFormat('en',{year:'numeric',hour:'numeric',minute:'numeric',hour12:true}).format(Date.UTC(2017,0,1,6,5)) === '2017, 6:05 AM'",
+        "new Intl.DateTimeFormat('en-US',{hour:'numeric',hour12:true}).format(0) === '12 AM'",
+        "new Intl.DateTimeFormat('ja',{hour:'numeric',hour12:true}).format(0) === '0 午前'",
+        "new Intl.DateTimeFormat('ja',{hour:'numeric',hour12:true,hourCycle:'h23'}).format(0) === '12 午前'",
+        "let f=new Intl.DateTimeFormat('en-u-hc-h24',{hour:'numeric'}); f.format(0) === '24' && f.resolvedOptions().locale === 'en-u-hc-h24'",
+        "let f=new Intl.DateTimeFormat('en-u-hc-h24',{hour:'numeric',hourCycle:'h11'}); f.format(0) === '0 AM' && f.resolvedOptions().locale === 'en'",
+        "let f=new Intl.DateTimeFormat('en-u-hc-h23',{hour:'numeric',hour12:true,hourCycle:'h24'}); f.format(0) === '12 AM' && f.resolvedOptions().locale === 'en' && f.resolvedOptions().hour12 === true",
+        "let f=new Intl.DateTimeFormat('en-u-hc-h12',{hour:'numeric',hour12:false,hourCycle:'h11'}); f.format(0) === '0' && f.resolvedOptions().hourCycle === 'h23' && f.resolvedOptions().hour12 === false",
+        "let f=new Intl.DateTimeFormat('en-u-hc-foobar',{hour:'numeric'}); f.format(0) === '12 AM' && f.resolvedOptions().locale === 'en'",
+        "new Intl.DateTimeFormat('en',{year:'numeric',hourCycle:'h24',hour12:true}).resolvedOptions().hourCycle === undefined",
+        "let f=new Intl.DateTimeFormat('en',{hour:'numeric',minute:'numeric',second:'numeric',fractionalSecondDigits:2.9,dayPeriod:'long',hour12:true}).resolvedOptions(); f.hour === 'numeric' && f.minute === 'numeric' && f.second === 'numeric' && f.fractionalSecondDigits === 2 && f.dayPeriod === 'long' && f.hour12 === true",
+        "new Intl.DateTimeFormat('en',{second:'2-digit',fractionalSecondDigits:3}).format(-1) === '59.999'",
+        "new Intl.DateTimeFormat('en',{second:'numeric',fractionalSecondDigits:1}).format(987) === '0.9'",
+        "new Intl.DateTimeFormat('en',{second:'numeric',fractionalSecondDigits:2}).format(987) === '0.98'",
+        "new Intl.DateTimeFormat('en',{second:'numeric',fractionalSecondDigits:3}).format(7) === '0.007'",
+        "new Intl.DateTimeFormat('en',{fractionalSecondDigits:3}).format(7) === '007'",
+        "new Intl.DateTimeFormat('ar',{second:'2-digit',fractionalSecondDigits:3}).format(7) === '٠٠٫٠٠٧'",
+        "new Intl.DateTimeFormat('ar-u-nu-latn',{hour:'numeric',minute:'numeric',hour12:true}).format(Date.UTC(2017,0,1,6,5)) === '6:05 ص'",
+        "new Intl.DateTimeFormat('en-u-nu-hanidec',{hour:'numeric',minute:'numeric',hourCycle:'h23'}).format(Date.UTC(2017,0,1,6,5)) === '〇六:〇五'",
+        "new Intl.DateTimeFormat('en',{hour:'numeric',dayPeriod:'long',hour12:true}).format(Date.UTC(2017,0,1,6)) === '6 in the morning'",
+        "new Intl.DateTimeFormat('en',{dayPeriod:'long'}).format(Date.UTC(2017,0,1,12)) === 'noon'",
+        "new Intl.DateTimeFormat('en',{dayPeriod:'narrow'}).format(Date.UTC(2017,0,1,12)) === 'n'",
+        "new Intl.DateTimeFormat('en',{hour:'numeric',dayPeriod:'short',hourCycle:'h23'}).format(Date.UTC(2017,0,1,12)) === '12 noon'",
+        "new Intl.DateTimeFormat('en',{dayPeriod:'long'}).format(Date.UTC(2017,0,1,13)) === 'in the afternoon'",
+        "new Intl.DateTimeFormat('en',{dayPeriod:'short'}).format(Date.UTC(2017,0,1,18)) === 'in the evening'",
+        "new Intl.DateTimeFormat('en',{dayPeriod:'long'}).format(Date.UTC(2017,0,1,21)) === 'at night'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    // Default cycles come from the same snapshot short time patterns as styles.
+    for (locale, cycle) in [
+        ("en", "h12"),
+        ("en-US", "h12"),
+        ("en-GB", "h23"),
+        ("de", "h23"),
+        ("fr", "h23"),
+        ("ja", "h23"),
+        ("ar", "h12"),
+    ] {
+        assert_eq!(
+            eval(&format!(
+                "new Intl.DateTimeFormat('{locale}',{{hour:'numeric'}}).resolvedOptions().hourCycle === '{cycle}'"
+            )),
+            ValueView::Bool(true),
+            "{locale}"
+        );
+    }
 }

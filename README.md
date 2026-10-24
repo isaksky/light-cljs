@@ -3488,12 +3488,25 @@ host zone per runtime; UTC, fixed minute offsets and the host's selected named
 zone (with recorded aliases) work. Named identifiers match without ASCII case. `format()` reads the unrecorded host clock;
 without a clock it throws RangeError. Invalid time values also throw RangeError.
 
-Explicit gaps: time fields, time zone names, `dateStyle` and `timeStyle` validate
-then throw RangeError pending -216/-217. Calendars other than `gregory` and
+Explicit gaps: time zone names, `dateStyle` and `timeStyle` validate
+then throw RangeError pending -217. Calendars other than `gregory` and
 named zones other than the host-selected zone throw RangeError. The snapshot's
 59 transition records do not imply support for its 598-name inventory. Numeric
 and named components reproduce QuickJS strings, including its English field
 ordering for de/fr/ja and Russian genitive month names.
+
+### Intl.DateTimeFormat time fields (clj-quickjs-216)
+
+Supported: numeric/2-digit `hour`, `minute`, `second`, 1–3
+`fractionalSecondDigits`, and long/short/narrow `dayPeriod`. Snapshot am/pm and
+day-period pools supply localized names; numeric fields share locale digit
+mapping. `hour12` overrides `hourCycle` and the `hc` locale extension; all four
+cycles work, and `resolvedOptions()` includes `hourCycle`/`hour12` only with an
+hour field. Locale defaults come from the generated short time patterns.
+Manual time fields use QuickJS's colon layout and trailing day periods, including
+Japanese `6:00 午前` and Spanish `6:00 a. m.`. Date plus time uses `, `.
+Fractional seconds truncate milliseconds and also work alone. `timeZoneName`
+remains an explicit RangeError gap; styles belong to -217.
 
 ### Async functions and await (clj-quickjs-248)
 

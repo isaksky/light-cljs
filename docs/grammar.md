@@ -4663,19 +4663,39 @@ Execution: `Intl.DateTimeFormat(locales, options)` works with or without `new`.
 and TimeClip, and `format()` reads the host clock. `resolvedOptions`,
 `supportedLocalesOf` and `Symbol.toStringTag` are provided. `weekday` and `era`
 accept long/short/narrow; `year` and `day` numeric/2-digit; `month` also accepts
-long/short/narrow. Missing date fields default to numeric year/month/day.
+long/short/narrow. Missing date and time fields default to numeric year/month/day.
 Locale resolution uses `ca`/`hc`/`nu`, and options include `localeMatcher`,
 `calendar`, `numberingSystem`, `hour12`, `hourCycle`, `timeZone`, `formatMatcher`.
 The service shares Date's cached host zone and accepts UTC, fixed minute offsets
 and the host's named zone/aliases (matched without ASCII case). Date names and numeric digits reproduce the
 pinned QuickJS snapshot, including its manual component layout.
 
-Explicit gaps: calendars other than `gregory`, time fields (`dayPeriod`, `hour`,
-`minute`, `second`, `fractionalSecondDigits`, `timeZoneName`) and
+Explicit gaps: calendars other than `gregory`, `timeZoneName` and
 `dateStyle`/`timeStyle` throw RangeError when supplied, after value validation.
 Named zones outside the host selection throw RangeError. No host clock means
 `format()` throws RangeError; NaN, infinities and out-of-TimeClip values do too.
-Time/style formatting belongs to -216/-217; formatToParts and ranges are deferred.
+Style formatting belongs to -217; formatToParts and ranges are deferred.
+
+### Intl.DateTimeFormat time fields (clj-quickjs-216)
+
+Execution: `hour`/`minute`/`second` accept numeric/2-digit;
+`fractionalSecondDigits` converts to a number, floors and validates 1–3;
+`dayPeriod` accepts long/short/narrow. Any of these suppresses default date fields.
+`hourCycle` supports h11 (0–11), h12 (1–12), h23 (0–23), h24 (1–24).
+Precedence is `hour12`, explicit `hourCycle`, `hc` extension, snapshot short time
+pattern default. Following QuickJS, Japanese `hour12: true` chooses h11 unless
+an explicit `hourCycle` was supplied, when it chooses h12; false chooses h23.
+The hour cycle and boolean `hour12` are reported only when `hour` is present.
+All option getters and conversions can wait and resume.
+
+Manual time fields reproduce QuickJS's colon separators, neighboring-field
+padding and trailing locale am/pm/day-period names. Explicit day periods use
+the snapshot's five hour buckets (6–11, 12, 13–17, 18–20, otherwise night), with
+short/long sharing a pool. en-US uses U+202F before the period; other locale
+tags use a space. Fractions truncate milliseconds, use Arabic decimal U+066B
+with arab digits and a period otherwise, and support standalone formatting.
+Time components use Date's existing host zone and transition rules.
+`timeZoneName`, `dateStyle`, `timeStyle`, formatToParts and ranges remain gaps.
 
 ## Async execution (clj-quickjs-248)
 

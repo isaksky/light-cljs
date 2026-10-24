@@ -189,20 +189,28 @@ impl State {
             "day" => {
                 self.slots.as_mut().unwrap().day = Some(service::string_option(&value, numeric)?)
             }
+            "dayPeriod" => {
+                self.slots.as_mut().unwrap().day_period =
+                    Some(service::string_option(&value, names)?)
+            }
+            "hour" => {
+                self.slots.as_mut().unwrap().hour = Some(service::string_option(&value, numeric)?)
+            }
+            "minute" => {
+                self.slots.as_mut().unwrap().minute = Some(service::string_option(&value, numeric)?)
+            }
+            "second" => {
+                self.slots.as_mut().unwrap().second = Some(service::string_option(&value, numeric)?)
+            }
+            "fractionalSecondDigits" => {
+                self.slots.as_mut().unwrap().fractional_second_digits =
+                    Some(service::number_option(&value, 1, 3)? as u8)
+            }
             "formatMatcher" => {
                 service::string_option(&value, &["basic", "best fit"])?;
             }
             _ => {
                 match name {
-                    "dayPeriod" => {
-                        service::string_option(&value, names)?;
-                    }
-                    "hour" | "minute" | "second" => {
-                        service::string_option(&value, numeric)?;
-                    }
-                    "fractionalSecondDigits" => {
-                        service::number_option(&value, 1, 3)?;
-                    }
                     "timeZoneName" => {
                         service::string_option(
                             &value,
@@ -260,6 +268,22 @@ impl State {
             tag.keywords.remove("nu");
         }
         let mut slots = DateTimeFormat::new(tag.to_string(), data);
+        if let Some(cycle) = self.hour_cycle {
+            slots.hour_cycle = cycle;
+        }
+        if let Some(hour12) = self.hour12 {
+            // Preserve the snapshot's Japanese hour12 choice (h11), and its
+            // h12 choice when an explicit hourCycle was also supplied.
+            slots.hour_cycle = if hour12 {
+                if tag.language == "ja" && self.hour_cycle.is_none() {
+                    "h11"
+                } else {
+                    "h12"
+                }
+            } else {
+                "h23"
+            };
+        }
         if let Some(nu) = self.numbering {
             slots.numbering = nu;
         }

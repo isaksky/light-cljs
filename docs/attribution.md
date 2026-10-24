@@ -969,3 +969,14 @@ with the QuickJS MIT notice retained beside the rows. Existing generated
 `src/intl/data/dates.rs` and locale records retain their QuickJS and Unicode
 notices; no data or generator changes were made. Runtime code is native Rust
 using the existing safe readers and Date conversion, with no linked C engine.
+
+### Intl.DateTimeFormat time fields (clj-quickjs-216)
+
+Semantic reference: `research/quickjs/intl/datetimeformat.c` (hour-cycle option
+precedence, manual time widths/layout, day-period hour buckets and fractions),
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. Five time rows in
+`tests/sim_host.rs::intl_date_time_format_time_fields` adapt
+`research/quickjs/tests/test_intl.js::test_dateTimeFormat`; the retained QuickJS
+copyright and MIT notice above the date test also covers these rows. Existing
+generated am/pm, day-period and time-pattern pools keep their QuickJS and
+Unicode notices. No table bytes or generation steps changed.

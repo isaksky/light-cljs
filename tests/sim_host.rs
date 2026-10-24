@@ -1227,6 +1227,11 @@ fn intl_date_time_format_host_zones_and_transitions() {
         if (f.format(Date.UTC(2017,10,5,6)) !== '11/05/2017') throw 'fall after';
         if (f.format(Date.UTC(2017,10,6,4,59,59)) !== '11/05/2017') throw 'fall midnight before';
         if (f.format(Date.UTC(2017,10,6,5)) !== '11/06/2017') throw 'fall midnight after';
+        let time=new Intl.DateTimeFormat('en',{hour:'numeric',minute:'numeric',second:'numeric',hourCycle:'h23'});
+        if (time.format(Date.UTC(2017,2,12,6,59,59)) !== '01:59:59') throw 'spring time before';
+        if (time.format(Date.UTC(2017,2,12,7)) !== '03:00:00') throw 'spring time after';
+        if (time.format(Date.UTC(2017,10,5,5,59,59)) !== '01:59:59') throw 'fall time before';
+        if (time.format(Date.UTC(2017,10,5,6)) !== '01:00:00') throw 'fall time after';
         let named=new Intl.DateTimeFormat('en',{timeZone:'US/Eastern',year:'numeric'});
         let lower=new Intl.DateTimeFormat('en',{timeZone:'america/new_york',year:'numeric'});
         let alias=new Intl.DateTimeFormat('en',{timeZone:'us/eastern',year:'numeric'});
@@ -1324,5 +1329,43 @@ fn intl_date_time_format_host_default_locale() {
         assert!(
             matches!(task.run_with(Budget::instructions(10000), &mut host).unwrap(), RunOutcome::Complete(value) if value.view() == ValueView::Bool(true))
         );
+    }
+}
+
+// Time rows adapted from QuickJS tests/test_intl.js at 7d1c13c5d8f8;
+// covered by the QuickJS copyright and MIT notice above the date-field test.
+/// Synthetic fixture, not light-cljs output. The snapshot-output policy selects
+/// Spanish U+202F inside a. m. and Japanese's trailing 午前, as QuickJS asserts.
+#[test]
+fn intl_date_time_format_time_fields() {
+    use clj_quickjs::{Budget, RunOutcome, host::TimeZone};
+    for zone in [TimeZone::UTC, TimeZone::fixed_offset_seconds(3600).unwrap()] {
+        let rt = Runtime::new();
+        let mut host = clj_quickjs::host::sim::SimTimeHost::new(1506098258091.0, zone);
+        let source = r#"
+            let d=new Date(2017,11,12,6,0,0,0);
+            if(new Intl.DateTimeFormat('en',{hour:'numeric',minute:'numeric',hour12:true}).format(d) !== '6:00 AM') throw 'en time';
+            if(new Intl.DateTimeFormat('en-GB',{hour:'numeric',minute:'numeric',hour12:true}).format(d) !== '6:00 am') throw 'en-GB time';
+            if(new Intl.DateTimeFormat('es',{hour:'numeric',minute:'numeric',hour12:true}).format(d) !== '6:00 a. m.') throw 'es QuickJS snapshot';
+            if(new Intl.DateTimeFormat('ja',{hour:'numeric',minute:'numeric',hour12:true}).format(d) !== '6:00 午前') throw 'ja QuickJS snapshot';
+            if(new Intl.DateTimeFormat('ar',{hour:'numeric',minute:'numeric',hour12:true}).format(d) !== '٦:٠٠ ص') throw 'ar time';
+            if(new Intl.DateTimeFormat('en',{hour:'numeric',minute:'2-digit',hourCycle:'h23',timeZone:'UTC'}).format(Date.UTC(2017,0,1,18,5)) !== '18:05') throw 'h23';
+            if(new Intl.DateTimeFormat('en',{hour:'numeric',hour12:true,timeZone:'UTC'}).format(Date.UTC(2017,0,1,0,30)) !== '12 AM') throw 'midnight';
+            if(new Intl.DateTimeFormat('en',{hour:'numeric',hour12:true}).resolvedOptions().hourCycle !== 'h12') throw 'resolved cycle';
+            let caught=false;
+            try {new Intl.DateTimeFormat('en',{hourCycle:'h25'});} catch(e){caught=e instanceof RangeError;}
+            if(!caught) throw 'invalid cycle';
+            true
+        "#;
+        let code = clj_quickjs::frontend::compile_script("dtf-time-fields", source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        match task
+            .run_with(Budget::instructions(100000), &mut host)
+            .unwrap()
+        {
+            RunOutcome::Complete(value) => assert_eq!(value.view(), ValueView::Bool(true)),
+            other => panic!("{zone:?}: {other:?}"),
+        }
+        assert!(task.dependency_log().edges().is_empty());
     }
 }

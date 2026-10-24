@@ -16,6 +16,11 @@ pub(crate) enum Field {
     Day,
     Year,
     Era,
+    Hour,
+    Minute,
+    Second,
+    Fraction,
+    DayPeriod,
 }
 #[derive(Clone, Debug)]
 pub(crate) enum PatternItem {
@@ -37,6 +42,12 @@ pub(crate) struct DateTimeFormat {
     pub year: Option<&'static str>,
     pub month: Option<&'static str>,
     pub day: Option<&'static str>,
+    pub hour: Option<&'static str>,
+    pub minute: Option<&'static str>,
+    pub second: Option<&'static str>,
+    pub fractional_second_digits: Option<u8>,
+    pub day_period: Option<&'static str>,
+    pub hour_cycle: &'static str,
     pub pattern: Vec<PatternItem>,
 }
 impl DateTimeFormat {
@@ -47,6 +58,31 @@ impl DateTimeFormat {
             .get("nu")
             .and_then(|n| number_format::numbering_system(n))
             .unwrap_or(if tag.language == "ar" { "arab" } else { "latn" });
+        // Use the snapshot's short time pattern for the locale default. Styles
+        // themselves are separate: manual components use QuickJS's layout.
+        let default_cycle = super::table_string(
+            dates::time_pattern_tab,
+            usize::from(data.timePatternShort_idx),
+        )
+        .and_then(|pattern| pattern.chars().find(|c| "hHKk".contains(*c)))
+        .map(|hour| match hour {
+            'K' => "h11",
+            'h' => "h12",
+            'k' => "h24",
+            _ => "h23",
+        })
+        .expect("snapshot short time pattern contains an hour");
+        let hour_cycle = tag
+            .keywords
+            .get("hc")
+            .and_then(|cycle| match cycle.as_str() {
+                "h11" => Some("h11"),
+                "h12" => Some("h12"),
+                "h23" => Some("h23"),
+                "h24" => Some("h24"),
+                _ => None,
+            })
+            .unwrap_or(default_cycle);
         Self {
             locale,
             data,
@@ -58,6 +94,12 @@ impl DateTimeFormat {
             year: None,
             month: None,
             day: None,
+            hour: None,
+            minute: None,
+            second: None,
+            fractional_second_digits: None,
+            day_period: None,
+            hour_cycle,
             pattern: vec![],
         }
     }
@@ -67,6 +109,11 @@ impl DateTimeFormat {
             && self.year.is_none()
             && self.month.is_none()
             && self.day.is_none()
+            && self.hour.is_none()
+            && self.minute.is_none()
+            && self.second.is_none()
+            && self.fractional_second_digits.is_none()
+            && self.day_period.is_none()
         {
             self.year = Some("numeric");
             self.month = Some("numeric");
@@ -102,7 +149,48 @@ impl DateTimeFormat {
                 p.extend([L(" "), F(Era)]);
             }
         }
+        let has_time = self.hour.is_some() || self.minute.is_some() || self.second.is_some();
+        if has_time || self.fractional_second_digits.is_some() {
+            if !p.is_empty() {
+                p.push(L(", "));
+            }
+            // QuickJS's component layout uses colons, including Japanese and
+            // locales whose style patterns put the day period before the hour.
+            let mut has_field = false;
+            for (option, field) in [
+                (self.hour, Hour),
+                (self.minute, Minute),
+                (self.second, Second),
+            ] {
+                if option.is_some() {
+                    if has_field {
+                        p.push(L(":"));
+                    }
+                    p.push(F(field));
+                    has_field = true;
+                }
+            }
+            if self.fractional_second_digits.is_some() {
+                if has_field {
+                    p.push(L(if self.numbering == "arab" { "٫" } else { "." }));
+                }
+                p.push(F(Fraction));
+            }
+        }
+        if self.day_period.is_some() || (self.hour.is_some() && self.is_12_hour()) {
+            if !p.is_empty() {
+                p.push(L(if self.locale == "en-US" {
+                    "\u{202f}"
+                } else {
+                    " "
+                }));
+            }
+            p.push(F(DayPeriod));
+        }
         self.pattern = p;
+    }
+    fn is_12_hour(&self) -> bool {
+        matches!(self.hour_cycle, "h11" | "h12")
     }
     fn name(&self, field: Field, fields: &date::UtcFields) -> Option<&'static str> {
         let d = self.data;
@@ -151,6 +239,30 @@ impl DateTimeFormat {
                     _ => 4,
                 } + usize::from(fields.year > 0),
             ),
+            Field::DayPeriod => match self.day_period {
+                Some(width) => (
+                    if width == "narrow" {
+                        dates::dayperiod_narrow_tab
+                    } else {
+                        dates::dayperiod_tab
+                    },
+                    if width == "narrow" {
+                        d.dayperiod_narrow_idx
+                    } else {
+                        d.dayperiod_idx
+                    },
+                    // The reference uses these hour boundaries for every
+                    // locale's five-entry day-period pool.
+                    match fields.hours {
+                        6..=11 => 0,
+                        12 => 1,
+                        13..=17 => 2,
+                        18..=20 => 3,
+                        _ => 4,
+                    },
+                ),
+                None => (dates::ampm_tab, d.ampm_idx, usize::from(fields.hours >= 12)),
+            },
             _ => return None,
         };
         pool_string(table[index as usize]?, item)
@@ -169,6 +281,48 @@ impl DateTimeFormat {
                     let (mut value, width) = match field {
                         Field::Month => (i32::from(fields.month) + 1, self.month),
                         Field::Day => (i32::from(fields.date), self.day),
+                        Field::Hour => {
+                            let h = i32::from(fields.hours);
+                            let value = match self.hour_cycle {
+                                "h11" => h % 12,
+                                "h12" => (h + 11) % 12 + 1,
+                                "h24" if h == 0 => 24,
+                                _ => h,
+                            };
+                            (
+                                value,
+                                if !self.is_12_hour()
+                                    && (self.minute.is_some() || self.second.is_some())
+                                {
+                                    Some("2-digit")
+                                } else {
+                                    self.hour
+                                },
+                            )
+                        }
+                        Field::Minute => (
+                            i32::from(fields.minutes),
+                            if self.hour.is_some() || self.second.is_some() {
+                                Some("2-digit")
+                            } else {
+                                self.minute
+                            },
+                        ),
+                        Field::Second => (
+                            i32::from(fields.seconds),
+                            if self.minute.is_some() {
+                                Some("2-digit")
+                            } else {
+                                self.second
+                            },
+                        ),
+                        Field::Fraction => {
+                            let digits = self.fractional_second_digits.expect("fraction pattern");
+                            let value = fields.milliseconds / 10_u16.pow(u32::from(3 - digits));
+                            let text = format!("{value:0width$}", width = usize::from(digits));
+                            result.push_str(&number_format::map_digits(self.numbering, &text));
+                            continue;
+                        }
                         Field::Year => (
                             if fields.year > 0 {
                                 fields.year
@@ -201,16 +355,27 @@ impl DateTimeFormat {
             ("numberingSystem", string(self.numbering)),
             ("timeZone", string(&self.time_zone)),
         ];
+        if self.hour.is_some() {
+            fields.push(("hourCycle", string(self.hour_cycle)));
+            fields.push(("hour12", Value::Bool(self.is_12_hour())));
+        }
         for (name, value) in [
             ("weekday", self.weekday),
             ("era", self.era),
             ("year", self.year),
             ("month", self.month),
             ("day", self.day),
+            ("dayPeriod", self.day_period),
+            ("hour", self.hour),
+            ("minute", self.minute),
+            ("second", self.second),
         ] {
             if let Some(value) = value {
                 fields.push((name, string(value)));
             }
+        }
+        if let Some(digits) = self.fractional_second_digits {
+            fields.push(("fractionalSecondDigits", Value::Number(f64::from(digits))));
         }
         service::resolved_options(heap, task, fields)
     }
