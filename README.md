@@ -3836,7 +3836,7 @@ The in-memory recording host and upstream parse fixtures are exercised with
 
 Linking, evaluation, per-task instances and namespaces, including cyclic
 binding initialization, are supported by the subsequent module execution
-pellets. JSON default exports remain deferred. The CLI remains script-only.
+pellets. JSON default exports are supported (clj-quickjs-256). The CLI remains script-only.
 
 ### Intl.Segmenter (clj-quickjs-222)
 
@@ -4014,8 +4014,8 @@ Verification: `CARGO_BUILD_JOBS=3 cargo test --test js_modules -- --test-threads
 and `CARGO_BUILD_JOBS=3 cargo test --lib module::namespace:: -- --test-threads=3`.
 Cyclic namespaces resolve before bodies execute, preserve hoisted function calls
 and throw catchable ReferenceErrors for lexical exports still in TDZ
-(clj-quickjs-255). JSON instances and default-export declarations remain
-deferred. The CLI remains script-only.
+(clj-quickjs-255). JSON instances are supported (clj-quickjs-256);
+default-export declarations remain deferred. The CLI remains script-only.
 
 ### Public class fields (clj-quickjs-139)
 
@@ -4027,3 +4027,16 @@ Initializers, super access, arrows and direct eval retain their receiver/home
 context across waits, collection and worker migration. Private names and static
 initialization blocks remain explicitly rejected. See `docs/grammar.md`,
 "Public class fields", for syntax, early errors and existing exotic-property gaps.
+
+### JSON modules (clj-quickjs-256)
+
+Supported: host-classified JSON sources (`.json` by the reference suffix rule)
+provide a single `default` export containing the parsed value. Every importer
+within a task shares its object; fresh tasks parse fresh instances from the
+cached immutable source. Namespaces expose only default. Linking validates all
+JSON before JavaScript runs, with module-named, positioned SyntaxErrors using
+the existing JSON.parse parser and limits. Parsing survives budgets, GC and
+migration. Import attributes and JSON5 extensions remain rejected; the CLI
+remains script-only.
+
+Verify with `CARGO_BUILD_JOBS=3 cargo test --test js_modules -- --test-threads=3`.

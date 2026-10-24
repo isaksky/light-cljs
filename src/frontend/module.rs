@@ -62,6 +62,25 @@ struct ModuleData {
 }
 
 impl ModuleRecord {
+    /// Static shape of a JSON synthetic module. The value belongs to a task,
+    /// never to this immutable, world-cached record.
+    pub(crate) fn json() -> Self {
+        let span = Span::new(0, 0);
+        Self::new(
+            Vec::new(),
+            span,
+            Vec::new(),
+            Vec::new(),
+            vec![LocalExportEntry {
+                export_name: "default".into(),
+                local_name: "*default*".into(),
+                span,
+            }],
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
     pub(super) fn new(
         body: Vec<ModuleItem>,
         span: Span,

@@ -32,6 +32,7 @@ pub(super) struct PreparedModule {
     bindings: Vec<ModuleBinding>,
     instantiate: Executable,
     body: Executable,
+    json: Option<JsString>,
 }
 
 #[derive(Debug)]
@@ -67,6 +68,7 @@ enum Stage {
         module: usize,
         after: Option<String>,
     },
+    ParseJson(usize),
 }
 
 pub(crate) enum Action {
@@ -99,6 +101,7 @@ pub(crate) struct Linker {
     cells: Vec<Value>,
     arguments: HashMap<ModuleKey, Vec<Value>>,
     namespaces: HashMap<ModuleKey, crate::heap::ObjectId>,
+    json_parser: Option<Box<crate::vm::json::Parser>>,
     pub(crate) running: bool,
 }
 
@@ -111,10 +114,13 @@ impl Linker {
         for node in graph.modules() {
             let loaded = node.module();
             let Some(record) = loaded.record() else {
-                initial_error = Some("JSON modules cannot be executed yet".into());
+                initial_error = Some("module record missing".into());
                 break;
             };
             let prepare = || {
+                if matches!(loaded.source(), ModuleSource::Json { .. }) {
+                    return Ok((vec![ModuleBinding::synthetic_default()], entry(), entry()));
+                }
                 let bindings = module_bindings(loaded.source.text(), record)?;
                 let instantiate = lower_module(
                     loaded.source.name(),
@@ -172,6 +178,10 @@ impl Linker {
                     bindings,
                     instantiate,
                     body,
+                    json: match loaded.source() {
+                        ModuleSource::Json { text, .. } => Some(JsString::from(text.as_str())),
+                        ModuleSource::JavaScript { .. } => None,
+                    },
                 },
             );
         }
@@ -196,6 +206,7 @@ impl Linker {
             cells: Vec::new(),
             arguments: HashMap::new(),
             namespaces: HashMap::new(),
+            json_parser: None,
             running: false,
         }
     }
@@ -256,10 +267,65 @@ impl Linker {
         }
     }
 
+    // Keep JSON parsing off the large graph-linking stack frame, since module
+    // tasks also run on 64 KiB workers in debug builds.
+    #[inline(never)]
+    fn parse_json(&mut self, index: usize, heap: &Heap, owner: TaskId) -> Result<Action, Fault> {
+        let Some(key) = self.order.get(index) else {
+            self.stage = Stage::Instantiate(0);
+            return Ok(Action::Continue);
+        };
+        let node = &self.modules[key];
+        let Some(text) = &node.json else {
+            self.stage = Stage::ParseJson(index + 1);
+            return Ok(Action::Continue);
+        };
+        if self.json_parser.is_none() {
+            self.json_parser = Some(Box::new(crate::vm::json::Parser::new(text.clone())?));
+        }
+        // Validate every JSON module before entering any JavaScript frame,
+        // including hoisted function instantiation. Partial containers remain
+        // in the traced continuation between parser steps.
+        let value = self
+            .json_parser
+            .as_mut()
+            .unwrap()
+            .advance(heap, owner)
+            .map_err(|fault| match fault {
+                Fault::JsonSyntaxError {
+                    message,
+                    line,
+                    column,
+                } => Fault::SyntaxError(format!("{}:{line}:{column}: {message}", node.name)),
+                other => other,
+            })?;
+        if let Some(value) = value {
+            let Value::Object(cell) = self.cells[self.slots[&(*key, "*default*".into())]] else {
+                return Err(Fault::Internal("JSON default cell missing"));
+            };
+            heap.with_object_mut(cell, |object| {
+                if let HeapObject::Cell(cell) = object {
+                    cell.value = Some(value);
+                }
+            });
+            self.json_parser = None;
+            self.stage = Stage::ParseJson(index + 1);
+        }
+        Ok(Action::Continue)
+    }
+
     /// One graph edge, binding, export entry or stage transition per step.
     /// Star tables retain a name cursor, never copy/traverse a whole barrel
     /// in one step. Calls use the VM's existing bounded argument binding.
     pub(crate) fn step(&mut self, heap: &Heap, owner: TaskId) -> Result<Action, Fault> {
+        if let Stage::ParseJson(index) = self.stage {
+            return self.parse_json(index, heap, owner);
+        }
+        self.step_link(heap, owner)
+    }
+
+    #[inline(never)]
+    fn step_link(&mut self, heap: &Heap, owner: TaskId) -> Result<Action, Fault> {
         if let Some(error) = self.initial_error.take() {
             return Err(Fault::SyntaxError(error));
         }
@@ -456,7 +522,7 @@ impl Linker {
             }
             Stage::Imports { module, binding } => {
                 let Some(key) = self.order.get(*module).copied() else {
-                    self.stage = Stage::Instantiate(0);
+                    self.stage = Stage::ParseJson(0);
                     return Ok(Action::Continue);
                 };
                 let node = &self.modules[&key];
@@ -493,6 +559,7 @@ impl Linker {
                     *binding = 0;
                 }
             }
+            Stage::ParseJson(_) => unreachable!("JSON parsing uses a separate stack frame"),
             Stage::Instantiate(index) => {
                 // The index is advanced before entering the VM frame, so a
                 // suspended module can never be selected for a second run.
@@ -500,6 +567,9 @@ impl Linker {
                 *index += 1;
                 if let Some(key) = self.order.get(next) {
                     let node = &self.modules[key];
+                    if node.json.is_some() {
+                        return Ok(Action::Continue);
+                    }
                     let args = self.arguments.get(key).cloned().unwrap_or_default();
                     self.running = true;
                     return Ok(Action::Run(node.instantiate.clone(), args));
@@ -515,6 +585,9 @@ impl Linker {
                         return Ok(Action::Failed(Box::new(error.clone())));
                     }
                     if self.evaluated.contains_key(&root) {
+                        return Ok(Action::Continue);
+                    }
+                    if self.modules[&key].json.is_some() {
                         return Ok(Action::Continue);
                     }
                     let args = self.arguments.get(&key).cloned().unwrap_or_default();
@@ -620,6 +693,9 @@ impl Linker {
 
 impl Trace for Linker {
     fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
+        if let Some(parser) = &self.json_parser {
+            parser.trace(visit);
+        }
         self.cells.iter().for_each(|value| value.trace(visit));
         for namespace in self.namespaces.values() {
             Value::Object(*namespace).trace(visit);

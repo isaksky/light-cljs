@@ -40,7 +40,7 @@ impl ModuleKey {
 }
 
 /// Root-free source supplied by the host. JSON text is retained unparsed until
-/// JSON-module instantiation is implemented; it is never parsed as JavaScript.
+/// task linking; it is never parsed as JavaScript.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModuleSource {
     JavaScript { name: String, text: String },
@@ -114,7 +114,8 @@ impl LoadedModule {
         &self.source
     }
 
-    /// `None` denotes a JSON source awaiting synthetic module support.
+    /// Static JavaScript or synthetic JSON record. A JSON record has no body
+    /// or requests and one local export, `default`; its value is task-owned.
     pub fn record(&self) -> Option<&ModuleRecord> {
         self.record.as_ref()
     }
@@ -341,7 +342,7 @@ impl ModuleLoader {
                     })
                 })?)
             }
-            ModuleSource::Json { .. } => None,
+            ModuleSource::Json { .. } => Some(ModuleRecord::json()),
         };
         let module = Arc::new(LoadedModule {
             key,

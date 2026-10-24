@@ -13,6 +13,16 @@ pub(crate) struct ModuleBinding {
 }
 
 impl ModuleBinding {
+    pub(crate) fn synthetic_default() -> Self {
+        Self {
+            name: Ident {
+                name: "*default*".into(),
+                span: Span::new(0, 0),
+            },
+            kind: BindingKind::Const,
+        }
+    }
+
     pub fn is_import(&self) -> bool {
         self.kind == BindingKind::Import
     }

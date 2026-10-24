@@ -199,7 +199,11 @@ fn load_carries_json_source_kind() {
     assert!(
         matches!(module.source(), ModuleSource::Json { name, text } if name == "examples/message.json" && text == r#"{"message":"hello"}"#)
     );
-    assert!(module.record().is_none());
+    let record = module.record().unwrap();
+    assert!(record.body().is_empty());
+    assert!(record.requested_modules().is_empty());
+    assert_eq!(record.local_export_entries().len(), 1);
+    assert_eq!(record.local_export_entries()[0].export_name, "default");
     assert!(graph.get(json).unwrap().requested_modules().is_empty());
 }
 
@@ -642,16 +646,24 @@ fn import_assignment_through_closure_and_eval_is_immutable() {
 }
 
 #[test]
-fn rejects_json_before_effects() {
+fn json_module_parse_error_fails_load() {
     let sources = [
-        ("entry.js", "import x from './dep.json'; __rt.effect(0, 1);"),
-        ("dep.json", "{}"),
+        (
+            "entry.js",
+            "import './effect.js'; import x from './message.json'; __rt.effect(0, 1);",
+        ),
+        ("effect.js", "__rt.effect(0, 2);"),
+        ("message.json", "{ \"x\": }"),
     ];
     let (outcome, effects) = execute_modules(&sources, Budget::UNLIMITED);
     assert!(
         matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError),
         "{outcome:?}"
     );
+    let RunOutcome::Failed(error) = outcome else {
+        unreachable!()
+    };
+    assert!(error.message().contains("message.json:1:8"), "{error:?}");
     assert!(effects.is_empty());
 }
 
@@ -1714,5 +1726,256 @@ fn cyclic_namespaces_share_origins_and_remain_live() {
         let (outcome, effects) = execute_modules(&sources, budget);
         assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
         assert_eq!(effects, vec![Primitive::Bool(true)]);
+    }
+}
+
+/*
+Adapted data from research/quickjs/examples/message.json at 7d1c13c5d8f8.
+QuickJS Javascript Engine
+Copyright (c) 2017-2021 Fabrice Bellard
+Copyright (c) 2017-2021 Charlie Gordon
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+*/
+const MESSAGE_JSON: &str = "{ \"x\" : 1, \"tab\": [ 1, 2, 3 ] }\n\n";
+
+#[test]
+fn json_module_default_import() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import msg from './message.json'; __rt.effect(0, msg.x === 1 && msg.tab.length === 3 && msg.tab[2] === 3);",
+            ),
+            ("message.json", MESSAGE_JSON),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn json_module_value_is_shared_by_importers() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {a} from './a.js'; import {b} from './b.js'; __rt.effect(0, a === b && b.x === 7);",
+            ),
+            (
+                "a.js",
+                "import msg from './message.json'; msg.x = 7; export {msg as a};",
+            ),
+            (
+                "b.js",
+                "import msg from './message.json'; export {msg as b};",
+            ),
+            ("message.json", MESSAGE_JSON),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn json_module_named_import_fails_link() {
+    let (outcome, effects) = execute_modules(
+        &[
+            (
+                "entry.js",
+                "import './effect.js'; import {x} from './message.json'; __rt.effect(0, x);",
+            ),
+            ("effect.js", "__rt.effect(0, 2);"),
+            ("message.json", MESSAGE_JSON),
+        ],
+        Budget::UNLIMITED,
+    );
+    let RunOutcome::Failed(error) = outcome else {
+        panic!("{outcome:?}")
+    };
+    assert_eq!(error.kind(), clj_quickjs::VmErrorKind::SyntaxError);
+    assert!(error.message().contains("export 'x'"), "{error:?}");
+    assert!(error.message().contains("message.json"), "{error:?}");
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn json_module_classified_by_host() {
+    assert!(matches!(
+        ModuleSource::from_name("message.json".into(), MESSAGE_JSON.into()),
+        ModuleSource::Json { .. }
+    ));
+    assert!(matches!(
+        ModuleSource::from_name("message.JSON".into(), MESSAGE_JSON.into()),
+        ModuleSource::JavaScript { .. }
+    ));
+    // Neither attributes nor QuickJS's json5 extension are accepted.
+    for kind in ["json", "json5"] {
+        assert!(
+            clj_quickjs::frontend::parse_module(&format!(
+                "import msg from './message.json' with {{ type: '{kind}' }};"
+            ))
+            .is_err()
+        );
+    }
+    assert_effects(&[("message.json", MESSAGE_JSON)], vec![]);
+}
+
+#[test]
+fn json_module_namespace_has_only_default() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import msg from './message.json'; import * as ns from './message.json'; import * as barrel from './barrel.js'; __rt.effect(0, Object.keys(ns).join(',') === 'default' && ns.default === msg && Object.keys(barrel).length === 0);",
+            ),
+            ("message.json", MESSAGE_JSON),
+            ("barrel.js", "export * from './message.json';"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn json_module_primitives_and_strict_json() {
+    for text in ["null", "true", "false", "42", "-0", "\"hello\"", "[]"] {
+        assert_effects(
+            &[
+                (
+                    "entry.js",
+                    &format!(
+                        "import value from './value.json'; __rt.effect(0, JSON.stringify(value) === JSON.stringify(JSON.parse({text:?})));"
+                    ),
+                ),
+                ("value.json", text),
+            ],
+            vec![Primitive::Bool(true)],
+        );
+    }
+    for text in [
+        "{x: 1}",
+        "{'x': 1}",
+        "[1,]",
+        "/* json5 */ {}",
+        "{} trailing",
+    ] {
+        let (outcome, effects) = execute_modules(
+            &[
+                ("entry.js", "import './value.json'; __rt.effect(0, 1);"),
+                ("value.json", text),
+            ],
+            Budget::UNLIMITED,
+        );
+        assert!(
+            matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError),
+            "{text}: {outcome:?}"
+        );
+        assert!(effects.is_empty());
+    }
+}
+
+#[test]
+fn json_module_instances_survive_budgets_collection_and_migration() {
+    use clj_quickjs::Completion;
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add("entry.js", "import msg from './message.json'; import * as ns from './message.json'; msg.x += 1; __rt.need(76, 0); __rt.effect(0, msg === ns.default && msg.x === 2 && msg.padding.length === 512 && msg.padding[511].value === 5 && msg.tab[2] === 3);");
+    let text = format!(
+        "{{\"x\":1,\"tab\":[1,2,3],\"padding\":[{}]}}",
+        vec!["{\"value\":5}"; 512].join(",")
+    );
+    host.add("message.json", &text);
+    let mut loader = ModuleLoader::new();
+    let graph = loader
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    let cached = loader
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    let fetches = host.fetches();
+    assert_eq!(fetches.len(), 2);
+    for graph in [&graph, &cached] {
+        let mut task = runtime.spawn_module(graph);
+        let mut done = false;
+        for _ in 0..2000 {
+            let (next_task, next_host, outcome) = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let outcome = task.run_with(Budget::instructions(1), &mut host).unwrap();
+                    (task, host, outcome)
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            task = next_task;
+            host = next_host;
+            runtime.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(key) => {
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = runtime.root(Primitive::Undefined);
+                    task = runtime
+                        .complete(key, request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(_) => {
+                    done = true;
+                    break;
+                }
+                outcome => panic!("{outcome:?}"),
+            }
+        }
+        assert!(done, "JSON module task did not finish");
+        assert_eq!(task.dependency_log().edges().len(), 1);
+        drop(task);
+        runtime.collect().unwrap();
+    }
+    assert_eq!(host.effects, vec![Primitive::Bool(true); 2]);
+    assert_eq!(host.fetches(), fetches);
+}
+
+#[test]
+fn json_module_errors_keep_utf16_positions_and_parser_limits() {
+    let deep = format!("{}0{}", "[".repeat(513), "]".repeat(513));
+    let long_key = format!("{{\"{}\":0}}", "x".repeat(4097));
+    for (text, position) in [
+        ("{\r\n\"😀\": }", "2:7"),
+        (deep.as_str(), "1:513"),
+        (long_key.as_str(), "1:4099"),
+    ] {
+        let (outcome, effects) = execute_modules(
+            &[
+                ("entry.js", "import './value.json'; __rt.effect(0, 1);"),
+                ("value.json", text),
+            ],
+            Budget::instructions(1),
+        );
+        let RunOutcome::Failed(error) = outcome else {
+            panic!("{outcome:?}")
+        };
+        assert_eq!(error.kind(), clj_quickjs::VmErrorKind::SyntaxError);
+        assert!(
+            error.message().contains(&format!("value.json:{position}")),
+            "{error:?}"
+        );
+        assert!(effects.is_empty());
     }
 }

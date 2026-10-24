@@ -78,7 +78,7 @@ enum Lexeme {
 }
 
 #[derive(Debug)]
-pub(super) struct Parser {
+pub(crate) struct Parser {
     text: JsString,
     flatten: Option<StringFlatten>,
     next: usize,
@@ -105,7 +105,7 @@ impl Trace for Parser {
 }
 
 impl Parser {
-    pub(super) fn new(text: JsString) -> Result<Self, Fault> {
+    pub(crate) fn new(text: JsString) -> Result<Self, Fault> {
         Ok(Self {
             text: JsString::from(""),
             flatten: Some(StringFlatten::new(text).ok_or(Fault::OutOfMemory("JSON input buffer"))?),
@@ -305,7 +305,7 @@ impl Parser {
     /// bounded, correctly rounded decimal accumulator (1100 retained digits).
     /// String bodies are sized once after scanning and transferred without
     /// a final linear copy. Property insertion uses the ordinary leaf API.
-    pub(super) fn advance(&mut self, heap: &Heap, task: TaskId) -> Result<Option<Value>, Fault> {
+    pub(crate) fn advance(&mut self, heap: &Heap, task: TaskId) -> Result<Option<Value>, Fault> {
         if let Some(flatten) = &mut self.flatten {
             if let Some(text) = flatten.advance(STEP) {
                 self.text = text;

@@ -521,7 +521,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | a property as a for-in/for-of target (`for (a.b in o)`, `for (a.b of o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
 | static initialization blocks, `import`/`export` in scripts, dynamic `import` | Unsupported |
 | private class names (`#x`) | UnknownToken |
-| module string-literal import/export names, import attributes, `import.meta`, top-level `await` | Unsupported |
+| module string-literal import/export names, import attributes (including `type: 'json'` and `type: 'json5'`), `import.meta`, top-level `await` | Unsupported |
 | `new.target` outside a non-arrow function, including a top-level arrow or indirect eval (clj-quickjs-99) | Invalid |
 | execution of parsed async generators | Unsupported at the function during compilation |
 | rest parameters, destructuring for-in/for-of heads | Unsupported |
@@ -569,8 +569,9 @@ Module source parses into static records (see "Modules"). The embedding API
 loads complete static graphs before task execution. Cyclic and acyclic
 graphs link and evaluate with live imports and re-exports (clj-quickjs-253/255).
 Namespace imports and re-exports execute, including cyclic TDZ checks
-(clj-quickjs-254). Default-export declarations and JSON module instances
-remain deferred; the CLI and `compile_script` take scripts only.
+(clj-quickjs-254). Host-classified JSON modules expose one default export
+(clj-quickjs-256). Default-export declarations remain deferred; the CLI and
+`compile_script` take scripts only.
 
 Super properties and public class fields execute (clj-quickjs-138/139);
 private names and static blocks remain rejected.
@@ -5555,8 +5556,8 @@ Imports are static requests, not recorded runtime dependency edges.
 
 The pre-run loader (clj-quickjs-252) follows these requests in source order and
 accepts cyclic graphs. This synthetic fixture (not light-cljs output) loads
-when the host supplies both dependencies; JSON becomes a source-kind entry,
-without a module instance or default binding yet:
+when the host supplies both dependencies. JSON has a synthetic static record
+with one default export; task linking parses and initializes its value:
 
 ```js module-accept
 import {fib} from './fib_module.js';
@@ -5848,10 +5849,40 @@ inc(); inc();
 __rt.effect(0, n);
 ```
 
-Explicit execution gaps: JSON instances and
-`export default` declarations fail before bodies execute. Top-level await,
+Explicit execution gaps: `export default` declarations fail before bodies execute. Top-level await,
 dynamic import, import.meta and attributes remain unsupported. The CLI stays
 script-only.
+
+### JSON modules (clj-quickjs-256)
+
+Execution: the host classifies sources as JSON, with a case-sensitive `.json`
+suffix in `ModuleSource::from_name`. A synthetic record has no JavaScript body
+or module requests and exports only `default`. Task linking reuses the budgeted
+JSON.parse parser once per instance before any JavaScript instantiation or body
+runs. Invalid JSON fails the entry task with SyntaxError naming the module and
+its 1-based UTF-16 line:column. The same 512-container and 4096-unit member-name
+limits apply. Cached immutable records retain source text, never parsed objects.
+All importers of one instance see the same mutable value; fresh tasks get fresh
+values. Named imports other than `default` fail linking, and namespace imports
+expose only `default`. Export stars omit it as usual. GC, budgets and migration
+retain partial parsing state and initialized cells.
+
+Synthetic fixture, not light-cljs output (host supplies message.json containing
+`{"x":1,"tab":[1,2,3]}`):
+
+```js module-accept
+import msg from './message.json';
+import * as ns from './message.json';
+__rt.effect(0, ns.default === msg && msg.x === 1 && msg.tab[2] === 3);
+```
+
+Explicit gaps: import attributes remain rejected, including both JSON and
+QuickJS's JSON5 type; JSON5 source extensions are rejected by the strict JSON
+parser. Script grammar and the script-only CLI are unchanged.
+
+```js module-reject Unsupported 1:25
+import './message.json' with {type: 'json5'};
+```
 
 ### SuppressedError (clj-quickjs-234)
 
