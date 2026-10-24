@@ -2372,8 +2372,18 @@ impl<'s> Lowerer<'s> {
     /// them; emission records how this call reaches each cell. Shadowed names
     /// are resolved once, from the innermost scope, and loop cells are read at
     /// the call so a descriptor always sees the current iteration.
+    fn in_parameter_expression(&self) -> bool {
+        // A field initializer is a fresh execution context even when its
+        // class expression is evaluated in an enclosing parameter default.
+        self.fns
+            .iter()
+            .rev()
+            .take_while(|f| !f.class_initializer || f.lexical_this)
+            .any(|f| f.in_parameters)
+    }
+
     fn eval_site(&mut self, span: Span) -> Result<EvalSite, SyntaxError> {
-        if self.fns.iter().any(|f| f.in_parameters) {
+        if self.in_parameter_expression() {
             return Err(self.unsupported(span, "direct eval in parameter expressions"));
         }
         if self.analyzing() && !self.cur().strict {
@@ -5365,7 +5375,7 @@ impl<'s> Lowerer<'s> {
         op_span: Span,
     ) -> Result<(), SyntaxError> {
         let direct = matches!(&callee.kind, ExprKind::Identifier(name) if name == "eval");
-        let parameter_call = direct && self.fns.iter().any(|f| f.in_parameters);
+        let parameter_call = direct && self.in_parameter_expression();
         if parameter_call
             && !self.eval_bindings.contains_key("eval")
             && !self.fns.iter().any(|ctx| {

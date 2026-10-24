@@ -26296,6 +26296,8 @@ fn class_fields() {
         "class C { x = (function(a) { return arguments[0]; })(7); y = {m() { return arguments.length; }}; } let c = new C(); c.x === 7 && c.y.m() === 0",
         "let n = 0; class B { constructor() { Object.preventExtensions(this); } } class C extends B { x = ++n; } let ok = false; try { new C(); } catch(e) { ok = e instanceof TypeError; } ok && n === 1",
         "let n = 0; class B { constructor() { return new Uint8Array(2); } } class C extends B { 0 = {valueOf() { n++; return 7; }}; x = 8; } let c = new C(); c[0] === 7 && c.x === 8 && n === 1",
+        "function f(C = class { x = eval('1'); }) { return new C().x; } f() === 1",
+        "function f(C = class { static x = eval('1'); }) { return C.x; } f() === 1",
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }

@@ -8208,3 +8208,9 @@ frontend nesting budget: their lowering retains a class frame, an initializer
 closure frame and a computed definition frame. The boundary-depth frontend test
 now covers nested instance and static field classes on the same 2 MiB compiler
 stack, with excessive input rejected as TooDeep.
+
+A field initializer is also the boundary for the existing eval-in-parameters
+restriction: a class expression evaluated in a parameter default may create
+instance/static initializers with direct eval. The initializer's fresh context
+ends the enclosing parameter restriction; parameter defaults inside its own
+nested arrows retain the existing explicit restriction.
