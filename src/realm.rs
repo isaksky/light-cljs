@@ -59,6 +59,7 @@
 //! | `Error`, `Error.prototype` (clj-quickjs-228) | callable/constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `name` ("Error"), `message` (""), `toString` (length 0) |
 //! | NativeError constructors and prototypes (clj-quickjs-229) | TypeError, RangeError, ReferenceError, SyntaxError, EvalError, URIError, InternalError; constructors inherit from Error, prototypes from Error.prototype | constructor length 1 and respective name; prototype owns constructor, name and empty message, inherits toString |
 //! | `JSON` (clj-quickjs-159/-160) | ordinary object, prototype `Object.prototype` | `parse` (length 2), `stringify` (length 3), resumable conversion/callbacks and budgeted JSON processing |
+//! | `Intl` (clj-quickjs-209) | ordinary object, prototype `Object.prototype` | `Symbol.toStringTag` (`Intl`, non-writable, non-enumerable, configurable); service constructors deferred |
 
 //! | `Map`, `Map.prototype` (clj-quickjs-169) | constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `set` (length 2), `get`, `has`, `delete` (length 1), `clear` (length 0), `size` getter (length 0) |
 //!
@@ -186,11 +187,13 @@ pub(crate) enum Global {
     Map = 21,
 
     ArrayBuffer = 22,
+
+    Intl = 23,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 23] = [
+    const ALL: [Global; 24] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -214,6 +217,8 @@ impl Global {
         Global::Symbol,
         Global::Map,
         Global::ArrayBuffer,
+
+        Global::Intl,
     ];
 
     /// The JavaScript name.
@@ -245,6 +250,8 @@ impl Global {
             Global::Map => "Map",
 
             Global::ArrayBuffer => "ArrayBuffer",
+
+            Global::Intl => "Intl",
         }
     }
 
@@ -319,6 +326,8 @@ pub(crate) struct Intrinsics {
 
     pub(crate) array_buffer_prototype: ObjectId,
     array_buffer: ObjectId,
+
+    pub(crate) intl: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -420,6 +429,7 @@ impl Intrinsics {
             Global::Json => Value::Object(self.json),
 
             Global::Symbol => Value::Object(self.symbol),
+            Global::Intl => Value::Object(self.intl),
         }
     }
 }
@@ -839,6 +849,22 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let (map_prototype, map) = map_intrinsics(&mut b, object_prototype)?;
 
     let (array_buffer_prototype, array_buffer) = array_buffer_intrinsics(&mut b, object_prototype)?;
+
+    let intl = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(intl);
+    let tag = crate::value::symbol::well_known("toStringTag");
+    let tag_key = heap.keys().intern_symbol(&tag)?;
+    heap.with_object_mut(intl, |object| match object {
+        HeapObject::Plain(o) => o.define_with(
+            tag_key,
+            Value::String(JsString::from("Intl")),
+            PropertyFlags::FUNCTION_INFO,
+        ),
+        _ => false,
+    })?
+    .then_some(())?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -892,6 +918,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         symbol,
         map_prototype,
         map,
+        intl,
     })
 }
 
@@ -1294,7 +1321,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 108); // Includes ArrayBuffer's six intrinsics.
+        assert_eq!(first.all.len(), 109); // Includes ArrayBuffer and Intl.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -1339,7 +1366,10 @@ mod tests {
         assert_eq!(Global::from_u16(21), Some(Global::Map));
 
         assert_eq!(Global::from_u16(22), Some(Global::ArrayBuffer));
-        assert_eq!(Global::from_u16(23), None);
+
+        assert_eq!(Global::from_name("Intl"), Some(Global::Intl));
+        assert_eq!(Global::from_u16(23), Some(Global::Intl));
+        assert_eq!(Global::from_u16(24), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

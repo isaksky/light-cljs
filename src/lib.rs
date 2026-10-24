@@ -114,3 +114,5 @@ pub use vm::{
     Assembler, Executable, ExecutableSpec, Label, Opcode, ThrowKind, ValidationError,
     ValidationErrorKind, VmLimits,
 };
+
+pub mod intl;

@@ -378,3 +378,24 @@ in `tests/js_source.rs` adapts the ten-comparison matrices from
 large-number equality cases of `test_bigint3`; its full QuickJS copyright
 and MIT permission notice is retained on that test. Additional signed,
 coercion and suspension fixtures are synthetic, not light-cljs output.
+
+## Intl locale data (clj-quickjs-209)
+
+`src/intl/data/*.rs` is generated/repacked from
+`research/quickjs/intl/locale-data.c` and `intl/intl_private.h`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04), using
+`scripts/quickjs-data/generate.sh`, `export.pl` and `repack-intl.pl`.
+Input and tool hashes are retained in `src/intl/data/provenance.txt`;
+`src/intl/data/QUICKJS-LICENSE` reproduces the QuickJS MIT notice.
+The source labels its tables as auto-generated from CLDR, without a verified
+CLDR release. The CLDR/Unicode data notice is Unicode License v3, reproduced
+in [UNICODE-LICENSE](UNICODE-LICENSE) from the
+[Unicode license](https://www.unicode.org/license.txt).
+
+`intl.c::js_intl_find_locale_data`, `gen-locale-data.js`, `tests/test_intl.js`
+and the service source files listed in the architecture coverage table were
+read as semantic/data-coverage references at the same revision. Runtime code
+and new source tests are written afresh (synthetic fixtures, not light-cljs
+output); no QuickJS runtime is linked or wrapped. Identifiers retain their
+existing Unicode 16.0.0 policy; imported snapshot Unicode decoders and full
+collation/break tables are not introduced by this pellet.

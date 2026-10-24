@@ -51,6 +51,13 @@ pub struct HostCall {
 
 /// Embedder-supplied leaf host effects. See the module docs for the contract.
 pub trait Host {
+    /// Default locale for this run. A leaf effect: no reentry, heap access or
+    /// suspension. Reads are not dependency inputs; embedders may vary this
+    /// between runs/worlds and should keep it stable when reproducibility matters.
+    fn default_locale(&mut self) -> String {
+        "en-US".to_owned()
+    }
+
     /// Perform the effect and return its result, or an error message that
     /// fails the task.
     fn effect(&mut self, call: HostCall) -> Result<Primitive, String>;
@@ -94,4 +101,11 @@ pub(crate) fn call_leaf(host: &mut dyn Host, call: HostCall) -> Result<Primitive
     IN_EFFECT.with(|f| f.set(true));
     let _mark = EffectMark;
     host.effect(call)
+}
+
+/// Read the host locale under the same leaf guard as `effect`.
+pub(crate) fn call_default_locale(host: &mut dyn Host) -> String {
+    IN_EFFECT.with(|f| assert!(!f.replace(true), "nested host locale effect"));
+    let _mark = EffectMark;
+    host.default_locale()
 }

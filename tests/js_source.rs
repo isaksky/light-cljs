@@ -14258,3 +14258,23 @@ fn object_to_string_rejects_foreign_receivers() {
         );
     }
 }
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_namespace_object() {
+    assert_eq!(
+        eval(
+            r#"
+            let call = false; let construct = false;
+            try { Intl(); } catch (e) { call = e instanceof TypeError; }
+            try { new Intl(); } catch (e) { construct = e instanceof TypeError; }
+            let d = Object.getOwnPropertyDescriptor(Intl, Symbol.toStringTag);
+            typeof Intl === 'object' && Object.getPrototypeOf(Intl) === Object.prototype &&
+            Object.prototype.toString.call(Intl) === '[object Intl]' && call && construct &&
+            d.value === 'Intl' && !d.writable && !d.enumerable && d.configurable &&
+            globalThis.Intl === Intl
+        "#
+        ),
+        ValueView::Bool(true)
+    );
+}

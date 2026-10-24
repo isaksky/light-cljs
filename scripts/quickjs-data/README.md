@@ -136,3 +136,32 @@ pass or C2Rust support dependencies.
 The generated C is intentionally straightforward and can take tens of seconds
 to compile. Its size and compilation strategy can be improved independently of
 the Rust data layout if this experiment becomes maintained tooling.
+
+## Checked-in Intl modules
+
+The runtime uses the same verified output, repacked by `repack-intl.pl` into
+`src/intl/data/{numbers,dates,locale,display_names,likely_subtags,preferences}.rs`.
+The repacker selects the agreed test-locale records plus required parents and
+only their referenced compact-pattern arrays. Shared byte pools and all their
+indices remain intact, including embedded and terminal NULs. Keeping unused
+pool entries is intentional: there is no binary-size cap in this stage.
+Timezone and compressed Unicode integration remain with their consumer pellets.
+
+Regenerate entirely inside a worktree (`target/intl-import` must be new):
+
+```sh
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/clj-quickjs/research/quickjs target/intl-import
+nix develop --command perl scripts/quickjs-data/repack-intl.pl \
+  target/intl-import/first target/intl-repacked-new
+cp target/intl-repacked-new/*.rs target/intl-repacked-new/provenance.txt \
+  target/intl-repacked-new/QUICKJS-LICENSE src/intl/data/
+```
+
+`data/mod.rs` is handwritten; `docs/UNICODE-LICENSE` holds the Unicode v3
+notice and is not regenerated. The provenance includes the exporter and
+repacker hashes. To check the repack, repeat it against `second` in a fresh
+output directory and compare the six `.rs` files and `provenance.txt` with
+`cmp`. Run `cargo test --lib intl:: -- --test-threads=3` and
+`cargo test --test js_source intl_namespace_object -- --exact --test-threads=3`
+for consumer semantics. Normal Cargo builds need none of these tools or inputs.

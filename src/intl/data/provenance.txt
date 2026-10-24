@@ -1,0 +1,19 @@
+Source: QuickJS 7d1c13c5d8f8c6b32893786ed35cdcebd88194d2
+Representation: immutable Rust values; C string bytes include terminal NUL.
+Unicode compressed representation retained; runtime decoders not implemented.
+Validation: all exported logical values match the compiled C representation.
+61b0bdf2df6347be0d7573c85ec07e373bccad41caa8cc7238f81ad9a52fc812  intl/locale-data.c
+d2ce6d65a8c00cdc0c56ef95d51139b031836aa568bce7ca934fa98f28ffd144  intl/intl_private.h
+42f37b41d40530a2b42fcc1f0bd8b3499595415a0cb12ec06065fe7b3ccc379b  temporal/tzdata_generated.c
+a0aed883c00fcd0ccb82892793c2699789d10b14900ce3ff316c894da690327a  temporal/timezone.h
+7fb4fbeffc7bc3e12c837ce602cd9f5a7e9e2b06a9bba95e23d61cdb8b6bc409  libunicode-table.h
+d2da6d06a75b9e6c116c82b7a41df6bcc170c8b1779f374fa953ecf688eda647  cutils.h
+09d208759171634a5b1e60aa314fd00da5d088ac28621b7ae4682ba2fb103415  quickjs.h
+c1c131252e3d9a4d739437c808dfdddeaa3ac1c807cf38d898af875e81785fcb  export.pl
+9ac1f1efb5674b238191314a6b0023a695f4bc91dd73ffe9c136120c21c337d8  generate.sh
+49bca3bae3af0bad127d183237ae77deab6ffbd7c6a2f4b4fa73044c5c02b48a  inputs.sha256
+gcc (GCC) 15.3.0
+rustc 1.95.0 (59807616e 2026-04-14) (built from a source tarball)
+perl 5.42.3
+Repack: service modules, 14 locale records and referenced compact arrays; shared pools unchanged.
+54d36c71291bb9d3211646d5994ece259bd36294a78bb6314a0d902ce21f1f83  scripts/quickjs-data/repack-intl.pl

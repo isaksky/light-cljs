@@ -1281,6 +1281,16 @@ fn is_array(heap: &Heap, value: &Value) -> Result<bool, Fault> {
 /// The builtinTag of `Object.prototype.toString`. Reject an own or
 /// inherited `@@toStringTag` until resumable tag consumption is supported.
 fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str, Fault> {
+    // The shared Intl namespace has a fixed data descriptor and cannot be
+    // mutated. Its own tag needs no getter, coercion, or resumable JS call.
+    if let Value::Object(id) = this
+        && *id
+            == realm::intrinsics(heap)
+                .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+                .intl
+    {
+        return Ok("Intl");
+    }
     // HasProperty walks outside object-table locks and never invokes a
     // getter. The receiver and its prototype chain stay rooted by the frame.
     if matches!(this, Value::Object(_))

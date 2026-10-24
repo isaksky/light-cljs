@@ -4612,3 +4612,102 @@ no new heap edges or continuation kind are introduced. BigInt/String pairs
 explicitly fail with UnsupportedOperand until StringToBigInt lands in
 clj-quickjs-201. Tests cover all acceptance rows, signed/limb boundaries,
 every normal integer power of two, the largest f64, and resumable coercion.
+
+## Intl locale data
+
+The data source is the pinned QuickJS snapshot at
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04), imported
+through the tested `scripts/quickjs-data/generate.sh` exporter and
+`repack-intl.pl`. The snapshot does not identify a verified CLDR release;
+we do not infer one. Input SHA-256 hashes, generator/repacker hashes, compiler
+versions and verification provenance are checked in with the data. Generation
+is offline, explicit and repeatable. Cargo builds do not use C, C2Rust, ICU,
+network access, `build.rs` generation or the reference checkout. No dependency
+was added. A different source requires a concrete missing capability and pinned
+inputs extending this pipeline, rather than a new data-source selection.
+
+The representation is immutable safe Rust in service-specific modules under
+`src/intl/data/`. Numeric fields replace C bitfields; references are immutable
+slices. C byte pools retain embedded separators and the final NUL. The checked
+`intl::pool_string` and `table_string` readers interpret those separators,
+validate UTF-8 and bounds, and return `None` for malformed/missing entries.
+Shared pools keep their original indices (including unused entries); locale
+records and compact-pattern arrays are subset by the repacker, not copied by
+hand. See `scripts/quickjs-data/README.md` for regeneration and verification.
+
+Initial advertised locales are only `en`, `en-US`, `en-GB`, `de`, `fr`, `es`,
+`ja`, `zh`, `zh-Hant`, `zh-Hans-CN`, `ar`, `ru`, `pt-BR`, `tr`, plus `zh-TW`
+resolution. `en-GB`, `zh-Hant` and synthetic `zh-TW` have exact snapshot rows;
+`en-US` uses `en`, `pt-BR` uses internal parent `pt`, and `zh-Hans-CN` uses
+internal parent `zh-Hans`. These fourteen physical records are not a claim of
+full modern-locale coverage. `lookup` takes a canonical tag, tries the exact
+row then progressively shorter parents (including extension-singleton removal),
+and returns `None` for `xx` or any tag with no supported parent. It never
+silently substitutes another language. `resolve` tries the requested list,
+then the host default, then `en-US`/`en` as the final root. Tag validation,
+canonicalization, service availability and ECMA-402 option/extension resolution
+are the later language-tag and service pellets; this is a data lookup API.
+
+| Service/input | Snapshot coverage and policy |
+| --- | --- |
+| Numbers, currency symbols, compact patterns; date/time names and patterns | The fourteen records above and shared pools provide data for every advertised locale through its recorded parent. JS services remain deferred. |
+| Likely subtags | All 7,788 entries retained as supplemental lookup data, not an expanded advertised locale set; maximize/minimize is deferred. |
+| Calendar/hour preferences, week data, script directions | Snapshot-wide supplemental tables retained for later Locale/date consumers. |
+| Display names | Exactly `en` and `fr` data; other requested languages must be reported unsupported by that service, then resolve through its available default/root (`en`). They must not claim translated names for the whole numbers/date locale set. |
+| Plural rules | Not in `locale-data.c`: rules are code in `intl/pluralrules.c`; later PluralRules work must port/test the rules for the advertised locales. |
+| List, relative time, duration units | Not exported locale tables: patterns/rules live in `intl/listformat.c`, `intl/relativetimeformat.c`, `intl/durationformat.c`. Later service pellets adapt/test those snapshot rules for their supported subset and explicitly expose missing coverage. No additional CLDR source is currently selected. |
+| Collation and segmentation | Small snapshot rules in `intl/collator.c` and `intl/segmenter.c`; complete UCA/DUCET and UAX #29 break datasets are absent. Later pellets own rule coverage and must pin any additional required inputs. |
+| Time zones | The same exporter preserves 59 transition records versus 598 names, not equivalent coverage. Timezone integration belongs to the host-zone/date pellets; a name alone must not imply supported transition behavior. |
+
+The default locale is `Host::default_locale() -> String`, a synchronous leaf
+host input with the host-effect guard: no VM reentry, heap access or suspension.
+The default trait implementation and a run with no host use `en-US`.
+`intl::default_locale` reads the input under that guard; `SimHost` exposes
+`set_default_locale` and supplies itself to its VM activations. The setting can
+change between runs/tasks/worlds; locale reads are unrecorded effects, not
+recorded dependency edges. Embedders requiring replay reproducibility keep the
+setting stable for the relevant computation. No OS `LANG`/`setlocale` is read.
+Intl services will capture resolved locale in their immutable construction slots.
+
+Expected output follows QuickJS strings: the upstream `tests/test_intl.js`
+rows run unmodified, including the date-component layouts with TODO alternatives,
+Spanish currency grouping and narrow-space time strings, Japanese field order,
+and DisplayNames' rejection of lowercase currency `usd`. Numbering follows the
+snapshot service behavior: `ar` numbers use Latin digits by default while `ar`
+dates use Arabic-Indic digits. This is deliberate compatibility, not a claim
+of current ICU/CLDR conformance; no existing expected rows were changed here.
+
+Unicode consumers start with the pinned export's compressed Unicode tables and
+share safe readers/offline expansion with clj-quickjs-191/-192. The download
+script targets Unicode 17.0.0; the existing identifier generator uses Unicode
+16.0.0. These are explicit separate versions pending -191 reconciliation,
+not an implicit upgrade of identifiers. Importing compressed normalization and
+property arrays does not establish complete collation or segmentation semantics.
+No separately pinned UCA/UAX #29 inputs are used by this pellet.
+
+`Intl` is an ordinary non-callable, non-constructible shared realm intrinsic,
+rooted and published with the other intrinsics. Its prototype is
+`Object.prototype`; its own `Symbol.toStringTag` is `Intl` with writable=false,
+enumerable=false, configurable=true. `Object.prototype.toString.call(Intl)`
+reads that fixed intrinsic identity without a callback. General user-defined
+`@@toStringTag` consumption remains deferred. Intrinsic mutation retains the
+realm-wide restriction even where descriptors are configurable. Global binding
+attributes follow the existing task global-object mechanism. Individual Intl
+constructors are deferred to their sibling pellets.
+
+CLDR-derived tables carry Unicode License v3, reproduced in
+`docs/UNICODE-LICENSE`; the QuickJS MIT notice is retained in
+`src/intl/data/QUICKJS-LICENSE`. See `docs/attribution.md`.
+
+There is no binary-size budget for this stage, per the user's decision; later
+services need not subset further to meet a cap. The release measurement below
+is informational, not an optimization target.
+
+Measured with `CARGO_BUILD_JOBS=3 nix develop --command cargo build --release`
+(Rust 1.95.0, default release settings, this worktree): the CLI executable grew
+from 2,139,280 bytes at base `6aff313` to 2,269,296 bytes with the locale-data
+integration and namespace, a delta of **130,016 bytes**. This is the linked
+whole-change delta, including namespace/host support; unused public tables can
+be discarded by the linker, so it is not the cost of every table being retained
+by future services. The generated source is about 1 MB. No effort is spent on
+binary-size optimization or a retained-all-data benchmark in this stage.

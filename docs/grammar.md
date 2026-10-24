@@ -448,6 +448,10 @@ are still covered by the computed-key rejection below.
 
 ## Explicit gaps
 
+`Intl` exists as an ordinary namespace (clj-quickjs-209), but language-tag
+canonicalization, `Intl.Locale` and service constructors remain deferred.
+Canonical-tag locale data lookup is currently a Rust API, not JS formatting.
+
 Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
 
@@ -851,6 +855,12 @@ delete a[o];
 ```
 
 ## Execution
+
+`Intl` is a global ordinary object with `Object.prototype` and a non-writable,
+non-enumerable, configurable `Symbol.toStringTag` of `Intl` (clj-quickjs-209).
+`Object.prototype.toString.call(Intl)` produces `[object Intl]`; both `Intl()`
+and `new Intl()` throw catchable TypeErrors. The namespace follows shared
+intrinsic mutation restrictions. Service constructors are not installed yet.
 
 String `+`, `+=`, template interpolation and `String.prototype.concat` use
 immutable ropes above 32 UTF-16 units (clj-quickjs-146). Repeated append or

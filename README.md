@@ -2784,3 +2784,26 @@ frames. BigInt/String comparisons explicitly return UnsupportedOperand until
 StringToBigInt (clj-quickjs-201) lands. Strict equality keeps numeric types
 distinct. Validation: `cargo test --test js_source bigint_ -- --test-threads=3`
 and `cargo test --lib value::bigint:: -- --test-threads=3`.
+
+### Intl locale data (clj-quickjs-209)
+
+Supported: the global ordinary `Intl` namespace, its `Symbol.toStringTag`
+descriptor and `[object Intl]` string; calling or constructing it throws a
+TypeError. Checked-in service-specific QuickJS data tables expose safe byte-pool
+readers and canonical-tag parent lookup in `clj_quickjs::intl`. Unsupported
+`xx` is returned as `None`; default resolution uses the embedding host locale,
+then `en-US`/`en`. `Host::default_locale` is an unrecorded leaf input;
+`SimHost::set_default_locale` configures it without OS locale dependencies.
+
+Initial coverage: `en`, `en-US`, `en-GB`, `de`, `fr`, `es`, `ja`, `zh`,
+`zh-Hant`, `zh-Hans-CN`, `ar`, `ru`, `pt-BR`, `tr`, plus `zh-TW` resolution.
+Display-name data covers only `en`/`fr`; likely-subtag and preference tables are
+supplemental, not extra advertised service locales. Data source, parent rows,
+per-service gaps, Unicode versions, QuickJS-compatible expected strings,
+licensing and the informational release-size measurement are recorded in
+[architecture: Intl locale data](docs/architecture.md#intl-locale-data).
+No binary-size cap applies at this stage. Regeneration uses the existing
+[offline exporter](scripts/quickjs-data/README.md#checked-in-intl-modules), with
+pinned hashes and provenance; normal builds require no generator or network.
+Deferred: locale-tag canonicalization, Intl.Locale and all Intl service
+constructors, general resumable `@@toStringTag` reads, and full UCA/UAX #29 data.

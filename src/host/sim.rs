@@ -507,6 +507,7 @@ enum Site {
 
 /// The simulated host. See the module docs.
 pub struct SimHost {
+    default_locale: String,
     rt: Runtime,
     worlds: HashMap<WorldId, Arc<WorldSpec>>,
     /// Never-run executable of job tasks, which exist for their identity and
@@ -545,6 +546,7 @@ impl SimHost {
         let job_code = crate::frontend::compile_script("sim-job", "undefined")
             .expect("the job placeholder script compiles");
         SimHost {
+            default_locale: "en-US".to_owned(),
             rt: rt.clone(),
             worlds: HashMap::new(),
             job_code,
@@ -560,6 +562,11 @@ impl SimHost {
             activation_limit: 10_000,
             graph: DependencyGraph::new(),
         }
+    }
+
+    /// Set the locale supplied to VM activations as an unrecorded leaf input.
+    pub fn set_default_locale(&mut self, locale: impl Into<String>) {
+        self.default_locale = locale.into();
     }
 
     /// Freeze `spec` as a new world and return its identity.
@@ -1181,7 +1188,7 @@ impl SimHost {
                 callable,
                 task: activation.id(),
             });
-            let value = match activation.run() {
+            let value = match activation.run_with(crate::Budget::UNLIMITED, self) {
                 Ok(RunOutcome::Complete(value)) => value,
                 Ok(RunOutcome::Failed(e)) => {
                     break Err(SimError::ActivationFailed {
@@ -1246,5 +1253,15 @@ impl SimHost {
         if self.awaiting.contains(&answer) {
             self.answers.insert(answer, (result, task.dependency_log()));
         }
+    }
+}
+
+impl crate::Host for SimHost {
+    fn default_locale(&mut self) -> String {
+        self.default_locale.clone()
+    }
+
+    fn effect(&mut self, call: crate::HostCall) -> Result<crate::Primitive, String> {
+        Err(format!("unsupported simulated host operation {}", call.op))
     }
 }
