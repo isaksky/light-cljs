@@ -1463,6 +1463,13 @@ pub(crate) fn step(
             let iterator = keys::for_in_start(heap, state.diag.task, &v)?;
             state.push(iterator);
         }
+        Instr::RequireObject => {
+            if !matches!(top_operands(state, 1)?, [Value::Object(_)]) {
+                return Err(Fault::TypeError("iterator must return an object".into()));
+            }
+        }
+        Instr::PendingThrow => state.push(Value::Bool(state.pending_throw())),
+        Instr::GetIterator => return Err(Fault::Internal("get_iterator is resumable")),
         Instr::ForInNext => {
             let iterator = state.pop()?;
             match keys::for_in_next(heap, state.diag.task, &iterator)? {
@@ -1938,6 +1945,9 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::DropCompletion
         // Allocates nothing; each step of the native it starts polls.
         | Instr::Reduce
+        | Instr::GetIterator
+        | Instr::RequireObject
+        | Instr::PendingThrow
         | Instr::NeedAll
         // Leaves the loop; continuing after it re-enters `execute`, which
         // polls at run entry.

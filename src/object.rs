@@ -292,9 +292,20 @@ pub(crate) struct OrdinaryObject {
 
     number_format: Option<Box<crate::intl::number_format::NumberFormat>>,
     number_format_bound: Option<Value>,
+    /// Task-owned cursor of a built-in iterator. Never exposed as properties.
+    iterator: Option<Box<crate::vm::native::iterator::Data>>,
 }
 
 impl OrdinaryObject {
+    pub(crate) fn with_iterator(mut self, data: crate::vm::native::iterator::Data) -> Self {
+        self.iterator = Some(Box::new(data));
+        self
+    }
+
+    pub(crate) fn iterator(&mut self) -> Option<&mut crate::vm::native::iterator::Data> {
+        self.iterator.as_deref_mut()
+    }
+
     /// An empty, extensible object with a null prototype, owned by `owner`
     /// (`None`: created by the embedder).
     pub(crate) fn new(owner: Option<TaskId>) -> OrdinaryObject {
@@ -315,6 +326,7 @@ impl OrdinaryObject {
 
             number_format: None,
             number_format_bound: None,
+            iterator: None,
         }
     }
 
@@ -795,6 +807,9 @@ pub(crate) enum DeleteOutcome {
 /// The collector traces every property value and the prototype.
 impl Trace for OrdinaryObject {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        if let Some(iterator) = &self.iterator {
+            iterator.trace(visit);
+        }
         // PrimitiveData and DateValue contain only f64 / JsString, with no heap edges.
         // locale_data owns Rust strings and also contains no heap edges.
         // NumberFormat options own strings/static data; the cached bound

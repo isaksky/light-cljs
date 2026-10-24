@@ -75,7 +75,9 @@ impl Stmt {
                     .max(update.as_ref().map_or(0, |e| e.height))
                     .max(body.height)
             }
-            StmtKind::ForIn { object, body, .. } => object.height.max(body.height),
+            StmtKind::ForIn { object, body, .. } | StmtKind::ForOf { object, body, .. } => {
+                object.height.max(body.height)
+            }
             StmtKind::Try {
                 block,
                 handler,
@@ -157,6 +159,12 @@ pub enum StmtKind {
     /// temporal dead zone while `object` is evaluated, and fresh in each
     /// iteration.
     ForIn {
+        head: ForInHead,
+        object: Expr,
+        body: Box<Stmt>,
+    },
+    /// Synchronous iteration; heads share the for-in binding representation.
+    ForOf {
         head: ForInHead,
         object: Expr,
         body: Box<Stmt>,

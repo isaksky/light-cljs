@@ -392,6 +392,8 @@ pub(crate) struct Intrinsics {
 
     pub(crate) intl_number_format_prototype: ObjectId,
     pub(crate) intl_number_format_bound: ObjectId,
+    pub(crate) array_iterator_prototype: ObjectId,
+    pub(crate) string_iterator_prototype: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -962,7 +964,6 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 
     let (date_prototype, date) = date_intrinsics(&mut b, object_prototype)?;
     let (regexp_prototype, regexp) = regexp_intrinsics(&mut b, object_prototype)?;
-
     let bigint_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
         object_prototype,
     ))))?;
@@ -1036,6 +1037,13 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let (intl_number_format_prototype, intl_number_format_bound) =
         intl_number_format_intrinsics(&mut b, object_prototype, intl)?;
     date_string_intrinsics(&mut b, date_prototype)?;
+    let (array_iterator_prototype, string_iterator_prototype) = iterator_intrinsics(
+        &mut b,
+        object_prototype,
+        array_prototype,
+        string_prototype,
+        typed_array_prototypes[0],
+    )?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1059,6 +1067,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         })
         .collect::<Option<Vec<_>>>()?;
     Some(Intrinsics {
+        array_iterator_prototype,
+        string_iterator_prototype,
         bigint,
         bigint_prototype,
         typed_array_prototypes,
@@ -1204,6 +1214,71 @@ fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obj
     let is_array = b.function(Builtin::ArrayIsArray, &[])?;
     b.add(array, "isArray", is_array, PropertyFlags::METHOD)?;
     Some((id, array))
+}
+
+/// Shared iterator prototypes and the iterable methods (clj-quickjs-237).
+fn iterator_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+    array: ObjectId,
+    string: ObjectId,
+    typed_array: ObjectId,
+) -> Option<(ObjectId, ObjectId)> {
+    let heap = b.heap;
+    let key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("iterator"))?;
+    let tag = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    let identity = b.function(Builtin::IteratorIdentity, &[])?;
+    let mut iterator = OrdinaryObject::intrinsic(Some(object_prototype));
+    iterator
+        .define_with(key, Value::Object(identity), PropertyFlags::METHOD)
+        .then_some(())?;
+    let iterator = heap.alloc(HeapObject::Plain(iterator))?;
+    b.all.push(iterator);
+    let mut prototypes = Vec::new();
+    for (name, kind) in [
+        ("Array Iterator", crate::vm::native::iterator::Kind::Array),
+        ("String Iterator", crate::vm::native::iterator::Kind::String),
+    ] {
+        let next = b.function(Builtin::IteratorNext(kind), &[])?;
+        let mut prototype = OrdinaryObject::intrinsic(Some(iterator));
+        define(heap, &mut prototype, "next", next, PropertyFlags::METHOD)?;
+        prototype
+            .define_with(
+                tag,
+                Value::String(JsString::from(name)),
+                PropertyFlags::FUNCTION_INFO,
+            )
+            .then_some(())?;
+        let id = heap.alloc(HeapObject::Plain(prototype))?;
+        b.all.push(id);
+        prototypes.push(id);
+    }
+    let shared_typed = heap.read(typed_array, |o| match o {
+        HeapObject::Plain(o) => o.prototype(),
+        _ => None,
+    })??;
+    for (prototype, which, values) in [
+        (array, Builtin::ArrayValues, true),
+        (string, Builtin::StringIterator, false),
+        (shared_typed, Builtin::TypedArrayValues, true),
+    ] {
+        let function = b.function(which, &[])?;
+        heap.with_object_mut(prototype, |o| match o {
+            HeapObject::Plain(o) => {
+                o.define_with(key, Value::Object(function), PropertyFlags::METHOD)
+            }
+            _ => false,
+        })?
+        .then_some(())?;
+        if values {
+            b.add(prototype, "values", function, PropertyFlags::METHOD)?;
+        }
+    }
+    Some((prototypes[0], prototypes[1]))
 }
 
 /// Append the Map constructor/prototype cycle and its ordinary accessor.

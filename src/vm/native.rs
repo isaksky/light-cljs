@@ -216,6 +216,7 @@
 
 use std::marker::PhantomData;
 mod intl;
+pub(crate) mod iterator;
 pub(crate) mod regexp;
 
 mod number_format;
@@ -404,6 +405,7 @@ enum ConvertTarget {
 #[derive(Debug)]
 enum NativeState {
     BigIntFormat(Box<crate::value::bigint::BigIntToString>),
+    Iterator(Box<iterator::State>),
     BigIntParse {
         parser: Box<crate::value::bigint::StringToBigInt>,
         instr: Option<Instr>,
@@ -681,6 +683,7 @@ pub(crate) struct NativeFrame {
 impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match &self.state {
+            NativeState::Iterator(iterator) => iterator.trace(visit),
             NativeState::TypedArray(array) => array.trace(visit),
             NativeState::Promise(p) => p.trace(visit),
             NativeState::StringSplit { out, .. } => out.trace(visit),
@@ -787,7 +790,7 @@ impl Trace for NativeFrame {
 pub(crate) fn is_resumable(instr: Instr) -> bool {
     use Instr::*;
     match instr {
-        Reduce | NeedAll => true,
+        Reduce | NeedAll | GetIterator => true,
         RegExpLiteral(_) | Const(_) | Undefined | GetLocal(_) | SetLocal(_) | Pop | Dup | Add
         | Sub | Mul | Lt | StrictEq | Not | Jump(_) | JumpIfFalse(_) | Return | NewObject
         | HostEffect(_) | NewVector(_) | NewMap(_) | TemplateObject(_) | Count | Nth | Get
@@ -802,7 +805,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | CallMethod(_) | NewObjectLiteral | ToString | GetThis | NewArray | AppendElement
         | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | Construct(_) | SetProto
         | Instanceof | Delete | In | ForInStart | ForInNext | NewArguments | Method(..)
-        | DefineGetter(_) | DefineSetter(_) => false,
+        | DefineGetter(_) | DefineSetter(_) | RequireObject | PendingThrow => false,
         GetGlobalObject
         | GetGlobal(_)
         | GetGlobalOrUndefined(_)
@@ -1090,6 +1093,12 @@ pub(crate) fn start_builtin(
     if !construct {
         let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
         let native = match which {
+            Builtin::IteratorNext(kind) => Some(NativeState::Iterator(Box::new(
+                iterator::State::next(heap, state.diag.task, this, kind)?,
+            ))),
+            Builtin::StringIterator => Some(NativeState::Iterator(Box::new(
+                iterator::State::string(this.clone())?,
+            ))),
             Builtin::TypedArraySet | Builtin::TypedArrayFill => {
                 Some(NativeState::TypedArray(Box::new(
                     typed_array::TypedArray::method(heap, state.diag.task, which, this, args)?,
@@ -1670,6 +1679,12 @@ pub(crate) fn start(
     pc: usize,
 ) -> Result<(), Fault> {
     let (popped, native) = match instr {
+        Instr::GetIterator => (
+            1,
+            NativeState::Iterator(Box::new(iterator::State::get_iterator(
+                operands::<1>(state)?[0].clone(),
+            ))),
+        ),
         Instr::Reduce => {
             let [f, init, vec] = operands::<3>(state)?;
             let len = coll::vector_count(heap, vec.clone())?;
@@ -2159,6 +2174,7 @@ impl NativeState {
                 }
             }
             NativeState::TypedArray(array) => array.step(heap, task, input),
+            NativeState::Iterator(iterator) => iterator.step(heap, task, input),
             NativeState::Intl(intl) => intl.step(heap, task, input),
             NativeState::Promise(p) => p.step(heap, task, jobs, input),
             NativeState::NumberFormat(format) => format.step(heap, task, input),
@@ -3214,6 +3230,7 @@ impl NativeState {
             (NativeState::BigIntParse { .. } | NativeState::BigIntFormat(_), _) => Action::Unwind,
             (
                 NativeState::Reduce { .. }
+                | NativeState::Iterator(_)
                 | NativeState::TypedArray(_)
                 | NativeState::Promise(_)
                 | NativeState::Error(_)

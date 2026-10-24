@@ -2259,8 +2259,7 @@ Supported (`cargo test --lib frontend::tests::for_var_heads`,
 
 Deferred:
 
-- The non-strict `for (var k = 1 in o)` (Annex B) is clj-quickjs-90;
-  `for (var k of o)` stays `Unsupported` with for-of.
+- The non-strict `for (var k = 1 in o)` (Annex B) is clj-quickjs-90.
 
 ### Properties and methods of number and string primitives (clj-quickjs-73)
 
@@ -3042,7 +3041,22 @@ Element loops are budgeted; backing buffers and iterable lists use the existing
 16 MiB buffer limit. Validation: `cargo test --test js_source typed_array_`.
 
 Deferred: BigInt views, resizable/shared buffers, species/subclassing and
-other typed-array methods (including iteration methods on typed arrays).
+other typed-array methods (except `values`/`Symbol.iterator`, clj-quickjs-237).
+
+### Synchronous iteration (clj-quickjs-237)
+
+For-of accepts identifier targets and `let`/`const`/`var` heads, with fresh
+lexical bindings per iteration. It follows `Symbol.iterator`/`next` and
+closes iterators on early exits through finally, including cancellation;
+pending throws take precedence over close errors. Iterator callbacks can
+wait, migrate and survive GC. Arrays and Number typed arrays expose
+`values`/`Symbol.iterator`; strings iterate by code points. Native consumers
+can reuse `vm::native::iterator::State::get_iterator`; typed-array construction
+now uses the general Array iterator instead of its local fallback.
+
+Deferred: using and async heads, destructuring/property heads and other
+iterable consumers. Validation: `cargo test --test js_source for_of_`,
+`cargo test --test exception_waits for_of_`, `cargo test --lib frontend::`.
 
 ### String replacement (clj-quickjs-189)
 

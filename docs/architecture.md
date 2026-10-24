@@ -5285,14 +5285,53 @@ prototype references Array.prototype.toString's existing function object and
 appends three method functions to the realm's intrinsic allocation sequence.
 Other typed-array methods and BigInt/resizable/shared views remain deferred.
 
-The general Array iterator intrinsic is still deferred. Typed-array
-construction supplies its default collection behavior locally when iterator
-lookup finds no property and the source's prototype chain contains
-Array.prototype. It walks one prototype per step, then rereads length before
-each indexed read and collects values before any numeric conversion. Explicit
-null/undefined iterator overrides select array-like behavior; custom iterators
-use the ordinary iterator stages. This fallback becomes unused when the
-standard iterator intrinsic lands, without changing the public realm here.
+Typed-array construction now uses the general Array iterator intrinsic
+(clj-quickjs-237); its former local array fallback has been removed. Explicit
+null/undefined iterator overrides still select array-like behavior.
+
+## Synchronous iterators and for-of (clj-quickjs-237)
+
+`src/vm/native/iterator.rs` exposes reusable resumable GetIterator state to
+native consumers. `get_iterator` (`0x74`) returns a hidden task-owned record
+holding the iterator and cached next method. For-of keeps these in frame
+locals and emits ordinary property reads and calls for next/done/value.
+`require_object` (`0x75`) checks protocol results; `pending_throw` (`0x76`)
+queries the current finally completion so IteratorClose can suppress a close
+failure only for a pending throw. No enum discriminants were repurposed.
+
+One finally handler surrounds the loop. A hidden local distinguishes the
+body/binding assignment from next/done/value evaluation: throwing during the
+latter skips close; cancellation still closes. Lowering's IteratorLoop exit
+entry runs the handler for breaks and jumps leaving it, and keeps it for its
+own continue. Exhaustion removes the handler without calling return.
+The generated close block reads and calls optional return, validates its
+result, catches errors only to preserve a pending throw, then resumes the
+original completion through EndFinally. Nested user finally blocks keep
+their existing order and can override jumps before close is reached.
+
+Built-in array/string iterators are ordinary task-owned objects with a boxed
+internal `iterator::Data` slot (source, cursor, kind, exhaustion flag).
+OrdinaryObject tracing visits the source; publication rejects these objects
+under the existing TaskOwned classification, even after Object.freeze.
+Next uses a traced native continuation for length/index getters and object
+length coercion. It advances the cursor before the indexed getter, reads live
+array lengths, and permanently releases the source on exhaustion. Typed
+arrays use their view's internal length and validate detachment per step.
+Strings preserve UTF-16 code-point boundaries, including lone surrogates.
+No lock or Rust frame survives user code, a wait or a safepoint.
+
+The realm appends shared IteratorPrototype, ArrayIteratorPrototype and
+StringIteratorPrototype intrinsics; identity Symbol.iterator, next and
+toStringTag are inherited. Array/typed-array values methods are their
+Symbol.iterator methods by identity. Iterator callbacks and all hidden
+locals/native state are traced by the existing task root inventory.
+
+QuickJS references and provenance: `research/quickjs/quickjs.c`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, `js_parse_for_in_of`,
+`OP_for_of_start`, `OP_for_of_next`, `OP_iterator_close`, `emit_break`,
+`emit_return`, `JS_IteratorClose` and built-in array/string iterators were
+consulted as semantic references. Implementation and synthetic tests are
+written fresh; no C stack frames, operand catch offsets or code are copied.
 
 ## String replacement (clj-quickjs-189)
 

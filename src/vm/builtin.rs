@@ -346,6 +346,11 @@ pub(crate) enum Builtin {
     DateToUtcString,
 
     PromiseResolveThenable(ObjectId),
+    ArrayValues,
+    TypedArrayValues,
+    StringIterator,
+    IteratorNext(super::native::iterator::Kind),
+    IteratorIdentity,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -388,6 +393,9 @@ impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::ArrayValues | Builtin::TypedArrayValues => "values",
+            Builtin::StringIterator | Builtin::IteratorIdentity => "[Symbol.iterator]",
+            Builtin::IteratorNext(_) => "next",
             Builtin::BigInt => "BigInt",
 
             Builtin::TypedArraySet => "set",
@@ -551,6 +559,11 @@ impl Builtin {
     /// The function's `length` property: its number of declared parameters.
     pub(crate) fn length(self) -> u32 {
         match self {
+            Builtin::ArrayValues
+            | Builtin::TypedArrayValues
+            | Builtin::StringIterator
+            | Builtin::IteratorNext(_)
+            | Builtin::IteratorIdentity => 0,
             Builtin::BigInt => 1,
 
             Builtin::TypedArraySet => 1,
@@ -704,6 +717,19 @@ pub(crate) fn call(
 ) -> Result<Value, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     match which {
+        Builtin::ArrayValues => {
+            super::native::iterator::create(heap, task, this, super::native::iterator::Kind::Array)
+        }
+        Builtin::TypedArrayValues => super::native::iterator::create(
+            heap,
+            task,
+            this,
+            super::native::iterator::Kind::TypedArray,
+        ),
+        Builtin::IteratorIdentity => Ok(this.clone()),
+        Builtin::StringIterator | Builtin::IteratorNext(_) => Err(Fault::Internal(
+            "iterator callback requires a resumable frame",
+        )),
         Builtin::TypedArraySet | Builtin::TypedArrayFill | Builtin::TypedArrayJoin => Err(
             Fault::Internal("typed array method requires a resumable frame"),
         ),

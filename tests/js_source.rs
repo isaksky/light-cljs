@@ -85,6 +85,190 @@ fn promise_thenable_adoption() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn for_of_loops() {
+    assert_eq!(
+        eval("let sum = 0; for (const x of [1, 2, 3]) sum += x; sum"),
+        ValueView::Number(6.0)
+    );
+    assert_eq!(
+        eval(
+            "let fs = []; for (let x of [1, 2, 3]) fs.push(() => x); fs[0]() === 1 && fs[2]() === 3"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval(
+            r#"
+        let calls = 0, closes = 0;
+        let iterable = {}; iterable[Symbol.iterator] = function() { return {
+            next() { calls++; return { value: calls, done: calls > 3 }; },
+            return() { closes++; return {}; }
+        }; };
+        let sum = 0;
+        for (const x of iterable) { if (x === 2) continue; sum += x; }
+        let exhausted = calls === 4 && closes === 0 && sum === 4;
+        calls = 0;
+        for (const x of iterable) break;
+        function f() { for (const x of iterable) return 42; }
+        calls = 0;
+        let returned = f() === 42;
+        let thrown = false;
+        calls = 0;
+        try { for (const x of iterable) throw 17; } catch (e) { thrown = e === 17; }
+        exhausted && returned && thrown && closes === 3
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval(
+            r#"
+        let closed = 0;
+        let it = { next() { return {value: 1, done: false}; },
+                   return() { closed++; throw 99; } };
+        it[Symbol.iterator] = function() { return this; };
+        let original = false, replaced = false;
+        try { for (let x of it) throw 17; } catch (e) { original = e === 17; }
+        try { for (let x of it) break; } catch (e) { replaced = e === 99; }
+        original && replaced && closed === 2
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval(
+            r#"
+        let it = { next() { return {value: 1, done: false}; }, return() { return 1; } };
+        it[Symbol.iterator] = function() { return this; };
+        let a = false, b = false;
+        try { for (const x of it) break; } catch (e) { a = e instanceof TypeError; }
+        try { for (const x of 1) {} } catch (e) { b = e instanceof TypeError; }
+        a && b
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output. Live array lengths, code
+/// points, generic receivers and detached typed arrays use actual iterators.
+#[test]
+fn for_of_builtin_iterators() {
+    for src in [
+        "let s = ''; for (let x of 'A\\u{1f600}\\ud800B') s += x.length; s === '1211'",
+        "let a = [1, , 3], s = ''; for (let x of a) { s += String(x); if (x === 1) a.push(4); } s === '1undefined34'",
+        "let a = [1], it = a.values(); it[Symbol.iterator]() === it && it.next().value === 1 && it.next().done && (a.push(2), it.next().done)",
+        "let it = Array.prototype.values.call({0: 5, length: 1}); it.next().value === 5 && it.next().done",
+        "let it = Array.prototype.values.call('ab'); it.next().value === 'a' && it.next().value === 'b' && it.next().done",
+        "Array.prototype.values === Array.prototype[Symbol.iterator] && Uint8Array.prototype.values === Uint8Array.prototype[Symbol.iterator]",
+        "let s = 0; for (let x of new Uint16Array([1, 2, 3])) s += x; s === 6",
+        "let a = new Uint8Array([2]); let it = a.values(); a.buffer.transfer(); let caught = false; try { it.next(); } catch (e) { caught = e instanceof TypeError; } caught",
+        "let it = 'ab'[Symbol.iterator](); it[Symbol.iterator]() === it && it.next().value === 'a' && it.next().value === 'b' && it.next().done",
+        "[1].values()[Symbol.toStringTag] === 'Array Iterator' && 'a'[Symbol.iterator]()[Symbol.toStringTag] === 'String Iterator'",
+        "let s = ''; for (var x of [1, 2]) s += x; s === '12' && x === 2",
+        "let x = 0; for (x of [1, 2]) {} x === 2",
+        "let caught = false; try { for (let x of x) {} } catch (e) { caught = e instanceof ReferenceError; } caught",
+        "let n = 0; for (let x of [1, 2]) { let f = () => x; x += 10; n += f(); } n === 23",
+        "let n = 0; for (const x of [1, 2]) { try { x = 3; } catch (e) { if (e instanceof TypeError) n++; } } n === 2",
+        "let c = 0; try { for (let x of true) {} } catch (e) { if (e instanceof TypeError) c++; } try { for (let x of Symbol()) {} } catch (e) { if (e instanceof TypeError) c++; } c === 2",
+        "let caught = false; try { 'a'[Symbol.iterator]().next.call([1].values()); } catch (e) { caught = e instanceof TypeError; } caught",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. The order of cleanup and
+/// precedence of exceptions must match IteratorClose, even through finally.
+#[test]
+fn for_of_abrupt_completions() {
+    assert_eq!(
+        eval(
+            r#"
+        let log = '', n = 0;
+        let it = { next() { return { value: ++n, done: false }; }, return() { log += 'C'; return {}; } };
+        it[Symbol.iterator] = function() { return this; };
+        outer: for (let x of [1, 2]) {
+            for (let y of it) { try { if (x === 1) continue outer; break outer; } finally { log += 'F'; } }
+        }
+        log === 'FCFC'
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval(
+            r#"
+        let n = 0, c = 0;
+        let it = { next() { n++; return {value: n, done: n > 2}; }, return() { c++; return {}; } };
+        it[Symbol.iterator] = function() { return this; };
+        same: for (let x of it) { try { continue same; } finally {} }
+        n === 3 && c === 0
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval(
+            r#"
+        let closes = 0, caught = 0;
+        let it = { next() { throw 7; }, return() { closes++; return {}; } };
+        it[Symbol.iterator] = function() { return this; };
+        try { for (const x of it) {} } catch (e) { if (e === 7) caught++; }
+        it.next = function() { return { get done() { throw 7; } }; };
+        try { for (const x of it) {} } catch (e) { if (e === 7) caught++; }
+        it.next = function() { return { done: false, get value() { throw 7; } }; };
+        try { for (const x of it) {} } catch (e) { if (e === 7) caught++; }
+        it.next = function() { return 1; };
+        try { for (const x of it) {} } catch (e) { if (e instanceof TypeError) caught++; }
+        caught === 4 && closes === 0
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval(
+            r#"
+        let count = 0, caught = 0;
+        let it = { next() { return {value: 1, done: false}; }, get return() { count++; throw 99; } };
+        it[Symbol.iterator] = function() { return this; };
+        try { for (let x of it) throw 7; } catch (e) { if (e === 7) caught++; }
+        try { for (let x of it) break; } catch (e) { if (e === 99) caught++; }
+        function f() { for (let x of it) return 1; }
+        try { f(); } catch (e) { if (e === 99) caught++; }
+        caught === 3 && count === 3
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval(
+            r#"
+        let gets = 0, n = 0, closed = 0;
+        let it = { get next() { gets++; return function() { n++; return { value: n, done: n > 2 }; }; }, return() { closed++; return {}; } };
+        it[Symbol.iterator] = function() { return this; };
+        let total = 0; for (let x of it) total += x;
+        total === 3 && gets === 1 && closed === 0
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval(
+            r#"
+        let closed = 0, caught = false;
+        let it = { next() { return {value: 1, done: false}; }, return() { closed++; return {}; } };
+        it[Symbol.iterator] = function() { return this; };
+        const k = 0;
+        try { for (k of it) {} } catch (e) { caught = e instanceof TypeError; }
+        caught && closed === 1
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+}
+
 #[test]
 fn upstream_string_rope() {
     assert_eq!(

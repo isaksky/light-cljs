@@ -397,7 +397,12 @@ fn render_stmt(s: &Stmt) -> String {
                 render_stmt(body)
             )
         }
-        StmtKind::ForIn { head, object, body } => {
+        StmtKind::ForIn { head, object, body } | StmtKind::ForOf { head, object, body } => {
+            let keyword = if matches!(s.kind, StmtKind::ForOf { .. }) {
+                "for-of"
+            } else {
+                "for-in"
+            };
             let head = match head {
                 super::ast::ForInHead::Binding(name) => name.name.clone(),
                 super::ast::ForInHead::Lexical(super::ast::LexicalKind::Let, name) => {
@@ -409,7 +414,7 @@ fn render_stmt(s: &Stmt) -> String {
                 super::ast::ForInHead::Var(name) => format!("(var {})", name.name),
             };
             format!(
-                "(for-in {head} {} {})",
+                "({keyword} {head} {} {})",
                 render_expr(object),
                 render_stmt(body)
             )
@@ -916,11 +921,15 @@ fn for_statements() {
     rejects_with("for (const k; ;) {}", Invalid, 1, 12, "missing initializer");
     rejects_with("for (;;) let x;", Invalid, 1, 10, "cannot be the body");
     rejects("for (;;) function f() {}", Invalid, 1, 10);
-    // For-of heads are a separate feature (for-in heads: `for_in_heads`;
-    // `var` heads: `for_var_heads`).
-    rejects_with("for (x of y) {}", Unsupported, 1, 1, "`for`-`of`");
-    rejects_with("for (let x of y) {}", Unsupported, 1, 1, "`for`-`of`");
-    rejects_with("for (a.b of y) {}", Unsupported, 1, 1, "`for`-`of`");
+    assert_eq!(ast("for (x of y) {}"), "(for-of x y (block))");
+    assert_eq!(ast("for (let x of y) {}"), "(for-of (let x) y (block))");
+    rejects_with(
+        "for (a.b of y) {}",
+        Unsupported,
+        1,
+        6,
+        "property references",
+    );
     rejects("for (let [a] = b; ;) {}", Unsupported, 1, 10);
     // `[~In]` (clj-quickjs-74): the `in` operator is not taken at the top
     // level of the init, so an `in` after any init starts a for-in head
@@ -1011,6 +1020,44 @@ fn for_statements() {
     // No semicolon is inserted inside the head.
     rejects("for (a\nb;;) {}", UnexpectedToken, 2, 1);
     rejects("for (;\n) {}", UnexpectedToken, 2, 1);
+}
+
+#[test]
+fn for_of_statements() {
+    assert_eq!(ast("for (let x of a) {}"), "(for-of (let x) a (block))");
+    assert_eq!(ast("for (const x of a) ;"), "(for-of (const x) a (empty))");
+    assert_eq!(ast("for (x of a) {}"), "(for-of x a (block))");
+    assert_eq!(ast("for ((async) of a) {}"), "(for-of async a (block))");
+    assert_eq!(ast("for (let of of a) ;"), "(for-of (let of) a (empty))");
+    assert_eq!(ast("for (x of (a, b)) ;"), "(for-of x (, a b) (empty))");
+    rejects(
+        "for (let x of a, b) {}",
+        SyntaxErrorKind::UnexpectedToken,
+        1,
+        16,
+    );
+    rejects(
+        "for (x o\\u0066 a) {}",
+        SyntaxErrorKind::UnexpectedToken,
+        1,
+        8,
+    );
+    rejects("for (async of a) {}", SyntaxErrorKind::Invalid, 1, 6);
+    rejects("for (let of a) {}", SyntaxErrorKind::UnexpectedToken, 1, 13);
+    rejects_with(
+        "for (let x = 1 of a) {}",
+        SyntaxErrorKind::Invalid,
+        1,
+        16,
+        "without an initializer",
+    );
+    rejects_with(
+        "for (let x, y of a) {}",
+        SyntaxErrorKind::Invalid,
+        1,
+        15,
+        "single binding",
+    );
 }
 
 /// `for`-`in` heads (clj-quickjs-85): an identifier target or a single
@@ -2001,7 +2048,7 @@ fn var_statements() {
 /// clj-quickjs-90).
 #[test]
 fn for_var_heads() {
-    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken, Unsupported};
+    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken};
     assert_eq!(
         ast("for (var i = 0, j; i < 1; ) ;"),
         "(for (var (i 0) (j)) (< i 1) _ (empty))"
@@ -2062,7 +2109,7 @@ fn for_var_heads() {
         1,
         43,
     );
-    rejects_with("for (var k of o) ;", Unsupported, 1, 1, "`for`-`of`");
+    assert_eq!(ast("for (var k of o) ;"), "(for-of (var k) o (empty))");
     rejects("for (var ;;) ;", UnexpectedToken, 1, 10);
     rejects("for (var a b;;) ;", UnexpectedToken, 1, 12);
     rejects("for (var let = 1;;) ;", ReservedWord, 1, 10);
@@ -3680,7 +3727,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("class A {}", 1, 1, "classes"),
         ("x = class {};", 1, 5, "classes"),
         ("await x;", 1, 1, "await"),
-        ("for (x of y) {}", 1, 1, "for`-`of"),
         ("try {} catch ([e]) {}", 1, 15, "destructuring"),
         ("with (o) {}", 1, 1, "with"),
         ("debugger;", 1, 1, "debugger"),
@@ -4172,6 +4218,7 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         }),
         // For-in heads (clj-quickjs-85).
         ("for-in", |n| format!("{}x;", "for (let k in o) ".repeat(n))),
+        ("for-of", |n| format!("{}x;", "for (let k of o) ".repeat(n))),
         ("for-in with targets", |n| {
             format!("{}x;", "for ((k) in (a, b)) ".repeat(n))
         }),

@@ -140,6 +140,114 @@ fn line_column(e: &VmError) -> (u32, u32) {
     (at.line, at.column)
 }
 
+/// Synthetic fixture, not light-cljs output. Every protocol callback parks;
+/// all retained iterator state must survive collection and thread migration.
+#[test]
+fn for_of_waits_resume_iteration_and_close() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        let sum = 0, n = 0, closes = 0;
+        let iterable = {}; iterable[Symbol.iterator] = function() { return {
+            next() { n++; __rt.effect(1, 10 + n); __rt.need(10 + n, 3); return { value: n, done: false }; },
+            return() { closes++; __rt.effect(1, 30); __rt.need(30, 3); return {}; }
+        }; };
+        for (const x of iterable) {
+            __rt.effect(1, 20 + x); sum += x + __rt.need(20 + x, 3);
+            if (x === 2) break;
+        }
+        sum + closes * 100
+    "#,
+    );
+    let mut log = Log::default();
+    let mut current = task;
+    for (index, dependency) in [11, 21, 12, 22, 30].into_iter().enumerate() {
+        let (outcome, next_log) = run_elsewhere(current.clone(), log);
+        log = next_log;
+        assert_eq!(
+            waiting(outcome),
+            key(&rt, (DependencyId::new(dependency), ResultKind::new(3)))
+        );
+        assert_eq!(log.0.len(), index + 1);
+        rt.collect().unwrap();
+        current = publish(&rt, &current, 0.0);
+        rt.collect().unwrap();
+    }
+    let (outcome, log) = run_elsewhere(current, log);
+    assert_eq!(number(outcome), 103.0);
+    assert_eq!(log.0, [11.0, 21.0, 12.0, 22.0, 30.0]);
+}
+
+#[test]
+fn for_of_cancellation_closes_body_and_pending_next() {
+    for (wait_in_next, cleanup) in [
+        (false, "return {};"),
+        (true, "return {};"),
+        (false, "throw 42;"),
+        (false, "return 42;"),
+    ] {
+        let rt = Runtime::new();
+        let task = spawn(
+            &rt,
+            &format!(
+                r#"
+            let it = {{
+                next() {{ {} return {{value: 1, done: false}}; }},
+                return() {{ __rt.effect(1, 2); {} }}
+            }};
+            it[Symbol.iterator] = function() {{ return this; }};
+            try {{ for (let x of it) {{ try {{ __rt.need(5, 3); }} finally {{ __rt.effect(1, 1); }} }} }}
+            catch (e) {{ __rt.effect(1, 99); }}
+            __rt.effect(1, 98);
+        "#,
+                if wait_in_next { "__rt.need(5, 3);" } else { "" },
+                cleanup
+            ),
+        );
+        let mut log = Log::default();
+        run_to_wait(&rt, &task, &mut log, A);
+        rt.collect().unwrap();
+        let resumed = cancel_parked(&task);
+        let (outcome, log) = run_elsewhere(resumed, log);
+        cancelled(outcome);
+        assert_eq!(
+            log.0,
+            if wait_in_next {
+                vec![2.0]
+            } else {
+                vec![1.0, 2.0]
+            }
+        );
+    }
+}
+
+#[test]
+fn for_of_builtin_iterator_getters_survive_waits() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        let sum = 0;
+        for (const x of Array.prototype.values.call({
+            get length() { return __rt.need(5, 3); },
+            get 0() { return __rt.need(6, 3); }
+        })) sum += x;
+        sum
+    "#,
+    );
+    let mut log = Log::default();
+    run_to_wait(&rt, &task, &mut log, A);
+    rt.collect().unwrap();
+    let task = publish(&rt, &task, 1.0);
+    let (outcome, log) = run_elsewhere(task.clone(), log);
+    assert_eq!(waiting(outcome), key(&rt, B));
+    rt.collect().unwrap();
+    let task = publish(&rt, &task, 42.0);
+    let (outcome, _) = run_elsewhere(task, log);
+    assert_eq!(number(outcome), 42.0);
+}
+
 /// A `do`-`while` loop (clj-quickjs-80) parks in its test after a
 /// `continue` through a finally block, then in its body: each time a
 /// collection runs while it is parked and it resumes on another thread

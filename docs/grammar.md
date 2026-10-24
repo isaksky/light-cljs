@@ -116,7 +116,7 @@ Script              = { Directive } { StatementListItem } EOF
 Directive           = String ";"     (* a whole ExpressionStatement; see "Directive prologues and strictness" *)
 StatementListItem   = FunctionDeclaration | LexicalDeclaration | Statement
 Statement           = Block | ";" | IfStatement | WhileStatement | DoWhileStatement
-                    | ForStatement | ForInStatement | SwitchStatement
+                    | ForStatement | ForInStatement | ForOfStatement | SwitchStatement
                     | VariableStatement
                     | ReturnStatement | ThrowStatement | TryStatement
                     | BreakStatement | ContinueStatement | LabelledStatement
@@ -130,6 +130,7 @@ ForInit             = Expression[~In] | ( "let" | "const" | "var" ) Declarator[~
                       (* "var": clj-quickjs-89 *)
                       (* [~In]: a top-level `in` ends it, ECMAScript's [In] parameter *)
 ForInStatement      = "for" "(" ForInHead "in" Expression ")" Statement   (* clj-quickjs-85 *)
+ForOfStatement      = "for" "(" ForInHead "of" AssignmentExpression ")" Statement (* clj-quickjs-237 *)
 ForInHead           = LeftHandSideExpression   (* an identifier, possibly parenthesized *)
                     | ( "let" | "const" | "var" ) BindingIdentifier
 SwitchStatement     = "switch" "(" Expression ")" "{" { CaseClause } "}"   (* at most one "default" *)
@@ -361,8 +362,7 @@ Notes on the grammar:
 - `ForStatement` (clj-quickjs-81): a `let`/`const` head declares bindings
   scoped to the whole loop (a `const` needs an initializer here too); a
   `var` head (clj-quickjs-89) declares bindings of the enclosing function
-  or script. For-of heads (`for (let x of y)`, `for (var k of o)`) are
-  rejected as `Unsupported`. An initializer in a for-in `var` head
+  or script. An initializer in a for-in `var` head
   (`for (var k = 1 in o)`) is `Invalid` as for `let`/`const`; the
   non-strict `var` form (Annex B) is clj-quickjs-90.
 - `ForInStatement` (clj-quickjs-85): the head's first element (an
@@ -380,6 +380,13 @@ Notes on the grammar:
   `for (f() in o)`). A property target (`for (a.b in o)`, `for (a[0] in
   o)`) is `Unsupported` until clj-quickjs-87. The object is an Expression,
   where `in` is the operator again.
+- `ForOfStatement` (clj-quickjs-237): identifier targets and a single
+  `let`/`const`/`var` binding without an initializer. The right side is an
+  AssignmentExpression: `for (x of a, b)` is a syntax error, while
+  `for (x of (a, b))` is accepted. `of` is contextual (`for (let of of a)`
+  declares `of`); `for (let of a)` and `for (async of a)` are syntax errors.
+  Parenthesized `(async)` is an ordinary assignment target. Property and
+  destructuring heads remain unsupported; using declarations are clj-quickjs-238.
 
 ### Automatic semicolon insertion
 
@@ -425,7 +432,7 @@ are still covered by the computed-key rejection below.
 
 | Form | Kind |
 |------|------|
-| for-of loops (`var` heads included), a property as a for-in target (`for (a.b in o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
+| a property as a for-in/for-of target (`for (a.b in o)`, `for (a.b of o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
 | classes, `new.target` (clj-quickjs-99), `super`, `import`/`export`, dynamic `import` | Unsupported |
 | execution of parsed async functions/arrows/methods and generators (including `yield`/`await`) | Unsupported at the function during compilation |
 | rest parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
@@ -457,6 +464,12 @@ non-decimal styles and parts/range methods remain deferred.
 
 Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
+
+- **Synchronous iteration** (clj-quickjs-237): plain for-of, array/typed-array
+  `values` and string iteration execute. Async iteration, `for (using ...)`,
+  destructuring/property heads, spread and other iterable consumers remain
+  separate features. Iterator prototypes expose their `Symbol.toStringTag`;
+  generic `Object.prototype.toString` symbol-tag dispatch remains deferred.
 
 - **Rope flattening** (clj-quickjs-146): the first contiguous read, comparison
   or hash flattens synchronously in O(length). Traversal and destruction use
@@ -1364,6 +1377,14 @@ Compile-time errors (`SyntaxError`) keep their own positions, given with each.
 
 ### Exceptions
 
+For-of uses IteratorClose on body failures, returns, breaks and jumps leaving
+the loop. An exception from the iterator's `return` getter/call, or its
+non-object result, preserves a pending throw; otherwise it replaces the
+completion (a non-object result throws TypeError). Exceptions from `next`,
+`done` or `value` do not close. Consumer cancellation closes even while
+waiting in `next`, and remains cancellation under the existing cleanup rules.
+Waiting itself never closes an iterator.
+
 `throw`, `try`/`catch`/`finally` and `return` through finally blocks follow
 JavaScript (clj-quickjs-11). The VM keeps the handlers and the *pending
 completion* of a running finally block (normal, a saved return value, a
@@ -2169,7 +2190,7 @@ do let a = 1; while (0);
 do x; y;
 ```
 
-```js reject Unsupported 1:1
+```js accept
 for (const x of xs) {}
 ```
 
@@ -3596,17 +3617,69 @@ the same function object as `Array.prototype.toString`, including dynamic
 long element loops and string copying yield to the instruction budget.
 
 Explicit gaps: BigInt views, resizable/shared buffers, species/subclassing,
-and other typed-array methods (including built-in iterator methods) remain
+and other typed-array methods (except `values`/`Symbol.iterator`, clj-quickjs-237) remain
 deferred. Allocation and iterable collection are bounded by the existing
 16 MiB backing-buffer limit per view; infinite iterables hit that limit.
 
-For default array sources, typed-array construction supplies array iteration
-locally until the general Array iterator intrinsic lands: it rereads length
-before each indexed read, then converts the collected values. This also applies
-to array-like objects inheriting Array.prototype. Explicit null/undefined
-iterator overrides, or removal of Array.prototype from the chain, select
-array-like read/conversion order. `set` always uses array-like order for
-ordinary sources and ignores their iterator properties.
+Default array sources now use the general Array iterator (clj-quickjs-237),
+which rereads length before each indexed read; construction then converts
+the collected values. Explicit null/undefined iterator overrides, or removal
+of Array.prototype from the chain, select array-like read/conversion order.
+`set` always uses array-like order for ordinary sources and ignores their
+iterator properties.
+
+## Synchronous for-of and built-in iterators (clj-quickjs-237)
+
+Execution: `for (const x of iterable)`, `for (let x of iterable)`,
+`for (var x of iterable)` and `for (x of iterable)` obtain `Symbol.iterator`
+once, call it with the iterable as receiver, require an object iterator and
+cache its `next`. Each iteration calls that method with the iterator as
+receiver, requires an object result, reads `done`, and reads `value` only
+when `done` is false. Non-iterables throw catchable TypeError. A lexical
+head has its own temporal dead zone during iterable evaluation and a fresh
+binding per iteration, including closures; `var` retains one hoisted binding.
+
+`Array.prototype.values` and `[Symbol.iterator]` are the same function.
+Array iterators read the current length and index each time (holes are
+undefined unless inherited); exhaustion is permanent. `values` is generic
+over array-like receivers. Typed-array `values`/`[Symbol.iterator]` validate
+the view and use its internal length, checking detachment on each step.
+`String.prototype[Symbol.iterator]` coerces its receiver to string, then
+yields code points: a surrogate pair is one two-unit string and a lone
+surrogate remains one unit. Iterators inherit an identity `[Symbol.iterator]`
+method and the appropriate `next` and `Symbol.toStringTag`.
+
+`continue` of this loop never closes; exhaustion never closes. Break,
+return, body throw, outer continue/labelled jump and consumer cancellation
+perform IteratorClose through the existing finally machinery. The `return`
+method is optional (null/undefined mean absent); its receiver is the iterator
+and its result must be an object. Pending throws retain their original
+identity and diagnostic when close fails; other completions are replaced by
+close failures. Exceptions from `next`/`done`/`value` do not close.
+Iterator, cached next and results are hidden traced frame locals. All
+getters, callbacks and string coercions use ordinary resumable frames;
+waiting, migration, collection and budget yields preserve exact progress.
+
+Synthetic fixtures, not light-cljs output:
+
+```js accept
+let total = 0;
+for (const x of [1, 2, 3]) total += x;
+let fs = []; for (let x of [1, 2]) fs.push(() => x);
+let text = ''; for (let cp of 'A\u{1f600}') text += cp;
+let it = { next() { return { value: 1, done: false }; }, return() { return {}; } };
+it[Symbol.iterator] = function() { return this; };
+for (let x of it) break;
+for (var x of new Uint8Array([1, 2])) {}
+```
+
+```js reject UnexpectedToken 1:16
+for (let x of a, b) {}
+```
+
+```js reject Unsupported 1:6
+for (obj.x of a) {}
+```
 
 ### String replacement (clj-quickjs-189)
 

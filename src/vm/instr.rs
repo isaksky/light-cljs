@@ -104,6 +104,9 @@
 //! | `Inc` | 0x71 | – | numeric → numeric+1 | increment using the operand's numeric type |
 //! | `Dec` | 0x72 | – | numeric → numeric-1 | decrement using the operand's numeric type |
 //! | `RegExpLiteral` | 0x73 | u16 string constant | → regexp | fresh task-owned object sharing immutable compiled code; constant encodes flags, NUL, pattern (clj-quickjs-188) |
+//! | `GetIterator` | 0x74 | – | iterable → record | resumable Symbol.iterator lookup/call and next lookup; hidden record has iterator/next |
+//! | `RequireObject` | 0x75 | – | value → value | TypeError unless value is an object (iterator protocol validation) |
+//! | `PendingThrow` | 0x76 | – | → boolean | whether this frame's innermost handler is a pending throw completion |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -579,6 +582,9 @@ pub enum Opcode {
     Inc = 0x71,
     Dec = 0x72,
     RegExpLiteral = 0x73,
+    GetIterator = 0x74,
+    RequireObject = 0x75,
+    PendingThrow = 0x76,
 }
 
 /// Operand encoding of an opcode.
@@ -749,6 +755,9 @@ impl Opcode {
             0x71 => Inc,
             0x72 => Dec,
             0x73 => RegExpLiteral,
+            0x74 => GetIterator,
+            0x75 => RequireObject,
+            0x76 => PendingThrow,
             _ => return None,
         })
     }
@@ -872,6 +881,9 @@ impl Opcode {
             Inc => "inc",
             Dec => "dec",
             RegExpLiteral => "regexp_literal",
+            GetIterator => "get_iterator",
+            RequireObject => "require_object",
+            PendingThrow => "pending_throw",
         }
     }
 
@@ -909,7 +921,8 @@ impl Opcode {
             | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString | GetThis | NewArray
             | AppendElement | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | SetProto
             | Instanceof | Delete | In | ForInStart | ForInNext | NewArguments => OperandKind::None,
-            GetGlobalObject | ToNumeric | Inc | Dec => OperandKind::None,
+            GetIterator | RequireObject | PendingThrow | GetGlobalObject | ToNumeric | Inc
+            | Dec => OperandKind::None,
         }
     }
 }
@@ -1077,6 +1090,9 @@ pub(crate) enum Instr {
     Inc,
     Dec,
     RegExpLiteral(u16),
+    GetIterator,
+    RequireObject,
+    PendingThrow,
 }
 
 impl Instr {
@@ -1197,6 +1213,9 @@ impl Instr {
             Instr::Inc => Opcode::Inc,
             Instr::Dec => Opcode::Dec,
             Instr::RegExpLiteral(_) => Opcode::RegExpLiteral,
+            Instr::GetIterator => Opcode::GetIterator,
+            Instr::RequireObject => Opcode::RequireObject,
+            Instr::PendingThrow => Opcode::PendingThrow,
         }
     }
 
@@ -1219,7 +1238,8 @@ impl Instr {
             | Rem | Gt | Le | Ge | LooseEq | Need | NeedAll | BitAnd | BitOr | BitXor | Shl
             | Sar | UShr | Pow | Plus | CompareLt | CompareGt | CompareLe | CompareGe
             | Instanceof | In => (2, 1),
-            ForInStart => (1, 1),
+            ForInStart | GetIterator | RequireObject => (1, 1),
+            PendingThrow => (0, 1),
             ForInNext => (1, 2),
             ToNumberPair => (2, 2),
             AtomNew | AtomLoad => (1, 1),
@@ -1259,6 +1279,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 115);
+        assert_eq!(assigned, 118);
     }
 }

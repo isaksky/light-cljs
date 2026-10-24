@@ -702,6 +702,14 @@ impl VmState {
             .any(|h| !matches!(h.kind, HandlerKind::Pending(_)))
     }
 
+    /// IteratorClose preserves a pending throw over errors in `return`.
+    pub(crate) fn pending_throw(&self) -> bool {
+        self.handlers.last().is_some_and(|h| {
+            h.frame == self.frame_index()
+                && matches!(h.kind, HandlerKind::Pending(Completion::Throw(_)))
+        })
+    }
+
     /// Return `value` from the running frame. If the frame has a finally
     /// handler, the innermost one becomes a pending `Return` completion and
     /// its block runs first (entries above it are discarded: catch handlers,

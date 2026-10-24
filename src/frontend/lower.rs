@@ -502,6 +502,12 @@ enum Exit {
         cont: usize,
         labels: Vec<String>,
     },
+    /// A for-of loop owns a finally handler. Only its own continue keeps it.
+    IteratorLoop {
+        brk: usize,
+        cont: usize,
+        labels: Vec<String>,
+    },
     /// A labelled statement that is not a loop (clj-quickjs-82): `break`
     /// to one of its labels jumps to `brk`, past it. An unlabelled `break`
     /// passes it by.
@@ -1842,6 +1848,9 @@ impl<'s> Lowerer<'s> {
             StmtKind::ForIn { head, object, body } => {
                 self.for_in_statement(head, object, body, span)?
             }
+            StmtKind::ForOf { head, object, body } => {
+                self.for_of_statement(head, object, body, span)?
+            }
             StmtKind::Throw(e) => {
                 self.expr(e)?;
                 self.out().op(Opcode::Throw, span);
@@ -2098,6 +2107,174 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
+    /// GetIterator and IteratorClose use ordinary resumable calls. The
+    /// finally handler protects the whole loop, while `in_body` distinguishes
+    /// consumer failures from failures in next/done/value (which do not close).
+    /// All protocol values are hidden frame locals, hence traced task state.
+    #[inline(never)]
+    fn for_of_statement(
+        &mut self,
+        head: &ForInHead,
+        object: &Expr,
+        body: &Stmt,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        if let ForInHead::Var(name) = head {
+            self.check_var_not_shadowed(name)?;
+        }
+        self.reset_completion(span);
+        let saved_slot = self.cur().next_slot;
+        self.cur_mut().scopes.push(Scope::new());
+        let mut cell = None;
+        if let ForInHead::Lexical(kind, name) = head {
+            self.declare(
+                name,
+                if *kind == LexicalKind::Let {
+                    BindingKind::Let
+                } else {
+                    BindingKind::Const
+                },
+                false,
+                false,
+            )?;
+            let b = self.local(name)?;
+            if b.repr == Repr::Cell {
+                self.out().op(Opcode::NewCell, name.span);
+                self.out().op_u16(Opcode::SetLocal, b.slot, name.span);
+                cell = Some(b.slot);
+            }
+        }
+        let it = self.temp(span)?;
+        let next = self.temp(span)?;
+        let result = self.temp(span)?;
+        let in_body = self.temp(span)?;
+        let suppress = self.temp(span)?;
+        self.expr(object)?;
+        self.out().op(Opcode::GetIterator, span);
+        self.out().op(Opcode::Dup, span);
+        self.iterator_field("next", span)?;
+        self.out().op_u16(Opcode::SetLocal, next, span);
+        self.iterator_field("iterator", span)?;
+        self.out().op_u16(Opcode::SetLocal, it, span);
+        let start = self.out().label();
+        let exhausted = self.out().label();
+        let close = self.out().label();
+        let end = self.out().label();
+        self.out().branch(Opcode::PushFinally, close, span);
+        self.out().bind(start);
+        self.constant(Primitive::Bool(false), span)?;
+        self.out().op_u16(Opcode::SetLocal, in_body, span);
+        self.out().op_u16(Opcode::GetLocal, it, span);
+        self.out().op_u16(Opcode::GetLocal, next, span);
+        self.out().op_u16(Opcode::CallMethod, 0, span);
+        self.out().op(Opcode::RequireObject, span);
+        self.out().op_u16(Opcode::SetLocal, result, span);
+        self.out().op_u16(Opcode::GetLocal, result, span);
+        self.iterator_field("done", span)?;
+        self.out().op(Opcode::Not, span);
+        self.out().branch(Opcode::JumpIfFalse, exhausted, span);
+        self.out().op_u16(Opcode::GetLocal, result, span);
+        self.iterator_field("value", span)?;
+        self.out().op_u16(Opcode::SetLocal, result, span);
+        self.constant(Primitive::Bool(true), span)?;
+        self.out().op_u16(Opcode::SetLocal, in_body, span);
+        if let Some(slot) = cell {
+            self.out().op(Opcode::NewCell, span);
+            self.out().op(Opcode::Dup, span);
+            self.out().op_u16(Opcode::SetLocal, slot, span);
+        }
+        self.out().op_u16(Opcode::GetLocal, result, span);
+        match head {
+            ForInHead::Lexical(_, name) => {
+                let b = self.initialize(name)?;
+                match b.repr {
+                    Repr::Cell => self.out().op(Opcode::CellInit, name.span),
+                    Repr::Value => self.out().op_u16(Opcode::SetLocal, b.slot, name.span),
+                }
+            }
+            ForInHead::Binding(name) | ForInHead::Var(name) => {
+                let access = self.resolve_reference(&name.name);
+                self.store(access, name.span)?;
+                self.out().op(Opcode::Pop, name.span);
+            }
+        }
+        let labels = std::mem::take(&mut self.cur_mut().loop_labels);
+        self.cur_mut().exits.push(Exit::IteratorLoop {
+            brk: end,
+            cont: start,
+            labels,
+        });
+        self.statement(body)?;
+        self.cur_mut().exits.pop();
+        self.out().branch(Opcode::Jump, start, span);
+        self.out().bind(exhausted);
+        self.out().op(Opcode::PopFinally, span);
+        self.out().op(Opcode::EndFinally, span);
+        self.out().branch(Opcode::Jump, end, span);
+        self.out().bind(close);
+        self.out().op(Opcode::PendingThrow, span);
+        self.out().op_u16(Opcode::SetLocal, suppress, span);
+        let run_close = self.out().label();
+        let finished = self.out().label();
+        self.out().op_u16(Opcode::GetLocal, suppress, span);
+        self.out().branch(Opcode::JumpIfFalse, run_close, span);
+        self.out().op_u16(Opcode::GetLocal, in_body, span);
+        self.out().branch(Opcode::JumpIfFalse, finished, span);
+        self.out().bind(run_close);
+        let caught = self.out().label();
+        self.out().branch(Opcode::PushCatch, caught, span);
+        self.iterator_close(it, result, span)?;
+        self.out().op(Opcode::PopCatch, span);
+        self.out().branch(Opcode::Jump, finished, span);
+        self.out().bind(caught);
+        let rethrow = self.out().label();
+        self.out().op_u16(Opcode::GetLocal, suppress, span);
+        self.out().branch(Opcode::JumpIfFalse, rethrow, span);
+        self.out().op(Opcode::Pop, span);
+        self.out().branch(Opcode::Jump, finished, span);
+        self.out().bind(rethrow);
+        self.out().op(Opcode::Throw, span);
+        self.out().bind(finished);
+        self.out().op(Opcode::EndFinally, span);
+        self.out().bind(end);
+        for slot in [it, next, result] {
+            self.out().op(Opcode::Undefined, span);
+            self.out().op_u16(Opcode::SetLocal, slot, span);
+        }
+        self.cur_mut().scopes.pop();
+        self.cur_mut().next_slot = saved_slot;
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn iterator_field(&mut self, name: &str, span: Span) -> Result<(), SyntaxError> {
+        let key = self.string_index(JsString::from(name), span)?;
+        self.out().op_u16(Opcode::GetField, key, span);
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn iterator_close(&mut self, it: u16, method: u16, span: Span) -> Result<(), SyntaxError> {
+        self.out().op_u16(Opcode::GetLocal, it, span);
+        self.iterator_field("return", span)?;
+        self.out().op_u16(Opcode::SetLocal, method, span);
+        let done = self.out().label();
+        for nullish in [Primitive::Undefined, Primitive::Null] {
+            self.out().op_u16(Opcode::GetLocal, method, span);
+            self.constant(nullish, span)?;
+            self.out().op(Opcode::StrictEq, span);
+            self.out().op(Opcode::Not, span);
+            self.out().branch(Opcode::JumpIfFalse, done, span);
+        }
+        self.out().op_u16(Opcode::GetLocal, it, span);
+        self.out().op_u16(Opcode::GetLocal, method, span);
+        self.out().op_u16(Opcode::CallMethod, 0, span);
+        self.out().op(Opcode::RequireObject, span);
+        self.out().op(Opcode::Pop, span);
+        self.out().bind(done);
+        Ok(())
+    }
+
     /// Replace each cell local in `copies` with a new cell initialized to
     /// the old cell's value (always initialized here).
     fn copy_cells(&mut self, copies: &[(u16, Span)]) {
@@ -2222,6 +2399,7 @@ impl<'s> Lowerer<'s> {
                 | StmtKind::DoWhile { .. }
                 | StmtKind::For { .. }
                 | StmtKind::ForIn { .. }
+                | StmtKind::ForOf { .. }
         ) {
             self.cur_mut().loop_labels = labels;
             return self.statement(body);
@@ -2265,6 +2443,11 @@ impl<'s> Lowerer<'s> {
                 Exit::Loop { brk, cont, labels } if label.is_none() || named(labels) => {
                     (None, Some(if is_break { *brk } else { *cont }))
                 }
+                Exit::IteratorLoop { brk, cont, labels } if label.is_none() || named(labels) => (
+                    is_break.then_some(Opcode::CallFinally),
+                    Some(if is_break { *brk } else { *cont }),
+                ),
+                Exit::IteratorLoop { .. } => (Some(Opcode::CallFinally), None),
                 Exit::Labelled { labels, brk } if is_break && named(labels) => (None, Some(*brk)),
                 Exit::Switch { brk } if is_break && label.is_none() => (None, Some(*brk)),
                 Exit::Loop { .. } | Exit::Labelled { .. } | Exit::Switch { .. } => (None, None),
@@ -3606,7 +3789,7 @@ fn var_names_in<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Ident>) {
             }
             var_names_in(body, out);
         }
-        StmtKind::ForIn { head, body, .. } => {
+        StmtKind::ForIn { head, body, .. } | StmtKind::ForOf { head, body, .. } => {
             if let ForInHead::Var(name) = head {
                 out.push(name);
             }

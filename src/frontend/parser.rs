@@ -714,8 +714,8 @@ impl<'a> Parser<'a> {
     /// `js_parse_for_in_of`), told apart from the three-part form after the
     /// head's first element, which is parsed without a top-level `in`
     /// operator (`[~In]`, [`Self::no_in`], clj-quickjs-74). ForInit may also
-    /// be a `var` declaration list (clj-quickjs-89). For-of heads are
-    /// rejected as unsupported at the `for` keyword.
+    /// be a `var` declaration list (clj-quickjs-89). For-of uses the same
+    /// heads followed by contextual `of` and an AssignmentExpression.
     fn parse_for(&mut self) -> PResult<StmtKind> {
         let saved = self.depth;
         self.deeper(cost::BODY)?;
@@ -732,6 +732,7 @@ impl<'a> Parser<'a> {
                 body,
             },
             ForHead::In(head, object) => StmtKind::ForIn { head, object, body },
+            ForHead::Of(head, object) => StmtKind::ForOf { head, object, body },
         })
     }
 
@@ -821,6 +822,9 @@ impl<'a> Parser<'a> {
                 };
                 self.advance()?;
                 let name = self.parse_binding_identifier("a variable name")?;
+                if self.is_of() {
+                    return self.parse_for_of_rest(ForInHead::Lexical(kind, name));
+                }
                 if self.is_keyword(Keyword::In) {
                     return self.parse_for_in_rest(ForInHead::Lexical(kind, name));
                 }
@@ -830,6 +834,9 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Var) => {
                 self.advance()?;
                 let name = self.parse_binding_identifier("a variable name")?;
+                if self.is_of() {
+                    return self.parse_for_of_rest(ForInHead::Var(name));
+                }
                 if self.is_keyword(Keyword::In) {
                     return self.parse_for_in_rest(ForInHead::Var(name));
                 }
@@ -847,8 +854,16 @@ impl<'a> Parser<'a> {
                     let target = self.for_in_target(&init)?;
                     return self.parse_for_in_rest(ForInHead::Binding(target));
                 }
-                if let Some(error) = self.for_of_error(keyword) {
-                    return Err(error);
+                if self.is_of() {
+                    if init.span.text(self.lexer.source()) == "async" {
+                        return Err(self.error(
+                            SyntaxErrorKind::Invalid,
+                            init.span,
+                            "`async` cannot be a for-of target",
+                        ));
+                    }
+                    let target = self.for_in_target(&init)?;
+                    return self.parse_for_of_rest(ForInHead::Binding(target));
                 }
                 Some(ForInit::Expr(init))
             }
@@ -893,16 +908,18 @@ impl<'a> Parser<'a> {
         self.simple_target(left, TargetUse::Assign)
     }
 
-    /// The current token is the `of` after the left side of a for-of head:
-    /// reject the loop as unsupported at the `for` keyword.
+    /// Contextual `of` is a separator only after the head's first binding.
     #[inline(never)]
-    fn for_of_error(&self, keyword: Span) -> Option<SyntaxError> {
-        match &self.tok.kind {
-            TokenKind::Identifier(name) if name == "of" => {
-                Some(self.unsupported(keyword, "`for`-`of` loops are"))
-            }
-            _ => None,
-        }
+    fn is_of(&self) -> bool {
+        self.tok.span.text(self.lexer.source()) == "of"
+    }
+
+    #[inline(never)]
+    fn parse_for_of_rest(&mut self, head: ForInHead) -> PResult<ForHead> {
+        self.advance()?;
+        let object = self.parse_assignment()?;
+        self.expect_punct(Punct::RParen)?;
+        Ok(ForHead::Of(head, object))
     }
 
     /// The current token is an `in` after a later declarator or an
@@ -1132,9 +1149,8 @@ impl<'a> Parser<'a> {
     /// identifier with an optional `= AssignmentExpression` initializer,
     /// required for `const`. `lexical`: `None` for `var`. `for_keyword`: in
     /// the head of the `for` statement at that span, whose initializers are
-    /// parsed with `[~In]`; there `of` after a name starts an unsupported
-    /// for-of head, and `in` after a later name or after an initializer is
-    /// an invalid for-in head. `first`: the first name, already parsed.
+    /// parsed with `[~In]`; `in`/`of` after a later name or an initializer
+    /// is an invalid iteration head. `first`: the first name, already parsed.
     fn parse_declarators(
         &mut self,
         lexical: Option<LexicalKind>,
@@ -1147,19 +1163,14 @@ impl<'a> Parser<'a> {
                 Some(name) => name,
                 None => self.parse_binding_identifier("a variable name")?,
             };
-            if let Some(keyword) = for_keyword {
-                if let Some(error) = self.for_of_error(keyword) {
-                    return Err(error);
-                }
-                if self.is_keyword(Keyword::In) {
-                    return Err(self.for_in_declaration_error());
-                }
+            if for_keyword.is_some() && (self.is_keyword(Keyword::In) || self.is_of()) {
+                return Err(self.for_in_declaration_error());
             }
             let init = if self.eat_punct(Punct::Assign)? {
                 let outer = std::mem::replace(&mut self.no_in, for_keyword.is_some());
                 let init = self.parse_assignment()?;
                 self.no_in = outer;
-                if for_keyword.is_some() && self.is_keyword(Keyword::In) {
+                if for_keyword.is_some() && (self.is_keyword(Keyword::In) || self.is_of()) {
                     return Err(self.for_in_declaration_error());
                 }
                 Some(init)
@@ -2974,6 +2985,7 @@ enum ForHead {
     Classic(Option<ForInit>, Option<Expr>, Option<Expr>),
     /// `(head in object)`
     In(ForInHead, Expr),
+    Of(ForInHead, Expr),
 }
 
 /// What an identifier target is used for (it selects the diagnostics).
