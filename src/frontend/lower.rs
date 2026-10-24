@@ -82,14 +82,18 @@
 //! `& | ^ << >> >>>`, `**` and unary `-`, `+`, `~` apply JavaScript ToNumber to
 //! operands that are not statically numbers (`ToNumber`/`ToNumberPair`)
 //! before the number-only arithmetic instruction (which applies ToInt32 /
-//! ToUint32 itself for the bitwise ones). `to_number` rejects a string
-//! operand (StringToNumber is clj-quickjs-67), so these operators never
-//! guess at a string. Binary `+` (clj-quickjs-65) lowers to the number-only
-//! `add` only when both operands are statically numbers (`is_number`),
-//! and otherwise to `plus`, JavaScript `+` on primitives, which concatenates
-//! two strings at run time and applies no ToNumber first. The relational
-//! operators still lower to ToNumber and a numeric comparison; string
-//! comparison (clj-quickjs-68) must lower them differently.
+//! ToUint32 itself for the bitwise ones). `to_number` converts a string
+//! operand with StringToNumber (clj-quickjs-67). Binary `+` (clj-quickjs-65)
+//! lowers to the number-only `add` only when both operands are statically
+//! numbers (`is_number`), and otherwise to `plus`, JavaScript `+` on
+//! primitives, which concatenates two strings at run time and applies no
+//! ToNumber first. The relational operators (clj-quickjs-68) lower to
+//! `compare_lt`/`compare_gt`/`compare_le`/`compare_ge` when neither operand
+//! is statically a number: those compare two strings by UTF-16 code units
+//! and convert any other primitives with ToNumber at run time. With a
+//! static number on either side the operands can never both be strings, so
+//! ToNumber and the number-only comparison are IsLessThan, and they are
+//! emitted instead.
 //!
 //! **Strings.** A string literal (Unicode scalar values, encoded as UTF-16
 //! code units) is a constant, deduplicated by content like other constants.
@@ -1990,6 +1994,21 @@ impl<'s> Lowerer<'s> {
                 return;
             }
             BinaryOp::Sub => Opcode::Sub,
+            // Two strings compare by code units, so a relational operator
+            // with no statically numeric operand decides at run time; with
+            // one, ToNumber and a numeric comparison are IsLessThan.
+            BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge
+                if !is_number(left) && !is_number(right) =>
+            {
+                let compare = match op {
+                    BinaryOp::Lt => Opcode::CompareLt,
+                    BinaryOp::Gt => Opcode::CompareGt,
+                    BinaryOp::Le => Opcode::CompareLe,
+                    _ => Opcode::CompareGe,
+                };
+                self.out().op(compare, span);
+                return;
+            }
             BinaryOp::Lt => Opcode::Lt,
             BinaryOp::Gt => Opcode::Gt,
             BinaryOp::Le => Opcode::Le,

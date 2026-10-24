@@ -78,6 +78,10 @@
 //! | `CallFinally`   | 0x47 | –                  | –                      | run the innermost finally block, then continue after this instruction |
 //! | `DropCompletion`| 0x48 | –                  | –                      | discard the pending completion of the running finally block |
 //! | `Plus`          | 0x49 | –                  | a b → a+b              | JavaScript binary `+` on primitives (numbers add, strings concatenate) |
+//! | `CompareLt`     | 0x4A | –                  | a b → a<b              | JavaScript `<` on primitives (IsLessThan: strings by code units) |
+//! | `CompareGt`     | 0x4B | –                  | a b → a>b              | JavaScript `>` on primitives |
+//! | `CompareLe`     | 0x4C | –                  | a b → a<=b             | JavaScript `<=` on primitives |
+//! | `CompareGe`     | 0x4D | –                  | a b → a>=b             | JavaScript `>=` on primitives |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -89,10 +93,10 @@
 //! `ToNumber` converts `undefined` to NaN, `null` to `+0` and booleans to 0
 //! or 1 and strings by StringToNumber (clj-quickjs-67); an object operand
 //! fails with `UnsupportedOperand` (ToPrimitive on objects is deferred).
-//! `ToNumberPair` also fails with `UnsupportedOperand` when both operands
-//! are strings and the next instruction is `Lt`, `Gt`, `Le` or `Ge`: the
-//! compiler lowers relational operators that way, and two strings compare
-//! by code units, not as numbers (clj-quickjs-68). `LooseEq` is JavaScript
+//! `ToNumberPair` converts both operands the same way; the compiler emits it
+//! before a number-only comparison only when the other operand of `<`, `>`,
+//! `<=` or `>=` is statically a number, so two strings never reach it there
+//! (they compare with `CompareLt` and its siblings below). `LooseEq` is JavaScript
 //! `==` (IsLooselyEqual) for the supported value types: `null ==
 //! undefined`, objects compare by identity, two strings by content, a
 //! number, boolean or string against another of those compares as numbers
@@ -222,6 +226,23 @@
 //! every `+` whose operands are not both statically numbers; `Add` stays
 //! number-only.
 //!
+//! Opcodes `0x4A`–`0x4D` are JavaScript's relational operators `<`, `>`,
+//! `<=`, `>=` on primitives (clj-quickjs-68; ECMAScript IsLessThan, QuickJS
+//! `js_relational_slow` and `js_string_compare`, `research/quickjs/quickjs.c`,
+//! revision 7d1c13c5d8f8). Two string operands compare lexicographically by
+//! UTF-16 code units (a proper prefix is smaller; the `Ord` of
+//! [`JsString`](crate::value::JsString)), so `"10" < "9"` and
+//! `"\u{10000}" < "\u{FFFF}"` hold. Any other pair of primitives converts
+//! with ToNumber (strings by StringToNumber) and compares as numbers, where
+//! a NaN makes all four false. `CompareGt` is IsLessThan with the operands
+//! swapped; `CompareLe` and `CompareGe` negate `CompareGt` and `CompareLt`
+//! except that NaN still gives false. An object operand fails with
+//! `UnsupportedOperand` before any conversion (ToPrimitive with hint number
+//! is clj-quickjs-70). They allocate nothing, so they are not poll points.
+//! The compiler emits them when neither operand is statically a number;
+//! with a static number on either side two strings are impossible, so it
+//! keeps `ToNumber`/`ToNumberPair` and the number-only `Lt`, `Gt`, `Le`, `Ge`.
+//!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
 //! boundary. The opcode list is an append-only registry: new opcodes take the
@@ -320,6 +341,10 @@ pub enum Opcode {
     CallFinally = 0x47,
     DropCompletion = 0x48,
     Plus = 0x49,
+    CompareLt = 0x4A,
+    CompareGt = 0x4B,
+    CompareLe = 0x4C,
+    CompareGe = 0x4D,
 }
 
 /// Operand encoding of an opcode.
@@ -441,6 +466,10 @@ impl Opcode {
             0x47 => CallFinally,
             0x48 => DropCompletion,
             0x49 => Plus,
+            0x4A => CompareLt,
+            0x4B => CompareGt,
+            0x4C => CompareLe,
+            0x4D => CompareGe,
             _ => return None,
         })
     }
@@ -522,6 +551,10 @@ impl Opcode {
             CallFinally => "call_finally",
             DropCompletion => "drop_completion",
             Plus => "plus",
+            CompareLt => "compare_lt",
+            CompareGt => "compare_gt",
+            CompareLe => "compare_le",
+            CompareGe => "compare_ge",
         }
     }
 
@@ -543,7 +576,8 @@ impl Opcode {
             | ToNumberPair | Gt | Le | Ge | LooseEq | CurrentFunction | NewCell | CellInit
             | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PopCatch
             | PopFinally | EndFinally | Reduce | NeedAll | BitAnd | BitOr | BitXor | Shl | Sar
-            | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus => OperandKind::None,
+            | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt | CompareGt
+            | CompareLe | CompareGe => OperandKind::None,
         }
     }
 }
@@ -661,6 +695,10 @@ pub(crate) enum Instr {
     CallFinally,
     DropCompletion,
     Plus,
+    CompareLt,
+    CompareGt,
+    CompareLe,
+    CompareGe,
 }
 
 impl Instr {
@@ -739,6 +777,10 @@ impl Instr {
             Instr::CallFinally => Opcode::CallFinally,
             Instr::DropCompletion => Opcode::DropCompletion,
             Instr::Plus => Opcode::Plus,
+            Instr::CompareLt => Opcode::CompareLt,
+            Instr::CompareGt => Opcode::CompareGt,
+            Instr::CompareLe => Opcode::CompareLe,
+            Instr::CompareGe => Opcode::CompareGe,
         }
     }
 
@@ -754,7 +796,7 @@ impl Instr {
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div
             | Rem | Gt | Le | Ge | LooseEq | Need | NeedAll | BitAnd | BitOr | BitXor | Shl
-            | Sar | UShr | Pow | Plus => (2, 1),
+            | Sar | UShr | Pow | Plus | CompareLt | CompareGt | CompareLe | CompareGe => (2, 1),
             ToNumberPair => (2, 2),
             AtomNew | AtomLoad => (1, 1),
             AtomCas => (3, 2),
@@ -786,6 +828,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 73);
+        assert_eq!(assigned, 77);
     }
 }

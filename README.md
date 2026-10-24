@@ -1418,9 +1418,9 @@ Supported (`cargo test --test js_source string_values`,
 Deferred:
 
 - Conversions fail with `UnsupportedOperand` instead of guessing: `+` with
-  an object operand (ToPrimitive, clj-quickjs-70); relational comparison of
-  two strings (clj-quickjs-68). (Strings convert to numbers since
-  clj-quickjs-67, below.) No `typeof`, templates, `length`, indexing or
+  an object operand (ToPrimitive, clj-quickjs-70). (Strings convert to
+  numbers since clj-quickjs-67 and compare relationally by code units since
+  clj-quickjs-68, below.) No `typeof`, templates, `length`, indexing or
   string methods yet (so no `Number.prototype.toString` call, and no radix
   other than 10, clj-quickjs-149); lone surrogate escapes are still rejected
   by the lexer (clj-quickjs-141).
@@ -1449,9 +1449,27 @@ Supported (`cargo test --test js_source strings_`,
 
 Deferred:
 
-- Relational comparison of two strings fails with `UnsupportedOperand`
-  until code-unit order (clj-quickjs-68); object operands wait for
-  ToPrimitive (clj-quickjs-70).
+- Object operands wait for ToPrimitive (clj-quickjs-70).
+
+### Relational comparison of strings (clj-quickjs-68)
+
+Supported (`cargo test --test js_source strings_compare_by_code_units`):
+
+- `<`, `>`, `<=`, `>=` with two string operands compare them
+  lexicographically by UTF-16 code units, a proper prefix being smaller
+  (ECMAScript IsLessThan, QuickJS `js_string_compare`): `"b" > "a"`,
+  `"a" < "aa"`, `"" < "a"`, `"B" < "a"` and `"10" < "9"` are true, and
+  `"\u{10000}" < "\uFFFF"` is true (U+10000 is D800 DC00). A string against
+  a non-string still compares numerically (`"10" < 9` and `"abc" >= 1` are
+  false). New opcodes `compare_lt`/`compare_gt`/`compare_le`/`compare_ge`
+  (`0x4A`–`0x4D`), emitted when neither operand is statically a number;
+  with a static number on either side the compiler keeps ToNumber and the
+  number-only `lt`/`gt`/`le`/`ge`.
+
+Deferred:
+
+- An object operand fails with `UnsupportedOperand` until ToPrimitive with
+  hint number (clj-quickjs-70).
 
 ### Labelled statements (clj-quickjs-82)
 

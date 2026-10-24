@@ -2165,20 +2165,105 @@ fn strings_convert_with_string_to_number() {
     ] {
         assert_eq!(eval(src), ValueView::Bool(expected), "{src}");
     }
-    // Two strings compare by code units (clj-quickjs-68), never as numbers:
-    // rejected until then.
-    for src in [
-        r#""10" < "9""#,
-        r#""9" <= "10""#,
-        r#"let a = "1", b = "2"; a >= b"#,
-        r#"let f = (a, b) => a > b; f("b", "a")"#,
+    // Two strings compare by code units (clj-quickjs-68,
+    // `strings_compare_by_code_units`), never as numbers.
+    for (src, expected) in [
+        (r#""10" < "9""#, true),
+        (r#""9" <= "10""#, false),
+        (r#"let a = "1", b = "2"; a >= b"#, false),
+        (r#"let f = (a, b) => a > b; f("b", "a")"#, true),
     ] {
-        assert_eq!(
-            failure(src).kind(),
-            VmErrorKind::UnsupportedOperand,
-            "{src}"
-        );
+        assert_eq!(eval(src), ValueView::Bool(expected), "{src}");
     }
+}
+
+/// Relational comparison of two strings by UTF-16 code units
+/// (clj-quickjs-68). `'b' > 'a'` is from `test_op1` (the case on line 103) of
+/// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8 (its
+/// `assert(a, b, msg)` as a Rust assertion on the expression's value); see
+/// `docs/architecture.md`, "QuickJS references and provenance". The QuickJS
+/// MIT notice is on `strings_convert_with_string_to_number` above.
+#[test]
+fn strings_compare_by_code_units() {
+    for (src, expected) in [
+        // `test_op1`.
+        ("'b' > 'a'", true),
+        ("'a' < 'b'", true),
+        // A proper prefix is smaller; the empty string is the smallest.
+        ("'a' < 'aa'", true),
+        ("'aa' > 'a'", true),
+        ("'' < 'a'", true),
+        ("'' < ''", false),
+        ("'' <= ''", true),
+        // Code units, not case-insensitive: 'B' is 0x42, 'a' is 0x61.
+        ("'B' < 'a'", true),
+        ("'a' <= 'a'", true),
+        ("'a' >= 'a'", true),
+        ("'a' > 'a'", false),
+        ("'a' >= 'b'", false),
+        ("'abd' > 'abc'", true),
+        // Two strings compare as strings, a string and a number as numbers.
+        ("'10' < '9'", true),
+        ("'10' < 9", false),
+        ("9 > '10'", false),
+        // 'abc' converts to NaN: every comparison is false.
+        ("'abc' < 1", false),
+        ("'abc' >= 1", false),
+        ("1 <= 'abc'", false),
+        // Code-unit order: U+10000 is D800 DC00, below U+FFFF (FFFF) even
+        // though its scalar value (and UTF-8 encoding) is larger.
+        ("'\\u{10000}' < '\u{FFFF}'", true),
+        ("'\u{FFFF}' < '\\u{10000}'", false),
+        ("'\\u{10000}' > '\\uE000'", false),
+        ("'\\u{10000}' > '\\uD7FF'", true),
+        ("'\\u{10000}' < '\\u{10001}'", true),
+        // Strings that are not statically known compare at run time, in
+        // all four operators.
+        (
+            "let f = (a, b) => (a < b) + 2 * (a > b) + 4 * (a <= b) + 8 * (a >= b); \
+             f('x', 'y') === 5 && f('y', 'x') === 10 && f('x', 'x') === 12",
+            true,
+        ),
+        // Booleans, null and undefined convert with ToNumber.
+        ("let t = true, s = '1'; t <= s && t >= s", true),
+        (
+            "let n = null, u; n < '1' && !(u < '1') && !(u >= '1')",
+            true,
+        ),
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(expected), "{src}");
+    }
+    // The `docs/grammar.md` example lines, each true.
+    for src in [
+        r#""b" > "a" && "a" < "aa" && "" < "a" && "B" < "a" && "a" <= "a""#,
+        r#""10" < "9" && !("10" < 9) && !("abc" < 1) && !("abc" >= 1)"#,
+        r#""\u{10000}" < "\uFFFF" && !("\uFFFF" < "\u{10000}")"#,
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    // The relational operators with no static number operand lower to the
+    // string-aware compare opcodes; with one, to ToNumber and `lt`.
+    let ops = opcodes(&exe("let a = 'a', b = 'b'; a < b; a > b; a <= b; a >= b"));
+    for op in [
+        Opcode::CompareLt,
+        Opcode::CompareGt,
+        Opcode::CompareLe,
+        Opcode::CompareGe,
+    ] {
+        assert!(ops.contains(&op), "{op:?} missing from {ops:?}");
+    }
+    let ops = opcodes(&exe("let a = 'a'; a < 1"));
+    assert!(
+        ops.contains(&Opcode::Lt) && !ops.contains(&Opcode::CompareLt),
+        "{ops:?}"
+    );
+    // An object operand still needs ToPrimitive (clj-quickjs-70).
+    let (kind, message, line, _) = failure_at("let o = function () {};\n'a' < o");
+    assert_eq!((kind, line), (VmErrorKind::UnsupportedOperand, 2));
+    assert_eq!(
+        message,
+        "compare_lt of string and object needs ToPrimitive, which is not supported"
+    );
 }
 
 /// IsLooselyEqual between strings and numbers or booleans (clj-quickjs-67).

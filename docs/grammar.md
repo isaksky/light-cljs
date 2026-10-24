@@ -314,9 +314,9 @@ checks left to later stages:
   rejected. At run time a string is a sequence of UTF-16 code units
   (clj-quickjs-65; `docs/architecture.md`, "String values"): a literal is
   stored as the UTF-16 encoding of its text, so `'\u{1F600}'` is two code
-  units, and content equality compares code units. `length`, indexing and
-  relational order on code units are later pellets (clj-quickjs-141,
-  clj-quickjs-142, clj-quickjs-68).
+  units, and content equality and relational order (clj-quickjs-68)
+  compare code units. `length` and indexing are later pellets
+  (clj-quickjs-141, clj-quickjs-142).
 - **Identifier tables are Unicode 16.0**, the version compiled into the perl
   that generated them; code points assigned later are not identifier
   characters until the tables are regenerated.
@@ -370,7 +370,7 @@ Executed, with JavaScript semantics:
 | `+` | when either operand is a string: ToString of both, concatenated (a new string; a result over 2^30 - 1 code units fails with `OutOfMemory`, as QuickJS's "string too long"). ToString gives `"undefined"`, `"null"`, `"true"`/`"false"`, and for numbers Number::toString in radix 10: shortest round-trip digits (ties to the even digit), plain decimal for `1e-6 <= \|x\| < 1e21` (`"0.000001"`, `"19686109595169230000"`), otherwise exponent form (`"1e+21"`, `"1e-7"`), `"0"` for `-0`, `"NaN"`, `"Infinity"` (clj-quickjs-66). Otherwise ToNumber of both, then IEEE addition. An object operand fails with `UnsupportedOperand` until ToPrimitive (clj-quickjs-70). Lowered to `add` when both operands are statically numbers, otherwise to `plus`, which decides at run time |
 | `- * / %` and unary `-`, `+` | ToNumber on `undefined` (NaN), `null` (0), booleans (0/1) and strings (StringToNumber, next row), then IEEE arithmetic; `%` keeps the dividend's sign |
 | StringToNumber (clj-quickjs-67), wherever ToNumber applies | leading and trailing whitespace and line terminators (including NBSP, BOM and Unicode `Zs`) are ignored; empty or all-whitespace is 0; an unsigned `0x`/`0o`/`0b` integer (any length, correctly rounded); a decimal with optional sign, fraction and exponent (`"-1.5e3"`, `".5"`, `"5."`; `"-0"` is -0; `"010"` is 10, no legacy octal); `Infinity` with an optional sign; anything else is NaN (`"1_000"`, `"1n"`, `"-0x1"`, `"12px"`, `"infinity"`) |
-| `< > <= >=` | ToNumber, then numeric comparison (anything with NaN is false; `"10" < 9` is false); two string operands fail with `UnsupportedOperand` (string comparison is clj-quickjs-68) |
+| `< > <= >=` | IsLessThan on primitives: two strings compare lexicographically by UTF-16 code units, a proper prefix being smaller (`"10" < "9"`, `"B" < "a"` and `"" < "a"` are true; `"\u{10000}" < "\uFFFF"` is true because U+10000 is the code units D800 DC00; clj-quickjs-68); any other pair converts with ToNumber, then compares numerically (anything with NaN is false; `"10" < 9` and `"abc" >= 1` are false). An object operand fails with `UnsupportedOperand` until ToPrimitive (clj-quickjs-70). Lowered to `compare_lt`/`compare_gt`/`compare_le`/`compare_ge` when neither operand is statically a number, otherwise to ToNumber and the number-only `lt`/`gt`/`le`/`ge` |
 | `&`, `\|`, `^`, `<<`, `>>`, `>>>` and unary `~` (clj-quickjs-62) | ToNumber of both operands (left first, after both are evaluated), then ToInt32 (NaN and ±Infinity are 0; truncate, wrap modulo 2^32), ToUint32 for the left operand of `>>>`; a shift count is `ToUint32(right) & 31`; the result is a 32-bit integer (unsigned for `>>>`), never `-0` |
 | `**` (clj-quickjs-63) | ToNumber of both operands (left first, after both are evaluated), then Number::exponentiate: IEEE `pow`, except that a NaN or ±Infinity exponent with base `1` or `-1` gives NaN (`1 ** NaN`, `(-1) ** Infinity`); `x ** 0` is 1 even for NaN |
 | `===`, `!==` | IsStrictlyEqual (`NaN !== NaN`, `0 === -0`; strings by content, never equal to a non-string) |
@@ -402,6 +402,15 @@ Strings convert with StringToNumber and compare loosely with numbers
 ("12345" | 0) === 12345 && ("0x12345" >>> 0) === 0x12345;
 "6" * "7" === 42 && "2" ** "10" === 1024;
 "" == 0 && "123" == 123 && "1" == true && "abc" != NaN;
+```
+
+Two strings compare by UTF-16 code units, a string and a number as numbers
+(clj-quickjs-68); each line below evaluates to `true`:
+
+```js accept
+"b" > "a" && "a" < "aa" && "" < "a" && "B" < "a" && "a" <= "a";
+"10" < "9" && !("10" < 9) && !("abc" < 1) && !("abc" >= 1);
+"\u{10000}" < "\uFFFF" && !("\uFFFF" < "\u{10000}");
 ```
 
 Errors:
@@ -461,15 +470,15 @@ would escape such a finally block ends the cleanup there (`src/task.rs`,
 Gaps specific to execution:
 
 - **Strings convert between primitives only** (clj-quickjs-65,
-  clj-quickjs-66, clj-quickjs-67). String literals, `===`/`==` between
-  strings, `+` with a string operand (ToString of a primitive, then
+  clj-quickjs-66, clj-quickjs-67, clj-quickjs-68). String literals,
+  `===`/`==` between strings, relational comparison of two strings (by
+  code units), `+` with a string operand (ToString of a primitive, then
   concatenation), StringToNumber (in the arithmetic, bitwise, shift, `**`
   and `++`/`--` operators, in `==` against a number or boolean, and in
   relational comparison against a non-string), ToBoolean and strings as
   map keys execute. Every operation that would convert an object fails
   with `UnsupportedOperand` instead of guessing (ToPrimitive,
-  clj-quickjs-70), and so does relational comparison of two strings,
-  which compares code units (clj-quickjs-68). `typeof`,
+  clj-quickjs-70). `typeof`,
   template literals, `length`, indexing and string methods are not
   supported yet.
 - **Error objects are opaque.** A caught ReferenceError, TypeError or

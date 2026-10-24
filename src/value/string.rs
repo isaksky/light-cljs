@@ -20,7 +20,7 @@
 //!   reading it from another task shares the same body without copying and
 //!   without any publication walk (`crate::value::share`);
 //! * equality, hashing and ordering read only the body, never the heap, so
-//!   `===`, map keys (SameValueZero) and future relational comparison need
+//!   `===`, map keys (SameValueZero) and relational comparison need
 //!   no heap lock.
 //!
 //! # UTF-16 code units

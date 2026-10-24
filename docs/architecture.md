@@ -1279,9 +1279,9 @@ Design: `design.md` §§4, 11.
   encoded with UTF-16; `JsString::from_code_units` already accepts any
   sequence, which is what lone surrogate escapes (clj-quickjs-141) need.
   `length` will be `JsString::len` (stored count, O(1)); indexing reads
-  `code_units()[i]` (clj-quickjs-142); relational order is `JsString`'s
-  `Ord`, lexicographic over code units (QuickJS `js_string_compare`), not
-  Unicode scalar order (clj-quickjs-68). Text for diagnostics and the
+  `code_units()[i]` (clj-quickjs-142); relational order (`<` etc.,
+  clj-quickjs-68) is `JsString`'s `Ord`, lexicographic over code units
+  (QuickJS `js_string_compare`), not Unicode scalar order. Text for diagnostics and the
   embedder (`to_string_lossy`, `Display`) maps a lone surrogate to U+FFFD.
 - **Room for later representations.** Every string uses the 16-bit form
   and concatenation copies both operands into a new flat body (an empty
@@ -1318,11 +1318,14 @@ Design: `design.md` §§4, 11.
   grammar (so Rust's `inf`/`nan` spellings stay NaN), signed `Infinity`,
   NaN otherwise. `===` and `==` compare two strings by content; `==`
   between a string and a number or boolean compares numbers (the boolean
-  as 0 or 1). The relational operators still lower to `to_number_pair`
-  and a numeric comparison, which is wrong only for two strings
-  (code-unit order, clj-quickjs-68): until that lowering changes,
-  `to_number_pair` fails with `UnsupportedOperand` when both operands are
-  strings and the next instruction is `lt`/`gt`/`le`/`ge`. Calling a string is a
+  as 0 or 1). The relational operators (clj-quickjs-68) lower to
+  `compare_lt`/`compare_gt`/`compare_le`/`compare_ge` (opcodes
+  `0x4A`–`0x4D`, IsLessThan on primitives, `is_less_than` in
+  `src/vm/dispatch.rs`) when neither operand is statically a number: two
+  strings compare by `JsString`'s code-unit `Ord`, any other pair by
+  ToNumber; with a static number on either side two strings are
+  impossible, so the compiler keeps `to_number`/`to_number_pair` and the
+  number-only `lt`/`gt`/`le`/`ge`. Calling a string is a
   TypeError "string is not a function"; an uncaught thrown string reports
   its text.
 - **Tests.** `tests/js_source.rs` `string_values`, `tests/publication.rs`
@@ -1613,3 +1616,12 @@ and Charlie Gordon) and is listed here with its source path and revision:
   consulted only, for semantics; `string_to_number` in
   `src/value/string.rs` follows ECMA-262 StringToNumber and parses decimals
   with Rust's correctly rounded `f64` parser. No code was copied.
+- `tests/js_source.rs` `strings_compare_by_code_units` (clj-quickjs-68):
+  the `('b' > 'a')` case (line 103) of `test_op1` of
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
+  Modified: `assert(a, b, msg)` is a Rust assertion on the expression's
+  value. The notice is on `strings_convert_with_string_to_number`.
+  `research/quickjs/quickjs.c` `js_relational_slow` and
+  `js_string_compare` were consulted only, for semantics; `is_less_than` in
+  `src/vm/dispatch.rs` follows ECMA-262 IsLessThan on primitives. No code
+  was copied.

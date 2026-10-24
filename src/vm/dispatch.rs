@@ -262,6 +262,32 @@ fn plus(a: &Value, b: &Value) -> Result<Value, Fault> {
     }
 }
 
+/// ECMAScript IsLessThan(x, y) on primitives (QuickJS `js_relational_slow`):
+/// `None` stands for its `undefined` result, a NaN operand. Two strings
+/// compare lexicographically by UTF-16 code units (QuickJS
+/// `js_string_compare`), a proper prefix being smaller; any other pair
+/// compares the ToNumber of both. Objects need ToPrimitive with hint number
+/// first (clj-quickjs-70), which is deferred, so an object operand is
+/// rejected explicitly before any conversion. For primitives the order of
+/// the two conversions is unobservable, so the LeftFirst flag is not needed.
+fn is_less_than(opcode: Opcode, x: &Value, y: &Value) -> Result<Option<bool>, Fault> {
+    Ok(match (x, y) {
+        (Value::Object(_), _) | (_, Value::Object(_)) => {
+            return Err(Fault::Unsupported(format!(
+                "{} of {} and {} needs ToPrimitive, which is not supported",
+                opcode.name(),
+                x.type_name(),
+                y.type_name()
+            )));
+        }
+        (Value::String(s), Value::String(t)) => Some(s < t),
+        _ => {
+            let (n, m) = (to_number(x)?, to_number(y)?);
+            n.partial_cmp(&m).map(|order| order.is_lt())
+        }
+    })
+}
+
 /// JavaScript `==` (IsLooselyEqual, QuickJS `js_eq_slow`) for the supported
 /// value types. `null` and `undefined` equal each other and nothing else;
 /// two values of one type compare strictly (two strings by content). A
@@ -645,6 +671,19 @@ fn step(
             let a = state.pop()?;
             state.push(plus(&a, &b)?);
         }
+        Instr::CompareLt | Instr::CompareGt | Instr::CompareLe | Instr::CompareGe => {
+            let b = state.pop()?;
+            let a = state.pop()?;
+            let opcode = instr.opcode();
+            // IsLessThan gives true, false or undefined (a NaN operand);
+            // undefined makes every relational operator false.
+            state.push(Value::Bool(match instr {
+                Instr::CompareLt => is_less_than(opcode, &a, &b)? == Some(true),
+                Instr::CompareGt => is_less_than(opcode, &b, &a)? == Some(true),
+                Instr::CompareLe => is_less_than(opcode, &b, &a)? == Some(false),
+                _ => is_less_than(opcode, &a, &b)? == Some(false),
+            }));
+        }
         Instr::StrictEq => {
             let b = state.pop()?;
             let a = state.pop()?;
@@ -670,21 +709,6 @@ fn step(
         Instr::ToNumberPair => {
             let b = state.pop()?;
             let a = state.pop()?;
-            // The compiler lowers `<`, `>`, `<=`, `>=` to `to_number_pair`
-            // and a numeric comparison, which is IsLessThan except when
-            // both operands are strings: those compare by code units
-            // (clj-quickjs-68), so they are rejected, never compared as
-            // numbers. `pc` is already past this instruction.
-            if let (Value::String(_), Value::String(_)) = (&a, &b)
-                && matches!(
-                    code.instrs.get(state.top().pc),
-                    Some(Instr::Lt | Instr::Gt | Instr::Le | Instr::Ge)
-                )
-            {
-                return Err(Fault::Unsupported(
-                    "relational comparison of two strings is not supported yet".to_string(),
-                ));
-            }
             let x = to_number(&a)?;
             let y = to_number(&b)?;
             state.push(Value::Number(x));
@@ -949,6 +973,10 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::Pow
         // A string result lives outside the heap: no allocation to poll for.
         | Instr::Plus
+        | Instr::CompareLt
+        | Instr::CompareGt
+        | Instr::CompareLe
+        | Instr::CompareGe
         | Instr::ThrowError(_)
         | Instr::GetCapture(_)
         | Instr::CellInit
