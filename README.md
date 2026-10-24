@@ -3909,3 +3909,27 @@ now available for a future implementation.
 CARGO_BUILD_JOBS=3 cargo test --test js_source intl_duration_format -- --test-threads=3
 CARGO_BUILD_JOBS=3 cargo test --lib value::string::tests::string_to_number_budgeted -- --test-threads=3
 ```
+
+### Complete QuickJS Intl fixture (clj-quickjs-226)
+
+`tests/quickjs_intl.rs::quickjs_test_intl_cases` runs all ten cases from the
+pinned QuickJS `tests/test_intl.js`, independently in UTC and UTC+05:30 with
+host default locale en-US. All 470 upstream definition/helper lines and every
+expected string are unchanged; each case reports unmodified, with no adapted
+rows. Supported constructors exercised are `Intl.DateTimeFormat`,
+`Intl.NumberFormat`, `Intl.Collator`, `Intl.ListFormat`,
+`Intl.RelativeTimeFormat`, `Intl.PluralRules`, `Intl.Locale`, `Intl.Segmenter`,
+`Intl.DisplayNames` and `Intl.DurationFormat`.
+
+This fixture covers the agreed test locales and QuickJS snapshot strings.
+Deferred behavior remains: DateTimeFormat calendars beyond gregory,
+`timeZoneName` options, and named time zones other than the host's configured
+zone (UTC and fixed offsets are supported); NumberFormat unit style;
+Segmenter sentence granularity and complete UAX #29 segmentation;
+DisplayNames localized names beyond en/fr (English fallback); and duration
+strings/Temporal private slots and complete CLDR unit patterns. See the
+individual service sections above for further limits.
+
+```sh
+CARGO_BUILD_JOBS=3 cargo test --test quickjs_intl -- --nocapture --test-threads=3
+```

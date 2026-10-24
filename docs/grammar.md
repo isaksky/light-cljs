@@ -5730,3 +5730,13 @@ Object.getPrototypeOf(SuppressedError) === Error && SuppressedError.length === 3
 Object.getOwnPropertyDescriptor(SuppressedError(1, 2), 'message') === undefined;
 SuppressedError(1, 2, undefined, {get cause() { throw 42; }}).cause === undefined;
 ```
+
+### Complete Intl upstream execution (clj-quickjs-226)
+
+Execution: `tests/quickjs_intl.rs::quickjs_test_intl_cases` compiles and runs
+all ten complete cases from QuickJS `tests/test_intl.js` lines 1-470 without
+changing any source row or expected string. Each case runs independently in
+UTC and UTC+05:30 with host default locale en-US. This adapted QuickJS text
+is a synthetic fixture, not light-cljs output. No syntax or runtime behavior
+is added. Explicit gaps remain those of the individual Intl services;
+the README's complete-fixture section collects the principal limitations.

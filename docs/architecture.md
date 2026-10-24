@@ -7968,3 +7968,16 @@ QuickJS references and provenance: `research/quickjs/quickjs.c`, revision
 `js_native_error_proto_funcs` and `js_new_suppressed_error` were read for
 semantics. Rust implementation and synthetic tests were written fresh;
 no upstream source or test text was copied.
+
+### Complete Intl upstream fixture (clj-quickjs-226)
+
+`tests/quickjs_intl.rs::quickjs_test_intl_cases` uses the existing compiler,
+Runtime and SimTimeHost to execute each of the ten pinned upstream Intl
+cases in UTC and UTC+05:30. The host's default locale is asserted to be
+en-US. All 470 upstream definition/helper lines and their QuickJS expected
+strings stay unchanged. The harness appends one selected case call, bounds
+execution by instruction budgets, and collects between slices with live Intl
+objects/native continuations. Each case/zone reports its unmodified status;
+failures are accumulated so one case cannot hide another. No runtime
+representation, locale tables or host interfaces change. Attribution and
+the retained license are recorded in docs/attribution.md and the fixture.

@@ -1243,3 +1243,16 @@ apply. Input and converter hashes are retained in unit_provenance.txt.
 The first three assertions in `tests/js_source.rs::intl_duration_format`
 adapt `research/quickjs/tests/test_intl.js::test_durationFormat`;
 the existing QuickJS MIT notice in that test file applies.
+
+### Complete Intl source fixture (clj-quickjs-226)
+
+`tests/fixtures/js/quickjs_test_intl.js` preserves lines 1-470 of
+`research/quickjs/tests/test_intl.js` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04),
+byte for byte, including all helpers, ten complete cases and expected strings.
+Only a descriptive header, the full copyright/MIT notice from
+`research/quickjs/LICENSE`, and ten trailing case calls are added. Its header
+and `tests/quickjs_intl.rs` list adapted rows: none. This is adapted QuickJS
+test text, a synthetic fixture, not light-cljs output. The integration test
+runs each case separately in two simulated host zones with en-US as the
+default locale and collection between instruction-budget slices.
