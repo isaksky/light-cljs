@@ -11152,6 +11152,11 @@ fn global_object_bindings() {
 /// Synthetic fixtures, not light-cljs output (clj-quickjs-105).
 #[test]
 fn sloppy_implicit_globals_and_delete() {
+    for src in ["delete __rt;", "delete (__rt);"] {
+        let error = compile_script_with("sloppy", src, ScriptOptions::SLOPPY).unwrap_err();
+        assert_eq!(error.kind, SyntaxErrorKind::ReservedWord, "{src}: {error}");
+        assert_eq!((error.line, error.column), (1, 1), "{src}: {error}");
+    }
     assert_eq!(
         sloppy_eval("function f() { u = 3; } f(); u"),
         ValueView::Number(3.0)
