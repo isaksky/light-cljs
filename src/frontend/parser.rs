@@ -12,6 +12,7 @@ use super::ast::{
     BinaryOp, Declarator, Expr, ExprKind, Function, Ident, LexicalDecl, LexicalKind, LogicalOp,
     Script, Stmt, StmtKind, UnaryOp,
 };
+use super::intrinsics::RESERVED_BINDING;
 use super::lexer::{Keyword, Lexer, Punct, Token, TokenKind};
 use super::{MAX_NESTING, Span, SyntaxError, SyntaxErrorKind};
 
@@ -576,6 +577,13 @@ impl<'a> Parser<'a> {
                 name: name.clone(),
                 span: left.span,
             }),
+            ExprKind::Member { object, .. } if is_reserved_binding(object) => Err(self.error(
+                SyntaxErrorKind::ReservedWord,
+                left.span,
+                format!(
+                    "intrinsics of the reserved binding `{RESERVED_BINDING}` cannot be assigned"
+                ),
+            )),
             ExprKind::Member { .. } => {
                 Err(self.unsupported(left.span, "assignment to properties is"))
             }
@@ -731,7 +739,7 @@ impl<'a> Parser<'a> {
                     span,
                 )?;
             } else {
-                self.reject_unsupported_postfix()?;
+                self.reject_unsupported_postfix(&expr)?;
                 break;
             }
         }
@@ -753,9 +761,16 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(never)]
-    fn reject_unsupported_postfix(&self) -> PResult<()> {
+    fn reject_unsupported_postfix(&self, object: &Expr) -> PResult<()> {
         let span = self.tok.span;
         match &self.tok.kind {
+            TokenKind::Punct(Punct::LBracket) if is_reserved_binding(object) => Err(self.error(
+                SyntaxErrorKind::ReservedWord,
+                span,
+                format!(
+                    "computed access to the reserved intrinsic binding `{RESERVED_BINDING}` is not allowed: name the intrinsic statically, as `{RESERVED_BINDING}.name(...)`"
+                ),
+            )),
             TokenKind::Punct(Punct::LBracket) => {
                 Err(self.unsupported(span, "computed member access is"))
             }
@@ -1038,4 +1053,10 @@ fn is_strict_reserved(k: Keyword) -> bool {
 
 fn strip_parens(text: &str) -> &str {
     text.trim_matches(|c: char| c == '(' || c == ')' || c.is_whitespace())
+}
+
+/// True for a reference to the compiler-reserved intrinsic binding
+/// (`super::intrinsics`), which no program can shadow.
+fn is_reserved_binding(e: &Expr) -> bool {
+    matches!(&e.kind, ExprKind::Identifier(name) if name == RESERVED_BINDING)
 }

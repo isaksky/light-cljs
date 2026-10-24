@@ -942,8 +942,10 @@ fn arbitrary_input_never_panics() {
 
 // ----- grammar document agreement ---------------------------------------------
 
-/// Every `js accept` example in docs/grammar.md parses, and every
-/// `js reject <Kind> <line>:<column>` example fails exactly so.
+/// Every `js accept` example in docs/grammar.md parses, every
+/// `js reject <Kind> <line>:<column>` example fails to parse exactly so, and
+/// every `js compile-reject <Kind> <line>:<column>` example parses but fails
+/// to compile exactly so.
 #[test]
 fn grammar_doc_examples() {
     let doc = include_str!("../../docs/grammar.md");
@@ -960,6 +962,16 @@ fn grammar_doc_examples() {
             ["accept"] => {
                 parse_script(&src).unwrap_or_else(|e| panic!("doc example {src:?}: {e}"));
                 accepted += 1;
+            }
+            ["compile-reject", kind, position] => {
+                parse_script(&src).unwrap_or_else(|e| panic!("doc example {src:?}: {e}"));
+                let e = super::compile_script("doc", &src).expect_err(&src);
+                assert_eq!(
+                    format!("{:?} {}:{}", e.kind, e.line, e.column),
+                    format!("{kind} {position}"),
+                    "doc example {src:?} gave {e}"
+                );
+                rejected += 1;
             }
             ["reject", kind, position] => {
                 let e = err(&src);

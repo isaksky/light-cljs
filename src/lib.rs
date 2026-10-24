@@ -53,8 +53,9 @@
 //!
 //! JavaScript source in the documented subset is parsed and compiled to
 //! validated bytecode ([`frontend::compile_script`]): straight-line code,
-//! conditionals, loops and locals; functions, calls and strings cannot be
-//! compiled yet. Executables can also be built from hand-assembled bytecode
+//! conditionals, loops, locals, functions, calls, closures and the
+//! compiler-reserved intrinsic binding `__rt`; strings and property access
+//! cannot be compiled yet. Executables can also be built from hand-assembled bytecode
 //! ([`Assembler`]), which is an early VM test tool, not JavaScript source
 //! support; at that level the VM runs nested calls and recursion in explicit
 //! task-owned frames, bounded by [`VmLimits`] instead of the Rust stack.

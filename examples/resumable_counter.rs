@@ -1,14 +1,18 @@
-//! Resumable VM example: budgeted runs, `Yielded`, and a leaf host effect.
+//! Resumable VM example: budgeted runs, `Yielded`, and a leaf host effect,
+//! running JavaScript source.
 //!
 //! Run with `cargo run --example resumable_counter`.
 //!
-//! Early VM test: the program is hand-assembled bytecode, not JavaScript
-//! source support (no JavaScript frontend exists yet). It is the equivalent of
+//! The program is `examples/resumable_counter.js` (a synthetic fixture),
+//! compiled by this crate's frontend (`frontend::compile_function`) and run by
+//! its VM:
 //!
 //! ```js
 //! function count(n) {
-//!   let i = 0, last;
-//!   while (i < n) { last = hostIncrement(i); i = i + 1; }
+//!   let last;
+//!   const bump = function (i) { return __rt.effect(0, i); };
+//!   let i = 0;
+//!   while (i < n) { last = bump(i); i = i + 1; }
 //!   return last;
 //! }
 //! ```
@@ -16,19 +20,19 @@
 //! Two tasks run the same shared executable. The example plays a tiny
 //! round-robin scheduler: each run gets a budget of 5 instructions, so every
 //! run ends in `Yielded` until the task returns. The host counter prints one
-//! line per executed `host_effect` instruction; since a resumed run continues
-//! at the saved instruction, no effect line is ever printed twice.
+//! line per executed `host_effect` instruction (the lowering of
+//! `__rt.effect`); since a resumed run continues at the saved instruction,
+//! no effect line is ever printed twice.
 
 use std::collections::VecDeque;
 
-use clj_quickjs::{
-    Assembler, Budget, Host, HostCall, Opcode, Primitive, RunOutcome, Runtime, Task, ValueView,
-};
+use clj_quickjs::frontend::compile_function;
+use clj_quickjs::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime, Task, ValueView};
 
 /// Host operation selector for "increment the counter".
 const INCREMENT: u16 = 0;
 
-/// The host side: a counter that the bytecode can only bump through a leaf
+/// The host side: a counter that the program can only bump through a leaf
 /// effect. It never reenters the VM, touches the heap, or suspends.
 #[derive(Default)]
 struct CounterHost {
@@ -54,30 +58,17 @@ impl Host for CounterHost {
 }
 
 fn main() {
-    let mut asm = Assembler::new();
-    let (top, done) = (asm.label(), asm.label());
-    asm.constant(Primitive::Number(0.0)).set_local(1); // i = 0
-    asm.op(Opcode::Undefined).set_local(2); // last = undefined
-    asm.bind(top);
-    asm.get_local(1).get_local(0).op(Opcode::Lt);
-    asm.jump_if_false(done); // while (i < n)
-    asm.get_local(1).host_effect(INCREMENT).set_local(2); // last = hostIncrement(i)
-    asm.get_local(1)
-        .constant(Primitive::Number(1.0))
-        .op(Opcode::Add)
-        .set_local(1); // i = i + 1
-    asm.jump(top);
-    asm.bind(done);
-    asm.get_local(2).op(Opcode::Return);
-    let exe = match asm.finish("count", 1, 3) {
+    let exe = match compile_function(include_str!("resumable_counter.js")) {
         Ok(exe) => exe,
         Err(e) => {
-            eprintln!("{e}");
+            eprintln!("examples/resumable_counter.js:{e}");
             std::process::exit(2);
         }
     };
 
-    println!("early VM test (hand-assembled bytecode, not JavaScript source)");
+    println!(
+        "JavaScript source examples/resumable_counter.js, compiled by the clj_quickjs frontend"
+    );
     let rt = Runtime::new();
     let mut ready: VecDeque<(&str, Task)> = VecDeque::new();
     for (name, n) in [("A", 3.0), ("B", 2.0)] {

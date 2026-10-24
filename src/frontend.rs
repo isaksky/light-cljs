@@ -8,7 +8,10 @@
 //! * [`compile_script`] / [`compile_function`]: source text to a validated
 //!   [`Executable`], via binding resolution and lowering (`frontend/lower.rs`;
 //!   `docs/grammar.md`, "Execution"). Forms that parse but cannot execute yet
-//!   (strings, calls, property access, functions) are compile errors.
+//!   (strings, property access) are compile errors. Functions, calls,
+//!   closures and the compiler-reserved intrinsic binding `__rt`
+//!   (`frontend/intrinsics.rs`; `docs/grammar.md`, "Reserved intrinsic
+//!   binding") compile to VM instructions.
 //! * [`parse_script`]: source text to an [`ast::Script`], or the first
 //!   [`SyntaxError`]. No AST is produced for input that uses an unsupported
 //!   form; the error names the form and its position.
@@ -23,6 +26,7 @@
 //! reported as [`SyntaxError`]s.
 
 pub mod ast;
+mod intrinsics;
 pub mod lexer;
 mod lower;
 mod parser;
@@ -194,8 +198,10 @@ pub fn parse_script(source: &str) -> Result<ast::Script, SyntaxError> {
 ///
 /// Errors: any [`parse_script`] error; a redeclared binding in one scope
 /// ([`SyntaxErrorKind::Invalid`], a JavaScript early error); forms that parse
-/// but cannot execute yet: string values, calls, property access and
-/// functions ([`SyntaxErrorKind::Unsupported`]); and bytecode limits
+/// but cannot execute yet: string values and property access
+/// ([`SyntaxErrorKind::Unsupported`]); misuse of the reserved intrinsic
+/// binding `__rt` ([`SyntaxErrorKind::ReservedWord`] or, for unknown
+/// intrinsics and bad arguments, [`SyntaxErrorKind::Invalid`]); and bytecode limits
 /// ([`SyntaxErrorKind::TooLarge`]). Unknown names, use of a binding before its
 /// declaration ran, and assignment to a `const` are not compile errors: as in
 /// JavaScript, they fail the task when (and only if) that code runs.
@@ -208,8 +214,9 @@ pub fn compile_script(name: &str, source: &str) -> Result<Executable, SyntaxErro
 /// into an executable whose parameters are that function's parameters: the
 /// entry point of a task, spawned with arguments. `return` completes the
 /// task; falling off the end returns `undefined`. The body follows the same
-/// rules as [`compile_script`]; nested functions are not supported yet
-/// (clj-quickjs-21).
+/// rules as [`compile_script`]. Inside the body, the function's own name is
+/// the running function object (so it can recurse); assigning it is
+/// [`SyntaxErrorKind::Unsupported`].
 pub fn compile_function(source: &str) -> Result<Executable, SyntaxError> {
     let script = parse_script(source)?;
     match script.body.as_slice() {

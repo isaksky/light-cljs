@@ -5,10 +5,10 @@ Requirements: [`docs/design.md`](docs/design.md). Backlog: Pellets (`pl list`).
 
 This is an architectural slice in progress, not a finished JavaScript engine.
 A small documented JavaScript subset ([`docs/grammar.md`](docs/grammar.md))
-compiles to VM bytecode and runs: straight-line code, conditionals, loops and
-locals. The VM executes nested calls, recursion and lexical closures in
-task-owned frames, but functions, calls and closures cannot be compiled from
-source yet, and strings are not executable.
+compiles to VM bytecode and runs: straight-line code, conditionals, loops,
+locals, functions, calls, recursion and closures in task-owned frames, and
+private collection and host-effect intrinsics through the compiler-reserved
+binding `__rt`. Strings and property access are not executable yet.
 
 ## Build and test
 
@@ -18,8 +18,9 @@ The toolchain comes from `flake.nix` (`nix develop` if `cargo` is not on PATH).
 cargo build --all-targets
 cargo test --all-targets          # unit + integration tests
 cargo test --doc                  # doc tests, including compile-fail handle tests
-cargo run                         # early VM test program (hand-assembled bytecode)
-cargo run --example resumable_counter   # budgeted yield/resume with a host counter
+cargo run                         # compile and run examples/demo.js (JavaScript source)
+cargo run -- path/to/script.js    # compile and run any script of the subset
+cargo run --example resumable_counter   # budgeted yield/resume of examples/resumable_counter.js
 cargo test --lib resume_tests     # yield/resume and host-effect unit tests
 cargo test --test resumable       # resume on another embedder thread
 cargo test --test gc              # collection through the embedding API
@@ -33,6 +34,7 @@ cargo test --lib value::share::   # categories, known-shareable cache, cycles
 cargo test --test dependency      # dependency cells: need, completion, worlds, GC, races
 cargo test --lib dep::            # cell root category, rejected completion
 cargo test --test js_source       # JavaScript source compiled and executed
+cargo test --test js_functions    # functions, calls, closures, reserved intrinsics from source
 cargo test --lib frontend::       # lexer, parser, grammar doc examples, lowering
 cargo test --test wakeup           # parking and wakeups: many waiters, duplicate wakes, one owner
 cargo test --lib task::           # task state machine and hook-forced handoff windows
@@ -110,7 +112,8 @@ Supported:
   fail the task (`VmErrorKind::HostEffect`); `Task::run` supplies no host.
 - Example: `cargo run --example resumable_counter` round-robins two tasks with
   a budget of 5 instructions and prints the host counter once per effect.
-  Hand-assembled bytecode: an early VM test, not JavaScript source support.
+  Since clj-quickjs-21 its program is JavaScript source,
+  `examples/resumable_counter.js` (`__rt.effect` lowers to `host_effect`).
 
 Deferred:
 
@@ -323,9 +326,9 @@ Supported:
 
 Deferred:
 
-- String values, calls, property access, function declarations and
-  expressions, closures and the reserved intrinsic bindings (clj-quickjs-21,
-  -20, -4): they parse but are rejected by the compiler as `Unsupported`.
+- String values and property access: they parse but are rejected by the
+  compiler as `Unsupported`. (Functions, calls, closures and the reserved
+  intrinsic binding compile since clj-quickjs-21, below.)
 - `throw`/`try` (clj-quickjs-11): ReferenceError and TypeError failures
   cannot be caught. Operators on objects need ToPrimitive and fail with
   `UnsupportedOperand` (objects cannot come from source yet).
@@ -433,8 +436,7 @@ Supported (VM level; early VM tests use hand-assembled bytecode,
 
 Deferred:
 
-- Compiling functions and calls from source (clj-quickjs-21). Closures and
-  captured bindings are VM-level since clj-quickjs-20 (below).
+- (Compiling functions and calls from source: clj-quickjs-21, below.)
 - `this`, `arguments`, `new`, rest/default parameters, function properties
   (`length`, `name`), native or host-function callees, and catching a
   `StackOverflow` or `TypeError` (clj-quickjs-11).
@@ -470,14 +472,13 @@ Supported (VM level; early VM tests use hand-assembled bytecode,
 
 Deferred:
 
-- Compiling closures from source, including the choice between value and
-  cell capture and replacing the compiler's static TDZ decision with cells
-  (clj-quickjs-21).
+- (Compiling closures from source: clj-quickjs-21, below.)
 - A captured `const` that a closure may read before its initialization must
   live in a cell, which makes the closure task-owned; there is no
   initialize-once immutable cell.
 - Spawning a task directly on closure code (no environment) fails at its
   first `get_capture` with `VmErrorKind::Internal`.
+
 ### Atoms (clj-quickjs-10)
 
 Supported (Rust API and VM intrinsics; VM tests use hand-assembled bytecode,
@@ -562,3 +563,56 @@ Deferred:
   native continuations (clj-quickjs-28); cancelling a producer
   automatically when its last consumer is cancelled (not done by design:
   the embedder decides, with `Runtime::cancel_cell`).
+
+### Functions, closures and reserved intrinsics from source (clj-quickjs-21)
+
+Supported (`cargo test --test js_functions`; fixtures in `tests/fixtures/js/`
+and `examples/`):
+
+- Function declarations (hoisted per statement list), function expressions
+  (named and anonymous), calls (`call n`), parameters, `return`, nested
+  calls, direct and mutual recursion, higher-order functions and escaping
+  closures, all compiled from JavaScript source to the VM's call and closure
+  instructions (`function`, `call`, `current_function`, `get_capture`,
+  `new_cell`/`cell_init`/`cell_get`/`cell_set`). Semantics and errors:
+  "Execution" in [`docs/grammar.md`](docs/grammar.md); design: "Functions,
+  closures and intrinsics from source" in
+  [`docs/architecture.md`](docs/architecture.md).
+- Closures see later assignments, share bindings with each other, keep them
+  alive after the frame returns, and get a fresh binding per loop iteration.
+  The temporal dead zone is checked statically inside a function and at run
+  time (binding cells) for closures that may run before a declaration.
+  Never-assigned bindings initialized before capture are copied, so such
+  closures stay publishable to other tasks; closures over cells are
+  task-owned.
+- A function's own name inside it is `current_function` (named function
+  expressions, `compile_function` entries, never-reassigned declarations).
+- The compiler-reserved intrinsic binding `__rt` with a specified contract
+  (no shadowing, reassignment, computed access or aliasing; explicit
+  `ReservedWord`/`Invalid` diagnostics): `__rt.vector`, `map`, `count`,
+  `nth`, `get`, `getOr`, `assoc`, `dissoc`, `conj`, `popLast`,
+  `vectorBuilder`, `mapBuilder`, `builderConj`, `builderAssoc`, `freeze`
+  (collection intrinsics) and `__rt.effect(op, x)` (`host_effect`). See
+  "Reserved intrinsic binding" in [`docs/grammar.md`](docs/grammar.md).
+- Demo: `cargo run` compiles and runs `examples/demo.js` (recursion, nested
+  calls, an escaping closure over a builder, intrinsics, one effect;
+  completes with 89); `cargo run -- file.js` runs any script. No qjsc or C
+  engine is used.
+- Adapted QuickJS `test_closure.js` cases run from source
+  (`tests/fixtures/js/quickjs_closure.js`, with its license notice).
+
+Deferred:
+
+- `__rt.need` (reserved; `Unsupported` until clj-quickjs-23 lowers it to a
+  resumable dependency wait).
+- `throw`/`try`/`finally` (clj-quickjs-11): run-time errors still fail the
+  task. Strings, property access (`f.call`, methods, objects), `this`,
+  `arguments`, `new`, default/rest parameters, arrow functions, generators.
+- A function declaration repeating a parameter or another declaration at
+  the top level of a script or function body (var-scoped in JavaScript) is
+  rejected as `Unsupported`.
+- A hoisted declaration capturing a `const` of its own scope uses a cell
+  (no initialize-once immutable cell), which makes it task-owned.
+- `src/host/sim.rs` still uses its stand-in tail-call convention for the
+  simulated producers (`tests/fixtures/js/sim_is_even.js`); switching it to
+  compiled calls belongs to the end-to-end pellets.

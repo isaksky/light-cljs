@@ -281,9 +281,10 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   JavaScript, so the compiler emits `throw_error` (opcode `0x2A`, modelled on
   QuickJS's `throw_error`) at that point: the task fails with
   `VmErrorKind::ReferenceError` or `TypeError` only if that code runs. With no
-  closures, `break` or `continue` in the subset, initialization is decided
-  statically by source position; with closures (clj-quickjs-21) the compiler
-  must switch to the VM's run-time check, binding cells (clj-quickjs-20).
+  `break`, `continue` or exceptions in the subset, initialization is decided
+  statically by source position within the declaring function; bindings
+  that closures capture use the VM's run-time check, binding cells, where
+  needed (clj-quickjs-21, below).
 - **Operators.** New number-only opcodes (`div`, `rem`, `neg`, `gt`, `le`,
   `ge`) follow the existing `add`/`sub`/`mul`/`lt` rule. The compiler applies
   JavaScript ToNumber explicitly (`to_number`, `to_number_pair`) to operands
@@ -395,10 +396,77 @@ Code: `src/vm/function.rs` (contract), `src/vm/dispatch.rs`; tests:
   value. A closure stored in a binding it captures is an ordinary cycle:
   kept while a frame or root reaches it, reclaimed by the next collection
   after it becomes unreachable.
-- **Deferred.** Compiling closures (clj-quickjs-21); an initialize-once
+- **Deferred.** (Compiling closures from source: clj-quickjs-21, "Functions,
+  closures and intrinsics from source" below.) An initialize-once
   immutable cell (a `const` read by a closure before its initialization must
   use a cell, making the closure task-owned); spawning closure code directly
   as a task entry fails at its first `get_capture` (`Internal`).
+
+## Functions, closures and intrinsics from source (clj-quickjs-21)
+
+```
+ ast ─► analysis pass (same lowering code, output discarded)
+          │ per binding: assigned? captured while initialized / uninitialized?
+          ▼
+        emit pass ─► one ExecutableSpec per function, loaded bottom-up
+                      (children in the parent's `functions` table)
+```
+
+- **Two passes, one code path** (`src/frontend/lower.rs`). Whether a
+  captured binding can be copied into closures or must live in a cell is
+  known only after every closure that uses it has been seen, but the cell
+  must be created when the binding's scope is entered. So the lowering runs
+  twice over the whole tree: the analysis pass records facts per binding
+  (keyed by the declaring identifier's offset), the emit pass chooses each
+  binding's representation from them. Both passes resolve every name the
+  same way, nested functions are lowered inline (no per-level re-lowering),
+  so the cost is linear and recursion depth is bounded by the tree height.
+- **Resolution through enclosing functions**, as QuickJS's
+  `get_closure_var` does: a name not found in the running function's scopes
+  is resolved in the parent; if found there, it becomes a capture of every
+  function in between, deduplicated per binding. The parent pushes each
+  capture (`get_local`, `get_capture` or `current_function`) before
+  `function i` creates the closure.
+- **Representation.** A binding no closure captures is a frame local. A
+  captured binding that is never assigned and is initialized whenever a
+  capturing closure is created is copied (by value). Every other captured
+  binding is a binding cell: `new_cell` on scope entry (parameters are moved
+  into a cell on function entry), `cell_init` at the declaration,
+  `cell_get`/`cell_set` at every use, so the VM performs the temporal-dead-
+  zone check for closures that run early. Assignment to a cell goes through
+  a scratch local (the value is evaluated first, as in JavaScript). Copying
+  matters for publication: only closures without cells are shareable.
+- **Self-reference.** A function's own name inside it lowers to
+  `current_function` when that is equivalent: always for a named function
+  expression (its name is immutable) and the `compile_function` entry, and
+  for a declaration whose binding is never assigned. So a self-recursive
+  function captures nothing.
+- **Hoisting.** Entering a statement list declares its `let`/`const`/
+  function bindings, creates its cells, then creates its function
+  declarations' closures in source order; only then do its statements run.
+  A declaration that uses a binding not yet initialized at that point (a
+  later sibling function, or a `let`/`const` of the list) captures it as a
+  cell. Within the declaring function, the static TDZ decision still holds.
+- **Reserved intrinsic binding** (`src/frontend/intrinsics.rs`, the
+  contract and table; `docs/grammar.md`, "Reserved intrinsic binding").
+  `__rt` is a binding in the scope outside the outermost function. It cannot
+  be declared anywhere, so every `__rt` resolves to it; the resolver, not the
+  callee's spelling, decides that `__rt.vector(…)` is an intrinsic. It can
+  only be used as the object of a direct call (`__rt.name(args)`); bare
+  references, uncalled members, assignment and computed access are compile
+  errors, so an intrinsic never becomes a value. Each call lowers to the
+  arguments plus one existing instruction (collection intrinsics `0x12`–
+  `0x20`, `host_effect`); no opcode was added. `__rt.need` is reserved and
+  rejected until clj-quickjs-23 gives it a resumable VM wait.
+- **Demo.** `cargo run` compiles and runs `examples/demo.js` (any script
+  path can be passed instead); `cargo run --example resumable_counter`
+  compiles `examples/resumable_counter.js` with `compile_function`. Both are
+  JavaScript source executed by this VM; no C engine is involved.
+- **Deferred.** String values and property access (so no `f.call`, method
+  calls or object literals); `this`, `arguments`, `new`, default/rest
+  parameters; var-scoped redeclaration by function declarations (rejected as
+  `Unsupported`); an initialize-once immutable cell, which would let a
+  hoisted declaration capture a `const` of its own scope by value.
 
 ## Task/dependency continuation shape (planned)
 
@@ -717,3 +785,19 @@ and Charlie Gordon) and is listed here with its source path and revision:
   string concatenation is a host effect per logged variable; `var x` is
   `const x` (captured by value); the `{ set, get }` object is a vector;
   `assert()` calls are Rust assertions. The file carries the full notice.
+- `tests/fixtures/js/quickjs_closure.js` (clj-quickjs-21): the top-level
+  `f`/`g1` case ('closure1'), `test_closure1`, `test_closure2` and
+  `test_closure3` of `research/quickjs/tests/test_closure.js`, revision
+  7d1c13c5d8f8, as JavaScript source compiled by this frontend. Modified:
+  `let`/`const` for `var`; `log` appends two decimal digits per value to a
+  number instead of concatenating strings; the `{ set, get }` object is a
+  vector made with `__rt.vector` and read with `__rt.nth`; failure flags
+  instead of `assert()` calls. `test_arrow_function`, `test_with`,
+  `test_eval_closure` and `test_eval_const` are omitted (outside the
+  subset). The file carries the full notice.
+- `research/quickjs/quickjs.c` (clj-quickjs-21), consulted only:
+  `js_parse_function_decl` (scoping of a function's name and its
+  self-binding), `get_closure_var`/`add_closure_var` (resolving a name
+  through enclosing functions and threading captures down) and
+  `instantiate_hoisted_definitions` (function declarations created on scope
+  entry). No code was copied.

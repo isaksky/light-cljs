@@ -4,16 +4,19 @@ The source frontend (`src/frontend/`, entry point `frontend::parse_script`)
 accepts the small, deliberately documented subset of JavaScript below and
 rejects everything else with a positioned `SyntaxError`. Requirements:
 [`design.md`](design.md) §§7, 12–14. This document and the parser are kept in
-agreement by tests: every `js accept` example below must parse, and every
+agreement by tests: every `js accept` example below must parse, every
 `js reject` example must fail with the stated error kind at the stated
-`line:column` (`frontend::tests::grammar_doc_examples`).
+`line:column`, and every `js compile-reject` example must parse but fail to
+compile that way (`frontend::tests::grammar_doc_examples`).
 
-Status: everything below parses. Scripts made of literals other than
-strings, bindings, operators, assignment, blocks, `if`/`else` and `while`
-also compile to VM bytecode and execute (`frontend::compile_script`; see
-"Execution" below). String values, calls, property access, functions and
-closures parse but are rejected by the compiler until later pellets
-(clj-quickjs-21, -20, -4).
+Status: everything below parses. Everything except string values and
+property access also compiles to VM bytecode and executes
+(`frontend::compile_script`; see "Execution" below): literals, bindings,
+operators, assignment, blocks, `if`/`else`, `while`, function declarations
+and expressions, calls, closures (clj-quickjs-21), and the
+compiler-reserved intrinsic binding `__rt` (see "Reserved intrinsic
+binding"). String values and property access parse but are rejected by the
+compiler. `throw`/`try` are rejected by the parser until clj-quickjs-11.
 
 ## Semantics model
 
@@ -98,9 +101,12 @@ Notes on the grammar:
   `Infinity`, `eval` and `arguments`.
 - The assignment target may be parenthesized (`(a) = 1`), as in JavaScript.
 - `a.b` (an `IdentifierName` after `.`, reserved words included) is parsed
-  so later stages can resolve compiler-reserved intrinsic bindings such as
-  `__rt.need` (clj-quickjs-21). The subset has no object values; assigning
-  to a property is rejected.
+  so the compiler can resolve the compiler-reserved intrinsic binding
+  (`__rt.vector(...)`; see "Reserved intrinsic binding"). The subset has no
+  object values: assigning to a property is rejected by the parser, and any
+  other property access by the compiler. Computed access to `__rt`
+  (`__rt[x]`) and assignment to one of its intrinsics (`__rt.count = f`)
+  are rejected by the parser as `ReservedWord`.
 - `const` requires an initializer.
 
 ### Automatic semicolon insertion
@@ -134,6 +140,7 @@ Every form below is rejected where it starts. Error kinds:
 | assignment to a property (`a.b = 1`) | Unsupported |
 | references to `eval` or `arguments` | Unsupported |
 | reserved word as a binding name or reference; binding or assigning `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` | ReservedWord |
+| computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`) | ReservedWord |
 | `return` outside a function, `const` without initializer, duplicate parameter, declaration as an `if`/`while` body, invalid assignment target (`1 = 2`) | Invalid |
 | nesting over the `MAX_NESTING` budget (256 units), or a syntax tree more than 256 nodes high; see "Nesting limit" below | TooDeep |
 
@@ -143,10 +150,17 @@ Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
 
 - **Scope errors are checked by the compiler, not the parser.**
-  `parse_script` accepts redeclaration (`let a; let a;`) and a `let` that
-  repeats a parameter name; `compile_script` rejects them (see
-  "Execution"). Temporal-dead-zone use and assignment to a `const` are
-  run-time errors, as in JavaScript.
+  `parse_script` accepts redeclaration (`let a; let a;`), a `let` that
+  repeats a parameter name and declarations of the reserved binding `__rt`;
+  `compile_script` rejects them (see "Execution"). Temporal-dead-zone use
+  and assignment to a `const` are run-time errors, as in JavaScript.
+- **Function declarations are always lexical.** Every function declaration
+  binds its name in the statement list that contains it, hoisted to the
+  start of that list. JavaScript lets a function declaration at the top
+  level of a script or function body repeat a parameter or another function
+  declaration (they are var-scoped there); the compiler rejects that as
+  `Unsupported`. Duplicates in a block, and any clash with `let`/`const`,
+  are early errors (`Invalid`), as in strict-mode JavaScript.
 - **Nesting limit.** Nesting is charged against one budget of 256 units
   (`MAX_NESTING`); input that exceeds it is rejected with `TooDeep`. Costs
   per level, weighted by the Rust stack each construct uses: a statement 1,
@@ -198,17 +212,28 @@ Executed, with JavaScript semantics:
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`); `&&`/`\|\|` short-circuit and return an operand |
 | `x = v` | evaluates `v`, then stores; the expression's value is `v` |
 | `return` (in `compile_function`) | completes the task |
+| function declarations | hoisted: entering a script, function body or block creates the closures of the declarations directly in it, in source order, before its first statement runs |
+| function expressions | each evaluation creates a new function object (`===` compares identity); a named expression's name is visible only inside it, is the running function, and assigning it is a TypeError |
+| `f(a, b)` | evaluates the callee, then the arguments left to right, then calls in a new task-owned frame; missing arguments are `undefined`, extra ones are ignored; falling off the end returns `undefined`; no `this`, `arguments` or `new` |
+| `return` (in any function) | returns from that function |
+| closures | a function sees the bindings of every enclosing scope, including after they are assigned and after the enclosing call returned; each execution of a block (each loop iteration) makes new bindings |
+| a function's own name (`compile_function`, or a declaration never assigned) | the running function object (`current_function`), so self-recursion captures nothing |
+| `__rt.name(args)` | the private VM operation of that intrinsic (see "Reserved intrinsic binding") |
 
 Errors:
 
 | Situation | When | Reported as |
 |-----------|------|-------------|
-| A name declared twice in one block, script or function body (including a `let` that repeats a parameter) | compile time | `SyntaxError`, kind `Invalid`, at the second declaration |
-| String values, calls, property access, function declarations and expressions, and (in `compile_function`) unshadowed uses of the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
-| More than 65,535 live bindings or 65,536 distinct constants | compile time | `SyntaxError`, kind `TooLarge` |
+| A name declared twice in one block, script or function body (including a `let` that repeats a parameter, and a function declaration that clashes with a `let`/`const` or repeats one in a block) | compile time | `SyntaxError`, kind `Invalid`, at the second declaration |
+| A function declaration that repeats a parameter or another function declaration at the top level of a script or function body (valid JavaScript) | compile time | `SyntaxError`, kind `Unsupported`, at the second name |
+| String values, property access other than `__rt.name(...)`, and (in `compile_function`) assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
+| Misuse of the reserved intrinsic binding `__rt` | compile time | see "Reserved intrinsic binding" |
+| More than 65,535 live bindings, 65,536 distinct constants, 65,536 functions in one function, or 65,535 call arguments or captured bindings | compile time | `SyntaxError`, kind `TooLarge` |
 | Reading or assigning a name with no binding (strict mode; there is no global object) | run time, only if reached, after the assigned value is evaluated | `VmErrorKind::ReferenceError`: "x is not defined" |
-| Reading or assigning a `let`/`const` before its declaration ran (temporal dead zone), including inside its own initializer | run time, only if reached | `VmErrorKind::ReferenceError`: "cannot access 'x' before initialization" |
-| Assigning to an initialized `const` | run time, only if reached, after the value is evaluated | `VmErrorKind::TypeError`: "assignment to constant variable 'x'" |
+| Reading or assigning a `let`/`const` before its declaration ran (temporal dead zone), including inside its own initializer, and from a closure that runs before it | run time, only if reached | `VmErrorKind::ReferenceError`: "cannot access 'x' before initialization" |
+| Assigning to an initialized `const`, or to a named function expression's name inside it | run time, only if reached, after the value is evaluated | `VmErrorKind::TypeError`: "assignment to constant variable 'x'" |
+| Calling a value that is not a function | run time | `VmErrorKind::TypeError`: "number is not a function" (names the value's type) |
+| Calls nested deeper than the task's `VmLimits` (for example unbounded recursion) | run time | `VmErrorKind::StackOverflow` |
 
 Run-time failures carry the source position (`Diagnostic::source`, line and
 column) of the failing reference or operator. These errors cannot be caught
@@ -221,12 +246,88 @@ Gaps specific to execution:
 - **No objects from source.** Operators applied to objects (reachable only
   through hand-built bytecode today) fail with `UnsupportedOperand` where
   JavaScript would call ToPrimitive.
-- **No functions or closures yet.** Because the subset has no closures,
-  `break`, `continue` or labels, whether a binding is initialized is known
-  from source order alone; the compiler decides it statically. Compiling
-  closures (clj-quickjs-21) will need the run-time check the VM provides for
-  captured bindings: binding cells, which raise `ReferenceError` when used
-  before initialization (clj-quickjs-20).
+- **Temporal dead zone: static within a function, dynamic across
+  closures.** The subset has no `break`, `continue`, labels or exceptions,
+  so within the function that declares a binding, whether it is
+  initialized at a reference is known from source order, and the compiler
+  decides it statically. A closure may run at any time, so a binding a
+  closure captures is checked at run time when it may be read before its
+  initialization: it lives in a binding cell, which raises the
+  `ReferenceError` (clj-quickjs-20).
+- **Captured bindings are values or cells.** A captured binding that is
+  never assigned and is initialized whenever a closure over it is created
+  is copied into the closure; any other captured binding (assigned
+  somewhere, or captured by a closure that may be created before the
+  binding is initialized: for example a hoisted function declaration that
+  uses a `let`/`const` of its own statement list, since the declaration is
+  created before any of them is initialized) lives in a task-owned binding
+  cell. Both behave as JavaScript bindings. The difference is publication:
+  a closure holding a cell cannot be published to other tasks
+  (`Runtime::publish` rejects it; another task calling it fails with
+  `VmErrorKind::ForeignBinding`). So a function meant to be shared should
+  capture only `const`s and never-assigned parameters that are initialized
+  before it is created (a function expression after the `const`, not a
+  hoisted declaration).
+- **Functions have no properties.** No `length`, `name`, `prototype`,
+  `call`/`apply`/`bind`, `this`, `arguments`, `new`, default or rest
+  parameters, getters or generators.
+
+## Reserved intrinsic binding
+
+`docs/design.md` §§5, 7 let the compiler lower known operations to private
+runtime intrinsics. This subset reserves exactly one binding for them,
+`__rt` (`src/frontend/intrinsics.rs`). It is not a JavaScript value; it is a
+binding the compiler places in the outermost scope of every program, and
+the contract below makes every occurrence of `__rt` resolve to it, so an
+intrinsic is recognized by binding resolution, never by the spelling of an
+arbitrary callee (a user function named `vector` or `need` is an ordinary
+function):
+
+| Rule | Example | Rejected as |
+|------|---------|-------------|
+| No shadowing: `__rt` cannot be declared by `let`, `const`, a parameter, a function declaration, a function expression's name, or the `compile_function` entry | `let __rt = 1;` | `ReservedWord` (compiler) |
+| No reassignment of the binding or of an intrinsic | `__rt = x;`, `__rt.count = f;` | `ReservedWord` (compiler; parser for the property) |
+| No computed access: intrinsics are named statically | `__rt["count"](v)` | `ReservedWord` (parser) |
+| No aliasing: `__rt` appears only as `__rt.name(args)`, a direct call | `const r = __rt;`, `f(__rt)`, `const c = __rt.count;` | `ReservedWord` (compiler) |
+| Known names, fixed arities, literal host operation selectors | `__rt.nope()`, `__rt.nth(v)`, `__rt.effect(op, x)` | `Invalid` (compiler) |
+
+Intrinsics evaluate their arguments left to right, then run one VM
+instruction (operands, results and run-time errors: `crate::vm::intrinsics`
+and `crate::host`):
+
+| Call | Instruction | Result |
+|------|-------------|--------|
+| `__rt.vector(x1, …, xn)` | `new_vector n` | new persistent vector |
+| `__rt.map(k1, v1, …, kn, vn)` | `new_map n` | new persistent map (even argument count) |
+| `__rt.count(c)` | `count` | element or entry count |
+| `__rt.nth(v, i)` | `nth` | vector element |
+| `__rt.get(c, k)`, `__rt.getOr(c, k, d)` | `get`, `get_or` | lookup (fails if absent / `d` if absent) |
+| `__rt.assoc(c, k, v)`, `__rt.dissoc(m, k)` | `assoc`, `dissoc` | persistent update |
+| `__rt.conj(v, x)`, `__rt.popLast(v)` | `conj`, `pop_last` | persistent append / remove-last |
+| `__rt.vectorBuilder()`, `__rt.mapBuilder()` | `new_vector_builder`, `new_map_builder` | task-owned transient builder |
+| `__rt.builderConj(b, x)`, `__rt.builderAssoc(b, k, v)` | `builder_conj`, `builder_assoc` | the builder, updated in place |
+| `__rt.freeze(b)` | `freeze` | persistent collection; the builder is frozen |
+| `__rt.effect(op, x)` | `host_effect op` | the leaf host effect's result; `op` must be an integer literal `0..=65535` |
+| `__rt.need(definition, kind)` | – | reserved: `Unsupported` until clj-quickjs-23 lowers it to a resumable dependency wait (it also needs string values) |
+
+```js compile-reject ReservedWord 2:14
+function helper(x) {
+  const rt = __rt;
+  return x;
+}
+```
+
+```js compile-reject ReservedWord 1:12
+function f(__rt) { return 1; }
+```
+
+```js compile-reject Invalid 1:6
+__rt.toString();
+```
+
+```js reject ReservedWord 1:5
+__rt[name](1);
+```
 
 ## Examples
 
@@ -335,5 +436,12 @@ revision 7d1c13c5d8f8 (`VERSION` 2026-06-04): `next_token`,
 `js_parse_expr_binary`, `js_parse_assign_expr`, `js_parse_statement`,
 `js_parse_expect_semi`; and the ASI cases of `test_parse_semicolon` in
 `research/quickjs/tests/test_language.js` (its `yield`/`await`/arrow cases
-are outside the subset). The tests in `src/frontend/tests.rs` are written
-for this project and are not adapted from QuickJS.
+are outside the subset). For functions and closures (clj-quickjs-21):
+`js_parse_function_decl` (function name and self-binding scoping),
+`get_closure_var` / `add_closure_var` (resolving a name through enclosing
+functions and threading it down as captured variables) and
+`instantiate_hoisted_definitions` (function declarations created on scope
+entry). The tests in `src/frontend/tests.rs` are written for this project
+and are not adapted from QuickJS; `tests/fixtures/js/quickjs_closure.js` is
+adapted from `research/quickjs/tests/test_closure.js` and carries its
+notice (`docs/architecture.md`, "QuickJS references and provenance").

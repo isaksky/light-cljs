@@ -1,35 +1,50 @@
-//! Thin binary over the `clj_quickjs` library.
+//! Thin binary over the `clj_quickjs` library: compile a JavaScript script of
+//! the documented subset (`docs/grammar.md`) and run it as one task.
 //!
-//! Runs one hand-assembled early VM test program (sum of 1..=10). This is not
-//! JavaScript source support; no JavaScript frontend exists yet.
+//! * `cargo run` runs the bundled demo, `examples/demo.js` (a documented
+//!   synthetic fixture).
+//! * `cargo run -- path/to/script.js` runs that file instead.
+//!
+//! The completion value is printed. Host effects (`__rt.effect(op, x)`) print
+//! `effect op: x` and return `x`. Compilation errors exit with status 2, run
+//! failures with status 1. No qjsc or C engine is involved: the script is
+//! compiled by `clj_quickjs::frontend` and executed by its VM.
 
-use clj_quickjs::{Assembler, Opcode, Primitive, RunOutcome, Runtime, ValueView};
+use clj_quickjs::frontend::compile_script;
+use clj_quickjs::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView};
+
+/// Prints each host effect and returns its argument.
+struct PrintingHost;
+
+impl Host for PrintingHost {
+    fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+        let shown = match call.arg {
+            Primitive::Number(n) => n.to_string(),
+            other => format!("{other:?}"),
+        };
+        println!("effect {}: {shown}", call.op);
+        Ok(call.arg)
+    }
+}
 
 fn main() {
-    // locals: 0 = i, 1 = sum
-    let mut asm = Assembler::new();
-    let (top, done) = (asm.label(), asm.label());
-    asm.constant(Primitive::Number(1.0)).set_local(0);
-    asm.constant(Primitive::Number(0.0)).set_local(1);
-    asm.bind(top);
-    asm.constant(Primitive::Number(10.0))
-        .get_local(0)
-        .op(Opcode::Lt)
-        .op(Opcode::Not);
-    asm.jump_if_false(done);
-    asm.get_local(1).get_local(0).op(Opcode::Add).set_local(1);
-    asm.get_local(0)
-        .constant(Primitive::Number(1.0))
-        .op(Opcode::Add)
-        .set_local(0);
-    asm.jump(top);
-    asm.bind(done);
-    asm.get_local(1).op(Opcode::Return);
-
-    let exe = match asm.finish("sum-1-to-10", 0, 2) {
+    let (name, source) = match std::env::args().nth(1) {
+        Some(path) => match std::fs::read_to_string(&path) {
+            Ok(source) => (path, source),
+            Err(e) => {
+                eprintln!("{path}: {e}");
+                std::process::exit(2);
+            }
+        },
+        None => (
+            "examples/demo.js".to_string(),
+            include_str!("../examples/demo.js").to_string(),
+        ),
+    };
+    let exe = match compile_script(&name, &source) {
         Ok(exe) => exe,
         Err(e) => {
-            eprintln!("{e}");
+            eprintln!("{name}:{e}");
             std::process::exit(2);
         }
     };
@@ -37,14 +52,24 @@ fn main() {
     let outcome = rt
         .spawn(&exe, &[])
         .map_err(|e| e.to_string())
-        .and_then(|t| t.run().map_err(|e| e.to_string()));
-    println!("early VM test (hand-assembled bytecode, not JavaScript source):");
+        .and_then(|t| {
+            t.run_with(Budget::UNLIMITED, &mut PrintingHost)
+                .map_err(|e| e.to_string())
+        });
     match outcome {
         Ok(RunOutcome::Complete(v)) => match v.view() {
-            ValueView::Number(n) => println!("sum 1..=10 = {n}"),
-            other => println!("unexpected result {other:?}"),
+            ValueView::Number(n) => println!("{name} completed with {n}"),
+            other => println!("{name} completed with {other:?}"),
         },
-        Ok(other) => println!("{other:?}"),
+        Ok(RunOutcome::Failed(e)) => {
+            // The error's display includes the source position.
+            eprintln!("{name}: {e}");
+            std::process::exit(1);
+        }
+        Ok(other) => {
+            eprintln!("{name}: {other:?}");
+            std::process::exit(1);
+        }
         Err(e) => {
             eprintln!("run error: {e}");
             std::process::exit(1);

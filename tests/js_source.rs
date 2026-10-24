@@ -82,7 +82,10 @@ fn decode(code: &[u8]) -> Vec<(usize, Opcode)> {
             | Opcode::HostEffect
             | Opcode::NewVector
             | Opcode::NewMap
-            | Opcode::ThrowError => 2,
+            | Opcode::ThrowError
+            | Opcode::Function
+            | Opcode::Call
+            | Opcode::GetCapture => 2,
             _ => 0,
         };
     }
@@ -452,14 +455,24 @@ fn redeclaration_and_unsupported_forms_are_compile_errors() {
     // Shadowing in an inner block is fine.
     assert_eq!(num("let a = 1; { let a = 2; } a"), 1.0);
 
+    // Function declarations take part in redeclaration checks: in a block
+    // (lexical) and against `let`/`const` they are JavaScript early errors.
+    assert_eq!(compile_err("function f() {}\nlet f;"), (Invalid, 2, 5));
+    assert_eq!(
+        compile_err("{ function g() {} function g() {} }"),
+        (Invalid, 1, 28)
+    );
+
     // Valid syntax that cannot execute yet is rejected where it starts.
+    // (Functions and calls execute since clj-quickjs-21.)
     for (src, line, column) in [
         ("let s = 'text';", 1, 9),
-        ("f(1);", 1, 1),
         ("let o = 1;\no.p;", 2, 1),
-        ("function f() {}", 1, 1),
-        ("let g = function () {};", 1, 9),
-        ("{ function f() {} }", 1, 3),
+        ("let o = 1;\no.p(1);", 2, 1),
+        // Var-scoped redeclaration by a function declaration, which
+        // JavaScript allows at the top level of a script or function body.
+        ("function f(a) { function a() {} }", 1, 26),
+        ("function h() {}\nfunction h() {}", 2, 10),
     ] {
         assert_eq!(compile_err(src), (Unsupported, line, column), "{src}");
     }
@@ -595,26 +608,35 @@ fn deep_expressions_compile_within_a_small_stack() {
 }
 
 #[test]
-fn entry_function_name_references_are_rejected_until_function_values_exist() {
-    for (src, column) in [
-        ("function f() { return f === f; }", 23),
-        ("function f() { f = 1; }", 16),
-        ("function f(a) { { return a + f; } }", 30),
-    ] {
-        let e = compile_function(src).unwrap_err();
-        assert_eq!(
-            (e.kind, e.line, e.column),
-            (SyntaxErrorKind::Unsupported, 1, column),
-            "{src}"
-        );
-    }
-    // Shadowed by a parameter or a body binding, the name is an ordinary local.
+fn entry_function_name_refers_to_the_running_function() {
     let complete = |src: &str, args: &[Primitive]| match run(&compile_function(src).unwrap(), args)
     {
         RunOutcome::Complete(v) => v.view(),
         other => panic!("{src}: {other:?}"),
     };
     let four = [Primitive::Number(4.0)];
+    // Since clj-quickjs-21 the entry function's own name is the running
+    // function object (`current_function`), so it can recurse.
+    assert_eq!(
+        complete("function f() { return f === f; }", &[]),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        complete(
+            "function fact(n) { return n <= 1 ? 1 : n * fact(n - 1); }",
+            &four
+        ),
+        ValueView::Number(24.0)
+    );
+    let fact = compile_function("function f(n) { return n ? f(n - 1) : 0; }").unwrap();
+    assert!(opcodes(&fact).contains(&Opcode::CurrentFunction));
+    // Assigning it would change a binding of a script that does not exist.
+    let e = compile_function("function f() { f = 1; }").unwrap_err();
+    assert_eq!(
+        (e.kind, e.line, e.column),
+        (SyntaxErrorKind::Unsupported, 1, 16)
+    );
+    // Shadowed by a parameter or a body binding, the name is an ordinary local.
     assert_eq!(
         complete("function f(f) { return f * 2; }", &four),
         ValueView::Number(8.0)
