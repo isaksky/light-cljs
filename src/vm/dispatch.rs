@@ -1169,6 +1169,7 @@ fn is_constructor(heap: &Heap, value: &Value, limit: usize) -> Result<bool, Faul
                         | Builtin::IntlCollator
                         | Builtin::IntlDateTimeFormat
                         | Builtin::IntlListFormat
+                        | Builtin::IntlRelativeTimeFormat
                 ));
             }
             Err(Fault::NotCallable(_)) => return Ok(false),
@@ -1295,6 +1296,7 @@ fn instruction_step(instr: Instr) -> InstructionStep {
         | Instr::ForwardArguments => class_step,
         Instr::Call(_)
         | Instr::CallMethod(_)
+        | Instr::Construct(_)
         | Instr::CallSpread
         | Instr::CallMethodSpread
         | Instr::ConstructSpread => call_step,
@@ -2997,6 +2999,7 @@ fn call_step(
     match instr {
         Instr::Call(argc) => call(state, heap, argc, false),
         Instr::CallMethod(argc) => call(state, heap, argc, true),
+        Instr::Construct(argc) => construct(state, heap, argc),
         Instr::CallSpread | Instr::CallMethodSpread | Instr::ConstructSpread => {
             call_spread(state, heap, instr)
         }

@@ -7349,6 +7349,8 @@ Both live and detached frame tracing visit new_target, and existing cell,
 function-capture and property-record tracing cover every other edge. Tests force
 collection and migration while parked inside super() and execute explicit,
 default and Object-derived construction on 64 KiB worker stacks.
+Ordinary Construct dispatches through the small call leaf too, keeping the
+general opcode dispatcher's temporaries off the receiver-allocation stack.
 
 ### Intl.ListFormat (clj-quickjs-220)
 
