@@ -2430,3 +2430,35 @@ prefix that rounds back to the same binary64, choosing the closest candidate
 with ties to even. Both zeros print `"0"`; NaN and infinities keep their usual
 spellings. For example, `(255).toString(16)` is `"ff"`, `(0.5).toString(2)`
 is `"0.1"`, and `(1.3).toString(7)` is `"1.2046204620462046205"`.
+
+### Math numeric functions (clj-quickjs-152)
+
+Execution: `Math` is an ordinary, non-callable namespace inheriting from
+`Object.prototype`. Its non-enumerable, writable, configurable methods are
+`floor`, `ceil`, `abs`, `fround` (length 1), `imul`, `hypot` (length 2).
+Methods ignore `this`. Fixed-arity methods convert only their required
+arguments, with missing arguments treated as undefined. Object arguments
+use resumable ToPrimitive with number hint, including forwarded/bound calls
+and native callbacks. `imul` multiplies modulo 2^32 and returns a signed
+32-bit number; `fround` rounds to binary32, ties to even.
+`hypot` converts all arguments in order, even after Infinity or NaN;
+Infinity wins over NaN, all-zero inputs yield +0, and scaled compensated
+summation avoids spurious overflow/underflow. Conversion and summation are
+budgeted across yields, waits, collection and worker migration.
+
+Synthetic fixtures, not light-cljs output:
+
+```js
+Math.floor(-0.5) === -1 && 1 / Math.ceil(-0.5) === -Infinity;
+Math.imul(-1, 8) === -8 && Math.fround(0.1) === 0.10000000149011612;
+Math.hypot(3, 4) === 5 && Math.hypot(NaN, Infinity) === Infinity;
+```
+
+The pellet's negative-zero expectation for `floor(-0.5)` is inconsistent
+with IEEE floor: the implemented result is -1; `floor(-0)` preserves -0.
+Explicit gaps: Math constants and other Math methods remain deferred to
+their pellets. Global-object integration remains clj-quickjs-104; lexical
+bindings shadow `Math`. Like every realm intrinsic, Math is shared and
+immutable despite its methods' writable/configurable descriptor flags.
+`Math()` and `new Math()` throw catchable TypeErrors; error constructors
+remain deferred, so tests verify caught failures and the runtime error kind.

@@ -3736,3 +3736,40 @@ frames, so callbacks can yield, wait, survive collection and migrate.
 Converted undefined is explicitly passed through ToNumber to distinguish it
 from an originally undefined radix. Invalid radixes use the catchable
 `Fault::RangeError` path introduced for array lengths (clj-quickjs-154).
+
+## Math numeric functions (clj-quickjs-152)
+
+The shared realm appends `Math` to `Global` (operand 10) and allocates an
+ordinary intrinsic object inheriting from `Object.prototype`, with six
+method functions: `floor`, `ceil`, `abs`, `imul`, `fround`, `hypot`.
+The existing immutable views, intrinsic roots and persistent publication
+rules apply to the namespace and its functions. No new heap kind or opcode
+is introduced. It is neither callable nor constructible.
+
+Fixed-arity methods run as leaf built-ins for primitive operands. Objects
+enter `native::Convert` with number hint and a Math completion target;
+each operand is converted to a Number before moving to the next argument.
+The existing traced operand vector, callback VM frames, depth limit and
+unwinding protocol preserve state through waits, GC, yields and migration.
+`imul` reuses the VM's ToInt32 bit conversion and wrapping multiplication
+(the low 32 bits are identical for ToUint32). `fround` casts to binary32
+and back to binary64; floor, ceil and abs use the IEEE Rust operations.
+In particular floor(-0.5) is -1, correcting the pellet's contradictory -0
+example; ceil(-0.5) and floor(-0) preserve negative zero.
+
+`hypot` always enters the conversion continuation, even for primitives,
+and converts one argument per native step while finding the largest
+absolute value. Only after all conversions succeed does it transition to
+`MathHypot`: Infinity returns +Infinity even with NaN inputs; otherwise
+each budgeted step adds one squared argument divided by the largest
+magnitude, with Kahan compensation. The final result rescales the square
+root. Zero terms are skipped, giving +0 for empty/all-zero inputs, while
+NaN terms propagate. Scaling keeps finite squares/sums in range even for
+extreme/subnormal input magnitudes. Initial argument-vector copying is
+bounded by the VM value-stack limit, as for existing built-ins.
+
+Source tests cover the upstream numeric examples, descriptors, binary32
+ties, signed zeros, missing/unused arguments, throws and coercion order,
+including callbacks that wait with collection and migration at every yield.
+GC inventory tests include the namespace and all six functions. Math
+constants and other methods are outside this pellet.

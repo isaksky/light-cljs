@@ -149,3 +149,18 @@ Other tests are synthetic fixtures, not light-cljs output.
 `research/quickjs/dtoa.c` at that revision were consulted as semantic
 references. The fixed-size exact-interval Rust formatter was written afresh;
 no upstream implementation code was copied.
+
+## Math numeric functions (clj-quickjs-152)
+
+`tests/js_source.rs::math_basic_functions` adapts the floor, ceil, imul,
+fround and hypot cases from `research/quickjs/tests/test_builtin.js`,
+`test_math` (lines 347-359), revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The full QuickJS copyright and MIT permission notice is retained on
+`string_code_unit_access` in that test file (`research/quickjs/LICENSE`).
+Other cases are synthetic fixtures, not light-cljs output.
+`js_math_hypot`, `js_math_fround`, `js_math_imul`, `js_math_funcs` and
+`js_math_obj` in `research/quickjs/quickjs.c` at that revision were read as
+semantic references. The Rust implementation was written afresh over the
+existing realm and resumable native protocol, with scaled compensated
+summation rather than the reference implementation's repeated hypot calls.

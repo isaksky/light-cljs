@@ -221,6 +221,13 @@ pub(crate) enum Builtin {
     /// Global and Number parsing functions (clj-quickjs-148).
     ParseInt,
     ParseFloat,
+    /// Numeric Math methods (clj-quickjs-152).
+    MathFloor,
+    MathCeil,
+    MathAbs,
+    MathImul,
+    MathFround,
+    MathHypot,
 }
 
 impl Builtin {
@@ -273,6 +280,12 @@ impl Builtin {
 
             Builtin::ParseInt => "parseInt",
             Builtin::ParseFloat => "parseFloat",
+            Builtin::MathFloor => "floor",
+            Builtin::MathCeil => "ceil",
+            Builtin::MathAbs => "abs",
+            Builtin::MathImul => "imul",
+            Builtin::MathFround => "fround",
+            Builtin::MathHypot => "hypot",
         }
     }
 
@@ -323,6 +336,8 @@ impl Builtin {
 
             Builtin::ParseInt => 2,
             Builtin::ParseFloat => 1,
+            Builtin::MathFloor | Builtin::MathCeil | Builtin::MathAbs | Builtin::MathFround => 1,
+            Builtin::MathImul | Builtin::MathHypot => 2,
         }
     }
 }
@@ -361,6 +376,12 @@ pub(crate) fn call(
             ))),
         },
         Builtin::ObjectIs => Ok(Value::Bool(same_value(&arg(0), &arg(1)))),
+        Builtin::MathFloor
+        | Builtin::MathCeil
+        | Builtin::MathAbs
+        | Builtin::MathImul
+        | Builtin::MathFround => math(which, args),
+        Builtin::MathHypot => Err(Fault::Internal("hypot requires a budgeted native frame")),
         Builtin::ObjectPrototypeToString => {
             let tag = to_string_tag(heap, this)?;
             Ok(Value::String(JsString::from(
@@ -450,6 +471,24 @@ pub(crate) fn call(
         | Builtin::NumberIsInteger
         | Builtin::NumberIsSafeInteger => number_predicate(which, &arg(0)),
     }
+}
+
+/// Fixed-arity Math operations, after resumable ToPrimitive for objects.
+/// ToInt32 and ToUint32 have identical bits, including after multiplication.
+pub(super) fn math(which: Builtin, args: &[Value]) -> Result<Value, Fault> {
+    let x = to_number(args.first().unwrap_or(&Value::Undefined))?;
+    let result = match which {
+        Builtin::MathFloor => x.floor(),
+        Builtin::MathCeil => x.ceil(),
+        Builtin::MathAbs => x.abs(),
+        Builtin::MathFround => f64::from(x as f32),
+        Builtin::MathImul => {
+            let y = to_number(args.get(1).unwrap_or(&Value::Undefined))?;
+            f64::from(super::dispatch::to_int32(x).wrapping_mul(super::dispatch::to_int32(y)))
+        }
+        _ => return Err(Fault::Internal("not a fixed-arity Math operation")),
+    };
+    Ok(Value::Number(result))
 }
 
 /// Global predicates receive a primitive after resumable ToPrimitive;

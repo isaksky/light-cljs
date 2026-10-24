@@ -328,6 +328,11 @@ enum ConvertTarget {
     PropertyBuiltin {
         which: builtin::Builtin,
     },
+    Math {
+        which: builtin::Builtin,
+        // Largest absolute operand, gathered during ToNumber for hypot.
+        magnitude: f64,
+    },
 }
 
 /// The operation-specific state of a native frame.
@@ -404,6 +409,16 @@ enum NativeState {
     StringSearch(crate::value::string::StringSearch),
     StringBuild(crate::value::string::StringBuild),
     NumberParse(Box<crate::value::string::NumberParse>),
+    /// All operands have undergone ToNumber. Sum scaled squares with Kahan
+    /// compensation, one operand per budgeted step; Infinity takes precedence
+    /// over NaN only after every argument's conversion has run.
+    MathHypot {
+        operands: Vec<Value>,
+        next: usize,
+        magnitude: f64,
+        sum: f64,
+        correction: f64,
+    },
 }
 
 /// A pending resumable native operation. See the module docs.
@@ -433,7 +448,7 @@ impl Trace for NativeFrame {
                 defs.trace(visit);
                 out.trace(visit);
             }
-            NativeState::Convert { operands, .. } => {
+            NativeState::Convert { operands, .. } | NativeState::MathHypot { operands, .. } => {
                 for v in operands {
                     v.trace(visit);
                 }
@@ -685,6 +700,35 @@ pub(crate) fn start_builtin(
             (
                 ConvertTarget::NumberToString { number },
                 vec![radix.clone()],
+                Hint::Number,
+            )
+        }
+        Builtin::MathFloor
+        | Builtin::MathCeil
+        | Builtin::MathAbs
+        | Builtin::MathImul
+        | Builtin::MathFround
+        | Builtin::MathHypot
+            if !construct =>
+        {
+            let count = match which {
+                Builtin::MathHypot => args.len(),
+                Builtin::MathImul => args.len().min(2),
+                _ => args.len().min(1),
+            };
+            let operands = &args[..count];
+            // hypot always takes the budgeted path, including primitives.
+            if which != Builtin::MathHypot
+                && !operands.iter().any(|v| matches!(v, Value::Object(_)))
+            {
+                return Ok(false);
+            }
+            (
+                ConvertTarget::Math {
+                    which,
+                    magnitude: 0.0,
+                },
+                operands.to_vec(),
                 Hint::Number,
             )
         }
@@ -1577,6 +1621,13 @@ impl NativeState {
                 while *next < *end {
                     let receiver = &operands[*next];
                     if !matches!(receiver, Value::Object(_)) {
+                        if let ConvertTarget::Math { magnitude, .. } = target {
+                            let number = dispatch::to_number(receiver)?;
+                            *magnitude = magnitude.max(number.abs());
+                            operands[*next] = Value::Number(number);
+                            *next += 1;
+                            return Ok(Action::Continue);
+                        }
                         if let ConvertTarget::NumberParse { .. } = target {
                             operands[*next] = if *next == 0 {
                                 Value::String(dispatch::to_js_string(receiver)?)
@@ -1685,6 +1736,22 @@ impl NativeState {
                         which,
                         args: operands.clone(),
                     }),
+                    ConvertTarget::Math {
+                        which: builtin::Builtin::MathHypot,
+                        magnitude,
+                    } => {
+                        *self = NativeState::MathHypot {
+                            operands: std::mem::take(operands),
+                            next: 0,
+                            magnitude,
+                            sum: 0.0,
+                            correction: 0.0,
+                        };
+                        Ok(Action::Continue)
+                    }
+                    ConvertTarget::Math { which, .. } => {
+                        builtin::math(which, operands).map(Action::Return)
+                    }
                     ConvertTarget::Instruction(instr) => Ok(Action::Resume {
                         instr,
                         operands: operands.clone(),
@@ -1738,6 +1805,31 @@ impl NativeState {
                     }
                 }
             }
+            NativeState::MathHypot {
+                operands,
+                next,
+                magnitude,
+                sum,
+                correction,
+            } => {
+                if magnitude.is_infinite() {
+                    return Ok(Action::Return(Value::Number(f64::INFINITY)));
+                }
+                if let Some(value) = operands.get(*next) {
+                    let number = dispatch::to_number(value)?;
+                    if number != 0.0 {
+                        let scaled = number / *magnitude;
+                        let term = scaled * scaled - *correction;
+                        let total = *sum + term;
+                        *correction = (total - *sum) - term;
+                        *sum = total;
+                    }
+                    *next += 1;
+                    Ok(Action::Continue)
+                } else {
+                    Ok(Action::Return(Value::Number(*magnitude * sum.sqrt())))
+                }
+            }
             NativeState::StringSearch(search) => Ok(match search.advance(256) {
                 Some(index) => Action::Return(Value::Number(index as f64)),
                 None => Action::Continue,
@@ -1771,6 +1863,7 @@ impl NativeState {
                 | NativeState::Bind { .. }
                 | NativeState::NeedAll { .. }
                 | NativeState::Convert { .. }
+                | NativeState::MathHypot { .. }
                 | NativeState::StringSearch(_)
                 | NativeState::StringBuild(_)
                 | NativeState::NumberParse(_),

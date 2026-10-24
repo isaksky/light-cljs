@@ -13,6 +13,159 @@ use clj_quickjs::{
     VmErrorKind,
 };
 
+/// Synthetic fixtures, not light-cljs output. The first rows adapt test_math
+/// in QuickJS tests/test_builtin.js (7d1c13c5d8f8); the full QuickJS copyright
+/// and MIT permission notice is retained on string_code_unit_access below.
+#[test]
+fn math_basic_functions() {
+    for src in [
+        "Math.floor(1.4) === 1 && Math.ceil(1.4) === 2",
+        "Math.imul(0x12345678, 123) === -1088058456",
+        "Math.imul(0xB505, 0xB504) === 2147441940 && Math.imul(0xB505, 0xB505) === -2147479015",
+        "Math.imul((-2)**31, (-2)**31) === 0 && Math.imul(2**31-1, 2**31-1) === 1",
+        "Math.fround(0.1) === 0.10000000149011612",
+        "Math.hypot() === 0 && Math.hypot(-2) === 2 && Math.hypot(3, 4) === 5",
+        "Math.abs(Math.hypot(3, 4, 5) - 7.0710678118654755) <= 1e-15",
+        // The pellet's floor(-0.5) == -0 row is a typo: IEEE floor is -1.
+        "Math.floor(-0.5) === -1 && 1 / Math.floor(-0) === -Infinity && 1 / Math.ceil(-0.5) === -Infinity",
+        "Math.abs(-2) === 2 && 1 / Math.abs(-0) === Infinity && Math.floor('2.5') === 2",
+        "Math.imul(-1, 8) === -8 && Math.imul(3) === 0 && Math.imul(4294967297.9, '3') === 3",
+        "Number.isNaN(Math.fround(NaN)) && Math.fround(2**128) === Infinity && Math.fround(1.5) === 1.5",
+        "Math.fround(1 + 2**-24) === 1 && Math.fround(1 + 3 * 2**-24) === 1 + 2**-22",
+        "1 / Math.fround(-1e-100) === -Infinity && 1 / Math.fround(-0) === -Infinity",
+        "Math.hypot(NaN, Infinity) === Infinity && Math.hypot(Infinity, NaN, -Infinity) === Infinity",
+        "Number.isNaN(Math.hypot(NaN, 1)) && 1 / Math.hypot(-0) === Infinity",
+        "Math.hypot(1e200, 1e200) < Infinity && Math.hypot(1e-200, 1e-200) > 0",
+        "Math.hypot(3e200, 4e200) / 1e200 === 5 && Math.hypot(3e-200, 4e-200) / 1e-200 === 5",
+        "Math.hypot(Number.MIN_VALUE) === Number.MIN_VALUE && Math.hypot(Number.MAX_VALUE) === Number.MAX_VALUE",
+        "let a = [1]; for (let i = 0; i < 128; i++) { a.push(2**-27); } Math.hypot.apply(null, a) === 1 + 2**-48",
+        "Number.isNaN(Math.floor()) && Number.isNaN(Math.ceil()) && Number.isNaN(Math.abs()) && Number.isNaN(Math.fround()) && Math.imul() === 0",
+        "Math.floor(Infinity) === Infinity && Math.ceil(-Infinity) === -Infinity && Math.abs(-Infinity) === Infinity",
+        "typeof Math === 'object' && Object.getPrototypeOf(Math) === Object.prototype && Object.keys(Math).length === 0",
+        "Math.floor.call(null, '2.9') === 2 && Math.imul.apply(null, [-1, 8]) === -8 && Math.hypot.bind(null, 3)(4) === 5",
+        "let Math = 7; Math === 7",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for (name, length) in [
+        ("floor", 1),
+        ("ceil", 1),
+        ("abs", 1),
+        ("imul", 2),
+        ("fround", 1),
+        ("hypot", 2),
+    ] {
+        let src = format!(
+            "let f = Math['{name}']; let d = Object.getOwnPropertyDescriptor(Math, '{name}'); d.value === f && d.writable && !d.enumerable && d.configurable && f.length === {length} && f.name === '{name}'"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{name}");
+        assert_eq!(
+            failure(&format!("new Math.{name}()")).kind(),
+            VmErrorKind::TypeError
+        );
+    }
+    for src in ["Math()", "new Math()"] {
+        let caught =
+            format!("let caught = false; try {{ {src}; }} catch (e) {{ caught = true; }} caught");
+        assert_eq!(eval(&caught), ValueView::Bool(true), "{src}");
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError);
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output: ToNumber is ordered and does
+/// not stop at Infinity or NaN; unused operands are never coerced.
+#[test]
+fn math_coercion() {
+    for src in [
+        "let log = ''; function v(n) { return {valueOf() { log += n; return n; }}; } Math.imul(v(2), v(3)) === 6 && log === '23'",
+        "let log = ''; let o = {valueOf() { log += 'v'; return {}; }, toString() { log += 's'; return '-2.5'; }}; Math.floor(o) === -3 && Math.ceil(o) === -2 && Math.abs(o) === 2.5 && Math.fround(o) === -2.5 && log === 'vsvsvsvs'",
+        "let log = ''; let o = {valueOf() { log += 'v'; return 4; }}; Math.hypot(NaN, Infinity, o) === Infinity && log === 'v'",
+        "let caught = false; try { Math.hypot(Infinity, {valueOf() { throw 42; }}); } catch (e) { caught = e === 42; } caught",
+        "let log = ''; let o = {valueOf() { log += 'v'; return NaN; }}; let p = {valueOf() { log += 'p'; return Infinity; }}; Math.hypot(o, p) === Infinity && log === 'vp'",
+        "let caught = false; try { Math.imul({valueOf() { throw 42; }}, {valueOf() { throw 43; }}); } catch (e) { caught = e === 42; } caught",
+        "let o = {valueOf() { throw 42; }}; Math.floor(2, o) === 2 && Math.imul(2, 3, o) === 6",
+        "Math.hypot({valueOf: Math.abs.bind(null, -3)}, new Number(4)) === 5",
+        "__rt.reduce(Math.imul, 2, __rt.vector(3, 4)) === 24 && __rt.reduce(Math.hypot, 3, __rt.vector(4)) === 5",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(
+        failure("Math.hypot(Infinity, Object.create(null))").kind(),
+        VmErrorKind::TypeError
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output. Conversion receivers and
+/// unconverted arguments stay rooted while callbacks wait or migrate.
+#[test]
+fn math_coercion_waits_yields_collects_and_migrates() {
+    for (expression, expected_order) in [
+        ("Math.floor(v(-2.5, 152)) === -3", "152,"),
+        ("Math.ceil.call(null, v(-2.5, 152)) === -2", "152,"),
+        ("Math.abs.apply(null, [v(-2.5, 152)]) === 2.5", "152,"),
+        ("Math.fround.bind(null, v(1.5, 152))() === 1.5", "152,"),
+        ("Math.imul(v(-2, 152), v(4, 153)) === -8", "152,153,"),
+        ("Math.hypot(v(3, 152), v(4, 153)) === 5", "152,153,"),
+        ("Math.hypot(NaN, Infinity, v(4, 152)) === Infinity", "152,"),
+        (
+            "Math.hypot({valueOf: Math.abs.bind(null, v(-3, 152))}, v(4, 153)) === 5",
+            "152,153,",
+        ),
+        (
+            "(() => { let caught = false; try { Math.hypot(Infinity, v(1, 152), {valueOf() { throw 42; }}); } catch (e) { caught = e === 42; } return caught && Math.floor(v(2.5, 153)) === 2; })()",
+            "152,153,",
+        ),
+    ] {
+        let rt = Runtime::new();
+        let src = format!(
+            "let order = ''; function v(n, id) {{ return {{n, valueOf() {{ order += id + ','; __rt.need(id, 1); return this.n; }} }}; }} let result = {expression}; result && order === '{expected_order}'"
+        );
+        let mut task = rt.spawn(&exe(&src), &[]).unwrap();
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..1000 {
+            let (next_task, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next_task;
+            match outcome {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert!(
+                        waits <= expected_order.matches(',').count(),
+                        "repeated wait: {expression}"
+                    );
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{expression}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{expression}: {other:?}"),
+            }
+        }
+        assert!(complete, "instruction bound exceeded: {expression}");
+        assert_eq!(waits, expected_order.matches(',').count(), "{expression}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. Four rows adapt QuickJS
 /// test_builtin.js::test_number, revision 7d1c13c5d8f8. The full QuickJS
 /// copyright and MIT notice is retained on string_code_unit_access below.

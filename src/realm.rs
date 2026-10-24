@@ -49,6 +49,7 @@
 //! | `Reflect` (clj-quickjs-102) | ordinary object, prototype `Object.prototype` | `apply` |
 //! | `Reflect.apply` | built-in function | `length` (3), `name` |
 //! | Number predicates and constants (clj-quickjs-147) | built-in functions and primitive values | `Number` has `isNaN`, `isFinite`, `isInteger`, `isSafeInteger` (each function has `length` 1 and `name`), plus `EPSILON`, `MIN_VALUE`, `MAX_VALUE`, `MAX_SAFE_INTEGER`, `MIN_SAFE_INTEGER`, `NaN`, `POSITIVE_INFINITY`, `NEGATIVE_INFINITY` (no attributes set); globals `isNaN` and `isFinite` each have `length` 1 and `name` |
+//! | `Math` (clj-quickjs-152) | ordinary object, prototype `Object.prototype` | `floor`, `ceil`, `abs`, `fround` (length 1), `imul`, `hypot` (length 2); each function has `name` |
 //!
 //! Every built-in function inherits from `Function.prototype`, which
 //! inherits from `Object.prototype` (clj-quickjs-102).
@@ -109,6 +110,7 @@
 //! `Object`, `Number` and `String` (clj-quickjs-73), `Function` and `Reflect` (clj-quickjs-102), and `Array` (clj-quickjs-155). The compiler emits `get_builtin_global i` for such a
 //! name; `isNaN` and `isFinite` use the same path (clj-quickjs-147).
 //! `parseInt` and `parseFloat` also resolve here (clj-quickjs-148).
+//! The ordinary `Math` namespace resolves here too (clj-quickjs-152).
 //! When the global object exists (clj-quickjs-104) these become its
 //! properties; until then assigning one is a compile-time `Unsupported`
 //! error.
@@ -147,11 +149,13 @@ pub(crate) enum Global {
 
     ParseInt = 8,
     ParseFloat = 9,
+    /// The ordinary Math namespace (clj-quickjs-152).
+    Math = 10,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 10] = [
+    const ALL: [Global; 11] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -162,6 +166,7 @@ impl Global {
         Global::IsFinite,
         Global::ParseInt,
         Global::ParseFloat,
+        Global::Math,
     ];
 
     /// The JavaScript name.
@@ -178,6 +183,7 @@ impl Global {
 
             Global::ParseInt => "parseInt",
             Global::ParseFloat => "parseFloat",
+            Global::Math => "Math",
         }
     }
 
@@ -237,6 +243,8 @@ pub(crate) struct Intrinsics {
 
     parse_int: ObjectId,
     parse_float: ObjectId,
+    /// Ordinary, non-callable Math namespace.
+    math: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -320,6 +328,7 @@ impl Intrinsics {
 
             Global::ParseInt => Value::Object(self.parse_int),
             Global::ParseFloat => Value::Object(self.parse_float),
+            Global::Math => Value::Object(self.math),
         }
     }
 }
@@ -544,6 +553,21 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let parse_float = b.function(Builtin::ParseFloat, &[])?;
     b.add(number, "parseInt", parse_int, PropertyFlags::METHOD)?;
     b.add(number, "parseFloat", parse_float, PropertyFlags::METHOD)?;
+    let math = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(math);
+    for which in [
+        Builtin::MathFloor,
+        Builtin::MathCeil,
+        Builtin::MathAbs,
+        Builtin::MathImul,
+        Builtin::MathFround,
+        Builtin::MathHypot,
+    ] {
+        let method = b.function(which, &[])?;
+        b.add(math, which.name(), method, PropertyFlags::METHOD)?;
+    }
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -587,6 +611,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 
         parse_int,
         parse_float,
+        math,
     })
 }
 
@@ -787,7 +812,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 55);
+        assert_eq!(first.all.len(), 62);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -814,7 +839,9 @@ mod tests {
         assert_eq!(Global::from_name("parseFloat"), Some(Global::ParseFloat));
         assert_eq!(Global::from_u16(8), Some(Global::ParseInt));
         assert_eq!(Global::from_u16(9), Some(Global::ParseFloat));
-        assert_eq!(Global::from_u16(10), None);
+        assert_eq!(Global::from_name("Math"), Some(Global::Math));
+        assert_eq!(Global::from_u16(10), Some(Global::Math));
+        assert_eq!(Global::from_u16(11), None);
     }
 
     /// Every built-in function inherits from `Function.prototype`, which
