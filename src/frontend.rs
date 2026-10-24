@@ -19,6 +19,9 @@
 //! * [`parse_script`]: source text to an [`ast::Script`], or the first
 //!   [`SyntaxError`]. No AST is produced for input that uses an unsupported
 //!   form; the error names the form and its position.
+//! * [`parse_module`]: always-strict module source to an immutable, shareable
+//!   [`ModuleRecord`] containing its parsed body and static import/export tables.
+//!   Loading, linking and execution are deferred.
 //! * [`lexer::Lexer`]: on-demand tokenizer used by the parser. It never
 //!   decides between division and a regular expression literal; the parser
 //!   requests the regexp lexical goal from grammatical context. Regular

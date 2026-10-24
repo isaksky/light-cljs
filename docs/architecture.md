@@ -2726,6 +2726,14 @@ those of ordinary objects; virtual properties introduce no heap edges.
 
 ## QuickJS references and provenance
 
+- `tests/fixtures/modules/{test_cyclic_import,fixture_cyclic_import,assert,
+  hello_module,fib_module}.js` (clj-quickjs-251) are complete parse-only copies of
+  `research/quickjs/tests/{test_cyclic_import,fixture_cyclic_import,assert}.js`
+  and `research/quickjs/examples/{hello_module,fib_module}.js`, revision
+  `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The full QuickJS license is
+  prepended to each; source bodies are unchanged. The frontend tests check
+  their exact static module tables without claiming module execution support.
+
 - `tests/fixtures/js/quickjs_test_generator.js`,
   `quickjs_test_async_gc.js` and `quickjs_test_async_promise_rejection.js`
   (clj-quickjs-250) extract `research/quickjs/tests/test_builtin.js`
@@ -7436,7 +7444,7 @@ body syntax and static tables in one `Arc`. Clones share the complete record;
 accessors expose only shared slices. It contains no GC handles, mutable bindings,
 resolver, instances, world/version, or task state and is `Send + Sync`. This is
 an explicit immutable code/syntax storage boundary, not a JavaScript heap object.
-Default function declarations are distinguished from expressions in the body;
+Default function and class declarations are distinguished from expressions in the body;
 anonymous defaults use ECMA-262's inaccessible `*default*` binding name.
 
 Loading, linking and execution are deferred. A later embedder cache can associate
@@ -7448,11 +7456,6 @@ QuickJS references and provenance: `research/quickjs/quickjs.c` functions
 `js_parse_import`, `js_parse_export`, `js_parse_from_clause`, `add_import`,
 `add_export_entry`, `add_req_module_entry`, revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, were consulted as semantic references;
-no C implementation is adapted. Under "QuickJS references and provenance", the
-parse-only fixtures `tests/fixtures/modules/{test_cyclic_import,fixture_cyclic_import,
-assert,hello_module,fib_module}.js` copy complete sources from
-`research/quickjs/tests/{test_cyclic_import,fixture_cyclic_import,assert}.js` and
-`research/quickjs/examples/{hello_module,fib_module}.js` at that revision, with the
-full QuickJS license prepended to each. The original source bodies are unchanged.
-`frontend::tests::module_records_of_quickjs_cases` checks their exact static tables;
-these fixtures do not claim module execution support.
+no C implementation is adapted. The five complete upstream source copies used by
+`frontend::tests::module_records_of_quickjs_cases` are documented under
+"QuickJS references and provenance" above.

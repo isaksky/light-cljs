@@ -31,6 +31,7 @@ pub enum ModuleItem {
 pub enum DefaultExport {
     Function(Function),
     Expression(Expr),
+    Class(Box<Class>),
 }
 
 /// A whole script: a statement list.

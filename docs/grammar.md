@@ -5253,9 +5253,9 @@ import 'side-effect';
 export {a, c as renamed, d, ns};
 ```
 
-Exported declarations include functions (ordinary, generator and async),
+Exported declarations include functions (ordinary, generator and async), classes,
 `var`, `let` and `const` (including binding patterns). Default exports accept
-an assignment expression, or a named/anonymous function declaration. A named
+an assignment expression, or a named/anonymous function or class declaration. A named
 default declaration binds its name locally; an expression or anonymous
 declaration has the inaccessible `*default*` record binding. Default function
 declarations remain distinct from default expressions in the body AST so a
@@ -5280,6 +5280,19 @@ export default function() { return 1; }
 
 ```js module-accept
 export default {answer: 42};
+```
+
+```js module-accept
+export class C { method(){return 1;} }
+```
+
+```js module-accept
+export default class Named {}
+export {Named};
+```
+
+```js module-accept
+export default class {}
 ```
 
 Duplicate exported names, repeated import bindings, imports conflicting with

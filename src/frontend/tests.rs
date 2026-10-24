@@ -429,6 +429,45 @@ fn module_default_exports_and_scope() {
     assert_eq!(module.requested_modules()[2].code_units(), &[0xd801]);
 }
 
+#[test]
+fn module_class_exports() {
+    use super::ast::{DefaultExport, ModuleItem};
+    use super::parse_module;
+    let named = parse_module("export class C { static make(){return new C();} }").unwrap();
+    assert_eq!(named.local_export_entries()[0].export_name, "C");
+    assert_eq!(named.local_export_entries()[0].local_name, "C");
+    for (source, name) in [
+        ("export default class C {} export {C};", "C"),
+        ("export default class {}", "*default*"),
+    ] {
+        let module = parse_module(source).unwrap();
+        assert_eq!(module.local_export_entries()[0].export_name, "default");
+        assert_eq!(module.local_export_entries()[0].local_name, name);
+        assert!(matches!(
+            module.body()[0],
+            ModuleItem::DefaultExport(DefaultExport::Class(_))
+        ));
+    }
+    let expression = parse_module("export default (class C {});").unwrap();
+    assert_eq!(expression.local_export_entries()[0].local_name, "*default*");
+    assert!(matches!(
+        expression.body()[0],
+        ModuleItem::DefaultExport(DefaultExport::Expression(_))
+    ));
+    for source in [
+        "import C from 's'; export class C {}",
+        "import C from 's'; export default class C {}",
+        "export default class C {} let C;",
+        "export default (class C {}); export {C};",
+        "export default class {}; export default class {};",
+    ] {
+        assert_eq!(
+            parse_module(source).expect_err(source).kind,
+            SyntaxErrorKind::Invalid
+        );
+    }
+}
+
 // ----- S-expression rendering of the AST ------------------------------------
 
 #[test]

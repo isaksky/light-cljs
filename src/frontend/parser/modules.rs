@@ -73,6 +73,11 @@ impl Tables {
                     }
                 }
                 ModuleItem::DefaultExport(DefaultExport::Expression(_)) => {}
+                ModuleItem::DefaultExport(DefaultExport::Class(class)) => {
+                    if let Some(name) = &class.name {
+                        declarations.push((&name.name, name.span, true));
+                    }
+                }
             }
         }
         declarations.sort_by_key(|(_, span, _)| span.start);
@@ -343,7 +348,9 @@ impl Parser<'_> {
         }
         if !matches!(
             self.tok.kind,
-            TokenKind::Keyword(Keyword::Let | Keyword::Const | Keyword::Var | Keyword::Function)
+            TokenKind::Keyword(
+                Keyword::Let | Keyword::Const | Keyword::Var | Keyword::Function | Keyword::Class
+            )
         ) && !self.at_async_function()
         {
             return Err(self.unexpected("an exported declaration or export list"));
@@ -376,6 +383,12 @@ impl Parser<'_> {
         };
         let value = if self.is_keyword(Keyword::Function) || self.at_async_function() {
             DefaultExport::Function(self.parse_function(false)?)
+        } else if self.is_keyword(Keyword::Class) {
+            let expr = self.parse_class(false)?;
+            let ExprKind::Class(class) = expr.kind else {
+                unreachable!("parse_class produces a class expression")
+            };
+            DefaultExport::Class(class)
         } else {
             let expr = self.parse_assignment()?;
             self.expect_semi()?;
@@ -383,6 +396,7 @@ impl Parser<'_> {
         };
         let local = match &value {
             DefaultExport::Function(f) if f.name.is_some() => f.name.clone().unwrap(),
+            DefaultExport::Class(class) if class.name.is_some() => class.name.clone().unwrap(),
             _ => Ident {
                 name: "*default*".into(),
                 span: exported.span,
