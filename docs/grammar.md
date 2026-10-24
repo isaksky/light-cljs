@@ -102,7 +102,7 @@ non-strict (sloppy) scripts and functions compile (clj-quickjs-95; see
 | Reserved words | all ECMAScript reserved words plus the strict-mode ones (`let`, `static`, `yield`, `implements`, `interface`, `package`, `private`, `protected`, `public`) and `await`; any of these may follow `.` or be an object literal key as a property name, also written with escapes (`a.l\u0065t` is the property `let`, so is the key in `{l\u0065t: 1}`) | as binding names, assignment targets or references; a reserved word written with escapes (`l\u0065t`, `tru\u0065`) is never the keyword and is rejected (`ReservedWord`) everywhere except right after `.` and as an object literal key (not a shorthand) |
 | Numbers | decimal integers, fractions (`1.5`, `.5`, `5.`), exponents (`1e-3`), `0x`/`0o`/`0b` integers; values are IEEE-754 doubles, correctly rounded; overflow gives `Infinity`; a member access may follow a literal (`0.1.a`, `0x1.a`, `.5.a`, `1..a`: the second `.` starts the access); in sloppy code only (clj-quickjs-51; ECMAScript B.1.1), a `0` followed by digits: all octal digits make a legacy octal integer (`017` is 15), which takes no fraction or exponent, so `01.a` is a member access; an `8` or `9` among them makes a decimal literal that may take a fraction and exponent (`08` is 8, `09.5`, `08e1`) | in strict code, legacy octal / leading zeros (`017`, `08`) at the `0`, also right after a `"use strict"` directive (`"use strict"; 010`); in sloppy code, a legacy octal integer followed by a fraction (`01.5` is `01` then `.5`, `UnexpectedToken`) or an exponent (`01e1`), and a `n` suffix or separator after a leading `0` (`01n`, `08n`, `0_1`, `08_1`: `InvalidToken`); numeric separators (`1_000`), BigInt (`10n`), a literal immediately followed by an identifier or digit (`3in`, `1.toString`, `0.a`), a number literal where a property name is expected (`0.1.2`), missing digits (`0x`, `1e`) |
 | Strings | `'...'` and `"..."` with escapes `\n \t \r \b \f \v \0 \xHH \uHHHH \u{H...}`, each `\u` escape is its UTF-16 code unit(s), so two surrogate escapes spell a pair (`"\u{dbff}\u{dfff}"` is U+10FFFF) and a lone surrogate escape (`\u{d800}`, a high surrogate before a non-surrogate) is a lone code unit (clj-quickjs-141), line continuations, identity escapes (`\'`, `\\`, `\q`), raw U+2028/U+2029; in sloppy code only (clj-quickjs-258; ECMAScript B.1.2), legacy octal escapes of at most three octal digits and value 0o377 (`"\07"` is U+0007, `"\101"` is `A`, `"\400"` is U+0020 then `0`; `\0` not followed by a digit is the null character in either mode) and `\8` `\9` (the characters `8` and `9`) | unterminated strings, raw LF/CR inside a string, malformed `\x`/`\u`; in strict code, octal escapes (`\07`, `\1`, `\08`) and `\8` `\9` at the `\`, also in a directive before a `"use strict"` directive (`"\07"; "use strict";`) and in the string right after one (`"use strict"; "\07"`) |
-| Template literals (clj-quickjs-57) | `` `...` `` with substitutions `${ Expression }`, nested to any depth within the nesting budget; one token per part (NoSubstitutionTemplate, TemplateHead, TemplateMiddle, TemplateTail): the `}` that closes a substitution (the first `}` not matching a `{` inside it) starts the next part. The text may contain raw line terminators (CR and CRLF read as LF, U+2028/U+2029 kept; they count for line numbers but not for ASI) and the escapes of string literals, except that a digit escape other than `\0` not followed by a digit is an error in either mode; `` \` `` and `\$` are text. Each part keeps its cooked value (escapes decoded) and its raw value (escapes as written, CR and CRLF read as LF; for tagged templates, clj-quickjs-58) | unterminated (`UnexpectedEnd` at the backtick, or at the `}` of the open part); malformed `\x`/`\u` escapes, octal escapes (`\1`, `\07`, `\00`) and `\8` `\9` (`InvalidToken` at the `\`, also in sloppy code); a substitution that is not one Expression followed by `}` (`` `${}` ``, `` `${a b}` ``: `UnexpectedToken`); a tagged template (`` f`x` ``, also with a line break before the template: `Unsupported`, clj-quickjs-58) |
+| Template literals (clj-quickjs-57) | `` `...` `` with substitutions `${ Expression }`, nested to any depth within the nesting budget; one token per part (NoSubstitutionTemplate, TemplateHead, TemplateMiddle, TemplateTail): the `}` that closes a substitution (the first `}` not matching a `{` inside it) starts the next part. The text may contain raw line terminators (CR and CRLF read as LF, U+2028/U+2029 kept; they count for line numbers but not for ASI) and the escapes of string literals, except that a digit escape other than `\0` not followed by a digit is an error in either mode; `` \` `` and `\$` are text. Each part keeps its cooked value (escapes decoded) and its raw value (escapes as written, CR and CRLF read as LF; for tagged templates, clj-quickjs-58) | unterminated (`UnexpectedEnd` at the backtick, or at the `}` of the open part); malformed `\x`/`\u` escapes, octal escapes (`\1`, `\07`, `\00`) and `\8` `\9` (`InvalidToken` at the `\`, also in sloppy code); a substitution that is not one Expression followed by `}` (`` `${}` ``, `` `${a b}` ``: `UnexpectedToken`) |
 | Regular expressions (clj-quickjs-55) | `/pattern/flags` where an operand is expected, including `/=/`; a slash inside `[...]` or escaped with `\` is pattern text. Escapes are preserved in the AST. Flags are IdentifierPart characters; `dgimsuyv` are supported spellings | a line terminator, even escaped (`InvalidToken`), or unterminated body/class/escape (`UnexpectedEnd`), at the opening `/`; duplicate/unknown/escaped flags and combining `u` with `v` (`Invalid` at the `/`). Pattern early errors are deferred to clj-quickjs-56; compiling a literal reports `Unsupported` until RegExp objects exist |
 | Punctuators | every ECMAScript punctuator is lexed by maximal munch (`a>>>=b` is `a`, `>>>=`, `b`) so the parser can name an unsupported operator precisely | other characters (`@`, `#`, ...) |
 
@@ -177,8 +177,8 @@ Exponentiation        = Unary | Update "**" Exponentiation
 Unary                 = ( "!" | "-" | "+" | "~" | "typeof" | "void" | "delete" ) Unary | Update
 Update                = ( "++" | "--" ) Unary
                       | Call [ [no LineTerminator here] ( "++" | "--" ) ]
-Call                  = ( Primary | New ) { Arguments | "." IdentifierName | "[" Expression "]" }
-New                   = "new" ( Primary | New ) { "." IdentifierName | "[" Expression "]" } [ Arguments ]
+Call                  = ( Primary | New ) { Arguments | "." IdentifierName | "[" Expression "]" | TemplateLiteral }
+New                   = "new" ( Primary | New ) { "." IdentifierName | "[" Expression "]" | TemplateLiteral } [ Arguments ]
                         (* the first Arguments belong to `new`: `new F()()` calls the result *)
 Arguments             = "(" [ AssignmentExpression { "," AssignmentExpression } [ "," ] ] ")"
 Primary               = Identifier | Literal | FunctionExpression | ObjectLiteral
@@ -186,6 +186,8 @@ Primary               = Identifier | Literal | FunctionExpression | ObjectLitera
                         (* `this`: script global object, ordinary receivers, lexical arrow captures *)
 TemplateLiteral       = NoSubstitutionTemplate
                       | TemplateHead Expression { TemplateMiddle Expression } TemplateTail
+                        (* after a member/call expression, including across a line break,
+                           this is a tagged call; invalid escapes have undefined cooked text *)
 ObjectLiteral         = "{" [ PropertyDefinition { "," PropertyDefinition } [ "," ] ] "}"
 PropertyDefinition    = PropertyName ":" AssignmentExpression | Identifier
                       | PropertyName FormalParameters FunctionBody
@@ -401,7 +403,7 @@ Every form below is rejected where it starts. Error kinds:
 | rest parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
 | optional chaining `?.`, spread `...` (in an array literal, a call or an object literal), an array literal as an assignment target (`[a] = v`) | Unsupported |
 | in object literals: computed keys `{[k]: v}` (clj-quickjs-233), `async` and generator methods | Unsupported |
-| tagged templates (`` f`x` ``, clj-quickjs-58), BigInt, numeric separators | Unsupported |
+| BigInt, numeric separators | Unsupported |
 | `??`, logical assignment (`&&=`, `\|\|=`, `??=`, also to a property: `a.b &&= 1`) | Unsupported |
 | `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for `super` and optional chaining | Unsupported |
 | `delete` of an identifier reference in strict code (`delete x`, ECMAScript 13.5.1.1), reported at the `delete` | Invalid |
@@ -1312,7 +1314,7 @@ Gaps specific to execution:
   (clj-quickjs-70). `typeof`, `length`, indexing, the code-unit methods
   (clj-quickjs-143) and `toString`/`valueOf` (clj-quickjs-73) execute;
   additional string methods remain deferred. Untagged template literals execute (clj-quickjs-57);
-  tagged templates and `String.raw` are clj-quickjs-58.
+  tagged templates and `String.raw` execute (clj-quickjs-58).
 - **Engine-raised error objects expose stacks only.** A caught ReferenceError, TypeError, RangeError or
   StackOverflow has an immutable `stack` string (`e.message`, `e.name`,
   and `e instanceof C`
@@ -1930,8 +1932,18 @@ x = `a${b, `c${d}`}e
 f`;
 ```
 
-```js reject Unsupported 1:6
+```js accept
 x = f`template`;
+```
+
+```js accept
+tag
+`a${x}b``\unicode`.member;
+new tag`constructor`(1);
+```
+
+```js reject Unsupported 1:2
+a?.b`c`;
 ```
 
 ```js reject InvalidToken 1:7
@@ -2801,3 +2813,23 @@ correctly rounded. The value for 10 and the digit-sizing expression above
 are pinned by source tests on the tested platform. Other Math methods and
 constants remain tracked by their own pellets. The existing shared realm
 immutability policy also applies to these methods.
+Tagged templates (clj-quickjs-58) evaluate the tag reference, obtain the
+site's template array, evaluate substitutions left to right without coercion,
+and call the tag with that array followed by the substitutions. Member and
+computed-member tags preserve `this`; result accesses and further tags chain
+normally. The cooked array and its `raw` array are frozen real arrays with
+Array.prototype; `raw` is non-enumerable, non-writable and non-configurable.
+Malformed escapes in tagged parts produce undefined cooked entries and retain
+raw text; malformed escapes in untagged templates remain syntax errors.
+
+GetTemplateObject caches per task executable instance, keyed by code identity
+and instruction position, including through recursion and distinct closures
+of that code. Separate tasks have separate template arrays. The arrays are
+persistent and can be published or captured by published closures; ordinary
+Object.freeze arrays remain task-owned. Shared code holds only primitives.
+`String.raw` is a realm built-in with length 1, reads callSite.raw then its
+ToLength length once, then each raw entry and available substitution in order,
+using resumable ToString. Missing substitutions add no text; extra ones are
+ignored. Null/undefined callSite or raw throw TypeError. Primitive property
+reads follow the existing wrapper model (Boolean wrappers remain unsupported).
+Output uses budgeted 256-unit copying and throws RangeError above 2^30 - 1 units.

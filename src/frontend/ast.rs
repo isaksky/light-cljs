@@ -404,7 +404,10 @@ impl Expr {
                 properties.iter().map(|p| p.value.height).max().unwrap_or(0)
             }
             ExprKind::AssignMember { object, value, .. } => object.height.max(value.height),
-            ExprKind::Template { exprs, .. } => exprs.iter().map(|e| e.height).max().unwrap_or(0),
+            ExprKind::Template { tag, exprs, .. } => exprs
+                .iter()
+                .map(|e| e.height)
+                .fold(tag.as_ref().map_or(0, |e| e.height), usize::max),
             ExprKind::Array(elements) => elements
                 .iter()
                 .flatten()
@@ -539,11 +542,12 @@ pub enum ExprKind {
         /// are reported.
         op_span: Span,
     },
-    /// An untagged template literal (clj-quickjs-57): its text parts and
+    /// A template literal (clj-quickjs-57/-58): optional tag, text parts and
     /// its substitutions, interleaved as `quasis[0] exprs[0] quasis[1] ...
     /// quasis[n]`, so there is one more part than substitutions. Each
     /// substitution is an Expression (the comma operator included).
     Template {
+        tag: Option<Box<Expr>>,
         quasis: Vec<TemplateElement>,
         exprs: Vec<Expr>,
     },
@@ -639,7 +643,9 @@ pub enum ExprKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TemplateElement {
     /// The template value: escapes decoded, CR and CRLF read as LF.
-    pub cooked: JsString,
+    /// None for an invalid escape in a tagged template; untagged ones
+    /// are rejected by the parser.
+    pub cooked: Option<JsString>,
     /// The raw text as written, CR and CRLF read as LF (for tagged
     /// templates, clj-quickjs-58).
     pub raw: String,

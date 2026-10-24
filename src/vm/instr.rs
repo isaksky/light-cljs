@@ -99,6 +99,7 @@
 //! | `PutGlobal` | 0x6C | u16 name constant | v → v | assign global property; sloppy code creates missing names, strict code throws ReferenceError |
 //! | `DeclareGlobalVar` | 0x6D | u16 name constant | – | create a non-configurable global var unless already own |
 //! | `DeclareGlobalFunction` | 0x6E | u16 name constant | – | validate a global function declaration and prepare its property |
+//! | `TemplateObject` | 0x6F | u16 part count n | cooked/raw pairs (2*n) → array | frozen, persistent per-task/site template object (clj-quickjs-58); cooked must be String/undefined and raw String; code stays primitive-only |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -558,6 +559,9 @@ pub enum Opcode {
     PutGlobal = 0x6C,
     DeclareGlobalVar = 0x6D,
     DeclareGlobalFunction = 0x6E,
+    /// Pop `2*n` interleaved cooked/raw primitives, push the per-task/site
+    /// persistent frozen template array (clj-quickjs-58).
+    TemplateObject = 0x6F,
 }
 
 /// Operand encoding of an opcode.
@@ -723,6 +727,7 @@ impl Opcode {
             0x6C => PutGlobal,
             0x6D => DeclareGlobalVar,
             0x6E => DeclareGlobalFunction,
+            0x6F => TemplateObject,
             _ => return None,
         })
     }
@@ -841,6 +846,7 @@ impl Opcode {
             PutGlobal => "put_global",
             DeclareGlobalVar => "declare_global_var",
             DeclareGlobalFunction => "declare_global_function",
+            TemplateObject => "template_object",
         }
     }
 
@@ -851,7 +857,7 @@ impl Opcode {
             GetLocal | SetLocal => OperandKind::Local,
             Jump | JumpIfFalse | PushCatch | PushFinally => OperandKind::Target,
             HostEffect => OperandKind::HostOp,
-            NewVector | NewMap => OperandKind::Count,
+            NewVector | NewMap | TemplateObject => OperandKind::Count,
             ThrowError => OperandKind::ThrowKind,
             Function | Method => OperandKind::Function,
             Call | CallMethod | Construct => OperandKind::ArgCount,
@@ -1040,6 +1046,7 @@ pub(crate) enum Instr {
     PutGlobal(u16),
     DeclareGlobalVar(u16),
     DeclareGlobalFunction(u16),
+    TemplateObject(u16),
 }
 
 impl Instr {
@@ -1155,6 +1162,7 @@ impl Instr {
             Instr::PutGlobal(_) => Opcode::PutGlobal,
             Instr::DeclareGlobalVar(_) => Opcode::DeclareGlobalVar,
             Instr::DeclareGlobalFunction(_) => Opcode::DeclareGlobalFunction,
+            Instr::TemplateObject(_) => Opcode::TemplateObject,
         }
     }
 
@@ -1192,7 +1200,7 @@ impl Instr {
             Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally
             | CallFinally | DropCompletion => (0, 0),
             NewVector(n) => (usize::from(n), 1),
-            NewMap(n) => (2 * usize::from(n), 1),
+            NewMap(n) | TemplateObject(n) => (2 * usize::from(n), 1),
             Call(n) => (usize::from(n) + 1, 1),
             Construct(n) => (usize::from(n) + 1, 1),
             CallMethod(n) => (usize::from(n) + 2, 1),
@@ -1216,6 +1224,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 110);
+        assert_eq!(assigned, 111);
     }
 }

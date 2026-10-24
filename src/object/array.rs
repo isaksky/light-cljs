@@ -129,6 +129,15 @@ pub(crate) const FROZEN_ELEMENT: PropertyFlags = PropertyFlags {
 };
 
 impl ArrayObject {
+    /// Internal immutable array storage, built before allocation. Only
+    /// TemplateObject uses this, with primitive elements and intrinsic
+    /// prototypes; freeze before exposing it to JavaScript.
+    pub(crate) fn template(prototype: ObjectId) -> ArrayObject {
+        ArrayObject {
+            object: OrdinaryObject::intrinsic(Some(prototype)),
+            ..ArrayObject::new(None)
+        }
+    }
     /// An empty array (length 0) with a null prototype, owned by `owner`.
     pub(crate) fn new(owner: Option<TaskId>) -> ArrayObject {
         ArrayObject {

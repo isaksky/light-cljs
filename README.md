@@ -1854,10 +1854,25 @@ Supported (`cargo test --lib frontend::tests::template_literals`,
 - Evaluation is left to right; each substitution is converted with ToString (`"undefined"`, `"null"`,
   `"true"`, Number::toString) by the `to_string` opcode right after it runs, then concatenated.
 
-Deferred:
+Object substitutions convert with hint string since clj-quickjs-70.
 
-- Tagged templates and `String.raw` (clj-quickjs-58; `` f`x` `` is `Unsupported`). Object
-  substitutions convert with hint string since clj-quickjs-70.
+### Tagged templates and String.raw (clj-quickjs-58)
+
+Supported (`cargo test --test js_source tagged_template`,
+`cargo test --lib frontend::tests::tagged_template_syntax`):
+
+- A member or call expression followed by a template calls the tag, also across a
+  line break; member tags receive their receiver as `this`. Substitutions are
+  passed unchanged, left to right. Chaining and member access on results execute.
+- The tag receives frozen cooked and raw arrays, with a non-enumerable immutable
+  `raw` property. Invalid escapes produce undefined cooked entries. The same site
+  reuses one object within a task, across function calls and closures; sites and
+  tasks have distinct objects. Template arrays and closures capturing them publish.
+- `String.raw(callSite, ...subs)` reads `raw` and its ToLength length once, then
+  interleaves ToString of raw entries and available substitutions. Getters and
+  coercion resume across yields, waits, collection and migration; copying is budgeted.
+- Optional chaining remains unsupported, including optional-chain template tags.
+  Boolean wrapper property reads remain deferred like other primitive reads.
 
 ### `this` in method calls (clj-quickjs-116)
 

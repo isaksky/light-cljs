@@ -514,6 +514,7 @@ impl Executable {
                 Opcode::PutGlobal => Instr::PutGlobal(operand as u16),
                 Opcode::DeclareGlobalVar => Instr::DeclareGlobalVar(operand as u16),
                 Opcode::DeclareGlobalFunction => Instr::DeclareGlobalFunction(operand as u16),
+                Opcode::TemplateObject => Instr::TemplateObject(operand as u16),
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,
@@ -641,6 +642,7 @@ impl Executable {
                 | Instr::PutGlobal(v)
                 | Instr::DeclareGlobalVar(v)
                 | Instr::DeclareGlobalFunction(v)
+                | Instr::TemplateObject(v)
                 | Instr::GetField(v)
                 | Instr::PutField(v)
                 | Instr::DefineField(v)

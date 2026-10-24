@@ -212,6 +212,7 @@
 //! keep, but no promise or job is involved here.
 
 use std::marker::PhantomData;
+mod string_raw;
 
 use super::builtin;
 use super::dispatch::{self, Callee, Fault, Flow, dependency_id, describe, result_kind};
@@ -434,6 +435,7 @@ enum NativeState {
         correction: f64,
     },
     Join(Box<ArrayJoin>),
+    StringRaw(Box<string_raw::StringRaw>),
     ArrayToString {
         this: Value,
         stage: u8,
@@ -621,6 +623,7 @@ impl Trace for NativeFrame {
                     parser.trace(visit);
                 }
             }
+            NativeState::StringRaw(raw) => raw.trace(visit),
             NativeState::Join(join) => {
                 join.this.trace(visit);
                 join.separator.trace(visit);
@@ -706,14 +709,14 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         Reduce | NeedAll => true,
         Const(_) | Undefined | GetLocal(_) | SetLocal(_) | Pop | Dup | Add | Sub | Mul | Lt
         | StrictEq | Not | Jump(_) | JumpIfFalse(_) | Return | NewObject | HostEffect(_)
-        | NewVector(_) | NewMap(_) | Count | Nth | Get | GetOr | Assoc | Dissoc | Conj
-        | PopLast | NewVectorBuilder | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze
-        | Div | Rem | Neg | ToNumber | ToNumberPair | Gt | Le | Ge | LooseEq | ThrowError(_)
-        | Function(..) | Call(_) | CurrentFunction | GetCapture(_) | NewCell | CellInit
-        | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PushCatch(_)
-        | PushFinally(_) | PopCatch | PopFinally | EndFinally | BitAnd | BitOr | BitXor | Shl
-        | Sar | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt
-        | CompareGt | CompareLe | CompareGe | Typeof | GetField(_) | PutField(_)
+        | NewVector(_) | NewMap(_) | TemplateObject(_) | Count | Nth | Get | GetOr | Assoc
+        | Dissoc | Conj | PopLast | NewVectorBuilder | NewMapBuilder | BuilderConj
+        | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber | ToNumberPair | Gt | Le | Ge
+        | LooseEq | ThrowError(_) | Function(..) | Call(_) | CurrentFunction | GetCapture(_)
+        | NewCell | CellInit | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw
+        | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally | BitAnd | BitOr
+        | BitXor | Shl | Sar | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus
+        | CompareLt | CompareGt | CompareLe | CompareGe | Typeof | GetField(_) | PutField(_)
         | DefineField(_) | GetBuiltinGlobal(_) | CallMethod(_) | NewObjectLiteral | ToString
         | GetThis | NewArray | AppendElement | AppendHole | GetElem | PutElem | Dup2
         | ToPropertyKey | Construct(_) | SetProto | Instanceof | Delete | In | ForInStart
@@ -860,6 +863,9 @@ pub(crate) fn start_builtin(
                 converted: false,
                 parser: None,
             }),
+            Builtin::StringRaw => Some(NativeState::StringRaw(Box::new(
+                string_raw::StringRaw::new(args)?,
+            ))),
             Builtin::ArrayPrototypeJoin => Some(NativeState::Join(Box::new(ArrayJoin {
                 this: builtin::array_string_receiver(heap, state.diag.task, this)?,
                 separator: arg(0),
@@ -1513,6 +1519,13 @@ impl NativeState {
     /// is stored in `self` (a root) before returning.
     fn step(&mut self, heap: &Heap, task: TaskId, input: Input) -> Result<Action, Fault> {
         match self {
+            NativeState::StringRaw(raw) => {
+                if let Some(build) = raw.finish()? {
+                    *self = NativeState::StringBuild(build);
+                    return Ok(Action::Continue);
+                }
+                raw.step(heap, task, input)
+            }
             NativeState::Join(join) => {
                 if matches!(join.stage, JoinStage::Element) && join.next == join.len {
                     *self = NativeState::StringBuild(
@@ -2281,6 +2294,7 @@ impl NativeState {
                 | NativeState::Apply { .. }
                 | NativeState::Push { .. }
                 | NativeState::Join(_)
+                | NativeState::StringRaw(_)
                 | NativeState::ArrayToString { .. }
                 | NativeState::Bind { .. }
                 | NativeState::NeedAll { .. }

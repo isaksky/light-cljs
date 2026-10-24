@@ -2854,7 +2854,12 @@ impl<'s> Lowerer<'s> {
                 value,
                 op_span,
             } => self.assign_member(object, property, value, *op_span),
-            ExprKind::Template { quasis, exprs } => self.template(quasis, exprs, span),
+            ExprKind::Template {
+                tag: Some(tag),
+                quasis,
+                exprs,
+            } => self.tagged_template(tag, quasis, exprs, span),
+            ExprKind::Template { quasis, exprs, .. } => self.template(quasis, exprs, span),
             ExprKind::Array(elements) => self.array_literal(elements, span),
             ExprKind::AssignIndex {
                 object,
@@ -3244,20 +3249,79 @@ impl<'s> Lowerer<'s> {
         let Some((first, rest)) = quasis.split_first() else {
             return Err(self.internal(span, "a template literal without parts"));
         };
-        if exprs.is_empty() || !first.cooked.is_empty() {
-            self.constant(Primitive::String(first.cooked.clone()), first.span)?;
+        let first_cooked = first
+            .cooked
+            .as_ref()
+            .ok_or_else(|| self.internal(span, "invalid untagged template"))?;
+        if exprs.is_empty() || !first_cooked.is_empty() {
+            self.constant(Primitive::String(first_cooked.clone()), first.span)?;
         }
         for (i, (expr, part)) in exprs.iter().zip(rest).enumerate() {
             self.expr(expr)?;
             self.out().op(Opcode::ToString, expr.span);
-            if i > 0 || !first.cooked.is_empty() {
+            if i > 0 || !first_cooked.is_empty() {
                 self.out().op(Opcode::Plus, expr.span);
             }
-            if !part.cooked.is_empty() {
-                self.constant(Primitive::String(part.cooked.clone()), part.span)?;
+            let cooked = part
+                .cooked
+                .as_ref()
+                .ok_or_else(|| self.internal(span, "invalid untagged template"))?;
+            if !cooked.is_empty() {
+                self.constant(Primitive::String(cooked.clone()), part.span)?;
                 self.out().op(Opcode::Plus, part.span);
             }
         }
+        Ok(())
+    }
+
+    /// GetTemplateObject precedes substitution evaluation. The tag reference
+    /// uses exactly the receiver preservation of an ordinary member call.
+    #[inline(never)]
+    fn tagged_template(
+        &mut self,
+        tag: &Expr,
+        quasis: &[TemplateElement],
+        exprs: &[Expr],
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        if quasis.len() > MAX_COUNT || exprs.len() + 1 > MAX_COUNT {
+            return Err(self.error(
+                SyntaxErrorKind::TooLarge,
+                span,
+                "more than 65,535 template arguments",
+            ));
+        }
+        let method = matches!(tag.kind, ExprKind::Member { .. } | ExprKind::Index { .. });
+        if method {
+            self.method_callee(tag)?;
+        } else {
+            self.expr(tag)?;
+        }
+        for part in quasis {
+            match &part.cooked {
+                Some(s) => self.constant(Primitive::String(s.clone()), part.span)?,
+                None => self.out().op(Opcode::Undefined, part.span),
+            }
+            self.constant(
+                Primitive::String(JsString::from(part.raw.as_str())),
+                part.span,
+            )?;
+        }
+        let op_span = quasis[0].span;
+        self.out()
+            .op_u16(Opcode::TemplateObject, quasis.len() as u16, op_span);
+        for expr in exprs {
+            self.expr(expr)?;
+        }
+        self.out().op_u16(
+            if method {
+                Opcode::CallMethod
+            } else {
+                Opcode::Call
+            },
+            (exprs.len() + 1) as u16,
+            op_span,
+        );
         Ok(())
     }
 

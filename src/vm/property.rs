@@ -421,6 +421,12 @@ fn function_prototype_miss(key: &Key, access: Access) -> Fault {
 
 /// Writes: the owner task only.
 fn check_write(object: &OrdinaryObject, task: TaskId) -> Result<(), Fault> {
+    // Internal template arrays are deeply immutable. Let their frozen
+    // descriptors reject writes/defines/deletes with normal JS semantics.
+    // Plain realm intrinsics are rejected separately before this check.
+    if object.is_intrinsic() && object.is_frozen() {
+        return Ok(());
+    }
     match object.owner() {
         Some(owner) if owner == task => Ok(()),
         owner => Err(foreign(owner, task)),
@@ -1538,6 +1544,11 @@ pub(crate) fn append(
     };
     heap.with_object_mut(id, |target| match target {
         HeapObject::Array(a) => {
+            // Literal append bypasses descriptor checks and is only valid
+            // on a newly created task-owned array, never a template array.
+            if a.object().is_intrinsic() {
+                return Err(immutable(&Key::Name(JsString::from("length"))));
+            }
             check_write(a.object(), task)?;
             if a.push(element) {
                 Ok(())

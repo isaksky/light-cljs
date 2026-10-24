@@ -2258,6 +2258,8 @@ impl<'a> Parser<'a> {
                 )?;
             } else if self.is_punct(Punct::LBracket) && !is_reserved_binding(&expr) {
                 expr = self.parse_index(expr)?;
+            } else if matches!(&self.tok.kind, TokenKind::Template(part) if part.head) {
+                expr = self.parse_template(Some(expr))?;
             } else {
                 if let Some(op) = self.postfix_update_op() {
                     let op_span = self.advance()?.span;
@@ -2309,6 +2311,8 @@ impl<'a> Parser<'a> {
                 )?;
             } else if self.is_punct(Punct::LBracket) && !is_reserved_binding(&callee) {
                 callee = self.parse_index(callee)?;
+            } else if matches!(&self.tok.kind, TokenKind::Template(part) if part.head) {
+                callee = self.parse_template(Some(callee))?;
             } else {
                 break;
             }
@@ -2370,11 +2374,6 @@ impl<'a> Parser<'a> {
             TokenKind::Punct(Punct::OptionalChain) => {
                 Err(self.unsupported(span, "optional chaining is"))
             }
-            // A template after a member or call expression, also across a
-            // line break, is a tagged template (clj-quickjs-58).
-            TokenKind::Template(part) if part.head => {
-                Err(self.unsupported(span, "tagged templates are"))
-            }
             _ => Ok(()),
         }
     }
@@ -2382,11 +2381,11 @@ impl<'a> Parser<'a> {
     /// TemplateLiteral (clj-quickjs-57): a NoSubstitutionTemplate, or a
     /// TemplateHead, then Expression (TemplateMiddle Expression)*
     /// TemplateTail. The lexer starts the part after a substitution at its
-    /// closing `}`. An invalid escape in any part is a SyntaxError, as the
-    /// template is untagged.
+    /// closing `}`. Invalid escapes are SyntaxErrors without a tag and
+    /// undefined cooked entries with a tag (clj-quickjs-58).
     #[inline(never)]
-    fn parse_template(&mut self) -> PResult<Expr> {
-        let start = self.tok.span.start;
+    fn parse_template(&mut self, tag: Option<Expr>) -> PResult<Expr> {
+        let start = tag.as_ref().map_or(self.tok.span.start, |e| e.span.start);
         let saved = self.depth;
         self.deeper(cost::TEMPLATE)?;
         let mut quasis = Vec::new();
@@ -2396,7 +2395,11 @@ impl<'a> Parser<'a> {
                 return Err(self.unexpected("`}` closing the template substitution"));
             };
             let element = TemplateElement {
-                cooked: part.cooked.clone()?,
+                cooked: if tag.is_some() {
+                    part.cooked.clone().ok()
+                } else {
+                    Some(part.cooked.clone()?)
+                },
                 raw: part.raw.clone(),
                 span: self.tok.span,
             };
@@ -2415,7 +2418,14 @@ impl<'a> Parser<'a> {
         }
         self.depth = saved;
         let span = self.span_from(start);
-        self.expr(ExprKind::Template { quasis, exprs }, span)
+        self.expr(
+            ExprKind::Template {
+                tag: tag.map(Box::new),
+                quasis,
+                exprs,
+            },
+            span,
+        )
     }
 
     /// Arguments: `(` (AssignmentExpression (`,` AssignmentExpression)* `,`?)? `)`
@@ -2461,7 +2471,7 @@ impl<'a> Parser<'a> {
             TokenKind::Identifier(_) => return self.parse_identifier_reference(),
             TokenKind::Punct(Punct::LParen) => return self.parse_parenthesized(),
             TokenKind::Punct(Punct::LBrace) => return self.parse_object_literal(),
-            TokenKind::Template(part) if part.head => return self.parse_template(),
+            TokenKind::Template(part) if part.head => return self.parse_template(None),
             TokenKind::Punct(Punct::LBracket) => return self.parse_array_literal(),
             _ => return Err(self.primary_error()),
         };

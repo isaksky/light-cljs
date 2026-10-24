@@ -204,6 +204,7 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
         HeapObject::Atom(_) => Shareability::ConcurrentReference,
         // A realm intrinsic: immutable once built (`crate::vm::builtin`).
         HeapObject::Builtin(_) => Shareability::Persistent,
+        HeapObject::Array(a) if a.object().is_intrinsic() => Shareability::Persistent,
         HeapObject::Array(_) => Shareability::TaskOwned,
     }
 }

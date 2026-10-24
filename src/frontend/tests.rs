@@ -155,11 +155,23 @@ fn render_expr(e: &Expr) -> String {
         ),
         // Text parts render as their cooked value, followed by `raw` and
         // the raw text where that differs.
-        ExprKind::Template { quasis, exprs } => {
-            let mut out = "(template".to_string();
+        ExprKind::Template { tag, quasis, exprs } => {
+            let mut out = tag.as_ref().map_or_else(
+                || "(template".to_string(),
+                |tag| format!("(tagged {}", render_expr(tag)),
+            );
             for (i, part) in quasis.iter().enumerate() {
-                out.push_str(&format!(" {:?}", part.cooked));
-                if part.raw != part.cooked.to_string() {
+                out.push_str(
+                    &part
+                        .cooked
+                        .as_ref()
+                        .map_or_else(|| " undefined".to_string(), |s| format!(" {s:?}")),
+                );
+                if part
+                    .cooked
+                    .as_ref()
+                    .is_none_or(|s| part.raw != s.to_string())
+                {
                     out.push_str(&format!(" raw {:?}", part.raw));
                 }
                 if let Some(e) = exprs.get(i) {
@@ -2918,11 +2930,33 @@ fn template_literals() {
     rejects_with("`${a + }`", UnexpectedToken, 1, 8, "`}` closing");
     // A `}` closing a substitution is not a punctuator.
     rejects("{ `${ }` }", UnexpectedToken, 1, 7);
-    // Tagged templates are clj-quickjs-58, also across a line break.
-    rejects_with("f`x`", Unsupported, 1, 2, "tagged template");
-    rejects_with("a.b\n`x${1}`", Unsupported, 2, 1, "tagged template");
-    rejects_with("f()`x`", Unsupported, 1, 4, "tagged template");
-    rejects_with("`${f`x`}`", Unsupported, 1, 5, "tagged template");
+}
+
+#[test]
+fn tagged_template_syntax() {
+    assert_eq!(ast("f\n`x`"), "(tagged f \"x\")");
+    assert_eq!(
+        ast(r"tag`\unicode`"),
+        r#"(tagged tag undefined raw "\\unicode")"#
+    );
+    for src in [
+        "f`x`",
+        "a.b\n`x${1}`",
+        "f()`x`",
+        "`${f`x`}`",
+        "tag`\\unicode`",
+        "tag`x``y`.p",
+        "new tag`x`(1)",
+    ] {
+        parse_script(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+    }
+    rejects_with(
+        "a?.b`c`",
+        SyntaxErrorKind::Unsupported,
+        1,
+        2,
+        "optional chaining",
+    );
 }
 
 // ----- negative: lexical ambiguity -------------------------------------------

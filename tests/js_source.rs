@@ -172,6 +172,167 @@ fn math_sqrt_and_log2() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output (clj-quickjs-58).
+#[test]
+fn tagged_templates() {
+    for src in [
+        r#"let b = 123; String.raw `abc${b}d` === 'abc123d'"#,
+        r#"String.raw`a\nb` === 'a\\nb' && String.raw`a\nb`.length === 4"#,
+        r#"function tag(s) { return s; } function site() { return tag`x${1}y`; } let a = site(), b = site(); a === b && a !== tag`x${1}y` && a !== tag`x${1}y` && a[0] === 'x' && a[1] === 'y' && a.length === 2 && Object.isFrozen(a) && Object.isFrozen(a.raw) && Object.getPrototypeOf(a) === Array.prototype"#,
+        r#"function tag(s) { let d = Object.getOwnPropertyDescriptor(s, 'raw'); let e = Object.getOwnPropertyDescriptor(s, '0'); return !d.writable && !d.enumerable && !d.configurable && !e.writable && e.enumerable && !e.configurable && Object.freeze(s) === s; } tag`x`"#,
+        r#"function tag(s) { return s[0] === undefined && s.raw[0] === '\\unicode' && s.raw[0].length === 8; } tag`\unicode`"#,
+        r#"let log = ''; function tag(s, x) { log += s[0]; return {get value() { log += 'v'; return x; }}; } tag`a${log += 's'}`.value === 's' && log === 'sav'"#,
+        r#"let log = ''; function tag(s, x) { log += s[0]; return function(t, y) { log += t[0]; return x + y; }; } tag`a${log += '1'}``b${log += '2'}` === '11a2' && log === '1a2b'"#,
+        r#"let o = {tag(s, x) { return this === o && x === 3; }}; o.tag`x${3}` && o['tag']`y${3}`"#,
+        r#"let n = 0; function tag(s, x) { return x; } let x = {toString() { n++; return 'x'; }}; tag`${x}` === x && n === 0"#,
+        r#"function tag(s) { return s; } let a = tag`x`; let caught = 0; try { a[0] = 'y'; } catch (e) { caught++; } try { a.raw = []; } catch (e) { caught++; } try { a.raw[0] = 'z'; } catch (e) { caught++; } caught === 3 && a[0] === 'x' && a.raw[0] === 'x'"#,
+        r#"String.raw({raw: ['a', 'b', 'c']}, 1) === 'a1bc' && String.raw({raw: []}, 1) === '' && String.raw({raw: 'xy'}, 2, 3) === 'x2y'"#,
+        r#"let log = ''; let raw = {get length() { log += 'l'; return {valueOf() { log += 'n'; return 2; }}; }, get 0() { log += 'a'; return {toString() { log += 's'; return 'A'; }}; }, get 1() { log += 'b'; return 'B'; }}; let site = {get raw() { log += 'r'; return raw; }}; String.raw(site, {toString() { log += 'x'; return 'X'; }}) === 'AXB' && log === 'rlnasxb'"#,
+        r#"String.raw.name === 'raw' && String.raw.length === 1 && !Object.getOwnPropertyDescriptor(String, 'raw').enumerable"#,
+        r#"function tag(s) { return s; } function make() { return () => tag`x`; } let a = make(), b = make(); a() === b()"#,
+        r#"let log = ''; let o = {get tag() { log += 'g'; return function(s, x) { log += 't'; return this === o; }; }}; o.tag`${log += 's'}` && log === 'gst'"#,
+        r#"function tag(s) { return function C(x) { this.x = x; }; } (new tag`x`(42)).x === 42"#,
+        r#"let log = ''; let bad = {toString() { log += 'x'; throw 42; }}; let later = {get 1() { log += 'b'; return 'B'; }, 0: 'A', length: 2}; let caught = false; try { String.raw({raw: later}, bad); } catch (e) { caught = e === 42; } caught && log === 'x'"#,
+        r#"String.raw({raw: {length: 2.9}}, undefined) === 'undefinedundefinedundefined' && String.raw({raw: {length: -1}}, {toString() { throw 42; }}) === ''"#,
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "String.raw()",
+        "String.raw({})",
+        "String.raw({raw: null})",
+        "new String.raw({raw: []})",
+    ] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+    }
+}
+
+/// Synthetic fixture: completed raw parts use the shared bounded copier.
+#[test]
+fn tagged_templates_raw_copy_is_budgeted() {
+    let text = "a".repeat(8191);
+    let rt = Runtime::new();
+    let code = exe(&format!("String.raw({{raw: ['{text}', 'z']}}, 1)"));
+    let task = rt.spawn(&code, &[]).unwrap();
+    let mut yields = 0;
+    let mut complete = false;
+    for _ in 0..256 {
+        match task
+            .run_with(Budget::instructions(1), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.string().unwrap().to_string(), format!("{text}1z"));
+                complete = true;
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(complete && yields > 32);
+}
+
+/// Synthetic fixture: caches are task-owned roots; their immutable arrays
+/// publish across tasks, while shared code does not carry heap/cache state.
+#[test]
+fn tagged_templates_publish_and_cache_per_task() {
+    let rt = Runtime::new();
+    let code = exe("function tag(s) { return s; } tag`x${1}y`");
+    let producer = rt.spawn(&code, &[]).unwrap();
+    let RunOutcome::Complete(first) = producer.run().unwrap() else {
+        panic!("producer");
+    };
+    rt.publish(&first).unwrap();
+    drop(producer);
+    rt.collect().unwrap();
+    let probe = compile_function("function probe(s) { return Object.isFrozen(s) && Object.isFrozen(s.raw) && s[0] === 'x' && s.raw[1] === 'y' && Object.freeze(s) === s; }").unwrap();
+    let RunOutcome::Complete(result) = rt.spawn(&probe, &[&first]).unwrap().run().unwrap() else {
+        panic!("probe");
+    };
+    assert_eq!(result.view(), ValueView::Bool(true));
+    let RunOutcome::Complete(second) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
+        panic!("second");
+    };
+    rt.scope(|s| assert!(!s.same_object(s.local(&first).unwrap(), s.local(&second).unwrap())));
+    // A closure that captures the array can be published with its code.
+    let code = exe("const s = (function(s) { return s; })`x`; () => s.raw[0]");
+    let RunOutcome::Complete(closure) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
+        panic!("closure");
+    };
+    rt.publish(&closure).unwrap();
+    let call = compile_function("function call(f) { return f() === 'x'; }").unwrap();
+    let RunOutcome::Complete(result) = rt.spawn(&call, &[&closure]).unwrap().run().unwrap() else {
+        panic!("call");
+    };
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+/// Synthetic fixture: each getter/conversion runs once through waits,
+/// single-instruction yields, collection and migration to fresh threads.
+#[test]
+fn tagged_templates_wait_yield_collect_and_migrate() {
+    let rt = Runtime::new();
+    let code = exe(r#"
+        function tag(s) { return s; }
+        function site() { return tag`cached`; }
+        site();
+        let log = '';
+        let result = String.raw({get raw() {
+            log += 'r'; __rt.need(1, 1);
+            return {get length() { log += 'l'; return {valueOf() {
+                log += 'n'; __rt.need(2, 1); return 2;
+            }}; }, get 0() { log += 'a'; return {toString() {
+                log += 's'; __rt.need(3, 1); return 'A';
+            }}; }, get 1() { log += 'b'; __rt.need(5, 1); return 'B'; }};
+        }}, {toString() { log += 'x'; __rt.need(4, 1); return 'X'; }});
+        result === 'AXB' && log === 'rlnasxb' && site()[0] === 'cached'
+    "#);
+    let mut task = rt.spawn(&code, &[]).unwrap();
+    let mut waited = 0;
+    let mut complete = false;
+    for _ in 0..1000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 5);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                complete = true;
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(complete);
+    assert_eq!(waited, 5);
+}
+
 /// Synthetic fixtures, not light-cljs output. The first rows adapt test_math
 /// in QuickJS tests/test_builtin.js (7d1c13c5d8f8); the full QuickJS copyright
 /// and MIT permission notice is retained on string_code_unit_access below.

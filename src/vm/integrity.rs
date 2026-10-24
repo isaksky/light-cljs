@@ -176,6 +176,9 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
             Ok(())
         }
         HeapObject::Array(a) => {
+            if a.object().is_intrinsic() {
+                return Ok(());
+            }
             writable(a.object().owner())?;
             match level {
                 Level::NonExtensible => a.object_mut().prevent_extensions(),

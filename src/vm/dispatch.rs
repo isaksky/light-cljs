@@ -926,6 +926,61 @@ fn new_arguments(state: &mut VmState, heap: &Heap) -> Result<Value, Fault> {
     Ok(Value::Object(id))
 }
 
+/// Internal GetTemplateObject. The instruction's data operands are checked
+/// even for hand-loaded bytecode: no task-owned edge may enter these arrays.
+fn template_object(state: &mut VmState, heap: &Heap, n: u16) -> Result<(), Fault> {
+    let n = usize::from(n);
+    if n == 0 || state.operands().len() < 2 * n {
+        return Err(Fault::Internal("invalid template object arity"));
+    }
+    let code = Arc::clone(&state.top().code);
+    let pc = state.top().pc.saturating_sub(1);
+    let key = (Arc::as_ptr(&code) as usize, pc);
+    if let Some((_, id)) = state.templates.get(&key) {
+        return state.replace(2 * n, Value::Object(*id));
+    }
+    let prototype = realm::intrinsics(heap)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .array_prototype;
+    let mut cooked = crate::object::array::ArrayObject::template(prototype);
+    let mut raw = crate::object::array::ArrayObject::template(prototype);
+    let operands = state.operands();
+    for pair in operands[operands.len() - 2 * n..].chunks_exact(2) {
+        if !matches!(pair[0], Value::String(_) | Value::Undefined)
+            || !matches!(pair[1], Value::String(_))
+        {
+            return Err(Fault::Internal("template parts must be string primitives"));
+        }
+        cooked.push(Some(pair[0].clone()));
+        raw.push(Some(pair[1].clone()));
+    }
+    raw.freeze();
+    let raw = heap
+        .alloc(HeapObject::Array(Box::new(raw)))
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    let raw_key = heap
+        .keys()
+        .intern(&JsString::from("raw"))
+        .ok_or(Fault::OutOfMemory("property key table exhausted"))?;
+    cooked.object_mut().define_with(
+        raw_key,
+        Value::Object(raw),
+        PropertyFlags {
+            writable: false,
+            enumerable: false,
+            configurable: false,
+        },
+    );
+    cooked.freeze();
+    let id = heap
+        .alloc(HeapObject::Array(Box::new(cooked)))
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    // No safepoint inside this leaf operation. Cache roots the cooked array
+    // and its raw edge before any collection can run.
+    state.templates.insert(key, (code, id));
+    state.replace(2 * n, Value::Object(id))
+}
+
 /// Execute one instruction of `code`, the running frame's code.
 pub(crate) fn step(
     state: &mut VmState,
@@ -955,6 +1010,7 @@ pub(crate) fn step(
             state.push(v);
         }
         Instr::Undefined => state.push(Value::Undefined),
+        Instr::TemplateObject(n) => template_object(state, heap, n)?,
         Instr::GetLocal(i) => {
             let v = state.local(i)?.clone();
             state.push(v);
@@ -1543,6 +1599,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         // (clj-quickjs-74).
         | Instr::In => true,
         Instr::NewObject
+        | Instr::TemplateObject(_)
         | Instr::NewObjectLiteral
         | Instr::NewArguments
         | Instr::NewArray

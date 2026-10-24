@@ -4129,3 +4129,41 @@ table may grow, as in source literals.
 SyntaxError messages retain JSON input line/UTF-16 column/offset independently
 of the VM call diagnostic. The engine's existing catchable error path is
 used; NativeError constructors and engine-error prototypes are separate work.
+## Tagged template objects and String.raw (clj-quickjs-58)
+
+The parser retains an optional tag and optional cooked values on template
+AST nodes, rejecting invalid escapes only for untagged templates. Out-of-line
+parser/lowerer helpers keep recursive stack use bounded. Lowering evaluates
+the tag reference with the ordinary member-call receiver rule, pushes
+interleaved cooked/raw primitive constants, emits TemplateObject (0x6F, u16
+part count), then substitutions unchanged and Call/CallMethod.
+
+A task is the executable instance for template identity. VmState caches by
+retained Arc<Code> identity and instruction index; retaining code prevents
+address reuse, and different closures of the same code share a site in that
+task. Cache entries are TaskFrame roots, traced even after a frame returns,
+and disappear on task teardown. Code remains immutable primitive-only Arc
+storage, usable by every task and runtime; no heap edges or mutable caches
+are attached to code. Distinct tasks intentionally get distinct site objects.
+
+TemplateObject validates primitive part types even for hand-loaded code,
+constructs arrays only on the first evaluation, freezes both before exposing
+them, and records the cooked array before the next safepoint. ArrayObject's
+internal template constructor uses the ownerless intrinsic ordinary store;
+only these internal frozen arrays classify as Persistent, while user-frozen
+arrays remain TaskOwned. Existing tracing follows elements, raw and intrinsic
+prototype edges. Normal frozen descriptors govern writes, deletes and defines;
+literal append explicitly rejects these arrays because it bypasses descriptors.
+No new heap kind or publication category is introduced.
+
+String.raw is appended to the built-in registry and installed on the realm's
+String constructor. A native frame traces raw and substitutions, saves each
+property-read/coercion stage before calling JavaScript, and passes completed
+parts to the existing bounded StringBuild copier. Tests cover identity,
+descriptors, publication of arrays/closures, and one-instruction yields with
+collection and thread migration through five dependency waits.
+
+Semantic references: research/quickjs/quickjs.c, js_parse_template and
+js_string_raw, revision 7d1c13c5d8f8c6b32893786ed35cdcebd88194d2. All new
+implementation and synthetic fixtures were written fresh; no upstream source
+or test text was adapted.

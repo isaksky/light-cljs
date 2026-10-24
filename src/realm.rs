@@ -663,7 +663,11 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
             PropertyFlags::METHOD,
         )?;
     }
-    for which in [Builtin::StringFromCharCode, Builtin::StringFromCodePoint] {
+    for which in [
+        Builtin::StringFromCharCode,
+        Builtin::StringFromCodePoint,
+        Builtin::StringRaw,
+    ] {
         let method = b.function(which, &[])?;
         b.add(string, which.name(), method, PropertyFlags::METHOD)?;
     }

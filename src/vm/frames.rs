@@ -188,6 +188,10 @@ pub(crate) enum Raised {
 /// The complete VM state of one task.
 #[derive(Debug)]
 pub(crate) struct VmState {
+    /// A task is an executable instance. Keys are retained code identity +
+    /// instruction index; retaining the Arc prevents address reuse. Only the
+    /// arrays are heap edges; shared Code remains primitive-only.
+    pub(crate) templates: std::collections::HashMap<(usize, usize), (Arc<Code>, ObjectId)>,
     /// Mutable global state belongs to the task, independently of workers.
     pub(crate) global_object: Option<ObjectId>,
     /// The frame the task started in.
@@ -241,6 +245,7 @@ impl VmState {
         stack.extend_from_slice(bound);
         bind_args(&mut stack, 0, code, bound.len());
         VmState {
+            templates: std::collections::HashMap::new(),
             global_object: None,
             entry: Frame {
                 code: Arc::clone(code),
@@ -860,6 +865,9 @@ impl VmState {
 /// traced.
 impl Trace for VmState {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        for (_, id) in self.templates.values() {
+            visit(*id);
+        }
         if let Some(id) = self.global_object {
             visit(id);
         }

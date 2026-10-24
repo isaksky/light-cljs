@@ -251,6 +251,7 @@ pub(crate) enum Builtin {
     MathSqrt,
     MathLog2,
     JsonParse,
+    StringRaw,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -358,6 +359,7 @@ impl Builtin {
             Builtin::ErrorPrototypeToString => "toString",
             Builtin::NativeError(kind) => kind.name(),
             Builtin::JsonParse => "parse",
+            Builtin::StringRaw => "raw",
         }
     }
 
@@ -420,6 +422,7 @@ impl Builtin {
             Builtin::ErrorPrototypeToString => 0,
             Builtin::NativeError(_) => 1,
             Builtin::JsonParse => 2,
+            Builtin::StringRaw => 1,
         }
     }
 }
@@ -453,6 +456,7 @@ pub(crate) fn call(
         | Builtin::ErrorPrototypeToString
         | Builtin::NativeError(_)
         | Builtin::JsonParse => Err(Fault::Internal("Error built-ins require a resumable frame")),
+        Builtin::StringRaw => Err(Fault::Internal("String.raw requires a resumable frame")),
         Builtin::Object => match arg(0) {
             Value::Undefined | Value::Null => new_object(heap, task),
             v @ Value::Object(_) => Ok(v),
