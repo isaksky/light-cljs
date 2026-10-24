@@ -383,7 +383,7 @@ impl Task {
     /// hand-assembled code, or while the task is running or finished.
     pub fn source_location(&self) -> Option<SourceLocation> {
         match &*self.0.body.try_lock().ok()? {
-            TaskBody::Ready(vm) => self.0.executable.0.location(vm.frame.pc),
+            TaskBody::Ready(vm) => vm.top().code.location(vm.top().pc),
             TaskBody::Finished => None,
         }
     }
@@ -468,11 +468,7 @@ impl Task {
     #[cfg(test)]
     pub(crate) fn saved_state(&self) -> Option<(usize, Vec<Value>, Vec<Value>)> {
         match &*self.0.body.try_lock().ok()? {
-            TaskBody::Ready(vm) => Some((
-                vm.frame.pc,
-                vm.frame.operands.clone(),
-                vm.frame.locals.to_vec(),
-            )),
+            TaskBody::Ready(vm) => Some(vm.snapshot()),
             TaskBody::Finished => None,
         }
     }
@@ -597,17 +593,16 @@ impl RunGuard<'_> {
             // Reached only with a guard acquired before the effect started
             // (`try_begin_run` refuses inside an effect). Fail this task rather
             // than reenter the VM from a leaf effect.
-            RunOutcome::Failed(guard_failure(
-                task,
+            RunOutcome::Failed(vm.failure(
                 VmErrorKind::HostEffect,
-                "a host effect may not reenter the VM",
-                vm.frame.pc,
+                "a host effect may not reenter the VM".to_string(),
+                vm.top().pc,
             ))
         } else {
             // The returned value is rooted while this guard (a registered
             // mutator) still exists, so no collection can run while the value
             // is held only in a Rust local.
-            match execute(vm, &task.executable.0, &task.heap, host, budget.0) {
+            match execute(vm, &task.heap, host, budget.0) {
                 Exit::Return(value) => RunOutcome::Complete(Rooted::new(&task.heap, value)),
                 Exit::Fail(error) => RunOutcome::Failed(error),
                 // The VM state stays in the task; dropping the guard releases
@@ -646,6 +641,7 @@ fn guard_failure(task: &TaskInner, kind: VmErrorKind, message: &str, pc: usize) 
             byte_offset: code.offsets.get(pc).copied(),
             opcode: code.instrs.get(pc).map(|i| i.opcode()),
             source: code.location(pc),
+            call_chain: Vec::new(),
         },
     }
 }
@@ -965,6 +961,7 @@ mod tests {
                 params: 0,
                 locals: 0,
                 constants: Box::new([]),
+                functions: Box::new([]),
                 offsets: (0..instrs.len() as u32).collect(),
                 instrs: instrs.clone().into(),
                 max_stack: 0,

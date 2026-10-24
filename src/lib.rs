@@ -49,12 +49,14 @@
 //!
 //! JavaScript source in the documented subset is parsed and compiled to
 //! validated bytecode ([`frontend::compile_script`]): straight-line code,
-//! conditionals, loops and locals; functions, calls and strings are not
-//! executable yet. Executables can also be built from hand-assembled bytecode
+//! conditionals, loops and locals; functions, calls and strings cannot be
+//! compiled yet. Executables can also be built from hand-assembled bytecode
 //! ([`Assembler`]), which is an early VM test tool, not JavaScript source
-//! support. Garbage collection is a precise nonmoving
-//! mark/sweep that runs only when no task run or foreign scope is active
-//! (cooperative safepoints are deferred; see [`heap::gc`]).
+//! support; at that level the VM runs nested calls and recursion in explicit
+//! task-owned frames, bounded by [`VmLimits`] instead of the Rust stack.
+//! Garbage collection is a precise nonmoving mark/sweep that runs only when
+//! no task run or foreign scope is active (cooperative safepoints are
+//! deferred; see [`heap::gc`]).
 
 pub mod collections;
 pub mod dep;
@@ -73,7 +75,7 @@ pub use dep::{
     CellStatus, ClaimError, CompleteError, Completion, DependencyLog, Need, NeedError,
     ProducerRequest, Wakeups,
 };
-pub use error::{Diagnostic, SourceLocation, VmError, VmErrorKind};
+pub use error::{CallSite, Diagnostic, SourceLocation, VmError, VmErrorKind};
 pub use heap::{
     CollectError, CollectStats, HandleError, HeapStats, Local, Rooted, Scope, WeakHandle,
 };
@@ -85,5 +87,5 @@ pub use value::share::{KeyName, PathStep, PublishError, ValuePath};
 pub use value::{Primitive, ValueView};
 pub use vm::{
     Assembler, Executable, ExecutableSpec, Label, Opcode, ThrowKind, ValidationError,
-    ValidationErrorKind,
+    ValidationErrorKind, VmLimits,
 };

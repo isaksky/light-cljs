@@ -20,7 +20,7 @@ use crate::task::Task;
 use crate::value::share::{self, PublishError};
 use crate::value::{Primitive, Value};
 use crate::vm::Executable;
-use crate::vm::frames::{DiagnosticContext, VmState};
+use crate::vm::frames::{DiagnosticContext, VmLimits, VmState};
 
 #[derive(Debug)]
 struct RuntimeShared {
@@ -29,6 +29,8 @@ struct RuntimeShared {
     world: WorldId,
     next_world: AtomicU64,
     deps: Arc<DependencyTable>,
+    /// Resource policy given to every task spawned here.
+    limits: VmLimits,
 }
 
 /// Shared runtime: heap plus execution machinery. See the module docs.
@@ -42,7 +44,14 @@ impl Default for Runtime {
 }
 
 impl Runtime {
+    /// A runtime whose tasks get the default [`VmLimits`].
     pub fn new() -> Runtime {
+        Runtime::with_limits(VmLimits::DEFAULT)
+    }
+
+    /// A runtime whose tasks run under `limits`: a call beyond them fails the
+    /// task with [`VmErrorKind::StackOverflow`](crate::VmErrorKind::StackOverflow).
+    pub fn with_limits(limits: VmLimits) -> Runtime {
         let heap = Arc::new(Heap::default());
         Runtime(Arc::new(RuntimeShared {
             deps: Arc::new(DependencyTable::new(Arc::clone(&heap))),
@@ -50,6 +59,7 @@ impl Runtime {
             next_task: AtomicU64::new(1),
             world: WorldId::INITIAL,
             next_world: AtomicU64::new(1),
+            limits,
         }))
     }
 
@@ -132,7 +142,7 @@ impl Runtime {
         // Relaxed: the counter only needs uniqueness, not ordering with other memory.
         let id = TaskId::from_raw(self.0.next_task.fetch_add(1, Ordering::Relaxed));
         let diag = DiagnosticContext { task: id, world };
-        let vm = VmState::new(&executable.0, &args, diag);
+        let vm = VmState::new(&executable.0, &args, diag, self.0.limits);
         Ok(Task::new(
             id,
             world,

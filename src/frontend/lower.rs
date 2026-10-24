@@ -254,6 +254,7 @@ impl<'s> Lowerer<'s> {
             locals: max_slots as u16,
             code: out.code,
             constants: out.constants,
+            functions: Vec::new(),
         };
         Executable::load_compiled(spec, Arc::from(source), locations).map_err(|e| {
             let span = Span::new(0, source.len());

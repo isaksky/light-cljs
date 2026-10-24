@@ -40,6 +40,7 @@ pub struct Assembler {
     id: u64,
     code: Vec<u8>,
     constants: Vec<Primitive>,
+    functions: Vec<Executable>,
     labels: Vec<Option<u32>>,
     /// (byte position of a u32 target operand, label)
     fixups: Vec<(usize, Label)>,
@@ -52,6 +53,7 @@ impl Default for Assembler {
             id: NEXT_ASSEMBLER.fetch_add(1, Ordering::Relaxed),
             code: Vec::new(),
             constants: Vec::new(),
+            functions: Vec::new(),
             labels: Vec::new(),
             fixups: Vec::new(),
         }
@@ -113,6 +115,22 @@ impl Assembler {
         self.op(Opcode::NewMap).u16(entries)
     }
 
+    /// Add `code` to the child function table (sharing it, not copying it)
+    /// and emit `Function` for it: at run time this pushes a new function
+    /// object for `code`. Tables larger than the u16 index range are rejected
+    /// by validation.
+    pub fn function(&mut self, code: &Executable) -> &mut Self {
+        let index = u16::try_from(self.functions.len()).unwrap_or(u16::MAX);
+        self.functions.push(code.clone());
+        self.op(Opcode::Function).u16(index)
+    }
+
+    /// Emit `Call` with `argc` arguments: pops the callee and the arguments
+    /// (pushed after it, first argument first), pushes the callee's result.
+    pub fn call(&mut self, argc: u16) -> &mut Self {
+        self.op(Opcode::Call).u16(argc)
+    }
+
     pub fn jump(&mut self, label: Label) -> &mut Self {
         self.branch(Opcode::Jump, label)
     }
@@ -168,6 +186,7 @@ impl Assembler {
             locals,
             code: self.code,
             constants: self.constants,
+            functions: self.functions,
         }
     }
 

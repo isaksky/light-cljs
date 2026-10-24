@@ -15,6 +15,15 @@
 //! A loaded [`Executable`] is an `Arc` handle: cloning it or spawning tasks
 //! from it never copies the code. Constants are primitives only in this slice,
 //! so an executable holds no heap edges and is not tied to one runtime.
+//!
+//! **Function code.** Each executable is the code of one function (the task
+//! entry is just the function a task starts in). Its child function table
+//! ([`ExecutableSpec::functions`]) holds already-validated executables by
+//! `Arc`, so a function tree is loaded bottom-up, each child exactly once,
+//! and is acyclic; `Function` operands are checked against the table.
+//! Recursion therefore goes through function *values* (`CurrentFunction`, or
+//! a function passed as an argument; captured bindings are clj-quickjs-20),
+//! never through a code cycle.
 
 use std::fmt;
 use std::sync::Arc;
@@ -38,6 +47,11 @@ pub struct ExecutableSpec {
     pub code: Vec<u8>,
     /// Constant pool referenced by `Const`.
     pub constants: Vec<Primitive>,
+    /// Child function code referenced by `Function` (its u16 operand is an
+    /// index here). The handles are shared, not copied: the loaded code keeps
+    /// the same `Arc`s, so every function object and every task running a
+    /// child runs the one loaded copy.
+    pub functions: Vec<Executable>,
 }
 
 /// Validated code shared by every task that runs it.
@@ -47,6 +61,8 @@ pub(crate) struct Code {
     pub(crate) params: u16,
     pub(crate) locals: u16,
     pub(crate) constants: Box<[Value]>,
+    /// Child function code, shared with the [`Executable`]s it was loaded from.
+    pub(crate) functions: Box<[Arc<Code>]>,
     pub(crate) instrs: Box<[Instr]>,
     /// Byte offset of each instruction, for diagnostics.
     pub(crate) offsets: Box<[u32]>,
@@ -82,6 +98,14 @@ impl Code {
 /// Immutable executable code; a cheap-to-clone shared handle.
 #[derive(Clone, Debug)]
 pub struct Executable(pub(crate) Arc<Code>);
+
+/// Identity, not structure: two handles are equal when they share the same
+/// loaded code ([`Executable::same_code`]).
+impl PartialEq for Executable {
+    fn eq(&self, other: &Executable) -> bool {
+        Executable::same_code(self, other)
+    }
+}
 
 /// Why [`Executable::load`] rejected a spec.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,6 +160,16 @@ pub enum ValidationErrorKind {
     UnknownThrowKind {
         code: u16,
     },
+    /// A `Function` operand past the end of the child function table.
+    FunctionOutOfRange {
+        index: u16,
+        count: usize,
+    },
+    /// More child functions than a u16 `Function` operand can address
+    /// (65,536).
+    FunctionTableTooLarge {
+        count: usize,
+    },
     /// Compiled code whose source map does not have one location per
     /// instruction (a compiler bug; never produced by [`Executable::load`]).
     SourceMapMismatch {
@@ -158,6 +192,10 @@ impl std::error::Error for ValidationError {}
 
 /// Constant-pool capacity: every index must fit the u16 `Const` operand.
 const MAX_CONSTANTS: usize = 1 << 16;
+
+/// Child-function-table capacity: every index must fit the u16 `Function`
+/// operand.
+const MAX_FUNCTIONS: usize = 1 << 16;
 
 fn err(offset: u32, kind: ValidationErrorKind) -> ValidationError {
     ValidationError { offset, kind }
@@ -191,6 +229,7 @@ impl Executable {
             locals,
             code,
             constants,
+            functions,
         } = spec;
         if code.is_empty() {
             return Err(err(0, EmptyCode));
@@ -204,6 +243,10 @@ impl Executable {
         if constants.len() > MAX_CONSTANTS {
             let count = constants.len();
             return Err(err(0, ConstantPoolTooLarge { count }));
+        }
+        if functions.len() > MAX_FUNCTIONS {
+            let count = functions.len();
+            return Err(err(0, FunctionTableTooLarge { count }));
         }
 
         // Pass 1: decode, checking opcodes, operand bytes and index ranges.
@@ -229,6 +272,11 @@ impl Executable {
                     let index = operand as u16;
                     let count = constants.len();
                     return Err(err(offset, ConstantOutOfRange { index, count }));
+                }
+                OperandKind::Function if operand as usize >= functions.len() => {
+                    let index = operand as u16;
+                    let count = functions.len();
+                    return Err(err(offset, FunctionOutOfRange { index, count }));
                 }
                 OperandKind::ThrowKind if ThrowKind::from_u16(operand as u16).is_none() => {
                     let code = operand as u16;
@@ -304,6 +352,9 @@ impl Executable {
                 Opcode::Le => Instr::Le,
                 Opcode::Ge => Instr::Ge,
                 Opcode::LooseEq => Instr::LooseEq,
+                Opcode::Function => Instr::Function(operand as u16),
+                Opcode::Call => Instr::Call(operand as u16),
+                Opcode::CurrentFunction => Instr::CurrentFunction,
                 Opcode::ThrowError => match ThrowKind::from_u16(operand as u16) {
                     Some(kind) => Instr::ThrowError(kind),
                     // Pass 1 rejected unknown kinds.
@@ -341,6 +392,7 @@ impl Executable {
             params,
             locals,
             constants: constants.into_iter().map(Value::from).collect(),
+            functions: functions.into_iter().map(|f| f.0).collect(),
             instrs: instrs.into(),
             offsets: offsets.into(),
             max_stack,
@@ -361,6 +413,12 @@ impl Executable {
     /// True when both handles share the same loaded code (no copy was made).
     pub fn same_code(a: &Executable, b: &Executable) -> bool {
         Arc::ptr_eq(&a.0, &b.0)
+    }
+
+    /// Child function `index` of this code's function table: the same shared
+    /// code the spec supplied (no copy), or `None` out of range.
+    pub fn function(&self, index: usize) -> Option<Executable> {
+        self.0.functions.get(index).cloned().map(Executable)
     }
 
     /// Number of instructions.
@@ -391,7 +449,9 @@ impl Executable {
                 | Instr::SetLocal(v)
                 | Instr::HostEffect(v)
                 | Instr::NewVector(v)
-                | Instr::NewMap(v) => u32::from(v),
+                | Instr::NewMap(v)
+                | Instr::Function(v)
+                | Instr::Call(v) => u32::from(v),
                 Instr::ThrowError(kind) => u32::from(kind as u16),
                 // Branch targets are instruction indices once loaded.
                 Instr::Jump(t) | Instr::JumpIfFalse(t) => code.offsets[t as usize],
@@ -410,6 +470,7 @@ impl Executable {
                 .iter()
                 .filter_map(|v| v.to_primitive())
                 .collect(),
+            functions: code.functions.iter().cloned().map(Executable).collect(),
         }
     }
 }
@@ -491,6 +552,7 @@ mod tests {
             locals,
             code,
             constants,
+            functions: Vec::new(),
         })
     }
 
@@ -538,6 +600,7 @@ mod tests {
             locals: 2,
             code: vec![UNDEF, RET],
             constants: vec![],
+            functions: vec![],
         });
         assert_eq!(
             kind(e),
@@ -617,6 +680,7 @@ mod tests {
             locals: 0,
             code: vec![UNDEF, RET],
             constants: vec![],
+            functions: vec![],
         };
         let at = SourceLocation {
             span: crate::frontend::Span::new(0, 1),
@@ -656,5 +720,80 @@ mod tests {
                 found: 1
             }
         );
+    }
+
+    fn with_functions(code: Vec<u8>, functions: Vec<Executable>) -> ExecutableSpec {
+        ExecutableSpec {
+            name: "t".into(),
+            params: 0,
+            locals: 0,
+            code,
+            constants: vec![],
+            functions,
+        }
+    }
+
+    #[test]
+    fn function_and_call_operands_are_validated() {
+        let (f, call, cur) = (
+            Opcode::Function as u8,
+            Opcode::Call as u8,
+            Opcode::CurrentFunction as u8,
+        );
+        let child = load(vec![UNDEF, RET], vec![], 0).unwrap();
+        // `Function 1` with a one-entry table.
+        let e = Executable::load(with_functions(vec![f, 1, 0, RET], vec![child.clone()]));
+        assert_eq!(kind(e), FunctionOutOfRange { index: 1, count: 1 });
+        let e = Executable::load(with_functions(vec![f, 0, 0, RET], vec![]));
+        assert_eq!(kind(e), FunctionOutOfRange { index: 0, count: 0 });
+        let e = Executable::load(with_functions(vec![f, 0], vec![child.clone()]));
+        assert_eq!(
+            kind(e),
+            TruncatedOperand {
+                opcode: Opcode::Function
+            }
+        );
+        // `Call 2` needs the callee plus two arguments.
+        let e = Executable::load(with_functions(
+            vec![f, 0, 0, UNDEF, call, 2, 0, RET],
+            vec![child.clone()],
+        ));
+        assert_eq!(
+            kind(e),
+            StackUnderflow {
+                opcode: Opcode::Call,
+                depth: 2
+            }
+        );
+        // callee + 2 arguments -> 1 result; max depth 3.
+        let exe = Executable::load(with_functions(
+            vec![cur, UNDEF, UNDEF, call, 2, 0, RET],
+            vec![],
+        ))
+        .unwrap();
+        assert_eq!(exe.max_stack(), 3);
+        let too_many = vec![child.clone(); MAX_FUNCTIONS + 1];
+        let e = Executable::load(with_functions(vec![UNDEF, RET], too_many));
+        assert_eq!(
+            kind(e),
+            FunctionTableTooLarge {
+                count: MAX_FUNCTIONS + 1
+            }
+        );
+    }
+
+    #[test]
+    fn child_functions_are_shared_and_round_trip() {
+        let child = load(vec![UNDEF, RET], vec![], 0).unwrap();
+        let code = vec![Opcode::Function as u8, 0, 0, Opcode::Call as u8, 0, 0, RET];
+        let exe = Executable::load(with_functions(code.clone(), vec![child.clone()])).unwrap();
+        assert!(Executable::same_code(&exe.function(0).unwrap(), &child));
+        assert!(Arc::ptr_eq(&exe.0.functions[0], &child.0), "not copied");
+        let spec = exe.to_spec();
+        assert_eq!(spec.code, code);
+        assert_eq!(spec.functions, vec![child.clone()]);
+        let again = Executable::load(spec).unwrap();
+        assert_eq!(again.0.instrs, exe.0.instrs);
+        assert!(Executable::same_code(&again.function(0).unwrap(), &child));
     }
 }

@@ -47,6 +47,9 @@
 //! | `Ge`            | 0x28 | –                  | a b → a>=b             | number greater-than-or-equal |
 //! | `LooseEq`       | 0x29 | –                  | a b → a==b             | JavaScript `==` |
 //! | `ThrowError`    | 0x2A | u16 [`ThrowKind`]  | → (never returns)      | fail with a static JavaScript error |
+//! | `Function`      | 0x2B | u16 function index | → f                    | new function object for child code `i` |
+//! | `Call`          | 0x2C | u16 argument count n | f a1 … an → r        | call `f` in a new task-owned frame |
+//! | `CurrentFunction` | 0x2D | –                | → f                    | the function object of the running frame |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -66,6 +69,26 @@
 //! [`VmErrorKind::TypeError`](crate::VmErrorKind::TypeError)); until
 //! exceptions exist (clj-quickjs-11) it cannot be caught. For stack checking
 //! it counts as pushing one value, so it can stand in for an expression.
+//!
+//! Opcodes `0x2B`–`0x2D` are calls (clj-quickjs-4). An executable carries a
+//! table of child function code ([`ExecutableSpec::functions`](crate::ExecutableSpec::functions),
+//! shared `Arc` handles, never copied); `Function i` allocates a new function
+//! object for child `i` each time it runs, so two evaluations are distinct
+//! objects, as with JavaScript function expressions. `Call n` pops the callee
+//! and `n` arguments, pushes a task-owned frame for the callee's code and
+//! continues there; the callee's `Return` pops its frame and pushes the result
+//! onto the caller's operands. Arguments bind to the callee's parameter
+//! locals: missing ones are `undefined`, extra ones are ignored, its other
+//! locals start `undefined`. There is no `this` or `arguments` object. A
+//! callee that is not a function object fails the task with
+//! [`VmErrorKind::TypeError`](crate::VmErrorKind::TypeError) (`… is not a
+//! function`); a call beyond the task's [`VmLimits`](crate::VmLimits) fails it
+//! with [`VmErrorKind::StackOverflow`](crate::VmErrorKind::StackOverflow).
+//! `CurrentFunction` pushes the function object of the running frame (for the
+//! task's entry frame, one is allocated on first use and reused): the
+//! self-reference of a named function expression, like QuickJS's
+//! `special_object` with `OP_SPECIAL_OBJECT_THIS_FUNC`. Frames are described in
+//! `crate::vm::frames`.
 //!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
@@ -134,6 +157,9 @@ pub enum Opcode {
     Ge = 0x28,
     LooseEq = 0x29,
     ThrowError = 0x2A,
+    Function = 0x2B,
+    Call = 0x2C,
+    CurrentFunction = 0x2D,
 }
 
 /// Operand encoding of an opcode.
@@ -152,6 +178,10 @@ pub(crate) enum OperandKind {
     Count,
     /// u16 [`ThrowKind`] selector.
     ThrowKind,
+    /// u16 index into the executable's child function table.
+    Function,
+    /// u16 number of call arguments.
+    ArgCount,
 }
 
 impl OperandKind {
@@ -162,7 +192,9 @@ impl OperandKind {
             | OperandKind::Local
             | OperandKind::HostOp
             | OperandKind::Count
-            | OperandKind::ThrowKind => 2,
+            | OperandKind::ThrowKind
+            | OperandKind::Function
+            | OperandKind::ArgCount => 2,
             OperandKind::Target => 4,
         }
     }
@@ -215,6 +247,9 @@ impl Opcode {
             0x28 => Ge,
             0x29 => LooseEq,
             0x2A => ThrowError,
+            0x2B => Function,
+            0x2C => Call,
+            0x2D => CurrentFunction,
             _ => return None,
         })
     }
@@ -265,6 +300,9 @@ impl Opcode {
             Ge => "ge",
             LooseEq => "loose_eq",
             ThrowError => "throw_error",
+            Function => "function",
+            Call => "call",
+            CurrentFunction => "current_function",
         }
     }
 
@@ -277,10 +315,12 @@ impl Opcode {
             HostEffect => OperandKind::HostOp,
             NewVector | NewMap => OperandKind::Count,
             ThrowError => OperandKind::ThrowKind,
+            Function => OperandKind::Function,
+            Call => OperandKind::ArgCount,
             Undefined | Pop | Dup | Add | Sub | Mul | Lt | StrictEq | Not | Return | NewObject
             | Count | Nth | Get | GetOr | Assoc | Dissoc | Conj | PopLast | NewVectorBuilder
             | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber
-            | ToNumberPair | Gt | Le | Ge | LooseEq => OperandKind::None,
+            | ToNumberPair | Gt | Le | Ge | LooseEq | CurrentFunction => OperandKind::None,
         }
     }
 }
@@ -360,6 +400,11 @@ pub(crate) enum Instr {
     Ge,
     LooseEq,
     ThrowError(ThrowKind),
+    /// Index into the child function table.
+    Function(u16),
+    /// Argument count.
+    Call(u16),
+    CurrentFunction,
 }
 
 impl Instr {
@@ -407,6 +452,9 @@ impl Instr {
             Instr::Ge => Opcode::Ge,
             Instr::LooseEq => Opcode::LooseEq,
             Instr::ThrowError(_) => Opcode::ThrowError,
+            Instr::Function(_) => Opcode::Function,
+            Instr::Call(_) => Opcode::Call,
+            Instr::CurrentFunction => Opcode::CurrentFunction,
         }
     }
 
@@ -416,7 +464,7 @@ impl Instr {
         use Instr::*;
         match self {
             Const(_) | Undefined | GetLocal(_) | NewObject | NewVectorBuilder | NewMapBuilder
-            | ThrowError(_) => (0, 1),
+            | ThrowError(_) | Function(_) | CurrentFunction => (0, 1),
             SetLocal(_) | Pop | JumpIfFalse(_) | Return => (1, 0),
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div
@@ -427,6 +475,7 @@ impl Instr {
             Jump(_) => (0, 0),
             NewVector(n) => (usize::from(n), 1),
             NewMap(n) => (2 * usize::from(n), 1),
+            Call(n) => (usize::from(n) + 1, 1),
         }
     }
 }
@@ -445,6 +494,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 42);
+        assert_eq!(assigned, 45);
     }
 }

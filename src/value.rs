@@ -125,7 +125,8 @@ pub enum ValueView {
     Null,
     Bool(bool),
     Number(f64),
-    /// A heap object (in this slice: a property-less plain object).
+    /// A heap object (in this slice: a property-less plain object, a
+    /// collection, or a function object).
     Object,
 }
 

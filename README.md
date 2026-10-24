@@ -6,7 +6,9 @@ Requirements: [`docs/design.md`](docs/design.md). Backlog: Pellets (`pl list`).
 This is an architectural slice in progress, not a finished JavaScript engine.
 A small documented JavaScript subset ([`docs/grammar.md`](docs/grammar.md))
 compiles to VM bytecode and runs: straight-line code, conditionals, loops and
-locals. Functions, calls, strings and closures are not executable yet.
+locals. The VM executes nested calls and recursion in task-owned frames, but
+functions and calls cannot be compiled from source yet, and strings and
+closures are not executable.
 
 ## Build and test
 
@@ -391,3 +393,44 @@ Deferred:
   (clj-quickjs-4, -20, -21, -23).
 - Worker threads (clj-quickjs-8), wait-cycle detection and reporting
   (clj-quickjs-26), cancelling a stalled request, and invalidation.
+
+### Calls and recursion in task-owned frames (clj-quickjs-4)
+
+Supported (VM level; early VM tests use hand-assembled bytecode,
+`tests/calls.rs`):
+
+- Function objects over shared immutable code: `ExecutableSpec::functions`
+  holds child `Executable`s by `Arc` (never copied per task or call;
+  `Executable::function(i)`), `function i` (`0x2B`) allocates a new function
+  object for child `i`, and `current_function` (`0x2D`) pushes the running
+  frame's own function object (a named function expression's self-binding).
+- `call n` (`0x2C`) runs the callee in a new frame on the task's explicit
+  frame stack; `return` pops it and hands the result to the caller. The
+  interpreter never recurses, so nesting depth costs no Rust stack: nested
+  calls, recursion and mutual recursion (through function values), budgeted
+  yields and collections with any number of live frames, and resumption on
+  another thread all work without replaying effects.
+- Arguments: missing ones are `undefined`, extra ones are ignored, other
+  locals start `undefined`. Calling anything but a function object fails the
+  task with `VmErrorKind::TypeError` ("`undefined is not a function`", "`vector
+  is not a function`", ...).
+- Resource policy: `Runtime::with_limits(VmLimits { max_call_depth,
+  max_stack_values })` (defaults 10,000 frames and 2^20 values). A call
+  beyond either bound fails the task with `VmErrorKind::StackOverflow`.
+- Diagnostics: a failure names the failing frame's function and instruction,
+  plus `Diagnostic::call_chain`, the callers' call sites (innermost first).
+  All frames run in their task's world.
+- Function objects compare by identity, are traced through the frames and
+  operands that hold them, and (having no properties or captures yet) pass
+  the publication check, so a function returned by one task can be called by
+  another.
+
+Deferred:
+
+- Compiling functions and calls from source (clj-quickjs-21); closures and
+  captured bindings (clj-quickjs-20), so mutual recursion between functions
+  that name each other needs closures; until then functions reach each other
+  through arguments.
+- `this`, `arguments`, `new`, rest/default parameters, function properties
+  (`length`, `name`), native or host-function callees, and catching a
+  `StackOverflow` or `TypeError` (clj-quickjs-11).

@@ -61,6 +61,7 @@ use roots::{RootTable, ScopeTable};
 use crate::collections::{Builder, Occurrence, PMap, PVector};
 use crate::value::Value;
 use crate::value::share::{self, Shareability};
+use crate::vm::function::FunctionObject;
 
 /// Stable identity of a heap object: slot index plus the slot's generation
 /// at allocation time. Crate-private: see the module docs.
@@ -109,6 +110,8 @@ pub(crate) enum ObjectKind {
     Occurrence,
     /// A task-owned transient builder (`crate::collections::builder`).
     Builder,
+    /// A function object (`crate::vm::function`): callable by `Call`.
+    Function,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -151,6 +154,8 @@ pub(crate) enum HeapObject {
     /// its owning task's run mutates it, in place under the object lock; an
     /// open builder's `Trace` reports its draft's contents.
     Builder(Builder),
+    /// A function object over shared immutable code (`crate::vm::function`).
+    Function(FunctionObject),
 }
 
 impl HeapObject {
@@ -163,6 +168,7 @@ impl HeapObject {
             HeapObject::Map(_) => ObjectKind::Map,
             HeapObject::Occurrence(_) => ObjectKind::Occurrence,
             HeapObject::Builder(_) => ObjectKind::Builder,
+            HeapObject::Function(_) => ObjectKind::Function,
         }
     }
 }
@@ -176,6 +182,7 @@ impl Trace for HeapObject {
             HeapObject::Map(m) => m.trace(visit),
             HeapObject::Occurrence(o) => o.trace(visit),
             HeapObject::Builder(b) => b.trace(visit),
+            HeapObject::Function(f) => f.trace(visit),
         }
     }
 }

@@ -343,7 +343,8 @@ mod tests {
             | HeapObject::Vector(_)
             | HeapObject::Map(_)
             | HeapObject::Occurrence(_)
-            | HeapObject::Builder(_) => panic!("not a native object"),
+            | HeapObject::Builder(_)
+            | HeapObject::Function(_) => panic!("not a native object"),
         })
         .expect("live object");
     }
@@ -477,6 +478,7 @@ mod tests {
             params: 1,
             locals: 1,
             constants: Box::new([obj(constant)]),
+            functions: Box::new([]),
             offsets: Box::new([0, 3]),
             instrs: Box::new([Instr::Const(0), Instr::Return]),
             max_stack: 1,

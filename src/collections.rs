@@ -254,6 +254,7 @@ pub(crate) fn object_name(object: &HeapObject) -> &'static str {
         HeapObject::Map(_) => PersistentKind::Map.name(),
         HeapObject::Occurrence(_) => PersistentKind::Occurrence.name(),
         HeapObject::Builder(b) => b.kind().name(),
+        HeapObject::Function(_) => "function",
     }
 }
 

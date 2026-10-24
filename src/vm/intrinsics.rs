@@ -113,28 +113,23 @@ fn top<const N: usize>(ops: &[Value]) -> Result<[Value; N], Fault> {
     <[Value; N]>::try_from(&ops[start..]).map_err(|_| Fault::Internal("operand stack underflow"))
 }
 
-/// Replace the top `popped` operands with `result`.
-fn replace(ops: &mut Vec<Value>, popped: usize, result: Value) {
-    ops.truncate(ops.len().saturating_sub(popped));
-    ops.push(result);
-}
-
 /// Execute one collection intrinsic or builder instruction.
 pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(), Fault> {
     let caller = state.diag.task;
-    let ops = &mut state.frame.operands;
     match instr {
         Instr::NewVector(n) => {
             let n = usize::from(n);
+            let ops = state.operands();
             let start = ops
                 .len()
                 .checked_sub(n)
                 .ok_or(Fault::Internal("operand stack underflow"))?;
             let vec = coll::new_vector(heap, &ops[start..])?;
-            replace(ops, n, vec);
+            state.replace(n, vec)?;
         }
         Instr::NewMap(n) => {
             let n = 2 * usize::from(n);
+            let ops = state.operands();
             let start = ops
                 .len()
                 .checked_sub(n)
@@ -144,47 +139,47 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(),
                 .map(|kv| (kv[0], kv[1]))
                 .collect();
             let map = coll::new_map(heap, &entries)?;
-            replace(ops, n, map);
+            state.replace(n, map)?;
         }
         Instr::Count => {
-            let [c] = top(ops)?;
+            let [c] = top(state.operands())?;
             let n = coll::count(heap, c)?;
-            replace(ops, 1, Value::Number(n as f64));
+            state.replace(1, Value::Number(n as f64))?;
         }
         Instr::Nth => {
-            let [v, i] = top(ops)?;
+            let [v, i] = top(state.operands())?;
             let found = coll::nth_at(heap, v, i)?;
-            replace(ops, 2, found);
+            state.replace(2, found)?;
         }
         Instr::Get => {
-            let [c, k] = top(ops)?;
+            let [c, k] = top(state.operands())?;
             let found = coll::lookup(heap, c, k)?;
-            replace(ops, 2, found);
+            state.replace(2, found)?;
         }
         Instr::GetOr => {
-            let [c, k, d] = top(ops)?;
+            let [c, k, d] = top(state.operands())?;
             let found = coll::get(heap, c, k)?.unwrap_or(d);
-            replace(ops, 3, found);
+            state.replace(3, found)?;
         }
         Instr::Assoc => {
-            let [c, k, v] = top(ops)?;
+            let [c, k, v] = top(state.operands())?;
             let updated = coll::assoc(heap, c, k, v)?;
-            replace(ops, 3, updated);
+            state.replace(3, updated)?;
         }
         Instr::Dissoc => {
-            let [m, k] = top(ops)?;
+            let [m, k] = top(state.operands())?;
             let updated = coll::dissoc(heap, m, k)?;
-            replace(ops, 2, updated);
+            state.replace(2, updated)?;
         }
         Instr::Conj => {
-            let [v, x] = top(ops)?;
+            let [v, x] = top(state.operands())?;
             let updated = coll::conj(heap, v, x)?;
-            replace(ops, 2, updated);
+            state.replace(2, updated)?;
         }
         Instr::PopLast => {
-            let [v] = top(ops)?;
+            let [v] = top(state.operands())?;
             let updated = coll::pop(heap, v)?;
-            replace(ops, 1, updated);
+            state.replace(1, updated)?;
         }
         Instr::NewVectorBuilder | Instr::NewMapBuilder => {
             let kind = match instr {
@@ -192,22 +187,22 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(),
                 _ => BuilderKind::Map,
             };
             let b = builder::new_builder(heap, caller, kind, &mut state.builders)?;
-            state.frame.operands.push(b);
+            state.push(b);
         }
         Instr::BuilderConj => {
-            let [b, x] = top(ops)?;
+            let [b, x] = top(state.operands())?;
             builder::conj(heap, caller, b, x)?;
-            replace(ops, 2, b);
+            state.replace(2, b)?;
         }
         Instr::BuilderAssoc => {
-            let [b, k, v] = top(ops)?;
+            let [b, k, v] = top(state.operands())?;
             builder::assoc(heap, caller, b, k, v)?;
-            replace(ops, 3, b);
+            state.replace(3, b)?;
         }
         Instr::Freeze => {
-            let [b] = top(ops)?;
+            let [b] = top(state.operands())?;
             let frozen = builder::freeze(heap, caller, b)?;
-            replace(ops, 1, frozen);
+            state.replace(1, frozen)?;
         }
         _ => return Err(Fault::Internal("not a collection intrinsic")),
     }

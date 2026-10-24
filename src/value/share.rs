@@ -7,7 +7,7 @@
 //!
 //! | Category | Kinds today | Shareable? |
 //! |----------|-------------|------------|
-//! | [`Shareability::Persistent`] | vector, map, occurrence; natives that declare it | when everything it references is shareable (transitively) |
+//! | [`Shareability::Persistent`] | vector, map, occurrence, function (no captures yet); natives that declare it | when everything it references is shareable (transitively) |
 //! | [`Shareability::TaskOwned`] | transient builders (any state), plain objects, natives that declare it | never |
 //! | [`Shareability::ConcurrentReference`] | none yet: reserved for atoms (clj-quickjs-10) and any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
 //!
@@ -122,6 +122,8 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
             Shareability::Persistent
         }
         HeapObject::Builder(_) => Shareability::TaskOwned,
+        // No properties or captures in this slice: immutable (`crate::vm::function`).
+        HeapObject::Function(_) => Shareability::Persistent,
     }
 }
 
@@ -133,7 +135,8 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
         | HeapObject::Native(_)
         | HeapObject::Vector(_)
         | HeapObject::Map(_)
-        | HeapObject::Occurrence(_) => None,
+        | HeapObject::Occurrence(_)
+        | HeapObject::Function(_) => None,
     }
 }
 

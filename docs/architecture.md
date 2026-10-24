@@ -36,9 +36,10 @@ JavaScript source support.
   shared read-only by every task running it (`Executable::same_code`). It holds
   no heap references, so it is not tied to one runtime.
 - **Task** (`src/task.rs`, `src/vm/frames.rs`): all execution state lives in the
-  task's `VmState`: instruction position, operand stack, locals and diagnostic
-  context (one frame for now; explicit call frames are pellet clj-quickjs-4).
-  A worker thread only borrows it for one run.
+  task's `VmState`: an explicit stack of call frames (each with its code,
+  saved instruction position and base in one task-owned value stack holding
+  every frame's locals and operands), resource limits and diagnostic context;
+  see "Calls and frames" below. A worker thread only borrows it for one run.
 - **Handles** (`src/heap/roots.rs`): embedders never see raw values. `Rooted`
   is a persistent root (how results are returned); `Local<'s>` is valid only
   inside `Runtime::scope`; `WeakHandle` names a value without keeping it
@@ -300,6 +301,61 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   the instruction a ready (for example yielded) task will run next, and
   `throw_error` messages quote the binding name from the source.
 
+## Calls and frames (clj-quickjs-4)
+
+```
+ VmState (task-owned)
+   entry: Frame ─┐   calls: [Frame, Frame, …]      each Frame = { code: Arc<Code>,
+                 │                                   callee, pc, base }
+   stack: [ entry locals | entry operands | f1 locals | f1 operands | f2 … ]
+                                           ▲ f1.base     (callee slot reused)
+```
+
+- **Function code** (`src/vm/executable.rs`, `src/vm/function.rs`): an
+  `Executable` is the code of one function; its child table
+  (`ExecutableSpec::functions`) holds already-loaded executables by `Arc`, so
+  a function tree is validated bottom-up once and is acyclic. A function
+  object (`HeapObject::Function`, appended to the object-kind registry) is a
+  heap value holding an `Arc` of that code: `function i` allocates one per
+  evaluation (distinct identities, as for function expressions), and
+  `current_function` yields the running frame's own (allocated on first use
+  for the entry frame, then kept by the frame). Recursion goes through
+  function values, never through a code cycle.
+- **Call/return** (`src/vm/frames.rs`, `src/vm/dispatch.rs`): `call n`
+  resolves the callee (a non-function fails with `TypeError`), checks the
+  task's `VmLimits`, then reuses the callee's operand slot as the new frame's
+  base: arguments become its parameter locals (missing → `undefined`, extra
+  dropped), and the loop continues in the new frame. `return` truncates the
+  value stack to the frame's base, pops it, and pushes the result for the
+  caller, whose saved `pc` already names the instruction after its `call`.
+  The interpreter is a flat loop: the only thing it keeps across
+  instructions is an `Arc` of the running frame's immutable code, refreshed
+  when the frame changes, and every frame and value is reached by index, so
+  `stack` and `calls` may reallocate on any call and a task may yield or be
+  collected between any two instructions with any number of live frames.
+  QuickJS's `JS_CallInternal` instead recurses on the C stack with
+  `alloca`'d `JSStackFrame`s; only its saved-state inventory (`cur_pc`,
+  `cur_sp`, argument and variable buffers) and argument binding rules are
+  reused as a reference.
+- **Resource policy.** `VmLimits` (per runtime, copied into each task) bounds
+  live frames and reserved values (locals plus each frame's validated
+  maximum operand depth). A `call` that would exceed either fails the task
+  with `VmErrorKind::StackOverflow` before anything changes; Rust stack use is
+  independent of JavaScript call depth (tested on a 64 KiB worker stack).
+- **Tracing.** The task root source traces the whole value stack and each
+  frame's function object; a function object's `Trace` reports its code's
+  constants, and the entry frame's constants are the task's executable
+  constants. A callee that is no longer on any operand stack stays alive
+  through its frame.
+- **Context and diagnostics.** Task identity and world are task-wide, so a
+  call never changes world. A failure reports the failing frame's executable,
+  instruction and source location plus `Diagnostic::call_chain`: each
+  caller's `call` site, innermost first.
+- **Publication.** A function object has no properties or captures yet, so
+  it is `Persistent` and passes `Runtime::publish`; another task calling it
+  runs the same code in its own frames. Closures (clj-quickjs-20) add
+  environments and their own publication rule.
+
 ## Task/dependency continuation shape (planned)
 
 Dependency waits reuse the same mechanism as `Yielded`: the task returns from
@@ -495,6 +551,12 @@ references only:
   validator's stack-depth walk (already written fresh in clj-quickjs-1), the
   `throw_error` opcode emitted for constant assignment, and the
   `eval_ret_idx` completion-value local. No code was copied.
+- `research/quickjs/quickjs.c` (clj-quickjs-4): `JSStackFrame` and
+  `JS_CallInternal` for call/return semantics and argument binding (missing
+  arguments `undefined`, extra ones ignored), `JS_ThrowStackOverflow` for the
+  depth failure, and `special_object` with `OP_SPECIAL_OBJECT_THIS_FUNC` for
+  `current_function`. Frames here are task-owned indices, not C-stack
+  pointers. No code was copied.
 
 No QuickJS source or encodings were copied. Adapted material keeps the notice
 from `research/quickjs/LICENSE` (MIT, Copyright (c) 2017-2021 Fabrice Bellard
@@ -506,3 +568,10 @@ and Charlie Gordon) and is listed here with its source path and revision:
   Modified: rewritten for the subset (`let` for `var`, `x = x + 1` for `++`,
   failure flags instead of `assert()` calls); the bitwise, `**` and string
   cases are omitted. The file carries the full notice.
+- `tests/calls.rs` (clj-quickjs-4): `fib1` from `test_closure3` and
+  `myfunc1`/`myfunc2` from `test_closure2` in
+  `research/quickjs/tests/test_closure.js`, revision 7d1c13c5d8f8, as
+  hand-assembled bytecode (early VM tests). Modified: `fib1`'s self-reference
+  is `current_function`; `myfunc2`'s capture of `myfunc1` is passed as an
+  argument (closures are clj-quickjs-20); `assert()` calls are Rust
+  assertions. The file carries the full notice.

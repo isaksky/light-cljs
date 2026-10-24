@@ -39,15 +39,35 @@ pub enum VmErrorKind {
     /// declaration ran (temporal dead zone). Not catchable until exceptions
     /// exist (clj-quickjs-11).
     ReferenceError,
-    /// A JavaScript TypeError raised by compiled source: assignment to a
-    /// `const` binding.
+    /// A JavaScript TypeError: assignment to a `const` binding, or a `Call`
+    /// whose callee is not a function object (`… is not a function`).
     TypeError,
+    /// A `Call` would exceed the task's [`VmLimits`](crate::VmLimits) (call
+    /// depth or operand/local storage). The task fails instead of growing
+    /// further; no Rust stack is involved, so deep recursion can never
+    /// overflow the worker's stack. QuickJS reports this as an InternalError
+    /// "stack overflow" (`JS_ThrowStackOverflow`); it is not catchable until
+    /// exceptions exist (clj-quickjs-11).
+    StackOverflow,
+}
+
+/// One active caller in a failure's call chain: the `Call` instruction a
+/// frame was executing when the failure happened in a frame it called.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallSite {
+    /// Name of the caller's executable.
+    pub executable: Arc<str>,
+    /// Index of the caller's `Call` instruction.
+    pub instruction: usize,
+    pub byte_offset: Option<u32>,
+    /// Source position of the call, for code compiled from JavaScript.
+    pub source: Option<SourceLocation>,
 }
 
 /// Where a failure happened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
-    /// Name of the executable.
+    /// Name of the executable of the failing frame (the innermost one).
     pub executable: Arc<str>,
     pub task: TaskId,
     pub world: WorldId,
@@ -60,6 +80,10 @@ pub struct Diagnostic {
     /// Source position of the failing instruction, for code compiled from
     /// JavaScript source (`None` for hand-assembled bytecode).
     pub source: Option<SourceLocation>,
+    /// The failing frame's callers, innermost first: the last entry is the
+    /// task's entry frame. Empty when the failure happened in the entry
+    /// frame. All frames of a task share its task and world.
+    pub call_chain: Vec<CallSite>,
 }
 
 /// A position in JavaScript source attached to a compiled instruction.
@@ -116,11 +140,27 @@ impl fmt::Display for VmError {
             d.task,
             d.world
         )?;
-        match d.source {
-            Some(at) => write!(f, " at source {at}"),
-            None => Ok(()),
+        if let Some(at) = d.source {
+            write!(f, " at source {at}")?;
+        }
+        for site in d.call_chain.iter().take(SHOWN_CALLERS) {
+            write!(
+                f,
+                "\n  called from {} at instruction {}",
+                site.executable, site.instruction
+            )?;
+            if let Some(at) = site.source {
+                write!(f, " (source {at})")?;
+            }
+        }
+        match d.call_chain.len().checked_sub(SHOWN_CALLERS) {
+            Some(more) if more > 0 => write!(f, "\n  … {more} more callers"),
+            _ => Ok(()),
         }
     }
 }
+
+/// Callers printed by `Display` (the full chain stays in [`Diagnostic`]).
+const SHOWN_CALLERS: usize = 16;
 
 impl std::error::Error for VmError {}
