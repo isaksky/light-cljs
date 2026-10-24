@@ -318,6 +318,7 @@ public API cannot reach.
 | typed-array backing buffer, ordinary properties and prototype | `PersistentHandle` (`TypedArray` → `ArrayBuffer`, property/prototype objects) | `typed_array_retains_buffer_and_properties` *(tests/gc.rs)* | `typed_array_retains_buffer_and_properties` *(tests/gc.rs)* |
 | built-in iterator source internal slot | `PersistentHandle` (`PlainObject` cursor → source array) | `builtin_iterator_source_retains_and_reclaims` *(lib)* | `builtin_iterator_source_retains_and_reclaims` *(lib)* |
 | Segments and Segment Iterator internal segmenter slots | `PersistentHandle` (`PlainObject` → Segmenter service) | `segmenter_slots_retain_and_reclaim` *(lib)* | `segmenter_slots_retain_and_reclaim` *(lib)* |
+| DisposableStack resources, ordinary properties and prototype | `PersistentHandle` (`DisposableStack`) | `disposable_stack_resources_retain_and_reclaim` *(lib)* | `disposable_stack_resources_retain_and_reclaim` *(lib)* |
 | bounded unhandled Promise/reason queue | `TaskFrame` (task inbox, including after completion) | `unhandled_rejection_roots_are_retained_and_reclaimed` *(tests/promises.rs)* | `unhandled_rejection_roots_are_retained_and_reclaimed` *(tests/promises.rs)* |
 | WeakRef ordinary properties and prototype | `PersistentHandle` (`WeakRef`) | `weak_ref_properties_and_prototype_are_traced` *(tests/gc.rs)* | `weak_ref_properties_and_prototype_are_traced` *(tests/gc.rs)* |
 | task kept objects for the active job | `TaskFrame`, running or suspended task state | `kept_objects_survive_need_wait` *(tests/gc.rs)* | `weak_ref_cleared_after_job_and_collection` *(tests/gc.rs)* |
@@ -1200,15 +1201,16 @@ docs.
 - **Synchronous disposal** (clj-quickjs-236). A statement list containing
   `using` owns a finally handler before any initializer runs. Hidden value
   and method locals retain each resource and its method snapshot; a method
-  slot stays undefined until AddDisposableResource succeeds. Disposal runs
-  those pairs backwards as ordinary receiver calls under individual catch
-  handlers. `pending_exception` reads the pending throw, and the leaf
-  `suppressed_error` instruction invokes the intrinsic engine helper to
-  combine errors without running JS. Hidden error locals distinguish an
-  empty error state from a thrown undefined. The existing completion stack
+  slot stays undefined until AddDisposableResource succeeds. `using_dispose`
+  transfers those pairs into the same traced native disposal loop as
+  DisposableStack (clj-quickjs-239), clearing the hidden locals. The loop
+  calls backwards through ordinary VM frames under native catch handlers.
+  `pending_exception` reads the pending throw; the intrinsic engine helper
+  combines errors without running JS. An optional saved error distinguishes
+  an empty error state from a thrown undefined. The existing completion stack
   retains returns, jumps, exception identity and cancellation; catches inside
-  disposal keep later resources running. `pending_cancel` discards the final
-  error during cancellation so `end_finally` can visit outer resource scopes;
+  disposal keep later resources running. `pending_cancel` tells the loop to
+  discard the final error during cancellation so `end_finally` can visit outer resource scopes;
   ordinary throws escaping a cancel finally would terminate all cleanup.
   `using_check` has a traced native continuation for a
   `Symbol.dispose` getter. Every getter and disposer can suspend and migrate;
@@ -2753,6 +2755,14 @@ those of ordinary objects; virtual properties introduce no heap edges.
   `tests/js_source.rs::for_using_of_loops` adapt
   `research/quickjs/tests/test_language.js::test_using`; its MIT notice is
   retained in that file. Lowering and remaining fixtures are original.
+
+- DisposableStack (clj-quickjs-239): consulted `js_disposable_stack_*`,
+  `js_get_dispose_method` and `js_dispose_resources` in
+  `research/quickjs/quickjs.c`, revision
+  `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The intrinsic-move scenarios in
+  `tests/js_source.rs::disposable_stack` adapt
+  `research/quickjs/tests/test_language.js::test_using`, with the MIT notice
+  retained in that file. Rust code and other fixtures are original.
 
 - Synchronous `using` (clj-quickjs-236): consulted
   `research/quickjs/quickjs.c` `is_using`, `js_parse_var`,

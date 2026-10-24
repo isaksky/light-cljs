@@ -550,8 +550,9 @@ Static module requests can be resolved and loaded through `module::ModuleLoader`
 ## Explicit gaps
 
 Synchronous `using` executes in blocks, function bodies, module top level and
-for-of heads. `await using` and disposal stack built-ins remain separate
-features (clj-quickjs-239..-242); classic for-using heads remain unsupported.
+for-of heads; DisposableStack is supported. `await using` and AsyncDisposableStack
+remain separate features (clj-quickjs-240..-242); classic for-using heads remain
+unsupported.
 
 The QuickJS collection fixture cases run with their original source except
 for the documented WeakRef kept-object adaptation (clj-quickjs-178).
@@ -3599,7 +3600,7 @@ including after publication and collection, and are distinct from registry
 symbols with matching descriptions. Their Symbol constructor properties are
 non-writable, non-enumerable and non-configurable. Exceptions: strict assignment
 or deletion throws catchable TypeError. Rejected forms and explicit gaps:
-this adds no syntax; `await using`, disposal stacks and iterator
+this adds no syntax; `await using`, AsyncDisposableStack and iterator
 disposal methods remain deferred to their own pellets.
 
 Synthetic fixture, not light-cljs output:
@@ -5912,7 +5913,7 @@ preserves this design: the engine test expects TypeError from the attempted
 intrinsic overwrite before replacing the global. The engine wrapping helper
 ignores that global binding and uses the original intrinsic prototype directly;
 synchronous disposal syntax is described under "Execution" above; async
-disposal and stacks remain separate pellets.
+disposal and AsyncDisposableStack remain separate pellets.
 
 Synthetic fixtures, not light-cljs output:
 
