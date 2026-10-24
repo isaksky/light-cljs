@@ -8,7 +8,7 @@
 //! | Category | Kinds today | Shareable? |
 //! |----------|-------------|------------|
 //! | [`Shareability::Persistent`] | vector, map, occurrence, function (closure; its own-property record is a separate ordinary object), built-in function, realm intrinsic ordinary object (`Object.prototype`, `crate::realm`), internal frozen template arrays; natives that declare it | when everything it references is shareable (transitively) |
-//! | [`Shareability::TaskOwned`] | transient builders (any state), ordinary objects other than realm intrinsics, JavaScript Maps, binding cells, natives that declare it | never |
+//! | [`Shareability::TaskOwned`] | transient builders (any state), ordinary objects other than realm intrinsics, JavaScript Maps, ArrayBuffers and typed-array views, binding cells, natives that declare it | never |
 //! | [`Shareability::ConcurrentReference`] | atoms (`crate::atom`); reserved for any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
 //!
 //! Primitives are always shareable, strings, symbols and BigInts included: a string
@@ -24,7 +24,8 @@
 //! `design.md` §4: task-owned mutation, never shareable, whatever their
 //! properties hold (an object literal is rejected like a builder). The
 //! same applies to ArrayBuffer objects, including detached buffers: their
-//! mutable backing stores and ordinary properties are task-owned. The
+//! mutable backing stores and ordinary properties are task-owned. Typed-array
+//! views retain their task-owned buffer and remain task-owned after detachment. The
 //! exception is the realm's intrinsic objects (`Object.prototype`, and the
 //! property stores of built-in functions; `crate::realm`, clj-quickjs-117):
 //! ownerless and never changed once the realm is installed, they are
@@ -216,6 +217,7 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
         HeapObject::Array(a) if a.object().is_intrinsic() => Shareability::Persistent,
         HeapObject::Array(_) | HeapObject::JsMap(_) => Shareability::TaskOwned,
         HeapObject::ArrayBuffer(_) => Shareability::TaskOwned,
+        HeapObject::TypedArray(_) => Shareability::TaskOwned,
     }
 }
 
@@ -229,6 +231,7 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
         HeapObject::JsMap(m) => m.object().owner(),
 
         HeapObject::ArrayBuffer(b) => b.object.owner(),
+        HeapObject::TypedArray(a) => a.object.owner(),
         HeapObject::Native(_)
         | HeapObject::Vector(_)
         | HeapObject::Map(_)

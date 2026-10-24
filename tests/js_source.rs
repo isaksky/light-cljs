@@ -490,7 +490,225 @@ fn bigint_primitive_key_enumeration() {
     }
 }
 
-/// Synthetic fixtures, not light-cljs output.
+/// Synthetic fixtures adapting integer rows of QuickJS test_builtin.js.
+/// Copyright (c) 2017-2021 Fabrice Bellard
+/// Copyright (c) 2017-2021 Charlie Gordon
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+/// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn integer_typed_array_elements() {
+    // Synthetic fixtures, not light-cljs output; QuickJS semantic rows are
+    // recorded in docs/attribution.md.
+    for src in [
+        "let a = new Uint8Array(4); for (let i = 0; i < 4; i++) a[i] = i; a[0] = -1; a.length === 4 && a[0] === 255 && a[3] === 3",
+        "let a = new Int8Array(1); a[0] = 255; a[0] === -1",
+        "let a = new Int32Array(1); a[0] = 4294967295; a[0] === -1 && a.BYTES_PER_ELEMENT === 4 && Int32Array.BYTES_PER_ELEMENT === 4",
+        "let a = new Uint8ClampedArray(4); a[0] = -100; a[1] = 1.5; a[2] = 0.5; a[3] = 1233.5; a[0] === 0 && a[1] === 2 && a[2] === 0 && a[3] === 255",
+        "let a = new Uint8Array(4); a[10] = 1; a[1.5] = 3; a['-0'] = 4; a[10] === undefined && a[1.5] === undefined && a['-0'] === undefined",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+#[test]
+fn typed_array_views_share_buffer() {
+    assert_eq!(
+        eval(
+            "let b = new ArrayBuffer(16); let u32 = new Uint32Array(b, 12, 1); u32[0] = -1; let u16 = new Uint16Array(b, 2); u16[0] = -1; let u8 = new Uint8Array(b); u8[2] === 255 && u8[3] === 255 && u8[12] === 255 && u8[13] === 255 && u8[14] === 255 && u8[15] === 255 && u32.length === 1 && u16.length === 7 && u8.buffer === b && u32.byteOffset === 12"
+        ),
+        ValueView::Bool(true)
+    );
+    for args in ["b, 2", "b, 12, 2"] {
+        let src = format!(
+            "let b = new ArrayBuffer(16); let ok = false; try {{ new Uint32Array({args}); }} catch(e) {{ ok = e instanceof RangeError; }} ok"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+}
+
+#[test]
+fn typed_array_after_transfer() {
+    assert_eq!(
+        eval(
+            "let b = new ArrayBuffer(16); let a = new Uint8Array(b); a[0] = 42; b.transfer(); a[0] === undefined && a.length === 0 && a.byteOffset === 0 && a.byteLength === 0 && a.buffer === b"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn typed_array_integer_indexed_properties() {
+    for src in [
+        "let a = new Uint8Array(2); a['01'] = 9; a['1.0'] = 8; a.x = 7; a['01'] === 9 && a['1.0'] === 8 && a.x === 7 && a[1] === 0",
+        "let a = new Uint8Array(2); let p = { '3': 9, '-0': 7 }; Object.setPrototypeOf(a, p); a[3] === undefined && a['-0'] === undefined && !(3 in a) && !('-0' in a) && 0 in a && 1 in a",
+        "let a = new Uint8Array(2); a.NaN = 8; a.Infinity = 8; a[-1] = 8; a.NaN === undefined && a.Infinity === undefined && a[-1] === undefined && !('NaN' in a)",
+        "let a = new Uint8Array(2); let n = 0; let v = {valueOf() { n++; return 257; }}; let r = (a[0] = v); a[8] = v; a['-0'] = v; a[0] === 1 && n === 3 && r === v",
+        "let a = new Uint8Array(1); let ok = false; try { a[9] = Symbol(); } catch(e) { ok = e instanceof TypeError; } ok",
+        "let a = new Uint8Array(2); let b = a.buffer; a[0] = {valueOf() { b.transfer(); return 42; }}; a[0] === undefined && a.length === 0",
+        "let a = new Uint8Array(2); let r = Object.defineProperty(a, '0', {value: {valueOf() { return 258; }}}); r === a && a[0] === 2",
+        "let a = new Uint8Array(2); let b = a.buffer; let r = Object.defineProperty(a, '0', {value: {valueOf() { b.transfer(); return 258; }}}); r === a && a.length === 0",
+        "let a = new Uint8Array(2); let n = 0; let ok = false; try { Object.defineProperty(a, '9', {value: {valueOf() { n++; return 2; }}}); } catch(e) { ok = e instanceof TypeError; } ok && n === 0",
+        "let a = new Uint8Array(2); let d = Object.getOwnPropertyDescriptor(a, '0'); d.value === 0 && d.writable && d.enumerable && d.configurable && Object.keys(a).length === 2 && Object.keys(a)[1] === '1'",
+        "let a = new Uint8Array(1); Object.defineProperty(a, '0', {value: 258}); let ok = false; try { delete a[0]; } catch(e) { ok = e instanceof TypeError; } a[0] === 2 && ok && delete a[4]",
+        "let a = new Uint8Array(1); Object.preventExtensions(a); a[0] = 9; a[0] === 9 && !Object.isExtensible(a) && !Object.isFrozen(a)",
+        "let a = new Uint8Array(1); let ok = false; try { Object.freeze(a); } catch(e) { ok = e instanceof TypeError; } ok && !Object.isExtensible(a)",
+        "let a = new Uint8Array(0); Object.freeze(a); Object.isFrozen(a)",
+        "let a = new Uint8Array(1); let ok = false; try { a[0] = 1n; } catch(e) { ok = e instanceof TypeError; } ok",
+        "let a = new Uint8Array(1); let ok = false; try { a[0] = {valueOf() { return 1n; }}; } catch(e) { ok = e instanceof TypeError; } ok",
+        "let a = new Uint8Array(2); a[0] = 3; JSON.stringify(a) === '{\"0\":3,\"1\":0}'",
+        "let ok = false; try { JSON.stringify(new Uint8Array(4097)); } catch(e) { ok = e instanceof RangeError; } ok",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+#[test]
+fn typed_array_constructor_validation_and_metadata() {
+    for src in [
+        "new Uint8Array().length === 0 && new Uint16Array('3.9').byteLength === 6 && new Uint32Array(-0.9).length === 0",
+        "let a = new Int16Array(1); a[0] = 65535; let b = new Uint16Array(1); b[0] = -2; let c = new Uint32Array(1); c[0] = -2; a[0] === -1 && b[0] === 65534 && c[0] === 4294967294",
+        "let a = new Uint8Array(4); a[0] = NaN; a[1] = Infinity; a[2] = -Infinity; a[3] = -257.9; a[0] === 0 && a[1] === 0 && a[2] === 0 && a[3] === 255",
+        "let a = new Uint8ClampedArray(4); a[0] = NaN; a[1] = Infinity; a[2] = 2.5; a[3] = 3.5; a[0] === 0 && a[1] === 255 && a[2] === 2 && a[3] === 4",
+        "let b = new ArrayBuffer(16); let a = new Uint32Array(b, 16, 0); a.length === 0 && a.byteOffset === 16 && a.byteLength === 0",
+        "let c = Object.getPrototypeOf(Uint8Array); c === Object.getPrototypeOf(Int32Array) && c.name === 'TypedArray' && Object.getPrototypeOf(Uint8Array.prototype) === c.prototype && Uint8Array.prototype.constructor === Uint8Array && Uint8Array.length === 3",
+        "let d = Object.getOwnPropertyDescriptor(Uint16Array.prototype, 'BYTES_PER_ELEMENT'); d.value === 2 && !d.writable && !d.enumerable && !d.configurable",
+        "let a = new Uint8Array(1); a instanceof Uint8Array && a instanceof Object && !Array.isArray(a) && Object.prototype.toString.call(a) === '[object Uint8Array]'",
+        "let b = new ArrayBuffer(8); let log = ''; let a = new Uint16Array(b, {valueOf() { log += 'o'; return 2; }}, {valueOf() { log += 'l'; return 2; }}); log === 'ol' && a.length === 2 && a.byteOffset === 2",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for (src, kind) in [
+        ("Uint8Array(1)", "TypeError"),
+        ("Object.getPrototypeOf(Uint8Array)()", "TypeError"),
+        (
+            "let T = Object.getPrototypeOf(Uint8Array); new T()",
+            "TypeError",
+        ),
+        ("Uint8Array.prototype.length", "TypeError"),
+        ("new Uint8Array(-1)", "RangeError"),
+        ("new Int32Array(4194305)", "RangeError"),
+        ("new Uint8Array(Infinity)", "RangeError"),
+        ("new Uint8Array(Symbol())", "TypeError"),
+        ("new Uint16Array(new ArrayBuffer(3))", "RangeError"),
+        (
+            "let b = new ArrayBuffer(4); b.transfer(); new Uint8Array(b)",
+            "TypeError",
+        ),
+        (
+            "let b = new ArrayBuffer(4); new Uint16Array(b, {valueOf() { b.transfer(); return 0; }})",
+            "TypeError",
+        ),
+        (
+            "let b = new ArrayBuffer(4); new Uint16Array(b, 0, {valueOf() { b.transfer(); return 1; }})",
+            "TypeError",
+        ),
+    ] {
+        let source =
+            format!("let ok = false; try {{ {src}; }} catch(e) {{ ok = e instanceof {kind}; }} ok");
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn typed_array_coercion_survives_waits_gc_and_migration() {
+    // Synthetic fixtures, not light-cljs output.
+    for source in [
+        "let b = new ArrayBuffer(8); let a = new Uint16Array(b, {valueOf() { b = null; __rt.need(166, 1); return 2; }}, 2); a.length === 2 && a.byteOffset === 2 && a.buffer.byteLength === 8",
+        "let b = new ArrayBuffer(8); let a = new Uint16Array(b, 0, {valueOf() { b = null; __rt.need(166, 1); return 2; }}); a.length === 2 && a.byteLength === 4",
+        "let a = new Uint8Array(1); let v = {valueOf() { __rt.need(166, 1); return 257; }}; let r = (a[0] = v); a[0] === 1 && r === v",
+        "let a = new Uint8Array(1); let v = {valueOf() { a = null; __rt.need(166, 1); return 257; }}; let r = (a[9] = v); a === null && r === v",
+        "let log = ''; let a = new Uint8Array(1); a[{toString() { log += 'k'; __rt.need(166, 1); return '0'; }}] = {valueOf() { log += 'v'; return 4; }}; a[0] === 4 && log === 'kv'",
+        "let a = new Uint8Array(1); let b = a.buffer; let n = 0; b.transfer(); a[0] = {valueOf() { __rt.need(166, 1); n++; return 42; }}; a[0] === undefined && n === 1",
+        "let a = new Uint8Array(1); let r = Object.defineProperty(a, '0', {value: {valueOf() { __rt.need(166, 1); return 257; }}}); r === a && a[0] === 1",
+    ] {
+        let rt = Runtime::new();
+        let mut task = rt.spawn(&exe(source), &[]).unwrap();
+        let mut waits = 0;
+        let mut done = false;
+        for _ in 0..1000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert_eq!(waits, 1);
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    done = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(done, "instruction bound exceeded: {source}");
+        assert_eq!(waits, 1);
+    }
+}
+
+#[test]
+fn typed_array_publication_and_foreign_access_rejected() {
+    let rt = Runtime::new();
+    let task = rt.spawn(&exe("new Uint8Array(8)"), &[]).unwrap();
+    let RunOutcome::Complete(array) = task.run().unwrap() else {
+        panic!("expected typed array");
+    };
+    assert!(matches!(
+        rt.publish(&array),
+        Err(clj_quickjs::PublishError::NotShareable { .. })
+    ));
+    assert!(rt.new_atom(&array).is_err());
+    for body in [
+        "return a[0];",
+        "a[0] = 1;",
+        "return a.length;",
+        "return Object.keys(a);",
+        "return Object.getPrototypeOf(a);",
+        "Object.defineProperty(a, '0', {value: 1});",
+    ] {
+        let code = compile_function(&format!("function f(a) {{ {body} }}")).unwrap();
+        let other = rt.spawn(&code, &[&array]).unwrap();
+        let RunOutcome::Failed(error) = other.run().unwrap() else {
+            panic!("expected ownership failure: {body}");
+        };
+        assert!(
+            matches!(error.kind(), VmErrorKind::ForeignObject { .. }),
+            "{body}: {error:?}"
+        );
+    }
+}
+
 #[test]
 fn array_buffer_basics() {
     for src in [

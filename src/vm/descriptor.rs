@@ -182,7 +182,15 @@ pub(crate) struct DefineProperty {
 }
 
 pub(crate) enum DefineStep {
-    Getter { callee: Value, this: Value },
+    Getter {
+        callee: Value,
+        this: Value,
+    },
+    TypedArrayValue {
+        target: Value,
+        index: f64,
+        value: Value,
+    },
     Done(Value),
 }
 
@@ -286,6 +294,16 @@ impl DefineProperty {
         let Value::Object(id) = self.target else {
             unreachable!()
         };
+        if let Some(value @ Value::Object(_)) = &self.desc.value
+            && let Some((_, index)) =
+                property::typed_array_descriptor(heap, task, id, &self.key, &self.desc)?
+        {
+            return Ok(DefineStep::TypedArrayValue {
+                target: self.target.clone(),
+                index,
+                value: value.clone(),
+            });
+        }
         property::define_own_property(heap, task, id, &self.key, &self.desc)?;
         Ok(DefineStep::Done(self.target.clone()))
     }

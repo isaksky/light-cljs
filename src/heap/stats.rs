@@ -57,6 +57,8 @@ pub struct ObjectCounts {
 
     /// Task-owned ArrayBuffer objects.
     pub array_buffer: usize,
+    /// Task-owned typed-array views (backing bytes counted on their buffer).
+    pub typed_array: usize,
 }
 
 impl ObjectCounts {
@@ -76,6 +78,7 @@ impl ObjectCounts {
             + self.bound_function
             + self.js_map
             + self.array_buffer
+            + self.typed_array
     }
 
     fn count(&mut self, object: &HeapObject) {
@@ -95,6 +98,7 @@ impl ObjectCounts {
             HeapObject::JsMap(_) => &mut self.js_map,
 
             HeapObject::ArrayBuffer(_) => &mut self.array_buffer,
+            HeapObject::TypedArray(_) => &mut self.typed_array,
         };
         *n += 1;
     }

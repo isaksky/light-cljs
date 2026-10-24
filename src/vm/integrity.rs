@@ -109,12 +109,21 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
         Some(owner) if owner != task => Err(foreign(Some(owner), task)),
         _ => Ok(()),
     };
+    if let Some(view) = crate::object::typed_array::view(heap, task, id)?
+        && matches!(level, Level::Frozen)
+        && view.live_length(heap)? != 0
+    {
+        return Ok(false);
+    }
     heap.read(id, |object| match object {
         HeapObject::Plain(o) => readable(o.owner()).map(|()| has_level(o, level)),
         HeapObject::JsMap(m) => readable(m.object().owner()).map(|()| has_level(m.object(), level)),
 
         HeapObject::ArrayBuffer(b) => {
             readable(b.object.owner()).map(|()| has_level(&b.object, level))
+        }
+        HeapObject::TypedArray(a) => {
+            readable(a.object.owner()).map(|()| has_level(&a.object, level))
         }
         HeapObject::Array(a) => readable(a.object().owner()).map(|()| match level {
             Level::NonExtensible => !a.object().extensible(),
@@ -158,6 +167,10 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
         Some(owner) if owner == task => Ok(()),
         owner => Err(foreign(owner, task)),
     };
+    let nonempty_view = crate::object::typed_array::view(heap, task, id)?
+        .map(|v| v.live_length(heap))
+        .transpose()?
+        .is_some_and(|n| n != 0);
     heap.with_object_mut(id, |object| match object {
         HeapObject::Plain(o) if o.is_intrinsic() => Err(immutable()),
         HeapObject::Builtin(_) => Err(immutable()),
@@ -194,6 +207,19 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
             match level {
                 Level::NonExtensible => b.object.prevent_extensions(),
                 Level::Frozen => b.object.freeze(),
+            }
+            Ok(())
+        }
+        HeapObject::TypedArray(a) => {
+            writable(a.object.owner())?;
+            a.object.prevent_extensions();
+            if matches!(level, Level::Frozen) {
+                if nonempty_view {
+                    return Err(Fault::TypeError(
+                        "cannot freeze a nonempty typed array".into(),
+                    ));
+                }
+                a.object.freeze();
             }
             Ok(())
         }

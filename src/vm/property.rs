@@ -436,6 +436,7 @@ fn visit<'a>(object: &'a HeapObject, task: TaskId) -> Result<Visit<'a>, Fault> {
         HeapObject::JsMap(m) => readable(m.object()).map(|()| Visit::Store(m.object())),
 
         HeapObject::ArrayBuffer(b) => readable(&b.object).map(|()| Visit::Store(&b.object)),
+        HeapObject::TypedArray(a) => readable(&a.object).map(|()| Visit::Store(&a.object)),
         HeapObject::Array(a) => readable(a.object()).map(|()| Visit::Array(a)),
         HeapObject::Builtin(f) => Ok(Visit::Store(&f.properties)),
         other => Ok(Visit::Other(other)),
@@ -596,6 +597,22 @@ pub(crate) fn in_operator(
     has_property(heap, task, base, &to_property_key(key)?)
 }
 
+/// `Some(None)` means an invalid integer-indexed key: stop the prototype walk.
+fn typed_element(
+    heap: &Heap,
+    task: TaskId,
+    id: ObjectId,
+    key: &Key,
+) -> Result<Option<Option<Value>>, Fault> {
+    let Some(index) = crate::object::typed_array::numeric_key(key) else {
+        return Ok(None);
+    };
+    let Some(view) = crate::object::typed_array::view(heap, task, id)? else {
+        return Ok(None);
+    };
+    view.get(heap, index).map(Some)
+}
+
 /// [`find`], or with `has` [`has_property`]'s walk: the found value is
 /// then only a presence marker.
 fn lookup(
@@ -624,6 +641,9 @@ fn lookup(
     };
     let mut realm = heap.realm().get();
     loop {
+        if let Some(element) = typed_element(heap, task, id, key)? {
+            return Ok(element.map(Read::Value));
+        }
         // An intrinsic is read from the realm's immutable view, without the
         // object-table lock (`crate::realm`, "Lock-free reads").
         if let Some(view) = realm.and_then(|r| r.view(id)) {
@@ -793,6 +813,10 @@ fn store(
             check_write(&b.object, task)?;
             named(&mut b.object)
         }
+        HeapObject::TypedArray(a) => {
+            check_write(&a.object, task)?;
+            named(&mut a.object)
+        }
         HeapObject::Array(a) => {
             check_write(a.object(), task)?;
             match key {
@@ -858,6 +882,13 @@ pub(crate) fn prepare_put(
     value: Value,
     strict: bool,
 ) -> Result<Option<Value>, Fault> {
+    if let Value::Object(id) = base
+        && let Some(index) = crate::object::typed_array::numeric_key(key)
+        && let Some(view) = crate::object::typed_array::view(heap, task, *id)?
+    {
+        view.set(heap, index, &value)?;
+        return Ok(None);
+    }
     let Value::Object(mut id) = *base else {
         if matches!(base, Value::Number(_) | Value::String(_) | Value::Bool(_))
             && !(matches!(base, Value::String(s) if string_own_property(s, key).is_some()))
@@ -950,6 +981,9 @@ pub(crate) fn prepare_put(
 
             (HeapObject::ArrayBuffer(b), _) => {
                 Ok(added(chain_key.is_some_and(|k| b.object.add(k, value))))
+            }
+            (HeapObject::TypedArray(a), _) => {
+                Ok(added(chain_key.is_some_and(|k| a.object.add(k, value))))
             }
             _ => Err(Fault::Internal("property base changed kind")),
         })
@@ -1201,6 +1235,33 @@ pub(crate) fn define_field(
 /// (`crate::vm::function::define_target`, clj-quickjs-125); the other heap
 /// kinds have no properties and are
 /// not extensible (TypeError).
+pub(crate) fn typed_array_descriptor(
+    heap: &Heap,
+    task: TaskId,
+    target: ObjectId,
+    key: &Key,
+    desc: &PropertyDescriptor,
+) -> Result<Option<(crate::object::typed_array::View, f64)>, Fault> {
+    let Some(index) = crate::object::typed_array::numeric_key(key) else {
+        return Ok(None);
+    };
+    let Some(view) = crate::object::typed_array::view(heap, task, target)? else {
+        return Ok(None);
+    };
+    if view.get(heap, index)?.is_none()
+        || desc.get.is_some()
+        || desc.set.is_some()
+        || desc.configurable == Some(false)
+        || desc.enumerable == Some(false)
+        || desc.writable == Some(false)
+    {
+        return Err(Fault::TypeError(
+            "invalid typed array element descriptor".into(),
+        ));
+    }
+    Ok(Some((view, index)))
+}
+
 pub(crate) fn define_own_property(
     heap: &Heap,
     task: TaskId,
@@ -1208,6 +1269,12 @@ pub(crate) fn define_own_property(
     key: &Key,
     desc: &PropertyDescriptor,
 ) -> Result<(), Fault> {
+    if let Some((view, index)) = typed_array_descriptor(heap, task, target, key, desc)? {
+        if let Some(value) = &desc.value {
+            view.set(heap, index, value)?;
+        }
+        return Ok(());
+    }
     let target = match is_function(heap, target) {
         true => function::define_target(heap, task, target, key)?,
         false => target,
@@ -1250,6 +1317,10 @@ pub(crate) fn define_own_property(
         HeapObject::ArrayBuffer(b) => {
             check_write(&b.object, task)?;
             named(&mut b.object)
+        }
+        HeapObject::TypedArray(a) => {
+            check_write(&a.object, task)?;
+            named(&mut a.object)
         }
         HeapObject::Array(a) => {
             check_write(a.object(), task)?;
@@ -1341,6 +1412,13 @@ pub(crate) fn get_own_property(
     target: ObjectId,
     key: &Key,
 ) -> Result<Option<Property>, Fault> {
+    if let Some(element) = typed_element(heap, task, target, key)? {
+        return Ok(element.map(|value| Property {
+            value,
+            flags: crate::object::PropertyFlags::DATA,
+            accessor: None,
+        }));
+    }
     if is_function(heap, target)
         && let Some(property) = function::own_metadata(heap, task, target, key)?
     {
@@ -1426,6 +1504,13 @@ pub(crate) fn delete(
 /// embedder-created object is `ForeignObject`; the other heap kinds have
 /// no properties.
 fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<DeleteOutcome, Fault> {
+    if let Some(element) = typed_element(heap, task, id, key)? {
+        return Ok(if element.is_some() {
+            DeleteOutcome::NonConfigurable
+        } else {
+            DeleteOutcome::Absent
+        });
+    }
     let id = match is_function(heap, id) {
         true => match function::delete_target(heap, task, id, key)? {
             function::FunctionDelete::Record(record) => record,
@@ -1479,6 +1564,10 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
         HeapObject::ArrayBuffer(b) => {
             check_write(&b.object, task)?;
             Ok(named(&mut b.object))
+        }
+        HeapObject::TypedArray(a) => {
+            check_write(&a.object, task)?;
+            Ok(named(&mut a.object))
         }
         other => match not_ordinary(other, key, Access::Delete) {
             Some(fault) => Err(fault),

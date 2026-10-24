@@ -390,7 +390,8 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
                 | HeapObject::Atom(_)
                 | HeapObject::Array(_)
                 | HeapObject::JsMap(_)
-                | HeapObject::ArrayBuffer(_) => "object",
+                | HeapObject::ArrayBuffer(_)
+                | HeapObject::TypedArray(_) => "object",
             })
             // A frame keeps its operands alive; a stale id is reported.
             .ok_or(Fault::Internal("typeof operand was reclaimed"))?,
@@ -657,7 +658,8 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
             | Builtin::Error
             | Builtin::NativeError(_)
             | Builtin::ArrayBuffer
-            | Builtin::IntlLocale),
+            | Builtin::IntlLocale
+            | Builtin::IntegerTypedArray(_)),
         )) => {
             if super::native::start_builtin(
                 heap,
@@ -1281,6 +1283,15 @@ pub(crate) fn step(
             let object = state.pop()?;
             let task = state.diag.task;
             if let Instr::PutField(_) = instr {
+                if native::typed_array_write(
+                    heap,
+                    state,
+                    &object,
+                    &property::Key::from_name(&name),
+                    &v,
+                )? {
+                    return Ok(Flow::Next);
+                }
                 let setter = property::prepare_put(
                     heap,
                     task,
@@ -1319,6 +1330,9 @@ pub(crate) fn step(
             let key = state.pop()?;
             let base = state.pop()?;
             let key = property::element_key(&base, &key, true)?;
+            if native::typed_array_write(heap, state, &base, &key, &v)? {
+                return Ok(Flow::Next);
+            }
             let setter =
                 property::prepare_put(heap, state.diag.task, &base, &key, v.clone(), code.strict)?;
             super::native::write_result(state, setter, base, v)?;

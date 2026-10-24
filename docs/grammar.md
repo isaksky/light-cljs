@@ -3230,7 +3230,8 @@ a fresh buffer without detaching, with negative indices relative to its length.
 Object indices convert left to right through resumable native frames.
 
 Explicit gaps: custom slice constructors/species fail explicitly; resizable
-buffers, typed-array views, SharedArrayBuffer and subclassing remain deferred.
+buffers, SharedArrayBuffer and subclassing remain deferred. Integer typed-array
+views are supported below.
 Publication through atoms or dependency cells rejects buffers, including detached
 ones. Foreign tasks cannot read or mutate their state.
 
@@ -3334,3 +3335,35 @@ Powers reject sizes beyond the 1 Mbit cap with RangeError (`BigInt is too
 large`), including oversized intermediate operations later cancelled by zero.
 Explicit gaps: BigInt bitwise/shifts and the conversion APIs remain assigned
 to their sibling pellets; this change adds no new conversions.
+
+## Integer typed arrays (clj-quickjs-166)
+
+Execution: the seven integer constructors `Int8Array`, `Uint8Array`,
+`Uint8ClampedArray`, `Int16Array`, `Uint16Array`, `Int32Array`, `Uint32Array`
+require `new`. A primitive length undergoes ToIndex; buffer construction
+converts byteOffset then optional length resumably, validates alignment and
+bounds, and rejects detached buffers with TypeError. Length allocation is
+zero-filled and bounded by ArrayBuffer's 16 MiB byte limit.
+
+Canonical numeric string keys (including `-0`, negative/fractional indices,
+NaN and infinities) use integer-indexed exotic operations, without prototype
+fallback for invalid indices. Invalid reads are undefined, `in` is false,
+and writes still convert their values before becoming no-ops. Other keys
+remain ordinary properties. Element writes wrap modulo the element width;
+Uint8ClampedArray clamps to 0..255 with ties rounded to even. Conversion
+callbacks, including property-key and descriptor-value conversion, can wait,
+yield, collect and migrate. BigInt and Symbol element values throw TypeError.
+
+The abstract `%TypedArray%` constructor is reached through
+`Object.getPrototypeOf(Uint8Array)`; calling or constructing it throws
+TypeError. Its shared prototype has branded `buffer`, `length`, `byteLength`,
+`byteOffset` getters. Each concrete constructor and prototype exposes fixed
+`BYTES_PER_ELEMENT`. A transfer detaches every old view: elements are
+undefined and the numeric getters are zero, while `buffer` retains identity.
+In-range element descriptors are writable/enumerable/configurable data
+properties, but deletion and attribute restrictions fail. A nonempty view
+cannot be frozen (preventing extensions still succeeds).
+
+Explicit gaps: floating-point and BigInt typed arrays, iterable/array-like/copy
+construction, typed-array methods, resizable buffers and subclass/species
+construction remain deferred. Unsupported object construction fails explicitly.

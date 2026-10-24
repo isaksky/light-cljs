@@ -564,6 +564,10 @@ impl Stringifier {
                 "JSON.stringify nesting limit of 512 exceeded".into(),
             ));
         }
+        let typed_length = crate::object::typed_array::view(heap, task, id)?
+            .map(|v| v.live_length(heap))
+            .transpose()?
+            .unwrap_or(0);
         let len = heap
             .read(id, |o| match o {
                 HeapObject::Array(a) => {
@@ -590,6 +594,18 @@ impl Stringifier {
                         .properties()
                         .take(MAX_OBJECT_PROPERTIES + 1)
                         .count()
+                        > MAX_OBJECT_PROPERTIES =>
+                {
+                    Err(Fault::RangeError(
+                        "JSON.stringify object property limit of 4096 exceeded".into(),
+                    ))
+                }
+                HeapObject::TypedArray(a)
+                    if typed_length
+                        + a.object
+                            .properties()
+                            .take(MAX_OBJECT_PROPERTIES + 1)
+                            .count()
                         > MAX_OBJECT_PROPERTIES =>
                 {
                     Err(Fault::RangeError(

@@ -470,3 +470,34 @@ fn map_properties_and_prototype_are_traced() {
         assert_eq!(weak.upgrade().unwrap_err(), HandleError::Reclaimed);
     }
 }
+
+/// Synthetic source fixture, not light-cljs output. The buffer and ordinary
+/// property/prototype edges are reachable only through the returned view.
+#[test]
+fn typed_array_retains_buffer_and_properties() {
+    use clj_quickjs::frontend::compile_function;
+    let rt = Runtime::new();
+    let property = new_rooted_object(&rt);
+    let prototype = new_rooted_object(&rt);
+    let property_weak = property.downgrade();
+    let prototype_weak = prototype.downgrade();
+    let code = compile_function("function make(p, proto) { let a = new Uint16Array(4); a[0] = 42; a.own = p; Object.setPrototypeOf(a, proto); return a; }").unwrap();
+    let task = rt.spawn(&code, &[&property, &prototype]).unwrap();
+    let array = complete(task.run().unwrap());
+    let array_weak = array.downgrade();
+    drop((task, property, prototype));
+    rt.collect().unwrap();
+    assert!(property_weak.is_live());
+    assert!(prototype_weak.is_live());
+    assert_eq!(rt.heap_usage().objects.array_buffer, 1);
+    assert_eq!(rt.heap_usage().objects.typed_array, 1);
+    assert_eq!(rt.heap_usage().array_buffer_bytes, 8);
+    drop(array);
+    rt.collect().unwrap();
+    assert!(!array_weak.is_live());
+    assert!(!property_weak.is_live());
+    assert!(!prototype_weak.is_live());
+    assert_eq!(rt.heap_usage().objects.array_buffer, 0);
+    assert_eq!(rt.heap_usage().objects.typed_array, 0);
+    assert_eq!(rt.heap_usage().array_buffer_bytes, 0);
+}

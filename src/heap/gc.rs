@@ -929,7 +929,8 @@ mod tests {
             HeapObject::Array(_)
             | HeapObject::BoundFunction(_)
             | HeapObject::JsMap(_)
-            | HeapObject::ArrayBuffer(_) => {
+            | HeapObject::ArrayBuffer(_)
+            | HeapObject::TypedArray(_) => {
                 panic!("not a native object")
             }
         })

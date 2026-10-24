@@ -448,3 +448,18 @@ eight division/remainder/power assertions of
 `research/quickjs/tests/test_bigint.js::test_bigint3`; its full QuickJS
 copyright and MIT permission notice is retained on the test. Other new tests
 are synthetic fixtures, not light-cljs output.
+
+## Integer typed arrays (clj-quickjs-166)
+
+`tests/js_source.rs::integer_typed_array_elements`,
+`typed_array_views_share_buffer` and `typed_array_after_transfer` adapt the
+integer element, buffer-view and detached-read rows in
+`research/quickjs/tests/test_builtin.js::test_typed_array`, replacing deferred
+join/toString checks with individual element assertions. The QuickJS MIT
+copyright/permission notice is retained alongside these fixtures.
+`js_typed_array_constructor`, `typed_array_init`, `JS_ToUint8ClampFree`,
+`js_TA_get_int8` through `js_TA_get_uint32` and the typed-array getters in
+`research/quickjs/quickjs.c` were semantic references; the Rust representation
+and VM integration were written afresh. Reference revision:
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04), license:
+`research/quickjs/LICENSE`. Other fixtures are synthetic, not light-cljs output.

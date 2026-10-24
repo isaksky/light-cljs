@@ -71,6 +71,7 @@ pub(crate) mod array;
 pub(crate) mod map;
 
 pub(crate) mod array_buffer;
+pub(crate) mod typed_array;
 
 use std::collections::HashMap;
 use std::sync::{PoisonError, RwLock};

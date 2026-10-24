@@ -4534,7 +4534,7 @@ The CLI prints a BigInt completion with an `n` suffix.
 `HeapObject::ArrayBuffer` boxes an ordinary task-owned property store, a
 `Vec<u8>` backing store and a detached flag. The bytes contain no heap edges;
 `Trace` visits only the ordinary properties and prototype. An explicit heap
-kind gives future typed-array views one stable `ObjectId` to retain and inspect
+kind gives typed-array views one stable `ObjectId` to retain and inspect
 on every access: a view must observe the buffer's detachment by identity rather
 than keeping a copy or a pointer into its old allocation. Detachment empties and
 releases the byte vector, preserving the buffer identity and its properties.
@@ -4567,7 +4567,8 @@ Object argument coercion runs through traced native conversion frames, allowing
 checks detachment after coercion (which can itself transfer the receiver).
 Slice rejects detachment before and after conversion; ordinary intrinsic slices
 copy bytes without detaching. Custom slice constructors/species fail explicitly;
-subclassing, resizable buffers, typed-array views and SharedArrayBuffer are deferred.
+subclassing, resizable buffers and SharedArrayBuffer are deferred. Integer typed-array
+views are supported below.
 The semantic reference is `research/quickjs/quickjs.c`, revision `7d1c13c5d8f8`,
 `js_array_buffer_constructor`, `js_array_buffer_get_byteLength`,
 `js_array_buffer_get_detached`, `js_array_buffer_transfer` and
@@ -4947,3 +4948,32 @@ is too large`; zero divisors and negative exponents have distinct RangeErrors.
 consuming one instruction each. The existing ToNumeric conversion frames,
 compound lowering, rooting and publication paths remain in use. No dependency,
 heap kind, opcode, JavaScript callback or internal budget poll is added.
+
+## Integer typed-array views (clj-quickjs-166)
+
+`HeapObject::TypedArray` holds an ordinary property store and a `View`:
+element type, ArrayBuffer ObjectId, byte offset, and fixed element length.
+It owns no bytes. `Trace` visits the buffer plus ordinary properties and
+prototype; the GC inventory maps these edges to `typed_array_retains_buffer_and_properties`
+in `tests/gc.rs`. Views are task-owned (including detached and empty views),
+reject foreign-task access and transitive publication, and count separately
+in heap usage; backing capacity is counted once on the ArrayBuffer.
+
+Every element operation rereads the retained buffer's detached state under
+a short heap access. No view caches byte pointers. Reads/writes decode and
+encode little-endian bytes explicitly, on every platform. Unsigned modulo
+2^32 conversion supplies the low bytes for all wrapping integer types;
+Uint8Clamped uses bounded round-to-nearest, ties-to-even. Canonical numeric
+keys intercept ordinary property/prototype paths; noncanonical strings and
+symbols use the ordinary store. Element metadata, enumeration, descriptors,
+delete, prototypes and integrity reflection integrate with existing VM paths.
+
+Concrete constructor/prototype pairs inherit from `%TypedArray%` and its
+shared branded-getter prototype. All intrinsics remain immutable and shared.
+Constructor offset/length coercion and object-valued element/descriptor writes
+run in traced `NativeState::Convert` continuations. Writes retain both the
+receiver and original RHS (assignment result); a callback may detach the
+buffer, wait or erase the caller's binding without retaining a Rust stack or
+losing the only buffer edge. ArrayBuffer's fallible 16 MiB allocation limit
+applies to newly allocated view backing stores. Resizable, floating and
+BigInt views, copy/iterable constructors and typed-array methods are deferred.

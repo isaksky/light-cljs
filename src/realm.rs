@@ -189,11 +189,18 @@ pub(crate) enum Global {
     ArrayBuffer = 22,
 
     Intl = 23,
+    Int8Array = 24,
+    Uint8Array = 25,
+    Uint8ClampedArray = 26,
+    Int16Array = 27,
+    Uint16Array = 28,
+    Int32Array = 29,
+    Uint32Array = 30,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 24] = [
+    const ALL: [Global; 31] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -218,6 +225,13 @@ impl Global {
         Global::Map,
         Global::ArrayBuffer,
         Global::Intl,
+        Global::Int8Array,
+        Global::Uint8Array,
+        Global::Uint8ClampedArray,
+        Global::Int16Array,
+        Global::Uint16Array,
+        Global::Int32Array,
+        Global::Uint32Array,
     ];
 
     /// The JavaScript name.
@@ -251,6 +265,13 @@ impl Global {
             Global::ArrayBuffer => "ArrayBuffer",
 
             Global::Intl => "Intl",
+            Global::Int8Array => "Int8Array",
+            Global::Uint8Array => "Uint8Array",
+            Global::Uint8ClampedArray => "Uint8ClampedArray",
+            Global::Int16Array => "Int16Array",
+            Global::Uint16Array => "Uint16Array",
+            Global::Int32Array => "Int32Array",
+            Global::Uint32Array => "Uint32Array",
         }
     }
 
@@ -328,6 +349,8 @@ pub(crate) struct Intrinsics {
 
     pub(crate) intl: ObjectId,
     pub(crate) intl_locale_prototype: ObjectId,
+    pub(crate) typed_array_prototypes: [ObjectId; 7],
+    typed_array_constructors: [ObjectId; 7],
 }
 
 /// The immutable property view of one intrinsic object.
@@ -393,6 +416,13 @@ impl Intrinsics {
     pub(crate) fn global(&self, global: Global) -> Value {
         match global {
             Global::ArrayBuffer => Value::Object(self.array_buffer),
+            Global::Int8Array => Value::Object(self.typed_array_constructors[0]),
+            Global::Uint8Array => Value::Object(self.typed_array_constructors[1]),
+            Global::Uint8ClampedArray => Value::Object(self.typed_array_constructors[2]),
+            Global::Int16Array => Value::Object(self.typed_array_constructors[3]),
+            Global::Uint16Array => Value::Object(self.typed_array_constructors[4]),
+            Global::Int32Array => Value::Object(self.typed_array_constructors[5]),
+            Global::Uint32Array => Value::Object(self.typed_array_constructors[6]),
             Global::Object => Value::Object(self.object),
             Global::Map => Value::Object(self.map),
             Global::Number => Value::Object(self.number),
@@ -866,6 +896,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     })?
     .then_some(())?;
     let intl_locale_prototype = intl_locale_intrinsics(&mut b, object_prototype, intl)?;
+    let (typed_array_prototypes, typed_array_constructors) =
+        typed_array_intrinsics(&mut b, object_prototype)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -889,6 +921,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         })
         .collect::<Option<Vec<_>>>()?;
     Some(Intrinsics {
+        typed_array_prototypes,
+        typed_array_constructors,
         array_buffer_prototype,
         array_buffer,
         templates: Mutex::new(std::collections::HashMap::new()),
@@ -1264,6 +1298,74 @@ impl Build<'_> {
     }
 }
 
+/// The abstract %TypedArray% and its shared accessor prototype, followed by
+/// one constructor/prototype pair for each integer element type.
+fn typed_array_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+) -> Option<([ObjectId; 7], [ObjectId; 7])> {
+    use crate::object::typed_array::ElementType;
+    let heap = b.heap;
+    let shared = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(shared);
+    let abstract_constructor = b.function(
+        Builtin::TypedArray,
+        &[("prototype", shared, PropertyFlags::FIXED)],
+    )?;
+    b.add(
+        shared,
+        "constructor",
+        abstract_constructor,
+        PropertyFlags::METHOD,
+    )?;
+    for (name, which) in [
+        ("buffer", Builtin::TypedArrayBuffer),
+        ("length", Builtin::TypedArrayLength),
+        ("byteLength", Builtin::TypedArrayByteLength),
+        ("byteOffset", Builtin::TypedArrayByteOffset),
+    ] {
+        let getter = b.function(which, &[])?;
+        let key = heap.keys().intern(&JsString::from(name))?;
+        let desc = PropertyDescriptor {
+            get: Some(Value::Object(getter)),
+            enumerable: Some(false),
+            configurable: Some(true),
+            ..PropertyDescriptor::default()
+        };
+        if heap.with_object_mut(shared, |o| match o {
+            HeapObject::Plain(o) => o.define_own_property(key, &desc),
+            _ => unreachable!(),
+        })? != DefineOutcome::Done
+        {
+            return None;
+        }
+    }
+    let mut prototypes = [shared; 7];
+    let mut constructors = [abstract_constructor; 7];
+    for (index, kind) in ElementType::ALL.into_iter().enumerate() {
+        let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(shared))))?;
+        b.all.push(prototype);
+        let constructor = b.builtin(
+            Some(abstract_constructor),
+            Builtin::IntegerTypedArray(kind),
+            &[("prototype", prototype, PropertyFlags::FIXED)],
+        )?;
+        b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+        for id in [constructor, prototype] {
+            b.add_value(
+                id,
+                "BYTES_PER_ELEMENT",
+                Value::Number(kind.size() as f64),
+                PropertyFlags::FIXED,
+            )?;
+        }
+        prototypes[index] = prototype;
+        constructors[index] = constructor;
+    }
+    Some((prototypes, constructors))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1381,7 +1483,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 124); // Includes ArrayBuffer, Intl and Locale.
+        assert_eq!(first.all.len(), 144); // Includes Locale and integer typed arrays.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -1429,7 +1531,9 @@ mod tests {
 
         assert_eq!(Global::from_name("Intl"), Some(Global::Intl));
         assert_eq!(Global::from_u16(23), Some(Global::Intl));
-        assert_eq!(Global::from_u16(24), None);
+        assert_eq!(Global::from_u16(24), Some(Global::Int8Array));
+        assert_eq!(Global::from_u16(30), Some(Global::Uint32Array));
+        assert_eq!(Global::from_u16(31), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose
@@ -1451,6 +1555,11 @@ mod tests {
                 .any(|&(id, _)| id == view.id)
             {
                 Some(intrinsics.error)
+            } else if intrinsics.typed_array_constructors.contains(&view.id) {
+                intrinsics
+                    .view(intrinsics.typed_array_constructors[0])
+                    .unwrap()
+                    .prototype
             } else if builtin {
                 Some(fp)
             } else {

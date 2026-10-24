@@ -104,6 +104,9 @@ pub(crate) fn get_prototype_of(
             HeapObject::ArrayBuffer(b) => {
                 readable(&b.object, task).map(|()| Some(b.object.prototype()))
             }
+            HeapObject::TypedArray(a) => {
+                readable(&a.object, task).map(|()| Some(a.object.prototype()))
+            }
             HeapObject::Array(a) => {
                 readable(a.object(), task).map(|()| Some(a.object().prototype()))
             }
@@ -155,6 +158,7 @@ pub(crate) fn set_prototype_of(
         HeapObject::JsMap(m) => writable(m.object()),
 
         HeapObject::ArrayBuffer(b) => writable(&b.object),
+        HeapObject::TypedArray(a) => writable(&a.object),
         HeapObject::Array(a) => writable(a.object()),
         HeapObject::Builtin(_) => immutable(),
         // A function's prototype lives in its property record, which
@@ -185,6 +189,10 @@ pub(crate) fn set_prototype_of(
         }
         HeapObject::ArrayBuffer(b) => {
             b.object.set_prototype(proto);
+            Ok(())
+        }
+        HeapObject::TypedArray(a) => {
+            a.object.set_prototype(proto);
             Ok(())
         }
         _ => Err(Fault::Internal("prototype target changed kind")),
@@ -220,6 +228,9 @@ fn check_chain(
 
                 HeapObject::ArrayBuffer(b) => {
                     readable(&b.object, task).map(|()| b.object.prototype())
+                }
+                HeapObject::TypedArray(a) => {
+                    readable(&a.object, task).map(|()| a.object.prototype())
                 }
                 HeapObject::Array(a) => readable(a.object(), task).map(|()| a.object().prototype()),
                 // A fixed prototype that cannot lead back (module docs).

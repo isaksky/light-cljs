@@ -313,6 +313,11 @@ enum Hint {
 /// What to finish after OrdinaryToPrimitive has converted its operands.
 #[derive(Clone, Copy, Debug)]
 enum ConvertTarget {
+    TypedArray {
+        kind: crate::object::typed_array::ElementType,
+        from_buffer: bool,
+    },
+    TypedArrayWrite,
     ArrayBuffer(builtin::Builtin),
     SymbolDescription,
     SymbolRegistryKey,
@@ -742,6 +747,47 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
     }
 }
 
+/// Start observable value coercion for an integer-indexed write. Keep both
+/// the original RHS (the assignment result) and the receiver traced.
+pub(crate) fn typed_array_write(
+    heap: &Heap,
+    state: &mut VmState,
+    base: &Value,
+    key: &property::Key,
+    value: &Value,
+) -> Result<bool, Fault> {
+    if !matches!(value, Value::Object(_)) {
+        return Ok(false);
+    }
+    let Value::Object(id) = base else {
+        return Ok(false);
+    };
+    let Some(index) = crate::object::typed_array::numeric_key(key) else {
+        return Ok(false);
+    };
+    if crate::object::typed_array::view(heap, state.diag.task, *id)?.is_none() {
+        return Ok(false);
+    }
+    push_native(
+        state,
+        NativeState::Convert {
+            target: ConvertTarget::TypedArrayWrite,
+            operands: vec![
+                base.clone(),
+                value.clone(),
+                Value::Number(index),
+                value.clone(),
+            ],
+            next: 3,
+            end: 4,
+            hint: Hint::Number,
+            method: 0,
+            method_get: false,
+        },
+    )?;
+    Ok(true)
+}
+
 /// The top `N` operands of the running frame, oldest first, not popped.
 fn operands<const N: usize>(state: &VmState) -> Result<[Value; N], Fault> {
     let ops = state.operands();
@@ -967,6 +1013,31 @@ pub(crate) fn start_builtin(
         return Ok(true);
     }
     let (target, operands, hint) = match which {
+        Builtin::IntegerTypedArray(kind) if construct => {
+            let first = args.first().cloned().unwrap_or(Value::Undefined);
+            let from_buffer = crate::object::typed_array::is_buffer(heap, &first);
+            if from_buffer {
+                crate::object::array_buffer::receiver(heap, state.diag.task, &first)?;
+            }
+            if matches!(first, Value::Object(_)) && !from_buffer {
+                return Err(Fault::Unsupported(
+                    "typed array iterable, array-like and copy construction is not supported"
+                        .into(),
+                ));
+            }
+            let mut operands = vec![first];
+            if from_buffer {
+                operands.push(args.get(1).cloned().unwrap_or(Value::Undefined));
+                if let Some(length) = args.get(2).filter(|v| !matches!(v, Value::Undefined)) {
+                    operands.push(length.clone());
+                }
+            }
+            (
+                ConvertTarget::TypedArray { kind, from_buffer },
+                operands,
+                Hint::Number,
+            )
+        }
         Builtin::ArrayBuffer if construct => (
             ConvertTarget::ArrayBuffer(which),
             vec![
@@ -1237,7 +1308,13 @@ pub(crate) fn start_builtin(
             "maximum native call depth of {limit} frames exceeded"
         )));
     }
-    let (first, end) = if matches!(target, ConvertTarget::ArrayBuffer(which) if which != Builtin::ArrayBuffer)
+    let (first, end) = if matches!(
+        target,
+        ConvertTarget::TypedArray {
+            from_buffer: true,
+            ..
+        }
+    ) || matches!(target, ConvertTarget::ArrayBuffer(which) if which != Builtin::ArrayBuffer)
     {
         (1, operands.len())
     } else if matches!(target, ConvertTarget::ArrayBuffer(Builtin::ArrayBuffer)) {
@@ -1962,6 +2039,22 @@ impl NativeState {
                         args: vec![],
                     }),
                     descriptor::DefineStep::Done(v) => Ok(Action::Return(v)),
+                    descriptor::DefineStep::TypedArrayValue {
+                        target,
+                        index,
+                        value,
+                    } => {
+                        *self = NativeState::Convert {
+                            target: ConvertTarget::TypedArrayWrite,
+                            operands: vec![target.clone(), target, Value::Number(index), value],
+                            next: 3,
+                            end: 4,
+                            hint: Hint::Number,
+                            method: 0,
+                            method_get: false,
+                        };
+                        Ok(Action::Continue)
+                    }
                 }
             }
             NativeState::PropertyCall {
@@ -2071,6 +2164,18 @@ impl NativeState {
                 while *next < *end {
                     let receiver = &operands[*next];
                     if !matches!(receiver, Value::Object(_)) {
+                        if let ConvertTarget::TypedArray { kind, from_buffer } = target {
+                            let number =
+                                Value::Number(crate::object::typed_array::to_number(receiver)?);
+                            if *from_buffer && *next == 1 {
+                                crate::object::typed_array::validate_offset(*kind, &number)?;
+                            } else {
+                                crate::object::typed_array::to_index(&number)?;
+                            }
+                            operands[*next] = number;
+                            *next += 1;
+                            continue;
+                        }
                         if let ConvertTarget::ArrayBuffer(which) = target {
                             let number = Value::Number(dispatch::to_number(receiver)?);
                             // Validate ToIndex now, before any later conversion.
@@ -2285,6 +2390,28 @@ impl NativeState {
                         instr,
                         operands: operands.clone(),
                     }),
+                    ConvertTarget::TypedArray { kind, from_buffer } => {
+                        crate::object::typed_array::constructor(
+                            heap,
+                            task,
+                            kind,
+                            operands,
+                            from_buffer,
+                        )
+                        .map(Action::Return)
+                    }
+                    ConvertTarget::TypedArrayWrite => {
+                        let Value::Object(id) = operands[0] else {
+                            return Err(Fault::Internal("typed array write receiver"));
+                        };
+                        let Value::Number(index) = operands[2] else {
+                            return Err(Fault::Internal("typed array write key"));
+                        };
+                        let view = crate::object::typed_array::view(heap, task, id)?
+                            .ok_or(Fault::Internal("typed array write kind"))?;
+                        view.set(heap, index, &operands[3])?;
+                        Ok(Action::Return(operands[1].clone()))
+                    }
                     ConvertTarget::ArrayBuffer(which) => {
                         use crate::object::array_buffer as buffer;
                         let undefined = Value::Undefined;

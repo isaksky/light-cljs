@@ -262,6 +262,7 @@ pub(crate) fn object_name(object: &HeapObject) -> &'static str {
         HeapObject::JsMap(_) => "Map",
 
         HeapObject::ArrayBuffer(_) => "ArrayBuffer",
+        HeapObject::TypedArray(_) => "typed array",
     }
 }
 

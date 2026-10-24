@@ -211,9 +211,14 @@ pub(crate) fn own_property_keys(
     let Some(store) = key_store(heap, target)? else {
         return Ok(Vec::new());
     };
-    let raw = heap
+    let mut raw = heap
         .read(store, |object| collect(object, task))
         .unwrap_or(Err(Fault::Internal("key enumeration target was reclaimed")))?;
+    if let Some(view) = crate::object::typed_array::view(heap, task, store)? {
+        raw.elements = (0..view.live_length(heap)? as u32)
+            .map(|i| (i, true))
+            .collect();
+    }
     Ok(order(heap, raw, filter))
 }
 
@@ -281,6 +286,13 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
             readable(b.object.owner())?;
             Ok(Raw {
                 named: named(&b.object),
+                ..Raw::default()
+            })
+        }
+        HeapObject::TypedArray(a) => {
+            readable(a.object.owner())?;
+            Ok(Raw {
+                named: named(&a.object),
                 ..Raw::default()
             })
         }

@@ -2768,7 +2768,7 @@ truncation/zero extension and detachment, and ordinary intrinsic `slice(start?,
 end?)`. Numeric object coercions can wait/yield and survive GC and migration.
 Buffers are reclaimed by GC, backing-store capacity is reported in heap usage,
 and publication through atoms is rejected. Deferred: custom slice species,
-resizable buffers, typed-array views and SharedArrayBuffer.
+resizable buffers and SharedArrayBuffer; integer views are supported below.
 Object-valued ArrayBuffer constructor options fail explicitly until resizable
 buffers are supported; primitive options are ignored.
 Slice indices truncate toward zero before relative-index clamping, including
@@ -2885,3 +2885,20 @@ Division processes base-2^32 quotient limbs and handles pi-sized operands;
 each arithmetic operation consumes one instruction. Object conversion remains
 resumable. Validation: `cargo test --test js_source bigint_ -- --test-threads=3`
 and `cargo test --lib value::bigint:: -- --test-threads=3`.
+
+### Integer typed arrays (clj-quickjs-166)
+
+Supported: `Int8Array`, `Uint8Array`, `Uint8ClampedArray`, `Int16Array`,
+`Uint16Array`, `Int32Array` and `Uint32Array`, constructed from a length or
+`(buffer, byteOffset?, length?)`. These task-owned views share ArrayBuffer
+bytes in little-endian order on every platform. Integer-indexed reads,
+writes, `in`, descriptors, deletion and own-key enumeration use element
+semantics; writes perform resumable Number conversion, wrapping or
+round-half-to-even clamping. The shared `%TypedArray%` prototype provides
+`buffer`, `length`, `byteLength` and `byteOffset`; constructors and concrete
+prototypes expose fixed `BYTES_PER_ELEMENT`. Detached views have zero length
+and undefined elements. Allocation uses ArrayBuffer's fallible 16 MiB bound.
+
+Deferred: floating-point and BigInt views, iterable/array-like/copy constructors,
+resizable buffers, species/subclassing, and typed-array methods (`set`, `fill`,
+`join`, etc.). Non-buffer object constructor arguments fail explicitly.

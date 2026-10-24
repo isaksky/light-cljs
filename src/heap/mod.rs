@@ -152,6 +152,7 @@ pub(crate) enum ObjectKind {
     JsMap,
 
     ArrayBuffer,
+    TypedArray,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -221,6 +222,7 @@ pub(crate) enum HeapObject {
     JsMap(Box<crate::object::map::MapObject>),
 
     ArrayBuffer(Box<crate::object::array_buffer::ArrayBuffer>),
+    TypedArray(Box<crate::object::typed_array::TypedArray>),
 }
 
 impl HeapObject {
@@ -247,6 +249,7 @@ impl HeapObject {
             HeapObject::JsMap(_) => ObjectKind::JsMap,
             HeapObject::BoundFunction(_) => ObjectKind::BoundFunction,
             HeapObject::ArrayBuffer(_) => ObjectKind::ArrayBuffer,
+            HeapObject::TypedArray(_) => ObjectKind::TypedArray,
         }
     }
 }
@@ -268,6 +271,7 @@ impl Trace for HeapObject {
             HeapObject::JsMap(m) => m.trace(visit),
             HeapObject::BoundFunction(f) => f.trace(visit),
             HeapObject::ArrayBuffer(b) => b.trace(visit),
+            HeapObject::TypedArray(a) => a.trace(visit),
         }
     }
 }

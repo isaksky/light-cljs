@@ -90,11 +90,12 @@ enum Holder {
 
     /// Ordinary properties and prototype links of ArrayBuffer objects.
     ArrayBufferProperty,
+    TypedArrayEdges,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 30] = [
+const HOLDERS: [Holder; 31] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -125,6 +126,7 @@ const HOLDERS: [Holder; 30] = [
     Holder::EngineErrorCause,
     Holder::JsMapEntries,
     Holder::ArrayBufferProperty,
+    Holder::TypedArrayEdges,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -140,7 +142,7 @@ const CATEGORIES: [RootCategory; 6] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 14] = [
+const KINDS: [ObjectKind; 15] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -155,6 +157,7 @@ const KINDS: [ObjectKind; 14] = [
     ObjectKind::BoundFunction,
     ObjectKind::JsMap,
     ObjectKind::ArrayBuffer,
+    ObjectKind::TypedArray,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -190,6 +193,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             ArrayElement,
             TaskGlobalObject,
             ArrayBufferProperty,
+            TypedArrayEdges,
         ],
         RootCategory::ExecutableConstant => &[ExecutableConstant],
         RootCategory::DependencyOutcome => &[DependencyOutcome],
@@ -227,6 +231,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::JsMap => &[JsMapEntries],
 
         ObjectKind::ArrayBuffer => &[ArrayBufferProperty],
+        ObjectKind::TypedArray => &[TypedArrayEdges],
     }
 }
 
@@ -254,6 +259,10 @@ fn coverage(holder: Holder) -> Coverage {
         reclaims: (GcRoots, reclaims),
     };
     match holder {
+        Holder::TypedArrayEdges => Coverage {
+            retains: (Gc, "typed_array_retains_buffer_and_properties"),
+            reclaims: (Gc, "typed_array_retains_buffer_and_properties"),
+        },
         Holder::ArrayBufferProperty => public(
             "array_buffer_properties_retained_and_reclaimed",
             "array_buffer_properties_retained_and_reclaimed",
@@ -668,7 +677,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         intrinsics.trace(&mut |id| ids.push(id));
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 124); // Includes ArrayBuffer, Intl and Locale.
+    assert_eq!(ids.len(), 144); // Includes integer typed arrays and their shared intrinsics.
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();
