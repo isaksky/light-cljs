@@ -844,6 +844,7 @@ fn realm_intrinsics_retain() {
         "String.prototype.concat",
         "String.prototype.padStart",
         "String.prototype.padEnd",
+        "String.prototype.split",
         "isNaN",
         "isFinite",
         "Number.isNaN",
@@ -893,8 +894,9 @@ fn realm_intrinsics_retain() {
     // six number predicates, clj-quickjs-147, two parsing functions,
     // clj-quickjs-148, Math with six numeric methods, clj-quickjs-152,
     // the two __proto__ accessors, clj-quickjs-261, Array.prototype.join,
-    // clj-quickjs-156, and Error and its prototype/toString, clj-quickjs-228.
-    assert_eq!(rt.heap_usage().objects.builtin, 61);
+    // clj-quickjs-156, Error and its prototype/toString, clj-quickjs-228,
+    // and String.prototype.split, clj-quickjs-157.
+    assert_eq!(rt.heap_usage().objects.builtin, 62);
     assert_eq!(rt.heap_usage().objects.plain, 7);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
