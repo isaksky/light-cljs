@@ -841,9 +841,12 @@ Supported:
   `VmErrorKind::Thrown` ("uncaught exception: 42") at the throw, with its
   source position and call chain, also after leaving through finally
   blocks.
-- Adapted QuickJS `test_try_catch1`–`7` run from source (`5` since
-  clj-quickjs-79)
-  (`tests/fixtures/js/quickjs_try_catch.js`, with its license notice).
+- Adapted QuickJS `test_try_catch1`–`8` run from source with their
+  upstream strings, `for(;;)` and `assert()` calls (clj-quickjs-227; `5`
+  since clj-quickjs-79, `8` with a counted `for` for `for`-`in`)
+  (`tests/fixtures/js/quickjs_try_catch.js`, with its license notice and
+  its remaining adaptations: `let` for `var`, `s = s + x` for `s += x`,
+  and an `assert` that throws its message string).
 
 Deferred:
 

@@ -1428,15 +1428,21 @@ and Charlie Gordon) and is listed here with its source path and revision:
   through enclosing functions and threading captures down) and
   `instantiate_hoisted_definitions` (function declarations created on scope
   entry). No code was copied.
-- `tests/fixtures/js/quickjs_try_catch.js` (clj-quickjs-11):
-  `test_try_catch1`–`test_try_catch4`, `test_try_catch6` and
-  `test_try_catch7` of `research/quickjs/tests/test_loop.js`, revision
-  7d1c13c5d8f8, as JavaScript source compiled by this frontend. Modified:
-  `let` for `var`; logged letters are digits appended to a number and the
-  thrown strings are those digits (no string values); failure flags instead
-  of `assert()` calls. `test_try_catch8` (`for`-`in`, object literals) is
-  omitted. `test_try_catch5` was added with clj-quickjs-79 (`while (true)`
-  for `for(;;)`). The file carries the full notice.
+- `tests/fixtures/js/quickjs_try_catch.js` (clj-quickjs-11, re-adapted
+  with upstream strings in clj-quickjs-227): the `assert` function and
+  `test_try_catch1`–`test_try_catch8` of
+  `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8, called once
+  each in upstream order, as JavaScript source compiled by this frontend;
+  the script completes with `"ok"`. The string literals, thrown strings,
+  `for(;;)` and `assert(actual, expected, message)` calls are upstream's.
+  Modified: `let` for `var` (until clj-quickjs-94); `s = s + x` for
+  `s += x` (until clj-quickjs-84); `assert` tests `expected === undefined`
+  instead of `arguments.length == 1` (until clj-quickjs-97), throws its
+  message string instead of `Error(...)` (until clj-quickjs-228) and drops
+  the unreached object/`toString()` comparison (until clj-quickjs-69 and
+  clj-quickjs-70); `test_try_catch8` iterates `"x"`, `"y"` with a counted
+  `for` instead of `for (var i in {x:1, y:2})` (until clj-quickjs-85,
+  clj-quickjs-89 and clj-quickjs-114). The file carries the full notice.
 - `tests/exceptions.rs` `break_and_continue_run_finally_blocks`
   (clj-quickjs-79): the body of `test_try_catch5` in
   `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8. Modified:

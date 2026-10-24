@@ -1,14 +1,18 @@
-// Adapted from research/quickjs/tests/test_loop.js (test_try_catch1,
-// test_try_catch2, test_try_catch3, test_try_catch4, test_try_catch5,
-// test_try_catch6 and test_try_catch7), QuickJS revision 7d1c13c5d8f8
-// (VERSION 2026-06-04). Modifications: rewritten for the documented subset
-// (`let` instead of `var`, `while (true)` instead of `for(;;)`; strings are
-// not values yet, so each logged letter is a digit appended with
-// `s = s * 10 + d`: "t" = 1, "c" = 2, "f" = 3, "a" = 4, "g" = 5, "b" = 6,
-// and the thrown strings are those digits); no assert() function: a failing
-// check records its number in `failed`, and the script completes with
-// `failed`, so 0 means every check passed. test_try_catch8 (`for`-`in`,
-// object literals) is omitted.
+// Adapted from research/quickjs/tests/test_loop.js (the assert function and
+// test_try_catch1 through test_try_catch8, called once each in upstream
+// order), QuickJS revision 7d1c13c5d8f8 (VERSION 2026-06-04). Modifications,
+// each for a form the documented subset lacks yet:
+// - `let` instead of `var` (until clj-quickjs-94);
+// - `s = s + x` instead of `s += x` (until clj-quickjs-84);
+// - assert() tests `expected === undefined` instead of
+//   `arguments.length == 1` (until clj-quickjs-97), throws its message
+//   string instead of `Error(...)` (until clj-quickjs-228), and drops the
+//   `typeof ... == 'object'` / `toString()` comparison, which no case here
+//   reaches (until clj-quickjs-69 and clj-quickjs-70);
+// - test_try_catch8 iterates "x" and "y" with a counted `for` instead of
+//   `for (var i in {x:1, y:2})` (until clj-quickjs-85, clj-quickjs-89 and
+//   clj-quickjs-114);
+// - the script completes with "ok" after the last case.
 //
 // QuickJS Javascript Engine
 //
@@ -33,105 +37,146 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-let failed = 0;
+function assert(actual, expected, message) {
+    if (expected === undefined)
+        expected = true;
 
-// test_try_catch1
-function test_try_catch1() {
-  try {
-    throw 7;
-  } catch (e) {
-    if (e !== 7) { failed = failed || 1; }
-    return;
-  }
-  failed = failed || 2;
+    if (actual === expected)
+        return;
+
+    throw "assertion failed: got |" + actual + "|" +
+          ", expected |" + expected + "|" +
+          (message ? " (" + message + ")" : "");
 }
+
+function test_try_catch1()
+{
+    try {
+        throw "hello";
+    } catch (e) {
+        assert(e, "hello", "catch");
+        return;
+    }
+    assert(false, "catch");
+}
+
+function test_try_catch2()
+{
+    let a;
+    try {
+        a = 1;
+    } catch (e) {
+        a = 2;
+    }
+    assert(a, 1, "catch");
+}
+
+function test_try_catch3()
+{
+    let s;
+    s = "";
+    try {
+        s = s + "t";
+    } catch (e) {
+        s = s + "c";
+    } finally {
+        s = s + "f";
+    }
+    assert(s, "tf", "catch");
+}
+
+function test_try_catch4()
+{
+    let s;
+    s = "";
+    try {
+        s = s + "t";
+        throw "c";
+    } catch (e) {
+        s = s + e;
+    } finally {
+        s = s + "f";
+    }
+    assert(s, "tcf", "catch");
+}
+
+function test_try_catch5()
+{
+    let s;
+    s = "";
+    for(;;) {
+        try {
+            s = s + "t";
+            break;
+            s = s + "b";
+        } finally {
+            s = s + "f";
+        }
+    }
+    assert(s, "tf", "catch");
+}
+
+function test_try_catch6()
+{
+    function f() {
+        try {
+            s = s + 't';
+            return 1;
+        } finally {
+            s = s + "f";
+        }
+    }
+    let s = "";
+    assert(f() === 1);
+    assert(s, "tf", "catch6");
+}
+
+function test_try_catch7()
+{
+    let s;
+    s = "";
+
+    try {
+        try {
+            s = s + "t";
+            throw "a";
+        } finally {
+            s = s + "f";
+        }
+    } catch(e) {
+        s = s + e;
+    } finally {
+        s = s + "g";
+    }
+    assert(s, "tfag", "catch");
+}
+
+function test_try_catch8()
+{
+    let s;
+
+    s = "";
+    for (let n = 0; n < 2; n++) {
+        let i = n === 0 ? "x" : "y";
+        try {
+            s = s + i;
+            throw "a";
+        } catch (e) {
+            s = s + e;
+        } finally {
+            s = s + "f";
+        }
+    }
+    assert(s === "xafyaf");
+}
+
 test_try_catch1();
-
-// test_try_catch2
-{
-  let a;
-  try {
-    a = 1;
-  } catch (e) {
-    a = 2;
-  }
-  if (a !== 1) { failed = failed || 3; }
-}
-
-// test_try_catch3: "tf"
-{
-  let s = 0;
-  try {
-    s = s * 10 + 1;
-  } catch (e) {
-    s = s * 10 + 2;
-  } finally {
-    s = s * 10 + 3;
-  }
-  if (s !== 13) { failed = failed || 4; }
-}
-
-// test_try_catch4: "tcf"
-{
-  let s = 0;
-  try {
-    s = s * 10 + 1;
-    throw 2;
-  } catch (e) {
-    s = s * 10 + e;
-  } finally {
-    s = s * 10 + 3;
-  }
-  if (s !== 123) { failed = failed || 5; }
-}
-
-// test_try_catch6: "tf", and f() returns 1 through the finally block
-function test_try_catch6() {
-  function f() {
-    try {
-      s = s * 10 + 1;
-      return 1;
-    } finally {
-      s = s * 10 + 3;
-    }
-  }
-  let s = 0;
-  if (!(f() === 1)) { failed = failed || 6; }
-  if (s !== 13) { failed = failed || 7; }
-}
+test_try_catch2();
+test_try_catch3();
+test_try_catch4();
+test_try_catch5();
 test_try_catch6();
+test_try_catch7();
+test_try_catch8();
 
-// test_try_catch5: "tf" (`while (true)` for `for(;;)`; "b" = 6)
-{
-  let s = 0;
-  while (true) {
-    try {
-      s = s * 10 + 1;
-      break;
-      s = s * 10 + 6;
-    } finally {
-      s = s * 10 + 3;
-    }
-  }
-  if (s !== 13) { failed = failed || 9; }
-}
-
-// test_try_catch7: "tfag"
-{
-  let s = 0;
-  try {
-    try {
-      s = s * 10 + 1;
-      throw 4;
-    } finally {
-      s = s * 10 + 3;
-    }
-  } catch (e) {
-    s = s * 10 + e;
-  } finally {
-    s = s * 10 + 5;
-  }
-  if (s !== 1345) { failed = failed || 8; }
-}
-
-failed
+"ok"

@@ -1045,8 +1045,12 @@ for the case block; "duplicate default"). `test_switch1` and
 `test_switch2` of `research/quickjs/tests/test_loop.js` are adapted in
 `tests/js_source.rs` `switch_statements` with the notice.
 `test_try_catch5` of `research/quickjs/tests/test_loop.js` is adapted in
-`tests/exceptions.rs` `break_and_continue_run_finally_blocks` and in
-`tests/fixtures/js/quickjs_try_catch.js`, each with the notice. The tests
+`tests/exceptions.rs` `break_and_continue_run_finally_blocks`, and
+`test_try_catch1`–`test_try_catch8` with their upstream strings and
+`assert` calls in `tests/fixtures/js/quickjs_try_catch.js` (clj-quickjs-227;
+`let` for `var`, `s = s + x` for `s += x`, an `assert` that throws its
+message string, and a counted `for` for the `for`-`in` of
+`test_try_catch8`), each with the notice. The tests
 in `src/frontend/tests.rs` are written for this project and are not adapted
 from QuickJS, except the hashbang line of `research/quickjs/tests/test_std.js`
 in `hashbang_comment_only_at_start`, which carries its notice, the name

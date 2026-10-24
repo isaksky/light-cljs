@@ -81,10 +81,34 @@ fn failure_at(e: &VmError) -> (VmErrorKind, String, u32, u32) {
     (e.kind(), e.message().to_string(), at.line, at.column)
 }
 
+const QUICKJS_TRY_CATCH: &str = include_str!("fixtures/js/quickjs_try_catch.js");
+
 #[test]
 fn quickjs_try_catch_cases_pass() {
-    let src = include_str!("fixtures/js/quickjs_try_catch.js");
-    assert_eq!(num(src), 0.0, "the number of the first failed check");
+    // Every case's assert() returned, so the script reached its last line.
+    match run(QUICKJS_TRY_CATCH).0 {
+        RunOutcome::Complete(v) => {
+            assert_eq!(v.view(), ValueView::String);
+            assert_eq!(v.string().expect("a string value").to_string(), "ok");
+        }
+        other => panic!("expected Complete(\"ok\"), got {other:?}"),
+    }
+}
+
+#[test]
+fn quickjs_try_catch_fixture_detects_a_wrong_result() {
+    // The same fixture expecting a wrong string fails at its assert(), so
+    // the helper is not vacuous.
+    assert_eq!(QUICKJS_TRY_CATCH.matches(r#""tfag""#).count(), 1);
+    let src = QUICKJS_TRY_CATCH.replace(r#""tfag""#, r#""tfgx""#);
+    let (e, _) = failure(&src);
+    assert_eq!(e.kind(), VmErrorKind::Thrown, "{e}");
+    assert!(
+        e.message()
+            .contains("assertion failed: got |tfag|, expected |tfgx| (catch)"),
+        "{}",
+        e.message()
+    );
 }
 
 #[test]
