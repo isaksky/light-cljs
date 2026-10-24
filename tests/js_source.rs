@@ -250,6 +250,146 @@ fn bigint_primitive_key_enumeration() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn array_buffer_basics() {
+    for src in [
+        "new ArrayBuffer(16).byteLength === 16 && new ArrayBuffer(0).byteLength === 0",
+        "let b = new ArrayBuffer(4); b.detached === false && b instanceof ArrayBuffer && Object.getPrototypeOf(b) === ArrayBuffer.prototype",
+        "new ArrayBuffer().byteLength === 0 && new ArrayBuffer(3.9).byteLength === 3 && new ArrayBuffer(-0.9).byteLength === 0",
+        "new ArrayBuffer('4').byteLength === 4 && new ArrayBuffer(NaN).byteLength === 0",
+        "new ArrayBuffer(null).byteLength === 0 && new ArrayBuffer(true).byteLength === 1 && new ArrayBuffer(-0).byteLength === 0",
+        "let b = new ArrayBuffer(3); Object.freeze(b); Object.isFrozen(b) && b.transfer().byteLength === 3 && b.detached",
+        "Object.prototype.toString.call(new ArrayBuffer(2)) === '[object ArrayBuffer]'",
+        "let b = new ArrayBuffer(4); b.x = 42; b.x === 42 && Object.keys(b)[0] === 'x'",
+        "let d = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength'); typeof d.get === 'function' && d.set === undefined && !d.enumerable && d.configurable",
+        "let n = 0; new ArrayBuffer({valueOf() { n++; return 5; }}).byteLength === 5 && n === 1",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for (src, kind) in [
+        ("new ArrayBuffer(-1)", "RangeError"),
+        ("new ArrayBuffer(Infinity)", "RangeError"),
+        ("new ArrayBuffer(9007199254740992)", "RangeError"),
+        ("new ArrayBuffer(16777217)", "RangeError"),
+        ("ArrayBuffer(8)", "TypeError"),
+        ("new ArrayBuffer(Symbol())", "TypeError"),
+        ("ArrayBuffer.prototype.byteLength", "TypeError"),
+    ] {
+        let expected = if kind == "RangeError" {
+            VmErrorKind::RangeError
+        } else {
+            VmErrorKind::TypeError
+        };
+        assert_eq!(failure(src).kind(), expected, "{src}");
+        let caught = format!("let ok = false; try {{ {src}; }} catch (e) {{ ok = true; }} ok");
+        assert_eq!(eval(&caught), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn array_buffer_transfer_detaches() {
+    for src in [
+        "let b = new ArrayBuffer(16); let c = b.transfer(); b.byteLength === 0 && b.detached === true && c.byteLength === 16 && c !== b && !c.detached",
+        "new ArrayBuffer(4).transfer(8).byteLength === 8 && new ArrayBuffer(4).transfer(2).byteLength === 2",
+        "let b = new ArrayBuffer(0); let c = b.transfer(); b.detached && !c.detached && c.byteLength === 0",
+        "let b = new ArrayBuffer(2); b.transfer(); let ok = false; try { b.transfer(); } catch (e) { ok = true; } ok",
+        "let b = new ArrayBuffer(2); try { b.transfer(-1); } catch (e) {} !b.detached && b.byteLength === 2",
+        "let b = new ArrayBuffer(2); let c = b.transfer({valueOf() { return 8; }}); b.detached && c.byteLength === 8",
+        "let b = new ArrayBuffer(2); b.x = 7; b.transfer(undefined).byteLength === 2 && b.x === 7",
+        "let b = new ArrayBuffer(2); b.transfer({valueOf() { return undefined; }}).byteLength === 0 && b.detached",
+        "let b = new ArrayBuffer(2); let caught = false; try { b.transfer({valueOf() { b.transfer(); return 4; }}); } catch (e) { caught = true; } caught && b.detached",
+        "let b = new ArrayBuffer(2); let caught = false; try { b.transfer({valueOf() { throw 42; }}); } catch (e) { caught = e === 42; } caught && !b.detached && b.byteLength === 2",
+        "let n = 0; let caught = false; try { ArrayBuffer.prototype.transfer.call({}, {valueOf() { n++; return 4; }}); } catch (e) { caught = true; } caught && n === 0",
+        "let b = new ArrayBuffer(2); let c = b.slice(1); b.byteLength === 2 && !b.detached && c.byteLength === 1 && c !== b",
+        "new ArrayBuffer(8).slice(-3, -1).byteLength === 2 && new ArrayBuffer(8).slice(6, 2).byteLength === 0",
+        "new ArrayBuffer(8).slice(-Infinity, Infinity).byteLength === 8 && new ArrayBuffer(8).slice(Infinity).byteLength === 0",
+        "let b = new ArrayBuffer(8); b.slice(0, {valueOf() { return undefined; }}).byteLength === 0 && b.slice(0, undefined).byteLength === 8",
+        "let b = new ArrayBuffer(8); let caught = false; try { b.slice({valueOf() { b.transfer(); return 1; }}); } catch (e) { caught = true; } caught && b.detached",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(
+        failure("let b = new ArrayBuffer(2); b.transfer(); b.transfer()").kind(),
+        VmErrorKind::TypeError
+    );
+}
+
+#[test]
+fn array_buffer_coercion_survives_waits_gc_and_migration() {
+    for source in [
+        "new ArrayBuffer({valueOf() { __rt.need(165, 1); return 4; }}).byteLength === 4",
+        "let b = new ArrayBuffer(2); let c = b.transfer({valueOf() { __rt.need(165, 1); return 4; }}); b.detached && c.byteLength === 4",
+        "let b = new ArrayBuffer(2); let c = b.transfer({valueOf() { b = null; __rt.need(165, 1); return 4; }}); b === null && c.byteLength === 4",
+        "let b = new ArrayBuffer(8); b.slice({valueOf() { __rt.need(165, 1); return 2; }}, 4).byteLength === 2 && !b.detached",
+    ] {
+        let rt = Runtime::new();
+        let mut task = rt.spawn(&exe(source), &[]).unwrap();
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..1000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert_eq!(waits, 1);
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(complete, "instruction bound exceeded: {source}");
+        assert_eq!(waits, 1);
+    }
+}
+
+#[test]
+fn array_buffer_publication_rejected() {
+    let rt = Runtime::new();
+    let task = rt.spawn(&exe("new ArrayBuffer(8)"), &[]).unwrap();
+    let RunOutcome::Complete(buffer) = task.run().unwrap() else {
+        panic!("expected buffer")
+    };
+    assert!(matches!(
+        rt.publish(&buffer),
+        Err(clj_quickjs::PublishError::NotShareable { .. })
+    ));
+    assert!(rt.new_atom(&buffer).is_err());
+    for source in [
+        "function f(b) { return b.byteLength; }",
+        "function f(b) { return ArrayBuffer.prototype.transfer.call(b); }",
+    ] {
+        let foreign = rt
+            .spawn(&compile_function(source).unwrap(), &[&buffer])
+            .unwrap();
+        assert!(matches!(foreign.run().unwrap(), RunOutcome::Failed(e)
+            if matches!(e.kind(), VmErrorKind::ForeignObject { .. })));
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. The first two rows adapt
 /// QuickJS tests/test_builtin.js::test_array, revision 7d1c13c5d8f8;
 /// its full copyright and MIT permission notice is retained on array_push.

@@ -277,6 +277,13 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
                 ..Raw::default()
             })
         }
+        HeapObject::ArrayBuffer(b) => {
+            readable(b.object.owner())?;
+            Ok(Raw {
+                named: named(&b.object),
+                ..Raw::default()
+            })
+        }
         HeapObject::Builtin(f) => Ok(Raw {
             named: named(&f.properties),
             ..Raw::default()

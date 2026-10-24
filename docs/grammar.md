@@ -3172,3 +3172,28 @@ UnsupportedOperand naming BigInt; mixing BigInt and Number in arithmetic
 throws TypeError. `JSON.stringify` rejects a BigInt with TypeError. Embedder
 inspection supports exact decimal digits and sign/magnitude independently of
 JavaScript conversion support.
+
+## ArrayBuffer (clj-quickjs-165)
+
+Execution: `new ArrayBuffer(length)` creates distinct, zero-initialized task-owned
+byte storage. Omitted/undefined/NaN lengths become zero; numeric coercion is
+resumable and fractions truncate toward zero. Negative integer lengths,
+infinities, and lengths above 16,777,216 bytes throw `RangeError`, as does byte
+allocation failure. `ArrayBuffer(length)` without `new` throws `TypeError`.
+`ArrayBuffer.prototype.byteLength` and `.detached` are non-enumerable configurable
+getters with no setter. They require a branded buffer; byteLength is zero after
+detachment. Buffers otherwise support ordinary task-owned properties/prototypes.
+
+`buffer.transfer(newLength?)` allocates a distinct buffer, copies the prefix,
+truncates or zero-extends as needed, and detaches the source after successful
+allocation. Omitted/undefined newLength preserves the original length. A detached
+source throws `TypeError`; invalid lengths or throwing coercions leave an
+attached source intact unless the coercion itself detached it. The source keeps
+its ordinary properties. `buffer.slice(start?, end?)` copies a clamped range into
+a fresh buffer without detaching, with negative indices relative to its length.
+Object indices convert left to right through resumable native frames.
+
+Explicit gaps: custom slice constructors/species fail explicitly; resizable
+buffers, typed-array views, SharedArrayBuffer and subclassing remain deferred.
+Publication through atoms or dependency cells rejects buffers, including detached
+ones. Foreign tasks cannot read or mutate their state.

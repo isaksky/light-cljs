@@ -2759,3 +2759,13 @@ clj-quickjs-197–204 and fail explicitly; JSON serialization throws TypeError.
 
 Validation: `cargo test --lib bigint -- --test-threads=3` and
 `cargo test --test js_source bigint -- --test-threads=3`.
+
+### ArrayBuffer (clj-quickjs-165)
+
+Supported: task-owned `new ArrayBuffer(length)` with zero-filled bytes (16 MiB
+maximum), branded `byteLength`/`detached` getters, `transfer(newLength?)` with
+truncation/zero extension and detachment, and ordinary intrinsic `slice(start?,
+end?)`. Numeric object coercions can wait/yield and survive GC and migration.
+Buffers are reclaimed by GC, backing-store capacity is reported in heap usage,
+and publication through atoms is rejected. Deferred: custom slice species,
+resizable buffers, typed-array views and SharedArrayBuffer.

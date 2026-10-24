@@ -40,6 +40,8 @@
 //! | `Array.prototype.push` | built-in function ([`Builtin::ArrayPrototypePush`]) | `length` (1), `name` |
 //! | `Array` (callable and constructible, clj-quickjs-153) | built-in function ([`Builtin::Array`]) | `length` (1), `name`, `prototype` (`Array.prototype`), `isArray` |
 //! | `Array.isArray` | built-in function ([`Builtin::ArrayIsArray`]) | `length` (1), `name` |
+//! | `ArrayBuffer` (clj-quickjs-165) | constructible built-in function | `length` (1), `name`, `prototype`; calling without `new` throws |
+//! | `ArrayBuffer.prototype` | ordinary intrinsic | `constructor`, `byteLength` and `detached` getters, `transfer`, `slice` |
 //! | `Number.prototype`, `String.prototype` (clj-quickjs-73) | ordinary objects, prototype `Object.prototype`; where a property read on a number or string primitive starts ([`Intrinsics::primitive_prototype`]) | `constructor` (`Number` / `String`), `toString`, `valueOf`; `String.prototype` also `length` (0, not writable, enumerable or configurable) |
 //! | `Number.prototype.toString`, `.valueOf`; `String.prototype.toString`, `.valueOf` | built-in functions | `length` (1 for `Number.prototype.toString`, else 0), `name` |
 //! | `Number`, `String` (callable and constructible, clj-quickjs-72) | built-in functions ([`Builtin::Number`], [`Builtin::String`]) | `length` (1), `name`, `prototype` |
@@ -182,11 +184,13 @@ pub(crate) enum Global {
 
     Symbol = 20,
     Map = 21,
+
+    ArrayBuffer = 22,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 22] = [
+    const ALL: [Global; 23] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -209,6 +213,7 @@ impl Global {
         Global::Json,
         Global::Symbol,
         Global::Map,
+        Global::ArrayBuffer,
     ];
 
     /// The JavaScript name.
@@ -238,6 +243,8 @@ impl Global {
 
             Global::Symbol => "Symbol",
             Global::Map => "Map",
+
+            Global::ArrayBuffer => "ArrayBuffer",
         }
     }
 
@@ -309,6 +316,9 @@ pub(crate) struct Intrinsics {
     symbol: ObjectId,
     pub(crate) map_prototype: ObjectId,
     map: ObjectId,
+
+    pub(crate) array_buffer_prototype: ObjectId,
+    array_buffer: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -373,6 +383,7 @@ impl Intrinsics {
     /// The value of a built-in global.
     pub(crate) fn global(&self, global: Global) -> Value {
         match global {
+            Global::ArrayBuffer => Value::Object(self.array_buffer),
             Global::Object => Value::Object(self.object),
             Global::Map => Value::Object(self.map),
             Global::Number => Value::Object(self.number),
@@ -826,6 +837,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     b.add(json, "stringify", stringify, PropertyFlags::METHOD)?;
 
     let (map_prototype, map) = map_intrinsics(&mut b, object_prototype)?;
+
+    let (array_buffer_prototype, array_buffer) = array_buffer_intrinsics(&mut b, object_prototype)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -849,6 +862,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         })
         .collect::<Option<Vec<_>>>()?;
     Some(Intrinsics {
+        array_buffer_prototype,
+        array_buffer,
         templates: Mutex::new(std::collections::HashMap::new()),
         object_prototype,
         object,
@@ -1027,6 +1042,52 @@ fn map_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obje
             _ => false,
         })?
         .then_some(())?;
+
+    Some((prototype, constructor))
+}
+
+/// ArrayBuffer's constructor, ordinary prototype, and branded accessors.
+fn array_buffer_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+) -> Option<(ObjectId, ObjectId)> {
+    let heap = b.heap;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::ArrayBuffer,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    for (name, which) in [
+        ("transfer", Builtin::ArrayBufferTransfer),
+        ("slice", Builtin::ArrayBufferSlice),
+    ] {
+        let function = b.function(which, &[])?;
+        b.add(prototype, name, function, PropertyFlags::METHOD)?;
+    }
+    for (name, which) in [
+        ("byteLength", Builtin::ArrayBufferByteLength),
+        ("detached", Builtin::ArrayBufferDetached),
+    ] {
+        let getter = b.function(which, &[])?;
+        let key = heap.keys().intern(&JsString::from(name))?;
+        let descriptor = PropertyDescriptor {
+            get: Some(Value::Object(getter)),
+            enumerable: Some(false),
+            configurable: Some(true),
+            ..PropertyDescriptor::default()
+        };
+        let outcome = heap.with_object_mut(prototype, |o| match o {
+            HeapObject::Plain(o) => o.define_own_property(key, &descriptor),
+            _ => unreachable!(),
+        })?;
+        if outcome != DefineOutcome::Done {
+            return None;
+        }
+    }
     Some((prototype, constructor))
 }
 
@@ -1233,7 +1294,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 102); // Includes Symbol.for/keyFor and Map.
+        assert_eq!(first.all.len(), 108); // Includes ArrayBuffer's six intrinsics.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -1276,7 +1337,9 @@ mod tests {
         assert_eq!(Global::from_u16(20), Some(Global::Symbol));
         assert_eq!(Global::from_name("Map"), Some(Global::Map));
         assert_eq!(Global::from_u16(21), Some(Global::Map));
-        assert_eq!(Global::from_u16(22), None);
+
+        assert_eq!(Global::from_u16(22), Some(Global::ArrayBuffer));
+        assert_eq!(Global::from_u16(23), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

@@ -13,6 +13,9 @@
 //! outside the heap (executable code, task VM state, dependency cells, the
 //! root table). The measurement harness (`examples/bench`) measures those
 //! with a counting allocator instead; see `docs/measurement.md`.
+//! ArrayBuffer backing-store capacity is reported separately in
+//! `array_buffer_bytes`; its object box/property storage remains excluded
+//! from the shallow fields, as with arrays.
 //!
 //! Taking a snapshot walks every slot under the object lock: O(slots), for
 //! tests and measurement, not for hot paths. It changes nothing.
@@ -51,6 +54,9 @@ pub struct ObjectCounts {
     pub bound_function: usize,
     /// Task-owned JavaScript Map objects.
     pub js_map: usize,
+
+    /// Task-owned ArrayBuffer objects.
+    pub array_buffer: usize,
 }
 
 impl ObjectCounts {
@@ -69,6 +75,7 @@ impl ObjectCounts {
             + self.array
             + self.bound_function
             + self.js_map
+            + self.array_buffer
     }
 
     fn count(&mut self, object: &HeapObject) {
@@ -86,6 +93,8 @@ impl ObjectCounts {
             HeapObject::Builtin(_) => &mut self.builtin,
             HeapObject::Array(_) => &mut self.array,
             HeapObject::JsMap(_) => &mut self.js_map,
+
+            HeapObject::ArrayBuffer(_) => &mut self.array_buffer,
         };
         *n += 1;
     }
@@ -114,6 +123,8 @@ pub struct HeapUsage {
     /// of one heap object. Shallow: excludes the out-of-table bodies listed
     /// in the module docs.
     pub object_bytes: usize,
+    /// Reserved ArrayBuffer backing-store bytes, including capacity beyond length.
+    pub array_buffer_bytes: usize,
 }
 
 impl HeapUsage {
@@ -130,10 +141,14 @@ impl Heap {
         let table = lock(&self.objects);
         let mut objects = ObjectCounts::default();
         let mut known_shareable = 0;
+        let mut array_buffer_bytes = 0;
         for slot in &table.slots {
             if let Some(object) = slot.object.as_deref() {
                 objects.count(object);
                 known_shareable += usize::from(slot.shareable);
+                if let HeapObject::ArrayBuffer(buffer) = object {
+                    array_buffer_bytes += buffer.bytes.capacity();
+                }
             }
         }
         debug_assert_eq!(objects.total(), table.live);
@@ -145,6 +160,7 @@ impl Heap {
             table_bytes: table.slots.capacity() * size_of::<Slot>()
                 + table.free.capacity() * size_of::<u32>(),
             object_bytes: table.live * size_of::<HeapObject>(),
+            array_buffer_bytes,
         }
     }
 }

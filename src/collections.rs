@@ -260,6 +260,8 @@ pub(crate) fn object_name(object: &HeapObject) -> &'static str {
         HeapObject::Builtin(_) => "built-in function",
         HeapObject::Array(_) => "array",
         HeapObject::JsMap(_) => "Map",
+
+        HeapObject::ArrayBuffer(_) => "ArrayBuffer",
     }
 }
 

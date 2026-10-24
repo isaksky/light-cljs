@@ -434,6 +434,8 @@ fn visit<'a>(object: &'a HeapObject, task: TaskId) -> Result<Visit<'a>, Fault> {
     match object {
         HeapObject::Plain(o) => readable(o).map(|()| Visit::Store(o)),
         HeapObject::JsMap(m) => readable(m.object()).map(|()| Visit::Store(m.object())),
+
+        HeapObject::ArrayBuffer(b) => readable(&b.object).map(|()| Visit::Store(&b.object)),
         HeapObject::Array(a) => readable(a.object()).map(|()| Visit::Array(a)),
         HeapObject::Builtin(f) => Ok(Visit::Store(&f.properties)),
         other => Ok(Visit::Other(other)),
@@ -787,6 +789,10 @@ fn store(
             check_write(m.object(), task)?;
             named(m.object_mut())
         }
+        HeapObject::ArrayBuffer(b) => {
+            check_write(&b.object, task)?;
+            named(&mut b.object)
+        }
         HeapObject::Array(a) => {
             check_write(a.object(), task)?;
             match key {
@@ -941,6 +947,10 @@ pub(crate) fn prepare_put(
             (HeapObject::JsMap(m), _) => Ok(added(
                 chain_key.is_some_and(|k| m.object_mut().add(k, value)),
             )),
+
+            (HeapObject::ArrayBuffer(b), _) => {
+                Ok(added(chain_key.is_some_and(|k| b.object.add(k, value))))
+            }
             _ => Err(Fault::Internal("property base changed kind")),
         })
         .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
@@ -1237,6 +1247,10 @@ pub(crate) fn define_own_property(
             check_write(m.object(), task)?;
             named(m.object_mut())
         }
+        HeapObject::ArrayBuffer(b) => {
+            check_write(&b.object, task)?;
+            named(&mut b.object)
+        }
         HeapObject::Array(a) => {
             check_write(a.object(), task)?;
             match key {
@@ -1461,6 +1475,10 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
                 _ if key.is_length() => DeleteOutcome::NonConfigurable,
                 Key::Name(_) | Key::Symbol(_) => named(a.object_mut()),
             })
+        }
+        HeapObject::ArrayBuffer(b) => {
+            check_write(&b.object, task)?;
+            Ok(named(&mut b.object))
         }
         other => match not_ordinary(other, key, Access::Delete) {
             Some(fault) => Err(fault),

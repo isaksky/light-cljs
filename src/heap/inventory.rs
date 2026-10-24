@@ -87,11 +87,14 @@ enum Holder {
     EngineErrorCause,
     /// Live JavaScript Map keys and values, plus its ordinary properties.
     JsMapEntries,
+
+    /// Ordinary properties and prototype links of ArrayBuffer objects.
+    ArrayBufferProperty,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 29] = [
+const HOLDERS: [Holder; 30] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -121,6 +124,7 @@ const HOLDERS: [Holder; 29] = [
     Holder::TemplateCache,
     Holder::EngineErrorCause,
     Holder::JsMapEntries,
+    Holder::ArrayBufferProperty,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -136,7 +140,7 @@ const CATEGORIES: [RootCategory; 6] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 13] = [
+const KINDS: [ObjectKind; 14] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -150,6 +154,7 @@ const KINDS: [ObjectKind; 13] = [
     ObjectKind::Array,
     ObjectKind::BoundFunction,
     ObjectKind::JsMap,
+    ObjectKind::ArrayBuffer,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -184,6 +189,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             ObjectProperty,
             ArrayElement,
             TaskGlobalObject,
+            ArrayBufferProperty,
         ],
         RootCategory::ExecutableConstant => &[ExecutableConstant],
         RootCategory::DependencyOutcome => &[DependencyOutcome],
@@ -219,6 +225,8 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::Array => &[ArrayElement],
         ObjectKind::BoundFunction => &[BoundFunction],
         ObjectKind::JsMap => &[JsMapEntries],
+
+        ObjectKind::ArrayBuffer => &[ArrayBufferProperty],
     }
 }
 
@@ -246,6 +254,10 @@ fn coverage(holder: Holder) -> Coverage {
         reclaims: (GcRoots, reclaims),
     };
     match holder {
+        Holder::ArrayBufferProperty => public(
+            "array_buffer_properties_retained_and_reclaimed",
+            "array_buffer_properties_retained_and_reclaimed",
+        ),
         Holder::TemplateCache => Coverage {
             retains: (Inventory, "template_cache_retains_and_reclaims"),
             reclaims: (Inventory, "template_cache_retains_and_reclaims"),
@@ -656,7 +668,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         intrinsics.trace(&mut |id| ids.push(id));
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 102); // Includes Symbol.for/keyFor and Map.
+    assert_eq!(ids.len(), 108); // Includes ArrayBuffer's six intrinsics.
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

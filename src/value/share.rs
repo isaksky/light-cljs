@@ -23,6 +23,8 @@
 //! (`crate::object`, clj-quickjs-114) are the mutable JavaScript objects of
 //! `design.md` §4: task-owned mutation, never shareable, whatever their
 //! properties hold (an object literal is rejected like a builder). The
+//! same applies to ArrayBuffer objects, including detached buffers: their
+//! mutable backing stores and ordinary properties are task-owned. The
 //! exception is the realm's intrinsic objects (`Object.prototype`, and the
 //! property stores of built-in functions; `crate::realm`, clj-quickjs-117):
 //! ownerless and never changed once the realm is installed, they are
@@ -212,6 +214,7 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
         HeapObject::Builtin(_) => Shareability::Persistent,
         HeapObject::Array(a) if a.object().is_intrinsic() => Shareability::Persistent,
         HeapObject::Array(_) | HeapObject::JsMap(_) => Shareability::TaskOwned,
+        HeapObject::ArrayBuffer(_) => Shareability::TaskOwned,
     }
 }
 
@@ -223,6 +226,8 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
         HeapObject::Plain(o) => o.owner(),
         HeapObject::Array(a) => a.object().owner(),
         HeapObject::JsMap(m) => m.object().owner(),
+
+        HeapObject::ArrayBuffer(b) => b.object.owner(),
         HeapObject::Native(_)
         | HeapObject::Vector(_)
         | HeapObject::Map(_)

@@ -34,6 +34,44 @@ use clj_quickjs::{
     WeakHandle, WorkerId,
 };
 
+#[test]
+fn array_buffer_reclaimed_when_unreachable() {
+    let rt = Runtime::new();
+    let code = clj_quickjs::frontend::compile_script("buffer", "new ArrayBuffer(1024)").unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let RunOutcome::Complete(buffer) = task.run().unwrap() else {
+        panic!("expected buffer")
+    };
+    let weak = buffer.downgrade();
+    assert_eq!(rt.heap_usage().array_buffer_bytes, 1024);
+    drop(task);
+    rt.collect().unwrap();
+    assert!(weak.upgrade().is_ok());
+    drop(buffer);
+    rt.collect().unwrap();
+    assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
+    assert_eq!(rt.heap_usage().array_buffer_bytes, 0);
+}
+
+#[test]
+fn array_buffer_properties_retained_and_reclaimed() {
+    let rt = Runtime::new();
+    // Synthetic fixtures, not light-cljs output. Test property, accessor,
+    // and prototype edges, each as the child's only remaining strong path.
+    for source in [
+        "function f(o) { let b = new ArrayBuffer(4); b.p = o; return b; }",
+        "function f(o) { let b = new ArrayBuffer(4); Object.defineProperty(b, 'p', {get: () => o}); return b; }",
+        "function f(o) { let b = new ArrayBuffer(4); Object.setPrototypeOf(b, o); return b; }",
+    ] {
+        let (task, weak) = spawn_holding(&rt, source);
+        let buffer = run_to_end(&task);
+        drop(task);
+        let held = Held::new(vec![weak, buffer.downgrade()], move || drop(buffer));
+        assert_retained(&rt, &held);
+        assert_reclaimed(&rt, held);
+    }
+}
+
 /// Bound for every cross-thread wait.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -851,10 +889,10 @@ fn object_property_reclaims() {
         release,
         keep,
     } = held;
-    assert_eq!(rt.heap_usage().objects.plain, 3 + 16);
+    assert_eq!(rt.heap_usage().objects.plain, 3 + 17);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
-    assert_eq!(rt.heap_usage().objects.plain, 16);
+    assert_eq!(rt.heap_usage().objects.plain, 17);
 }
 
 /// The realm intrinsics (clj-quickjs-117, `RootCategory::Intrinsic`):
@@ -974,8 +1012,9 @@ fn realm_intrinsics_retain() {
     // String.raw: clj-quickjs-58; Symbol.for/keyFor: clj-quickjs-128.
     // JSON.stringify: clj-quickjs-160.
     // Map adds its constructor, five methods and size getter (-169).
-    assert_eq!(rt.heap_usage().objects.builtin, 86);
-    assert_eq!(rt.heap_usage().objects.plain, 16);
+    // JSON.stringify: clj-quickjs-160; ArrayBuffer: clj-quickjs-165.
+    assert_eq!(rt.heap_usage().objects.builtin, 91);
+    assert_eq!(rt.heap_usage().objects.plain, 17);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
         assert_live(&weak);
@@ -1181,11 +1220,11 @@ fn function_properties_reclaim() {
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (4 + 16, 1));
+    assert_eq!((usage.plain, usage.function), (4 + 17, 1));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (16, 0));
+    assert_eq!((usage.plain, usage.function), (17, 0));
 }
 
 #[test]
@@ -1202,11 +1241,11 @@ fn array_element_reclaims() {
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (1 + 16, 3));
+    assert_eq!((usage.plain, usage.array), (1 + 17, 3));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (16, 0));
+    assert_eq!((usage.plain, usage.array), (17, 0));
 }
 
 #[test]

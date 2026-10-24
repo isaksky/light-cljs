@@ -4529,3 +4529,54 @@ explicitly with UnsupportedOperand naming BigInt. JSON serialization rejects
 BigInt with TypeError. `Rooted::bigint` and `Scope::bigint` return an immutable
 root-free `JsBigInt`, inspectable as decimal (`Display`) or sign/magnitude.
 The CLI prints a BigInt completion with an `n` suffix.
+
+## ArrayBuffer storage (clj-quickjs-165)
+
+`HeapObject::ArrayBuffer` boxes an ordinary task-owned property store, a
+`Vec<u8>` backing store and a detached flag. The bytes contain no heap edges;
+`Trace` visits only the ordinary properties and prototype. An explicit heap
+kind gives future typed-array views one stable `ObjectId` to retain and inspect
+on every access: a view must observe the buffer's detachment by identity rather
+than keeping a copy or a pointer into its old allocation. Detachment empties and
+releases the byte vector, preserving the buffer identity and its properties.
+Both attached and detached buffers classify as `TaskOwned` in `value/share.rs`;
+atoms and dependency publication reject them. Ownership checks cover properties,
+prototype reflection and branded getters/methods, including foreign-task reads.
+
+The alternative of immutable persistent bytes would require replacing every
+view on transfer; independent native payloads with copied bytes would lose the
+shared detached state. Neither represents JavaScript buffer identity. Shared
+backing memory and SharedArrayBuffer are outside this pellet.
+
+A buffer is limited to **16 MiB (16,777,216 bytes)**. ToIndex truncates toward
+zero, maps NaN/undefined to zero, and rejects negative integers, infinities and
+lengths beyond that bound with `RangeError`. This bound also rejects every
+length above the ECMAScript safe-integer bound. Byte allocations use
+`Vec::try_reserve_exact` before zero filling, mapping reservation failure to
+`RangeError`. Destination allocation precedes transfer's detachment, so failure
+leaves the receiver attached. Copy/zero-fill work is bounded by the per-buffer
+limit; total runtime memory remains proportional to the number of live buffers.
+`HeapUsage.objects.array_buffer` counts live buffers, and the separate
+`HeapUsage.array_buffer_bytes` sums their reserved byte capacity, including
+capacity beyond logical length. Shallow object/table byte metrics retain their
+existing definitions. Reclamation and detachment release the owned storage.
+
+The realm adds a constructor/prototype cycle, two branded accessor functions
+and transfer/slice methods to its intrinsic root list and immutable views.
+Object argument coercion runs through traced native conversion frames, allowing
+`valueOf`/`toString` to wait, yield, migrate or trigger collection. Transfer
+checks detachment after coercion (which can itself transfer the receiver).
+Slice rejects detachment before and after conversion; ordinary intrinsic slices
+copy bytes without detaching. Custom slice constructors/species fail explicitly;
+subclassing, resizable buffers, typed-array views and SharedArrayBuffer are deferred.
+The semantic reference is `research/quickjs/quickjs.c`, revision `7d1c13c5d8f8`,
+`js_array_buffer_constructor`, `js_array_buffer_get_byteLength`,
+`js_array_buffer_get_detached`, `js_array_buffer_transfer` and
+`js_array_buffer_slice`. Implementation and tests are original Rust/synthetic JS.
+
+The root inventory adds holder `ArrayBufferProperty`, covered by
+`array_buffer_properties_retained_and_reclaimed` for data/accessor/prototype
+edges. `array_buffer_reclaimed_when_unreachable` checks retention by a host root,
+reclamation after dropping it, stale `WeakHandle` rejection and backing-byte
+accounting. `array_buffer_coercion_survives_waits_gc_and_migration` forces
+collection and changes worker threads during constructor/transfer/slice coercion.

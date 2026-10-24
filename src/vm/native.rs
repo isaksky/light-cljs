@@ -312,6 +312,7 @@ enum Hint {
 /// What to finish after OrdinaryToPrimitive has converted its operands.
 #[derive(Clone, Copy, Debug)]
 enum ConvertTarget {
+    ArrayBuffer(builtin::Builtin),
     SymbolDescription,
     SymbolRegistryKey,
     StringSplit {
@@ -954,6 +955,33 @@ pub(crate) fn start_builtin(
         return Ok(true);
     }
     let (target, operands, hint) = match which {
+        Builtin::ArrayBuffer if construct => (
+            ConvertTarget::ArrayBuffer(which),
+            vec![args.first().cloned().unwrap_or(Value::Undefined)],
+            Hint::Number,
+        ),
+        Builtin::ArrayBufferTransfer | Builtin::ArrayBufferSlice if !construct => {
+            crate::object::array_buffer::receiver(heap, state.diag.task, this)?;
+            // Slice rejects an already detached receiver before conversions.
+            if which == Builtin::ArrayBufferSlice
+                && matches!(
+                    crate::object::array_buffer::inspect(heap, state.diag.task, this, true)?,
+                    Value::Bool(true)
+                )
+            {
+                return Err(Fault::TypeError("ArrayBuffer is detached".into()));
+            }
+            let mut operands = vec![this.clone()];
+            if which == Builtin::ArrayBufferSlice {
+                operands.push(args.first().cloned().unwrap_or(Value::Undefined));
+                if let Some(end) = args.get(1).filter(|v| !matches!(v, Value::Undefined)) {
+                    operands.push(end.clone());
+                }
+            } else if let Some(length) = args.first().filter(|v| !matches!(v, Value::Undefined)) {
+                operands.push(length.clone());
+            }
+            (ConvertTarget::ArrayBuffer(which), operands, Hint::Number)
+        }
         Builtin::NumberPrototypeToString if !construct => {
             // thisNumberValue must reject an invalid receiver before any
             // observable radix conversion, even through call/apply/bind.
@@ -1194,7 +1222,10 @@ pub(crate) fn start_builtin(
             "maximum native call depth of {limit} frames exceeded"
         )));
     }
-    let (first, end) = if matches!(target, ConvertTarget::PropertyBuiltin { .. }) {
+    let (first, end) = if matches!(target, ConvertTarget::ArrayBuffer(which) if which != Builtin::ArrayBuffer)
+    {
+        (1, operands.len())
+    } else if matches!(target, ConvertTarget::PropertyBuiltin { .. }) {
         (1, 2)
     } else {
         (0, operands.len())
@@ -2022,6 +2053,16 @@ impl NativeState {
                 while *next < *end {
                     let receiver = &operands[*next];
                     if !matches!(receiver, Value::Object(_)) {
+                        if let ConvertTarget::ArrayBuffer(which) = target {
+                            let number = Value::Number(dispatch::to_number(receiver)?);
+                            // Validate ToIndex now, before any later conversion.
+                            if *which != builtin::Builtin::ArrayBufferSlice {
+                                crate::object::array_buffer::to_index(&number)?;
+                            }
+                            operands[*next] = number;
+                            *next += 1;
+                            continue;
+                        }
                         // Numeric binary operators complete ToNumeric on
                         // each operand in order. A symbol on the left must
                         // throw before any right-hand conversion callback.
@@ -2226,6 +2267,30 @@ impl NativeState {
                         instr,
                         operands: operands.clone(),
                     }),
+                    ConvertTarget::ArrayBuffer(which) => {
+                        use crate::object::array_buffer as buffer;
+                        let undefined = Value::Undefined;
+                        match which {
+                            builtin::Builtin::ArrayBuffer => {
+                                buffer::constructor(heap, task, &operands[0])
+                            }
+                            builtin::Builtin::ArrayBufferTransfer => buffer::transfer(
+                                heap,
+                                task,
+                                &operands[0],
+                                operands.get(1).unwrap_or(&undefined),
+                            ),
+                            builtin::Builtin::ArrayBufferSlice => buffer::slice(
+                                heap,
+                                task,
+                                &operands[0],
+                                &operands[1],
+                                operands.get(2).unwrap_or(&undefined),
+                            ),
+                            _ => Err(Fault::Internal("unexpected ArrayBuffer conversion")),
+                        }
+                        .map(Action::Return)
+                    }
                     ConvertTarget::PrimitiveConstructor { which, construct } => {
                         // String's descriptive-symbol exception applies only
                         // to an original symbol argument, never the result of

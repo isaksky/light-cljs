@@ -926,7 +926,10 @@ mod tests {
             | HeapObject::Cell(_) => panic!("not a native object"),
             HeapObject::Atom(_) => panic!("not a native object"),
             HeapObject::Builtin(_) => panic!("not a native object"),
-            HeapObject::Array(_) | HeapObject::BoundFunction(_) | HeapObject::JsMap(_) => {
+            HeapObject::Array(_)
+            | HeapObject::BoundFunction(_)
+            | HeapObject::JsMap(_)
+            | HeapObject::ArrayBuffer(_) => {
                 panic!("not a native object")
             }
         })

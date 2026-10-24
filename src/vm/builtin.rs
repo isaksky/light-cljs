@@ -268,6 +268,12 @@ pub(crate) enum Builtin {
     MapDelete,
     MapClear,
     MapSize,
+
+    ArrayBuffer,
+    ArrayBufferByteLength,
+    ArrayBufferDetached,
+    ArrayBufferTransfer,
+    ArrayBufferSlice,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -310,6 +316,11 @@ impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::ArrayBuffer => "ArrayBuffer",
+            Builtin::ArrayBufferByteLength => "get byteLength",
+            Builtin::ArrayBufferDetached => "get detached",
+            Builtin::ArrayBufferTransfer => "transfer",
+            Builtin::ArrayBufferSlice => "slice",
             Builtin::ArrayIsArray => "isArray",
 
             Builtin::Symbol => "Symbol",
@@ -394,6 +405,9 @@ impl Builtin {
     /// The function's `length` property: its number of declared parameters.
     pub(crate) fn length(self) -> u32 {
         match self {
+            Builtin::ArrayBuffer | Builtin::ArrayBufferTransfer => 1,
+            Builtin::ArrayBufferByteLength | Builtin::ArrayBufferDetached => 0,
+            Builtin::ArrayBufferSlice => 2,
             Builtin::Object | Builtin::Array | Builtin::ArrayIsArray => 1,
 
             Builtin::Symbol => 0,
@@ -487,6 +501,18 @@ pub(crate) fn call(
 ) -> Result<Value, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     match which {
+        Builtin::ArrayBuffer => Err(Fault::TypeError("ArrayBuffer requires new".into())),
+        Builtin::ArrayBufferByteLength | Builtin::ArrayBufferDetached => {
+            crate::object::array_buffer::inspect(
+                heap,
+                task,
+                this,
+                which == Builtin::ArrayBufferDetached,
+            )
+        }
+        Builtin::ArrayBufferTransfer | Builtin::ArrayBufferSlice => Err(Fault::Internal(
+            "ArrayBuffer methods require a resumable frame",
+        )),
         Builtin::Error
         | Builtin::ErrorPrototypeToString
         | Builtin::NativeError(_)
@@ -1290,6 +1316,7 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                 }
                 HeapObject::Array(_) => Ok("Array"),
                 HeapObject::Native(_) | HeapObject::JsMap(_) => Ok("Object"),
+                HeapObject::ArrayBuffer(_) => Ok("ArrayBuffer"),
                 HeapObject::Plain(o) if o.is_error() => Ok("Error"),
                 HeapObject::Plain(o) => Ok(match o.primitive_data() {
                     Some(PrimitiveData::Number(_)) => "Number",
