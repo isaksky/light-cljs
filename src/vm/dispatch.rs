@@ -1172,6 +1172,8 @@ pub(crate) fn step(
                     Instr::Add => Some(x.checked_add(y)),
                     Instr::Sub => Some(x.checked_sub(y)),
                     Instr::Mul => Some(x.checked_mul(y)),
+                    Instr::Div => Some(x.checked_div_rem(y).map(|(q, _)| q)),
+                    Instr::Rem => Some(x.checked_div_rem(y).map(|(_, r)| r)),
                     _ => None,
                 };
                 if let Some(result) = result {
@@ -1225,6 +1227,10 @@ pub(crate) fn step(
         Instr::Pow => {
             let b = state.pop()?;
             let a = state.pop()?;
+            if let (Value::BigInt(x), Value::BigInt(y)) = (&a, &b) {
+                state.push(bigint_result(x.checked_pow(y))?);
+                return Ok(Flow::Next);
+            }
             let (x, y) = numbers(instr.opcode(), &a, &b)?;
             state.push(Value::Number(exponentiate(x, y)));
         }

@@ -10,11 +10,13 @@ use std::sync::Arc;
 /// Maximum magnitude size, matching the runtime's BigInt policy (1 Mbit).
 pub const MAX_BIGINT_BITS: usize = 1 << 20;
 
-/// A malformed digit sequence or a magnitude exceeding the size cap.
+/// Invalid digits, an oversized magnitude, or an invalid arithmetic operand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BigIntError {
     InvalidDigits,
     TooLarge,
+    DivisionByZero,
+    NegativeExponent,
 }
 
 impl fmt::Display for BigIntError {
@@ -22,6 +24,8 @@ impl fmt::Display for BigIntError {
         f.write_str(match self {
             Self::InvalidDigits => "invalid BigInt digits",
             Self::TooLarge => "BigInt is too large",
+            Self::DivisionByZero => "BigInt division by zero",
+            Self::NegativeExponent => "BigInt negative exponent",
         })
     }
 }
@@ -164,6 +168,78 @@ impl JsBigInt {
             }
         }
         Self::from_sign_magnitude(negative_a ^ negative_b, out)
+    }
+
+    /// Truncating quotient and remainder (the latter has the dividend's sign).
+    /// Normalized base-2^32 long division estimates and corrects one quotient
+    /// limb at a time, rather than performing a division step for every bit.
+    pub fn checked_div_rem(&self, other: &Self) -> Result<(Self, Self), BigIntError> {
+        let (mut small_a, mut small_b) = ([0; 2], [0; 2]);
+        let (negative_a, a) = self.magnitude(&mut small_a);
+        let (negative_b, b) = other.magnitude(&mut small_b);
+        if b.is_empty() {
+            return Err(BigIntError::DivisionByZero);
+        }
+        if a.len()
+            .cmp(&b.len())
+            .then_with(|| a.iter().rev().cmp(b.iter().rev()))
+            .is_lt()
+        {
+            return Ok((Self::from(0), self.clone()));
+        }
+        let (quotient, remainder) = divide_magnitudes(a, b);
+        Ok((
+            Self::from_sign_magnitude(negative_a ^ negative_b, quotient)?,
+            Self::from_sign_magnitude(negative_a, remainder)?,
+        ))
+    }
+
+    /// Exact integer power. Bound the result before computing, then check each
+    /// multiplication; exponentiation by squaring never builds an unused power.
+    pub fn checked_pow(&self, exponent: &Self) -> Result<Self, BigIntError> {
+        let (mut small_a, mut small_e) = ([0; 2], [0; 2]);
+        let (negative, a) = self.magnitude(&mut small_a);
+        let (negative_e, e) = exponent.magnitude(&mut small_e);
+        if negative_e {
+            return Err(BigIntError::NegativeExponent);
+        }
+        if e.is_empty() {
+            return Ok(Self::from(1));
+        }
+        if a.is_empty() {
+            return Ok(Self::from(0));
+        }
+        let odd = e[0] & 1 != 0;
+        if a == [1] {
+            return Ok(Self::from(if negative && odd { -1 } else { 1 }));
+        }
+        let bits = (a.len() - 1) * 32 + 32 - a.last().unwrap().leading_zeros() as usize;
+        // |a| >= 2^(bits-1): powers with this lower bound above the cap
+        // cannot fit. Remaining exponents fit u32, independently of host size.
+        if e.len() > 1 || e[0] as usize > (MAX_BIGINT_BITS - 1) / (bits - 1) {
+            return Err(BigIntError::TooLarge);
+        }
+        let mut exponent = e[0];
+        // Powers of two have an exact size bound and can be placed directly,
+        // including the largest legal power, without quadratic multiplication.
+        if a.iter().map(|limb| limb.count_ones()).sum::<u32>() == 1 {
+            let bit = (bits - 1) * exponent as usize;
+            let mut limbs = vec![0; bit / 32 + 1];
+            limbs[bit / 32] = 1 << (bit % 32);
+            return Self::from_sign_magnitude(negative && odd, limbs);
+        }
+        let mut result = Self::from(1);
+        let mut power = self.clone();
+        loop {
+            if exponent & 1 != 0 {
+                result = result.checked_mul(&power)?;
+            }
+            exponent >>= 1;
+            if exponent == 0 {
+                return Ok(result);
+            }
+            power = power.checked_mul(&power)?;
+        }
     }
 
     /// Negation has the same magnitude, with canonical zero and i64 edges.
@@ -372,6 +448,82 @@ impl JsBigInt {
     }
 }
 
+/// Unsigned division, with nonempty b and a >= b. Knuth's normalized long
+/// division (Algorithm D), implemented here over the in-tree limb format.
+fn divide_magnitudes(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
+    if b.len() == 1 {
+        let mut q = vec![0; a.len()];
+        let mut rem = 0u64;
+        for (out, &limb) in q.iter_mut().zip(a).rev() {
+            let dividend = (rem << 32) | limb as u64;
+            *out = (dividend / b[0] as u64) as u32;
+            rem = dividend % b[0] as u64;
+        }
+        return (q, vec![rem as u32]);
+    }
+
+    const BASE: u64 = 1u64 << 32;
+    let n = b.len();
+    let shift = b[n - 1].leading_zeros();
+    let normalize = |limbs: &[u32]| {
+        let mut out = Vec::with_capacity(limbs.len() + 1);
+        let mut carry = 0u64;
+        for &limb in limbs {
+            let word = ((limb as u64) << shift) | carry;
+            out.push(word as u32);
+            carry = word >> 32;
+        }
+        (out, carry as u32)
+    };
+    let (v, carry) = normalize(b);
+    debug_assert_eq!(carry, 0);
+    let (mut u, carry) = normalize(a);
+    // This guard limb is normalized division workspace, not an intermediate
+    // BigInt magnitude. Output quotient and remainder never exceed the input.
+    u.push(carry);
+    let mut q = vec![0; a.len() - n + 1];
+    for j in (0..q.len()).rev() {
+        let top = ((u[j + n] as u64) << 32) | u[j + n - 1] as u64;
+        let mut estimate = (top / v[n - 1] as u64).min(BASE - 1);
+        let mut rem = top - estimate * v[n - 1] as u64;
+        while rem < BASE && estimate * v[n - 2] as u64 > ((rem << 32) | u[j + n - 2] as u64) {
+            estimate -= 1;
+            rem += v[n - 1] as u64;
+        }
+
+        // Subtract estimate * v, keeping the multiply carry and subtract
+        // borrow together. Each product plus incoming borrow fits u64.
+        let mut borrow = 0u64;
+        for i in 0..n {
+            let product = estimate * v[i] as u64 + borrow;
+            let (difference, underflow) = u[j + i].overflowing_sub(product as u32);
+            u[j + i] = difference;
+            borrow = (product >> 32) + u64::from(underflow);
+        }
+        let (high, underflow) = u[j + n].overflowing_sub(borrow as u32);
+        u[j + n] = high;
+        if underflow {
+            // The estimate was one too high: restore one divisor.
+            estimate -= 1;
+            let mut carry = 0u64;
+            for i in 0..n {
+                let sum = u[j + i] as u64 + v[i] as u64 + carry;
+                u[j + i] = sum as u32;
+                carry = sum >> 32;
+            }
+            u[j + n] = u[j + n].wrapping_add(carry as u32);
+        }
+        q[j] = estimate as u32;
+    }
+    u.truncate(n);
+    if shift != 0 {
+        for i in 0..n {
+            u[i] = (u[i] >> shift) | (u.get(i + 1).copied().unwrap_or(0) << (32 - shift));
+        }
+    }
+    (q, u)
+}
+
 impl fmt::Display for JsBigInt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Repr::Small(value) = self.0 {
@@ -468,6 +620,79 @@ mod tests {
         assert_eq!(
             JsBigInt::from_sign_magnitude(false, vec![1; MAX_BIGINT_BITS / 32 + 1]),
             Err(BigIntError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn division_matches_native_i128() {
+        let exact = |n: i128| {
+            let magnitude = n.unsigned_abs();
+            JsBigInt::from_sign_magnitude(
+                n < 0,
+                (0..4).map(|i| (magnitude >> (i * 32)) as u32).collect(),
+            )
+            .unwrap()
+        };
+        let mut state = 0xb789_4d3a_21f0_769bu64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        // Deterministic, independent native arithmetic expectations exercise
+        // each divisor length and both normalization/no-normalization paths.
+        for i in 0..10000 {
+            let a = (((next() as u128) << 64) | next() as u128) as i128;
+            let width = 1 + i % 127;
+            let b = ((((next() as u128) << 64) | next() as u128) >> (128 - width)) as i128 | 1;
+            let b = if i % 2 == 0 { b } else { -b };
+            let (q, r) = exact(a).checked_div_rem(&exact(b)).unwrap();
+            assert_eq!(q, exact(a / b), "{a} / {b}");
+            assert_eq!(r, exact(a % b), "{a} % {b}");
+        }
+        for a in [i64::MIN as i128, -1, 0, 1, i64::MAX as i128] {
+            for b in [i64::MIN as i128, -1, 1, i64::MAX as i128] {
+                assert_eq!(
+                    exact(a).checked_div_rem(&exact(b)).unwrap(),
+                    (exact(a / b), exact(a % b))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn division_corrects_quotient_estimates_and_handles_wide_operands() {
+        // The leading two dividend/divisor limbs suggest 1, but the low
+        // limb makes the dividend smaller: the subtraction must add back.
+        for high in [1, 0x8000_0000, u32::MAX] {
+            let b = JsBigInt::from_sign_magnitude(false, vec![1, 0, high]).unwrap();
+            let r = b.checked_sub(&JsBigInt::from(1)).unwrap();
+            let q = JsBigInt::from_sign_magnitude(false, vec![0, 1]).unwrap();
+            let a = b.checked_mul(&q).unwrap().checked_add(&r).unwrap();
+            assert_eq!(a.checked_div_rem(&b).unwrap(), (q, r));
+        }
+        for high in [1, 0x8000_0000, u32::MAX] {
+            let mut limbs: Vec<u32> = (0..406)
+                .map(|i| (i as u32).wrapping_mul(0x6f28_9e31))
+                .collect();
+            limbs.push(high);
+            let b = JsBigInt::from_sign_magnitude(false, limbs).unwrap();
+            let q = JsBigInt::from_sign_magnitude(false, vec![u32::MAX; 205]).unwrap();
+            let r = b.checked_sub(&JsBigInt::from(1)).unwrap();
+            let a = b.checked_mul(&q).unwrap().checked_add(&r).unwrap();
+            for (a, b, q, r) in [
+                (a.clone(), b.clone(), q.clone(), r.clone()),
+                (a.negated(), b.clone(), q.negated(), r.negated()),
+                (a.clone(), b.negated(), q.negated(), r.clone()),
+                (a.negated(), b.negated(), q.clone(), r.negated()),
+            ] {
+                assert_eq!(a.checked_div_rem(&b).unwrap(), (q, r));
+            }
+        }
+        assert_eq!(
+            JsBigInt::from(0).checked_div_rem(&JsBigInt::from(0)),
+            Err(BigIntError::DivisionByZero)
         );
     }
 

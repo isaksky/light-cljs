@@ -4917,3 +4917,33 @@ consumption remains deferred. Likely-subtag operations, information methods,
 `variants`/`firstDayOfWeek` options and formatting service resolution belong to
 later pellets. Numeric absent from the tag/options yields `false`, matching
 the pinned QuickJS getter rather than assuming another engine's output.
+
+## BigInt division and exponentiation (clj-quickjs-199)
+
+`JsBigInt::checked_div_rem` divides unsigned magnitudes, then applies quotient
+sign XOR and the dividend's remainder sign. Normalization restores inline i64,
+canonical zero and shared immutable large results. One-limb divisors use a
+single high-to-low u64 division pass. Multi-limb divisors use normalized
+base-2^32 long division (Knuth Algorithm D): shift the divisor's highest bit
+to bit 31, estimate a quotient limb from two leading dividend limbs, correct
+it using the next divisor limb, subtract the estimated product, and add back
+one divisor on underflow. Complexity is O((m-n+1)n) limb operations for m/n
+input limbs, with linear scratch storage. It processes quotient limbs rather
+than individual bits and supports the roughly 13,000-bit pi-example operands.
+The normalized dividend has one guard limb; it is a workspace encoding, not
+an oversized mathematical BigInt result. Quotient/remainder magnitudes are
+bounded by the inputs, and all returned values use `from_sign_magnitude`.
+
+`checked_pow` rejects negative exponents first, handles zero exponent and
+bases 0/1/-1 directly (including huge exponents), and checks the result-size
+lower bound `(base_bits - 1) * exponent + 1` before computing. Powers of two
+have an exact bit-size bound and are constructed directly. Other bases use
+exponentiation by squaring, with the existing checked multiplication cap on
+every intermediate; no unused final square is computed. The lower bound never
+rejects a result that fits; ambiguous sizes are resolved by checked products,
+which never store oversized magnitudes. Overflow is RangeError with `BigInt
+is too large`; zero divisors and negative exponents have distinct RangeErrors.
+`Div`, `Rem` and `Pow` dispatch matching BigInts to these leaf operations,
+consuming one instruction each. The existing ToNumeric conversion frames,
+compound lowering, rooting and publication paths remain in use. No dependency,
+heap kind, opcode, JavaScript callback or internal budget poll is added.

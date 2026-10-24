@@ -412,13 +412,10 @@ fn bigint_comparisons_wait_yield_collect_and_migrate() {
 }
 
 /// Synthetic fixtures, not light-cljs output. Later BigInt pellets supply
-/// division, exponentiation, bitwise operations and conversions.
+/// bitwise operations and conversions.
 #[test]
 fn bigint_deferred_operations_fail_explicitly() {
     for src in [
-        "1n / 1n",
-        "1n % 1n",
-        "1n ** 1n",
         "1n & 1n",
         "1n | 1n",
         "1n ^ 1n",
@@ -14404,6 +14401,9 @@ fn bigint_arithmetic_resumes_object_conversion() {
         "a + b === 11n",
         "a - b === 3n",
         "a * b === 28n",
+        "a / b === 1n",
+        "a % b === 3n",
+        "a ** b === 2401n",
         "-a === -7n",
         "a++ === 7n && a === 8n",
         "++a === 8n",
@@ -14662,4 +14662,107 @@ fn intl_locale_task_ownership() {
             "{body}"
         );
     }
+}
+
+/// Synthetic fixtures, not light-cljs output. The division and power rows adapt
+/// QuickJS tests/test_bigint.js at 7d1c13c5d8f8c6b32893786ed35cdcebd88194d2.
+/// Copyright (c) 2017-2021 Fabrice Bellard
+/// Copyright (c) 2017-2021 Charlie Gordon
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+/// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn bigint_division_remainder_and_exponentiation() {
+    for src in [
+        "1n / 1n === 1n && 1n % 1n === 0n && 1n ** 1n === 1n",
+        "3213213213213213432453243n / 123434343439n === 26031760073331n",
+        "-3213213213213213432453243n / 123434343439n === -26031760073331n",
+        "-3213213213213213432453243n % -123434343439n === -26953727934n",
+        "3213213213213213432453243n % 123434343439n === 26953727934n",
+        "(-2n) ** 127n === -170141183460469231731687303715884105728n",
+        "2n ** 127n === 170141183460469231731687303715884105728n",
+        "(-256n) ** 11n === -309485009821345068724781056n",
+        "7n ** 20n === 79792266297612001n",
+        "7n / 2n === 3n && -7n / 2n === -3n && 7n / -2n === -3n && -7n / -2n === 3n",
+        "7n % -2n === 1n && -7n % 2n === -1n && -7n % -2n === -1n",
+        "0n ** 0n === 1n && 5n ** 0n === 1n && 0n ** 5n === 0n",
+        "2n ** 64n === 18446744073709551616n",
+        "(10n ** 600n) / (10n ** 599n) === 10n",
+        "(10n ** 600n + 7n) % (10n ** 300n) === 7n",
+        // Roughly 13,000-bit operands, as used by the pi example.
+        "let a = 10n ** 4000n; (a + 7n) / (10n ** 2000n) === 10n ** 2000n && (a + 7n) % (10n ** 2000n) === 7n",
+        "-9223372036854775808n / -1n === 9223372036854775808n && -2n % 2n === 0n",
+        "3n / 5n === 0n && 3n % 5n === 3n && 0n / -5n === 0n",
+        "(-1n) ** 18446744073709551617n === -1n && (-1n) ** 18446744073709551616n === 1n && 1n ** 18446744073709551616n === 1n",
+        "let x = 25n; x /= 2n; x %= 5n; x **= 3n; x === 8n",
+        "let o = {x: 25n}; o.x /= 2n; o['x'] %= 5n; o.x **= 3n; o.x === 8n",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for src in ["1n / 0n", "1n % 0n", "2n ** -1n", "0n ** -1n", "1n ** -1n"] {
+        let caught = format!(
+            "let caught = false; try {{ {src}; }} catch (e) {{ caught = e instanceof RangeError; }} caught"
+        );
+        assert_eq!(eval(&caught), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "1n / 1",
+        "1 / 1n",
+        "1n % 1",
+        "1 % 1n",
+        "2 ** 1n",
+        "2n ** 1",
+        "1n / true",
+        "null % 1n",
+    ] {
+        let caught = format!(
+            "let caught = false; try {{ {src}; }} catch (e) {{ caught = e instanceof TypeError; }} caught"
+        );
+        assert_eq!(eval(&caught), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(
+        compile_script("bigint", "-2n ** 2n").unwrap_err().kind,
+        SyntaxErrorKind::Invalid
+    );
+}
+
+/// Synthetic fixture, not light-cljs output. Powers check the size cap before
+/// allocating oversized results; failed compound stores preserve their target.
+#[test]
+fn bigint_power_size_limit_and_errors() {
+    for src in [
+        "2n ** 1048576n",
+        "2n ** 18446744073709551616n",
+        "3n ** 1048576n",
+        "(2n ** 1048576n) * 0n",
+    ] {
+        let caught = format!(
+            "let caught = false; try {{ {src}; }} catch (e) {{ caught = e instanceof RangeError && e.message === 'BigInt is too large'; }} caught"
+        );
+        assert_eq!(eval(&caught), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "let x = 2n; try { x **= 1048576n; } catch (e) {} x === 2n",
+        "let x = 3n; try { x /= 0n; } catch (e) {} x === 3n",
+        "let o = {x: 3n}; try { o.x %= 0n; } catch (e) {} o.x === 3n",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(
+        eval("let a = 2n ** 1048575n; a / a === 1n && a % a === 0n && a / 2n === 2n ** 1048574n"),
+        ValueView::Bool(true)
+    );
 }

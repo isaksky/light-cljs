@@ -3200,7 +3200,7 @@ and hash by integer value; `__rt.get(__rt.map(10n, 1), 10n)` is `1`.
 `Object.keys` and `Object.getOwnPropertyNames` report no own keys for a
 BigInt primitive; `for-in` over it performs no iterations.
 
-Explicit gaps: BigInt division/remainder/exponentiation and bitwise operations,
+Explicit gaps: BigInt bitwise operations,
 comparisons with strings, `BigInt()`, JavaScript string/Number conversions,
 wrappers, literal property names and BigInt property keys remain assigned to
 later pellets. Available but deferred operators/conversions throw
@@ -3315,6 +3315,22 @@ instruction, independent of limb count. Every intermediate result obeys the
 Mixing BigInt with Number, boolean, undefined or null throws catchable TypeError
 (`cannot mix BigInt and other types`); unary plus on BigInt also throws TypeError.
 Object operands use resumable ToPrimitive in source order, including waits.
-Explicit gaps: division, remainder, exponentiation, bitwise operations and shifts
-remain deferred. String concatenation involving BigInt still fails explicitly
+Explicit gaps: bitwise operations and shifts remain deferred. String concatenation involving BigInt still fails explicitly
 pending BigInt ToString (clj-quickjs-202).
+
+### BigInt division, remainder and exponentiation (clj-quickjs-199)
+
+Lexical grammar: existing `/`, `%`, `**`, `/=`, `%=` and `**=` tokens and
+BigInt literals suffice. The unary-left-operand restriction still makes
+`-2n ** 2n` a SyntaxError; `(-2n) ** 2n` and `2n ** -1n` parse.
+Execution: two BigInts divide with truncation toward zero and produce a
+remainder with the dividend's sign (zero stays canonical). Exponentiation
+computes exact powers, with `x ** 0n === 1n` even for zero, and `0n ** k === 0n`
+for positive k. A negative exponent or division/remainder by zero throws a
+catchable RangeError. Mixed numeric types throw TypeError after resumable
+ToNumeric conversion in source order. Compound assignments reuse these
+operators and store only after success. Each operation costs one instruction.
+Powers reject sizes beyond the 1 Mbit cap with RangeError (`BigInt is too
+large`), including oversized intermediate operations later cancelled by zero.
+Explicit gaps: BigInt bitwise/shifts and the conversion APIs remain assigned
+to their sibling pellets; this change adds no new conversions.

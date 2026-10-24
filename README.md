@@ -1293,7 +1293,7 @@ Supported (`cargo test --lib frontend::tests::exponent_operator_syntax`,
 Deferred:
 
 - (`**=`: clj-quickjs-84, below.) Object
-  operands convert since clj-quickjs-70; strings since clj-quickjs-67. BigInt exponentiation remains deferred to clj-quickjs-199.
+  operands convert since clj-quickjs-70; strings since clj-quickjs-67. BigInt exponentiation is supported (clj-quickjs-199).
 
 ### `break` and `continue` through finally blocks (clj-quickjs-79)
 
@@ -2869,7 +2869,19 @@ BigInt `+`, `-`, `*`, unary minus, prefix/postfix `++`/`--` and their compound
 assignments produce exact results, including binding and property updates.
 Mixed numeric types and unary plus throw TypeError; results above 1 Mbit throw
 RangeError before assignment. Object conversion remains resumable. Each
-arithmetic operation consumes one instruction. BigInt string conversion,
-division, exponentiation and bitwise operations remain deferred.
+arithmetic operation consumes one instruction. BigInt string conversion
+and bitwise operations remain deferred; division and exponentiation are supported below.
 Validation: `cargo test --test js_source bigint_ -- --test-threads=3` and
 `cargo test --lib value::bigint:: -- --test-threads=3`.
+
+### BigInt division, remainder and powers (clj-quickjs-199)
+
+BigInt `/` truncates toward zero, `%` keeps the dividend's sign, and `**`
+computes exact integer powers, including `0n ** 0n === 1n`. Their compound
+assignments support bindings and properties. Zero divisors and negative
+exponents throw catchable RangeError; mixed numeric types throw TypeError.
+Powers and every intermediate obey the 1 Mbit cap (`BigInt is too large`).
+Division processes base-2^32 quotient limbs and handles pi-sized operands;
+each arithmetic operation consumes one instruction. Object conversion remains
+resumable. Validation: `cargo test --test js_source bigint_ -- --test-threads=3`
+and `cargo test --lib value::bigint:: -- --test-threads=3`.

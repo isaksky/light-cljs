@@ -436,3 +436,15 @@ including round-trip inputs from the pellet's acceptance list corresponding to
 `research/quickjs/tests/test_intl.js::test_locale`; no upstream test text is
 copied. The QuickJS MIT notice is retained in `src/intl/data/QUICKJS-LICENSE`.
 No new generated tables or CLDR source are introduced.
+
+## BigInt division and exponentiation (clj-quickjs-199)
+
+Semantic references: `research/quickjs/quickjs.c` (`js_bigint_divrem`,
+`js_bigint_pow`, `js_binary_arith_slow`), revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The Rust normalized limb division and exponentiation were written afresh.
+`tests/js_source.rs::bigint_division_remainder_and_exponentiation` adapts the
+eight division/remainder/power assertions of
+`research/quickjs/tests/test_bigint.js::test_bigint3`; its full QuickJS
+copyright and MIT permission notice is retained on the test. Other new tests
+are synthetic fixtures, not light-cljs output.
