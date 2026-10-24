@@ -25,7 +25,8 @@ execute; see "Exceptions" below. Unlabelled `break` and `continue` in `while`,
 jumps out of `try` statements that run their finally blocks on the way
 (clj-quickjs-79). Labelled statements and labelled `break`/`continue`
 (clj-quickjs-82) parse and execute. Prefix and postfix `++`/`--` on identifier bindings
-(clj-quickjs-64) parse and execute.
+(clj-quickjs-64) parse and execute. `switch` statements (clj-quickjs-83)
+parse and execute.
 
 ## Semantics model
 
@@ -63,7 +64,7 @@ EBNF; `{ x }` is repetition, `[ x ]` is optional. Terminals are quoted.
 Script              = { StatementListItem } EOF
 StatementListItem   = FunctionDeclaration | LexicalDeclaration | Statement
 Statement           = Block | ";" | IfStatement | WhileStatement | DoWhileStatement
-                    | ForStatement
+                    | ForStatement | SwitchStatement
                     | ReturnStatement | ThrowStatement | TryStatement
                     | BreakStatement | ContinueStatement | LabelledStatement
                     | ExpressionStatement
@@ -73,6 +74,8 @@ WhileStatement      = "while" "(" Expression ")" Statement
 DoWhileStatement    = "do" Statement "while" "(" Expression ")" [ ";" ]   (* ";" always optional *)
 ForStatement        = "for" "(" [ ForInit ] ";" [ Expression ] ";" [ Expression ] ")" Statement
 ForInit             = Expression | ( "let" | "const" ) Declarator { "," Declarator }
+SwitchStatement     = "switch" "(" Expression ")" "{" { CaseClause } "}"   (* at most one "default" *)
+CaseClause          = ( "case" Expression | "default" ) ":" { StatementListItem }
 ReturnStatement     = "return" [no LineTerminator here] [ Expression ] ";"
 ThrowStatement      = "throw" [no LineTerminator here] Expression ";"
 BreakStatement      = "break" [no LineTerminator here] [ Identifier ] ";"
@@ -149,7 +152,11 @@ Notes on the grammar:
   same function (not in the test of a `do`-`while` or the head of a
   `for`): a function
   nested in the loop starts a new context (`while (x) { function f() {
-  break; } }` is an early error). With a label (clj-quickjs-82; only on the
+  break; } }` is an early error). An unlabelled `break` is also accepted
+  inside the case block of a `switch` of the same function
+  (clj-quickjs-83), and leaves the innermost loop or `switch`; `continue`
+  in a `switch` needs an enclosing loop of the same function, which it
+  continues. With a label (clj-quickjs-82; only on the
   same line as the keyword) they are accepted anywhere inside a statement
   of the same function that has that label, which for `continue` must be
   a loop (`L: { continue L; }` is an early error).
@@ -165,11 +172,17 @@ Notes on the grammar:
   (`L: function f() {}`, `L: let x;`). Sibling statements may reuse a
   label, and labels are separate from bindings (`let x; x: { break x; }`
   is valid).
+- `SwitchStatement` (clj-quickjs-83): `case` and `default` clauses in any
+  order, each followed by a statement list (declarations allowed) that
+  ends at the next clause or the closing `}`. The clause bodies together
+  are one scope (the case block), so a name declared in two clauses is a
+  redeclaration (a compiler `Invalid` error at the second one, see
+  "Execution"). Early error (`Invalid`): a second `default`, at its
+  keyword.
 - `FunctionDeclaration` and `LexicalDeclaration` are statement-list items:
-  allowed in the script, a function body or a block, but not as the direct
-  body of `if`/`else`/`while`/`do`/`for` or of a labelled statement
-  (strict mode rejects that; wrap it
-  in a block).
+  allowed in the script, a function body, a block or a `switch` clause,
+  but not as the direct body of `if`/`else`/`while`/`do`/`for` or of a
+  labelled statement (strict mode rejects that; wrap it in a block).
 - Function parameter names must be distinct (strict mode).
 - Arrow functions (clj-quickjs-53). A `(` whose matching `)` is followed
   by `=>` starts an arrow parameter list (the ECMAScript cover grammar);
@@ -245,7 +258,7 @@ Every form below is rejected where it starts. Error kinds:
 
 | Form | Kind |
 |------|------|
-| `var` (also as a `for` head), for-in and for-of loops, `switch`, `debugger`, `with` | Unsupported |
+| `var` (also as a `for` head), for-in and for-of loops, `debugger`, `with` | Unsupported |
 | classes, `new`, `this`, `super`, `import`/`export`, dynamic `import` | Unsupported |
 | `async` functions and arrows, `await`, generators (`function*`) | Unsupported |
 | rest/default parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
@@ -257,7 +270,7 @@ Every form below is rejected where it starts. Error kinds:
 | reserved word as a binding name or reference; binding, assigning, incrementing or decrementing `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` | ReservedWord |
 | computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`) or `++`/`--` on one (`__rt.count++`) | ReservedWord |
 | an arrow function as an operand, callee or member object without parentheses (`1 + x => x`, `() => {}()`), a line break before `=>` | UnexpectedToken |
-| `return` outside a function, `break` or `continue` outside a loop of the same function, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while`/`do`/`for` or labelled body, a `break`/`continue` label that no enclosing statement of the same function has, `continue` to a label of a statement that is not a loop, a label inside a statement with the same label, `const` without initializer in a `for` head, invalid assignment target (`1 = 2`), an operand of `++`/`--` that is not an identifier binding (`1++`, `f()++`, `++a++`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
+| `return` outside a function, `break` outside a loop or `switch` of the same function, `continue` outside a loop of the same function, a second `default` in a `switch`, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while`/`do`/`for` or labelled body, a `break`/`continue` label that no enclosing statement of the same function has, `continue` to a label of a statement that is not a loop, a label inside a statement with the same label, `const` without initializer in a `for` head, invalid assignment target (`1 = 2`), an operand of `++`/`--` that is not an identifier binding (`1++`, `f()++`, `++a++`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
 | nesting over the `MAX_NESTING` budget (256 units), or a syntax tree more than 256 nodes high; see "Nesting limit" below | TooDeep |
 
 ## Explicit gaps
@@ -281,7 +294,8 @@ checks left to later stages:
   (`MAX_NESTING`); input that exceeds it is rejected with `TooDeep`. Costs
   per level, weighted by the Rust stack each construct uses: a statement 1,
   and each label of a labelled statement 1,
-  plus 1 for a block or an `if`/`while`/`do`-`while`/`for`/`try` (the
+  plus 1 for a block or an `if`/`while`/`do`-`while`/`for`/`try`, 2 for a
+  `switch` (its case block counts as a block) (the
   expressions of a `for` head are charged as expressions); a function or
   arrow function 3 plus its body block (or, for a concise arrow body, its
   assignment);
@@ -337,7 +351,10 @@ runs and that completes normally keeps it, so
 statement's value is its body's, and a `break` to its label keeps the
 value produced so far (clj-quickjs-82), so `5; L: { break L; }` is 5,
 `5; L: { 6; break L; }` is 6 and `5; L: if (true) break L;` is
-`undefined`).
+`undefined`; a `switch` (clj-quickjs-83) is `undefined` unless a clause
+that ran produced a value, so `switch (1) { case 1: 7; case 2: 8; }` is 8,
+`5; switch (1) { case 1: }` is `undefined` and
+`5; switch (1) { case 1: 6; break; }` is 6).
 `frontend::compile_function(source)` compiles a source made of exactly one
 function declaration into an entry point whose parameters are the task's
 arguments (missing ones are `undefined`); `return` completes the task and
@@ -366,6 +383,7 @@ Executed, with JavaScript semantics:
 | `for (init; test; update) body` (clj-quickjs-81) | runs the init once (an expression's value is discarded), then repeats: evaluates the test (absent: true) and stops when it is falsy, runs the body, then the update (its value discarded) |
 | `for (let ...; ...; ...)`, `for (const ...; ...; ...)` | the head's bindings are scoped to the loop and in their temporal dead zone during their own initializers (`for (let i = i; ;)` is a ReferenceError); each iteration has its own copy of the `let` bindings (CreatePerIterationEnvironment, before the first test and before each update), so a closure created in an iteration keeps that iteration's binding, and the next iteration starts from the values it ended with, including assignments made by closures; updating a `const` head is a TypeError |
 | `break`, `continue`; `break L`, `continue L`, `L: body` (clj-quickjs-82) | `break` leaves the innermost enclosing loop, `continue` evaluates its test again (in a `for` loop, runs the update first); `break L` leaves the enclosing statement labelled `L` (a loop or any other statement, continuing after it) and `continue L` continues the enclosing loop labelled `L` (directly or through a label set `L: M: while ...`), leaving every loop in between; an unlabelled `break`/`continue` passes by labelled statements that are not loops; leaving a `try` block pops its catch handler, so a later exception is not caught by it; leaving a `try` block or catch body runs its finally block first (innermost first, clj-quickjs-79), and a finally block that completes abruptly (`return`, `throw`, `break`, `continue`) replaces the jump; a jump out of a finally block discards its pending completion (return value, exception or jump) |
+| `switch (e) { case a: ... default: ... }` (clj-quickjs-83) | evaluates `e` once, then the `case` tests in source order, comparing each with IsStrictlyEqual (`===`: `-0` matches `0`, `NaN` matches nothing, `"1"` does not match `1`) and evaluating none after the first match; runs from the matching clause, or from `default` (wherever it is) if none matches, through the following clauses (fall-through); an unlabelled `break` leaves the switch, `continue` the switch and the iteration of its enclosing loop; the clauses form one block scope whose function declarations are created on entry, before the tests |
 | function declarations | hoisted: entering a script, function body or block creates the closures of the declarations directly in it, in source order, before its first statement runs |
 | function expressions | each evaluation creates a new function object (`===` compares identity); a named expression's name is visible only inside it, is the running function, and assigning it is a TypeError |
 | arrow functions | lowered exactly as an anonymous function expression whose concise body is `{ return body; }`: same closures, captures, cells and temporal dead zone; the subset has no `this`, `arguments`, `new.target` or `super`, so an arrow's lexical versions of them do not arise (they stay rejected inside arrows) |
@@ -379,7 +397,7 @@ Errors:
 
 | Situation | When | Reported as |
 |-----------|------|-------------|
-| A name declared twice in one block, script or function body (including a `let` that repeats a parameter, and a function declaration that clashes with a `let`/`const` or repeats one in a block) | compile time | `SyntaxError`, kind `Invalid`, at the second declaration |
+| A name declared twice in one block, script, function body or `switch` case block (including a `let` that repeats a parameter, and a function declaration that clashes with a `let`/`const` or repeats one in a block) | compile time | `SyntaxError`, kind `Invalid`, at the second declaration |
 | A function declaration that repeats a parameter or another function declaration at the top level of a script or function body (valid JavaScript) | compile time | `SyntaxError`, kind `Unsupported`, at the second name |
 | Property access other than `__rt.name(...)`, and (in `compile_function`) assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
 | Misuse of the reserved intrinsic binding `__rt` | compile time | see "Reserved intrinsic binding" |
@@ -473,7 +491,17 @@ Gaps specific to execution:
   decides it statically. A closure may run at any time, so a binding a
   closure captures is checked at run time when it may be read before its
   initialization: it lives in a binding cell, which raises the
-  `ReferenceError` (clj-quickjs-20).
+  `ReferenceError` (clj-quickjs-20). The one jump that does enter a scope
+  past declarations is a `switch` selecting a clause (clj-quickjs-83):
+  control enters the case block at the matching clause (or `default`), past
+  the declarations of the clauses before it. So every `let`/`const`
+  declared in a clause before the last non-empty one lives in a binding
+  cell, captured or not, and each read or assignment after its declaration
+  checks it at run time (`switch (1) { case 0: let y = 1; case 1: y; }` is
+  a ReferenceError at `y`). A reference before the declaration, in an
+  earlier clause or a `case` test, always runs before it and is still
+  decided statically, as are the bindings of the last non-empty clause,
+  which no clause after it can reach.
 - **Captured bindings are values or cells.** A captured binding that is
   never assigned and is initialized whenever a closure over it is created
   is copied into the closure; any other captured binding (assigned
@@ -546,6 +574,10 @@ function f(__rt) { return 1; }
 
 ```js compile-reject Invalid 1:6
 __rt.toString();
+```
+
+```js compile-reject Invalid 1:41
+switch (x) { case 1: let a; case 2: let a; }
 ```
 
 ```js reject ReservedWord 1:5
@@ -659,6 +691,20 @@ let x = 0;
 x: { if (x) break x; x = 1; }
 while (1) L: break
 x
+```
+
+```js accept
+// `switch` (clj-quickjs-83): `===` matching, `default` anywhere,
+// fall-through; `break` leaves the switch, `continue` its loop. The
+// clauses are one scope.
+for (let i = 0; i < 4; i++) {
+  switch (i) {
+    default: log(i);
+    case 0: case 1: { break; }
+    case 2: continue;
+    case "3": let s = i; function f() { return s; }
+  }
+}
 ```
 
 ```js accept
@@ -803,6 +849,14 @@ while (x) {
 while (x) break outer;
 ```
 
+```js reject Invalid 1:23
+switch (x) { default: default: }
+```
+
+```js reject Invalid 1:22
+switch (x) { case 1: continue; }
+```
+
 ```js reject Invalid 1:15
 L: { continue L; }
 ```
@@ -943,6 +997,12 @@ and `OP_close_loc` on the loop variables before the update, the
 per-iteration copy that this lowering does with new binding cells). The
 first group of `test_for` of `research/quickjs/tests/test_loop.js` is
 adapted in `tests/js_source.rs` `for_loops` with the notice.
+For `switch` (clj-quickjs-83): the `TOK_SWITCH` case of
+`js_parse_statement_or_decl` (the discriminant evaluated once, `case`
+tests in order with `OP_strict_eq`, then a jump to `default`; one scope
+for the case block; "duplicate default"). `test_switch1` and
+`test_switch2` of `research/quickjs/tests/test_loop.js` are adapted in
+`tests/js_source.rs` `switch_statements` with the notice.
 `test_try_catch5` of `research/quickjs/tests/test_loop.js` is adapted in
 `tests/exceptions.rs` `break_and_continue_run_finally_blocks` and in
 `tests/fixtures/js/quickjs_try_catch.js`, each with the notice. The tests

@@ -81,6 +81,13 @@ impl Stmt {
                 .max(handler.as_ref().map_or(0, |h| max_height(&h.body)))
                 .max(finalizer.as_deref().map_or(0, max_height)),
             StmtKind::Labelled { body, .. } => body.height,
+            StmtKind::Switch {
+                discriminant,
+                cases,
+            } => cases.iter().fold(discriminant.height, |h, c| {
+                h.max(c.test.as_ref().map_or(0, |e| e.height))
+                    .max(max_height(&c.body))
+            }),
             StmtKind::Return(None)
             | StmtKind::Break(_)
             | StmtKind::Continue(_)
@@ -145,9 +152,10 @@ pub enum StmtKind {
         handler: Option<CatchClause>,
         finalizer: Option<Vec<Stmt>>,
     },
-    /// `break;` leaves the innermost enclosing loop (only inside a loop of
-    /// the same function); `break L;` (clj-quickjs-82) leaves the enclosing
-    /// statement labelled `L` of the same function.
+    /// `break;` leaves the innermost enclosing loop or `switch`
+    /// (clj-quickjs-83) (only inside one of the same function); `break L;`
+    /// (clj-quickjs-82) leaves the enclosing statement labelled `L` of the
+    /// same function.
     Break(Option<Ident>),
     /// `continue;` starts the next iteration of the innermost enclosing
     /// loop (only inside a loop of the same function); `continue L;`
@@ -160,8 +168,29 @@ pub enum StmtKind {
         label: Ident,
         body: Box<Stmt>,
     },
+    /// `switch (discriminant) { case e: ... default: ... }`
+    /// (clj-quickjs-83). The clauses are in source order, with at most one
+    /// `default`, anywhere among them. The clause bodies together form one
+    /// statement list (one scope, the case block), which control may enter
+    /// at the start of any clause.
+    Switch {
+        discriminant: Expr,
+        cases: Vec<SwitchCase>,
+    },
     /// `;`
     Empty,
+}
+
+/// A `case test:` clause (or, without a test, `default:`) of a `switch`
+/// with the statements up to the next clause.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SwitchCase {
+    /// `None` for `default`.
+    pub test: Option<Expr>,
+    pub body: Vec<Stmt>,
+    /// From the `case`/`default` keyword to the end of its last statement
+    /// (or its `:`).
+    pub span: Span,
 }
 
 /// The head of a `for` statement before its first `;`.

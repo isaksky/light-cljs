@@ -448,6 +448,21 @@ fn script_completion_value_follows_javascript() {
     );
     assert_eq!(num("5; L: while (true) { 6; { break L; } }"), 6.0);
     assert_eq!(num("5; L: { try { 6; break L; } finally { 7; } }"), 6.0);
+    // `switch` (clj-quickjs-83): undefined at entry, then the value of the
+    // clauses that ran.
+    assert_eq!(num("switch (1) { case 1: 7; case 2: 8; }"), 8.0);
+    assert_eq!(eval("5; switch (1) { case 1: }"), ValueView::Undefined);
+    assert_eq!(eval("5; switch (3) { case 1: 6; }"), ValueView::Undefined);
+    assert_eq!(num("5; switch (1) { case 1: 6; break; case 2: 7; }"), 6.0);
+    assert_eq!(
+        num("5; switch (2) { case 1: 6; default: 7; case 2: 8; }"),
+        8.0
+    );
+    assert_eq!(
+        eval("5; switch (1) { case 1: 6; switch (2) { case 2: break; } }"),
+        ValueView::Undefined
+    );
+    assert_eq!(num("5; L: switch (1) { case 1: 6; { break L; } }"), 6.0);
 }
 
 /// Unlabelled `break` and `continue` in `while` loops (clj-quickjs-78).
@@ -1311,6 +1326,342 @@ fn labelled_break_and_continue() {
     let (a, b) = handle.join().unwrap();
     a.unwrap();
     b.unwrap();
+}
+
+/// `switch` statements (clj-quickjs-83). `TEST_SWITCH1` and `TEST_SWITCH2`
+/// are adapted from `test_switch1` and `test_switch2` in
+/// `research/quickjs/tests/test_loop.js` (QuickJS, revision 7d1c13c5d8f8;
+/// see `docs/architecture.md` for the attribution): `let` for `var`, and
+/// the asserted condition is the completion value. The numeric versions map
+/// `"a"`, `"b"`, `"c"` to the digits 1, 2, 3 and append with
+/// `s = s * 10 + d` (`a = i` for `a = "" + i`); the string versions append
+/// with `s = s + a` for `s += a` (compound assignment is clj-quickjs-84).
+/// The other scripts are written for this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn switch_statements() {
+    const TEST_SWITCH1: &str = "
+        let i, a, s;
+        s = 0;
+        for(i = 0; i < 3; i++) {
+            a = 0;
+            switch(i) {
+            case 0:
+                a = 1;
+                break;
+            case 1:
+                a = 2;
+                break;
+            default:
+                a = 3;
+                break;
+            }
+            s = s * 10 + a;
+        }
+        s === 123 && i === 3";
+    assert_eq!(eval(TEST_SWITCH1), ValueView::Bool(true));
+    const TEST_SWITCH2: &str = "
+        let i, a, s;
+        s = 0;
+        for(i = 0; i < 4; i++) {
+            a = 0;
+            switch(i) {
+            case 0:
+                a = 1;
+                break;
+            case 1:
+                a = 2;
+                break;
+            case 2:
+                continue;
+            default:
+                a = i;
+                break;
+            }
+            s = s * 10 + a;
+        }
+        s === 123 && i === 4";
+    assert_eq!(eval(TEST_SWITCH2), ValueView::Bool(true));
+    assert_eq!(
+        eval(
+            r#"
+        let i, a, s;
+        s = "";
+        for(i = 0; i < 3; i++) {
+            a = "?";
+            switch(i) {
+            case 0:
+                a = "a";
+                break;
+            case 1:
+                a = "b";
+                break;
+            default:
+                a = "c";
+                break;
+            }
+            s = s + a;
+        }
+        s === "abc" && i === 3"#
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval(
+            r#"
+        let i, a, s;
+        s = "";
+        for(i = 0; i < 4; i++) {
+            a = "?";
+            switch(i) {
+            case 0:
+                a = "a";
+                break;
+            case 1:
+                a = "b";
+                break;
+            case 2:
+                continue;
+            default:
+                a = "" + i;
+                break;
+            }
+            s = s + a;
+        }
+        s === "ab3" && i === 4"#
+        ),
+        ValueView::Bool(true)
+    );
+
+    // The same loop under a 3-instruction budget yields inside the switch
+    // and resumes there with the same result.
+    let looping = exe(TEST_SWITCH2);
+    let task = Runtime::new().spawn(&looping, &[]).unwrap();
+    let mut yields = 0;
+    let result = loop {
+        match task
+            .run_with(Budget::instructions(3), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => yields += 1,
+            RunOutcome::Complete(v) => break v.view(),
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(result, ValueView::Bool(true));
+    assert!(yields >= 10, "{yields} yields");
+
+    // Matching is strict equality.
+    assert_eq!(num("let r = 0; switch (0) { case -0: r = 1; } r"), 1.0);
+    assert_eq!(
+        num("let r = 0; switch (NaN) { case NaN: r = 1; break; default: r = 2; } r"),
+        2.0
+    );
+    assert_eq!(
+        num(r#"let r = 0; switch ("1") { case 1: r = 1; break; default: r = 2; } r"#),
+        2.0
+    );
+    assert_eq!(
+        num(r#"let r = 0; switch ("ab") { case "a": r = 1; break; case "a" + "b": r = 2; } r"#),
+        2.0
+    );
+    assert_eq!(
+        num("let r = 0; switch (null) { case undefined: r = 1; break; case null: r = 2; } r"),
+        2.0
+    );
+    assert_eq!(
+        num(
+            "let r = 0; const f = () => 1; switch (f) { case () => 1: r = 1; break; case f: r = 2; } r"
+        ),
+        2.0
+    );
+    // No match and no `default`: nothing runs.
+    assert_eq!(
+        num("let r = 0; switch (3) { case 1: r = 1; case 2: r = 2; } r"),
+        0.0
+    );
+
+    // The discriminant is evaluated once; the tests in source order until
+    // one matches, and none after it.
+    assert_eq!(
+        num("let n = 0, d = 0;
+             function t(v) { n = n * 10 + v; return v; }
+             switch ((d = d + 1, 2)) { case t(1): case t(2): n = n * 10 + 9; break; case t(3): n = 0; }
+             n * 10 + d"),
+        1291.0
+    );
+    // With no match, every test runs before `default`, wherever it is.
+    assert_eq!(
+        num("let n = 0;
+             function t(v) { n = n * 10 + v; return v; }
+             switch (5) { case t(1): n = 0; default: n = n * 10 + 7; case t(2): n = n * 10 + 8; break; case t(3): n = 0; }
+             n"),
+        12378.0
+    );
+
+    // Fall-through, including from `default` placed before other clauses,
+    // and `default` in the middle when a later case matches.
+    assert_eq!(
+        num(
+            "let s = 0; switch (9) { default: s = s * 10 + 1; case 1: s = s * 10 + 2; break; case 2: s = 99; } s"
+        ),
+        12.0
+    );
+    assert_eq!(
+        num(
+            "let s = 0; switch (3) { case 1: s = 1; default: s = s * 10 + 2; case 3: s = s * 10 + 3; } s"
+        ),
+        3.0
+    );
+    assert_eq!(
+        num(
+            "let s = 0; switch (1) { case 1: s = s * 10 + 1; case 2: case 3: s = s * 10 + 3; default: s = s * 10 + 4; } s"
+        ),
+        134.0
+    );
+
+    // `break` leaves the innermost switch or loop; `continue` passes the
+    // switch to its loop; a labelled `break` leaves a labelled switch.
+    assert_eq!(
+        num("let s = 0;
+             switch (1) { case 1: switch (2) { case 2: s = 1; break; } s = s * 10 + 2; }
+             s"),
+        12.0
+    );
+    assert_eq!(
+        num("let s = 0;
+             switch (1) { case 1: for (let i = 0; ; i++) { if (i === 3) break; s++; } s = s * 10; }
+             s"),
+        30.0
+    );
+    assert_eq!(
+        num("let s = 0;
+             L: switch (1) { case 1: while (true) { s++; break L; } s = 99; }
+             s"),
+        1.0
+    );
+    assert_eq!(
+        num("let s = 0, i = 0;
+             L: while (i < 5) { i++; switch (i % 2) { case 0: continue L; default: s = s * 10 + i; } }
+             s"),
+        135.0
+    );
+    // Jumps out of a switch through finally blocks run them.
+    assert_eq!(
+        num("let log = 0;
+             for (let i = 0; i < 3; i++) {
+                 switch (i) {
+                 case 1: try { continue; } finally { log = log * 10 + 1; }
+                 default: try { break; } finally { log = log * 10 + 2; }
+                 }
+             }
+             log"),
+        212.0
+    );
+    // `return` from a clause.
+    assert_eq!(
+        num(
+            "function f(x) { switch (x) { case 1: return 10; default: return 20; } }
+             f(1) + f(2)"
+        ),
+        30.0
+    );
+
+    // The case block is one scope: function declarations are hoisted to
+    // its start, so a later clause sees one declared in a skipped clause.
+    assert_eq!(
+        num("let r = 0; switch (1) { case 0: function f() { return 7; } case 1: r = f(); } r"),
+        7.0
+    );
+    // Entering a clause past a `let`/`const` leaves it uninitialized: a
+    // run-time ReferenceError at the reference or assignment.
+    let cases = [
+        ("switch (1) { case 0: let y = 1; case 1: y; }", "y", 1, 41),
+        (
+            "switch (1) { case 0: let y = 1; case 1: y = 2; }",
+            "y",
+            1,
+            41,
+        ),
+        (
+            "switch (1) {\ncase 0:\n  const c = 1;\ndefault:\ncase 1:\n  c;\n}",
+            "c",
+            6,
+            3,
+        ),
+        // The tests run before every clause body.
+        ("switch (1) { case y: let y = 1; }", "y", 1, 19),
+        (
+            "switch (1) { case 0: let y = 1; case 1: function g() { return y; } g(); }",
+            "y",
+            1,
+            63,
+        ),
+    ];
+    for (src, name, line, column) in cases {
+        let (kind, message, l, c) = failure_at(src);
+        assert_eq!(kind, VmErrorKind::ReferenceError, "{src}");
+        assert_eq!(
+            message,
+            format!("cannot access '{name}' before initialization"),
+            "{src}"
+        );
+        assert_eq!((l, c), (line, column), "{src}");
+    }
+    // Entered at its declaration's clause, the binding is initialized.
+    assert_eq!(
+        num("let r = 0; switch (0) { case 0: let y = 1; case 1: y = y + 1; r = y; } r"),
+        2.0
+    );
+    // Each execution of the case block makes new bindings.
+    assert_eq!(
+        num("let s = 0;
+             for (let i = 0; i < 3; i++) {
+                 switch (i) { case 0: let y = 5; case 1: s = s * 10 + i; default: }
+             }
+             s"),
+        1.0
+    );
+    assert_eq!(
+        failure_at("for (let i = 0; i < 2; i++) { switch (i) { case 0: let y = 5; case 1: y; } }")
+            .0,
+        VmErrorKind::ReferenceError
+    );
+    // A closure created in one clause sees a `let` assigned in a later
+    // clause, and fails if it runs before the declaration ran.
+    assert_eq!(
+        num("let f; switch (0) { case 0: f = () => x; case 1: let x = 1; case 2: x = 5; } f()"),
+        5.0
+    );
+    assert_eq!(
+        failure_at("switch (0) { case 0: let g = () => x; g(); case 1: let x = 1; }").0,
+        VmErrorKind::ReferenceError
+    );
+
+    // Switches nested near the nesting limit compile within the 2 MiB stack
+    // the parser is tested with.
+    let nested = format!("{}x;{}", "switch (1) { case 1: ".repeat(60), "}".repeat(60));
+    let handle = std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(move || compile_script("switches", &nested).map(|_| ()))
+        .unwrap();
+    handle.join().unwrap().unwrap();
 }
 
 #[test]

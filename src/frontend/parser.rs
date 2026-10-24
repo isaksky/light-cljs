@@ -10,7 +10,7 @@
 
 use super::ast::{
     BinaryOp, CatchClause, Declarator, Expr, ExprKind, ForInit, Function, FunctionKind, Ident,
-    LexicalDecl, LexicalKind, LogicalOp, Script, Stmt, StmtKind, UnaryOp, UpdateOp,
+    LexicalDecl, LexicalKind, LogicalOp, Script, Stmt, StmtKind, SwitchCase, UnaryOp, UpdateOp,
 };
 use super::intrinsics::RESERVED_BINDING;
 use super::lexer::{Keyword, Lexer, Punct, Token, TokenKind};
@@ -60,6 +60,9 @@ pub(super) struct Parser<'a> {
     /// Inside the body of a loop of the current function (`break` and
     /// `continue` are allowed).
     in_loop: bool,
+    /// Inside the case block of a `switch` of the current function
+    /// (clj-quickjs-83): an unlabelled `break` is allowed.
+    in_switch: bool,
     /// The labels of the enclosing labelled statements of the current
     /// function, outermost first.
     labels: Vec<LabelEntry>,
@@ -87,6 +90,7 @@ impl<'a> Parser<'a> {
             depth: 0,
             in_function: false,
             in_loop: false,
+            in_switch: false,
             labels: Vec::new(),
         }
     }
@@ -260,29 +264,23 @@ impl<'a> Parser<'a> {
         self.deeper(cost::STATEMENT)?;
         let start = self.tok.span.start;
         let kind = match &self.tok.kind {
-            TokenKind::Punct(Punct::LBrace) => StmtKind::Block(self.parse_block()?),
-            TokenKind::Punct(Punct::Semicolon) => {
-                self.advance()?;
-                StmtKind::Empty
-            }
-            TokenKind::Keyword(Keyword::If) => self.parse_if()?,
-            TokenKind::Keyword(Keyword::While) => self.parse_while()?,
-            TokenKind::Keyword(Keyword::Do) => self.parse_do_while()?,
-            TokenKind::Keyword(Keyword::For) => self.parse_for()?,
-            TokenKind::Keyword(Keyword::Return) => self.parse_return()?,
-            TokenKind::Keyword(Keyword::Throw) => self.parse_throw()?,
-            TokenKind::Keyword(Keyword::Try) => self.parse_try()?,
-            TokenKind::Keyword(Keyword::Break | Keyword::Continue) => {
-                self.parse_break_continue()?
-            }
-            TokenKind::Identifier(_) if self.at_label() => self.parse_labelled()?,
-            _ => {
-                if let Some(error) = self.statement_start_error() {
-                    return Err(error);
-                }
-                self.parse_expression_statement()?
-            }
-        };
+            TokenKind::Punct(Punct::LBrace) => self.parse_block().map(StmtKind::Block),
+            TokenKind::Punct(Punct::Semicolon) => self.advance().map(|_| StmtKind::Empty),
+            TokenKind::Keyword(Keyword::If) => self.parse_if(),
+            TokenKind::Keyword(Keyword::While) => self.parse_while(),
+            TokenKind::Keyword(Keyword::Do) => self.parse_do_while(),
+            TokenKind::Keyword(Keyword::For) => self.parse_for(),
+            TokenKind::Keyword(Keyword::Return) => self.parse_return(),
+            TokenKind::Keyword(Keyword::Throw) => self.parse_throw(),
+            TokenKind::Keyword(Keyword::Try) => self.parse_try(),
+            TokenKind::Keyword(Keyword::Switch) => self.parse_switch(),
+            TokenKind::Keyword(Keyword::Break | Keyword::Continue) => self.parse_break_continue(),
+            TokenKind::Identifier(_) if self.at_label() => self.parse_labelled(),
+            _ => match self.statement_start_error() {
+                Some(error) => Err(error),
+                None => self.parse_expression_statement(),
+            },
+        }?;
         self.depth = saved;
         self.bounded(Stmt::new(kind, self.span_from(start)))
     }
@@ -499,6 +497,72 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// SwitchStatement (clj-quickjs-83): `switch` `(` Expression `)` `{`
+    /// CaseClause* `}`, where a CaseClause is `case` Expression `:` or
+    /// `default` `:`, followed by StatementListItems up to the next clause
+    /// (QuickJS `TOK_SWITCH` in `js_parse_statement_or_decl`). The case
+    /// block is charged as a block. Early error (`Invalid`): a second
+    /// `default`, at its keyword ("duplicate default"). Redeclarations
+    /// across clauses (the case block is one scope) are compiler errors, as
+    /// for any statement list. An unlabelled `break` in a clause leaves the
+    /// switch; `continue` still needs an enclosing loop.
+    #[inline(never)]
+    fn parse_switch(&mut self) -> PResult<StmtKind> {
+        let saved = self.depth;
+        self.deeper(cost::BODY + cost::BLOCK)?;
+        self.advance()?;
+        let discriminant = self.parse_paren_condition()?;
+        self.expect_punct(Punct::LBrace)?;
+        let outer = std::mem::replace(&mut self.in_switch, true);
+        let mut cases: Vec<SwitchCase> = Vec::new();
+        let mut has_default = false;
+        while !self.is_punct(Punct::RBrace) {
+            let start = self.tok.span.start;
+            let test = match self.tok.kind {
+                TokenKind::Keyword(Keyword::Case) => {
+                    self.advance()?;
+                    Some(self.parse_expression()?)
+                }
+                TokenKind::Keyword(Keyword::Default) => {
+                    if has_default {
+                        return Err(self.error(
+                            SyntaxErrorKind::Invalid,
+                            self.tok.span,
+                            "a `switch` statement can have only one `default` clause",
+                        ));
+                    }
+                    has_default = true;
+                    self.advance()?;
+                    None
+                }
+                TokenKind::Eof => return Err(self.unexpected("`}`")),
+                _ => return Err(self.unexpected("`case`, `default` or `}`")),
+            };
+            self.expect_punct(Punct::Colon)?;
+            let mut body = Vec::new();
+            while !matches!(
+                self.tok.kind,
+                TokenKind::Keyword(Keyword::Case | Keyword::Default)
+                    | TokenKind::Punct(Punct::RBrace)
+                    | TokenKind::Eof
+            ) {
+                body.push(self.parse_statement_list_item()?);
+            }
+            cases.push(SwitchCase {
+                test,
+                body,
+                span: self.span_from(start),
+            });
+        }
+        self.advance()?;
+        self.in_switch = outer;
+        self.depth = saved;
+        Ok(StmtKind::Switch {
+            discriminant,
+            cases,
+        })
+    }
+
     /// `for` `(` ForInit? `;` Expression? `;` Expression? `)`. Out of line,
     /// so the frame of [`Self::parse_for`], which recurses through the
     /// body, stays small.
@@ -599,9 +663,10 @@ impl<'a> Parser<'a> {
     /// BreakStatement: `break` [no LineTerminator here] LabelIdentifier? `;`
     /// and ContinueStatement likewise. Restricted productions: a line break
     /// after the keyword ends the statement. Early errors (QuickJS
-    /// `emit_break`; the subset has no `switch` yet): an unlabelled one
-    /// outside a loop of the same function ("break must be inside loop or
-    /// switch", "continue must be inside loop"); a label that no enclosing
+    /// `emit_break`): an unlabelled `break` outside a loop or `switch`
+    /// (clj-quickjs-83) of the same function ("break must be inside loop or
+    /// switch"), an unlabelled `continue` outside a loop of the same
+    /// function ("continue must be inside loop"); a label that no enclosing
     /// labelled statement of the same function declares ("break/continue
     /// label not found"); `continue` to a label of a statement that is not
     /// a loop (clj-quickjs-82).
@@ -653,11 +718,17 @@ impl<'a> Parser<'a> {
         } else {
             StmtKind::Continue(None)
         };
-        if !self.in_loop {
+        let allowed = self.in_loop || (is_break && self.in_switch);
+        if !allowed {
+            let place = if is_break {
+                "a loop or `switch`"
+            } else {
+                "a loop"
+            };
             return Err(self.error(
                 SyntaxErrorKind::Invalid,
                 keyword.span,
-                format!("`{name}` must be inside a loop of the same function"),
+                format!("`{name}` must be inside {place} of the same function"),
             ));
         }
         self.expect_semi()?;
@@ -830,10 +901,12 @@ impl<'a> Parser<'a> {
         let (name, params) = self.parse_function_head(declaration)?;
         let outer = std::mem::replace(&mut self.in_function, true);
         let outer_loop = std::mem::replace(&mut self.in_loop, false);
+        let outer_switch = std::mem::replace(&mut self.in_switch, false);
         let outer_labels = std::mem::take(&mut self.labels);
         let body = self.parse_block()?;
         self.in_function = outer;
         self.in_loop = outer_loop;
+        self.in_switch = outer_switch;
         self.labels = outer_labels;
         self.depth = saved;
         let function = Function::new(
@@ -917,10 +990,12 @@ impl<'a> Parser<'a> {
         let (kind, body) = if self.is_punct(Punct::LBrace) {
             let outer = std::mem::replace(&mut self.in_function, true);
             let outer_loop = std::mem::replace(&mut self.in_loop, false);
+            let outer_switch = std::mem::replace(&mut self.in_switch, false);
             let outer_labels = std::mem::take(&mut self.labels);
             let body = self.parse_block()?;
             self.in_function = outer;
             self.in_loop = outer_loop;
+            self.in_switch = outer_switch;
             self.labels = outer_labels;
             (FunctionKind::Arrow, body)
         } else {
@@ -1583,7 +1658,6 @@ fn is_compound_assign(p: Punct) -> bool {
 fn unsupported_statement(k: Keyword) -> Option<&'static str> {
     Some(match k {
         Keyword::Var => "`var` declarations are (use `let` or `const`)",
-        Keyword::Switch => "`switch` is",
         Keyword::Class => "classes are",
         Keyword::Import => "modules (`import`) are",
         Keyword::Export => "modules (`export`) are",

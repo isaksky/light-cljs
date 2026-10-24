@@ -543,7 +543,10 @@ Code: `src/vm/function.rs` (contract), `src/vm/dispatch.rs`; tests:
   binding is a binding cell: `new_cell` on scope entry (parameters are moved
   into a cell on function entry), `cell_init` at the declaration,
   `cell_get`/`cell_set` at every use, so the VM performs the temporal-dead-
-  zone check for closures that run early. Assignment to a cell goes through
+  zone check for closures that run early. A `let`/`const` declared in a
+  `switch` clause before the last non-empty one is a cell too, captured or
+  not, because control can enter a later clause past its declaration
+  (clj-quickjs-83). Assignment to a cell goes through
   a scratch local (the value is evaluated first, as in JavaScript). Copying
   matters for publication: only closures without cells are shareable.
 - **Self-reference.** A function's own name inside it lowers to
@@ -556,7 +559,9 @@ Code: `src/vm/function.rs` (contract), `src/vm/dispatch.rs`; tests:
   declarations' closures in source order; only then do its statements run.
   A declaration that uses a binding not yet initialized at that point (a
   later sibling function, or a `let`/`const` of the list) captures it as a
-  cell. Within the declaring function, the static TDZ decision still holds.
+  cell. Within the declaring function, the static TDZ decision still holds,
+  except for the `switch` bindings above, which the cell checks at run
+  time.
 - **Reserved intrinsic binding** (`src/frontend/intrinsics.rs`, the
   contract and table; `docs/grammar.md`, "Reserved intrinsic binding").
   `__rt` is a binding in the scope outside the outermost function. It cannot
@@ -1573,3 +1578,17 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `js_dtoa2` were consulted only, for semantics; the Number::toString
   layout in `src/value/string.rs` follows ECMA-262 and takes its digits
   from Rust's shortest and correctly rounded formatting. No code was copied.
+- `tests/js_source.rs` `switch_statements` (clj-quickjs-83):
+  `test_switch1` (line 208) and `test_switch2` (line 230) of
+  `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8, as
+  JavaScript source compiled by this frontend. Modified: `let` for `var`,
+  `s = s + a` for `s += a`, and the asserted condition is the script's
+  completion value; a numeric version maps `"a"`, `"b"`, `"c"` to 1, 2, 3
+  and appends with `s = s * 10 + a` (and sets `a = i` for `a = "" + i`).
+  The test carries the full notice. The
+  `TOK_SWITCH` case of `js_parse_statement_or_decl` in
+  `research/quickjs/quickjs.c` (discriminant evaluated once, cases tested
+  in order with `strict_eq`, then a jump to `default`; one scope for the
+  case block; "duplicate default") was consulted only. Unlike QuickJS,
+  the discriminant lives in a scratch local rather than on the operand
+  stack, and all tests precede the clause bodies. No code was copied.

@@ -244,6 +244,22 @@ fn render_stmt(s: &Stmt) -> String {
         StmtKind::Labelled { label, body } => {
             format!("(label {} {})", label.name, render_stmt(body))
         }
+        StmtKind::Switch {
+            discriminant,
+            cases,
+        } => {
+            let mut out = format!("(switch {}", render_expr(discriminant));
+            for case in cases {
+                let head = match &case.test {
+                    Some(test) => format!("case {}", render_expr(test)),
+                    None => "default".to_string(),
+                };
+                out.push(' ');
+                out.push_str(&render_list(&head, &case.body));
+            }
+            out.push(')');
+            out
+        }
         StmtKind::Empty => "(empty)".into(),
     }
 }
@@ -756,6 +772,99 @@ fn do_while_statements() {
     rejects("do x; y;", UnexpectedToken, 1, 7);
     rejects("do x;", UnexpectedEnd, 1, 6);
     rejects("do x; while y;", UnexpectedToken, 1, 13);
+}
+
+/// `switch` statements (clj-quickjs-83).
+#[test]
+fn switch_statements() {
+    use SyntaxErrorKind::{Invalid, UnexpectedEnd, UnexpectedToken};
+    assert_eq!(ast("switch (x) {}"), "(switch x)");
+    assert_eq!(ast("switch (a, b) { }"), "(switch (, a b))");
+    // Clauses with and without bodies; a body is a statement list.
+    assert_eq!(
+        ast("switch (x) { case 1: case 2: a; b; case 3: { c; } }"),
+        "(switch x (case 1) (case 2 a b) (case 3 (block c)))"
+    );
+    assert_eq!(
+        ast("switch (x) { case 1: let a = 1; function f() {} const c = 2; }"),
+        "(switch x (case 1 (let (a 1)) (function f ()) (const (c 2))))"
+    );
+    assert_eq!(
+        ast("switch (x) { case y ? 1 : 2: z; }"),
+        "(switch x (case (? y 1 2) z))"
+    );
+    // `default` first, in the middle and last.
+    assert_eq!(
+        ast("switch (x) { default: a; case 1: b; }"),
+        "(switch x (default a) (case 1 b))"
+    );
+    assert_eq!(
+        ast("switch (x) { case 1: default: case 2: c; }"),
+        "(switch x (case 1) (default) (case 2 c))"
+    );
+    assert_eq!(
+        ast("switch (x) { case 1: break; default: }"),
+        "(switch x (case 1 (break)) (default))"
+    );
+    // `break` inside a clause; `continue` targets an enclosing loop; labels.
+    assert_eq!(
+        ast("while (a) switch (x) { case 1: continue; default: break; }"),
+        "(while a (switch x (case 1 (continue)) (default (break))))"
+    );
+    assert_eq!(
+        ast("L: switch (x) { case 1: if (y) break L; }"),
+        "(label L (switch x (case 1 (if y (break L)))))"
+    );
+    assert_eq!(
+        ast("switch (x) { case 1: while (y) break; break; }"),
+        "(switch x (case 1 (while y (break)) (break)))"
+    );
+    // Early errors.
+    rejects_with(
+        "switch (x) { default: default: }",
+        Invalid,
+        1,
+        23,
+        "only one `default`",
+    );
+    rejects_with(
+        "switch (x) { case 1: continue; }",
+        Invalid,
+        1,
+        22,
+        "inside a loop",
+    );
+    rejects("L: switch (x) { case 1: continue L; }", Invalid, 1, 34);
+    rejects(
+        "switch (x) { case 1: function f() { break; } }",
+        Invalid,
+        1,
+        37,
+    );
+    rejects("switch (x) {} break;", Invalid, 1, 15);
+    // Malformed case blocks.
+    rejects("switch (x) { a; }", UnexpectedToken, 1, 14);
+    rejects("switch (x) { case 1 }", UnexpectedToken, 1, 21);
+    rejects("switch (x) { default }", UnexpectedToken, 1, 22);
+    rejects("switch x {}", UnexpectedToken, 1, 8);
+    rejects("switch (x) { case 1:", UnexpectedEnd, 1, 21);
+    // The case block is one scope: a redeclaration across clauses is a
+    // compile-time early error at the second declaration.
+    let e = super::compile_script("s", "switch (x) { case 1: let a; case 2: let a; }")
+        .expect_err("redeclaration across clauses");
+    assert_eq!((e.kind, e.line, e.column), (Invalid, 1, 41), "{e}");
+    let e = super::compile_script(
+        "s",
+        "switch (x) { case 1: function f() {} default: const f = 1; }",
+    )
+    .expect_err("redeclaration across clauses");
+    assert_eq!((e.kind, e.line, e.column), (Invalid, 1, 53), "{e}");
+    // Sibling switches and nested blocks may reuse names.
+    super::compile_script(
+        "s",
+        "switch (x) { case 1: let a; } switch (x) { case 1: { let a; } let a; }",
+    )
+    .expect("no redeclaration");
 }
 
 #[test]
@@ -1723,7 +1832,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("function* g() {}", 1, 1, "generator"),
         ("var x = 1;", 1, 1, "var"),
         ("for (x of y) {}", 1, 1, "for`-`of"),
-        ("switch (x) {}", 1, 1, "switch"),
         ("try {} catch ([e]) {}", 1, 15, "destructuring"),
         ("with (o) {}", 1, 1, "with"),
         ("debugger;", 1, 1, "debugger"),
@@ -1808,6 +1916,7 @@ fn deep_nesting_is_rejected_without_overflowing_the_stack() {
         format!("{}x;", "while (1) ".repeat(n)),
         format!("{}x;{}", "do ".repeat(n), " while (1)".repeat(n)),
         format!("{}x;", "for (;;) ".repeat(n)),
+        format!("{}x;{}", "switch (1) { case 1: ".repeat(n), "}".repeat(n)),
         format!("{}x;", "for (let i = 0; i < 1; i = i + 1) ".repeat(n)),
         format!("{}{}", "function f() {".repeat(n), "}".repeat(n)),
         format!(
@@ -1875,6 +1984,9 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
             format!("{}x;{}", "do ".repeat(n), " while (1)".repeat(n))
         }),
         ("for", |n| format!("{}x;", "for (;;) ".repeat(n))),
+        ("switch", |n| {
+            format!("{}x;{}", "switch (1) { case 1: ".repeat(n), "}".repeat(n))
+        }),
         ("label sets", |n| {
             let labels: String = (0..n).map(|i| format!("l{i}: ")).collect();
             format!("{labels}x;")

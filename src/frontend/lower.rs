@@ -69,6 +69,11 @@
 //! always runs after. Such references, assignments to `const` bindings and
 //! references to undeclared names lower to `throw_error`. Only closures can
 //! run a reference at another time, and they use the run-time check above.
+//! The exception is a `switch` (clj-quickjs-83), which enters its case
+//! block at the selected clause, past the declarations of the clauses
+//! before it: those `let`/`const` bindings are cells, captured or not, so
+//! the references after them check at run time
+//! (`Lowerer::switch_statement`).
 //!
 //! **Reserved intrinsic binding.** `__rt` resolves to the outermost scope;
 //! see [`super::intrinsics`] for the contract and the table.
@@ -105,7 +110,8 @@
 //!
 //! **`break` and `continue`** (clj-quickjs-78) jump to the end
 //! or the `continue` target (the test, or a `for` loop's update) of the
-//! innermost loop of the running function, or with a label (clj-quickjs-82)
+//! innermost loop of the running function (an unlabelled `break` to the end
+//! of an inner `switch`, clj-quickjs-83), or with a label (clj-quickjs-82)
 //! to the end of the innermost statement with that label or the `continue`
 //! target of the innermost loop with that label in its label set
 //! (`Lowerer::jump`, `Lowerer::labelled`), first popping the catch handler of every `try` block
@@ -121,7 +127,7 @@ use std::sync::Arc;
 
 use super::ast::{
     BinaryOp, CatchClause, Expr, ExprKind, ForInit, Function, Ident, LexicalDecl, LexicalKind,
-    LogicalOp, Script, Stmt, StmtKind, UnaryOp, UpdateOp,
+    LogicalOp, Script, Stmt, StmtKind, SwitchCase, UnaryOp, UpdateOp,
 };
 use super::intrinsics::{self, Arity, Lowering, RESERVED_BINDING};
 use super::lexer::{Lexer, TokenKind};
@@ -395,6 +401,9 @@ enum Exit {
     /// to one of its labels jumps to `brk`, past it. An unlabelled `break`
     /// passes it by.
     Labelled { labels: Vec<String>, brk: usize },
+    /// The case block of a `switch` (clj-quickjs-83): an unlabelled `break`
+    /// jumps to `brk`, past it; `continue` and labelled jumps pass it by.
+    Switch { brk: usize },
     /// The block of a `try` statement with a catch clause: its catch handler
     /// is on the handler stack, so leaving pops it.
     Catch,
@@ -638,31 +647,58 @@ impl<'s> Lowerer<'s> {
         params: &[Ident],
         top_level: bool,
     ) -> Result<(), SyntaxError> {
+        let saved_slot = self.enter_scope(&[body], params, top_level, 0)?;
+        for stmt in body {
+            self.statement(stmt)?;
+        }
+        self.exit_scope(saved_slot);
+        Ok(())
+    }
+
+    /// Enter the scope of a statement list made of `clauses` (one slice for
+    /// a script, function body or block; the clause bodies of a `switch`
+    /// case block): declare `params` (a function body) and every binding of
+    /// the list, create the cells of its cell bindings and the closures of
+    /// its function declarations. The `let`/`const` bindings declared
+    /// directly in `clauses[..checked]` are kept in cells whatever the facts
+    /// say, so every reference after their declaration checks at run time
+    /// that they are initialized: control can enter a later clause past
+    /// them (clj-quickjs-83). Returns the slot count to restore with
+    /// [`Self::exit_scope`].
+    fn enter_scope(
+        &mut self,
+        clauses: &[&[Stmt]],
+        params: &[Ident],
+        top_level: bool,
+        checked: usize,
+    ) -> Result<usize, SyntaxError> {
         let saved_slot = self.cur().next_slot;
         self.cur_mut().scopes.push(Scope::new());
         let mut declared: Vec<&Ident> = Vec::new();
         for p in params {
-            self.declare(p, BindingKind::Param, top_level)?;
+            self.declare(p, BindingKind::Param, top_level, false)?;
             declared.push(p);
         }
-        for stmt in body {
-            match &stmt.kind {
-                StmtKind::Lexical(decl) => {
-                    let kind = match decl.kind {
-                        LexicalKind::Let => BindingKind::Let,
-                        LexicalKind::Const => BindingKind::Const,
-                    };
-                    for d in &decl.declarators {
-                        self.declare(&d.name, kind, top_level)?;
-                        declared.push(&d.name);
+        for (i, clause) in clauses.iter().enumerate() {
+            for stmt in clause.iter() {
+                match &stmt.kind {
+                    StmtKind::Lexical(decl) => {
+                        let kind = match decl.kind {
+                            LexicalKind::Let => BindingKind::Let,
+                            LexicalKind::Const => BindingKind::Const,
+                        };
+                        for d in &decl.declarators {
+                            self.declare(&d.name, kind, top_level, i < checked)?;
+                            declared.push(&d.name);
+                        }
                     }
+                    StmtKind::FunctionDecl(f) => {
+                        let name = self.declaration_name(f)?;
+                        self.declare(name, BindingKind::Function, top_level, false)?;
+                        declared.push(name);
+                    }
+                    _ => {}
                 }
-                StmtKind::FunctionDecl(f) => {
-                    let name = self.declaration_name(f)?;
-                    self.declare(name, BindingKind::Function, top_level)?;
-                    declared.push(name);
-                }
-                _ => {}
             }
         }
         // Cells first, so hoisted closures can capture any of them.
@@ -681,7 +717,7 @@ impl<'s> Lowerer<'s> {
             self.out().op_u16(Opcode::SetLocal, b.slot, span);
         }
         // Hoisted function declarations, in source order.
-        for stmt in body {
+        for stmt in clauses.iter().flat_map(|c| c.iter()) {
             if let StmtKind::FunctionDecl(f) = &stmt.kind {
                 let name = self.declaration_name(f)?;
                 let b = self.local(name)?;
@@ -699,13 +735,15 @@ impl<'s> Lowerer<'s> {
                 self.initialize(name)?;
             }
         }
-        for stmt in body {
-            self.statement(stmt)?;
-        }
+        Ok(saved_slot)
+    }
+
+    /// Leave the scope entered by [`Self::enter_scope`], which returned
+    /// `saved_slot`.
+    fn exit_scope(&mut self, saved_slot: usize) {
         let ctx = self.cur_mut();
         ctx.scopes.pop();
         ctx.next_slot = saved_slot;
-        Ok(())
     }
 
     fn declaration_name<'f>(&self, f: &'f Function) -> Result<&'f Ident, SyntaxError> {
@@ -714,11 +752,15 @@ impl<'s> Lowerer<'s> {
             .ok_or_else(|| self.internal(f.span, "function declaration without a name"))
     }
 
+    /// Declare `name` in the innermost scope. `checked`: keep it in a cell
+    /// even if no closure needs one, for the cell's run-time
+    /// temporal-dead-zone check ([`Self::enter_scope`]).
     fn declare(
         &mut self,
         name: &Ident,
         kind: BindingKind,
         top_level: bool,
+        checked: bool,
     ) -> Result<(), SyntaxError> {
         self.check_not_reserved(name)?;
         let prior = self.cur().scopes.last().and_then(|s| s.get(&name.name));
@@ -761,7 +803,11 @@ impl<'s> Lowerer<'s> {
             kind,
             slot: ctx.next_slot as u16,
             initialized: kind == BindingKind::Param,
-            repr: self.facts_of(key).repr(),
+            repr: if checked {
+                Repr::Cell
+            } else {
+                self.facts_of(key).repr()
+            },
             key,
         };
         let ctx = self.cur_mut();
@@ -1200,6 +1246,10 @@ impl<'s> Lowerer<'s> {
             StmtKind::Break(label) => self.jump(true, label.as_ref(), span)?,
             StmtKind::Continue(label) => self.jump(false, label.as_ref(), span)?,
             StmtKind::Labelled { .. } => self.labelled(stmt)?,
+            StmtKind::Switch {
+                discriminant,
+                cases,
+            } => self.switch_statement(discriminant, cases, span)?,
             // Created when its statement list was entered (hoisting).
             StmtKind::FunctionDecl(_) | StmtKind::Empty => {}
         }
@@ -1277,7 +1327,7 @@ impl<'s> Lowerer<'s> {
                     LexicalKind::Const => BindingKind::Const,
                 };
                 for d in &decl.declarators {
-                    self.declare(&d.name, kind, false)?;
+                    self.declare(&d.name, kind, false, false)?;
                 }
                 for d in &decl.declarators {
                     let b = self.local(&d.name)?;
@@ -1342,6 +1392,86 @@ impl<'s> Lowerer<'s> {
         ctx.exits.push(Exit::Loop { brk, cont, labels });
     }
 
+    /// Lower `switch (discriminant) { cases }` (clj-quickjs-83):
+    ///
+    /// ```text
+    ///        <discriminant>; set_local d
+    ///        <case block scope entry: new_cell, hoisted functions>
+    ///        get_local d; <test 1>; strict_eq; not; jump_if_false C1
+    ///        ...                                    (each `case`, in order)
+    ///        jump D                                 (`default`, else end)
+    /// C1:    <clause 1>
+    /// ...    (fall through from clause to clause)
+    /// end:
+    /// ```
+    ///
+    /// The discriminant is evaluated once and kept in a scratch local, not
+    /// on the operand stack, so a clause body starts at an empty stack like
+    /// any statement and jumps out of it drop nothing. ECMAScript tests the
+    /// clauses before `default`, then those after it, then takes `default`
+    /// (CaseBlockEvaluation): testing them all in source order first is the
+    /// same, since `default` has no test, and a test after the first match
+    /// is never evaluated. The tests run inside the case block's scope
+    /// (its function declarations are created first, its `let`/`const`
+    /// bindings are all uninitialized there).
+    ///
+    /// Control enters the case block at a clause, possibly past a
+    /// declaration of an earlier clause, so the `let`/`const` bindings of
+    /// every clause before the last non-empty one live in cells, whose
+    /// reads and writes check initialization at run time
+    /// ([`Self::enter_scope`]); a reference to one in an earlier clause or
+    /// a test always runs before its declaration and still throws
+    /// statically. The bindings of the last non-empty clause are only
+    /// reachable after their declaration in that clause.
+    ///
+    /// An unlabelled `break` jumps to `end` ([`Exit::Switch`]). The
+    /// completion value is reset to `undefined` at entry, then set by the
+    /// clause bodies (ECMAScript `UpdateEmpty(R, undefined)`).
+    fn switch_statement(
+        &mut self,
+        discriminant: &Expr,
+        cases: &[SwitchCase],
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        self.reset_completion(span);
+        self.expr(discriminant)?;
+        let saved_slot = self.cur().next_slot;
+        let value = self.temp(discriminant.span)?;
+        self.out()
+            .op_u16(Opcode::SetLocal, value, discriminant.span);
+        let clauses: Vec<&[Stmt]> = cases.iter().map(|c| c.body.as_slice()).collect();
+        let checked = clauses.iter().rposition(|b| !b.is_empty()).unwrap_or(0);
+        let scope_slot = self.enter_scope(&clauses, &[], false, checked)?;
+        let starts: Vec<usize> = cases.iter().map(|_| self.out().label()).collect();
+        let end = self.out().label();
+        let mut default = end;
+        for (case, &start) in cases.iter().zip(&starts) {
+            match &case.test {
+                Some(test) => {
+                    self.out().op_u16(Opcode::GetLocal, value, test.span);
+                    self.expr(test)?;
+                    self.out().op(Opcode::StrictEq, test.span);
+                    self.out().op(Opcode::Not, test.span);
+                    self.out().branch(Opcode::JumpIfFalse, start, test.span);
+                }
+                None => default = start,
+            }
+        }
+        self.out().branch(Opcode::Jump, default, span);
+        self.cur_mut().exits.push(Exit::Switch { brk: end });
+        for (case, &start) in cases.iter().zip(&starts) {
+            self.out().bind(start);
+            for stmt in &case.body {
+                self.statement(stmt)?;
+            }
+        }
+        self.cur_mut().exits.pop();
+        self.out().bind(end);
+        self.exit_scope(scope_slot);
+        self.cur_mut().next_slot = saved_slot;
+        Ok(())
+    }
+
     /// Lower the labelled statement `stmt` with its whole label set
     /// `L1: L2: ... body` (clj-quickjs-82). A loop body takes the label set
     /// as its own (so `continue L1` continues it); any other body is wrapped
@@ -1404,7 +1534,8 @@ impl<'s> Lowerer<'s> {
                     (None, Some(if is_break { *brk } else { *cont }))
                 }
                 Exit::Labelled { labels, brk } if is_break && named(labels) => (None, Some(*brk)),
-                Exit::Loop { .. } | Exit::Labelled { .. } => (None, None),
+                Exit::Switch { brk } if is_break && label.is_none() => (None, Some(*brk)),
+                Exit::Loop { .. } | Exit::Labelled { .. } | Exit::Switch { .. } => (None, None),
             };
             if let Some(op) = op {
                 self.out().op(op, at);

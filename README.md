@@ -353,10 +353,10 @@ Deferred:
   below.)
 - (`throw`/`try`/`finally`: clj-quickjs-11, below.) Operators on objects need ToPrimitive and fail with
   `UnsupportedOperand` (objects cannot come from source yet).
-- `switch`, `var`, update and compound
+- `var`, update and compound
   assignment operators (rejected by the parser). (Unlabelled `break` and
   `continue`: clj-quickjs-78; `do`-`while`: clj-quickjs-80; `for`:
-  clj-quickjs-81; labels: clj-quickjs-82, below.)
+  clj-quickjs-81; labels: clj-quickjs-82; `switch`: clj-quickjs-83, below.)
 
 ### Parking and wakeups (clj-quickjs-7)
 
@@ -1265,8 +1265,8 @@ Supported (`cargo test --lib frontend::tests::break_and_continue`,
 
 Deferred:
 
-- `switch`. (`do`-`while`, `for`, labels: clj-quickjs-80, -81, -82,
-  below.)
+- Nothing specific (`do`-`while`, `for`, labels, `switch`:
+  clj-quickjs-80, -81, -82, -83, below).
 
 ### Exponentiation operator (clj-quickjs-63)
 
@@ -1455,5 +1455,37 @@ Supported (`cargo test --lib frontend::tests::labelled_statements`,
 
 Deferred:
 
-- `switch` (clj-quickjs-83), so `break` does not yet target a `switch`;
-  `with` (clj-quickjs-110).
+- `with` (clj-quickjs-110). (Labelled `switch`: clj-quickjs-83, below.)
+
+### `switch` statements (clj-quickjs-83)
+
+Supported (`cargo test --lib frontend::tests::switch_statements`,
+`cargo test --test js_source switch_statements`):
+
+- `switch (e) { case a: ... default: ... }` with `default` in any
+  position: the discriminant is evaluated once, the `case` tests in source
+  order with `===` (`-0` matches `0`, `NaN` matches nothing, `"1"` does not
+  match `1`) until one matches, and none after it; with no match, control
+  goes to `default` if present. Clauses fall through. An unlabelled `break`
+  leaves the switch, `continue` continues the enclosing loop, a labelled
+  `break` leaves a labelled switch; jumps out run finally blocks.
+- The case block is one scope: a name declared twice across clauses is an
+  early error (`Invalid`, from `compile_script`), function declarations
+  are hoisted to its start, and a `let`/`const` of a clause before the
+  last non-empty one lives in a binding cell, so entering a later clause
+  past it gives a run-time ReferenceError at the reference
+  (`switch (1) { case 0: let y = 1; case 1: y; }`).
+- Early errors (`Invalid`): a second `default`; `continue` with no
+  enclosing loop. Completion values: `undefined` at entry, then
+  `UpdateEmpty` over the clauses that ran
+  (`switch (1) { case 1: 7; case 2: 8; }` is 8).
+- Lowering: the discriminant lives in a scratch local, so clause bodies
+  start at an empty operand stack and the switch is ordinary branches: a
+  task may yield, wait or migrate inside any clause. No new opcode.
+  QuickJS `test_switch1` and `test_switch2` run from source (adapted, with
+  notice), as digit versions and as string versions.
+
+Deferred:
+
+- Both upstream tests use `s += a` (compound assignment, clj-quickjs-84):
+  the string versions use `s = s + a` until it lands.
