@@ -1026,7 +1026,8 @@ fn realm_intrinsics_retain() {
     // Locale likely-subtag methods add two built-in functions (-211).
     // Date adds one prototype and five built-ins (-179).
     // Floating-point typed arrays add three constructors and prototypes (-167).
-    assert_eq!(rt.heap_usage().objects.builtin, 127);
+    // Date ISO formatting adds one built-in method (-180).
+    assert_eq!(rt.heap_usage().objects.builtin, 128);
     assert_eq!(rt.heap_usage().objects.plain, 31);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
