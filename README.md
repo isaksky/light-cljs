@@ -3778,3 +3778,16 @@ spacing and limited locale-specific auto coverage. Number parts carry the
 singular unit; literal parts do not. Getters and coercions can yield or wait.
 Coverage remains the agreed Intl test locales; other CLDR relative-time
 patterns and auto phrases absent from this snapshot remain deferred.
+
+### QuickJS collection fixtures (clj-quickjs-178)
+
+Supported test coverage: the complete pinned QuickJS typed-array, Map,
+WeakMap, WeakMap-cycle and FinalizationRegistry cases run unmodified with
+their original assertion helpers. Only `test_weak_ref` is adapted: four
+same-job assertions keep targets alive, and a timer per iteration collects
+and verifies both references clear. The fixture header lists every changed
+line. Map and typed arrays yield and collect between instruction slices;
+Rust additionally checks that all three retained WeakMaps have zero entries.
+No additional engine behavior is introduced.
+
+Run `CARGO_BUILD_JOBS=3 cargo test --test quickjs_collections -- --test-threads=3`.

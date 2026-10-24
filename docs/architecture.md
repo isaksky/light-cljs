@@ -7459,3 +7459,24 @@ QuickJS references and provenance: `research/quickjs/quickjs.c` functions
 no C implementation is adapted. The five complete upstream source copies used by
 `frontend::tests::module_records_of_quickjs_cases` are documented under
 "QuickJS references and provenance" above.
+
+## QuickJS collection fixture driver (clj-quickjs-178)
+
+`tests/quickjs_collections.rs` selects the pinned assertion helper prologue
+and each complete case from `quickjs_test_builtin_collections.js`, compiling
+once per case in a fresh runtime/task. The Map range includes `test_map1`.
+All cases run without source substitutions; only the fixture's WeakRef case
+adapts the four reference-counting assertions to kept-object semantics and
+adds one timer per iteration. Each timer captures that iteration's pair of
+WeakRefs, collects in its new job, and checks both targets are gone.
+Completion drains timer and finalization jobs; exceptions fail the test.
+
+Map runs with 10,000 instructions per slice; other cases use 100, up to
+10 million instructions per case. Every yield triggers a collection, and
+Map/typed-array runs must yield. For the two WeakMap cases, harness code
+wraps the task-local constructor before calling the unchanged body. It
+retains the native map instances without retaining keys or values or
+altering native methods. A returned persistent vector keeps the maps alive
+for Rust's existing `weak_map_live_entry_count` diagnostic: one map in the
+ordinary case and two in the cycle case must each have zero entries. No
+runtime representations, collector edges or built-in semantics change.

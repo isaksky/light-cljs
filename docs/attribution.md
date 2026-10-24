@@ -1141,3 +1141,25 @@ implementation, using that file as a semantic reference. The synthetic
 `intl_relative_time_format` test references the 16 result rows in
 `research/quickjs/tests/test_intl.js::test_relativeTimeFormat` at that revision;
 the QuickJS copyright/license notice is retained at the top of the test file.
+
+## Complete collection source cases (clj-quickjs-178)
+
+`tests/fixtures/js/quickjs_test_builtin_collections.js` extracts
+`research/quickjs/tests/test_builtin.js` lines 1-71, 456-522, 845-906,
+908-934, 936-959, 961-982 and 984-1005 at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The full QuickJS MIT notice from `research/quickjs/LICENSE`, including
+Fabrice Bellard and Charlie Gordon's copyright, is retained in its header.
+This is adapted QuickJS test text, a synthetic fixture, not light-cljs output.
+
+The selected upstream spans contain 295 lines. Only `test_weak_ref` changes:
+lines 976-977 and 979-980 assert each `deref()` is not undefined within the
+same job, then six inserted lines capture both references separately per
+iteration and schedule a timer to collect and assert both are undefined.
+The fixture header records the exact replacements and inserted block.
+Every other selected byte is unchanged; the license header and six trailing
+case calls are added. The integration test checks embedded range lengths;
+the upstream bytes were compared directly after reversing those documented
+WeakRef edits. `tests/quickjs_collections.rs` adds harness-only WeakMap
+constructor observation without editing upstream bodies, allowing the
+Rust-side live-entry diagnostic to check all three still-rooted maps.

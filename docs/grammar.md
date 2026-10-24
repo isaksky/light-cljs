@@ -516,6 +516,10 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 
 ## Explicit gaps
 
+The QuickJS collection fixture cases run with their original source except
+for the documented WeakRef kept-object adaptation (clj-quickjs-178).
+They do not cover iterable Map/WeakMap construction, which remains rejected.
+
 The QuickJS Date/RegExp fixture cases execute without source adaptations
 (clj-quickjs-195). Their direct eval is strict and does not require the
 sloppy declaration hoisting deferred to clj-quickjs-108.
@@ -981,6 +985,16 @@ delete a[o];
 
 `parse_module` only parses and checks module static semantics. It produces no
 executable and performs no host work; module evaluation is deferred.
+
+`tests/quickjs_collections.rs::quickjs_collection_cases_run` compiles each
+of six selected QuickJS collection cases once with the upstream assertion
+helpers (clj-quickjs-178). The harness opts into `std.gc` and virtual timers.
+Each case has a 10-million-instruction bound: Map runs in 10,000-instruction
+slices and the other cases in 100-instruction slices, collecting at every
+yield. Map and typed arrays must yield. WeakRef yields preserve the current
+job's kept objects; per-iteration timer callbacks collect and verify clearing
+in later jobs. WeakMap cases retain only map instances through a harness
+constructor wrapper so Rust can inspect zero live entries after completion.
 
 Optional links `a?.b`, `a?.[key]` and `a?.(args)` (clj-quickjs-134) test only
 for null and undefined. A nullish link skips the whole remaining member/call
