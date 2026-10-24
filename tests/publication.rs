@@ -915,6 +915,37 @@ fn built_in_proto_accessors_are_shared_across_tasks() {
     }
 }
 
+#[test]
+fn inherited_prototype_assignment_preserves_function_publication() {
+    // Synthetic fixtures, not light-cljs output (clj-quickjs-261).
+    let rt = Runtime::new();
+    let source = "function F() {} let o = Object.create(F); o.prototype = 5; F";
+    let producer = rt
+        .spawn(
+            &compile_script("inherited-lazy-prototype", source).unwrap(),
+            &[],
+        )
+        .unwrap();
+    let constructor = complete(producer.run().unwrap());
+    // Setter lookup on the child's prototype must not materialize F.prototype.
+    rt.publish(&constructor).unwrap();
+    drop(producer);
+
+    let assign = compile_function(
+        "function assign(F) { let o = Object.create(F); o.prototype = 7; \
+         return o.prototype === 7 && \
+         Object.getOwnPropertyDescriptor(o, 'prototype').value === 7; }",
+    )
+    .unwrap();
+    let consumer = rt.spawn(&assign, &[&constructor]).unwrap();
+    assert_eq!(
+        complete(consumer.run().unwrap()).view(),
+        ValueView::Bool(true)
+    );
+    // A published constructor remains unchanged after another task's lookup.
+    rt.publish(&constructor).unwrap();
+}
+
 /// `'prototype' in f` (clj-quickjs-74) reports a constructor's lazy
 /// `prototype` without creating it, as QuickJS `JS_HasProperty` leaves
 /// autoinit properties alone: the function stays publishable, and a
