@@ -2168,7 +2168,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 268); // Includes WeakMap and the three Number decimal formatters.
+        assert_eq!(first.all.len(), 274); // Includes six DateTimeFormat intrinsics.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
