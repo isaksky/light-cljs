@@ -161,6 +161,7 @@ pub(crate) enum ObjectKind {
     AsyncState,
     WeakRef,
     FinalizationRegistry,
+    ModuleNamespace,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -243,6 +244,7 @@ pub(crate) enum HeapObject {
     AsyncState(Box<crate::vm::asynchronous::AsyncState>),
     WeakRef(Box<crate::object::weak_ref::WeakRefObject>),
     FinalizationRegistry(Box<crate::object::finalization_registry::FinalizationRegistryObject>),
+    ModuleNamespace(Box<crate::module::namespace::Namespace>),
 }
 
 impl HeapObject {
@@ -278,6 +280,7 @@ impl HeapObject {
             HeapObject::PromiseResolving(_) => ObjectKind::PromiseResolving,
             HeapObject::Generator(_) => ObjectKind::Generator,
             HeapObject::AsyncState(_) => ObjectKind::AsyncState,
+            HeapObject::ModuleNamespace(_) => ObjectKind::ModuleNamespace,
         }
     }
 }
@@ -308,6 +311,7 @@ impl Trace for HeapObject {
             HeapObject::PromiseResolving(r) => r.trace(visit),
             HeapObject::Generator(g) => g.trace(visit),
             HeapObject::AsyncState(a) => a.trace(visit),
+            HeapObject::ModuleNamespace(ns) => ns.trace(visit),
         }
     }
 
@@ -337,6 +341,7 @@ impl Trace for HeapObject {
             HeapObject::PromiseResolving(r) => r.trace_conditional(visit),
             HeapObject::Generator(g) => g.trace_conditional(visit),
             HeapObject::AsyncState(a) => a.trace_conditional(visit),
+            HeapObject::ModuleNamespace(_) => {}
         }
     }
 }

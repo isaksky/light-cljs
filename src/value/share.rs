@@ -61,6 +61,11 @@
 //! objects are task-owned, so methods cannot publish, even with no captures
 //! or own-property record and even if detached from the literal.
 //!
+//! Module namespaces (`crate::module::namespace`) are always task-owned,
+//! including empty frozen namespaces. Their live exporting cells belong to
+//! that task's module instances. Publication rejects namespaces directly or
+//! through containers and closure captures; freezing does not change category.
+//!
 //! ## Functions with own properties (clj-quickjs-125)
 //!
 //! A function's JavaScript own properties (`f.x = 1`, its lazy `prototype`)
@@ -209,6 +214,7 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
         }
         HeapObject::PromiseReaction(_) => Shareability::TaskOwned,
         HeapObject::Generator(_) | HeapObject::AsyncState(_) => Shareability::TaskOwned,
+        HeapObject::ModuleNamespace(_) => Shareability::TaskOwned,
         // Realm intrinsics never change after the realm is built
         // (`crate::realm`); every other ordinary object, including an
         // engine Error, Intl.Locale, Intl.NumberFormat, Intl.PluralRules, Intl.Collator, Intl.DateTimeFormat, Intl.RelativeTimeFormat, Intl.DisplayNames, Intl.DurationFormat, Intl.Segmenter, Segments, Segment Iterators and
@@ -243,6 +249,7 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
     match object {
         HeapObject::Builder(b) => Some(b.owner()),
         HeapObject::Cell(c) => Some(c.owner),
+        HeapObject::ModuleNamespace(ns) => Some(ns.owner),
         HeapObject::Generator(g) => Some(g.owner),
         HeapObject::AsyncState(a) => Some(a.owner),
         HeapObject::Plain(o) => o.owner(),

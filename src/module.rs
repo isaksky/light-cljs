@@ -7,6 +7,7 @@
 
 mod dfs;
 mod link;
+pub(crate) mod namespace;
 mod resolve;
 pub(crate) use link::{Action as LinkAction, Linker};
 

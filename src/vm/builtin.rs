@@ -2085,6 +2085,17 @@ fn is_array(heap: &Heap, value: &Value) -> Result<bool, Fault> {
 /// The builtinTag of `Object.prototype.toString`. Reject an own or
 /// inherited `@@toStringTag` until resumable tag consumption is supported.
 fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str, Fault> {
+    if let Value::Object(id) = this
+        && crate::module::namespace::probe(
+            heap,
+            task,
+            *id,
+            &crate::vm::property::Key::Symbol(crate::value::symbol::well_known("toStringTag")),
+        )?
+        .is_some()
+    {
+        return Ok("Module");
+    }
     // The shared Intl namespace has a fixed data descriptor and cannot be
     // mutated. Its own tag needs no getter, coercion, or resumable JS call.
     if let Value::Object(id) = this
@@ -2158,6 +2169,7 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                 | HeapObject::PromiseResolving(_) => Ok("Object"),
                 HeapObject::Promise(_) => Ok("Promise"),
                 HeapObject::Generator(_) | HeapObject::AsyncState(_) => Ok("Object"),
+                HeapObject::ModuleNamespace(_) => Ok("Object"),
             })
             // The receiver is an operand of the running frame.
             .unwrap_or(Err(Fault::Internal("receiver was reclaimed"))),

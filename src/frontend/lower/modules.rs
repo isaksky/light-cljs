@@ -3,8 +3,8 @@
 //! nested closures capture those cells through the ordinary precise-GC path.
 
 use super::*;
+use crate::frontend::ModuleRecord;
 use crate::frontend::ast::ModuleItem;
-use crate::frontend::{ImportName, ModuleRecord};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ModuleBinding {
@@ -27,14 +27,6 @@ pub(crate) fn module_bindings(
 ) -> Result<Vec<ModuleBinding>, SyntaxError> {
     let mut bindings = Vec::new();
     for import in record.import_entries() {
-        if import.import_name == ImportName::Namespace {
-            return Err(SyntaxError::new(
-                source,
-                SyntaxErrorKind::Unsupported,
-                import.span,
-                "namespace imports cannot be executed yet",
-            ));
-        }
         bindings.push(ModuleBinding {
             name: Ident {
                 name: import.local_name.clone(),

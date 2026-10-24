@@ -34,6 +34,8 @@ pub struct LocalExportEntry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndirectExportEntry {
     pub specifier: JsString,
+    /// Imported name, or `*namespace*` for `export * as ns from`.
+    /// The marker cannot be spelled as an IdentifierName.
     pub import_name: String,
     pub export_name: String,
     pub span: Span,

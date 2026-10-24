@@ -21,6 +21,7 @@
 //! | built-in function (`Object`, `Object.is`, ...; `crate::vm::builtin`) | own property, else the chain from `Function.prototype` (clj-quickjs-102); a standard name `Function.prototype` lacks so far (`toString`, ...) `UnsupportedOperand` | catchable `TypeError`, as above |
 //! | persistent vector, map, occurrence; builder, atom, binding cell; native payload | `undefined` (no JavaScript properties) | catchable `TypeError` |
 //! | function object (`crate::vm::function`, clj-quickjs-125) | code metadata (`length`, `name`) until its property record exists, plus a lazy `prototype`; names `Function.prototype` lacks so far `UnsupportedOperand`; any other name continues at `Function.prototype` (clj-quickjs-102) | the creating task writes its property record (`ForeignObject` for another task); a published function: catchable `TypeError` |
+//! | module namespace owned by the running task (`crate::module::namespace`) | live exporting cells (ReferenceError in TDZ); fixed Symbol.toStringTag; absent names undefined | always rejects (`TypeError` in strict code, ignored in sloppy code); another task cannot access it |
 //! | Error instance, including a caught engine error | ordinary object properties and prototype chain | ordinary object ownership and attributes |
 //! | `undefined`, `null` | catchable `TypeError` | catchable `TypeError` |
 //! | number, string (clj-quickjs-73) | `Number.prototype` / `String.prototype` and its chain, without a wrapper (see "Primitive bases"), after a string's own `length` and indices below it (clj-quickjs-142) | `TypeError` in strict code, nothing in sloppy code; `__proto__` does nothing |
@@ -642,6 +643,18 @@ fn lookup(
     };
     let mut realm = heap.realm().get();
     loop {
+        if let Some(entry) = crate::module::namespace::probe(heap, task, id, key)? {
+            return entry
+                .map(|entry| {
+                    if has {
+                        Ok(Read::Value(Value::Undefined))
+                    } else {
+                        crate::module::namespace::property(heap, task, entry)
+                            .map(|p| Read::Value(p.value))
+                    }
+                })
+                .transpose();
+        }
         if let Some(element) = typed_element(heap, task, id, key)? {
             return Ok(element.map(Read::Value));
         }
@@ -916,6 +929,15 @@ pub(crate) fn prepare_put(
     value: Value,
     strict: bool,
 ) -> Result<Option<Value>, Fault> {
+    if let Value::Object(id) = base
+        && crate::module::namespace::probe(heap, task, *id, key)?.is_some()
+    {
+        return if strict {
+            Err(read_only(key))
+        } else {
+            Ok(None)
+        };
+    }
     if let Value::Object(id) = base
         && let Some(index) = crate::object::typed_array::numeric_key(key)
         && let Some(view) = crate::object::typed_array::view(heap, task, *id)?
@@ -1240,6 +1262,9 @@ fn check_inherited(
 ) -> Result<Chain, Fault> {
     let mut realm = heap.realm().get();
     loop {
+        if crate::module::namespace::probe(heap, task, id, key)?.is_some() {
+            return Err(read_only(key));
+        }
         if let Some(element) = typed_element(heap, task, id, key)? {
             return Ok(if element.is_some() {
                 Chain::Add
@@ -1442,6 +1467,9 @@ pub(crate) fn define_own_property(
     key: &Key,
     desc: &PropertyDescriptor,
 ) -> Result<(), Fault> {
+    if let Some(entry) = crate::module::namespace::probe(heap, task, target, key)? {
+        return crate::module::namespace::define(heap, task, entry, desc);
+    }
     if let Some((view, index)) = typed_array_descriptor(heap, task, target, key, desc)? {
         if let Some(value) = &desc.value {
             view.set(heap, index, value)?;
@@ -1601,6 +1629,11 @@ pub(crate) fn get_own_property(
     target: ObjectId,
     key: &Key,
 ) -> Result<Option<Property>, Fault> {
+    if let Some(entry) = crate::module::namespace::probe(heap, task, target, key)? {
+        return entry
+            .map(|e| crate::module::namespace::property(heap, task, e))
+            .transpose();
+    }
     if let Some(element) = typed_element(heap, task, target, key)? {
         return Ok(element.map(|value| Property {
             value,
@@ -1712,6 +1745,13 @@ pub(crate) fn delete(
 /// embedder-created object is `ForeignObject`; the other heap kinds have
 /// no properties.
 fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<DeleteOutcome, Fault> {
+    if let Some(entry) = crate::module::namespace::probe(heap, task, id, key)? {
+        return Ok(if entry.is_some() {
+            DeleteOutcome::NonConfigurable
+        } else {
+            DeleteOutcome::Absent
+        });
+    }
     if let Some(element) = typed_element(heap, task, id, key)? {
         return Ok(if element.is_some() {
             DeleteOutcome::NonConfigurable

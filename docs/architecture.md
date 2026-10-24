@@ -287,6 +287,7 @@ public API cannot reach.
 | task global object and its properties | `TaskFrame` (`PlainObject`) | `task_global_object_retains_and_reclaims` | `finished_task_releases_global_object` |
 | task global declarative environment | `TaskFrame` (`Cell`) | `task_global_lexicals_survive_job_replacement_and_reclaim` *(lib)* | `task_global_lexicals_survive_job_replacement_and_reclaim` *(lib)* |
 | module linking continuation and environment cells | `TaskFrame` (`Cell`) | `module_linker_cells_retain_and_reclaim` (`tests/js_modules.rs`) | `module_linker_cells_retain_and_reclaim` |
+| module namespace export cells and their values | `PersistentHandle` (`ModuleNamespace` → `Cell`) | `namespace_cells_retain_and_reclaim` *(lib, module::namespace)* | `namespace_cells_retain_and_reclaim` |
 | frames suspended at a pending `__rt.need` | `TaskFrame` | `pending_need_frame_retains` | `pending_need_frame_reclaims` |
 | executor ready queue | `TaskFrame` (queued task) | `ready_queue_retains` | `ready_queue_reclaims` |
 | executor parked set | `TaskFrame` (parked task) | `executor_parked_task_retains` | `executor_parked_task_reclaims` |
@@ -8096,3 +8097,50 @@ Generator `next` and Promise entry use small dedicated native handlers before
 the general constructor dispatcher, so suspended methods can attach and resume
 on 64 KiB workers. Tests retain compound super references across generator yield
 and async await, collect while detached and migrate before resumption.
+
+## Module namespace objects (clj-quickjs-254)
+
+`HeapObject::ModuleNamespace` is a distinct object kind, not an ordinary object
+or a Proxy. It holds the owning task ID and a BTreeMap from immutable JsString
+names to resolved binding-cell IDs. JsString compares UTF-16 code units, so
+own keys preserve module namespace order even for numeric-looking names.
+The fixed Symbol.toStringTag property follows the exports. Property hooks
+implement Get, HasProperty, GetOwnProperty, DefineOwnProperty, Set, Delete,
+prototype reflection, extensibility and enumeration. Reads release the
+namespace lock before reading a cell; presence checks never read its value.
+There are no JavaScript getters, user-extensible internal comparisons or new
+locks. A namespace on the prototype chain also rejects inherited assignment.
+
+Namespace creation is lazy on static linkage requests and cached per task's
+module instance, not on the world's immutable module record. The saved linker
+first allocates requested namespace objects and their internal initialized
+cells, then fills each namespace one export entry per budgeted step. All
+binding cells already exist; namespace properties hold cells rather than
+values, preserving TDZ and later writes. Namespace imports have immutable
+local bindings. Both local exports of namespace imports and direct
+`export * as ns from` resolve to the same canonical namespace origin, avoiding
+false ambiguity in star barrels. IndirectExportEntry uses the unspellable
+`*namespace*` import-name marker for namespace re-exports.
+
+The linker continuation traces cached namespaces before any module body runs;
+each namespace traces every export cell, which traces its current value.
+`namespace_cells_retain_and_reclaim` tests retention and reclamation through
+the namespace alone. `namespace_waits_collects_and_migrates` tests budgeted
+linking and execution, forced GC, a dependency wait, fresh instances and
+migration on 64 KiB workers without repeated host fetches or effects.
+Namespaces are classified TaskOwned in value::share, even when empty and
+frozen. Publication rejects them, containers reaching them and closures
+capturing them; they never cross task boundaries as persistent values.
+
+Cyclic graph execution remains explicitly rejected for clj-quickjs-255.
+`namespace_cyclic_tdz_fixture_is_explicitly_deferred` records that integration
+boundary; `namespace_get_in_tdz_throws_reference_error` uses a real namespace
+with an uninitialized cell as an argument to JavaScript source, proving that
+Get, descriptors, Object.keys and DefineProperty throw catchable ReferenceErrors
+while HasProperty and own-name enumeration succeed.
+
+QuickJS references and provenance: `research/quickjs/quickjs.c` functions
+`js_build_module_ns`, `JS_GetModuleNamespace`, `js_module_ns_has` and
+`js_module_ns_autoinit`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, were consulted as semantic
+references. No C code or upstream test text was adapted for these additions.

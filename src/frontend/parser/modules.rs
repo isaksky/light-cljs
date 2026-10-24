@@ -332,17 +332,36 @@ impl Parser<'_> {
             return self.parse_default_export(tables).map(Some);
         }
         if self.is_punct(Punct::Star) {
-            let span = self.advance()?.span;
-            if self.is_module_word("as") {
-                return Err(self.unsupported(span, "`export * as ns from` is"));
-            }
+            self.advance()?;
+            let namespace = if self.is_module_word("as") {
+                self.advance()?;
+                Some(self.parse_module_name()?)
+            } else {
+                None
+            };
             if !self.is_module_word("from") {
                 return Err(self.unexpected("from"));
             }
             self.advance()?;
             let specifier = self.parse_module_specifier()?;
             tables.request(&specifier);
-            tables.stars.push(specifier);
+            if let Some(exported) = namespace {
+                if !tables.exported_names.insert(exported.name.clone()) {
+                    return Err(self.error(
+                        SyntaxErrorKind::Invalid,
+                        exported.span,
+                        format!("duplicate exported name `{}`", exported.name),
+                    ));
+                }
+                tables.indirect.push(IndirectExportEntry {
+                    specifier,
+                    import_name: "*namespace*".into(),
+                    export_name: exported.name,
+                    span: exported.span,
+                });
+            } else {
+                tables.stars.push(specifier);
+            }
             self.expect_semi()?;
             return Ok(None);
         }

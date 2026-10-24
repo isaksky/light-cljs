@@ -3,7 +3,7 @@
 //! star branch may still resolve it. Only an unresolved explicit export fails.
 
 use super::ModuleKey;
-use super::link::{Exports, Origin, PreparedModule};
+use super::link::{Exports, NAMESPACE, Origin, PreparedModule};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,7 +69,10 @@ impl Resolver {
         let node = &modules[&frame.key];
         match &mut frame.state {
             State::Start => {
-                if !self.seen.insert((frame.key, frame.name.clone())) {
+                if frame.name == NAMESPACE {
+                    // Namespace origins terminate resolution even inside an SCC.
+                    self.finish(Resolution::Found((frame.key, NAMESPACE.into())));
+                } else if !self.seen.insert((frame.key, frame.name.clone())) {
                     self.circular = true;
                     self.finish(Resolution::Missing);
                 } else if components[&frame.key] != components[&self.root] {
@@ -82,7 +85,10 @@ impl Resolver {
                     };
                     self.finish(result);
                 } else if let Some(local) = node.local_exports.get(&frame.name) {
-                    let origin = (frame.key, local.clone());
+                    let origin = match node.imports.get(local) {
+                        Some((dep, name)) if name == NAMESPACE => (*dep, name.clone()),
+                        _ => (frame.key, local.clone()),
+                    };
                     self.finish(Resolution::Found(origin));
                 } else if let Some((dep, name)) = node.indirect_exports.get(&frame.name) {
                     frame.state = State::Indirect;

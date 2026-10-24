@@ -99,6 +99,21 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
         // A primitive is not extensible and is frozen.
         return Ok(true);
     };
+    if let Some(keys) =
+        crate::module::namespace::keys(heap, task, id, crate::vm::keys::KeyFilter::All)?
+    {
+        if level == Level::NonExtensible {
+            return Ok(true);
+        }
+        for key in keys {
+            let property = crate::vm::property::get_own_property(heap, task, id, &key.key)?
+                .ok_or(Fault::Internal("namespace key missing"))?;
+            if property.flags.writable {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
     let id = match function_store(heap, id)? {
         Some(IntegrityStore::Shared) => return Ok(true),
         Some(IntegrityStore::Unrecorded) => return Ok(false),
@@ -156,6 +171,26 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
     let Value::Object(id) = *v else {
         return Ok(());
     };
+    if let Some(keys) =
+        crate::module::namespace::keys(heap, task, id, crate::vm::keys::KeyFilter::All)?
+    {
+        if level == Level::Frozen {
+            for key in keys {
+                crate::vm::property::define_own_property(
+                    heap,
+                    task,
+                    id,
+                    &key.key,
+                    &crate::object::PropertyDescriptor {
+                        configurable: Some(false),
+                        writable: Some(false),
+                        ..Default::default()
+                    },
+                )?;
+            }
+        }
+        return Ok(());
+    }
     let id = if is_function(heap, id) {
         match function::integrity_target(heap, task, id)? {
             IntegrityStore::Record(record) => record,

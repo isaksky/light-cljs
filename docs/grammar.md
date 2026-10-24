@@ -5666,7 +5666,7 @@ Loading, resolution, linking and execution remain outside this parse API.
 export * from 's';
 ```
 
-```js module-reject Unsupported 1:8
+```js module-accept
 export * as ns from 's';
 ```
 
@@ -5948,3 +5948,37 @@ x = super.y;
 ```js reject Invalid 1:23
 function g() { return super.x; }
 ```
+
+### Module namespaces (clj-quickjs-254)
+
+Execution: `import * as ns` binds the instance's cached namespace object.
+`export {ns}` and `export * as ns from` preserve that identity, including
+through star barrels. Export names are sorted by UTF-16 code units; ambiguous
+star exports are omitted. Reads use live exporting cells and throw a catchable
+ReferenceError in TDZ. Presence tests do not read cells. Namespace methods
+receive the namespace as `this`.
+
+Namespaces have null prototype, are non-extensible, and have a fixed
+non-enumerable `Symbol.toStringTag` value `"Module"`. Export descriptors are
+writable, enumerable and non-configurable, but assignment always fails
+(TypeError in strict module code, ignored in sloppy code). Deleting an export
+fails; deleting an absent name succeeds. DefineProperty accepts only compatible
+descriptors with the same current value, including SameValue's NaN and signed
+zero rules. Setting the prototype to null succeeds; another prototype fails.
+An empty namespace can be frozen; a namespace with exports cannot.
+
+Synthetic fixture, not light-cljs output (host supplies counter.js):
+
+```js module-accept
+import * as counter from './counter.js';
+export {counter};
+counter.inc();
+__rt.effect(0, counter.n);
+export * as sameCounter from './counter.js';
+```
+
+Namespaces and closures capturing them are task-owned and cannot be published,
+even when the namespace is empty and frozen. Each fresh task gets fresh
+instances and namespaces. The cyclic TDZ integration fixture still fails
+explicitly at the cyclic-linking boundary pending clj-quickjs-255; internal
+source execution tests exercise catchable namespace TDZ reads independently.

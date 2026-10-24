@@ -97,6 +97,7 @@ pub(crate) fn get_prototype_of(
     }
     let function = heap
         .read(id, |object| match object {
+            HeapObject::ModuleNamespace(ns) => ns.check_owner(task).map(|()| Some(None)),
             HeapObject::Plain(o) => readable(o, task).map(|()| Some(o.prototype())),
             HeapObject::Promise(p) => Ok(Some(Some(p.prototype))),
             HeapObject::Generator(g) => {
@@ -256,6 +257,7 @@ fn check_chain(
         }
         proto = heap
             .read(p, |object| match object {
+                HeapObject::ModuleNamespace(ns) => ns.check_owner(task).map(|()| None),
                 HeapObject::Plain(o) => readable(o, task).map(|()| o.prototype()),
                 HeapObject::Generator(g) => {
                     readable(&g.object, task).map(|()| g.object.prototype())

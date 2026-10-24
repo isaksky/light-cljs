@@ -16,6 +16,7 @@ use crate::vm::function::BindingCell;
 use crate::{Assembler, Executable, Opcode, TaskId};
 
 pub(super) type Origin = (ModuleKey, String);
+pub(super) const NAMESPACE: &str = "*namespace*";
 // None is an ambiguous star export; absence is a missing export.
 pub(super) type Exports = HashMap<ModuleKey, BTreeMap<String, Option<Origin>>>;
 
@@ -27,7 +28,7 @@ pub(super) struct PreparedModule {
     pub(super) indirect_exports: BTreeMap<String, Origin>,
     pub(super) requests: Vec<ModuleKey>,
     pub(super) request_keys: HashMap<Vec<u16>, ModuleKey>,
-    imports: HashMap<String, Origin>,
+    pub(super) imports: HashMap<String, Origin>,
     bindings: Vec<ModuleBinding>,
     instantiate: Executable,
     body: Executable,
@@ -58,6 +59,14 @@ enum Stage {
     Instantiate(usize),
     Evaluate,
     Done,
+    CreateNamespaces {
+        module: usize,
+        entry: usize,
+    },
+    PopulateNamespaces {
+        module: usize,
+        after: Option<String>,
+    },
 }
 
 pub(crate) enum Action {
@@ -89,6 +98,7 @@ pub(crate) struct Linker {
     slots: HashMap<Origin, usize>,
     cells: Vec<Value>,
     arguments: HashMap<ModuleKey, Vec<Value>>,
+    namespaces: HashMap<ModuleKey, crate::heap::ObjectId>,
     pub(crate) running: bool,
 }
 
@@ -139,8 +149,9 @@ impl Linker {
                 .import_entries()
                 .iter()
                 .map(|import| {
-                    let ImportName::Name(name) = &import.import_name else {
-                        unreachable!("checked namespace")
+                    let name = match &import.import_name {
+                        ImportName::Name(name) => name.clone(),
+                        ImportName::Namespace => NAMESPACE.into(),
                     };
                     (
                         import.local_name.clone(),
@@ -184,6 +195,7 @@ impl Linker {
             slots: HashMap::new(),
             cells: Vec::new(),
             arguments: HashMap::new(),
+            namespaces: HashMap::new(),
             running: false,
         }
     }
@@ -273,7 +285,12 @@ impl Linker {
                 if let Some(key) = self.order.get(*module) {
                     if let Some(b) = self.modules[key].bindings.get(*binding) {
                         *binding += 1;
-                        if !b.is_import() {
+                        if !b.is_import()
+                            || self.modules[key]
+                                .imports
+                                .get(&b.name.name)
+                                .is_some_and(|(_, name)| name == NAMESPACE)
+                        {
                             let cell = BindingCell {
                                 owner,
                                 value: b.is_var().then_some(Value::Undefined),
@@ -431,9 +448,9 @@ impl Linker {
                         *after = None;
                     }
                 } else {
-                    self.stage = Stage::Imports {
+                    self.stage = Stage::CreateNamespaces {
                         module: 0,
-                        binding: 0,
+                        entry: 0,
                     };
                 }
             }
@@ -447,7 +464,21 @@ impl Linker {
                     let name = b.name.name.clone();
                     let origin = if b.is_import() {
                         let (dep, imported) = &node.imports[&name];
-                        Self::resolve_export(&self.modules, &self.exports, *dep, imported)?
+                        if imported == NAMESPACE {
+                            let value = Value::Object(self.namespaces[dep]);
+                            let Value::Object(cell) = self.cells[self.slots[&(key, name.clone())]]
+                            else {
+                                return Err(Fault::Internal("namespace import cell missing"));
+                            };
+                            heap.with_object_mut(cell, |o| {
+                                if let HeapObject::Cell(cell) = o {
+                                    cell.value = Some(value);
+                                }
+                            });
+                            (key, name)
+                        } else {
+                            Self::resolve_export(&self.modules, &self.exports, *dep, imported)?
+                        }
                     } else {
                         (key, name)
                     };
@@ -500,6 +531,88 @@ impl Linker {
                 Event::Continue => {}
             },
             Stage::Done => return Ok(Action::Complete),
+            Stage::CreateNamespaces { module, entry } => {
+                let Some(key) = self.order.get(*module) else {
+                    self.stage = Stage::PopulateNamespaces {
+                        module: 0,
+                        after: None,
+                    };
+                    return Ok(Action::Continue);
+                };
+                let node = &self.modules[key];
+                // Process each source entry once, allocating only namespaces
+                // actually requested by an import or namespace re-export.
+                let dep = if let Some(import) = node.record.import_entries().get(*entry) {
+                    (import.import_name == ImportName::Namespace)
+                        .then(|| node.request_keys[import.specifier.code_units()])
+                } else if let Some(export) = node
+                    .record
+                    .indirect_export_entries()
+                    .get(*entry - node.record.import_entries().len())
+                {
+                    (export.import_name == NAMESPACE)
+                        .then(|| node.request_keys[export.specifier.code_units()])
+                } else {
+                    *module += 1;
+                    *entry = 0;
+                    return Ok(Action::Continue);
+                };
+                *entry += 1;
+                if let Some(dep) = dep
+                    && let std::collections::hash_map::Entry::Vacant(slot) =
+                        self.namespaces.entry(dep)
+                {
+                    let ns = heap
+                        .alloc(HeapObject::ModuleNamespace(Box::new(
+                            super::namespace::Namespace {
+                                owner,
+                                exports: BTreeMap::new(),
+                            },
+                        )))
+                        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+                    // Root the object before allocating its cell; all roots
+                    // remain in this saved, task-owned linker continuation.
+                    slot.insert(ns);
+                    let cell = heap
+                        .alloc(HeapObject::Cell(BindingCell {
+                            owner,
+                            value: Some(Value::Object(ns)),
+                        }))
+                        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+                    self.slots.insert((dep, NAMESPACE.into()), self.cells.len());
+                    self.cells.push(Value::Object(cell));
+                }
+            }
+            Stage::PopulateNamespaces { module, after } => {
+                let Some(key) = self.order.get(*module) else {
+                    self.stage = Stage::Imports {
+                        module: 0,
+                        binding: 0,
+                    };
+                    return Ok(Action::Continue);
+                };
+                if let Some(ns) = self.namespaces.get(key) {
+                    let range = after.as_ref().map_or(Unbounded, |s| Excluded(s.as_str()));
+                    if let Some((name, origin)) =
+                        self.exports[key].range::<str, _>((range, Unbounded)).next()
+                    {
+                        *after = Some(name.clone());
+                        if let Some(origin) = origin {
+                            let Value::Object(cell) = self.cells[self.slots[origin]] else {
+                                return Err(Fault::Internal("namespace export cell missing"));
+                            };
+                            heap.with_object_mut(*ns, |o| {
+                                if let HeapObject::ModuleNamespace(ns) = o {
+                                    ns.exports.insert(JsString::from(name.as_str()), cell);
+                                }
+                            });
+                        }
+                        return Ok(Action::Continue);
+                    }
+                }
+                *module += 1;
+                *after = None;
+            }
         }
         Ok(Action::Continue)
     }
@@ -508,6 +621,9 @@ impl Linker {
 impl Trace for Linker {
     fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
         self.cells.iter().for_each(|value| value.trace(visit));
+        for namespace in self.namespaces.values() {
+            Value::Object(*namespace).trace(visit);
+        }
         // Lowered executables have immutable primitive constants only. Trace
         // them through the ordinary code path as well, keeping that invariant
         // explicit if the code representation is extended in the future.

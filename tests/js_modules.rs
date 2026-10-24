@@ -642,20 +642,11 @@ fn import_assignment_through_closure_and_eval_is_immutable() {
 }
 
 #[test]
-fn rejects_namespaces_and_json_before_effects() {
-    for sources in [
-        vec![
-            (
-                "entry.js",
-                "import * as ns from './dep.js'; __rt.effect(0, 1);",
-            ),
-            ("dep.js", ""),
-        ],
-        vec![
-            ("entry.js", "import x from './dep.json'; __rt.effect(0, 1);"),
-            ("dep.json", "{}"),
-        ],
-    ] {
+fn rejects_json_before_effects() {
+    for sources in [vec![
+        ("entry.js", "import x from './dep.json'; __rt.effect(0, 1);"),
+        ("dep.json", "{}"),
+    ]] {
         let (outcome, effects) = execute_modules(&sources, Budget::UNLIMITED);
         assert!(
             matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError),
@@ -1275,9 +1266,7 @@ fn cyclic_reexported_import_calls_hoisted_function() {
 }
 
 #[test]
-fn cyclic_import_through_namespace_requires_namespace_support() {
-    // clj-quickjs-254 is not merged here. Keep this dependent row explicit
-    // until namespace objects land; the cyclic named-import shape runs above.
+fn cyclic_import_through_namespace() {
     let (outcome, effects) = execute_modules(
         &[
             (
@@ -1291,11 +1280,8 @@ fn cyclic_import_through_namespace_requires_namespace_support() {
         ],
         Budget::UNLIMITED,
     );
-    assert!(
-        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError && e.message().contains("namespace")),
-        "{outcome:?}"
-    );
-    assert!(effects.is_empty());
+    assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+    assert_eq!(effects, vec![Primitive::Number(4.0)]);
 }
 
 #[test]
@@ -1431,4 +1417,241 @@ fn cyclic_star_export_skips_back_edge_and_uses_later_origin() {
         assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
         assert_eq!(effects, vec![Primitive::Number(7.0)]);
     }
+}
+
+#[test]
+fn namespace_import_reads_exports() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; __rt.effect(0, m.g(1) === 2 && m.g() === m && m.missing === undefined);",
+            ),
+            (
+                "m.js",
+                "export function g(x) { if (x === undefined) return this; return x + 1; }",
+            ),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_reads_are_live() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; const d = Object.getOwnPropertyDescriptor(m, 'n'); m.inc(); __rt.effect(0, d.value === 0 && m.n === 1 && Object.getOwnPropertyDescriptor(m, 'n').value === 1);",
+            ),
+            ("m.js", "export let n = 0; export function inc() { n++; }"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_identity_is_per_instance() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; import {ns as a} from './a.js'; import {ns as b} from './b.js'; __rt.effect(0, m === a && a === b && a.n === 7);",
+            ),
+            ("a.js", "import * as ns from './m.js'; export {ns};"),
+            ("b.js", "export * as ns from './m.js';"),
+            ("m.js", "export let n = 7;"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_is_read_only() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; let errors=0; try { m.g=1; } catch(e) { if(e instanceof TypeError) errors++; } try { m.newProp=1; } catch(e) { if(e instanceof TypeError) errors++; } try { delete m.g; } catch(e) { if(e instanceof TypeError) errors++; } try { m=1; } catch(e) { if(e instanceof TypeError) errors++; } __rt.effect(0, errors === 4 && delete m.absent);",
+            ),
+            ("m.js", "export function g() {}"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_reflection_and_definitions() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; const d=Object.getOwnPropertyDescriptor(m, 'a'); const tag=Object.getOwnPropertyDescriptor(m, Symbol.toStringTag); const keys=Object.getOwnPropertyNames(m); let errors=0; try { Object.defineProperty(m,'a',{value:2}); } catch(e) { if(e instanceof TypeError) errors++; } try { Object.defineProperty(m,'a',{writable:false}); } catch(e) { if(e instanceof TypeError) errors++; } try { Object.defineProperty(m,'a',{get(){return 1;}}); } catch(e) { if(e instanceof TypeError) errors++; } try { Object.defineProperty(m,'absent',{value:1}); } catch(e) { if(e instanceof TypeError) errors++; } try { Object.setPrototypeOf(m,{}); } catch(e) { if(e instanceof TypeError) errors++; } Object.setPrototypeOf(m,null); Object.preventExtensions(m); Object.defineProperty(m,'a',{value:1,writable:true,enumerable:true,configurable:false}); Object.defineProperty(m,Symbol.toStringTag,{value:'Module'}); __rt.effect(0, errors===5 && Object.getPrototypeOf(m)===null && !Object.isExtensible(m) && !Object.isFrozen(m) && Object.keys(m).join(',')==='a,b,z' && keys.length===3 && 'a' in m && !('missing' in m) && m[Symbol.toStringTag]==='Module' && d.writable && d.enumerable && !d.configurable && !tag.writable && !tag.enumerable && !tag.configurable && Object.prototype.toString.call(m)==='[object Module]');",
+            ),
+            ("m.js", "export let z=3, a=1, b=2;"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_sorts_utf16_and_omits_ambiguous_stars() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; __rt.effect(0, Object.keys(m).join(',')==='a,𐀀,ﬀ' && !('conflict' in m));",
+            ),
+            (
+                "m.js",
+                "export * from './a.js'; export * from './b.js'; export {a as 𐀀, a as ﬀ}; let a=1; export {a};",
+            ),
+            ("a.js", "let a=1; export {a as conflict};"),
+            ("b.js", "let b=2; export {b as conflict};"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_reexport_paths_share_one_origin() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {ns} from './barrel.js'; import * as m from './m.js'; __rt.effect(0, ns===m);",
+            ),
+            (
+                "barrel.js",
+                "export * from './a.js'; export * from './b.js';",
+            ),
+            ("a.js", "import * as ns from './m.js'; export {ns};"),
+            ("b.js", "export * as ns from './m.js';"),
+            ("m.js", ""),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_empty_freezes_and_inherited_writes_fail() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; import * as empty from './empty.js'; let errors=0; try { Object.freeze(m); } catch(e) { if(e instanceof TypeError) errors++; } const o=Object.create(m); try { o.newProp=1; } catch(e) { if(e instanceof TypeError) errors++; } Object.defineProperty(o,'n',{value:9}); __rt.effect(0, errors===2 && o.n===9 && m.n===1 && Object.freeze(empty)===empty && Object.isFrozen(empty));",
+            ),
+            ("m.js", "export let n=1;"),
+            ("empty.js", ""),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_waits_collects_and_migrates() {
+    use clj_quickjs::Completion;
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add("entry.js", "import * as m from './m.js'; import {ns} from './barrel.js'; __rt.effect(0, m===ns && m.n===12); m.inc(); __rt.effect(0, ns.n===13);");
+    host.add("barrel.js", "export * as ns from './m.js';");
+    host.add(
+        "m.js",
+        "export let n=5; export function inc(){n++;} n+=__rt.need(75,0);",
+    );
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    // Each spawn gets fresh cells and namespaces even though records are cached.
+    for _ in 0..2 {
+        let mut task = runtime.spawn_module(&graph);
+        let mut done = false;
+        for _ in 0..1500 {
+            let (next, next_host, outcome) = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let outcome = task.run_with(Budget::instructions(1), &mut host).unwrap();
+                    (task, host, outcome)
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            task = next;
+            host = next_host;
+            runtime.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(key) => {
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = runtime.root(Primitive::Number(7.0));
+                    task = runtime
+                        .complete(key, request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(_) => {
+                    done = true;
+                    break;
+                }
+                outcome => panic!("{outcome:?}"),
+            }
+        }
+        assert!(done);
+        assert_eq!(task.dependency_log().edges().len(), 1);
+        drop(task);
+        runtime.collect().unwrap();
+        assert_eq!(runtime.heap_usage().objects.module_namespace, 0);
+    }
+    assert_eq!(host.effects, vec![Primitive::Bool(true); 4]);
+    assert_eq!(host.fetches().len(), 3);
+}
+
+#[test]
+fn namespace_default_tag_and_enumeration() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; import d from './barrel.js'; let names=''; for(let k in m) names+=k+','; let errors=0; try{delete m[Symbol.toStringTag];}catch(e){if(e instanceof TypeError)errors++;} try{m[Symbol.toStringTag]='x';}catch(e){if(e instanceof TypeError)errors++;} try{Object.defineProperty(m,Symbol.toStringTag,{configurable:true});}catch(e){if(e instanceof TypeError)errors++;} globalThis.ns=m; (0,eval)('ns.n=999; ns.absent=1;'); m.inc(); __rt.effect(0, errors===3 && m.n===2 && m.default===2 && m.absent===undefined && names==='default,inc,n,' && d===m && JSON.stringify(m)==='{\"default\":2,\"n\":2}');",
+            ),
+            ("barrel.js", "export * as default from './m.js';"),
+            (
+                "m.js",
+                "export let n=1; export {n as default}; export function inc(){n++;}",
+            ),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_get_in_tdz_throws_reference_error() {
+    let (outcome, effects) = execute_modules(
+        &[
+            ("entry.js", "import './reader.js'; export let x=1;"),
+            (
+                "reader.js",
+                "import * as m from './entry.js'; try { m.x; } catch(e) { __rt.effect(0,e instanceof ReferenceError); }",
+            ),
+        ],
+        Budget::UNLIMITED,
+    );
+    assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+    assert_eq!(effects, vec![Primitive::Bool(true)]);
+}
+
+#[test]
+fn namespace_definitions_use_same_value() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; Object.defineProperty(m,'nan',{value:NaN}); Object.defineProperty(m,'zero',{value:-0}); const o=m.obj; Object.defineProperty(m,'obj',{value:o}); let errors=0; try { Object.defineProperty(m,'zero',{value:0}); }catch(e){if(e instanceof TypeError)errors++;} try { Object.defineProperty(m,'obj',{value:{}}); }catch(e){if(e instanceof TypeError)errors++;} __rt.effect(0, errors===2 && Object.is(m.zero,-0) && m.obj===o);",
+            ),
+            ("m.js", "export let nan=NaN, zero=-0, obj={};"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
 }

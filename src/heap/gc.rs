@@ -1974,6 +1974,7 @@ mod tests {
             | HeapObject::PromiseReaction(_)
             | HeapObject::PromiseResolving(_)
             | HeapObject::Generator(_)
+            | HeapObject::ModuleNamespace(_)
             | HeapObject::AsyncState(_) => {
                 panic!("not a native object")
             }

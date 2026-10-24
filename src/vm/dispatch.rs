@@ -422,6 +422,7 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
                 | HeapObject::PromiseReaction(_)
                 | HeapObject::PromiseResolving(_) => "object",
                 HeapObject::Generator(_) | HeapObject::AsyncState(_) => "object",
+                HeapObject::ModuleNamespace(_) => "object",
             })
             // A frame keeps its operands alive; a stale id is reported.
             .ok_or(Fault::Internal("typeof operand was reclaimed"))?,

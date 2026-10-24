@@ -189,6 +189,9 @@ pub(crate) fn own_property_keys(
     target: ObjectId,
     filter: KeyFilter,
 ) -> Result<Vec<OwnKey>, Fault> {
+    if let Some(keys) = crate::module::namespace::keys(heap, task, target, filter)? {
+        return Ok(keys);
+    }
     let function = heap
         .read(target, |o| {
             matches!(o, HeapObject::Function(_) | HeapObject::BoundFunction(_))
@@ -261,6 +264,9 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
             .collect()
     };
     match object {
+        HeapObject::ModuleNamespace(_) => {
+            Err(Fault::Internal("namespace bypassed exotic key enumeration"))
+        }
         HeapObject::AsyncState(_) => Err(Fault::TypeError(
             "async state has no public properties".into(),
         )),
@@ -622,6 +628,9 @@ impl NativePayload for ForInIterator {
 /// no intrinsic on its chain has an enumerable property, decided from the
 /// realm's immutable views without any lock.
 fn walk_keys(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<Vec<OwnKey>>, Fault> {
+    if let Some(keys) = crate::module::namespace::keys(heap, task, id, KeyFilter::All)? {
+        return Ok(Some(keys));
+    }
     if let Some(realm) = heap.realm().get()
         && let Some(view) = realm.view(id)
     {

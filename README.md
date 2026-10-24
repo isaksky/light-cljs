@@ -3834,8 +3834,9 @@ module body runs during loading and imports create no dependency-cell edges.
 The in-memory recording host and upstream parse fixtures are exercised with
 `CARGO_BUILD_JOBS=3 cargo test --test js_modules -- --test-threads=3`.
 
-Deferred: linking, evaluation, per-task instances, namespace objects, cyclic
-binding initialization, and JSON default exports. The CLI remains script-only.
+Linking, evaluation, per-task instances and namespaces are supported by the
+subsequent module execution pellets. Deferred: cyclic binding initialization
+and JSON default exports. The CLI remains script-only.
 
 ### Intl.Segmenter (clj-quickjs-222)
 
@@ -3999,3 +4000,18 @@ and every assertion remain unchanged; adapted rows: none. Other
 ```sh
 CARGO_BUILD_JOBS=3 cargo test --test quickjs_language quickjs_operator_cases_run_unmodified -- --exact --nocapture --test-threads=3
 ```
+
+### Module namespaces (clj-quickjs-254)
+
+Supported: acyclic module tasks execute `import * as ns`, `export {ns}` and
+`export * as ns from`, with one task-owned namespace per module instance.
+Namespaces have a null prototype, sorted UTF-16 export keys, live binding-cell
+reads, fixed Symbol.toStringTag "Module", non-extensibility and the namespace
+write/define/delete rules. Namespace captures cannot be published. Budgeted
+linking, waits, GC and migration preserve identity and live reads.
+
+Verification: `CARGO_BUILD_JOBS=3 cargo test --test js_modules -- --test-threads=3`
+and `CARGO_BUILD_JOBS=3 cargo test --lib module::namespace:: -- --test-threads=3`.
+Deferred: cyclic graph execution and the cyclic namespace TDZ integration case
+(clj-quickjs-255). Namespace TDZ errors are covered independently by source
+execution over an internal namespace fixture. The CLI remains script-only.

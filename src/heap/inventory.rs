@@ -108,11 +108,12 @@ enum Holder {
     ActiveFinalizationRegistries,
     SegmenterSlots,
     ModuleEnvironment,
+    ModuleNamespaceEdges,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 48] = [
+const HOLDERS: [Holder; 49] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -161,6 +162,7 @@ const HOLDERS: [Holder; 48] = [
     Holder::ActiveFinalizationRegistries,
     Holder::SegmenterSlots,
     Holder::ModuleEnvironment,
+    Holder::ModuleNamespaceEdges,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -177,7 +179,7 @@ const CATEGORIES: [RootCategory; 7] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 23] = [
+const KINDS: [ObjectKind; 24] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -201,6 +203,7 @@ const KINDS: [ObjectKind; 23] = [
     ObjectKind::AsyncState,
     ObjectKind::WeakRef,
     ObjectKind::FinalizationRegistry,
+    ObjectKind::ModuleNamespace,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -231,6 +234,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             WeakMapEntries,
             WeakRefProperties,
             FinalizationRegistryEdges,
+            ModuleNamespaceEdges,
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
@@ -302,6 +306,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
 
         ObjectKind::ArrayBuffer => &[ArrayBufferProperty],
         ObjectKind::TypedArray => &[TypedArrayEdges],
+        ObjectKind::ModuleNamespace => &[ModuleNamespaceEdges],
     }
 }
 
@@ -317,6 +322,7 @@ enum File {
     /// JavaScript Map result-root tracing.
     Gc,
     Modules,
+    Namespaces,
 }
 
 /// A holder's retention and reclamation tests.
@@ -332,6 +338,10 @@ fn coverage(holder: Holder) -> Coverage {
         reclaims: (GcRoots, reclaims),
     };
     match holder {
+        Holder::ModuleNamespaceEdges => Coverage {
+            retains: (Namespaces, "namespace_cells_retain_and_reclaim"),
+            reclaims: (Namespaces, "namespace_cells_retain_and_reclaim"),
+        },
         Holder::ModuleEnvironment => Coverage {
             retains: (Modules, "module_linker_cells_retain_and_reclaim"),
             reclaims: (Modules, "module_linker_cells_retain_and_reclaim"),
@@ -551,6 +561,7 @@ fn every_category_and_kind_has_retention_and_reclamation_tests() {
                 File::Gc => GC_SOURCE,
                 File::Promises => include_str!("../../tests/promises.rs"),
                 File::Modules => include_str!("../../tests/js_modules.rs"),
+                File::Namespaces => include_str!("../module/namespace.rs"),
             };
             assert!(
                 defines_test(source, name),

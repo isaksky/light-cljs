@@ -250,13 +250,6 @@ fn module_syntax_rejections() {
     use super::SyntaxErrorKind::{Invalid, ReservedWord, Unsupported};
     let cases = [
         (
-            "export * as ns from 's';",
-            Unsupported,
-            1,
-            8,
-            "export * as ns",
-        ),
-        (
             "import {'x' as x} from 's';",
             Unsupported,
             1,
@@ -5721,6 +5714,33 @@ fn module_star_and_from_exports_are_static_requests() {
         "export {x} from 'a'; export {y as x} from 'b';",
         "export const x = 1; export {y as x} from 'b';",
         "export * from 'a' with {};",
+    ] {
+        assert!(super::parse_module(source).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn module_namespace_reexport_entries() {
+    let record =
+        super::parse_module("export * as ns from './a'; export * as default from './a';").unwrap();
+    assert_eq!(record.requested_modules(), &["./a"]);
+    assert!(record.star_export_entries().is_empty());
+    assert!(record.local_export_entries().is_empty());
+    assert!(record.import_entries().is_empty());
+    let entries = record.indirect_export_entries();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        (&*entries[0].import_name, &*entries[0].export_name),
+        ("*namespace*", "ns")
+    );
+    assert_eq!(
+        (&*entries[1].import_name, &*entries[1].export_name),
+        ("*namespace*", "default")
+    );
+    for source in [
+        "export * as ns from 'a'; export * as ns from 'b';",
+        "export const ns=1; export * as ns from 'a';",
+        "export * as ns from 'a' with {};",
     ] {
         assert!(super::parse_module(source).is_err(), "{source}");
     }
