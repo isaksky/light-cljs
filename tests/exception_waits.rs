@@ -254,6 +254,51 @@ fn labelled_jumps_wait_and_resume_after_migration() {
     assert_eq!(log.0, [11.0, 12.0, 7.0, 2.0]);
 }
 
+/// `switch` (clj-quickjs-83) state across waits: the discriminant (a
+/// function object, kept in the switch's scratch local) is evaluated once,
+/// a `case` test parks in a `need`, then a clause body parks while a case
+/// binding lives in its binding cell (control fell through past its
+/// declaration) and a closure in an earlier clause captures it. Each time a
+/// collection runs while it is parked and it resumes on another thread
+/// exactly where it stopped: no test or effect is replayed, the selection
+/// holds, and the closure sees the assignment made after the wait.
+#[test]
+fn switch_waits_survive_migration_and_collection() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        "let f = 0, r = 0, d = 0;
+         const k = () => 40;
+         switch ((d = d + 1, k)) {
+           case __rt.effect(1, 1): r = 99; break;
+           case (__rt.need(5, 3), k):
+             __rt.effect(1, 2);
+             let y = __rt.effect(1, 3);
+             f = () => y;
+           case 0:
+             y = y + __rt.need(6, 3);
+             __rt.effect(1, y);
+             break;
+           default: r = 98;
+         }
+         r * 10000 + d * 1000 + f() * 100 + k()",
+    );
+    let mut log = Log::default();
+    // The second test waits.
+    run_to_wait(&rt, &task, &mut log, A);
+    assert_eq!(log.0, [1.0]);
+    rt.collect().unwrap();
+    let task = publish(&rt, &task, 7.0);
+    // It matches; the clause body runs into the next clause, which waits.
+    let (outcome, log) = run_elsewhere(task.clone(), log);
+    assert_eq!(waiting(outcome), key(&rt, B));
+    assert_eq!(log.0, [1.0, 2.0, 3.0]);
+    rt.collect().unwrap();
+    let (outcome, log) = run_elsewhere(publish(&rt, &task, 4.0), log);
+    assert_eq!(number(outcome), 1740.0);
+    assert_eq!(log.0, [1.0, 2.0, 3.0, 7.0]);
+}
+
 /// A wait in a protected block, a catch block, and a finally block: parking
 /// runs no handler, the finally block runs once after the resumed code, and
 /// nothing before the wait is replayed.

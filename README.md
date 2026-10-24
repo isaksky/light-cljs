@@ -1460,7 +1460,8 @@ Deferred:
 ### `switch` statements (clj-quickjs-83)
 
 Supported (`cargo test --lib frontend::tests::switch_statements`,
-`cargo test --test js_source switch_statements`):
+`cargo test --test js_source switch_statements`,
+`cargo test --test exception_waits switch_waits_survive_migration_and_collection`):
 
 - `switch (e) { case a: ... default: ... }` with `default` in any
   position: the discriminant is evaluated once, the `case` tests in source
