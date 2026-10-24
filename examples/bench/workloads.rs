@@ -444,9 +444,8 @@ pub struct Memory {
 }
 
 /// Measure [`Memory`] in a fresh runtime. `probe` reads the harness's
-/// allocator counters (tests pass one returning zeros); `fx` provides the
-/// executable, but `consumer.js` is compiled again inside the measured code
-/// phase so its bytes are counted.
+/// allocator counters (tests pass one returning zeros). `consumer.js` is
+/// compiled inside the measured code phase so its bytes are counted.
 pub fn memory(consumers: usize, width: usize, probe: &dyn Fn() -> Probe) -> Memory {
     const DEF: u64 = 1;
     let rt = Runtime::new();
@@ -552,7 +551,7 @@ pub struct WorkWhileWaiting {
     pub wake_all: Duration,
 }
 
-/// Uses definition `def` of a fresh runtime.
+/// Runs in a fresh runtime; the consumers need definition 1.
 pub fn work_while_waiting(
     workers: usize,
     consumers: usize,
