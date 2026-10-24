@@ -647,6 +647,13 @@ pub(crate) fn declare_global_with(
     configurable: bool,
 ) -> Result<(), crate::vm::dispatch::Fault> {
     use crate::vm::dispatch::Fault;
+    let declaration_error = |message| {
+        if configurable {
+            Fault::TypeError(message)
+        } else {
+            Fault::SyntaxError(message)
+        }
+    };
     let key = heap
         .keys()
         .intern(name)
@@ -660,7 +667,7 @@ pub(crate) fn declare_global_with(
                 return Ok(());
             }
             if !prior.flags.configurable && (!prior.flags.writable || !prior.flags.enumerable) {
-                return Err(Fault::SyntaxError(format!(
+                return Err(declaration_error(format!(
                     "cannot declare global function '{name}'"
                 )));
             }
@@ -674,9 +681,7 @@ pub(crate) fn declare_global_with(
             configurable,
         };
         if !object.define_with(key, Value::Undefined, flags) {
-            return Err(Fault::SyntaxError(format!(
-                "cannot declare global '{name}'"
-            )));
+            return Err(declaration_error(format!("cannot declare global '{name}'")));
         }
         Ok(())
     })
