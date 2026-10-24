@@ -596,19 +596,83 @@ fn deeply_nested_functions_compile_within_a_small_stack() {
 
 #[test]
 fn redeclaration_rules_cover_function_declarations() {
-    use SyntaxErrorKind::{Invalid, Unsupported};
+    use SyntaxErrorKind::Invalid;
     assert_eq!(compile_err("let f;\nfunction f() {}"), (Invalid, 2, 10));
     assert_eq!(
         compile_err("function f() { const g = 1; function g() {} }"),
         (Invalid, 1, 38)
     );
-    assert_eq!(
-        compile_err("function f(a) { function a() {} }"),
-        (Unsupported, 1, 26)
-    );
     // Separate blocks and functions are separate scopes.
     assert_eq!(
         num("function g() { return 1; } { function g() { return 2; } } g()"),
+        1.0
+    );
+}
+
+/// Function declarations directly in a script or function body are
+/// var-scoped (clj-quickjs-94): they share one binding with a parameter, a
+/// `var` or another declaration of the same name, the last declaration
+/// wins, and all are created at entry. Block-level ones stay lexical.
+#[test]
+fn top_level_function_declarations_are_var_scoped() {
+    assert_eq!(
+        num("function f(a) { function a() { return 7; } return a(); } f(1)"),
+        7.0
+    );
+    assert_eq!(
+        num("function g() { return 1; } function g() { return 2; } g()"),
+        2.0
+    );
+    assert_eq!(num("var h; function h() { return 3; } h()"), 3.0);
+    assert_eq!(
+        compile_err("{ function k() {} function k() {} }"),
+        (SyntaxErrorKind::Invalid, 1, 28)
+    );
+    // `var h;` after the function does not reset it; a `var` initializer
+    // runs in order, after the hoisted function.
+    assert_eq!(num("function h() { return 3; } var h; h()"), 3.0);
+    assert_eq!(num("var h = 4; function h() { return 3; } h"), 4.0);
+    assert_eq!(
+        num(
+            "function f() { const r = h(); var h = 5; function h() { return 6; } return r * 10 + h; } f()"
+        ),
+        65.0
+    );
+    // An earlier hoisted closure sees the winning declaration, through a
+    // cell (the binding is assigned at entry), also in a function body.
+    let src = "function f(a) {
+                 function g() { return a() + b(); }
+                 function a() { return 10; }
+                 function b() { return 1; }
+                 function b() { return 2; }
+                 return g();
+               }
+               f(1)";
+    uses(&exe(src), &[Opcode::NewCell, Opcode::CellInit]);
+    assert_eq!(num(src), 12.0);
+    // A repeated declaration refers to the binding, not to itself.
+    assert_eq!(
+        num("function r(n) { return -1; }
+             function r(n) { return n === 0 ? 10 : r(n - 1) + 1; }
+             r(3)"),
+        13.0
+    );
+    assert_eq!(
+        num("function p() { return p; } function p() { return 8; } p()"),
+        8.0
+    );
+    // A single declaration still refers to itself without a capture.
+    let single = exe("function q(n) { return n === 0 ? 0 : q(n - 1); } var q; q(2)");
+    uses(&single, &[Opcode::CurrentFunction]);
+    assert!(!all_opcodes(&single).contains(&Opcode::NewCell));
+    // In a block, a function declaration is lexical: it cannot share a
+    // name with a `var` there, and does not replace the outer binding.
+    assert_eq!(
+        compile_err("function f() { { var m; function m() {} } }"),
+        (SyntaxErrorKind::Invalid, 1, 22)
+    );
+    assert_eq!(
+        num("function f(a) { { function a() { return 9; } } return a; } f(1)"),
         1.0
     );
 }

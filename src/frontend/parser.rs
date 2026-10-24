@@ -270,6 +270,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::While) => self.parse_while(),
             TokenKind::Keyword(Keyword::Do) => self.parse_do_while(),
             TokenKind::Keyword(Keyword::For) => self.parse_for(),
+            TokenKind::Keyword(Keyword::Var) => self.parse_var(),
             TokenKind::Keyword(Keyword::Return) => self.parse_return(),
             TokenKind::Keyword(Keyword::Throw) => self.parse_throw(),
             TokenKind::Keyword(Keyword::Try) => self.parse_try(),
@@ -576,7 +577,7 @@ impl<'a> Parser<'a> {
                 self.parse_lexical_declarators(Some(keyword))?,
             )),
             TokenKind::Keyword(Keyword::Var) => {
-                return Err(self.unsupported(self.tok.span, "`var` declarations are"));
+                return Err(self.unsupported(self.tok.span, "`var` in a `for` head is"));
             }
             _ => {
                 // `for (k in o)`: the expression parser would report the
@@ -810,6 +811,17 @@ impl<'a> Parser<'a> {
         self.bounded(Stmt::new(StmtKind::Lexical(decl), self.span_from(start)))
     }
 
+    /// VariableStatement: `var` Declarator (`,` Declarator)* `;`
+    /// (clj-quickjs-94), in any statement position. Out of line, so the
+    /// frame of [`Self::parse_statement`] stays small.
+    #[inline(never)]
+    fn parse_var(&mut self) -> PResult<StmtKind> {
+        self.advance()?;
+        let declarators = self.parse_declarators(None, None)?;
+        self.expect_semi()?;
+        Ok(StmtKind::Var(declarators))
+    }
+
     /// (`let` | `const`) Declarator (`,` Declarator)*, without the `;`.
     /// `for_keyword`: in the head of the `for` statement at that span, where
     /// `in` or `of` after a name starts an unsupported for-in or for-of head.
@@ -819,6 +831,19 @@ impl<'a> Parser<'a> {
         } else {
             LexicalKind::Const
         };
+        let declarators = self.parse_declarators(Some(kind), for_keyword)?;
+        Ok(LexicalDecl { kind, declarators })
+    }
+
+    /// Declarator (`,` Declarator)* after the declaration keyword: a binding
+    /// identifier with an optional `= AssignmentExpression` initializer,
+    /// required for `const`. `lexical`: `None` for `var`. `for_keyword`: as
+    /// for [`Self::parse_lexical_declarators`].
+    fn parse_declarators(
+        &mut self,
+        lexical: Option<LexicalKind>,
+        for_keyword: Option<Span>,
+    ) -> PResult<Vec<Declarator>> {
         let mut declarators = Vec::new();
         loop {
             let name = self.parse_binding_identifier("a variable name")?;
@@ -830,7 +855,7 @@ impl<'a> Parser<'a> {
             let init = if self.eat_punct(Punct::Assign)? {
                 Some(self.parse_assignment()?)
             } else {
-                if kind == LexicalKind::Const {
+                if lexical == Some(LexicalKind::Const) {
                     return Err(self.error(
                         SyntaxErrorKind::Invalid,
                         name.span,
@@ -851,7 +876,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(LexicalDecl { kind, declarators })
+        Ok(declarators)
     }
 
     /// BindingIdentifier: an identifier that is not a reserved word, a
@@ -1684,7 +1709,6 @@ fn is_logical_assign(p: Punct) -> bool {
 /// keyword. (`let`, `const` and `function` are handled by the caller.)
 fn unsupported_statement(k: Keyword) -> Option<&'static str> {
     Some(match k {
-        Keyword::Var => "`var` declarations are (use `let` or `const`)",
         Keyword::Class => "classes are",
         Keyword::Import => "modules (`import`) are",
         Keyword::Export => "modules (`export`) are",

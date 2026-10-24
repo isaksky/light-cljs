@@ -1,8 +1,10 @@
 // Adapted from research/quickjs/tests/test_closure.js, QuickJS revision
 // 7d1c13c5d8f8 (VERSION 2026-06-04): the top-level `f`/`g1` case
 // ("closure1"), test_closure1, test_closure2 and test_closure3.
-// Modifications: rewritten for the documented subset (`let`/`const` instead
-// of `var`; `log` appends each logged value to a number as two decimal
+// Modifications: rewritten for the documented subset (upstream's `var`
+// declarations are kept since clj-quickjs-94, but script-level `var`s are
+// script bindings, not global object properties; the added `failed` is a
+// `let`; `log` appends each logged value to a number as two decimal
 // digits instead of concatenating strings; test_closure1's `{ set, get }`
 // object is a vector built with the reserved intrinsic `__rt.vector` and
 // read with `__rt.nth`; no assert() function: a failing check records its
@@ -35,7 +37,7 @@
 // THE SOFTWARE.
 
 let failed = 0;
-let log_str = 0;
+var log_str = 0;
 
 function log(v)
 {
@@ -44,7 +46,7 @@ function log(v)
 
 function f(a, b, c)
 {
-    const x = 10;
+    var x = 10;
     log(a);
     function g(d) {
         function h() {
@@ -59,7 +61,7 @@ function f(a, b, c)
     return g;
 }
 
-const g1 = f(1, 2, 3);
+var g1 = f(1, 2, 3);
 if (log_str !== 102030410) { failed = failed || 1; }   // a=1,b=2,c=3,d=4,x=10
 log_str = 0;
 g1(5);
@@ -69,7 +71,7 @@ function test_closure1()
 {
     function f2()
     {
-        let val = 1;
+        var val = 1;
 
         function set(a) {
             val = a;
@@ -80,16 +82,16 @@ function test_closure1()
         return __rt.vector(set, get);
     }
 
-    const obj = f2();
+    var obj = f2();
     __rt.nth(obj, 0)(10);
-    let r;
+    var r;
     r = __rt.nth(obj, 1)();
     if (r !== 10) { failed = failed || 3; }
 }
 
 function test_closure2()
 {
-    const expr_func = function myfunc1(n) {
+    var expr_func = function myfunc1(n) {
         function myfunc2(n) {
             return myfunc1(n - 1);
         }
@@ -98,7 +100,7 @@ function test_closure2()
         else
             return myfunc2(n);
     };
-    let r;
+    var r;
     r = expr_func(1);
     if (r !== 0) { failed = failed || 4; }
 }
@@ -115,7 +117,7 @@ function test_closure3()
             return fib(n - 1) + fib(n - 2);
     }
 
-    const fib_func = function fib1(n)
+    var fib_func = function fib1(n)
     {
         if (n <= 0)
             return 0;

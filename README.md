@@ -353,8 +353,8 @@ Deferred:
   below.)
 - (`throw`/`try`/`finally`: clj-quickjs-11, below.) Operators on objects need ToPrimitive and fail with
   `UnsupportedOperand` (objects cannot come from source yet).
-- `var` and the logical assignment operators (rejected by the parser).
-  (Update: clj-quickjs-64; compound assignment: clj-quickjs-84; unlabelled `break` and
+- The logical assignment operators (rejected by the parser). (`var`:
+  clj-quickjs-94; update: clj-quickjs-64; compound assignment: clj-quickjs-84; unlabelled `break` and
   `continue`: clj-quickjs-78; `do`-`while`: clj-quickjs-80; `for`:
   clj-quickjs-81; labels: clj-quickjs-82; `switch`: clj-quickjs-83, below.)
 
@@ -631,9 +631,9 @@ Deferred:
   clj-quickjs-65 below)
   `arguments`, `new`, default/rest parameters, generators. (Arrow
   functions: clj-quickjs-53 below.)
-- A function declaration repeating a parameter or another declaration at
-  the top level of a script or function body (var-scoped in JavaScript) is
-  rejected as `Unsupported`.
+- (A function declaration repeating a parameter or another declaration at
+  the top level of a script or function body runs since clj-quickjs-94,
+  below.)
 - A hoisted declaration capturing a `const` of its own scope uses a cell
   (no initialize-once immutable cell), which makes it task-owned.
 - `src/host/sim.rs` still uses its stand-in tail-call convention for the
@@ -1585,3 +1585,31 @@ Deferred:
 - `typeof Object` waits for a global `Object` (clj-quickjs-77); once a
   global object exists, an unbound name must be looked up at run time
   rather than decided by the compiler.
+
+### `var` declarations and var-scoped function declarations (clj-quickjs-94)
+
+Supported (`cargo test --lib frontend::tests::var_statements`,
+`cargo test --test js_source var_declarations_hoist_to_the_function`,
+`cargo test --test js_functions top_level_function_declarations_are_var_scoped`):
+
+- `var a, b = 1;` in every statement position (blocks, `if`/loop bodies,
+  labelled statements, `try`/`catch`/`finally`, `switch` clauses). One
+  binding per name per function body or script, hoisted and `undefined`
+  from entry (no temporal dead zone); `var x;` does not reset a value; a
+  `var` named like a parameter is the parameter. Closures capture a `var`
+  by value or through one cell per call, under the existing rule, so
+  closures from different loop iterations share it.
+- Function declarations directly in a script or function body are
+  var-scoped: they may repeat a parameter, a `var` or each other, and the
+  last one wins. Block-level declarations stay lexical.
+- Early errors (`Invalid`, at the `var`'s name): a `var` whose name a
+  `let`/`const`/block function declares in the same body or an enclosing
+  block of the same function (`let a; var a;`, `{ let a; { var a; } }`).
+  A `var` repeating a catch parameter is allowed (Annex B), as in QuickJS.
+- `tests/fixtures/js/quickjs_closure.js` keeps upstream's `var`s.
+
+Deferred:
+
+- Script-level `var`s and function declarations are bindings of the
+  script, not properties of a global object (clj-quickjs-104).
+  `var` in a `for` head (clj-quickjs-89) stays `Unsupported`.

@@ -1868,6 +1868,118 @@ fn use_before_initialization_fails_with_reference_errors() {
     );
 }
 
+/// `var` (clj-quickjs-94): one binding per name per function or script,
+/// hoisted to its entry and `undefined` there (no temporal dead zone).
+#[test]
+fn var_declarations_hoist_to_the_function() {
+    // Read before the declaration: `undefined`, not a ReferenceError.
+    assert_eq!(
+        eval("function f() { const r = x; var x = 2; return r; } f()"),
+        ValueView::Undefined
+    );
+    assert_eq!(eval("x; var x = 1;"), ValueView::Undefined);
+    assert_eq!(num("x = 3; var x; x"), 3.0);
+    // A `var` in a nested block (or any statement position) binds in the
+    // function.
+    assert_eq!(num("function f() { { var x = 1; } return x; } f()"), 1.0);
+    assert_eq!(
+        num(
+            "function f(b) { if (b) var y = 1; else { var z = 2; } return y === undefined ? z : y; } f(false) * 10 + f(true)"
+        ),
+        21.0
+    );
+    assert_eq!(
+        num(
+            "function f() { try { var a = 1; throw 0; } catch (e) { var b = 2; } finally { var c = 3; } \
+             switch (a) { case 1: var d = 4; } L: var g = 5; return a + b + c + d + g; } f()"
+        ),
+        15.0
+    );
+    // Loop bodies: an unexecuted `for` body still declares; an executed
+    // one leaves its value; a `do` body's `var` is readable before the loop.
+    assert_eq!(
+        eval("function f() { for (; false;) var x = 1; return x; } f()"),
+        ValueView::Undefined
+    );
+    assert_eq!(
+        num("function f() { for (let i = 0; i < 3; i++) { var last = i; } return last; } f()"),
+        2.0
+    );
+    assert_eq!(
+        num(
+            "function f() { const before = d; do var d = 7; while (false); return before === undefined ? d : -1; } f()"
+        ),
+        7.0
+    );
+    // A `var` named like a parameter is that parameter's binding.
+    assert_eq!(num("function f(a) { var a; return a; } f(5)"), 5.0);
+    assert_eq!(num("function f(a) { var a = 2; return a; } f(5)"), 2.0);
+    // `var x;` does not reset an assigned value; repeating `var` is fine.
+    assert_eq!(num("var v = 1; var v; v"), 1.0);
+    assert_eq!(num("var v = 1; { var v = v + 1; } var v = v * 10; v"), 20.0);
+    // A `var` statement has no completion value.
+    assert_eq!(num("1; var w = 2;"), 1.0);
+    // A closure created before the `var` statement sees its later value.
+    assert_eq!(
+        num("function f() { var g = function () { return x; }; var x = 3; return g(); } f()"),
+        3.0
+    );
+    assert_eq!(
+        num("var n = 0; function inc() { n = n + 1; } inc(); inc(); n"),
+        2.0
+    );
+    // Closures made in successive iterations of a loop body share its one
+    // `var` binding and all see its final value (with `let`, each
+    // iteration has its own: `js_functions.rs`
+    // `loop_iterations_allocate_distinct_captured_cells`).
+    let src = "let i = 0;
+               let first, last;
+               while (i < 2) {
+                 var j = i;
+                 const get = function () { return j; };
+                 if (i === 0) { first = get; }
+                 last = get;
+                 i = i + 1;
+               }
+               first() * 100 + last()";
+    assert_eq!(num(src), 101.0);
+    let src = "let i = 0;
+               let first, last;
+               while (i < 2) {
+                 var j = i;
+                 const bump = function () { j = j + 1; return j; };
+                 if (i === 0) { first = bump; }
+                 last = bump;
+                 i = i + 1;
+               }
+               first() * 100 + last()";
+    assert_eq!(num(src), 203.0);
+    // A never-assigned `var` captured by a closure holds `undefined`.
+    assert_eq!(
+        eval("function f() { function g() { return u; } var u; return g(); } f()"),
+        ValueView::Undefined
+    );
+    // A `var` of a function is not visible outside it.
+    let (kind, message, ..) = failure_at("function f() { var inner = 1; } f(); inner");
+    assert_eq!(
+        (kind, message.as_str()),
+        (VmErrorKind::ReferenceError, "inner is not defined")
+    );
+    // A `var` in a catch block named like its parameter (ECMAScript Annex
+    // B) is a function binding, but its initializer assigns the parameter.
+    assert_eq!(
+        num(
+            "function f() { try { throw 1; } catch (e) { var e = 2; var r = e; } return e === undefined ? r : -1; } f()"
+        ),
+        2.0
+    );
+    // A `var` shadows an enclosing function's binding of the same name.
+    assert_eq!(
+        num("let s = 1; function f() { s = 2; var s; return s; } f() * 10 + s"),
+        21.0
+    );
+}
+
 #[test]
 fn redeclaration_and_unsupported_forms_are_compile_errors() {
     let compile_err = |src: &str| {
@@ -1897,14 +2009,7 @@ fn redeclaration_and_unsupported_forms_are_compile_errors() {
 
     // Valid syntax that cannot execute yet is rejected where it starts.
     // (Functions and calls execute since clj-quickjs-21.)
-    for (src, line, column) in [
-        ("let o = 1;\no.p;", 2, 1),
-        ("let o = 1;\no.p(1);", 2, 1),
-        // Var-scoped redeclaration by a function declaration, which
-        // JavaScript allows at the top level of a script or function body.
-        ("function f(a) { function a() {} }", 1, 26),
-        ("function h() {}\nfunction h() {}", 2, 10),
-    ] {
+    for (src, line, column) in [("let o = 1;\no.p;", 2, 1), ("let o = 1;\no.p(1);", 2, 1)] {
         assert_eq!(compile_err(src), (Unsupported, line, column), "{src}");
     }
     // Syntax errors pass through from the parser.

@@ -575,6 +575,22 @@ Code: `src/vm/function.rs` (contract), `src/vm/dispatch.rs`; tests:
   cell. Within the declaring function, the static TDZ decision still holds,
   except for the `switch` bindings above, which the cell checks at run
   time.
+- **`var` and var-scoped declarations** (clj-quickjs-94). Entering a
+  script or function body also declares, after its parameters and
+  lexical and function declarations, the names of every `var` statement in
+  the body (nested statements included, nested functions excluded). A
+  `var` or function declaration that repeats a parameter, a `var` or a
+  function declaration of that body reuses its binding (QuickJS
+  `define_var` / `instantiate_hoisted_definitions`); a function declaration
+  doing so marks the binding assigned, so closures and the declarations'
+  self-references go through a cell, and the last declaration wins. A `var`
+  binding is initialized (`undefined`) at entry: a cell one gets
+  `new_cell; cell_init undefined`, a plain local starts `undefined` in a
+  new frame. A `var x = e` statement is an assignment `x = e` minus its
+  value; `var x;` emits nothing. The `var` statement checks the scopes
+  between it and the body for a lexical binding of its name (an early
+  error), skipping a catch parameter (Annex B). Script-level `var`s are
+  script bindings until the global object (clj-quickjs-104) exists.
 - **Reserved intrinsic binding** (`src/frontend/intrinsics.rs`, the
   contract and table; `docs/grammar.md`, "Reserved intrinsic binding").
   `__rt` is a binding in the scope outside the outermost function. It cannot
@@ -592,8 +608,8 @@ Code: `src/vm/function.rs` (contract), `src/vm/dispatch.rs`; tests:
   JavaScript source executed by this VM; no C engine is involved.
 - **Deferred.** String values and property access (so no `f.call`, method
   calls or object literals); `this`, `arguments`, `new`, default/rest
-  parameters; var-scoped redeclaration by function declarations (rejected as
-  `Unsupported`); an initialize-once immutable cell, which would let a
+  parameters (var-scoped redeclaration by function declarations runs since
+  clj-quickjs-94); an initialize-once immutable cell, which would let a
   hoisted declaration capture a `const` of its own scope by value.
 
 ## Dependency waits in the VM (clj-quickjs-23)
@@ -1425,7 +1441,9 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `f`/`g1` case ('closure1'), `test_closure1`, `test_closure2` and
   `test_closure3` of `research/quickjs/tests/test_closure.js`, revision
   7d1c13c5d8f8, as JavaScript source compiled by this frontend. Modified:
-  `let`/`const` for `var`; `log` appends two decimal digits per value to a
+  upstream's `var`s are kept since clj-quickjs-94 (`let`/`const` before),
+  but script-level ones are script bindings, not global object properties;
+  the added `failed` flag is a `let`; `log` appends two decimal digits per value to a
   number instead of concatenating strings; the `{ set, get }` object is a
   vector made with `__rt.vector` and read with `__rt.nth`; failure flags
   instead of `assert()` calls. `test_arrow_function`, `test_with`,

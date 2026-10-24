@@ -169,8 +169,12 @@ fn render_lexical(decl: &super::ast::LexicalDecl) -> String {
         super::ast::LexicalKind::Let => "let",
         super::ast::LexicalKind::Const => "const",
     };
+    render_declarators(keyword, &decl.declarators)
+}
+
+fn render_declarators(keyword: &str, declarators: &[super::ast::Declarator]) -> String {
     let mut out = format!("({keyword}");
-    for d in &decl.declarators {
+    for d in declarators {
         match &d.init {
             Some(init) => out.push_str(&format!(" ({} {})", d.name.name, render_expr(init))),
             None => out.push_str(&format!(" ({})", d.name.name)),
@@ -184,6 +188,7 @@ fn render_stmt(s: &Stmt) -> String {
     match &s.kind {
         StmtKind::FunctionDecl(f) => render_function(f),
         StmtKind::Lexical(decl) => render_lexical(decl),
+        StmtKind::Var(declarators) => render_declarators("var", declarators),
         StmtKind::Expr(e) => render_expr(e),
         StmtKind::Return(None) => "(return)".into(),
         StmtKind::Return(Some(e)) => format!("(return {})", render_expr(e)),
@@ -1193,6 +1198,66 @@ fn declarations() {
     assert_eq!(ast("let $_x9 = async;"), "(let ($_x9 async))");
 }
 
+/// `var` statements (clj-quickjs-94) in every statement position, and the
+/// early errors of a `var` that a lexical declaration would shadow.
+#[test]
+fn var_statements() {
+    use SyntaxErrorKind::{Invalid, UnexpectedToken};
+    assert_eq!(ast("var a, b = 1;"), "(var (a) (b 1))");
+    assert_eq!(ast("if (x) var y = 1;"), "(if x (var (y 1)))");
+    assert_eq!(
+        ast("while (x) var y; L: var z = (1, 2)\nvar w"),
+        "(while x (var (y))) (label L (var (z (, 1 2)))) (var (w))"
+    );
+    assert_eq!(ast("{ var a = b = c; }"), "(block (var (a (= b c))))");
+    rejects("var;", UnexpectedToken, 1, 4);
+    rejects("var a b;", UnexpectedToken, 1, 7);
+    rejects("var a = 1, ;", UnexpectedToken, 1, 12);
+    rejects_with("var let = 1;", SyntaxErrorKind::ReservedWord, 1, 5, "let");
+    // A `var` names the function's binding: a `let`/`const` (or block
+    // function) of the same name in its own scope or an enclosing block is
+    // an early error at the `var` name.
+    let compile_err = |src: &str| {
+        let e = super::compile_script("v", src).expect_err(src);
+        (e.kind, e.line, e.column)
+    };
+    assert_eq!(compile_err("let a; var a;"), (Invalid, 1, 12));
+    assert_eq!(compile_err("var a; const a = 1;"), (Invalid, 1, 5));
+    assert_eq!(compile_err("{ let a; { var a; } }"), (Invalid, 1, 16));
+    assert_eq!(compile_err("{ { var a; } let a; }"), (Invalid, 1, 9));
+    assert_eq!(compile_err("{ function a() {} var a; }"), (Invalid, 1, 23));
+    assert_eq!(
+        compile_err("for (let i = 0; ;) { var i; }"),
+        (Invalid, 1, 26)
+    );
+    assert_eq!(
+        compile_err("switch (x) { case 1: let a; case 2: var a; }"),
+        (Invalid, 1, 41)
+    );
+    assert_eq!(
+        compile_err("function f() { if (x) { const k = 1; var k; } }"),
+        (Invalid, 1, 42)
+    );
+    assert_eq!(
+        compile_err("function f(a) { let a; var a; }"),
+        (Invalid, 1, 21)
+    );
+    // Not conflicts: a sibling block, a nested function, a parameter, a
+    // repeated `var`, a top-level function declaration and (ECMAScript
+    // Annex B) a catch parameter.
+    for src in [
+        "{ let a; } var a;",
+        "let a; function f() { var a; }",
+        "function f(a) { var a; { var a; } }",
+        "var a; var a; { var a; }",
+        "function a() {} var a;",
+        "var a; function a() {}",
+        "try {} catch (e) { var e = 1; }",
+    ] {
+        super::compile_script("v", src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+    }
+}
+
 #[test]
 fn functions() {
     assert_eq!(
@@ -1902,7 +1967,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("x = async (y) => y;", 1, 5, "arrow"),
         ("await x;", 1, 1, "await"),
         ("function* g() {}", 1, 1, "generator"),
-        ("var x = 1;", 1, 1, "var"),
         ("for (x of y) {}", 1, 1, "for`-`of"),
         ("try {} catch ([e]) {}", 1, 15, "destructuring"),
         ("with (o) {}", 1, 1, "with"),
@@ -2054,6 +2118,9 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
             format!("{}x;{}", "do ".repeat(n), " while (1)".repeat(n))
         }),
         ("for", |n| format!("{}x;", "for (;;) ".repeat(n))),
+        ("var bodies", |n| {
+            format!("{}var x = 1;", "if (1) ".repeat(n))
+        }),
         ("switch", |n| {
             format!("{}x;{}", "switch (1) { case 1: ".repeat(n), "}".repeat(n))
         }),

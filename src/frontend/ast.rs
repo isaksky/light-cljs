@@ -40,12 +40,8 @@ impl Stmt {
     pub(crate) fn new(kind: StmtKind, span: Span) -> Stmt {
         let child = match &kind {
             StmtKind::FunctionDecl(f) => f.height,
-            StmtKind::Lexical(decl) => decl
-                .declarators
-                .iter()
-                .filter_map(|d| d.init.as_ref().map(|e| e.height))
-                .max()
-                .unwrap_or(0),
+            StmtKind::Lexical(decl) => decl.height(),
+            StmtKind::Var(declarators) => declarators_height(declarators),
             StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw(e) => e.height,
             StmtKind::Block(body) => max_height(body),
             StmtKind::If {
@@ -113,6 +109,10 @@ pub enum StmtKind {
     /// `let a = 1, b;` or `const c = 2;`. Allowed only directly in a
     /// statement list.
     Lexical(LexicalDecl),
+    /// `var a = 1, b;` (clj-quickjs-94): a VariableStatement, allowed in
+    /// every statement position. Its names are bindings of the enclosing
+    /// function (or script) body, not of the block it appears in.
+    Var(Vec<Declarator>),
     /// `expr;`
     Expr(Expr),
     /// `return;` or `return expr;` (only inside a function body).
@@ -228,12 +228,17 @@ pub struct LexicalDecl {
 impl LexicalDecl {
     /// The height of its highest initializer (0 without one).
     pub(crate) fn height(&self) -> usize {
-        self.declarators
-            .iter()
-            .filter_map(|d| d.init.as_ref().map(|e| e.height))
-            .max()
-            .unwrap_or(0)
+        declarators_height(&self.declarators)
     }
+}
+
+/// The height of the highest initializer of `declarators` (0 without one).
+fn declarators_height(declarators: &[Declarator]) -> usize {
+    declarators
+        .iter()
+        .filter_map(|d| d.init.as_ref().map(|e| e.height))
+        .max()
+        .unwrap_or(0)
 }
 
 #[derive(Clone, Debug, PartialEq)]

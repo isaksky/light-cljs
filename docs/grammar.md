@@ -31,6 +31,9 @@ parse and execute. Arithmetic, bitwise, shift and `**` compound assignment
 `>>>=`) on identifier bindings (clj-quickjs-84) parses and executes; the
 logical assignments `&&=`, `||=` and `??=` do not. The `typeof` operator
 (clj-quickjs-69) parses and executes, including on a name with no binding.
+`var` statements (clj-quickjs-94) parse and execute, with function-level
+hoisting; top-level function declarations of a script or function body
+are var-scoped.
 
 ## Semantics model
 
@@ -68,7 +71,7 @@ EBNF; `{ x }` is repetition, `[ x ]` is optional. Terminals are quoted.
 Script              = { StatementListItem } EOF
 StatementListItem   = FunctionDeclaration | LexicalDeclaration | Statement
 Statement           = Block | ";" | IfStatement | WhileStatement | DoWhileStatement
-                    | ForStatement | SwitchStatement
+                    | ForStatement | SwitchStatement | VariableStatement
                     | ReturnStatement | ThrowStatement | TryStatement
                     | BreakStatement | ContinueStatement | LabelledStatement
                     | ExpressionStatement
@@ -90,6 +93,7 @@ Catch               = "catch" [ "(" BindingIdentifier ")" ] Block
 Finally             = "finally" Block
 ExpressionStatement = Expression ";"     (* not starting with "{" or "function" *)
 LexicalDeclaration  = ( "let" | "const" ) Declarator { "," Declarator } ";"
+VariableStatement   = "var" Declarator { "," Declarator } ";"
 Declarator          = BindingIdentifier [ "=" AssignmentExpression ]
 FunctionDeclaration = "function" BindingIdentifier FunctionRest
 FunctionExpression  = "function" [ BindingIdentifier ] FunctionRest
@@ -189,6 +193,11 @@ Notes on the grammar:
   allowed in the script, a function body, a block or a `switch` clause,
   but not as the direct body of `if`/`else`/`while`/`do`/`for` or of a
   labelled statement (strict mode rejects that; wrap it in a block).
+- `VariableStatement` (clj-quickjs-94) is a Statement, so it may also be
+  the body of `if`/`else`/`while`/`do`/`for` or of a labelled statement
+  (`if (x) var y = 1;`). Its names are bindings of the enclosing function
+  or script, wherever the statement is (see "Execution"); `var` in a `for`
+  head is not supported yet.
 - Function parameter names must be distinct (strict mode).
 - Arrow functions (clj-quickjs-53). A `(` whose matching `)` is followed
   by `=>` starts an arrow parameter list (the ECMAScript cover grammar);
@@ -224,8 +233,9 @@ Notes on the grammar:
 - `const` requires an initializer.
 - `ForStatement` (clj-quickjs-81): a `let`/`const` head declares bindings
   scoped to the whole loop (a `const` needs an initializer here too). For-in
-  and for-of heads (`for (x in o)`, `for (let x of y)`) and `var` heads are
-  rejected as `Unsupported`; the `in` operator is itself unsupported, so an
+  and for-of heads (`for (x in o)`, `for (let x of y)`) and `var` heads
+  (`for (var i = 0; ;)`) are rejected as `Unsupported`; the `in` operator
+  is itself unsupported, so an
   expression head has no `in` ambiguity yet.
 
 ### Automatic semicolon insertion
@@ -267,7 +277,7 @@ Every form below is rejected where it starts. Error kinds:
 
 | Form | Kind |
 |------|------|
-| `var` (also as a `for` head), for-in and for-of loops, `debugger`, `with` | Unsupported |
+| `var` as a `for` head, for-in and for-of loops, `debugger`, `with` | Unsupported |
 | classes, `new`, `this`, `super`, `import`/`export`, dynamic `import` | Unsupported |
 | `async` functions and arrows, `await`, generators (`function*`) | Unsupported |
 | rest/default parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
@@ -292,13 +302,14 @@ checks left to later stages:
   repeats a parameter name and declarations of the reserved binding `__rt`;
   `compile_script` rejects them (see "Execution"). Temporal-dead-zone use
   and assignment to a `const` are run-time errors, as in JavaScript.
-- **Function declarations are always lexical.** Every function declaration
-  binds its name in the statement list that contains it, hoisted to the
-  start of that list. JavaScript lets a function declaration at the top
-  level of a script or function body repeat a parameter or another function
-  declaration (they are var-scoped there); the compiler rejects that as
-  `Unsupported`. Duplicates in a block, and any clash with `let`/`const`,
-  are early errors (`Invalid`), as in strict-mode JavaScript.
+- **Script-level `var` and function declarations are script bindings.**
+  A `var` or function declaration at the top level of a script binds a
+  name of that script only, like a top-level `let`: there is no global
+  object yet, so it does not become a property of one and is not visible
+  to other scripts (clj-quickjs-104 will make them global object
+  properties). Function declarations in blocks are lexical (strict-mode
+  semantics; the sloppy-mode Annex B hoisting out of blocks is not
+  implemented).
 - **Nesting limit.** Nesting is charged against one budget of 256 units
   (`MAX_NESTING`); input that exceeds it is rejected with `TooDeep`. Costs
   per level, weighted by the Rust stack each construct uses: a statement 1,
@@ -376,6 +387,7 @@ Executed, with JavaScript semantics:
 | Number, `true`/`false`, `null`, `undefined`, `NaN`, `Infinity` literals | IEEE-754 doubles; `-0` is preserved; no constant folding |
 | String literals `"..."`, `'...'` (clj-quickjs-65) | immutable string values (UTF-16 code units) loaded from the constant pool, one constant per distinct content; a string is a primitive: publishable to other tasks and usable as a persistent map key, compared by content |
 | `let`, `const`, parameters, block scoping and shadowing | one frame local per live binding; `let x;` sets `undefined` each time it runs (loop bodies included) |
+| `var a = 1, b;` (clj-quickjs-94) | one binding per name per function body (or script), wherever the `var` statements are (nested blocks, loop and `if` bodies, `try`/`catch`/`finally` blocks and `switch` clauses included, nested functions excluded); hoisted: it exists and is `undefined` from function entry, with no temporal dead zone (`x; var x = 1;` reads `undefined`); repeating `var` is allowed and `var x;` does nothing (it does not reset an assigned value); an initializer is an assignment that runs when the statement does; a `var` named like a parameter, or like a function declaration at the top of the same body, is that binding; a `var` statement has no completion value. Closures capture a `var` under the rule of every binding: by value if it is never assigned, otherwise through one cell for the whole call, so closures made in different loop iterations share it (unlike a `let` in the loop body). A `var` in a catch block may repeat the simple catch parameter (ECMAScript Annex B, as QuickJS does): it declares the function's binding, and its initializer assigns the parameter |
 | `+` | when either operand is a string: ToString of both, concatenated (a new string; a result over 2^30 - 1 code units fails with `OutOfMemory`, as QuickJS's "string too long"). ToString gives `"undefined"`, `"null"`, `"true"`/`"false"`, and for numbers Number::toString in radix 10: shortest round-trip digits (ties to the even digit), plain decimal for `1e-6 <= \|x\| < 1e21` (`"0.000001"`, `"19686109595169230000"`), otherwise exponent form (`"1e+21"`, `"1e-7"`), `"0"` for `-0`, `"NaN"`, `"Infinity"` (clj-quickjs-66). Otherwise ToNumber of both, then IEEE addition. An object operand fails with `UnsupportedOperand` until ToPrimitive (clj-quickjs-70). Lowered to `add` when both operands are statically numbers, otherwise to `plus`, which decides at run time |
 | `- * / %` and unary `-`, `+` | ToNumber on `undefined` (NaN), `null` (0), booleans (0/1) and strings (StringToNumber, next row), then IEEE arithmetic; `%` keeps the dividend's sign |
 | StringToNumber (clj-quickjs-67), wherever ToNumber applies | leading and trailing whitespace and line terminators (including NBSP, BOM and Unicode `Zs`) are ignored; empty or all-whitespace is 0; an unsigned `0x`/`0o`/`0b` integer (any length, correctly rounded); a decimal with optional sign, fraction and exponent (`"-1.5e3"`, `".5"`, `"5."`; `"-0"` is -0; `"010"` is 10, no legacy octal); `Infinity` with an optional sign; anything else is NaN (`"1_000"`, `"1n"`, `"-0x1"`, `"12px"`, `"infinity"`) |
@@ -396,7 +408,7 @@ Executed, with JavaScript semantics:
 | `for (let ...; ...; ...)`, `for (const ...; ...; ...)` | the head's bindings are scoped to the loop and in their temporal dead zone during their own initializers (`for (let i = i; ;)` is a ReferenceError); each iteration has its own copy of the `let` bindings (CreatePerIterationEnvironment, before the first test and before each update), so a closure created in an iteration keeps that iteration's binding, and the next iteration starts from the values it ended with, including assignments made by closures; updating a `const` head is a TypeError |
 | `break`, `continue`; `break L`, `continue L`, `L: body` (clj-quickjs-82) | `break` leaves the innermost enclosing loop, `continue` evaluates its test again (in a `for` loop, runs the update first); `break L` leaves the enclosing statement labelled `L` (a loop or any other statement, continuing after it) and `continue L` continues the enclosing loop labelled `L` (directly or through a label set `L: M: while ...`), leaving every loop in between; an unlabelled `break`/`continue` passes by labelled statements that are not loops; leaving a `try` block pops its catch handler, so a later exception is not caught by it; leaving a `try` block or catch body runs its finally block first (innermost first, clj-quickjs-79), and a finally block that completes abruptly (`return`, `throw`, `break`, `continue`) replaces the jump; a jump out of a finally block discards its pending completion (return value, exception or jump) |
 | `switch (e) { case a: ... default: ... }` (clj-quickjs-83) | evaluates `e` once, then the `case` tests in source order, comparing each with IsStrictlyEqual (`===`: `-0` matches `0`, `NaN` matches nothing, `"1"` does not match `1`) and evaluating none after the first match; runs from the matching clause, or from `default` (wherever it is) if none matches, through the following clauses (fall-through); an unlabelled `break` leaves the switch, `continue` the switch and the iteration of its enclosing loop; the clauses form one block scope whose function declarations are created on entry, before the tests |
-| function declarations | hoisted: entering a script, function body or block creates the closures of the declarations directly in it, in source order, before its first statement runs |
+| function declarations | hoisted: entering a script, function body or block creates the closures of the declarations directly in it, in source order, before its first statement runs. At the top level of a script or function body they are var-scoped (clj-quickjs-94): one may repeat a parameter, a `var` or another function declaration there, which all share one binding, and the last declaration wins (`function g() { return 1; } function g() { return 2; } g()` is 2; `var h; function h() {}` leaves `h` the function). In a block they are lexical (strict mode) |
 | function expressions | each evaluation creates a new function object (`===` compares identity); a named expression's name is visible only inside it, is the running function, and assigning it is a TypeError |
 | arrow functions | lowered exactly as an anonymous function expression whose concise body is `{ return body; }`: same closures, captures, cells and temporal dead zone; the subset has no `this`, `arguments`, `new.target` or `super`, so an arrow's lexical versions of them do not arise (they stay rejected inside arrows) |
 | `f(a, b)` | evaluates the callee, then the arguments left to right, then calls in a new task-owned frame; missing arguments are `undefined`, extra ones are ignored; falling off the end returns `undefined`; no `this`, `arguments` or `new` |
@@ -445,8 +457,8 @@ Errors:
 
 | Situation | When | Reported as |
 |-----------|------|-------------|
-| A name declared twice in one block, script, function body or `switch` case block (including a `let` that repeats a parameter, and a function declaration that clashes with a `let`/`const` or repeats one in a block) | compile time | `SyntaxError`, kind `Invalid`, at the second declaration |
-| A function declaration that repeats a parameter or another function declaration at the top level of a script or function body (valid JavaScript) | compile time | `SyntaxError`, kind `Unsupported`, at the second name |
+| A name declared twice in one block, script, function body or `switch` case block (including a `let` that repeats a parameter, and a function declaration that clashes with a `let`/`const` or repeats one in a block), other than the var-scoped repetitions above | compile time | `SyntaxError`, kind `Invalid`, at the second declaration |
+| A `var` whose name a `let`, `const` or block-level function declaration binds in the same body (`let a; var a;`) or in a block enclosing the `var` within the same function (`{ let a; { var a; } }`), or a `for` head binding of an enclosing loop | compile time | `SyntaxError`, kind `Invalid`, at the `var`'s name |
 | Property access other than `__rt.name(...)`, and (in `compile_function`) assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
 | Misuse of the reserved intrinsic binding `__rt` | compile time | see "Reserved intrinsic binding" |
 | More than 65,535 live bindings, 65,536 distinct constants, 65,536 functions in one function, or 65,535 call arguments or captured bindings | compile time | `SyntaxError`, kind `TooLarge` |
@@ -803,6 +815,19 @@ const õ = Ãµ + abc + a.l\u0065t;
 ```
 
 ```js accept
+// `var` (clj-quickjs-94): function-scoped and hoisted; top-level function
+// declarations are var-scoped, so the second `g` replaces the first.
+function f(a, flag) {
+  if (flag) var x = a;
+  { var a = a + 1; }
+  function g() { return 1; }
+  function g() { return x === undefined ? a : x; }
+  return g();
+}
+var r = f(1, false), r2;
+```
+
+```js accept
 // A member access may follow a number literal (clj-quickjs-48).
 const a = 0.1.a, b = 0x1.a, c = .5.a, d = 1..toString;
 ```
@@ -955,6 +980,15 @@ for (k in o) {}
 for (var i = 0; i < 3; i++) {}
 ```
 
+```js compile-reject Invalid 1:16
+{ let a; { var a; } }
+```
+
+```js compile-reject Invalid 2:5
+let a;
+var a;
+```
+
 ```js reject Invalid 1:12
 for (const k; ;) {}
 ```
@@ -1073,6 +1107,12 @@ read with `OP_get_var_undef`, so an unresolvable name is not an error),
 `test_language.js` are adapted in `tests/js_source.rs` `typeof_operator`
 (notice on `identifiers_are_not_normalized`, which also runs the
 `typeof õ` case of `test_unicode_ident`).
+For `var` (clj-quickjs-94): `js_parse_var` (declarators; an initializer
+lowered as an assignment to the resolved name), `define_var` (a `var`
+reuses the function's one variable of that name and is an error inside a
+lexical declaration's scope, except a catch parameter's) and
+`instantiate_hoisted_definitions` (function declarations of the body
+assigned at entry, so the last of the same name wins).
 `test_try_catch5` of `research/quickjs/tests/test_loop.js` is adapted in
 `tests/exceptions.rs` `break_and_continue_run_finally_blocks`, and
 `test_try_catch1`–`test_try_catch8` with their upstream strings and

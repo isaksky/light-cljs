@@ -26,7 +26,14 @@
 //! lives in a frame local. Entering a statement list (script, function body,
 //! block) first declares all of its bindings, so a reference anywhere in the
 //! list resolves to them; a redeclared name is a JavaScript early error,
-//! [`SyntaxErrorKind::Invalid`]. Sibling blocks reuse local slots. Names are
+//! [`SyntaxErrorKind::Invalid`]. Sibling blocks reuse local slots.
+//! A script or function body also declares the `var` bindings of its whole
+//! body (clj-quickjs-94; [`var_names`]), initialized to `undefined` at
+//! entry, so they have no temporal dead zone. There, parameters, `var`s and
+//! function declarations are var-scoped: repeating one of them reuses its
+//! binding (`Lowerer::declare`), and a `var` statement's initializer is an
+//! assignment. A `var` that a lexical binding of an enclosing block would
+//! shadow is an early error (`Lowerer::check_var_not_shadowed`). Names are
 //! resolved through the stack of enclosing functions, as QuickJS's
 //! `get_closure_var` does: a binding of an enclosing function becomes a
 //! capture of every function in between (`ExecutableSpec::captures`), passed
@@ -211,6 +218,9 @@ enum BindingKind {
     Param,
     /// A function declaration's name.
     Function,
+    /// A `var` binding (clj-quickjs-94) that is not also a parameter or a
+    /// function declaration's name.
+    Var,
 }
 
 /// Where a binding's value lives.
@@ -694,20 +704,38 @@ impl<'s> Lowerer<'s> {
                             LexicalKind::Const => BindingKind::Const,
                         };
                         for d in &decl.declarators {
-                            self.declare(&d.name, kind, top_level, i < checked)?;
-                            declared.push(&d.name);
+                            if self.declare(&d.name, kind, top_level, i < checked)? {
+                                declared.push(&d.name);
+                            }
                         }
                     }
                     StmtKind::FunctionDecl(f) => {
                         let name = self.declaration_name(f)?;
-                        self.declare(name, BindingKind::Function, top_level, false)?;
-                        declared.push(name);
+                        if self.declare(name, BindingKind::Function, top_level, false)? {
+                            declared.push(name);
+                        }
                     }
                     _ => {}
                 }
             }
         }
-        // Cells first, so hoisted closures can capture any of them.
+        if top_level {
+            // The `var` bindings of the whole body, nested blocks included
+            // (not nested functions), after its parameters and lexical and
+            // function declarations, which they may share a binding with.
+            let mut vars = Vec::new();
+            for clause in clauses {
+                var_names(clause, &mut vars);
+            }
+            for name in vars {
+                if self.declare(name, BindingKind::Var, true, false)? {
+                    declared.push(name);
+                }
+            }
+        }
+        // Cells first, so hoisted closures can capture any of them. A
+        // parameter's cell holds its argument and a `var`'s `undefined`;
+        // the others start uninitialized.
         for name in declared {
             let b = self.local(name)?;
             if b.repr != Repr::Cell {
@@ -715,14 +743,24 @@ impl<'s> Lowerer<'s> {
             }
             let span = name.span;
             self.out().op(Opcode::NewCell, span);
-            if b.kind == BindingKind::Param {
-                self.out().op(Opcode::Dup, span);
-                self.out().op_u16(Opcode::GetLocal, b.slot, span);
-                self.out().op(Opcode::CellInit, span);
+            match b.kind {
+                BindingKind::Param => {
+                    self.out().op(Opcode::Dup, span);
+                    self.out().op_u16(Opcode::GetLocal, b.slot, span);
+                    self.out().op(Opcode::CellInit, span);
+                }
+                BindingKind::Var => {
+                    self.out().op(Opcode::Dup, span);
+                    self.out().op(Opcode::Undefined, span);
+                    self.out().op(Opcode::CellInit, span);
+                }
+                BindingKind::Let | BindingKind::Const | BindingKind::Function => {}
             }
             self.out().op_u16(Opcode::SetLocal, b.slot, span);
         }
-        // Hoisted function declarations, in source order.
+        // Hoisted function declarations, in source order. At the top level,
+        // several may share one binding (with each other or a parameter);
+        // the last one wins.
         for stmt in clauses.iter().flat_map(|c| c.iter()) {
             if let StmtKind::FunctionDecl(f) = &stmt.kind {
                 let name = self.declaration_name(f)?;
@@ -733,6 +771,7 @@ impl<'s> Lowerer<'s> {
                 if b.repr == Repr::Cell {
                     self.out().op_u16(Opcode::GetLocal, b.slot, f.span);
                     self.closure(f, self_name)?;
+                    // `cell_init` also overwrites an initialized cell.
                     self.out().op(Opcode::CellInit, f.span);
                 } else {
                     self.closure(f, self_name)?;
@@ -758,37 +797,50 @@ impl<'s> Lowerer<'s> {
             .ok_or_else(|| self.internal(f.span, "function declaration without a name"))
     }
 
-    /// Declare `name` in the innermost scope. `checked`: keep it in a cell
-    /// even if no closure needs one, for the cell's run-time
-    /// temporal-dead-zone check ([`Self::enter_scope`]).
+    /// Declare `name` in the innermost scope; returns whether that made a
+    /// new binding. `checked`: keep it in a cell even if no closure needs
+    /// one, for the cell's run-time temporal-dead-zone check
+    /// ([`Self::enter_scope`]).
+    ///
+    /// At the top level of a script or function body (`top_level`),
+    /// parameters, `var`s and function declarations are var-scoped
+    /// (clj-quickjs-94): a `var` or function declaration that repeats one of
+    /// them is that binding, not a new one. A function declaration then
+    /// assigns it at scope entry, after the argument or an earlier function
+    /// declaration, so the binding counts as assigned. Any other repeated
+    /// name is a JavaScript early error.
     fn declare(
         &mut self,
         name: &Ident,
         kind: BindingKind,
         top_level: bool,
         checked: bool,
-    ) -> Result<(), SyntaxError> {
+    ) -> Result<bool, SyntaxError> {
         self.check_not_reserved(name)?;
-        let prior = self.cur().scopes.last().and_then(|s| s.get(&name.name));
+        let prior = self
+            .cur()
+            .scopes
+            .last()
+            .and_then(|s| s.get(&name.name))
+            .copied();
         if let Some(prior) = prior {
-            // At the top level of a script or function body, JavaScript
-            // allows a function declaration to repeat a parameter or another
-            // function declaration (they are var-scoped); the subset does not.
-            let var_scoped = |k| matches!(k, BindingKind::Param | BindingKind::Function);
-            if top_level && kind == BindingKind::Function && var_scoped(prior.kind) {
-                return Err(self.error(
-                    SyntaxErrorKind::Unsupported,
-                    name.span,
-                    format!(
-                        "redeclaring '{}' with a function declaration is not supported by this JavaScript subset",
-                        name.name
-                    ),
-                ));
+            let var_scoped = |k| {
+                matches!(
+                    k,
+                    BindingKind::Param | BindingKind::Function | BindingKind::Var
+                )
+            };
+            if top_level && var_scoped(kind) && var_scoped(prior.kind) && kind != BindingKind::Param
+            {
+                if kind == BindingKind::Function && self.analyzing() {
+                    self.fact(prior.key).assigned = true;
+                }
+                return Ok(false);
             }
-            let what = if prior.kind == BindingKind::Param {
-                "a parameter"
-            } else {
-                "a binding in this scope"
+            let what = match prior.kind {
+                BindingKind::Param => "a parameter",
+                BindingKind::Var => "a `var` binding",
+                _ => "a binding in this scope",
             };
             return Err(self.error(
                 SyntaxErrorKind::Invalid,
@@ -808,7 +860,7 @@ impl<'s> Lowerer<'s> {
         let binding = Binding {
             kind,
             slot: ctx.next_slot as u16,
-            initialized: kind == BindingKind::Param,
+            initialized: matches!(kind, BindingKind::Param | BindingKind::Var),
             repr: if checked {
                 Repr::Cell
             } else {
@@ -821,6 +873,31 @@ impl<'s> Lowerer<'s> {
         ctx.max_slots = ctx.max_slots.max(ctx.next_slot);
         if let Some(scope) = ctx.scopes.last_mut() {
             scope.insert(name.name.clone(), binding);
+        }
+        Ok(true)
+    }
+
+    /// Reject a `var` declaration of `name` that a `let`, `const`, block
+    /// function declaration or `for` head binding of an enclosing block of
+    /// the running function would shadow (an early error: `var` names the
+    /// function's binding, which such a declaration hides). A catch
+    /// parameter does not count (ECMAScript Annex B, "VariableStatements in
+    /// Catch Blocks", as in QuickJS's `define_var`): an initializer assigns
+    /// the catch parameter, the innermost binding of that name.
+    fn check_var_not_shadowed(&self, name: &Ident) -> Result<(), SyntaxError> {
+        let blocks = self.cur().scopes.iter().skip(1);
+        let lexical = blocks
+            .filter_map(|scope| scope.get(&name.name))
+            .any(|b| b.kind != BindingKind::Param);
+        if lexical {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                name.span,
+                format!(
+                    "'{}' is already declared by `let`, `const` or a function declaration in an enclosing block",
+                    name.name
+                ),
+            ));
         }
         Ok(())
     }
@@ -1166,6 +1243,19 @@ impl<'s> Lowerer<'s> {
                 }
             }
             StmtKind::Lexical(decl) => self.declarators(decl)?,
+            // The bindings exist from function entry (`undefined`); each
+            // initializer is an assignment, and `var x;` does nothing.
+            StmtKind::Var(declarators) => {
+                for d in declarators {
+                    self.check_var_not_shadowed(&d.name)?;
+                    if let Some(init) = &d.init {
+                        self.expr(init)?;
+                        let access = self.resolve(&d.name.name);
+                        self.store(access, d.name.span)?;
+                        self.out().op(Opcode::Pop, d.span);
+                    }
+                }
+            }
             StmtKind::Return(value) => {
                 if self.cur().completion.is_some() {
                     // The parser rejects this; kept as a guard.
@@ -2095,6 +2185,62 @@ impl<'s> Lowerer<'s> {
             self.out().op(Opcode::ToNumber, span);
         }
         self.out().op(numeric, span);
+    }
+}
+
+/// Append the names `var` statements of `body` declare, in source order,
+/// looking into nested statements but not nested functions. Recursion depth
+/// is bounded by the tree height.
+fn var_names<'a>(body: &'a [Stmt], out: &mut Vec<&'a Ident>) {
+    for stmt in body {
+        var_names_in(stmt, out);
+    }
+}
+
+fn var_names_in<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Ident>) {
+    match &stmt.kind {
+        StmtKind::Var(declarators) => out.extend(declarators.iter().map(|d| &d.name)),
+        StmtKind::Block(body) => var_names(body, out),
+        StmtKind::If {
+            consequent,
+            alternate,
+            ..
+        } => {
+            var_names_in(consequent, out);
+            if let Some(alternate) = alternate {
+                var_names_in(alternate, out);
+            }
+        }
+        StmtKind::While { body, .. }
+        | StmtKind::DoWhile { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::Labelled { body, .. } => var_names_in(body, out),
+        StmtKind::Try {
+            block,
+            handler,
+            finalizer,
+        } => {
+            var_names(block, out);
+            if let Some(handler) = handler {
+                var_names(&handler.body, out);
+            }
+            if let Some(finalizer) = finalizer {
+                var_names(finalizer, out);
+            }
+        }
+        StmtKind::Switch { cases, .. } => {
+            for case in cases {
+                var_names(&case.body, out);
+            }
+        }
+        StmtKind::FunctionDecl(_)
+        | StmtKind::Lexical(_)
+        | StmtKind::Expr(_)
+        | StmtKind::Return(_)
+        | StmtKind::Throw(_)
+        | StmtKind::Break(_)
+        | StmtKind::Continue(_)
+        | StmtKind::Empty => {}
     }
 }
 
