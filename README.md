@@ -3834,9 +3834,9 @@ module body runs during loading and imports create no dependency-cell edges.
 The in-memory recording host and upstream parse fixtures are exercised with
 `CARGO_BUILD_JOBS=3 cargo test --test js_modules -- --test-threads=3`.
 
-Linking, evaluation, per-task instances and namespaces are supported by the
-subsequent module execution pellets. Deferred: cyclic binding initialization
-and JSON default exports. The CLI remains script-only.
+Linking, evaluation, per-task instances and namespaces, including cyclic
+binding initialization, are supported by the subsequent module execution
+pellets. JSON default exports remain deferred. The CLI remains script-only.
 
 ### Intl.Segmenter (clj-quickjs-222)
 
