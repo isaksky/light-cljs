@@ -3913,6 +3913,206 @@ fn update_expressions_on_properties() {
     );
 }
 
+/// Compound assignment on property references `o.p op= v` and `o[k] op= v`
+/// (clj-quickjs-260): the base and the key once, the key converted once,
+/// then the read, the right operand, the operator and the write. Synthetic
+/// fixtures, not light-cljs output.
+#[test]
+fn compound_assignment_on_properties() {
+    for src in [
+        "let o = {x: 1}; o.x += 2; o.x === 3",
+        "let o = {x: 3}; o['x'] *= 2; o.x === 6",
+        // The key is evaluated once.
+        "let a = [1, 1]; let i = 0; a[i = i + 1] += 4; i === 1 && a[1] === 5 && a[0] === 1",
+        "let a = [0, 0], i = 0; a[i++] -= 1; i === 1 && a[0] === -1 && a[1] === 0",
+        // The base is evaluated once.
+        "let n = 0; const o = {x: 1}; function get() { n = n + 1; return o; } \
+         get().x += 1; n === 1 && o.x === 2",
+        "let n = 0; const o = {x: 1}; const get = () => { n++; return o; }; \
+         get()['x'] **= 3; get()['x'] += get().x; n === 3 && o.x === 2",
+        // The expression's value is the written value; right-associative.
+        "let o = {x: 1}; let r = (o.x += 2); r === 3 && o.x === 3",
+        "let o = {a: 10, b: 2}; o.a -= o.b *= 3; o.a === 4 && o.b === 6",
+        "let o = {a: 1}, b = 2; o.a += b += 3; o.a === 6 && b === 5",
+        "let a = [1]; let b = 2; b *= a[0] += 4; b === 10 && a[0] === 5",
+        // Parenthesized targets, chains and nested references.
+        "let o = {p: 2}; (o.p) *= 5; ((o)['p']) -= 1; o.p === 9",
+        "let o = {a: {b: [1, 2]}}; o.a.b[1] += 10; o['a'].b[0] -= 1; \
+         o.a.b[0] === 0 && o.a.b[1] === 12",
+        "let a = [[5]]; a[0][a[0][0] -= 5] += 1; a[0][0] === 1",
+        // Every operator.
+        "let o = {v: 7}; o.v -= 1; o.v /= 4; o.v %= 1; o.v === 0.5",
+        "let o = {v: 2}; o.v **= 10; o.v === 1024",
+        "let o = {v: 12}; o.v &= 10; o.v |= 1; o.v ^= 3; o.v === 10",
+        "let o = {v: 1}; o.v <<= 4; o.v >>= 1; o.v === 8",
+        "let o = {v: -16}; o.v >>>= 28; o['v'] === 15",
+        "let o = {v: -16}; o.v >>= 2; o.v === -4",
+        // `+=` concatenates when either value is a string; the others
+        // apply ToNumber.
+        "let o = {s: 'a'}; o.s += 1; o.s += true; o.s === 'a1true'",
+        "let o = {n: 1}; o.n += '2'; o.n === '12'",
+        "let o = {s: '6'}; o.s *= '2'; o.s === 12",
+        "let o = {t: true, u: null}; o.t += 1; o.u -= 1; o.t === 2 && o.u === -1",
+        // A string key that is an array index, and a numeric name.
+        "let a = [1]; a['0'] += 1; a[0] === 2",
+        "let o = {}; o[1.5] = 1; o[1.5] += 1; o['1.5'] === 2",
+        // A loop accumulator in an object and an array.
+        "let o = {n: 0}, a = [0]; for (let i = 1; i <= 4; i++) { o.n += i; a[0] -= i; } \
+         o.n === 10 && a[0] === -10",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    // An absent property reads as undefined: NaN for the numeric operators,
+    // concatenation for `+=` with a string.
+    assert!(num("let o = {}; o.x += 1; o.x").is_nan());
+    assert_eq!(string("let o = {}; o.k += 'v'; o.k"), "undefinedv");
+    // Writing past an array's end extends it.
+    assert_eq!(num("let a = []; a[2] |= 4; a.length * 10 + a[2]"), 34.0);
+
+    // The order: base, key, read, right operand, write. The right operand
+    // sees the old value (it was not yet written) and replaces it; the
+    // result uses the value read before it ran, and the write comes after
+    // it.
+    assert_eq!(
+        string(
+            "let log = ''; const o = {x: 1}; \
+             function base() { log += 'b'; return o; } \
+             function key() { log += 'k'; return 'x'; } \
+             function rhs() { log += 'r' + o.x; o.x = 100; return 2; } \
+             let r = base()[key()] += rhs(); \
+             log += ',' + r + ',' + o.x; log"
+        ),
+        "bkr1,3,3"
+    );
+    assert_eq!(
+        string(
+            "let log = ''; const o = {x: 1}; \
+             const base = () => { log += 'b'; return o; }; \
+             base().x *= (log += 'r' + o.x, o.x = 7, 5); \
+             log += ',' + o.x; log"
+        ),
+        "br1,5"
+    );
+
+    // A `null`/`undefined` base is a catchable TypeError at the `.` or
+    // `[`, after the key but before the right operand runs.
+    let (kind, message, line, column) = failure_at("let o = null;\no.x += 1;");
+    assert_eq!(
+        (kind, line, column),
+        (VmErrorKind::TypeError, 2, 2),
+        "{message}"
+    );
+    let (kind, _, line, column) = failure_at("null.x += 1");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 1, 5));
+    let (kind, _, line, column) = failure_at("let u;\nu[0] -= 1;");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 2));
+    assert_eq!(
+        string("let r = 'none'; try { null.x += 1; } catch (e) { r = 'caught'; } r"),
+        "caught"
+    );
+    assert_eq!(
+        string(
+            "let log = '', u; \
+             try { u[(log += 'k', 'p')] += (log += 'r', 1); } catch (e) { log += 'c'; } log"
+        ),
+        "kc"
+    );
+    assert_eq!(
+        string(
+            "let log = ''; \
+             try { null.x *= (log += 'r', 1); } catch (e) { log += 'c'; } log"
+        ),
+        "c"
+    );
+
+    // A failed write (a non-writable property, clj-quickjs-119): in strict
+    // code a catchable TypeError at the `.` or `[` after the right operand;
+    // the property keeps its value.
+    let frozen = "let o = {}; Object.defineProperty(o, 'k', {value: 1});";
+    let (kind, message, line, column) = failure_at(&format!("{frozen}\no.k += 1;"));
+    assert_eq!(
+        (kind, line, column),
+        (VmErrorKind::TypeError, 2, 2),
+        "{message}"
+    );
+    let (kind, _, line, column) = failure_at(&format!("{frozen}\no['k'] *= 2;"));
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 2));
+    assert_eq!(
+        string(&format!(
+            "{frozen} let log = ''; \
+             try {{ o.k += (log += 'r', 1); }} catch (e) {{ log += 'c'; }} log + o.k"
+        )),
+        "rc1"
+    );
+    // In sloppy code the write does nothing; the value is still the
+    // operator's result. A strict function in the same script throws.
+    assert_eq!(
+        sloppy_eval(&format!(
+            "{frozen} let r = (o.k += 5); let s = (o['k'] -= 1); r === 6 && s === 0 && o.k === 1"
+        )),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        sloppy_eval(&format!(
+            "{frozen} function f() {{ 'use strict'; o.k += 3; }} \
+             let r = 'none'; try {{ f(); }} catch (e) {{ r = 'caught'; }} r === 'caught' && o.k === 1"
+        )),
+        ValueView::Bool(true)
+    );
+
+    // An object value needs ToPrimitive (deferred, clj-quickjs-70); the
+    // operator fails at the `op=` token.
+    let (kind, _, line, column) = failure_at("let o = {p: {}};\no.p *= 2;");
+    assert_eq!(
+        (kind, line, column),
+        (VmErrorKind::UnsupportedOperand, 2, 5)
+    );
+    let (kind, _, line, column) = failure_at("let o = {p: 1};\no['p'] += {};");
+    assert_eq!(
+        (kind, line, column),
+        (VmErrorKind::UnsupportedOperand, 2, 8)
+    );
+    // Intrinsics of the reserved binding stay compile errors.
+    for src in ["__rt.count += 1;", "__rt.count -= 1;", "__rt[0] += 1;"] {
+        let e = compile_script("t", src).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::ReservedWord, "{src}: {e}");
+    }
+    // Logical assignment stays unsupported, on properties too.
+    for src in ["o.x &&= 1;", "o[0] ||= 1;", "o.x ??= 1;"] {
+        let e = compile_script("t", src).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
+    }
+
+    // `o[k]` converts its key once and reads with the reference
+    // duplicated; `o.p` duplicates its base.
+    let ops = opcodes(&exe("let o = {}, k = 'p'; o[k] += 1;"));
+    for op in [
+        Opcode::ToPropertyKey,
+        Opcode::Dup2,
+        Opcode::GetElem,
+        Opcode::Plus,
+        Opcode::PutElem,
+    ] {
+        assert!(ops.contains(&op), "{op:?} missing from {ops:?}");
+    }
+    assert_eq!(
+        ops.iter()
+            .filter(|op| **op == Opcode::ToPropertyKey)
+            .count(),
+        1,
+        "{ops:?}"
+    );
+    let ops = opcodes(&exe("let o = {}; o.p -= 1;"));
+    for op in [Opcode::Dup, Opcode::GetField, Opcode::Sub, Opcode::PutField] {
+        assert!(ops.contains(&op), "{op:?} missing from {ops:?}");
+    }
+    // A numeric compound assignment's value is a number: no conversion
+    // before `+`.
+    let ops = opcodes(&exe("let o = {p: 1}; 1 + (o.p *= 2)"));
+    assert!(ops.contains(&Opcode::Add), "{ops:?}");
+    assert!(!ops.contains(&Opcode::Plus), "{ops:?}");
+}
+
 /// Compound assignment on identifier bindings (clj-quickjs-84): read, then
 /// the right operand, then the binary operator's own instructions, then the
 /// store.
@@ -4804,21 +5004,19 @@ fn computed_member_access() {
     );
 
     // Explicitly unsupported, never a wrong value: an object key needs
-    // ToPrimitive (clj-quickjs-70); compound assignment to a property is
-    // its own pellet (clj-quickjs-260; `++`/`--` are clj-quickjs-76).
+    // ToPrimitive (clj-quickjs-70), also in `++`/`--` (clj-quickjs-76) and
+    // compound assignment (clj-quickjs-260).
     for src in [
         "let o = {};\no[{}];",
         "let o = {};\no[o] = 1;",
         "let o = {};\no[o]++;",
+        "let o = {};\no[o] += 1;",
     ] {
         let (kind, message, line, _) = failure_at(src);
         assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
         assert!(message.contains("ToPrimitive"), "{src}: {message}");
         assert_eq!(line, 2, "{src}");
     }
-    let src = "let o = {}; o['x'] += 1;";
-    let e = compile_script("t", src).unwrap_err();
-    assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
 }
 
 /// Function own properties and the lazy `prototype` object

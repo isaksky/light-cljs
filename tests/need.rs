@@ -336,6 +336,73 @@ fn property_update_resumes_after_wait() {
     assert_eq!(host.effects, [1.0], "the effect is not replayed");
 }
 
+/// A compound assignment on a property (clj-quickjs-260) keeps its
+/// reference and the value it read across budget yields and a dependency
+/// wait in its right operand: the run suspends at a need in
+/// `get()[key] += ...` with the base, the converted key and the old value
+/// on the operand stack, is collected while parked, resumes on another
+/// thread one instruction at a time, and finishes with the base and the key
+/// evaluated once, the old value used, and the effect not replayed.
+#[test]
+fn property_compound_assignment_resumes_after_wait() {
+    let rt = Runtime::new();
+    let exe = compile_script(
+        "t",
+        "let n = 0, m = 0; const p = {k: 'v'}; \
+         const get = () => { m = m + __rt.effect(1, 1) - 100; return p; }; \
+         const r = get()[(n = n + 1, 'k')] += (p.k = 'w', __rt.need(5, 3)); \
+         p.k *= 1; \
+         `${r},${p.k},${n},${m}`",
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Recorder::default();
+    let number_key = key(&rt, NUMBER);
+    let mut runs = 0;
+    let request = loop {
+        runs += 1;
+        assert!(runs < 1_000, "bounded");
+        match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+            RunOutcome::Yielded => {}
+            RunOutcome::Waiting(k) => {
+                assert_eq!(k, number_key);
+                break one_request(&task, number_key);
+            }
+            other => panic!("expected the wait, got {other:?}"),
+        }
+    };
+    assert!(runs > 3, "the budget split the run ({runs} runs)");
+    assert_eq!(host.effects, [1.0]);
+    rt.collect().unwrap();
+    let resumed = only_runnable(publish_number(&rt, &request, 42.0));
+    let (outcome, host) = thread::spawn(move || {
+        let mut runs = 0;
+        let outcome = loop {
+            runs += 1;
+            assert!(runs < 1_000, "bounded");
+            match resumed
+                .run_with(Budget::instructions(1), &mut host)
+                .unwrap()
+            {
+                RunOutcome::Yielded => {}
+                other => break other,
+            }
+        };
+        (outcome, host)
+    })
+    .join()
+    .unwrap();
+    match outcome {
+        RunOutcome::Complete(v) => {
+            // `'v' + 42`, written over the right operand's `'w'`, then
+            // `'v42' * 1` is NaN.
+            assert_eq!(v.string().expect("a string").to_string(), "v42,NaN,1,1");
+        }
+        other => panic!("expected Complete, got {other:?}"),
+    }
+    assert_eq!(host.effects, [1.0], "the effect is not replayed");
+}
+
 /// A need of a completed cell continues in the same run: no suspension, no
 /// producer request, and the read is still recorded.
 #[test]

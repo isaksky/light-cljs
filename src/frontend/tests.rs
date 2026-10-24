@@ -55,6 +55,12 @@ fn render_expr(e: &Expr) -> String {
             let op = binary_name(*op);
             format!("({op}= {} {})", target.name, render_expr(value))
         }
+        ExprKind::CompoundAssignProperty {
+            op, target, value, ..
+        } => {
+            let op = binary_name(*op);
+            format!("({op}= {} {})", render_expr(target), render_expr(value))
+        }
         ExprKind::Logical { op, left, right } => {
             let op = match op {
                 LogicalOp::And => "&&",
@@ -1235,7 +1241,39 @@ fn compound_assignment() {
     rejects_with("undefined += 1;", ReservedWord, 1, 1, "undefined");
     rejects_with("NaN -= 1;", ReservedWord, 1, 1, "NaN");
     rejects_with("__rt.count += 1;", ReservedWord, 1, 1, "__rt");
-    rejects_with("a.b += 1;", Unsupported, 1, 1, "assignment to properties");
+    rejects_with("__rt[0] += 1;", ReservedWord, 1, 5, "computed access");
+    // Property targets (clj-quickjs-260), possibly parenthesized.
+    assert_eq!(ast("a.b += 1;"), "(+= (. a b) 1)");
+    assert_eq!(ast("a[0] **= 2;"), "(**= ([] a 0) 2)");
+    assert_eq!(ast("(a.b) -= c.d *= 2;"), "(-= (. a b) (*= (. c d) 2))");
+    assert_eq!(
+        ast("f().x >>>= a[i] = 1;"),
+        "(>>>= (. (call f) x) (= ([] a i) 1))"
+    );
+    assert_eq!(
+        ast("a.b.c[d] |= 1, e;"),
+        "(, (|= ([] (. (. a b) c) d) 1) e)"
+    );
+    let script = parse_script("  (o[k]) <<= 1;").unwrap();
+    let StmtKind::Expr(e) = &script.body[0].kind else {
+        panic!("not an expression statement")
+    };
+    assert_eq!((e.span.start, e.span.end), (2, 14));
+    let &ExprKind::CompoundAssignProperty {
+        op,
+        ref target,
+        op_span,
+        ..
+    } = &e.kind
+    else {
+        panic!("not a property compound assignment")
+    };
+    assert_eq!(op, BinaryOp::Shl);
+    assert_eq!((target.span.start, target.span.end), (2, 8));
+    assert_eq!((op_span.start, op_span.end), (9, 12));
+    rejects_with("a.b++ += 1;", Invalid, 1, 1, "invalid assignment target");
+    rejects_with("a.b &&= 1;", Unsupported, 1, 5, "&&=");
+    rejects_with("a[0] ??= 1;", Unsupported, 1, 6, "??=");
     // Logical assignment is not supported.
     rejects_with("a &&= 1;", Unsupported, 1, 3, "&&=");
     rejects_with("a ||= 1;", Unsupported, 1, 3, "||=");
@@ -1318,9 +1356,9 @@ fn object_literals() {
     rejects_with("({a});;({b: 1", SyntaxErrorKind::UnexpectedEnd, 1, 14, "");
 }
 
-/// `o.name = v` (clj-quickjs-114); compound assignment and `++`/`--` of a
-/// property, and any assignment to the reserved intrinsic binding, stay
-/// rejected.
+/// `o.name = v` (clj-quickjs-114), compound assignment (clj-quickjs-260)
+/// and `++`/`--` (clj-quickjs-76) of a property; any assignment to the
+/// reserved intrinsic binding stays rejected.
 #[test]
 fn property_assignment() {
     use SyntaxErrorKind::{ReservedWord, Unsupported};
@@ -1328,15 +1366,11 @@ fn property_assignment() {
     assert_eq!(ast("(a.b) = 1;"), "(= (. a b) 1)");
     assert_eq!(ast("a.b.c = d.e = f;"), "(= (. (. a b) c) (= (. d e) f))");
     assert_eq!(ast("f().x = 1;"), "(= (. (call f) x) 1)");
-    rejects_with(
-        "a.b += 1;",
-        Unsupported,
-        1,
-        1,
-        "compound assignment to properties",
-    );
-    // `++`/`--` on a property (clj-quickjs-76).
+    // Compound assignment (clj-quickjs-260) and `++`/`--` (clj-quickjs-76)
+    // on a property.
+    assert_eq!(ast("a.b += 1;"), "(+= (. a b) 1)");
     assert_eq!(ast("a.b++;"), "(post++ (. a b))");
+    rejects_with("a.b ||= 1;", Unsupported, 1, 5, "||=");
     rejects_with("__rt.x = 1;", ReservedWord, 1, 1, "cannot be assigned");
 }
 
@@ -1384,8 +1418,7 @@ fn array_literals() {
 /// Computed member access `a[k]` and assignment `a[k] = v` in member and
 /// call chains (clj-quickjs-115; parsed since clj-quickjs-118). A computed
 /// callee is a method call; compound assignment and `++`/`--` of a computed
-/// property stay rejected (clj-quickjs-260, -76), and `__rt` cannot be
-/// indexed.
+/// property parse (clj-quickjs-260, -76), and `__rt` cannot be indexed.
 #[test]
 fn computed_member_access() {
     use SyntaxErrorKind::{ReservedWord, Unsupported};
@@ -1403,13 +1436,9 @@ fn computed_member_access() {
     );
     // No line-terminator restriction: `a` newline `[0]` is one member.
     assert_eq!(ast("a\n[0]"), "([] a 0)");
-    rejects_with(
-        "a[0] += 1;",
-        Unsupported,
-        1,
-        1,
-        "compound assignment to properties",
-    );
+    // Compound assignment to a computed property (clj-quickjs-260).
+    assert_eq!(ast("a[0] += 1;"), "(+= ([] a 0) 1)");
+    rejects_with("a[0] ??= 1;", Unsupported, 1, 6, "??=");
     rejects_with("__rt[0];", ReservedWord, 1, 5, "computed access");
     rejects_with("__rt[0] = 1;", ReservedWord, 1, 5, "computed access");
 }
@@ -2876,7 +2905,7 @@ fn rejects_unsupported_syntax_with_positions() {
         ("x = this;", 1, 5, "this"),
         ("x = super.y;", 1, 5, "super"),
         ("delete x.y;", 1, 1, "delete"),
-        ("x.y += 1;", 1, 1, "compound assignment to properties"),
+        ("x.y &&= 1;", 1, 5, "&&="),
         ("x = [...a];", 1, 6, "spread elements"),
         ("[a] = b;", 1, 1, "destructuring assignment"),
         ("f(...a);", 1, 3, "spread"),

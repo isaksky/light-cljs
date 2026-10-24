@@ -1356,8 +1356,9 @@ Supported (`cargo test --lib frontend::tests::update_expressions`,
 
 Deferred:
 
-- Compound assignment on properties (clj-quickjs-260); a property value or
-  key that is an object waits for ToPrimitive (`UnsupportedOperand`).
+- A property value or key that is an object waits for ToPrimitive
+  (`UnsupportedOperand`). (Compound assignment on properties:
+  clj-quickjs-260, below.)
 
 ### `do`-`while` loops (clj-quickjs-80)
 
@@ -1588,8 +1589,34 @@ Supported (`cargo test --lib frontend::tests::compound_assignment`,
 
 Deferred:
 
-- Logical assignment (`&&=`, `||=`, `??=`) stays `Unsupported`; compound
-  assignment to a property (`a.b += 1`) waits for property assignment.
+- Logical assignment (`&&=`, `||=`, `??=`) stays `Unsupported`. (Compound
+  assignment to a property: clj-quickjs-260, below.)
+
+### Compound assignment on properties (clj-quickjs-260)
+
+Supported (`cargo test --lib frontend::tests::compound_assignment`,
+`cargo test --test js_source compound_assignment_on_properties`,
+`cargo test --test need property_compound_assignment_resumes_after_wait`,
+`cargo test --test gc_roots property_compound_assignment_base_survives`):
+
+- `o.p op= v` and `o[k] op= v` for the operators of compound assignment
+  on bindings, possibly parenthesized and right-associative. The base and
+  the key are evaluated once and the key converted with ToPropertyKey
+  once (`a[i = i + 1] += 4` and `get().x += 1` run their key and base
+  once); then the property is read (a `null`/`undefined` base is a
+  catchable `TypeError` before `v` runs), `v` is evaluated, the operator
+  applied as on a binding, and the result written as `o.p = v` writes (a
+  read-only property is a catchable `TypeError` in strict code and left
+  unchanged in sloppy code). The value is the operator's result. No new
+  opcode: the reference instructions of property `++`/`--`
+  (clj-quickjs-76) around the operator's own. The read and the write are
+  reported at the `.`/`[`, the operator at the `op=`.
+
+Deferred:
+
+- Logical assignment on properties (`o.p &&= v`) stays `Unsupported`; a
+  property value, operand or key that is an object waits for ToPrimitive
+  (`UnsupportedOperand`).
 
 ### `typeof` (clj-quickjs-69)
 
@@ -1681,8 +1708,8 @@ Deferred:
 - (`Object.prototype` and method calls: clj-quickjs-117, below.)
   Getters/setters, methods, computed keys in literals (clj-quickjs-233;
   `o[k]` is clj-quickjs-115, below), `delete`,
-  `__proto__`, compound assignment on properties (clj-quickjs-260; property
-  `++`/`--`: clj-quickjs-76, above); properties of error objects and
+  `__proto__` (property `++`/`--` and compound assignment: clj-quickjs-76,
+  -260, above); properties of error objects and
   primitives fail with `UnsupportedOperand` (function properties:
   clj-quickjs-125, below).
 
@@ -1703,8 +1730,8 @@ Deferred:
 
 - Object keys (ToPrimitive, clj-quickjs-70) and symbol keys
   (clj-quickjs-127) fail explicitly; primitive and function bases fail
-  with `UnsupportedOperand` (clj-quickjs-73, -125); compound assignment
-  and `++`/`--` of a property (clj-quickjs-260, -76); optional chaining.
+  with `UnsupportedOperand` (clj-quickjs-73, -125); optional chaining.
+  (Compound assignment and `++`/`--` of a property: clj-quickjs-260, -76.)
 - Interned property names are never reclaimed, so writing many distinct
   computed keys grows the runtime's key table (clj-quickjs-259;
   `docs/grammar.md`, "Explicit gaps").

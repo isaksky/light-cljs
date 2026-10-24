@@ -1357,9 +1357,10 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    /// AssignmentExpression: ConditionalExpression, ArrowFunction, or
-    /// Identifier (`=` | an arithmetic, bitwise, shift or `**` compound
-    /// operator) AssignmentExpression (right-associative).
+    /// AssignmentExpression: ConditionalExpression, ArrowFunction, or an
+    /// identifier or a property reference `o.p` / `o[k]` (`=` | an
+    /// arithmetic, bitwise, shift or `**` compound operator)
+    /// AssignmentExpression (right-associative).
     fn parse_assignment(&mut self) -> PResult<Expr> {
         let saved = self.depth;
         self.deeper(cost::ASSIGNMENT)?;
@@ -1372,6 +1373,9 @@ impl<'a> Parser<'a> {
         if let TokenKind::Punct(p) = self.tok.kind
             && let Some(op) = compound_assign_op(p)
         {
+            if is_property_target(&left) {
+                return self.compound_assign_property(op, left, saved);
+            }
             let target = self.simple_target(&left, TargetUse::Assign)?;
             let op_span = self.advance()?.span;
             let value = self.parse_assignment()?;
@@ -1394,9 +1398,7 @@ impl<'a> Parser<'a> {
             self.depth = saved;
             return Ok(left);
         }
-        if matches!(&left.kind, ExprKind::Member { object, .. } if !is_reserved_binding(object))
-            || matches!(&left.kind, ExprKind::Index { .. })
-        {
+        if is_property_target(&left) {
             return self.assign_member(left, saved);
         }
         if matches!(&left.kind, ExprKind::Array(_)) && left.span.text(self.src).starts_with('[') {
@@ -1413,6 +1415,31 @@ impl<'a> Parser<'a> {
             ExprKind::Assign {
                 target,
                 value: Box::new(value),
+            },
+            span,
+        )
+    }
+
+    /// `o.p op= v` or `o[k] op= v` (clj-quickjs-260), with the current
+    /// token the `op=`; `left` is the member expression (possibly
+    /// parenthesized), whose object is not the reserved intrinsic binding.
+    #[inline(never)]
+    fn compound_assign_property(
+        &mut self,
+        op: BinaryOp,
+        left: Expr,
+        saved: usize,
+    ) -> PResult<Expr> {
+        let op_span = self.advance()?.span;
+        let value = self.parse_assignment()?;
+        self.depth = saved;
+        let span = left.span.to(value.span);
+        self.expr(
+            ExprKind::CompoundAssignProperty {
+                op,
+                target: Box::new(left),
+                value: Box::new(value),
+                op_span,
             },
             span,
         )
@@ -1451,20 +1478,16 @@ impl<'a> Parser<'a> {
 
     /// The identifier binding `left` names, as the target of an assignment
     /// or of `++`/`--` (`use_`, which selects the diagnostics); anything
-    /// else is rejected. (`++`/`--` of a property other than an intrinsic
-    /// never gets here: [`Self::update`] takes it first, clj-quickjs-76.)
+    /// else is rejected. (A property other than an intrinsic never gets
+    /// here: [`Self::update`] (clj-quickjs-76), [`Self::assign_member`] and
+    /// [`Self::compound_assign_property`] (clj-quickjs-260) take it first.)
     #[inline(never)]
     fn simple_target(&self, left: &Expr, use_: TargetUse) -> PResult<Ident> {
         let text = strip_parens(left.span.text(self.src));
-        let (verb, properties, invalid) = match use_ {
-            TargetUse::Assign => (
-                "assigned",
-                "compound assignment to properties is",
-                "invalid assignment target",
-            ),
+        let (verb, invalid) = match use_ {
+            TargetUse::Assign => ("assigned", "invalid assignment target"),
             TargetUse::Update => (
                 "incremented or decremented",
-                "increment and decrement of properties are",
                 "invalid increment/decrement operand",
             ),
         };
@@ -1478,9 +1501,6 @@ impl<'a> Parser<'a> {
                 left.span,
                 format!("intrinsics of the reserved binding `{RESERVED_BINDING}` cannot be {verb}"),
             )),
-            ExprKind::Member { .. } | ExprKind::Index { .. } => {
-                Err(self.unsupported(left.span, properties))
-            }
             ExprKind::Undefined | ExprKind::Number(_) if RESERVED_CONSTANTS.contains(&text) => {
                 Err(self.error(
                     SyntaxErrorKind::ReservedWord,
@@ -1495,8 +1515,8 @@ impl<'a> Parser<'a> {
     /// `object.property = value` (clj-quickjs-114) or `object[index] =
     /// value` (clj-quickjs-118), with the current token the `=`; `left` is
     /// the member expression (possibly parenthesized), whose object is not
-    /// the reserved intrinsic binding. Only plain `=`: compound assignment
-    /// and `++`/`--` of properties stay rejected.
+    /// the reserved intrinsic binding. Compound assignment is
+    /// [`Self::compound_assign_property`], `++`/`--` [`Self::update`].
     #[inline(never)]
     fn assign_member(&mut self, left: Expr, saved: usize) -> PResult<Expr> {
         let span = left.span;
@@ -1761,9 +1781,7 @@ impl<'a> Parser<'a> {
     /// intrinsic binding is a `ReservedWord` error there).
     #[inline(never)]
     fn update(&self, op: UpdateOp, prefix: bool, operand: Expr, op_span: Span) -> PResult<Expr> {
-        if matches!(&operand.kind, ExprKind::Member { object, .. } if !is_reserved_binding(object))
-            || matches!(&operand.kind, ExprKind::Index { .. })
-        {
+        if is_property_target(&operand) {
             let span = op_span.to(operand.span);
             return self.expr(
                 ExprKind::UpdateProperty {
@@ -2391,4 +2409,15 @@ fn strip_parens(text: &str) -> &str {
 /// (`super::intrinsics`), which no program can shadow.
 fn is_reserved_binding(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::Identifier(name) if name == RESERVED_BINDING)
+}
+
+/// True for a property reference that can be assigned, compound-assigned
+/// or incremented: `o.p` whose object is not the reserved intrinsic
+/// binding, or `o[k]` (possibly parenthesized).
+fn is_property_target(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Member { object, .. } => !is_reserved_binding(object),
+        ExprKind::Index { .. } => true,
+        _ => false,
+    }
 }

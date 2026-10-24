@@ -420,7 +420,11 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   Compound assignment `x op= v` on a binding (clj-quickjs-84) likewise:
   the binding's read, then `v`, then exactly the instructions of the
   binary operator `x op v` (`plus` for `+=`, `to_number_pair` and the
-  numeric opcode otherwise), then the binding's store.
+  numeric opcode otherwise), then the binding's store. On a property,
+  `o.p op= v` / `o[k] op= v` (clj-quickjs-260) puts the same operator
+  instructions between the reference read and write of property
+  `++`/`--` (`dup` `get_field` .. `put_field`, or `to_property_key`
+  `dup2` `get_elem` .. `put_elem`), with `v` evaluated after the read.
   `typeof` (clj-quickjs-69) is the opcode `typeof` (`0x4E`), which reads
   the heap only to tell a function object (`"function"`) from every other
   object kind (`"object"`; the mapping of every value kind is in
@@ -2341,6 +2345,15 @@ and Charlie Gordon) and is listed here with its source path and revision:
   order. `tests/js_source.rs` `compound_assignment_on_bindings` and
   `src/frontend/tests.rs` `compound_assignment` are written for this
   project. No code was copied.
+- Compound assignment on properties (clj-quickjs-260): the same function
+  and `get_lvalue` (`OP_get_field2`, `OP_get_array_el3`: the reference
+  kept on the stack under the value read) in `research/quickjs/quickjs.c`,
+  revision 7d1c13c5d8f8, were consulted only, for the evaluation order.
+  `tests/js_source.rs` `compound_assignment_on_properties`,
+  `tests/need.rs` `property_compound_assignment_resumes_after_wait` and
+  `tests/gc_roots.rs`
+  `property_compound_assignment_base_survives_wait_collection_and_migration`
+  are written for this project. No code was copied.
 - `tests/js_source.rs` `typeof_operator` (clj-quickjs-69): the `typeof 1`,
   `typeof null` and `typeof unknown_var` rows of `test_op2` (line 195) of
   `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.

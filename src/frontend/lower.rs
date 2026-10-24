@@ -2149,6 +2149,12 @@ impl<'s> Lowerer<'s> {
                 target,
                 op_span,
             } => self.update_property(*op, *prefix, target, *op_span),
+            ExprKind::CompoundAssignProperty {
+                op,
+                target,
+                value,
+                op_span,
+            } => self.compound_assign_property(*op, target, value, *op_span),
             _ => Err(self.internal(e.span, "not a property expression")),
         }
     }
@@ -2287,9 +2293,9 @@ impl<'s> Lowerer<'s> {
     }
 
     /// A property reference that is read and then written (`o.p++`,
-    /// `o[k]--`; compound assignment to a property, clj-quickjs-260, is to
-    /// reuse it): evaluates the base once and, for `o[k]`, the key once,
-    /// followed by `ToPropertyKey` (the base's `undefined`/`null` check and
+    /// `o[k]--`, and compound assignment `o.p op= v`, clj-quickjs-260):
+    /// evaluates the base once and, for `o[k]`, the key once, followed by
+    /// `ToPropertyKey` (the base's `undefined`/`null` check and
     /// the only key conversion), leaving `o` or `o key` on the stack. Then
     /// [`Self::reference_get`] pushes the property's value above them and
     /// [`Self::reference_put`] writes the value on top and leaves it.
@@ -2384,6 +2390,28 @@ impl<'s> Lowerer<'s> {
             self.out().op_u16(Opcode::GetLocal, tmp, op_span);
             self.cur_mut().next_slot -= 1;
         }
+        Ok(())
+    }
+
+    /// `o.p op= v` and `o[k] op= v` (clj-quickjs-260; QuickJS
+    /// `js_parse_assign_expr` with `get_lvalue`/`put_lvalue`): the reference
+    /// once (so a `null`/`undefined` base fails before `v` runs), its value,
+    /// `v`, the binary operator's own instructions (as for a binding,
+    /// clj-quickjs-84), the write, whose value is the result. The operator
+    /// is reported at the `op=`.
+    #[inline(never)]
+    fn compound_assign_property(
+        &mut self,
+        op: BinaryOp,
+        target: &Expr,
+        value: &Expr,
+        op_span: Span,
+    ) -> Result<(), SyntaxError> {
+        let r = self.property_reference(target)?;
+        self.reference_get(r);
+        self.expr(value)?;
+        self.binary(op, false, is_number(value), op_span);
+        self.reference_put(r);
         Ok(())
     }
 
@@ -2596,7 +2624,8 @@ impl<'s> Lowerer<'s> {
             | ExprKind::Array(_)
             | ExprKind::Index { .. }
             | ExprKind::AssignIndex { .. }
-            | ExprKind::UpdateProperty { .. } => {
+            | ExprKind::UpdateProperty { .. }
+            | ExprKind::CompoundAssignProperty { .. } => {
                 self.property_expr(e)?;
             }
             ExprKind::Function(f) => {
@@ -2967,7 +2996,9 @@ fn is_number(e: &Expr) -> bool {
         | ExprKind::AssignIndex { value, .. } => is_number(value),
         // The binding's old value may be a string, so only `+=` may
         // concatenate; the other compound operators are numeric.
-        ExprKind::CompoundAssign { op, .. } => *op != BinaryOp::Add,
+        ExprKind::CompoundAssign { op, .. } | ExprKind::CompoundAssignProperty { op, .. } => {
+            *op != BinaryOp::Add
+        }
         ExprKind::Sequence { right, .. } => is_number(right),
         ExprKind::Update { .. } | ExprKind::UpdateProperty { .. } => true,
         _ => false,

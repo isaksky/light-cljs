@@ -382,6 +382,9 @@ impl Expr {
                 ..
             } => object.height.max(index.height).max(value.height),
             ExprKind::UpdateProperty { target, .. } => target.height,
+            ExprKind::CompoundAssignProperty { target, value, .. } => {
+                target.height.max(value.height)
+            }
         };
         Expr {
             kind,
@@ -473,8 +476,8 @@ pub enum ExprKind {
         right: Box<Expr>,
     },
     /// `name op= value` for an arithmetic, bitwise, shift or `**` operator
-    /// `op` on an identifier binding (property targets are not supported
-    /// yet; the target may be parenthesized): reads the binding, evaluates
+    /// `op` on an identifier binding (property targets are
+    /// [`ExprKind::CompoundAssignProperty`]; the target may be parenthesized): reads the binding, evaluates
     /// `value`, applies `op` as the binary operator does, and stores the
     /// result, which is the expression's value. The logical assignments
     /// (`&&=`, `||=`, `??=`) are not supported.
@@ -547,6 +550,23 @@ pub enum ExprKind {
         /// The `++` / `--` token, where failures of the conversion and the
         /// arithmetic are reported (the read and the write are reported at
         /// the member's `.` or `[`).
+        op_span: Span,
+    },
+    /// `o.p op= v` and `o[k] op= v` (clj-quickjs-260) for the operators of
+    /// [`ExprKind::CompoundAssign`]: `target` is an [`ExprKind::Member`]
+    /// (whose object is not the reserved intrinsic binding) or an
+    /// [`ExprKind::Index`], possibly parenthesized. The base and the key are
+    /// evaluated once (the key converted with ToPropertyKey once, before
+    /// the read); the property is read, `value` evaluated, `op` applied as
+    /// the binary operator does, and the result written back (a rejected
+    /// write is a TypeError in strict code); the result is the value.
+    CompoundAssignProperty {
+        op: BinaryOp,
+        target: Box<Expr>,
+        value: Box<Expr>,
+        /// The `op=` token, where run-time failures of the operator are
+        /// reported (the read and the write are reported at the member's
+        /// `.` or `[`).
         op_span: Span,
     },
 }
