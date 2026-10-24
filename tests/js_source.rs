@@ -282,7 +282,9 @@ fn array_buffer_basics() {
             VmErrorKind::TypeError
         };
         assert_eq!(failure(src).kind(), expected, "{src}");
-        let caught = format!("let ok = false; try {{ {src}; }} catch (e) {{ ok = true; }} ok");
+        let caught = format!(
+            "let ok = false; try {{ {src}; }} catch (e) {{ ok = e instanceof {kind}; }} ok"
+        );
         assert_eq!(eval(&caught), ValueView::Bool(true), "{src}");
     }
 }
@@ -343,7 +345,7 @@ fn array_buffer_transfer_detaches() {
         "let b = new ArrayBuffer(16); let c = b.transfer(); b.byteLength === 0 && b.detached === true && c.byteLength === 16 && c !== b && !c.detached",
         "new ArrayBuffer(4).transfer(8).byteLength === 8 && new ArrayBuffer(4).transfer(2).byteLength === 2",
         "let b = new ArrayBuffer(0); let c = b.transfer(); b.detached && !c.detached && c.byteLength === 0",
-        "let b = new ArrayBuffer(2); b.transfer(); let ok = false; try { b.transfer(); } catch (e) { ok = true; } ok",
+        "let b = new ArrayBuffer(2); b.transfer(); let ok = false; try { b.transfer(); } catch (e) { ok = e instanceof TypeError; } ok",
         "let b = new ArrayBuffer(2); try { b.transfer(-1); } catch (e) {} !b.detached && b.byteLength === 2",
         "let b = new ArrayBuffer(2); let c = b.transfer({valueOf() { return 8; }}); b.detached && c.byteLength === 8",
         "let b = new ArrayBuffer(2); b.x = 7; b.transfer(undefined).byteLength === 2 && b.x === 7",

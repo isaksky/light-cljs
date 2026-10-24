@@ -1213,7 +1213,7 @@ fn function_properties_reclaim() {
     let held = function_properties(&rt);
     assert_retained(&rt, &held);
     // The argument, the record, the object in `x` and the prototype object
-    // go with the function; the realm's fifteen ordinary objects stay.
+    // go with the function; the realm's seventeen ordinary objects stay.
     let Held {
         weak,
         release,
@@ -1232,9 +1232,9 @@ fn array_element_reclaims() {
     let rt = Runtime::new();
     let held = array_element(&rt);
     assert_retained(&rt, &held);
-    // The argument and the three arrays go together; the realm's twelve
+    // The argument and the three arrays go together; the realm's fourteen
     // prototypes (`Object`, `Array`, `Number`, `String`, `Error`, seven
-    // NativeErrors), `Reflect`, `Math` and `JSON` stay.
+    // NativeErrors, `Map`, `ArrayBuffer`), `Reflect`, `Math` and `JSON` stay.
     let Held {
         weak,
         release,
