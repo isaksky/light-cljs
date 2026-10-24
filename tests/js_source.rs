@@ -21378,3 +21378,179 @@ fn weak_map_property_descriptors_and_delete() {
         assert_eq!(sloppy_eval(source), ValueView::Bool(true), "{source}");
     }
 }
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn intl_date_time_format_options_and_brands() {
+    for source in [
+        "let f=Intl.DateTimeFormat('en'); f instanceof Intl.DateTimeFormat && f[Symbol.toStringTag] === 'Intl.DateTimeFormat' && Intl.DateTimeFormat.name === 'DateTimeFormat' && Intl.DateTimeFormat.length === 1 && f.resolvedOptions.length === 0 && Intl.DateTimeFormat.supportedLocalesOf.length === 1",
+        "let d=Object.getOwnPropertyDescriptor(Intl.DateTimeFormat.prototype,'format'); typeof d.get === 'function' && d.set === undefined && !d.enumerable && d.configurable",
+        "let d=new Intl.DateTimeFormat('en'); let f=d.format; f === d.format && f.name === '' && f.length === 1 && f.call(null,0) === '1/1/1970'",
+        "Object.freeze(new Intl.DateTimeFormat('en')).format(0) === '1/1/1970'",
+        "Intl.DateTimeFormat.supportedLocalesOf(['EN-us-u-nu-arab','de-DE','xx']).join() === 'en-US-u-nu-arab,de-DE'",
+        "new Intl.DateTimeFormat('en',5).format(0) === '1/1/1970'",
+        "let d=new Intl.DateTimeFormat('en',{weekday:'short',month:'2-digit',day:'2-digit',year:'2-digit',formatMatcher:'basic'}); d.format(0) === 'Thu, 01/01/70'",
+        "new Intl.DateTimeFormat('en',{year:'numeric',era:'long'}).format(Date.UTC(0,0,1) - 59958230400000) === '1 Before Christ'",
+        "new Intl.DateTimeFormat('en',{year:'numeric',era:'narrow'}).format(Date.UTC(2017,11,12)) === '2017 A'",
+        "new Intl.DateTimeFormat('ar-u-nu-latn',{month:'2-digit',day:'2-digit',year:'2-digit'}).format(0) === '01 01, 70'",
+        "new Intl.DateTimeFormat('en-u-ca-gregory-hc-h23-nu-arab',{year:'numeric'}).format(0) === '١٩٧٠'",
+        "let d=new Intl.DateTimeFormat('en-u-ca-buddhist-hc-h23-nu-arab',{calendar:'gregory',numberingSystem:'latn',hourCycle:'h12',year:'numeric'}); d.resolvedOptions().locale === 'en' && d.format(0) === '1970'",
+        "let d=new Intl.DateTimeFormat('en',{numberingSystem:'hanidec',year:'numeric'}); d.format(0) === '一九七〇'",
+        "new Intl.DateTimeFormat('en',{year:'numeric',numberingSystem:'foobar'}).resolvedOptions().numberingSystem === 'latn'",
+        "let d=new Intl.DateTimeFormat('en',{year:'numeric',timeZone:'+01'}); d.resolvedOptions().timeZone === '+01:00' && d.format(Date.UTC(2017,11,31,23)) === '2018'",
+        "new Intl.DateTimeFormat('en',{timeZone:'-00'}).resolvedOptions().timeZone === '+00:00'",
+        "let d=new Intl.DateTimeFormat('en',{timeZone:'-0530',year:'numeric',month:'short',day:'numeric'}); d.resolvedOptions().timeZone === '-05:30' && d.format(0) === 'Dec 31, 1969'",
+        "new Intl.DateTimeFormat('en',{timeZone:'utc',year:'numeric'}).resolvedOptions().timeZone === 'UTC'",
+        "let d=new Intl.DateTimeFormat('en',{year:'numeric'}); d.format(null) === '1970' && d.format('0') === '1970' && d.format(-0.9) === '1970'",
+        "let d=new Intl.DateTimeFormat('en').resolvedOptions(); Object.keys(d).join() === 'locale,calendar,numberingSystem,timeZone,year,month,day' && d.calendar === 'gregory' && d.numberingSystem === 'latn' && d.year === 'numeric' && d.month === 'numeric' && d.day === 'numeric'",
+        "let d=new Intl.DateTimeFormat('en',{year:'numeric'}); d.format(8640000000000000) === '275760' && d.format(-8640000000000000) === '271822'",
+        "new Intl.DateTimeFormat('en',{year:'numeric',timeZone:'+23:59'}).format(8640000000000000) === '275760'",
+        "let log=''; let caught=false; try {new Intl.DateTimeFormat('en',{get month(){log+='m';return {toString(){log+='s';throw 7;}};},get day(){log+='d';}});} catch(e){caught=e === 7;} caught && log === 'ms'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for call in [
+        "new Intl.DateTimeFormat('en',null)",
+        "Intl.DateTimeFormat.prototype.resolvedOptions.call({})",
+        "Object.getOwnPropertyDescriptor(Intl.DateTimeFormat.prototype,'format').get.call({})",
+        "new Intl.DateTimeFormat().format(Symbol())",
+        "new Intl.DateTimeFormat().format(1n)",
+        "new Intl.DateTimeFormat().format({valueOf(){return 1n;}})",
+        "new Intl.DateTimeFormat.supportedLocalesOf('en')",
+    ] {
+        assert_eq!(
+            eval(&format!(
+                "let caught=false;try {{{call};}} catch(e){{caught=e instanceof TypeError;}}caught"
+            )),
+            ValueView::Bool(true),
+            "{call}"
+        );
+    }
+    for options in [
+        "{localeMatcher:'bad'}",
+        "{calendar:'a!'}",
+        "{calendar:'buddhist'}",
+        "{numberingSystem:'a!'}",
+        "{hourCycle:'bad'}",
+        "{weekday:'numeric'}",
+        "{era:'bad'}",
+        "{year:'long'}",
+        "{month:'bad'}",
+        "{day:'short'}",
+        "{formatMatcher:'bad'}",
+        "{hour:'numeric'}",
+        "{minute:'2-digit'}",
+        "{second:'numeric'}",
+        "{dayPeriod:'long'}",
+        "{fractionalSecondDigits:2}",
+        "{fractionalSecondDigits:0}",
+        "{timeZoneName:'short'}",
+        "{dateStyle:'short'}",
+        "{timeStyle:'long'}",
+        "{timeZone:'America/New_York'}",
+        "{timeZone:'Africa/Accra'}",
+        "{timeZone:'+24:00'}",
+        "{timeZone:'+00:60'}",
+        "{timeZone:'+01:00:00'}",
+        "{timeZone:'+0x'}",
+    ] {
+        assert_eq!(
+            eval(&format!(
+                "let caught=false;try {{new Intl.DateTimeFormat('en',{options});}}catch(e){{caught=e instanceof RangeError;}}caught"
+            )),
+            ValueView::Bool(true),
+            "{options}"
+        );
+    }
+    for value in ["NaN", "Infinity", "8640000000000001", "undefined"] {
+        assert_eq!(
+            eval(&format!(
+                "let caught=false;try {{new Intl.DateTimeFormat().format({value});}}catch(e){{caught=e instanceof RangeError;}}caught"
+            )),
+            ValueView::Bool(true),
+            "{value}"
+        );
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Every callback waits; the cached
+/// bound function is the only remaining reference to the formatter after build.
+#[test]
+fn intl_date_time_format_callbacks_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r#"
+        let log='';
+        let d=new Intl.DateTimeFormat({get length(){log+='l';__rt.need(1,1);return 1;},get 0(){log+='t';__rt.need(2,1);return 'EN';}},
+            {get timeZone(){log+='z';__rt.need(3,1);return {toString(){log+='x';__rt.need(4,1);return '+01';}};},
+             get month(){log+='m';__rt.need(5,1);return {toString(){log+='s';__rt.need(6,1);return 'long';}};},day:'numeric',year:'numeric'});
+        let f=d.format; let same=f === d.format; d=null;
+        let result=f({valueOf(){log+='n';__rt.need(7,1);return Date.UTC(2017,11,11,23);}});
+        same && result === 'December 12, 2017' && log === 'ltzxmsn'
+    "#;
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..3000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 7);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 7);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("DateTimeFormat continuation did not finish");
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn intl_date_time_format_ownership() {
+    let rt = Runtime::new();
+    for source in [
+        "new Intl.DateTimeFormat('en')",
+        "Object.freeze(new Intl.DateTimeFormat('en'))",
+    ] {
+        let RunOutcome::Complete(value) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
+        else {
+            panic!("formatter construction");
+        };
+        assert!(matches!(
+            rt.publish(&value),
+            Err(clj_quickjs::PublishError::NotShareable { .. })
+        ));
+        for body in [
+            "value.format",
+            "Intl.DateTimeFormat.prototype.resolvedOptions.call(value)",
+        ] {
+            let code = compile_function(&format!("function f(value){{return {body};}}")).unwrap();
+            assert!(
+                matches!(rt.spawn(&code, &[&value]).unwrap().run().unwrap(), RunOutcome::Failed(e) if matches!(e.kind(), VmErrorKind::ForeignObject { .. }))
+            );
+        }
+    }
+}

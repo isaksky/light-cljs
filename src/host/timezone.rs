@@ -57,6 +57,31 @@ impl TimeZone {
         }
     }
 
+    /// Stable embedding-zone identifier used by Intl resolvedOptions.
+    pub fn identifier(self) -> String {
+        match self.0 {
+            Zone::Fixed(0) => "UTC".into(),
+            Zone::Fixed(seconds) => {
+                let sign = if seconds < 0 { "-" } else { "+" };
+                let n = seconds.abs();
+                if n % 60 == 0 {
+                    format!("{sign}{:02}:{:02}", n / 3600, n / 60 % 60)
+                } else {
+                    format!("{sign}{:02}:{:02}:{:02}", n / 3600, n / 60 % 60, n % 60)
+                }
+            }
+            Zone::Named(i) => std::str::from_utf8(
+                tables::ti_tz_zone_data[i]
+                    .canonical_name
+                    .unwrap()
+                    .strip_suffix(&[0])
+                    .unwrap(),
+            )
+            .expect("validated zone name")
+            .into(),
+        }
+    }
+
     fn transitions(self) -> &'static [tables::TZTransition] {
         match self.0 {
             Zone::Named(i) => tables::ti_tz_zone_data[i].transitions.unwrap(),

@@ -1117,3 +1117,134 @@ fn intl_default_locale_resolution_after_matcher_wait() {
         );
     }
 }
+
+// Date field rows adapted from QuickJS tests/test_intl.js at 7d1c13c5d8f8.
+// QuickJS Javascript Engine
+//
+// Copyright (c) 2017-2021 Fabrice Bellard
+// Copyright (c) 2017-2021 Charlie Gordon
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_date_time_format_date_fields() {
+    use clj_quickjs::{Budget, RunOutcome, host::TimeZone};
+    for zone in [TimeZone::UTC, TimeZone::fixed_offset_seconds(3600).unwrap()] {
+        let rt = Runtime::new();
+        let mut host = clj_quickjs::host::sim::SimTimeHost::new(1506098258091.0, zone);
+        let source = r#"
+        let d = new Date(2017, 11, 12, 6, 0, 0, 0);
+        if (new Intl.DateTimeFormat('en', { month: 'long', day: 'numeric', year: 'numeric' }).format(d) !== "December 12, 2017") throw "en dateTimeFormat long month";
+        if (new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' }).format(d) !== "Dec 12") throw "en dateTimeFormat short month";
+        if (new Intl.DateTimeFormat('en', { weekday: 'long' }).format(d) !== "Tuesday") throw "en dateTimeFormat weekday";
+        if (new Intl.DateTimeFormat('en', { year: 'numeric', era: 'short' }).format(d) !== "2017 AD") throw "en dateTimeFormat era";
+        if (new Intl.DateTimeFormat('en-GB', { month: 'long', day: 'numeric', year: 'numeric' }).format(d) !== "December 12, 2017") throw "en-GB dateTimeFormat";
+        if (new Intl.DateTimeFormat('de', { month: 'long', day: 'numeric', year: 'numeric' }).format(d) !== "Dezember 12, 2017") throw "de dateTimeFormat";
+        if (new Intl.DateTimeFormat('de', { month: 'short', day: 'numeric' }).format(d) !== "Dez. 12") throw "de dateTimeFormat short month";
+        if (new Intl.DateTimeFormat('de', { weekday: 'long' }).format(d) !== "Dienstag") throw "de weekday";
+        if (new Intl.DateTimeFormat('de', { weekday: 'narrow' }).format(d) !== "D") throw "de narrow weekday";
+        if (new Intl.DateTimeFormat('de', { month: 'narrow' }).format(d) !== "D") throw "de narrow month";
+        if (new Intl.DateTimeFormat('de', { year: 'numeric', era: 'short' }).format(d) !== "2017 n. Chr.") throw "de era";
+        if (new Intl.DateTimeFormat('fr', { month: 'long', day: 'numeric', year: 'numeric' }).format(d) !== "décembre 12, 2017") throw "fr dateTimeFormat";
+        if (new Intl.DateTimeFormat('fr', { month: 'short', day: 'numeric' }).format(d) !== "déc. 12") throw "fr short month";
+        if (new Intl.DateTimeFormat('fr', { weekday: 'long' }).format(d) !== "mardi") throw "fr weekday";
+        if (new Intl.DateTimeFormat('fr', { weekday: 'narrow' }).format(d) !== "M") throw "fr narrow weekday";
+        if (new Intl.DateTimeFormat('fr', { month: 'narrow' }).format(d) !== "D") throw "fr narrow month";
+        if (new Intl.DateTimeFormat('fr', { year: 'numeric', era: 'short' }).format(d) !== "2017 ap. J.-C.") throw "fr era";
+        if (new Intl.DateTimeFormat('es', { month: 'long', day: 'numeric', year: 'numeric' }).format(d) !== "diciembre 12, 2017") throw "es dateTimeFormat";
+        if (new Intl.DateTimeFormat('ja', { month: 'long', day: 'numeric', year: 'numeric' }).format(d) !== "12月 12, 2017") throw "ja dateTimeFormat";
+        if (new Intl.DateTimeFormat('ja', { weekday: 'long' }).format(d) !== "火曜日") throw "ja weekday";
+        if (new Intl.DateTimeFormat('ja', { weekday: 'narrow' }).format(d) !== "火") throw "ja narrow weekday";
+        if (new Intl.DateTimeFormat('ja', { month: 'narrow' }).format(d) !== "12") throw "ja narrow month";
+        if (new Intl.DateTimeFormat('ja', { year: 'numeric', era: 'short' }).format(d) !== "2017 西暦") throw "ja era";
+        if (new Intl.DateTimeFormat('zh', { month: 'long', day: 'numeric', year: 'numeric' }).format(d) !== "十二月 12, 2017") throw "zh dateTimeFormat";
+        if (new Intl.DateTimeFormat('zh', { year: 'numeric', era: 'short' }).format(d) !== "2017 公元") throw "zh era";
+        if (new Intl.DateTimeFormat('zh', { weekday: 'narrow' }).format(d) !== "二") throw "zh narrow weekday";
+        if (new Intl.DateTimeFormat('zh', { month: 'narrow' }).format(d) !== "12") throw "zh narrow month";
+        if (new Intl.DateTimeFormat('zh-Hant', { month: 'long', day: 'numeric', year: 'numeric' }).format(d) !== "12月 12, 2017") throw "zh-Hant dateTimeFormat";
+        if (new Intl.DateTimeFormat('zh-Hant', { year: 'numeric', era: 'short' }).format(d) !== "2017 西元") throw "zh-Hant era";
+        if (new Intl.DateTimeFormat('ar', { month: 'long', day: 'numeric', year: 'numeric' }).format(d) !== "ديسمبر ١٢, ٢٠١٧") throw "ar dateTimeFormat";
+        if (new Intl.DateTimeFormat('ar', { weekday: 'long' }).format(d) !== "الثلاثاء") throw "ar weekday";
+        if (new Intl.DateTimeFormat('ar', { year: 'numeric', era: 'short' }).format(d) !== "٢٠١٧ م") throw "ar era";
+        if (new Intl.DateTimeFormat('ru', { month: 'long', day: 'numeric', year: 'numeric' }).format(d) !== "декабря 12, 2017") throw "ru dateTimeFormat";
+        if (new Intl.DateTimeFormat('ru', { weekday: 'long' }).format(d) !== "вторник") throw "ru weekday";
+        if (new Intl.DateTimeFormat('ru', { year: 'numeric', era: 'short' }).format(d) !== "2017 н. э.") throw "ru era";
+        if (new Intl.DateTimeFormat('pt-BR', { month: 'long', day: 'numeric', year: 'numeric' }).format(d) !== "dezembro 12, 2017") throw "pt-BR dateTimeFormat";
+        if (new Intl.DateTimeFormat('en', {timeZone:'UTC', year:'numeric'}).resolvedOptions().timeZone !== 'UTC') throw 'zone';
+        let caught=false;
+        try {new Intl.DateTimeFormat().format(NaN);} catch(e) {caught=e instanceof RangeError;}
+        if (!caught) throw 'NaN';
+        if (new Intl.DateTimeFormat('en', {timeZone:'UTC',year:'numeric',month:'short',day:'numeric'}).format() !== 'Sep 22, 2017') throw 'clock';
+        true
+        "#;
+        let code = clj_quickjs::frontend::compile_script("dtf-date-fields", source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        match task
+            .run_with(Budget::instructions(100000), &mut host)
+            .unwrap()
+        {
+            RunOutcome::Complete(value) => assert_eq!(value.view(), ValueView::Bool(true)),
+            other => panic!("{zone:?}: {other:?}"),
+        }
+        assert!(task.dependency_log().edges().is_empty());
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Named zones are available to the
+/// formatter only when selected by the embedding host, with the Date rules.
+#[test]
+fn intl_date_time_format_host_zones_and_transitions() {
+    use clj_quickjs::{
+        Budget, RunOutcome,
+        host::{TimeZone, sim::SimTimeHost},
+    };
+    let rt = Runtime::new();
+    let mut host = SimTimeHost::new(0.0, TimeZone::named("America/New_York").unwrap());
+    let source = r#"
+        let f=new Intl.DateTimeFormat('en',{year:'numeric',month:'2-digit',day:'2-digit'});
+        if (f.resolvedOptions().timeZone !== 'America/New_York') throw 'zone';
+        if (f.format(Date.UTC(2017,2,12,6,59,59)) !== '03/12/2017') throw 'spring before';
+        if (f.format(Date.UTC(2017,2,12,7)) !== '03/12/2017') throw 'spring after';
+        if (f.format(Date.UTC(2017,2,13,3,59,59)) !== '03/12/2017') throw 'spring midnight before';
+        if (f.format(Date.UTC(2017,2,13,4)) !== '03/13/2017') throw 'spring midnight after';
+        if (f.format(Date.UTC(2017,10,5,5,59,59)) !== '11/05/2017') throw 'fall before';
+        if (f.format(Date.UTC(2017,10,5,6)) !== '11/05/2017') throw 'fall after';
+        if (f.format(Date.UTC(2017,10,6,4,59,59)) !== '11/05/2017') throw 'fall midnight before';
+        if (f.format(Date.UTC(2017,10,6,5)) !== '11/06/2017') throw 'fall midnight after';
+        let named=new Intl.DateTimeFormat('en',{timeZone:'US/Eastern',year:'numeric'});
+        named.resolvedOptions().timeZone === 'America/New_York' && named.format(0) === '1969'
+    "#;
+    let code = clj_quickjs::frontend::compile_script("dtf-host-zone", source).unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    match task
+        .run_with(Budget::instructions(100000), &mut host)
+        .unwrap()
+    {
+        RunOutcome::Complete(value) => assert_eq!(value.view(), ValueView::Bool(true)),
+        other => panic!("{other:?}"),
+    }
+    // Date and all subsequent formatters keep the runtime's first zone.
+    host.zone = TimeZone::UTC;
+    let code = clj_quickjs::frontend::compile_script("dtf-same-zone", "new Intl.DateTimeFormat().resolvedOptions().timeZone === 'America/New_York' && new Date(1970,0,1).getTime() === 18000000").unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    assert!(
+        matches!(task.run_with(Budget::instructions(10000), &mut host).unwrap(), RunOutcome::Complete(value) if value.view() == ValueView::Bool(true))
+    );
+    assert_eq!(host.clock_reads(), 0);
+}

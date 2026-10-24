@@ -179,29 +179,7 @@ impl NumberFormat {
             result.push_str(rest);
             result
         };
-        let index = numbers::intl_all_numbering_systems
-            .iter()
-            .position(|bytes| {
-                bytes.and_then(|pool| super::pool_string(pool, 0)) == Some(self.numbering)
-            })
-            .expect("resolved numbering system");
-        let base = numbers::nf_digit_base[index];
-        let result: String = result
-            .chars()
-            .map(|c| {
-                if !c.is_ascii_digit() {
-                    return c;
-                }
-                let digit = c as u32 - '0' as u32;
-                if self.numbering == "hanidec" {
-                    char::from_u32(numbers::hanidec_cps[digit as usize]).unwrap()
-                } else if base != 0 {
-                    char::from_u32(base + digit).unwrap()
-                } else {
-                    c
-                } // QuickJS algorithmic systems retain Latin digits here.
-            })
-            .collect();
+        let result = map_digits(self.numbering, &result);
         Ok(Value::String(JsString::from(result.as_str())))
     }
     pub fn resolved(&self, heap: &Heap, task: TaskId) -> Result<Value, Fault> {
@@ -390,6 +368,30 @@ pub(crate) fn get_format(heap: &Heap, task: TaskId, this: &Value) -> Result<Valu
     })
     .ok_or(Fault::Internal("NumberFormat reclaimed"))?;
     Ok(bound)
+}
+
+/// Shared nf_put_digit mapping for numeric Intl fields.
+pub(crate) fn map_digits(numbering: &str, text: &str) -> String {
+    let index = numbers::intl_all_numbering_systems
+        .iter()
+        .position(|bytes| bytes.and_then(|pool| super::pool_string(pool, 0)) == Some(numbering))
+        .expect("resolved numbering system");
+    let base = numbers::nf_digit_base[index];
+    text.chars()
+        .map(|c| {
+            if !c.is_ascii_digit() {
+                return c;
+            }
+            let digit = c as u32 - '0' as u32;
+            if numbering == "hanidec" {
+                char::from_u32(numbers::hanidec_cps[digit as usize]).unwrap()
+            } else if base != 0 {
+                char::from_u32(base + digit).unwrap()
+            } else {
+                c
+            } // QuickJS algorithmic systems retain Latin digits here.
+        })
+        .collect()
 }
 
 #[cfg(test)]

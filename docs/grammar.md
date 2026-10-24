@@ -4612,3 +4612,24 @@ Explicit gaps: the pinned snapshot's Turkish mapping changes dotless ı only;
 I/İ retain root folding, so full locale-specific uppercase equivalences are
 deferred. Azerbaijani is not in the agreed locale set. Additional collations
 and UCA/DUCET weights remain deferred.
+
+### Intl.DateTimeFormat date fields (clj-quickjs-215)
+
+Execution: `Intl.DateTimeFormat(locales, options)` works with or without `new`.
+`format` is a cached bound getter; `format(value)` performs resumable ToNumber
+and TimeClip, and `format()` reads the host clock. `resolvedOptions`,
+`supportedLocalesOf` and `Symbol.toStringTag` are provided. `weekday` and `era`
+accept long/short/narrow; `year` and `day` numeric/2-digit; `month` also accepts
+long/short/narrow. Missing date fields default to numeric year/month/day.
+Locale resolution uses `ca`/`hc`/`nu`, and options include `localeMatcher`,
+`calendar`, `numberingSystem`, `hour12`, `hourCycle`, `timeZone`, `formatMatcher`.
+The service shares Date's cached host zone and accepts UTC, fixed minute offsets
+and the host's named zone/aliases. Date names and numeric digits reproduce the
+pinned QuickJS snapshot, including its manual component layout.
+
+Explicit gaps: calendars other than `gregory`, time fields (`dayPeriod`, `hour`,
+`minute`, `second`, `fractionalSecondDigits`, `timeZoneName`) and
+`dateStyle`/`timeStyle` throw RangeError when supplied, after value validation.
+Named zones outside the host selection throw RangeError. No host clock means
+`format()` throws RangeError; NaN, infinities and out-of-TimeClip values do too.
+Time/style formatting belongs to -216/-217; formatToParts and ranges are deferred.

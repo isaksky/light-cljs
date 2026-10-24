@@ -3474,3 +3474,21 @@ sources throw TypeError; other primitives use their property-read behavior.
 Object literal computed names, object spread, rest parameters and destructuring
 iteration heads remain deferred. Verify with
 `CARGO_BUILD_JOBS=3 cargo test --test js_source destructuring -- --test-threads=3`.
+
+### Intl.DateTimeFormat date fields (clj-quickjs-215)
+
+Supported: `Intl.DateTimeFormat` with or without `new`, its cached bound `format`
+getter, `resolvedOptions`, `supportedLocalesOf`, and `Intl.DateTimeFormat` tag.
+Gregorian weekday/era/year/month/day options use snapshot names, locale digits
+(including Arabic-Indic defaults for `ar`), and QuickJS's manual field layout.
+No fields defaults to numeric month/day/year. The formatter shares Date's one
+host zone per runtime; UTC, fixed minute offsets and the host's selected named
+zone (with recorded aliases) work. `format()` reads the unrecorded host clock;
+without a clock it throws RangeError. Invalid time values also throw RangeError.
+
+Explicit gaps: time fields, time zone names, `dateStyle` and `timeStyle` validate
+then throw RangeError pending -216/-217. Calendars other than `gregory` and
+named zones other than the host-selected zone throw RangeError. The snapshot's
+59 transition records do not imply support for its 598-name inventory. Numeric
+and named components reproduce QuickJS strings, including its English field
+ordering for de/fr/ja and Russian genitive month names.

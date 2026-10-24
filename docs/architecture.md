@@ -6630,3 +6630,40 @@ The instruction loop routes these leaves before entering the main dispatch
 frame. Ordinary VM calls also keep native forwarding temporaries in a separate
 slow path, preserving execution on 64 KiB worker stacks. Computed object literal
 execution and object spread remain deferred.
+
+### Intl.DateTimeFormat date fields (clj-quickjs-215)
+
+DateTimeFormat uses an ordinary task-owned object with one boxed service payload:
+immutable owned options, references to the existing `data::dates` pools, a
+value-only `TimeZone`, and a traced cached bound function. Frozen objects remain
+task-owned; neither the slots nor the static pattern/name data adds heap edges.
+The service uses shared locale-list/resolution, option conversion and
+supported-locale helpers. Locale and option getters and `format` argument
+ToNumber run in saved native stages, so waits, GC and worker migration retain
+no Rust stack frame. Realm identities and builtin variants append to the registry.
+
+Resolved `ca`, `hc` and `nu` extension keys are reconciled with explicit options;
+only Gregorian dates are implemented. `ar` defaults to Arabic-Indic digits for
+this service. Numeric fields share NumberFormat's snapshot digit mapper;
+name fields use the original month, weekday and era pools, including the
+Russian genitive month forms and all long/short/narrow widths. No importer or
+emitted table representation changes are needed. Component layouts are stored
+as literal/field pattern items; the existing locale date/time/combined pattern
+pools remain available for -217, and time component formatting belongs to -216.
+
+The service TimeClips the argument before using Date's existing local calendar
+conversion, including offsets across TimeClip endpoints. UTC, ±HH, ±HHMM and
+±HH:MM are accepted; offsets resolve to ±HH:MM (zero resolves to +00:00).
+Host fixed zones report `TimeZone::identifier()` (UTC at zero; second precision
+when needed); named host zones report the canonical snapshot identifier. A
+requested named zone must be the host-selected zone or its recorded alias;
+other names fail explicitly, including inventory-only names. Default-zone
+selection shares Date's runtime cache. First/last transition offsets extend
+indefinitely without extrapolating recurrence rules. Clock/default-zone reads
+are guarded, unrecorded host leaf effects; a missing host clock throws RangeError.
+
+Compatibility follows the recorded QuickJS-output policy: manual date fields
+use weekday, month, day, year, era ordering with QuickJS separators even where
+CLDR style patterns differ. Unsupported calendars, time fields, time zone names
+and styles fail with explicit RangeError. Formatting beyond Gregorian date
+components, formatToParts and range methods remain deferred.

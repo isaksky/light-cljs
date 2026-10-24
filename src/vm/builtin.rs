@@ -383,6 +383,12 @@ pub(crate) enum Builtin {
     WeakMapDelete,
     NumberPrototypeToExponential,
     NumberPrototypeToPrecision,
+
+    IntlDateTimeFormat,
+    IntlDateTimeFormatGetFormat,
+    IntlDateTimeFormatBound,
+    IntlDateTimeFormatResolvedOptions,
+    IntlDateTimeFormatSupportedLocales,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -455,6 +461,11 @@ impl Builtin {
             Builtin::IntlPluralRulesResolvedOptions => "resolvedOptions",
             Builtin::IntlPluralRulesSupportedLocales => "supportedLocalesOf",
             Builtin::IntlNumberFormat => "NumberFormat",
+            Builtin::IntlDateTimeFormat => "DateTimeFormat",
+            Builtin::IntlDateTimeFormatGetFormat => "get format",
+            Builtin::IntlDateTimeFormatBound => "",
+            Builtin::IntlDateTimeFormatResolvedOptions => "resolvedOptions",
+            Builtin::IntlDateTimeFormatSupportedLocales => "supportedLocalesOf",
             Builtin::IntlNumberFormatGetFormat => "get format",
             Builtin::IntlNumberFormatBound => "",
             Builtin::IntlNumberFormatResolvedOptions => "resolvedOptions",
@@ -644,6 +655,10 @@ impl Builtin {
             | Builtin::IntlNumberFormatBound
             | Builtin::IntlNumberFormatSupportedLocales => 1,
             Builtin::IntlNumberFormatGetFormat | Builtin::IntlNumberFormatResolvedOptions => 0,
+            Builtin::IntlDateTimeFormat
+            | Builtin::IntlDateTimeFormatBound
+            | Builtin::IntlDateTimeFormatSupportedLocales => 1,
+            Builtin::IntlDateTimeFormatGetFormat | Builtin::IntlDateTimeFormatResolvedOptions => 0,
             Builtin::IntlLocale | Builtin::IntlGetCanonicalLocales => 1,
             Builtin::IntegerTypedArray(_) => 3,
             Builtin::TypedArray => 0,
@@ -818,6 +833,17 @@ pub(crate) fn call(
         Builtin::TypedArraySet | Builtin::TypedArrayFill | Builtin::TypedArrayJoin => Err(
             Fault::Internal("typed array method requires a resumable frame"),
         ),
+        Builtin::IntlDateTimeFormat
+        | Builtin::IntlDateTimeFormatBound
+        | Builtin::IntlDateTimeFormatSupportedLocales => {
+            Err(Fault::Internal("DateTimeFormat requires native frame"))
+        }
+        Builtin::IntlDateTimeFormatGetFormat => {
+            crate::intl::date_time_format::get_format(heap, task, this)
+        }
+        Builtin::IntlDateTimeFormatResolvedOptions => {
+            crate::intl::date_time_format::record(heap, task, this)?.resolved(heap, task)
+        }
         Builtin::IntlPluralRules => Err(Fault::TypeError("Intl.PluralRules requires new".into())),
         Builtin::IntlCollator
         | Builtin::IntlCollatorBound

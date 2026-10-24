@@ -222,6 +222,7 @@ pub(crate) mod regexp;
 mod array_from;
 mod array_sort;
 mod collator;
+mod date_time_format;
 mod intl_service;
 mod number_format;
 mod plural_rules;
@@ -549,6 +550,7 @@ enum NativeState {
     TypedArray(Box<typed_array::TypedArray>),
     ArraySort(Box<array_sort::State>),
     Collator(Box<collator::State>),
+    DateTimeFormat(Box<date_time_format::State>),
 }
 
 #[derive(Debug)]
@@ -775,6 +777,7 @@ impl Trace for NativeFrame {
             NativeState::NumberFormat(format) => format.trace(visit),
             NativeState::PluralRules(rules) => rules.trace(visit),
             NativeState::Collator(collator) => collator.trace(visit),
+            NativeState::DateTimeFormat(format) => format.trace(visit),
             NativeState::Join(join) => {
                 join.this.trace(visit);
                 join.separator.trace(visit);
@@ -1145,6 +1148,18 @@ pub(crate) fn start_builtin(
         let native = collator::State::new(which, this, args, heap, state.diag.task)?;
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::Collator(Box::new(native)))?;
+        return Ok(true);
+    }
+    if matches!(
+        which,
+        Builtin::IntlDateTimeFormat
+            | Builtin::IntlDateTimeFormatBound
+            | Builtin::IntlDateTimeFormatSupportedLocales
+    ) && (!construct || which == Builtin::IntlDateTimeFormat)
+    {
+        let native = date_time_format::State::new(which, this, args, heap, state.diag.task)?;
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::DateTimeFormat(Box::new(native)))?;
         return Ok(true);
     }
     if (which == Builtin::IntlPluralRules && construct)
@@ -2430,6 +2445,7 @@ impl NativeState {
             NativeState::NumberFormat(format) => format.step(heap, task, input),
             NativeState::PluralRules(rules) => rules.step(heap, task, input),
             NativeState::Collator(collator) => collator.step(heap, task, input),
+            NativeState::DateTimeFormat(format) => format.step(heap, task, input, host),
             NativeState::StringRaw(raw) => {
                 if let Some(build) = raw.finish()? {
                     *self = NativeState::StringBuild(build);
@@ -3569,6 +3585,7 @@ impl NativeState {
                 | NativeState::Intl(_)
                 | NativeState::PluralRules(_)
                 | NativeState::Collator(_)
+                | NativeState::DateTimeFormat(_)
                 | NativeState::NumberFormat(_)
                 | NativeState::ArrayToString { .. }
                 | NativeState::Bind { .. }

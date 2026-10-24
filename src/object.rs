@@ -268,8 +268,14 @@ pub(crate) enum PrimitiveData {
     String(JsString),
 }
 
-/// Keep service slots behind one pointer so adding Collator does not enlarge
+/// Keep service slots behind one pointer so adding a service does not enlarge
 /// every object by an inline cached Value (including dispatcher temporaries).
+#[derive(Debug)]
+struct DateTimeFormatSlots {
+    options: crate::intl::date_time_format::DateTimeFormat,
+    bound: Option<Value>,
+}
+
 #[derive(Debug)]
 struct CollatorSlots {
     options: crate::intl::collator::Collator,
@@ -309,6 +315,7 @@ pub(crate) struct OrdinaryObject {
 
     plural_rules: Option<Box<crate::intl::plural_rules::PluralRules>>,
     collator: Option<Box<CollatorSlots>>,
+    date_time_format: Option<Box<DateTimeFormatSlots>>,
 }
 
 impl OrdinaryObject {
@@ -345,6 +352,7 @@ impl OrdinaryObject {
 
             plural_rules: None,
             collator: None,
+            date_time_format: None,
         }
     }
 
@@ -417,6 +425,32 @@ impl OrdinaryObject {
     ) -> Self {
         self.plural_rules = Some(Box::new(data));
         self
+    }
+    pub(crate) fn with_date_time_format(
+        mut self,
+        data: crate::intl::date_time_format::DateTimeFormat,
+    ) -> Self {
+        self.date_time_format = Some(Box::new(DateTimeFormatSlots {
+            options: data,
+            bound: None,
+        }));
+        self
+    }
+    pub(crate) fn date_time_format(
+        &self,
+    ) -> Option<&crate::intl::date_time_format::DateTimeFormat> {
+        self.date_time_format.as_ref().map(|s| &s.options)
+    }
+    pub(crate) fn date_time_format_bound(&self) -> Option<&Value> {
+        self.date_time_format
+            .as_ref()
+            .and_then(|s| s.bound.as_ref())
+    }
+    pub(crate) fn set_date_time_format_bound(&mut self, value: Value) {
+        self.date_time_format
+            .as_mut()
+            .expect("checked DateTimeFormat receiver")
+            .bound = Some(value);
     }
     pub(crate) fn with_collator(mut self, data: crate::intl::collator::Collator) -> Self {
         self.collator = Some(Box::new(CollatorSlots {
@@ -866,8 +900,11 @@ impl Trace for OrdinaryObject {
         if let Some(bound) = &self.number_format_bound {
             bound.trace(visit);
         }
-        // Collator's immutable options contain no heap edges. The bound
-        // compare cache forms a traced cycle through its bound receiver.
+        // Immutable Intl options contain no heap edges. Cached bound
+        // functions form traced cycles through their receivers.
+        if let Some(bound) = self.date_time_format_bound() {
+            bound.trace(visit);
+        }
         if let Some(bound) = self.collator_bound() {
             bound.trace(visit);
         }

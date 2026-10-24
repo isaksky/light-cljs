@@ -899,7 +899,7 @@ pub(crate) fn utc_fields(time: f64) -> Option<UtcFields> {
     calendar_fields(time)
 }
 
-fn calendar_fields(time: f64) -> Option<UtcFields> {
+pub(crate) fn calendar_fields(time: f64) -> Option<UtcFields> {
     // LocalTime may extend one offset beyond TimeClip at the endpoints.
     if !time.is_finite() || time.abs() > 8.64e15 + MS_PER_DAY {
         return None;

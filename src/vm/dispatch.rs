@@ -762,7 +762,8 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
             | Builtin::Promise
             | Builtin::IntlNumberFormat
             | Builtin::IntlPluralRules
-            | Builtin::IntlCollator),
+            | Builtin::IntlCollator
+            | Builtin::IntlDateTimeFormat),
         )) => {
             if super::native::start_builtin(
                 heap,

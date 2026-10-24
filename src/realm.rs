@@ -404,6 +404,8 @@ pub(crate) struct Intrinsics {
     pub(crate) generator_prototype: ObjectId,
     pub(crate) intl_collator_prototype: ObjectId,
     pub(crate) intl_collator_bound: ObjectId,
+    pub(crate) intl_date_time_format_prototype: ObjectId,
+    pub(crate) intl_date_time_format_bound: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -1108,6 +1110,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     b.add(array_prototype, "sort", array_sort, PropertyFlags::METHOD)?;
     let (intl_collator_prototype, intl_collator_bound) =
         intl_collator_intrinsics(&mut b, object_prototype, intl)?;
+    let (intl_date_time_format_prototype, intl_date_time_format_bound) =
+        intl_date_time_format_intrinsics(&mut b, object_prototype, intl)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1186,6 +1190,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         generator_prototype,
         intl_collator_prototype,
         intl_collator_bound,
+        intl_date_time_format_prototype,
+        intl_date_time_format_bound,
     })
 }
 
@@ -1982,6 +1988,67 @@ fn weak_map_intrinsics(
         })?
         .then_some(())?;
     Some((prototype, constructor))
+}
+
+fn intl_date_time_format_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+    intl: ObjectId,
+) -> Option<(ObjectId, ObjectId)> {
+    let heap = b.heap;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::IntlDateTimeFormat,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    b.add(intl, "DateTimeFormat", constructor, PropertyFlags::METHOD)?;
+    let supported = b.function(Builtin::IntlDateTimeFormatSupportedLocales, &[])?;
+    b.add(
+        constructor,
+        "supportedLocalesOf",
+        supported,
+        PropertyFlags::METHOD,
+    )?;
+    let resolved = b.function(Builtin::IntlDateTimeFormatResolvedOptions, &[])?;
+    b.add(
+        prototype,
+        "resolvedOptions",
+        resolved,
+        PropertyFlags::METHOD,
+    )?;
+    let getter = b.function(Builtin::IntlDateTimeFormatGetFormat, &[])?;
+    let key = heap.keys().intern(&JsString::from("format"))?;
+    let descriptor = PropertyDescriptor {
+        get: Some(Value::Object(getter)),
+        enumerable: Some(false),
+        configurable: Some(true),
+        ..PropertyDescriptor::default()
+    };
+    if heap.with_object_mut(prototype, |o| match o {
+        HeapObject::Plain(o) => o.define_own_property(key, &descriptor),
+        _ => unreachable!(),
+    })? != DefineOutcome::Done
+    {
+        return None;
+    }
+    let key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    heap.with_object_mut(prototype, |o| match o {
+        HeapObject::Plain(o) => o.define_with(
+            key,
+            Value::String(JsString::from("Intl.DateTimeFormat")),
+            PropertyFlags::FUNCTION_INFO,
+        ),
+        _ => false,
+    })?
+    .then_some(())?;
+    let bound = b.function(Builtin::IntlDateTimeFormatBound, &[])?;
+    Some((prototype, bound))
 }
 
 #[cfg(test)]

@@ -941,3 +941,15 @@ and MIT notice is retained in `src/number.rs` and the existing
 `string_code_unit_access` notice in the source tests, with a full copy in
 `src/intl/data/QUICKJS-LICENSE`. Additional fixtures are synthetic, not light-cljs
 output.
+
+### Intl.DateTimeFormat date fields (clj-quickjs-215)
+
+Semantic reference: `research/quickjs/intl/datetimeformat.c` (component layout,
+field extraction, option processing and bound format) and `intl/intl_private.h`
+(pool indexing), revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`.
+The 36 date component rows in `tests/sim_host.rs` adapt
+`research/quickjs/tests/test_intl.js::test_dateTimeFormat` at that revision,
+with the QuickJS MIT notice retained beside the rows. Existing generated
+`src/intl/data/dates.rs` and locale records retain their QuickJS and Unicode
+notices; no data or generator changes were made. Runtime code is native Rust
+using the existing safe readers and Date conversion, with no linked C engine.
