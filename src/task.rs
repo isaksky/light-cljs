@@ -1525,6 +1525,38 @@ mod tests {
             a.constant(Primitive::Bool(true)).op(Neg);
         });
         assert_eq!(failed(neg).kind(), VmErrorKind::UnsupportedOperand);
+        // The bitwise and shift opcodes (clj-quickjs-62) are number-only
+        // too, in either operand position: no implicit ToNumber.
+        for op in [BitAnd, BitOr, BitXor, Shl, Sar, UShr] {
+            for bad_left in [true, false] {
+                let e = failed(run(&|a| {
+                    let (x, y) = if bad_left {
+                        (Primitive::Bool(true), num(0.0))
+                    } else {
+                        (num(0.0), Primitive::Null)
+                    };
+                    a.constant(x).constant(y).op(op);
+                }));
+                assert_eq!(e.kind(), VmErrorKind::UnsupportedOperand, "{op:?}");
+                assert_eq!(e.diagnostic().opcode, Some(op));
+            }
+            let objects = failed(run(&|a| {
+                a.op(NewObject).constant(num(1.0)).op(op);
+            }));
+            assert_eq!(objects.kind(), VmErrorKind::UnsupportedOperand, "{op:?}");
+        }
+        for operand in [Primitive::Null, Primitive::Undefined] {
+            let e = failed(run(&|a| {
+                a.constant(operand).op(BitNot);
+            }));
+            assert_eq!(e.kind(), VmErrorKind::UnsupportedOperand);
+            assert_eq!(e.diagnostic().opcode, Some(BitNot));
+        }
+        // On numbers they compute directly.
+        let shl = run(&|a| {
+            a.constant(num(1.0)).constant(num(31.0)).op(Shl);
+        });
+        assert_eq!(complete(shl), ValueView::Number(-2147483648.0));
 
         let thrown = failed(run(&|a| {
             a.op(ThrowError).raw(2).raw(0);
