@@ -394,6 +394,16 @@ Executed, with JavaScript semantics:
 | a function's own name (`compile_function`, or a declaration never assigned) | the running function object (`current_function`), so self-recursion captures nothing |
 | `__rt.name(args)` | the private VM operation of that intrinsic (see "Reserved intrinsic binding") |
 
+Strings convert with StringToNumber and compare loosely with numbers
+(clj-quickjs-67); each line below evaluates to `true`:
+
+```js accept
++" 12\n" === 12 && +"0x1f" === 31 && +"" === 0;
+("12345" | 0) === 12345 && ("0x12345" >>> 0) === 0x12345;
+"6" * "7" === 42 && "2" ** "10" === 1024;
+"" == 0 && "123" == 123 && "1" == true && "abc" != NaN;
+```
+
 Errors:
 
 | Situation | When | Reported as |

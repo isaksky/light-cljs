@@ -2128,6 +2128,15 @@ fn strings_convert_with_string_to_number() {
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
+    // The `docs/grammar.md` example lines, each true.
+    for src in [
+        r#"+" 12\n" === 12 && +"0x1f" === 31 && +"" === 0"#,
+        r#"("12345" | 0) === 12345 && ("0x12345" >>> 0) === 0x12345"#,
+        r#""6" * "7" === 42 && "2" ** "10" === 1024"#,
+        r#""" == 0 && "123" == 123 && "1" == true && "abc" != NaN"#,
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
     let minus_zero = num(r#"+"-0""#);
     assert!(minus_zero == 0.0 && minus_zero.is_sign_negative());
     for src in [
@@ -2160,6 +2169,7 @@ fn strings_convert_with_string_to_number() {
     // rejected until then.
     for src in [
         r#""10" < "9""#,
+        r#""9" <= "10""#,
         r#"let a = "1", b = "2"; a >= b"#,
         r#"let f = (a, b) => a > b; f("b", "a")"#,
     ] {
