@@ -45,6 +45,8 @@ cargo test --test cancellation    # consumer and cell cancellation racing settle
 cargo test --lib task::cancel_tests # hook-forced cancellation in every handoff window
 cargo test --test safepoints      # safepoints: collection requests during runs and scopes
 cargo test --lib heap::gc::       # rendezvous root snapshot with running tasks
+cargo test --test executor        # two-worker executor: overlap, migration, cancellation, shutdown
+cargo test --lib exec::           # builder ownership across workers
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -60,7 +62,8 @@ scoped and weak handles, tracing contract, mark/sweep collector), `value`,
 compiler host), `collections` (persistent
 vectors, maps and occurrences), `dep` (dependency keys, single-assignment
 cells, read-or-subscribe, per-task dependency log), `atom` (atomic
-references: single-writer publication, identity compare-and-set). See
+references: single-writer publication, identity compare-and-set), `exec`
+(optional reference executor with worker threads). See
 the `lib.rs` crate docs and [`docs/architecture.md`](docs/architecture.md).
 
 ## Supported and deferred
@@ -650,3 +653,42 @@ Deferred:
   long-running leaf host effect (a request waits for the effect to return).
 - A thread holding two run guards at once, or a guard it is not executing,
   delays collection until it drops them (only a thread's single run parks).
+### Reference executor (clj-quickjs-8)
+
+Supported:
+
+- `exec::Executor` (optional example/host code, not part of the embedding
+  contract): N worker OS threads (default 2) driving the public run API
+  with one FIFO ready queue, per-run instruction budgets (default 10 000),
+  one leaf-effect `Host` per worker, and a driver that receives the run
+  guard (default: run the VM). The runtime never starts it; the same tasks
+  can be driven by hand (`tests/executor.rs`,
+  `manual_embedding_needs_no_executor`).
+- Ownership per run: a worker acquires the task's execution claim before
+  dispatch and the claim is returned on yield, park or a terminal outcome,
+  so a task never runs on two workers. No lock is held while a task runs
+  or suspends; two workers execute instructions at the same time (proved
+  by a rendezvous inside host effects).
+- Waiting tasks occupy no worker: a parked task is kept by the executor
+  and re-enqueued by `Executor::wake(wakeups)` (from
+  `Runtime::complete`), then runs on any eligible worker, continuing at its
+  saved instruction without replaying effects. A placement hook
+  (`ExecutorConfig::placement`) chooses the worker per enqueue (reason and
+  last worker given), e.g. a different worker after a wait. Transient
+  builders follow their task across workers; other tasks are rejected.
+- Event record (`Executor::events`, `wait_for`): worker start (OS thread
+  id) and stop, enqueue (reason, placement), dispatch (execution number),
+  release (how the run ended; `Completed` = useful work), refused claims.
+- Cancellation (`Executor::cancel`: a parked task is enqueued so its own
+  run cleans up) and bounded shutdown (`begin_shutdown`, `shutdown(timeout)`
+  returns the queued and parked tasks to the embedder, or
+  `ShutdownTimeout` naming busy workers and handing the executor back).
+- Tests: `cargo test --test executor`, `cargo test --lib exec::`.
+
+Deferred:
+
+- Collection while workers run (clj-quickjs-25): `Runtime::collect` still
+  refuses while any worker holds a run guard; idle workers hold none.
+- A VM-level need (clj-quickjs-23): until then a driver issues needs
+  through the run guard and parks. Work stealing, priorities, fairness
+  beyond FIFO, and bounding the event record are not implemented.

@@ -48,6 +48,7 @@
 //! | [`frontend`] | JavaScript subset lexer, parser, AST and compiler to bytecode, with positioned diagnostics (`docs/grammar.md`) |
 //! | [`dep`] | dependency keys, single-assignment cells, read-or-subscribe, per-task dependency log |
 //! | [`atom`] | atomic references: single-writer publication, identity compare-and-set, load-to-root acquisition |
+//! | [`exec`] | optional reference executor: worker threads, ready queue, placement hook, events, bounded shutdown and cancellation |
 //!
 //! The module list is append-only per pellet.
 //!
@@ -65,11 +66,14 @@
 //! rendezvous: [`Runtime::request_collection`] waits for running tasks to
 //! reach VM poll points and for scopes to close or be released
 //! ([`Scope::released`]); see [`heap::gc`].
+//! An optional reference executor ([`exec`]) drives tasks on worker threads
+//! with a ready queue; the runtime itself owns no threads.
 
 pub mod atom;
 pub mod collections;
 pub mod dep;
 mod error;
+pub mod exec;
 pub mod frontend;
 pub mod heap;
 pub mod host;
@@ -86,6 +90,7 @@ pub use dep::{
     ProducerRequest, Wakeups,
 };
 pub use error::{CallSite, Diagnostic, SourceLocation, VmError, VmErrorKind};
+pub use exec::{Executor, ExecutorConfig, Placement, WorkerId};
 pub use heap::{
     CollectError, CollectStats, HandleError, HeapStats, Local, Rooted, Scope, WeakHandle,
 };

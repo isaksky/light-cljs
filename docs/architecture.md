@@ -762,6 +762,47 @@ Design: `design.md` §§8, 10, 15.
   current value (rooted); the runtime has no `swap`-with-callback and never
   re-runs user code, macros or effects to hide a conflict.
 
+## Reference executor (clj-quickjs-8)
+
+`src/exec.rs` (module docs: model, events, locks, shutdown). Design:
+`design.md` §§3–4, 8, 10, 13, 15.
+
+- **Optional.** Example/host code built only on the public run API
+  (`try_begin_run`, `run_with`, `need`/`park`, `cancel`, `Wakeups`). The
+  runtime owns no threads and never starts it; an embedder's own pool
+  drives tasks the same way (`tests/executor.rs` has a manual embedding
+  next to the executor tests).
+- **Workers and ownership.** N OS threads share one FIFO ready queue whose
+  entries carry a placement (any worker, or one). A worker claims the task
+  (`try_begin_run`, the task's atomic state word) before handing the run
+  guard to the driver, and the claim ends with the run: yield (requeue),
+  park (the task waits in the executor's parked set, on no worker), or a
+  terminal outcome (stored for `take_outcome`). Workers are temporary
+  executors; the VM state stays in the task, so a resumed run on another
+  worker continues at the saved instruction and replays nothing.
+  Task-owned builders follow the task.
+- **No global lock.** Two short leaf mutexes (scheduling state; event
+  record, innermost) are never held while a task runs or suspends, nor
+  while the driver, a host, or the placement hook runs. A rendezvous inside
+  two tasks' host effects proves two workers execute at once.
+- **Deterministic tests.** The placement hook sees each enqueue's reason
+  and the task's last worker (for example: woken tasks go to another
+  worker); the event record (dispatch, release, enqueue, worker start with
+  OS thread id) is what tests wait on, with bounded waits, never sleeps.
+- **Cancellation and shutdown.** `Executor::cancel` enqueues a parked task
+  its cancellation made runnable; the task's own run cleans up. Shutdown
+  stops dispatch, waits a bounded time for in-flight runs (bounded by the
+  budget), and returns queued and parked tasks to the embedder;
+  `ShutdownTimeout` names busy workers and returns the executor for a
+  retry.
+- **Contrast.** `research/quickjs/quickjs-libc.c` `worker_func` gives each
+  worker its own `JSRuntime` and `js_worker_postMessage` serializes
+  messages between them; here all workers share one runtime and heap and
+  pass tasks, not copies of values.
+- **Deferred.** Collection integrated with running workers
+  (clj-quickjs-25); the VM-level need (clj-quickjs-23) that will let the
+  default driver park on its own.
+
 ## QuickJS references and provenance
 
 Consulted (Bellard upstream `https://github.com/bellard/quickjs.git`, revision
