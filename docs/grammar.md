@@ -335,7 +335,8 @@ function):
 
 Intrinsics evaluate their arguments left to right, then run one VM
 instruction (operands, results and run-time errors: `crate::vm::intrinsics`,
-`crate::host` and, for `need`, `crate::task`):
+`crate::host`, for `need`, `crate::task`, and for `reduce` and `needAll`,
+`crate::vm::native`):
 
 | Call | Instruction | Result |
 |------|-------------|--------|
@@ -351,6 +352,8 @@ instruction (operands, results and run-time errors: `crate::vm::intrinsics`,
 | `__rt.freeze(b)` | `freeze` | persistent collection; the builder is frozen |
 | `__rt.effect(op, x)` | `host_effect op` | the leaf host effect's result; `op` must be an integer literal `0..=65535` |
 | `__rt.need(definition, kind)` | `need` | the shared result `kind` of `definition` in the task's world, suspending the whole task while it is pending (clj-quickjs-23); both are non-negative integers (a bad literal is a compile error) |
+| `__rt.reduce(f, init, v)` | `reduce` | resumable native fold (clj-quickjs-12): `f(acc, x)` for each element of the vector `v` in order, starting from `init`; a callback may suspend the whole task, which continues inside the fold without repeating completed elements |
+| `__rt.needAll(defs, kind)` | `need_all` | resumable native (clj-quickjs-12): a new vector of the shared results `kind` of each definition id in the vector `defs`, suspending at the call for each pending one |
 
 ```js compile-reject ReservedWord 2:14
 function helper(x) {

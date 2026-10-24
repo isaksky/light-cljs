@@ -363,6 +363,11 @@ pub(crate) fn count(heap: &Heap, coll: Value) -> Result<usize, CollectionError> 
     }
 }
 
+/// The element count of a vector (`WrongType` for anything else).
+pub(crate) fn vector_count(heap: &Heap, vec: Value) -> Result<usize, CollectionError> {
+    vector_body(heap, vec).map(|vec| vec.len())
+}
+
 pub(crate) fn nth(heap: &Heap, vec: Value, index: usize) -> Result<Value, CollectionError> {
     let vec = vector_body(heap, vec)?;
     vec.get(index).ok_or(CollectionError::IndexOutOfBounds {

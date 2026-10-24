@@ -14,6 +14,8 @@
 //!   clj-quickjs-4).
 //! * `exception`: the task-owned handler stack, completion records and
 //!   error objects of `throw`/`try` (clj-quickjs-11).
+//! * `native`: resumable native operations, the task-owned native
+//!   continuations the loop drives step by step (clj-quickjs-12).
 
 pub mod asm;
 pub(crate) mod dispatch;
@@ -23,6 +25,7 @@ pub(crate) mod frames;
 pub(crate) mod function;
 pub mod instr;
 pub mod intrinsics;
+pub(crate) mod native;
 
 pub use asm::{Assembler, Label};
 pub use executable::{Executable, ExecutableSpec, ValidationError, ValidationErrorKind};

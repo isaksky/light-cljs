@@ -55,6 +55,16 @@
 //! injection of the result belong to the run guard (`crate::task`, "Dependency
 //! waits in the VM"), which either pushes the value and calls [`execute`]
 //! again or ends the run. No Rust frame of this loop survives a wait.
+//!
+//! **Resumable natives.** `Reduce` and `NeedAll` push a task-owned native
+//! frame (`crate::vm::native`) instead of running to completion. While one is
+//! running (no call frame above it) the loop takes its next *step* in place
+//! of an instruction: a trampoline. A step that calls a callback enters a VM
+//! frame like `Call`, whose `Return` hands the result back to the native; a
+//! step that demands a dependency leaves with [`Exit::Need`] exactly like a
+//! `Need` instruction. Each step counts against the budget and is a poll
+//! point, so a yield, a suspension or a collection may fall between any two
+//! steps, and the next run continues with the pending step.
 
 use std::sync::Arc;
 
@@ -70,6 +80,7 @@ use crate::vm::frames::{Raised, Returned, VmState};
 use crate::vm::function::{BindingCell, FunctionObject};
 use crate::vm::instr::{Instr, Opcode, ThrowKind};
 use crate::vm::intrinsics;
+use crate::vm::native;
 
 /// How a run of the interpreter loop ended.
 #[derive(Debug)]
@@ -79,8 +90,9 @@ pub(crate) enum Exit {
     /// The budget ran out; the task can be run again.
     Yield,
     /// A `Need` instruction at `pc` asks for result `kind` of `dependency`;
-    /// its operands are popped and the running frame's `pc` is past it. The
-    /// caller pushes the result and continues with `budget`, or suspends.
+    /// its operands are popped and the running frame's `pc` is past it. Or a
+    /// running native frame started by the instruction at `pc` demands it.
+    /// The caller pushes the result and continues with `budget`, or suspends.
     Need {
         dependency: DependencyId,
         kind: ResultKind,
@@ -120,8 +132,8 @@ pub(crate) enum Fault {
     Rethrow(Exception),
 }
 
-/// What the loop does after an instruction.
-enum Flow {
+/// What the loop does after an instruction (or a native step).
+pub(crate) enum Flow {
     Next,
     /// `Call` or `Return` changed the running frame.
     FrameChanged,
@@ -205,9 +217,9 @@ fn throw_message(code: &Code, pc: usize, kind: ThrowKind) -> String {
     }
 }
 
-/// The callee of a `Call`: the code of a function object, or the name of
-/// what was found instead.
-fn callee_code(heap: &Heap, callee: Value) -> Result<Arc<Code>, Fault> {
+/// The callee of a `Call` (or of a native's callback): the code of a function
+/// object, or the name of what was found instead.
+pub(crate) fn callee_code(heap: &Heap, callee: Value) -> Result<Arc<Code>, Fault> {
     let Value::Object(id) = callee else {
         return Err(Fault::NotCallable(callee.type_name()));
     };
@@ -258,16 +270,8 @@ fn with_cell<R>(
 /// `0..=2^53-1`, exactly representable) and a result kind (an integer in
 /// `0..=u32::MAX`). Anything else is rejected, never rounded.
 fn need_operands(dependency: Value, kind: Value) -> Result<(DependencyId, ResultKind), Fault> {
-    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
-    let integer = |v: Value, max: f64| match v {
-        Value::Number(n) if n.fract() == 0.0 && (0.0..=max).contains(&n) => Some(n),
-        _ => None,
-    };
-    match (
-        integer(dependency, MAX_SAFE_INTEGER),
-        integer(kind, f64::from(u32::MAX)),
-    ) {
-        (Some(d), Some(k)) => Ok((DependencyId::new(d as u64), ResultKind::new(k as u32))),
+    match (dependency_id(dependency), result_kind(kind)) {
+        (Some(d), Some(k)) => Ok((d, k)),
         _ => Err(Fault::Unsupported(format!(
             "need takes a definition id and a result kind as non-negative integer numbers, got {} and {}",
             describe(dependency),
@@ -276,8 +280,27 @@ fn need_operands(dependency: Value, kind: Value) -> Result<(DependencyId, Result
     }
 }
 
+/// `v` as an integer number in `0..=max`, never rounded.
+fn integer(v: Value, max: f64) -> Option<f64> {
+    match v {
+        Value::Number(n) if n.fract() == 0.0 && (0.0..=max).contains(&n) => Some(n),
+        _ => None,
+    }
+}
+
+/// A definition id operand: an integer number in `0..=2^53-1`.
+pub(crate) fn dependency_id(v: Value) -> Option<DependencyId> {
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+    integer(v, MAX_SAFE_INTEGER).map(|d| DependencyId::new(d as u64))
+}
+
+/// A result kind operand: an integer number in `0..=u32::MAX`.
+pub(crate) fn result_kind(v: Value) -> Option<ResultKind> {
+    integer(v, f64::from(u32::MAX)).map(|k| ResultKind::new(k as u32))
+}
+
 /// A value for a diagnostic: numbers as themselves, other values by type.
-fn describe(v: Value) -> String {
+pub(crate) fn describe(v: Value) -> String {
     match v {
         Value::Number(n) => n.to_string(),
         other => other.type_name().to_string(),
@@ -373,6 +396,14 @@ fn step(
     host: &mut dyn Host,
     instr: Instr,
 ) -> Result<Flow, Fault> {
+    if native::is_resumable(instr) {
+        // A resumable native: its frame is pushed and its first step runs
+        // next (`crate::vm::native`). `pc` was advanced past the instruction.
+        let pc = state.top().pc.saturating_sub(1);
+        native::start(state, heap, instr, pc)?;
+        return Ok(Flow::Next);
+    }
+    // Everything below, leaf natives included, runs to completion here.
     match instr {
         Instr::Const(i) => {
             let v = code
@@ -609,6 +640,9 @@ fn step(
             };
             state.push(f);
         }
+        Instr::Reduce | Instr::NeedAll => {
+            return Err(Fault::Internal("resumable native on the leaf path"));
+        }
         Instr::Need => {
             let kind = state.pop()?;
             let dependency = state.pop()?;
@@ -699,6 +733,9 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::PopCatch
         | Instr::PopFinally
         | Instr::EndFinally
+        // Allocates nothing; each step of the native it starts polls.
+        | Instr::Reduce
+        | Instr::NeedAll
         // Leaves the loop; continuing after it re-enters `execute`, which
         // polls at run entry.
         | Instr::Need => false,
@@ -723,17 +760,31 @@ pub(crate) fn execute(
             }
             *left -= 1;
         }
-        let pc = state.top().pc;
-        let instr = code.instrs.get(pc).copied();
-        if instr.is_some_and(|i| polls(i, pc)) {
-            heap.safepoint(state);
-        }
-        let result = match instr {
-            Some(instr) => {
-                state.top_mut().pc = pc + 1;
-                step(state, &code, heap, host, instr)
+        // A running native frame (no call frame above it) takes the next
+        // step instead of the running frame's next instruction; `pc` is then
+        // its starting instruction, which a failure or a need reports.
+        let (pc, result) = match native::running(state) {
+            Some(pc) => {
+                // Every step is a poll point: the native's values are in its
+                // frame.
+                heap.safepoint(state);
+                (pc, native::step(state, heap))
             }
-            None => Err(Fault::Internal("instruction position out of range")),
+            None => {
+                let pc = state.top().pc;
+                let instr = code.instrs.get(pc).copied();
+                if instr.is_some_and(|i| polls(i, pc)) {
+                    heap.safepoint(state);
+                }
+                let result = match instr {
+                    Some(instr) => {
+                        state.top_mut().pc = pc + 1;
+                        step(state, &code, heap, host, instr)
+                    }
+                    None => Err(Fault::Internal("instruction position out of range")),
+                };
+                (pc, result)
+            }
         };
         let exception = match result {
             Ok(Flow::Next) => continue,

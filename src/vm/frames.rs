@@ -47,6 +47,12 @@
 //! recursing. Pending completions hold values (a saved return value or
 //! exception), traced with the frames.
 //!
+//! **Native frames.** A resumable native operation (`crate::vm::native`)
+//! keeps its pending state in [`VmState::natives`], beside the call frames:
+//! its arguments, progress and intermediate values, traced with the frames,
+//! and its operand area on the value stack just above the frame that started
+//! it, where a callback it calls is entered like any other callee.
+//!
 //! **Dynamic context.** The task and world in [`DiagnosticContext`] belong to
 //! the task, so every frame runs in the world its task was spawned in; a call
 //! never changes world. A failure reports the failing frame and its chain of
@@ -63,6 +69,7 @@ use crate::value::Value;
 use crate::vm::dispatch::Fault;
 use crate::vm::exception::{Completion, Exception, Handler, HandlerKind};
 use crate::vm::executable::Code;
+use crate::vm::native::NativeFrame;
 
 /// Per-task VM resource policy, fixed when the task is spawned
 /// ([`Runtime::with_limits`](crate::Runtime::with_limits)).
@@ -178,6 +185,9 @@ pub(crate) struct VmState {
     /// The handler stack: catch and finally handlers and pending completions
     /// of every frame, innermost last (`crate::vm::exception`).
     handlers: Vec<Handler>,
+    /// Pending resumable native operations, innermost last, each above the
+    /// call frame that started it (`crate::vm::native`). Traced.
+    pub(crate) natives: Vec<NativeFrame>,
 }
 
 /// Bind `args` to a frame's locals: as in JavaScript, missing arguments are
@@ -217,6 +227,7 @@ impl VmState {
             builders: OwnedBuilders::default(),
             pending_need: None,
             handlers: Vec::new(),
+            natives: Vec::new(),
         }
     }
 
@@ -237,6 +248,31 @@ impl VmState {
     /// Push an operand onto the running frame.
     pub(crate) fn push(&mut self, v: Value) {
         self.stack.push(v);
+    }
+
+    /// Number of values on the value stack (every frame's locals and
+    /// operands).
+    pub(crate) fn stack_len(&self) -> usize {
+        self.stack.len()
+    }
+
+    /// The value at value-stack index `at`, which must be an operand of the
+    /// running frame.
+    pub(crate) fn stack_value(&self, at: usize) -> Result<Value, Fault> {
+        self.stack
+            .get(at)
+            .copied()
+            .filter(|_| at >= self.top().floor())
+            .ok_or(Fault::Internal("operand index out of range"))
+    }
+
+    /// Drop the running frame's operands from value-stack index `len` up.
+    pub(crate) fn truncate_operands(&mut self, len: usize) -> Result<(), Fault> {
+        if len < self.top().floor() {
+            return Err(Fault::Internal("operand stack underflow"));
+        }
+        self.stack.truncate(len);
+        Ok(())
     }
 
     /// Pop an operand of the running frame; never reaches into its locals or
@@ -560,7 +596,8 @@ impl VmState {
 /// by pending completions (saved return values and exceptions). A frame's code
 /// constants are reached through its function object (whose `Trace` reports
 /// them) or, for the entry frame, through the task's executable
-/// (`RootCategory::ExecutableConstant`). The builder list is deliberately not
+/// (`RootCategory::ExecutableConstant`). Pending native frames report their
+/// arguments and intermediate values. The builder list is deliberately not
 /// traced.
 impl Trace for VmState {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
@@ -571,6 +608,7 @@ impl Trace for VmState {
             }
         }
         self.handlers.iter().for_each(|h| h.trace(visit));
+        self.natives.iter().for_each(|n| n.trace(visit));
     }
 }
 

@@ -352,6 +352,9 @@ pub enum Wake {
 }
 
 /// Task-owned state behind the execution guard.
+// The body already lives inside the task's shared allocation, one per task:
+// boxing the VM state would add an indirection on every run for no saving.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum TaskBody {
     /// Boxed: the VM state (frames, value stack, handler stack) is much

@@ -409,6 +409,8 @@ impl Executable {
                 Opcode::PopCatch => Instr::PopCatch,
                 Opcode::PopFinally => Instr::PopFinally,
                 Opcode::EndFinally => Instr::EndFinally,
+                Opcode::Reduce => Instr::Reduce,
+                Opcode::NeedAll => Instr::NeedAll,
                 Opcode::ThrowError => match ThrowKind::from_u16(operand as u16) {
                     Some(kind) => Instr::ThrowError(kind),
                     // Pass 1 rejected unknown kinds.

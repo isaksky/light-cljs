@@ -972,6 +972,49 @@ docs.
   (clj-quickjs-29); `host::sim` integration and executor-side cycle
   detection.
 
+## Resumable native operations (clj-quickjs-12)
+
+Native operations that call JavaScript or demand dependencies cannot be
+ordinary Rust calls: a callback may suspend the whole task, and no Rust frame
+may survive the run. The contract is the `src/vm/native.rs` module docs.
+
+- **Two kinds.** Leaf natives (collection, builder and atom intrinsics, leaf
+  host effects) run inside one instruction, as before. Resumable natives
+  (`reduce` `0x3D`, `need_all` `0x3E`, behind `__rt.reduce` and
+  `__rt.needAll`) only pop their operands into a `NativeFrame` pushed on
+  the task's `VmState` (`vm::native::is_resumable` is the exhaustive split).
+- **Trampoline.** While a native frame is running (no call frame above the
+  frame that started it), the dispatch loop takes its next step instead of
+  an instruction. A step consumes the completion of the previous action
+  (start, a callback's result, or a dependency's value) and returns the next:
+  `Call` (callee and arguments pushed in the native's operand area, then a
+  VM frame entered exactly as `Call` does; its `Return` delivers the result
+  back there), `Need` (`Exit::Need` to the run guard, the same protocol as
+  the `need` instruction; the value is pushed there on resume), or `Return`
+  (the frame is popped and the value pushed for the caller).
+- **State.** A native frame holds the arguments, progress index and length,
+  intermediate value (accumulator, results so far), what it awaits, its
+  result destination (its operand-area slot) and the starting instruction
+  (diagnostics, suspended source location). It is traced with the task's
+  frames (`RootCategory::TaskFrame`) whether the task is suspended, yielded
+  or stopped at a VM safepoint, and released when the native returns or the
+  task finishes or is cancelled.
+- **No borrows across steps.** A step reads one element through
+  `collections` (taking and releasing the heap lock inside the call) and
+  stores anything it allocates in the frame before returning; nothing is
+  held across a callback, a stack growth, a collection or a suspension.
+- **Budget and polls.** Each step is one budget unit and a poll point.
+- **Tests.** `tests/native_fold.rs` (a source callback capturing a live local
+  waits for a VM helper inside the fold and resumes on another thread;
+  one suspension per element plus one-unit budgets without replay;
+  collection while values are held only by a suspended, yielded or running
+  native frame and reclamation after; cancellation inside a fold; `needAll`
+  suspending in the native; failure positions; nested folds) and
+  `src/vm/native.rs` (leaf versus resumable step accounting).
+- **Deferred.** Unwinding failures through native frames into JavaScript
+  handlers, and the cancellation and migration policy for tasks inside a
+  native, are clj-quickjs-28.
+
 ## QuickJS references and provenance
 
 Consulted (Bellard upstream `https://github.com/bellard/quickjs.git`, revision
@@ -1015,6 +1058,13 @@ references only:
   (`quickjs.h`) are reference-count lifetimes, replaced here by rooting and
   collector grace periods. `quickjs-atom.h` atoms are interned names,
   unrelated to these atomic references. No code was copied.
+- `research/quickjs/quickjs.c` `js_call_c_function` (clj-quickjs-12): the
+  synchronous C-stack call of a native, which reenters `JS_CallInternal` for
+  callbacks; resumable natives replace that recursion with task-owned native
+  frames. `JSAsyncFunctionState` / `async_func_resume` as the inventory of
+  state a pending native keeps; `quickjs.h` `JSCFunction` and `JSClassGCMark`
+  for the call and edge boundaries. No promise semantics, ABI or code was
+  used.
 
 No QuickJS source or encodings were copied. Adapted material keeps the notice
 from `research/quickjs/LICENSE` (MIT, Copyright (c) 2017-2021 Fabrice Bellard

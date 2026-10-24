@@ -54,6 +54,8 @@ cargo test --lib task::need_tests # hook-forced handoff windows of the VM need
 cargo test --test exceptions      # throw, try/catch/finally, completion records, yields inside handlers
 cargo run --example e2e           # end-to-end compiler-host scenario on two workers (prints its trace)
 cargo test --test e2e             # the same scenario, asserted
+cargo test --test native_fold     # resumable natives: a fold whose callback waits, needAll, GC
+cargo test --lib vm::native::     # leaf versus resumable natives, step accounting
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -63,7 +65,8 @@ cargo clippy --all-targets -- -D warnings
 Library (`src/lib.rs`) plus a thin binary (`src/main.rs`). Modules:
 `runtime` (embedding entry point, `collect`), `task` (task state, execution
 guard, run outcomes), `vm` (instruction format, executable validation,
-task-owned frames, dispatch, test assembler), `heap` (object identity, roots,
+task-owned frames, dispatch, resumable native continuations, test
+assembler), `heap` (object identity, roots,
 scoped and weak handles, tracing contract, mark/sweep collector), `value`,
 `ids`, `error`, `host` (leaf host effects; `host::sim`, the simulated
 compiler host), `collections` (persistent
@@ -892,3 +895,40 @@ Not shown here (deferred):
   the producer when the scenario says so (it does not use `host::sim`'s
   worlds and producers, whose callables are still host tokens), and the
   executor still has no producer bindings or wait-cycle detection.
+
+### Resumable native operations (clj-quickjs-12)
+
+Supported (`src/vm/native.rs` module docs; tests in `tests/native_fold.rs`,
+`src/vm/native.rs`):
+
+- Leaf natives (collection, builder and atom intrinsics, `__rt.effect`) stay
+  ordinary Rust calls inside one instruction. Resumable natives push a
+  task-owned native frame that the interpreter loop drives one step at a
+  time (a trampoline): a step may call a JavaScript callback (entered as a
+  VM frame), demand a dependency (the same protocol as `__rt.need`), or
+  return the operation's value. No Rust frame survives a step.
+- `__rt.reduce(f, init, vec)` (opcode `reduce`, `0x3D`): folds a persistent
+  vector through `f(acc, x)`. A callback may suspend the whole task (at a
+  `__rt.need`) or the budget may run out between steps; the next run, on
+  any thread, continues where it stopped without repeating completed
+  elements, callbacks or effects. Callbacks may start nested folds.
+- `__rt.needAll(defs, kind)` (opcode `need_all`, `0x3E`): needs `kind` of
+  each definition id in the vector `defs`, in order, suspending in the
+  native for each pending one, and returns a vector of the shared results.
+- A native frame's arguments, progress index, accumulator or results so far,
+  and pending result destination are traced with the task's frames, while
+  suspended, yielded, or running at a safepoint; they become garbage when the
+  native returns or the task finishes or is cancelled.
+- Each step counts as one budget unit and is a poll point. Failures in a
+  step report the starting call's source position; a failing callback has
+  that call in its call chain.
+
+Deferred:
+
+- Unwinding callback and dependency failures through native frames into a
+  JavaScript handler, the documented cancellation policy and executor
+  migration tests for tasks inside a native, and debug-build enforcement of
+  the no-borrow-across-steps rule (clj-quickjs-28). Every failure inside a
+  native is terminal for the task for now; cancellation releases its frame.
+- Other resumable natives (map/filter, map traversal) and natives callable
+  as JavaScript function values; callbacks receive `(acc, x)` only.

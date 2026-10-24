@@ -39,6 +39,16 @@
 //! 4,294,967,295 for the kind) is rejected at compile time, other values at
 //! run time.
 //!
+//! **`__rt.reduce(f, init, vec)`** and **`__rt.needAll(defs, kind)`**
+//! (clj-quickjs-12) are resumable native operations (`crate::vm::native`):
+//! `reduce` calls the JavaScript function `f(acc, x)` for each element of the
+//! persistent vector `vec` in order and evaluates to the last result (`init`
+//! for an empty vector); `needAll` needs result `kind` of each definition id
+//! in `defs` in order and evaluates to a new vector of the results. Either
+//! may suspend the whole task part-way (in a callback, or at a pending
+//! dependency) and continues where it stopped when the task is run again,
+//! without repeating completed elements.
+//!
 //! A call evaluates its arguments left to right, then runs one VM
 //! instruction; the operand order is the instruction's stack order
 //! ([`crate::vm::intrinsics`] documents operands, results and errors).
@@ -126,6 +136,8 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
         arity: Arity::Exactly(2),
         lowering: Lowering::Need,
     },
+    op("reduce", 3, Opcode::Reduce),
+    op("needAll", 2, Opcode::NeedAll),
 ];
 
 /// The table entry for `name`, if it is an intrinsic.

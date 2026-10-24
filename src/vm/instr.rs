@@ -65,6 +65,8 @@
 //! | `PopCatch`      | 0x3A | –                  | –                      | pop the frame's innermost handler, a catch handler |
 //! | `PopFinally`    | 0x3B | –                  | –                      | pop the innermost finally handler, recording a normal completion |
 //! | `EndFinally`    | 0x3C | –                  | –                      | resume the pending completion of the finished finally block |
+//! | `Reduce`        | 0x3D | –                  | f init vec → acc       | resumable native fold: `acc = f(acc, x)` for each element |
+//! | `NeedAll`       | 0x3E | –                  | defs kind → results    | resumable native: a vector of the results of `need` of each definition |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -146,6 +148,17 @@
 //! when it runs: a mismatch, possible only in hand-assembled code, fails the
 //! task with `Internal`. `ThrowError` failures (and the other JavaScript
 //! errors listed there) are catchable.
+//!
+//! Opcodes `0x3D`–`0x3E` start *resumable native operations*
+//! (clj-quickjs-12), documented in `crate::vm::native`: `Reduce` (behind
+//! `__rt.reduce`) folds a persistent vector through a JavaScript callback,
+//! `NeedAll` (behind `__rt.needAll`) needs one dependency per element of a
+//! vector of definition ids. Unlike the leaf intrinsics above, which run to
+//! completion inside their instruction, each pops its operands into a
+//! task-owned native continuation that the interpreter loop drives one step
+//! at a time; the continuation may call JavaScript or demand a dependency,
+//! and the whole task may yield or suspend between its steps. The result is
+//! pushed when the continuation returns.
 //!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
@@ -232,6 +245,8 @@ pub enum Opcode {
     PopCatch = 0x3A,
     PopFinally = 0x3B,
     EndFinally = 0x3C,
+    Reduce = 0x3D,
+    NeedAll = 0x3E,
 }
 
 /// Operand encoding of an opcode.
@@ -340,6 +355,8 @@ impl Opcode {
             0x3A => PopCatch,
             0x3B => PopFinally,
             0x3C => EndFinally,
+            0x3D => Reduce,
+            0x3E => NeedAll,
             _ => return None,
         })
     }
@@ -408,6 +425,8 @@ impl Opcode {
             PopCatch => "pop_catch",
             PopFinally => "pop_finally",
             EndFinally => "end_finally",
+            Reduce => "reduce",
+            NeedAll => "need_all",
         }
     }
 
@@ -428,7 +447,7 @@ impl Opcode {
             | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber
             | ToNumberPair | Gt | Le | Ge | LooseEq | CurrentFunction | NewCell | CellInit
             | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PopCatch
-            | PopFinally | EndFinally => OperandKind::None,
+            | PopFinally | EndFinally | Reduce | NeedAll => OperandKind::None,
         }
     }
 }
@@ -533,6 +552,8 @@ pub(crate) enum Instr {
     PopCatch,
     PopFinally,
     EndFinally,
+    Reduce,
+    NeedAll,
 }
 
 impl Instr {
@@ -598,6 +619,8 @@ impl Instr {
             Instr::PopCatch => Opcode::PopCatch,
             Instr::PopFinally => Opcode::PopFinally,
             Instr::EndFinally => Opcode::EndFinally,
+            Instr::Reduce => Opcode::Reduce,
+            Instr::NeedAll => Opcode::NeedAll,
         }
     }
 
@@ -612,11 +635,11 @@ impl Instr {
             CellInit | CellSet => (2, 0),
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div
-            | Rem | Gt | Le | Ge | LooseEq | Need => (2, 1),
+            | Rem | Gt | Le | Ge | LooseEq | Need | NeedAll => (2, 1),
             ToNumberPair => (2, 2),
             AtomNew | AtomLoad => (1, 1),
             AtomCas => (3, 2),
-            GetOr | Assoc | BuilderAssoc => (3, 1),
+            GetOr | Assoc | BuilderAssoc | Reduce => (3, 1),
             Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet => (1, 1),
             Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally => (0, 0),
             NewVector(n) => (usize::from(n), 1),
@@ -641,6 +664,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 60);
+        assert_eq!(assigned, 62);
     }
 }
