@@ -7765,6 +7765,50 @@ provenance:
 suffix classification; no C implementation was adapted. The existing fixture
 copyright notices and provenance above remain applicable.
 
+### Synthetic JSON defaults (clj-quickjs-256)
+
+Policy (a) is retained: the host returns `ModuleSource::Json`, normally selected
+by the resolved name's case-sensitive `.json` suffix. Thus the pinned
+`examples/hello_module.js` JSON import works without adding attributes; running
+that complete example still requires its console host facility. Attributes,
+including `type: 'json5'`, remain explicit syntax rejections; JSON5 text is
+rejected by the strict JSON parser. There is no filesystem access in the VM.
+
+The world/version record cache retains immutable JSON source and a synthetic
+`ModuleRecord` with one local `default` export, an inaccessible `*default*`
+binding, no requests and no JavaScript body. Task preparation creates the
+synthetic binding without lowering JSON as JavaScript. The saved linker first
+allocates cells and resolves all exports/imports, then parses every JSON source
+with the same bounded `vm::json::Parser` used by JSON.parse. Only after all JSON
+values are initialized does JavaScript function instantiation and evaluation
+start. Malformed JSON therefore fails the task during linking before any body
+effect, even if an effectful sibling appears earlier in DFS order. SyntaxError
+messages include the source name and the parser's 1-based UTF-16 line:column;
+the existing depth (512 containers) and key (4096 UTF-16 units) limits apply.
+
+The active parser lives in the traced linker continuation, so partial arrays
+and objects remain rooted at budget and GC safepoints. A completed value moves
+into the task-owned default binding cell, which is shared by import aliases
+and the instance's namespace. Synthetic modules have no executable VM frames;
+evaluation simply marks them complete through the existing DFS machinery.
+The same cached record yields freshly parsed objects in each task, without
+host refetches or dependency edges from imports. Existing object/cell tracing
+and publication rules apply; no new heap kind or lock is introduced.
+
+Verification: `tests/js_modules.rs` covers the exact upstream message text,
+default import properties, shared importer identity and mutation, namespace
+contents, star exclusion, fresh task instances from cached records, primitives,
+strict JSON/JSON5 rejection, UTF-16 positions, limits and failures before any
+body. One-instruction runs collect between every step, migrate on 64 KiB worker
+stacks, wait in JavaScript and resume without refetching or reparsing an instance.
+
+QuickJS references and provenance: semantic references are
+`research/quickjs/quickjs-libc.c::{js_module_loader,create_json_module,json_module_init}`
+and `js_module_check_attributes` / `js_module_test_json`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The exact data text from
+`research/quickjs/examples/message.json` is included in `tests/js_modules.rs`
+with the QuickJS MIT copyright/license notice. No C implementation was adapted.
+
 ### Intl.Segmenter (clj-quickjs-222)
 
 `intl::segmenter::Data` stores one of three private slots on ordinary task-owned
@@ -8226,47 +8270,3 @@ newline where a field may end through ASI. Binding, reference and label parsing
 still reject the reserved spelling when the token belongs to an expression.
 This preserves both initialized/uninitialized fields before escaped names and
 multiline accessors without treating get/set as line-restricted modifiers.
-
-### Modules: synthetic JSON defaults (clj-quickjs-256)
-
-Policy (a) is retained: the host returns `ModuleSource::Json`, normally selected
-by the resolved name's case-sensitive `.json` suffix. Thus the pinned
-`examples/hello_module.js` JSON import works without adding attributes; running
-that complete example still requires its console host facility. Attributes,
-including `type: 'json5'`, remain explicit syntax rejections; JSON5 text is
-rejected by the strict JSON parser. There is no filesystem access in the VM.
-
-The world/version record cache retains immutable JSON source and a synthetic
-`ModuleRecord` with one local `default` export, an inaccessible `*default*`
-binding, no requests and no JavaScript body. Task preparation creates the
-synthetic binding without lowering JSON as JavaScript. The saved linker first
-allocates cells and resolves all exports/imports, then parses every JSON source
-with the same bounded `vm::json::Parser` used by JSON.parse. Only after all JSON
-values are initialized does JavaScript function instantiation and evaluation
-start. Malformed JSON therefore fails the task during linking before any body
-effect, even if an effectful sibling appears earlier in DFS order. SyntaxError
-messages include the source name and the parser's 1-based UTF-16 line:column;
-the existing depth (512 containers) and key (4096 UTF-16 units) limits apply.
-
-The active parser lives in the traced linker continuation, so partial arrays
-and objects remain rooted at budget and GC safepoints. A completed value moves
-into the task-owned default binding cell, which is shared by import aliases
-and the instance's namespace. Synthetic modules have no executable VM frames;
-evaluation simply marks them complete through the existing DFS machinery.
-The same cached record yields freshly parsed objects in each task, without
-host refetches or dependency edges from imports. Existing object/cell tracing
-and publication rules apply; no new heap kind or lock is introduced.
-
-Verification: `tests/js_modules.rs` covers the exact upstream message text,
-default import properties, shared importer identity and mutation, namespace
-contents, star exclusion, fresh task instances from cached records, primitives,
-strict JSON/JSON5 rejection, UTF-16 positions, limits and failures before any
-body. One-instruction runs collect between every step, migrate on 64 KiB worker
-stacks, wait in JavaScript and resume without refetching or reparsing an instance.
-
-QuickJS references and provenance: semantic references are
-`research/quickjs/quickjs-libc.c::{js_module_loader,create_json_module,json_module_init}`
-and `js_module_check_attributes` / `js_module_test_json`, revision
-`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The exact data text from
-`research/quickjs/examples/message.json` is included in `tests/js_modules.rs`
-with the QuickJS MIT copyright/license notice. No C implementation was adapted.
