@@ -2470,8 +2470,8 @@ and `cargo test --test gc_roots method_home_object`.
 Global `parseInt(string, radix)` and `parseFloat(string)` execute, with
 identical `Number.parseInt` / `Number.parseFloat` aliases. They accept the
 longest valid prefix, preserve signed zero and round to binary64. Object
-coercion is resumable; long scans charge the instruction budget. Global
-object properties remain deferred to clj-quickjs-104. Run the parsing cases
+coercion is resumable; long scans charge the instruction budget. The global
+bindings are task-owned properties (clj-quickjs-104). Run the parsing cases
 with `cargo test --test js_source parse_`.
 
 ### Accessor properties (clj-quickjs-120)
@@ -2508,7 +2508,7 @@ summation for extreme magnitudes. `Math.floor(-0.5)` is -1;
 `Math.ceil(-0.5)` preserves negative zero. Math constants and other methods
 remain deferred. Run `cargo test --test js_source math_`.
 
-### Global object bindings (clj-quickjs-104, data-property portion)
+### Global object bindings (clj-quickjs-104)
 
 Supported (`cargo test --test js_source global_object_bindings`,
 `cargo test --test js_functions global_`, `cargo test --test gc_roots global_object`):
@@ -2518,13 +2518,13 @@ Supported (`cargo test --test js_source global_object_bindings`,
 - Script `var` and function declarations create non-configurable global
   properties at entry. `let` and `const` remain lexical.
 - Global identifiers use current properties at every read/write, including
-  redefined data descriptors and strict/sloppy read-only writes.
+  redefined data/accessor descriptors and strict/sloppy read-only writes.
+  Getters/setters receive the global object and use resumable VM frames.
 - A published function reads its receiving task's globals. Capturing the
   global object itself prevents publication; lexical cells remain task-owned.
 - The object and its properties survive yields, collections and migration,
   and are reclaimed after task VM state is released.
 
-Deferred: accessor globals await clj-quickjs-120, so this pellet's full
-acceptance is unfinished; implicit globals/identifier deletion (-105),
+Deferred: implicit globals/identifier deletion (-105),
 indirect eval (-106), multiple scripts in one task, and sloppy `this`
 substitution keep their existing gaps.

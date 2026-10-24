@@ -11019,7 +11019,7 @@ fn string_index_reads_allocate_no_wrappers() {
     assert_eq!(rt.heap_stats().objects, before);
 }
 
-/// The data-property sequence adapts QuickJS `test_global_var_opt`,
+/// The descriptor sequence adapts QuickJS `test_global_var_opt`,
 /// research/quickjs/tests/test_language.js at 7d1c13c5d8f8. Other rows are
 /// synthetic fixtures, not light-cljs output. QuickJS's license:
 ///
@@ -11043,7 +11043,7 @@ fn string_index_reads_allocate_no_wrappers() {
 /// DEALINGS IN THE SOFTWARE.
 #[test]
 fn global_object_bindings() {
-    // Synthetic fixtures, not light-cljs output. Accessors require -120.
+    // Synthetic fixtures, not light-cljs output.
     for src in [
         "globalThis === this",
         "var a = 1; globalThis.a === 1",
@@ -11060,6 +11060,12 @@ fn global_object_bindings() {
         "let original = this; globalThis = 7; this === original",
         "var Object; typeof Object === 'function'",
         "function f() { return f; } let original = f; globalThis.f = 3; original() === 3",
+        "let calls = 0; Object.defineProperty(globalThis, 'x', {get() { calls++; return this === globalThis ? 7 : 0; }}); x === 7 && typeof x === 'number' && calls === 2",
+        "Object.defineProperty(globalThis, 'x', {set(v) { this.saved = v; return 99; }}); x === undefined && typeof x === 'undefined' && (x = 3) === 3 && saved === 3",
+        "let p = {get x() { return this.saved; }, set x(v) { this.saved = v; }}; Object.setPrototypeOf(globalThis, p); (x = 7) === 7 && x === 7 && globalThis.saved === 7",
+        "let hits = 0; Object.defineProperty(globalThis, 'x', {get() { hits++; return 2; }, set(v) { this.saved = v; }}); let old = x++; old === 2 && saved === 3 && hits === 1",
+        "let caught = 0; Object.defineProperty(globalThis, 'x', {get() { throw 7; }, set(v) { throw v; }}); try { x; } catch(e) { caught += e; } try { x = 3; } catch(e) { caught += e; } caught === 10",
+        "Object.defineProperty(globalThis, 'x', {value: undefined, configurable: true}); let found = x === undefined; delete globalThis.x; let caught = false; try { x; } catch(e) { caught = true; } found && caught && typeof x === 'undefined'",
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
@@ -11069,7 +11075,34 @@ fn global_object_bindings() {
         failure("Object.defineProperty(globalThis, 'gvar1', {value: 1}); gvar1 = 2").kind(),
         VmErrorKind::TypeError
     );
-    let sloppy = compile_script_with("globals", "Object.defineProperty(globalThis, 'gvar1', {value: 0, writable: true, configurable: true}); gvar1 = 1; Object.defineProperty(globalThis, 'gvar1', {writable: false}); gvar1 = 2; let ok = gvar1 === 1; Object.defineProperty(globalThis, 'gvar1', {value: 4, writable: true, configurable: true}); ok && gvar1 === 4 && (gvar1 = 6) === 6", ScriptOptions { strict: false }).unwrap();
+    assert_eq!(
+        failure("Object.defineProperty(globalThis, 'x', {get() { return 1; }}); x = 2").kind(),
+        VmErrorKind::TypeError
+    );
+    let sloppy = compile_script_with("globals", r#"
+        Object.defineProperty(globalThis, 'gvar1', {value: 0, writable: true, configurable: true});
+        function test() {
+            var v2;
+            gvar1 = 1;
+            Object.defineProperty(globalThis, 'gvar1', {writable: false});
+            gvar1 = 2;
+            var ok = gvar1 === 1;
+            Object.defineProperty(globalThis, 'gvar1', {
+                get: function() { return this === globalThis ? 'hello' : 'wrong receiver'; },
+                set: function(v) { v2 = this === globalThis ? v : 0; }
+            });
+            ok = ok && gvar1 === 'hello';
+            gvar1 = 3;
+            ok = ok && v2 === 3;
+            Object.defineProperty(globalThis, 'gvar1', {value: 4, writable: true, configurable: true});
+            ok = ok && gvar1 === 4;
+            gvar1 = 6;
+            Object.defineProperty(globalThis, 'getterOnly', {get: function() { return 9; }});
+            getterOnly = 10;
+            return ok && gvar1 === 6 && getterOnly === 9;
+        }
+        test()
+    "#, ScriptOptions::SLOPPY).unwrap();
     assert!(
         matches!(run(&sloppy, &[]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
     );
@@ -11108,7 +11141,18 @@ fn global_object_descriptors() {
          d !== undefined && d.value === this && d.writable && !d.enumerable && d.configurable \
          && Object.keys(this).length === 0",
     );
-    for name in ["Object", "Number", "String", "Array", "Function", "Reflect"] {
+    for name in [
+        "Object",
+        "Number",
+        "String",
+        "Array",
+        "Function",
+        "Reflect",
+        "isNaN",
+        "isFinite",
+        "parseInt",
+        "parseFloat",
+    ] {
         let value_check = if name == "Reflect" {
             "typeof d.value === 'object' && typeof d.value.apply === 'function'".to_string()
         } else {

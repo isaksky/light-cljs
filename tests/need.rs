@@ -1303,3 +1303,51 @@ fn to_primitive_bound_method_waits_with_its_bound_receiver() {
     assert_eq!(number(outcome), 18.0);
     assert_eq!(host.reports, [4.0]);
 }
+
+/// Synthetic global-identifier fixtures, not light-cljs output. Run the
+/// existing bounded property harness with collection at every instruction,
+/// while parked, and after resuming on another worker.
+#[test]
+fn global_accessors_wait_collect_and_migrate_without_replay() {
+    for (src, expected, reports) in [
+        (
+            "Object.defineProperty(globalThis, 'x', {get() { __rt.effect(2, 1); return __rt.need(5, 3) + this.offset; }}); globalThis.offset = 2; x",
+            9.0,
+            vec![1.0],
+        ),
+        (
+            "Object.defineProperty(globalThis, 'x', {set(v) { __rt.effect(2, 1); this.saved = __rt.need(5, 3) + v.n; return 99; }}); let v = (x = {n: 2}); saved + v.n",
+            11.0,
+            vec![1.0],
+        ),
+        (
+            "Object.defineProperty(globalThis, 'x', {get() { __rt.effect(2, 1); __rt.need(5, 3); return 9; }}); typeof x === 'number' ? 1 : 0",
+            1.0,
+            vec![1.0],
+        ),
+        (
+            "globalThis.saved = 2; Object.defineProperty(globalThis, 'x', {get() { __rt.effect(2, 1); return __rt.need(5, 3) + this.saved; }, set(v) { __rt.effect(2, 2); this.saved = v; }}); x += 1; saved",
+            10.0,
+            vec![1.0, 2.0],
+        ),
+        (
+            "globalThis.saved = 2; Object.defineProperty(globalThis, 'x', {get() { __rt.effect(2, 1); return this.saved; }, set(v) { __rt.effect(2, 2); this.saved = __rt.need(5, 3) + v; }}); let old = x++; saved + old",
+            12.0,
+            vec![1.0, 2.0],
+        ),
+        (
+            "let p = {get x() { __rt.effect(2, 1); return __rt.need(5, 3) + this.offset; }}; Object.setPrototypeOf(globalThis, p); globalThis.offset = 2; x",
+            9.0,
+            vec![1.0],
+        ),
+        (
+            "Object.defineProperty(globalThis, 'x', {get() { __rt.effect(2, 1); __rt.need(5, 3); throw 9; }}); let n = 0; try { x; } catch(e) { n = e; } n",
+            9.0,
+            vec![1.0],
+        ),
+    ] {
+        let (result, host) = resume_property_fixture(src);
+        assert_eq!(result, expected, "{src}");
+        assert_eq!(host.reports, reports, "no replay: {src}");
+    }
+}

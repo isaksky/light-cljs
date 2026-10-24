@@ -864,7 +864,9 @@ impl Opcode {
             | DeclareGlobalFunction
             | GetField
             | PutField
-            | DefineField | DefineGetter | DefineSetter => OperandKind::Name,
+            | DefineField
+            | DefineGetter
+            | DefineSetter => OperandKind::Name,
             Undefined | Pop | Dup | Add | Sub | Mul | Lt | StrictEq | Not | Return | NewObject
             | Count | Nth | Get | GetOr | Assoc | Dissoc | Conj | PopLast | NewVectorBuilder
             | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber

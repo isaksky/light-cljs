@@ -926,6 +926,62 @@ mod tests {
     }
 
     #[test]
+    fn global_declarations_preserve_or_replace_accessors() {
+        use crate::object::{DefineOutcome, PropertyDescriptor};
+        use crate::vm::dispatch::Fault;
+        let heap = Heap::default();
+        let id = new_global_object(&heap, crate::ids::TaskId::from_raw(1)).unwrap();
+        for configurable in [false, true] {
+            let name = JsString::from(if configurable { "replaceable" } else { "fixed" });
+            let key = heap.keys().intern(&name).unwrap();
+            heap.with_object_mut(id, |object| {
+                let HeapObject::Plain(object) = object else {
+                    panic!()
+                };
+                assert_eq!(
+                    object.define_own_property(
+                        key,
+                        &PropertyDescriptor {
+                            get: Some(Value::Undefined),
+                            enumerable: Some(true),
+                            configurable: Some(configurable),
+                            ..PropertyDescriptor::default()
+                        }
+                    ),
+                    DefineOutcome::Done
+                );
+            })
+            .unwrap();
+            assert!(declare_global(&heap, id, &name, false).is_ok());
+            assert!(
+                heap.read(id, |object| {
+                    let HeapObject::Plain(object) = object else {
+                        panic!()
+                    };
+                    object.get_own(key).unwrap().accessor.is_some()
+                })
+                .unwrap(),
+                "var preserves an existing accessor"
+            );
+            let result = declare_global(&heap, id, &name, true);
+            if configurable {
+                assert!(result.is_ok());
+                heap.read(id, |object| {
+                    let HeapObject::Plain(object) = object else {
+                        panic!()
+                    };
+                    let p = object.get_own(key).unwrap();
+                    assert!(p.accessor.is_none());
+                    assert!(p.flags.writable && p.flags.enumerable && !p.flags.configurable);
+                })
+                .unwrap();
+            } else {
+                assert!(matches!(result, Err(Fault::SyntaxError(_))));
+            }
+        }
+    }
+
+    #[test]
     fn the_realm_is_built_once_and_its_objects_are_shareable() {
         let heap = Heap::default();
         assert!(heap.realm().get().is_none());

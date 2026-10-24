@@ -3576,10 +3576,9 @@ collection and thread migration during coercion and long result construction.
 
 ## Number predicates and constants (clj-quickjs-147)
 
-The shared realm appends `isNaN` and `isFinite` to `Global` and resolves
-unshadowed identifiers with `get_builtin_global` (operands 6 and 7), just
-like existing built-in globals. Global-object properties await
-clj-quickjs-104. It also installs four Number predicate functions and eight
+The shared realm appends `isNaN` and `isFinite` to `Global` (operands 6 and
+7). Their task-owned global bindings resolve with `get_global`, like other
+built-in globals (clj-quickjs-104). It also installs four Number predicate functions and eight
 primitive Number constants before copying the intrinsic views and publishing
 the realm. Constants use `PropertyFlags::FIXED`; `MIN_VALUE` is binary64
 bit pattern 1, the smallest subnormal (Rust's `MIN_POSITIVE` is normal).
@@ -3605,8 +3604,8 @@ through waits, collection at every yield and thread migration.
 The append-only realm global table adds `parseInt` and `parseFloat`;
 `Number.parseInt` and `Number.parseFloat` reference those exact intrinsic
 function objects. Their usual method descriptors and function metadata are
-included in the immutable realm views and precise intrinsic roots. Global
-object properties remain the work of clj-quickjs-104.
+included in the immutable realm views and precise intrinsic roots. Their
+global bindings are task-owned properties (clj-quickjs-104).
 
 Every call uses `ConvertTarget::NumberParse`: ToString of the first operand
 finishes before ToInt32 of the radix begins. OrdinaryToPrimitive calls run
@@ -3803,7 +3802,7 @@ property without changing its descriptor or value. A function declaration
 checks restricted properties before any closure is created, then installs
 its closure. The compiler rejects conflicts with that script's lexical
 bindings. A function declaration against a non-configurable property that
-is not writable and enumerable raises a catchable run-time `SyntaxError`.
+is an accessor or is not writable and enumerable raises a catchable run-time `SyntaxError`.
 Script `let` and `const` retain the existing lexical frame/cell machinery
 and never become global object properties.
 
@@ -3812,7 +3811,11 @@ Unbound identifiers and references to script object bindings use
 Every access walks current properties; no global value is cached in code,
 locals, captures or a function's self-reference. Descriptor replacement,
 read-only strict writes and ignored sloppy writes use the existing
-property implementation. Missing reads and writes raise `ReferenceError`;
+property implementation. Getter/setter calls receive the global object,
+including for inherited accessors, through the traced `PropertyCall`
+continuation and ordinary VM frames from clj-quickjs-120. `typeof` also
+invokes getters. Setter return values are ignored; assignment returns its
+right operand. No Rust frame survives a callback wait. Missing reads and writes raise `ReferenceError`;
 sloppy implicit creation and identifier deletion remain clj-quickjs-105.
 `get_builtin_global` remains available to hand-assembled code, but source
 identifiers no longer use it.
@@ -3845,23 +3848,22 @@ there is no new heap kind, root category or publication exemption.
 finishing a task. `tests/js_functions.rs` checks receiving-task lookup,
 publication rejection for a captured global, and one-instruction runs with
 collection and migration between every slice. `tests/js_source.rs`
-`global_object_bindings` checks source semantics and data descriptors.
+`global_object_bindings` checks source semantics and data/accessor descriptors.
 `global_object_descriptors` checks every initial global binding's value and
 attributes, and all three attributes of script var/function properties.
 
-**Remaining prerequisite.** The object model does not yet store accessors
-(clj-quickjs-120). The accessor/getter/setter rows of this pellet's acceptance
-cannot run until that prerequisite lands; they must use resumable VM/native
-frames, as required for every JavaScript callback. Sloppy non-object `this`
-substitution remains the existing clj-quickjs-116 gap. This implementation
-therefore completes the global object/data-property portion of -104 only.
+`tests/need.rs::global_accessors_wait_collect_and_migrate_without_replay`
+checks getters, setters, inherited accessors, `typeof`, updates and throws
+with collection at every one-instruction yield and while parked, then
+resumption on another thread with exactly-once effects. Sloppy non-object
+`this` substitution remains the existing clj-quickjs-116 gap.
 
 QuickJS references and provenance: `research/quickjs/quickjs.c`,
 `JS_CheckDefineGlobalVar`, `OP_get_var`, `OP_put_var`, and
 `research/quickjs/tests/test_language.js`, `test_global_var_opt`, revision
-`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The data-property sequence in
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The descriptor sequence in
 `tests/js_source.rs::global_object_bindings` adapts the upstream sequence:
 `Object.defineProperty` creates the initial configurable property instead
-of indirect eval; Rust assertions check script completion values; accessor
-and delete groups are deferred. The test carries the QuickJS MIT notice.
+of indirect eval; Rust assertions check script completion values. The
+identifier-delete group is deferred. The test carries the QuickJS MIT notice.
 No upstream implementation code is copied.

@@ -416,8 +416,8 @@ checks left to later stages:
 
 - **Number prefix parsing** (clj-quickjs-148): global `parseInt` and
   `parseFloat`, and their identical `Number` aliases, execute with resumable
-  object coercion and budgeted scans. Built-in globals remain immutable
-  realm bindings until the global object exists (clj-quickjs-104).
+  object coercion and budgeted scans. Their global bindings are writable
+  task-owned properties (clj-quickjs-104).
 - **String extraction and combination** (clj-quickjs-145): `substring`,
   `slice`, `concat`, `padStart` and `padEnd` are supported, including generic
   receivers, resumable object coercion and budgeted result copying. Ropes and
@@ -2394,9 +2394,8 @@ hint and can yield, wait, be collected around and migrate during conversion.
 The constants' descriptors have all three flags false; strict writes throw
 catchable TypeError.
 
-Explicit gaps: global-object integration remains clj-quickjs-104. The two
-globals resolve through `get_builtin_global`, like the existing built-in
-globals, and lexical declarations shadow them. Error constructors remain
+The two globals are task-owned global-object properties (clj-quickjs-104),
+and lexical declarations shadow them. Error constructors remain
 deferred; tests assert caught failures and the runtime's TypeError kind.
 `Number.parseInt` and `Number.parseFloat` belong to the parsing pellet.
 
@@ -2463,6 +2462,10 @@ Read-only global writes throw `TypeError` in strict code and do nothing
 in sloppy code. A declaration conflict with lexical bindings is an early
 SyntaxError; a restricted global function property is a catchable run-time
 `VmErrorKind::SyntaxError` at the declaration's name.
+Getter/setter calls receive the global object, including inherited accessors,
+and execute in resumable VM frames. `typeof x` invokes a getter too;
+assignment returns the assigned value after a setter completes. Callbacks
+may yield, wait, be collected around and migrate without repeating effects.
 
 ```js accept
 globalThis === this;
@@ -2471,12 +2474,13 @@ function g() {} globalThis.g === g;
 let b = 1; globalThis.b === undefined;
 Object.defineProperty(globalThis, "x", {value: 1, writable: true}); x = 2; globalThis.x === 2;
 Object = 3; globalThis.Object === 3;
+Object.defineProperty(globalThis, "x", {get() { return this === globalThis ? 7 : 0; }}); x === 7 && typeof x === "number";
+Object.defineProperty(globalThis, "x", {set(v) { this.saved = v; }}); (x = 3) === 3 && saved === 3;
 ```
 
 Global objects are task-owned and cannot be published. A published closure
 that refers to a global reads the calling task's globals; a closure with a
 lexical capture follows the usual value/cell publication rule. A script
 arrow capturing `this` captures the task-owned object and cannot publish.
-There is one script per task. Accessor properties remain unavailable until
-clj-quickjs-120; implicit globals/identifier deletion (-105), indirect eval
+There is one script per task. Implicit globals/identifier deletion (-105), indirect eval
 (-106), and sloppy non-object receiver substitution are still deferred.
