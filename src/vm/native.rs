@@ -810,13 +810,25 @@ pub(crate) fn start_builtin(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
-    if which == Builtin::Error || (which == Builtin::ErrorPrototypeToString && !construct) {
-        let native = if which == Builtin::Error {
-            let stack = state.error_stack(state.top().pc.saturating_sub(1));
-            error::ErrorState::constructor(heap, state.diag.task, args, stack)?
-        } else {
-            error::ErrorState::to_string(this)?
-        };
+    let error = match which {
+        Builtin::Error => Some(error::ErrorState::constructor(
+            heap,
+            state.diag.task,
+            args,
+            None,
+            state.error_stack(state.top().pc.saturating_sub(1)),
+        )?),
+        Builtin::NativeError(kind) => Some(error::ErrorState::constructor(
+            heap,
+            state.diag.task,
+            args,
+            Some(kind),
+            state.error_stack(state.top().pc.saturating_sub(1)),
+        )?),
+        Builtin::ErrorPrototypeToString if !construct => Some(error::ErrorState::to_string(this)?),
+        _ => None,
+    };
+    if let Some(native) = error {
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::Error(native))?;
         return Ok(true);

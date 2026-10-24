@@ -861,7 +861,7 @@ Deferred:
   clj-quickjs-27 (below).
 - Engine-raised errors still have no JavaScript properties or `instanceof`
   support (clj-quickjs-230). JavaScript-created Error instances are supported
-  (clj-quickjs-228, below); NativeError constructors remain deferred.
+  (clj-quickjs-228, below), including NativeError constructors (clj-quickjs-229).
 
 ### End-to-end compiler-host scenario (clj-quickjs-13)
 
@@ -2573,7 +2573,7 @@ as a dependency failure, is rejected as task-owned mutation.
 
 Tests: `cargo test --test js_source error_` and
 `cargo test --test exceptions uncaught_error_objects_report_name_and_message`.
-NativeError constructors, engine-raised errors as instances,
+Engine-raised errors as instances,
 subclasses and `Reflect.construct` remain deferred.
 
 ### String splitting (clj-quickjs-157)
@@ -2616,3 +2616,12 @@ standard property attributes are exposed. Results are task-owned like literals.
 Deferred: subclassing/new.target, proxies, species and remaining array methods.
 
 Verify: `cargo test --test js_source array_constructor_and_is_array`.
+
+### NativeError constructors (clj-quickjs-229)
+
+`TypeError`, `RangeError`, `ReferenceError`, `SyntaxError`, `EvalError`,
+`URIError` and QuickJS's non-standard `InternalError` support calls and `new`,
+including Error's resumable message conversion, cause getters and captured stacks. Their
+constructors inherit from Error, their prototypes from Error.prototype,
+and instances support both `instanceof` checks and inherited `toString`.
+Tests: `cargo test --test js_source native_error`.

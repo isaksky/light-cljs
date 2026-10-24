@@ -54,8 +54,9 @@
 //! | Number predicates and constants (clj-quickjs-147) | built-in functions and primitive values | `Number` has `isNaN`, `isFinite`, `isInteger`, `isSafeInteger` (each function has `length` 1 and `name`), plus `EPSILON`, `MIN_VALUE`, `MAX_VALUE`, `MAX_SAFE_INTEGER`, `MIN_SAFE_INTEGER`, `NaN`, `POSITIVE_INFINITY`, `NEGATIVE_INFINITY` (no attributes set); globals `isNaN` and `isFinite` each have `length` 1 and `name` |
 //! | `Math` (clj-quickjs-152) | ordinary object, prototype `Object.prototype` | `floor`, `ceil`, `abs`, `fround` (length 1), `imul`, `hypot` (length 2); each function has `name` |
 //! | `Error`, `Error.prototype` (clj-quickjs-228) | callable/constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `name` ("Error"), `message` (""), `toString` (length 0) |
+//! | NativeError constructors and prototypes (clj-quickjs-229) | TypeError, RangeError, ReferenceError, SyntaxError, EvalError, URIError, InternalError; constructors inherit from Error, prototypes from Error.prototype | constructor length 1 and respective name; prototype owns constructor, name and empty message, inherits toString |
 //!
-//! Every built-in function inherits from `Function.prototype`, which
+//! NativeError constructors inherit from Error. Other built-in functions inherit from `Function.prototype`, which
 //! inherits from `Object.prototype` (clj-quickjs-102).
 //!
 //! Property attributes are the standard ones (ECMAScript §18): methods and
@@ -112,7 +113,7 @@
 //! [`Global`] lists the names a free identifier resolves to after every
 //! lexical scope and before the `ReferenceError` (`crate::frontend::lower`):
 //! `Object`, `Number` and `String` (clj-quickjs-73), `Function` and `Reflect`
-//! (clj-quickjs-102), `isNaN`, `isFinite`, `parseInt`, `parseFloat`, `Math`, `Array` (clj-quickjs-155) and `Error` (clj-quickjs-228). They initialize writable
+//! (clj-quickjs-102), `isNaN`, `isFinite`, `parseInt`, `parseFloat`, `Math`, `Array` (clj-quickjs-155), `Error` (clj-quickjs-228), and the seven NativeError constructors (clj-quickjs-229). They initialize writable
 //! properties of each task's mutable global object (clj-quickjs-104,
 //! [`new_global_object`]). Source references always look up those properties;
 //! `get_builtin_global` remains an instruction for hand-assembled code.
@@ -126,7 +127,7 @@ use crate::object::{
     PropertyKey,
 };
 use crate::value::{JsString, Value};
-use crate::vm::builtin::{Builtin, BuiltinFunction};
+use crate::vm::builtin::{Builtin, BuiltinFunction, NativeErrorKind};
 
 /// A built-in global name (the `get_builtin_global` operand). Append-only:
 /// the operand values are part of the instruction format.
@@ -157,11 +158,18 @@ pub(crate) enum Global {
     /// The ordinary Math namespace (clj-quickjs-152).
     Math = 10,
     Error = 11,
+    TypeError = 12,
+    RangeError = 13,
+    ReferenceError = 14,
+    SyntaxError = 15,
+    EvalError = 16,
+    URIError = 17,
+    InternalError = 18,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 12] = [
+    const ALL: [Global; 19] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -174,6 +182,13 @@ impl Global {
         Global::ParseFloat,
         Global::Math,
         Global::Error,
+        Global::TypeError,
+        Global::RangeError,
+        Global::ReferenceError,
+        Global::SyntaxError,
+        Global::EvalError,
+        Global::URIError,
+        Global::InternalError,
     ];
 
     /// The JavaScript name.
@@ -192,6 +207,13 @@ impl Global {
             Global::ParseFloat => "parseFloat",
             Global::Math => "Math",
             Global::Error => "Error",
+            Global::TypeError => "TypeError",
+            Global::RangeError => "RangeError",
+            Global::ReferenceError => "ReferenceError",
+            Global::SyntaxError => "SyntaxError",
+            Global::EvalError => "EvalError",
+            Global::URIError => "URIError",
+            Global::InternalError => "InternalError",
         }
     }
 
@@ -252,6 +274,8 @@ pub(crate) struct Intrinsics {
     math: ObjectId,
     pub(crate) error_prototype: ObjectId,
     error: ObjectId,
+    /// (constructor, prototype) pairs in NativeErrorKind order; rooted in `all`.
+    native_errors: [(ObjectId, ObjectId); 7],
 }
 
 /// The immutable property view of one intrinsic object.
@@ -289,6 +313,10 @@ impl IntrinsicView {
 }
 
 impl Intrinsics {
+    pub(crate) fn native_error_prototype(&self, kind: NativeErrorKind) -> ObjectId {
+        self.native_errors[kind as usize].1
+    }
+
     /// The property view of `id` if it is an intrinsic: a scan of the few
     /// intrinsic identities, no lock.
     pub(crate) fn view(&self, id: ObjectId) -> Option<&IntrinsicView> {
@@ -325,6 +353,25 @@ impl Intrinsics {
             Global::ParseFloat => Value::Object(self.parse_float),
             Global::Math => Value::Object(self.math),
             Global::Error => Value::Object(self.error),
+            Global::TypeError => {
+                Value::Object(self.native_errors[NativeErrorKind::Type as usize].0)
+            }
+            Global::RangeError => {
+                Value::Object(self.native_errors[NativeErrorKind::Range as usize].0)
+            }
+            Global::ReferenceError => {
+                Value::Object(self.native_errors[NativeErrorKind::Reference as usize].0)
+            }
+            Global::SyntaxError => {
+                Value::Object(self.native_errors[NativeErrorKind::Syntax as usize].0)
+            }
+            Global::EvalError => {
+                Value::Object(self.native_errors[NativeErrorKind::Eval as usize].0)
+            }
+            Global::URIError => Value::Object(self.native_errors[NativeErrorKind::Uri as usize].0),
+            Global::InternalError => {
+                Value::Object(self.native_errors[NativeErrorKind::Internal as usize].0)
+            }
         }
     }
 }
@@ -680,6 +727,29 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
             PropertyFlags::METHOD,
         )?;
     }
+    let mut native_errors = Vec::with_capacity(NativeErrorKind::ALL.len());
+    for kind in NativeErrorKind::ALL {
+        let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+            error_prototype,
+        ))))?;
+        b.all.push(prototype);
+        let constructor = b.builtin(
+            Some(error),
+            Builtin::NativeError(kind),
+            &[("prototype", prototype, PropertyFlags::FIXED)],
+        )?;
+        b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+        for (name, text) in [("name", kind.name()), ("message", "")] {
+            b.add_value(
+                prototype,
+                name,
+                Value::String(JsString::from(text)),
+                PropertyFlags::METHOD,
+            )?;
+        }
+        native_errors.push((constructor, prototype));
+    }
+    let native_errors = native_errors.try_into().ok()?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -724,6 +794,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         math,
         error_prototype,
         error,
+        native_errors,
     })
 }
 
@@ -1027,7 +1098,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 70);
+        assert_eq!(first.all.len(), 84);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -1058,11 +1129,17 @@ mod tests {
         assert_eq!(Global::from_u16(10), Some(Global::Math));
         assert_eq!(Global::from_name("Error"), Some(Global::Error));
         assert_eq!(Global::from_u16(11), Some(Global::Error));
-        assert_eq!(Global::from_u16(12), None);
+        for (offset, kind) in NativeErrorKind::ALL.into_iter().enumerate() {
+            assert_eq!(
+                Global::from_u16(12 + offset as u16),
+                Global::from_name(kind.name())
+            );
+        }
+        assert_eq!(Global::from_u16(19), None);
     }
 
-    /// Every built-in function inherits from `Function.prototype`, which
-    /// inherits from `Object.prototype` (clj-quickjs-102).
+    /// Built-ins inherit from Function.prototype, except NativeErrors whose
+    /// constructor prototype is Error (clj-quickjs-229).
     #[test]
     fn built_in_functions_inherit_from_function_prototype() {
         let heap = Heap::default();
@@ -1074,6 +1151,12 @@ mod tests {
                 .unwrap();
             let expected = if view.id == fp {
                 Some(intrinsics.object_prototype)
+            } else if intrinsics
+                .native_errors
+                .iter()
+                .any(|&(id, _)| id == view.id)
+            {
+                Some(intrinsics.error)
             } else if builtin {
                 Some(fp)
             } else {

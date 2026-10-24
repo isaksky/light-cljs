@@ -577,7 +577,9 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
             state.replace(argc + 1, result)?;
             return Ok(Flow::Next);
         }
-        Ok(Callee::Builtin(which @ (Builtin::Number | Builtin::String | Builtin::Error))) => {
+        Ok(Callee::Builtin(
+            which @ (Builtin::Number | Builtin::String | Builtin::Error | Builtin::NativeError(_)),
+        )) => {
             if super::native::start_builtin(
                 heap,
                 state,

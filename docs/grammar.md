@@ -432,11 +432,12 @@ checks left to later stages:
   Pattern early errors are clj-quickjs-56. RegExp objects and matching are
   deferred (clj-quickjs-186–194), so compilation rejects literals explicitly
   with `Unsupported` naming RegExp objects.
-- **Error instances** (clj-quickjs-228): `Error` is callable and constructible,
+- **Error instances** (clj-quickjs-228/-229): `Error` and all seven NativeError
+  constructors are callable and constructible,
   with resumable message conversion, inherited/accessor `options.cause`, and
   generic `Error.prototype.toString` and captured `stack` strings
   (clj-quickjs-59). Engine-raised errors expose stacks; their other properties
-  and instance behavior (clj-quickjs-230) and NativeError constructors remain deferred.
+  and instance behavior (clj-quickjs-230) remain deferred.
 - **Number prefix parsing** (clj-quickjs-148): global `parseInt` and
   `parseFloat`, and their identical `Number` aliases, execute with resumable
   object coercion and budgeted scans. Their global bindings are writable
@@ -1276,6 +1277,7 @@ try { f(); } catch (e) { throw e; } finally {}
 |--------|-----------------------|----------------------|
 | `throw v` (any value) | `v` itself, by identity | `VmErrorKind::Thrown`, "uncaught exception: v", at the last `throw` of it |
 | `throw Error("boom")` or `throw new Error("boom")` (clj-quickjs-228) | the task-owned Error instance with ordinary properties | `VmErrorKind::Thrown`, "uncaught exception: Error: boom", at the last `throw`; name/message are read from data properties only, with no user code; accessors or object-valued fields fall back to "an object" |
+| `throw new TypeError("boom")` and the other NativeError constructors (clj-quickjs-229) | the task-owned instance, also an `instanceof Error` | `VmErrorKind::Thrown`, "uncaught exception: TypeError: boom" (using the instance's name and message as above) |
 | ReferenceError, TypeError, RangeError (invalid array length), StackOverflow above | a fresh immutable error object with a `stack` string | the original error, at the failing instruction, also when the object is rethrown |
 | a failed or cancelled cell read by `__rt.need` (clj-quickjs-27) | a fresh immutable error object whose cause is the producer's published error value (`undefined` for a cancelled cell) | `DependencyFailed(key)` / `DependencyCancelled(key)` at the `need`, also when rethrown |
 | any other run-time failure (`UnsupportedOperand`, collection, builder, atom or binding-cell contract violations, host errors, out of memory) | not catchable: the task fails at once without running catch or finally blocks | that failure |
@@ -1306,8 +1308,8 @@ Gaps specific to execution:
   StackOverflow has an immutable `stack` string (`e.message`, `e.name`,
   and `e instanceof C`
   fails with `UnsupportedOperand`); it can be compared, passed around and
-  rethrown. JavaScript-created `Error` instances have ordinary properties;
-  NativeError constructors (clj-quickjs-229), engine errors as instances
+  rethrown. JavaScript-created `Error` and NativeError instances have ordinary
+  properties and support `instanceof`; engine errors as instances
   (clj-quickjs-230) remain deferred.
 - **Conversion gaps.** Symbols and `Symbol.toPrimitive` (clj-quickjs-127
   and -128) remain deferred.
@@ -2302,9 +2304,10 @@ so truncating from 4294967295 does not scan billions of holes.
 
 Explicit gaps: an object length value needs resumable ToPrimitive
 (clj-quickjs-70) and fails explicitly with `UnsupportedOperand`. RangeError
-uses the existing opaque immutable VM error object; its constructor,
-prototype, `name` and `message` properties remain deferred with the other
-error built-ins. Synthetic fixtures, not light-cljs output:
+uses the existing opaque immutable VM error object; engine-raised errors'
+prototype, `name` and `message` properties remain deferred (clj-quickjs-230).
+The RangeError constructor is supported (clj-quickjs-229).
+Synthetic fixtures, not light-cljs output:
 
 ```js accept
 let a = [1,2,3]; a.length = '2'; a.length === 2 && a[2] === undefined;
@@ -2396,7 +2399,7 @@ hint, validating each code point before converting the next argument.
 Callbacks may yield, wait, be collected around and migrate without replay.
 String and Number wrappers use their observable conversion methods too.
 
-Explicit gaps: NativeError constructors and engine-raised error properties remain deferred;
+Explicit gaps: engine-raised error properties remain deferred (clj-quickjs-230);
 the thrown values are the existing catchable TypeError and RangeError objects.
 
 Bulk primitive-string coercion in the static constructors currently runs
@@ -2429,7 +2432,7 @@ new String('abc').indexOf({toString: () => 'b'}, {valueOf: () => 1}) === 1;
 
 Explicit gaps: other string search methods remain deferred. Bulk primitive
 coercion may delay yielding (clj-quickjs-265); substring scanning itself is
-budgeted. NativeError constructors and engine-raised error properties remain deferred.
+budgeted. Engine-raised error properties remain deferred (clj-quickjs-230).
 
 ### String extraction and combination (clj-quickjs-145)
 
@@ -2478,8 +2481,8 @@ The constants' descriptors have all three flags false; strict writes throw
 catchable TypeError.
 
 The two globals are task-owned global-object properties (clj-quickjs-104),
-and lexical declarations shadow them. NativeError constructors remain
-deferred; tests assert caught failures and the runtime's TypeError kind.
+and lexical declarations shadow them. Engine-raised errors remain opaque
+(clj-quickjs-230); tests assert caught failures and the runtime's TypeError kind.
 `Number.parseInt` and `Number.parseFloat` belong to the parsing pellet.
 
 ### Number radix formatting (clj-quickjs-149)
@@ -2528,8 +2531,8 @@ Explicit gaps: Math constants and other Math methods remain deferred to
 their pellets. Global-object integration remains clj-quickjs-104; lexical
 bindings shadow `Math`. Like every realm intrinsic, Math is shared and
 immutable despite its methods' writable/configurable descriptor flags.
-`Math()` and `new Math()` throw catchable TypeErrors; NativeError constructors
-remain deferred, so tests verify caught failures and the runtime error kind.
+`Math()` and `new Math()` throw catchable TypeErrors; engine-raised errors
+remain opaque, so tests verify caught failures and the runtime error kind.
 
 ### Global object bindings (clj-quickjs-104)
 
@@ -2616,7 +2619,7 @@ try { throw Error('getter'); } catch (caught) { caught.message === 'getter'; }
 
 ### Error stack strings (clj-quickjs-59)
 
-`Error(...)` and `new Error(...)` capture `stack` at construction, including
+`Error(...)`, `new Error(...)` and all NativeError constructors capture `stack` at construction, including
 when the object is never thrown. Catchable engine errors capture it at the
 failing instruction, before unwinding. Reading it later or rethrowing the
 object keeps the creation positions. The first line is the creating/failing
@@ -2643,8 +2646,7 @@ own property, readable through property access, `in` and
 `Object.getOwnPropertyDescriptor`. Other native error properties and key
 enumeration remain unsupported until clj-quickjs-230. Direct/indirect eval
 remain deferred; eval SyntaxError stacks will use eval's source map when
-eval is implemented. NativeError constructors and function
-`lineNumber`/`columnNumber` properties are outside this addition.
+eval is implemented. Function `lineNumber`/`columnNumber` properties remain deferred.
 
 ```js accept
 Error('hello').stack.indexOf('    at <anonymous> (') === 0;
@@ -2675,3 +2677,32 @@ configurable; intrinsic mutation still follows the shared-immutable rule.
 
 Explicit gaps: subclassing/new.target, proxies (including proxy array
 branding), species and the remaining array methods belong to later work.
+
+### NativeError constructors (clj-quickjs-229)
+
+`TypeError`, `RangeError`, `ReferenceError`, `SyntaxError`, `EvalError`,
+`URIError` and `InternalError` are callable and constructible globals with
+length 1 and their respective names. `InternalError` is a QuickJS extension,
+not an ECMAScript standard constructor. Each constructor inherits from
+`Error`; each prototype inherits from `Error.prototype`, has its own
+`constructor`, `name` and empty `message`, and inherits `toString`.
+The realm intrinsics remain shared and immutable, with writable task-owned
+global bindings. AggregateError and SuppressedError remain deferred.
+
+Every constructor uses Error's resumable message/cause handling and stack capture, and creates
+a task-owned ordinary object with the internal error marker. Its instances
+are instances of both its own constructor and Error; different NativeError
+kinds have distinct prototypes. Message conversions, cause getters and
+inherited stringification can yield, wait, survive GC and migrate. These
+constructors do not change the representation of engine-raised failures
+(clj-quickjs-230).
+
+Synthetic fixtures, not light-cljs output:
+
+```js accept
+let e = new TypeError('text', {cause: 1});
+e.message === 'text' && e.cause === 1 && e instanceof TypeError && e instanceof Error;
+RangeError('m').toString() === 'RangeError: m';
+Object.getPrototypeOf(URIError) === Error && Object.getPrototypeOf(URIError.prototype) === Error.prototype;
+InternalError.prototype.toString === Error.prototype.toString;
+```

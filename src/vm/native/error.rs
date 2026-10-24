@@ -7,6 +7,7 @@ use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
 use crate::object::{OrdinaryObject, PropertyFlags};
 use crate::value::{JsString, Value};
+use crate::vm::builtin::NativeErrorKind;
 use crate::vm::{dispatch, property, prototype};
 
 #[derive(Debug)]
@@ -51,14 +52,18 @@ impl ErrorState {
         heap: &Heap,
         task: TaskId,
         args: &[Value],
+        kind: Option<NativeErrorKind>,
         stack: JsString,
     ) -> Result<Self, Fault> {
-        // NewTarget is Error itself (or a bound Error, resolved by Construct).
+        // NewTarget is the intrinsic (or a bound target, resolved by Construct).
         // Reflect.construct and subclass syntax are not supported yet. The
-        // intrinsic's fixed prototype is Error.prototype in both call modes.
-        let proto = crate::realm::intrinsics(heap)
-            .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
-            .error_prototype;
+        // intrinsic's fixed prototype is used in both call modes.
+        let intrinsics = crate::realm::intrinsics(heap)
+            .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+        let proto = match kind {
+            Some(kind) => intrinsics.native_error_prototype(kind),
+            None => intrinsics.error_prototype,
+        };
         let object = OrdinaryObject::with_prototype(task, proto).with_error_data();
         let id = heap
             .alloc(HeapObject::Plain(object))

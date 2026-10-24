@@ -4045,3 +4045,20 @@ property storage; its realm identity supplies the array brand for isArray
 and Object.prototype.toString. All mutable arrays use the Array heap kind.
 This preserves existing realm views and publication categories without
 adding an intrinsic array variant or changing append-only registries.
+
+## NativeError instances (clj-quickjs-229)
+
+The realm appends seven constructor/prototype pairs, rooted in its existing
+`all` inventory and immutable views. `Builtin::NativeError(kind)` selects
+the prototype for Error's existing native constructor continuation; the
+allocated instance uses the same ordinary-object error marker, tracing and
+task ownership. Each constructor inherits from Error and each prototype
+from Error.prototype, sharing its resumable toString implementation.
+No new heap kind, publication category or callback mechanism is introduced.
+Engine-raised error objects remain separate (clj-quickjs-230).
+
+QuickJS references and provenance: `research/quickjs/quickjs.c`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, `js_error_constructor` and
+`js_native_error_proto_funcs` were consulted for semantics. Rust code and
+synthetic fixtures in `tests/js_source.rs` were written fresh; no upstream
+source or test text was copied.

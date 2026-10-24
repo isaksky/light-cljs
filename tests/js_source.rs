@@ -11860,3 +11860,130 @@ fn error_objects_are_task_owned_and_cannot_be_published_as_failures() {
     rt.collect().unwrap();
     assert!(weak.upgrade().is_err());
 }
+
+/// Synthetic fixtures, not light-cljs output (clj-quickjs-229).
+#[test]
+fn native_error_constructors() {
+    for name in [
+        "TypeError",
+        "RangeError",
+        "ReferenceError",
+        "SyntaxError",
+        "EvalError",
+        "URIError",
+        "InternalError",
+    ] {
+        for expression in [
+            "new N('m').message === 'm'",
+            "N('m').name === 'NAME' && N('m').toString() === 'NAME: m'",
+            "N.prototype.name === 'NAME' && N.prototype.message === '' && N.prototype.constructor === N",
+            "Object.getPrototypeOf(N) === Error && Object.getPrototypeOf(N.prototype) === Error.prototype",
+            "N.prototype.toString === Error.prototype.toString && Object.getOwnPropertyDescriptor(N.prototype, 'toString') === undefined",
+            "N.name === 'NAME' && N.length === 1",
+            "let p = Object.getOwnPropertyDescriptor(N.prototype, 'name'); let m = Object.getOwnPropertyDescriptor(N.prototype, 'message'); let c = Object.getOwnPropertyDescriptor(N.prototype, 'constructor'); p.value === 'NAME' && p.writable && p.configurable && !p.enumerable && m.value === '' && m.writable && m.configurable && !m.enumerable && c.value === N && c.writable && c.configurable && !c.enumerable",
+            "let n = Object.getOwnPropertyDescriptor(N, 'name'); let l = Object.getOwnPropertyDescriptor(N, 'length'); n.value === 'NAME' && !n.writable && !n.enumerable && n.configurable && l.value === 1 && !l.writable && !l.enumerable && l.configurable",
+            "new N('m', {cause: 1}).cause === 1",
+            "new N() instanceof N && new N() instanceof Error && Object.getPrototypeOf(N()) === N.prototype",
+            "N() !== N() && N().toString() === 'NAME' && N(12).message === '12'",
+            "Object.getOwnPropertyDescriptor(N(undefined), 'message') === undefined && N(undefined).message === ''",
+            "let e = N('m', {cause: undefined}); let m = Object.getOwnPropertyDescriptor(e, 'message'); let c = Object.getOwnPropertyDescriptor(e, 'cause'); m.value === 'm' && m.writable && m.configurable && !m.enumerable && c.value === undefined && c.writable && c.configurable && !c.enumerable && Object.keys(e).length === 0",
+            "N('m', Object.create({cause: 42})).cause === 42 && N('m', 1).cause === undefined",
+            "let log = ''; let e = N({toString() { log += 'm'; return 'text'; }}, {get cause() { log += 'c'; return 9; }}); log === 'mc' && e.message === 'text' && e.cause === 9",
+            "let caught = false; try { N({toString() { throw 42; }}, {get cause() { throw 43; }}); } catch (e) { caught = e === 42; } caught",
+            "let caught = false; try { new N('m', {get cause() { throw 43; }}); } catch (e) { caught = e === 43; } caught",
+            "let B = N.bind(null, 'bound'); new B().message === 'bound' && new B() instanceof N && B().name === 'NAME'",
+            "N.call(null, 'x').message === 'x' && N.apply(null, ['y']).message === 'y' && Reflect.apply(N, null, ['z']).message === 'z'",
+            "let e = N('m', {cause: 1}); e.message = 'n'; e.cause = 2; delete e.message; e.message === '' && e.cause === 2",
+            "Object.prototype.toString.call(N()) === '[object Error]' && Object.prototype.toString.call(N.prototype) === '[object Object]'",
+            "let e; try { throw new N('caught'); } catch (caught) { e = caught; } e instanceof N && e.message === 'caught'",
+            "globalThis.NAME === N && Object.getOwnPropertyDescriptor(globalThis, 'NAME').writable",
+            "Error = 0; globalThis.NAME = 0; let e = new N('kept'); e instanceof N && e.name === 'NAME' && e.toString() === 'NAME: kept'",
+        ] {
+            let src = format!("const N = {name}; {}", expression.replace("NAME", name));
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+        let error = failure(&format!("throw new {name}('boom')"));
+        assert_eq!(error.kind(), VmErrorKind::Thrown);
+        assert_eq!(error.message(), format!("uncaught exception: {name}: boom"));
+    }
+    assert_eq!(
+        eval("new TypeError() instanceof RangeError"),
+        ValueView::Bool(false)
+    );
+    assert_eq!(
+        eval("let TypeError = 42; TypeError === 42"),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval("TypeError = 42; globalThis.TypeError === 42"),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output: all NativeErrors share Error's
+/// resumable callbacks and retain their prototype across GC and migration.
+#[test]
+fn native_error_callbacks_wait_yield_collect_and_migrate() {
+    for name in [
+        "TypeError",
+        "RangeError",
+        "ReferenceError",
+        "SyntaxError",
+        "EvalError",
+        "URIError",
+        "InternalError",
+    ] {
+        let rt = Runtime::new();
+        let src = format!(
+            r"
+            let log = '';
+            let e = new {name}({{toString() {{ log += 'm'; __rt.need(1, 1); return 'text'; }}}},
+                Object.create({{get cause() {{ log += 'c'; __rt.need(2, 1); return {{n: 42}}; }}}}));
+            Object.defineProperty(e, 'name', {{get() {{ log += 'n'; __rt.need(3, 1); return '{name}'; }}}});
+            Object.defineProperty(e, 'message', {{get() {{ log += 's'; __rt.need(4, 1); return 'text'; }}}});
+            e.toString() === '{name}: text' && log === 'mcns'
+                && e.cause.n === 42 && e instanceof {name} && e instanceof Error
+        "
+        );
+        let mut task = rt.spawn(&exe(&src), &[]).unwrap();
+        let mut waited = 0;
+        let mut complete = false;
+        for _ in 0..1000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waited += 1;
+                    assert!(waited <= 4, "{name}");
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{name}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        assert!(complete, "{name}");
+        assert_eq!(waited, 4, "{name}");
+    }
+}

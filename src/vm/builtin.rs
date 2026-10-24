@@ -242,6 +242,47 @@ pub(crate) enum Builtin {
     StringPrototypeSplit,
     /// Array brand test (clj-quickjs-153).
     ArrayIsArray,
+
+
+
+    /// NativeError constructors share Error's resumable implementation.
+    NativeError(NativeErrorKind),
+}
+
+/// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeErrorKind {
+    Type,
+    Range,
+    Reference,
+    Syntax,
+    Eval,
+    Uri,
+    Internal,
+}
+
+impl NativeErrorKind {
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Type,
+        Self::Range,
+        Self::Reference,
+        Self::Syntax,
+        Self::Eval,
+        Self::Uri,
+        Self::Internal,
+    ];
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Type => "TypeError",
+            Self::Range => "RangeError",
+            Self::Reference => "ReferenceError",
+            Self::Syntax => "SyntaxError",
+            Self::Eval => "EvalError",
+            Self::Uri => "URIError",
+            Self::Internal => "InternalError",
+        }
+    }
 }
 
 impl Builtin {
@@ -308,6 +349,7 @@ impl Builtin {
             Builtin::ObjectPrototypeProtoSetter => "set __proto__",
             Builtin::Error => "Error",
             Builtin::ErrorPrototypeToString => "toString",
+            Builtin::NativeError(kind) => kind.name(),
         }
     }
 
@@ -367,6 +409,7 @@ impl Builtin {
             Builtin::ObjectPrototypeProtoSetter => 1,
             Builtin::Error => 1,
             Builtin::ErrorPrototypeToString => 0,
+            Builtin::NativeError(_) => 1,
         }
     }
 }
@@ -396,7 +439,7 @@ pub(crate) fn call(
 ) -> Result<Value, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     match which {
-        Builtin::Error | Builtin::ErrorPrototypeToString => {
+        Builtin::Error | Builtin::ErrorPrototypeToString | Builtin::NativeError(_) => {
             Err(Fault::Internal("Error built-ins require a resumable frame"))
         }
         Builtin::Object => match arg(0) {
