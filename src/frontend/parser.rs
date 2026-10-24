@@ -2583,13 +2583,21 @@ impl<'a> Parser<'a> {
         // ends an operand. Carry that distinction through its parameters.
         let mut function_head = None;
         let mut function_body = None;
+        // Return/break/continue may end at a line break; break/continue
+        // can first consume one label on the same line.
+        let mut restricted = None;
         let mut parens = Vec::new();
         // Whether each brace ends a statement, whether it contains
-        // statements, and the parenthesis depth at which it was opened.
+        // statements, and its interior delimiter depth.
         let mut braces = Vec::new();
         let mut conditionals = Vec::new();
         while open > 0 {
             let mut token = lexer.next_token().ok()?;
+            let previous_restricted = restricted.take();
+            if previous_restricted.is_some() && token.newline_before {
+                operand = true;
+                statement = true;
+            }
             if operand
                 && matches!(
                     token.kind,
@@ -2600,6 +2608,9 @@ impl<'a> Parser<'a> {
             }
             let was_operand = operand;
             let was_statement = statement;
+            let in_statement_body = braces
+                .last()
+                .is_some_and(|&(_, body, depth)| body && depth == open);
             let pending_body = function_body.take();
             let closes_control = match token.kind {
                 TokenKind::Punct(Punct::LParen) => {
@@ -2637,10 +2648,12 @@ impl<'a> Parser<'a> {
             statement = closes_control;
             match token.kind {
                 TokenKind::Punct(Punct::LBrace) => {
-                    let ends_statement = pending_body.unwrap_or(was_statement);
+                    let ends_statement = pending_body.unwrap_or(
+                        was_statement || (!was_operand && in_statement_body && !after_arrow),
+                    );
                     let body =
                         pending_body.is_some() || was_statement || !was_operand || after_arrow;
-                    braces.push((ends_statement, body, parens.len()));
+                    braces.push((ends_statement, body, open + 1));
                     statement = body;
                 }
                 TokenKind::Punct(Punct::RBrace) => {
@@ -2649,9 +2662,7 @@ impl<'a> Parser<'a> {
                     statement = ends_statement;
                 }
                 TokenKind::Punct(Punct::Semicolon) => {
-                    statement = braces
-                        .last()
-                        .is_some_and(|&(_, body, depth)| body && depth == parens.len());
+                    statement = in_statement_body;
                 }
                 TokenKind::Punct(Punct::Question) => conditionals.push(open),
                 TokenKind::Punct(Punct::Colon) => {
@@ -2660,7 +2671,7 @@ impl<'a> Parser<'a> {
                     } else {
                         // A label or switch clause in a statement body;
                         // object property values remain expressions.
-                        statement = braces.last().is_some_and(|&(_, body, _)| body);
+                        statement = in_statement_body;
                     }
                 }
                 TokenKind::Keyword(
@@ -2673,6 +2684,16 @@ impl<'a> Parser<'a> {
                 }
                 _ => {}
             }
+            restricted = match token.kind {
+                TokenKind::Keyword(Keyword::Return) if !after_dot => Some(false),
+                TokenKind::Keyword(Keyword::Break | Keyword::Continue) if !after_dot => Some(true),
+                TokenKind::Identifier(_)
+                    if previous_restricted == Some(true) && !token.newline_before =>
+                {
+                    Some(false)
+                }
+                _ => None,
+            };
             control_head = !after_dot
                 && matches!(
                     token.kind,
